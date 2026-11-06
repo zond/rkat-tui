@@ -60,6 +60,20 @@ pub enum TuiError {
         #[source]
         source: Box<meerkat::PersistenceError>,
     },
+    /// The realm lease (the heartbeat record `rkat realm prune` and realm
+    /// inspection read to tell a live realm from an idle one) could not be
+    /// written.
+    #[error("cannot take the lease of realm {realm_id} in {lease_dir}: {source}")]
+    RealmLease {
+        /// The realm id.
+        realm_id: String,
+        /// The realm's lease directory.
+        lease_dir: PathBuf,
+        /// Underlying store error (boxed: the variant must not widen the
+        /// error type).
+        #[source]
+        source: Box<meerkat_store::StoreError>,
+    },
     /// A session store operation failed.
     #[error("session store error: {0}")]
     Store(#[from] meerkat_store::StoreError),
@@ -175,6 +189,7 @@ impl TuiError {
             Self::Io { .. }
             | Self::Persistence(_)
             | Self::PersistenceOpen { .. }
+            | Self::RealmLease { .. }
             | Self::Store(_)
             | Self::SessionStore(_)
             | Self::LlmClient(_)

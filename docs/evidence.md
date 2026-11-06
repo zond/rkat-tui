@@ -986,3 +986,32 @@ Two defects from the Meerkat maintainer's review of the harness, one commit each
   but comes with confining every launch kind). The realm config's other sections (endpoints, models) still load
   untrusted; they start no process, but a planted endpoint `base_url` could receive an environment key. Not in
   this change's scope.
+
+## Review reuse items (2026-11-07)
+
+Three "reuse the existing owner" items from the maintainer's review ("Existing owners to reuse before adding APIs").
+
+### 1. Realm lease while the realm is open
+
+- Before: bootstrap opened the realm persistence (`meerkat::open_realm_persistence_in`) but took no lease, so
+  `rkat realm prune` and realm inspection (`meerkat_store::inspect_realm_leases_in`) saw a realm a TUI had open as
+  idle.
+- After: `bootstrap_with` calls `meerkat_store::start_realm_lease_in(state_root, realm_id, None, "rkat-tui")` right
+  after persistence opens, as `rkat-rpc` (`crates/meerkat-rpc/src/main.rs`), `rkat-rest` and the mob host
+  (`crates/meerkat-cli/src/mob_host.rs`) do. The guard lives in `Runtime::realm_lease` for the process lifetime;
+  the runner's quit (`Runner::shutdown`) releases it with `RealmLeaseGuard::shutdown` (heartbeat stopped, record
+  removed) after the service shuts down; a runtime dropped without quitting releases it through the guard's `Drop`.
+  A failure to write the record is the typed startup error `TuiError::RealmLease` (realm id, lease directory,
+  `StoreError`).
+- What the owner API provides: a per-instance heartbeat record (`<realm>/leases/<instance>.json`, refreshed every
+  `REALM_LEASE_HEARTBEAT_SECS`, stale after the TTL) that `inspect_realm_leases_in` classifies as active/stale/
+  unparseable. What it does not: exclusivity. The lease is not a lock; every host writes its own record and no host
+  refuses to start while another holds one (with `instance_id: None` each process gets a fresh `instance-<uuid>`).
+  So there is no "held by another host" condition to surface; a second `rkat-tui` on the same realm starts and holds
+  a second lease, exactly like a second `rkat-rpc`.
+- Tests (`tests/integrator.rs`): `each_open_of_a_realm_holds_its_own_lease_until_released` (two bootstraps of the same
+  workspace realm: two active leases, surface `rkat-tui`, this pid; releasing one leaves one; releasing both leaves
+  none and `blocks_destructive_prune()` is false; release is idempotent), `quitting_releases_the_realm_lease` (the
+  runner's quit removes the record).
+- Commands: `cargo clippy --all-targets --all-features -- -D warnings` exit 0; `cargo nextest run --all-features`
+  771 passed, 6 skipped, exit 0.

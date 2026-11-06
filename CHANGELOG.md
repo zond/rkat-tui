@@ -140,6 +140,12 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Changed
 
+- `rkat-tui` holds a realm lease (`meerkat_store::start_realm_lease_in`,
+  surface `rkat-tui`) from the moment the realm's persistence is open until
+  it quits, as `rkat-rpc`, `rkat-rest` and the mob host do, so
+  `rkat realm prune` and realm inspection see the realm as live while a TUI
+  has it open.
+
 ### Fixed
 
 - The shell lexer no longer treats a carriage return as a blank. bash, dash

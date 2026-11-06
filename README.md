@@ -27,6 +27,9 @@ transcript, the model and the cost totals survive restarts: `-c` continues
 the workspace's latest session, `--resume <ref>` or `/resume [ref]` any other
 (`last`, `~N` for the N-th most recent, an id or id prefix; `/resume` or
 `--resume` alone opens a picker), `/clear` (`/new`) starts a fresh one.
+While it runs, `rkat-tui` holds a lease on the realm (surface `rkat-tui`,
+one per process; released on quit), so `rkat realm prune` and realm
+inspection treat the realm as live.
 
 **Typing while the agent works.** Enter on an idle session starts a turn
 (a `Queue` input). While a turn runs, Enter *steers*: the message becomes a

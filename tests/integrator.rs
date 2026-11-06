@@ -1062,3 +1062,97 @@ async fn export_writes_the_transcript_and_names_the_file() {
     );
     rig.quit().await;
 }
+
+/// The leases of the workspace realm `runtime` has open.
+async fn realm_leases(runtime: &rkat_tui::bootstrap::Runtime) -> meerkat_store::RealmLeaseStatus {
+    meerkat_store::inspect_realm_leases_in(
+        &runtime.scope.state_root,
+        &runtime.scope.realm_id,
+        false,
+    )
+    .await
+    .unwrap()
+}
+
+/// Every open realm holds a lease (what `rkat realm prune` and realm
+/// inspection read), one per process: two opens of the same realm hold two,
+/// each released on its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn each_open_of_a_realm_holds_its_own_lease_until_released() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let open = || async {
+        rkat_tui::bootstrap::bootstrap(
+            &common::args_for(&ws.root),
+            rkat_tui::bootstrap::BootstrapOptions {
+                llm_override: Some(Arc::clone(&llm) as Arc<dyn meerkat::LlmClient>),
+                lister: Some(common::no_lists()),
+                host_paths: Some(rkat_tui::bootstrap::HostPaths::default()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+    };
+    let mut first = common::within(open()).await;
+    let mut second = common::within(open()).await;
+    assert_eq!(first.scope.realm_id, second.scope.realm_id);
+
+    let status = realm_leases(&first).await;
+    assert_eq!(status.active.len(), 2, "{status:?}");
+    assert!(status.active.iter().all(|lease| {
+        lease.surface == rkat_tui::bootstrap::LEASE_SURFACE
+            && lease.pid == std::process::id()
+            && lease.realm_id == first.scope.realm_id
+    }));
+    assert!(status.blocks_destructive_prune());
+
+    first.release_realm_lease().await;
+    first.release_realm_lease().await;
+    let status = realm_leases(&second).await;
+    assert_eq!(status.active.len(), 1, "{status:?}");
+
+    second.release_realm_lease().await;
+    let status = realm_leases(&second).await;
+    assert!(
+        status.active.is_empty() && status.stale.is_empty(),
+        "{status:?}"
+    );
+    assert!(!status.blocks_destructive_prune());
+}
+
+/// The runner's quit releases the lease the bootstrap took.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn quitting_releases_the_realm_lease() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let rig = Rig::start(&ws.root, &llm, Start::New).await;
+    // The workspace-local realm lives inside the workspace.
+    assert_eq!(walk_leases(&ws.root), 1);
+    rig.quit().await;
+    assert_eq!(walk_leases(&ws.root), 0);
+}
+
+/// Lease records (`<realm>/leases/*.json`) under `dir`.
+fn walk_leases(dir: &std::path::Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|entry| {
+            let path = entry.path();
+            if path.is_dir() {
+                walk_leases(&path)
+            } else {
+                usize::from(
+                    path.extension().is_some_and(|ext| ext == "json")
+                        && path
+                            .parent()
+                            .and_then(|p| p.file_name())
+                            .is_some_and(|n| n == "leases"),
+                )
+            }
+        })
+        .sum()
+}

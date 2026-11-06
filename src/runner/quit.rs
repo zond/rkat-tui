@@ -38,7 +38,8 @@ impl Runner {
     /// Quit: interrupt a running turn and wait (up to [`QUIT_TURN_TIMEOUT`])
     /// for its inputs to end, abort the runner's remaining tasks, leave the
     /// session (off the runtime, its approval state dropped) and shut the
-    /// service down, then append every message the model never got to
+    /// service down, release the realm lease, then append every message the
+    /// model never got to
     /// [`UNSENT_FILE`].
     pub(super) async fn shutdown(mut self) -> Option<SavedUnsent> {
         if self.turn.is_active() {
@@ -67,6 +68,7 @@ impl Runner {
         if let Err(err) = self.runtime.service.try_shutdown().await {
             tracing::warn!(error = %err, "session service shutdown failed");
         }
+        self.runtime.release_realm_lease().await;
         let unsent = unsent_texts(std::mem::take(&mut self.held_unsent), &self.delivered);
         if unsent.is_empty() {
             return None;

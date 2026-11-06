@@ -66,7 +66,9 @@ use meerkat::{
 use meerkat_core::connection::RealmId;
 use meerkat_core::{AuthBindingRef, Config, ConfigStore, McpServerConfig, Provider};
 use meerkat_runtime::MeerkatMachine;
-use meerkat_store::{RealmBackend, realm_paths_in};
+use meerkat_store::{
+    RealmBackend, RealmLeaseGuard, realm_lease_dir, realm_paths_in, start_realm_lease_in,
+};
 use meerkat_tools::builtin::shell::ShellConfinement;
 
 use crate::cli::Args;
@@ -98,6 +100,9 @@ const MAX_SESSIONS: usize = 8;
 /// File in the realm directory where the session-LLM reconfigure host keeps
 /// its state (the same name the REST surface uses).
 const CONFIG_STATE_FILE: &str = "config_state.json";
+
+/// The surface name this host's realm lease records.
+pub const LEASE_SURFACE: &str = "rkat-tui";
 
 /// The session service the TUI drives.
 pub type TuiService = PersistentSessionService<FactoryAgentBuilder>;
@@ -161,6 +166,11 @@ pub struct Runtime {
     pub store: Arc<dyn SessionStore>,
     /// Backend pinned in the realm manifest.
     pub backend: RealmBackend,
+    /// This process's realm lease, held from the moment persistence is
+    /// opened until [`Runtime::release_realm_lease`] (or the drop) on exit:
+    /// what tells `rkat realm prune` and realm inspection that the realm is
+    /// live, as every other long-running host does.
+    pub realm_lease: Option<RealmLeaseGuard>,
     /// The approval engine and the channels the runner serves.
     pub approval: ApprovalParts,
     /// The helper (mob member) host; `None` without the `mob` feature.
@@ -234,6 +244,14 @@ impl Runtime {
             self.profile_generation.fetch_add(1, Ordering::SeqCst);
         }
         Ok(())
+    }
+
+    /// Release the realm lease: stop its heartbeat and remove its record.
+    /// Idempotent.
+    pub async fn release_realm_lease(&mut self) {
+        if let Some(lease) = self.realm_lease.take() {
+            lease.shutdown().await;
+        }
     }
 
     /// The current [`Runtime::profile_generation`].
@@ -392,6 +410,13 @@ pub async fn bootstrap_with(
         realm_id: scope.realm_id.clone(),
         source: Box::new(source),
     })?;
+    let realm_lease = start_realm_lease_in(&scope.state_root, &scope.realm_id, None, LEASE_SURFACE)
+        .await
+        .map_err(|source| TuiError::RealmLease {
+            realm_id: scope.realm_id.clone(),
+            lease_dir: realm_lease_dir(&realm_paths_in(&scope.state_root, &scope.realm_id)),
+            source: Box::new(source),
+        })?;
     let store = persistence.session_store();
     let store_path = persistence
         .store_path()
@@ -508,6 +533,7 @@ pub async fn bootstrap_with(
         machine,
         store,
         backend: manifest.backend,
+        realm_lease: Some(realm_lease),
         approval,
         helpers,
         instructions: InstructionSources {
