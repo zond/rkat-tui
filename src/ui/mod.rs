@@ -426,6 +426,10 @@ pub enum Effect {
     /// The session's cost totals after a model call; the integrator
     /// persists them next to the session.
     CostSnapshot(SessionCostSnapshot),
+    /// `/context`: the UI's part of the report (the gauge and the
+    /// compaction policy); the integrator adds what the context holds and
+    /// answers with one [`Msg::Notice`].
+    ContextReport(String),
     /// Ctrl-L: clear the terminal and repaint everything. The UI loop
     /// answers it itself; it never reaches the integrator.
     Redraw,
@@ -965,6 +969,35 @@ impl App {
     /// [`History`]; blank submissions are never recorded.
     pub fn take_submitted(&mut self) -> Vec<String> {
         std::mem::take(&mut self.submitted)
+    }
+
+    /// `/context`'s first lines: the gauge (used / window, percent,
+    /// estimated or not) and the compaction policy (as `/compact status`).
+    pub fn context_header(&self) -> String {
+        let s = &self.status;
+        let est = |approx: bool| if approx { " (estimated)" } else { "" };
+        let window = s.context_window.filter(|w| *w > 0);
+        let gauge = match (s.context_used, window) {
+            (Some(used), Some(window)) => format!(
+                "context: {used} of {window} tokens ({}%){}; window{}",
+                used.saturating_mul(100) / window,
+                est(s.context_approx),
+                if s.window_approx { " estimated" } else { " from the model profile" },
+            ),
+            (Some(used), None) => format!(
+                "context: {used} tokens{}; window unknown",
+                est(s.context_approx)
+            ),
+            (None, Some(window)) => format!(
+                "context: unknown until the first model call; window {window} tokens{}",
+                est(s.window_approx)
+            ),
+            (None, None) => "context: unknown until the first model call; window unknown".into(),
+        };
+        format!(
+            "{gauge}\ncompaction: {}",
+            self.gauge.policy().describe(s.context_window)
+        )
     }
 
     /// Whether a turn is running.
@@ -2364,6 +2397,7 @@ impl App {
                     .push_notice(NoticeLevel::Info, commands::HELP_TEXT);
             }
             Command::Copy(n) => self.copy_answer(n),
+            Command::Context => fx.push(Effect::ContextReport(self.context_header())),
             Command::Cost => {
                 let text = self.status.cost.breakdown(&self.status.prices);
                 self.transcript.push_notice(NoticeLevel::Info, text);
@@ -4647,6 +4681,42 @@ mod tests {
             );
         }
         assert!(!app.compacting);
+    }
+
+    #[test]
+    fn context_command_sends_the_gauge_and_the_policy() {
+        let mut app = gauge_app(CompactMode::Warn);
+        let fx = submit(&mut app, "/context");
+        let [Effect::ContextReport(header)] = fx.as_slice() else {
+            panic!("{fx:?}");
+        };
+        assert!(header.starts_with("context: unknown until the first model call"), "{header}");
+        assert!(header.contains("\ncompaction: auto-compaction is off"), "{header}");
+        app.status.context_used = Some(42_000);
+        let header = app.context_header();
+        assert!(
+            header.starts_with("context: 42000 of 100000 tokens (42%); window from the model profile"),
+            "{header}"
+        );
+        app.status.context_approx = true;
+        app.status.window_approx = true;
+        assert!(
+            app.context_header()
+                .starts_with("context: 42000 of 100000 tokens (42%) (estimated); window estimated"),
+            "{}",
+            app.context_header()
+        );
+        app.status.context_window = None;
+        assert!(
+            app.context_header()
+                .starts_with("context: 42000 tokens (estimated); window unknown")
+        );
+        // Allowed while a turn runs.
+        let mut app = running_app();
+        assert!(matches!(
+            submit(&mut app, "/context").as_slice(),
+            [Effect::ContextReport(_)]
+        ));
     }
 
     // `/compact` used to print the policy; it now compacts like Claude

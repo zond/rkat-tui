@@ -561,6 +561,14 @@ ordinary queued input once it is done. The `✓ compacted` notice appears
 when the session next runs (Meerkat publishes it once the semantic index
 took the discarded messages).
 
+`/context` prints the gauge (tokens used of the window, the percentage,
+and whether either is an estimate), the policy `/compact status` prints, and
+what the TUI knows of the context: the system prompt's size, the message
+counts, the instruction files on disk (`SYSTEM.md`, the workspace and parent
+`AGENTS.md`, `AGENTS.local.md`) and the number of tools rkat-tui registers
+itself. Sizes in tokens are estimates (four bytes a token); the engine's
+built-in and MCP tools are not visible to the TUI and are labelled unknown.
+
 `/compact <instructions>` compacts the same way. Claude Code uses such text
 to focus the summary; Meerkat's compaction takes no instructions yet, so
 rkat-tui says so in a warning and compacts without them.
@@ -570,7 +578,7 @@ rkat-tui says so in a warning and compacts without them.
 `/help`, `/quit`, `/clear`, `/resume [ref]`,
 `/permissions [list|add allow|deny <tool> [pattern]|rm <n>|trust]` (alias `/rules`),
 `/auto [on|off|resume]`, `/model [[endpoint:]id|refresh]`,
-`/remember <text>`, `/compact [now|status|<instructions>]`, `/usage` (aliases `/cost`, `/stats`), `/copy [N]`, `/mcp trust`,
+`/remember <text>`, `/compact [now|status|<instructions>]`, `/context`, `/usage` (aliases `/cost`, `/stats`), `/copy [N]`, `/mcp trust`,
 `/helpers [expand|fold <label>|all]` (alias `/tasks`). `/clear`, `/resume`, `/model` and `/compact` work only while
 idle; the transcript is replaced only once the new session is live.
 

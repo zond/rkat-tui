@@ -113,6 +113,9 @@ pub enum Command {
     Compact(CompactCommand),
     /// `/cost`: the session's token cost by model.
     Cost,
+    /// `/context`: the context gauge, the compaction policy and what the
+    /// context holds, as far as the TUI knows.
+    Context,
     /// `/copy [N]`: copy the Nth latest assistant answer (1, the default,
     /// is the latest) to the clipboard (OSC 52).
     Copy(usize),
@@ -174,6 +177,7 @@ Commands:
   /compact status                show the compaction policy (tui.toml [auto] compact =
                                  \"warn\" (default) warns at 75% and 85%; \"auto\" or
                                  --auto-compact lets the runtime compact at 85%)
+  /context                       context usage, the compaction policy and what the context holds
   /copy [N]                      copy the latest (or Nth latest) answer to the clipboard (OSC 52)
   /usage, /cost, /stats          token usage and cost per model (footer: $0.42, ~ estimate, $? unpriced)
   /helpers, /tasks               list the helpers (sub-agents) and their state
@@ -267,6 +271,10 @@ fn parse_command(name: &str, args: &[&str]) -> Result<Command, CommandError> {
         "quit" | "exit" | "q" => Ok(Command::Quit),
         "clear" | "new" => Ok(Command::Clear),
         "help" | "?" => Ok(Command::Help),
+        "context" => match args {
+            [] | ["all"] => Ok(Command::Context),
+            _ => Err(CommandError::Usage("/context")),
+        },
         "usage" | "cost" | "stats" => match args {
             [] => Ok(Command::Cost),
             _ => Err(CommandError::Usage("/usage")),
@@ -401,6 +409,9 @@ mod tests {
             parse("/remember"),
             Some(Err(CommandError::Usage("/remember <text>")))
         );
+        assert_eq!(ok("/context"), Command::Context);
+        assert_eq!(ok("/context all"), Command::Context);
+        assert_eq!(parse("/context x"), Some(Err(CommandError::Usage("/context"))));
         assert_eq!(ok("/compact"), Command::Compact(CompactCommand::Now));
         assert_eq!(ok("/compact now"), Command::Compact(CompactCommand::Now));
         assert_eq!(ok("/compact status"), Command::Compact(CompactCommand::Status));
@@ -493,6 +504,7 @@ mod tests {
             "/rules",
             "/permissions",
             "/usage",
+            "/context",
             "/stats",
             "/tasks",
             "/auto",

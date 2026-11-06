@@ -964,3 +964,30 @@ async fn esc_interrupts_and_the_queued_message_runs_next() {
     assert_eq!(app.status.queued, 0);
     rig.quit().await;
 }
+
+/// `/context`: the runner adds the session's system prompt, its messages,
+/// the instruction files and the TUI's own tools to the UI's header.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn context_report_describes_the_session() {
+    let ws = Workspace::new();
+    std::fs::write(ws.root.join("AGENTS.md"), "# AGENTS.md\n\n- use tabs\n").unwrap();
+    let llm = ScriptedLlmClient::new(vec![Step::Text("hello")]);
+    let mut rig = Rig::start(&ws.root, &llm, Start::New).await;
+    rig.send(Effect::StartTurn("hi".into()));
+    rig.turn_finished().await;
+    rig.send(Effect::ContextReport("context: header".into()));
+    let msg = rig
+        .wait_for(
+            |msg| matches!(msg, Msg::Notice { text, .. } if text.starts_with("context: header")),
+        )
+        .await;
+    let Msg::Notice { text, .. } = msg else {
+        unreachable!()
+    };
+    assert!(text.contains("system prompt: "), "{text}");
+    assert!(text.contains("messages: 2 (user 1, assistant 1"), "{text}");
+    assert!(text.contains("workspace AGENTS.md: "), "{text}");
+    assert!(text.contains("24 bytes"), "{text}");
+    assert!(text.contains("registered by rkat-tui"), "{text}");
+    rig.quit().await;
+}

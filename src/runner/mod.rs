@@ -798,6 +798,7 @@ impl Runner {
             Effect::TrustProjectMcp => self.trust_project_mcp().await,
             // The UI loop repaints the terminal itself.
             Effect::Redraw => {}
+            Effect::ContextReport(header) => self.context_report(&header).await,
         }
     }
 

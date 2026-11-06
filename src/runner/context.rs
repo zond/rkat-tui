@@ -23,8 +23,13 @@
 use sha2::{Digest, Sha256};
 
 use super::Runner;
+use std::fmt::Write as _;
+use std::path::PathBuf;
+
+use meerkat_core::Message;
+
 use crate::bootstrap::instructions::{
-    append_remember_line, remember_line, remember_target, remembered_context,
+    SectionKind, append_remember_line, remember_line, remember_target, remembered_context,
 };
 use crate::error::TuiError;
 use crate::session::SessionHandle;
@@ -203,6 +208,57 @@ impl Runner {
         }
     }
 
+    /// [`crate::ui::Effect::ContextReport`]: the UI's `header` plus what the
+    /// context holds, as one notice.
+    pub(super) async fn context_report(&mut self, header: &str) {
+        let session = self.session.read().await.map_err(|err| err.to_string());
+        let workspace = &self.runtime.scope.context_root;
+        let size = |path: &std::path::Path| {
+            std::fs::metadata(path)
+                .ok()
+                .filter(std::fs::Metadata::is_file)
+                .map(|m| usize::try_from(m.len()).unwrap_or(usize::MAX))
+        };
+        let mut files = Vec::new();
+        if let Some(global) = &self.runtime.scope.global {
+            let path = global.system_md();
+            files.push(InstructionFile {
+                label: "SYSTEM.md (replaces the base prompt)".into(),
+                bytes: size(&path),
+                path,
+                truncated: false,
+            });
+        }
+        let agents = remember_target(workspace);
+        files.push(InstructionFile {
+            label: "workspace AGENTS.md".into(),
+            bytes: size(&agents),
+            path: agents,
+            truncated: false,
+        });
+        for section in self.template.instructions.discover() {
+            let label = match section.kind {
+                SectionKind::UserGlobal => "user AGENTS.md",
+                SectionKind::Ancestor => "parent AGENTS.md",
+                SectionKind::Local => "AGENTS.local.md",
+            };
+            files.push(InstructionFile {
+                label: label.into(),
+                bytes: Some(section.body.len()),
+                path: section.path,
+                truncated: section.truncated,
+            });
+        }
+        let tools = self.template.external_tools.tools().len();
+        let text = context_breakdown(
+            header,
+            session.as_ref().map(|s| s.messages()).map_err(Clone::clone),
+            &files,
+            tools,
+        );
+        self.notice(NoticeLevel::Info, text);
+    }
+
     /// [`crate::ui::Effect::Remember`].
     pub(super) async fn remember(&mut self, text: &str) {
         let Some(line) = remember_line(text) else {
@@ -241,6 +297,85 @@ impl Runner {
     }
 }
 
+/// An instruction file `/context` names: a label, its path and its size on
+/// disk (`None`: absent).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct InstructionFile {
+    pub(super) label: String,
+    pub(super) path: PathBuf,
+    pub(super) bytes: Option<usize>,
+    pub(super) truncated: bool,
+}
+
+/// `~N tokens` for `bytes` of text (four bytes a token).
+fn approx_tokens(bytes: usize) -> String {
+    let tokens = u64::try_from(bytes / 4).unwrap_or(u64::MAX);
+    format!("~{} tokens", crate::ui::render::fmt_ctx_tokens(tokens))
+}
+
+/// `/context`: the UI's `header`, then the session's system prompt and
+/// message counts (`messages`, or why they could not be read), the
+/// instruction files on disk, and the tools rkat-tui registers itself.
+pub(super) fn context_breakdown(
+    header: &str,
+    messages: Result<&[Message], String>,
+    files: &[InstructionFile],
+    tui_tools: usize,
+) -> String {
+    let mut out = header.to_string();
+    match messages {
+        Ok(messages) => {
+            let (mut system, mut system_bytes) = (0usize, 0usize);
+            let (mut user, mut assistant, mut tools, mut notices) = (0usize, 0, 0, 0);
+            for message in messages {
+                match message {
+                    Message::System(s) => {
+                        system += 1;
+                        system_bytes += s.content.len();
+                    }
+                    Message::SystemNotice(_) => notices += 1,
+                    Message::User(_) => user += 1,
+                    Message::BlockAssistant(_) => assistant += 1,
+                    Message::ToolResults { .. } => tools += 1,
+                }
+            }
+            let _ = write!(
+                out,
+                "\nsystem prompt: {system_bytes} bytes ({}) in {system} system message{}",
+                approx_tokens(system_bytes),
+                if system == 1 { "" } else { "s" }
+            );
+            let _ = write!(
+                out,
+                "\nmessages: {} (user {user}, assistant {assistant}, tool results {tools}, notices {notices})",
+                user + assistant + tools + notices
+            );
+        }
+        Err(err) => {
+            let _ = write!(out, "\nsystem prompt and messages: unknown ({err})");
+        }
+    }
+    out.push_str(
+        "\ninstruction files on disk (new sessions load them; a resumed session keeps the copy it was built with):",
+    );
+    for file in files {
+        let size = match file.bytes {
+            Some(bytes) => format!(
+                "{bytes} bytes ({}){}",
+                approx_tokens(bytes),
+                if file.truncated { ", cut to the cap" } else { "" }
+            ),
+            None => "absent".to_string(),
+        };
+        let _ = write!(out, "\n  {}: {} — {size}", file.label, file.path.display());
+    }
+    let _ = write!(
+        out,
+        "\ntools: {tui_tools} registered by rkat-tui (file, notes, fork); the engine's built-in, MCP and helper tools: unknown here"
+    );
+    out
+}
+
 /// The idempotency key of a remembered line (per session: the same line
 /// twice is one system message). A SHA-256 digest of the line, so the key
 /// is the same across processes, builds and toolchains.
@@ -257,7 +392,47 @@ fn remember_key(line: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::remember_key;
+    use super::{InstructionFile, context_breakdown, remember_key};
+    use meerkat_core::{Message, SystemMessage, UserMessage};
+    use std::path::PathBuf;
+
+    #[test]
+    fn the_context_breakdown_counts_the_prompt_messages_files_and_tools() {
+        let messages = vec![
+            Message::System(SystemMessage::new("x".repeat(4000))),
+            Message::User(UserMessage::text("hi")),
+        ];
+        let files = [
+            InstructionFile {
+                label: "workspace AGENTS.md".into(),
+                path: PathBuf::from("/w/AGENTS.md"),
+                bytes: Some(800),
+                truncated: false,
+            },
+            InstructionFile {
+                label: "AGENTS.local.md".into(),
+                path: PathBuf::from("/w/AGENTS.local.md"),
+                bytes: None,
+                truncated: false,
+            },
+        ];
+        let text = context_breakdown("context: head", Ok(&messages), &files, 9);
+        assert!(text.starts_with("context: head\n"), "{text}");
+        assert!(
+            text.contains("system prompt: 4000 bytes (~1k tokens) in 1 system message"),
+            "{text}"
+        );
+        assert!(
+            text.contains("messages: 1 (user 1, assistant 0, tool results 0, notices 0)"),
+            "{text}"
+        );
+        assert!(text.contains("workspace AGENTS.md: /w/AGENTS.md — 800 bytes (~200 tokens)"), "{text}");
+        assert!(text.contains("AGENTS.local.md: /w/AGENTS.local.md — absent"), "{text}");
+        assert!(text.contains("tools: 9 registered by rkat-tui"), "{text}");
+        assert!(text.contains("unknown here"), "{text}");
+        let text = context_breakdown("h", Err("gone".into()), &[], 0);
+        assert!(text.contains("system prompt and messages: unknown (gone)"), "{text}");
+    }
 
     #[test]
     fn remember_keys_are_stable_digests_per_line() {
