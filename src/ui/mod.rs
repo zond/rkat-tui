@@ -4025,6 +4025,32 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_p_and_ctrl_n_are_up_and_down() {
+        let mut app = App::new(StatusInfo::default()).with_history(vec!["one".into(), "two".into()]);
+        type_str(&mut app, "a");
+        app.update(ctrl('j'));
+        type_str(&mut app, "b");
+        // A row up first, then history.
+        app.update(ctrl('p'));
+        assert_eq!(app.input.cursor(), (0, 1));
+        app.update(ctrl('p'));
+        assert_eq!(app.input.text(), "two");
+        app.update(ctrl('p'));
+        assert_eq!(app.input.text(), "one");
+        app.update(ctrl('n'));
+        assert_eq!(app.input.text(), "two");
+        app.update(ctrl('n'));
+        assert_eq!(app.input.text(), "a\nb");
+        // On an empty input with a held message, Ctrl-P edits it like ↑.
+        let mut app = running_app();
+        submit(&mut app, "held");
+        app.update(ack(1, Err(SteerFailure::NotRunning)));
+        assert!(app.input.is_empty());
+        app.update(ctrl('p'));
+        assert_eq!(app.input.text(), "held");
+    }
+
+    #[test]
     fn up_moves_a_visual_row_within_a_wrapped_line_keeping_the_column() {
         let mut app = App::new(StatusInfo::default()).with_history(vec!["old".into()]);
         app.input.set_wrap_width(10);

@@ -185,7 +185,7 @@ Keys:
                                  PgUp/PgDn scroll it); a click unfolds a header in the transcript
   Ctrl-R                         search history (Ctrl-R again: older · Enter accept · Esc cancel)
   Ctrl-X Ctrl-S                  interrupt and send the input (sends normally when idle)
-  Up/Down                        move between lines · recall prompt history
+  Up/Down, Ctrl-P/N              move between lines · recall prompt history
   Ctrl-A/E, Alt+B/F              line start/end, word left/right
   Ctrl-K/U, Ctrl-W, Alt+D        kill to line end/start, the word before/after (Ctrl-K at a
                                  line end kills the newline); Ctrl/Alt+Backspace = Ctrl-W

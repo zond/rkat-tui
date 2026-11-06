@@ -109,6 +109,8 @@ pub fn map_key(key: &KeyEvent, input_empty: bool) -> Action {
         KeyCode::Char('y') if ctrl => Action::Edit(EditAction::Yank),
         KeyCode::Char('k') if ctrl => Action::Edit(EditAction::KillToLineEnd),
         KeyCode::Char('x') if ctrl => Action::ChordPrefix,
+        KeyCode::Char('p') if ctrl => Action::Edit(EditAction::Up),
+        KeyCode::Char('n') if ctrl => Action::Edit(EditAction::Down),
         KeyCode::Char('a') if ctrl => Action::Edit(EditAction::Home),
         KeyCode::Char('e') if ctrl => Action::Edit(EditAction::End),
         KeyCode::Char('w') if ctrl => Action::Edit(EditAction::DeleteWordBack),
@@ -261,6 +263,14 @@ mod tests {
         );
         assert_eq!(
             map_key(&k(KeyCode::Down, KeyModifiers::NONE), true),
+            Action::Edit(EditAction::Down)
+        );
+        assert_eq!(
+            map_key(&k(KeyCode::Char('p'), KeyModifiers::CONTROL), true),
+            Action::Edit(EditAction::Up)
+        );
+        assert_eq!(
+            map_key(&k(KeyCode::Char('n'), KeyModifiers::CONTROL), true),
             Action::Edit(EditAction::Down)
         );
     }

@@ -571,7 +571,7 @@ Ctrl-S); Shift+Enter, Alt+Enter or Ctrl-J insert a newline, and so does a
 `\` typed right before Enter at the end of a line (the backslash is
 dropped); Ctrl-C interrupts (twice to quit when idle); Esc recalls
 held messages, else interrupts; ↑ on an empty editor edits the newest held
-message, else recalls prompt history; Ctrl-R searches history (workspace,
+message, else recalls prompt history (Ctrl-P/Ctrl-N are ↑/↓); Ctrl-R searches history (workspace,
 then global); Ctrl-X Ctrl-S interrupts and sends the input; Ctrl-O shows or
 hides detail (the last reasoning block and the last tool output together;
 Ctrl-T is unbound, reserved for a task checklist); Ctrl+↑/↓ select a helper in the panel under the
