@@ -61,7 +61,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use meerkat::surface::build_runtime_backed_service_with_default_reconfigure_host;
 use meerkat::{
-    AgentFactory, FactoryAgentBuilder, LlmClient, PersistentSessionService, SessionStore,
+    AgentFactory, FactoryAgentBuilder, LlmClient, PersistentSessionService,
 };
 use meerkat_core::connection::RealmId;
 use meerkat_core::{AuthBindingRef, Config, ConfigStore, McpServerConfig, Provider};
@@ -162,8 +162,6 @@ pub struct Runtime {
     pub service: Arc<TuiService>,
     /// Runtime control plane: input admission, interrupt, registrations.
     pub machine: Arc<MeerkatMachine>,
-    /// Realm session store (for listing persisted sessions).
-    pub store: Arc<dyn SessionStore>,
     /// Backend pinned in the realm manifest.
     pub backend: RealmBackend,
     /// This process's realm lease, held from the moment persistence is
@@ -417,7 +415,6 @@ pub async fn bootstrap_with(
             lease_dir: realm_lease_dir(&realm_paths_in(&scope.state_root, &scope.realm_id)),
             source: Box::new(source),
         })?;
-    let store = persistence.session_store();
     let store_path = persistence
         .store_path()
         .map_or_else(|| realm_root.clone(), PathBuf::from);
@@ -531,7 +528,6 @@ pub async fn bootstrap_with(
         confinement,
         service,
         machine,
-        store,
         backend: manifest.backend,
         realm_lease: Some(realm_lease),
         approval,

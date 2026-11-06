@@ -1156,3 +1156,51 @@ fn walk_leases(dir: &std::path::Path) -> usize {
         })
         .sum()
 }
+
+/// Session references resolve over the service's listing
+/// (`SessionService::list`): an archived session is no longer `last`, `~N`
+/// or a prefix match.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn references_resolve_over_the_service_listing() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![Step::Text("first"), Step::Text("second")]);
+    let mut rig = Rig::start(&ws.root, &llm, Start::New).await;
+    let first = rig.first_session.clone();
+    rig.send(Effect::StartTurn("in the first session".into()));
+    rig.turn_finished().await;
+    rig.send(Effect::NewSession);
+    let second = match rig
+        .wait_for(|msg| matches!(msg, Msg::Status(StatusUpdate::Session(_))))
+        .await
+    {
+        Msg::Status(StatusUpdate::Session(id)) => id,
+        other => panic!("{other:?}"),
+    };
+    rig.send(Effect::StartTurn("in the second session".into()));
+    rig.turn_finished().await;
+
+    let listed = rkat_tui::session::list_sessions(&*rig.store).await.unwrap();
+    let ids: Vec<String> = listed.iter().map(|s| s.session_id.to_string()).collect();
+    assert_eq!(ids, vec![second.clone(), first.to_string()]);
+    assert_eq!(resolve_session_ref(&*rig.store, "~1").await.unwrap(), first);
+    // (v7 ids of one test share their leading timestamp digits.)
+    let prefix = &first.to_string()[..30];
+    assert_eq!(
+        resolve_session_ref(&*rig.store, prefix).await.unwrap(),
+        first
+    );
+
+    rig.service
+        .archive_with_machine_protocol(
+            &first,
+            meerkat::MachineSessionArchiveProtocol::from_machine(rig.machine.as_ref()),
+        )
+        .await
+        .unwrap();
+    let listed = rkat_tui::session::list_sessions(&*rig.store).await.unwrap();
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!(listed[0].session_id.to_string(), second);
+    assert!(resolve_session_ref(&*rig.store, "~1").await.is_err());
+    assert!(resolve_session_ref(&*rig.store, prefix).await.is_err());
+    rig.quit().await;
+}

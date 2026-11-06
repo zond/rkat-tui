@@ -344,9 +344,12 @@ pub struct RigOptions {
 /// A runner over a real runtime-backed service, with its channels.
 pub struct Rig {
     pub service: Arc<TuiService>,
+    pub machine: Arc<meerkat_runtime::MeerkatMachine>,
     pub helpers: Option<Arc<rkat_tui::mobs::Helpers>>,
     pub approval: Arc<ApprovalEngine>,
-    pub store: Arc<dyn meerkat::SessionStore>,
+    /// The session lister (`resolve_session_ref` reads the service's
+    /// `SessionService::list`).
+    pub store: Arc<dyn meerkat::SessionService>,
     pub effects: mpsc::UnboundedSender<Effect>,
     pub ui_rx: mpsc::UnboundedReceiver<Msg>,
     pub events: Arc<Mutex<Vec<AgentEvent>>>,
@@ -413,9 +416,10 @@ impl Rig {
         )
         .await?;
         let service = Arc::clone(&runtime.service);
+        let machine = Arc::clone(&runtime.machine);
         let helpers = runtime.helpers.clone();
         let approval = Arc::clone(&runtime.approval.engine);
-        let store = Arc::clone(&runtime.store);
+        let store = Arc::clone(&runtime.service) as Arc<dyn meerkat::SessionService>;
         let RunnerHarness {
             effects,
             ui_rx,
@@ -434,6 +438,7 @@ impl Rig {
         });
         Ok(Self {
             service,
+            machine,
             helpers,
             approval,
             store,

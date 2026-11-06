@@ -1,11 +1,12 @@
 //! Resolve user-facing session references (`last`, `~N`, full id, id prefix)
-//! against the realm's session store, mirroring `rkat`'s
-//! `resolve_flexible_session_id`.
+//! against the realm's sessions as the session service lists them
+//! ([`SessionService::list`], the listing `rkat`'s
+//! `resolve_flexible_session_id` reads too).
 
 use std::cmp::Reverse;
 
-use meerkat::{SessionFilter, SessionStore};
-use meerkat_core::{SessionId, SessionMeta};
+use meerkat_core::SessionId;
+use meerkat_core::service::{SessionQuery, SessionService, SessionSummary};
 
 use crate::error::TuiError;
 
@@ -19,9 +20,9 @@ use crate::error::TuiError;
 /// # Errors
 ///
 /// [`TuiError::SessionRef`] when nothing (or more than one session) matches,
-/// [`TuiError::Store`] when listing fails.
+/// [`TuiError::Session`] when listing fails.
 pub async fn resolve_session_ref(
-    store: &dyn SessionStore,
+    service: &dyn SessionService,
     reference: &str,
 ) -> Result<SessionId, TuiError> {
     let reference = reference.trim();
@@ -45,9 +46,9 @@ pub async fn resolve_session_ref(
         };
 
     if let Some(offset) = offset {
-        let sessions = sorted_sessions(store).await?;
+        let sessions = sorted_sessions(service).await?;
         return match sessions.get(offset) {
-            Some(meta) => Ok(meta.id.clone()),
+            Some(summary) => Ok(summary.session_id.clone()),
             None if sessions.is_empty() => Err(fail("no sessions in this realm".to_string())),
             None => Err(fail(format!(
                 "only {} session(s) exist; ~{offset} is out of range",
@@ -61,12 +62,12 @@ pub async fn resolve_session_ref(
     }
 
     let prefix = reference.to_ascii_lowercase();
-    let sessions = sorted_sessions(store).await?;
+    let sessions = sorted_sessions(service).await?;
     let mut matches = sessions
         .iter()
-        .filter(|meta| meta.id.to_string().starts_with(&prefix));
+        .filter(|summary| summary.session_id.to_string().starts_with(&prefix));
     match (matches.next(), matches.next()) {
-        (Some(only), None) => Ok(only.id.clone()),
+        (Some(only), None) => Ok(only.session_id.clone()),
         (None, _) => Err(fail("no session matches this id or prefix".to_string())),
         (Some(_), Some(_)) => Err(fail(format!(
             "prefix is ambiguous ({} sessions match); use more characters",
@@ -75,18 +76,19 @@ pub async fn resolve_session_ref(
     }
 }
 
-/// All sessions, most recently updated first (ties: newest id first). Store
-/// backends do not agree on list order, so sort here.
+/// The realm's sessions (archived and retired ones left out, as the service
+/// lists them), most recently updated first (ties: newest id first). The
+/// service does not promise an order, so sort here.
 ///
 /// # Errors
 ///
-/// Returns [`TuiError::Store`] when the store cannot be listed.
-pub async fn list_sessions(store: &dyn SessionStore) -> Result<Vec<SessionMeta>, TuiError> {
-    sorted_sessions(store).await
+/// Returns [`TuiError::Session`] when the service cannot list them.
+pub async fn list_sessions(service: &dyn SessionService) -> Result<Vec<SessionSummary>, TuiError> {
+    sorted_sessions(service).await
 }
 
-async fn sorted_sessions(store: &dyn SessionStore) -> Result<Vec<SessionMeta>, TuiError> {
-    let mut sessions = store.list(SessionFilter::default()).await?;
-    sessions.sort_by_key(|meta| Reverse((meta.updated_at, meta.id.0)));
+async fn sorted_sessions(service: &dyn SessionService) -> Result<Vec<SessionSummary>, TuiError> {
+    let mut sessions = service.list(SessionQuery::default()).await?;
+    sessions.sort_by_key(|summary| Reverse((summary.updated_at, summary.session_id.0)));
     Ok(sessions)
 }

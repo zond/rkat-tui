@@ -1015,3 +1015,25 @@ Three "reuse the existing owner" items from the maintainer's review ("Existing o
   runner's quit removes the record).
 - Commands: `cargo clippy --all-targets --all-features -- -D warnings` exit 0; `cargo nextest run --all-features`
   771 passed, 6 skipped, exit 0.
+
+### 2. Sessions listed through `SessionService::list`
+
+- Before: `src/session/resolve.rs` listed `SessionStore::list(SessionFilter::default())` on the realm store
+  (`Runtime::store`) for `last`/`~N`/prefix resolution and the `/resume` picker.
+- After: `resolve_session_ref` and `list_sessions` take `&dyn SessionService` and call
+  `SessionService::list(SessionQuery::default())` (the listing `rkat`'s `resolve_flexible_session_id` reads),
+  returning `SessionSummary`. `Runtime::store` is gone (it had no other reader). Semantics kept: `last`/`~`/`~0`,
+  `~N` (0-based), full UUID, unique id prefix, ordering by `updated_at` then id, newest first (sorted here: the
+  service does not promise an order). The picker reads `session_id`, `updated_at` and `message_count`, all in
+  `SessionSummary`; nothing the resolver needs is missing.
+- Behaviour change from the owner: `PersistentSessionService::list` reads the runtime session catalog and leaves out
+  sessions whose lifecycle is `Archived` or whose runtime state is `Retired`/`Destroyed`; the raw store listing
+  included them. A session the TUI closed on switch or quit stays listed (the `-c`/`/resume` tests below cover it).
+- Tests: unchanged `tests/integrator.rs` `new_and_resume_switch_sessions_in_process`,
+  `continue_and_resume_by_id_across_lifetimes`, `resume_without_a_reference_opens_the_picker_at_start` pass (the
+  harness's `Rig::store` is now the service as `Arc<dyn SessionService>`); new
+  `references_resolve_over_the_service_listing` (two sessions listed newest first, `~1` and a prefix resolve to the
+  older; after archiving it through `archive_with_machine_protocol` it is neither listed nor `~1` nor a prefix
+  match). The harness also exposes `Rig::machine` for that archive.
+- Commands: `cargo clippy --all-targets --all-features -- -D warnings` exit 0; `cargo nextest run --all-features`
+  772 passed, 6 skipped, exit 0.

@@ -145,6 +145,10 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
   it quits, as `rkat-rpc`, `rkat-rest` and the mob host do, so
   `rkat realm prune` and realm inspection see the realm as live while a TUI
   has it open.
+- Session references (`last`, `~N`, id prefixes) and the `/resume` picker
+  list the realm's sessions through `SessionService::list`, as `rkat` does,
+  instead of the raw session store: a session another surface archived is
+  no longer offered or matched.
 
 ### Fixed
 

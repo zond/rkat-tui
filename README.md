@@ -26,7 +26,8 @@ with a `MeerkatMachine` owning input admission, interruption and resume. The
 transcript, the model and the cost totals survive restarts: `-c` continues
 the workspace's latest session, `--resume <ref>` or `/resume [ref]` any other
 (`last`, `~N` for the N-th most recent, an id or id prefix; `/resume` or
-`--resume` alone opens a picker), `/clear` (`/new`) starts a fresh one.
+`--resume` alone opens a picker; the session service's listing, so an
+archived session is not offered), `/clear` (`/new`) starts a fresh one.
 While it runs, `rkat-tui` holds a lease on the realm (surface `rkat-tui`,
 one per process; released on quit), so `rkat realm prune` and realm
 inspection treat the realm as live.

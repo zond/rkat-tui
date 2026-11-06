@@ -3,7 +3,7 @@
 //! the transcript and status seeding of a resumed session.
 
 use meerkat_core::{
-    AssistantBlock, Message, Session, SessionId, SessionMeta, TranscriptUserRole,
+    AssistantBlock, Message, Session, SessionId, TranscriptUserRole,
 };
 
 use super::cost::session_cost;
@@ -12,6 +12,7 @@ use crate::bootstrap::Runtime;
 use crate::cli::Args;
 use crate::endpoints::EndpointName;
 use crate::error::TuiError;
+use meerkat_core::service::SessionSummary;
 use crate::session::{
     SessionHandle, SessionIdentity, SessionOptions, list_sessions, resolve_session_ref,
 };
@@ -69,7 +70,7 @@ pub async fn open_start(
     match start {
         Start::New | Start::Pick => Ok((SessionHandle::create(runtime, options).await?, None)),
         Start::Resume(reference) => {
-            let id = resolve_session_ref(&*runtime.store, reference).await?;
+            let id = resolve_session_ref(&*runtime.service, reference).await?;
             let session = SessionHandle::resume(runtime, &id, options).await?;
             let transcript = session.read().await?;
             Ok((session, Some(transcript)))
@@ -218,7 +219,7 @@ impl Runner {
         if self.refuse_switch_while_busy() {
             return;
         }
-        let id = match resolve_session_ref(&*self.runtime.store, reference).await {
+        let id = match resolve_session_ref(&*self.runtime.service, reference).await {
             Ok(id) => id,
             Err(err) => {
                 self.notice(NoticeLevel::Warn, err.to_string());
@@ -316,9 +317,8 @@ impl Runner {
 
     /// `/resume` without a reference: offer the realm's sessions.
     pub(super) async fn show_resume_picker(&mut self) {
-        let store = std::sync::Arc::clone(&self.runtime.store);
         let ui_tx = self.ui_tx.clone();
-        let msg = match list_sessions(&*store).await {
+        let msg = match list_sessions(&*self.runtime.service).await {
             Ok(sessions) => Msg::ShowResumePicker(sessions.iter().map(picker_item).collect()),
             Err(err) => Msg::Notice {
                 level: NoticeLevel::Error,
@@ -441,18 +441,18 @@ fn restored_tool_block(name: &str, args: serde_json::Value) -> Block {
     }
 }
 
-fn picker_item(meta: &SessionMeta) -> (String, String) {
-    let age = meta
+fn picker_item(summary: &SessionSummary) -> (String, String) {
+    let age = summary
         .updated_at
         .elapsed()
         .map_or_else(|_| "just now".to_string(), humanize);
-    let id = meta.id.to_string();
+    let id = summary.session_id.to_string();
     (
         id.clone(),
         format!(
             "{} · {age} ago · {} msgs",
             short_id(&id),
-            meta.message_count
+            summary.message_count
         ),
     )
 }
