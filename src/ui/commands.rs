@@ -141,7 +141,7 @@ impl fmt::Display for CommandError {
     }
 }
 
-const RULES_USAGE: &str = "/rules [list | add allow|deny <tool> [pattern] | rm <n> | trust]";
+const RULES_USAGE: &str = "/permissions [list | add allow|deny <tool> [pattern] | rm <n> | trust]";
 const AUTO_USAGE: &str = "/auto [on | off | resume]";
 const HELPERS_USAGE: &str = "/helpers [expand <label>|all | fold <label>|all]";
 
@@ -152,11 +152,11 @@ Commands:
   /quit, /exit, /q               leave rkat-tui (asks again while a turn runs or messages are queued)
   /clear, /new                   clear the transcript and start a new session (idle only)
   /resume [ref]                  resume a session (last, ~N, or id prefix); no ref opens a picker
-  /rules [list]                  list approval rules
-  /rules add allow|deny <tool> [pattern]
+  /permissions [list]            list approval rules (/rules is an alias)
+  /permissions add allow|deny <tool> [pattern]
                                  add an approval rule
-  /rules rm <n>                  remove rule n
-  /rules trust                   show the realm tui.toml and trust it as it is now
+  /permissions rm <n>            remove rule n
+  /permissions trust             show the realm tui.toml and trust it as it is now
   /mcp trust                     trust the project .rkat/mcp.toml as it is now (its servers
                                  start from the next session)
   /auto                          show auto-mode state and denial counters
@@ -174,8 +174,8 @@ Commands:
                                  \"warn\" (default) warns at 75% and 85%; \"auto\" or
                                  --auto-compact lets the runtime compact at 85%)
   /copy [N]                      copy the latest (or Nth latest) answer to the clipboard (OSC 52)
-  /cost                          token usage and cost per model (footer: $0.42, ~ estimate, $? unpriced)
-  /helpers                       list the helpers (sub-agents) and their state
+  /usage, /cost, /stats          token usage and cost per model (footer: $0.42, ~ estimate, $? unpriced)
+  /helpers, /tasks               list the helpers (sub-agents) and their state
   /helpers expand|fold <label>|all
                                  show a helper's work in the transcript, or fold it to one line
 Keys:
@@ -266,9 +266,9 @@ fn parse_command(name: &str, args: &[&str]) -> Result<Command, CommandError> {
         "quit" | "exit" | "q" => Ok(Command::Quit),
         "clear" | "new" => Ok(Command::Clear),
         "help" | "?" => Ok(Command::Help),
-        "cost" => match args {
+        "usage" | "cost" | "stats" => match args {
             [] => Ok(Command::Cost),
-            _ => Err(CommandError::Usage("/cost")),
+            _ => Err(CommandError::Usage("/usage")),
         },
         "copy" => match args {
             [] => Ok(Command::Copy(1)),
@@ -301,12 +301,12 @@ fn parse_command(name: &str, args: &[&str]) -> Result<Command, CommandError> {
             ["resume"] => Ok(Command::Auto(AutoCommand::Resume)),
             _ => Err(CommandError::Usage(AUTO_USAGE)),
         },
-        "rules" => parse_rules(args).map(Command::Rules),
+        "permissions" | "rules" => parse_rules(args).map(Command::Rules),
         "mcp" => match args {
             ["trust"] => Ok(Command::McpTrust),
             _ => Err(CommandError::Usage("/mcp trust")),
         },
-        "helpers" => {
+        "helpers" | "tasks" => {
             let target = |t: &str| match t {
                 "all" => HelperTarget::All,
                 label => HelperTarget::Label(label.to_string()),
@@ -407,8 +407,14 @@ mod tests {
             ok("/compact keep the  test plan"),
             Command::Compact(CompactCommand::Focused("keep the test plan".into()))
         );
-        assert_eq!(ok("/cost"), Command::Cost);
-        assert_eq!(parse("/cost now"), Some(Err(CommandError::Usage("/cost"))));
+        for name in ["/usage", "/cost", "/stats"] {
+            assert_eq!(ok(name), Command::Cost, "{name}");
+            assert_eq!(
+                parse(&format!("{name} now")),
+                Some(Err(CommandError::Usage("/usage"))),
+                "{name}"
+            );
+        }
         assert_eq!(
             ok("/compact later"),
             Command::Compact(CompactCommand::Focused("later".into()))
@@ -484,6 +490,10 @@ mod tests {
             "/clear",
             "/resume",
             "/rules",
+            "/permissions",
+            "/usage",
+            "/stats",
+            "/tasks",
             "/auto",
             "/model",
             "/remember",
@@ -527,6 +537,42 @@ mod tests {
             "Ctrl+Up/Down",
         ] {
             assert!(HELP_TEXT.contains(needle), "help is missing {needle}");
+        }
+    }
+
+    #[test]
+    fn permissions_and_rules_parse_identically() {
+        for line in [
+            "",
+            " list",
+            " add allow shell cargo test *",
+            " add deny web_fetch",
+            " rm 3",
+            " trust",
+            " rm x",
+            " add maybe t",
+        ] {
+            assert_eq!(
+                parse(&format!("/permissions{line}")),
+                parse(&format!("/rules{line}")),
+                "{line}"
+            );
+        }
+        assert_eq!(
+            parse("/permissions rm x"),
+            Some(Err(CommandError::Usage(RULES_USAGE)))
+        );
+        assert!(RULES_USAGE.starts_with("/permissions"));
+    }
+
+    #[test]
+    fn tasks_is_helpers() {
+        for line in ["", " list", " expand scout", " fold all", " expand"] {
+            assert_eq!(
+                parse(&format!("/tasks{line}")),
+                parse(&format!("/helpers{line}")),
+                "{line}"
+            );
         }
     }
 

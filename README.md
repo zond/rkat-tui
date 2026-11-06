@@ -302,7 +302,7 @@ transcript, a second Esc drops the selection.
 The transcript keeps each helper's header where it was spawned, as the
 record: `▸ [scout · model] done · 7 tool calls`. A click on it unfolds the
 helper's blocks in place (indented, tool output still collapsed), and
-`/helpers` lists the helpers, `/helpers expand|fold <label>|all` unfolds or
+`/helpers` (or `/tasks`) lists the helpers, `/helpers expand|fold <label>|all` unfolds or
 folds them. `[ui] helpers = "expanded"` in `tui.toml` starts every header
 unfolded (default `"folded"`); a resumed session shows its helpers folded.
 
@@ -325,7 +325,7 @@ content is indented with `  | `, so a tool result cannot forge a user line.
 The child has the builtins and the shell exactly when the session has them
 (its persisted tooling overrides). The child is a helper
 in every other respect (the same gate, persona, file tools, nesting under
-`[fork-N · model]`, status bar, `/cost` and interrupt), cannot ask the user,
+`[fork-N · model]`, status bar, `/usage` and interrupt), cannot ask the user,
 and returns its final answer (at most 16 KiB) as the tool result. Only the
 session's own agent has `fork`; helpers and fork children do not, so forks
 do not nest.
@@ -342,7 +342,7 @@ session's own turn runs, which is when a tool call asks for it.
 ## Rules
 
 Rules live in TOML, layered (later settings win): the user-global
-`<config-dir>/tui.toml`, then `<realm>/tui.toml` (written by `/rules add`),
+`<config-dir>/tui.toml`, then `<realm>/tui.toml` (written by `/permissions add`),
 then the command line, then `<project>/.rkat/tui.toml`. The project file may
 only add deny rules and `[auto]` settings; its `[endpoints]`, `[pricing]` and
 `[confinement]` are ignored with a notice. Broad allow rules (blanket shell, interpreters, package-manager run
@@ -355,7 +355,7 @@ SHA-256 of each workspace file it wrote itself or you trusted. The realm
 `tui.toml` counts as yours only when it is a regular file reached through no
 symbolic link and its digest matches the record; otherwise it can only deny,
 its `[endpoints]`, `[pricing]`, `[confinement]` and `[auto]` are ignored,
-and a notice says why. `/rules add` and the escalation dialog update the record; `/rules
+and a notice says why. `/permissions add` and the escalation dialog update the record; `/permissions
 trust` shows a summary of the file as it is now and records its digest.
 
 ```toml
@@ -386,7 +386,7 @@ Every key can be set in a user layer or for one run with
 after the global and realm files and before the project file: tables merge,
 scalars replace, arrays append, endpoints merge by name. A bad `--set`
 (unknown key, wrong type, invalid pattern or dialect) stops start-up and
-names the argument. Command-line rules show as `(cli)` in `/rules list` and
+names the argument. Command-line rules show as `(cli)` in `/permissions list` and
 are never written to a file.
 
 | Key | Flag | Default |
@@ -451,12 +451,12 @@ model call's tokens are priced per model from `[pricing]` overrides, a
 LiteLLM endpoint's `/model/info`, or LiteLLM's community price list (cached
 for 7 days in the user cache directory, `$XDG_CACHE_HOME/rkat-tui` or the
 platform's; `--no-pricing-fetch` skips the download). Helpers' usage and
-compactions (their estimated input plus the summary) count too. `/cost`
+compactions (their estimated input plus the summary) count too. `/usage`
 prints the breakdown. The readout is an estimate, not a bill, and says how
 far it can be trusted: exact; `~` **approximate** when part of it is
 estimated (a compaction's input, or usage the session's own record has that
 the TUI did not see: the totals are reconciled with the session's
-authoritative usage on resume); `~` and a "lower bound" note in `/cost`
+authoritative usage on resume); `~` and a "lower bound" note in `/usage`
 when some helper usage could not be observed at all.
 
 ## Instructions and memory
@@ -568,10 +568,10 @@ rkat-tui says so in a warning and compacts without them.
 ## Keys and commands
 
 `/help`, `/quit`, `/clear`, `/resume [ref]`,
-`/rules [list|add allow|deny <tool> [pattern]|rm <n>|trust]`,
+`/permissions [list|add allow|deny <tool> [pattern]|rm <n>|trust]` (alias `/rules`),
 `/auto [on|off|resume]`, `/model [[endpoint:]id|refresh]`,
-`/remember <text>`, `/compact [now|status|<instructions>]`, `/cost`, `/copy [N]`, `/mcp trust`,
-`/helpers [expand|fold <label>|all]`. `/clear`, `/resume`, `/model` and `/compact` work only while
+`/remember <text>`, `/compact [now|status|<instructions>]`, `/usage` (aliases `/cost`, `/stats`), `/copy [N]`, `/mcp trust`,
+`/helpers [expand|fold <label>|all]` (alias `/tasks`). `/clear`, `/resume`, `/model` and `/compact` work only while
 idle; the transcript is replaced only once the new session is live.
 
 Enter sends (steers while a turn runs); Ctrl+Enter sends now (while a

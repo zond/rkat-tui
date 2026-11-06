@@ -1069,7 +1069,7 @@ impl fmt::Display for Notice {
                 if *auto {
                     f.write_str(" and its [auto] settings")?;
                 }
-                f.write_str("); review it and run /rules trust to use all of it")
+                f.write_str("); review it and run /permissions trust to use all of it")
             }
             Self::LegacyGlobalRulesIgnored { path, new_path } => write!(
                 f,
@@ -2144,7 +2144,7 @@ mod tests {
                 ..
             }
         )));
-        assert!(notices[0].to_string().contains("/rules trust"));
+        assert!(notices[0].to_string().contains("/permissions trust"));
     }
 
     fn write(dir: &Path, text: &str) {
