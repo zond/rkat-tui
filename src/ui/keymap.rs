@@ -52,10 +52,10 @@ pub enum Action {
     CtrlD,
     /// Esc: recall pending messages, else interrupt a running turn.
     Escape,
-    /// Toggle collapse of the last reasoning block (Ctrl-O).
-    ToggleReasoning,
-    /// Expand or collapse the output of the most recent tool call (Ctrl-T).
-    ToggleToolOutput,
+    /// Show or hide detail (Ctrl-O): the last reasoning block and the
+    /// output of the last tool call together. Ctrl-T is left unbound (kept
+    /// for a task checklist).
+    ToggleDetail,
     /// Copy the mouse selection again, or else the last assistant message (Ctrl-Y).
     Copy,
     /// Start a reverse history search (Ctrl-R).
@@ -98,8 +98,7 @@ pub fn map_key(key: &KeyEvent, input_empty: bool) -> Action {
         KeyCode::Char('j') if ctrl => Action::Newline,
         KeyCode::Char('c') if ctrl => Action::CtrlC,
         KeyCode::Char('d') if ctrl => Action::CtrlD,
-        KeyCode::Char('o') if ctrl => Action::ToggleReasoning,
-        KeyCode::Char('t') if ctrl => Action::ToggleToolOutput,
+        KeyCode::Char('o') if ctrl => Action::ToggleDetail,
         KeyCode::Char('r') if ctrl => Action::HistorySearch,
         KeyCode::Char('y') if ctrl => Action::Copy,
         KeyCode::Char('x') if ctrl => Action::ChordPrefix,
@@ -199,11 +198,12 @@ mod tests {
         );
         assert_eq!(
             map_key(&k(KeyCode::Char('o'), KeyModifiers::CONTROL), false),
-            Action::ToggleReasoning
+            Action::ToggleDetail
         );
+        // Ctrl-T is reserved for a task checklist.
         assert_eq!(
             map_key(&k(KeyCode::Char('t'), KeyModifiers::CONTROL), false),
-            Action::ToggleToolOutput
+            Action::None
         );
         assert_eq!(
             map_key(&k(KeyCode::Char('r'), KeyModifiers::CONTROL), false),

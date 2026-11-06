@@ -287,8 +287,8 @@ around). Enter on an **empty** input opens the selected helper's **full
 view** in place of the transcript (Enter with text in the input sends it as
 usual, and the input keeps working while the view is open): the helper's
 header as the title, then everything it did in order: its prose
-(markdown), its reasoning (one line, Ctrl-O toggles the latest), its tool
-calls with collapsed output (Ctrl-T toggles the latest) and notes, and the
+(markdown), its reasoning (one line), its tool calls with collapsed output
+(Ctrl-O toggles the latest reasoning and tool output) and notes, and the
 headers of helpers it spawned. PgUp/PgDn, Shift+↑/↓ and the wheel scroll
 it; it follows new output while at the bottom. The view stays open after
 the helper finishes, so its result can be read; Esc returns to the
@@ -572,8 +572,9 @@ Ctrl-S); Shift+Enter, Alt+Enter or Ctrl-J insert a newline, and so does a
 dropped); Ctrl-C interrupts (twice to quit when idle); Esc recalls
 held messages, else interrupts; ↑ on an empty editor edits the newest held
 message, else recalls prompt history; Ctrl-R searches history (workspace,
-then global); Ctrl-X Ctrl-S interrupts and sends the input; Ctrl-O toggles
-the last reasoning block; Ctrl+↑/↓ select a helper in the panel under the
+then global); Ctrl-X Ctrl-S interrupts and sends the input; Ctrl-O shows or
+hides detail (the last reasoning block and the last tool output together;
+Ctrl-T is unbound, reserved for a task checklist); Ctrl+↑/↓ select a helper in the panel under the
 input and Enter on an empty input opens its full view (Esc returns);
 PgUp/PgDn and Shift+↑/↓ scroll; Home/End jump when the editor is empty.
 Long lines wrap at the width of the input field (which grows up to six
@@ -581,7 +582,7 @@ rows, then scrolls to the cursor), and ↑/↓ move by wrapped rows before
 reaching history.
 
 The mouse is captured by default: the wheel scrolls and a click expands or
-collapses a tool call's output (Ctrl-T for the latest). Dragging selects text
+collapses a tool call's output (Ctrl-O for the latest). Dragging selects text
 and copies it on release (double click: a word, triple click: a line;
 Ctrl-Y copies again or copies the last answer). Hold Shift for native
 selection, or start with `--no-mouse`.

@@ -1556,13 +1556,8 @@ impl App {
             Action::Edit(EditAction::Up) if self.input.is_empty() && self.has_recallable() => {
                 self.recall_newest();
             }
-            Action::ToggleReasoning => {
-                self.transcript.toggle_last_reasoning_in(view);
-            }
-            Action::ToggleToolOutput => {
-                if let Some(id) = self.transcript.last_tool_with_output_in(view) {
-                    self.transcript.toggle_tool(id);
-                }
+            Action::ToggleDetail => {
+                self.transcript.toggle_last_detail_in(view);
             }
             Action::Copy => self.copy_again(),
             Action::HistorySearch => self.start_search(),
@@ -2622,7 +2617,7 @@ mod tests {
     }
 
     #[test]
-    fn click_toggles_tool_output_and_ctrl_t_toggles_the_last() {
+    fn click_toggles_tool_output_and_ctrl_o_toggles_the_last() {
         let mut app = App::new(StatusInfo::default());
         app.transcript.push(user("look"));
         for id in ["t1", "t2"] {
@@ -2669,10 +2664,14 @@ mod tests {
         assert!(!app.take_dirty());
         assert_eq!(app.take_clipboard_text(), None);
 
+        // Ctrl-O toggles the last tool output (no reasoning here); Ctrl-T
+        // does nothing.
         app.update(ctrl('t'));
+        assert!(tool_collapsed(&app, t2));
+        app.update(ctrl('o'));
         assert!(!tool_collapsed(&app, t2));
         assert!(tool_collapsed(&app, t1));
-        app.update(ctrl('t'));
+        app.update(ctrl('o'));
         assert!(tool_collapsed(&app, t2));
     }
 
@@ -3401,6 +3400,43 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    fn reasoning_collapsed(app: &App) -> bool {
+        app.transcript.blocks().iter().rev().any(|b| {
+            matches!(
+                b,
+                Block::Reasoning {
+                    collapsed: true,
+                    ..
+                }
+            )
+        })
+    }
+
+    #[test]
+    fn ctrl_o_toggles_the_last_reasoning_and_tool_output_together() {
+        let mut app = App::new(StatusInfo::default());
+        app.update(agent(AgentEvent::ReasoningDelta {
+            delta: "think".into(),
+            assistant_message_id: None,
+        }));
+        app.update(agent(AgentEvent::ToolCallRequested {
+            id: "t1".into(),
+            name: "read_file".into(),
+            args: test_args(json!({"path": "a.rs"})),
+        }));
+        app.update(agent(test_tool_result("t1", "a\nb")));
+        let tool = app.transcript.tool_block("t1").unwrap();
+        assert!(reasoning_collapsed(&app) && tool_collapsed(&app, tool));
+        app.update(ctrl('o'));
+        assert!(!reasoning_collapsed(&app) && !tool_collapsed(&app, tool));
+        app.update(ctrl('o'));
+        assert!(reasoning_collapsed(&app) && tool_collapsed(&app, tool));
+        // One expanded, one collapsed (a click opened the tool): both expand.
+        app.transcript.toggle_tool(tool);
+        app.update(ctrl('o'));
+        assert!(!reasoning_collapsed(&app) && !tool_collapsed(&app, tool));
     }
 
     #[test]
@@ -4961,7 +4997,8 @@ mod tests {
             })
             .collect();
         assert_eq!(kinds, ["tool", "reasoning", "prose", "tool"]);
-        // Ctrl-O in the view toggles the helper's reasoning.
+        // Ctrl-O in the view toggles the helper's latest reasoning (and
+        // its latest tool output).
         app.update(ctrl_key(KeyCode::Down));
         app.update(key(KeyCode::Enter));
         app.update(ctrl('o'));

@@ -300,7 +300,7 @@ pub enum Block {
         /// Nesting depth (0 for the primary agent, >0 for sub-agents).
         depth: usize,
         /// Whether the result preview and diff are hidden behind the header.
-        /// Tool output starts collapsed; a click (or Ctrl-T) toggles it.
+        /// Tool output starts collapsed; a click (or Ctrl-O for the latest) toggles it.
         collapsed: bool,
     },
     /// An approval decision.
@@ -878,6 +878,49 @@ impl Transcript {
         };
         if let Some(Block::Reasoning { collapsed, .. }) = self.block_mut(id) {
             *collapsed = !*collapsed;
+        }
+        true
+    }
+
+    /// Ctrl-O: show or hide the detail of the latest work in the transcript
+    /// on screen (`None`) or in the full view of the helper `scope`: the
+    /// most recent reasoning block and the most recent tool output together.
+    /// Both expand when either is collapsed, else both collapse. Returns
+    /// whether there was anything to toggle.
+    pub fn toggle_last_detail_in(&mut self, scope: Option<BlockId>) -> bool {
+        let blocks = self.scoped_blocks_rev(scope);
+        let reasoning = blocks
+            .iter()
+            .copied()
+            .find(|id| matches!(self.block(*id), Some(Block::Reasoning { .. })));
+        let tool = blocks
+            .iter()
+            .copied()
+            .find(|id| self.block(*id).is_some_and(tool_has_output));
+        let targets: Vec<BlockId> = reasoning.into_iter().chain(tool).collect();
+        if targets.is_empty() {
+            return false;
+        }
+        let expand = targets.iter().any(|id| {
+            matches!(
+                self.block(*id),
+                Some(
+                    Block::Reasoning {
+                        collapsed: true,
+                        ..
+                    } | Block::Tool {
+                        collapsed: true,
+                        ..
+                    }
+                )
+            )
+        });
+        for id in targets {
+            if let Some(Block::Reasoning { collapsed, .. } | Block::Tool { collapsed, .. }) =
+                self.block_mut(id)
+            {
+                *collapsed = !expand;
+            }
         }
         true
     }

@@ -697,7 +697,7 @@ fn helper_line(fold: &HelperFold, w: usize, lead: &str, tail: &str) -> Line<'sta
 }
 
 /// The hint after a tool header with output: `▸ 12 lines` / `▸ +3 -1` when
-/// collapsed (click or Ctrl-T to expand), `▾` when expanded.
+/// collapsed (click or Ctrl-O to expand), `▾` when expanded.
 fn tool_toggle_hint(collapsed: bool, preview: Option<&str>, diff: Option<&DiffView>) -> String {
     if !collapsed {
         return " ▾".to_string();

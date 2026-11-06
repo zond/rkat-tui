@@ -174,8 +174,8 @@ Keys:
   Ctrl-D                         quit (on empty input; press again within 3 s while a turn
                                  runs or messages are queued: the turn is interrupted and
                                  undelivered messages are saved)
-  Ctrl-O                         toggle the last reasoning block
-  Ctrl-T                         toggle the output of the last tool call
+  Ctrl-O                         show or hide detail: the last reasoning block and the
+                                 output of the last tool call (a click toggles one tool)
   Ctrl+Up/Down                   select a helper in the panel under the input (newest first);
                                  Enter on an empty input opens its full view (Esc returns,
                                  PgUp/PgDn scroll it); a click unfolds a header in the transcript
