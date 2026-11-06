@@ -42,7 +42,7 @@ pub use compaction::{
 pub use cost::{CostConfidence, CostReadout, SessionCost, SessionCostSnapshot, UsageTotals};
 pub use delivery::{Pending, PendingQueue, PendingState};
 pub use history::History;
-pub use input::InputEditor;
+pub use input::{InputEditor, StashOutcome};
 pub use keymap::{Action, EditAction};
 pub use modal::{
     EscalationAnswer, EscalationId, EscalationPrompt, Modal, ModelPicker, ResumePicker,
@@ -1586,6 +1586,20 @@ impl App {
             }
             Action::ToggleDetail => {
                 self.transcript.toggle_last_detail_in(view);
+            }
+            Action::Stash => {
+                if let StashOutcome::Stashed {
+                    displaced: Some(text),
+                } = self.input.toggle_stash()
+                {
+                    // Keep the replaced stash reachable with ↑.
+                    self.input.remember(&text);
+                    self.submitted.push(text);
+                    self.transcript.push_notice(
+                        NoticeLevel::Info,
+                        "stashed; the earlier stash went to the prompt history (↑)",
+                    );
+                }
             }
             Action::HistorySearch => self.start_search(),
             Action::ChordPrefix => self.chord = Some(now),
@@ -4289,8 +4303,9 @@ mod tests {
         app.update_at(ctrl('x'), t0);
         let late = t0 + CHORD_WINDOW + Duration::from_millis(1);
         assert!(!app.chord_pending(late));
+        // Too late for the chord: a bare Ctrl-S, which stashes.
         assert!(app.update_at(ctrl('s'), late).is_empty());
-        assert_eq!(app.input.text(), "x");
+        assert!(app.input.is_empty() && app.input.has_stash());
         assert!(!app.is_running());
         // A tick after the window clears the pending chord.
         app.update_at(ctrl('x'), t0);
@@ -4299,12 +4314,30 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_s_alone_is_noop() {
+    fn ctrl_s_alone_stashes_and_restores() {
         let mut app = App::new(StatusInfo::default());
         type_str(&mut app, "text");
         assert!(app.update(ctrl('s')).is_empty());
-        assert_eq!(app.input.text(), "text");
+        assert!(app.input.is_empty());
+        assert!(app.input.has_stash());
         assert!(!app.is_running());
+        // Send something else meanwhile, then restore.
+        assert_eq!(
+            submit(&mut app, "quick question"),
+            vec![Effect::StartTurn("quick question".into())]
+        );
+        assert!(app.update(ctrl('s')).is_empty());
+        assert_eq!(app.input.text(), "text");
+        assert!(!app.input.has_stash());
+        // Stashing over a stash keeps the older one in the history.
+        app.update(ctrl('s'));
+        type_str(&mut app, "newer");
+        app.take_submitted();
+        app.update(ctrl('s'));
+        assert_eq!(app.take_submitted(), vec!["text".to_string()]);
+        assert_eq!(app.input.history().last().map(String::as_str), Some("text"));
+        app.update(ctrl('s'));
+        assert_eq!(app.input.text(), "newer");
     }
 
     fn last_notice(app: &App) -> Option<(NoticeLevel, String)> {

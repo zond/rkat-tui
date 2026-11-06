@@ -191,6 +191,8 @@ Keys:
   Ctrl-K/U, Ctrl-W, Alt+D        kill to line end/start, the word before/after (Ctrl-K at a
                                  line end kills the newline); Ctrl/Alt+Backspace = Ctrl-W
   Ctrl-Y, Alt+Y                  yank the last killed text; Alt+Y right after cycles older kills
+  Ctrl-S                         stash the input (put it aside, clear); on an empty input,
+                                 restore the stash (Ctrl-X Ctrl-S still sends now)
   Ctrl-_                         undo the last input edit (a word, a kill, a paste, a clear)
   PgUp/PgDn, Shift+Up/Down       scroll the transcript
   Home/End                       scroll to top/bottom when the input is empty (Ctrl+Home/End always)
@@ -475,6 +477,7 @@ mod tests {
             "Ctrl-Y",
             "Alt+Y",
             "Ctrl-_",
+            "Ctrl-S",
             "Enter",
             "Alt+Enter",
             "Ctrl+J",

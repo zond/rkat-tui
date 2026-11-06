@@ -68,6 +68,9 @@ pub enum Action {
     ToggleDetail,
     /// Start a reverse history search (Ctrl-R).
     HistorySearch,
+    /// Ctrl-S: stash the input, or restore the stash on an empty input
+    /// (after Ctrl-X it completes the send-now chord instead).
+    Stash,
     /// Ctrl-X: the first key of a chord, resolved by the app with the next key.
     ChordPrefix,
     /// Scroll the transcript up by lines.
@@ -111,6 +114,7 @@ pub fn map_key(key: &KeyEvent, input_empty: bool) -> Action {
         KeyCode::Char('y') if ctrl => Action::Edit(EditAction::Yank),
         KeyCode::Char('k') if ctrl => Action::Edit(EditAction::KillToLineEnd),
         KeyCode::Char('x') if ctrl => Action::ChordPrefix,
+        KeyCode::Char('s') if ctrl => Action::Stash,
         // Ctrl-_ arrives as `_`, or as Ctrl-7 or Ctrl-Shift-- in some terminals.
         KeyCode::Char('_' | '7') if ctrl => Action::Edit(EditAction::Undo),
         KeyCode::Char('-') if ctrl && shift => Action::Edit(EditAction::Undo),
@@ -245,10 +249,10 @@ mod tests {
             map_key(&k(KeyCode::Char('x'), KeyModifiers::CONTROL), false),
             Action::ChordPrefix
         );
-        // Ctrl-S only means something inside a Ctrl-X chord (resolved by the app).
+        // Bare Ctrl-S stashes; inside a Ctrl-X chord the app resolves it first.
         assert_eq!(
             map_key(&k(KeyCode::Char('s'), KeyModifiers::CONTROL), false),
-            Action::None
+            Action::Stash
         );
         assert_eq!(
             map_key(&k(KeyCode::Char('q'), KeyModifiers::CONTROL), false),

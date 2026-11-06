@@ -41,6 +41,21 @@ enum LastEdit {
     Yank { start: (usize, usize), age: usize },
 }
 
+/// What Ctrl+S did ([`InputEditor::toggle_stash`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StashOutcome {
+    /// The input was stashed and cleared; `displaced` is the text of an
+    /// older stash it replaced, if any.
+    Stashed {
+        /// The replaced stash's text.
+        displaced: Option<String>,
+    },
+    /// The empty input got the stash back.
+    Restored,
+    /// Empty input and nothing stashed.
+    Nothing,
+}
+
 /// A multi-line text editor with prompt history and a kill ring.
 #[derive(Debug, Clone)]
 pub struct InputEditor {
@@ -60,6 +75,8 @@ pub struct InputEditor {
     /// at word boundaries while typing, at the start of a run of deletes,
     /// and before kills, yanks, pastes, newlines and clears.
     undo: VecDeque<Snapshot>,
+    /// A prompt put aside with Ctrl+S (text and cursor).
+    stash: Option<Snapshot>,
 }
 
 impl Default for InputEditor {
@@ -231,6 +248,7 @@ impl InputEditor {
             kill_ring: VecDeque::new(),
             last: LastEdit::Other,
             undo: VecDeque::new(),
+            stash: None,
         }
     }
 
@@ -317,6 +335,34 @@ impl InputEditor {
         false
     }
 
+    /// Ctrl+S: with text, put it (and the cursor) aside and clear the
+    /// input; on an empty input, bring the stash back.
+    pub fn toggle_stash(&mut self) -> StashOutcome {
+        if !self.is_empty() {
+            self.push_undo();
+            let displaced = self
+                .stash
+                .replace(self.snapshot())
+                .map(|old| old.lines.join("\n"));
+            self.last = LastEdit::Other;
+            self.reset();
+            return StashOutcome::Stashed { displaced };
+        }
+        let Some(Snapshot { lines, row, col }) = self.stash.take() else {
+            return StashOutcome::Nothing;
+        };
+        self.push_undo();
+        self.last = LastEdit::Other;
+        self.lines = lines;
+        (self.row, self.col) = (row, col);
+        StashOutcome::Restored
+    }
+
+    /// Whether a prompt is stashed (Ctrl+S on an empty input restores it).
+    pub fn has_stash(&self) -> bool {
+        self.stash.is_some()
+    }
+
     /// Remove all text (history is kept); Ctrl+_ brings it back.
     pub fn clear(&mut self) {
         self.push_undo();
@@ -344,12 +390,18 @@ impl InputEditor {
         self.col = char_len(self.current());
     }
 
+    /// Add non-blank `text` to the prompt history (unless it is the newest
+    /// entry already).
+    pub fn remember(&mut self, text: &str) {
+        if !text.trim().is_empty() && self.history.last().is_none_or(|last| last != text) {
+            self.history.push(text.to_string());
+        }
+    }
+
     /// Take the text for submission: clears the editor and records non-blank text in history.
     pub fn take(&mut self) -> String {
         let text = self.text();
-        if !text.trim().is_empty() && self.history.last() != Some(&text) {
-            self.history.push(text.clone());
-        }
+        self.remember(&text);
         // A new prompt starts with no undo states.
         self.reset();
         self.last = LastEdit::Other;
@@ -1053,6 +1105,35 @@ mod tests {
         }
         assert_eq!(steps, UNDO_DEPTH);
         assert!(!e.is_empty());
+    }
+
+    #[test]
+    fn stash_puts_the_prompt_aside_and_brings_it_back() {
+        let mut e = typed("one\ntwo");
+        e.left();
+        assert_eq!(
+            e.toggle_stash(),
+            StashOutcome::Stashed { displaced: None }
+        );
+        assert!(e.is_empty() && e.has_stash());
+        e.insert_str("other");
+        assert_eq!(e.take(), "other");
+        assert_eq!(e.toggle_stash(), StashOutcome::Restored);
+        assert_eq!(e.text(), "one\ntwo");
+        assert_eq!(e.cursor(), (1, 2));
+        assert!(!e.has_stash());
+        assert_eq!(InputEditor::new().toggle_stash(), StashOutcome::Nothing);
+        // Stashing over a stash hands the older one back.
+        e.toggle_stash();
+        e.insert_str("newer");
+        assert_eq!(
+            e.toggle_stash(),
+            StashOutcome::Stashed {
+                displaced: Some("one\ntwo".into())
+            }
+        );
+        e.toggle_stash();
+        assert_eq!(e.text(), "newer");
     }
 
     #[test]

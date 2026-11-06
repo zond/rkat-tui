@@ -735,3 +735,23 @@ fn esc_on_an_idle_draft_names_the_second_esc_in_the_editor_title() {
     );
     assert_eq!(lines[10], "› draft");
 }
+
+#[test]
+fn a_stashed_prompt_is_named_in_the_editor_title() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = App::new(StatusInfo::default());
+    for c in "later".chars() {
+        app.update(Msg::Key(KeyEvent::from(KeyCode::Char(c))));
+    }
+    app.update(Msg::Key(KeyEvent::new(
+        KeyCode::Char('s'),
+        KeyModifiers::CONTROL,
+    )));
+    let lines = rows(&render_buffer(&mut app, W, H));
+    assert!(
+        lines[9].contains("Ctrl-S restores the stashed prompt"),
+        "title: {:?}",
+        lines[9]
+    );
+    assert_eq!(lines[10], "›");
+}

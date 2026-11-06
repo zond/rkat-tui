@@ -590,7 +590,11 @@ kills join one entry); Ctrl-Y yanks the newest and Alt+Y right after a yank
 replaces it with the next older one. Ctrl-_ (Ctrl-7 or Ctrl-Shift-- in
 some terminals) undoes input edits: a word of typing, a run of deletes, a
 kill, a yank, a paste or a clear (Ctrl-C included) at a time, up to 64
-steps; sending a prompt starts afresh.
+steps; sending a prompt starts afresh. Ctrl-S stashes the input (puts
+it aside and clears the editor) and, on an empty editor, brings the stash
+back, so a quick question can go first; stashing over a stash moves the
+older one to the prompt history. Ctrl-S right after Ctrl-X still completes
+the send-now chord.
 
 The mouse is captured by default: the wheel scrolls and a click expands or
 collapses a tool call's output (Ctrl-O for the latest). Dragging selects text
