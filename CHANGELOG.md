@@ -146,6 +146,8 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
     the model receives in the tool error (`denied by the user: <text>`, with
     an instruction to follow it) and the approval record keeps; an empty
     Enter or Esc denies without a comment.
+  - `?` on an empty input opens a shortcut panel (the keys part of
+    `/help`); any key closes it. The idle editor title hints `? keys`.
 
 ### Changed
 

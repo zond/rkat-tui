@@ -84,8 +84,12 @@ fn renders_blocks_input_and_status_bar() {
     assert_eq!(rows[2], "• Sure, let me look.");
     assert_eq!(rows[3], "");
     assert_eq!(rows[4], "◐ glob({\"pattern\":\"*.rs\"}) running…");
-    // Input box: top border then the prompt line.
-    assert!(rows[9].starts_with("────"), "border row: {:?}", rows[9]);
+    // Input box: top border (idle and empty: the `?` hint) then the prompt line.
+    assert!(
+        rows[9].starts_with(" ? keys ────"),
+        "border row: {:?}",
+        rows[9]
+    );
     assert_eq!(rows[10], "›");
     assert_eq!(
         rows[11],
@@ -275,6 +279,51 @@ fn escalation_deny_comment_field_snapshot() {
             "└──────────────────────────────────────────────────────┘",
         ]
     );
+}
+
+#[test]
+fn keys_panel_snapshot() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent};
+    let mut app = App::new(StatusInfo::default());
+    // Idle with an empty input, the editor title offers the panel.
+    let idle = rows(&render_buffer(&mut app, W, H));
+    assert!(idle[H as usize - 3].starts_with(" ? keys ──"), "{idle:?}");
+    app.update(Msg::Key(KeyEvent::from(KeyCode::Char('?'))));
+    // Wide enough for the help's columns; cut to the height with a pointer
+    // to /help. The dialog spans columns 3..107.
+    let drawn = rows(&render_buffer(&mut app, 110, 10));
+    let panel: Vec<String> = drawn
+        .iter()
+        .map(|r| r.chars().skip(3).collect::<String>().trim_end().to_string())
+        .collect();
+    assert_eq!(
+        panel,
+        [
+            "┌ Keys (any key closes) ───────────────────────────────────────────────────────────────────────────────┐",
+            "│  ? (empty input)                show these keys; any key closes them (with text, ? is typed)         │",
+            "│  Enter                          send; while the agent is working, queues the message                 │",
+            "│                                 and delivers it at the next step                                     │",
+            "│  Ctrl+Enter                     send now: interrupt the turn and send the input next                 │",
+            "│                                 (sends normally when idle; same as Ctrl-X Ctrl-S)                    │",
+            "│  Shift+Enter, Alt+Enter, Ctrl+J insert a newline (so does \\ right before Enter at a line end)        │",
+            "│  Ctrl-C                         interrupt the turn (as Esc) · clear the input · press twice to quit  │───",
+            "│… more in /help                                                                                       │",
+            "└──────────────────────────────────────────────────────────────────────────────────────────────────────┘",
+        ]
+    );
+    // Narrow: descriptions wrap under their column.
+    let narrow = rows(&render_buffer(&mut app, W, 14));
+    assert!(
+        narrow[1].contains("│  ? (empty input)                show these keys; any   │"),
+        "{narrow:?}"
+    );
+    assert!(
+        narrow[2].contains("│                                 key closes them (with  │"),
+        "{narrow:?}"
+    );
+    // Any key closes it.
+    app.update(Msg::Key(KeyEvent::from(KeyCode::Char('x'))));
+    assert!(app.modal.is_none());
 }
 
 fn render_buffer(app: &mut App, width: u16, height: u16) -> Buffer {

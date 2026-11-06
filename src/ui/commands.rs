@@ -219,6 +219,7 @@ Commands:
   /helpers expand|fold <label>|all
                                  show a helper's work in the transcript, or fold it to one line
 Keys:
+  ? (empty input)                show these keys; any key closes them (with text, ? is typed)
   Enter                          send; while the agent is working, queues the message
                                  and delivers it at the next step
   Ctrl+Enter                     send now: interrupt the turn and send the input next
@@ -261,6 +262,16 @@ Approval prompt:
   Up/Down, j/k, Enter            move between the rows and pick one
   s                              stop the turn (Ctrl-C stops every open prompt)
 Start a prompt with // to send a literal leading slash.";
+
+/// The "Keys" and "Approval prompt" parts of [`HELP_TEXT`]: what the `?`
+/// shortcut panel lists.
+#[must_use]
+pub fn keys_help() -> &'static str {
+    let start = HELP_TEXT.find("Keys:").unwrap_or(0);
+    let keys = HELP_TEXT.get(start..).unwrap_or(HELP_TEXT);
+    keys.split_once("\nStart a prompt")
+        .map_or(keys, |(keys, _)| keys)
+}
 
 /// A single-line `#text` input (not `##…`) as a remember request: returns the
 /// text after `#`, trimmed. Multi-line input and `\#` escapes are prompts.
@@ -637,9 +648,20 @@ mod tests {
             "/model refresh",
             "/helpers",
             "Ctrl+Up/Down",
+            "? (empty input)",
         ] {
             assert!(HELP_TEXT.contains(needle), "help is missing {needle}");
         }
+    }
+
+    #[test]
+    fn the_keys_panel_lists_the_keys_and_the_approval_prompt_only() {
+        let keys = keys_help();
+        assert!(keys.starts_with("Keys:\n  ? (empty input)"), "{keys}");
+        assert!(keys.contains("Approval prompt:"));
+        assert!(keys.trim_end().ends_with("stops every open prompt)"), "{keys}");
+        assert!(!keys.contains("/permissions"));
+        assert!(!keys.contains("Start a prompt"));
     }
 
     #[test]

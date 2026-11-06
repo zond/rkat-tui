@@ -668,7 +668,10 @@ writes it with its file tools, so the usual approval, protected-path and
 sealed-path rules apply. `/clear`, `/resume`, `/model` and `/compact` work only while
 idle; the transcript is replaced only once the new session is live.
 
-Enter sends (steers while a turn runs); Ctrl+Enter sends now (while a
+`?` on an empty input opens a panel with the keys part of `/help` (the
+editor title shows `? keys` while idle and empty); `?`, Esc or any other
+key closes it without being typed, and with text in the input `?` is just
+typed. Enter sends (steers while a turn runs); Ctrl+Enter sends now (while a
 turn runs it interrupts the turn and sends the input next, like Ctrl-X
 Ctrl-S); Shift+Enter, Alt+Enter or Ctrl-J insert a newline, and so does a
 `\` typed right before Enter at the end of a line (the backslash is

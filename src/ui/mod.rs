@@ -1630,7 +1630,7 @@ impl App {
             Msg::ShowResumePicker(items) => {
                 let picker = Modal::Resume(ResumePicker { items, selected: 0 });
                 match self.modal {
-                    None => self.modal = Some(picker),
+                    None | Some(Modal::Keys) => self.modal = Some(picker),
                     // Shown once the escalations are answered; replaces a
                     // picker parked earlier.
                     Some(Modal::Escalation { .. }) => self.parked = Some(picker),
@@ -1638,7 +1638,7 @@ impl App {
                 }
             }
             Msg::ShowModelPicker(groups) => {
-                if self.modal.is_none() && self.parked.is_none() {
+                if matches!(self.modal, None | Some(Modal::Keys)) && self.parked.is_none() {
                     self.modal = Some(Modal::Model(ModelPicker::new(groups)));
                 } else {
                     for warning in ModelPicker::warnings(&groups) {
@@ -1731,6 +1731,19 @@ impl App {
                 // Anything else cancels the chord and is processed normally.
                 _ => {}
             }
+        }
+        if key.code == KeyCode::Char('?')
+            && !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            && self.input.is_empty()
+        {
+            // `?` on an empty input opens the shortcut panel; with text it
+            // is just typed.
+            self.last_ctrl_c = None;
+            self.last_esc = None;
+            self.modal = Some(Modal::Keys);
+            return;
         }
         let action = keymap::map_key(key, self.input.is_empty());
         if action != Action::CtrlC {
@@ -1944,7 +1957,10 @@ impl App {
                 }
                 _ => {}
             },
-            None => {}
+            // Any key closes the panel and is not typed; a held `?` does
+            // not close what it just opened.
+            Some(Modal::Keys) if !repeat => self.modal = None,
+            Some(Modal::Keys) | None => {}
         }
     }
 
@@ -2699,8 +2715,11 @@ impl App {
             }
             _ => {
                 // Escalations are time-limited and shown at once; an open
-                // picker waits until they are answered.
-                if let Some(picker) = self.modal.take() {
+                // picker waits until they are answered (the shortcut panel
+                // just closes).
+                if let Some(picker) = self.modal.take()
+                    && picker != Modal::Keys
+                {
                     self.parked = Some(picker);
                 }
                 self.modal = Some(Modal::Escalation {
@@ -3957,6 +3976,50 @@ mod tests {
             )]
         );
         assert_eq!(app.modal.as_ref(), Some(&picker));
+    }
+
+    #[test]
+    fn question_mark_on_an_empty_input_toggles_the_keys_panel() {
+        let mut app = App::new(StatusInfo::default());
+        assert!(app.update(key(KeyCode::Char('?'))).is_empty());
+        assert_eq!(app.modal, Some(Modal::Keys));
+        // A held `?` keeps it open; `?` again closes it and is not typed.
+        let mut held = KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE);
+        held.kind = KeyEventKind::Repeat;
+        app.update(Msg::Key(held));
+        assert_eq!(app.modal, Some(Modal::Keys));
+        app.update(key(KeyCode::Char('?')));
+        assert!(app.modal.is_none());
+        assert!(app.input.is_empty());
+        // Esc closes it, and so does any other key, which is not typed
+        // (Enter does not send).
+        for close in [KeyCode::Esc, KeyCode::Char('x'), KeyCode::Enter] {
+            app.update(key(KeyCode::Char('?')));
+            assert!(app.update(key(close)).is_empty(), "{close:?}");
+            assert!(app.modal.is_none(), "{close:?}");
+            assert!(app.input.is_empty(), "{close:?}");
+        }
+        // With text in the input `?` is just typed.
+        type_str(&mut app, "why?");
+        assert!(app.modal.is_none());
+        assert_eq!(app.input.text(), "why?");
+    }
+
+    #[test]
+    fn the_keys_panel_gives_way_to_escalations_and_pickers() {
+        let mut app = App::new(StatusInfo::default());
+        app.update(key(KeyCode::Char('?')));
+        app.update(Msg::Escalation(shell_prompt(), EscalationId(1)));
+        assert!(matches!(app.modal, Some(Modal::Escalation { .. })));
+        app.update(key(KeyCode::Char('y')));
+        assert!(app.modal.is_none(), "the panel is not parked");
+        app.update(key(KeyCode::Char('?')));
+        app.update(Msg::ShowResumePicker(vec![("a".into(), "x".into())]));
+        assert!(matches!(app.modal, Some(Modal::Resume(_))));
+        app.update(key(KeyCode::Esc));
+        app.update(key(KeyCode::Char('?')));
+        app.update(Msg::ShowModelPicker(picker_models()));
+        assert!(matches!(app.modal, Some(Modal::Model(_))));
     }
 
     #[test]

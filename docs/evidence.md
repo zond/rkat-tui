@@ -1132,3 +1132,22 @@ Three "reuse the existing owner" items from the maintainer's review ("Existing o
   file is not written, the ledger record is Denied with reason `denied: put it in .env.example instead`).
 - Commands: `cargo clippy --all-targets --all-features -- -D warnings` exit 0; `cargo fmt --all` exit 0;
   `cargo nextest run --all-features` 781 passed, 6 skipped, exit 0.
+
+### 3. `?` shortcut panel
+
+- Before: `?` was always typed; the keys were only in `/help`'s notice.
+- After: `?` (no Ctrl/Alt) on an empty input, outside reverse search and the Ctrl-X chord, opens `Modal::Keys`, drawn
+  by `draw_modal` as a box up to 104 columns wide with `commands::keys_help()` (HELP_TEXT from `Keys:` through the
+  approval prompt, the heading dropped since the title says `Keys (any key closes)`). A description too long for its
+  column wraps under it; a panel taller than the screen ends in `… more in /help`. Any key press closes it and is not
+  typed (Enter does not send); a held `?` does not close it. With text in the input `?` is typed. An escalation
+  closes the panel instead of parking it; a resume or model picker list replaces it. The editor title reads `? keys`
+  when idle with an empty input and nothing else to say.
+- Tests: `ui::tests::question_mark_on_an_empty_input_toggles_the_keys_panel`,
+  `the_keys_panel_gives_way_to_escalations_and_pickers`,
+  `ui::commands::tests::the_keys_panel_lists_the_keys_and_the_approval_prompt_only`,
+  `render_snapshot::keys_panel_snapshot` (the idle `? keys` title; the panel at 110×10, cut with `… more in /help`; the
+  wrapped layout at 60 columns; a key closes it), `renders_blocks_input_and_status_bar` (border row now carries the
+  hint).
+- Commands: `cargo clippy --all-targets --all-features -- -D warnings` exit 0; `cargo fmt --all` exit 0;
+  `cargo nextest run --all-features` 785 passed, 6 skipped, exit 0.

@@ -299,6 +299,8 @@ pub enum Modal {
     Resume(ResumePicker),
     /// Model picker.
     Model(ModelPicker),
+    /// The `?` shortcut panel: the keys part of the help.
+    Keys,
 }
 
 /// Center a `width`×`height` rectangle inside `area` (clamped to fit).
@@ -339,15 +341,71 @@ pub fn draw_modal(frame: &mut Frame<'_>, area: Rect, modal: &Modal) {
             " Select model ".to_string(),
             model_picker_lines(picker, inner_w, usize::from(area.height.saturating_sub(4))),
         ),
+        Modal::Keys => {
+            // Wider than the other dialogs: the help's columns.
+            let width = area.width.saturating_sub(2).clamp(20, 104);
+            let inner_w = usize::from(width.saturating_sub(2));
+            let lines = keys_lines(inner_w, usize::from(area.height.saturating_sub(2)));
+            return draw_box(frame, area, width, " Keys (any key closes) ", lines);
+        }
     };
+    draw_box(frame, area, width, &title, lines);
+}
+
+/// A bordered box of `lines`, `width` wide, centered over `area`.
+fn draw_box(frame: &mut Frame<'_>, area: Rect, width: u16, title: &str, lines: Vec<Line<'static>>) {
     let height = (lines.len() as u16).saturating_add(2);
     let rect = centered(area, width, height);
     frame.render_widget(Clear, rect);
     let block = BorderBlock::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Yellow))
-        .title(title);
+        .title(title.to_string());
     frame.render_widget(Paragraph::new(lines).block(block), rect);
+}
+
+/// Column where the help's descriptions start.
+const HELP_DESC_COL: usize = 33;
+
+/// The keys help, wrapped to `width` (a description too long for its
+/// column continues under it) and cut to `max_lines` with a pointer to
+/// `/help`.
+fn keys_lines(width: usize, max_lines: usize) -> Vec<Line<'static>> {
+    let heading = Style::default().add_modifier(Modifier::BOLD);
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let mut lines = Vec::new();
+    // The box's title names the panel: skip the help's own "Keys:" heading.
+    for raw in super::commands::keys_help().lines().skip(1) {
+        if !raw.starts_with(' ') {
+            lines.push(Line::styled(raw.to_string(), heading));
+            continue;
+        }
+        let split = raw
+            .char_indices()
+            .nth(HELP_DESC_COL)
+            .map(|(i, _)| i)
+            .filter(|_| width > HELP_DESC_COL + 20);
+        match split.map(|i| raw.split_at(i)) {
+            Some((key, desc)) => {
+                let mut pad = key.to_string();
+                for (n, part) in wrap_text(desc, width - HELP_DESC_COL)
+                    .into_iter()
+                    .enumerate()
+                {
+                    if n > 0 {
+                        pad = " ".repeat(HELP_DESC_COL);
+                    }
+                    lines.push(Line::from(format!("{pad}{part}")));
+                }
+            }
+            None => lines.extend(wrap_text(raw, width).into_iter().map(Line::from)),
+        }
+    }
+    if lines.len() > max_lines {
+        lines.truncate(max_lines.saturating_sub(1));
+        lines.push(Line::styled("… more in /help", dim));
+    }
+    lines
 }
 
 fn escalation_lines(

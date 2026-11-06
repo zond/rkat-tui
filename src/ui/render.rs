@@ -201,6 +201,8 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect, now: Instant) {
         format!(" Enter queues · Ctrl+Enter interrupts and sends{helpers} · Esc/Ctrl-C interrupts ")
     } else if app.input.is_empty() && app.input.has_stash() {
         format!(" Ctrl-S restores the stashed prompt{helpers} ")
+    } else if helpers.is_empty() && app.input.is_empty() && !app.is_running() {
+        " ? keys ".into()
     } else if helpers.is_empty() {
         String::new()
     } else {
