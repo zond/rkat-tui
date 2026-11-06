@@ -174,14 +174,30 @@ pub fn lex(input: &str) -> Result<Vec<Tok>, Unsupported> {
     attach_redirect_targets(raw)
 }
 
+/// Whether `c` is a control character the lexer refuses.
+///
+/// Only `\t` and `\n` have a separator meaning shared by every supported shell.
+/// bash, dash and zsh read every other control character (`\r`, `\x0b`, `\x0c`,
+/// `\x1b`, ...) as an ordinary word character (bash even drops NUL), so a lexer
+/// that treated one as a blank would judge a different command than the shell
+/// runs: `git status \r# ; rm -rf x` would hide `rm` behind a comment. No
+/// allowlisted command needs one, so the whole command is unsupported, and a
+/// Windows `\r\n` line ending escalates too (the shell would run `status\r`).
+fn refused_control(c: char) -> bool {
+    c.is_control() && !matches!(c, '\t' | '\n')
+}
+
 fn lex_raw(input: &str) -> Result<Vec<Raw>, Unsupported> {
+    if input.chars().any(refused_control) {
+        return Err(Unsupported("control character"));
+    }
     let mut out = Vec::new();
     let mut word = WordBuf::default();
     let mut chars = input.chars().peekable();
 
     while let Some(c) = chars.next() {
         match c {
-            ' ' | '\t' | '\r' => word.flush(&mut out),
+            ' ' | '\t' => word.flush(&mut out),
             '\n' => {
                 word.flush(&mut out);
                 out.push(Raw::Op(Op::Newline));
@@ -1818,6 +1834,67 @@ mod tests {
         ] {
             assert!(lex(cmd).is_err(), "{cmd} should be unsupported");
         }
+    }
+
+    /// Every supported shell (bash 5.2, dash 0.5.12, zsh 5.9; see
+    /// docs/evidence.md) reads `\r` and the other C0 controls as word
+    /// characters, so a comment after one is not a comment. The lexer refuses
+    /// them outright rather than modelling that.
+    #[test]
+    fn control_characters_are_unsupported() {
+        for cmd in [
+            "git status \r# ; rm -rf x",
+            "git status\r# ; rm -rf x",
+            "git st\ratus",
+            "git status\r\n",
+            "git status\r\nls\r\n",
+            "echo 'a\rb'",
+            "echo \"a\rb\"",
+            "echo a\\\rb",
+            "ls\0 # x",
+            "ls\x1b[2J",
+            "ls \x0b# ; rm x",
+            "ls \x0c# ; rm x",
+            "ls\x7f",
+            "ls \u{85}# ; rm x",
+        ] {
+            assert_eq!(
+                lex(cmd),
+                Err(Unsupported("control character")),
+                "{cmd:?} should be unsupported"
+            );
+        }
+        // Tab and newline keep their meaning.
+        assert_eq!(words("ls\t-la\nls"), ["ls", "-la", "ls"]);
+    }
+
+    #[test]
+    fn carriage_return_comment_is_not_allowlisted() {
+        let (_dir, root) = project();
+        let ctx = ctx(&root, false);
+        assert!(allowlisted("git status", &ctx).is_ok());
+        assert!(allowlisted("git status \r# ; rm -rf x", &ctx).is_err());
+        assert!(allowlisted("git status\r\n", &ctx).is_err());
+    }
+
+    /// `#` starts a comment only where a word would start, as in bash, dash
+    /// and zsh (`printf 'echo a#b "#" \\#c ;#d\n' | sh` prints `a#b # #c`).
+    #[test]
+    fn hash_starts_a_comment_only_at_a_word_start() {
+        assert_eq!(words("echo a#b"), ["echo", "a#b"]);
+        assert_eq!(words("echo \"#\" '#'"), ["echo", "#", "#"]);
+        assert_eq!(words("echo \\#c"), ["echo", "#c"]);
+        assert_eq!(words("echo ''#x"), ["echo", "#x"]);
+        assert_eq!(words("echo a=#b"), ["echo", "a=#b"]);
+        assert_eq!(words("echo a;#b ; rm x"), ["echo", "a"]);
+        assert_eq!(words("echo a #b\nrm x"), ["echo", "a", "rm", "x"]);
+        assert_eq!(words("echo a\t#b ; rm x"), ["echo", "a"]);
+        assert!(lex("echo $#").is_err(), "$# is parameter expansion");
+        assert!(lex("echo \"$#\"").is_err());
+        // After a redirection operator `#` starts a comment, so the redirect
+        // has no target (bash: syntax error), never a file named `#x`.
+        assert!(lex("echo a >#x").is_err());
+        assert!(lex("echo a 2>#x").is_err());
     }
 
     #[test]

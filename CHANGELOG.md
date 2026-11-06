@@ -139,3 +139,12 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
   - Ctrl+G and Ctrl+X Ctrl+E edit the input in `$VISUAL`/`$EDITOR`/`vi`.
 
 ### Changed
+
+### Fixed
+
+- The shell lexer no longer treats a carriage return as a blank. bash, dash
+  and zsh read `\r` as a word character, so `git status \r# ; rm -rf x` was
+  judged as the allowlisted `git status` while the shell ran `rm`. Any control
+  character other than tab and newline (`\r`, a `\r\n` line ending, NUL,
+  ESC, `\v`, `\f`, DEL, C1) now makes the command unsupported, so the gate
+  escalates it.

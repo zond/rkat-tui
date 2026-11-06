@@ -905,3 +905,37 @@ meerkat-tui --all-features` exit 0 (lane `tui-port`).
 - Manual check: not run in a real terminal (no interactive terminal in this session, and starting rkat-tui needs a
   live endpoint). The launch itself is exercised by `a_real_editor_command_edits_the_draft` (`sh -c` through
   `HostLaunchExemption::user_editor`); the leave/restore path is the one Ctrl+Z uses, also not run interactively.
+
+## Review defects (2026-11-07)
+
+Two defects from the Meerkat maintainer's review of the harness, one commit each.
+
+### 1. Shell lexer: a carriage return is not a word separator
+
+- Before: `lex_raw` flushed a word on `' ' | '\t' | '\r'`, and a `#` at a word start opened a comment, so
+  `git status \r# ; rm -rf x` lexed as `git status` and passed the Tier-1 allowlist while the shell ran `rm -rf x`.
+- Observed shell behaviour (`printf '<cmd>\n' | <shell> | od -c`), bash 5.2.21, dash 0.5.12 (`/usr/bin/sh`), zsh 5.9
+  (`zsh -f`, from the Ubuntu noble `zsh_5.9-6ubuntu2` package extracted locally; zsh is not installed on this host):
+  - `echo a\r#b c` prints `a\r#b c` in all three: `\r` is a word character, the `#` after it is not a comment.
+  - `echo x \r# ; echo INJECTED` prints `x \r#` and then `INJECTED` in all three (also through `bash -c`/`zsh -fc`).
+  - `echo crlf\r\necho next\r\n` prints `crlf\r` and `next\r`: `\r\n` is not a line ending, the word keeps the `\r`.
+  - `\x0b`, `\x0c`, `\x1b` are word characters in all three; NUL is dropped by bash and dash and kept by zsh.
+  - `echo a#b "#" \#c` → `a#b # #c`; `echo a=#b ''#x` → `a=#b #x`; `echo a;#b` and `echo a\t#b ; echo INJ` → `a`;
+    `echo a >#x` is a syntax error in all three (the `#` after `>` starts a comment).
+- Choice: any control character other than `\t` and `\n` (`char::is_control`: C0, DEL, C1) makes the command
+  `Unsupported("control character")`, so Tier 1 never allows it and allow rules never match it (`allow_matches`
+  refuses unlexable commands); the gate escalates. Modelling `\r` as a word character instead would be correct but
+  is not needed: no allowlisted command contains one, and a `\r\n` command is not the command it looks like (the
+  shell runs `status\r`), so judging it with the `\r` stripped would judge a different command. A `\r\n` line ending
+  therefore escalates too.
+- Audit of the rest of the lexer and `attach_redirect_targets` against the same shells: the only blanks are space
+  and tab and the only line separator `\n` (the metacharacters `| & ; < > ( )` are operators or refused); `#` opens
+  a comment only when no word is in progress (mid-word `a#b`, `a=#b`, quoted `"#"`/`'#'`, escaped `\#`, and `''#x`
+  after an empty quoted word stay words; after `;`, a blank, or a redirection operator it is a comment, the last
+  leaving the redirect without a target, which is refused); `$#` is refused as parameter expansion, quoted or not.
+  No other disagreement found.
+- Tests (`src/approval/shell.rs`): `control_characters_are_unsupported` (the exact `\r#` case, `\r` inside a word and
+  inside quotes, escaped `\r`, `\r\n` endings, NUL, ESC, `\x0b`, `\x0c`, DEL, U+0085; tab and newline still split),
+  `carriage_return_comment_is_not_allowlisted`, `hash_starts_a_comment_only_at_a_word_start`.
+- Commands: `cargo clippy --all-targets --all-features -- -D warnings` exit 0; `cargo nextest run --all-features`
+  763 passed, 6 skipped, exit 0.
