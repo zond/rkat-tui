@@ -1655,6 +1655,9 @@ impl App {
             EditAction::YankPop => {
                 e.yank_pop();
             }
+            EditAction::Undo => {
+                e.undo();
+            }
         }
     }
 
@@ -2846,6 +2849,26 @@ mod tests {
         app.update(key(KeyCode::Char('x')));
         assert!(app.selection().is_none());
         assert_eq!(app.input.text(), "x");
+    }
+
+    #[test]
+    fn ctrl_underscore_undoes_input_edits() {
+        let mut app = App::new(StatusInfo::default());
+        type_str(&mut app, "first words");
+        app.update(ctrl('w'));
+        assert_eq!(app.input.text(), "first ");
+        app.update(ctrl('_'));
+        assert_eq!(app.input.text(), "first words");
+        app.update(Msg::Key(KeyEvent::new(KeyCode::Char('7'), KeyModifiers::CONTROL)));
+        assert_eq!(app.input.text(), "first");
+        // Ctrl-C clears the input; undo brings it back.
+        app.update(ctrl('c'));
+        assert!(app.input.is_empty());
+        app.update(Msg::Key(KeyEvent::new(
+            KeyCode::Char('-'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        )));
+        assert_eq!(app.input.text(), "first");
     }
 
     #[test]

@@ -587,7 +587,10 @@ move; Ctrl-K kills to the line end (at a line end, the newline), Ctrl-U to
 the line start, Ctrl-W (or Ctrl/Alt+Backspace) the word before, Alt+D the
 word after. Killed text goes onto a kill ring of 16 entries (consecutive
 kills join one entry); Ctrl-Y yanks the newest and Alt+Y right after a yank
-replaces it with the next older one.
+replaces it with the next older one. Ctrl-_ (Ctrl-7 or Ctrl-Shift-- in
+some terminals) undoes input edits: a word of typing, a run of deletes, a
+kill, a yank, a paste or a clear (Ctrl-C included) at a time, up to 64
+steps; sending a prompt starts afresh.
 
 The mouse is captured by default: the wheel scrolls and a click expands or
 collapses a tool call's output (Ctrl-O for the latest). Dragging selects text

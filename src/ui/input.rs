@@ -12,12 +12,28 @@ use super::markdown::{display_width, sanitize};
 /// Entries the kill ring keeps (the oldest is dropped beyond this).
 pub const KILL_RING_CAP: usize = 16;
 
+/// Input states the undo stack keeps (the oldest is dropped beyond this).
+pub const UNDO_DEPTH: usize = 64;
+
+/// The input text and cursor, as the undo stack keeps them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Snapshot {
+    lines: Vec<String>,
+    row: usize,
+    col: usize,
+}
+
 /// The previous editing command, as far as the next one cares: consecutive
-/// kills join one kill-ring entry, and Alt+Y works only right after a yank.
+/// kills join one kill-ring entry, Alt+Y works only right after a yank, and
+/// a run of typing (up to a word boundary) or of deleting is one undo step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LastEdit {
-    /// Anything else (typing, moving, a history recall).
+    /// Anything else (moving, a newline, a paste, a history recall).
     Other,
+    /// Typed a character.
+    Typing,
+    /// Deleted a character (Backspace, Delete).
+    Deleting,
     /// A kill that took text.
     Kill,
     /// A yank put kill-ring entry `age` (0 = the newest) between `start`
@@ -40,6 +56,10 @@ pub struct InputEditor {
     /// Ctrl+Y yanks the newest, Alt+Y cycles to older ones.
     kill_ring: VecDeque<String>,
     last: LastEdit,
+    /// Earlier input states, the newest last (Ctrl+_ restores them). Pushed
+    /// at word boundaries while typing, at the start of a run of deletes,
+    /// and before kills, yanks, pastes, newlines and clears.
+    undo: VecDeque<Snapshot>,
 }
 
 impl Default for InputEditor {
@@ -210,6 +230,7 @@ impl InputEditor {
             wrap_width: 0,
             kill_ring: VecDeque::new(),
             last: LastEdit::Other,
+            undo: VecDeque::new(),
         }
     }
 
@@ -260,9 +281,50 @@ impl InputEditor {
         self.lines.len() == 1 && self.lines.first().is_none_or(String::is_empty)
     }
 
-    /// Remove all text (history is kept).
+    fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            lines: self.lines.clone(),
+            row: self.row,
+            col: self.col,
+        }
+    }
+
+    /// Remember the current state for Ctrl+_ (unless it is the newest one
+    /// already).
+    fn push_undo(&mut self) {
+        let snapshot = self.snapshot();
+        if self.undo.back() != Some(&snapshot) {
+            self.undo.push_back(snapshot);
+            if self.undo.len() > UNDO_DEPTH {
+                self.undo.pop_front();
+            }
+        }
+    }
+
+    /// Ctrl+_: restore the newest remembered state that differs from the
+    /// current one. Returns whether there was one.
+    pub fn undo(&mut self) -> bool {
+        let current = self.snapshot();
+        while let Some(snapshot) = self.undo.pop_back() {
+            if snapshot != current {
+                let Snapshot { lines, row, col } = snapshot;
+                self.lines = lines;
+                (self.row, self.col) = (row, col);
+                self.last = LastEdit::Other;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Remove all text (history is kept); Ctrl+_ brings it back.
     pub fn clear(&mut self) {
+        self.push_undo();
         self.last = LastEdit::Other;
+        self.reset();
+    }
+
+    fn reset(&mut self) {
         self.lines = vec![String::new()];
         self.row = 0;
         self.col = 0;
@@ -272,6 +334,7 @@ impl InputEditor {
 
     /// Replace the text and put the cursor at the end.
     pub fn set_text(&mut self, text: &str) {
+        self.push_undo();
         self.last = LastEdit::Other;
         self.lines = text.split('\n').map(str::to_string).collect();
         if self.lines.is_empty() {
@@ -287,7 +350,10 @@ impl InputEditor {
         if !text.trim().is_empty() && self.history.last() != Some(&text) {
             self.history.push(text.clone());
         }
-        self.clear();
+        // A new prompt starts with no undo states.
+        self.reset();
+        self.last = LastEdit::Other;
+        self.undo.clear();
         text
     }
 
@@ -304,12 +370,20 @@ impl InputEditor {
 
     /// Insert one character at the cursor (`\n` splits the line).
     pub fn insert_char(&mut self, ch: char) {
-        self.last = LastEdit::Other;
         if ch == '\n' {
-            self.split_line();
-        } else {
-            self.put_char(ch);
+            self.newline();
+            return;
         }
+        let after_word = self
+            .current()
+            .chars()
+            .nth(self.col.wrapping_sub(1))
+            .is_some_and(|c| !c.is_whitespace());
+        if self.last != LastEdit::Typing || (ch.is_whitespace() && after_word) {
+            self.push_undo();
+        }
+        self.put_char(ch);
+        self.last = LastEdit::Typing;
     }
 
     fn put_char(&mut self, ch: char) {
@@ -322,6 +396,7 @@ impl InputEditor {
 
     /// Insert text verbatim (bracketed paste). `\r\n` and `\r` become newlines.
     pub fn insert_str(&mut self, text: &str) {
+        self.push_undo();
         self.last = LastEdit::Other;
         let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
         self.put_str(&normalized);
@@ -329,6 +404,7 @@ impl InputEditor {
 
     /// Split the line at the cursor.
     pub fn newline(&mut self) {
+        self.push_undo();
         self.last = LastEdit::Other;
         self.split_line();
     }
@@ -352,14 +428,23 @@ impl InputEditor {
         if self.col == 0 || self.col != len || !line.ends_with('\\') {
             return false;
         }
-        self.backspace();
-        self.newline();
+        self.push_undo();
+        self.remove_before();
+        self.split_line();
+        self.last = LastEdit::Other;
         true
     }
 
     /// Delete the character before the cursor (joining lines at column 0).
     pub fn backspace(&mut self) {
-        self.last = LastEdit::Other;
+        if self.last != LastEdit::Deleting {
+            self.push_undo();
+        }
+        self.last = LastEdit::Deleting;
+        self.remove_before();
+    }
+
+    fn remove_before(&mut self) {
         if self.col > 0 {
             let col = self.col;
             let line = self.current_mut();
@@ -376,7 +461,10 @@ impl InputEditor {
 
     /// Delete the character under the cursor (joining lines at end of line).
     pub fn delete(&mut self) {
-        self.last = LastEdit::Other;
+        if self.last != LastEdit::Deleting {
+            self.push_undo();
+        }
+        self.last = LastEdit::Deleting;
         let col = self.col;
         if col < char_len(self.current()) {
             let line = self.current_mut();
@@ -537,12 +625,18 @@ impl InputEditor {
 
     /// Kill from `from` to the cursor (a backward kill).
     fn kill_back_to(&mut self, from: (usize, usize)) {
+        if from < self.cursor() {
+            self.push_undo();
+        }
         let text = self.remove_range(from, self.cursor());
         self.record_kill(text, false);
     }
 
     /// Kill from the cursor to `to` (a forward kill).
     fn kill_forward_to(&mut self, to: (usize, usize)) {
+        if self.cursor() < to {
+            self.push_undo();
+        }
         let text = self.remove_range(self.cursor(), to);
         self.record_kill(text, true);
     }
@@ -596,6 +690,7 @@ impl InputEditor {
         let Some(text) = self.kill_ring.back().cloned() else {
             return false;
         };
+        self.push_undo();
         let start = self.cursor();
         self.put_str(&text);
         self.last = LastEdit::Yank { start, age: 0 };
@@ -617,6 +712,7 @@ impl InputEditor {
         let Some(text) = self.kill_ring.get(n - 1 - age).cloned() else {
             return false;
         };
+        self.push_undo();
         let end = self.cursor();
         self.remove_range(start, end);
         self.put_str(&text);
@@ -902,6 +998,61 @@ mod tests {
         }
         assert_eq!(e.kill_ring.len(), KILL_RING_CAP);
         assert_eq!(e.kill_ring.front().map(String::as_str), Some("3"));
+    }
+
+    #[test]
+    fn undo_steps_back_by_words_and_edits() {
+        let mut e = InputEditor::new();
+        assert!(!e.undo());
+        for ch in "hello big world".chars() {
+            e.insert_char(ch);
+        }
+        assert!(e.undo());
+        assert_eq!(e.text(), "hello big");
+        assert!(e.undo());
+        assert_eq!(e.text(), "hello");
+        // A run of backspaces is one step.
+        e.end();
+        e.backspace();
+        e.backspace();
+        assert_eq!(e.text(), "hel");
+        assert!(e.undo());
+        assert_eq!(e.text(), "hello");
+        assert_eq!(e.cursor(), (0, 5));
+        // Kills, yanks, pastes and clears are steps of their own.
+        e.delete_word_back();
+        e.yank();
+        e.insert_str(" pasted");
+        e.clear();
+        assert!(e.undo());
+        assert_eq!(e.text(), "hello pasted");
+        assert!(e.undo());
+        assert_eq!(e.text(), "hello");
+        assert!(e.undo());
+        assert_eq!(e.text(), "");
+        assert!(e.undo());
+        assert_eq!(e.text(), "hello");
+        assert!(e.undo());
+        assert_eq!(e.text(), "");
+        assert!(!e.undo());
+        // A sent prompt leaves nothing to undo.
+        e.insert_str("sent");
+        e.take();
+        assert!(!e.undo());
+    }
+
+    #[test]
+    fn the_undo_stack_keeps_the_newest_states() {
+        let mut e = InputEditor::new();
+        for i in 0..UNDO_DEPTH + 10 {
+            e.insert_str(&format!("{i} "));
+        }
+        let mut steps = 0;
+        while e.undo() {
+            steps += 1;
+        }
+        assert_eq!(steps, UNDO_DEPTH);
+        assert!(!e.is_empty());
     }
 
     #[test]

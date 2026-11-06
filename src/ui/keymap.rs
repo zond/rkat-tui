@@ -42,6 +42,8 @@ pub enum EditAction {
     Yank,
     /// Right after a yank, replace it with the next older entry (Alt-Y).
     YankPop,
+    /// Restore the previous input state (Ctrl-_).
+    Undo,
 }
 
 /// What a key press means in the main view.
@@ -109,6 +111,9 @@ pub fn map_key(key: &KeyEvent, input_empty: bool) -> Action {
         KeyCode::Char('y') if ctrl => Action::Edit(EditAction::Yank),
         KeyCode::Char('k') if ctrl => Action::Edit(EditAction::KillToLineEnd),
         KeyCode::Char('x') if ctrl => Action::ChordPrefix,
+        // Ctrl-_ arrives as `_`, or as Ctrl-7 or Ctrl-Shift-- in some terminals.
+        KeyCode::Char('_' | '7') if ctrl => Action::Edit(EditAction::Undo),
+        KeyCode::Char('-') if ctrl && shift => Action::Edit(EditAction::Undo),
         KeyCode::Char('p') if ctrl => Action::Edit(EditAction::Up),
         KeyCode::Char('n') if ctrl => Action::Edit(EditAction::Down),
         KeyCode::Char('a') if ctrl => Action::Edit(EditAction::Home),
@@ -264,6 +269,18 @@ mod tests {
         assert_eq!(
             map_key(&k(KeyCode::Down, KeyModifiers::NONE), true),
             Action::Edit(EditAction::Down)
+        );
+        for undo in [
+            k(KeyCode::Char('_'), KeyModifiers::CONTROL),
+            k(KeyCode::Char('_'), KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+            k(KeyCode::Char('7'), KeyModifiers::CONTROL),
+            k(KeyCode::Char('-'), KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+        ] {
+            assert_eq!(map_key(&undo, false), Action::Edit(EditAction::Undo));
+        }
+        assert_eq!(
+            map_key(&k(KeyCode::Char('-'), KeyModifiers::CONTROL), false),
+            Action::None
         );
         assert_eq!(
             map_key(&k(KeyCode::Char('p'), KeyModifiers::CONTROL), true),
