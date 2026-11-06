@@ -647,15 +647,27 @@ rkat-tui says so in a warning and compacts without them.
 
 ## Keys and commands
 
-`/help`, `/quit`, `/clear`, `/resume [ref]`,
-`/permissions [list|add allow|deny <tool> [pattern]|rm <n>|trust]` (alias `/rules`),
+**Claude Code parity.** The keys, the commands and the approval prompt
+follow Claude Code's wherever both have the feature: Enter queues while the
+agent works and Ctrl+Enter sends now, Esc interrupts, Shift+Tab switches
+the mode, `?` shows the keys, `/permissions`, `/usage`, `/context` and
+`/compact` mean what they mean there, and the approval prompt offers the
+same three numbered choices. Where rkat-tui differs or lacks a feature, and
+why, is recorded in [`docs/ux-parity.md`](docs/ux-parity.md) (the audit
+behind these controls; its table describes the state before the change).
+
+
+`/help` (alias `/?`), `/quit` (aliases `/exit`, `/q`), `/clear` (alias `/new`), `/resume [ref]`,
+`/permissions [list|add allow|deny <tool> [pattern]|rm <n>|trust]` (alias `/rules`; `remove` for `rm`),
 `/auto [on|off|resume]`, `/model [[endpoint:]id|refresh]`,
 `/remember <text>`, `/memory [user|system]`, `/init`, `/compact [now|status|<instructions>]`, `/context`, `/status`, `/export [file]`, `/usage` (aliases `/cost`, `/stats`), `/copy [N]`, `/trust` (alias `/mcp trust`),
 `/helpers [expand|fold <label>|all]` (alias `/tasks`). `/status` prints the
 rkat-tui version, the model and its endpoint, the session id, the workspace
 and realm directories, the shell confinement, the auto-mode state, whether
-the realm `tui.toml` and the project `.rkat/mcp.toml` are trusted, and the
-helper depth limit. `/export [file]` writes the transcript as plain text
+the realm `tui.toml` is trusted, the trust state of each project input
+`/trust` covers (`.rkat/mcp.toml`, `.rkat/config.toml`, the workspace
+realm's `config.toml`; "trusted for this run" under `--trust-project`), and
+the helper depth limit. `/export [file]` writes the transcript as plain text
 (a `## user`, `## assistant`, `## tool …`, `## notice` header per block;
 folded reasoning and collapsed tool output keep only their headers, as on
 screen) to `file` (relative to the workspace; owner-readable only), by
@@ -680,8 +692,8 @@ messages are sent next (Ctrl-C twice quits when idle); when idle, Esc twice on a
 and saves it to the prompt history (↑ brings it back); ↑ on an empty editor takes queued
 messages back, else recalls prompt history (Ctrl-P/Ctrl-N are ↑/↓); Ctrl-R searches history (workspace,
 then global); Ctrl-X Ctrl-S interrupts and sends the input; Ctrl-O shows or
-hides detail (the last reasoning block and the last tool output together;
-Ctrl-T is unbound, reserved for a task checklist); Ctrl+↑/↓ select a helper in the panel under the
+hides detail (the last reasoning block and the last tool output together);
+Ctrl+↑/↓ select a helper in the panel under the
 input and Enter on an empty input opens its full view (Esc returns);
 PgUp/PgDn and Shift+↑/↓ scroll; Home/End jump when the editor is empty;
 Ctrl-L clears the screen and redraws it; Shift+Tab switches auto mode off

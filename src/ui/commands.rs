@@ -178,18 +178,21 @@ pub const HELP_TEXT: &str = "\
 Commands:
   /help, /?                      show this help
   /quit, /exit, /q               leave rkat-tui (asks again while a turn runs or messages are queued)
+                                 and release its lease on the realm
   /clear, /new                   clear the transcript and start a new session (idle only)
   /resume [ref]                  resume a session (last, ~N, or id prefix); no ref opens a picker
-                                 (so does rkat-tui --resume without a ref)
+                                 (so does rkat-tui --resume without a ref; archived sessions
+                                 are not offered)
   /permissions [list]            list approval rules (/rules is an alias)
   /permissions add allow|deny <tool> [pattern]
                                  add an approval rule
-  /permissions rm <n>            remove rule n
+  /permissions rm <n>            remove rule n (rm or remove)
   /permissions trust             show the realm tui.toml and trust it as it is now
   /trust                         trust the project's .rkat/mcp.toml, .rkat/config.toml and
                                  workspace realm config.toml as they are now (their MCP
                                  servers and hooks run from the next session; /mcp trust
-                                 is an alias)
+                                 is an alias; rkat-tui --trust-project trusts them for one
+                                 run without recording)
   /auto                          show auto-mode state and denial counters
   /auto on|off|resume            enable, disable, or resume auto mode after a pause (Shift+Tab
                                  switches it off and on)
@@ -205,7 +208,8 @@ Commands:
                                  \"warn\" (default) warns at 75% and 85%; \"auto\" or
                                  --auto-compact lets the runtime compact at 85%)
   /status                        version, model, session, workspace, realm, confinement, auto
-                                 mode, trust of tui.toml and mcp.toml, helper depth limit
+                                 mode, trust of tui.toml and of each file /trust covers,
+                                 helper depth limit
   /memory [user | system]        edit the workspace AGENTS.md, the user AGENTS.md or SYSTEM.md
                                  in $VISUAL / $EDITOR / vi; an edited AGENTS.md reaches this
                                  session (also while a turn runs), SYSTEM.md the next one
@@ -241,13 +245,14 @@ Keys:
   Ctrl-X Ctrl-S                  interrupt and send the input (sends normally when idle)
   Ctrl-G, Ctrl-X Ctrl-E          edit the input in $VISUAL / $EDITOR / vi (also while a turn runs)
   Up/Down, Ctrl-P/N              move between lines · recall prompt history
-  Ctrl-A/E, Alt+B/F              line start/end, word left/right
+  Ctrl-A/E, Alt+B/F              line start/end, word left/right (Ctrl/Alt+Left/Right too)
   Ctrl-K/U, Ctrl-W, Alt+D        kill to line end/start, the word before/after (Ctrl-K at a
                                  line end kills the newline); Ctrl/Alt+Backspace = Ctrl-W
   Ctrl-Y, Alt+Y                  yank the last killed text; Alt+Y right after cycles older kills
   Ctrl-S                         stash the input (put it aside, clear); on an empty input,
                                  restore the stash (Ctrl-X Ctrl-S still sends now)
-  Ctrl-_                         undo the last input edit (a word, a kill, a paste, a clear)
+  Ctrl-_                         undo the last input edit (a word, a kill, a paste, a clear;
+                                 Ctrl-7 or Ctrl-Shift-- in some terminals)
   PgUp/PgDn, Shift+Up/Down       scroll the transcript
   Ctrl-L                         clear the screen and redraw it
   Ctrl-Z                         suspend to the shell (fg resumes; Unix)

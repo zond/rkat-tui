@@ -20,7 +20,7 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
   `SYSTEM.md`/`AGENTS.md`, ancestor `AGENTS.md`, `AGENTS.local.md`),
   `/remember`, notes (`note_*` tools, indexed as untrusted context), native
   semantic memory, MCP servers from `mcp.toml` (the project file's only once
-  trusted with `/mcp trust` or `--allow-project-mcp`), and a native/warn/auto
+  trusted with `/trust` or `--trust-project`), and a native/warn/auto
   policy over native auto-compaction with `/compact now`. Configured
   endpoints and the `[models.<id>]` profiles of models only an endpoint
   knows are written into the realm's own `config.toml`, so `rkat`, REST and
@@ -61,13 +61,11 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
   last activity, tokens) that Ctrl+↑/↓ and Enter, a click or
   `/helpers expand|fold` open to show its work (`[ui] helpers` sets the
   default). An interrupt abandons the messages still queued for the
-  running turn before it stops the run, so none of them runs as a
-  follow-up turn after the interrupt, and every one comes back to the
-  editor with the turn reported as interrupted, not failed. Esc while a
-  turn runs pulls back the steers the runtime still holds queued without
-  stopping the run (only when nothing is left to pull back does it
-  interrupt), and the first Ctrl-C after a mouse selection only clears the
-  selection. The terminal is asked for keyboard disambiguation only, not
+  running turn before it stops the run, so none of them is lost or runs
+  twice, and the turn is reported as interrupted, not failed; ↑ on an empty
+  input pulls back the steers the runtime still holds queued without
+  stopping the run, and the first Ctrl-C (or Esc) after a mouse selection
+  only clears the selection. The terminal is asked for keyboard disambiguation only, not
   event types: kitty 0.32 sent a Backspace release as a second press byte,
   which deleted two characters per keystroke. A call the classifier
   allowed shows a dim `allowed by classifier: <reason>` line under its tool
@@ -83,20 +81,20 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
   its full view (its prose, reasoning, tool calls and nested helpers) in
   place of the transcript until Esc. Long lines in the input editor wrap
   at the field width instead of scrolling sideways; the field grows up to
-  six rows and ↑/↓ move by wrapped rows. See
-  `crates/meerkat-tui/README.md`. Keys follow Claude Code where both have
-  the feature:
+  six rows and ↑/↓ move by wrapped rows. See `README.md`. Keys,
+  commands and the approval prompt follow Claude Code where both have the
+  feature (`docs/ux-parity.md` is the audit):
   - Ctrl+Enter sends now (interrupts a running turn and sends the input
     next, like Ctrl-X Ctrl-S) instead of inserting a newline; `\` right
     before Enter at a line end inserts a newline.
   - Ctrl+O shows or hides detail: the last reasoning block and the last
-    tool output together. Ctrl+T no longer toggles tool output (it is kept
-    for a task checklist); a click still toggles one tool.
+    tool output together (one key instead of two); a click still toggles
+    one tool.
   - A kill ring: Ctrl+K (kill to the line end), Ctrl+U, Ctrl+W,
     Ctrl/Alt+Backspace and Alt+D (kill the word after) push the deleted
     text; Ctrl+Y yanks it and Alt+Y cycles older kills.
-  - `/copy [N]` copies the latest (or Nth latest) answer; Ctrl+Y no longer
-    copies. A mouse selection still copies on release.
+  - `/copy [N]` copies the latest (or Nth latest) answer, now that Ctrl+Y
+    yanks. A mouse selection still copies on release.
   - Ctrl+P/Ctrl+N work as ↑/↓ in the editor (rows first, then history).
   - Esc twice (within 1.5 s) on an idle draft clears it and saves it to
     the prompt history.
@@ -123,7 +121,8 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
     rkat-tui's own tools).
   - `/status` prints the version, model and endpoint, session id,
     workspace and realm, confinement, auto mode, the trust state of
-    `tui.toml` and `mcp.toml`, and the helper depth limit.
+    `tui.toml` and of each project input `/trust` covers, and the helper
+    depth limit.
   - `/export [file]` writes the transcript as plain text (default
     `.rkat/tui/export-<session>-<time>.txt` in the workspace).
   - `/init` asks the agent, as an ordinary turn, to write or update the

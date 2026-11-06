@@ -1151,3 +1151,62 @@ Three "reuse the existing owner" items from the maintainer's review ("Existing o
   hint).
 - Commands: `cargo clippy --all-targets --all-features -- -D warnings` exit 0; `cargo fmt --all` exit 0;
   `cargo nextest run --all-features` 785 passed, 6 skipped, exit 0.
+
+### 4. Docs pass for batch 1
+
+- Read: every commit from `f65a305` (Ctrl+Enter, the first batch 1 commit) to HEAD, including the five review commits
+  (`2f0c267` shell lexer, `ba9d4cd` one trust decision, `d9871dc` realm lease, `a39bc5c` `SessionService::list`,
+  `d33c0ff` `ConfigRuntime` writes), against `ui/keymap.rs`, `ui/commands.rs` `parse_command`, `cli.rs`,
+  `runner/status.rs` and the `draw_input` hints.
+- HELP_TEXT: `/quit` names the lease release; `/resume` says archived sessions are not offered; `/trust` names
+  `--trust-project`; `/permissions rm` names its `remove` alias; `/status` lists the trust of each file `/trust`
+  covers (was "tui.toml and mcp.toml"); Ctrl/Alt+←/→ and the Ctrl-7 / Ctrl-Shift-- forms of Ctrl-_ are named.
+- README: the command list names every alias once (`/?`, `/exit`, `/q`, `/new`, `/rules`, `remove`, `/cost`,
+  `/stats`, `/mcp trust`, `/tasks`); `/status` describes the per-input trust lines; the stale "Ctrl-T is unbound"
+  clause is gone; a "Claude Code parity" paragraph opens "Keys and commands" and points at `docs/ux-parity.md`.
+- CHANGELOG: the `rkat-tui` paragraph pointed at `crates/meerkat-tui/README.md` (now `README.md`), named
+  `/mcp trust`/`--allow-project-mcp` as the way to trust project MCP (now `/trust`/`--trust-project`), and still
+  described Esc as pulling queued steers back and an interrupt as returning queued messages to the editor (both
+  replaced in batch 1: Esc interrupts, ↑ pulls back, queued messages are sent next); the Ctrl+T and "Ctrl+Y no
+  longer copies" wording is rephrased around the new controls; `/status`'s trust wording follows the code.
+- Checked absent: no doc or hint names Ctrl+T, a Ctrl+Y copy, or Esc recalling queued messages
+  (`grep -n "Ctrl+T\|Ctrl-T\|Ctrl+Y no\|Esc recalls" README.md CHANGELOG.md src/ui/commands.rs src/ui/render.rs`:
+  no match).
+
+## Batch 1 summary
+
+Controls changed by batch 1 (before → after):
+
+- Ctrl+Enter: newline → send now (interrupt and send; as Ctrl-X Ctrl-S). `\` before Enter at a line end: sent →
+  newline.
+- Ctrl+O: last reasoning block only → reasoning and last tool output together. Ctrl+T: last tool output → unbound.
+- Ctrl+Y: copy → yank (kill ring; Alt+Y cycles). Ctrl+K: unbound → kill to line end. Alt+D: unbound → kill word
+  after. `/copy [N]`: none → copy the Nth latest answer.
+- Ctrl+P/Ctrl+N: unbound → ↑/↓.
+- Esc Esc on an idle draft: nothing → clear it into the prompt history.
+- Ctrl+_: unbound → undo input edits.
+- Ctrl+S: unbound → stash / restore the input.
+- Ctrl+L: unbound → clear and redraw the screen.
+- Shift+Tab: unbound → auto mode off/on.
+- Ctrl+D on an idle empty input: quit at once → quit on a second press within 3 s.
+- Esc while a turn runs: pull back queued steers (interrupt only when none) → interrupt; queued messages are sent
+  next. ↑ on an empty input takes them back.
+- `/compact`: show the policy → compact now (`/compact status` shows the policy; `/compact <instructions>` warns).
+- `/permissions` (was only `/rules`, now its alias), `/usage` (was only `/cost`; `/cost`, `/stats` aliases),
+  `/tasks` (alias of `/helpers`).
+- `rkat-tui --resume` with no reference: error → session picker.
+- New commands: `/context`, `/status`, `/export [file]`, `/init`, `/memory [user|system]`.
+- Terminal bell: none → on a turn end or an approval prompt while unfocused (`[ui] bell`).
+- Alt+P: unbound → model picker, draft kept. Ctrl+Z: unbound → suspend (Unix). Ctrl+G / Ctrl+X Ctrl+E: unbound → edit
+  the input in `$VISUAL`/`$EDITOR`/`vi`.
+- Approval prompt: `[y] [a] [n] [s]` key line → numbered rows with a cursor (↑/↓, `j`/`k`, Enter, `1`-`3`; the
+  letters still answer; `s` and Ctrl+C as a footer hint).
+- Approval deny: immediate → row 3 opens a comment field; the comment reaches the model's tool error and the
+  approval record.
+- `?` on an empty input: typed → shortcut panel (any key closes it).
+- `/mcp trust` → `/trust` (alias kept) over every project input; `--allow-project-mcp` → `--trust-project` (alias
+  kept).
+
+Commands for the docs pass: `cargo clippy --all-targets --all-features -- -D warnings` exit 0; `cargo fmt --all`
+exit 0; `cargo nextest run --all-features` 785 passed, 6 skipped, exit 0 (`help_mentions_every_command_and_key`
+covers the HELP_TEXT edits).
