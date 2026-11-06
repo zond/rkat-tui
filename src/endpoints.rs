@@ -10,8 +10,9 @@
 //!
 //! Sessions are built and hot-swapped by the factory, which resolves every
 //! LLM client from the realm config. The TUI therefore projects its
-//! endpoints into the realm's own config document, through the config
-//! owner ([`meerkat_core::FileConfigStore`], see [`project_endpoints`]):
+//! endpoints into the realm's own config document, through the realm's
+//! config runtime ([`meerkat_core::ConfigRuntime`]: the writer lock and
+//! generation check every surface writes under; see [`project_endpoints`]):
 //!
 //! - **Built-in endpoints** (`anthropic`, `openai`, `gemini`) add nothing:
 //!   sessions on them resolve their credentials exactly as `rkat` does (the
@@ -57,7 +58,6 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
-use std::path::PathBuf;
 
 use meerkat_core::auth::{AuthConstraints, AuthMetadataDefaults};
 use meerkat_core::config::{ConfigError, CustomModelConfig};
@@ -66,7 +66,8 @@ use meerkat_core::connection::{
 };
 use meerkat_core::{
     AuthBindingRef, AuthProfileConfig, BackendProfileConfig, BindingId, BindingOrigin,
-    BindingPolicy, Config, ConfigDelta, ConfigStore, Provider, ProviderBindingConfig,
+    BindingPolicy, Config, ConfigDelta, ConfigRuntime, ConfigRuntimeError, Provider,
+    ProviderBindingConfig,
 };
 
 use crate::approval::rules::{EndpointSection, LayeredEndpoint, Notice, RuleOrigin};
@@ -418,14 +419,19 @@ pub enum EndpointError {
     /// The realm's config document could not be read.
     #[error("cannot read the realm config: {0}")]
     ConfigRead(#[source] ConfigError),
-    /// The realm's config document refused the write.
-    #[error("cannot write the realm config {}: {source}", .path.display())]
-    ConfigWrite {
-        /// The document.
-        path: PathBuf,
-        /// The config owner's refusal.
-        #[source]
-        source: ConfigError,
+    /// The realm's config runtime could not read the document (or its
+    /// generation) for a write.
+    #[error("cannot read the realm config for a write: {0}")]
+    ConfigSnapshot(#[source] ConfigRuntimeError),
+    /// The realm's config runtime refused the write.
+    #[error("cannot write the realm config: {0}")]
+    ConfigWrite(#[source] ConfigRuntimeError),
+    /// Another writer changed the realm config between each of rkat-tui's
+    /// reads and its write.
+    #[error("the realm config kept changing under rkat-tui's write ({attempts} attempts)")]
+    ConfigContended {
+        /// Reads and writes tried.
+        attempts: u32,
     },
     /// The patch for the realm document could not be built.
     #[error("cannot encode the realm config patch: {0}")]
@@ -953,34 +959,58 @@ fn changed<T: serde::Serialize>(
     Ok(out)
 }
 
-/// Project the configured endpoints of `endpoints` into the realm document
-/// `store` (see the module docs). Returns whether the document changed. The
-/// document names each endpoint's environment variable, never a key.
+/// How often [`patch_document`] re-reads after a generation conflict.
+const CONFIG_WRITE_ATTEMPTS: u32 = 8;
+
+/// Read the realm document through `runtime`, let `delta_for` build the
+/// patch from it (`None`: nothing to write), and write it under the
+/// generation read, re-reading when another writer got in between (the
+/// read-modify-write contract `rkat config` follows). Returns whether the
+/// document changed.
 ///
 /// # Errors
 ///
-/// [`EndpointError`] when the section cannot be built, the document cannot
-/// be read, or the config owner refuses the write.
+/// What `delta_for` returns, [`EndpointError::ConfigSnapshot`] /
+/// [`EndpointError::ConfigWrite`] when the runtime cannot read or write,
+/// [`EndpointError::ConfigContended`] when every attempt conflicted.
+pub async fn patch_document(
+    runtime: &ConfigRuntime,
+    delta_for: impl Fn(&Config) -> Result<Option<ConfigDelta>, EndpointError>,
+) -> Result<bool, EndpointError> {
+    for _ in 0..CONFIG_WRITE_ATTEMPTS {
+        let snapshot = runtime.get().await.map_err(EndpointError::ConfigSnapshot)?;
+        let Some(delta) = delta_for(&snapshot.config)? else {
+            return Ok(false);
+        };
+        match runtime.patch(delta, Some(snapshot.generation)).await {
+            Ok(_) => return Ok(true),
+            Err(ConfigRuntimeError::GenerationConflict { .. }) => {}
+            Err(err) => return Err(EndpointError::ConfigWrite(err)),
+        }
+    }
+    Err(EndpointError::ConfigContended {
+        attempts: CONFIG_WRITE_ATTEMPTS,
+    })
+}
+
+/// Project the configured endpoints of `endpoints` into the realm document
+/// through its config `runtime` (see the module docs). Returns whether the
+/// document changed. The document names each endpoint's environment
+/// variable, never a key.
+///
+/// # Errors
+///
+/// [`EndpointError`] when the section cannot be built or the write fails
+/// (see [`patch_document`]).
 pub async fn project_endpoints(
-    store: &meerkat_core::FileConfigStore,
+    runtime: &ConfigRuntime,
     endpoints: &[Endpoint],
 ) -> Result<bool, EndpointError> {
     let section = endpoint_section(endpoints)?;
     if section.binding.is_empty() {
         return Ok(false);
     }
-    let persisted = store.get().await.map_err(EndpointError::ConfigRead)?;
-    let Some(patch) = endpoint_patch(&persisted, &section)? else {
-        return Ok(false);
-    };
-    store
-        .patch(patch)
-        .await
-        .map_err(|source| EndpointError::ConfigWrite {
-            path: store.path().to_path_buf(),
-            source,
-        })?;
-    Ok(true)
+    patch_document(runtime, |persisted| endpoint_patch(persisted, &section)).await
 }
 
 /// The `[models.<id>]` entry `model` on `provider` needs, or `None` when
@@ -1047,34 +1077,27 @@ pub fn model_profile_entry(
     }))
 }
 
-/// Make sure the realm document `store` profiles `model` on `provider`
-/// ([`model_profile_entry`]), writing the `[models.<id>]` entry through the
-/// config owner. Returns whether the document changed.
+/// Make sure the realm document profiles `model` on `provider`
+/// ([`model_profile_entry`]), writing the `[models.<id>]` entry through its
+/// config `runtime`. Returns whether the document changed.
 ///
 /// # Errors
 ///
-/// As [`model_profile_entry`]; [`EndpointError::ConfigRead`] /
-/// [`EndpointError::ConfigWrite`] when the document cannot be read or
-/// refuses the write.
+/// As [`model_profile_entry`] and [`patch_document`].
 pub async fn ensure_model_profile(
-    store: &meerkat_core::FileConfigStore,
+    runtime: &ConfigRuntime,
     provider: Provider,
     model: &str,
     listed: Option<&ModelEntry>,
 ) -> Result<bool, EndpointError> {
-    let persisted = store.get().await.map_err(EndpointError::ConfigRead)?;
-    let Some(entry) = model_profile_entry(&persisted, provider, model, listed)? else {
-        return Ok(false);
-    };
-    let value = serde_json::to_value(&entry).map_err(EndpointError::Encode)?;
-    store
-        .patch(ConfigDelta(serde_json::json!({ "models": { model: value } })))
-        .await
-        .map_err(|source| EndpointError::ConfigWrite {
-            path: store.path().to_path_buf(),
-            source,
-        })?;
-    Ok(true)
+    patch_document(runtime, |persisted| {
+        let Some(entry) = model_profile_entry(persisted, provider, model, listed)? else {
+            return Ok(None);
+        };
+        let value = serde_json::to_value(&entry).map_err(EndpointError::Encode)?;
+        Ok(Some(ConfigDelta(serde_json::json!({ "models": { model: value } }))))
+    })
+    .await
 }
 
 /// The context window the engine's model registry knows for `model` on
@@ -1732,11 +1755,80 @@ mod tests {
         assert!(endpoint_section(&endpoints[..1]).unwrap().binding.is_empty());
     }
 
+    /// The config runtime of the document at `path`, its sidecar beside it.
+    fn config_runtime(path: &std::path::Path) -> ConfigRuntime {
+        ConfigRuntime::new(
+            std::sync::Arc::new(meerkat_core::FileConfigStore::new(
+                path.to_path_buf(),
+                meerkat_models::canonical(),
+            )),
+            path.with_file_name("config_state.json"),
+        )
+    }
+
+    /// A writer that commits between the read and the write makes the
+    /// write conflict on the generation; the patch is rebuilt from the new
+    /// document and written then.
+    #[tokio::test]
+    async fn a_write_that_lost_the_generation_race_is_rebuilt_and_retried() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        let runtime = config_runtime(&path);
+        let sidecar = path.with_file_name("config_state.json");
+        let reads = std::sync::atomic::AtomicU32::new(0);
+        let wrote = patch_document(&runtime, |persisted| {
+            if reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                // Another surface commits a write of its own meanwhile.
+                std::fs::write(&path, "[models.\"theirs\"]\nprovider = \"openai\"\n").unwrap();
+                std::fs::write(&sidecar, r#"{"generation": 7}"#).unwrap();
+            }
+            assert_eq!(
+                persisted.models.custom.contains_key("theirs"),
+                reads.load(std::sync::atomic::Ordering::SeqCst) > 1
+            );
+            Ok(Some(ConfigDelta(serde_json::json!({
+                "models": { "ours": { "provider": "anthropic" } }
+            }))))
+        })
+        .await
+        .unwrap();
+        assert!(wrote);
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 2);
+        let snapshot = runtime.get().await.unwrap();
+        assert_eq!(snapshot.generation, 8);
+        assert!(snapshot.config.models.custom.contains_key("theirs"));
+        assert!(snapshot.config.models.custom.contains_key("ours"));
+    }
+
+    /// rkat-tui's write waits for the writer lock another surface holds.
+    #[tokio::test]
+    async fn a_write_waits_for_the_writer_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        let runtime = config_runtime(&path);
+        let held =
+            meerkat_core::config_runtime::ConfigWriterLock::acquire(&path.with_file_name("config_state.lock"))
+                .await
+                .unwrap();
+        let write = ensure_model_profile(&runtime, Provider::OpenAI, "llama3:8b", None);
+        tokio::pin!(write);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(200), &mut write)
+                .await
+                .is_err(),
+            "the write went past a held writer lock"
+        );
+        assert!(!path.exists());
+        drop(held);
+        assert!(write.await.unwrap());
+        assert!(std::fs::read_to_string(&path).unwrap().contains("llama3:8b"));
+    }
+
     #[tokio::test]
     async fn endpoints_are_projected_into_the_realm_document_once() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("config.toml");
-        let store = meerkat_core::FileConfigStore::new(path.clone(), meerkat_models::canonical());
+        let store = config_runtime(&path);
         let endpoints = vec![
             ep("anthropic", WireDialect::Anthropic, true),
             configured("litellm", WireDialect::OpenAi, Some("LITELLM_KEY")),
@@ -1746,10 +1838,8 @@ mod tests {
         assert!(!project_endpoints(&store, &endpoints).await.unwrap());
         // What another surface loading the realm document reads resolves
         // the session's binding.
-        let reread = meerkat_core::FileConfigStore::new(path.clone(), meerkat_models::canonical())
-            .get()
-            .await
-            .unwrap();
+        let reread = meerkat_core::FileConfigStore::new(path.clone(), meerkat_models::canonical());
+        let reread = meerkat_core::ConfigStore::get(&reread).await.unwrap();
         let binding = endpoints[1].binding().unwrap();
         let target =
             meerkat_core::connection::resolve_explicit_auth_binding_target(&reread, &binding)
@@ -1776,7 +1866,9 @@ mod tests {
         assert!(!text.contains("sk-inline"), "{text}");
         // Earlier endpoints stay, so their sessions keep resolving.
         let reread = store.get().await.unwrap();
-        let section = &reread.realm[ENDPOINT_REALM];
+        // Each write was one generation of the realm's config runtime.
+        assert_eq!(reread.generation, 2);
+        let section = &reread.config.realm[ENDPOINT_REALM];
         assert!(section.binding.contains_key("litellm"));
         assert!(section.binding.contains_key("gateway"));
     }
@@ -1820,10 +1912,7 @@ mod tests {
     #[tokio::test]
     async fn profiles_are_written_for_unknown_models_and_refused_across_dialects() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = meerkat_core::FileConfigStore::new(
-            tmp.path().join("config.toml"),
-            meerkat_models::canonical(),
-        );
+        let store = config_runtime(&tmp.path().join("config.toml"));
         assert!(
             !ensure_model_profile(&store, Provider::Anthropic, ANTHROPIC_MODEL, None)
                 .await
@@ -1856,7 +1945,7 @@ mod tests {
                 .await
                 .unwrap()
         );
-        let config = store.get().await.unwrap();
+        let config = store.get().await.unwrap().config;
         let custom = &config.models.custom["llama3:8b"];
         assert_eq!(custom.provider, Provider::OpenAI);
         assert_eq!(custom.context_window, Some(16_384));

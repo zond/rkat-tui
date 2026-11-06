@@ -99,8 +99,6 @@ const MAX_SESSIONS: usize = 8;
 
 /// File in the realm directory where the session-LLM reconfigure host keeps
 /// its state (the same name the REST surface uses).
-const CONFIG_STATE_FILE: &str = "config_state.json";
-
 /// The surface name this host's realm lease records.
 pub const LEASE_SURFACE: &str = "rkat-tui";
 
@@ -229,10 +227,7 @@ impl Runtime {
         model: &str,
         listed: Option<&ModelEntry>,
     ) -> Result<(), TuiError> {
-        let before = self.realm_config.before_write();
-        let wrote = ensure_model_profile(self.realm_config.document(), provider, model, listed).await;
-        self.realm_config.after_write(before);
-        if wrote? {
+        if ensure_model_profile(self.realm_config.runtime(), provider, model, listed).await? {
             let effective = self
                 .realm_config
                 .get()
@@ -360,26 +355,24 @@ pub async fn bootstrap_with(
     let project_inputs =
         project_trust::ProjectInputs::new(&scope, Arc::clone(&trust), args.trust_project);
     let realm_config = Arc::new(
-        RealmConfigStore::new(&scope.config_path(), scope.global.clone())
-            .with_inputs(project_inputs.clone()),
+        RealmConfigStore::new(
+            &scope.config_path(),
+            scope.config_state_path(),
+            scope.global.clone(),
+        )
+        .with_inputs(project_inputs.clone()),
     );
-    let before = realm_config.before_write();
-    let projected = project_endpoints(realm_config.document(), endpoints.as_slice()).await;
-    realm_config.after_write(before);
-    projected?;
+    project_endpoints(realm_config.runtime(), endpoints.as_slice()).await?;
     let listed = models
         .as_ref()
         .and_then(|cache| cache.entry(choice.endpoint.as_str(), &choice.model));
-    let before = realm_config.before_write();
-    let profiled = ensure_model_profile(
-        realm_config.document(),
+    ensure_model_profile(
+        realm_config.runtime(),
         choice.provider,
         &choice.model,
         listed,
     )
-    .await;
-    realm_config.after_write(before);
-    profiled?;
+    .await?;
     let effective = realm_config
         .get()
         .await
@@ -491,7 +484,7 @@ pub async fn bootstrap_with(
         builder,
         MAX_SESSIONS,
         persistence,
-        realm_root.join(CONFIG_STATE_FILE),
+        realm_config.state_path().to_path_buf(),
     )?;
     // Every gate judges a call by where the session's tool of that name
     // comes from (its live tool definitions), never by the name alone.

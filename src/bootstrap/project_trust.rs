@@ -296,11 +296,6 @@ impl ProjectInputs {
 #[must_use]
 pub struct RealmConfigWrite(bool);
 
-impl RealmConfigWrite {
-    /// A write with no project inputs to record.
-    pub const UNGUARDED: Self = Self(false);
-}
-
 /// The `[hooks]` entries of a conventions config, as the factory reads them
 /// (an absent or unparsable file has none).
 async fn read_hooks(file: &Path) -> Vec<meerkat_core::HookEntryConfig> {
@@ -518,6 +513,42 @@ mod tests {
         )
         .unwrap();
         inputs.wrote_realm_config(before);
+        assert!(matches!(
+            inputs.status(&realm_config),
+            TrustStatus::Untrusted(Untrusted::Changed)
+        ));
+    }
+
+    /// The same through the realm's config runtime, the path rkat-tui's
+    /// endpoint and profile writes take: the record follows each write made
+    /// under the writer lock.
+    #[tokio::test]
+    async fn writes_through_the_config_runtime_keep_trust_but_never_launder() {
+        let fx = fixture();
+        let realm_config = fx.ws.join(".rkat/tui/config.toml");
+        let inputs = ProjectInputs::new(&fx.scope, record(&fx.scope), false);
+        let store = super::super::realm_config::RealmConfigStore::new(
+            &fx.scope.config_path(),
+            fx.scope.config_state_path(),
+            None,
+        )
+        .with_inputs(inputs.clone());
+        let profile = |model: &'static str| {
+            crate::endpoints::ensure_model_profile(
+                store.runtime(),
+                meerkat_core::Provider::OpenAI,
+                model,
+                None,
+            )
+        };
+        assert!(profile("served-a").await.unwrap());
+        assert_eq!(inputs.status(&realm_config), TrustStatus::Trusted);
+        assert!(profile("served-b").await.unwrap());
+        assert_eq!(inputs.status(&realm_config), TrustStatus::Trusted);
+        let mut planted = std::fs::read_to_string(&realm_config).unwrap();
+        planted.push_str("\n[[tools.mcp_servers]]\nname = \"x\"\ncommand = \"y\"\n");
+        std::fs::write(&realm_config, planted).unwrap();
+        assert!(profile("served-c").await.unwrap());
         assert!(matches!(
             inputs.status(&realm_config),
             TrustStatus::Untrusted(Untrusted::Changed)

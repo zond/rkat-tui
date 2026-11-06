@@ -455,7 +455,9 @@ provider environment variable, or the `rkat` token store). More come from
 `[endpoints.<name>]` in `tui.toml`.
 
 Configured endpoints are **written into the realm's own `config.toml`**
-(through Meerkat's config owner) as connections of the `rkat-tui-endpoints`
+(through the realm's `ConfigRuntime`: the writer lock and generation check
+`rkat config`, REST and RPC write under, retried when another writer got in
+between) as connections of the `rkat-tui-endpoints`
 realm section: a backend with the endpoint's URL, an auth profile reading
 the environment variable `api_key_env` names (the document records the
 variable's name, never a key) and a binding. Keys come from the environment

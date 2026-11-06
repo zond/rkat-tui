@@ -1037,3 +1037,50 @@ Three "reuse the existing owner" items from the maintainer's review ("Existing o
   match). The harness also exposes `Rig::machine` for that archive.
 - Commands: `cargo clippy --all-targets --all-features -- -D warnings` exit 0; `cargo nextest run --all-features`
   772 passed, 6 skipped, exit 0.
+
+### 3. Realm config mutations through `ConfigRuntime`
+
+- Write sites found (every mutation of the realm `config.toml`; nothing else rkat-tui writes is a `Config`):
+  1. `bootstrap_with` → `endpoints::project_endpoints`: the `[realm.rkat-tui-endpoints]` backend/auth/binding
+     entries of configured endpoints.
+  2. `bootstrap_with` → `endpoints::ensure_model_profile`: the start-up model's `[models.<id>]` profile.
+  3. `Runtime::ensure_profile` → `ensure_model_profile`: a profile on a model switch (picker, `/model`, helpers).
+  4. `RealmConfigStore`'s own `ConfigStore::{set, patch, patch_with_warnings}`: called only by the engine's
+     `ConfigRuntime` over the builder's config store (the LLM reconfigure host built by
+     `build_runtime_backed_service_with_default_reconfigure_host`, same `config_state.json`), which already holds
+     the writer lock.
+  Not config writes: the trust records (`HostTrustRecord`, `~/.rkat/tui/trust/<key>.toml`, its own file), `/remember`
+  (appends to `AGENTS.md`), `/permissions add` (`tui.toml` rules), the approval ledger.
+- Before: sites 1-3 read `FileConfigStore::get` and wrote `FileConfigStore::patch` on the document directly, with
+  `RealmConfigStore::{before_write, after_write}` bracketing the trust record outside any lock; no generation was
+  read or published, so a concurrent `rkat config set` could interleave and a TUI write never bumped the generation
+  other surfaces' CAS reads.
+- After: `RealmConfigStore` owns a `meerkat_core::ConfigRuntime` over the raw document (`RealmDocument`, a private
+  `ConfigStore` whose writes bracket the trust record) at `RuntimeScope::config_state_path()`
+  (`<realm>/config_state.json`, the sidecar the engine's reconfigure host and `rkat config` use; one source for both
+  now). Sites 1-3 go through `endpoints::patch_document(runtime, delta_for)`: `ConfigRuntime::get` (reader lock,
+  document + generation), build the patch from the snapshot, `ConfigRuntime::patch(delta, Some(generation))`
+  (writer lock, generation check, publication); on `GenerationConflict` re-read and rebuild, up to 8 attempts
+  (`EndpointError::ConfigContended` after). This is the read-modify-write `rkat` follows (`cli_head_config_snapshot`
+  + `patch_cli_skills`). The trust bracket now runs inside the writer lock, and records only after a successful
+  write. `before_write`/`after_write`/`document()` and `RealmConfigWrite::UNGUARDED` are gone. Site 4 keeps writing
+  the document directly (it is the lock holder's store; routing it through rkat-tui's runtime would wait on the lock
+  its caller holds).
+- Reads: `scope::load_config` (the start-up config) now reads through `ConfigRuntime::get` too, as `rkat config get`
+  does. The factory's per-build reads (`RealmConfigStore::get`) stay lock-free `ConfigStore` reads, as the engine's
+  own `FactoryAgentBuilder` reads its config store.
+- What the owner API provides: the cross-process writer/reader lock (`config_state.lock`, OS advisory), the
+  generation sidecar and its CAS. What it does not: a retrying read-modify-write helper (each surface writes its own
+  loop; `patch_document` is rkat-tui's), and a path in its errors (`EndpointError::ConfigWrite` now carries the
+  `ConfigRuntimeError` without the document path).
+- Tests: `endpoints::tests::a_write_that_lost_the_generation_race_is_rebuilt_and_retried` (another writer commits
+  between the read and the write: the patch is rebuilt from the new document, both entries kept, generation 7→8),
+  `a_write_waits_for_the_writer_lock` (a held `ConfigWriterLock` keeps the profile write pending; released, it
+  lands), `endpoints_are_projected_into_the_realm_document_once` (now through the runtime; two writes, generation 2;
+  the unchanged projection writes nothing), `profiles_are_written_for_unknown_models_and_refused_across_dialects`,
+  `realm_config::tests::reads_follow_the_document_and_writes_reach_it` (a runtime write publishes generation 1; a
+  stale-generation write is `GenerationConflict`), `project_trust::tests::
+  writes_through_the_config_runtime_keep_trust_but_never_launder` (absent → written → trusted; trusted → written →
+  trusted; planted → written → still `Changed`).
+- Commands: `cargo clippy --all-targets --all-features -- -D warnings` exit 0; `cargo fmt --all -- --check` exit 0;
+  `cargo nextest run --all-features` 775 passed, 6 skipped, exit 0.

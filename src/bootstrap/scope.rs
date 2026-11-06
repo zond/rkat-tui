@@ -12,8 +12,11 @@
 //! `meerkat-cli/src/main.rs`).
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use meerkat_core::{Config, ConfigStore, FileConfigStore, RealmConfig, RealmSelection};
+use meerkat_core::{
+    Config, ConfigRuntime, FileConfigStore, RealmConfig, RealmSelection,
+};
 use meerkat_store::{RealmBackend, RealmOrigin, realm_paths_in};
 
 use super::dirs::GlobalDirs;
@@ -64,6 +67,15 @@ impl RuntimeScope {
     #[must_use]
     pub fn config_path(&self) -> PathBuf {
         realm_paths_in(&self.state_root, &self.realm_id).config_path
+    }
+
+    /// Path of the realm config's generation sidecar
+    /// (`<realm>/config_state.json`), which every surface's
+    /// [`ConfigRuntime`] of the realm uses (its writer lock is
+    /// `config_state.lock` beside it).
+    #[must_use]
+    pub fn config_state_path(&self) -> PathBuf {
+        self.realm_root().join("config_state.json")
     }
 }
 
@@ -329,7 +341,8 @@ fn project_root_from(path: &Path) -> Result<ProjectRoot, TuiError> {
 }
 
 /// Load the realm config (`<state_root>/<realm>/config.toml`) and apply
-/// environment overrides, exactly like `rkat`.
+/// environment overrides, exactly like `rkat`: read through the realm's
+/// config runtime, under its reader lock (`rkat config get` reads so too).
 ///
 /// # Errors
 ///
@@ -342,13 +355,18 @@ pub async fn load_config(scope: &RuntimeScope) -> Result<Config, TuiError> {
             .await
             .map_err(|e| TuiError::io("failed to create realm config directory", e))?;
     }
-    let mut config = FileConfigStore::new(config_path, meerkat_models::canonical())
+    let document = Arc::new(FileConfigStore::new(
+        config_path,
+        meerkat_models::canonical(),
+    ));
+    let mut config = ConfigRuntime::new(document, scope.config_state_path())
         .get()
         .await
-        .map_err(|source| TuiError::Config {
+        .map_err(|source| TuiError::ConfigRuntime {
             context: "failed to load config",
             source,
-        })?;
+        })?
+        .config;
     config
         .apply_env_overrides()
         .map_err(|source| TuiError::Config {

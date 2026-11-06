@@ -149,6 +149,14 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
   list the realm's sessions through `SessionService::list`, as `rkat` does,
   instead of the raw session store: a session another surface archived is
   no longer offered or matched.
+- rkat-tui's writes into the realm `config.toml` (the configured endpoints'
+  connections and the `[models.<id>]` profiles, at start-up and on a model
+  switch) go through the realm's `ConfigRuntime`, under its writer lock and
+  generation sidecar (`config_state.json`) like `rkat config`, REST and RPC,
+  instead of writing the document directly: they no longer interleave with
+  another surface's write, and a write that lost the generation race is
+  rebuilt from the new document and retried. The start-up read takes the
+  reader lock too. The trust record follows each write inside the lock.
 
 ### Fixed
 

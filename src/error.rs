@@ -35,6 +35,15 @@ pub enum TuiError {
         #[source]
         source: meerkat_core::ConfigError,
     },
+    /// The realm config could not be read through its config runtime.
+    #[error("{context}: {source}")]
+    ConfigRuntime {
+        /// What was being attempted.
+        context: &'static str,
+        /// Underlying config runtime error.
+        #[source]
+        source: meerkat_core::ConfigRuntimeError,
+    },
     /// The realm persistence backend could not be opened.
     #[error("failed to open realm persistence: {0}")]
     Persistence(#[from] meerkat::PersistenceError),
@@ -178,6 +187,7 @@ impl TuiError {
             Self::ProjectRoot { .. }
             | Self::Realm(_)
             | Self::Config { .. }
+            | Self::ConfigRuntime { .. }
             | Self::SessionRef { .. }
             | Self::Endpoint(_)
             | Self::McpConfig(_)
