@@ -71,6 +71,8 @@ pub enum Action {
     /// Ctrl-S: stash the input, or restore the stash on an empty input
     /// (after Ctrl-X it completes the send-now chord instead).
     Stash,
+    /// Ctrl-L: clear the screen and repaint everything.
+    Redraw,
     /// Ctrl-X: the first key of a chord, resolved by the app with the next key.
     ChordPrefix,
     /// Scroll the transcript up by lines.
@@ -115,6 +117,7 @@ pub fn map_key(key: &KeyEvent, input_empty: bool) -> Action {
         KeyCode::Char('k') if ctrl => Action::Edit(EditAction::KillToLineEnd),
         KeyCode::Char('x') if ctrl => Action::ChordPrefix,
         KeyCode::Char('s') if ctrl => Action::Stash,
+        KeyCode::Char('l') if ctrl => Action::Redraw,
         // Ctrl-_ arrives as `_`, or as Ctrl-7 or Ctrl-Shift-- in some terminals.
         KeyCode::Char('_' | '7') if ctrl => Action::Edit(EditAction::Undo),
         KeyCode::Char('-') if ctrl && shift => Action::Edit(EditAction::Undo),
@@ -253,6 +256,10 @@ mod tests {
         assert_eq!(
             map_key(&k(KeyCode::Char('s'), KeyModifiers::CONTROL), false),
             Action::Stash
+        );
+        assert_eq!(
+            map_key(&k(KeyCode::Char('l'), KeyModifiers::CONTROL), false),
+            Action::Redraw
         );
         assert_eq!(
             map_key(&k(KeyCode::Char('q'), KeyModifiers::CONTROL), false),

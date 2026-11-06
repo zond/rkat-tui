@@ -792,6 +792,8 @@ impl Runner {
             Effect::CostSnapshot(snapshot) => self.save_cost_snapshot(&snapshot),
             Effect::TrustRealmRules => self.trust_realm_rules(),
             Effect::TrustProjectMcp => self.trust_project_mcp().await,
+            // The UI loop repaints the terminal itself.
+            Effect::Redraw => {}
         }
     }
 

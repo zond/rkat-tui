@@ -577,7 +577,8 @@ then global); Ctrl-X Ctrl-S interrupts and sends the input; Ctrl-O shows or
 hides detail (the last reasoning block and the last tool output together;
 Ctrl-T is unbound, reserved for a task checklist); Ctrl+↑/↓ select a helper in the panel under the
 input and Enter on an empty input opens its full view (Esc returns);
-PgUp/PgDn and Shift+↑/↓ scroll; Home/End jump when the editor is empty.
+PgUp/PgDn and Shift+↑/↓ scroll; Home/End jump when the editor is empty;
+Ctrl-L clears the screen and redraws it.
 Long lines wrap at the width of the input field (which grows up to six
 rows, then scrolls to the cursor), and ↑/↓ move by wrapped rows before
 reaching history.

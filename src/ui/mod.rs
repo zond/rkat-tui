@@ -421,6 +421,9 @@ pub enum Effect {
     /// The session's cost totals after a model call; the integrator
     /// persists them next to the session.
     CostSnapshot(SessionCostSnapshot),
+    /// Ctrl-L: clear the terminal and repaint everything. The UI loop
+    /// answers it itself; it never reaches the integrator.
+    Redraw,
 }
 
 /// Everything the status bar shows.
@@ -1601,6 +1604,7 @@ impl App {
                     );
                 }
             }
+            Action::Redraw => fx.push(Effect::Redraw),
             Action::HistorySearch => self.start_search(),
             Action::ChordPrefix => self.chord = Some(now),
             Action::ScrollUp(n) => self.active_scroll().up(n),
@@ -4311,6 +4315,14 @@ mod tests {
         app.update_at(ctrl('x'), t0);
         app.update_at(Msg::Tick, late);
         assert!(app.chord.is_none());
+    }
+
+    #[test]
+    fn ctrl_l_requests_a_redraw() {
+        let mut app = App::new(StatusInfo::default());
+        type_str(&mut app, "kept");
+        assert_eq!(app.update(ctrl('l')), vec![Effect::Redraw]);
+        assert_eq!(app.input.text(), "kept");
     }
 
     #[test]

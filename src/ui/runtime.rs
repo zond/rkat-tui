@@ -200,8 +200,14 @@ pub async fn run_ui(
     let mut tick = tokio::time::interval(TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+    // Ctrl-L asked for a full repaint ([`Effect::Redraw`]).
+    let mut redraw = false;
     loop {
-        if app.take_dirty() {
+        if std::mem::take(&mut redraw) {
+            terminal.clear()?;
+            terminal.draw(|frame| draw(frame, &mut app))?;
+            app.take_dirty();
+        } else if app.take_dirty() {
             terminal.draw(|frame| draw(frame, &mut app))?;
         }
         for copy in copies.drain(..) {
@@ -234,7 +240,14 @@ pub async fn run_ui(
             _ = tick.tick() => vec![Msg::Tick],
         };
         for msg in batch {
-            if apply(&mut app, msg, &effects, &mut histories, &mut copies)? {
+            if apply(
+                &mut app,
+                msg,
+                &effects,
+                &mut histories,
+                &mut copies,
+                &mut redraw,
+            )? {
                 return Ok(());
             }
         }
@@ -251,7 +264,7 @@ fn write_clipboard(text: &str, tmux: bool, out: &mut impl Write) -> io::Result<(
 }
 
 /// Apply one message, queue its copy, record submitted lines and forward
-/// the effects.
+/// the effects; [`Effect::Redraw`] stays here and sets `redraw`.
 /// Returns whether the user quit.
 fn apply(
     app: &mut App,
@@ -259,6 +272,7 @@ fn apply(
     effects: &mpsc::UnboundedSender<Effect>,
     histories: &mut [History],
     copies: &mut Vec<QueuedCopy>,
+    redraw: &mut bool,
 ) -> Result<bool, UiError> {
     let effects_now = app.update(msg);
     copies.extend(app.take_clipboard());
@@ -274,6 +288,10 @@ fn apply(
         }
     }
     for effect in effects_now {
+        if effect == Effect::Redraw {
+            *redraw = true;
+            continue;
+        }
         let quit = effect == Effect::Quit;
         if effects.send(effect).is_err() && !quit {
             return Err(UiError::EffectChannelClosed);
@@ -345,6 +363,17 @@ mod tests {
             .collect();
         assert_eq!(assistant, vec![&Block::Assistant { md: "Hello".into() }]);
         assert!(!app.is_running());
+    }
+
+    #[test]
+    fn ctrl_l_asks_the_loop_for_a_full_repaint_and_nothing_else() {
+        let (effects, mut effect_rx) = mpsc::unbounded_channel();
+        let mut app = App::new(StatusInfo::default());
+        let (mut copies, mut redraw) = (Vec::new(), false);
+        let ctrl_l = Msg::Key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL));
+        let quit = apply(&mut app, ctrl_l, &effects, &mut [], &mut copies, &mut redraw).unwrap();
+        assert!(!quit && redraw);
+        assert!(effect_rx.try_recv().is_err());
     }
 
     #[test]

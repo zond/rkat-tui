@@ -195,6 +195,7 @@ Keys:
                                  restore the stash (Ctrl-X Ctrl-S still sends now)
   Ctrl-_                         undo the last input edit (a word, a kill, a paste, a clear)
   PgUp/PgDn, Shift+Up/Down       scroll the transcript
+  Ctrl-L                         clear the screen and redraw it
   Home/End                       scroll to top/bottom when the input is empty (Ctrl+Home/End always)
 Approval prompt:
   y allow once · a allow and add a rule · n/Esc deny · s stop the turn (Ctrl-C stops all)
@@ -478,6 +479,7 @@ mod tests {
             "Alt+Y",
             "Ctrl-_",
             "Ctrl-S",
+            "Ctrl-L",
             "Enter",
             "Alt+Enter",
             "Ctrl+J",
