@@ -618,7 +618,10 @@ input and Enter on an empty input opens its full view (Esc returns);
 PgUp/PgDn and Shift+↑/↓ scroll; Home/End jump when the editor is empty;
 Ctrl-L clears the screen and redraws it; Shift+Tab switches auto mode off
 and on (the same as `/auto off` and `/auto on`); Alt+P opens the model
-picker (as `/model`) and leaves the draft in the editor.
+picker (as `/model`) and leaves the draft in the editor; Ctrl-Z suspends
+rkat-tui to the shell (on Unix: it gives the terminal back and stops with
+SIGTSTP; `fg` resumes it and repaints the screen, while the session's work
+was paused with the process).
 Long lines wrap at the width of the input field (which grows up to six
 rows, then scrolls to the cursor), and ↑/↓ move by wrapped rows before
 reaching history.

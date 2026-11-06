@@ -967,7 +967,9 @@ rust_test(
         "fast",
     ],
     size = "medium",
-    data = [],
+    data = [
+        ":package_runfiles",
+    ],
     env = {
         "RUST_MIN_STACK": "8388608",
         "RUST_TEST_THREADS": "1",

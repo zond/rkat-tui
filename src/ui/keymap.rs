@@ -78,6 +78,8 @@ pub enum Action {
     Redraw,
     /// Alt+P: open the model picker (as `/model`), keeping the draft.
     ModelPicker,
+    /// Ctrl-Z: suspend to the shell (Unix job control).
+    Suspend,
     /// Ctrl-X: the first key of a chord, resolved by the app with the next key.
     ChordPrefix,
     /// Scroll the transcript up by lines.
@@ -123,6 +125,7 @@ pub fn map_key(key: &KeyEvent, input_empty: bool) -> Action {
         KeyCode::Char('x') if ctrl => Action::ChordPrefix,
         KeyCode::Char('s') if ctrl => Action::Stash,
         KeyCode::Char('l') if ctrl => Action::Redraw,
+        KeyCode::Char('z') if ctrl => Action::Suspend,
         // Ctrl-_ arrives as `_`, or as Ctrl-7 or Ctrl-Shift-- in some terminals.
         KeyCode::Char('_' | '7') if ctrl => Action::Edit(EditAction::Undo),
         KeyCode::Char('-') if ctrl && shift => Action::Edit(EditAction::Undo),
@@ -233,6 +236,10 @@ mod tests {
         assert_eq!(
             map_key(&k(KeyCode::Char('p'), KeyModifiers::ALT), false),
             Action::ModelPicker
+        );
+        assert_eq!(
+            map_key(&k(KeyCode::Char('z'), KeyModifiers::CONTROL), false),
+            Action::Suspend
         );
         // Ctrl-T is reserved for a task checklist.
         assert_eq!(

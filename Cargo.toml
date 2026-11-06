@@ -67,6 +67,10 @@ globset = "0.4"
 regex = "1"
 similar = "2"
 
+# Ctrl+Z: stop the process with SIGTSTP (job control).
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true }
+
 [features]
 default = ["mcp", "mob"]
 mcp = ["meerkat/mcp"]

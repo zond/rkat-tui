@@ -445,6 +445,10 @@ pub enum Effect {
     /// the version, model, session, workspace, realm, confinement, auto
     /// mode, trust state and helper depth limit.
     StatusReport,
+    /// Ctrl-Z: give the terminal back and stop the process (SIGTSTP); on
+    /// `fg`, take the terminal again and repaint. The UI loop answers it
+    /// itself; it never reaches the integrator. A no-op off Unix.
+    Suspend,
     /// Ctrl-L: clear the terminal and repaint everything. The UI loop
     /// answers it itself; it never reaches the integrator.
     Redraw,
@@ -1711,6 +1715,7 @@ impl App {
                 }
             }
             Action::Redraw => fx.push(Effect::Redraw),
+            Action::Suspend => fx.push(Effect::Suspend),
             // The draft stays in the editor behind the picker.
             Action::ModelPicker => {
                 self.run_command(Command::Model(ModelCommand::Pick), now, fx);
@@ -4577,6 +4582,16 @@ mod tests {
         // A paused auto mode counts as on.
         app.status.set_auto("PAUSED", (3, 3, 3, 20));
         assert_eq!(app.update(back_tab()), vec![Effect::SetAutoMode(false)]);
+    }
+
+    #[test]
+    fn ctrl_z_requests_a_suspend() {
+        let mut app = App::new(StatusInfo::default());
+        type_str(&mut app, "draft");
+        assert_eq!(app.update(ctrl('z')), vec![Effect::Suspend]);
+        assert_eq!(app.input.text(), "draft");
+        let mut running = running_app();
+        assert_eq!(running.update(ctrl('z')), vec![Effect::Suspend]);
     }
 
     #[test]

@@ -84,32 +84,82 @@ impl TerminalGuard {
     /// Enter TUI mode. `mouse` enables mouse capture (on by default: wheel
     /// scrolling and click-to-expand; native selection then needs Shift).
     pub fn enter(mouse: bool) -> io::Result<Self> {
-        enable_raw_mode()?;
-        TERMINAL_ACTIVE.store(true, Ordering::SeqCst);
-        // From here on, `Drop` restores whatever was enabled if a later step fails.
+        // From the first step on, `Drop` restores whatever was enabled if a
+        // later step fails.
         let guard = Self { _private: () };
-        let mut out = io::stdout();
-        // Focus reports let the bell ring only while the terminal is
-        // unfocused; a terminal without them never reports a loss.
-        execute!(out, EnterAlternateScreen, EnableBracketedPaste, EnableFocusChange)?;
-        if matches!(supports_keyboard_enhancement(), Ok(true)) {
-            // Disambiguation only: it tells Esc from Alt sequences and
-            // Shift/Ctrl+Enter from Enter. Event types are not requested:
-            // under them kitty 0.32 sends the release of a legacy-encoded
-            // key (Backspace, Enter, Tab) as a second press byte, which
-            // deleted two characters per Backspace; the spec says those keys
-            // get no release event, and the UI needs none.
-            execute!(
-                out,
-                PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-            )?;
-            KEYBOARD_ENHANCED.store(true, Ordering::SeqCst);
-        }
-        if mouse {
-            execute!(out, EnableMouseCapture)?;
-            MOUSE_CAPTURED.store(true, Ordering::SeqCst);
-        }
+        enter_tui_mode(mouse)?;
         Ok(guard)
+    }
+}
+
+/// Raw mode, the alternate screen, bracketed paste, focus reports, keyboard
+/// flags and (with `mouse`) mouse capture; [`restore_terminal`] undoes it.
+fn enter_tui_mode(mouse: bool) -> io::Result<()> {
+    enable_raw_mode()?;
+    TERMINAL_ACTIVE.store(true, Ordering::SeqCst);
+    let mut out = io::stdout();
+    // Focus reports let the bell ring only while the terminal is
+    // unfocused; a terminal without them never reports a loss.
+    execute!(out, EnterAlternateScreen, EnableBracketedPaste, EnableFocusChange)?;
+    if matches!(supports_keyboard_enhancement(), Ok(true)) {
+        // Disambiguation only: it tells Esc from Alt sequences and
+        // Shift/Ctrl+Enter from Enter. Event types are not requested:
+        // under them kitty 0.32 sends the release of a legacy-encoded
+        // key (Backspace, Enter, Tab) as a second press byte, which
+        // deleted two characters per Backspace; the spec says those keys
+        // get no release event, and the UI needs none.
+        execute!(
+            out,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )?;
+        KEYBOARD_ENHANCED.store(true, Ordering::SeqCst);
+    }
+    if mouse {
+        execute!(out, EnableMouseCapture)?;
+        MOUSE_CAPTURED.store(true, Ordering::SeqCst);
+    }
+    Ok(())
+}
+
+/// What the loop does itself after applying a batch (effects that never
+/// reach the integrator).
+#[derive(Debug, Default)]
+struct LocalEffects {
+    /// Ctrl-L: a full repaint.
+    redraw: bool,
+    /// Ctrl-Z: suspend to the shell.
+    suspend: bool,
+}
+
+/// Leave TUI mode, run `job` with the terminal in cooked mode, then come
+/// back: the event reader is stopped first (a new stream starts reading
+/// only when polled), keys that arrived meanwhile are dropped, and the
+/// screen is cleared for a full repaint.
+#[cfg(unix)]
+fn outside_tui<T>(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    events: &mut crossterm::event::EventStream,
+    mouse: bool,
+    job: impl FnOnce() -> T,
+) -> Result<T, UiError> {
+    // Dropping the old stream stops its reader thread.
+    *events = crossterm::event::EventStream::new();
+    restore_terminal();
+    let result = job();
+    enter_tui_mode(mouse)?;
+    while ratatui::crossterm::event::poll(Duration::ZERO)? {
+        let _ = ratatui::crossterm::event::read()?;
+    }
+    terminal.clear()?;
+    Ok(result)
+}
+
+/// Ctrl-Z: stop this process with SIGTSTP, as the terminal's own suspend
+/// key would; returns once the shell continues it (`fg`).
+#[cfg(unix)]
+fn stop_self() {
+    if let Err(err) = nix::sys::signal::raise(nix::sys::signal::Signal::SIGTSTP) {
+        tracing::warn!(error = %err, "could not suspend");
     }
 }
 
@@ -205,10 +255,16 @@ pub async fn run_ui(
     let mut tick = tokio::time::interval(TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    // Ctrl-L asked for a full repaint ([`Effect::Redraw`]).
-    let mut redraw = false;
+    // Ctrl-L asked for a full repaint ([`Effect::Redraw`]), Ctrl-Z for a
+    // suspend ([`Effect::Suspend`]; a no-op off Unix).
+    let mut local = LocalEffects::default();
     loop {
-        if std::mem::take(&mut redraw) {
+        if std::mem::take(&mut local.suspend) {
+            #[cfg(unix)]
+            outside_tui(&mut terminal, &mut events, mouse, stop_self)?;
+            local.redraw = true;
+        }
+        if std::mem::take(&mut local.redraw) {
             terminal.clear()?;
             terminal.draw(|frame| draw(frame, &mut app))?;
             app.take_dirty();
@@ -254,7 +310,7 @@ pub async fn run_ui(
                 &effects,
                 &mut histories,
                 &mut copies,
-                &mut redraw,
+                &mut local,
             )? {
                 return Ok(());
             }
@@ -278,15 +334,15 @@ fn write_clipboard(text: &str, tmux: bool, out: &mut impl Write) -> io::Result<(
 }
 
 /// Apply one message, queue its copy, record submitted lines and forward
-/// the effects; [`Effect::Redraw`] stays here and sets `redraw`.
-/// Returns whether the user quit.
+/// the effects; [`Effect::Redraw`] and [`Effect::Suspend`] stay here (in
+/// `local`). Returns whether the user quit.
 fn apply(
     app: &mut App,
     msg: Msg,
     effects: &mpsc::UnboundedSender<Effect>,
     histories: &mut [History],
     copies: &mut Vec<QueuedCopy>,
-    redraw: &mut bool,
+    local: &mut LocalEffects,
 ) -> Result<bool, UiError> {
     let effects_now = app.update(msg);
     copies.extend(app.take_clipboard());
@@ -302,9 +358,16 @@ fn apply(
         }
     }
     for effect in effects_now {
-        if effect == Effect::Redraw {
-            *redraw = true;
-            continue;
+        match effect {
+            Effect::Redraw => {
+                local.redraw = true;
+                continue;
+            }
+            Effect::Suspend => {
+                local.suspend = true;
+                continue;
+            }
+            _ => {}
         }
         let quit = effect == Effect::Quit;
         if effects.send(effect).is_err() && !quit {
@@ -383,10 +446,21 @@ mod tests {
     fn ctrl_l_asks_the_loop_for_a_full_repaint_and_nothing_else() {
         let (effects, mut effect_rx) = mpsc::unbounded_channel();
         let mut app = App::new(StatusInfo::default());
-        let (mut copies, mut redraw) = (Vec::new(), false);
+        let (mut copies, mut local) = (Vec::new(), LocalEffects::default());
         let ctrl_l = Msg::Key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL));
-        let quit = apply(&mut app, ctrl_l, &effects, &mut [], &mut copies, &mut redraw).unwrap();
-        assert!(!quit && redraw);
+        let quit = apply(&mut app, ctrl_l, &effects, &mut [], &mut copies, &mut local).unwrap();
+        assert!(!quit && local.redraw && !local.suspend);
+        assert!(effect_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn ctrl_z_suspends_in_the_loop_and_nothing_reaches_the_integrator() {
+        let (effects, mut effect_rx) = mpsc::unbounded_channel();
+        let mut app = App::new(StatusInfo::default());
+        let (mut copies, mut local) = (Vec::new(), LocalEffects::default());
+        let ctrl_z = Msg::Key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+        let quit = apply(&mut app, ctrl_z, &effects, &mut [], &mut copies, &mut local).unwrap();
+        assert!(!quit && local.suspend);
         assert!(effect_rx.try_recv().is_err());
     }
 

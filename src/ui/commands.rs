@@ -227,6 +227,7 @@ Keys:
   Ctrl-_                         undo the last input edit (a word, a kill, a paste, a clear)
   PgUp/PgDn, Shift+Up/Down       scroll the transcript
   Ctrl-L                         clear the screen and redraw it
+  Ctrl-Z                         suspend to the shell (fg resumes; Unix)
   Shift+Tab                      switch auto mode off/on (same as /auto off|on)
   Alt+P                          pick a model (as /model) without clearing the input
   Home/End                       scroll to top/bottom when the input is empty (Ctrl+Home/End always)
@@ -557,6 +558,7 @@ mod tests {
             "Ctrl-_",
             "Ctrl-S",
             "Ctrl-L",
+            "Ctrl-Z",
             "Shift+Tab",
             "Alt+P",
             "Enter",
