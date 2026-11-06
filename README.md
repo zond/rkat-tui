@@ -578,12 +578,17 @@ rkat-tui says so in a warning and compacts without them.
 `/help`, `/quit`, `/clear`, `/resume [ref]`,
 `/permissions [list|add allow|deny <tool> [pattern]|rm <n>|trust]` (alias `/rules`),
 `/auto [on|off|resume]`, `/model [[endpoint:]id|refresh]`,
-`/remember <text>`, `/compact [now|status|<instructions>]`, `/context`, `/status`, `/usage` (aliases `/cost`, `/stats`), `/copy [N]`, `/mcp trust`,
+`/remember <text>`, `/compact [now|status|<instructions>]`, `/context`, `/status`, `/export [file]`, `/usage` (aliases `/cost`, `/stats`), `/copy [N]`, `/mcp trust`,
 `/helpers [expand|fold <label>|all]` (alias `/tasks`). `/status` prints the
 rkat-tui version, the model and its endpoint, the session id, the workspace
 and realm directories, the shell confinement, the auto-mode state, whether
 the realm `tui.toml` and the project `.rkat/mcp.toml` are trusted, and the
-helper depth limit. `/clear`, `/resume`, `/model` and `/compact` work only while
+helper depth limit. `/export [file]` writes the transcript as plain text
+(a `## user`, `## assistant`, `## tool …`, `## notice` header per block;
+folded reasoning and collapsed tool output keep only their headers, as on
+screen) to `file` (relative to the workspace; owner-readable only), by
+default `.rkat/tui/export-<session id>-<unix time>.txt` in the workspace.
+It is rkat-tui's own write, like the history file, not a tool call. `/clear`, `/resume`, `/model` and `/compact` work only while
 idle; the transcript is replaced only once the new session is live.
 
 Enter sends (steers while a turn runs); Ctrl+Enter sends now (while a

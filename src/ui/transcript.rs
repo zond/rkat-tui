@@ -648,6 +648,116 @@ impl Transcript {
         false
     }
 
+    /// The transcript as plain text for `/export`: one `## ` header per
+    /// shown block (user, assistant, reasoning, tool, approval, notice,
+    /// helper, queued) and its text. Folded reasoning, collapsed tool output
+    /// and the blocks of folded helpers keep only their headers, as on
+    /// screen.
+    #[must_use]
+    pub fn export_text(&self) -> String {
+        use std::fmt::Write as _;
+        let mut out = String::new();
+        for (idx, block) in self.blocks.iter().enumerate() {
+            if self.is_hidden(BlockId(idx)) {
+                continue;
+            }
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            let body = |out: &mut String, text: &str| {
+                let text = text.trim_end();
+                if !text.is_empty() {
+                    out.push_str(text);
+                    out.push('\n');
+                }
+            };
+            match block {
+                Block::User { text } => {
+                    out.push_str("## user\n");
+                    body(&mut out, text);
+                }
+                Block::Queued { text, label, .. } => {
+                    let _ = writeln!(out, "## user ({})", label.text());
+                    body(&mut out, text);
+                }
+                Block::Assistant { md } => {
+                    out.push_str("## assistant\n");
+                    body(&mut out, md);
+                }
+                Block::Reasoning { text, collapsed } => {
+                    out.push_str("## reasoning\n");
+                    if !collapsed {
+                        body(&mut out, text);
+                    }
+                }
+                Block::Tool {
+                    name,
+                    args,
+                    state,
+                    result_preview,
+                    diff,
+                    note,
+                    collapsed,
+                    ..
+                } => {
+                    let state = match state {
+                        ToolState::Requested => "requested".to_string(),
+                        ToolState::Running { .. } => "running".to_string(),
+                        ToolState::Done {
+                            is_error,
+                            duration_ms,
+                        } => format!(
+                            "{} in {duration_ms} ms",
+                            if *is_error { "failed" } else { "done" }
+                        ),
+                        ToolState::Denied { reason } => format!("denied: {reason}"),
+                    };
+                    let _ = writeln!(out, "## tool {name} {} ({state})", args_preview(args));
+                    if let Some(note) = note {
+                        let _ = writeln!(out, "{note}");
+                    }
+                    if let Some(diff) = diff {
+                        let _ = writeln!(out, "edited {} (+{} -{})", diff.path, diff.added, diff.removed);
+                    }
+                    if !collapsed {
+                        if let Some(preview) = result_preview {
+                            body(&mut out, preview);
+                        }
+                        if let Some(diff) = diff {
+                            body(&mut out, &diff.unified);
+                        }
+                    }
+                }
+                Block::Approval {
+                    tool,
+                    tier,
+                    allowed,
+                    reason,
+                } => {
+                    let verdict = if *allowed { "allowed" } else { "denied" };
+                    let _ = write!(out, "## approval: {tool} {verdict} by {tier}");
+                    if let Some(reason) = reason {
+                        let _ = write!(out, ": {reason}");
+                    }
+                    out.push('\n');
+                }
+                Block::Notice { level, text } => {
+                    let level = match level {
+                        NoticeLevel::Info => "info",
+                        NoticeLevel::Warn => "warning",
+                        NoticeLevel::Error => "error",
+                    };
+                    let _ = writeln!(out, "## notice ({level})");
+                    body(&mut out, text);
+                }
+                Block::Helper(fold) => {
+                    let _ = writeln!(out, "## helper {} {}", fold.tag(), fold.state.text());
+                }
+            }
+        }
+        out
+    }
+
     /// Whether `block` is inside a folded helper (the renderer skips it).
     pub fn is_hidden(&self, block: BlockId) -> bool {
         let mut at = block;
@@ -1777,6 +1887,50 @@ mod tests {
             delta: d.to_string(),
             assistant_message_id: None,
         }
+    }
+
+    #[test]
+    fn export_text_has_a_header_per_block_and_folds_collapsed_output() {
+        let mut t = Transcript::new();
+        t.push(Block::User { text: "fix it".into() });
+        t.push(Block::Reasoning {
+            text: "secret thoughts".into(),
+            collapsed: true,
+        });
+        let tool = |collapsed| Block::Tool {
+            name: "read_file".into(),
+            args: json!({"path": "a.rs"}),
+            state: ToolState::Done {
+                is_error: false,
+                duration_ms: 3,
+            },
+            result_preview: Some("fn main() {}".into()),
+            diff: None,
+            note: Some("allowed by rule".into()),
+            depth: 0,
+            collapsed,
+        };
+        t.push(tool(true));
+        t.push(tool(false));
+        t.push(Block::Assistant { md: "done\n".into() });
+        t.push(Block::Approval {
+            tool: "shell".into(),
+            tier: "classifier".into(),
+            allowed: false,
+            reason: Some("rm -rf".into()),
+        });
+        t.push_notice(NoticeLevel::Warn, "turn interrupted");
+        let text = t.export_text();
+        assert_eq!(
+            text,
+            "## user\nfix it\n\n## reasoning\n\n\
+             ## tool read_file {\"path\":\"a.rs\"} (done in 3 ms)\nallowed by rule\n\n\
+             ## tool read_file {\"path\":\"a.rs\"} (done in 3 ms)\nallowed by rule\nfn main() {}\n\n\
+             ## assistant\ndone\n\n\
+             ## approval: shell denied by classifier: rm -rf\n\n\
+             ## notice (warning)\nturn interrupted\n"
+        );
+        assert!(!text.contains("secret thoughts"));
     }
 
     #[test]

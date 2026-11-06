@@ -46,6 +46,7 @@ mod cost;
 pub mod cost_store;
 mod lifecycle;
 mod models;
+mod export;
 mod quit;
 mod status;
 #[doc(hidden)]
@@ -801,6 +802,7 @@ impl Runner {
             Effect::Redraw => {}
             Effect::ContextReport(header) => self.context_report(&header).await,
             Effect::StatusReport => self.status_report(),
+            Effect::Export { path, text } => self.export(path.as_deref(), &text),
         }
     }
 

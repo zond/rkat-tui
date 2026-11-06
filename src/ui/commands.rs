@@ -115,6 +115,8 @@ pub enum Command {
     Cost,
     /// `/status`: version, model, session, workspace and trust state.
     Status,
+    /// `/export [file]`: write the transcript as plain text.
+    Export(Option<String>),
     /// `/context`: the context gauge, the compaction policy and what the
     /// context holds, as far as the TUI knows.
     Context,
@@ -181,6 +183,8 @@ Commands:
                                  --auto-compact lets the runtime compact at 85%)
   /status                        version, model, session, workspace, realm, confinement, auto
                                  mode, trust of tui.toml and mcp.toml, helper depth limit
+  /export [file]                 write the transcript as plain text (default:
+                                 .rkat/tui/export-<session>-<time>.txt in the workspace)
   /context                       context usage, the compaction policy and what the context holds
   /copy [N]                      copy the latest (or Nth latest) answer to the clipboard (OSC 52)
   /usage, /cost, /stats          token usage and cost per model (footer: $0.42, ~ estimate, $? unpriced)
@@ -275,6 +279,10 @@ fn parse_command(name: &str, args: &[&str]) -> Result<Command, CommandError> {
         "quit" | "exit" | "q" => Ok(Command::Quit),
         "clear" | "new" => Ok(Command::Clear),
         "help" | "?" => Ok(Command::Help),
+        "export" => match args {
+            [] => Ok(Command::Export(None)),
+            words => Ok(Command::Export(Some(words.join(" ")))),
+        },
         "status" => match args {
             [] => Ok(Command::Status),
             _ => Err(CommandError::Usage("/status")),
@@ -418,6 +426,8 @@ mod tests {
             Some(Err(CommandError::Usage("/remember <text>")))
         );
         assert_eq!(ok("/status"), Command::Status);
+        assert_eq!(ok("/export"), Command::Export(None));
+        assert_eq!(ok("/export notes/chat.txt"), Command::Export(Some("notes/chat.txt".into())));
         assert_eq!(parse("/status x"), Some(Err(CommandError::Usage("/status"))));
         assert_eq!(ok("/context"), Command::Context);
         assert_eq!(ok("/context all"), Command::Context);
@@ -516,6 +526,7 @@ mod tests {
             "/usage",
             "/context",
             "/status",
+            "/export [file]",
             "/stats",
             "/tasks",
             "/auto",

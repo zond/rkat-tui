@@ -430,6 +430,15 @@ pub enum Effect {
     /// compaction policy); the integrator adds what the context holds and
     /// answers with one [`Msg::Notice`].
     ContextReport(String),
+    /// `/export [file]`: write `text` (the transcript as plain text) to
+    /// `path` (relative to the workspace), or to a fresh file under the
+    /// workspace's `.rkat/tui/` when `None`; answered with a notice.
+    Export {
+        /// Where to write, as typed.
+        path: Option<String>,
+        /// The transcript text.
+        text: String,
+    },
     /// `/status`: the integrator answers with one [`Msg::Notice`] naming
     /// the version, model, session, workspace, realm, confinement, auto
     /// mode, trust state and helper depth limit.
@@ -2403,6 +2412,10 @@ impl App {
             Command::Copy(n) => self.copy_answer(n),
             Command::Context => fx.push(Effect::ContextReport(self.context_header())),
             Command::Status => fx.push(Effect::StatusReport),
+            Command::Export(path) => fx.push(Effect::Export {
+                path,
+                text: self.transcript.export_text(),
+            }),
             Command::Cost => {
                 let text = self.status.cost.breakdown(&self.status.prices);
                 self.transcript.push_notice(NoticeLevel::Info, text);
@@ -3823,6 +3836,16 @@ mod tests {
         );
         assert_eq!(run(&mut app, "/rules rm 2"), vec![Effect::RemoveRule(2)]);
         assert_eq!(run(&mut app, "/status"), vec![Effect::StatusReport]);
+        app.transcript.push(Block::User { text: "hi".into() });
+        let text = app.transcript.export_text();
+        assert!(text.ends_with("## user\nhi\n"), "{text}");
+        assert_eq!(
+            run(&mut app, "/export out.txt"),
+            vec![Effect::Export {
+                path: Some("out.txt".into()),
+                text,
+            }]
+        );
         // The transcript is reset only once the integrator confirms.
         app.transcript.push_notice(NoticeLevel::Info, "old");
         assert_eq!(run(&mut app, "/clear"), vec![Effect::NewSession]);

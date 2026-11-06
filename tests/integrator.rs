@@ -1020,3 +1020,45 @@ async fn status_report_names_the_session_and_the_workspace() {
     assert!(text.contains("helpers: "), "{text}");
     rig.quit().await;
 }
+
+/// `/export`: the runner writes the UI's text to the default file under the
+/// workspace's `.rkat/tui/` (and to a typed path), and says where.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn export_writes_the_transcript_and_names_the_file() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let mut rig = Rig::start(&ws.root, &llm, Start::New).await;
+    rig.send(Effect::Export {
+        path: None,
+        text: "## user\nhi\n".into(),
+    });
+    let msg = rig
+        .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text.contains("export")))
+        .await;
+    let Msg::Notice { text, .. } = msg else {
+        unreachable!()
+    };
+    let path = text
+        .strip_prefix("exported the transcript to ")
+        .unwrap_or_else(|| panic!("{text}"));
+    let path = std::path::Path::new(path);
+    assert!(path.starts_with(ws.root.join(".rkat/tui")), "{text}");
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    assert!(
+        name.starts_with(&format!("export-{}-", rig.first_session)) && name.ends_with(".txt"),
+        "{name}"
+    );
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "## user\nhi\n");
+
+    rig.send(Effect::Export {
+        path: Some("out/chat.txt".into()),
+        text: "x\n".into(),
+    });
+    rig.wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text.contains("chat.txt")))
+        .await;
+    assert_eq!(
+        std::fs::read_to_string(ws.root.join("out/chat.txt")).unwrap(),
+        "x\n"
+    );
+    rig.quit().await;
+}
