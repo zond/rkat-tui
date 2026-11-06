@@ -570,7 +570,8 @@ turn runs it interrupts the turn and sends the input next, like Ctrl-X
 Ctrl-S); Shift+Enter, Alt+Enter or Ctrl-J insert a newline, and so does a
 `\` typed right before Enter at the end of a line (the backslash is
 dropped); Ctrl-C interrupts (twice to quit when idle); Esc recalls
-held messages, else interrupts; ↑ on an empty editor edits the newest held
+held messages, else interrupts; when idle, Esc twice on a draft clears it
+and saves it to the prompt history (↑ brings it back); ↑ on an empty editor edits the newest held
 message, else recalls prompt history (Ctrl-P/Ctrl-N are ↑/↓); Ctrl-R searches history (workspace,
 then global); Ctrl-X Ctrl-S interrupts and sends the input; Ctrl-O shows or
 hides detail (the last reasoning block and the last tool output together;

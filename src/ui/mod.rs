@@ -62,6 +62,10 @@ pub const DOUBLE_CTRL_C_WINDOW: Duration = Duration::from_millis(1500);
 /// is running or messages are queued.
 pub const QUIT_CONFIRM_WINDOW: Duration = Duration::from_secs(3);
 
+/// Window in which a second Esc on an idle input with text clears it
+/// (saving it to the prompt history).
+pub const DOUBLE_ESC_WINDOW: Duration = Duration::from_millis(1500);
+
 /// Window after Ctrl-X in which the second key of a chord is accepted.
 pub const CHORD_WINDOW: Duration = Duration::from_millis(1500);
 
@@ -686,6 +690,8 @@ pub struct App {
     running: bool,
     run_first_block: usize,
     last_ctrl_c: Option<Instant>,
+    /// When an Esc on an idle input with text armed the draft clear.
+    last_esc: Option<Instant>,
     viewport_height: usize,
     /// Screen area of the transcript and, per drawn row, the block and the
     /// transcript logical line shown there, as of the last draw (for mouse
@@ -738,6 +744,7 @@ impl App {
             running: false,
             run_first_block: 0,
             last_ctrl_c: None,
+            last_esc: None,
             viewport_height: 20,
             transcript_area: Rect::default(),
             transcript_rows: Vec::new(),
@@ -971,6 +978,13 @@ impl App {
     pub fn quit_armed(&self, now: Instant) -> bool {
         self.last_ctrl_c
             .is_some_and(|t| now.saturating_duration_since(t) < DOUBLE_CTRL_C_WINDOW)
+    }
+
+    /// Whether a second Esc at `now` would clear the input (used for the
+    /// input hint).
+    pub fn esc_clear_armed(&self, now: Instant) -> bool {
+        self.last_esc
+            .is_some_and(|t| now.saturating_duration_since(t) < DOUBLE_ESC_WINDOW)
     }
 
     /// Whether a second Ctrl-D / `/quit` at `now` would quit despite a running
@@ -1535,6 +1549,8 @@ impl App {
         if action != Action::CtrlC {
             self.last_ctrl_c = None;
         }
+        let esc_armed = self.esc_clear_armed(now);
+        self.last_esc = None;
         let page = self.viewport_height.saturating_sub(2).max(1);
         let view = self.helper_view();
         match action {
@@ -1564,7 +1580,7 @@ impl App {
                     self.input.delete();
                 }
             }
-            Action::Escape => self.escape(fx),
+            Action::Escape => self.escape(esc_armed, now, fx),
             Action::Edit(EditAction::Up) if self.input.is_empty() && self.has_recallable() => {
                 self.recall_newest();
             }
@@ -1954,7 +1970,11 @@ impl App {
     /// brings back the held ones, so the editor keeps their order); with
     /// only held messages, recall those; while a recall is on its way, wait
     /// for it.
-    fn escape(&mut self, fx: &mut Vec<Effect>) {
+    ///
+    /// Idle with nothing to recall, Esc twice within [`DOUBLE_ESC_WINDOW`]
+    /// on an input with text clears it and saves it to the prompt history
+    /// (`esc_armed`: the previous key was such an Esc); one Esc only arms it.
+    fn escape(&mut self, esc_armed: bool, now: Instant, fx: &mut Vec<Effect>) {
         if self.recalling {
             return;
         }
@@ -1965,6 +1985,15 @@ impl App {
             self.recall_all();
         } else if self.running {
             self.interrupt(fx);
+        } else if self.input.is_empty() {
+            // Esc Esc on an empty input is reserved for rewind.
+        } else if esc_armed {
+            let text = self.input.take();
+            if !text.trim().is_empty() {
+                self.submitted.push(text);
+            }
+        } else {
+            self.last_esc = Some(now);
         }
     }
 
@@ -3180,6 +3209,42 @@ mod tests {
             queued_block(1, "two", QueuedLabel::Delivering)
         );
         assert_eq!(app.update(key(KeyCode::Esc)), vec![Effect::Interrupt]);
+    }
+
+    #[test]
+    fn esc_esc_clears_the_draft_into_history() {
+        let mut app = App::new(StatusInfo::default());
+        let t0 = Instant::now();
+        type_str(&mut app, "a draft");
+        // One Esc does nothing but arm the clear.
+        assert!(app.update_at(key(KeyCode::Esc), t0).is_empty());
+        assert_eq!(app.input.text(), "a draft");
+        assert!(app.esc_clear_armed(t0));
+        // The second within the window clears and saves it to history.
+        let t1 = t0 + Duration::from_millis(500);
+        assert!(app.update_at(key(KeyCode::Esc), t1).is_empty());
+        assert!(app.input.is_empty());
+        assert!(!app.esc_clear_armed(t1));
+        assert_eq!(app.take_submitted(), vec!["a draft".to_string()]);
+        app.update_at(key(KeyCode::Up), t1);
+        assert_eq!(app.input.text(), "a draft");
+        // Too slow: the second Esc only arms again.
+        let t2 = t1 + Duration::from_secs(10);
+        app.update_at(key(KeyCode::Esc), t2);
+        let late = t2 + DOUBLE_ESC_WINDOW + Duration::from_millis(1);
+        app.update_at(key(KeyCode::Esc), late);
+        assert_eq!(app.input.text(), "a draft");
+        // Another key in between disarms it.
+        app.update_at(key(KeyCode::Left), late);
+        app.update_at(key(KeyCode::Esc), late);
+        assert_eq!(app.input.text(), "a draft");
+        assert!(app.take_submitted().is_empty());
+        // An empty input: Esc Esc does nothing (reserved for rewind).
+        let mut app = App::new(StatusInfo::default());
+        assert!(app.update_at(key(KeyCode::Esc), t0).is_empty());
+        assert!(app.update_at(key(KeyCode::Esc), t0).is_empty());
+        assert!(!app.esc_clear_armed(t0));
+        assert!(app.take_submitted().is_empty());
     }
 
     #[test]

@@ -174,6 +174,7 @@ Keys:
   Shift+Enter, Alt+Enter, Ctrl+J insert a newline (so does \\ right before Enter at a line end)
   Ctrl-C                         interrupt the turn · clear the input · press twice to quit
   Esc                            recall queued messages (interrupts when nothing is queued)
+  Esc Esc (idle, with text)      clear the input and save it to the prompt history (↑ recalls it)
   Up (empty input)               edit the newest queued message
   Ctrl-D                         quit (on empty input; press again within 3 s while a turn
                                  runs or messages are queued: the turn is interrupted and

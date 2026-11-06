@@ -718,3 +718,20 @@ fn a_helper_full_view_renders_title_prose_reasoning_and_tools() {
         rows[8]
     );
 }
+
+#[test]
+fn esc_on_an_idle_draft_names_the_second_esc_in_the_editor_title() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent};
+    let mut app = App::new(StatusInfo::default());
+    for c in "draft".chars() {
+        app.update(Msg::Key(KeyEvent::from(KeyCode::Char(c))));
+    }
+    app.update(Msg::Key(KeyEvent::from(KeyCode::Esc)));
+    let lines = rows(&render_buffer(&mut app, W, H));
+    assert!(
+        lines[9].contains("Esc again to clear the input"),
+        "title: {:?}",
+        lines[9]
+    );
+    assert_eq!(lines[10], "› draft");
+}

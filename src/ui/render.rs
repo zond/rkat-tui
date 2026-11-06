@@ -183,6 +183,8 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect, now: Instant) {
         " press Ctrl-C again to quit ".into()
     } else if app.quit_confirm_armed(now) {
         " press Ctrl-D (or /quit) again to quit anyway ".into()
+    } else if app.esc_clear_armed(now) {
+        " Esc again to clear the input (saved to history) ".into()
     } else if app.chord_pending(now) {
         " C-x- ".into()
     } else if app.search().is_some() {
