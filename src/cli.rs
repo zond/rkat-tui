@@ -153,11 +153,12 @@ pub struct Args {
     #[arg(long, hide = true)]
     pub mouse: bool,
 
-    /// Start the MCP servers of the project's `.rkat/mcp.toml` for this run
-    /// even though the file is not in the host trust record (`/mcp trust`
-    /// records it for later runs).
-    #[arg(long)]
-    pub allow_project_mcp: bool,
+    /// Trust the project inputs (`.rkat/mcp.toml`, `.rkat/config.toml`'s
+    /// hooks, the workspace realm's `config.toml`) for this run even though
+    /// they are not in the host trust record (`/trust` records them for
+    /// later runs). `--allow-project-mcp` is an alias.
+    #[arg(long, visible_alias = "allow-project-mcp")]
+    pub trust_project: bool,
     /// Block until every configured MCP server has finished connecting before
     /// the first turn (default: connect in the background).
     #[arg(long)]

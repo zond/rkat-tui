@@ -77,7 +77,7 @@ All rkat-tui paths below are relative to `crates/meerkat-tui/src/`: `keymap` = `
 | 67 | `/terminal-setup` | installs Shift+Enter in some terminals | not needed: `Ctrl+J`/`Alt+Enter` work everywhere | n/a |
 | 68 | `/login`, `/logout`, `/bug`, `/feedback`, `/release-notes`, `/upgrade`, `/mobile`, `/desktop`, `/install-github-app`, `/theme` | account and product commands | — | n/a |
 
-rkat-tui extras with no CC counterpart: `Shift+↑/↓`, `PgUp/PgDn` and `Home/End` scroll the transcript (keymap:120-129); mouse selection copies over OSC 52; `/helpers` fold and expand; `/rules trust` and `/mcp trust`; `/auto resume`; `//` sends a literal slash (cmd:214); `\#` sends a literal `#`.
+rkat-tui extras with no CC counterpart: `Shift+↑/↓`, `PgUp/PgDn` and `Home/End` scroll the transcript (keymap:120-129); mouse selection copies over OSC 52; `/helpers` fold and expand; `/rules trust` and `/trust` (alias `/mcp trust`); `/auto resume`; `//` sends a literal slash (cmd:214); `\#` sends a literal `#`.
 
 ## 2. Rebind to match
 

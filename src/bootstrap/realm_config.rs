@@ -8,6 +8,16 @@
 //! [`crate::endpoints`]) and what another surface writes is what the next
 //! session build sees. Writes go to the document unchanged: the overrides
 //! are never persisted.
+//!
+//! When the realm lives inside the workspace its document is a project input
+//! ([`super::project_trust`]): every read is guarded
+//! ([`ProjectInputs::guard`]: an untrusted document's MCP servers and hooks,
+//! and an untrusted project `.rkat/config.toml`'s hooks, do not reach the
+//! build), and a write through this store records the new digest only when
+//! the document was trusted before it ([`ProjectInputs::wrote_realm_config`]).
+//! [`ConfigStore::set`] writes what it is given: a config read from this
+//! store carries the guard's disabled hook shadows, so a caller that sets one
+//! persists them (rkat-tui never calls it).
 
 use std::path::Path;
 
@@ -16,11 +26,13 @@ use meerkat_core::config::{ConfigError, ConfigWarning};
 use meerkat_core::{Config, ConfigDelta, ConfigStore, FileConfigStore};
 
 use super::dirs::GlobalDirs;
+use super::project_trust::{ProjectInputs, RealmConfigWrite};
 
 /// The realm document plus the load-time overrides (see the module docs).
 pub struct RealmConfigStore {
     document: FileConfigStore,
     global: Option<GlobalDirs>,
+    inputs: Option<ProjectInputs>,
 }
 
 impl RealmConfigStore {
@@ -31,17 +43,48 @@ impl RealmConfigStore {
         Self {
             document: FileConfigStore::new(path.to_path_buf(), meerkat_models::canonical()),
             global,
+            inputs: None,
         }
     }
 
-    /// The document's owner, for writes of individual entries.
+    /// Guard reads and record writes with the project inputs' trust (see
+    /// the module docs).
+    #[must_use]
+    pub fn with_inputs(mut self, inputs: ProjectInputs) -> Self {
+        self.inputs = Some(inputs);
+        self
+    }
+
+    /// The document's owner, for writes of individual entries. Bracket a
+    /// write with [`Self::before_write`] and [`Self::after_write`].
     #[must_use]
     pub fn document(&self) -> &FileConfigStore {
         &self.document
     }
 
+    /// Call before writing through [`Self::document`].
+    pub fn before_write(&self) -> RealmConfigWrite {
+        self.inputs.as_ref().map_or(RealmConfigWrite::UNGUARDED, |inputs| {
+            inputs.before_realm_config_write()
+        })
+    }
+
+    /// Call after writing through [`Self::document`] with what
+    /// [`Self::before_write`] returned.
+    pub fn after_write(&self, before: RealmConfigWrite) {
+        if let Some(inputs) = &self.inputs {
+            inputs.wrote_realm_config(before);
+        }
+    }
+
     /// The document as persisted with the load-time overrides applied.
-    fn effective(&self, mut config: Config) -> Result<Config, ConfigError> {
+    async fn effective(&self, mut config: Config) -> Result<Config, ConfigError> {
+        if let Some(inputs) = &self.inputs {
+            let refused = inputs.guard(&mut config).await;
+            if !refused.is_empty() {
+                tracing::debug!(?refused, "untrusted project inputs left out of the build config");
+            }
+        }
         config.apply_env_overrides()?;
         super::instructions::apply_system_md(&mut config, self.global.as_ref());
         Ok(config)
@@ -59,21 +102,26 @@ impl std::fmt::Debug for RealmConfigStore {
 #[async_trait]
 impl ConfigStore for RealmConfigStore {
     async fn get(&self) -> Result<Config, ConfigError> {
-        self.effective(self.document.get().await?)
+        self.effective(self.document.get().await?).await
     }
 
     async fn get_with_warnings(&self) -> Result<(Config, Vec<ConfigWarning>), ConfigError> {
         let (config, warnings) = self.document.get_with_warnings().await?;
-        Ok((self.effective(config)?, warnings))
+        Ok((self.effective(config).await?, warnings))
     }
 
     async fn set(&self, config: Config) -> Result<(), ConfigError> {
-        self.document.set(config).await
+        let before = self.before_write();
+        self.document.set(config).await?;
+        self.after_write(before);
+        Ok(())
     }
 
     async fn patch(&self, delta: ConfigDelta) -> Result<Config, ConfigError> {
+        let before = self.before_write();
         let patched = self.document.patch(delta).await?;
-        self.effective(patched)
+        self.after_write(before);
+        self.effective(patched).await
     }
 
     async fn patch_preview(
@@ -81,15 +129,17 @@ impl ConfigStore for RealmConfigStore {
         delta: &ConfigDelta,
     ) -> Result<(Config, Vec<ConfigWarning>), ConfigError> {
         let (config, warnings) = self.document.patch_preview(delta).await?;
-        Ok((self.effective(config)?, warnings))
+        Ok((self.effective(config).await?, warnings))
     }
 
     async fn patch_with_warnings(
         &self,
         delta: ConfigDelta,
     ) -> Result<(Config, Vec<ConfigWarning>), ConfigError> {
+        let before = self.before_write();
         let (config, warnings) = self.document.patch_with_warnings(delta).await?;
-        Ok((self.effective(config)?, warnings))
+        self.after_write(before);
+        Ok((self.effective(config).await?, warnings))
     }
 }
 

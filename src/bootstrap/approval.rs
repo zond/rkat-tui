@@ -58,7 +58,7 @@ pub struct ApprovalParts {
     /// Observations from loading the rules, shown once.
     pub notices: Vec<String>,
     /// The host trust record of this workspace and realm (`/rules trust`,
-    /// and the project MCP config's opt-in).
+    /// and the project inputs' `/trust`).
     pub trust: Arc<parking_lot::Mutex<HostTrustRecord>>,
     /// The realm rules file.
     pub realm_rules: std::path::PathBuf,
@@ -148,6 +148,7 @@ pub(crate) async fn build(
     source: ClassifierSource<'_>,
     overrides: &ApprovalOverrides,
     issuer: meerkat_core::ApprovalService,
+    trust: Arc<parking_lot::Mutex<HostTrustRecord>>,
 ) -> Result<ApprovalParts, TuiError> {
     let realm_dir = scope.realm_root();
     let realm_rules = realm_dir.join(RULES_FILE_NAME);
@@ -170,7 +171,6 @@ pub(crate) async fn build(
         }
     };
     let ledger = EscalationLedger::new(issuer);
-    let trust = Arc::new(parking_lot::Mutex::new(trust_record(scope)));
     let engine = ApprovalEngine::new(ApprovalConfig {
         root: scope.project_root.clone(),
         rules: layered.rules,

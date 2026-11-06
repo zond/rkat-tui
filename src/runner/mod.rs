@@ -803,7 +803,7 @@ impl Runner {
             Effect::CompactNow => self.compact_now().await,
             Effect::CostSnapshot(snapshot) => self.save_cost_snapshot(&snapshot),
             Effect::TrustRealmRules => self.trust_realm_rules(),
-            Effect::TrustProjectMcp => self.trust_project_mcp().await,
+            Effect::TrustProject => self.trust_project().await,
             // The UI loop repaints the terminal and suspends itself.
             // The UI loop runs these itself.
             Effect::Redraw | Effect::Suspend | Effect::ExternalEditor(_) => {}

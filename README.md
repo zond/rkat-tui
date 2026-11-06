@@ -131,6 +131,29 @@ state and counters. Every escalation is recorded through the realm's own
 approval issuer (`approvals.json`); when that record cannot be written the
 action is denied.
 
+**What runs as the host and when it is trusted.** The gate and the sandbox
+cover the agent's tool calls. Local MCP stdio servers and command hooks are
+not tool calls: rkat-tui starts them itself, with your privileges and
+outside the shell's confinement. Three workspace files can define them: the
+project's `.rkat/mcp.toml` (MCP servers), the project's `.rkat/config.toml`
+(`[hooks]`, which Meerkat discovers at the workspace) and, when the realm
+lives in the workspace (the default), the realm's `.rkat/tui/config.toml`
+(`[[tools.mcp_servers]]` and `[hooks]`). Any of them may have come with a
+cloned repository, and on Linux a confined shell can write `.rkat/`, so
+each runs nothing until you trust it: `/trust` (alias `/mcp trust`)
+records the SHA-256 of every one of them, as it is now, in the host trust
+record under `~/.rkat/tui/trust/` (outside the workspace), and
+`--trust-project` (alias `--allow-project-mcp`) trusts them for one run
+without recording. A file that is absent, or whose digest matches, is
+trusted; rkat-tui's own writes into the realm config (endpoints, model
+profiles) keep it trusted, but only when it was trusted before the write.
+Until then its MCP servers are not started and its hooks do not run (each
+project hook is overridden by a disabled entry of its id, for helpers too),
+and a start-up notice names each file, why it is not trusted (never
+trusted, or changed since), and what it did not start. `/status` shows
+each file's state. Your own `~/.rkat/config.toml`, `~/.rkat/mcp.toml` and
+`~/.rkat/tui` are always trusted.
+
 ## Confinement
 
 `--confinement <mode>` decides how the shell (foreground commands,
@@ -415,7 +438,7 @@ Other flags: `--model`/`-m <[endpoint:]id>`, `--endpoint <name>`
 (`--provider` for the built-ins), `--resume [ref]`, `-c`/`--continue`,
 `-w`/`--workspace`, `--config-dir`, `--user-config-root`, `--realm`,
 `--isolated`, `--realm-backend`, `--state-root`, `--confinement`,
-`--confinement-read`, `--confinement-write`, `--no-confinement`, `--no-mouse`, `--wait-for-mcp`, `--allow-project-mcp`,
+`--confinement-read`, `--confinement-write`, `--no-confinement`, `--no-mouse`, `--wait-for-mcp`, `--trust-project` (alias `--allow-project-mcp`),
 `--no-pricing-fetch`.
 
 ## Models, endpoints and cost
@@ -536,11 +559,11 @@ project's `.rkat/mcp.toml` and the user's `~/.rkat/mcp.toml` (`rkat mcp add`
 writes them), loaded once at start-up. They connect in the background (the
 model sees a pending notice until they are ready); `--wait-for-mcp` waits for
 them before the first turn. MCP tools are tier 3 unless a rule allows or
-denies them by name. The project's `.rkat/mcp.toml` may have come with the
-repository, so its servers (which run with your privileges) start only when
-you trust it: `/mcp trust` records its digest in the host trust record (its
-servers start from the next session, until the file changes), and
-`--allow-project-mcp` trusts it for one run. Otherwise a start-up notice
+denies them by name. The project's `.rkat/mcp.toml` and the workspace
+realm's `config.toml` may have come with the repository, so their servers
+(which run with your privileges) start only once you trust them (`/trust`
+or `--trust-project`; see
+[What runs as the host](#how-approval-works)). Otherwise a start-up notice
 lists the servers it did not start.
 
 ### Context and compaction
@@ -599,7 +622,7 @@ rkat-tui says so in a warning and compacts without them.
 `/help`, `/quit`, `/clear`, `/resume [ref]`,
 `/permissions [list|add allow|deny <tool> [pattern]|rm <n>|trust]` (alias `/rules`),
 `/auto [on|off|resume]`, `/model [[endpoint:]id|refresh]`,
-`/remember <text>`, `/memory [user|system]`, `/init`, `/compact [now|status|<instructions>]`, `/context`, `/status`, `/export [file]`, `/usage` (aliases `/cost`, `/stats`), `/copy [N]`, `/mcp trust`,
+`/remember <text>`, `/memory [user|system]`, `/init`, `/compact [now|status|<instructions>]`, `/context`, `/status`, `/export [file]`, `/usage` (aliases `/cost`, `/stats`), `/copy [N]`, `/trust` (alias `/mcp trust`),
 `/helpers [expand|fold <label>|all]` (alias `/tasks`). `/status` prints the
 rkat-tui version, the model and its endpoint, the session id, the workspace
 and realm directories, the shell confinement, the auto-mode state, whether

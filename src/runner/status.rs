@@ -5,7 +5,6 @@ use std::path::PathBuf;
 
 use super::Runner;
 use crate::approval::trust::TrustStatus;
-use crate::bootstrap::mcp::project_file;
 use crate::approval::rules::RULES_FILE_NAME;
 use crate::ui::NoticeLevel;
 
@@ -22,7 +21,8 @@ pub(super) struct StatusReport {
     pub(super) confinement: String,
     pub(super) auto: String,
     pub(super) realm_rules: (PathBuf, String),
-    pub(super) project_mcp: (PathBuf, String),
+    /// Each project input (`/trust`) and its trust in words.
+    pub(super) project_inputs: Vec<(PathBuf, String)>,
     /// `None`: this build hosts no helpers.
     pub(super) helper_depth: Option<u8>,
 }
@@ -58,12 +58,9 @@ impl fmt::Display for StatusReport {
             self.realm_rules.0.display(),
             self.realm_rules.1
         )?;
-        writeln!(
-            f,
-            "project {}: {}",
-            self.project_mcp.0.display(),
-            self.project_mcp.1
-        )?;
+        for (file, trust) in &self.project_inputs {
+            writeln!(f, "project {}: {trust}", file.display())?;
+        }
         match self.helper_depth {
             None => f.write_str("helpers: not built in"),
             Some(0) => f.write_str("helpers: depth limit 0, every helper is refused"),
@@ -82,11 +79,18 @@ impl Runner {
         let (state, (c, cm, t, tm)) = super::approval::auto_status(&self.approval.engine);
         let realm = scope.realm_root();
         let rules = realm.join(RULES_FILE_NAME);
-        let mcp = project_file(scope);
-        let (rules_trust, mcp_trust) = {
-            let trust = self.runtime.approval.trust.lock();
-            (trust_words(&trust.check(&rules)), trust_words(&trust.check(&mcp)))
-        };
+        let rules_trust = trust_words(&self.runtime.approval.trust.lock().check(&rules));
+        let inputs = &self.runtime.project_inputs;
+        let project_inputs = inputs
+            .files()
+            .map(|file| {
+                let mut words = trust_words(&inputs.status(file));
+                if inputs.by_flag() && words.starts_with("not trusted") {
+                    words.push_str(" (trusted for this run by --trust-project)");
+                }
+                (file.to_path_buf(), words)
+            })
+            .collect();
         let confinement = clap::ValueEnum::to_possible_value(&self.runtime.confinement.mode)
             .map_or_else(
                 || format!("{:?}", self.runtime.confinement.mode),
@@ -103,7 +107,7 @@ impl Runner {
             confinement,
             auto: format!("{state} (consecutive denials {c}/{cm}, total {t}/{tm})"),
             realm_rules: (rules, rules_trust),
-            project_mcp: (mcp, mcp_trust),
+            project_inputs,
             helper_depth: self
                 .runtime
                 .helpers
@@ -131,10 +135,13 @@ mod tests {
             confinement: "workspace".into(),
             auto: "active (consecutive denials 0/3, total 0/20)".into(),
             realm_rules: (PathBuf::from("/w/.rkat/tui/tui.toml"), "absent".into()),
-            project_mcp: (
-                PathBuf::from("/w/.rkat/mcp.toml"),
-                trust_words(&TrustStatus::Untrusted(Untrusted::Changed)),
-            ),
+            project_inputs: vec![
+                (
+                    PathBuf::from("/w/.rkat/mcp.toml"),
+                    trust_words(&TrustStatus::Untrusted(Untrusted::Changed)),
+                ),
+                (PathBuf::from("/w/.rkat/config.toml"), "absent".into()),
+            ],
             helper_depth: Some(1),
         }
     }
@@ -152,7 +159,8 @@ mod tests {
         assert!(lines[6].starts_with("auto mode: active"));
         assert_eq!(lines[7], "realm /w/.rkat/tui/tui.toml: absent");
         assert!(lines[8].starts_with("project /w/.rkat/mcp.toml: not trusted: it changed"));
-        assert!(lines[9].starts_with("helpers: depth limit on (max_depth 1"));
+        assert_eq!(lines[9], "project /w/.rkat/config.toml: absent");
+        assert!(lines[10].starts_with("helpers: depth limit on (max_depth 1"));
         let mut off = report();
         off.helper_depth = Some(0);
         off.endpoint = None;

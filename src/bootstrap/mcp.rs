@@ -17,73 +17,41 @@
 //! unless a user rule allows or denies it by name.
 //!
 //! Local stdio servers run as the trusted host (see
-//! [`super::confinement`]). The project `mcp.toml` lives in the workspace:
-//! it may have come with the repository, and a confined shell can write it
-//! on Linux. Its servers therefore start only when the project file is
-//! trusted ([`ProjectMcpTrust`]): `--allow-project-mcp` for this run, or the
-//! host trust record ([`crate::approval::trust::HostTrustRecord`]) holding
-//! the file's digest after `/mcp trust`. Otherwise upstream's trusting
-//! loader ([`McpConfig::effective_servers_from_roots_trusting`]) refuses
-//! each of its servers (unless a trusted source states the same definition)
-//! and a start-up notice lists them.
+//! [`super::confinement`]). The project `mcp.toml` and, when the realm lives
+//! in the workspace, the realm config are project inputs
+//! ([`super::project_trust`]): they may have come with the repository, and a
+//! confined shell can write them on Linux. Their servers therefore start
+//! only when the file is trusted: `--trust-project` for this run, or the
+//! host trust record holding the file's digest after `/trust`. Otherwise
+//! upstream's trusting loader
+//! ([`McpConfig::effective_servers_from_roots_trusting`]) refuses each
+//! server of an untrusted `mcp.toml` (unless a trusted source states the
+//! same definition), an untrusted realm config's servers are left out, and
+//! [`LoadedMcp::refused`] lists them for the start-up notice.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use meerkat_core::mcp_config::{McpConfig, McpScope, McpServerSource, project_mcp_path_in};
+use meerkat_core::mcp_config::{McpConfig, McpScope, McpServerSource};
 use meerkat_core::{Config, McpServerConfig};
 
+use super::project_trust::{ProjectInputs, Refused};
 use super::scope::RuntimeScope;
-use crate::approval::trust::{HostTrustRecord, TrustStatus};
 use crate::error::TuiError;
-
-/// Whether the project `.rkat/mcp.toml` may start servers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProjectMcpTrust {
-    /// `--allow-project-mcp`: trusted for this run.
-    AllowedByFlag,
-    /// Its digest is in the host trust record (`/mcp trust`).
-    Recorded,
-    /// Not trusted: its servers are refused.
-    Untrusted,
-}
-
-impl ProjectMcpTrust {
-    /// The trust of `scope`'s project file under `record` (`flag`:
-    /// `--allow-project-mcp`).
-    #[must_use]
-    pub fn of(scope: &RuntimeScope, record: &HostTrustRecord, flag: bool) -> Self {
-        if flag {
-            return Self::AllowedByFlag;
-        }
-        match record.check(&project_file(scope)) {
-            TrustStatus::Trusted => Self::Recorded,
-            TrustStatus::Missing | TrustStatus::Untrusted(_) => Self::Untrusted,
-        }
-    }
-
-    fn trusted(self) -> bool {
-        self != Self::Untrusted
-    }
-}
-
-/// The project MCP config of `scope` (`<workspace>/.rkat/mcp.toml`).
-#[must_use]
-pub fn project_file(scope: &RuntimeScope) -> PathBuf {
-    project_mcp_path_in(&scope.context_root)
-}
 
 /// The loaded MCP set and what to tell the user about it.
 #[derive(Debug, Default)]
 pub struct LoadedMcp {
     /// Servers every session build carries.
     pub servers: Vec<McpServerConfig>,
-    /// Start-up notices (project-scoped servers).
+    /// Servers of untrusted project inputs that do not start.
+    pub refused: Vec<Refused>,
+    /// Start-up notices (project-scoped servers, the build's MCP support).
     pub notices: Vec<String>,
 }
 
 /// Load the effective MCP set for `scope` (see the module docs): the
-/// project file's servers only when `project` trusts it. Without the `mcp`
-/// feature the set is empty and a configured server is reported.
+/// project inputs' servers only when `inputs` trusts their file. Without
+/// the `mcp` feature the set is empty and a configured server is reported.
 ///
 /// # Errors
 ///
@@ -92,35 +60,45 @@ pub struct LoadedMcp {
 pub async fn load(
     scope: &RuntimeScope,
     config: &Config,
-    project: ProjectMcpTrust,
+    inputs: &ProjectInputs,
 ) -> Result<LoadedMcp, TuiError> {
-    let project_path = project_file(scope);
-    let untrusted = move |path: &Path| !project.trusted() && path == project_path;
+    let mut refused = Vec::new();
+    let realm_servers: &[McpServerConfig] = if inputs.realm_config_trusted() {
+        &config.tools.mcp_servers
+    } else {
+        if let Some(file) = inputs.realm_config_file() {
+            refused.extend(
+                config
+                    .tools
+                    .mcp_servers
+                    .iter()
+                    .map(|server| Refused::mcp_server(file, &server.name)),
+            );
+        }
+        &[]
+    };
+    let mcp_trusted = inputs.mcp_trusted();
+    let untrusted = |path: &Path| !mcp_trusted && path == inputs.mcp_file();
     let effective = McpConfig::effective_servers_from_roots_trusting(
-        &config.tools.mcp_servers,
+        realm_servers,
         Some(scope.context_root.as_path()),
         scope.user_config_root.as_deref(),
         &untrusted,
     )
     .await?;
     let servers = effective.admitted;
-    let refused: Vec<&str> = effective
-        .refused
-        .iter()
-        .map(|r| r.server.name.as_str())
-        .collect();
+    refused.extend(
+        effective
+            .refused
+            .iter()
+            .map(|r| Refused::mcp_server(inputs.mcp_file(), &r.server.name)),
+    );
     let project: Vec<&str> = servers
         .iter()
         .filter(|s| s.source == McpServerSource::File(McpScope::Project))
         .map(|s| s.server.name.as_str())
         .collect();
     let mut notices = Vec::new();
-    if !refused.is_empty() {
-        notices.push(format!(
-            "MCP servers of the project's .rkat/mcp.toml not started (the file is not trusted; /mcp trust or --allow-project-mcp starts them): {}",
-            refused.join(", ")
-        ));
-    }
     if !cfg!(feature = "mcp") {
         if !servers.is_empty() {
             notices.push(format!(
@@ -130,6 +108,7 @@ pub async fn load(
         }
         return Ok(LoadedMcp {
             servers: Vec::new(),
+            refused,
             notices,
         });
     }
@@ -141,6 +120,7 @@ pub async fn load(
     }
     Ok(LoadedMcp {
         servers: servers.into_iter().map(|s| s.server).collect(),
+        refused,
         notices,
     })
 }
@@ -149,21 +129,21 @@ pub async fn load(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::approval::trust::HostTrustRecord;
     use clap::Parser;
+    use std::sync::Arc;
 
-    #[tokio::test]
-    async fn project_and_user_files_compose() {
+    fn inputs(scope: &RuntimeScope, record: HostTrustRecord, flag: bool) -> ProjectInputs {
+        ProjectInputs::new(scope, Arc::new(parking_lot::Mutex::new(record)), flag)
+    }
+
+    fn fixture() -> (tempfile::TempDir, std::path::PathBuf, RuntimeScope) {
         let dir = tempfile::tempdir().unwrap();
         let base = std::fs::canonicalize(dir.path()).unwrap();
         let ws = base.join("ws");
         let home = base.join("home");
         std::fs::create_dir_all(ws.join(".rkat")).unwrap();
         std::fs::create_dir_all(home.join(".rkat")).unwrap();
-        std::fs::write(
-            ws.join(".rkat/mcp.toml"),
-            "[[servers]]\nname = \"proj\"\ncommand = \"proj-server\"\n",
-        )
-        .unwrap();
         std::fs::write(
             home.join(".rkat/mcp.toml"),
             "[[servers]]\nname = \"usr\"\ncommand = \"user-server\"\n",
@@ -180,13 +160,29 @@ mod tests {
         ])
         .unwrap();
         let scope = super::super::resolve_scope(&args).unwrap();
-        let loaded = load(&scope, &Config::default(), ProjectMcpTrust::AllowedByFlag)
-            .await
-            .unwrap();
+        (dir, ws, scope)
+    }
+
+    fn names(loaded: &LoadedMcp) -> Vec<String> {
         let mut names: Vec<_> = loaded.servers.iter().map(|s| s.name.clone()).collect();
         names.sort();
+        names
+    }
+
+    #[tokio::test]
+    async fn project_and_user_files_compose() {
+        let (_dir, ws, scope) = fixture();
+        let project = ws.join(".rkat/mcp.toml");
+        std::fs::write(
+            &project,
+            "[[servers]]\nname = \"proj\"\ncommand = \"proj-server\"\n",
+        )
+        .unwrap();
+        let flagged = inputs(&scope, HostTrustRecord::in_memory(&scope.context_root), true);
+        let loaded = load(&scope, &Config::default(), &flagged).await.unwrap();
+        assert!(loaded.refused.is_empty());
         if cfg!(feature = "mcp") {
-            assert_eq!(names, ["proj", "usr"]);
+            assert_eq!(names(&loaded), ["proj", "usr"]);
             assert_eq!(loaded.notices.len(), 1);
             assert!(
                 loaded.notices[0].ends_with(": proj"),
@@ -194,41 +190,64 @@ mod tests {
                 loaded.notices
             );
         } else {
-            assert!(names.is_empty());
+            assert!(names(&loaded).is_empty());
         }
 
         // Untrusted: the project's servers are refused and listed; the
         // user's still start.
-        let mut record = HostTrustRecord::in_memory(&scope.context_root);
-        let trust = ProjectMcpTrust::of(&scope, &record, false);
-        assert_eq!(trust, ProjectMcpTrust::Untrusted);
-        let loaded = load(&scope, &Config::default(), trust).await.unwrap();
-        let names: Vec<_> = loaded.servers.iter().map(|s| s.name.clone()).collect();
+        let untrusted = inputs(&scope, HostTrustRecord::in_memory(&scope.context_root), false);
+        assert!(!untrusted.mcp_trusted());
+        let loaded = load(&scope, &Config::default(), &untrusted).await.unwrap();
+        assert_eq!(loaded.refused, [Refused::mcp_server(&project, "proj")]);
         if cfg!(feature = "mcp") {
-            assert_eq!(names, ["usr"]);
-            assert!(
-                loaded
-                    .notices
-                    .iter()
-                    .any(|n| n.contains("not trusted") && n.ends_with(": proj")),
-                "{:?}",
-                loaded.notices
-            );
+            assert_eq!(names(&loaded), ["usr"]);
         }
-        // `/mcp trust` records the digest: trusted until the file changes.
-        record.record_file(&project_file(&scope)).unwrap();
-        assert_eq!(
-            ProjectMcpTrust::of(&scope, &record, false),
-            ProjectMcpTrust::Recorded
-        );
-        std::fs::write(ws.join(".rkat/mcp.toml"), "not toml [").unwrap();
-        assert_eq!(
-            ProjectMcpTrust::of(&scope, &record, false),
-            ProjectMcpTrust::Untrusted
-        );
+        // `/trust` records the digest: trusted until the file changes.
+        untrusted.trust_all().unwrap();
+        assert!(untrusted.mcp_trusted());
+        let loaded = load(&scope, &Config::default(), &untrusted).await.unwrap();
+        assert!(loaded.refused.is_empty());
+        std::fs::write(&project, "not toml [").unwrap();
+        assert!(!untrusted.mcp_trusted());
         assert!(matches!(
-            load(&scope, &Config::default(), ProjectMcpTrust::AllowedByFlag).await,
+            load(&scope, &Config::default(), &flagged).await,
             Err(TuiError::McpConfig(_))
         ));
+    }
+
+    /// A server defined only in the workspace realm's `config.toml` does not
+    /// start before the file is trusted.
+    #[tokio::test]
+    async fn a_realm_config_server_waits_for_trust() {
+        let (_dir, ws, scope) = fixture();
+        let realm_config = ws.join(".rkat/tui/config.toml");
+        std::fs::write(
+            &realm_config,
+            "[[tools.mcp_servers]]\nname = \"realm\"\ncommand = \"realm-server\"\n",
+        )
+        .unwrap();
+        let config = super::super::load_config(&scope).await.unwrap();
+        assert_eq!(config.tools.mcp_servers.len(), 1);
+        let inputs = inputs(&scope, HostTrustRecord::in_memory(&scope.context_root), false);
+        let loaded = load(&scope, &config, &inputs).await.unwrap();
+        assert_eq!(loaded.refused, [Refused::mcp_server(&realm_config, "realm")]);
+        assert!(!names(&loaded).contains(&"realm".to_string()));
+
+        inputs.trust_all().unwrap();
+        let loaded = load(&scope, &config, &inputs).await.unwrap();
+        assert!(loaded.refused.is_empty());
+        if cfg!(feature = "mcp") {
+            assert_eq!(names(&loaded), ["realm", "usr"]);
+        }
+
+        // Changed after trust: refused again.
+        std::fs::write(
+            &realm_config,
+            "[[tools.mcp_servers]]\nname = \"realm\"\ncommand = \"other\"\n",
+        )
+        .unwrap();
+        let config = super::super::load_config(&scope).await.unwrap();
+        let loaded = load(&scope, &config, &inputs).await.unwrap();
+        assert_eq!(loaded.refused, [Refused::mcp_server(&realm_config, "realm")]);
     }
 }

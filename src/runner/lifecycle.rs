@@ -257,21 +257,44 @@ impl Runner {
         }
     }
 
-    /// [`crate::ui::Effect::TrustProjectMcp`]: record the project
-    /// `.rkat/mcp.toml`'s digest in the host trust record and reload the MCP
-    /// set, so its servers start from the next session.
-    pub(super) async fn trust_project_mcp(&mut self) {
-        let path = crate::bootstrap::mcp::project_file(&self.runtime.scope);
-        let recorded = self.runtime.approval.trust.lock().record_file(&path);
-        if let Err(err) = recorded {
-            self.notice(NoticeLevel::Error, format!("not trusted: {err}"));
+    /// [`crate::ui::Effect::TrustProject`]: record every project input's
+    /// digest in the host trust record and reload the MCP set, so their
+    /// servers and hooks run from the next session (the hooks through the
+    /// realm config store's guard, which reads the record on every build).
+    pub(super) async fn trust_project(&mut self) {
+        let recorded = match self.runtime.project_inputs.trust_all() {
+            Ok(recorded) => recorded,
+            Err(err) => {
+                self.notice(NoticeLevel::Error, format!("not trusted: {err}"));
+                return;
+            }
+        };
+        if recorded.is_empty() {
+            self.notice(
+                NoticeLevel::Info,
+                "the project has no .rkat/mcp.toml, .rkat/config.toml or workspace realm config.toml to trust",
+            );
             return;
         }
-        let config = self.runtime.config.clone();
+        let files = recorded
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let config = match crate::bootstrap::load_config(&self.runtime.scope).await {
+            Ok(config) => config,
+            Err(err) => {
+                self.notice(
+                    NoticeLevel::Error,
+                    format!("trusted {files}, but the realm config cannot be loaded: {err}"),
+                );
+                return;
+            }
+        };
         match crate::bootstrap::mcp::load(
             &self.runtime.scope,
             &config,
-            crate::bootstrap::mcp::ProjectMcpTrust::Recorded,
+            &self.runtime.project_inputs,
         )
         .await
         {
@@ -280,14 +303,13 @@ impl Runner {
                 self.notice(
                     NoticeLevel::Info,
                     format!(
-                        "trusted {} as it is now; its servers start from the next session (/new or /resume)",
-                        path.display()
+                        "trusted {files} as they are now; their MCP servers and hooks run from the next session (/new or /resume)"
                     ),
                 );
             }
             Err(err) => self.notice(
                 NoticeLevel::Error,
-                format!("trusted {}, but it cannot be loaded: {err}", path.display()),
+                format!("trusted {files}, but the MCP set cannot be loaded: {err}"),
             ),
         }
     }

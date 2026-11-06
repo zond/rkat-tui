@@ -50,6 +50,7 @@ pub mod dirs;
 pub mod instructions;
 pub mod mcp;
 pub mod persona;
+pub mod project_trust;
 pub mod realm_config;
 pub mod scope;
 
@@ -167,8 +168,11 @@ pub struct Runtime {
     /// Where the instruction files of every session build come from.
     pub instructions: InstructionSources,
     /// The declarative MCP servers every session build carries (reloaded
-    /// by `/mcp trust`).
+    /// by `/trust`).
     pub mcp_servers: Vec<McpServerConfig>,
+    /// The workspace files that make the host run something, and their
+    /// trust (see [`project_trust`]).
+    pub project_inputs: project_trust::ProjectInputs,
     /// Whether sessions get native semantic memory (`memory_search`).
     pub memory: bool,
     /// The `tui.toml` `[ui]` settings.
@@ -217,7 +221,10 @@ impl Runtime {
         model: &str,
         listed: Option<&ModelEntry>,
     ) -> Result<(), TuiError> {
-        if ensure_model_profile(self.realm_config.document(), provider, model, listed).await? {
+        let before = self.realm_config.before_write();
+        let wrote = ensure_model_profile(self.realm_config.document(), provider, model, listed).await;
+        self.realm_config.after_write(before);
+        if wrote? {
             let effective = self
                 .realm_config
                 .get()
@@ -333,21 +340,30 @@ pub async fn bootstrap_with(
     let lister = options.lister.clone().unwrap_or_else(live_lister);
     let (choice, models) = plan_model(args, &config, &endpoints, &lister).await?;
 
-    let realm_config = Arc::new(RealmConfigStore::new(
-        &scope.config_path(),
-        scope.global.clone(),
-    ));
-    project_endpoints(realm_config.document(), endpoints.as_slice()).await?;
+    let trust = Arc::new(parking_lot::Mutex::new(approval::trust_record(&scope)));
+    let project_inputs =
+        project_trust::ProjectInputs::new(&scope, Arc::clone(&trust), args.trust_project);
+    let realm_config = Arc::new(
+        RealmConfigStore::new(&scope.config_path(), scope.global.clone())
+            .with_inputs(project_inputs.clone()),
+    );
+    let before = realm_config.before_write();
+    let projected = project_endpoints(realm_config.document(), endpoints.as_slice()).await;
+    realm_config.after_write(before);
+    projected?;
     let listed = models
         .as_ref()
         .and_then(|cache| cache.entry(choice.endpoint.as_str(), &choice.model));
-    ensure_model_profile(
+    let before = realm_config.before_write();
+    let profiled = ensure_model_profile(
         realm_config.document(),
         choice.provider,
         &choice.model,
         listed,
     )
-    .await?;
+    .await;
+    realm_config.after_write(before);
+    profiled?;
     let effective = realm_config
         .get()
         .await
@@ -424,11 +440,17 @@ pub async fn bootstrap_with(
         },
         &options.approval,
         persistence.approval_issuer(),
+        trust,
     )
     .await?;
-    let project_mcp =
-        mcp::ProjectMcpTrust::of(&scope, &approval.trust.lock(), args.allow_project_mcp);
-    let mcp = mcp::load(&scope, &config, project_mcp).await?;
+    let mcp = mcp::load(&scope, &config, &project_inputs).await?;
+    let mut refused = mcp.refused;
+    for item in project_inputs.guard(&mut config.clone()).await {
+        if !refused.contains(&item) {
+            refused.push(item);
+        }
+    }
+    notices.extend(project_inputs.notice(&refused));
     notices.extend(mcp.notices);
     let mut builder = FactoryAgentBuilder::new_with_config_store(
         factory,
@@ -494,6 +516,7 @@ pub async fn bootstrap_with(
             home: dirs_home(),
         },
         mcp_servers: mcp.servers,
+        project_inputs,
         memory,
         ui,
         helper_max_depth: helper_depth,

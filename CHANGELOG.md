@@ -148,3 +148,19 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
   character other than tab and newline (`\r`, a `\r\n` line ending, NUL,
   ESC, `\v`, `\f`, DEL, C1) now makes the command unsupported, so the gate
   escalates it.
+- One trust decision covers every workspace file that makes the host run
+  something: the project `.rkat/mcp.toml`, the project `.rkat/config.toml`'s
+  `[hooks]` and the workspace realm's `.rkat/tui/config.toml`
+  (`[[tools.mcp_servers]]`, `[hooks]`). Before, only `mcp.toml` had one: a
+  cloned repository or a confined shell (which can write `.rkat/` on Linux)
+  could plant realm-config MCP servers or command hooks that ran as the host
+  at the next launch. Each file's SHA-256 is kept in the existing host trust
+  record; until it matches, the file's MCP servers do not start, its hooks
+  are overridden by disabled entries (helpers included), and a start-up
+  notice names the file, why (never trusted, or changed since) and what did
+  not start. `/trust` trusts them all (`/mcp trust` is an alias),
+  `--trust-project` for one run (`--allow-project-mcp` is an alias);
+  rkat-tui's own writes keep the realm config trusted only when it was
+  trusted before. `/status` lists each file's state. An existing realm
+  `config.toml` that defines MCP servers or hooks needs one `/trust` after
+  upgrading.

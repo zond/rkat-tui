@@ -939,3 +939,50 @@ Two defects from the Meerkat maintainer's review of the harness, one commit each
   `carriage_return_comment_is_not_allowlisted`, `hash_starts_a_comment_only_at_a_word_start`.
 - Commands: `cargo clippy --all-targets --all-features -- -D warnings` exit 0; `cargo nextest run --all-features`
   763 passed, 6 skipped, exit 0.
+
+### 2. Trust boundary for every executable project input
+
+- Before: only the project `.rkat/mcp.toml` had a trust decision (`/mcp trust`, `--allow-project-mcp`). The workspace
+  realm `.rkat/tui/config.toml` was loaded by `scope::load_config` and read by the factory through
+  `RealmConfigStore` on every build with no trust check, so its `[[tools.mcp_servers]]` entered the MCP set and its
+  `[hooks]` became the build's active hooks; the project `.rkat/config.toml`'s `[hooks]` were discovered by the
+  factory at the conventions root (`meerkat::sdk::resolve_layered_hooks`: build config > `<context_root>/.rkat/
+  config.toml` > `<user_root>/.rkat/config.toml`, by id; that is the only project hook file the engine reads). All
+  run as the host, and on Linux a confined shell can write `.rkat/`.
+- After (`src/bootstrap/project_trust.rs`, `ProjectInputs`): the inputs are `mcp.toml`, the project
+  `.rkat/config.toml`, and the realm `config.toml` when it lies inside the workspace (a `--realm`/`--state-root` realm
+  elsewhere is the user's own). Each is trusted when absent, when its whole-file SHA-256 is in the existing
+  `HostTrustRecord` (`~/.rkat/tui/trust/<key>.toml`, the same record `/rules trust` uses), or for one run under
+  `--trust-project` (alias `--allow-project-mcp`). Untrusted:
+  - `mcp::load` leaves the realm config's servers out and the trusting loader refuses `mcp.toml`'s; both are listed
+    as `Refused`.
+  - `RealmConfigStore` runs `ProjectInputs::guard` on every config it serves (so on every session build, helpers'
+    included, and re-checking the record each time): an untrusted realm config loses its `tools.mcp_servers` and
+    `hooks.entries`; each hook of an untrusted project `.rkat/config.toml` gets a disabled entry of its id in the
+    build config, which the factory's id layering puts first, so the project entry never runs (an entry the user's
+    `~/.rkat/config.toml` states identically is the user's and is kept). User-global hooks are untouched.
+  - One start-up notice names each untrusted file with the reason (`Untrusted::NotRecorded` "may have come with the
+    repository", or `Changed` "it changed since rkat-tui last wrote or you trusted it") and what it did not start,
+    and says `/trust` and `--trust-project`.
+- `/trust` (new; `/mcp trust` stays as an alias) records every present input and reloads the MCP set. rkat-tui's own
+  writes into the realm config (endpoint projection, model profiles, `ConfigStore` patches) record the new digest
+  only when the file was trusted (or absent) before the write, so a write never launders planted content. `/status`
+  lists each input's state.
+- Tests: `project_trust::tests::{the_inputs_are_the_project_files_and_the_workspace_realm_config,
+  a_realm_config_from_the_checkout_runs_nothing_until_trusted, project_hooks_are_shadowed_until_trusted,
+  a_hook_the_user_file_states_too_is_the_users, rkat_tui_writes_keep_trust_but_never_launder_a_planted_file}`
+  (initial checkout refused with notice, trust admits across a reopen, modification after trust refused again with
+  "changed", the flag trusts without recording; hook shadowing checked against the engine's own
+  `meerkat::resolve_layered_hooks_config`), `mcp::tests::{project_and_user_files_compose,
+  a_realm_config_server_waits_for_trust}` (a server defined only in the realm config is not in the MCP set before
+  `/trust`, is after, and is refused again after a change), `commands::tests` (`/trust`, `/mcp trust`),
+  `status::tests::the_status_report_names_everything_on_its_own_line`.
+- Commands: `cargo clippy --all-targets --all-features -- -D warnings` exit 0; `cargo fmt --all -- --check` exit 0;
+  `cargo nextest run --all-features` 769 passed, 6 skipped, exit 0.
+- Residual: the guard reads the project `.rkat/config.toml` when it serves the build config and the factory reads it
+  again while building; a hook id a concurrently running confined command adds between the two reads is not
+  shadowed for that one build (the next build's guard sees it). Closing that needs an engine seam (a factory-level
+  predicate for untrusted hook sources without full host confinement; `HostConfinement::untrusted_source` exists
+  but comes with confining every launch kind). The realm config's other sections (endpoints, models) still load
+  untrusted; they start no process, but a planted endpoint `base_url` could receive an environment key. Not in
+  this change's scope.

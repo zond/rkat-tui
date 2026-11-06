@@ -445,9 +445,10 @@ pub enum Effect {
     /// `/rules trust`: show the realm `tui.toml` and record its digest in
     /// the host trust record; answered with [`Msg::Notice`].
     TrustRealmRules,
-    /// `/mcp trust`: record the project `.rkat/mcp.toml`'s digest in the
-    /// host trust record; its servers start from the next session.
-    TrustProjectMcp,
+    /// `/trust` (alias `/mcp trust`): record every project input's digest
+    /// in the host trust record; their servers and hooks run from the next
+    /// session.
+    TrustProject,
     /// Enable/disable auto mode.
     SetAutoMode(bool),
     /// Resume auto mode after a denial-limit pause.
@@ -2680,7 +2681,7 @@ impl App {
             }),
             Command::Rules(RulesCommand::Remove(n)) => fx.push(Effect::RemoveRule(n)),
             Command::Rules(RulesCommand::Trust) => fx.push(Effect::TrustRealmRules),
-            Command::McpTrust => fx.push(Effect::TrustProjectMcp),
+            Command::TrustProject => fx.push(Effect::TrustProject),
             Command::Helpers(cmd) => self.helpers_command(cmd),
         }
     }

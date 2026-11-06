@@ -139,9 +139,11 @@ pub enum Command {
     /// `/copy [N]`: copy the Nth latest assistant answer (1, the default,
     /// is the latest) to the clipboard (OSC 52).
     Copy(usize),
-    /// `/mcp trust`: trust the project `.rkat/mcp.toml` as it is now; its
-    /// servers start from the next session.
-    McpTrust,
+    /// `/trust` (alias `/mcp trust`): trust every project input
+    /// (`.rkat/mcp.toml`, `.rkat/config.toml`, the workspace realm's
+    /// `config.toml`) as it is now; their servers and hooks run from the
+    /// next session.
+    TrustProject,
     /// `/helpers [expand|fold <label>|all]`.
     Helpers(HelpersCommand),
 }
@@ -184,8 +186,10 @@ Commands:
                                  add an approval rule
   /permissions rm <n>            remove rule n
   /permissions trust             show the realm tui.toml and trust it as it is now
-  /mcp trust                     trust the project .rkat/mcp.toml as it is now (its servers
-                                 start from the next session)
+  /trust                         trust the project's .rkat/mcp.toml, .rkat/config.toml and
+                                 workspace realm config.toml as they are now (their MCP
+                                 servers and hooks run from the next session; /mcp trust
+                                 is an alias)
   /auto                          show auto-mode state and denial counters
   /auto on|off|resume            enable, disable, or resume auto mode after a pause (Shift+Tab
                                  switches it off and on)
@@ -363,9 +367,13 @@ fn parse_command(name: &str, args: &[&str]) -> Result<Command, CommandError> {
             _ => Err(CommandError::Usage(AUTO_USAGE)),
         },
         "permissions" | "rules" => parse_rules(args).map(Command::Rules),
+        "trust" => match args {
+            [] => Ok(Command::TrustProject),
+            _ => Err(CommandError::Usage("/trust")),
+        },
         "mcp" => match args {
-            ["trust"] => Ok(Command::McpTrust),
-            _ => Err(CommandError::Usage("/mcp trust")),
+            ["trust"] => Ok(Command::TrustProject),
+            _ => Err(CommandError::Usage("/trust (or /mcp trust)")),
         },
         "helpers" | "tasks" => {
             let target = |t: &str| match t {
@@ -546,7 +554,9 @@ mod tests {
         );
         assert_eq!(ok("/rules rm 3"), Command::Rules(RulesCommand::Remove(3)));
         assert_eq!(ok("/rules trust"), Command::Rules(RulesCommand::Trust));
-        assert_eq!(ok("/mcp trust"), Command::McpTrust);
+        assert_eq!(ok("/mcp trust"), Command::TrustProject);
+        assert_eq!(ok("/trust"), Command::TrustProject);
+        assert!(parse("/trust all").is_some_and(|r| r.is_err()));
         assert!(parse("/mcp").is_some_and(|r| r.is_err()));
         assert!(matches!(
             parse("/rules rm x"),
