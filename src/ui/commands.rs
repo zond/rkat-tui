@@ -117,6 +117,8 @@ pub enum Command {
     Status,
     /// `/export [file]`: write the transcript as plain text.
     Export(Option<String>),
+    /// `/init`: ask the agent to write or update the workspace `AGENTS.md`.
+    Init,
     /// `/context`: the context gauge, the compaction policy and what the
     /// context holds, as far as the TUI knows.
     Context,
@@ -152,6 +154,9 @@ const RULES_USAGE: &str = "/permissions [list | add allow|deny <tool> [pattern] 
 const AUTO_USAGE: &str = "/auto [on | off | resume]";
 const HELPERS_USAGE: &str = "/helpers [expand <label>|all | fold <label>|all]";
 
+/// The prompt `/init` sends as an ordinary user turn.
+pub const INIT_PROMPT: &str = "Please inspect this project and write an AGENTS.md file in the workspace root (update the existing one if there is one, keeping what is still true) for future agents working here. Cover: the build, test, lint and run commands (including how to run a single test); the layout of the code (the main directories and what lives where); and the conventions a newcomer would not guess (style, naming, error handling, testing, commit habits). Be concrete and specific to this repository, skip generic advice, and keep the file under 200 lines.";
+
 /// Help text shown by `/help`: every slash command and key binding.
 pub const HELP_TEXT: &str = "\
 Commands:
@@ -183,6 +188,7 @@ Commands:
                                  --auto-compact lets the runtime compact at 85%)
   /status                        version, model, session, workspace, realm, confinement, auto
                                  mode, trust of tui.toml and mcp.toml, helper depth limit
+  /init                          ask the agent to write or update AGENTS.md for this project (idle only)
   /export [file]                 write the transcript as plain text (default:
                                  .rkat/tui/export-<session>-<time>.txt in the workspace)
   /context                       context usage, the compaction policy and what the context holds
@@ -279,6 +285,10 @@ fn parse_command(name: &str, args: &[&str]) -> Result<Command, CommandError> {
         "quit" | "exit" | "q" => Ok(Command::Quit),
         "clear" | "new" => Ok(Command::Clear),
         "help" | "?" => Ok(Command::Help),
+        "init" => match args {
+            [] => Ok(Command::Init),
+            _ => Err(CommandError::Usage("/init")),
+        },
         "export" => match args {
             [] => Ok(Command::Export(None)),
             words => Ok(Command::Export(Some(words.join(" ")))),
@@ -427,6 +437,8 @@ mod tests {
         );
         assert_eq!(ok("/status"), Command::Status);
         assert_eq!(ok("/export"), Command::Export(None));
+        assert_eq!(ok("/init"), Command::Init);
+        assert_eq!(parse("/init x"), Some(Err(CommandError::Usage("/init"))));
         assert_eq!(ok("/export notes/chat.txt"), Command::Export(Some("notes/chat.txt".into())));
         assert_eq!(parse("/status x"), Some(Err(CommandError::Usage("/status"))));
         assert_eq!(ok("/context"), Command::Context);
@@ -527,6 +539,7 @@ mod tests {
             "/context",
             "/status",
             "/export [file]",
+            "/init",
             "/stats",
             "/tasks",
             "/auto",

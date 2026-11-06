@@ -2412,6 +2412,13 @@ impl App {
             Command::Copy(n) => self.copy_answer(n),
             Command::Context => fx.push(Effect::ContextReport(self.context_header())),
             Command::Status => fx.push(Effect::StatusReport),
+            Command::Init => {
+                if self.running || !self.pending.is_empty() {
+                    busy(self);
+                } else {
+                    self.start_turn(commands::INIT_PROMPT.to_string(), now, fx);
+                }
+            }
             Command::Export(path) => fx.push(Effect::Export {
                 path,
                 text: self.transcript.export_text(),
@@ -4710,6 +4717,28 @@ mod tests {
             );
         }
         assert!(!app.compacting);
+    }
+
+    #[test]
+    fn init_sends_the_canned_prompt_as_a_user_turn_when_idle() {
+        let mut app = App::new(StatusInfo::default());
+        assert_eq!(
+            submit(&mut app, "/init"),
+            vec![Effect::StartTurn(commands::INIT_PROMPT.into())]
+        );
+        assert_eq!(app.transcript.blocks(), &[user(commands::INIT_PROMPT)]);
+        assert!(app.is_running());
+        assert!(commands::INIT_PROMPT.contains("AGENTS.md"));
+        assert!(commands::INIT_PROMPT.contains("under 200 lines"));
+        // While a turn runs it is refused.
+        assert!(submit(&mut app, "/init").is_empty());
+        assert_eq!(
+            last_notice(&app),
+            Some((
+                NoticeLevel::Warn,
+                "a turn is running; interrupt it first (Ctrl-C)".into()
+            ))
+        );
     }
 
     #[test]
