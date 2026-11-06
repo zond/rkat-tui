@@ -8,6 +8,7 @@ pub mod commands;
 pub mod compaction;
 pub mod cost;
 pub mod delivery;
+pub mod editor;
 pub mod history;
 pub mod input;
 pub mod keymap;
