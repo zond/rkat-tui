@@ -254,7 +254,11 @@ Keys:
   Alt+P                          pick a model (as /model) without clearing the input
   Home/End                       scroll to top/bottom when the input is empty (Ctrl+Home/End always)
 Approval prompt:
-  y allow once · a allow and add a rule · n/Esc deny · s stop the turn (Ctrl-C stops all)
+  1, y                           yes, allow once
+  2, a                           yes, allow and add the rule the row shows
+  3, n, Esc                      no, deny
+  Up/Down, j/k, Enter            move between the rows and pick one
+  s                              stop the turn (Ctrl-C stops every open prompt)
 Start a prompt with // to send a literal leading slash.";
 
 /// A single-line `#text` input (not `##…`) as a remember request: returns the
@@ -618,10 +622,11 @@ mod tests {
             "PgDn",
             "Home",
             "End",
-            "y allow",
-            "a allow",
-            "n/Esc deny",
-            "s stop",
+            "1, y",
+            "2, a",
+            "3, n, Esc",
+            "j/k, Enter",
+            "stop the turn",
             "queued messages are sent next",
             "take queued messages back",
             "delivers it at the next step",

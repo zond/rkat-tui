@@ -1084,3 +1084,26 @@ Three "reuse the existing owner" items from the maintainer's review ("Existing o
   trusted; planted → written → still `Changed`).
 - Commands: `cargo clippy --all-targets --all-features -- -D warnings` exit 0; `cargo fmt --all -- --check` exit 0;
   `cargo nextest run --all-features` 775 passed, 6 skipped, exit 0.
+
+## Batch 1 A3 (2026-11-07)
+
+### 1. Approval prompt: numbered rows with a cursor
+
+- Before: one key line `[y] allow once  [a] allow + rule  [n] deny  [s] stop`; only the letters answered, Esc denied.
+- After: `ui/modal.rs` `EscalationDialog` (the cursor; `Modal::Escalation` carries it) renders three numbered rows,
+  `1. Yes, allow once`, `2. Yes, allow and add a rule (<tool> <subject>)` (the literal rule the runner would add:
+  `EscalationPrompt::rule`, set in `runner/approval.rs` `on_escalation` from the first subject; without one the row
+  reads `Yes, allow (no rule fits this action)`), `3. No, and tell the agent what to do instead (Esc)`, then the
+  footer `Enter select · s stop the turn · Ctrl+C stop all`. ↑/↓ and `j`/`k` move (clamped; a held key moves but
+  never answers), Enter picks the highlighted row, `1`-`3` pick directly; `y`, `a`, `n`/Esc, `s` and Ctrl+C keep
+  their meaning. A Ctrl/Alt chord no longer answers (Ctrl+Y used to allow once). Every new or advanced dialog starts
+  on row 1.
+- Tests: `ui::modal::tests::escalation_dialog_moves_clamped_and_picks`,
+  `ui::tests::escalation_choices_by_number_arrows_and_enter` (four queued escalations answered by `2`, ↓↓↑ Enter,
+  `1` and `s`; a held `j` moves; Ctrl+Y does nothing), `render_snapshot::escalation_modal_is_drawn_over_the_transcript`
+  (full dialog snapshot, the cyan cursor row, ↓ moves the cursor to row 2). The parked-picker and queued-escalation
+  tests pass unchanged.
+- Docs: HELP_TEXT "Approval prompt" (one line per choice), README "How approval works", CHANGELOG.
+- Commands: `cargo clippy --all-targets --all-features -- -D warnings` exit 0; `cargo fmt --all` exit 0;
+  `cargo nextest run --all-features` first run 771 passed, 1 failed (`workspace_state_survives_a_rename`, the known
+  timing flake), rerun 777 passed, 6 skipped, exit 0.

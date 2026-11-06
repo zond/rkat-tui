@@ -77,7 +77,7 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
   to a protected path in the project (`.env*`, `build.rs`, `.cargo/`,
   `AGENTS.md`, `.gitmodules`, …) always asks you in the escalation dialog,
   naming the path and why, instead of going to the classifier; an allow
-  rule for the path (the dialog's "allow + rule") stops the prompts.
+  rule for the path (the dialog's "allow and add a rule") stops the prompts.
   Running helpers (and those finished this turn) are listed in a panel
   under the input; Ctrl+↑/↓ select one and Enter on an empty input opens
   its full view (its prose, reasoning, tool calls and nested helpers) in
@@ -137,6 +137,11 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
     `AGENTS.md` or `SYSTEM.md` in `$VISUAL`/`$EDITOR`/`vi`; an edited
     `AGENTS.md` reaches the live session, `SYSTEM.md` the next one.
   - Ctrl+G and Ctrl+X Ctrl+E edit the input in `$VISUAL`/`$EDITOR`/`vi`.
+  - The approval prompt lists numbered choices with a cursor ("1. Yes,
+    allow once", "2. Yes, allow and add a rule (<the rule>)", "3. No, and
+    tell the agent what to do instead (Esc)"): ↑/↓ or `j`/`k` and Enter,
+    or `1`-`3`, pick a row; `y`, `a`, `n`/Esc still answer, `s` stops the
+    turn and Ctrl+C stops every prompt (a footer hint, not a row).
 
 ### Changed
 

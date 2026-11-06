@@ -46,7 +46,8 @@ pub use history::History;
 pub use input::{InputEditor, StashOutcome};
 pub use keymap::{Action, EditAction};
 pub use modal::{
-    EscalationAnswer, EscalationId, EscalationPrompt, Modal, ModelPicker, ResumePicker,
+    EscalationAnswer, EscalationDialog, EscalationId, EscalationPrompt, Modal, ModelPicker,
+    ResumePicker,
 };
 pub use runtime::{TerminalGuard, UiChannels, UiError, install_panic_hook, run_ui};
 pub use search::{HistorySearch, SearchOutcome};
@@ -1878,21 +1879,23 @@ impl App {
         // edit the filter and type.
         let repeat = key.kind == KeyEventKind::Repeat;
         match &mut self.modal {
-            Some(Modal::Escalation { id, .. }) => {
+            Some(Modal::Escalation { id, dialog, .. }) => {
                 let id = *id;
-                if repeat {
+                if repeat && !EscalationDialog::is_move(key.code) {
                     return;
                 }
                 if ctrl_c {
                     self.stop_all_escalations(fx);
                     return;
                 }
-                let answer = match key.code {
-                    KeyCode::Char('y' | 'Y') => EscalationAnswer::AllowOnce,
-                    KeyCode::Char('a' | 'A') => EscalationAnswer::AllowAndAddRule,
-                    KeyCode::Char('n' | 'N') | KeyCode::Esc => EscalationAnswer::Deny,
-                    KeyCode::Char('s' | 'S') => EscalationAnswer::Stop,
-                    _ => return,
+                if key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                {
+                    return;
+                }
+                let Some(answer) = dialog.key(key.code) else {
+                    return;
                 };
                 fx.push(Effect::RespondEscalation(id, answer));
                 self.advance_escalation();
@@ -2702,6 +2705,7 @@ impl App {
                     id,
                     prompt,
                     queued_behind: self.pending_escalations.len(),
+                    dialog: EscalationDialog::default(),
                 });
             }
         }
@@ -2713,6 +2717,7 @@ impl App {
                 id,
                 prompt,
                 queued_behind: self.pending_escalations.len(),
+                dialog: EscalationDialog::default(),
             }),
             None => self.parked.take(),
         };
@@ -3754,6 +3759,7 @@ mod tests {
             args_preview: "{}".into(),
             hint: None,
             reason: None,
+            rule: None,
         };
         app.update(Msg::Escalation(prompt("a"), EscalationId(1)));
         app.update(Msg::Escalation(prompt("b"), EscalationId(2)));
@@ -3786,6 +3792,7 @@ mod tests {
             args_preview: "rm x".into(),
             hint: Some("deletes".into()),
             reason: None,
+            rule: None,
         };
         app.update(Msg::Escalation(p.clone(), EscalationId(7)));
         app.update(Msg::Escalation(p.clone(), EscalationId(8)));
@@ -3813,6 +3820,73 @@ mod tests {
             vec![Effect::RespondEscalation(
                 EscalationId(9),
                 EscalationAnswer::AllowAndAddRule
+            )]
+        );
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn escalation_choices_by_number_arrows_and_enter() {
+        let mut app = App::new(StatusInfo::default());
+        for n in 1..=4 {
+            app.update(Msg::Escalation(shell_prompt(), EscalationId(n)));
+        }
+        // `2` picks the rule choice directly.
+        assert_eq!(
+            app.update(key(KeyCode::Char('2'))),
+            vec![Effect::RespondEscalation(
+                EscalationId(1),
+                EscalationAnswer::AllowAndAddRule
+            )]
+        );
+        // Each new dialog starts on row 1; ↓ ↓ ↑ lands on row 2.
+        app.update(key(KeyCode::Down));
+        app.update(key(KeyCode::Down));
+        app.update(key(KeyCode::Up));
+        assert!(matches!(
+            app.modal,
+            Some(Modal::Escalation {
+                dialog: EscalationDialog { cursor: 1 },
+                ..
+            })
+        ));
+        assert_eq!(
+            app.update(key(KeyCode::Enter)),
+            vec![Effect::RespondEscalation(
+                EscalationId(2),
+                EscalationAnswer::AllowAndAddRule
+            )]
+        );
+        // j/k move too, and the cursor stops at the last row; a held j moves.
+        let mut held = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE);
+        held.kind = KeyEventKind::Repeat;
+        app.update(Msg::Key(held));
+        app.update(key(KeyCode::Char('j')));
+        app.update(key(KeyCode::Char('j')));
+        app.update(key(KeyCode::Char('k')));
+        app.update(key(KeyCode::Char('j')));
+        assert!(matches!(
+            app.modal,
+            Some(Modal::Escalation {
+                dialog: EscalationDialog { cursor: 2 },
+                ..
+            })
+        ));
+        // `1` picks row 1 wherever the cursor is; `s` still stops the turn.
+        assert_eq!(
+            app.update(key(KeyCode::Char('1'))),
+            vec![Effect::RespondEscalation(
+                EscalationId(3),
+                EscalationAnswer::AllowOnce
+            )]
+        );
+        // A Ctrl or Alt chord does not answer.
+        assert!(app.update(ctrl('y')).is_empty());
+        assert_eq!(
+            app.update(key(KeyCode::Char('s'))),
+            vec![Effect::RespondEscalation(
+                EscalationId(4),
+                EscalationAnswer::Stop
             )]
         );
         assert!(app.modal.is_none());
@@ -4291,6 +4365,7 @@ mod tests {
             args_preview: "{}".into(),
             hint: None,
             reason: None,
+            rule: None,
         }
     }
 

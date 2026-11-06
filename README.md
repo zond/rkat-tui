@@ -87,7 +87,7 @@ resumed sessions and helpers carry it too. First match wins:
 | 0 | A user **deny** rule matches, or `write_file` / `edit_file` (or any target of a patch) is a **sealed** path: the project's `.rkat/` (the realm's `config.toml`, rules, MCP servers, sessions) and every `.git` inside it, and, wherever they lie, the git directories governing the project (an enclosing repository's `.git` when the workspace is a subdirectory, a worktree's git dir and the common dir its `commondir` names, with the hooks), the realm directory (`--realm`/`--state-root`: `config.toml`, approvals, `tui.toml`) and the user config directory (`~/.rkat/tui`: global rules, trust records). Neither the classifier nor an allow rule opens a sealed path, and reading one is not sealed; a shell command that writes there is still judged by the classifier | denied |
 | 1 | Read-only tools (`read_file`, `glob`, `grep` inside the project, task tools, `memory_search`, `note_list`/`note_read`, `blob_inspect`, skill browsing, `shell_jobs`, read-only `mob_*` queries, `delegate`, `fork`), read-only shell commands (`cat`, `ls`, `rg`, `git status/diff/log`, `cargo check/test` when builds are trusted, …), narrow user **allow** rules | allowed |
 | 2 | `write_file` / `edit_file` where every target is inside the project and not protected (`.rkat/`, `.git/` and any `.git` file, `.env*`, …); workspace notes | allowed |
-| ask | `write_file` / `edit_file` (or any target of a patch) is a **protected** path in the project: `.env*`, `.envrc`, `build.rs`, `.cargo/`, `rust-toolchain*`, `AGENTS.md`, `.claude/`, `.gitmodules`, `.gitattributes`, `tui.toml`, `.vscode/`, `.idea/`. Never the classifier, whatever auto mode's state: the dialog names each path and what it is (`protected path: .env.local (secrets); the policy always asks for these`). A user allow rule for the path (what the dialog's "allow + rule" adds) allows it, a deny rule denies it | asks you, every time |
+| ask | `write_file` / `edit_file` (or any target of a patch) is a **protected** path in the project: `.env*`, `.envrc`, `build.rs`, `.cargo/`, `rust-toolchain*`, `AGENTS.md`, `.claude/`, `.gitmodules`, `.gitattributes`, `tui.toml`, `.vscode/`, `.idea/`. Never the classifier, whatever auto mode's state: the dialog names each path and what it is (`protected path: .env.local (secrets); the policy always asks for these`). A user allow rule for the path (what the dialog's "allow and add a rule" adds) allows it, a deny rule denies it | asks you, every time |
 | 3 | Everything else: other shell commands, MCP tools, web search, comms sends, mutating mob tools, out-of-project paths, user-level notes | classifier |
 
 A tool counts as a builtin, file or note tool only when its definition's
@@ -125,9 +125,25 @@ tag counts what the classifier itself read before deciding, not the session's
 reads.
 
 After **3 consecutive** or **20 total** classifier blocks, auto mode pauses
-and each tier-3 action opens a dialog: allow once, allow and add a narrow
-rule, deny, or stop the turn. The same dialog answers a protected write. A
-helper's call names the helper. "Allow + rule" adds a literal allow rule
+and each tier-3 action opens a dialog. The same dialog answers a protected
+write, and a helper's call names the helper. As in Claude Code, it lists
+numbered choices with a cursor on the first:
+
+```text
+❯ 1. Yes, allow once
+  2. Yes, allow and add a rule (shell rm -rf build)
+  3. No, and tell the agent what to do instead (Esc)
+
+Enter select · s stop the turn · Ctrl+C stop all
+```
+
+↑/↓ (or `j`/`k`) move the cursor and Enter picks the highlighted row; `1`,
+`2` and `3` pick a row directly, and the letters `y`, `a` and `n` (or Esc)
+do the same. `s` denies and stops the turn; Ctrl-C stops every open
+prompt. A held key only moves the cursor, it never answers. Row 2 names
+the rule it adds; an action with no rule subject shows
+`Yes, allow (no rule fits this action)` there and is allowed once.
+"Allow and add a rule" adds a literal allow rule
 for the call's first subject to the realm `tui.toml`: for a file write the
 project-relative path (`write_file` `.env.local`), which matches that file
 only, and only when every target of the call matches it. `/auto resume` resumes; `/auto` shows the

@@ -5,6 +5,7 @@
 //! engine and session modules.
 
 use ratatui::Frame;
+use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -48,6 +49,59 @@ pub struct EscalationPrompt {
     pub hint: Option<String>,
     /// Why the policy asks without the classifier (a protected path), if so.
     pub reason: Option<String>,
+    /// The allow rule "Yes, allow and add a rule" would add (`shell ls -la`),
+    /// `None` when the action has no rule subject (the choice then allows
+    /// once).
+    pub rule: Option<String>,
+}
+
+/// The escalation dialog's numbered choices, top to bottom.
+const ESCALATION_CHOICES: [EscalationAnswer; 3] = [
+    EscalationAnswer::AllowOnce,
+    EscalationAnswer::AllowAndAddRule,
+    EscalationAnswer::Deny,
+];
+
+/// The escalation dialog's own state: the highlighted choice.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EscalationDialog {
+    /// Index into the numbered choices (0: allow once).
+    pub cursor: usize,
+}
+
+impl EscalationDialog {
+    /// Whether `code` only moves the cursor (a held key may repeat it).
+    #[must_use]
+    pub fn is_move(code: KeyCode) -> bool {
+        matches!(
+            code,
+            KeyCode::Up | KeyCode::Down | KeyCode::Char('j' | 'k')
+        )
+    }
+
+    /// Apply a key: arrows (and `j`/`k`) move the cursor, Enter picks the
+    /// highlighted choice, `1`-`3` pick directly, and the accelerators
+    /// `y`, `a`, `n`/Esc and `s` answer at once. `None`: no answer yet.
+    pub fn key(&mut self, code: KeyCode) -> Option<EscalationAnswer> {
+        let pick = |index: usize| ESCALATION_CHOICES.get(index).copied();
+        match code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.cursor = self.cursor.saturating_sub(1);
+                None
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.cursor = (self.cursor + 1).min(ESCALATION_CHOICES.len() - 1);
+                None
+            }
+            KeyCode::Enter => pick(self.cursor),
+            KeyCode::Char(c @ '1'..='3') => pick(usize::from(c as u8 - b'1')),
+            KeyCode::Char('y' | 'Y') => Some(EscalationAnswer::AllowOnce),
+            KeyCode::Char('a' | 'A') => Some(EscalationAnswer::AllowAndAddRule),
+            KeyCode::Char('n' | 'N') | KeyCode::Esc => Some(EscalationAnswer::Deny),
+            KeyCode::Char('s' | 'S') => Some(EscalationAnswer::Stop),
+            _ => None,
+        }
+    }
 }
 
 /// Session picker for `/resume` without a reference.
@@ -177,6 +231,8 @@ pub enum Modal {
         prompt: EscalationPrompt,
         /// How many more escalations are queued behind this one.
         queued_behind: usize,
+        /// The highlighted choice.
+        dialog: EscalationDialog,
     },
     /// Session picker.
     Resume(ResumePicker),
@@ -204,6 +260,7 @@ pub fn draw_modal(frame: &mut Frame<'_>, area: Rect, modal: &Modal) {
         Modal::Escalation {
             prompt,
             queued_behind,
+            dialog,
             ..
         } => {
             let title = if *queued_behind > 0 {
@@ -211,7 +268,7 @@ pub fn draw_modal(frame: &mut Frame<'_>, area: Rect, modal: &Modal) {
             } else {
                 " Approval needed ".to_string()
             };
-            (title, escalation_lines(prompt, inner_w))
+            (title, escalation_lines(prompt, dialog, inner_w))
         }
         Modal::Resume(picker) => (
             " Resume session ".to_string(),
@@ -232,7 +289,11 @@ pub fn draw_modal(frame: &mut Frame<'_>, area: Rect, modal: &Modal) {
     frame.render_widget(Paragraph::new(lines).block(block), rect);
 }
 
-fn escalation_lines(prompt: &EscalationPrompt, width: usize) -> Vec<Line<'static>> {
+fn escalation_lines(
+    prompt: &EscalationPrompt,
+    dialog: &EscalationDialog,
+    width: usize,
+) -> Vec<Line<'static>> {
     let dim = Style::default().add_modifier(Modifier::DIM);
     let mut lines = Vec::new();
     if let Some(agent) = &prompt.agent {
@@ -276,19 +337,34 @@ fn escalation_lines(prompt: &EscalationPrompt, width: usize) -> Vec<Line<'static
         );
     }
     lines.push(Line::default());
-    let key = Style::default()
+    let rule = match &prompt.rule {
+        Some(rule) => format!("Yes, allow and add a rule ({rule})"),
+        None => "Yes, allow (no rule fits this action)".to_string(),
+    };
+    let choices = [
+        "Yes, allow once".to_string(),
+        rule,
+        "No, and tell the agent what to do instead (Esc)".to_string(),
+    ];
+    let highlight = Style::default()
         .fg(Color::Cyan)
         .add_modifier(Modifier::BOLD);
-    lines.push(Line::from(vec![
-        Span::styled("[y]", key),
-        Span::raw(" allow once  "),
-        Span::styled("[a]", key),
-        Span::raw(" allow + rule  "),
-        Span::styled("[n]", key),
-        Span::raw(" deny  "),
-        Span::styled("[s]", key),
-        Span::raw(" stop"),
-    ]));
+    for (i, choice) in choices.iter().enumerate() {
+        let (mark, style) = if i == dialog.cursor {
+            ("❯ ", highlight)
+        } else {
+            ("  ", Style::default())
+        };
+        lines.push(Line::styled(
+            truncate_to_width(&format!("{mark}{}. {choice}", i + 1), width),
+            style,
+        ));
+    }
+    lines.push(Line::default());
+    lines.push(Line::styled(
+        "Enter select · s stop the turn · Ctrl+C stop all",
+        dim,
+    ));
     lines
 }
 
@@ -562,6 +638,38 @@ mod tests {
             group_header(&g),
             "── litellm (openai dialect, http://localhost:4000) ──"
         );
+    }
+
+    #[test]
+    fn escalation_dialog_moves_clamped_and_picks() {
+        let mut d = EscalationDialog::default();
+        assert_eq!(d.key(KeyCode::Up), None);
+        assert_eq!(d.cursor, 0);
+        assert_eq!(d.key(KeyCode::Enter), Some(EscalationAnswer::AllowOnce));
+        for _ in 0..5 {
+            assert_eq!(d.key(KeyCode::Down), None);
+        }
+        assert_eq!(d.cursor, 2);
+        assert_eq!(d.key(KeyCode::Enter), Some(EscalationAnswer::Deny));
+        assert_eq!(d.key(KeyCode::Char('k')), None);
+        assert_eq!(
+            d.key(KeyCode::Enter),
+            Some(EscalationAnswer::AllowAndAddRule)
+        );
+        for (c, answer) in [
+            ('1', EscalationAnswer::AllowOnce),
+            ('2', EscalationAnswer::AllowAndAddRule),
+            ('3', EscalationAnswer::Deny),
+            ('y', EscalationAnswer::AllowOnce),
+            ('a', EscalationAnswer::AllowAndAddRule),
+            ('n', EscalationAnswer::Deny),
+            ('s', EscalationAnswer::Stop),
+        ] {
+            assert_eq!(d.key(KeyCode::Char(c)), Some(answer), "{c}");
+        }
+        assert_eq!(d.key(KeyCode::Esc), Some(EscalationAnswer::Deny));
+        assert_eq!(d.key(KeyCode::Char('4')), None);
+        assert_eq!(d.key(KeyCode::Char('x')), None);
     }
 
     #[test]

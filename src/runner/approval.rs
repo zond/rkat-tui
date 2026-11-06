@@ -108,12 +108,16 @@ impl Runner {
     /// Show an escalation to the human.
     pub(super) fn on_escalation(&mut self, request: EscalationRequest) {
         let EscalationRequest { prompt, respond } = request;
+        let subject = prompt.subjects.into_iter().next();
         let shown = EscalationPrompt {
             agent: prompt.agent,
             tool: prompt.tool.clone(),
             args_preview: prompt.args_preview,
             hint: prompt.classifier_hint,
             reason: prompt.policy_reason,
+            rule: subject
+                .as_ref()
+                .map(|subject| format!("{} {subject}", prompt.tool)),
         };
         self.approval.pending.insert(
             prompt.id,
@@ -121,7 +125,7 @@ impl Runner {
                 session_id: prompt.session_id,
                 respond,
                 tool: prompt.tool,
-                subject: prompt.subjects.into_iter().next(),
+                subject,
             },
         );
         self.send(Msg::Escalation(shown, EscalationId(prompt.id)));

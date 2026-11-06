@@ -189,16 +189,46 @@ fn escalation_modal_is_drawn_over_the_transcript() {
             args_preview: "rm -rf build".into(),
             hint: None,
             reason: None,
+            rule: Some("shell rm -rf build".into()),
         },
         EscalationId(1),
     ));
-    let rows = render(&mut app, Instant::now());
-    let joined = rows.join("\n");
-    assert!(joined.contains("Approval needed"), "{joined}");
-    assert!(joined.contains("Helper: researcher"), "{joined}");
-    assert!(joined.contains("Tool: shell"), "{joined}");
-    assert!(joined.contains("rm -rf build"), "{joined}");
-    assert!(joined.contains("[y] allow once"), "{joined}");
+    // The numbered choices, the cursor on the first; `s` is a footer hint.
+    let buf = render_buffer(&mut app, W, 14);
+    let drawn = rows(&buf);
+    // The dialog spans columns 2..58 of rows 1..12.
+    let modal: Vec<String> = drawn[1..12]
+        .iter()
+        .map(|r| r.chars().skip(2).take(56).collect())
+        .collect();
+    assert_eq!(
+        modal,
+        [
+            "┌ Approval needed ─────────────────────────────────────┐",
+            "│Helper: researcher                                    │",
+            "│Tool: shell                                           │",
+            "│rm -rf build                                          │",
+            "│                                                      │",
+            "│❯ 1. Yes, allow once                                  │",
+            "│  2. Yes, allow and add a rule (shell rm -rf build)   │",
+            "│  3. No, and tell the agent what to do instead (Esc)  │",
+            "│                                                      │",
+            "│Enter select · s stop the turn · Ctrl+C stop all      │",
+            "└──────────────────────────────────────────────────────┘",
+        ]
+    );
+    assert_eq!(buf[(3, 6)].fg, Color::Cyan, "the highlighted row");
+    // ↓ moves the cursor to the rule choice.
+    app.update(Msg::Key(ratatui::crossterm::event::KeyEvent::from(
+        ratatui::crossterm::event::KeyCode::Down,
+    )));
+    let moved = rows(&render_buffer(&mut app, W, 14));
+    assert!(moved[6].contains("│  1. Yes, allow once"), "{}", moved[6]);
+    assert!(
+        moved[7].contains("│❯ 2. Yes, allow and add a rule (shell rm -rf build)"),
+        "{}",
+        moved[7]
+    );
 }
 
 fn render_buffer(app: &mut App, width: u16, height: u16) -> Buffer {
