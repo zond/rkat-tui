@@ -755,3 +755,21 @@ fn a_stashed_prompt_is_named_in_the_editor_title() {
     );
     assert_eq!(lines[10], "›");
 }
+
+#[test]
+fn a_first_idle_ctrl_d_asks_for_a_second_in_the_editor_title() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = App::new(StatusInfo::default());
+    let effects = app.update(Msg::Key(KeyEvent::new(
+        KeyCode::Char('d'),
+        KeyModifiers::CONTROL,
+    )));
+    assert!(effects.is_empty());
+    let lines = rows(&render_buffer(&mut app, W, H));
+    assert!(
+        lines[9].contains("Ctrl-D again to quit"),
+        "title: {:?}",
+        lines[9]
+    );
+    assert!(!lines[9].contains("anyway"), "title: {:?}", lines[9]);
+}

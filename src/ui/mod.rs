@@ -58,8 +58,9 @@ pub use transcript::{
 /// Window in which a second Ctrl-C on an idle, empty prompt quits.
 pub const DOUBLE_CTRL_C_WINDOW: Duration = Duration::from_millis(1500);
 
-/// Window in which a second Ctrl-D / `/quit` confirms quitting while a turn
-/// is running or messages are queued.
+/// Window in which a second Ctrl-D confirms quitting (on an idle empty
+/// input), or a second Ctrl-D / `/quit` while a turn is running or messages
+/// are queued.
 pub const QUIT_CONFIRM_WINDOW: Duration = Duration::from_secs(3);
 
 /// Window in which a second Esc on an idle input with text clears it
@@ -990,8 +991,14 @@ impl App {
             .is_some_and(|t| now.saturating_duration_since(t) < DOUBLE_ESC_WINDOW)
     }
 
-    /// Whether a second Ctrl-D / `/quit` at `now` would quit despite a running
-    /// turn or queued messages (used for the input hint).
+    /// Whether quitting now would interrupt a turn or leave messages
+    /// undelivered (a quit then asks again).
+    pub fn quit_is_busy(&self) -> bool {
+        self.running || !self.pending.is_empty() || self.send_next.is_some()
+    }
+
+    /// Whether a second Ctrl-D (or, while busy, `/quit`) at `now` would quit
+    /// (used for the input hint).
     pub fn quit_confirm_armed(&self, now: Instant) -> bool {
         self.quit_confirm
             .is_some_and(|t| now.saturating_duration_since(t) < QUIT_CONFIRM_WINDOW)
@@ -1576,13 +1583,8 @@ impl App {
             Action::HelperNext => self.move_panel_selection(true),
             Action::Newline => self.input.newline(),
             Action::CtrlC => self.ctrl_c(now, fx),
-            Action::CtrlD => {
-                if self.input.is_empty() {
-                    self.request_quit(now, fx);
-                } else {
-                    self.input.delete();
-                }
-            }
+            Action::CtrlD if !self.input.is_empty() => self.input.delete(),
+            Action::CtrlD => self.ctrl_d(now, fx),
             Action::Escape => self.escape(esc_armed, now, fx),
             Action::Edit(EditAction::Up) if self.input.is_empty() && self.has_recallable() => {
                 self.recall_newest();
@@ -2277,7 +2279,18 @@ impl App {
         fx.push(Effect::Interrupt);
     }
 
-    /// Ctrl-D on an empty editor or `/quit`: quit right away when idle;
+    /// Ctrl-D on an empty editor: when idle, the first press only arms
+    /// [`QUIT_CONFIRM_WINDOW`] (the editor title says to press it again)
+    /// and a second one quits; while busy, the same as `/quit`.
+    fn ctrl_d(&mut self, now: Instant, fx: &mut Vec<Effect>) {
+        if self.quit_is_busy() || self.quit_confirm_armed(now) {
+            self.request_quit(now, fx);
+        } else {
+            self.quit_confirm = Some(now);
+        }
+    }
+
+    /// `/quit` (and a confirmed or busy Ctrl-D): quit right away when idle;
     /// otherwise warn and quit only on a second request within
     /// [`QUIT_CONFIRM_WINDOW`]. Quitting hands every held message to the
     /// integrator ([`Effect::SaveUnsent`]) so undelivered ones are saved.
@@ -3553,7 +3566,18 @@ mod tests {
         assert!(app.update(ctrl('d')).is_empty());
         assert_eq!(app.input.text(), "a");
         app.update(key(KeyCode::Backspace));
-        assert_eq!(app.update(ctrl('d')), vec![Effect::Quit]);
+        // Empty and idle: the first press only arms the quit.
+        let t0 = Instant::now();
+        assert!(app.update_at(ctrl('d'), t0).is_empty());
+        assert!(app.quit_confirm_armed(t0));
+        assert!(app.transcript.blocks().is_empty(), "no notice, only a hint");
+        assert_eq!(app.update_at(ctrl('d'), t0), vec![Effect::Quit]);
+        // Too late: it arms again.
+        let mut app = App::new(StatusInfo::default());
+        app.update_at(ctrl('d'), t0);
+        let late = t0 + QUIT_CONFIRM_WINDOW;
+        assert!(app.update_at(ctrl('d'), late).is_empty());
+        assert_eq!(app.update_at(ctrl('d'), late), vec![Effect::Quit]);
     }
 
     #[test]
@@ -3801,8 +3825,6 @@ mod tests {
 
     #[test]
     fn idle_quit_is_immediate() {
-        let mut app = App::new(StatusInfo::default());
-        assert_eq!(app.update(ctrl('d')), vec![Effect::Quit]);
         let mut app = App::new(StatusInfo::default());
         type_str(&mut app, "/quit");
         assert_eq!(app.update(key(KeyCode::Enter)), vec![Effect::Quit]);

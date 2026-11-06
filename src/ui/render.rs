@@ -181,8 +181,10 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect, now: Instant) {
     };
     let title: String = if app.quit_armed(now) {
         " press Ctrl-C again to quit ".into()
-    } else if app.quit_confirm_armed(now) {
+    } else if app.quit_confirm_armed(now) && app.quit_is_busy() {
         " press Ctrl-D (or /quit) again to quit anyway ".into()
+    } else if app.quit_confirm_armed(now) {
+        " Ctrl-D again to quit ".into()
     } else if app.esc_clear_armed(now) {
         " Esc again to clear the input (saved to history) ".into()
     } else if app.chord_pending(now) {

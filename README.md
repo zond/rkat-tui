@@ -62,8 +62,9 @@ happened to an input; never resubmit it blindly). A steered message counts
 as delivered only when the runtime reports it written at a boundary or its
 input consumed.
 
-Ctrl-D on an empty editor (or `/quit`) quits at once when idle. While a turn
-runs or messages are pending it warns first; pressing it again within 3 s
+Ctrl-D on an empty editor quits on a second press within 3 s (the editor
+title asks for it); `/quit` quits at once when idle. While a turn runs or
+messages are pending both warn first; pressing again within 3 s
 interrupts the turn and appends every message the model never received to
 `<workspace>/.rkat/tui/tui_unsent.txt` (the next start says so).
 

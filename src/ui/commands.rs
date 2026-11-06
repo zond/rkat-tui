@@ -177,9 +177,9 @@ Keys:
   Esc                            recall queued messages (interrupts when nothing is queued)
   Esc Esc (idle, with text)      clear the input and save it to the prompt history (↑ recalls it)
   Up (empty input)               edit the newest queued message
-  Ctrl-D                         quit (on empty input; press again within 3 s while a turn
-                                 runs or messages are queued: the turn is interrupted and
-                                 undelivered messages are saved)
+  Ctrl-D                         quit on an empty input: press again within 3 s (while a turn
+                                 runs or messages are queued the turn is then interrupted and
+                                 undelivered messages are saved); with text, delete forward
   Ctrl-O                         show or hide detail: the last reasoning block and the
                                  output of the last tool call (a click toggles one tool)
   Ctrl+Up/Down                   select a helper in the panel under the input (newest first);
