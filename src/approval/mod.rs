@@ -124,8 +124,11 @@ pub enum DenyReason {
         /// Explanation.
         explanation: String,
     },
-    /// The human denied it.
-    Human,
+    /// The human denied it, optionally telling the agent what to do instead.
+    Human {
+        /// The user's instruction to the agent, if they wrote one.
+        comment: Option<String>,
+    },
     /// The human stopped the turn.
     Stopped,
     /// Auto mode is disabled; Tier-3 actions are not run.
@@ -150,7 +153,7 @@ impl DenyReason {
             | Self::ClassifierUnavailable(_)
             | Self::LedgerUnavailable(_) => Decider::Policy,
             Self::Classifier { .. } => Decider::Classifier,
-            Self::Human | Self::Stopped | Self::EscalationTimedOut => Decider::Human,
+            Self::Human { .. } | Self::Stopped | Self::EscalationTimedOut => Decider::Human,
         }
     }
 
@@ -178,7 +181,10 @@ impl fmt::Display for DenyReason {
                 rule: None,
                 explanation,
             } => f.write_str(explanation),
-            Self::Human => f.write_str("the user denied this action"),
+            Self::Human { comment: None } => f.write_str("the user denied this action"),
+            Self::Human {
+                comment: Some(comment),
+            } => write!(f, "denied by the user: {comment}"),
             Self::Stopped => f.write_str("the user stopped this turn"),
             Self::AutoDisabled => {
                 f.write_str("auto mode is disabled, so actions that need safety review are not run")
@@ -234,6 +240,17 @@ pub struct DenyPayload {
 /// Model-facing denial message.
 #[must_use]
 pub fn deny_message(reason: &DenyReason) -> String {
+    if let DenyReason::Human {
+        comment: Some(_), ..
+    } = reason
+    {
+        // The user said what to do instead: that is the way forward, not a
+        // detour around the denial.
+        return format!(
+            "Blocked by auto-mode safety policy: {reason}. Do what the user says instead; do not \
+             try to achieve the denied action's effect another way."
+        );
+    }
     format!(
         "Blocked by auto-mode safety policy: {reason}. Do not try to achieve the same effect \
          another way (different tool, rewritten or encoded command, or a script). Choose a safer \
@@ -346,7 +363,7 @@ mod tests {
         };
         assert_eq!(classifier.decider(), Decider::Classifier);
         assert_eq!(classifier.rule_label().as_deref(), Some("D1"));
-        assert_eq!(DenyReason::Human.decider(), Decider::Human);
+        assert_eq!(DenyReason::Human { comment: None }.decider(), Decider::Human);
         assert_eq!(DenyReason::EscalationTimedOut.decider(), Decider::Human);
         assert_eq!(DenyReason::AutoDisabled.decider(), Decider::Policy);
         assert_eq!(DenyReason::Stopped.rule_label(), None);

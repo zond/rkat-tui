@@ -1003,10 +1003,14 @@ impl ApprovalEngine {
                 self.human_allowed(tier);
                 allow_at(tier, Decider::Human, "allowed by the user (rule added)")
             }
-            HumanDecision::Deny => {
+            HumanDecision::Deny { comment } => {
                 // A denial stands whether or not it could be recorded.
-                let _ = pending.settle(ApprovalDecision::Deny, "denied").await;
-                deny_at(tier, DenyReason::Human)
+                let reason = match &comment {
+                    Some(comment) => format!("denied: {comment}"),
+                    None => "denied".to_string(),
+                };
+                let _ = pending.settle(ApprovalDecision::Deny, &reason).await;
+                deny_at(tier, DenyReason::Human { comment })
             }
             HumanDecision::Stop => {
                 let _ = pending
@@ -2113,12 +2117,12 @@ mod tests {
 
         let task = spawn_call(&rig, "w2", "write_file", env_write());
         let request = rig.escalations.recv().await.unwrap();
-        request.respond.send(HumanDecision::Deny).unwrap();
+        request.respond.send(HumanDecision::Deny { comment: None }).unwrap();
         assert_eq!(
             task.await.unwrap(),
             Verdict::Deny {
                 tier: Tier::AskUser,
-                reason: DenyReason::Human
+                reason: DenyReason::Human { comment: None }
             }
         );
 
@@ -2148,7 +2152,7 @@ mod tests {
         // The rule is that file's only.
         let task = spawn_call(&rig, "w5", "write_file", json!({"path": ".env", "content": ""}));
         let request = rig.escalations.recv().await.unwrap();
-        request.respond.send(HumanDecision::Deny).unwrap();
+        request.respond.send(HumanDecision::Deny { comment: None }).unwrap();
         assert!(!task.await.unwrap().is_allowed());
 
         assert_eq!(rig.classifier.calls(), 0);

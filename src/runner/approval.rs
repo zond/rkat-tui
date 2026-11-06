@@ -145,7 +145,7 @@ impl Runner {
         };
         let decision = match answer {
             EscalationAnswer::AllowOnce => HumanDecision::AllowOnce,
-            EscalationAnswer::Deny => HumanDecision::Deny,
+            EscalationAnswer::Deny { comment } => HumanDecision::Deny { comment },
             EscalationAnswer::Stop => HumanDecision::Stop,
             EscalationAnswer::AllowAndAddRule => {
                 // A literal rule over the canonical subject: matches exactly

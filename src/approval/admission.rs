@@ -201,7 +201,7 @@ mod tests {
 
     #[test]
     fn denials_are_policy_denied_with_the_reason() {
-        let error = denial_error(&DenyReason::Human);
+        let error = denial_error(&DenyReason::Human { comment: None });
         assert_eq!(error.error_code(), "policy_denied");
         let text = error.to_string();
         assert!(
@@ -209,5 +209,11 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("the user denied this action"));
+        let text = denial_error(&DenyReason::Human {
+            comment: Some("use git mv".into()),
+        })
+        .to_string();
+        assert!(text.contains("denied by the user: use git mv."), "{text}");
+        assert!(text.contains("Do what the user says instead"), "{text}");
     }
 }

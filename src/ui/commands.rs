@@ -256,7 +256,8 @@ Keys:
 Approval prompt:
   1, y                           yes, allow once
   2, a                           yes, allow and add the rule the row shows
-  3, n, Esc                      no, deny
+  3, n, Esc                      no: type what the agent should do instead and Enter sends it
+                                 with the denial (empty Enter or Esc denies without a comment)
   Up/Down, j/k, Enter            move between the rows and pick one
   s                              stop the turn (Ctrl-C stops every open prompt)
 Start a prompt with // to send a literal leading slash.";

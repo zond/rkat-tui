@@ -231,6 +231,52 @@ fn escalation_modal_is_drawn_over_the_transcript() {
     );
 }
 
+#[test]
+fn escalation_deny_comment_field_snapshot() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent};
+    let mut app = sample_app();
+    app.update(Msg::Escalation(
+        EscalationPrompt {
+            agent: None,
+            tool: "write_file".into(),
+            args_preview: ".env.local".into(),
+            hint: None,
+            reason: None,
+            rule: Some("write_file .env.local".into()),
+        },
+        EscalationId(1),
+    ));
+    app.update(Msg::Key(KeyEvent::from(KeyCode::Char('n'))));
+    for c in "use .env.example".chars() {
+        app.update(Msg::Key(KeyEvent::from(KeyCode::Char(c))));
+    }
+    let drawn = rows(&render_buffer(&mut app, W, 16));
+    let modal: Vec<String> = drawn
+        .iter()
+        .map(|r| r.chars().skip(2).take(56).collect::<String>())
+        .skip_while(|r| !r.starts_with('┌'))
+        .take(13)
+        .collect();
+    assert_eq!(
+        modal,
+        [
+            "┌ Approval needed ─────────────────────────────────────┐",
+            "│Tool: write_file                                      │",
+            "│.env.local                                            │",
+            "│                                                      │",
+            "│  1. Yes, allow once                                  │",
+            "│  2. Yes, allow and add a rule (write_file .env.local)│",
+            "│❯ 3. No, and tell the agent what to do instead (Esc)  │",
+            "│                                                      │",
+            "│Tell the agent what to do instead:                    │",
+            "│› use .env.example                                    │",
+            "│Enter sends · empty Enter denies without a comment ·  │",
+            "│Esc denies · Ctrl+C stop all                          │",
+            "└──────────────────────────────────────────────────────┘",
+        ]
+    );
+}
+
 fn render_buffer(app: &mut App, width: u16, height: u16) -> Buffer {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     terminal.draw(|f| draw_at(f, app, Instant::now())).unwrap();

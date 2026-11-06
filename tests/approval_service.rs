@@ -296,6 +296,58 @@ async fn an_unanswered_escalation_times_out_as_a_denial() {
     rig.quit().await;
 }
 
+/// "No, and tell the agent what to do instead": the comment the user wrote
+/// reaches the model in the denied call's tool error, and the approval
+/// record keeps it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_deny_comment_reaches_the_model_as_the_tool_error() {
+    let ws = Workspace::new();
+    let classifier = ScriptedClassifier::new(vec![]);
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Tool {
+            id: "w1",
+            name: "write_file",
+            args: json!({ "path": ".env.local", "content": "TOKEN=1\n" }),
+        },
+        Step::Text("understood"),
+    ]);
+    let mut rig = Rig::start_with(&ws.root, &llm, Start::New, overrides(&classifier)).await;
+    rig.send(Effect::StartTurn("configure the token".into()));
+    let Msg::Escalation(_, id) = rig.wait_for(|msg| matches!(msg, Msg::Escalation(..))).await
+    else {
+        unreachable!()
+    };
+    rig.send(Effect::RespondEscalation(
+        id,
+        EscalationAnswer::Deny {
+            comment: Some("put it in .env.example instead".into()),
+        },
+    ));
+    assert_eq!(
+        rig.turn_finished().await.result.expect("turn").text,
+        "understood"
+    );
+    assert!(!ws.root.join(".env.local").exists());
+    let result = tool_result(&llm.requests()[1], "w1");
+    assert!(result.is_error);
+    let text = result.text_content();
+    assert!(
+        text.contains("denied by the user: put it in .env.example instead"),
+        "{text}"
+    );
+    assert!(text.contains("Do what the user says instead"), "{text}");
+    let records = rig.approval.ledger().unwrap().records().unwrap();
+    assert_eq!(records[0].status, ApprovalStatus::Denied);
+    assert_eq!(
+        records[0]
+            .decision
+            .as_ref()
+            .and_then(|d| d.reason.as_deref()),
+        Some("denied: put it in .env.example instead")
+    );
+    rig.quit().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_resumed_session_reseeds_the_classifier_transcript() {
     let ws = Workspace::new();
@@ -396,7 +448,10 @@ async fn a_protected_write_asks_the_user_and_allow_always_stops_the_prompts() {
         prompt.reason.as_deref(),
         Some("protected path: `.env.local` (secrets); the policy always asks for these")
     );
-    rig.send(Effect::RespondEscalation(id, EscalationAnswer::Deny));
+    rig.send(Effect::RespondEscalation(
+        id,
+        EscalationAnswer::Deny { comment: None },
+    ));
     let notice = rig
         .wait_for(|msg| matches!(msg, Msg::Approval(ApprovalNotice { allowed: false, .. })))
         .await;

@@ -142,6 +142,10 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
     tell the agent what to do instead (Esc)"): ↑/↓ or `j`/`k` and Enter,
     or `1`-`3`, pick a row; `y`, `a`, `n`/Esc still answer, `s` stops the
     turn and Ctrl+C stops every prompt (a footer hint, not a row).
+  - Row 3 opens a one-line comment field: Enter denies with the text, which
+    the model receives in the tool error (`denied by the user: <text>`, with
+    an instruction to follow it) and the approval record keeps; an empty
+    Enter or Esc denies without a comment.
 
 ### Changed
 

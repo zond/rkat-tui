@@ -1464,7 +1464,9 @@ impl App {
                 }
             }
             Msg::Paste(text) => {
-                if self.modal.is_none() {
+                if let Some(Modal::Escalation { dialog, .. }) = &mut self.modal {
+                    dialog.type_text(&text);
+                } else if self.modal.is_none() {
                     self.chord = None;
                     if let InputMode::Search(search) = &mut self.mode {
                         for c in text.chars().filter(|c| !c.is_control()) {
@@ -1881,7 +1883,7 @@ impl App {
         match &mut self.modal {
             Some(Modal::Escalation { id, dialog, .. }) => {
                 let id = *id;
-                if repeat && !EscalationDialog::is_move(key.code) {
+                if repeat && !dialog.accepts_repeat(key.code) {
                     return;
                 }
                 if ctrl_c {
@@ -3846,7 +3848,10 @@ mod tests {
         assert!(matches!(
             app.modal,
             Some(Modal::Escalation {
-                dialog: EscalationDialog { cursor: 1 },
+                dialog: EscalationDialog {
+                    cursor: 1,
+                    comment: None
+                },
                 ..
             })
         ));
@@ -3868,7 +3873,10 @@ mod tests {
         assert!(matches!(
             app.modal,
             Some(Modal::Escalation {
-                dialog: EscalationDialog { cursor: 2 },
+                dialog: EscalationDialog {
+                    cursor: 2,
+                    comment: None
+                },
                 ..
             })
         ));
@@ -3890,6 +3898,65 @@ mod tests {
             )]
         );
         assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn deny_with_a_comment_then_the_queue_and_the_parked_picker() {
+        let (mut app, picker) = app_with_moved_model_picker();
+        for n in 1..=3 {
+            app.update(Msg::Escalation(shell_prompt(), EscalationId(n)));
+        }
+        // `n` opens the field; typed and pasted text goes into it, not the
+        // input, and `s` is a letter there.
+        assert!(app.update(key(KeyCode::Char('n'))).is_empty());
+        type_str(&mut app, "use cargo nextest, not s");
+        app.update(Msg::Paste("hell\nscripts".into()));
+        assert!(app.input.is_empty());
+        assert_eq!(
+            app.update(key(KeyCode::Enter)),
+            vec![Effect::RespondEscalation(
+                EscalationId(1),
+                EscalationAnswer::Deny {
+                    comment: Some("use cargo nextest, not shell scripts".into())
+                }
+            )]
+        );
+        // The next queued dialog starts closed, on row 1.
+        assert!(matches!(
+            app.modal,
+            Some(Modal::Escalation {
+                id: EscalationId(2),
+                queued_behind: 1,
+                dialog: EscalationDialog {
+                    cursor: 0,
+                    comment: None
+                },
+                ..
+            })
+        ));
+        // Enter on row 3 opens it too; an empty Enter denies without a comment.
+        app.update(key(KeyCode::Down));
+        app.update(key(KeyCode::Down));
+        assert!(app.update(key(KeyCode::Enter)).is_empty());
+        assert_eq!(
+            app.update(key(KeyCode::Enter)),
+            vec![Effect::RespondEscalation(
+                EscalationId(2),
+                EscalationAnswer::Deny { comment: None }
+            )]
+        );
+        // Ctrl+C in an open field still stops every prompt, and the parked
+        // picker comes back.
+        app.update(key(KeyCode::Char('3')));
+        type_str(&mut app, "half a thought");
+        assert_eq!(
+            app.update(ctrl('c')),
+            vec![Effect::RespondEscalation(
+                EscalationId(3),
+                EscalationAnswer::Stop
+            )]
+        );
+        assert_eq!(app.modal.as_ref(), Some(&picker));
     }
 
     #[test]
@@ -4430,13 +4497,15 @@ mod tests {
         if let Some(Modal::Model(p)) = &app.modal {
             assert_eq!(p.filter, "claude");
         }
-        // Esc in an escalation denies it and still brings the picker back.
+        // Esc in an escalation opens the comment field, a second Esc
+        // denies it, and the picker comes back.
         app.update(Msg::Escalation(shell_prompt(), EscalationId(2)));
+        assert!(app.update(key(KeyCode::Esc)).is_empty());
         assert_eq!(
             app.update(key(KeyCode::Esc)),
             vec![Effect::RespondEscalation(
                 EscalationId(2),
-                EscalationAnswer::Deny
+                EscalationAnswer::Deny { comment: None }
             )]
         );
         assert_eq!(app.modal.as_ref(), Some(&picker));
@@ -4485,6 +4554,7 @@ mod tests {
         app.update(key(KeyCode::Down));
         app.update(Msg::Escalation(shell_prompt(), EscalationId(1)));
         app.update(key(KeyCode::Char('n')));
+        app.update(key(KeyCode::Enter));
         assert!(matches!(
             app.modal,
             Some(Modal::Resume(ResumePicker { selected: 1, .. }))

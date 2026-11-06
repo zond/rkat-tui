@@ -140,7 +140,13 @@ Enter select · s stop the turn · Ctrl+C stop all
 ↑/↓ (or `j`/`k`) move the cursor and Enter picks the highlighted row; `1`,
 `2` and `3` pick a row directly, and the letters `y`, `a` and `n` (or Esc)
 do the same. `s` denies and stops the turn; Ctrl-C stops every open
-prompt. A held key only moves the cursor, it never answers. Row 2 names
+prompt. A held key only moves the cursor, it never answers. Choosing row 3
+(`3`, `n`, Esc, or Enter on it) opens a one-line field, "Tell the agent
+what to do instead": Enter denies the call and the model's tool error reads
+`denied by the user: <your text>` with an instruction to follow it (the
+realm's approval record keeps the text too); an empty Enter, or Esc, denies
+without a comment. In the field every letter is text (`s` included) and a
+paste joins onto the line; Ctrl-C still stops everything. Row 2 names
 the rule it adds; an action with no rule subject shows
 `Yes, allow (no rule fits this action)` there and is allowed once.
 "Allow and add a rule" adds a literal allow rule

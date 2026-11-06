@@ -3,7 +3,7 @@
 //! The admission gate decides parallel tool calls concurrently, but the human can
 //! only answer one dialog at a time, so the broker serializes requests with an
 //! async mutex held across the whole wait. Any failure to get an answer (UI
-//! gone, responder dropped) resolves as [`HumanDecision::Deny`]: fail closed.
+//! gone, responder dropped) resolves as [`HumanDecision::Deny`] without a comment: fail closed.
 
 use super::rules::Rule;
 use meerkat_core::SessionId;
@@ -17,7 +17,10 @@ pub enum HumanDecision {
     /// Allow and add the given (narrow) allow rule.
     AllowAndAddRule(Box<Rule>),
     /// Deny this call.
-    Deny,
+    Deny {
+        /// What the user told the agent to do instead, if anything.
+        comment: Option<String>,
+    },
     /// Deny and stop the turn; pending escalations for the session are denied too.
     Stop,
 }
@@ -96,9 +99,9 @@ impl EscalationBroker {
             .await
             .is_err()
         {
-            return HumanDecision::Deny;
+            return HumanDecision::Deny { comment: None };
         }
-        answer.await.unwrap_or(HumanDecision::Deny)
+        answer.await.unwrap_or(HumanDecision::Deny { comment: None })
     }
 
     /// Acquire the serial lock and ask the human.
@@ -153,12 +156,12 @@ mod tests {
         first.respond.send(HumanDecision::AllowOnce).unwrap();
         let second = rx.recv().await.unwrap();
         assert_ne!(second.prompt.tool, first_tool);
-        second.respond.send(HumanDecision::Deny).unwrap();
+        second.respond.send(HumanDecision::Deny { comment: None }).unwrap();
 
         let (ra, rb) = (a.await.unwrap(), b.await.unwrap());
         let mut answers = [ra, rb];
-        answers.sort_by_key(|d| matches!(d, HumanDecision::Deny));
-        assert_eq!(answers, [HumanDecision::AllowOnce, HumanDecision::Deny]);
+        answers.sort_by_key(|d| matches!(d, HumanDecision::Deny { .. }));
+        assert_eq!(answers, [HumanDecision::AllowOnce, HumanDecision::Deny { comment: None }]);
     }
 
     #[tokio::test]
@@ -167,13 +170,13 @@ mod tests {
         let task = tokio::spawn(async move { broker.ask(prompt("x")).await });
         let req = rx.recv().await.unwrap();
         drop(req);
-        assert_eq!(task.await.unwrap(), HumanDecision::Deny);
+        assert_eq!(task.await.unwrap(), HumanDecision::Deny { comment: None });
     }
 
     #[tokio::test]
     async fn dropped_receiver_denies() {
         let (broker, rx) = EscalationBroker::new(1);
         drop(rx);
-        assert_eq!(broker.ask(prompt("x")).await, HumanDecision::Deny);
+        assert_eq!(broker.ask(prompt("x")).await, HumanDecision::Deny { comment: None });
     }
 }

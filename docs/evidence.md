@@ -1107,3 +1107,28 @@ Three "reuse the existing owner" items from the maintainer's review ("Existing o
 - Commands: `cargo clippy --all-targets --all-features -- -D warnings` exit 0; `cargo fmt --all` exit 0;
   `cargo nextest run --all-features` first run 771 passed, 1 failed (`workspace_state_survives_a_rename`, the known
   timing flake), rerun 777 passed, 6 skipped, exit 0.
+
+### 2. Deny with a comment
+
+- Before: `n`/Esc denied at once; the model read `the user denied this action` and nothing else.
+- After: picking row 3 (`3`, `n`, Esc, Enter on it) opens `EscalationDialog::comment` (one line; control characters
+  dropped, newlines and tabs become spaces, a paste goes in, 2000 chars max; letters are text, `s` included; a held
+  key types or deletes but never answers). Enter sends `EscalationAnswer::Deny { comment }` (trimmed; `None` when
+  empty), Esc sends `Deny { comment: None }`, Ctrl+C still stops every prompt. The comment travels as
+  `HumanDecision::Deny { comment }` to the engine, which records `denied: <comment>` as the approval ledger's decision
+  reason and denies with `DenyReason::Human { comment }`: its display is `denied by the user: <comment>`, and
+  `deny_message` then says `Do what the user says instead; do not try to achieve the denied action's effect another
+  way.` instead of the "choose a safer approach or ask" tail. Without a comment the wording is unchanged. The broker's
+  fail-closed answers are `Deny { comment: None }`. The approval transcript records no decisions, so it is unchanged.
+- Tests: `ui::modal::tests::escalation_dialog_moves_clamped_and_picks` (every way into the field, Esc and blank Enter
+  deny without a comment), `the_comment_field_takes_text_and_denies_with_it` (typing, Backspace, paste, repeat, cap),
+  `ui::tests::deny_with_a_comment_then_the_queue_and_the_parked_picker` (three queued escalations over a parked model
+  picker: a typed + pasted comment, Enter on row 3 then empty Enter, Ctrl+C in an open field; the picker returns),
+  `escalation_parks_the_model_picker_and_restores_it` / `escalation_parks_the_resume_picker_and_restores_it` (updated:
+  Esc/`n` open the field, a second key denies), `approval::admission::tests::denials_are_policy_denied_with_the_reason`,
+  `render_snapshot::escalation_deny_comment_field_snapshot`, and end to end
+  `approval_service::a_deny_comment_reaches_the_model_as_the_tool_error` (a protected `.env.local` write denied with
+  a comment: the tool error the model receives contains `denied by the user: put it in .env.example instead`, the
+  file is not written, the ledger record is Denied with reason `denied: put it in .env.example instead`).
+- Commands: `cargo clippy --all-targets --all-features -- -D warnings` exit 0; `cargo fmt --all` exit 0;
+  `cargo nextest run --all-features` 781 passed, 6 skipped, exit 0.

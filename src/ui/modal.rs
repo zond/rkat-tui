@@ -24,14 +24,17 @@ const MAX_ARGS_LINES: usize = 10;
 pub struct EscalationId(pub u64);
 
 /// The user's answer to an escalation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EscalationAnswer {
     /// Allow this call only.
     AllowOnce,
     /// Allow and persist a narrow allow rule.
     AllowAndAddRule,
     /// Deny this call.
-    Deny,
+    Deny {
+        /// What to tell the agent to do instead (the tool error carries it).
+        comment: Option<String>,
+    },
     /// Deny and stop the turn.
     Stop,
 }
@@ -55,51 +58,109 @@ pub struct EscalationPrompt {
     pub rule: Option<String>,
 }
 
-/// The escalation dialog's numbered choices, top to bottom.
-const ESCALATION_CHOICES: [EscalationAnswer; 3] = [
-    EscalationAnswer::AllowOnce,
-    EscalationAnswer::AllowAndAddRule,
-    EscalationAnswer::Deny,
-];
+/// How many numbered choices the escalation dialog lists.
+const ESCALATION_CHOICES: usize = 3;
 
-/// The escalation dialog's own state: the highlighted choice.
+/// Index of the "No, and tell the agent what to do instead" choice.
+const DENY_CHOICE: usize = 2;
+
+/// Longest deny comment, in characters.
+const MAX_COMMENT_CHARS: usize = 2000;
+
+/// The escalation dialog's own state: the highlighted choice and, once
+/// "No" was chosen, the comment being written.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EscalationDialog {
     /// Index into the numbered choices (0: allow once).
     pub cursor: usize,
+    /// The comment field: `Some` once the deny choice was picked.
+    pub comment: Option<String>,
 }
 
 impl EscalationDialog {
-    /// Whether `code` only moves the cursor (a held key may repeat it).
+    /// Whether a held (repeating) `code` may act: it moves the cursor or
+    /// edits the comment, never answers.
     #[must_use]
-    pub fn is_move(code: KeyCode) -> bool {
-        matches!(
-            code,
-            KeyCode::Up | KeyCode::Down | KeyCode::Char('j' | 'k')
-        )
+    pub fn accepts_repeat(&self, code: KeyCode) -> bool {
+        if self.comment.is_some() {
+            matches!(code, KeyCode::Char(_) | KeyCode::Backspace)
+        } else {
+            matches!(
+                code,
+                KeyCode::Up | KeyCode::Down | KeyCode::Char('j' | 'k')
+            )
+        }
     }
 
     /// Apply a key: arrows (and `j`/`k`) move the cursor, Enter picks the
     /// highlighted choice, `1`-`3` pick directly, and the accelerators
-    /// `y`, `a`, `n`/Esc and `s` answer at once. `None`: no answer yet.
+    /// `y`, `a`, `n`/Esc and `s` answer at once. The deny choice opens the
+    /// comment field; there Enter denies with the comment (none when
+    /// empty) and Esc denies without one. `None`: no answer yet.
     pub fn key(&mut self, code: KeyCode) -> Option<EscalationAnswer> {
-        let pick = |index: usize| ESCALATION_CHOICES.get(index).copied();
+        if let Some(comment) = &mut self.comment {
+            return match code {
+                KeyCode::Enter => {
+                    let text = comment.trim();
+                    let comment = (!text.is_empty()).then(|| text.to_string());
+                    Some(EscalationAnswer::Deny { comment })
+                }
+                KeyCode::Esc => Some(EscalationAnswer::Deny { comment: None }),
+                KeyCode::Backspace => {
+                    comment.pop();
+                    None
+                }
+                KeyCode::Char(c) => {
+                    let mut buf = [0; 4];
+                    self.type_text(c.encode_utf8(&mut buf));
+                    None
+                }
+                _ => None,
+            };
+        }
         match code {
             KeyCode::Up | KeyCode::Char('k') => {
                 self.cursor = self.cursor.saturating_sub(1);
                 None
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                self.cursor = (self.cursor + 1).min(ESCALATION_CHOICES.len() - 1);
+                self.cursor = (self.cursor + 1).min(ESCALATION_CHOICES - 1);
                 None
             }
-            KeyCode::Enter => pick(self.cursor),
-            KeyCode::Char(c @ '1'..='3') => pick(usize::from(c as u8 - b'1')),
-            KeyCode::Char('y' | 'Y') => Some(EscalationAnswer::AllowOnce),
-            KeyCode::Char('a' | 'A') => Some(EscalationAnswer::AllowAndAddRule),
-            KeyCode::Char('n' | 'N') | KeyCode::Esc => Some(EscalationAnswer::Deny),
+            KeyCode::Enter => self.pick(self.cursor),
+            KeyCode::Char(c @ '1'..='3') => self.pick(usize::from(c as u8 - b'1')),
+            KeyCode::Char('y' | 'Y') => self.pick(0),
+            KeyCode::Char('a' | 'A') => self.pick(1),
+            KeyCode::Char('n' | 'N') | KeyCode::Esc => self.pick(DENY_CHOICE),
             KeyCode::Char('s' | 'S') => Some(EscalationAnswer::Stop),
             _ => None,
+        }
+    }
+
+    /// Type (or paste) `text` into an open comment field, on one line and
+    /// without control characters. Does nothing while the field is closed.
+    pub fn type_text(&mut self, text: &str) {
+        let Some(comment) = &mut self.comment else {
+            return;
+        };
+        let room = MAX_COMMENT_CHARS.saturating_sub(comment.chars().count());
+        comment.extend(
+            text.chars()
+                .map(|c| if c == '\n' || c == '\t' { ' ' } else { c })
+                .filter(|c| !c.is_control())
+                .take(room),
+        );
+    }
+
+    fn pick(&mut self, index: usize) -> Option<EscalationAnswer> {
+        match index {
+            0 => Some(EscalationAnswer::AllowOnce),
+            1 => Some(EscalationAnswer::AllowAndAddRule),
+            _ => {
+                self.cursor = DENY_CHOICE;
+                self.comment = Some(String::new());
+                None
+            }
         }
     }
 }
@@ -361,10 +422,31 @@ fn escalation_lines(
         ));
     }
     lines.push(Line::default());
-    lines.push(Line::styled(
-        "Enter select · s stop the turn · Ctrl+C stop all",
-        dim,
-    ));
+    let Some(comment) = &dialog.comment else {
+        lines.push(Line::styled(
+            "Enter select · s stop the turn · Ctrl+C stop all",
+            dim,
+        ));
+        return lines;
+    };
+    lines.push(Line::from("Tell the agent what to do instead:"));
+    // One line: the end of the text stays in view, with a block cursor.
+    let room = width.saturating_sub(3);
+    let skip = comment.chars().count().saturating_sub(room);
+    let shown: String = comment.chars().skip(skip).collect();
+    lines.push(Line::from(vec![
+        Span::styled("› ", highlight),
+        Span::raw(shown),
+        Span::styled(" ", Style::default().add_modifier(Modifier::REVERSED)),
+    ]));
+    lines.extend(
+        wrap_text(
+            "Enter sends · empty Enter denies without a comment · Esc denies · Ctrl+C stop all",
+            width,
+        )
+        .into_iter()
+        .map(|l| Line::styled(l, dim)),
+    );
     lines
 }
 
@@ -642,15 +724,18 @@ mod tests {
 
     #[test]
     fn escalation_dialog_moves_clamped_and_picks() {
+        let deny = |comment: Option<&str>| EscalationAnswer::Deny {
+            comment: comment.map(str::to_string),
+        };
         let mut d = EscalationDialog::default();
         assert_eq!(d.key(KeyCode::Up), None);
         assert_eq!(d.cursor, 0);
         assert_eq!(d.key(KeyCode::Enter), Some(EscalationAnswer::AllowOnce));
+        assert_eq!(d.key(KeyCode::Char('k')), None);
         for _ in 0..5 {
             assert_eq!(d.key(KeyCode::Down), None);
         }
         assert_eq!(d.cursor, 2);
-        assert_eq!(d.key(KeyCode::Enter), Some(EscalationAnswer::Deny));
         assert_eq!(d.key(KeyCode::Char('k')), None);
         assert_eq!(
             d.key(KeyCode::Enter),
@@ -659,17 +744,77 @@ mod tests {
         for (c, answer) in [
             ('1', EscalationAnswer::AllowOnce),
             ('2', EscalationAnswer::AllowAndAddRule),
-            ('3', EscalationAnswer::Deny),
             ('y', EscalationAnswer::AllowOnce),
             ('a', EscalationAnswer::AllowAndAddRule),
-            ('n', EscalationAnswer::Deny),
             ('s', EscalationAnswer::Stop),
         ] {
             assert_eq!(d.key(KeyCode::Char(c)), Some(answer), "{c}");
         }
-        assert_eq!(d.key(KeyCode::Esc), Some(EscalationAnswer::Deny));
         assert_eq!(d.key(KeyCode::Char('4')), None);
         assert_eq!(d.key(KeyCode::Char('x')), None);
+        assert_eq!(d.comment, None);
+        // `3`, `n`, Esc and Enter on row 3 open the comment field; there
+        // Esc denies without a comment.
+        for open in [
+            KeyCode::Char('3'),
+            KeyCode::Char('n'),
+            KeyCode::Char('N'),
+            KeyCode::Esc,
+        ] {
+            let mut d = EscalationDialog::default();
+            assert_eq!(d.key(open), None, "{open:?}");
+            assert_eq!(d.cursor, 2);
+            assert_eq!(d.comment.as_deref(), Some(""));
+            assert_eq!(d.key(KeyCode::Esc), Some(deny(None)));
+        }
+        let mut d = EscalationDialog {
+            cursor: 2,
+            comment: None,
+        };
+        assert_eq!(d.key(KeyCode::Enter), None);
+        // Empty (or blank) Enter denies without a comment.
+        assert_eq!(d.key(KeyCode::Char(' ')), None);
+        assert_eq!(d.key(KeyCode::Enter), Some(deny(None)));
+    }
+
+    #[test]
+    fn the_comment_field_takes_text_and_denies_with_it() {
+        let mut d = EscalationDialog::default();
+        d.type_text("ignored while closed");
+        assert_eq!(d.comment, None);
+        d.key(KeyCode::Char('3'));
+        // Letters that answer elsewhere are text here, `s` included.
+        for c in "use git mvx".chars() {
+            assert_eq!(d.key(KeyCode::Char(c)), None);
+        }
+        assert_eq!(d.key(KeyCode::Backspace), None);
+        assert!(d.accepts_repeat(KeyCode::Char('s')));
+        assert!(d.accepts_repeat(KeyCode::Backspace));
+        assert!(!d.accepts_repeat(KeyCode::Enter));
+        assert!(!d.accepts_repeat(KeyCode::Esc));
+        // A paste lands on one line, control characters dropped.
+        d.type_text("\n and\tkeep\u{1b} history");
+        assert_eq!(d.comment.as_deref(), Some("use git mv  and keep history"));
+        assert_eq!(d.key(KeyCode::Up), None, "arrows do not move in the field");
+        assert_eq!(d.cursor, 2);
+        assert_eq!(
+            d.key(KeyCode::Enter),
+            Some(EscalationAnswer::Deny {
+                comment: Some("use git mv  and keep history".into())
+            })
+        );
+        // The field is capped.
+        let mut d = EscalationDialog::default();
+        d.key(KeyCode::Esc);
+        d.type_text(&"x".repeat(MAX_COMMENT_CHARS + 10));
+        assert_eq!(
+            d.comment.as_ref().map(|c| c.chars().count()),
+            Some(MAX_COMMENT_CHARS)
+        );
+        // Closed, only moves repeat.
+        let d = EscalationDialog::default();
+        assert!(d.accepts_repeat(KeyCode::Down));
+        assert!(!d.accepts_repeat(KeyCode::Char('y')));
     }
 
     #[test]
