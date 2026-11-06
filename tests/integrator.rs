@@ -991,3 +991,32 @@ async fn context_report_describes_the_session() {
     assert!(text.contains("registered by rkat-tui"), "{text}");
     rig.quit().await;
 }
+
+/// `/status`: one notice naming the version, model, session and the rest.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn status_report_names_the_session_and_the_workspace() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let mut rig = Rig::start(&ws.root, &llm, Start::New).await;
+    rig.send(Effect::StatusReport);
+    let msg = rig
+        .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text.starts_with("rkat-tui ")))
+        .await;
+    let Msg::Notice { text, .. } = msg else {
+        unreachable!()
+    };
+    assert!(
+        text.contains(&format!("session: {}", rig.first_session)),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!("workspace: {}", ws.root.display())),
+        "{text}"
+    );
+    assert!(text.contains("shell confinement: "), "{text}");
+    assert!(text.contains("auto mode: "), "{text}");
+    assert!(text.contains("tui.toml: "), "{text}");
+    assert!(text.contains("mcp.toml: absent"), "{text}");
+    assert!(text.contains("helpers: "), "{text}");
+    rig.quit().await;
+}

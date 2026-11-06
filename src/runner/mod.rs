@@ -47,6 +47,7 @@ pub mod cost_store;
 mod lifecycle;
 mod models;
 mod quit;
+mod status;
 #[doc(hidden)]
 pub mod testing;
 
@@ -799,6 +800,7 @@ impl Runner {
             // The UI loop repaints the terminal itself.
             Effect::Redraw => {}
             Effect::ContextReport(header) => self.context_report(&header).await,
+            Effect::StatusReport => self.status_report(),
         }
     }
 

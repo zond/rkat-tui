@@ -430,6 +430,10 @@ pub enum Effect {
     /// compaction policy); the integrator adds what the context holds and
     /// answers with one [`Msg::Notice`].
     ContextReport(String),
+    /// `/status`: the integrator answers with one [`Msg::Notice`] naming
+    /// the version, model, session, workspace, realm, confinement, auto
+    /// mode, trust state and helper depth limit.
+    StatusReport,
     /// Ctrl-L: clear the terminal and repaint everything. The UI loop
     /// answers it itself; it never reaches the integrator.
     Redraw,
@@ -2398,6 +2402,7 @@ impl App {
             }
             Command::Copy(n) => self.copy_answer(n),
             Command::Context => fx.push(Effect::ContextReport(self.context_header())),
+            Command::Status => fx.push(Effect::StatusReport),
             Command::Cost => {
                 let text = self.status.cost.breakdown(&self.status.prices);
                 self.transcript.push_notice(NoticeLevel::Info, text);
@@ -3817,6 +3822,7 @@ mod tests {
             vec![Effect::ResumeSession("last".into())]
         );
         assert_eq!(run(&mut app, "/rules rm 2"), vec![Effect::RemoveRule(2)]);
+        assert_eq!(run(&mut app, "/status"), vec![Effect::StatusReport]);
         // The transcript is reset only once the integrator confirms.
         app.transcript.push_notice(NoticeLevel::Info, "old");
         assert_eq!(run(&mut app, "/clear"), vec![Effect::NewSession]);

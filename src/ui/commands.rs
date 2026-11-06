@@ -113,6 +113,8 @@ pub enum Command {
     Compact(CompactCommand),
     /// `/cost`: the session's token cost by model.
     Cost,
+    /// `/status`: version, model, session, workspace and trust state.
+    Status,
     /// `/context`: the context gauge, the compaction policy and what the
     /// context holds, as far as the TUI knows.
     Context,
@@ -177,6 +179,8 @@ Commands:
   /compact status                show the compaction policy (tui.toml [auto] compact =
                                  \"warn\" (default) warns at 75% and 85%; \"auto\" or
                                  --auto-compact lets the runtime compact at 85%)
+  /status                        version, model, session, workspace, realm, confinement, auto
+                                 mode, trust of tui.toml and mcp.toml, helper depth limit
   /context                       context usage, the compaction policy and what the context holds
   /copy [N]                      copy the latest (or Nth latest) answer to the clipboard (OSC 52)
   /usage, /cost, /stats          token usage and cost per model (footer: $0.42, ~ estimate, $? unpriced)
@@ -271,6 +275,10 @@ fn parse_command(name: &str, args: &[&str]) -> Result<Command, CommandError> {
         "quit" | "exit" | "q" => Ok(Command::Quit),
         "clear" | "new" => Ok(Command::Clear),
         "help" | "?" => Ok(Command::Help),
+        "status" => match args {
+            [] => Ok(Command::Status),
+            _ => Err(CommandError::Usage("/status")),
+        },
         "context" => match args {
             [] | ["all"] => Ok(Command::Context),
             _ => Err(CommandError::Usage("/context")),
@@ -409,6 +417,8 @@ mod tests {
             parse("/remember"),
             Some(Err(CommandError::Usage("/remember <text>")))
         );
+        assert_eq!(ok("/status"), Command::Status);
+        assert_eq!(parse("/status x"), Some(Err(CommandError::Usage("/status"))));
         assert_eq!(ok("/context"), Command::Context);
         assert_eq!(ok("/context all"), Command::Context);
         assert_eq!(parse("/context x"), Some(Err(CommandError::Usage("/context"))));
@@ -505,6 +515,7 @@ mod tests {
             "/permissions",
             "/usage",
             "/context",
+            "/status",
             "/stats",
             "/tasks",
             "/auto",

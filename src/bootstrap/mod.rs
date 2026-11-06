@@ -173,6 +173,9 @@ pub struct Runtime {
     pub memory: bool,
     /// The `tui.toml` `[ui]` settings.
     pub ui: crate::approval::rules::UiSettings,
+    /// How deep helpers may nest (`[helpers] max_depth`; 0 refuses every
+    /// helper).
+    pub helper_max_depth: u8,
     /// Start-up notices (warnings) for the transcript.
     pub notices: Vec<String>,
 }
@@ -493,6 +496,7 @@ pub async fn bootstrap_with(
         mcp_servers: mcp.servers,
         memory,
         ui,
+        helper_max_depth: helper_depth,
         notices,
     })
 }

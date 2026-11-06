@@ -317,7 +317,7 @@ impl Runner {
 }
 
 /// Status-bar form of the auto-mode state.
-fn auto_status(engine: &ApprovalEngine) -> (String, (u32, u32, u32, u32)) {
+pub(super) fn auto_status(engine: &ApprovalEngine) -> (String, (u32, u32, u32, u32)) {
     let (counters, state) = engine.auto_state();
     let label = match state {
         AutoModeState::Active => "active".to_string(),
