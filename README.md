@@ -561,7 +561,7 @@ took the discarded messages).
 `/help`, `/quit`, `/clear`, `/resume [ref]`,
 `/rules [list|add allow|deny <tool> [pattern]|rm <n>|trust]`,
 `/auto [on|off|resume]`, `/model [[endpoint:]id|refresh]`,
-`/remember <text>`, `/compact [now]`, `/cost`, `/mcp trust`,
+`/remember <text>`, `/compact [now]`, `/cost`, `/copy [N]`, `/mcp trust`,
 `/helpers [expand|fold <label>|all]`. `/clear`, `/resume`, `/model` and `/compact now` work only while
 idle; the transcript is replaced only once the new session is live.
 
@@ -581,10 +581,17 @@ Long lines wrap at the width of the input field (which grows up to six
 rows, then scrolls to the cursor), and ↑/↓ move by wrapped rows before
 reaching history.
 
+The editor has the readline keys: Ctrl-A/E and Alt+B/F (or Ctrl/Alt+←/→)
+move; Ctrl-K kills to the line end (at a line end, the newline), Ctrl-U to
+the line start, Ctrl-W (or Ctrl/Alt+Backspace) the word before, Alt+D the
+word after. Killed text goes onto a kill ring of 16 entries (consecutive
+kills join one entry); Ctrl-Y yanks the newest and Alt+Y right after a yank
+replaces it with the next older one.
+
 The mouse is captured by default: the wheel scrolls and a click expands or
 collapses a tool call's output (Ctrl-O for the latest). Dragging selects text
 and copies it on release (double click: a word, triple click: a line;
-Ctrl-Y copies again or copies the last answer). Hold Shift for native
+`/copy` copies the latest answer, `/copy N` the Nth latest). Hold Shift for native
 selection, or start with `--no-mouse`.
 
 Copying uses OSC 52 only, so the terminal must support it: kitty, foot,

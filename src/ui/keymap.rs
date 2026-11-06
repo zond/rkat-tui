@@ -30,10 +30,18 @@ pub enum EditAction {
     Up,
     /// Line down / newer history.
     Down,
-    /// Delete previous word.
+    /// Kill the previous word (onto the kill ring).
     DeleteWordBack,
-    /// Delete to line start.
+    /// Kill to line start.
     KillToLineStart,
+    /// Kill to line end; at a line end, the newline (Ctrl-K).
+    KillToLineEnd,
+    /// Kill the next word (Alt-D).
+    KillWordForward,
+    /// Insert the newest kill-ring entry (Ctrl-Y).
+    Yank,
+    /// Right after a yank, replace it with the next older entry (Alt-Y).
+    YankPop,
 }
 
 /// What a key press means in the main view.
@@ -56,8 +64,6 @@ pub enum Action {
     /// output of the last tool call together. Ctrl-T is left unbound (kept
     /// for a task checklist).
     ToggleDetail,
-    /// Copy the mouse selection again, or else the last assistant message (Ctrl-Y).
-    Copy,
     /// Start a reverse history search (Ctrl-R).
     HistorySearch,
     /// Ctrl-X: the first key of a chord, resolved by the app with the next key.
@@ -100,7 +106,8 @@ pub fn map_key(key: &KeyEvent, input_empty: bool) -> Action {
         KeyCode::Char('d') if ctrl => Action::CtrlD,
         KeyCode::Char('o') if ctrl => Action::ToggleDetail,
         KeyCode::Char('r') if ctrl => Action::HistorySearch,
-        KeyCode::Char('y') if ctrl => Action::Copy,
+        KeyCode::Char('y') if ctrl => Action::Edit(EditAction::Yank),
+        KeyCode::Char('k') if ctrl => Action::Edit(EditAction::KillToLineEnd),
         KeyCode::Char('x') if ctrl => Action::ChordPrefix,
         KeyCode::Char('a') if ctrl => Action::Edit(EditAction::Home),
         KeyCode::Char('e') if ctrl => Action::Edit(EditAction::End),
@@ -108,6 +115,8 @@ pub fn map_key(key: &KeyEvent, input_empty: bool) -> Action {
         KeyCode::Char('u') if ctrl => Action::Edit(EditAction::KillToLineStart),
         KeyCode::Char('b') if alt => Action::Edit(EditAction::WordLeft),
         KeyCode::Char('f') if alt => Action::Edit(EditAction::WordRight),
+        KeyCode::Char('d') if alt => Action::Edit(EditAction::KillWordForward),
+        KeyCode::Char('y') if alt => Action::Edit(EditAction::YankPop),
         KeyCode::Char(_) if ctrl || alt => Action::None,
         KeyCode::Char(c) => Action::Edit(EditAction::Insert(c)),
         KeyCode::Esc => Action::Escape,
@@ -211,7 +220,19 @@ mod tests {
         );
         assert_eq!(
             map_key(&k(KeyCode::Char('y'), KeyModifiers::CONTROL), false),
-            Action::Copy
+            Action::Edit(EditAction::Yank)
+        );
+        assert_eq!(
+            map_key(&k(KeyCode::Char('y'), KeyModifiers::ALT), false),
+            Action::Edit(EditAction::YankPop)
+        );
+        assert_eq!(
+            map_key(&k(KeyCode::Char('k'), KeyModifiers::CONTROL), false),
+            Action::Edit(EditAction::KillToLineEnd)
+        );
+        assert_eq!(
+            map_key(&k(KeyCode::Char('d'), KeyModifiers::ALT), false),
+            Action::Edit(EditAction::KillWordForward)
         );
         assert_eq!(
             map_key(&k(KeyCode::Char('x'), KeyModifiers::CONTROL), false),

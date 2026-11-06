@@ -5,9 +5,27 @@
 //! field width ([`wrap_layout`]); wrapping is layout only, the stored lines are
 //! never split.
 
+use std::collections::VecDeque;
+
 use super::markdown::{display_width, sanitize};
 
-/// A multi-line text editor with prompt history.
+/// Entries the kill ring keeps (the oldest is dropped beyond this).
+pub const KILL_RING_CAP: usize = 16;
+
+/// The previous editing command, as far as the next one cares: consecutive
+/// kills join one kill-ring entry, and Alt+Y works only right after a yank.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LastEdit {
+    /// Anything else (typing, moving, a history recall).
+    Other,
+    /// A kill that took text.
+    Kill,
+    /// A yank put kill-ring entry `age` (0 = the newest) between `start`
+    /// and the cursor.
+    Yank { start: (usize, usize), age: usize },
+}
+
+/// A multi-line text editor with prompt history and a kill ring.
 #[derive(Debug, Clone)]
 pub struct InputEditor {
     lines: Vec<String>,
@@ -18,6 +36,10 @@ pub struct InputEditor {
     draft: Option<String>,
     /// Columns a visual row holds (set by the renderer; 0 = do not wrap).
     wrap_width: usize,
+    /// Killed text, the newest last (Ctrl+K/U/W, Alt+D, Ctrl/Alt+Backspace);
+    /// Ctrl+Y yanks the newest, Alt+Y cycles to older ones.
+    kill_ring: VecDeque<String>,
+    last: LastEdit,
 }
 
 impl Default for InputEditor {
@@ -186,6 +208,8 @@ impl InputEditor {
             history_pos: None,
             draft: None,
             wrap_width: 0,
+            kill_ring: VecDeque::new(),
+            last: LastEdit::Other,
         }
     }
 
@@ -238,6 +262,7 @@ impl InputEditor {
 
     /// Remove all text (history is kept).
     pub fn clear(&mut self) {
+        self.last = LastEdit::Other;
         self.lines = vec![String::new()];
         self.row = 0;
         self.col = 0;
@@ -247,6 +272,7 @@ impl InputEditor {
 
     /// Replace the text and put the cursor at the end.
     pub fn set_text(&mut self, text: &str) {
+        self.last = LastEdit::Other;
         self.lines = text.split('\n').map(str::to_string).collect();
         if self.lines.is_empty() {
             self.lines.push(String::new());
@@ -278,10 +304,15 @@ impl InputEditor {
 
     /// Insert one character at the cursor (`\n` splits the line).
     pub fn insert_char(&mut self, ch: char) {
+        self.last = LastEdit::Other;
         if ch == '\n' {
-            self.newline();
-            return;
+            self.split_line();
+        } else {
+            self.put_char(ch);
         }
+    }
+
+    fn put_char(&mut self, ch: char) {
         let col = self.col;
         let line = self.current_mut();
         let at = byte_index(line, col);
@@ -291,14 +322,18 @@ impl InputEditor {
 
     /// Insert text verbatim (bracketed paste). `\r\n` and `\r` become newlines.
     pub fn insert_str(&mut self, text: &str) {
+        self.last = LastEdit::Other;
         let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
-        for ch in normalized.chars() {
-            self.insert_char(ch);
-        }
+        self.put_str(&normalized);
     }
 
     /// Split the line at the cursor.
     pub fn newline(&mut self) {
+        self.last = LastEdit::Other;
+        self.split_line();
+    }
+
+    fn split_line(&mut self) {
         let col = self.col;
         let line = self.current_mut();
         let at = byte_index(line, col);
@@ -324,6 +359,7 @@ impl InputEditor {
 
     /// Delete the character before the cursor (joining lines at column 0).
     pub fn backspace(&mut self) {
+        self.last = LastEdit::Other;
         if self.col > 0 {
             let col = self.col;
             let line = self.current_mut();
@@ -340,6 +376,7 @@ impl InputEditor {
 
     /// Delete the character under the cursor (joining lines at end of line).
     pub fn delete(&mut self) {
+        self.last = LastEdit::Other;
         let col = self.col;
         if col < char_len(self.current()) {
             let line = self.current_mut();
@@ -353,6 +390,11 @@ impl InputEditor {
 
     /// Move left one char (wrapping to the previous line).
     pub fn left(&mut self) {
+        self.last = LastEdit::Other;
+        self.move_left();
+    }
+
+    fn move_left(&mut self) {
         if self.col > 0 {
             self.col -= 1;
         } else if self.row > 0 {
@@ -363,6 +405,11 @@ impl InputEditor {
 
     /// Move right one char (wrapping to the next line).
     pub fn right(&mut self) {
+        self.last = LastEdit::Other;
+        self.move_right();
+    }
+
+    fn move_right(&mut self) {
         if self.col < char_len(self.current()) {
             self.col += 1;
         } else if self.row + 1 < self.lines.len() {
@@ -373,18 +420,25 @@ impl InputEditor {
 
     /// Start of the current line.
     pub fn home(&mut self) {
+        self.last = LastEdit::Other;
         self.col = 0;
     }
 
     /// End of the current line.
     pub fn end(&mut self) {
+        self.last = LastEdit::Other;
         self.col = char_len(self.current());
     }
 
     /// Jump to the start of the previous word.
     pub fn word_left(&mut self) {
+        self.last = LastEdit::Other;
+        self.move_word_left();
+    }
+
+    fn move_word_left(&mut self) {
         if self.col == 0 {
-            self.left();
+            self.move_left();
             return;
         }
         let chars: Vec<char> = self.current().chars().collect();
@@ -400,9 +454,14 @@ impl InputEditor {
 
     /// Jump past the end of the next word.
     pub fn word_right(&mut self) {
+        self.last = LastEdit::Other;
+        self.move_word_right();
+    }
+
+    fn move_word_right(&mut self) {
         let chars: Vec<char> = self.current().chars().collect();
         if self.col >= chars.len() {
-            self.right();
+            self.move_right();
             return;
         }
         let mut c = self.col;
@@ -415,25 +474,154 @@ impl InputEditor {
         self.col = c;
     }
 
-    /// Delete the word before the cursor (Ctrl-W).
+    /// Where a cursor move would land, without moving.
+    fn probe(&mut self, mv: fn(&mut Self)) -> (usize, usize) {
+        let at = self.cursor();
+        mv(self);
+        let to = self.cursor();
+        (self.row, self.col) = at;
+        to
+    }
+
+    /// Remove the text from `from` to `to` (`from` first), leave the cursor
+    /// at `from` and return the text (`\n` between lines).
+    fn remove_range(&mut self, from: (usize, usize), to: (usize, usize)) -> String {
+        let ((r1, c1), (r2, c2)) = (from, to);
+        if r2 >= self.lines.len() || from >= to {
+            return String::new();
+        }
+        let a = byte_index(&self.lines[r1], c1);
+        let b = byte_index(&self.lines[r2], c2);
+        let removed = if r1 == r2 {
+            let removed = self.lines[r1].get(a..b).unwrap_or_default().to_string();
+            self.lines[r1].replace_range(a..b, "");
+            removed
+        } else {
+            let tail = self.lines[r2].split_off(b);
+            let mut removed = self.lines[r1].split_off(a);
+            for line in self.lines.drain(r1 + 1..=r2) {
+                removed.push('\n');
+                removed.push_str(&line);
+            }
+            self.lines[r1].push_str(&tail);
+            removed
+        };
+        (self.row, self.col) = from;
+        removed
+    }
+
+    /// Put killed text on the kill ring: right after another kill it joins
+    /// that entry (after it for a forward kill, before it for a backward
+    /// one), as in readline.
+    fn record_kill(&mut self, text: String, forward: bool) {
+        if text.is_empty() {
+            return;
+        }
+        match self.kill_ring.back_mut() {
+            Some(entry) if self.last == LastEdit::Kill => {
+                if forward {
+                    entry.push_str(&text);
+                } else {
+                    entry.insert_str(0, &text);
+                }
+            }
+            _ => {
+                self.kill_ring.push_back(text);
+                if self.kill_ring.len() > KILL_RING_CAP {
+                    self.kill_ring.pop_front();
+                }
+            }
+        }
+        self.last = LastEdit::Kill;
+    }
+
+    /// Kill from `from` to the cursor (a backward kill).
+    fn kill_back_to(&mut self, from: (usize, usize)) {
+        let text = self.remove_range(from, self.cursor());
+        self.record_kill(text, false);
+    }
+
+    /// Kill from the cursor to `to` (a forward kill).
+    fn kill_forward_to(&mut self, to: (usize, usize)) {
+        let text = self.remove_range(self.cursor(), to);
+        self.record_kill(text, true);
+    }
+
+    /// Kill the word before the cursor (Ctrl-W, Ctrl/Alt+Backspace); at a
+    /// line start, the newline before it.
     pub fn delete_word_back(&mut self) {
-        let end = self.col;
-        self.word_left();
-        if self.col < end && self.row < self.lines.len() {
-            let start = self.col;
-            let line = self.current_mut();
-            let (a, b) = (byte_index(line, start), byte_index(line, end));
-            line.replace_range(a..b, "");
+        let from = self.probe(Self::move_word_left);
+        self.kill_back_to(from);
+    }
+
+    /// Kill the word after the cursor (Alt+D); at a line end, the newline.
+    pub fn kill_word_forward(&mut self) {
+        let to = self.probe(Self::move_word_right);
+        self.kill_forward_to(to);
+    }
+
+    /// Kill from the line start to the cursor (Ctrl-U).
+    pub fn kill_to_line_start(&mut self) {
+        self.kill_back_to((self.row, 0));
+    }
+
+    /// Kill from the cursor to the line end (Ctrl-K); at a line end, the
+    /// newline (joining the next line).
+    pub fn kill_to_line_end(&mut self) {
+        let len = char_len(self.current());
+        let to = if self.col < len {
+            (self.row, len)
+        } else if self.row + 1 < self.lines.len() {
+            (self.row + 1, 0)
+        } else {
+            return;
+        };
+        self.kill_forward_to(to);
+    }
+
+    /// Insert text at the cursor without touching the editing state.
+    fn put_str(&mut self, text: &str) {
+        for ch in text.chars() {
+            if ch == '\n' {
+                self.split_line();
+            } else {
+                self.put_char(ch);
+            }
         }
     }
 
-    /// Delete from line start to the cursor (Ctrl-U).
-    pub fn kill_to_line_start(&mut self) {
-        let col = self.col;
-        let line = self.current_mut();
-        let at = byte_index(line, col);
-        line.replace_range(..at, "");
-        self.col = 0;
+    /// Ctrl-Y: insert the newest kill-ring entry at the cursor. Returns
+    /// whether the ring held one.
+    pub fn yank(&mut self) -> bool {
+        let Some(text) = self.kill_ring.back().cloned() else {
+            return false;
+        };
+        let start = self.cursor();
+        self.put_str(&text);
+        self.last = LastEdit::Yank { start, age: 0 };
+        true
+    }
+
+    /// Alt-Y right after a yank: replace the yanked text with the next
+    /// older kill-ring entry (wrapping to the newest). Returns whether it
+    /// did anything.
+    pub fn yank_pop(&mut self) -> bool {
+        let LastEdit::Yank { start, age } = self.last else {
+            return false;
+        };
+        let n = self.kill_ring.len();
+        if n == 0 {
+            return false;
+        }
+        let age = (age + 1) % n;
+        let Some(text) = self.kill_ring.get(n - 1 - age).cloned() else {
+            return false;
+        };
+        let end = self.cursor();
+        self.remove_range(start, end);
+        self.put_str(&text);
+        self.last = LastEdit::Yank { start, age };
+        true
     }
 
     /// Move the cursor to visual row `vrow` at display column `vcol` (clamped).
@@ -447,6 +635,7 @@ impl InputEditor {
     /// Up arrow: move up a visual row, or recall older history from the
     /// first visual row.
     pub fn up(&mut self) {
+        self.last = LastEdit::Other;
         let layout = self.layout();
         let (vrow, vcol) = self.cursor_visual(&layout);
         if vrow > 0 {
@@ -470,6 +659,7 @@ impl InputEditor {
     /// Down arrow: move down a visual row, or recall newer history from the
     /// last visual row.
     pub fn down(&mut self) {
+        self.last = LastEdit::Other;
         let layout = self.layout();
         let (vrow, vcol) = self.cursor_visual(&layout);
         if vrow + 1 < layout.len() {
@@ -593,6 +783,125 @@ mod tests {
         assert!(!e.backslash_newline());
         assert_eq!(e.text(), "a\\b");
         assert!(!InputEditor::new().backslash_newline());
+    }
+
+    #[test]
+    fn kills_feed_the_ring_and_yank_puts_the_newest_back() {
+        let mut e = typed("one two three");
+        e.delete_word_back();
+        assert_eq!(e.text(), "one two ");
+        assert!(e.yank());
+        assert_eq!(e.text(), "one two three");
+        // Ctrl-K to the line end, then (at the end) the newline.
+        let mut e = typed("ab\ncd");
+        e.up();
+        e.home();
+        e.right();
+        e.kill_to_line_end();
+        assert_eq!(e.text(), "a\ncd");
+        e.left();
+        e.right();
+        e.kill_to_line_end();
+        assert_eq!(e.text(), "acd");
+        // Nothing left to kill at the very end: no new entry.
+        e.end();
+        e.kill_to_line_end();
+        assert_eq!(e.kill_ring.len(), 2);
+        // Ctrl-U kills to the line start; Alt-D kills the word after.
+        let mut e = typed("foo bar baz");
+        e.word_left();
+        e.kill_to_line_start();
+        assert_eq!(e.text(), "baz");
+        e.end();
+        e.home();
+        e.kill_word_forward();
+        assert_eq!(e.text(), "");
+        assert_eq!(
+            e.kill_ring.iter().map(String::as_str).collect::<Vec<_>>(),
+            ["foo bar ", "baz"]
+        );
+    }
+
+    #[test]
+    fn consecutive_kills_join_one_entry() {
+        let mut e = typed("alpha beta gamma");
+        e.delete_word_back();
+        e.delete_word_back();
+        assert_eq!(e.text(), "alpha ");
+        assert_eq!(e.kill_ring.len(), 1);
+        assert_eq!(e.kill_ring.back().map(String::as_str), Some("beta gamma"));
+        // Forward kills append; a move in between starts a new entry.
+        let mut e = typed("a b c");
+        e.home();
+        e.kill_word_forward();
+        e.kill_word_forward();
+        assert_eq!(e.kill_ring.back().map(String::as_str), Some("a b"));
+        e.end();
+        e.delete_word_back();
+        assert_eq!(e.kill_ring.len(), 2);
+        // Ctrl-W at a line start kills the newline.
+        let mut e = typed("x\ny");
+        e.home();
+        e.delete_word_back();
+        assert_eq!(e.text(), "xy");
+        assert_eq!(e.kill_ring.back().map(String::as_str), Some("\n"));
+    }
+
+    #[test]
+    fn alt_y_cycles_older_entries_only_right_after_a_yank() {
+        let mut e = InputEditor::new();
+        assert!(!e.yank());
+        for word in ["one", "two", "three"] {
+            e.insert_str(word);
+            e.home();
+            e.kill_to_line_end();
+            e.insert_char(' ');
+            e.backspace();
+        }
+        assert_eq!(e.kill_ring.len(), 3);
+        assert!(!e.yank_pop());
+        e.insert_str("> ");
+        assert!(e.yank());
+        assert_eq!(e.text(), "> three");
+        assert!(e.yank_pop());
+        assert_eq!(e.text(), "> two");
+        assert!(e.yank_pop());
+        assert_eq!(e.text(), "> one");
+        assert!(e.yank_pop());
+        assert_eq!(e.text(), "> three");
+        e.insert_char('!');
+        assert!(!e.yank_pop());
+        // A multi-line entry is replaced whole.
+        let mut e = typed("l1\nl2");
+        e.up();
+        e.home();
+        e.kill_to_line_end();
+        e.kill_to_line_end();
+        e.kill_to_line_end();
+        assert_eq!(e.text(), "");
+        e.insert_str("x");
+        e.home();
+        e.kill_to_line_end();
+        e.insert_char('>');
+        e.yank();
+        assert_eq!(e.text(), ">x");
+        assert!(e.yank_pop());
+        assert_eq!(e.text(), ">l1\nl2");
+        assert!(e.yank_pop());
+        assert_eq!(e.text(), ">x");
+    }
+
+    #[test]
+    fn the_kill_ring_keeps_the_newest_entries() {
+        let mut e = InputEditor::new();
+        for i in 0..KILL_RING_CAP + 3 {
+            e.insert_str(&i.to_string());
+            e.home();
+            e.kill_to_line_end();
+            e.right();
+        }
+        assert_eq!(e.kill_ring.len(), KILL_RING_CAP);
+        assert_eq!(e.kill_ring.front().map(String::as_str), Some("3"));
     }
 
     #[test]

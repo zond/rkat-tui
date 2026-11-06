@@ -104,6 +104,9 @@ pub enum Command {
     },
     /// `/cost`: the session's token cost by model.
     Cost,
+    /// `/copy [N]`: copy the Nth latest assistant answer (1, the default,
+    /// is the latest) to the clipboard (OSC 52).
+    Copy(usize),
     /// `/mcp trust`: trust the project `.rkat/mcp.toml` as it is now; its
     /// servers start from the next session.
     McpTrust,
@@ -158,6 +161,7 @@ Commands:
                                  \"warn\" (default) warns at 75% and 85%; \"auto\" or
                                  --auto-compact lets the runtime compact at 85%)
   /compact now                   rebuild the session so its next model call compacts (idle only)
+  /copy [N]                      copy the latest (or Nth latest) answer to the clipboard (OSC 52)
   /cost                          token usage and cost per model (footer: $0.42, ~ estimate, $? unpriced)
   /helpers                       list the helpers (sub-agents) and their state
   /helpers expand|fold <label>|all
@@ -182,6 +186,10 @@ Keys:
   Ctrl-R                         search history (Ctrl-R again: older · Enter accept · Esc cancel)
   Ctrl-X Ctrl-S                  interrupt and send the input (sends normally when idle)
   Up/Down                        move between lines · recall prompt history
+  Ctrl-A/E, Alt+B/F              line start/end, word left/right
+  Ctrl-K/U, Ctrl-W, Alt+D        kill to line end/start, the word before/after (Ctrl-K at a
+                                 line end kills the newline); Ctrl/Alt+Backspace = Ctrl-W
+  Ctrl-Y, Alt+Y                  yank the last killed text; Alt+Y right after cycles older kills
   PgUp/PgDn, Shift+Up/Down       scroll the transcript
   Home/End                       scroll to top/bottom when the input is empty (Ctrl+Home/End always)
 Approval prompt:
@@ -243,6 +251,14 @@ fn parse_command(name: &str, args: &[&str]) -> Result<Command, CommandError> {
         "cost" => match args {
             [] => Ok(Command::Cost),
             _ => Err(CommandError::Usage("/cost")),
+        },
+        "copy" => match args {
+            [] => Ok(Command::Copy(1)),
+            [n] => match n.parse::<usize>() {
+                Ok(n) if n >= 1 => Ok(Command::Copy(n)),
+                _ => Err(CommandError::Usage("/copy [N] (N ≥ 1, 1 = the latest answer)")),
+            },
+            _ => Err(CommandError::Usage("/copy [N] (N ≥ 1, 1 = the latest answer)")),
         },
         "compact" => match args {
             [] => Ok(Command::Compact { now: false }),
@@ -334,6 +350,14 @@ mod tests {
         assert_eq!(ok(" /exit "), Command::Quit);
         assert_eq!(ok("/clear"), Command::Clear);
         assert_eq!(ok("/help"), Command::Help);
+        assert_eq!(ok("/copy"), Command::Copy(1));
+        assert_eq!(ok("/copy 3"), Command::Copy(3));
+        for bad in ["/copy 0", "/copy x", "/copy 1 2"] {
+            assert!(
+                matches!(parse(bad), Some(Err(CommandError::Usage(_)))),
+                "{bad}"
+            );
+        }
         assert_eq!(ok("/resume"), Command::Resume(None));
         assert_eq!(ok("/resume ~2"), Command::Resume(Some("~2".into())));
         assert_eq!(
@@ -443,6 +467,11 @@ mod tests {
             "#<text>",
             "/compact",
             "/cost",
+            "/copy [N]",
+            "Ctrl-K",
+            "Alt+D",
+            "Ctrl-Y",
+            "Alt+Y",
             "Enter",
             "Alt+Enter",
             "Ctrl+J",

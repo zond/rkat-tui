@@ -1182,17 +1182,31 @@ impl App {
         self.copy_text(&text);
     }
 
-    /// Ctrl-Y: copy the selection again, or else the last assistant message.
-    fn copy_again(&mut self) {
-        if self.selection.is_some() {
-            self.copy_selection();
-            return;
+    /// `/copy [N]`: copy the Nth latest assistant answer (1 = the latest).
+    fn copy_answer(&mut self, n: usize) {
+        let answers: Vec<String> = self
+            .transcript
+            .blocks()
+            .iter()
+            .rev()
+            .filter_map(|b| match b {
+                Block::Assistant { md } if !md.trim().is_empty() => Some(md.clone()),
+                _ => None,
+            })
+            .take(n)
+            .collect();
+        match answers.get(n.saturating_sub(1)) {
+            Some(text) => self.copy_text(text),
+            None if answers.is_empty() => self.copy_text(""),
+            None => {
+                let n = answers.len();
+                let (verb, plural) = if n == 1 { ("is", "") } else { ("are", "s") };
+                self.transcript.push_notice(
+                    NoticeLevel::Warn,
+                    format!("there {verb} only {n} answer{plural} to copy"),
+                );
+            }
         }
-        let last = self.transcript.blocks().iter().rev().find_map(|b| match b {
-            Block::Assistant { md } if !md.trim().is_empty() => Some(md.clone()),
-            _ => None,
-        });
-        self.copy_text(last.as_deref().unwrap_or(""));
     }
 
     /// Queue `text` (capped) for the clipboard; the runtime reports how the
@@ -1256,9 +1270,7 @@ impl App {
         let mut dirty = true;
         match msg {
             Msg::Key(key) => {
-                let copy_key =
-                    key.code == KeyCode::Char('y') && key.modifiers.contains(KeyModifiers::CONTROL);
-                if self.selection.is_some() && !copy_key {
+                if self.selection.is_some() {
                     self.clear_selection();
                     let ctrl_c = key.code == KeyCode::Char('c')
                         && key.modifiers.contains(KeyModifiers::CONTROL);
@@ -1559,7 +1571,6 @@ impl App {
             Action::ToggleDetail => {
                 self.transcript.toggle_last_detail_in(view);
             }
-            Action::Copy => self.copy_again(),
             Action::HistorySearch => self.start_search(),
             Action::ChordPrefix => self.chord = Some(now),
             Action::ScrollUp(n) => self.active_scroll().up(n),
@@ -1620,6 +1631,14 @@ impl App {
             EditAction::Down => e.down(),
             EditAction::DeleteWordBack => e.delete_word_back(),
             EditAction::KillToLineStart => e.kill_to_line_start(),
+            EditAction::KillToLineEnd => e.kill_to_line_end(),
+            EditAction::KillWordForward => e.kill_word_forward(),
+            EditAction::Yank => {
+                e.yank();
+            }
+            EditAction::YankPop => {
+                e.yank_pop();
+            }
         }
     }
 
@@ -2269,6 +2288,7 @@ impl App {
                 self.transcript
                     .push_notice(NoticeLevel::Info, commands::HELP_TEXT);
             }
+            Command::Copy(n) => self.copy_answer(n),
             Command::Cost => {
                 let text = self.status.cost.breakdown(&self.status.prices);
                 self.transcript.push_notice(NoticeLevel::Info, text);
@@ -2800,9 +2820,9 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_y_recopies_the_selection_or_the_last_assistant_message() {
+    fn copy_command_copies_the_nth_latest_answer() {
         let mut app = selection_app();
-        app.update(ctrl('y'));
+        submit(&mut app, "/copy");
         assert_eq!(app.take_clipboard_text(), None);
         assert_eq!(
             last_notice(&app),
@@ -2814,20 +2834,61 @@ mod tests {
         app.transcript.push(Block::Assistant {
             md: "the *last* answer".into(),
         });
-        app.update(ctrl('y'));
+        submit(&mut app, "/copy");
         assert_eq!(
             app.take_clipboard_text().as_deref(),
             Some("the *last* answer")
         );
+        submit(&mut app, "/copy 2");
+        assert_eq!(
+            app.take_clipboard_text().as_deref(),
+            Some("first **answer**")
+        );
+        submit(&mut app, "/copy 3");
+        assert_eq!(app.take_clipboard_text(), None);
+        assert_eq!(
+            last_notice(&app),
+            Some((NoticeLevel::Warn, "there are only 2 answers to copy".into()))
+        );
+        submit(&mut app, "/copy 0");
+        assert!(matches!(last_notice(&app), Some((NoticeLevel::Warn, t)) if t.starts_with("usage: /copy")));
 
+        // A mouse selection is copied on release; Ctrl-Y no longer copies and,
+        // like any other key, clears the selection.
         draw_rows(&mut app, 1, 60, 20);
         app.update(down(1, 2));
         app.update(drag(1, 6));
         app.update(up(1, 6));
         assert_eq!(app.take_clipboard_text().as_deref(), Some("hello"));
         app.update(ctrl('y'));
-        assert_eq!(app.take_clipboard_text().as_deref(), Some("hello"));
-        assert!(app.selection().is_some());
+        assert_eq!(app.take_clipboard_text(), None);
+        assert!(app.selection().is_none());
+    }
+
+    #[test]
+    fn kill_and_yank_keys_edit_the_input() {
+        let mut app = App::new(StatusInfo::default());
+        type_str(&mut app, "keep this text");
+        app.update(ctrl('w'));
+        assert_eq!(app.input.text(), "keep this ");
+        app.update(ctrl('a'));
+        app.update(Msg::Key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT)));
+        assert_eq!(app.input.text(), " this ");
+        app.update(ctrl('k'));
+        assert_eq!(app.input.text(), "");
+        // Alt-D then Ctrl-K was one run of kills: one entry.
+        app.update(ctrl('y'));
+        assert_eq!(app.input.text(), "keep this ");
+        app.update(Msg::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::ALT)));
+        assert_eq!(app.input.text(), "text");
+        app.update(Msg::Key(KeyEvent::new(
+            KeyCode::Backspace,
+            KeyModifiers::ALT,
+        )));
+        assert_eq!(app.input.text(), "");
+        app.update(ctrl('u'));
+        app.update(ctrl('y'));
+        assert_eq!(app.input.text(), "text");
     }
 
     #[test]
