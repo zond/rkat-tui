@@ -1605,6 +1605,10 @@ impl App {
                 }
             }
             Action::Redraw => fx.push(Effect::Redraw),
+            Action::CycleMode => {
+                let on = self.status.auto_state.eq_ignore_ascii_case("off");
+                self.run_command(Command::Auto(if on { AutoCommand::On } else { AutoCommand::Off }), now, fx);
+            }
             Action::HistorySearch => self.start_search(),
             Action::ChordPrefix => self.chord = Some(now),
             Action::ScrollUp(n) => self.active_scroll().up(n),
@@ -4315,6 +4319,20 @@ mod tests {
         app.update_at(ctrl('x'), t0);
         app.update_at(Msg::Tick, late);
         assert!(app.chord.is_none());
+    }
+
+    #[test]
+    fn shift_tab_switches_auto_mode_off_and_on() {
+        let back_tab = || Msg::Key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        let mut app = App::new(StatusInfo::default());
+        app.status.set_auto("active", (0, 3, 0, 20));
+        assert_eq!(app.update(back_tab()), vec![Effect::SetAutoMode(false)]);
+        // The runner answers with the new state; the next press turns it on.
+        app.status.set_auto("off", (0, 3, 0, 20));
+        assert_eq!(app.update(back_tab()), vec![Effect::SetAutoMode(true)]);
+        // A paused auto mode counts as on.
+        app.status.set_auto("PAUSED", (3, 3, 3, 20));
+        assert_eq!(app.update(back_tab()), vec![Effect::SetAutoMode(false)]);
     }
 
     #[test]

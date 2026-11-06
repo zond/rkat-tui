@@ -71,6 +71,8 @@ pub enum Action {
     /// Ctrl-S: stash the input, or restore the stash on an empty input
     /// (after Ctrl-X it completes the send-now chord instead).
     Stash,
+    /// Shift+Tab: switch auto mode off → on → off (as `/auto on|off`).
+    CycleMode,
     /// Ctrl-L: clear the screen and repaint everything.
     Redraw,
     /// Ctrl-X: the first key of a chord, resolved by the app with the next key.
@@ -134,6 +136,7 @@ pub fn map_key(key: &KeyEvent, input_empty: bool) -> Action {
         KeyCode::Char(_) if ctrl || alt => Action::None,
         KeyCode::Char(c) => Action::Edit(EditAction::Insert(c)),
         KeyCode::Esc => Action::Escape,
+        KeyCode::BackTab => Action::CycleMode,
         KeyCode::Backspace if ctrl || alt => Action::Edit(EditAction::DeleteWordBack),
         KeyCode::Backspace => Action::Edit(EditAction::Backspace),
         KeyCode::Delete => Action::Edit(EditAction::Delete),
@@ -256,6 +259,10 @@ mod tests {
         assert_eq!(
             map_key(&k(KeyCode::Char('s'), KeyModifiers::CONTROL), false),
             Action::Stash
+        );
+        assert_eq!(
+            map_key(&k(KeyCode::BackTab, KeyModifiers::SHIFT), false),
+            Action::CycleMode
         );
         assert_eq!(
             map_key(&k(KeyCode::Char('l'), KeyModifiers::CONTROL), false),

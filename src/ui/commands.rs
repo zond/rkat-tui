@@ -151,7 +151,8 @@ Commands:
   /mcp trust                     trust the project .rkat/mcp.toml as it is now (its servers
                                  start from the next session)
   /auto                          show auto-mode state and denial counters
-  /auto on|off|resume            enable, disable, or resume auto mode after a pause
+  /auto on|off|resume            enable, disable, or resume auto mode after a pause (Shift+Tab
+                                 switches it off and on)
   /model                         pick a model from every endpoint's list (type to filter)
   /model [endpoint:]<id>         switch to a model (idle only); a bare id is looked up
   /model refresh                 refetch every endpoint's model list and pick
@@ -196,6 +197,7 @@ Keys:
   Ctrl-_                         undo the last input edit (a word, a kill, a paste, a clear)
   PgUp/PgDn, Shift+Up/Down       scroll the transcript
   Ctrl-L                         clear the screen and redraw it
+  Shift+Tab                      switch auto mode off/on (same as /auto off|on)
   Home/End                       scroll to top/bottom when the input is empty (Ctrl+Home/End always)
 Approval prompt:
   y allow once · a allow and add a rule · n/Esc deny · s stop the turn (Ctrl-C stops all)
@@ -480,6 +482,7 @@ mod tests {
             "Ctrl-_",
             "Ctrl-S",
             "Ctrl-L",
+            "Shift+Tab",
             "Enter",
             "Alt+Enter",
             "Ctrl+J",
