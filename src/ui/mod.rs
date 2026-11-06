@@ -34,8 +34,8 @@ use ratatui::layout::Rect;
 use ratatui::text::Line;
 
 pub use commands::{
-    AutoCommand, Command, CommandError, CompactCommand, HelperTarget, HelpersCommand, ModelCommand, RuleEffect,
-    RulesCommand,
+    AutoCommand, Command, CommandError, CompactCommand, HelperTarget, HelpersCommand, MemoryTarget, ModelCommand,
+    RuleEffect, RulesCommand,
 };
 pub use compaction::{
     COMPACT_NOW, CompactFailure, CompactMode, CompactionGauge, CompactionPolicy, CompactionTrigger,
@@ -238,6 +238,36 @@ pub struct QueuedCopy {
     pub truncated: bool,
 }
 
+/// What the user's external editor opens ([`Effect::ExternalEditor`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EditorTarget {
+    /// An instruction file (`/memory`), edited in place.
+    Memory {
+        /// Which one.
+        target: MemoryTarget,
+        /// Its path.
+        path: std::path::PathBuf,
+    },
+    /// The input draft (Ctrl-G, Ctrl-X Ctrl-E), through a temporary file.
+    Draft(String),
+}
+
+/// How an external editor run ended ([`Msg::EditorClosed`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EditorClosed {
+    /// An instruction file; `Err` says why the edit may not have been saved.
+    Memory {
+        /// Which one.
+        target: MemoryTarget,
+        /// Its path.
+        path: std::path::PathBuf,
+        /// The run's outcome.
+        result: Result<(), String>,
+    },
+    /// The draft: its new text, or why the input is kept unchanged.
+    Draft(Result<String, String>),
+}
+
 /// Input to [`App::update`].
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
@@ -341,6 +371,16 @@ pub enum Msg {
     HelperUnmeasured(String),
     /// The terminal gained (`true`) or lost (`false`) the focus.
     Focus(bool),
+    /// The integrator resolved `/memory`'s file (and created a missing
+    /// `SYSTEM.md`): open it in the external editor.
+    EditFile {
+        /// Which instruction file.
+        target: MemoryTarget,
+        /// Its path.
+        path: std::path::PathBuf,
+    },
+    /// The UI loop's answer to [`Effect::ExternalEditor`].
+    EditorClosed(EditorClosed),
     /// Animation tick.
     Tick,
 }
@@ -446,6 +486,21 @@ pub enum Effect {
     /// the version, model, session, workspace, realm, confinement, auto
     /// mode, trust state and helper depth limit.
     StatusReport,
+    /// `/memory`: resolve the instruction file (creating `SYSTEM.md` with
+    /// a comment header) and answer with [`Msg::EditFile`].
+    OpenMemory(MemoryTarget),
+    /// An instruction file was edited (`/memory`): push its new content to
+    /// the live session where it can go, or say it applies from the next.
+    MemoryEdited {
+        /// Which instruction file.
+        target: MemoryTarget,
+        /// Its path.
+        path: std::path::PathBuf,
+    },
+    /// Run the user's editor on `target` (leaving TUI mode around it). The
+    /// UI loop answers it itself ([`Msg::EditorClosed`]); it never reaches
+    /// the integrator.
+    ExternalEditor(EditorTarget),
     /// Ctrl-Z: give the terminal back and stop the process (SIGTSTP); on
     /// `fg`, take the terminal again and repaint. The UI loop answers it
     /// itself; it never reaches the integrator. A no-op off Unix.
@@ -1606,6 +1661,10 @@ impl App {
                 self.scroll.bottom();
             }
             Msg::CompactRebuilt(result) => self.compact_rebuilt(result),
+            Msg::EditFile { target, path } => {
+                fx.push(Effect::ExternalEditor(EditorTarget::Memory { target, path }));
+            }
+            Msg::EditorClosed(closed) => self.editor_closed(closed, &mut fx),
             Msg::HelperUnmeasured(label) => {
                 self.transcript.helper_unmeasured(&label);
                 self.status.cost.mark_unmeasured(&label);
@@ -1658,6 +1717,11 @@ impl App {
                 KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     self.last_ctrl_c = None;
                     self.interrupt_and_send(now, fx);
+                    return;
+                }
+                KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.last_ctrl_c = None;
+                    self.edit_draft_externally(fx);
                     return;
                 }
                 // Anything else cancels the chord and is processed normally.
@@ -1717,6 +1781,7 @@ impl App {
             }
             Action::Redraw => fx.push(Effect::Redraw),
             Action::Suspend => fx.push(Effect::Suspend),
+            Action::ExternalEditor => self.edit_draft_externally(fx),
             // The draft stays in the editor behind the picker.
             Action::ModelPicker => {
                 self.run_command(Command::Model(ModelCommand::Pick), now, fx);
@@ -1753,6 +1818,12 @@ impl App {
 
     /// Ctrl+Enter or Ctrl-X Ctrl-S: when idle, the same as Enter; when running, interrupt and
     /// send the editor contents next (plain interrupt when the editor is empty).
+    /// Ctrl-G, Ctrl-X Ctrl-E: open the draft in the user's editor (idle or
+    /// running: it only edits the input).
+    fn edit_draft_externally(&mut self, fx: &mut Vec<Effect>) {
+        fx.push(Effect::ExternalEditor(EditorTarget::Draft(self.input.text())));
+    }
+
     fn interrupt_and_send(&mut self, now: Instant, fx: &mut Vec<Effect>) {
         if !self.running {
             self.submit(now, fx);
@@ -1967,6 +2038,40 @@ impl App {
     }
 
     /// `/compact now` answered: report the rebuild (or why it failed).
+    /// The external editor closed: an edited instruction file goes to the
+    /// integrator to reload, an edited draft replaces the input (Ctrl-_
+    /// brings the old one back); a failure keeps everything and notices.
+    fn editor_closed(&mut self, closed: EditorClosed, fx: &mut Vec<Effect>) {
+        match closed {
+            EditorClosed::Memory {
+                target,
+                path,
+                result: Ok(()),
+            } => fx.push(Effect::MemoryEdited { target, path }),
+            EditorClosed::Memory {
+                path,
+                result: Err(err),
+                ..
+            } => {
+                self.transcript.push_notice(
+                    NoticeLevel::Warn,
+                    format!("{} may not be saved: {err}", path.display()),
+                );
+                self.scroll.bottom();
+            }
+            EditorClosed::Draft(Ok(text)) => {
+                if text != self.input.text() {
+                    self.input.set_text(&text);
+                }
+            }
+            EditorClosed::Draft(Err(err)) => {
+                self.transcript
+                    .push_notice(NoticeLevel::Warn, format!("the input is unchanged: {err}"));
+                self.scroll.bottom();
+            }
+        }
+    }
+
     fn compact_rebuilt(&mut self, result: Result<(), CompactFailure>) {
         self.compacting = false;
         match result {
@@ -2474,6 +2579,7 @@ impl App {
                     self.start_turn(commands::INIT_PROMPT.to_string(), now, fx);
                 }
             }
+            Command::Memory(target) => fx.push(Effect::OpenMemory(target)),
             Command::Export(path) => fx.push(Effect::Export {
                 path,
                 text: self.transcript.export_text(),
@@ -4593,6 +4699,109 @@ mod tests {
         assert_eq!(app.input.text(), "draft");
         let mut running = running_app();
         assert_eq!(running.update(ctrl('z')), vec![Effect::Suspend]);
+    }
+
+    #[test]
+    fn ctrl_g_and_ctrl_x_ctrl_e_edit_the_draft_externally() {
+        let mut app = App::new(StatusInfo::default());
+        let t0 = Instant::now();
+        type_str(&mut app, "draft");
+        assert_eq!(
+            app.update_at(ctrl('g'), t0),
+            vec![Effect::ExternalEditor(EditorTarget::Draft("draft".into()))]
+        );
+        assert_eq!(app.input.text(), "draft");
+        assert!(app.update_at(ctrl('x'), t0).is_empty());
+        assert_eq!(
+            app.update_at(ctrl('e'), t0),
+            vec![Effect::ExternalEditor(EditorTarget::Draft("draft".into()))]
+        );
+        assert!(app.chord.is_none());
+        // Bare Ctrl-E still goes to the line end.
+        assert!(app.update_at(ctrl('e'), t0).is_empty());
+        // While a turn runs too: it only edits the input.
+        let mut running = running_app();
+        type_str(&mut running, "steer");
+        assert_eq!(
+            running.update(ctrl('g')),
+            vec![Effect::ExternalEditor(EditorTarget::Draft("steer".into()))]
+        );
+    }
+
+    #[test]
+    fn the_edited_draft_replaces_the_input_and_a_failure_keeps_it() {
+        let mut app = App::new(StatusInfo::default());
+        type_str(&mut app, "old");
+        assert!(
+            app.update(Msg::EditorClosed(EditorClosed::Draft(Ok("new\ntext".into()))))
+                .is_empty()
+        );
+        assert_eq!(app.input.text(), "new\ntext");
+        // Ctrl-_ brings the old draft back.
+        app.update(ctrl('_'));
+        assert_eq!(app.input.text(), "old");
+        app.update(Msg::EditorClosed(EditorClosed::Draft(Err("vi exited with 1".into()))));
+        assert_eq!(app.input.text(), "old");
+        assert_eq!(
+            last_notice(&app),
+            Some((NoticeLevel::Warn, "the input is unchanged: vi exited with 1".into()))
+        );
+    }
+
+    #[test]
+    fn memory_opens_the_file_the_integrator_names_and_reports_back() {
+        let mut app = App::new(StatusInfo::default());
+        assert_eq!(
+            submit(&mut app, "/memory"),
+            vec![Effect::OpenMemory(MemoryTarget::Workspace)]
+        );
+        assert_eq!(
+            submit(&mut app, "/memory system"),
+            vec![Effect::OpenMemory(MemoryTarget::System)]
+        );
+        let mut running = running_app();
+        assert_eq!(
+            submit(&mut running, "/memory user"),
+            vec![Effect::OpenMemory(MemoryTarget::User)]
+        );
+        let path = std::path::PathBuf::from("/c/SYSTEM.md");
+        let target = MemoryTarget::System;
+        assert_eq!(
+            app.update(Msg::EditFile {
+                target,
+                path: path.clone()
+            }),
+            vec![Effect::ExternalEditor(EditorTarget::Memory {
+                target,
+                path: path.clone()
+            })]
+        );
+        assert_eq!(
+            app.update(Msg::EditorClosed(EditorClosed::Memory {
+                target,
+                path: path.clone(),
+                result: Ok(())
+            })),
+            vec![Effect::MemoryEdited {
+                target,
+                path: path.clone()
+            }]
+        );
+        assert!(
+            app.update(Msg::EditorClosed(EditorClosed::Memory {
+                target,
+                path,
+                result: Err("could not start nano: not found".into())
+            }))
+            .is_empty()
+        );
+        assert_eq!(
+            last_notice(&app),
+            Some((
+                NoticeLevel::Warn,
+                "/c/SYSTEM.md may not be saved: could not start nano: not found".into()
+            ))
+        );
     }
 
     #[test]

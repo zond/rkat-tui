@@ -784,3 +784,19 @@ fn a_first_idle_ctrl_d_asks_for_a_second_in_the_editor_title() {
     );
     assert!(!lines[9].contains("anyway"), "title: {:?}", lines[9]);
 }
+
+#[test]
+fn a_pending_ctrl_x_chord_names_its_second_keys() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = App::new(StatusInfo::default());
+    app.update(Msg::Key(KeyEvent::new(
+        KeyCode::Char('x'),
+        KeyModifiers::CONTROL,
+    )));
+    let lines = rows(&render_buffer(&mut app, W, H));
+    assert!(
+        lines[9].contains(" C-x- · C-s send now · C-e edit in $EDITOR "),
+        "title: {:?}",
+        lines[9]
+    );
+}

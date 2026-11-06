@@ -493,7 +493,21 @@ and model switches make) keeps the instructions it was created with: Meerkat
 does not reassemble a resumed session's system prompt, so the TUI passes the
 session's persisted instructions back unchanged (the persona appears once).
 Edited instruction files apply from the next new session; `/remember`
-reaches the live one.
+and `/memory` reach the live one.
+
+**`/memory`** opens the workspace `AGENTS.md` (the file `/remember` writes),
+**`/memory user`** the user-global `AGENTS.md` and **`/memory system`** the
+user-global `SYSTEM.md` in your editor: `$VISUAL`, else `$EDITOR`, else
+`vi`, split on whitespace so `code --wait` works (a variable holding only
+blanks is refused with a notice). rkat-tui leaves the alternate screen, runs
+the editor on its terminal, and takes the screen back when it exits (keys
+typed meanwhile are dropped). A missing `SYSTEM.md` is created with a
+one-line comment header, which alone counts as empty (the default prompt
+stays). When an `AGENTS.md` changed, its new content (capped like a loaded
+file) is appended to the live session as system context under
+`# Instructions (updated from <path>)`, as `/remember` does, so the next
+model call reads it; `SYSTEM.md` applies from the next new session. It
+works while a turn runs too.
 
 **`/remember <text>`** (or a single-line `#text`; `##…`, multi-line input and
 `\#…` are sent as prompts) appends `- <text>` to the workspace `AGENTS.md`
@@ -585,7 +599,7 @@ rkat-tui says so in a warning and compacts without them.
 `/help`, `/quit`, `/clear`, `/resume [ref]`,
 `/permissions [list|add allow|deny <tool> [pattern]|rm <n>|trust]` (alias `/rules`),
 `/auto [on|off|resume]`, `/model [[endpoint:]id|refresh]`,
-`/remember <text>`, `/init`, `/compact [now|status|<instructions>]`, `/context`, `/status`, `/export [file]`, `/usage` (aliases `/cost`, `/stats`), `/copy [N]`, `/mcp trust`,
+`/remember <text>`, `/memory [user|system]`, `/init`, `/compact [now|status|<instructions>]`, `/context`, `/status`, `/export [file]`, `/usage` (aliases `/cost`, `/stats`), `/copy [N]`, `/mcp trust`,
 `/helpers [expand|fold <label>|all]` (alias `/tasks`). `/status` prints the
 rkat-tui version, the model and its endpoint, the session id, the workspace
 and realm directories, the shell confinement, the auto-mode state, whether
@@ -621,7 +635,13 @@ and on (the same as `/auto off` and `/auto on`); Alt+P opens the model
 picker (as `/model`) and leaves the draft in the editor; Ctrl-Z suspends
 rkat-tui to the shell (on Unix: it gives the terminal back and stops with
 SIGTSTP; `fg` resumes it and repaints the screen, while the session's work
-was paused with the process).
+was paused with the process); Ctrl-G or Ctrl-X Ctrl-E opens the input
+in your editor (`$VISUAL`, else `$EDITOR`, else `vi`, as `/memory` does)
+through a private temporary file in the realm directory's `drafts/`, and the
+edited text replaces the input when the editor exits successfully (trailing
+newline dropped, Ctrl-_ restores the old draft); a failed run keeps the
+draft with a notice. It works while a turn runs; the session goes on
+meanwhile and its output appears when the editor closes.
 Long lines wrap at the width of the input field (which grows up to six
 rows, then scrolls to the cursor), and ↑/↓ move by wrapped rows before
 reaching history.
@@ -661,7 +681,8 @@ All state for a workspace lives inside it, under `<workspace>/.rkat/tui/`:
 the realm (sessions, config with the endpoint connections and model
 profiles, `tui.toml` written by the UI, the approval issuer's
 `approvals.json`, process custody, semantic index), the per-session cost
-records (`tui_cost/`, owner-only), input history, unsent messages, notes and
+records (`tui_cost/`, owner-only), input history, unsent messages, notes,
+the external editor's draft files while Ctrl-G edits them (`drafts/`) and
 logs
 (`logs/rkat-tui.log`). Nothing is keyed by the absolute path, so a renamed
 or moved workspace still continues with `-c`. A `.gitignore` keeps the

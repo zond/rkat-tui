@@ -211,9 +211,39 @@ pub fn git_root(start: &Path, home: Option<&Path>) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
+/// The comment line `/memory system` starts a new `SYSTEM.md` with. A file
+/// holding only this line (and whitespace) counts as empty.
+pub const SYSTEM_MD_HEADER: &str = "<!-- SYSTEM.md: text below replaces rkat-tui's base system prompt in new sessions; leave it empty to keep the default. -->";
+
+/// Whether `content` of a `SYSTEM.md` says nothing (blank, or only
+/// [`SYSTEM_MD_HEADER`]).
+#[must_use]
+pub fn system_md_is_empty(content: &str) -> bool {
+    content
+        .lines()
+        .map(str::trim)
+        .all(|line| line.is_empty() || line == SYSTEM_MD_HEADER)
+}
+
+/// The runtime system context for an instruction file edited with
+/// `/memory`: `# Instructions (updated from <path>)`, a blank line and the
+/// content, capped as a loaded file is ([`AGENTS_MD_MAX_BYTES`]). `None`
+/// when nothing is left.
+#[must_use]
+pub fn edited_context(path: &Path, content: &str) -> Option<String> {
+    let trimmed = content.trim_end();
+    let body = normalize_agents_md_content(trimmed)?;
+    let mut out = format!("# Instructions (updated from {})\n\n{body}", path.display());
+    if body.len() < trimmed.len() {
+        let _ = write!(out, "\n\n[truncated at {} KiB]", AGENTS_MD_MAX_BYTES / 1024);
+    }
+    Some(out)
+}
+
 /// Point `config.agent.system_prompt_file` at the user-global `SYSTEM.md`.
 ///
-/// Applies only when `SYSTEM.md` exists and is non-empty and the config sets
+/// Applies only when `SYSTEM.md` exists and is non-empty (beyond
+/// [`SYSTEM_MD_HEADER`]) and the config sets
 /// neither `system_prompt_file` nor a non-empty `system_prompt`. Returns the
 /// applied path.
 pub fn apply_system_md(config: &mut Config, global: Option<&GlobalDirs>) -> Option<PathBuf> {
@@ -232,7 +262,7 @@ pub fn apply_system_md(config: &mut Config, global: Option<&GlobalDirs>) -> Opti
         return None;
     }
     match std::fs::read_to_string(&path) {
-        Ok(content) if !content.trim().is_empty() => {}
+        Ok(content) if !system_md_is_empty(&content) => {}
         Ok(_) => return None,
         Err(err) => {
             if err.kind() != std::io::ErrorKind::NotFound {
@@ -484,6 +514,31 @@ mod tests {
         let kinds: Vec<_> = sections.iter().map(|s| s.kind).collect();
         assert_eq!(kinds, [SectionKind::Ancestor, SectionKind::Local]);
         assert_eq!(sections[0].path, t.a.join(".rkat/AGENTS.md"));
+    }
+
+    #[test]
+    fn a_system_md_with_only_its_header_counts_as_empty() {
+        let t = tree();
+        write(&t.global.system_md(), &format!("{SYSTEM_MD_HEADER}\n\n"));
+        assert_eq!(apply_system_md(&mut Config::default(), Some(&t.global)), None);
+        write(&t.global.system_md(), &format!("{SYSTEM_MD_HEADER}\nYou are X.\n"));
+        assert!(apply_system_md(&mut Config::default(), Some(&t.global)).is_some());
+        assert!(system_md_is_empty(""));
+        assert!(system_md_is_empty(&format!("  {SYSTEM_MD_HEADER}  \n")));
+        assert!(!system_md_is_empty("x"));
+    }
+
+    #[test]
+    fn an_edited_file_becomes_capped_system_context() {
+        let path = Path::new("/w/AGENTS.md");
+        assert_eq!(
+            edited_context(path, "- use nextest\n\n").as_deref(),
+            Some("# Instructions (updated from /w/AGENTS.md)\n\n- use nextest")
+        );
+        assert_eq!(edited_context(path, "  \n"), None);
+        let long = "x".repeat(AGENTS_MD_MAX_BYTES + 10);
+        let text = edited_context(path, &long).unwrap();
+        assert!(text.ends_with(&format!("[truncated at {} KiB]", AGENTS_MD_MAX_BYTES / 1024)));
     }
 
     #[test]

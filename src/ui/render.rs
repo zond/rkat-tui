@@ -188,7 +188,7 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect, now: Instant) {
     } else if app.esc_clear_armed(now) {
         " Esc again to clear the input (saved to history) ".into()
     } else if app.chord_pending(now) {
-        " C-x- ".into()
+        " C-x- · C-s send now · C-e edit in $EDITOR ".into()
     } else if app.search().is_some() {
         " Ctrl-R older · Enter accept · Esc cancel ".into()
     } else if app.helper_view().is_some() {

@@ -69,6 +69,17 @@ pub enum CompactCommand {
     Status,
 }
 
+/// Which instruction file `/memory` opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryTarget {
+    /// The workspace `AGENTS.md` (`/memory`).
+    Workspace,
+    /// The user-global `AGENTS.md` (`/memory user`).
+    User,
+    /// The user-global `SYSTEM.md` (`/memory system`).
+    System,
+}
+
 /// Which helpers a `/helpers expand|fold` applies to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HelperTarget {
@@ -119,6 +130,9 @@ pub enum Command {
     Export(Option<String>),
     /// `/init`: ask the agent to write or update the workspace `AGENTS.md`.
     Init,
+    /// `/memory [user | system]`: open an instruction file in the user's
+    /// editor.
+    Memory(MemoryTarget),
     /// `/context`: the context gauge, the compaction policy and what the
     /// context holds, as far as the TUI knows.
     Context,
@@ -188,6 +202,9 @@ Commands:
                                  --auto-compact lets the runtime compact at 85%)
   /status                        version, model, session, workspace, realm, confinement, auto
                                  mode, trust of tui.toml and mcp.toml, helper depth limit
+  /memory [user | system]        edit the workspace AGENTS.md, the user AGENTS.md or SYSTEM.md
+                                 in $VISUAL / $EDITOR / vi; an edited AGENTS.md reaches this
+                                 session (also while a turn runs), SYSTEM.md the next one
   /init                          ask the agent to write or update AGENTS.md for this project (idle only)
   /export [file]                 write the transcript as plain text (default:
                                  .rkat/tui/export-<session>-<time>.txt in the workspace)
@@ -217,6 +234,7 @@ Keys:
                                  PgUp/PgDn scroll it); a click unfolds a header in the transcript
   Ctrl-R                         search history (Ctrl-R again: older · Enter accept · Esc cancel)
   Ctrl-X Ctrl-S                  interrupt and send the input (sends normally when idle)
+  Ctrl-G, Ctrl-X Ctrl-E          edit the input in $VISUAL / $EDITOR / vi (also while a turn runs)
   Up/Down, Ctrl-P/N              move between lines · recall prompt history
   Ctrl-A/E, Alt+B/F              line start/end, word left/right
   Ctrl-K/U, Ctrl-W, Alt+D        kill to line end/start, the word before/after (Ctrl-K at a
@@ -287,6 +305,12 @@ fn parse_command(name: &str, args: &[&str]) -> Result<Command, CommandError> {
         "quit" | "exit" | "q" => Ok(Command::Quit),
         "clear" | "new" => Ok(Command::Clear),
         "help" | "?" => Ok(Command::Help),
+        "memory" => match args {
+            [] => Ok(Command::Memory(MemoryTarget::Workspace)),
+            ["user"] => Ok(Command::Memory(MemoryTarget::User)),
+            ["system"] => Ok(Command::Memory(MemoryTarget::System)),
+            _ => Err(CommandError::Usage("/memory [user | system]")),
+        },
         "init" => match args {
             [] => Ok(Command::Init),
             _ => Err(CommandError::Usage("/init")),
@@ -440,6 +464,13 @@ mod tests {
         assert_eq!(ok("/status"), Command::Status);
         assert_eq!(ok("/export"), Command::Export(None));
         assert_eq!(ok("/init"), Command::Init);
+        assert_eq!(ok("/memory"), Command::Memory(MemoryTarget::Workspace));
+        assert_eq!(ok("/memory user"), Command::Memory(MemoryTarget::User));
+        assert_eq!(ok("/memory system"), Command::Memory(MemoryTarget::System));
+        assert_eq!(
+            parse("/memory workspace"),
+            Some(Err(CommandError::Usage("/memory [user | system]")))
+        );
         assert_eq!(parse("/init x"), Some(Err(CommandError::Usage("/init"))));
         assert_eq!(ok("/export notes/chat.txt"), Command::Export(Some("notes/chat.txt".into())));
         assert_eq!(parse("/status x"), Some(Err(CommandError::Usage("/status"))));
@@ -542,6 +573,7 @@ mod tests {
             "/status",
             "/export [file]",
             "/init",
+            "/memory [user | system]",
             "/stats",
             "/tasks",
             "/auto",
@@ -570,6 +602,8 @@ mod tests {
             "Ctrl-O",
             "Ctrl-R",
             "Ctrl-X Ctrl-S",
+            "Ctrl-G",
+            "Ctrl-X Ctrl-E",
             "PgUp",
             "PgDn",
             "Home",

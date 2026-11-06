@@ -80,6 +80,9 @@ pub enum Action {
     ModelPicker,
     /// Ctrl-Z: suspend to the shell (Unix job control).
     Suspend,
+    /// Ctrl-G: edit the input in the user's editor (`$VISUAL`, `$EDITOR`,
+    /// `vi`); Ctrl-X Ctrl-E does the same through the chord.
+    ExternalEditor,
     /// Ctrl-X: the first key of a chord, resolved by the app with the next key.
     ChordPrefix,
     /// Scroll the transcript up by lines.
@@ -126,6 +129,7 @@ pub fn map_key(key: &KeyEvent, input_empty: bool) -> Action {
         KeyCode::Char('s') if ctrl => Action::Stash,
         KeyCode::Char('l') if ctrl => Action::Redraw,
         KeyCode::Char('z') if ctrl => Action::Suspend,
+        KeyCode::Char('g') if ctrl => Action::ExternalEditor,
         // Ctrl-_ arrives as `_`, or as Ctrl-7 or Ctrl-Shift-- in some terminals.
         KeyCode::Char('_' | '7') if ctrl => Action::Edit(EditAction::Undo),
         KeyCode::Char('-') if ctrl && shift => Action::Edit(EditAction::Undo),
@@ -240,6 +244,10 @@ mod tests {
         assert_eq!(
             map_key(&k(KeyCode::Char('z'), KeyModifiers::CONTROL), false),
             Action::Suspend
+        );
+        assert_eq!(
+            map_key(&k(KeyCode::Char('g'), KeyModifiers::CONTROL), false),
+            Action::ExternalEditor
         );
         // Ctrl-T is reserved for a task checklist.
         assert_eq!(

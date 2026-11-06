@@ -183,6 +183,7 @@ pub async fn run(args: Args) -> Result<(), TuiError> {
         effect_tx,
         args.mouse_capture(),
         histories,
+        realm_root.join("drafts"),
     )
     .await;
     // The UI has gone (and closed the effect channel): the runner interrupts
@@ -588,6 +589,9 @@ pub(crate) struct Runner {
     helper_updates: Option<mpsc::UnboundedReceiver<HelperUpdate>>,
     /// The session runs on `/compact now`'s one-turn trigger.
     compact_now_pending: bool,
+    /// `/memory`: the file being edited and its bytes before (`None`:
+    /// missing), to tell an edit from an unchanged close.
+    memory_before: Option<(PathBuf, Option<Vec<u8>>)>,
     /// The prompt of the last turn when that turn failed (not interrupted):
     /// the failed run already committed it to this session, so the same text
     /// sent right after is a retry, not a new message.
@@ -653,6 +657,7 @@ impl Runner {
             price_fetch,
             helper_updates,
             compact_now_pending: false,
+            memory_before: None,
             failed_prompt: None,
         };
         runner.refresh_identity().await;
@@ -800,7 +805,10 @@ impl Runner {
             Effect::TrustRealmRules => self.trust_realm_rules(),
             Effect::TrustProjectMcp => self.trust_project_mcp().await,
             // The UI loop repaints the terminal and suspends itself.
-            Effect::Redraw | Effect::Suspend => {}
+            // The UI loop runs these itself.
+            Effect::Redraw | Effect::Suspend | Effect::ExternalEditor(_) => {}
+            Effect::OpenMemory(target) => self.open_memory(target),
+            Effect::MemoryEdited { target, path } => self.memory_edited(target, &path).await,
             Effect::ContextReport(header) => self.context_report(&header).await,
             Effect::StatusReport => self.status_report(),
             Effect::Export { path, text } => self.export(path.as_deref(), &text),

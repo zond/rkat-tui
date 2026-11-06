@@ -27,7 +27,8 @@ use tokio::sync::mpsc;
 
 use super::render::draw;
 use super::selection::{copy_notice, osc52};
-use super::{App, Effect, History, Msg, QueuedCopy};
+use super::editor::{edit_draft, editor_from_env, run_editor};
+use super::{App, EditorClosed, EditorTarget, Effect, History, Msg, QueuedCopy};
 
 /// Render tick interval (~30 fps).
 pub const TICK: Duration = Duration::from_millis(33);
@@ -129,29 +130,72 @@ struct LocalEffects {
     redraw: bool,
     /// Ctrl-Z: suspend to the shell.
     suspend: bool,
+    /// `/memory`, Ctrl-G: run the user's editor.
+    editor: Option<EditorTarget>,
 }
 
 /// Leave TUI mode, run `job` with the terminal in cooked mode, then come
 /// back: the event reader is stopped first (a new stream starts reading
 /// only when polled), keys that arrived meanwhile are dropped, and the
 /// screen is cleared for a full repaint.
-#[cfg(unix)]
-fn outside_tui<T>(
+async fn outside_tui<T>(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     events: &mut crossterm::event::EventStream,
     mouse: bool,
-    job: impl FnOnce() -> T,
+    job: impl std::future::Future<Output = T>,
 ) -> Result<T, UiError> {
     // Dropping the old stream stops its reader thread.
     *events = crossterm::event::EventStream::new();
     restore_terminal();
-    let result = job();
+    let result = job.await;
     enter_tui_mode(mouse)?;
     while ratatui::crossterm::event::poll(Duration::ZERO)? {
         let _ = ratatui::crossterm::event::read()?;
     }
     terminal.clear()?;
     Ok(result)
+}
+
+/// Run the user's editor on `target` outside TUI mode (on a blocking
+/// thread, so the runtime's workers stay free) and report how it ended. An
+/// editor variable naming no program is refused without leaving TUI mode.
+async fn run_external_editor(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    events: &mut crossterm::event::EventStream,
+    mouse: bool,
+    target: EditorTarget,
+    scratch: &std::path::Path,
+) -> Result<EditorClosed, UiError> {
+    let command = match editor_from_env() {
+        Ok(command) => command,
+        Err(refused) => return Ok(editor_failed(target, refused)),
+    };
+    let fallback = target.clone();
+    let scratch = scratch.to_path_buf();
+    let job = tokio::task::spawn_blocking(move || match target {
+        EditorTarget::Memory { target, path } => EditorClosed::Memory {
+            target,
+            result: run_editor(&command, &path),
+            path,
+        },
+        EditorTarget::Draft(text) => {
+            EditorClosed::Draft(edit_draft(&text, &scratch, |path| run_editor(&command, path)))
+        }
+    });
+    let joined = outside_tui(terminal, events, mouse, job).await?;
+    Ok(joined.unwrap_or_else(|err| editor_failed(fallback, format!("the editor task failed: {err}"))))
+}
+
+/// `target`'s editor run failed before it could say more: `why`.
+fn editor_failed(target: EditorTarget, why: String) -> EditorClosed {
+    match target {
+        EditorTarget::Memory { target, path } => EditorClosed::Memory {
+            target,
+            path,
+            result: Err(why),
+        },
+        EditorTarget::Draft(_) => EditorClosed::Draft(Err(why)),
+    }
 }
 
 /// Ctrl-Z: stop this process with SIGTSTP, as the terminal's own suspend
@@ -239,6 +283,7 @@ pub async fn run_ui(
     effects: mpsc::UnboundedSender<Effect>,
     mouse: bool,
     mut histories: Vec<History>,
+    scratch: std::path::PathBuf,
 ) -> Result<(), UiError> {
     install_panic_hook();
     let _guard = TerminalGuard::enter(mouse)?;
@@ -261,7 +306,22 @@ pub async fn run_ui(
     loop {
         if std::mem::take(&mut local.suspend) {
             #[cfg(unix)]
-            outside_tui(&mut terminal, &mut events, mouse, stop_self)?;
+            outside_tui(&mut terminal, &mut events, mouse, async { stop_self() }).await?;
+            local.redraw = true;
+        }
+        if let Some(target) = local.editor.take() {
+            let closed =
+                run_external_editor(&mut terminal, &mut events, mouse, target, &scratch).await?;
+            if apply(
+                &mut app,
+                Msg::EditorClosed(closed),
+                &effects,
+                &mut histories,
+                &mut copies,
+                &mut local,
+            )? {
+                return Ok(());
+            }
             local.redraw = true;
         }
         if std::mem::take(&mut local.redraw) {
@@ -334,8 +394,9 @@ fn write_clipboard(text: &str, tmux: bool, out: &mut impl Write) -> io::Result<(
 }
 
 /// Apply one message, queue its copy, record submitted lines and forward
-/// the effects; [`Effect::Redraw`] and [`Effect::Suspend`] stay here (in
-/// `local`). Returns whether the user quit.
+/// the effects; [`Effect::Redraw`], [`Effect::Suspend`] and
+/// [`Effect::ExternalEditor`] stay here (in `local`). Returns whether the
+/// user quit.
 fn apply(
     app: &mut App,
     msg: Msg,
@@ -365,6 +426,10 @@ fn apply(
             }
             Effect::Suspend => {
                 local.suspend = true;
+                continue;
+            }
+            Effect::ExternalEditor(target) => {
+                local.editor = Some(target);
                 continue;
             }
             _ => {}
@@ -462,6 +527,72 @@ mod tests {
         let quit = apply(&mut app, ctrl_z, &effects, &mut [], &mut copies, &mut local).unwrap();
         assert!(!quit && local.suspend);
         assert!(effect_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn the_editor_runs_in_the_loop_and_its_answer_reaches_the_app() {
+        use crate::ui::MemoryTarget;
+        let (effects, mut effect_rx) = mpsc::unbounded_channel();
+        let mut app = App::new(StatusInfo::default());
+        let (mut copies, mut local) = (Vec::new(), LocalEffects::default());
+        let path = std::path::PathBuf::from("/w/AGENTS.md");
+        let open = Msg::EditFile {
+            target: MemoryTarget::Workspace,
+            path: path.clone(),
+        };
+        apply(&mut app, open, &effects, &mut [], &mut copies, &mut local).unwrap();
+        assert_eq!(
+            local.editor.take(),
+            Some(EditorTarget::Memory {
+                target: MemoryTarget::Workspace,
+                path: path.clone(),
+            })
+        );
+        assert!(effect_rx.try_recv().is_err());
+        let closed = Msg::EditorClosed(EditorClosed::Memory {
+            target: MemoryTarget::Workspace,
+            path: path.clone(),
+            result: Ok(()),
+        });
+        apply(&mut app, closed, &effects, &mut [], &mut copies, &mut local).unwrap();
+        assert_eq!(
+            effect_rx.try_recv().unwrap(),
+            Effect::MemoryEdited {
+                target: MemoryTarget::Workspace,
+                path,
+            }
+        );
+
+        // Ctrl-G: the draft goes to the loop, not the integrator.
+        app.input.set_text("draft");
+        let ctrl_g = Msg::Key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
+        apply(&mut app, ctrl_g, &effects, &mut [], &mut copies, &mut local).unwrap();
+        assert_eq!(local.editor, Some(EditorTarget::Draft("draft".into())));
+        assert!(effect_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_failed_editor_run_keeps_its_target() {
+        use crate::ui::MemoryTarget;
+        let path = std::path::PathBuf::from("/c/SYSTEM.md");
+        assert_eq!(
+            editor_failed(
+                EditorTarget::Memory {
+                    target: MemoryTarget::System,
+                    path: path.clone()
+                },
+                "no".into()
+            ),
+            EditorClosed::Memory {
+                target: MemoryTarget::System,
+                path,
+                result: Err("no".into())
+            }
+        );
+        assert_eq!(
+            editor_failed(EditorTarget::Draft("x".into()), "no".into()),
+            EditorClosed::Draft(Err("no".into()))
+        );
     }
 
     #[test]
