@@ -18,13 +18,13 @@ use async_trait::async_trait;
 use common::{Rig, ScriptedLlmClient, Step, Workspace, within};
 use meerkat_core::types::ToolResult;
 use meerkat_core::{AgentEvent, ApprovalStatus, Message};
-use meerkat_tui::approval::classifier::{
+use parking_lot::Mutex;
+use rkat_tui::approval::classifier::{
     ActionClassifier, ClassifierError, ClassifierInput, ClassifierVerdict,
 };
-use meerkat_tui::bootstrap::ApprovalOverrides;
-use meerkat_tui::runner::Start;
-use meerkat_tui::ui::{ApprovalNotice, Effect, EscalationAnswer, Msg};
-use parking_lot::Mutex;
+use rkat_tui::bootstrap::ApprovalOverrides;
+use rkat_tui::runner::Start;
+use rkat_tui::ui::{ApprovalNotice, Effect, EscalationAnswer, Msg};
 use serde_json::{Value, json};
 
 /// A classifier that replays verdicts and records what it was shown.

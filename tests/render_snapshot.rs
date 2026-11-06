@@ -4,14 +4,14 @@
 use std::time::Instant;
 
 use meerkat_core::{AgentEvent, EventEnvelope, ToolCallArguments};
-use meerkat_tui::ui::render::draw_at;
-use meerkat_tui::ui::{
-    App, Block, DiffView, EscalationId, EscalationPrompt, Msg, StatusInfo, ToolState,
-};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier};
+use rkat_tui::ui::render::draw_at;
+use rkat_tui::ui::{
+    App, Block, DiffView, EscalationId, EscalationPrompt, Msg, StatusInfo, ToolState,
+};
 use serde_json::json;
 
 const W: u16 = 60;
@@ -308,8 +308,8 @@ fn history_search_prompt_line() {
 
 #[test]
 fn queued_block_status_count_and_hints() {
-    use meerkat_tui::delivery::{PendingId, SteerFailure};
     use ratatui::crossterm::event::{KeyCode, KeyEvent};
+    use rkat_tui::delivery::{PendingId, SteerFailure};
     let mut app = sample_app();
     let now = Instant::now();
     for c in "go".chars() {
@@ -383,7 +383,7 @@ fn queued_block_status_count_and_hints() {
 
 #[test]
 fn status_bar_shows_context_gauge_with_threshold_colours() {
-    use meerkat_tui::ui::StatusUpdate;
+    use rkat_tui::ui::StatusUpdate;
     let mut app = sample_app();
     let now = Instant::now();
     app.update(Msg::Status(StatusUpdate::ContextWindow(Some(200_000))));
@@ -459,8 +459,8 @@ fn status_bar_shows_context_gauge_with_threshold_colours() {
 
 #[test]
 fn model_picker_snapshot() {
-    use meerkat_tui::endpoints::WireDialect;
-    use meerkat_tui::models::{ModelEntry, ModelGroup, ModelSource};
+    use rkat_tui::endpoints::WireDialect;
+    use rkat_tui::models::{ModelEntry, ModelGroup, ModelSource};
     let entry = |id: &str, name: &str, window: Option<u64>, source| ModelEntry {
         id: id.into(),
         display_name: Some(name.into()),

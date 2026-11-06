@@ -3,13 +3,12 @@
 //!
 //! The UI loop leaves TUI mode around a run (see `runtime.rs`); this module
 //! holds the parts that need no terminal: which editor, the launch itself
-//! (a typed host launch exemption, [`HostLaunchExemption::UserEditor`]) and
-//! the draft's temporary file.
+//! (the editor runs as the user, unconfined, with the TUI's own environment)
+//! and the draft's temporary file.
 
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
-
-use meerkat_core::HostLaunchExemption;
+use std::process::Command;
 
 /// The editor to run: a program and the arguments that come before the
 /// file (`code --wait` is the program `code` and the argument `--wait`).
@@ -70,7 +69,7 @@ pub fn editor_from_env() -> Result<EditorCommand, String> {
 /// A description when the editor cannot start or exits unsuccessfully.
 pub fn run_editor(command: &EditorCommand, path: &Path) -> Result<(), String> {
     let program = command.program.display();
-    match HostLaunchExemption::user_editor(&command.program, None)
+    match Command::new(&command.program)
         .args(&command.args)
         .arg(path)
         .status()

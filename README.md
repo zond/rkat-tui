@@ -1,4 +1,4 @@
-# meerkat-tui (`rkat-tui`)
+# rkat-tui
 
 An interactive terminal coding harness built on the Meerkat agent engine. It
 hosts its sessions in-process on Meerkat's runtime-backed session path (the
@@ -8,7 +8,7 @@ risky ones are judged by a reasoning-blind classifier, and you are asked only
 after repeated blocks. The shell runs inside an OS sandbox by default.
 
 ```bash
-cargo run -p meerkat-tui -- "fix the failing test"
+cargo run -- "fix the failing test"
 rkat-tui -c                       # continue the latest session of this workspace
 rkat-tui --resume ~2
 rkat-tui --model gpt-5.5 --classifier-model gpt-5.5
@@ -720,7 +720,7 @@ headless runner tests over the real runtime-backed service with a scripted
 LLM):
 
 ```bash
-cargo test -p meerkat-tui
+cargo test
 ```
 
 The integration tests drive internal modules through the crate's
@@ -743,8 +743,7 @@ The live lanes are ignored by default and skip a provider whose key is not in
 the environment:
 
 ```bash
-ANTHROPIC_API_KEY=… OPENAI_API_KEY=… GEMINI_API_KEY=… cargo test -p meerkat-tui --test e2e_classifier -- --ignored
-ANTHROPIC_API_KEY=… OPENAI_API_KEY=… GEMINI_API_KEY=… cargo test -p meerkat-tui --lib e2e_list_models -- --ignored
+ANTHROPIC_API_KEY=… OPENAI_API_KEY=… GEMINI_API_KEY=… cargo test --test e2e_classifier -- --ignored
+ANTHROPIC_API_KEY=… OPENAI_API_KEY=… GEMINI_API_KEY=… cargo test --lib e2e_list_models -- --ignored
 ```
 
-Inside this repository use `./scripts/repo-cargo` in place of `cargo`.

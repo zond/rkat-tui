@@ -1,0 +1,6 @@
+# Carried over from the Meerkat workspace: its debug test graph needs an
+# 8 MiB test-thread stack, and meerkat-sqlite requires the bundled SQLite
+# to be built with exactly this lock profile (meerkat_sqlite::REQUIRED_LIBSQLITE3_FLAGS).
+[env]
+RUST_MIN_STACK = "8388608"
+LIBSQLITE3_FLAGS = { value = "-DSQLITE_DEFAULT_MEMSTATUS=0 -USQLITE_ENABLE_MEMORY_MANAGEMENT -DSQLITE_DISABLE_PAGECACHE_OVERFLOW_STATS", force = true }

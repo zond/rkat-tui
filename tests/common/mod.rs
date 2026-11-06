@@ -18,14 +18,14 @@ use meerkat::{LlmClient, LlmDoneOutcome, LlmError, LlmEvent, LlmRequest};
 use meerkat_core::{
     AgentEvent, Message, Provider, ProviderTag, Session, SessionId, StopReason, TurnUsage, Usage,
 };
-use meerkat_tui::Args;
-use meerkat_tui::approval::ApprovalEngine;
-use meerkat_tui::bootstrap::{self, ApprovalOverrides, BootstrapOptions, HostPaths, TuiService};
-use meerkat_tui::harness::{RunnerHarness, SavedUnsent, spawn_runner};
-use meerkat_tui::models::{EndpointListing, ModelLister};
-use meerkat_tui::runner::Start;
-use meerkat_tui::ui::{Effect, Msg, TurnOutcome};
 use parking_lot::Mutex;
+use rkat_tui::Args;
+use rkat_tui::approval::ApprovalEngine;
+use rkat_tui::bootstrap::{self, ApprovalOverrides, BootstrapOptions, HostPaths, TuiService};
+use rkat_tui::harness::{RunnerHarness, SavedUnsent, spawn_runner};
+use rkat_tui::models::{EndpointListing, ModelLister};
+use rkat_tui::runner::Start;
+use rkat_tui::ui::{Effect, Msg, TurnOutcome};
 use serde_json::Value;
 use tempfile::TempDir;
 use tokio::sync::{Notify, mpsc};
@@ -317,7 +317,7 @@ pub fn args_for(root: &Path) -> Args {
 
 /// A model lister that lists nothing (no network).
 pub fn no_lists() -> ModelLister {
-    Arc::new(|endpoints: Vec<meerkat_tui::endpoints::Endpoint>| {
+    Arc::new(|endpoints: Vec<rkat_tui::endpoints::Endpoint>| {
         Box::pin(async move {
             endpoints
                 .into_iter()
@@ -344,7 +344,7 @@ pub struct RigOptions {
 /// A runner over a real runtime-backed service, with its channels.
 pub struct Rig {
     pub service: Arc<TuiService>,
-    pub helpers: Option<Arc<meerkat_tui::mobs::Helpers>>,
+    pub helpers: Option<Arc<rkat_tui::mobs::Helpers>>,
     pub approval: Arc<ApprovalEngine>,
     pub store: Arc<dyn meerkat::SessionStore>,
     pub effects: mpsc::UnboundedSender<Effect>,
@@ -400,7 +400,7 @@ impl Rig {
         llm: &Arc<ScriptedLlmClient>,
         start: Start,
         options: RigOptions,
-    ) -> Result<Self, meerkat_tui::TuiError> {
+    ) -> Result<Self, rkat_tui::TuiError> {
         let extra: Vec<&str> = options.args.iter().map(String::as_str).collect();
         let runtime = bootstrap::bootstrap(
             &args_with(root, &extra),

@@ -19,10 +19,10 @@ mod common;
 
 use common::{Rig, RigOptions, ScriptedLlmClient, Step, Workspace};
 use meerkat_core::AgentEvent;
-use meerkat_tui::runner::Start;
-use meerkat_tui::ui::compaction::CompactionGauge;
-use meerkat_tui::ui::{CompactMode, Effect, Msg, StatusUpdate};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use rkat_tui::runner::Start;
+use rkat_tui::ui::compaction::CompactionGauge;
+use rkat_tui::ui::{CompactMode, Effect, Msg, StatusUpdate};
 
 /// Input tokens the sixth turn reports.
 const BIG: u64 = 60_000;
@@ -200,7 +200,7 @@ async fn warn_mode_warns_and_compacts_only_on_compact() {
     assert!(warning.contains("auto-compaction is off"), "{warning}");
 
     // A bare `/compact` typed into the UI compacts (as `/compact now` did).
-    let mut app = meerkat_tui::ui::App::new(meerkat_tui::ui::StatusInfo::default());
+    let mut app = rkat_tui::ui::App::new(rkat_tui::ui::StatusInfo::default());
     app.status.context_used = Some(BIG);
     for c in "/compact".chars() {
         app.update(Msg::Key(KeyEvent::from(KeyCode::Char(c))));

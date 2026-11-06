@@ -16,8 +16,8 @@ use std::path::Path;
 
 use common::{Rig, ScriptedLlmClient, Step, Workspace};
 use meerkat_core::prompt::AGENTS_MD_MAX_BYTES;
-use meerkat_tui::runner::Start;
-use meerkat_tui::ui::{Effect, Msg, NoticeLevel, StatusUpdate};
+use rkat_tui::runner::Start;
+use rkat_tui::ui::{Effect, Msg, NoticeLevel, StatusUpdate};
 
 fn write(path: &Path, content: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();

@@ -20,13 +20,13 @@ use common::{Rig, ScriptedLlmClient, Step, Workspace, within};
 use meerkat_core::Message;
 use meerkat_core::service::SessionError;
 use meerkat_core::types::ToolResult;
-use meerkat_tui::approval::classifier::{
+use parking_lot::Mutex;
+use rkat_tui::approval::classifier::{
     ActionClassifier, ClassifierError, ClassifierInput, ClassifierVerdict,
 };
-use meerkat_tui::bootstrap::ApprovalOverrides;
-use meerkat_tui::runner::Start;
-use meerkat_tui::ui::{ApprovalNotice, Effect, Msg, StatusUpdate};
-use parking_lot::Mutex;
+use rkat_tui::bootstrap::ApprovalOverrides;
+use rkat_tui::runner::Start;
+use rkat_tui::ui::{ApprovalNotice, Effect, Msg, StatusUpdate};
 use serde_json::json;
 
 /// A classifier that replays verdicts and records the tools it judged.

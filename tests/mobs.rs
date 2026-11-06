@@ -18,15 +18,15 @@ use async_trait::async_trait;
 use common::{Rig, RigOptions, ScriptedLlmClient, Step, Workspace, args_with, within};
 use meerkat_core::types::ToolResult;
 use meerkat_core::{Message, StreamScopeFrame};
-use meerkat_tui::approval::classifier::{
+use parking_lot::Mutex;
+use rkat_tui::approval::classifier::{
     ActionClassifier, ClassifierError, ClassifierInput, ClassifierVerdict,
 };
-use meerkat_tui::bootstrap::{self, ApprovalOverrides};
-use meerkat_tui::endpoints::{ENDPOINT_REALM, Endpoint, load_cost};
-use meerkat_tui::models::{EndpointListing, ModelEntry, ModelLister, ModelSource};
-use meerkat_tui::runner::Start;
-use meerkat_tui::ui::{App, ApprovalNotice, Effect, Msg, StatusInfo, StatusUpdate};
-use parking_lot::Mutex;
+use rkat_tui::bootstrap::{self, ApprovalOverrides};
+use rkat_tui::endpoints::{ENDPOINT_REALM, Endpoint, load_cost};
+use rkat_tui::models::{EndpointListing, ModelEntry, ModelLister, ModelSource};
+use rkat_tui::runner::Start;
+use rkat_tui::ui::{App, ApprovalNotice, Effect, Msg, StatusInfo, StatusUpdate};
 use serde_json::{Value, json};
 
 /// A classifier that replays verdicts and records `(tool, transcript)`.
@@ -515,7 +515,7 @@ async fn a_helper_no_open_session_owns_is_refused() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_helpers_owner_survives_a_restart_until_it_retires() {
-    use meerkat_tui::mobs::HelperKey;
+    use rkat_tui::mobs::HelperKey;
 
     let ws = Workspace::new();
     let mob = meerkat_mob::MobId::from("team");
@@ -595,7 +595,7 @@ async fn a_helpers_owner_survives_a_restart_until_it_retires() {
         bootstrap::resolve_scope(&args_with(&ws.root, &[]))
             .unwrap()
             .realm_root()
-            .join(meerkat_tui::mobs::bindings::BINDINGS_FILE),
+            .join(rkat_tui::mobs::bindings::BINDINGS_FILE),
     )
     .unwrap();
     assert!(!file.contains("worker"), "{file}");

@@ -9,11 +9,11 @@
 
 use meerkat::AgentFactory;
 use meerkat_core::{Config, Provider, SessionLlmIdentity};
-use meerkat_tui::approval::classifier::{
+use rkat_tui::approval::classifier::{
     ActionClassifier, ClassifierInput, ClassifierVerdict, Environment, LlmClassifier,
     classifier_default_model,
 };
-use meerkat_tui::approval::transcript::ApprovalTranscript;
+use rkat_tui::approval::transcript::ApprovalTranscript;
 use serde_json::json;
 
 fn key_var(provider: Provider) -> &'static [&'static str] {

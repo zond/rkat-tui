@@ -10,16 +10,16 @@ mod common;
 
 use common::{Rig, RigOptions, ScriptedLlmClient, Step, Workspace};
 use meerkat_core::{AgentEvent, Message};
-use meerkat_tui::approval::catalog::ToolOrigin;
-use meerkat_tui::approval::policy::{
+use rkat_tui::approval::catalog::ToolOrigin;
+use rkat_tui::approval::policy::{
     Action, DELEGATION_TOOLS, PolicyContext, READ_ONLY_BUILTINS, REVIEWED_BUILTINS, Tier,
     classify_tier,
 };
-use meerkat_tui::approval::rules::RuleSet;
-use meerkat_tui::memory::NOTE_TOOL_NAMES;
-use meerkat_tui::paths::ProjectRoot;
-use meerkat_tui::runner::Start;
-use meerkat_tui::ui::Effect;
+use rkat_tui::approval::rules::RuleSet;
+use rkat_tui::memory::NOTE_TOOL_NAMES;
+use rkat_tui::paths::ProjectRoot;
+use rkat_tui::runner::Start;
+use rkat_tui::ui::Effect;
 use serde_json::json;
 
 const SECRET: &str = "the zebra pancake recipe uses saffron";

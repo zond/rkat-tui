@@ -16,12 +16,12 @@ use std::sync::Arc;
 use common::{Rig, RigOptions, ScriptedLlmClient, Step, Workspace, args_with};
 use meerkat_core::ConfigStore;
 use meerkat_core::Usage;
-use meerkat_tui::bootstrap;
-use meerkat_tui::endpoints::{ENDPOINT_REALM, Endpoint};
-use meerkat_tui::models::{EndpointListing, ModelEntry, ModelLister, ModelSource};
-use meerkat_tui::runner::Start;
-use meerkat_tui::runner::cost_store::load_cost;
-use meerkat_tui::ui::{Effect, Msg, SessionCost, StatusUpdate};
+use rkat_tui::bootstrap;
+use rkat_tui::endpoints::{ENDPOINT_REALM, Endpoint};
+use rkat_tui::models::{EndpointListing, ModelEntry, ModelLister, ModelSource};
+use rkat_tui::runner::Start;
+use rkat_tui::runner::cost_store::load_cost;
+use rkat_tui::ui::{Effect, Msg, SessionCost, StatusUpdate};
 
 /// An Anthropic-dialect gateway, defined on the command line.
 fn proxy_args() -> Vec<String> {

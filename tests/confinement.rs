@@ -24,15 +24,15 @@ use std::time::Duration;
 use async_trait::async_trait;
 use common::{Rig, RigOptions, ScriptedLlmClient, Step, Workspace, within};
 use meerkat_core::{AgentEvent, Message};
-use meerkat_tui::TuiError;
-use meerkat_tui::approval::classifier::{
+use rkat_tui::TuiError;
+use rkat_tui::approval::classifier::{
     ActionClassifier, ClassifierError, ClassifierInput, ClassifierVerdict,
 };
-use meerkat_tui::bootstrap::ApprovalOverrides;
-use meerkat_tui::bootstrap::confinement::{HostPaths, lower};
-use meerkat_tui::cli::ConfinementArg;
-use meerkat_tui::runner::Start;
-use meerkat_tui::ui::Effect;
+use rkat_tui::bootstrap::ApprovalOverrides;
+use rkat_tui::bootstrap::confinement::{HostPaths, lower};
+use rkat_tui::cli::ConfinementArg;
+use rkat_tui::runner::Start;
+use rkat_tui::ui::Effect;
 use serde_json::json;
 
 /// Allows every reviewed call: these tests are about the sandbox under the
@@ -365,7 +365,7 @@ async fn an_interrupted_shell_call_leaves_custody_records_and_no_process() {
     })
     .await;
     // The call ran in the session's durable process custody.
-    let custody = meerkat_tui::bootstrap::resolve_scope(&common::args_for(&ws.root))
+    let custody = rkat_tui::bootstrap::resolve_scope(&common::args_for(&ws.root))
         .unwrap()
         .realm_root()
         .join(meerkat_tools::builtin::shell::PROCESS_CUSTODY_DIR);
@@ -399,7 +399,7 @@ fn walk(dir: &Path) -> Vec<std::path::PathBuf> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn no_confinement_below_a_realm_policy_is_a_typed_startup_error() {
     let ws = Workspace::new();
-    let realm = meerkat_tui::bootstrap::resolve_scope(&common::args_for(&ws.root))
+    let realm = rkat_tui::bootstrap::resolve_scope(&common::args_for(&ws.root))
         .unwrap()
         .realm_root();
     std::fs::create_dir_all(&realm).unwrap();
@@ -417,7 +417,7 @@ async fn no_confinement_below_a_realm_policy_is_a_typed_startup_error() {
     assert!(
         matches!(
             &err,
-            TuiError::Confinement(meerkat_tui::ConfinementError::BelowRealmFloor { policy, .. })
+            TuiError::Confinement(rkat_tui::ConfinementError::BelowRealmFloor { policy, .. })
                 if policy.contains("workspace preset")
         ),
         "{err}"

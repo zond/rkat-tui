@@ -6,8 +6,8 @@
 use meerkat_tools::builtin::BuiltinTool;
 use meerkat_tools::builtin::shell::{ShellConfig, ShellTool};
 use meerkat_tools::builtin::utility::ApplyPatchTool;
-use meerkat_tui::approval::patch_targets::affected_paths;
-use meerkat_tui::approval::policy::ShellArgs;
+use rkat_tui::approval::patch_targets::affected_paths;
+use rkat_tui::approval::policy::ShellArgs;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};

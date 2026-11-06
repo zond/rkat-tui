@@ -16,17 +16,17 @@ use meerkat_core::lifecycle::run_primitive::{
 use meerkat_core::types::{AssistantBlock, BlockAssistantMessage, ToolResult};
 use meerkat_core::{Message, Provider, ProviderTag, Session, StopReason, UserMessage};
 use meerkat_llm_core::LlmClient;
-use meerkat_tui::approval::ApprovalEvent;
-use meerkat_tui::approval::classifier::{
+use rkat_tui::approval::ApprovalEvent;
+use rkat_tui::approval::classifier::{
     ActionClassifier, ClassifierError, ClassifierInput, ClassifierVerdict, Environment,
     LlmClassifier, STAGE1_ALLOW_REASON, classifier_default_model, low_reasoning_params,
 };
-use meerkat_tui::approval::prompts::{
+use rkat_tui::approval::prompts::{
     STAGE2_TOOLS_INSTRUCTIONS, TOOL_BUDGET_EXHAUSTED, UNTRUSTED_TOOL_RESULT_PREFIX,
 };
-use meerkat_tui::approval::transcript::ApprovalTranscript;
-use meerkat_tui::paths::ProjectRoot;
-use meerkat_tui::tools::ReadOnlyProjectTools;
+use rkat_tui::approval::transcript::ApprovalTranscript;
+use rkat_tui::paths::ProjectRoot;
+use rkat_tui::tools::ReadOnlyProjectTools;
 use serde_json::{Value, json};
 
 fn seeded_transcript() -> ApprovalTranscript {

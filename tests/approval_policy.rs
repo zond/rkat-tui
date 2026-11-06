@@ -23,15 +23,15 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use meerkat_core::ToolSourceKind;
-use meerkat_tui::approval::catalog::ToolOrigin;
-use meerkat_tui::approval::policy::{
+use rkat_tui::approval::catalog::ToolOrigin;
+use rkat_tui::approval::policy::{
     Action, DELEGATION_TOOLS, PolicyContext, READ_ONLY_BUILTINS, REVIEWED_BUILTINS, Tier,
     TierDecision, classify_tier,
 };
-use meerkat_tui::approval::rules::{Rule, RuleKind, RuleOrigin, RuleSet};
-use meerkat_tui::memory::{NOTE_TOOL_NAMES, NOTES_SOURCE};
-use meerkat_tui::paths::ProjectRoot;
-use meerkat_tui::tools::{FILE_TOOL_NAMES, FILE_TOOLS_SOURCE};
+use rkat_tui::approval::rules::{Rule, RuleKind, RuleOrigin, RuleSet};
+use rkat_tui::memory::{NOTE_TOOL_NAMES, NOTES_SOURCE};
+use rkat_tui::paths::ProjectRoot;
+use rkat_tui::tools::{FILE_TOOL_NAMES, FILE_TOOLS_SOURCE};
 use serde_json::{Value, json};
 
 struct Harness {
@@ -103,8 +103,8 @@ fn origin(name: &str) -> ToolOrigin {
         ToolOrigin::tui(FILE_TOOLS_SOURCE, name)
     } else if NOTE_TOOL_NAMES.contains(&name) {
         ToolOrigin::tui(NOTES_SOURCE, name)
-    } else if name == meerkat_tui::fork::FORK {
-        ToolOrigin::tui(meerkat_tui::fork::FORK_SOURCE, name)
+    } else if name == rkat_tui::fork::FORK {
+        ToolOrigin::tui(rkat_tui::fork::FORK_SOURCE, name)
     } else if READ_ONLY_BUILTINS.contains(&name)
         || REVIEWED_BUILTINS.contains(&name)
         || DELEGATION_TOOLS.contains(&name)
@@ -296,7 +296,7 @@ fn a_sealed_patch_target_after_a_protected_or_outside_one_is_sealed() {
 /// while reading them is not sealed.
 #[test]
 fn sealed_roots_outside_the_workspace_are_sealed() {
-    use meerkat_tui::paths::git_dirs;
+    use rkat_tui::paths::git_dirs;
     let dir = tempfile::tempdir().unwrap();
     let base = std::fs::canonicalize(dir.path()).unwrap();
     let repo = base.join("repo");

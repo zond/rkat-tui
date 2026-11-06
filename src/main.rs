@@ -1,7 +1,7 @@
 //! `rkat-tui` binary entry point.
 
 use clap::Parser;
-use meerkat_tui::{Args, run};
+use rkat_tui::{Args, run};
 use std::process::ExitCode;
 
 const BINARY_NAME: &str = "rkat-tui";

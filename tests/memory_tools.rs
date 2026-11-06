@@ -7,14 +7,14 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use meerkat_core::{AgentToolDispatcher, ToolCallView};
-use meerkat_tui::approval::catalog::ToolOrigin;
-use meerkat_tui::approval::policy::{Action, PolicyContext, Tier, classify_tier};
-use meerkat_tui::approval::rules::RuleSet;
-use meerkat_tui::memory::{
+use rkat_tui::approval::catalog::ToolOrigin;
+use rkat_tui::approval::policy::{Action, PolicyContext, Tier, classify_tier};
+use rkat_tui::approval::rules::RuleSet;
+use rkat_tui::memory::{
     INDEX_FILE, NOTE_LIST, NOTE_SAVE, NOTES_SOURCE, NoteStore, NoteToolDispatcher,
     UNTRUSTED_INDEX_LABEL, prompt_index,
 };
-use meerkat_tui::paths::ProjectRoot;
+use rkat_tui::paths::ProjectRoot;
 use serde_json::{Value, json};
 
 struct Harness {

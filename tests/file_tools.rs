@@ -2,8 +2,8 @@
 //! Integration tests for the in-crate file tools.
 
 use meerkat_core::{AgentToolDispatcher, ToolCallView, ToolError, ToolResult};
-use meerkat_tui::paths::ProjectRoot;
-use meerkat_tui::tools::{FILE_TOOL_NAMES, FileDiff, FileToolDispatcher};
+use rkat_tui::paths::ProjectRoot;
+use rkat_tui::tools::{FILE_TOOL_NAMES, FileDiff, FileToolDispatcher};
 use serde_json::{Value, json};
 use std::path::Path;
 use std::time::{Duration, SystemTime};
@@ -748,7 +748,7 @@ async fn promptly<F: std::future::Future>(what: &str, fut: F) -> F::Output {
 #[cfg(unix)]
 #[tokio::test]
 async fn fifo_is_refused_promptly_by_read_grep_and_read_only_tools() {
-    use meerkat_tui::tools::ReadOnlyProjectTools;
+    use rkat_tui::tools::ReadOnlyProjectTools;
 
     let fx = Fixture::new();
     fx.write("plain.txt", "needle\n");
@@ -823,7 +823,7 @@ async fn socket_is_refused_by_read_and_grep() {
 
 #[tokio::test]
 async fn reads_are_capped_and_say_so() {
-    use meerkat_tui::tools::MAX_FILE_READ_BYTES;
+    use rkat_tui::tools::MAX_FILE_READ_BYTES;
 
     let fx = Fixture::new();
     let cap = usize::try_from(MAX_FILE_READ_BYTES).unwrap();
