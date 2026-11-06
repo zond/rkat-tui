@@ -14,9 +14,9 @@ use meerkat_core::{AgentEvent, EventEnvelope};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{
-    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
-    KeyEventKind, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
+    DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+    EnableFocusChange, EnableMouseCapture, Event, KeyEventKind, KeyboardEnhancementFlags,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
@@ -65,6 +65,7 @@ fn restore_terminal() {
     }
     let _ = execute!(
         out,
+        DisableFocusChange,
         DisableBracketedPaste,
         LeaveAlternateScreen,
         ratatui::crossterm::cursor::Show
@@ -88,7 +89,9 @@ impl TerminalGuard {
         // From here on, `Drop` restores whatever was enabled if a later step fails.
         let guard = Self { _private: () };
         let mut out = io::stdout();
-        execute!(out, EnterAlternateScreen, EnableBracketedPaste)?;
+        // Focus reports let the bell ring only while the terminal is
+        // unfocused; a terminal without them never reports a loss.
+        execute!(out, EnterAlternateScreen, EnableBracketedPaste, EnableFocusChange)?;
         if matches!(supports_keyboard_enhancement(), Ok(true)) {
             // Disambiguation only: it tells Esc from Alt sequences and
             // Shift/Ctrl+Enter from Enter. Event types are not requested:
@@ -168,6 +171,8 @@ fn translate(event: Event, mouse: bool) -> Option<Msg> {
         Event::Paste(text) => Some(Msg::Paste(text)),
         Event::Resize(w, h) => Some(Msg::Resize(w, h)),
         Event::Mouse(m) if mouse => Some(Msg::Mouse(m)),
+        Event::FocusGained => Some(Msg::Focus(true)),
+        Event::FocusLost => Some(Msg::Focus(false)),
         _ => None,
     }
 }
@@ -209,6 +214,9 @@ pub async fn run_ui(
             app.take_dirty();
         } else if app.take_dirty() {
             terminal.draw(|frame| draw(frame, &mut app))?;
+        }
+        if app.take_bell() {
+            ring_bell(terminal.backend_mut())?;
         }
         for copy in copies.drain(..) {
             let (level, text) = copy_notice(
@@ -252,6 +260,12 @@ pub async fn run_ui(
             }
         }
     }
+}
+
+/// Write BEL to `out` (the terminal backend, after a frame).
+fn ring_bell(out: &mut impl Write) -> io::Result<()> {
+    out.write_all(b"\x07")?;
+    out.flush()
 }
 
 /// Write `text` to `out` (the terminal backend, after a frame) as an OSC 52
@@ -394,6 +408,20 @@ mod tests {
             translate(Event::Resize(1, 2), false),
             Some(Msg::Resize(1, 2))
         ));
-        assert!(translate(Event::FocusGained, false).is_none());
+        assert!(matches!(
+            translate(Event::FocusGained, false),
+            Some(Msg::Focus(true))
+        ));
+        assert!(matches!(
+            translate(Event::FocusLost, false),
+            Some(Msg::Focus(false))
+        ));
+    }
+
+    #[test]
+    fn the_bell_is_one_bel_byte() {
+        let mut out = Vec::new();
+        ring_bell(&mut out).unwrap();
+        assert_eq!(out, b"\x07");
     }
 }

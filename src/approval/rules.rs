@@ -722,20 +722,38 @@ pub struct UiSection {
     /// See [`UiSettings::helpers`] (`"folded"` or `"expanded"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub helpers: Option<HelperView>,
+    /// See [`UiSettings::bell`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bell: Option<bool>,
 }
 
 /// `[ui]` settings after layering.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UiSettings {
     /// How helper (sub-agent) headers start: one folded line (default) or
     /// showing the helper's work.
     pub helpers: HelperView,
+    /// Ring the terminal bell when a turn ends or an approval prompt opens
+    /// while the terminal is not focused (default on).
+    pub bell: bool,
+}
+
+impl Default for UiSettings {
+    fn default() -> Self {
+        Self {
+            helpers: HelperView::default(),
+            bell: true,
+        }
+    }
 }
 
 impl UiSettings {
     fn apply(&mut self, section: &UiSection) {
         if let Some(helpers) = section.helpers {
             self.helpers = helpers;
+        }
+        if let Some(bell) = section.bell {
+            self.bell = bell;
         }
     }
 }
@@ -1322,6 +1340,7 @@ pub fn load_layered_with(
         let cli_ui = cli.and_then(|c| c.ui).unwrap_or_default();
         ui.apply(&UiSection {
             helpers: section.helpers.filter(|_| cli_ui.helpers.is_none()),
+            bell: section.bell.filter(|_| cli_ui.bell.is_none()),
         });
     }
     if !project.allow.is_empty() {
@@ -1711,6 +1730,7 @@ mod tests {
             helpers: Some(HelpersSection { max_depth: Some(2) }),
             ui: Some(UiSection {
                 helpers: Some(HelperView::Expanded),
+                bell: Some(false),
             }),
         };
         let text = toml::to_string_pretty(&file).unwrap();
@@ -2207,6 +2227,23 @@ mod tests {
         write(&project, "[helpers]\nmax_depth = 5\n");
         let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
         assert_eq!(layered.helpers.max_depth, 1);
+    }
+
+    #[test]
+    fn ui_bell_defaults_to_on_and_layers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (realm, project) = (tmp.path().join("realm"), tmp.path().join("p"));
+        write(&realm, "");
+        write(&project, "");
+        let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+        assert!(layered.ui.bell);
+        write(&realm, "[ui]\nbell = false\n");
+        let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+        assert!(!layered.ui.bell);
+        let overlay = cli("[ui]\nbell = true\n");
+        let layered =
+            load_layered_with(&realm, None, &project, RealmTrust::Owned, Some(&overlay)).unwrap();
+        assert!(layered.ui.bell);
     }
 
     #[test]

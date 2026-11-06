@@ -306,6 +306,13 @@ helper's blocks in place (indented, tool output still collapsed), and
 folds them. `[ui] helpers = "expanded"` in `tui.toml` starts every header
 unfolded (default `"folded"`); a resumed session shows its helpers folded.
 
+**Bell.** When a turn ends (and no queued message starts the next one) or an
+approval prompt opens while the terminal does not have the focus, rkat-tui
+writes a terminal bell (BEL), which most terminals turn into a sound, a
+badge or a desktop notification. Focus comes from the terminal's focus
+reports; a terminal that sends none counts as focused, so it never rings.
+`[ui] bell = false` in `tui.toml` (or `--set ui.bell=false`) turns it off.
+
 Helpers nest one level deep by default, as in Claude Code: the session may
 delegate, its helpers may not, so a chain of helpers each carrying a full
 context (and the mob and council tool schemas, about 25k tokens in every

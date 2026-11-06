@@ -338,6 +338,8 @@ pub enum Msg {
     /// Some of helper `label`'s usage could not be observed (its events
     /// could not be followed): the cost readout becomes a lower bound.
     HelperUnmeasured(String),
+    /// The terminal gained (`true`) or lost (`false`) the focus.
+    Focus(bool),
     /// Animation tick.
     Tick,
 }
@@ -739,6 +741,13 @@ pub struct App {
     /// Admitted messages a recall found already with the agent: ↑ no
     /// longer tries to recall them (it recalls history).
     reached: Vec<PendingId>,
+    /// Ring the bell when a turn ends or an approval prompt opens while the
+    /// terminal is unfocused (`[ui] bell`).
+    bell: bool,
+    /// Whether the terminal has the focus (assumed at start-up).
+    focused: bool,
+    /// A bell is due ([`Self::take_bell`]).
+    ring: bool,
     dirty: bool,
 }
 
@@ -781,7 +790,30 @@ impl App {
             helper_view: None,
             recalling: false,
             reached: Vec::new(),
+            bell: true,
+            focused: true,
+            ring: false,
             dirty: true,
+        }
+    }
+
+    /// Whether to ring the bell when a turn ends or an approval prompt opens
+    /// while the terminal is unfocused (default on).
+    #[must_use]
+    pub fn with_bell(mut self, bell: bool) -> Self {
+        self.bell = bell;
+        self
+    }
+
+    /// Whether a bell is due; clears it. The UI loop writes BEL when so.
+    pub fn take_bell(&mut self) -> bool {
+        std::mem::take(&mut self.ring)
+    }
+
+    /// Ask for a bell when enabled and the terminal is unfocused.
+    fn notify(&mut self) {
+        if self.bell && !self.focused {
+            self.ring = true;
         }
     }
 
@@ -1459,7 +1491,13 @@ impl App {
                 self.record_helper_usage(&ev, &mut fx);
                 self.transcript.apply_scoped_event_at(&ev, now);
             }
-            Msg::TurnFinished(outcome) => self.turn_finished(outcome, now, &mut fx),
+            Msg::TurnFinished(outcome) => {
+                self.turn_finished(outcome, now, &mut fx);
+                // Not when the queued messages started the next turn.
+                if !self.running {
+                    self.notify();
+                }
+            }
             Msg::SteerAck { id, result } => self.steer_ack(id, result, now, &mut fx),
             Msg::SteerDelivered(id) => self.settle(id),
             Msg::SteerRequeued(id) => self.requeue(id),
@@ -1484,7 +1522,14 @@ impl App {
                     );
                 }
             }
-            Msg::Escalation(prompt, id) => self.escalation(prompt, id),
+            Msg::Escalation(prompt, id) => {
+                self.escalation(prompt, id);
+                self.notify();
+            }
+            Msg::Focus(focused) => {
+                self.focused = focused;
+                dirty = false;
+            }
             Msg::EscalationResolved(id) => self.escalation_resolved(id),
             Msg::Approval(n) => {
                 self.transcript.push(Block::Approval {
@@ -4109,6 +4154,39 @@ mod tests {
         app.update(key(KeyCode::Down));
         let picker = app.modal.clone().expect("picker open");
         (app, picker)
+    }
+
+    #[test]
+    fn the_bell_rings_only_while_unfocused_and_enabled() {
+        let mut app = running_app();
+        // Focused: no bell.
+        app.update(finished(Ok(summary()), &[]));
+        assert!(!app.take_bell());
+        // Unfocused: a finished turn and an escalation ring.
+        app.update(Msg::Focus(false));
+        submit(&mut app, "two");
+        app.update(finished(Ok(summary()), &[]));
+        assert!(app.take_bell());
+        assert!(!app.take_bell(), "taken once");
+        app.update(Msg::Escalation(shell_prompt(), EscalationId(1)));
+        assert!(app.take_bell());
+        // A turn whose queued messages start the next one does not ring.
+        let mut app = running_app();
+        app.update(Msg::Focus(false));
+        submit(&mut app, "two");
+        app.update(ack(1, Err(SteerFailure::NotRunning)));
+        app.update(finished(Ok(summary()), &[]));
+        assert!(app.is_running());
+        assert!(!app.take_bell());
+        // Focus back: quiet again.
+        app.update(Msg::Focus(true));
+        app.update(finished(Ok(summary()), &[]));
+        assert!(!app.take_bell());
+        // Disabled.
+        let mut app = App::new(StatusInfo::default()).with_bell(false);
+        app.update(Msg::Focus(false));
+        app.update(Msg::Escalation(shell_prompt(), EscalationId(1)));
+        assert!(!app.take_bell());
     }
 
     #[test]
