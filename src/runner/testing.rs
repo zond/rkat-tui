@@ -48,6 +48,9 @@ pub async fn spawn_runner(runtime: Runtime, start: &Start) -> Result<RunnerHarne
     let (agent_tx, agent_rx) = mpsc::channel(AGENT_EVENT_CAPACITY);
     let (ui_tx, ui_rx) = mpsc::unbounded_channel();
     let (effects, effect_rx) = mpsc::unbounded_channel();
+    for effect in start.first_effects() {
+        let _ = effects.send(effect);
+    }
     let runner = Runner::new(RunnerParts {
         runtime,
         template,

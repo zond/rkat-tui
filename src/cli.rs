@@ -60,9 +60,10 @@ pub struct Args {
     #[arg(long)]
     pub no_trust_project_builds: bool,
 
-    /// Resume an existing session: `last`, `~N`, a session ID, or an ID prefix.
-    #[arg(long, conflicts_with = "continue_last")]
-    pub resume: Option<String>,
+    /// Resume an existing session: `last`, `~N`, a session ID, or an ID
+    /// prefix. Without a value, opens the session picker at start-up.
+    #[arg(long, conflicts_with = "continue_last", num_args = 0..=1, value_name = "REF")]
+    pub resume: Option<Option<String>>,
 
     /// Continue the most recent session of this workspace (same as `--resume last`).
     #[arg(short = 'c', long = "continue")]
@@ -254,7 +255,7 @@ mod tests {
         .unwrap();
         assert_eq!(args.prompt.as_deref(), Some("fix the tests"));
         assert_eq!(args.model.as_deref(), Some("claude-sonnet-4-6"));
-        assert_eq!(args.resume.as_deref(), Some("last"));
+        assert_eq!(args.resume, Some(Some("last".to_string())));
         assert!(args.no_auto);
         assert_eq!(args.realm_backend, Some(RealmBackendArg::Sqlite));
     }

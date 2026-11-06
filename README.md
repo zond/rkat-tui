@@ -25,8 +25,8 @@ Every session lives in a `PersistentSessionService` over the realm's stores,
 with a `MeerkatMachine` owning input admission, interruption and resume. The
 transcript, the model and the cost totals survive restarts: `-c` continues
 the workspace's latest session, `--resume <ref>` or `/resume [ref]` any other
-(`last`, `~N` for the N-th most recent, an id or id prefix; `/resume` alone
-opens a picker), `/clear` (`/new`) starts a fresh one.
+(`last`, `~N` for the N-th most recent, an id or id prefix; `/resume` or
+`--resume` alone opens a picker), `/clear` (`/new`) starts a fresh one.
 
 **Typing while the agent works.** Enter on an idle session starts a turn
 (a `Queue` input). While a turn runs, Enter *steers*: the message becomes a
@@ -405,7 +405,7 @@ are never written to a file.
 | `pricing."<model id>".input`, `.output`, `.cached_input`, `.cache_write` (USD per 1M tokens) | `--set 'pricing."<id>".input=15'` | fetched prices |
 
 Other flags: `--model`/`-m <[endpoint:]id>`, `--endpoint <name>`
-(`--provider` for the built-ins), `--resume <ref>`, `-c`/`--continue`,
+(`--provider` for the built-ins), `--resume [ref]`, `-c`/`--continue`,
 `-w`/`--workspace`, `--config-dir`, `--user-config-root`, `--realm`,
 `--isolated`, `--realm-backend`, `--state-root`, `--confinement`,
 `--confinement-read`, `--confinement-write`, `--no-confinement`, `--no-mouse`, `--wait-for-mcp`, `--allow-project-mcp`,

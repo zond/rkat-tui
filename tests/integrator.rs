@@ -302,6 +302,48 @@ async fn continue_and_resume_by_id_across_lifetimes() {
     rig.quit().await;
 }
 
+/// `--resume` without a reference: a fresh session, and the picker offers
+/// the earlier one first thing; choosing it resumes it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn resume_without_a_reference_opens_the_picker_at_start() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![Step::Text("ok")]);
+    let mut rig = Rig::start(&ws.root, &llm, Start::New).await;
+    let first = rig.first_session.clone();
+    rig.send(Effect::StartTurn("pick me later".into()));
+    rig.turn_finished().await;
+    rig.quit().await;
+
+    let llm = ScriptedLlmClient::new(vec![]);
+    let mut rig = Rig::start(&ws.root, &llm, Start::Pick).await;
+    assert_ne!(rig.first_session, first);
+    let items = match rig
+        .wait_for(|msg| matches!(msg, Msg::ShowResumePicker(_)))
+        .await
+    {
+        Msg::ShowResumePicker(items) => items,
+        other => panic!("{other:?}"),
+    };
+    let first_id = first.to_string();
+    let chosen = items
+        .iter()
+        .find(|(reference, _)| reference == &first_id)
+        .map(|(reference, _)| reference.clone())
+        .unwrap_or_else(|| panic!("the earlier session is offered: {items:?}"));
+    rig.send(Effect::ResumeSession(chosen));
+    let blocks = match rig
+        .wait_for(|msg| matches!(msg, Msg::ResetTranscript(blocks) if !blocks.is_empty()))
+        .await
+    {
+        Msg::ResetTranscript(blocks) => blocks,
+        other => panic!("{other:?}"),
+    };
+    assert!(blocks.contains(&Block::User {
+        text: "pick me later".into()
+    }));
+    rig.quit().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn workspace_state_survives_a_rename() {
     let ws = Workspace::new();

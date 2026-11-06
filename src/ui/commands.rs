@@ -152,6 +152,7 @@ Commands:
   /quit, /exit, /q               leave rkat-tui (asks again while a turn runs or messages are queued)
   /clear, /new                   clear the transcript and start a new session (idle only)
   /resume [ref]                  resume a session (last, ~N, or id prefix); no ref opens a picker
+                                 (so does rkat-tui --resume without a ref)
   /permissions [list]            list approval rules (/rules is an alias)
   /permissions add allow|deny <tool> [pattern]
                                  add an approval rule

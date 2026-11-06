@@ -15,7 +15,7 @@ use crate::error::TuiError;
 use crate::session::{
     SessionHandle, SessionIdentity, SessionOptions, list_sessions, resolve_session_ref,
 };
-use crate::ui::{Block, Msg, NoticeLevel, SessionCost, StatusUpdate, ToolState, TurnFailure};
+use crate::ui::{Block, Effect, Msg, NoticeLevel, SessionCost, StatusUpdate, ToolState, TurnFailure};
 
 /// The session the TUI starts with.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,6 +24,9 @@ pub enum Start {
     New,
     /// Resume by reference (`last`, `~N`, id, id prefix).
     Resume(String),
+    /// `--resume` without a reference: a fresh session, with the resume
+    /// picker as the first UI action (as `/resume` alone).
+    Pick,
 }
 
 impl Start {
@@ -31,9 +34,22 @@ impl Start {
     #[must_use]
     pub fn from_args(args: &Args) -> Self {
         if args.continue_last {
-            Self::Resume("last".to_string())
-        } else {
-            args.resume.clone().map_or(Self::New, Self::Resume)
+            return Self::Resume("last".to_string());
+        }
+        match &args.resume {
+            None => Self::New,
+            Some(None) => Self::Pick,
+            Some(Some(reference)) => Self::Resume(reference.clone()),
+        }
+    }
+
+    /// Effects the UI sends before anything else: the picker for
+    /// [`Self::Pick`].
+    #[must_use]
+    pub fn first_effects(&self) -> Vec<Effect> {
+        match self {
+            Self::Pick => vec![Effect::RequestResumePicker],
+            Self::New | Self::Resume(_) => Vec::new(),
         }
     }
 }
@@ -51,7 +67,7 @@ pub async fn open_start(
     start: &Start,
 ) -> Result<(SessionHandle, Option<Session>), TuiError> {
     match start {
-        Start::New => Ok((SessionHandle::create(runtime, options).await?, None)),
+        Start::New | Start::Pick => Ok((SessionHandle::create(runtime, options).await?, None)),
         Start::Resume(reference) => {
             let id = resolve_session_ref(&*runtime.store, reference).await?;
             let session = SessionHandle::resume(runtime, &id, options).await?;
@@ -446,6 +462,7 @@ mod tests {
     #[test]
     fn start_follows_the_flags() {
         let parse = |argv: &[&str]| Args::try_parse_from(argv).unwrap();
+        let parse_err = |argv: &[&str]| Args::try_parse_from(argv).is_err();
         assert_eq!(Start::from_args(&parse(&["rkat-tui"])), Start::New);
         assert_eq!(
             Start::from_args(&parse(&["rkat-tui", "-c"])),
@@ -455,6 +472,15 @@ mod tests {
             Start::from_args(&parse(&["rkat-tui", "--resume", "~2"])),
             Start::Resume("~2".into())
         );
+        let pick = Start::from_args(&parse(&["rkat-tui", "--resume"]));
+        assert_eq!(pick, Start::Pick);
+        assert_eq!(pick.first_effects(), vec![Effect::RequestResumePicker]);
+        assert_eq!(
+            Start::from_args(&parse(&["rkat-tui", "--resume", "--no-auto"])),
+            Start::Pick
+        );
+        assert!(Start::New.first_effects().is_empty());
+        assert!(parse_err(&["rkat-tui", "--resume", "-c"]));
     }
 
     #[test]

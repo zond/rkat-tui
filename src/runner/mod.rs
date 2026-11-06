@@ -148,6 +148,10 @@ pub async fn run(args: Args) -> Result<(), TuiError> {
             text,
         });
     }
+    // `--resume` without a reference opens the picker first.
+    for effect in start.first_effects() {
+        let _ = effect_tx.send(effect);
+    }
     // The prompt argument is typed into the editor and submitted, so the UI
     // shows it and knows a turn runs.
     if let Some(prompt) = args.prompt.clone() {
