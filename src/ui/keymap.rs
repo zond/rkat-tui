@@ -43,6 +43,9 @@ pub enum Action {
     Submit,
     /// Insert a newline into the prompt.
     Newline,
+    /// Ctrl+Enter: send now (the same as Ctrl-X Ctrl-S: when idle like Enter,
+    /// while a turn runs interrupt it and send the input next).
+    SendNow,
     /// Ctrl-C: stop / interrupt / clear / quit depending on state.
     CtrlC,
     /// Ctrl-D: quit when the input is empty, otherwise delete forward.
@@ -89,7 +92,8 @@ pub fn map_key(key: &KeyEvent, input_empty: bool) -> Action {
     let alt = m.contains(KeyModifiers::ALT);
     let shift = m.contains(KeyModifiers::SHIFT);
     match key.code {
-        KeyCode::Enter if shift || alt || ctrl => Action::Newline,
+        KeyCode::Enter if shift || alt => Action::Newline,
+        KeyCode::Enter if ctrl => Action::SendNow,
         KeyCode::Enter => Action::Submit,
         KeyCode::Char('j') if ctrl => Action::Newline,
         KeyCode::Char('c') if ctrl => Action::CtrlC,
@@ -156,6 +160,17 @@ mod tests {
         );
         assert_eq!(
             map_key(&k(KeyCode::Char('j'), KeyModifiers::CONTROL), true),
+            Action::Newline
+        );
+        assert_eq!(
+            map_key(&k(KeyCode::Enter, KeyModifiers::CONTROL), true),
+            Action::SendNow
+        );
+        assert_eq!(
+            map_key(
+                &k(KeyCode::Enter, KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+                true
+            ),
             Action::Newline
         );
     }

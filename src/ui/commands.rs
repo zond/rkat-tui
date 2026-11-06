@@ -165,7 +165,9 @@ Commands:
 Keys:
   Enter                          send; while the agent is working, queues the message
                                  and delivers it at the next step
-  Alt+Enter, Shift+Enter, Ctrl+J insert a newline
+  Ctrl+Enter                     send now: interrupt the turn and send the input next
+                                 (sends normally when idle; same as Ctrl-X Ctrl-S)
+  Shift+Enter, Alt+Enter, Ctrl+J insert a newline (so does \\ right before Enter at a line end)
   Ctrl-C                         interrupt the turn · clear the input · press twice to quit
   Esc                            recall queued messages (interrupts when nothing is queued)
   Up (empty input)               edit the newest queued message

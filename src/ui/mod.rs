@@ -1530,8 +1530,11 @@ impl App {
             // text it submits as always.
             Action::Submit => match self.panel_selection() {
                 Some(id) if self.input.is_empty() => self.toggle_helper_view(id),
+                // `\`+Enter at the end of a line inserts a newline.
+                _ if self.input.backslash_newline() => {}
                 _ => self.submit(now, fx),
             },
+            Action::SendNow => self.interrupt_and_send(now, fx),
             // Esc closes the helper view first, then drops the selection.
             Action::Escape if view.is_some() => {
                 self.helper_view = None;
@@ -1588,7 +1591,7 @@ impl App {
         self.input.set_text(text);
     }
 
-    /// Ctrl-X Ctrl-S: when idle, the same as Enter; when running, interrupt and
+    /// Ctrl+Enter or Ctrl-X Ctrl-S: when idle, the same as Enter; when running, interrupt and
     /// send the editor contents next (plain interrupt when the editor is empty).
     fn interrupt_and_send(&mut self, now: Instant, fx: &mut Vec<Effect>) {
         if !self.running {
@@ -3413,6 +3416,44 @@ mod tests {
         assert_eq!(
             app.update(key(KeyCode::Enter)),
             vec![Effect::StartTurn("a\nb\n\nx\ny".into())]
+        );
+        // A backslash right before the cursor at the end of a line: Enter
+        // replaces it with a newline instead of sending.
+        let mut app = App::new(StatusInfo::default());
+        type_str(&mut app, "one\\");
+        assert!(app.update(key(KeyCode::Enter)).is_empty());
+        type_str(&mut app, "two");
+        assert_eq!(app.input.text(), "one\ntwo");
+        assert_eq!(
+            app.update(key(KeyCode::Enter)),
+            vec![Effect::StartTurn("one\ntwo".into())]
+        );
+    }
+
+    #[test]
+    fn ctrl_enter_sends_now() {
+        let ctrl_enter = || Msg::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL));
+        let mut app = App::new(StatusInfo::default());
+        // Idle: the same as Enter.
+        type_str(&mut app, "first");
+        assert_eq!(
+            app.update(ctrl_enter()),
+            vec![Effect::StartTurn("first".into())]
+        );
+        // Running: interrupt and send the input next.
+        type_str(&mut app, "next");
+        assert_eq!(
+            app.update(ctrl_enter()),
+            vec![Effect::InterruptAndSend("next".into())]
+        );
+        assert_eq!(app.send_next.as_deref(), Some("next"));
+        // Running with an empty input: a plain interrupt.
+        assert_eq!(app.update(ctrl_enter()), vec![Effect::Interrupt]);
+        // A trailing backslash does not turn Ctrl+Enter into a newline.
+        type_str(&mut app, "x\\");
+        assert_eq!(
+            app.update(ctrl_enter()),
+            vec![Effect::InterruptAndSend("x\\".into())]
         );
     }
 

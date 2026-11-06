@@ -192,9 +192,9 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect, now: Instant) {
     } else if app.panel_selection().is_some() {
         " Enter opens the helper (empty input; with text Enter sends) · Esc deselects ".into()
     } else if app.has_recallable() {
-        format!(" Esc recall all · ↑ edit last queued · Ctrl-X Ctrl-S send now{helpers} ")
+        format!(" Esc recall all · ↑ edit last queued · Ctrl+Enter send now{helpers} ")
     } else if app.is_running() {
-        format!(" Enter queues · Ctrl-X Ctrl-S interrupts and sends{helpers} · Esc/Ctrl-C interrupts ")
+        format!(" Enter queues · Ctrl+Enter interrupts and sends{helpers} · Esc/Ctrl-C interrupts ")
     } else if helpers.is_empty() {
         String::new()
     } else {

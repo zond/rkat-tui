@@ -565,8 +565,11 @@ took the discarded messages).
 `/helpers [expand|fold <label>|all]`. `/clear`, `/resume`, `/model` and `/compact now` work only while
 idle; the transcript is replaced only once the new session is live.
 
-Enter sends (steers while a turn runs); Alt+Enter, Shift+Enter or Ctrl-J
-insert a newline; Ctrl-C interrupts (twice to quit when idle); Esc recalls
+Enter sends (steers while a turn runs); Ctrl+Enter sends now (while a
+turn runs it interrupts the turn and sends the input next, like Ctrl-X
+Ctrl-S); Shift+Enter, Alt+Enter or Ctrl-J insert a newline, and so does a
+`\` typed right before Enter at the end of a line (the backslash is
+dropped); Ctrl-C interrupts (twice to quit when idle); Esc recalls
 held messages, else interrupts; ↑ on an empty editor edits the newest held
 message, else recalls prompt history; Ctrl-R searches history (workspace,
 then global); Ctrl-X Ctrl-S interrupts and sends the input; Ctrl-O toggles

@@ -308,6 +308,20 @@ impl InputEditor {
         self.col = 0;
     }
 
+    /// `\`+Enter: when the char before the cursor is a backslash at the end
+    /// of the line, replace it with a newline and return true; otherwise
+    /// leave the text alone and return false (Enter then submits).
+    pub fn backslash_newline(&mut self) -> bool {
+        let line = self.current();
+        let len = char_len(line);
+        if self.col == 0 || self.col != len || !line.ends_with('\\') {
+            return false;
+        }
+        self.backspace();
+        self.newline();
+        true
+    }
+
     /// Delete the character before the cursor (joining lines at column 0).
     pub fn backspace(&mut self) {
         if self.col > 0 {
@@ -564,6 +578,21 @@ mod tests {
         assert_eq!(e.text(), "a\nb");
         e.up();
         assert_eq!(e.text(), "old");
+    }
+
+    #[test]
+    fn a_trailing_backslash_becomes_a_newline() {
+        let mut e = typed("ab\\");
+        assert!(e.backslash_newline());
+        assert_eq!(e.lines(), &["ab".to_string(), String::new()]);
+        assert_eq!(e.cursor(), (1, 0));
+        // Not at the end of the line, or no backslash: nothing happens.
+        let mut e = typed("a\\b");
+        assert!(!e.backslash_newline());
+        e.left();
+        assert!(!e.backslash_newline());
+        assert_eq!(e.text(), "a\\b");
+        assert!(!InputEditor::new().backslash_newline());
     }
 
     #[test]
