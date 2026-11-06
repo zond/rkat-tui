@@ -56,6 +56,19 @@ pub enum ModelCommand {
     Set(String),
 }
 
+/// `/compact` subcommands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompactCommand {
+    /// `/compact` (or `/compact now`): compact before the next turn's first
+    /// model call.
+    Now,
+    /// `/compact <instructions>`: as [`Self::Now`]; the engine has no
+    /// instruction-guided compaction, so the instructions are not used.
+    Focused(String),
+    /// `/compact status`: report the compaction policy.
+    Status,
+}
+
 /// Which helpers a `/helpers expand|fold` applies to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HelperTarget {
@@ -96,12 +109,8 @@ pub enum Command {
     /// `/remember <text>` or a single-line `#text` input: append a line to the
     /// workspace AGENTS.md.
     Remember(String),
-    /// `/compact` (report the compaction policy) or `/compact now` (compact
-    /// before the next turn's first model call).
-    Compact {
-        /// `/compact now`.
-        now: bool,
-    },
+    /// `/compact [now | status | <instructions>]`.
+    Compact(CompactCommand),
     /// `/cost`: the session's token cost by model.
     Cost,
     /// `/copy [N]`: copy the Nth latest assistant answer (1, the default,
@@ -158,10 +167,12 @@ Commands:
   /model refresh                 refetch every endpoint's model list and pick
   /remember <text>, #<text>      add a line to the workspace AGENTS.md and to this session
                                  (\\# sends a literal #)
-  /compact                       show the compaction policy (tui.toml [auto] compact =
+  /compact [now]                 compact: rebuild the session so its next model call
+                                 compacts (idle only)
+  /compact <instructions>        the same; focus instructions are not supported yet (ignored)
+  /compact status                show the compaction policy (tui.toml [auto] compact =
                                  \"warn\" (default) warns at 75% and 85%; \"auto\" or
                                  --auto-compact lets the runtime compact at 85%)
-  /compact now                   rebuild the session so its next model call compacts (idle only)
   /copy [N]                      copy the latest (or Nth latest) answer to the clipboard (OSC 52)
   /cost                          token usage and cost per model (footer: $0.42, ~ estimate, $? unpriced)
   /helpers                       list the helpers (sub-agents) and their state
@@ -267,11 +278,11 @@ fn parse_command(name: &str, args: &[&str]) -> Result<Command, CommandError> {
             },
             _ => Err(CommandError::Usage("/copy [N] (N ≥ 1, 1 = the latest answer)")),
         },
-        "compact" => match args {
-            [] => Ok(Command::Compact { now: false }),
-            ["now"] => Ok(Command::Compact { now: true }),
-            _ => Err(CommandError::Usage("/compact [now]")),
-        },
+        "compact" => Ok(Command::Compact(match args {
+            [] | ["now"] => CompactCommand::Now,
+            ["status"] => CompactCommand::Status,
+            words => CompactCommand::Focused(words.join(" ")),
+        })),
         "resume" => match args {
             [] => Ok(Command::Resume(None)),
             [r] => Ok(Command::Resume(Some((*r).to_string()))),
@@ -389,13 +400,18 @@ mod tests {
             parse("/remember"),
             Some(Err(CommandError::Usage("/remember <text>")))
         );
-        assert_eq!(ok("/compact"), Command::Compact { now: false });
-        assert_eq!(ok("/compact now"), Command::Compact { now: true });
+        assert_eq!(ok("/compact"), Command::Compact(CompactCommand::Now));
+        assert_eq!(ok("/compact now"), Command::Compact(CompactCommand::Now));
+        assert_eq!(ok("/compact status"), Command::Compact(CompactCommand::Status));
+        assert_eq!(
+            ok("/compact keep the  test plan"),
+            Command::Compact(CompactCommand::Focused("keep the test plan".into()))
+        );
         assert_eq!(ok("/cost"), Command::Cost);
         assert_eq!(parse("/cost now"), Some(Err(CommandError::Usage("/cost"))));
         assert_eq!(
-            parse("/compact later"),
-            Some(Err(CommandError::Usage("/compact [now]")))
+            ok("/compact later"),
+            Command::Compact(CompactCommand::Focused("later".into()))
         );
     }
 

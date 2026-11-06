@@ -152,13 +152,13 @@ impl CompactionPolicy {
         };
         match self.mode {
             CompactMode::Native => format!(
-                "auto-compaction follows the engine's own threshold (compact = \"native\"; the gauge warns from {at}); /compact now compacts before the next turn's first model call, compact = \"auto\" or --auto-compact sets the threshold to {at} instead"
+                "auto-compaction follows the engine's own threshold (compact = \"native\"; the gauge warns from {at}); /compact compacts before the next turn's first model call, compact = \"auto\" or --auto-compact sets the threshold to {at} instead"
             ),
             CompactMode::Auto => format!(
-                "auto-compaction is on: the runtime compacts the context before a model call once it reaches {at}; /compact now compacts before the next turn's first model call"
+                "auto-compaction is on: the runtime compacts the context before a model call once it reaches {at}; /compact compacts before the next turn's first model call"
             ),
             CompactMode::Warn => format!(
-                "auto-compaction is off (compact = \"warn\"; the warning repeats from {at}); /compact now compacts before the next turn's first model call, compact = \"auto\" in tui.toml or --auto-compact compacts automatically"
+                "auto-compaction is off (compact = \"warn\"; the warning repeats from {at}); /compact compacts before the next turn's first model call, compact = \"auto\" in tui.toml or --auto-compact compacts automatically"
             ),
         }
     }
@@ -289,21 +289,21 @@ impl CompactionGauge {
             Zone::Warn => {
                 self.warned = true;
                 Some(format!(
-                    "{}; run /compact now to free space",
+                    "{}; run /compact to free space",
                     usage_text(used, window)
                 ))
             }
             Zone::Auto if self.policy.mode == CompactMode::Native => {
                 self.warned = true;
                 Some(format!(
-                    "{}; the engine compacts at its own threshold: run /compact now to free space earlier",
+                    "{}; the engine compacts at its own threshold: run /compact to free space earlier",
                     usage_text(used, window)
                 ))
             }
             Zone::Auto => {
                 self.warned = true;
                 Some(format!(
-                    "{}; auto-compaction is off: run /compact now, or set compact = \"auto\" in tui.toml (--auto-compact)",
+                    "{}; auto-compaction is off: run /compact, or set compact = \"auto\" in tui.toml (--auto-compact)",
                     usage_text(used, window)
                 ))
             }
@@ -416,7 +416,7 @@ mod tests {
             text.contains("85% of the context window (85k tokens)"),
             "{text}"
         );
-        assert!(text.contains("/compact now"), "{text}");
+        assert!(text.contains("/compact compacts"), "{text}");
         let text = warn().describe(None);
         assert!(text.contains("auto-compaction is off"), "{text}");
         assert!(text.contains("150k tokens"), "{text}");
@@ -432,7 +432,7 @@ mod tests {
         assert_eq!(g.after_turn(70_000, W), None);
         assert_eq!(
             g.after_turn(76_000, W).as_deref(),
-            Some("context 76% full (76k/100k tokens); run /compact now to free space")
+            Some("context 76% full (76k/100k tokens); run /compact to free space")
         );
         assert_eq!(g.after_turn(80_000, W), None);
         for used in [85_000, 86_000] {
@@ -452,7 +452,7 @@ mod tests {
         assert_eq!(g.after_turn(70_000, W), None);
         assert_eq!(
             g.after_turn(76_000, W).as_deref(),
-            Some("context 76% full (76k/100k tokens); run /compact now to free space")
+            Some("context 76% full (76k/100k tokens); run /compact to free space")
         );
         let text = g.after_turn(86_000, W).expect("a warning");
         assert!(text.contains("engine compacts at its own threshold"), "{text}");
@@ -482,7 +482,7 @@ mod tests {
         assert_eq!(g.after_turn(119_999, None), None);
         assert_eq!(
             g.after_turn(120_000, Some(0)).as_deref(),
-            Some("context at 120k tokens; run /compact now to free space")
+            Some("context at 120k tokens; run /compact to free space")
         );
         assert_eq!(g.after_turn(149_999, None), None);
         assert!(

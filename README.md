@@ -481,7 +481,7 @@ The system prompt of a new session is built from, in order:
    model-written context rather than instructions.
 
 Instruction files and notes are re-read for every new session (`/clear`,
-`/new`). A resumed session (`-c`, `/resume`, and the rebuilds `/compact now`
+`/new`). A resumed session (`-c`, `/resume`, and the rebuilds `/compact`
 and model switches make) keeps the instructions it was created with: Meerkat
 does not reassemble a resumed session's system prompt, so the TUI passes the
 session's persisted instructions back unchanged (the persona appears once).
@@ -537,7 +537,7 @@ entry the endpoint listing keeps current):
   turn from `compact_auto_percent` (85%) on.
 - `compact = "warn"`: the size trigger is off (Meerkat still compacts to
   recover a request the provider refused as too large) and the gauge warns as
-  above; compaction happens only on `/compact now`.
+  above; compaction happens only on `/compact`.
 - `compact = "auto"` (or `--auto-compact`; `--no-auto-compact` forces
   `warn`): the threshold is `compact_auto_percent` of the model's context
   window, and the runtime compacts before the first model call that would
@@ -549,9 +549,9 @@ For a model whose window is unknown the thresholds are 120k (warn) and 150k
 (auto) tokens. `compact_auto_percent` below `compact_warn_percent` is raised
 to it, with a notice.
 
-`/compact` shows the policy and threshold. Meerkat has no on-demand
-compaction call, so **`/compact now`** (idle only, after at least one turn)
-*rebuilds the session so its next model call compacts*: the session is
+`/compact status` shows the policy and threshold. Meerkat has no on-demand
+compaction call, so **`/compact`** (or `/compact now`; idle only, after at
+least one turn) *rebuilds the session so its next model call compacts*: the session is
 rebuilt with a one-turn threshold of one token, and when the next turn ends
 it is rebuilt on the policy's threshold again. The rebuild is all the TUI
 can report; the compaction notices confirm the compaction itself. A long
@@ -561,13 +561,17 @@ ordinary queued input once it is done. The `✓ compacted` notice appears
 when the session next runs (Meerkat publishes it once the semantic index
 took the discarded messages).
 
+`/compact <instructions>` compacts the same way. Claude Code uses such text
+to focus the summary; Meerkat's compaction takes no instructions yet, so
+rkat-tui says so in a warning and compacts without them.
+
 ## Keys and commands
 
 `/help`, `/quit`, `/clear`, `/resume [ref]`,
 `/rules [list|add allow|deny <tool> [pattern]|rm <n>|trust]`,
 `/auto [on|off|resume]`, `/model [[endpoint:]id|refresh]`,
-`/remember <text>`, `/compact [now]`, `/cost`, `/copy [N]`, `/mcp trust`,
-`/helpers [expand|fold <label>|all]`. `/clear`, `/resume`, `/model` and `/compact now` work only while
+`/remember <text>`, `/compact [now|status|<instructions>]`, `/cost`, `/copy [N]`, `/mcp trust`,
+`/helpers [expand|fold <label>|all]`. `/clear`, `/resume`, `/model` and `/compact` work only while
 idle; the transcript is replaced only once the new session is live.
 
 Enter sends (steers while a turn runs); Ctrl+Enter sends now (while a

@@ -10,7 +10,7 @@
 //!   runtime finalized the memory projection) reports a smaller history,
 //!   the number the gauge shows;
 //! - `warn`: the native trigger is off, nothing compacts, and the gauge
-//!   warns; `/compact now` arms the next turn, which compacts, and the
+//!   warns; `/compact` arms the next turn, which compacts, and the
 //!   session is back on the policy afterwards.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -22,6 +22,7 @@ use meerkat_core::AgentEvent;
 use meerkat_tui::runner::Start;
 use meerkat_tui::ui::compaction::CompactionGauge;
 use meerkat_tui::ui::{CompactMode, Effect, Msg, StatusUpdate};
+use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 /// Input tokens the sixth turn reports.
 const BIG: u64 = 60_000;
@@ -174,7 +175,7 @@ async fn auto_mode_compacts_natively_at_the_threshold() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn warn_mode_warns_and_compacts_only_on_compact_now() {
+async fn warn_mode_warns_and_compacts_only_on_compact() {
     let ws = Workspace::new();
     let mut script = history();
     // A turn past the threshold that does not compact.
@@ -198,7 +199,17 @@ async fn warn_mode_warns_and_compacts_only_on_compact_now() {
         .expect("a warning");
     assert!(warning.contains("auto-compaction is off"), "{warning}");
 
-    rig.send(Effect::CompactNow);
+    // A bare `/compact` typed into the UI compacts (as `/compact now` did).
+    let mut app = meerkat_tui::ui::App::new(meerkat_tui::ui::StatusInfo::default());
+    app.status.context_used = Some(BIG);
+    for c in "/compact".chars() {
+        app.update(Msg::Key(KeyEvent::from(KeyCode::Char(c))));
+    }
+    let effects = app.update(Msg::Key(KeyEvent::from(KeyCode::Enter)));
+    assert_eq!(effects, vec![Effect::CompactNow]);
+    for effect in effects {
+        rig.send(effect);
+    }
     let msg = rig
         .wait_for(|msg| matches!(msg, Msg::CompactRebuilt(_)))
         .await;

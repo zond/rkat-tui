@@ -33,7 +33,7 @@ use ratatui::layout::Rect;
 use ratatui::text::Line;
 
 pub use commands::{
-    AutoCommand, Command, CommandError, HelperTarget, HelpersCommand, ModelCommand, RuleEffect,
+    AutoCommand, Command, CommandError, CompactCommand, HelperTarget, HelpersCommand, ModelCommand, RuleEffect,
     RulesCommand,
 };
 pub use compaction::{
@@ -342,7 +342,11 @@ pub enum Msg {
     Tick,
 }
 
-/// Notice shown once `/compact now` rebuilt the session.
+/// Notice for `/compact <instructions>`: the engine cannot use them.
+pub const COMPACT_FOCUS_UNSUPPORTED: &str =
+    "focus instructions are not supported by the engine yet; compacting without them";
+
+/// Notice shown once `/compact` rebuilt the session.
 pub const COMPACT_REBUILT: &str = "the context will be compacted at the start of your next message (Meerkat has no on-demand compaction; the ✓ compacted notice confirms it)";
 
 /// Side effect requested by [`App::update`], executed by the integrator.
@@ -1777,7 +1781,7 @@ impl App {
         } else if self.compacting {
             self.transcript.push_notice(
                 NoticeLevel::Warn,
-                "the session is being rebuilt for /compact now; wait for it to finish",
+                "the session is being rebuilt for /compact; wait for it to finish",
             );
             false
         } else {
@@ -1871,7 +1875,7 @@ impl App {
             }
             Err(err) => {
                 self.transcript
-                    .push_notice(NoticeLevel::Error, format!("/compact now failed: {err}"));
+                    .push_notice(NoticeLevel::Error, format!("/compact failed: {err}"));
             }
         }
     }
@@ -2350,7 +2354,7 @@ impl App {
         let compacting = |app: &mut Self| {
             app.transcript.push_notice(
                 NoticeLevel::Warn,
-                "the session is being rebuilt for /compact now; wait for it to finish",
+                "the session is being rebuilt for /compact; wait for it to finish",
             );
         };
         match cmd {
@@ -2399,11 +2403,11 @@ impl App {
                     .push_notice(NoticeLevel::Info, format!("remembering: {text}"));
                 fx.push(Effect::Remember(text));
             }
-            Command::Compact { now: false } => {
+            Command::Compact(CompactCommand::Status) => {
                 let text = self.gauge.policy().describe(self.status.context_window);
                 self.transcript.push_notice(NoticeLevel::Info, text);
             }
-            Command::Compact { now: true } => {
+            Command::Compact(cmd @ (CompactCommand::Now | CompactCommand::Focused(_))) => {
                 if self.compacting {
                     compacting(self);
                 } else if self.running || !self.pending.is_empty() {
@@ -2412,6 +2416,9 @@ impl App {
                         "finish or interrupt the current turn first",
                     );
                 } else if self.status.context_used.is_some() {
+                    if matches!(cmd, CompactCommand::Focused(_)) {
+                        self.transcript.push_notice(NoticeLevel::Warn, COMPACT_FOCUS_UNSUPPORTED);
+                    }
                     self.compacting = true;
                     self.transcript
                         .push_notice(NoticeLevel::Info, "rebuilding the session so the next model call compacts…");
@@ -4578,7 +4585,7 @@ mod tests {
             last_notice(&app),
             Some((
                 NoticeLevel::Warn,
-                "context 76% full (76k/100k tokens); run /compact now to free space".into()
+                "context 76% full (76k/100k tokens); run /compact to free space".into()
             ))
         );
         assert!(turn_at(&mut app, 80_000).is_empty());
@@ -4619,24 +4626,49 @@ mod tests {
     }
 
     #[test]
-    fn compact_reports_the_policy_and_now_needs_context() {
+    fn compact_status_reports_the_policy_and_compact_needs_context() {
         let mut app = gauge_app(CompactMode::Auto);
-        assert!(submit(&mut app, "/compact").is_empty());
+        assert!(submit(&mut app, "/compact status").is_empty());
         assert!(
             last_notice(&app).is_some_and(|(level, text)| level == NoticeLevel::Info
                 && text.contains("auto-compaction is on")
                 && text.contains("85k tokens"))
         );
         let mut app = gauge_app(CompactMode::Warn);
-        assert!(submit(&mut app, "/compact").is_empty());
+        assert!(submit(&mut app, "/compact status").is_empty());
         assert!(last_notice(&app).is_some_and(|(_, text)| text.contains("auto-compaction is off")));
         // Nothing reported yet: nothing to compact.
-        assert!(submit(&mut app, "/compact now").is_empty());
-        assert_eq!(
-            last_notice(&app),
-            Some((NoticeLevel::Info, "nothing to compact yet".into()))
-        );
+        for cmd in ["/compact", "/compact now", "/compact keep the plan"] {
+            assert!(submit(&mut app, cmd).is_empty(), "{cmd}");
+            assert_eq!(
+                last_notice(&app),
+                Some((NoticeLevel::Info, "nothing to compact yet".into())),
+                "{cmd}"
+            );
+        }
         assert!(!app.compacting);
+    }
+
+    // `/compact` used to print the policy; it now compacts like Claude
+    // Code's, with `now` kept as an alias and the policy under `status`.
+    #[test]
+    fn bare_compact_compacts_and_instructions_add_a_warning() {
+        let mut app = App::new(StatusInfo::default());
+        app.status.context_used = Some(40_000);
+        assert_eq!(submit(&mut app, "/compact"), vec![Effect::CompactNow]);
+        assert!(app.compacting);
+        assert!(!app.transcript.blocks().iter().any(
+            |b| matches!(b, Block::Notice { text, .. } if text == COMPACT_FOCUS_UNSUPPORTED)
+        ));
+        app.update(Msg::CompactRebuilt(Ok(())));
+        assert_eq!(
+            submit(&mut app, "/compact keep the test plan"),
+            vec![Effect::CompactNow]
+        );
+        assert!(app.transcript.blocks().iter().any(|b| matches!(
+            b,
+            Block::Notice { level: NoticeLevel::Warn, text } if text == COMPACT_FOCUS_UNSUPPORTED
+        )));
     }
 
     #[test]
@@ -4694,7 +4726,7 @@ mod tests {
             last_notice(&app),
             Some((
                 NoticeLevel::Error,
-                "/compact now failed: could not rebuild the session: boom".into()
+                "/compact failed: could not rebuild the session: boom".into()
             ))
         );
     }

@@ -197,7 +197,7 @@ impl Runner {
             self.notice(
                 NoticeLevel::Warn,
                 format!(
-                    "could not restore the compaction trigger after /compact now: {err}; /resume the session to restore it"
+                    "could not restore the compaction trigger after /compact: {err}; /resume the session to restore it"
                 ),
             );
         }
