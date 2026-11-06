@@ -34,22 +34,26 @@ durable `Steer` input that the runtime writes into the running turn as an
 ordinary user message at its next model boundary (between tool calls), or
 runs as one follow-up turn when no boundary comes. Its placeholder in the
 transcript reads *queued*, then *delivering*, and becomes your message once
-the runtime reports it written. A steer the runtime did not deliver (an
-interrupt, a failed turn) comes back to the editor.
+the runtime reports it written. A steer an interrupted turn did not deliver
+is sent next (see below); one a failed turn did not deliver comes back to
+the editor.
 
-*Esc while a turn runs* pulls messages back without stopping the run: the
-messages the UI still holds and every steer the runtime still holds queued
-(not yet joined to the run) are abandoned and come back to the editor, oldest
-first, before your draft; the turn runs on (a tool in flight finishes and its
-result reaches the model). A steer that already joined the run cannot be
-pulled back: Esc then says your messages already reached the agent, and Esc
-again interrupts. With nothing pending, Esc interrupts the turn. Ctrl-C
-interrupts too (the first Ctrl-C after a mouse selection only clears it):
+*Esc while a turn runs* interrupts it, as in Claude Code, and Ctrl-C does
+the same (the first Esc or Ctrl-C after a mouse selection only clears it):
 steers still waiting for a boundary are abandoned first, then the current run
 is stopped (steers that joined it are abandoned, not re-run, and a call in
 flight is cancelled and answered as *outcome unknown*), outstanding inputs
 are cancelled and running helpers are cancelled. Every steered message the
-interrupt abandoned comes back to the editor. Typing alone never interrupts:
+interrupt abandoned then starts the next turn at once, oldest first, shown in
+place as your messages; your draft stays in the editor.
+
+*↑ on an empty editor* takes queued messages back without stopping the run:
+the messages the UI still holds and every steer the runtime still holds
+queued (not yet joined to the run) are abandoned and come back to the editor,
+oldest first; the turn runs on (a tool in flight finishes and its result
+reaches the model). A steer that already joined the run cannot be pulled
+back: the transcript then says your messages already reached the agent, and
+↑ recalls prompt history again. Typing alone never interrupts:
 a message sent while a tool runs waits for that tool's result and joins the
 turn after it.
 
@@ -570,10 +574,10 @@ Enter sends (steers while a turn runs); Ctrl+Enter sends now (while a
 turn runs it interrupts the turn and sends the input next, like Ctrl-X
 Ctrl-S); Shift+Enter, Alt+Enter or Ctrl-J insert a newline, and so does a
 `\` typed right before Enter at the end of a line (the backslash is
-dropped); Ctrl-C interrupts (twice to quit when idle); Esc recalls
-held messages, else interrupts; when idle, Esc twice on a draft clears it
-and saves it to the prompt history (↑ brings it back); ↑ on an empty editor edits the newest held
-message, else recalls prompt history (Ctrl-P/Ctrl-N are ↑/↓); Ctrl-R searches history (workspace,
+dropped); Esc or Ctrl-C interrupts a running turn and the queued
+messages are sent next (Ctrl-C twice quits when idle); when idle, Esc twice on a draft clears it
+and saves it to the prompt history (↑ brings it back); ↑ on an empty editor takes queued
+messages back, else recalls prompt history (Ctrl-P/Ctrl-N are ↑/↓); Ctrl-R searches history (workspace,
 then global); Ctrl-X Ctrl-S interrupts and sends the input; Ctrl-O shows or
 hides detail (the last reasoning block and the last tool output together;
 Ctrl-T is unbound, reserved for a task checklist); Ctrl+↑/↓ select a helper in the panel under the

@@ -715,8 +715,8 @@ pub struct App {
     helper_view: Option<OpenHelperView>,
     /// An [`Effect::RecallQueued`] is waiting for its [`Msg::Recalled`].
     recalling: bool,
-    /// Admitted messages a recall found already with the agent: Esc no
-    /// longer tries to recall them (it interrupts).
+    /// Admitted messages a recall found already with the agent: ↑ no
+    /// longer tries to recall them (it recalls history).
     reached: Vec<PendingId>,
     dirty: bool,
 }
@@ -968,9 +968,18 @@ impl App {
         self.running
     }
 
-    /// Whether a queued message can be recalled (Esc / ↑ on an empty editor).
+    /// Whether a message the UI holds can be recalled without the runner.
     pub fn has_recallable(&self) -> bool {
         self.pending.newest_recallable().is_some()
+    }
+
+    /// Whether ↑ on an empty editor takes queued messages back: one the UI
+    /// holds, one the runtime holds while the turn runs (recalled through
+    /// the runner), or a recall already on its way.
+    pub fn can_take_back(&self) -> bool {
+        self.has_recallable()
+            || self.recalling
+            || (self.running && self.has_admitted_recallable())
     }
 
     /// Escalations waiting behind the open modal.
@@ -1586,8 +1595,8 @@ impl App {
             Action::CtrlD if !self.input.is_empty() => self.input.delete(),
             Action::CtrlD => self.ctrl_d(now, fx),
             Action::Escape => self.escape(esc_armed, now, fx),
-            Action::Edit(EditAction::Up) if self.input.is_empty() && self.has_recallable() => {
-                self.recall_newest();
+            Action::Edit(EditAction::Up) if self.input.is_empty() && self.can_take_back() => {
+                self.take_back_queued(fx);
             }
             Action::ToggleDetail => {
                 self.transcript.toggle_last_detail_in(view);
@@ -1991,26 +2000,16 @@ impl App {
         }
     }
 
-    /// Esc: pull back what can still be pulled back, else interrupt the
-    /// running turn. With messages the runtime admitted and no recall has
-    /// found with the agent, ask the runner to recall them (the answer also
-    /// brings back the held ones, so the editor keeps their order); with
-    /// only held messages, recall those; while a recall is on its way, wait
-    /// for it.
+    /// Esc: while a turn runs, interrupt it (as Claude Code does); the
+    /// messages queued behind it are sent as the next turn once it ends
+    /// (see [`Self::next_after_turn`]). ↑ on an empty input takes them back
+    /// instead.
     ///
-    /// Idle with nothing to recall, Esc twice within [`DOUBLE_ESC_WINDOW`]
-    /// on an input with text clears it and saves it to the prompt history
-    /// (`esc_armed`: the previous key was such an Esc); one Esc only arms it.
+    /// Idle, Esc twice within [`DOUBLE_ESC_WINDOW`] on an input with text
+    /// clears it and saves it to the prompt history (`esc_armed`: the
+    /// previous key was such an Esc); one Esc only arms it.
     fn escape(&mut self, esc_armed: bool, now: Instant, fx: &mut Vec<Effect>) {
-        if self.recalling {
-            return;
-        }
-        if self.running && self.has_admitted_recallable() {
-            self.recalling = true;
-            fx.push(Effect::RecallQueued);
-        } else if self.has_recallable() {
-            self.recall_all();
-        } else if self.running {
+        if self.running {
             self.interrupt(fx);
         } else if self.input.is_empty() {
             // Esc Esc on an empty input is reserved for rewind.
@@ -2067,12 +2066,12 @@ impl App {
         let text = match (returned, reached) {
             (0, 0) => return,
             (0, _) if self.running => {
-                "your messages already reached the agent; Esc again interrupts".to_string()
+                "your messages already reached the agent; Esc interrupts".to_string()
             }
             (0, _) => return,
             (n, 0) => format!("{n} message{} returned to the editor", plural(n)),
             (n, m) if self.running => format!(
-                "{n} message{} returned to the editor; {m} already reached the agent (Esc again interrupts)",
+                "{n} message{} returned to the editor; {m} already reached the agent (Esc interrupts)",
                 plural(n)
             ),
             (n, _) => format!("{n} message{} returned to the editor", plural(n)),
@@ -2081,18 +2080,21 @@ impl App {
         self.scroll.bottom();
     }
 
-    /// Esc with held messages: pull every one the UI still holds back into
-    /// the editor. Messages the runtime admitted stay (see [`delivery`]).
-    fn recall_all(&mut self) {
-        let held: Vec<PendingId> = self
-            .pending
-            .items()
-            .iter()
-            .filter(|p| p.state.recallable())
-            .map(|p| p.id)
-            .collect();
-        let texts = self.withdraw(&held);
-        self.prepend_to_editor(texts);
+    /// ↑ on an empty editor with queued messages: while a turn runs and the
+    /// runtime holds messages no recall has found with the agent, ask the
+    /// runner to take them back (the answer also brings back the held ones,
+    /// so the editor keeps their order); otherwise pull back the newest held
+    /// one. While a recall is on its way, wait for it.
+    fn take_back_queued(&mut self, fx: &mut Vec<Effect>) {
+        if self.recalling {
+            return;
+        }
+        if self.running && self.has_admitted_recallable() {
+            self.recalling = true;
+            fx.push(Effect::RecallQueued);
+        } else {
+            self.recall_newest();
+        }
     }
 
     /// ↑ on an empty editor with held messages: pull back the newest one.
@@ -2202,8 +2204,10 @@ impl App {
     }
 
     /// Decide what to send after a turn, in priority order: the Ctrl-X Ctrl-S
-    /// prompt (with anything unsent), unsent messages back to the editor after
-    /// an interrupt or a failure, unsent messages as a new turn.
+    /// prompt (with anything unsent), unsent messages back to the editor
+    /// after a turn that ended without a result (failed, unknown, pending),
+    /// unsent messages as a new turn (after a completed or an interrupted
+    /// turn: Esc interrupts and the queue goes next, as in Claude Code).
     fn next_after_turn(
         &mut self,
         unsent: Vec<Pending>,
@@ -2217,8 +2221,8 @@ impl App {
             texts.push(next.clone());
             self.transcript.push(Block::User { text: next });
             self.begin_turn(texts.join("\n\n"), false, now, fx);
-        } else if interrupted || !succeeded {
-            if !unsent.is_empty() && !interrupted {
+        } else if !succeeded && !interrupted {
+            if !unsent.is_empty() {
                 self.transcript.push_notice(
                     NoticeLevel::Warn,
                     format!(
@@ -2273,8 +2277,8 @@ impl App {
     }
 
     /// Interrupt the running turn. The runner also cancels every steered
-    /// message not yet delivered; [`TurnOutcome::undelivered`] brings them
-    /// back to the editor.
+    /// message not yet delivered; [`TurnOutcome::undelivered`] lists them
+    /// and they start the next turn.
     fn interrupt(&mut self, fx: &mut Vec<Effect>) {
         fx.push(Effect::Interrupt);
     }
@@ -2368,7 +2372,7 @@ impl App {
                 } else if !self.pending.is_empty() {
                     self.transcript.push_notice(
                         NoticeLevel::Warn,
-                        "messages are still queued; wait for them or recall them (Esc)",
+                        "messages are still queued; wait for them or take them back (↑ on an empty input)",
                     );
                 } else {
                     // The integrator resets the transcript and counters once
@@ -2384,7 +2388,7 @@ impl App {
                 } else if !self.pending.is_empty() {
                     self.transcript.push_notice(
                         NoticeLevel::Warn,
-                        "messages are still queued; wait for them or recall them (Esc)",
+                        "messages are still queued; wait for them or take them back (↑ on an empty input)",
                     );
                 } else {
                     fx.push(reference.map_or(Effect::RequestResumePicker, Effect::ResumeSession));
@@ -3194,39 +3198,43 @@ mod tests {
         ));
     }
 
+    // Esc used to recall queued messages before interrupting; it now
+    // always interrupts a running turn (Claude Code), and ↑ takes them back.
     #[test]
-    fn esc_recalls_only_held_messages_and_otherwise_interrupts() {
-        let mut app = running_app();
-        submit(&mut app, "two");
-        app.update(ack(1, Err(SteerFailure::NotRunning)));
-        type_str(&mut app, "draft");
-        assert!(app.has_recallable());
-        // Only a held message: it comes back without the runner.
-        assert!(app.update(key(KeyCode::Esc)).is_empty());
-        assert_eq!(app.input.text(), "two\ndraft");
-        assert_eq!(app.transcript.blocks(), &[user("one")]);
-        // Esc again: interrupt.
-        assert_eq!(app.update(key(KeyCode::Esc)), vec![Effect::Interrupt]);
-    }
-
-    #[test]
-    fn esc_with_an_admitted_message_recalls_it_without_interrupting() {
+    fn esc_interrupts_even_with_queued_messages() {
         let mut app = running_app();
         submit(&mut app, "two");
         submit(&mut app, "three");
         app.update(ack(1, Ok(())));
         app.update(ack(2, Err(SteerFailure::NotRunning)));
         type_str(&mut app, "draft");
-        assert_eq!(app.update(key(KeyCode::Esc)), vec![Effect::RecallQueued]);
-        // While the recall is on its way, Esc waits for it.
-        assert!(app.update(key(KeyCode::Esc)).is_empty());
+        assert_eq!(app.update(key(KeyCode::Esc)), vec![Effect::Interrupt]);
+        // Nothing comes back to the editor; the queue stays in place.
+        assert_eq!(app.input.text(), "draft");
+        assert_eq!(app.status.queued, 2);
+        // Ctrl-C does the same.
+        assert_eq!(app.update(ctrl('c')), vec![Effect::Interrupt]);
+        assert_eq!(app.status.queued, 2);
+    }
+
+    #[test]
+    fn up_with_an_admitted_message_recalls_it_without_interrupting() {
+        let mut app = running_app();
+        submit(&mut app, "two");
+        submit(&mut app, "three");
+        app.update(ack(1, Ok(())));
+        app.update(ack(2, Err(SteerFailure::NotRunning)));
+        assert!(app.can_take_back());
+        assert_eq!(app.update(key(KeyCode::Up)), vec![Effect::RecallQueued]);
+        // While the recall is on its way, ↑ waits for it.
+        assert!(app.update(key(KeyCode::Up)).is_empty());
         let fx = app.update(Msg::Recalled {
             recalled: vec![PendingId(1)],
             errors: Vec::new(),
         });
         assert!(fx.is_empty());
-        // The recalled and the held message, oldest first, before the draft.
-        assert_eq!(app.input.text(), "two\nthree\ndraft");
+        // The recalled and the held message, oldest first.
+        assert_eq!(app.input.text(), "two\nthree");
         assert_eq!(app.transcript.blocks()[0], user("one"));
         assert!(
             !app.transcript
@@ -3239,16 +3247,16 @@ mod tests {
             Some((NoticeLevel::Info, "2 messages returned to the editor".into()))
         );
         assert_eq!(app.status.queued, 0);
-        // Nothing left to recall: Esc interrupts.
+        assert!(!app.can_take_back());
         assert_eq!(app.update(key(KeyCode::Esc)), vec![Effect::Interrupt]);
     }
 
     #[test]
-    fn esc_when_the_messages_already_reached_the_agent_notices_then_interrupts() {
-        let mut app = running_app();
+    fn up_when_the_messages_already_reached_the_agent_notices_then_recalls_history() {
+        let mut app = running_app().with_history(vec!["old".into()]);
         submit(&mut app, "two");
         app.update(ack(1, Ok(())));
-        assert_eq!(app.update(key(KeyCode::Esc)), vec![Effect::RecallQueued]);
+        assert_eq!(app.update(key(KeyCode::Up)), vec![Effect::RecallQueued]);
         let fx = app.update(Msg::Recalled {
             recalled: Vec::new(),
             errors: Vec::new(),
@@ -3258,15 +3266,17 @@ mod tests {
             last_notice(&app),
             Some((
                 NoticeLevel::Info,
-                "your messages already reached the agent; Esc again interrupts".into()
+                "your messages already reached the agent; Esc interrupts".into()
             ))
         );
-        // The message stays with the runtime.
+        // The message stays with the runtime; ↑ is history recall again.
         assert_eq!(
             app.transcript.blocks()[1],
             queued_block(1, "two", QueuedLabel::Delivering)
         );
-        assert_eq!(app.update(key(KeyCode::Esc)), vec![Effect::Interrupt]);
+        assert!(app.update(key(KeyCode::Up)).is_empty());
+        assert_eq!(app.input.text(), "two");
+        assert_eq!(app.status.queued, 1);
     }
 
     #[test]
@@ -3319,10 +3329,14 @@ mod tests {
         submit(&mut app, "two");
         submit(&mut app, "three");
         app.update(ack(1, Err(SteerFailure::NotRunning)));
-        app.update(ack(2, Ok(())));
+        app.update(ack(2, Err(SteerFailure::NotRunning)));
+        assert!(app.update(key(KeyCode::Up)).is_empty());
+        assert_eq!(app.input.text(), "three");
+        assert_eq!(app.status.queued, 1);
+        app.update(ctrl('u'));
         assert!(app.update(key(KeyCode::Up)).is_empty());
         assert_eq!(app.input.text(), "two");
-        assert_eq!(app.status.queued, 1);
+        assert_eq!(app.status.queued, 0);
         // With nothing held, ↑ is history recall again.
         app.update(ctrl('u'));
         app.update(key(KeyCode::Up));
@@ -3344,46 +3358,64 @@ mod tests {
         );
     }
 
+    // An interrupted turn used to return undelivered messages to the
+    // editor; now they start the next turn at once, shown in place.
     #[test]
-    fn interrupted_turn_returns_undelivered_to_the_editor() {
+    fn interrupted_turn_sends_undelivered_messages_next() {
         let mut app = running_app();
         submit(&mut app, "two");
         submit(&mut app, "three");
         app.update(ack(1, Ok(())));
         app.update(ack(2, Ok(())));
         app.update(Msg::SteerDelivered(PendingId(1)));
-        assert_eq!(app.update(ctrl('c')), vec![Effect::Interrupt]);
+        assert_eq!(app.update(key(KeyCode::Esc)), vec![Effect::Interrupt]);
         assert_eq!(app.status.queued, 1);
         type_str(&mut app, "draft");
         let fx = app.update(finished(Err(TurnFailure::Interrupted), &[2]));
-        assert!(fx.is_empty());
-        assert_eq!(app.input.text(), "three\ndraft");
-        assert!(app.transcript.blocks().contains(&user("two")));
+        assert_eq!(fx, vec![Effect::StartTurn("three".into())]);
+        assert!(app.is_running());
+        // The draft stays in the editor.
+        assert_eq!(app.input.text(), "draft");
+        let users: Vec<&Block> = app
+            .transcript
+            .blocks()
+            .iter()
+            .filter(|b| matches!(b, Block::User { .. }))
+            .collect();
+        assert_eq!(users, vec![&user("one"), &user("two"), &user("three")]);
         assert!(
             !app.transcript
                 .blocks()
                 .iter()
-                .any(|b| matches!(b, Block::Queued { .. })
-                    || matches!(b, Block::User { text } if text == "three"))
+                .any(|b| matches!(b, Block::Queued { .. }))
         );
         assert_eq!(app.status.queued, 0);
     }
 
     #[test]
-    fn discarded_delivery_of_a_stopped_turn_returns_too() {
+    fn interrupted_turn_without_queued_messages_starts_nothing() {
+        let mut app = running_app();
+        assert_eq!(app.update(key(KeyCode::Esc)), vec![Effect::Interrupt]);
+        assert!(app.update(finished(Err(TurnFailure::Interrupted), &[])).is_empty());
+        assert!(!app.is_running());
+    }
+
+    #[test]
+    fn discarded_delivery_of_a_stopped_turn_is_sent_again() {
         let mut app = running_app();
         submit(&mut app, "two");
         app.update(ack(1, Ok(())));
         app.update(Msg::SteerDelivered(PendingId(1)));
         let fx = app.update(finished(Err(TurnFailure::Interrupted), &[1]));
-        assert!(fx.is_empty());
-        assert_eq!(app.input.text(), "two");
-        assert!(
-            !app.transcript
-                .blocks()
-                .iter()
-                .any(|b| matches!(b, Block::User { text } if text == "two"))
-        );
+        assert_eq!(fx, vec![Effect::StartTurn("two".into())]);
+        assert!(app.input.is_empty());
+        let twos = app
+            .transcript
+            .blocks()
+            .iter()
+            .filter(|b| matches!(b, Block::User { text } if text == "two"))
+            .count();
+        assert_eq!(twos, 1);
     }
 
     #[test]

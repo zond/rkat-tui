@@ -195,8 +195,8 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect, now: Instant) {
         " Esc back to the transcript · PgUp/PgDn scroll · Enter sends typed text ".into()
     } else if app.panel_selection().is_some() {
         " Enter opens the helper (empty input; with text Enter sends) · Esc deselects ".into()
-    } else if app.has_recallable() {
-        format!(" Esc recall all · ↑ edit last queued · Ctrl+Enter send now{helpers} ")
+    } else if app.input.is_empty() && app.can_take_back() {
+        format!(" ↑ takes back queued · Ctrl+Enter send now{helpers} · Esc interrupts (queued go next) ")
     } else if app.is_running() {
         format!(" Enter queues · Ctrl+Enter interrupts and sends{helpers} · Esc/Ctrl-C interrupts ")
     } else if app.input.is_empty() && app.input.has_stash() {

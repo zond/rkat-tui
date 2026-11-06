@@ -173,10 +173,10 @@ Keys:
   Ctrl+Enter                     send now: interrupt the turn and send the input next
                                  (sends normally when idle; same as Ctrl-X Ctrl-S)
   Shift+Enter, Alt+Enter, Ctrl+J insert a newline (so does \\ right before Enter at a line end)
-  Ctrl-C                         interrupt the turn · clear the input · press twice to quit
-  Esc                            recall queued messages (interrupts when nothing is queued)
+  Ctrl-C                         interrupt the turn (as Esc) · clear the input · press twice to quit
+  Esc                            interrupt the turn; queued messages are sent next
   Esc Esc (idle, with text)      clear the input and save it to the prompt history (↑ recalls it)
-  Up (empty input)               edit the newest queued message
+  Up (empty input)               take queued messages back into the editor
   Ctrl-D                         quit on an empty input: press again within 3 s (while a turn
                                  runs or messages are queued the turn is then interrupted and
                                  undelivered messages are saved); with text, delete forward
@@ -500,8 +500,8 @@ mod tests {
             "a allow",
             "n/Esc deny",
             "s stop",
-            "recall queued messages",
-            "newest queued message",
+            "queued messages are sent next",
+            "take queued messages back",
             "delivers it at the next step",
             "press again",
             "switch to a model (idle only)",

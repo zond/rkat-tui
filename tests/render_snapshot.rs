@@ -316,6 +316,13 @@ fn queued_block_status_count_and_hints() {
         app.update(Msg::Key(KeyEvent::from(KeyCode::Char(c))));
     }
     app.update_at(Msg::Key(KeyEvent::from(KeyCode::Enter)), now);
+    // Running with nothing queued: Esc interrupts.
+    let rows = render_sized(&mut app, now, 100);
+    assert!(
+        rows[9].contains("Enter queues · Ctrl+Enter interrupts and sends · Esc/Ctrl-C interrupts"),
+        "input title: {:?}",
+        rows[9]
+    );
     for c in "also fix tests".chars() {
         app.update(Msg::Key(KeyEvent::from(KeyCode::Char(c))));
     }
@@ -325,9 +332,11 @@ fn queued_block_status_count_and_hints() {
         rows.iter().any(|r| r == "› also fix tests  · queued"),
         "rows: {rows:#?}"
     );
-    // Steered into the runtime: not recallable, Esc interrupts.
+    // A queued message: ↑ takes it back, Esc interrupts and sends it next.
     assert!(
-        rows[9].contains("Enter queues · Ctrl+Enter interrupts and sends · Esc/Ctrl-C interrupts"),
+        rows[9].contains(
+            "↑ takes back queued · Ctrl+Enter send now · Esc interrupts (queued go next)"
+        ),
         "input title: {:?}",
         rows[9]
     );
@@ -364,7 +373,9 @@ fn queued_block_status_count_and_hints() {
     });
     let rows = render_sized(&mut app, now, 100);
     assert!(
-        rows[9].contains("Esc recall all · ↑ edit last queued · Ctrl+Enter send now"),
+        rows[9].contains(
+            "↑ takes back queued · Ctrl+Enter send now · Esc interrupts (queued go next)"
+        ),
         "input title: {:?}",
         rows[9]
     );

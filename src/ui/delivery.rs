@@ -45,8 +45,8 @@ impl PendingState {
         }
     }
 
-    /// Whether the UI alone can pull the message back into the editor (Esc /
-    /// ↑): only messages the runtime does not hold yet (admitted ones need a
+    /// Whether the UI alone can pull the message back into the editor (↑ on an
+    /// empty input): only messages the runtime does not hold yet (admitted ones need a
     /// recall through the runner).
     #[must_use]
     pub fn recallable(self) -> bool {

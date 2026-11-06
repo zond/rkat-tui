@@ -842,3 +842,83 @@ async fn recalling_a_steer_that_already_joined_the_run_leaves_it_delivered() {
     assert!(user_texts(&requests[1]).contains(&"typed while it sleeps".to_string()));
     rig.quit().await;
 }
+
+/// Feed the runner's messages to `app` (forwarding the effects it answers
+/// with) until one matches `until`; returns that message.
+async fn pump(rig: &mut Rig, app: &mut meerkat_tui::ui::App, until: impl Fn(&Msg) -> bool) -> Msg {
+    loop {
+        let msg = rig.wait_for(|_| true).await;
+        let stop = until(&msg);
+        for effect in app.update(msg.clone()) {
+            rig.send(effect);
+        }
+        if stop {
+            return msg;
+        }
+    }
+}
+
+/// Type `text` into `app` and press `code`; forward the effects.
+fn press(
+    rig: &Rig,
+    app: &mut meerkat_tui::ui::App,
+    text: &str,
+    code: ratatui::crossterm::event::KeyCode,
+) {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent};
+    for c in text.chars() {
+        app.update(Msg::Key(KeyEvent::from(KeyCode::Char(c))));
+    }
+    for effect in app.update(Msg::Key(KeyEvent::from(code))) {
+        rig.send(effect);
+    }
+}
+
+/// Esc while a turn runs interrupts it, and the message queued behind it
+/// starts the next turn at once (Claude Code's behaviour), with the real UI
+/// state machine deciding.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn esc_interrupts_and_the_queued_message_runs_next() {
+    use ratatui::crossterm::event::KeyCode;
+    let ws = Workspace::new();
+    let never = Arc::new(Notify::new());
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Gated(never, Box::new(Step::Text("never"))),
+        Step::Text("answered the queued message"),
+    ]);
+    let mut rig = Rig::start(&ws.root, &llm, Start::New).await;
+    let mut app = meerkat_tui::ui::App::new(meerkat_tui::ui::StatusInfo::default());
+    press(&rig, &mut app, "long task", KeyCode::Enter);
+    llm.wait_call(0).await;
+    press(&rig, &mut app, "and this", KeyCode::Enter);
+    pump(&mut rig, &mut app, |msg| {
+        matches!(msg, Msg::SteerAck { .. })
+    })
+    .await;
+    press(&rig, &mut app, "", KeyCode::Esc);
+    let first = pump(&mut rig, &mut app, |msg| {
+        matches!(msg, Msg::TurnFinished(_))
+    })
+    .await;
+    assert!(
+        matches!(&first, Msg::TurnFinished(outcome)
+            if outcome.result == Err(TurnFailure::Interrupted)
+                && outcome.undelivered == vec![PendingId(1)]),
+        "{first:?}"
+    );
+    // The UI started the next turn with the queued message on its own.
+    assert!(app.is_running());
+    let second = pump(&mut rig, &mut app, |msg| {
+        matches!(msg, Msg::TurnFinished(_))
+    })
+    .await;
+    assert!(
+        matches!(&second, Msg::TurnFinished(outcome)
+            if outcome.result.as_ref().is_ok_and(|s| s.text == "answered the queued message")),
+        "{second:?}"
+    );
+    assert!(user_texts(llm.requests().last().unwrap()).contains(&"and this".to_string()));
+    assert!(app.input.is_empty());
+    assert_eq!(app.status.queued, 0);
+    rig.quit().await;
+}
