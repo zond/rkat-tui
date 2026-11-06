@@ -1711,6 +1711,10 @@ impl App {
                 }
             }
             Action::Redraw => fx.push(Effect::Redraw),
+            // The draft stays in the editor behind the picker.
+            Action::ModelPicker => {
+                self.run_command(Command::Model(ModelCommand::Pick), now, fx);
+            }
             Action::CycleMode => {
                 let on = self.status.auto_state.eq_ignore_ascii_case("off");
                 self.run_command(Command::Auto(if on { AutoCommand::On } else { AutoCommand::Off }), now, fx);
@@ -4096,6 +4100,37 @@ mod tests {
         let mut running = running_app();
         type_str(&mut running, "/model");
         assert!(running.update(key(KeyCode::Enter)).is_empty());
+    }
+
+    #[test]
+    fn alt_p_opens_the_model_picker_and_keeps_the_draft() {
+        let mut app = app_on_sonnet();
+        type_str(&mut app, "half a thought");
+        let alt_p = Msg::Key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::ALT));
+        assert_eq!(
+            app.update(alt_p.clone()),
+            vec![Effect::RequestModelPicker { refresh: false }]
+        );
+        assert_eq!(app.input.text(), "half a thought");
+        assert!(app.take_submitted().is_empty());
+        app.update(Msg::ShowModelPicker(picker_models()));
+        // Typing filters the picker, not the draft; Esc closes it.
+        type_str(&mut app, "op");
+        assert!(app.update(key(KeyCode::Esc)).is_empty());
+        assert!(app.modal.is_none());
+        assert_eq!(app.input.text(), "half a thought");
+        // Picking a model keeps it too.
+        app.update(alt_p.clone());
+        app.update(Msg::ShowModelPicker(picker_models()));
+        app.update(key(KeyCode::Down));
+        assert_eq!(
+            app.update(key(KeyCode::Enter)),
+            vec![Effect::SetModel("anthropic:claude-opus-4-6".into())]
+        );
+        assert_eq!(app.input.text(), "half a thought");
+        // While a turn runs it is refused, as /model is.
+        let mut running = running_app();
+        assert!(running.update(alt_p).is_empty());
     }
 
     #[test]

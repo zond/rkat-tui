@@ -228,6 +228,7 @@ Keys:
   PgUp/PgDn, Shift+Up/Down       scroll the transcript
   Ctrl-L                         clear the screen and redraw it
   Shift+Tab                      switch auto mode off/on (same as /auto off|on)
+  Alt+P                          pick a model (as /model) without clearing the input
   Home/End                       scroll to top/bottom when the input is empty (Ctrl+Home/End always)
 Approval prompt:
   y allow once · a allow and add a rule · n/Esc deny · s stop the turn (Ctrl-C stops all)
@@ -557,6 +558,7 @@ mod tests {
             "Ctrl-S",
             "Ctrl-L",
             "Shift+Tab",
+            "Alt+P",
             "Enter",
             "Alt+Enter",
             "Ctrl+J",

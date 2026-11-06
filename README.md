@@ -617,7 +617,8 @@ Ctrl-T is unbound, reserved for a task checklist); Ctrl+↑/↓ select a helper 
 input and Enter on an empty input opens its full view (Esc returns);
 PgUp/PgDn and Shift+↑/↓ scroll; Home/End jump when the editor is empty;
 Ctrl-L clears the screen and redraws it; Shift+Tab switches auto mode off
-and on (the same as `/auto off` and `/auto on`).
+and on (the same as `/auto off` and `/auto on`); Alt+P opens the model
+picker (as `/model`) and leaves the draft in the editor.
 Long lines wrap at the width of the input field (which grows up to six
 rows, then scrolls to the cursor), and ↑/↓ move by wrapped rows before
 reaching history.

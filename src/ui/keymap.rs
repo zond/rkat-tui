@@ -60,7 +60,8 @@ pub enum Action {
     CtrlC,
     /// Ctrl-D: quit when the input is empty, otherwise delete forward.
     CtrlD,
-    /// Esc: recall pending messages, else interrupt a running turn.
+    /// Esc: interrupt a running turn (queued messages go next); idle, twice
+    /// on a draft, clear it into the history.
     Escape,
     /// Show or hide detail (Ctrl-O): the last reasoning block and the
     /// output of the last tool call together. Ctrl-T is left unbound (kept
@@ -75,6 +76,8 @@ pub enum Action {
     CycleMode,
     /// Ctrl-L: clear the screen and repaint everything.
     Redraw,
+    /// Alt+P: open the model picker (as `/model`), keeping the draft.
+    ModelPicker,
     /// Ctrl-X: the first key of a chord, resolved by the app with the next key.
     ChordPrefix,
     /// Scroll the transcript up by lines.
@@ -133,6 +136,7 @@ pub fn map_key(key: &KeyEvent, input_empty: bool) -> Action {
         KeyCode::Char('f') if alt => Action::Edit(EditAction::WordRight),
         KeyCode::Char('d') if alt => Action::Edit(EditAction::KillWordForward),
         KeyCode::Char('y') if alt => Action::Edit(EditAction::YankPop),
+        KeyCode::Char('p') if alt => Action::ModelPicker,
         KeyCode::Char(_) if ctrl || alt => Action::None,
         KeyCode::Char(c) => Action::Edit(EditAction::Insert(c)),
         KeyCode::Esc => Action::Escape,
@@ -225,6 +229,10 @@ mod tests {
         assert_eq!(
             map_key(&k(KeyCode::Char('o'), KeyModifiers::CONTROL), false),
             Action::ToggleDetail
+        );
+        assert_eq!(
+            map_key(&k(KeyCode::Char('p'), KeyModifiers::ALT), false),
+            Action::ModelPicker
         );
         // Ctrl-T is reserved for a task checklist.
         assert_eq!(
