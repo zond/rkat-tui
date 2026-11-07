@@ -227,6 +227,18 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Fixed
 
+- A Rust toolchain runs in the confined shell. Two engine fixes (pinned
+  from the `zond/meerkat` fork, branch `fix/sandbox-procfs`): the Linux
+  sandbox gives each launch its own pid namespace and a fresh `/proc`,
+  which the rustup proxies, rustc's library lookup, `cargo clippy`, `cargo
+  fmt` and the linker wrapper all need (`no /proc/self/exe available`); and
+  its filter allows Unix stream and seqpacket socketpairs with IP, which
+  std's fork-and-exec spawn path needs (before, rustc could not run its
+  linker and cargo could not run rustc: `Operation not permitted`). On the
+  TUI side, workspace mode grants `/etc/alternatives` (Debian's `cc` link)
+  and `/usr/libexec` (gcc's `collect2` and LTO plugin) read-only. Inside
+  the sandbox a command is now pid 1 and sees no host process. A test
+  compiles, links and runs a program in the sandbox.
 - An escalation whose timeout ran out while it waited behind another dialog is denied before it is shown; before, it could reach the user with no budget left (also the cause of the flaky `parallel_escalations_share_one_timeout_including_the_queue` test).
 - The shell lexer no longer treats a carriage return as a blank. bash, dash
   and zsh read `\r` as a word character, so `git status \r# ; rm -rf x` was

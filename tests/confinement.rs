@@ -317,6 +317,55 @@ async fn strict_mode_denies_the_network_and_workspace_mode_allows_it() {
     assert!(open.contains("NET-OPEN"), "{open}");
 }
 
+/// A Rust toolchain runs confined: the sandbox gives the launch its own pid
+/// namespace with a fresh `/proc` (the rustup proxies, rustc's library
+/// lookup and the linker wrapper all read `/proc/self/exe`) and the
+/// `/etc/alternatives` grant lets Debian's `cc` link resolve. Prints
+/// `SKIPPED:` when the host has no `rustc` on its `PATH`.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::disallowed_methods)] // test-only: is a toolchain installed?
+async fn workspace_mode_runs_the_rust_toolchain() {
+    if std::process::Command::new("rustc")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("SKIPPED: no rustc on PATH");
+        return;
+    }
+    let ws = Workspace::new();
+    if let Some(reason) = sandbox_unavailable(&ws.root, ConfinementArg::Workspace).await {
+        println!("SKIPPED: --confinement=workspace is unavailable on this host: {reason}");
+        return;
+    }
+    let command = "echo pid=$$; printf 'fn main() { println!(\"linked-ok\"); }\n' > m.rs && rustc m.rs -o m && ./m; echo END";
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Tool {
+            id: "sh",
+            name: "shell",
+            args: json!({ "command": command }),
+        },
+        Step::Text("done"),
+    ]);
+    // The host's real paths: the toolchain lives in the rustup and cargo
+    // homes, which the rig's hermetic default leaves out.
+    let options = RigOptions {
+        host_paths: Some(HostPaths::detect()),
+        ..allow_shell(vec!["--confinement=workspace".to_string()])
+    };
+    let mut rig = Rig::try_start_opts(&ws.root, &llm, Start::New, options)
+        .await
+        .unwrap_or_else(|err| panic!("bootstrap: {err}"));
+    rig.send(Effect::StartTurn("build it".into()));
+    rig.turn_finished().await;
+    let output = tool_text(&llm.requests()[1], "sh");
+    rig.quit().await;
+    assert!(output.contains("END"), "{output}");
+    assert!(output.contains("pid=1\n"), "{output}");
+    assert!(output.contains("linked-ok"), "{output}");
+}
+
 /// Whether process `pid` is alive (not reaped and not a zombie).
 fn alive(pid: &str) -> bool {
     std::fs::read_to_string(Path::new("/proc").join(pid).join("stat"))
