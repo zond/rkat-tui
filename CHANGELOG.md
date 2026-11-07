@@ -98,7 +98,7 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
   its full view (its prose, reasoning, tool calls and nested helpers) in
   place of the transcript until Esc. Long lines in the input editor wrap
   at the field width instead of scrolling sideways; the field grows up to
-  six rows and ↑/↓ move by wrapped rows. See `README.md`. Keys,
+  six rows and ↑/↓ move by wrapped rows. See `docs/manual.md`. Keys,
   commands and the approval prompt follow Claude Code where both have the
   feature (`docs/ux-parity.md` is the audit):
   - Ctrl+Enter sends now (interrupts a running turn and sends the input

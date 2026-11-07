@@ -51,6 +51,13 @@ invocation misses the test targets and the `mob` and `test-support` code.
 | Confinement | `tests/confinement.rs` | Probes the host sandbox; prints `SKIPPED: <reason>` and passes where the backend is unavailable (nested namespaces, Ubuntu's user-namespace restriction) |
 | Live | `tests/e2e_classifier.rs`, `--lib e2e_list_models` | `#[ignore]`; need provider keys. Not part of the gate |
 
+The live lanes skip a provider whose key is not in the environment:
+
+```bash
+ANTHROPIC_API_KEY=… OPENAI_API_KEY=… GEMINI_API_KEY=… cargo test --test e2e_classifier -- --ignored
+ANTHROPIC_API_KEY=… OPENAI_API_KEY=… GEMINI_API_KEY=… cargo test --lib e2e_list_models -- --ignored
+```
+
 Every behaviour change ships with a test in the matching place. A UI change
 gets a `render_snapshot` row assertion or an `App::update` unit test; a
 runner or session change gets a scripted-client test; an approval change gets

@@ -12,7 +12,7 @@ All rkat-tui paths below are relative to `crates/meerkat-tui/src/`: `keymap` = `
 | 2 | Interrupt / clear input / quit | `Ctrl+C`: interrupts a run; when idle the 1st press clears the input and the 2nd exits | `Ctrl+C`: interrupts, else clears the input, else a 2nd press within 1.5 s quits (keymap:95; mod:2188; window mod:59) | same |
 | 3 | Exit | `Ctrl+D`: 1st press shows a hint, 2nd within 800 ms exits; with text it deletes forward | `Ctrl+D` on an empty input quits **at once** when idle and asks again within 3 s only while busy; with text it deletes forward (keymap:96; mod:1545, 2213) | partial (no idle confirmation; the window is 3 s, not 800 ms) |
 | 4 | Newline | `Shift+Enter`, `Ctrl+J`, `\`+`Enter`, `Option+Enter` | `Shift/Alt/Ctrl+Enter`, `Ctrl+J` (keymap:92,94) | partial: no `\`+Enter. `Ctrl+Enter` is a newline here but "send now" in CC (see row 12) |
-| 5 | Prompt history | `Up/Down` (also `Ctrl+P/Ctrl+N`); moves by visual rows first | `Up/Down`, by wrapped rows, then history (keymap:122-123; README "Keys") | partial: no `Ctrl+P/N` (unbound, keymap:108) |
+| 5 | Prompt history | `Up/Down` (also `Ctrl+P/Ctrl+N`); moves by visual rows first | `Up/Down`, by wrapped rows, then history (keymap:122-123; `manual.md` "Keys and commands") | partial: no `Ctrl+P/N` (unbound, keymap:108) |
 | 6 | Interrupt the agent | `Esc` stops the turn; queued messages are sent next | `Esc` first **recalls** queued messages and interrupts only when nothing is queued (keymap:110; mod:1940-1951) | differs |
 | 7 | Rewind / checkpoints | `Esc Esc` on an empty input, or `/rewind` (`/checkpoint`, `/undo`): restore code and/or conversation, or summarize from/up to a point | none | missing |
 | 8 | Clear draft | `Esc Esc` with text: clears it and saves it to history | `Ctrl+C` clears without saving to history (mod:2192); `Esc` does nothing with text | partial |
@@ -38,7 +38,7 @@ All rkat-tui paths below are relative to `crates/meerkat-tui/src/`: `keymap` = `
 | 28 | Auto-accept edits | `Shift+Tab` → acceptEdits | auto mode (classifier) covers edits (`/auto on`, cmd:261) | partial |
 | 29 | `/permissions` | `/permissions`: interactive allow/ask/deny rules | `/rules [list\|add allow\|deny <tool> [pattern]\|rm <n>\|trust]` (cmd:268, 290-313) | differs (name) |
 | 30 | `/context` | `/context [all]`: usage grid | status bar gauge `ctx 42% (84k/200k)` (render:366-390) | partial (no command) |
-| 31 | Context warnings / auto-compact | warns, then auto-compacts; `/autocompact` sets the window | warnings at 75%/85%, `auto.compact` and `--auto-compact` (README "Context and compaction"; cmd text :157) | same (no `/autocompact`) |
+| 31 | Context warnings / auto-compact | warns, then auto-compacts; `/autocompact` sets the window | warnings at 75%/85%, `auto.compact` and `--auto-compact` (`manual.md` "Context and compaction"; cmd text :157) | same (no `/autocompact`) |
 | 32 | `/memory` | `/memory`: edit CLAUDE.md, toggle auto memory | none (`/remember` only appends) | missing |
 | 33 | `#` memory prefix | **Removed** from CC (no longer in the quick-commands table; the memory docs say to ask Claude or use `/memory`) | `#text` and `/remember <text>` append to AGENTS.md (cmd:192, 219) | n/a (legacy CC control rkat-tui still has) |
 | 34 | `/init` | `/init` writes CLAUDE.md | none | missing |
@@ -52,7 +52,7 @@ All rkat-tui paths below are relative to `crates/meerkat-tui/src/`: `keymap` = `
 | 42 | Undo an input edit | `Ctrl+_` | none | missing |
 | 43 | Readline editing: `Ctrl+A/E/U/W`, `Alt+B/F` | same keys | `Ctrl+A/E/W/U` (keymap:102-105), `Alt+B/F` (keymap:106-107), `Ctrl/Alt+←/→` and `Ctrl/Alt+Backspace` (keymap:111-115) | same (in CC these deletions also feed a kill ring; here they do not) |
 | 44 | Kill to end of line / yank | `Ctrl+K`; `Ctrl+Y` yank; `Alt+Y` cycles | `Ctrl+K` unbound; `Ctrl+Y` = **copy** the selection or the last answer (keymap:100; mod:1186) | differs (`Ctrl+Y` collides) |
-| 45 | Copy the last answer | `/copy [N]` | `Ctrl+Y` (mod:1186-1196), mouse drag (README "Keys") | differs |
+| 45 | Copy the last answer | `/copy [N]` | `Ctrl+Y` (mod:1186-1196), mouse drag (`manual.md` "Keys and commands") | differs |
 | 46 | Stash the prompt | `Ctrl+S` | none (`Ctrl+S` acts only after `Ctrl+X`) | missing |
 | 47 | Suspend | `Ctrl+Z` | none | missing |
 | 48 | Diff display for edits | colored diffs on Edit/Write | unified diffs attached to tool blocks (render:494; transcript.rs:244, 944) | same |
@@ -67,7 +67,7 @@ All rkat-tui paths below are relative to `crates/meerkat-tui/src/`: `keymap` = `
 | 57 | `/review`, `/security-review` | bundled skills | none | missing |
 | 58 | Custom commands / skills | `.claude/commands/*.md`, `.claude/skills/*/SKILL.md` as `/name` | none | missing |
 | 59 | `/add-dir`, `/cd` | `/add-dir <path>` | `--confinement-read/--confinement-write` at start (cli.rs:128,134) | partial |
-| 60 | `/branch`, `/fork`, `/rename` | branch or fork the conversation; name the session | agent-facing `fork` tool only (README "Fork") | missing (user-facing) |
+| 60 | `/branch`, `/fork`, `/rename` | branch or fork the conversation; name the session | agent-facing `fork` tool only (`manual.md` "Helpers") | missing (user-facing) |
 | 61 | `/btw` side question | `/btw [q]` | none | missing |
 | 62 | `/doctor` | setup checkup | none | missing |
 | 63 | Notifications / bell | terminal bell or notification on completion or prompt | none | missing |
@@ -82,7 +82,7 @@ rkat-tui extras with no CC counterpart: `Shift+↑/↓`, `PgUp/PgDn` and `Home/E
 ## 2. Rebind to match
 
 1. **`Esc` while running** (mod:1940): recall queued messages → **interrupt, and send the queued messages next** (CC). Recall stays on `Up` (mod:1553), which already matches CC.
-   - Conflict: today an interrupt returns undelivered steers to the editor (README "Sessions"). CC sends them next. The runner's interrupt path must re-admit them instead of withdrawing them.
+   - Conflict: today an interrupt returns undelivered steers to the editor (`manual.md` "Sessions"). CC sends them next. The runner's interrupt path must re-admit them instead of withdrawing them.
    - The hints at render:195-197 must change.
 2. **`Ctrl+Enter`**: newline (keymap:92, `ctrl` arm) → **send queued now**, the same action as `Ctrl+X Ctrl+S` (CC `chat:sendNow`).
    - Keep `Shift+Enter`, `Alt+Enter` and `Ctrl+J` for newlines.
@@ -93,7 +93,7 @@ rkat-tui extras with no CC counterpart: `Shift+↑/↓`, `PgUp/PgDn` and `Home/E
 4. **`Ctrl+T`** → **`Ctrl+O`**: today `Ctrl+O` toggles the last reasoning block (keymap:97) and `Ctrl+T` the last tool output (keymap:98). In CC, `Ctrl+O` is the single "show me detail" key (tool output and thinking), and `Ctrl+T` is the todo checklist.
    - Merge both into `Ctrl+O`: toggle a verbose mode that expands every reasoning block and tool output in the active view, or, as a minimal step, toggle the last reasoning block and the last tool output together.
    - That frees `Ctrl+T` for a task checklist.
-   - Conflict: `Ctrl+T` loses its "last tool output" meaning. A mouse click still toggles a single tool (README "Keys").
+   - Conflict: `Ctrl+T` loses its "last tool output" meaning. A mouse click still toggles a single tool (`manual.md` "Keys and commands").
    - Update hints render:562 and render:700, and HELP_TEXT cmd:175-176.
 5. **`Ctrl+Y`**: copy (keymap:100; mod:1186) → **yank** the last killed text (CC).
    - Move copying to **`/copy [N]`** (CC: copy the Nth-latest answer). Mouse drag already copies the selection on release.
