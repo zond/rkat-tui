@@ -16,12 +16,14 @@
 //! `[auto]`, the file holds `[endpoints.<name>]` (see [`crate::endpoints`])
 //! and `[pricing."<model id>"]` price overrides (see [`crate::pricing`]), and
 //! `[confinement] extra_read`/`extra_write` sandbox grants (see
-//! [`crate::bootstrap::confinement`]); like endpoints and prices, those are
+//! [`crate::bootstrap::confinement`]), and `[thinking]` Anthropic thinking
+//! per model (see [`crate::thinking`]); like endpoints and prices, those are
 //! honoured from the user's own layers only.
 
 use crate::approval::mode::PermissionMode;
 use crate::approval::trust::{TrustStatus, Untrusted};
 use crate::bootstrap::confinement::ConfinementSection;
+use crate::thinking::ThinkingSetting;
 use crate::ui::compaction::{CompactMode, CompactionPolicy};
 use crate::ui::checklist::ChecklistView;
 use crate::ui::transcript::HelperView;
@@ -960,6 +962,9 @@ pub struct RulesFile {
     /// Price overrides by model id (USD per million tokens).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pricing: BTreeMap<String, PricingSection>,
+    /// Anthropic thinking by model reference or id (user layers only).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub thinking: BTreeMap<String, ThinkingSetting>,
     /// Extra directories for the confined shell (user layers only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confinement: Option<ConfinementSection>,
@@ -1043,6 +1048,8 @@ pub enum Notice {
         endpoints: usize,
         /// Ignored price overrides.
         pricing: usize,
+        /// Ignored `[thinking]` entries.
+        thinking: usize,
         /// Ignored `[confinement]` grants (directories).
         confinement: usize,
     },
@@ -1087,6 +1094,14 @@ pub enum Notice {
         /// Number of ignored grants (directories).
         count: usize,
     },
+    /// A file the user does not own (the project file) set `[thinking]`;
+    /// only user layers may (a thinking budget is billed).
+    ThinkingIgnored {
+        /// The rules file.
+        path: PathBuf,
+        /// Number of ignored model entries.
+        count: usize,
+    },
     /// A `[pricing."<model>"]` entry has a negative or non-finite price.
     PricingInvalid {
         /// Model id.
@@ -1124,11 +1139,12 @@ impl fmt::Display for Notice {
                 auto,
                 endpoints,
                 pricing,
+                thinking,
                 confinement,
             } => {
                 write!(
                     f,
-                    "{} is not trusted ({reason}); only its deny rules apply (ignored {allow} allow rule(s), {endpoints} endpoint(s), {pricing} price override(s), {confinement} [confinement] grant(s)",
+                    "{} is not trusted ({reason}); only its deny rules apply (ignored {allow} allow rule(s), {endpoints} endpoint(s), {pricing} price override(s), {thinking} [thinking] setting(s), {confinement} [confinement] grant(s)",
                     path.display()
                 )?;
                 if *auto {
@@ -1159,6 +1175,11 @@ impl fmt::Display for Notice {
             Self::ProjectConfinementIgnored { path, count } => write!(
                 f,
                 "ignored {count} [confinement] grant(s) in {}: project files may not widen the shell's sandbox; add them to your own tui.toml",
+                path.display()
+            ),
+            Self::ThinkingIgnored { path, count } => write!(
+                f,
+                "ignored {count} [thinking] setting(s) in {}: only your own tui.toml files set thinking",
                 path.display()
             ),
             Self::PricingInvalid { model, field } => write!(
@@ -1226,6 +1247,9 @@ pub struct Layered {
     pub endpoints: BTreeMap<String, LayeredEndpoint>,
     /// Merged `[pricing."<model>"]` overrides (invalid entries dropped).
     pub pricing: BTreeMap<String, PricingSection>,
+    /// Merged `[thinking]` settings of the user layers (not yet validated,
+    /// see [`crate::thinking::ThinkingTable::validate`]).
+    pub thinking: BTreeMap<String, ThinkingSetting>,
     /// Merged `[confinement]` grants of the user layers (global, an owned
     /// realm file, the command-line overlay), in layer order; not yet
     /// validated (see [`crate::bootstrap::confinement::grants_with`]).
@@ -1296,6 +1320,7 @@ pub fn load_layered_with(
     let mut notices = Vec::new();
     let mut endpoints: BTreeMap<String, LayeredEndpoint> = BTreeMap::new();
     let mut pricing: BTreeMap<String, PricingSection> = BTreeMap::new();
+    let mut thinking: BTreeMap<String, ThinkingSetting> = BTreeMap::new();
     let mut confinement = ConfinementSection::default();
     let mut helpers = HelperSettings::default();
     let mut shell = ShellSettings::default();
@@ -1340,6 +1365,7 @@ pub fn load_layered_with(
                 || auto
                 || !file.endpoints.is_empty()
                 || !file.pricing.is_empty()
+                || !file.thinking.is_empty()
                 || grants > 0
             {
                 notices.push(Notice::UntrustedRealmDenyOnly {
@@ -1349,6 +1375,7 @@ pub fn load_layered_with(
                     auto,
                     endpoints: file.endpoints.len(),
                     pricing: file.pricing.len(),
+                    thinking: file.thinking.len(),
                     confinement: grants,
                 });
             }
@@ -1363,6 +1390,9 @@ pub fn load_layered_with(
                 .or_default()
                 .merge_from(section);
         }
+        // A later layer's setting replaces an earlier one's (`"default"`
+        // undoes it).
+        thinking.extend(file.thinking.iter().map(|(key, setting)| (key.clone(), *setting)));
         for (name, section) in &file.endpoints {
             endpoints
                 .entry(name.clone())
@@ -1414,6 +1444,12 @@ pub fn load_layered_with(
         notices.push(Notice::PricingIgnored {
             path: project_path.clone(),
             count: project.pricing.len(),
+        });
+    }
+    if !project.thinking.is_empty() {
+        notices.push(Notice::ThinkingIgnored {
+            path: project_path.clone(),
+            count: project.thinking.len(),
         });
     }
     pricing.retain(|model, section| match section.invalid_field() {
@@ -1511,6 +1547,7 @@ pub fn load_layered_with(
         settings,
         endpoints,
         pricing,
+        thinking,
         confinement,
         helpers,
         shell,
@@ -1622,6 +1659,9 @@ pub fn summarize(path: &Path, file: &RulesFile) -> String {
     }
     if !file.pricing.is_empty() {
         let _ = write!(out, "\n  {} price override(s)", file.pricing.len());
+    }
+    if !file.thinking.is_empty() {
+        let _ = write!(out, "\n  {} thinking setting(s)", file.thinking.len());
     }
     out
 }
@@ -1828,6 +1868,15 @@ mod tests {
                     cache_write: None,
                 },
             )]),
+            thinking: BTreeMap::from([
+                ("litellm:claude-x".to_string(), ThinkingSetting::Adaptive),
+                (
+                    "claude-sonnet-4-5".to_string(),
+                    ThinkingSetting::Enabled {
+                        budget_tokens: 8000,
+                    },
+                ),
+            ]),
             confinement: Some(ConfinementSection {
                 extra_read: vec![PathBuf::from("/data")],
                 extra_write: vec![PathBuf::from("/scratch")],
@@ -2597,6 +2646,62 @@ mod tests {
         )
         .unwrap();
         assert!(layered.pricing.is_empty());
+    }
+
+    #[test]
+    fn thinking_layers_replace_by_key_and_only_user_layers_count() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (realm, project) = (tmp.path().join("realm"), tmp.path().join("p"));
+        let global = tmp.path().join("global").join(RULES_FILE_NAME);
+        write(
+            global.parent().unwrap(),
+            "[thinking]\n\"a\" = \"adaptive\"\n\"b\" = { enabled = 4096 }\n",
+        );
+        write(&realm, "[thinking]\n\"b\" = \"default\"\n");
+        write(&project, "[thinking]\n\"c\" = \"adaptive\"\n");
+        let overlay = cli("[thinking]\n\"a\" = { enabled = 2048 }\n");
+        let layered = load_layered_with(
+            &realm,
+            Some(&global),
+            &project,
+            RealmTrust::Owned,
+            Some(&overlay),
+        )
+        .unwrap();
+        assert_eq!(
+            layered.thinking,
+            BTreeMap::from([
+                (
+                    "a".to_string(),
+                    ThinkingSetting::Enabled {
+                        budget_tokens: 2048
+                    }
+                ),
+                ("b".to_string(), ThinkingSetting::Default),
+            ]),
+            "the project's setting is ignored"
+        );
+        let texts: Vec<String> = layered.notices.iter().map(ToString::to_string).collect();
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.contains("ignored 1 [thinking] setting(s)")),
+            "{texts:?}"
+        );
+        // An untrusted realm file's settings are ignored too, and counted.
+        let layered = load_layered_with(
+            &realm,
+            None,
+            &project,
+            RealmTrust::DenyOnly(Untrusted::Changed),
+            None,
+        )
+        .unwrap();
+        assert!(layered.thinking.is_empty());
+        assert!(layered.notices.iter().any(|n| matches!(
+            n,
+            Notice::UntrustedRealmDenyOnly { thinking: 1, .. }
+        )));
     }
 
     #[test]

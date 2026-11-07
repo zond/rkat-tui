@@ -204,6 +204,13 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
     session's mode. The mode is saved as `[auto] mode` in the realm
     `tui.toml`, so the next start comes back in it; a project `tui.toml`
     cannot choose one. The idle editor title hints `Shift+Tab mode`.
+- `[thinking]` in `tui.toml` sets Anthropic thinking per model
+  (`"adaptive"`, `{ enabled = <budget> }`, or `"default"` for no
+  override), keyed by `endpoint:id` or a bare id. It rides in the
+  session's provider params on create, `/model`, resume and rewind, so a
+  proxy alias outside the catalog can get the engine's thinking-block
+  binding control (lukacf/meerkat#2095). Non-Anthropic endpoints and types
+  a catalogued model refuses are ignored with a start-up notice.
 
 ### Changed
 

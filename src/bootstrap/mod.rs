@@ -80,6 +80,8 @@ use crate::error::TuiError;
 use crate::mobs::Helpers;
 use crate::models::{ModelCache, ModelEntry, ModelLister, live_lister};
 use crate::pricing::PricingSetup;
+use crate::thinking::ThinkingTable;
+use meerkat_core::lifecycle::run_primitive::AnthropicThinkingConfig;
 #[cfg(feature = "mob")]
 use crate::tools::FileToolDispatcher;
 #[cfg(feature = "mob")]
@@ -117,9 +119,19 @@ pub struct ModelChoice {
     /// The explicit auth binding of a configured endpoint (`None`: default
     /// resolution, the built-in endpoints).
     pub auth_binding: Option<AuthBindingRef>,
+    /// The Anthropic thinking `[thinking]` configures for the model on
+    /// this endpoint (`None`: no override; see [`crate::thinking`]).
+    pub thinking: Option<AnthropicThinkingConfig>,
 }
 
 impl ModelChoice {
+    /// The choice with the thinking `table` configures for it.
+    #[must_use]
+    pub fn with_thinking(mut self, table: &ThinkingTable) -> Self {
+        self.thinking = table.resolve(Some(self.endpoint.as_str()), self.provider, &self.model);
+        self
+    }
+
     /// The choice as an `endpoint:model` reference.
     #[must_use]
     pub fn reference(&self) -> EndpointRef {
@@ -146,6 +158,8 @@ pub struct Runtime {
     pub profile_generation: Arc<AtomicU64>,
     /// Model of new sessions.
     pub choice: ModelChoice,
+    /// The `[thinking]` settings every session's provider params follow.
+    pub thinking: ThinkingTable,
     /// The LLM endpoints of this process.
     pub endpoints: EndpointRegistry,
     /// Model lists fetched during start-up, if any.
@@ -214,7 +228,7 @@ impl Runtime {
     ///
     /// [`TuiError::Endpoint`] when the endpoint is unknown.
     pub fn choice_for(&self, reference: &EndpointRef) -> Result<ModelChoice, TuiError> {
-        choice_for(&self.endpoints, reference)
+        Ok(choice_for(&self.endpoints, reference)?.with_thinking(&self.thinking))
     }
 
     /// Make sure the factory knows a capability profile for `model` on
@@ -278,6 +292,7 @@ fn choice_for(
         model: reference.model.clone(),
         provider: endpoint.provider(),
         auth_binding: endpoint.binding(),
+        thinking: None,
     })
 }
 
@@ -354,7 +369,12 @@ pub async fn bootstrap_with(
         endpoints.add_keyless_builtins();
     }
     let lister = options.lister.clone().unwrap_or_else(live_lister);
+    let (thinking, thinking_notices) = ThinkingTable::validate(
+        std::mem::take(&mut layered.thinking),
+        endpoints.as_slice(),
+    );
     let (choice, models) = plan_model(args, &config, &endpoints, &lister).await?;
+    let choice = choice.with_thinking(&thinking);
 
     let trust = Arc::new(parking_lot::Mutex::new(approval::trust_record(&scope)));
     let project_inputs =
@@ -448,6 +468,7 @@ pub async fn bootstrap_with(
     );
     let ui = layered.ui;
     approval_notices.extend(endpoint_notices.iter().map(ToString::to_string));
+    approval_notices.extend(thinking_notices);
     let helper_depth = layered.helpers.max_depth;
     let user_shell_timeout = std::time::Duration::from_secs(layered.shell.user_timeout_secs);
     let approval = approval::build(
@@ -521,6 +542,7 @@ pub async fn bootstrap_with(
         effective,
         profile_generation: Arc::new(AtomicU64::new(0)),
         choice,
+        thinking,
         endpoints,
         models,
         lister,

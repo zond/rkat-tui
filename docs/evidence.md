@@ -1550,3 +1550,51 @@ Conversation rewind: `/rewind` (aliases `/checkpoint`, `/undo`) and Esc Esc on a
   (also merged the second `### Fixed` heading under `[Unreleased]` into the original section).
 - Commands: `cargo fmt --all` exit 0; `cargo clippy --all-targets --all-features -- -D warnings` exit 0;
   `cargo nextest run --all-features --no-fail-fast` 855 passed, 7 skipped, exit 0.
+
+## Anthropic thinking per model (2026-11-07)
+
+`[thinking]` in `tui.toml`: Anthropic thinking per model, carried in each session's provider params.
+
+- Why: Anthropic binds replayed thinking blocks to the request prefix, so a request whose tool list changed (an
+  MCP server connected, a resume) answers 400 unless it carries `thinking.block_binding.prefix_mismatch_behavior:
+  "drop_block"`. meerkat-anthropic sends that control for catalogued ids; for an id outside the catalog (a proxy
+  alias, a dated snapshot, a `[models.<id>]` profile) the upstream fix (lukacf/meerkat#2095, narrowed after
+  review) sends it only when the request's Anthropic tag configures thinking explicitly (`Adaptive` or `Enabled
+  { budget_tokens }`), since an unknown alias may be enabled-only. rkat-tui passed `provider_params: None`
+  everywhere, so such a user had no way to get the control.
+- Engine facts: the realm config refuses a realm-level `[agent] provider_params`
+  (`meerkat-core` `reject_unwired_agent_provider_params`), so the host carries them per session:
+  `SessionBuildOptions::provider_params` on create; `SessionLlmReconfigureRequest::provider_params` on a switch,
+  a tri-state where `None` keeps the session's current params (`resolve_session_llm_identity_override`), so a
+  switch that sent `None` would carry the previous model's thinking onto the next model; on resume the factory
+  keeps the persisted params unless `ResumeOverrideMask::provider_params` is set
+  (`resolve_resumed_session_llm_identity`). The factory already refuses, at build time, a thinking type a
+  catalogued model does not accept (`validate_anthropic_request_shaping` over
+  `ModelCapabilities::anthropic_provider_tag_rejection`).
+- Shape: one table keyed by `endpoint:id` (wins) or bare id, values `"adaptive"`, `{ enabled = N }`, `"default"`
+  (no override; a later layer undoes an earlier one). `"default"`, not `"off"`: `"off"` reads as the engine's
+  `disabled` thinking type, which this setting does not send. Nothing is derived from a `[models.<id>]` profile's
+  `supports_thinking` (it does not say adaptive vs enabled). User layers only, like `[pricing]` (a budget is
+  billed); the project file's and an untrusted realm file's entries are ignored with a notice.
+- Validation at start-up (`thinking::ThinkingTable::validate`): a reference to a non-Anthropic endpoint, a bare id
+  the catalog gives another provider, and a type a catalogued Anthropic model refuses (the engine's own
+  `anthropic_provider_tag_rejection` text) are dropped with a notice; an uncatalogued id passes through
+  unchanged.
+- Where it applies: `SessionHandle::create` (build params from `ModelChoice::thinking`); `switch_model` (always
+  `Set` or `Clear`, never `None`); `SessionHandle::resume`, which a rewind (fork + resume) and every rebuild go
+  through: the configured thinking for the persisted identity's endpoint and model is compared with the persisted
+  tag's, and only on a difference does the build set the mask, replacing just the tag's `thinking`
+  (`thinking::reapplied`; other persisted knobs stay). The classifier keeps `low_reasoning_params`. Helpers are
+  left on the engine's default: `SpawnMemberSpec` has no fresh-spawn provider-params field (only the member
+  profile's, which the engine's `delegate` builds, and `resume_provider_params`, which a fresh spawn rejects).
+- Tests: `thinking::tests::{each_value_parses, the_settings_round_trip, a_bad_value_names_what_is_expected,
+  a_reference_wins_over_the_bare_id_and_default_is_no_override, a_non_anthropic_endpoint_is_ignored_with_a_notice,
+  a_catalogued_model_refusing_the_type_is_ignored_with_the_engines_reason, params_carry_only_the_thinking,
+  a_resume_replaces_only_the_thinking}`;
+  `approval::rules::tests::thinking_layers_replace_by_key_and_only_user_layers_count` (and the round trip);
+  end to end `models::{configured_thinking_reaches_the_request_on_create_and_after_a_switch,
+  a_resume_follows_the_thinking_configured_now}` (the scripted client's `LlmRequest` tag carries the configured
+  thinking on create, after `/model`, cleared on a switch to an unconfigured model, picked up and dropped again on
+  resume; with no setting the tag equals today's).
+- Commands: `cargo fmt --all -- --check` exit 0; `cargo clippy --all-targets --all-features -- -D warnings` exit 0;
+  `cargo nextest run --all-features` 873 passed, 7 skipped, exit 0.

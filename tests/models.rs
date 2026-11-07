@@ -5,7 +5,9 @@
 //! carries the new model; the endpoint's connection and the model's profile
 //! are in the realm's own config document (so `rkat` resolves the session
 //! too), the endpoint is derived from the session's binding on resume, and
-//! the cost totals survive a resume in the session's cost record.
+//! the cost totals survive a resume in the session's cost record. The
+//! `[thinking]` setting rides in the session's provider params on create,
+//! switch and resume.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -15,7 +17,9 @@ use std::sync::Arc;
 
 use common::{Rig, RigOptions, ScriptedLlmClient, Step, Workspace, args_with};
 use meerkat_core::ConfigStore;
+use meerkat_core::ProviderTag;
 use meerkat_core::Usage;
+use meerkat_core::lifecycle::run_primitive::AnthropicThinkingConfig;
 use rkat_tui::bootstrap;
 use rkat_tui::endpoints::{ENDPOINT_REALM, Endpoint};
 use rkat_tui::models::{EndpointListing, ModelEntry, ModelLister, ModelSource};
@@ -203,5 +207,166 @@ async fn unresolvable_references_leave_the_model_alone() {
     rig.send(Effect::StartTurn("still here".into()));
     rig.turn_finished().await;
     assert_eq!(llm.recorded()[0].model, common::MODEL);
+    rig.quit().await;
+}
+
+/// The `thinking` of the Anthropic tag a request carried.
+fn thinking_of(recorded: &common::Recorded) -> Option<AnthropicThinkingConfig> {
+    match &recorded.provider_params {
+        Some(ProviderTag::Anthropic(tag)) => tag.thinking.clone(),
+        _ => None,
+    }
+}
+
+/// The request's tag with its `thinking` taken out.
+fn without_thinking(recorded: &common::Recorded) -> Option<ProviderTag> {
+    match recorded.provider_params.clone() {
+        Some(ProviderTag::Anthropic(mut tag)) => {
+            tag.thinking = None;
+            Some(ProviderTag::Anthropic(tag)).filter(|tag| {
+                *tag != ProviderTag::Anthropic(
+                    meerkat_core::lifecycle::run_primitive::AnthropicProviderTag::default(),
+                )
+            })
+        }
+        other => other,
+    }
+}
+
+/// [`options`] plus `thinking` settings on the command line.
+fn thinking_options(settings: &[&str]) -> RigOptions {
+    let mut options = options();
+    for setting in settings {
+        options.args.push("--set".to_string());
+        options.args.push((*setting).to_string());
+    }
+    options
+}
+
+/// Run a turn on `rig` and switch it to the proxy's alias, then run
+/// another.
+async fn turn_switch_turn(rig: &mut Rig) {
+    rig.wait_for(|m| is_model(m, "anthropic", common::MODEL))
+        .await;
+    rig.send(Effect::StartTurn("first".into()));
+    rig.turn_finished().await;
+    rig.send(Effect::SetModel("proxy:my-alias".into()));
+    rig.wait_for(|m| is_model(m, "proxy", "my-alias")).await;
+    rig.send(Effect::StartTurn("second".into()));
+    rig.turn_finished().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn configured_thinking_reaches_the_request_on_create_and_after_a_switch() {
+    // Absent: the requests carry no thinking, as before the setting existed.
+    let ws = Workspace::new();
+    let plain = ScriptedLlmClient::new(vec![Step::Text("one"), Step::Text("two")]);
+    let mut rig = Rig::start_opts(&ws.root, &plain, Start::New, options()).await;
+    turn_switch_turn(&mut rig).await;
+    rig.quit().await;
+    let plain = plain.recorded();
+    assert_eq!(plain[1].model, "my-alias");
+    assert_eq!(
+        thinking_of(&plain[0]),
+        None,
+        "{:?}",
+        plain[0].provider_params
+    );
+    assert_eq!(
+        thinking_of(&plain[1]),
+        None,
+        "{:?}",
+        plain[1].provider_params
+    );
+
+    // Configured: a budget for the catalogued start-up model by its bare id,
+    // adaptive for the proxy alias by its reference.
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![Step::Text("one"), Step::Text("two")]);
+    let mut rig = Rig::start_opts(
+        &ws.root,
+        &llm,
+        Start::New,
+        thinking_options(&[
+            &format!("thinking.\"{}\".enabled=4096", common::MODEL),
+            "thinking.\"proxy:my-alias\"=adaptive",
+        ]),
+    )
+    .await;
+    let id = rig.first_session.clone();
+    turn_switch_turn(&mut rig).await;
+    let recorded = llm.recorded();
+    assert_eq!(
+        thinking_of(&recorded[0]),
+        Some(AnthropicThinkingConfig::Enabled {
+            budget_tokens: 4096
+        })
+    );
+    assert_eq!(recorded[1].model, "my-alias");
+    assert_eq!(
+        thinking_of(&recorded[1]),
+        Some(AnthropicThinkingConfig::Adaptive)
+    );
+    // Only the thinking differs from the plain requests.
+    assert_eq!(without_thinking(&recorded[0]), without_thinking(&plain[0]));
+    assert_eq!(without_thinking(&recorded[1]), without_thinking(&plain[1]));
+    // The session's identity records it.
+    let meta = rig.session(&id).await.session_metadata().unwrap();
+    let Some(ProviderTag::Anthropic(tag)) = meta.provider_params.and_then(|p| p.provider_tag)
+    else {
+        panic!("the session's provider params carry the Anthropic tag");
+    };
+    assert_eq!(tag.thinking, Some(AnthropicThinkingConfig::Adaptive));
+
+    // A switch to a model without a setting clears it.
+    rig.send(Effect::SetModel(format!("anthropic:{}", "claude-opus-4-8")));
+    rig.wait_for(|m| is_model(m, "anthropic", "claude-opus-4-8"))
+        .await;
+    rig.send(Effect::StartTurn("third".into()));
+    rig.turn_finished().await;
+    let recorded = llm.recorded();
+    assert_eq!(recorded[2].model, "claude-opus-4-8");
+    assert_eq!(
+        thinking_of(&recorded[2]),
+        None,
+        "{:?}",
+        recorded[2].provider_params
+    );
+    rig.quit().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_resume_follows_the_thinking_configured_now() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![Step::Text("one")]);
+    let mut rig = Rig::start_opts(&ws.root, &llm, Start::New, options()).await;
+    rig.send(Effect::StartTurn("first".into()));
+    rig.turn_finished().await;
+    rig.quit().await;
+    assert_eq!(thinking_of(&llm.recorded()[0]), None);
+
+    // Configured since: the resumed session thinks adaptively.
+    let llm = ScriptedLlmClient::new(vec![Step::Text("two")]);
+    let mut rig = Rig::start_opts(
+        &ws.root,
+        &llm,
+        Start::Resume("last".into()),
+        thinking_options(&[&format!("thinking.\"{}\"=adaptive", common::MODEL)]),
+    )
+    .await;
+    rig.send(Effect::StartTurn("second".into()));
+    rig.turn_finished().await;
+    assert_eq!(
+        thinking_of(&llm.recorded()[0]),
+        Some(AnthropicThinkingConfig::Adaptive)
+    );
+    rig.quit().await;
+
+    // No longer configured: the setting is gone again.
+    let llm = ScriptedLlmClient::new(vec![Step::Text("three")]);
+    let mut rig = Rig::start_opts(&ws.root, &llm, Start::Resume("last".into()), options()).await;
+    rig.send(Effect::StartTurn("third".into()));
+    rig.turn_finished().await;
+    assert_eq!(thinking_of(&llm.recorded()[0]), None);
     rig.quit().await;
 }

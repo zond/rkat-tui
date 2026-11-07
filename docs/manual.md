@@ -479,8 +479,8 @@ session's own turn runs, which is when a tool call asks for it.
 Rules live in TOML, layered (later settings win): the user-global
 `<config-dir>/tui.toml`, then `<realm>/tui.toml` (written by `/permissions add`),
 then the command line, then `<project>/.rkat/tui.toml`. The project file may
-only add deny rules and `[auto]` settings; its `[endpoints]`, `[pricing]` and
-`[confinement]` are ignored with a notice. Broad allow rules (blanket shell, interpreters, package-manager run
+only add deny rules and `[auto]` settings; its `[endpoints]`, `[pricing]`,
+`[thinking]` and `[confinement]` are ignored with a notice. Broad allow rules (blanket shell, interpreters, package-manager run
 commands) are dropped when auto mode starts.
 
 **Trusting the realm file.** The realm `tui.toml` lives in the workspace and
@@ -489,7 +489,7 @@ outside the workspace (`<config-dir>/trust/<workspace key>.toml`) with the
 SHA-256 of each workspace file it wrote itself or you trusted. The realm
 `tui.toml` counts as yours only when it is a regular file reached through no
 symbolic link and its digest matches the record; otherwise it can only deny,
-its `[endpoints]`, `[pricing]`, `[confinement]` and `[auto]` are ignored,
+its `[endpoints]`, `[pricing]`, `[thinking]`, `[confinement]` and `[auto]` are ignored,
 and a notice says why. `/permissions add` and the escalation dialog update the record; `/permissions
 trust` shows a summary of the file as it is now and records its digest.
 
@@ -541,6 +541,7 @@ are never written to a file.
 | `ui.checklist` (`"hidden"`/`"shown"`: the task checklist under the input; Ctrl-T writes it) | `--set ui.checklist=shown` | `"hidden"` |
 | `shell.user_timeout_secs` (how long a `!` command may run; a project file may only lower it) | `--set shell.user_timeout_secs=N` | `120` |
 | `pricing."<model id>".input`, `.output`, `.cached_input`, `.cache_write` (USD per 1M tokens) | `--set 'pricing."<id>".input=15'` | fetched prices |
+| `thinking."<endpoint:id or id>"` (`"adaptive"`, `{ enabled = <budget tokens> }` or `"default"`; Anthropic-dialect endpoints only, see "Thinking") | `--set 'thinking."proxy:my-alias"=adaptive'` | the engine's default |
 
 Other flags: `--model`/`-m <[endpoint:]id>`, `--endpoint <name>`
 (`--provider` for the built-ins), `--resume [ref]`, `-c`/`--continue`,
@@ -584,6 +585,31 @@ swap of the live session's model through the runtime (between turns), also
 across endpoints and dialects; the session's metadata records the model and
 binding, and `-c`/`/resume` derive the endpoint from them. Helpers follow
 the session's model; the classifier stays on the start-up endpoint.
+
+**Thinking.** `[thinking]` sets Anthropic thinking per model, keyed by an
+`endpoint:id` reference or a bare id (the reference wins):
+
+```toml
+[thinking]
+"proxy:claude-alias" = "adaptive"         # the model picks its budget
+"claude-sonnet-4-5" = { enabled = 8000 }  # at most 8000 thinking tokens
+"claude-opus-4-7" = "default"             # no override (undoes a lower layer)
+```
+
+Anthropic checks every replayed thinking block against the request it was
+made in, so a request whose tool list changed (an MCP server connected, a
+resume) is refused unless it asks to drop stale blocks, and the engine asks
+only for catalogued models or when thinking is set explicitly. A proxy alias
+or another id outside the Meerkat catalog therefore needs a setting here.
+The setting goes into the session's provider params when the session is
+created, on every `/model` switch (a model without one gets none), and on
+every resume and rewind (the session follows the setting as it is now). It
+applies on Anthropic-dialect endpoints only: a reference to an endpoint of
+another dialect, a bare id the catalog gives another provider, and a type a
+catalogued model does not accept (an adaptive-only model with a budget, say)
+are ignored with a start-up notice; an id outside the catalog is sent as
+set. Like `[pricing]`, only your own `tui.toml` files set it. Helpers
+(`delegate`, `fork`) keep the engine's default.
 
 The status bar shows the context gauge, `ctx 42% (84k/200k)` (yellow from 70%,
 red from 90%, `~` for an estimate), and the session's cost, `$0.42`: each

@@ -25,6 +25,11 @@
 //!   endpoint binding) through the runtime's session-LLM reconfigure host
 //!   ([`SessionServiceRuntimeExt::reconfigure_session_llm_identity`]); the
 //!   next model call uses it.
+//! - The session's provider params carry the Anthropic thinking `[thinking]`
+//!   configures for its model ([`crate::thinking`]): on create, on every
+//!   switch (set or cleared, never kept from the previous model) and on
+//!   resume, where the build overrides the persisted params only when the
+//!   configured thinking differs from theirs.
 //! - The handle keeps no copy of the session's model, provider or auth
 //!   binding: [`SessionHandle::identity`] reads them from the session's
 //!   authoritative metadata.
@@ -77,6 +82,8 @@ use meerkat_runtime::{
 
 use crate::approval::{ApprovalEngine, InputKey, admission};
 use crate::bootstrap::{CODING_PERSONA, ModelChoice, Runtime, TuiService};
+use crate::endpoints::{EndpointName, endpoint_of};
+use crate::thinking;
 use crate::error::TuiError;
 use crate::mobs::Helpers;
 
@@ -219,6 +226,7 @@ impl SessionHandle {
         let instructions = fresh_instructions(&options.additional_instructions);
         let mut build = build_options(options, choice.provider, Some(instructions), runtime);
         build.auth_binding.clone_from(&choice.auth_binding);
+        build.provider_params = thinking::params_for(choice.thinking.as_ref());
         build.mint_session_with_id(session.id().clone());
         if let Some(engine) = &approval {
             admission::install(&mut build, engine, session.id().clone());
@@ -270,6 +278,27 @@ impl SessionHandle {
             .and_then(|state| state.additional_instructions);
         let mut build = build_options(options, identity.provider, persisted, runtime);
         build.auth_binding.clone_from(&identity.auth_binding);
+        // The session's thinking follows `[thinking]` as it is now: only
+        // when that changes it does the build override the persisted
+        // provider params (the rest of them stays; see
+        // [`thinking::reapplied`]).
+        let endpoint = endpoint_of(
+            identity.provider,
+            identity.auth_binding.as_ref(),
+            &runtime.endpoints,
+        );
+        let configured = runtime.thinking.resolve(
+            endpoint.as_ref().map(EndpointName::as_str),
+            identity.provider,
+            &identity.model,
+        );
+        let durable = session
+            .session_metadata()
+            .and_then(|meta| meta.provider_params);
+        if let Some(params) = thinking::reapplied(durable.as_ref(), configured.as_ref()) {
+            build.provider_params = params;
+            build.resume_override_mask.provider_params = true;
+        }
         build.resume_existing_session(session.clone());
         if let Some(engine) = &approval {
             admission::install(&mut build, engine, session.id().clone());
@@ -381,6 +410,11 @@ impl SessionHandle {
     /// persisted with the session, and the next model call uses it. The
     /// target needs a capability profile ([`Runtime::ensure_profile`]).
     ///
+    /// The provider params become `choice`'s thinking, or none: the
+    /// reconfigure request's `None` would keep the previous model's params
+    /// (`resolve_session_llm_identity_override`), so the request always
+    /// sets or clears them.
+    ///
     /// # Errors
     ///
     /// [`TuiError::Runtime`] when the runtime refuses the switch (no
@@ -390,7 +424,10 @@ impl SessionHandle {
             model: Some(choice.model.clone()),
             provider: Some(choice.provider.as_str().to_string()),
             self_hosted_server_id: None,
-            provider_params: None,
+            provider_params: Some(match thinking::params_for(choice.thinking.as_ref()) {
+                Some(params) => TurnMetadataOverride::Set(params),
+                None => TurnMetadataOverride::Clear,
+            }),
             auth_binding: Some(match &choice.auth_binding {
                 Some(binding) => TurnMetadataOverride::Set(binding.clone()),
                 None => TurnMetadataOverride::Clear,

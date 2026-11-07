@@ -27,6 +27,7 @@
 //! - `memory` — file-based notes
 //! - `endpoints` — LLM endpoints, `endpoint:model` references, their projection into the realm config
 //! - `models` — live model lists of every endpoint (never the catalog)
+//! - `thinking` — `[thinking]`: Anthropic thinking per model, carried in each session's provider params
 //! - `bootstrap` — realm/config/factory/service construction, provider credentials
 //! - `mobs` — helpers (sub-agents) as mob members: approval gate, model binding, observation
 //! - `session` — session handle: create, resume, turns, steer, interrupt
@@ -53,7 +54,7 @@ macro_rules! internal_modules {
 
 internal_modules!(
     approval, bootstrap, cli, delivery, endpoints, error, fork, http, memory, mentions, mobs,
-    models, overlay, paths, pricing, runner, session, tools, ui, user_shell,
+    models, overlay, paths, pricing, runner, session, thinking, tools, ui, user_shell,
 );
 
 /// The headless runner the integration tests drive (see
