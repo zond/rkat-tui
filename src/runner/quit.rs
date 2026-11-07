@@ -61,7 +61,10 @@ impl Runner {
                 self.finish_turn().await;
             }
         }
+        // Abort the runner's tasks and wait until each has actually stopped:
+        // an aborted task is only dropped at its next await point.
         self.tasks.abort_all();
+        while self.tasks.join_next().await.is_some() {}
         self.cancel_shell();
         if let Err(err) = self.session.close().await {
             tracing::warn!(error = %err, "could not take the session off the runtime on quit");

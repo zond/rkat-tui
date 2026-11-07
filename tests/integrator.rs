@@ -374,7 +374,28 @@ async fn workspace_state_survives_a_rename() {
 
     let moved = ws.sibling("renamed-project");
     copy_tree(&ws.root, &moved);
-    std::fs::remove_dir_all(&ws.root).unwrap();
+    // A user moves the directory after rkat-tui exited; here the process
+    // lives on, and a file operation the service's shutdown left in flight
+    // can still land for a moment, so the removal gets three tries. A
+    // leftover that persists is reported by name.
+    let mut tries = 0;
+    loop {
+        match std::fs::remove_dir_all(&ws.root) {
+            Ok(()) => break,
+            Err(err) if tries < 3 => {
+                tries += 1;
+                eprintln!(
+                    "remove_dir_all try {tries}: {err}; present: {:?}",
+                    remaining_entries(&ws.root)
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+            Err(err) => panic!(
+                "remove_dir_all: {err}; left behind: {:#?}",
+                remaining_entries(&ws.root)
+            ),
+        }
+    }
 
     let llm = ScriptedLlmClient::new(vec![]);
     let rig = Rig::start(&moved, &llm, Start::Resume("last".into())).await;
@@ -1549,4 +1570,19 @@ async fn rewind_forks_before_the_chosen_message_and_keeps_the_old_session() {
         .await;
     assert!(matches!(refusal, Msg::Notice { .. }));
     rig.quit().await;
+}
+
+/// Every path under `root`, for the rename test's diagnostics.
+fn remaining_entries(root: &std::path::Path) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            out.push(path.display().to_string());
+            if path.is_dir() {
+                out.extend(remaining_entries(&path));
+            }
+        }
+    }
+    out
 }
