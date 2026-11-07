@@ -19,9 +19,9 @@
 //! - **The model.** A `delegate` helper runs on its delegator's model (the
 //!   implicit mob's profile); the customizer adds the owner's auth binding,
 //!   so a helper of a configured endpoint's session reaches the same
-//!   endpoint. The implicit mob's profile names the provider of the model's
-//!   realm profile ([`ModelProfiles`]), so a model only an endpoint lists
-//!   delegates too.
+//!   endpoint. The engine names the provider route the session's build
+//!   resolved for its model in the implicit mob's profile, so a model only
+//!   an endpoint lists (a realm `[models.<id>]` profile) delegates too.
 //! - **Tools and instructions.** The TUI's file tools and
 //!   [`crate::bootstrap::HELPER_PERSONA`].
 //! - **Observation.** [`follow`] subscribes to each helper and forwards its
@@ -48,8 +48,6 @@ pub mod bindings;
 #[cfg(feature = "mob")]
 pub mod customizer;
 #[cfg(feature = "mob")]
-mod endpoint_models;
-#[cfg(feature = "mob")]
 mod follow;
 
 use std::sync::Arc;
@@ -61,9 +59,6 @@ use tokio::sync::mpsc;
 pub use registry::{HelperStatus, HelperTag, HelperUpdate};
 #[cfg(feature = "mob")]
 pub use registry::{HelperKey, HelperRegistry, Owner, OwnerError};
-
-#[cfg(feature = "mob")]
-pub use endpoint_models::ModelProfiles;
 
 #[cfg(feature = "mob")]
 use meerkat_mob_mcp::MobMcpState;
@@ -111,10 +106,6 @@ pub struct HelperHostParts {
     /// curated set ([`crate::bootstrap::ConfinementPlan::shell_env`]),
     /// `None` when the shell runs unconfined.
     pub shell_env: Option<std::collections::HashMap<String, String>>,
-    /// The providers of the realm's current `[models.<id>]` profiles: a
-    /// session's implicit `delegate` mob names its model's, so a helper can
-    /// run on a model only an endpoint lists.
-    pub profiles: ModelProfiles,
     /// How deep helpers may nest (`[helpers] max_depth`): a helper at this
     /// depth gets no tool that starts helpers, and a deeper spawn is
     /// refused.
@@ -142,7 +133,6 @@ impl Helpers {
             llm_override,
             workgraph,
             shell_env,
-            profiles,
             max_depth,
         } = parts;
         let (registry, updates) = HelperRegistry::persistent(&realm_root);
@@ -172,9 +162,6 @@ impl Helpers {
         .with_workgraph_service(Some(workgraph))
         .with_default_llm_client(llm_override)
         .with_child_spawn_member_customizer(Arc::new(customizer))
-        .with_implicit_mob_customizer(Arc::new(endpoint_models::EndpointModels::new(
-            profiles,
-        )))
         .into_shared();
         install_mob_hooks(&state, &registry);
         tokio::spawn(follow::watch(

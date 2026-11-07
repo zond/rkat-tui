@@ -138,7 +138,7 @@ impl ForkToolDispatcher {
         let (mob, _) = state
             .ensure_implicit_mob_for_model(&caller.to_string(), &model, None)
             .await
-            .map_err(ForkError::Host)?;
+            .map_err(|err| ForkError::from_implicit_mob(err, &model))?;
         let handle = state.handle_for(&mob).await.map_err(ForkError::Host)?;
         // The mob under the implicit id must still be the caller's own
         // implicit mob: one registered under the id since (after a
@@ -245,6 +245,16 @@ enum ForkError {
     ChildPolicy(#[from] ChildToolPolicyRefused),
     #[error("cannot host the fork: {0}")]
     Host(#[source] MobError),
+    /// The engine refused the implicit mob's definition: its `delegate`
+    /// profile names the model alone, which validates only for a catalogued
+    /// model. The engine's `delegate` tool names the session's provider
+    /// route; its route-aware entry point is not exported yet.
+    #[error(
+        "cannot fork on model `{0}`: the fork tool cannot yet run on a model outside the \
+         catalog (rkat-tui needs an engine export to name the session's provider route); \
+         use `delegate`, whose first call also lets later forks reuse its helper mob"
+    )]
+    UncataloguedModel(String),
     #[error("cannot fork: mob {0} is no longer this session's own helper mob")]
     NotCallersMob(MobId),
     #[error("invalid fork result bound: {0}")]
@@ -259,6 +269,24 @@ enum ForkError {
         identity: AgentIdentity,
         reason: String,
     },
+}
+
+impl ForkError {
+    /// The fork-facing error of creating the caller's implicit mob on
+    /// `model`: the engine's refusal of an uncatalogued model is
+    /// [`ForkError::UncataloguedModel`], anything else [`ForkError::Host`].
+    fn from_implicit_mob(err: MobError, model: &str) -> Self {
+        match &err {
+            MobError::DefinitionError(diagnostics)
+                if diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.code == meerkat_mob::DiagnosticCode::UnknownModel) =>
+            {
+                Self::UncataloguedModel(model.to_string())
+            }
+            _ => Self::Host(err),
+        }
+    }
 }
 
 /// Whether a mob with this owner authority is `caller`'s implicit
@@ -348,6 +376,30 @@ mod tests {
         assert!(!is_implicit_mob_of(None, &caller));
         let err = ForkError::NotCallersMob(MobId::from("implicit-x"));
         assert!(err.to_string().contains("no longer this session's own"), "{err}");
+    }
+
+    #[test]
+    fn an_uncatalogued_model_refusal_says_the_fork_tool_cannot_run_there() {
+        let diagnostic = |code| meerkat_mob::Diagnostic {
+            code,
+            message: "profiles.delegate model 'realm-gateway-model' is neither catalogued".into(),
+            location: None,
+            severity: meerkat_mob::DiagnosticSeverity::Error,
+        };
+        let err = ForkError::from_implicit_mob(
+            MobError::DefinitionError(vec![diagnostic(meerkat_mob::DiagnosticCode::UnknownModel)]),
+            "realm-gateway-model",
+        );
+        assert!(matches!(&err, ForkError::UncataloguedModel(model) if model == "realm-gateway-model"));
+        let text = err.to_string();
+        assert!(text.contains("outside the catalog") && text.contains("engine export"), "{text}");
+        assert!(!text.contains("neither catalogued"), "{text}");
+        // Any other definition refusal stays the engine's own.
+        let other = ForkError::from_implicit_mob(
+            MobError::DefinitionError(vec![diagnostic(meerkat_mob::DiagnosticCode::EmptyProfiles)]),
+            "realm-gateway-model",
+        );
+        assert!(matches!(other, ForkError::Host(_)), "{other}");
     }
 
     #[test]

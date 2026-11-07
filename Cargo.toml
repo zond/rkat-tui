@@ -25,24 +25,25 @@ path = "src/main.rs"
 # store, auto-compaction), skills, MCP, comms and semantic memory
 # (`meerkat-memory` directly for the start-up index probe).
 #
-# Pinned to the zond/meerkat fork at upstream main c89d1ccc6e plus the three
-# engine fixes the harness needs (Anthropic thinking-block binding, implicit
-# mob provider for configured non-catalog models, final-symlink read-only
-# file grant). Upstream is re-landing them for 0.9.11; switch to crates.io
-# then and drop the `mobs/customizer` hook.
-meerkat = { git = "https://github.com/zond/meerkat.git", rev = "a3251768c872134b88d813ae5b0172b7bf3264f5", features = ["anthropic", "openai", "gemini", "session-store", "jsonl-store", "session-compaction", "memory-store-session", "skills", "comms"] }
-meerkat-core = { git = "https://github.com/zond/meerkat.git", rev = "a3251768c872134b88d813ae5b0172b7bf3264f5" }
-meerkat-runtime = { git = "https://github.com/zond/meerkat.git", rev = "a3251768c872134b88d813ae5b0172b7bf3264f5", features = ["sqlite-store"] }
-meerkat-store = { git = "https://github.com/zond/meerkat.git", rev = "a3251768c872134b88d813ae5b0172b7bf3264f5" }
-meerkat-sqlite = { git = "https://github.com/zond/meerkat.git", rev = "a3251768c872134b88d813ae5b0172b7bf3264f5" }
+# Pinned to the zond/meerkat fork at upstream main 70121a6157 plus two
+# sandbox fixes the confined shell needs (a pid namespace and procfs per
+# Linux launch; Unix stream/seqpacket socketpairs alongside IP). Upstream main
+# already names the session's provider route for the implicit `delegate` mob
+# and grants a final-symlink read-only file. Switch to crates.io once the
+# sandbox fixes land upstream.
+meerkat = { git = "https://github.com/zond/meerkat.git", rev = "83e65f2065b3fafef08892ab447f10497500c14f", features = ["anthropic", "openai", "gemini", "session-store", "jsonl-store", "session-compaction", "memory-store-session", "skills", "comms"] }
+meerkat-core = { git = "https://github.com/zond/meerkat.git", rev = "83e65f2065b3fafef08892ab447f10497500c14f" }
+meerkat-runtime = { git = "https://github.com/zond/meerkat.git", rev = "83e65f2065b3fafef08892ab447f10497500c14f", features = ["sqlite-store"] }
+meerkat-store = { git = "https://github.com/zond/meerkat.git", rev = "83e65f2065b3fafef08892ab447f10497500c14f" }
+meerkat-sqlite = { git = "https://github.com/zond/meerkat.git", rev = "83e65f2065b3fafef08892ab447f10497500c14f" }
 # `sqlite`: the session task store the Ctrl+T checklist reads.
-meerkat-tools = { git = "https://github.com/zond/meerkat.git", rev = "a3251768c872134b88d813ae5b0172b7bf3264f5", features = ["sqlite"] }
-meerkat-models = { git = "https://github.com/zond/meerkat.git", rev = "a3251768c872134b88d813ae5b0172b7bf3264f5" }
-meerkat-llm-core = { git = "https://github.com/zond/meerkat.git", rev = "a3251768c872134b88d813ae5b0172b7bf3264f5" }
-meerkat-memory = { git = "https://github.com/zond/meerkat.git", rev = "a3251768c872134b88d813ae5b0172b7bf3264f5" }
-meerkat-sandbox = { git = "https://github.com/zond/meerkat.git", rev = "a3251768c872134b88d813ae5b0172b7bf3264f5" }
-meerkat-mob = { git = "https://github.com/zond/meerkat.git", rev = "a3251768c872134b88d813ae5b0172b7bf3264f5", optional = true }
-meerkat-mob-mcp = { git = "https://github.com/zond/meerkat.git", rev = "a3251768c872134b88d813ae5b0172b7bf3264f5", optional = true }
+meerkat-tools = { git = "https://github.com/zond/meerkat.git", rev = "83e65f2065b3fafef08892ab447f10497500c14f", features = ["sqlite"] }
+meerkat-models = { git = "https://github.com/zond/meerkat.git", rev = "83e65f2065b3fafef08892ab447f10497500c14f" }
+meerkat-llm-core = { git = "https://github.com/zond/meerkat.git", rev = "83e65f2065b3fafef08892ab447f10497500c14f" }
+meerkat-memory = { git = "https://github.com/zond/meerkat.git", rev = "83e65f2065b3fafef08892ab447f10497500c14f" }
+meerkat-sandbox = { git = "https://github.com/zond/meerkat.git", rev = "83e65f2065b3fafef08892ab447f10497500c14f" }
+meerkat-mob = { git = "https://github.com/zond/meerkat.git", rev = "83e65f2065b3fafef08892ab447f10497500c14f", optional = true }
+meerkat-mob-mcp = { git = "https://github.com/zond/meerkat.git", rev = "83e65f2065b3fafef08892ab447f10497500c14f", optional = true }
 
 # Async + serialization
 tokio = { version = "1.43", features = ["full"] }

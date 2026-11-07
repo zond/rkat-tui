@@ -647,15 +647,100 @@ fn overlaps(a: &Path, b: &Path) -> bool {
 
 /// `path` when it exists as a directory (`dir`), absolute and canonical (no
 /// symbolic link on the way), or as a file the sandbox backend accepts as a
-/// read-only file grant ([`meerkat_sandbox::literal_file_grantable`]: on
-/// Linux that includes a final symbolic link to a regular file that only
-/// root or this user can retarget, bound at the link's path).
+/// read-only file grant ([`file_grantable`]).
 fn canonical(path: &Path, dir: bool) -> Option<PathBuf> {
     if dir {
         let resolved = std::fs::canonicalize(path).ok()?;
         return (path.is_absolute() && resolved == path && resolved.is_dir()).then_some(resolved);
     }
-    meerkat_sandbox::literal_file_grantable(path).then(|| path.to_path_buf())
+    file_grantable(path).then(|| path.to_path_buf())
+}
+
+/// Whether the sandbox backend accepts `path` as a read-only file grant, by
+/// its own rules (`meerkat-sandbox` keeps them private): `path` is absolute,
+/// off `/proc`, `/sys` and `/dev`, every directory on the way is canonical,
+/// and it names a regular file with one hard link, either directly or (on
+/// Linux only) through a final symbolic link that the backend binds at the
+/// link's path: one hop (the link's text, resolved lexically from its
+/// directory, is the target's canonical path) that only root or this user
+/// can retarget (the link and every directory from `/` down to its own are
+/// owned by one of them, none writable by group or others unless sticky).
+/// A detected file the backend would refuse is left out instead of making
+/// the whole confinement fail.
+fn file_grantable(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let reserved =
+        |path: &Path| ["/proc", "/sys", "/dev"].iter().any(|root| path.starts_with(root));
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    if !path.is_absolute()
+        || reserved(path)
+        || !path
+            .components()
+            .all(|c| matches!(c, std::path::Component::RootDir | std::path::Component::Normal(_)))
+        || std::fs::canonicalize(parent).ok().as_deref() != Some(parent)
+    {
+        return false;
+    }
+    // `metadata` follows a final link: the object the grant would bind.
+    let Ok(target) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !target.is_file() || target.nlink() != 1 {
+        return false;
+    }
+    let Ok(named) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    if !named.file_type().is_symlink() {
+        return true;
+    }
+    cfg!(target_os = "linux") && trusted_final_link(path, parent, &named, reserved)
+}
+
+/// [`file_grantable`]'s rule for a final symbolic link at `path` in the
+/// canonical directory `parent`.
+fn trusted_final_link(
+    path: &Path,
+    parent: &Path,
+    link: &std::fs::Metadata,
+    reserved: impl Fn(&Path) -> bool,
+) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    const STICKY: u32 = 0o1000;
+    const GROUP_OR_OTHER_WRITE: u32 = 0o022;
+    let (Ok(canonical), Ok(text)) = (std::fs::canonicalize(path), std::fs::read_link(path)) else {
+        return false;
+    };
+    if reserved(&canonical) {
+        return false;
+    }
+    let mut named = parent.to_path_buf();
+    for component in text.components() {
+        match component {
+            std::path::Component::RootDir => named = PathBuf::from("/"),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                named.pop();
+            }
+            std::path::Component::Normal(name) => named.push(name),
+            std::path::Component::Prefix(_) => return false,
+        }
+    }
+    if named != canonical {
+        return false;
+    }
+    let user = nix::unistd::geteuid().as_raw();
+    let trusted_owner = |metadata: &std::fs::Metadata| metadata.uid() == 0 || metadata.uid() == user;
+    trusted_owner(link)
+        && parent.ancestors().all(|ancestor| {
+            std::fs::symlink_metadata(ancestor).is_ok_and(|metadata| {
+                metadata.is_dir()
+                    && trusted_owner(&metadata)
+                    && (metadata.mode() & GROUP_OR_OTHER_WRITE == 0 || metadata.mode() & STICKY != 0)
+            })
+        })
 }
 
 /// What the TUI installs for the shell, and what to tell the user.

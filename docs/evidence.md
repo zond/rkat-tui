@@ -234,7 +234,11 @@ timestamp, and output excerpts.
      `tests::implicit_mob_without_a_customizer_is_exactly_the_implicit_definition`,
      `tests::implicit_mob_customizer_provider_makes_an_uncatalogued_model_validate_and_is_reused`,
      `tests::implicit_mob_customizer_error_refuses_the_create`; TUI:
-     `mobs::a_session_on_an_endpoint_only_model_delegates_on_it`. Found with it: the agent's mob tools capture the
+     `mobs::a_session_on_an_endpoint_only_model_delegates_on_it`. **Superseded upstream** (2026-11-07): upstream main hands the mob tools the provider route the
+     factory resolved and `delegate` creates the implicit mob on it (`ensure_implicit_mob_on_route`); the customizer
+     and `EndpointModels` are gone. `fork` still calls `ensure_implicit_mob_for_model` (the route-aware variant is
+     `pub(crate)`), so on an uncatalogued model it fails with `ForkError::UncataloguedModel` unless `delegate` created
+     the mob first. Found with it: the agent's mob tools capture the
      model at build (`AgentMobToolSurface.model`), so after a hot `/model` switch `delegate` helpers ran on the old
      model. The TUI now rebuilds the session after every switch
      (`RebuildReason::ModelSwitch`); `mobs::a_helper_delegated_after_a_model_switch_runs_on_the_new_model`. Ask: the
@@ -520,7 +524,8 @@ The A4 regression (Tier-1 `read_file`/`memory_search` reaching the classifier) w
   still re-resolves the link to the pinned target, so a retargeted link fails closed. Narrowed for review: the link
   is accepted only when the link and every directory from `/` to its parent are owned by root or the euid and none is
   group/other-writable unless sticky (`link_is_trusted`); `meerkat_sandbox::literal_file_grantable` exports the
-  backend's rule and the TUI's `canonical` calls it. Unit:
+  backend's rule and the TUI's `canonical` calls it. Upstream's version (PR #2084) keeps the rule private, so since 2026-11-07 the TUI's
+  `file_grantable` mirrors it. Unit:
   `linux::tests::a_final_component_link_grants_its_regular_file_target_read_only`,
   `linux::tests::a_final_component_link_in_a_shared_writable_directory_is_refused`,
   `linux::tests::a_final_component_link_owned_by_another_user_is_refused` (root only); positive lane:

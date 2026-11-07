@@ -207,6 +207,17 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Changed
 
+- The engine pin moved to upstream Meerkat `main` (70121a6157) plus two
+  sandbox fixes (a pid namespace and procfs per Linux confined launch; Unix
+  stream/seqpacket socketpairs alongside IP). The implicit-mob customizer
+  (`mobs::endpoint_models`) is gone: the engine now names the session's
+  resolved provider route in its implicit `delegate` mob itself, so a realm
+  `[models.<id>]` model delegates without help. The `fork` tool cannot yet
+  name that route (the engine's route-aware entry point is not exported):
+  on a model outside the catalog it fails with an error saying so, unless a
+  `delegate` call already created the session's helper mob. The detected
+  read-only file grants (`/etc/resolv.conf`, …) are now judged by a local
+  copy of the sandbox backend's rule, which upstream keeps private.
 - `rkat-tui` holds a realm lease (`meerkat_store::start_realm_lease_in`,
   surface `rkat-tui`) from the moment the realm's persistence is open until
   it quits, as `rkat-rpc`, `rkat-rest` and the mob host do, so
