@@ -4,6 +4,7 @@
 //! returns [`Effect`]s that the integrator (session/approval wiring) executes.
 //! Everything the integrator wants to show is pushed back in as a [`Msg`].
 
+pub mod checklist;
 pub mod commands;
 pub mod compaction;
 pub mod complete;
@@ -45,6 +46,7 @@ pub use compaction::{
 };
 pub use cost::{CostConfidence, CostReadout, SessionCost, SessionCostSnapshot, UsageTotals};
 pub use delivery::{Pending, PendingQueue, PendingState};
+pub use checklist::{Checklist, ChecklistItem, ChecklistView, ItemState};
 pub use history::History;
 pub use input::{InputEditor, StashOutcome};
 pub use keymap::{Action, EditAction};
@@ -412,6 +414,12 @@ pub enum Msg {
         /// How it went.
         outcome: ShellOutcome,
     },
+    /// The current session's task checklist, read from the engine's task
+    /// store (when a session opens and after each of its task tool calls).
+    Checklist(Checklist),
+    /// The task store could not be read: the checklist stays as it is and
+    /// the next Ctrl+T says why.
+    ChecklistUnavailable(String),
     /// Animation tick.
     Tick,
 }
@@ -515,6 +523,9 @@ pub enum Effect {
     SetMode(PermissionMode),
     /// Resume auto mode after a denial-limit pause.
     ResumeAutoMode,
+    /// Record the checklist panel's view (Ctrl+T) as `[ui] checklist` in
+    /// the realm `tui.toml`.
+    SetChecklistView(ChecklistView),
     /// Switch model.
     SetModel(String),
     /// Load the provider's model list (cached for the session unless
@@ -913,6 +924,12 @@ pub struct App {
     last_shell_id: u64,
     /// Whether `!` commands run confined (the editor title says so).
     shell_confined: bool,
+    /// The current session's tasks (the panel under the input, Ctrl+T).
+    checklist: Checklist,
+    /// Whether the checklist panel shows (`[ui] checklist`).
+    checklist_view: ChecklistView,
+    /// Why the task store could not be read, said once at the next Ctrl+T.
+    checklist_note: Option<String>,
     dirty: bool,
 }
 
@@ -975,6 +992,9 @@ impl App {
             shell_run: None,
             last_shell_id: 0,
             shell_confined: true,
+            checklist: Checklist::default(),
+            checklist_view: ChecklistView::default(),
+            checklist_note: None,
             dirty: true,
         }
     }
@@ -1049,6 +1069,38 @@ impl App {
     pub fn with_helper_view(mut self, view: HelperView) -> Self {
         self.transcript.set_helper_view(view);
         self
+    }
+
+    /// Whether the task checklist starts shown (`[ui] checklist`).
+    #[must_use]
+    pub fn with_checklist_view(mut self, view: ChecklistView) -> Self {
+        self.checklist_view = view;
+        self
+    }
+
+    /// The current session's task checklist.
+    pub fn checklist(&self) -> &Checklist {
+        &self.checklist
+    }
+
+    /// The checklist the panel under the input shows: `Some` while the
+    /// panel is on and the session has tasks.
+    pub fn checklist_panel(&self) -> Option<&Checklist> {
+        (self.checklist_view.is_shown() && !self.checklist.is_empty()).then_some(&self.checklist)
+    }
+
+    /// Ctrl+T: show or hide the checklist and record the choice. With no
+    /// tasks nothing shows either way; a store that could not be read is
+    /// named once.
+    fn toggle_checklist(&mut self, fx: &mut Vec<Effect>) {
+        self.checklist_view = self.checklist_view.toggled();
+        fx.push(Effect::SetChecklistView(self.checklist_view));
+        if let Some(why) = self.checklist_note.take() {
+            self.transcript.push_notice(
+                NoticeLevel::Info,
+                format!("the task checklist could not be read: {why}"),
+            );
+        }
     }
 
     /// The helpers the panel under the input lists (see
@@ -1847,6 +1899,11 @@ impl App {
                 self.status.cost.mark_unmeasured(&label);
                 fx.push(Effect::CostSnapshot(self.status.cost.clone()));
             }
+            Msg::Checklist(list) => {
+                self.checklist = list;
+                self.checklist_note = None;
+            }
+            Msg::ChecklistUnavailable(why) => self.checklist_note = Some(why),
             Msg::Tick => {
                 let helpers_spun = self.transcript.tick_helpers(now);
                 dirty = helpers_spun
@@ -2063,6 +2120,7 @@ impl App {
             Action::ToggleDetail => {
                 self.transcript.toggle_last_detail_in(view);
             }
+            Action::ToggleChecklist => self.toggle_checklist(fx),
             Action::Stash => {
                 if let StashOutcome::Stashed {
                     displaced: Some(text),
@@ -3574,7 +3632,7 @@ mod tests {
         assert_eq!(app.take_clipboard_text(), None);
 
         // Ctrl-O toggles the last tool output (no reasoning here); Ctrl-T
-        // does nothing.
+        // (the task checklist) leaves it alone.
         app.update(ctrl('t'));
         assert!(tool_collapsed(&app, t2));
         app.update(ctrl('o'));
@@ -3582,6 +3640,55 @@ mod tests {
         assert!(tool_collapsed(&app, t1));
         app.update(ctrl('o'));
         assert!(tool_collapsed(&app, t2));
+    }
+
+    #[test]
+    fn ctrl_t_toggles_the_checklist_and_records_the_view() {
+        let mut app = App::new(StatusInfo::default());
+        assert_eq!(app.checklist_panel(), None);
+        let list = Checklist::from_items(vec![ChecklistItem {
+            text: "write the fix".into(),
+            state: ItemState::InProgress,
+        }]);
+        app.update(Msg::Checklist(list.clone()));
+        assert_eq!(app.checklist(), &list);
+        // Hidden by default.
+        assert_eq!(app.checklist_panel(), None);
+        let fx = app.update(ctrl('t'));
+        assert!(
+            fx.contains(&Effect::SetChecklistView(ChecklistView::Shown)),
+            "{fx:?}"
+        );
+        assert_eq!(app.checklist_panel(), Some(&list));
+        let fx = app.update(ctrl('t'));
+        assert!(fx.contains(&Effect::SetChecklistView(ChecklistView::Hidden)));
+        assert_eq!(app.checklist_panel(), None);
+        // `[ui] checklist = "shown"` starts it shown; an empty list never
+        // shows.
+        let mut shown = App::new(StatusInfo::default()).with_checklist_view(ChecklistView::Shown);
+        assert_eq!(shown.checklist_panel(), None);
+        shown.update(Msg::Checklist(list.clone()));
+        assert_eq!(shown.checklist_panel(), Some(&list));
+        // Ctrl-T types nothing.
+        assert!(shown.input.is_empty());
+    }
+
+    #[test]
+    fn an_unreadable_task_store_is_named_once_at_the_next_ctrl_t() {
+        let mut app = App::new(StatusInfo::default());
+        app.update(Msg::ChecklistUnavailable("database is locked".into()));
+        let notices = |app: &App| {
+            app.transcript
+                .blocks()
+                .iter()
+                .filter(|b| matches!(b, Block::Notice { text, .. } if text.contains("database is locked")))
+                .count()
+        };
+        assert_eq!(notices(&app), 0);
+        app.update(ctrl('t'));
+        assert_eq!(notices(&app), 1);
+        app.update(ctrl('t'));
+        assert_eq!(notices(&app), 1);
     }
 
     #[test]

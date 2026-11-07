@@ -23,6 +23,7 @@ use crate::approval::mode::PermissionMode;
 use crate::approval::trust::{TrustStatus, Untrusted};
 use crate::bootstrap::confinement::ConfinementSection;
 use crate::ui::compaction::{CompactMode, CompactionPolicy};
+use crate::ui::checklist::ChecklistView;
 use crate::ui::transcript::HelperView;
 use globset::{Glob, GlobBuilder, GlobMatcher};
 use serde::{Deserialize, Serialize};
@@ -758,6 +759,9 @@ pub struct UiSection {
     /// See [`UiSettings::bell`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bell: Option<bool>,
+    /// See [`UiSettings::checklist`] (`"hidden"` or `"shown"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checklist: Option<ChecklistView>,
 }
 
 /// `[ui]` settings after layering.
@@ -769,6 +773,9 @@ pub struct UiSettings {
     /// Ring the terminal bell when a turn ends or an approval prompt opens
     /// while the terminal is not focused (default on).
     pub bell: bool,
+    /// Whether the task checklist shows under the input (Ctrl+T toggles
+    /// it and records the choice; default hidden).
+    pub checklist: ChecklistView,
 }
 
 impl Default for UiSettings {
@@ -776,6 +783,7 @@ impl Default for UiSettings {
         Self {
             helpers: HelperView::default(),
             bell: true,
+            checklist: ChecklistView::default(),
         }
     }
 }
@@ -787,6 +795,9 @@ impl UiSettings {
         }
         if let Some(bell) = section.bell {
             self.bell = bell;
+        }
+        if let Some(checklist) = section.checklist {
+            self.checklist = checklist;
         }
     }
 }
@@ -1383,6 +1394,7 @@ pub fn load_layered_with(
         ui.apply(&UiSection {
             helpers: section.helpers.filter(|_| cli_ui.helpers.is_none()),
             bell: section.bell.filter(|_| cli_ui.bell.is_none()),
+            checklist: section.checklist.filter(|_| cli_ui.checklist.is_none()),
         });
     }
     if !project.allow.is_empty() {
@@ -1645,6 +1657,18 @@ pub fn persist_realm_mode(path: &Path, mode: PermissionMode) -> Result<(), Rules
     save_realm(path, &file)
 }
 
+/// Record `view` as the realm's `[ui] checklist`, keeping everything else
+/// in the file.
+///
+/// # Errors
+///
+/// Returns [`RulesError`] when the file cannot be read, parsed or written.
+pub fn persist_realm_checklist(path: &Path, view: ChecklistView) -> Result<(), RulesError> {
+    let mut file = RulesFile::load(path)?;
+    file.ui.get_or_insert_with(UiSection::default).checklist = Some(view);
+    save_realm(path, &file)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -1815,6 +1839,7 @@ mod tests {
             ui: Some(UiSection {
                 helpers: Some(HelperView::Expanded),
                 bell: Some(false),
+                checklist: Some(ChecklistView::Shown),
             }),
         };
         let text = toml::to_string_pretty(&file).unwrap();
@@ -2372,6 +2397,35 @@ mod tests {
         let layered =
             load_layered_with(&realm, None, &project, RealmTrust::Owned, Some(&overlay)).unwrap();
         assert_eq!(layered.ui.helpers, HelperView::Expanded);
+    }
+
+    #[test]
+    fn ui_checklist_defaults_to_hidden_layers_and_persists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (realm, project) = (tmp.path().join("realm"), tmp.path().join("p"));
+        write(&realm, "[auto]\nmode = \"plan\"\n[ui]\nbell = false\n");
+        write(&project, "");
+        let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+        assert_eq!(layered.ui.checklist, ChecklistView::Hidden);
+        let realm_file = realm.join(RULES_FILE_NAME);
+        persist_realm_checklist(&realm_file, ChecklistView::Shown).unwrap();
+        let text = std::fs::read_to_string(&realm_file).unwrap();
+        assert!(text.contains("checklist = \"shown\""), "{text}");
+        let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+        assert_eq!(layered.ui.checklist, ChecklistView::Shown);
+        // The rest of the file stays.
+        assert!(!layered.ui.bell);
+        assert_eq!(layered.settings.mode, PermissionMode::Plan);
+        // The project's preference applies unless the command line set one.
+        write(&project, "[ui]\nchecklist = \"hidden\"\n");
+        let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+        assert_eq!(layered.ui.checklist, ChecklistView::Hidden);
+        let overlay = cli("[ui]\nchecklist = \"shown\"\n");
+        let layered =
+            load_layered_with(&realm, None, &project, RealmTrust::Owned, Some(&overlay)).unwrap();
+        assert_eq!(layered.ui.checklist, ChecklistView::Shown);
+        write(&project, "[ui]\nchecklist = \"open\"\n");
+        assert!(load_layered_with(&realm, None, &project, RealmTrust::Owned, None).is_err());
     }
 
     /// The realm's `[auto] mode` (what `/mode` records) sets the start

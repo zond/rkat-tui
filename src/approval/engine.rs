@@ -630,6 +630,28 @@ impl ApprovalEngine {
         Ok(())
     }
 
+    /// Record the checklist panel's view as the realm's `[ui] checklist`
+    /// (Ctrl+T), trusted like every other write of the realm rules file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RulesError`] when the file cannot be read, parsed or written.
+    pub fn persist_checklist(
+        &self,
+        view: crate::ui::checklist::ChecklistView,
+    ) -> Result<(), RulesError> {
+        let Some(path) = &self.rules_path else {
+            return Ok(());
+        };
+        rules::persist_realm_checklist(path, view)?;
+        if let Some(trust) = &self.rules_trust
+            && let Err(err) = trust.lock().record_file(path)
+        {
+            tracing::warn!(error = %err, "realm rules written but not recorded as trusted");
+        }
+        Ok(())
+    }
+
     /// `/auto resume`: clear a pause (including the total-denials pause) and
     /// reset counters; in another mode, switch to auto mode.
     pub fn resume_auto(&self) {

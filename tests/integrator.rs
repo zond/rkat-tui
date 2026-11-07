@@ -1342,3 +1342,114 @@ async fn plan_mode_refuses_a_write_and_the_model_reads_why() {
     );
     rig.quit().await;
 }
+
+/// The id of the task `subject` as a `task_create` result in `messages`
+/// returned it.
+fn task_id(messages: &[Message], subject: &str) -> String {
+    messages
+        .iter()
+        .find_map(|m| match m {
+            Message::ToolResults { results, .. } => results.iter().find_map(|r| {
+                let task: serde_json::Value = serde_json::from_str(&r.text_content()).ok()?;
+                (task["subject"] == subject).then(|| task["id"].as_str().unwrap().to_string())
+            }),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no task_create result for {subject}"))
+}
+
+/// The model's task tools fill the Ctrl+T checklist from the engine's task
+/// store, and a resumed session gets its checklist back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_task_tools_fill_the_checklist_and_resume_restores_it() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rkat_tui::ui::{App, ChecklistView, ItemState, StatusInfo};
+
+    let ws = Workspace::new();
+    let create = |subject: &str| json!({ "subject": subject, "description": "" });
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Tools(vec![
+            ("c1", "task_create", create("read the parser")),
+            ("c2", "task_create", create("write the fix")),
+            ("c3", "task_create", create("run the tests")),
+        ]),
+        Step::Dynamic(Arc::new(|messages| {
+            Step::Tools(vec![
+                (
+                    "u1",
+                    "task_update",
+                    json!({ "id": task_id(messages, "read the parser"), "status": "completed" }),
+                ),
+                (
+                    "u2",
+                    "task_update",
+                    json!({ "id": task_id(messages, "write the fix"), "status": "in_progress" }),
+                ),
+            ])
+        })),
+        Step::Text("on it"),
+    ]);
+    let mut rig = Rig::start(&ws.root, &llm, Start::New).await;
+    let first = rig.first_session.clone();
+    let mut app = App::new(StatusInfo::default());
+    rig.send(Effect::StartTurn("fix the parser".into()));
+    let done_and_in_progress = |msg: &Msg| {
+        matches!(msg, Msg::Checklist(list) if list.items().iter().any(|i| i.state == ItemState::InProgress)
+            && list.items().iter().any(|i| i.state == ItemState::Done))
+    };
+    pump(&mut rig, &mut app, done_and_in_progress).await;
+    rig.turn_finished().await;
+    let ctrl_t = Msg::Key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL));
+    let fx = app.update(ctrl_t.clone());
+    assert!(fx.contains(&Effect::SetChecklistView(ChecklistView::Shown)));
+    for effect in fx {
+        rig.send(effect);
+    }
+    let want = [
+        ("run the tests", ItemState::Pending),
+        ("read the parser", ItemState::Done),
+        ("write the fix", ItemState::InProgress),
+    ];
+    let items = |list: &rkat_tui::ui::Checklist| -> Vec<(String, ItemState)> {
+        list.items()
+            .iter()
+            .map(|i| (i.text.clone(), i.state))
+            .collect()
+    };
+    let want: Vec<(String, ItemState)> = want.iter().map(|(t, s)| (t.to_string(), *s)).collect();
+    assert_eq!(items(app.checklist_panel().expect("shown")), want);
+    // The creates showed up before the updates (a read after each
+    // completed task call).
+    assert!(
+        rig.seen.iter().any(|m| matches!(m, Msg::Checklist(list)
+            if list.items().len() == 3 && list.items().iter().all(|i| i.state == ItemState::Pending))),
+        "{:?}",
+        rig.seen
+    );
+    rig.quit().await;
+    let realm_rules = std::fs::read_to_string(ws.root.join(".rkat/tui/tui.toml")).unwrap();
+    assert!(
+        realm_rules.contains("checklist = \"shown\""),
+        "{realm_rules}"
+    );
+
+    // Resumed: the same list, read from the store, before any turn.
+    let llm = ScriptedLlmClient::new(vec![]);
+    let mut rig = Rig::start(&ws.root, &llm, Start::Resume("last".into())).await;
+    assert_eq!(rig.first_session, first);
+    let msg = rig
+        .wait_for(|msg| matches!(msg, Msg::Checklist(list) if !list.is_empty()))
+        .await;
+    let Msg::Checklist(list) = msg else {
+        unreachable!()
+    };
+    assert_eq!(items(&list), want);
+    rig.quit().await;
+
+    // A new session starts with an empty checklist.
+    let llm = ScriptedLlmClient::new(vec![]);
+    let mut rig = Rig::start(&ws.root, &llm, Start::New).await;
+    let msg = rig.wait_for(|msg| matches!(msg, Msg::Checklist(_))).await;
+    assert!(matches!(msg, Msg::Checklist(list) if list.is_empty()));
+    rig.quit().await;
+}

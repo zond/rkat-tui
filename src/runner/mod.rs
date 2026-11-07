@@ -41,6 +41,7 @@
 //! live in [`context`], `!` shell mode in [`shell`].
 
 mod approval;
+mod checklist;
 mod context;
 mod cost;
 pub mod cost_store;
@@ -133,6 +134,7 @@ pub async fn run(args: Args) -> Result<(), TuiError> {
     let mut app = App::new(status)
         .with_compaction_policy(template.policy)
         .with_helper_view(runtime.ui.helpers)
+        .with_checklist_view(runtime.ui.checklist)
         .with_bell(runtime.ui.bell)
         .with_shell_confined(runtime.confinement.requirement().is_some())
         .with_workspace(runtime.scope.project_root.clone())
@@ -693,6 +695,7 @@ impl Runner {
         }
         runner.push_prices();
         runner.show_session(transcript.as_ref(), false);
+        runner.refresh_checklist().await;
         // Fetch the lists in the background, for the picker, bare-id
         // lookups and endpoint prices.
         if runner.models.is_none() && runner.runtime.endpoints.iter().any(|e| e.has_key()) {
@@ -819,6 +822,7 @@ impl Runner {
             | Effect::ListRules) => self.handle_approval_effect(effect),
             Effect::SetMode(mode) => self.set_mode(mode).await,
             Effect::ResumeAutoMode => self.resume_auto().await,
+            Effect::SetChecklistView(view) => self.set_checklist_view(view),
             Effect::SetModel(reference) => self.set_model(reference).await,
             Effect::RequestModelPicker { refresh } => self.request_model_picker(refresh),
             Effect::Remember(text) => self.remember(&text).await,
@@ -1045,11 +1049,18 @@ impl Runner {
     /// steered messages.
     async fn on_event(&mut self, env: EventEnvelope<AgentEvent>) {
         let msgs = self.observe(&env.payload);
+        let tasks_changed = matches!(
+            &env.payload,
+            AgentEvent::ToolExecutionCompleted { name, .. } if checklist::changes_tasks(name)
+        );
         if self.agent_tx.send(env).await.is_err() {
             tracing::debug!("UI event receiver closed");
         }
         for msg in msgs {
             self.send(msg);
+        }
+        if tasks_changed {
+            self.refresh_checklist().await;
         }
         if self.turn.finish_by.is_some() && self.turn.open_runs.is_empty() {
             self.finish_turn().await;

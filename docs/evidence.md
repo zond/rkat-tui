@@ -1423,3 +1423,48 @@ Permission modes on Shift+Tab (`docs/ux-parity.md` rows 9, 27, 28; candidate 5).
   Shift+Tab-toggles-auto description; tier table and config reference rows), CHANGELOG.
 - Commands: `cargo fmt --all` exit 0; `cargo clippy --all-targets --all-features -- -D warnings` exit 0;
   `cargo nextest run --all-features --no-fail-fast` 833 passed, 7 skipped, exit 0.
+
+## Batch 3 B (2026-11-07)
+
+Task checklist on Ctrl+T (`docs/ux-parity.md` row 22; candidate 7).
+
+- Before: Ctrl+T was unbound (`Action::None`, kept for this); the engine's task tools (`task_create`, `task_get`,
+  `task_list`, `task_update`, tier 1 in `approval/policy.rs`) ran but nothing showed their state.
+- Source: the engine's own task store, no parsing of tool calls or results. With `session-store` the facade's
+  dispatcher build gives every session `meerkat_tools::SqliteTaskStore::for_session(<store_path>/tasks.db,
+  <session id>)` (`meerkat/src/factory.rs`, `build_tool_dispatcher_for_agent_with_overrides`), so the list is
+  persistent and host-readable. `bootstrap::tasks_db(store_path)` mirrors that path (upstream ask: the facade
+  names it only inside the dispatcher build) and `Runtime::tasks_db` carries it. `runner::checklist::read_checklist`
+  lists the session's tasks through the same store type (no file: empty, and reading does not create one);
+  the runner reads it when a session opens (start, `/new`, `/resume`, so a resumed session gets its list back)
+  and after each `ToolExecutionCompleted` of `task_create`/`task_update` on the session's own event stream, and
+  sends `Msg::Checklist`. A read error sends `Msg::ChecklistUnavailable`, which the next Ctrl+T names in one notice
+  (the brief's resumed-session note only applies to a non-persistent source, which this is not). Helpers' tasks
+  live in their own sessions and are not shown. `meerkat-tools` now names its `sqlite` feature explicitly
+  (feature unification already enabled it); `chrono` parses the update stamps.
+- UI: `ui::checklist::{Checklist, ChecklistItem, ItemState, ChecklistView}`: items ordered by `updated_at`
+  (stable, the store's created order among ties), `☐`/`◐`/`☑`; `window()` shows up to 5 items, beyond that the
+  4 updated last and `… and N more` above them (5 lines; the helper panel keeps its own 6, so both together are
+  at most 11). Ctrl+T (`Action::ToggleChecklist`) toggles `checklist_view` and sends `Effect::SetChecklistView`;
+  with no tasks nothing is drawn. `render::draw_checklist` draws under the input, before the helper panel;
+  in progress bold yellow, done dim. Idle editor title: ` ? keys · Shift+Tab mode · Ctrl+T shows|hides the
+  tasks ` while there are tasks.
+- Config: `[ui] checklist = "hidden"|"shown"` (default hidden) layered like `[ui] helpers` (realm, project
+  unless the command line set it, `--set ui.checklist=shown`); Ctrl+T writes it into the realm `tui.toml`
+  (`rules::persist_realm_checklist` via `ApprovalEngine::persist_checklist`, recorded in the host trust record
+  like the mode write).
+- Tests: `ui::checklist::tests::{tasks_map_to_items_newest_updated_last, the_window_keeps_the_newest_and_counts_the_rest,
+  the_view_toggles}`; `runner::checklist::tests::{the_checklist_is_the_sessions_tasks_in_the_store (another
+  session's task is not listed), only_the_writing_task_tools_refresh}`;
+  `approval::rules::tests::ui_checklist_defaults_to_hidden_layers_and_persists`; `ui::keymap` Ctrl+T;
+  `ui::tests::{ctrl_t_toggles_the_checklist_and_records_the_view, an_unreadable_task_store_is_named_once_at_the_next_ctrl_t}`;
+  render snapshots `ctrl_t_with_no_tasks_draws_nothing`, `the_checklist_renders_under_the_input` (three items,
+  hint both ways), `more_than_five_tasks_show_the_newest_and_a_count`, `the_checklist_comes_before_the_helper_panel`;
+  end to end `integrator::the_task_tools_fill_the_checklist_and_resume_restores_it` (the scripted model creates
+  three tasks, then updates two by the ids the results returned (new `Step::Dynamic` in `tests/common`); the App
+  fed by the runner shows ☐ run the tests / ☑ read the parser / ◐ write the fix after Ctrl+T; realm `tui.toml`
+  holds `checklist = "shown"`; `--resume last` sends the same list before any turn; a new session's is empty).
+- Docs: HELP_TEXT/keys panel Ctrl-T row; README "Task checklist" section, keys paragraph, config reference row;
+  CHANGELOG.
+- Commands: `cargo fmt --all` exit 0; `cargo clippy --all-targets --all-features -- -D warnings` exit 0;
+  `cargo nextest run --all-features --no-fail-fast` 846 passed, 7 skipped, exit 0.

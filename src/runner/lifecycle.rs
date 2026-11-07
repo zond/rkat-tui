@@ -352,6 +352,7 @@ impl Runner {
         }
         self.refresh_identity().await;
         self.show_session(transcript.as_ref(), true);
+        self.refresh_checklist().await;
         // A resumed session on another model than the current one.
         self.ensure_trigger().await;
     }

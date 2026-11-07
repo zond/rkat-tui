@@ -64,9 +64,10 @@ pub enum Action {
     /// on a draft, clear it into the history.
     Escape,
     /// Show or hide detail (Ctrl-O): the last reasoning block and the
-    /// output of the last tool call together. Ctrl-T is left unbound (kept
-    /// for a task checklist).
+    /// output of the last tool call together.
     ToggleDetail,
+    /// Ctrl-T: show or hide the task checklist under the input.
+    ToggleChecklist,
     /// Start a reverse history search (Ctrl-R).
     HistorySearch,
     /// Ctrl-S: stash the input, or restore the stash on an empty input
@@ -122,6 +123,7 @@ pub fn map_key(key: &KeyEvent, input_empty: bool) -> Action {
         KeyCode::Char('c') if ctrl => Action::CtrlC,
         KeyCode::Char('d') if ctrl => Action::CtrlD,
         KeyCode::Char('o') if ctrl => Action::ToggleDetail,
+        KeyCode::Char('t') if ctrl => Action::ToggleChecklist,
         KeyCode::Char('r') if ctrl => Action::HistorySearch,
         KeyCode::Char('y') if ctrl => Action::Edit(EditAction::Yank),
         KeyCode::Char('k') if ctrl => Action::Edit(EditAction::KillToLineEnd),
@@ -249,10 +251,9 @@ mod tests {
             map_key(&k(KeyCode::Char('g'), KeyModifiers::CONTROL), false),
             Action::ExternalEditor
         );
-        // Ctrl-T is reserved for a task checklist.
         assert_eq!(
             map_key(&k(KeyCode::Char('t'), KeyModifiers::CONTROL), false),
-            Action::None
+            Action::ToggleChecklist
         );
         assert_eq!(
             map_key(&k(KeyCode::Char('r'), KeyModifiers::CONTROL), false),

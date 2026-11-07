@@ -35,7 +35,8 @@ meerkat-core = { git = "https://github.com/zond/meerkat.git", rev = "75a37e9e3b8
 meerkat-runtime = { git = "https://github.com/zond/meerkat.git", rev = "75a37e9e3b81e9a5007ae07158d8d4edd2e8e4f2", features = ["sqlite-store"] }
 meerkat-store = { git = "https://github.com/zond/meerkat.git", rev = "75a37e9e3b81e9a5007ae07158d8d4edd2e8e4f2" }
 meerkat-sqlite = { git = "https://github.com/zond/meerkat.git", rev = "75a37e9e3b81e9a5007ae07158d8d4edd2e8e4f2" }
-meerkat-tools = { git = "https://github.com/zond/meerkat.git", rev = "75a37e9e3b81e9a5007ae07158d8d4edd2e8e4f2" }
+# `sqlite`: the session task store the Ctrl+T checklist reads.
+meerkat-tools = { git = "https://github.com/zond/meerkat.git", rev = "75a37e9e3b81e9a5007ae07158d8d4edd2e8e4f2", features = ["sqlite"] }
 meerkat-models = { git = "https://github.com/zond/meerkat.git", rev = "75a37e9e3b81e9a5007ae07158d8d4edd2e8e4f2" }
 meerkat-llm-core = { git = "https://github.com/zond/meerkat.git", rev = "75a37e9e3b81e9a5007ae07158d8d4edd2e8e4f2" }
 meerkat-memory = { git = "https://github.com/zond/meerkat.git", rev = "75a37e9e3b81e9a5007ae07158d8d4edd2e8e4f2" }
@@ -64,6 +65,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 # Durable digests (allow cache, trust record) and atomic file writes.
 sha2 = "0.10"
 tempfile = "3.14"
+# Task update stamps (the checklist orders by them).
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 
 # Terminal UI
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }

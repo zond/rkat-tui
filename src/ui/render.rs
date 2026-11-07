@@ -14,6 +14,7 @@ use super::transcript::{
     Block, BlockId, DiffView, HelperFold, HelperState, NoticeLevel, ShellState, ToolState,
     args_preview, result_line_count,
 };
+use super::checklist::{Checklist, ItemState};
 use super::{App, HistorySearch, StatusInfo};
 use crate::approval::mode::PermissionMode;
 
@@ -52,9 +53,18 @@ pub fn draw_at(frame: &mut Frame<'_>, app: &mut App, now: Instant) {
     };
     let panel = app.helper_panel();
     let panel_rows = panel.len().min(MAX_PANEL_LINES) as u16;
-    let [transcript_area, input_area, panel_area, status_area] = Layout::vertical([
+    // The checklist comes first under the input, then the helper panel.
+    let checklist_rows = app.checklist_panel().map_or(0, |list| list.rows()) as u16;
+    let [
+        transcript_area,
+        input_area,
+        checklist_area,
+        panel_area,
+        status_area,
+    ] = Layout::vertical([
         Constraint::Min(1),
         Constraint::Length(input_rows + 1),
+        Constraint::Length(checklist_rows),
         Constraint::Length(panel_rows),
         Constraint::Length(1),
     ])
@@ -67,6 +77,9 @@ pub fn draw_at(frame: &mut Frame<'_>, app: &mut App, now: Instant) {
     draw_input(frame, app, input_area, now);
     if app.modal.is_none() {
         draw_menu(frame, app, transcript_area, input_area);
+    }
+    if let Some(list) = app.checklist_panel() {
+        draw_checklist(frame, list, checklist_area);
     }
     if !panel.is_empty() {
         draw_panel(frame, app, &panel, panel_area);
@@ -156,6 +169,34 @@ fn draw_panel(frame: &mut Frame<'_>, app: &App, panel: &[BlockId], area: Rect) {
             Style::default().add_modifier(Modifier::DIM),
         ));
     }
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// The task checklist under the input: `… and N more` for the older
+/// items it leaves out, then one line per item, newest-updated last, its
+/// box saying pending (`☐`), in progress (`◐`) or done (`☑`).
+fn draw_checklist(frame: &mut Frame<'_>, list: &Checklist, area: Rect) {
+    let w = usize::from(area.width).max(4);
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let (items, more) = list.window();
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(items.len() + 1);
+    if more > 0 {
+        lines.push(Line::styled(format!("  … and {more} more"), dim));
+    }
+    lines.extend(items.iter().map(|item| {
+        let text = truncate_to_width(
+            &format!("  {} {}", item.state.glyph(), sanitize(&item.text)),
+            w,
+        );
+        let style = match item.state {
+            ItemState::Pending => Style::default(),
+            ItemState::InProgress => Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+            ItemState::Done => dim,
+        };
+        Line::styled(text, style)
+    }));
     frame.render_widget(Paragraph::new(lines), area);
 }
 
@@ -261,7 +302,13 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect, now: Instant) {
     } else if app.input.is_empty() && app.input.has_stash() {
         format!(" Ctrl-S restores the stashed prompt{helpers} ")
     } else if helpers.is_empty() && app.input.is_empty() && !app.is_running() {
-        " ? keys · Shift+Tab mode ".into()
+        if app.checklist().is_empty() {
+            " ? keys · Shift+Tab mode ".into()
+        } else if app.checklist_panel().is_some() {
+            " ? keys · Shift+Tab mode · Ctrl+T hides the tasks ".into()
+        } else {
+            " ? keys · Shift+Tab mode · Ctrl+T shows the tasks ".into()
+        }
     } else if helpers.is_empty() {
         String::new()
     } else {

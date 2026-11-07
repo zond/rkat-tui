@@ -502,6 +502,7 @@ are never written to a file.
 | `endpoints.<name>.dialect`, `.base_url`, `.api_key_env`, `.priority` (an inline `.api_key` is refused at start-up) | `--endpoint-def <name>=<dialect>=<url>[,key_env=VAR]` | |
 | `helpers.max_depth` (levels of helpers; a project file may only lower it) | `--set helpers.max_depth=N` | `1` |
 | `ui.helpers` (`"folded"`/`"expanded"`: how helper headers start) | `--set ui.helpers=expanded` | `"folded"` |
+| `ui.checklist` (`"hidden"`/`"shown"`: the task checklist under the input; Ctrl-T writes it) | `--set ui.checklist=shown` | `"hidden"` |
 | `shell.user_timeout_secs` (how long a `!` command may run; a project file may only lower it) | `--set shell.user_timeout_secs=N` | `120` |
 | `pricing."<model id>".input`, `.output`, `.cached_input`, `.cache_write` (USD per 1M tokens) | `--set 'pricing."<id>".input=15'` | fetched prices |
 
@@ -792,6 +793,7 @@ and saves it to the prompt history (↑ brings it back); ↑ on an empty editor 
 messages back, else recalls prompt history (Ctrl-P/Ctrl-N are ↑/↓); Ctrl-R searches history (workspace,
 then global); Ctrl-X Ctrl-S interrupts and sends the input; Ctrl-O shows or
 hides detail (the last reasoning block and the last tool output together);
+Ctrl-T shows or hides the [task checklist](#task-checklist);
 Ctrl+↑/↓ select a helper in the panel under the
 input and Enter on an empty input opens its full view (Esc returns);
 PgUp/PgDn and Shift+↑/↓ scroll; Home/End jump when the editor is empty;
@@ -839,6 +841,20 @@ terminal supports each. Inside
 tmux it is passed through, and tmux needs `set -g set-clipboard on`. The
 notice says `copied N chars (terminal must support OSC 52)` once the
 sequence is written, or `copy failed: <error>` when it could not be.
+
+### Task checklist
+
+The agent keeps a task list with its `task_create`/`task_update` tools
+(they need no approval). Ctrl-T shows it under the input, before the helper
+panel: one line per task, `☐` pending, `◐` in progress (bold), `☑` done
+(dim), the most recently updated last. Five lines at most: with more tasks,
+the four updated last and `… and N more`. Nothing shows while the session
+has no tasks; the idle editor title says `Ctrl+T shows the tasks` once it
+has some. The list is the engine's own task store (the realm's `tasks.db`,
+scoped to the session), read when a session opens and after each task call,
+so a resumed session gets its list back and a new one starts empty. Ctrl-T
+saves the choice as `[ui] checklist = "shown"` (or `"hidden"`, the default)
+in the realm `tui.toml`.
 
 ## Where things live
 

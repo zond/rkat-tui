@@ -1002,3 +1002,123 @@ fn the_at_menu_renders_matching_paths_above_the_input() {
     assert!(buffer[(59, 6)].modifier.contains(Modifier::REVERSED));
     assert_eq!(buffer[(2, 7)].fg, Color::Cyan);
 }
+
+/// Three tasks: one done, one in progress, one pending (newest-updated last).
+fn three_tasks() -> Msg {
+    use rkat_tui::ui::{Checklist, ChecklistItem, ItemState};
+    let item = |text: &str, state| ChecklistItem {
+        text: text.into(),
+        state,
+    };
+    Msg::Checklist(Checklist::from_items(vec![
+        item("read the parser", ItemState::Done),
+        item("write the fix", ItemState::InProgress),
+        item("run the tests", ItemState::Pending),
+    ]))
+}
+
+fn ctrl_t() -> Msg {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    Msg::Key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL))
+}
+
+#[test]
+fn ctrl_t_with_no_tasks_draws_nothing() {
+    let mut app = App::new(StatusInfo::default());
+    let before = render(&mut app, Instant::now());
+    app.update(ctrl_t());
+    let after = render(&mut app, Instant::now());
+    assert_eq!(before, after);
+    assert!(
+        after[H as usize - 3].starts_with(" ? keys · Shift+Tab mode ──"),
+        "{after:?}"
+    );
+}
+
+#[test]
+fn the_checklist_renders_under_the_input() {
+    let mut app = App::new(StatusInfo::default());
+    app.update(three_tasks());
+    // Hidden by default: the idle hint offers it.
+    let hidden = render(&mut app, Instant::now());
+    assert!(
+        hidden[H as usize - 3].starts_with(" ? keys · Shift+Tab mode · Ctrl+T shows the tasks"),
+        "{hidden:?}"
+    );
+    app.update(ctrl_t());
+    let mut terminal = Terminal::new(TestBackend::new(W, H)).unwrap();
+    terminal
+        .draw(|f| draw_at(f, &mut app, Instant::now()))
+        .unwrap();
+    let buffer = terminal.backend().buffer().clone();
+    let shown = rows(&buffer);
+    // Input border and line (rows 6-7), three items (8-10), the status bar.
+    assert!(
+        shown[6].starts_with(" ? keys · Shift+Tab mode · Ctrl+T hides the tasks"),
+        "{shown:?}"
+    );
+    assert_eq!(shown[7], "›");
+    assert_eq!(
+        &shown[8..11],
+        [
+            "  ☑ read the parser",
+            "  ◐ write the fix",
+            "  ☐ run the tests"
+        ]
+    );
+    assert!(buffer[(4, 8)].modifier.contains(Modifier::DIM));
+    assert!(buffer[(4, 9)].modifier.contains(Modifier::BOLD));
+    assert_eq!(buffer[(4, 9)].fg, Color::Yellow);
+    // Ctrl+T again hides it.
+    app.update(ctrl_t());
+    assert_eq!(render(&mut app, Instant::now()), hidden);
+}
+
+#[test]
+fn more_than_five_tasks_show_the_newest_and_a_count() {
+    use rkat_tui::ui::{Checklist, ChecklistItem, ItemState};
+    let mut app = App::new(StatusInfo::default());
+    app.update(ctrl_t());
+    app.update(Msg::Checklist(Checklist::from_items(
+        (1..=7)
+            .map(|i| ChecklistItem {
+                text: format!("step {i}"),
+                state: ItemState::Pending,
+            })
+            .collect(),
+    )));
+    let shown = render(&mut app, Instant::now());
+    assert_eq!(
+        &shown[6..11],
+        [
+            "  … and 3 more",
+            "  ☐ step 4",
+            "  ☐ step 5",
+            "  ☐ step 6",
+            "  ☐ step 7"
+        ]
+    );
+}
+
+#[test]
+fn the_checklist_comes_before_the_helper_panel() {
+    let mut app = helper_app();
+    app.update(three_tasks());
+    app.update(ctrl_t());
+    let rows = render_sized(&mut app, Instant::now(), 70);
+    // Transcript (0-4), the input (5-6), three items (7-9), the helper
+    // line (10), the status bar.
+    assert_eq!(rows[6], "›");
+    assert_eq!(
+        &rows[7..10],
+        [
+            "  ☑ read the parser",
+            "  ◐ write the fix",
+            "  ☐ run the tests"
+        ]
+    );
+    assert_eq!(
+        rows[10],
+        "  [scout · opus] ⠋ running · 2 tool calls · grep \"fn resolve\""
+    );
+}

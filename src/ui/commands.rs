@@ -607,6 +607,9 @@ Keys:
                                  undelivered messages are saved); with text, delete forward
   Ctrl-O                         show or hide detail: the last reasoning block and the
                                  output of the last tool call (a click toggles one tool)
+  Ctrl-T                         show or hide the task checklist under the input (the agent's
+                                 task_create/task_update list: ☐ pending, ◐ in progress, ☑ done;
+                                 nothing shows while there are no tasks; saved as [ui] checklist)
   Ctrl+Up/Down                   select a helper in the panel under the input (newest first);
                                  Enter on an empty input opens its full view (Esc returns,
                                  PgUp/PgDn scroll it); a click unfolds a header in the transcript
@@ -1068,6 +1071,7 @@ mod tests {
             "Esc",
             "Ctrl-D",
             "Ctrl-O",
+            "Ctrl-T",
             "Ctrl-R",
             "Ctrl-X Ctrl-S",
             "Ctrl-G",

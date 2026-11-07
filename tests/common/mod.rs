@@ -65,6 +65,9 @@ pub enum Step {
     Hang,
     /// The inner step, once the gate is notified.
     Gated(Arc<Notify>, Box<Step>),
+    /// The step this function makes of the request's messages (e.g. a call
+    /// naming an id an earlier tool result returned).
+    Dynamic(Arc<dyn Fn(&[Message]) -> Step + Send + Sync>),
 }
 
 impl Step {
@@ -128,6 +131,7 @@ impl Step {
             Self::StreamError => vec![Err(LlmError::ServerOverloaded)],
             Self::Hang => Vec::new(),
             Self::Gated(_, inner) => inner.events(model),
+            Self::Dynamic(_) => panic!("a dynamic step is resolved before it streams"),
         }
     }
 }
@@ -238,6 +242,10 @@ impl LlmClient for ScriptedLlmClient {
             .get(index)
             .cloned()
             .unwrap_or(Step::Text("script exhausted"));
+        let step = match step {
+            Step::Dynamic(make) => make(&request.messages),
+            other => other,
+        };
         let (gate, step) = step.into_parts();
         let hang = matches!(step, Step::Hang);
         let events = step.events(&request.model);

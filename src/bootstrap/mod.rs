@@ -181,6 +181,9 @@ pub struct Runtime {
     pub project_inputs: project_trust::ProjectInputs,
     /// Whether sessions get native semantic memory (`memory_search`).
     pub memory: bool,
+    /// The engine's task store (see [`tasks_db`]), which the Ctrl+T
+    /// checklist reads.
+    pub tasks_db: PathBuf,
     /// The `tui.toml` `[ui]` settings.
     pub ui: crate::approval::rules::UiSettings,
     /// How deep helpers may nest (`[helpers] max_depth`; 0 refuses every
@@ -427,6 +430,7 @@ pub async fn bootstrap_with(
         .into_iter()
         .collect();
     let memory = memory_probe(&store_path, manifest.backend, &mut notices);
+    let tasks_db = tasks_db(&store_path);
     let factory = build_factory(
         &scope,
         store_path,
@@ -536,6 +540,7 @@ pub async fn bootstrap_with(
         mcp_servers: mcp.servers,
         project_inputs,
         memory,
+        tasks_db,
         ui,
         helper_max_depth: helper_depth,
         user_shell_timeout,
@@ -546,6 +551,15 @@ pub async fn bootstrap_with(
 /// The canonical home directory, if any.
 fn dirs_home() -> Option<PathBuf> {
     ::dirs::home_dir().map(|home| std::fs::canonicalize(&home).unwrap_or(home))
+}
+
+/// The SQLite file the factory keeps every session's tasks in (the task
+/// tools' [`meerkat_tools::SqliteTaskStore`], scoped by session id).
+/// Upstream ask: the facade names this path only inside its dispatcher
+/// build (`store_path.join("tasks.db")`), so it is mirrored here.
+#[must_use]
+pub fn tasks_db(store_path: &std::path::Path) -> PathBuf {
+    store_path.join("tasks.db")
 }
 
 /// Directory of the realm's semantic-memory index (where the factory opens

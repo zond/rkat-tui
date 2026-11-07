@@ -10,6 +10,13 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Added
 
+- Ctrl+T shows or hides a task checklist under the input (before the
+  helper panel): the session's tasks from the engine's task store
+  (`task_create`/`task_update`), `☐` pending, `◐` in progress, `☑` done,
+  newest-updated last, at most five lines (`… and N more`). A resumed
+  session gets its list back; the choice is saved as `[ui] checklist` in
+  the realm `tui.toml` (default hidden), and the idle editor title names
+  Ctrl+T while there are tasks.
 - `meerkat-tui`: a new crate whose `rkat-tui` binary is an interactive
   terminal coding harness. Its sessions run on the runtime-backed session
   path (durable Queue/Steer input while the agent works, interrupt, resume
