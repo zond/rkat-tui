@@ -1250,3 +1250,56 @@ covers the HELP_TEXT edits).
 - Docs: HELP_TEXT Keys gains the `/ (one-line input)` row; README "Keys and commands"; CHANGELOG.
 - Commands: `cargo fmt --all` exit 0; `cargo clippy --all-targets --all-features -- -D warnings` exit 0;
   `cargo nextest run --all-features` 793 passed, 6 skipped, exit 0.
+
+### 2. `@` file mentions with path completion
+
+- Before: `@` was plain text; the agent had to read a file the user named itself.
+- After: `src/mentions.rs` (new module). `workspace_paths(root)` walks the workspace with
+  `tools::glob::mention_walker` (the `glob` tool's walker settings: `.gitignore`/excludes honoured, hidden files
+  included, `.git` skipped, secrets not hidden; it also never enters a path matching `paths::SEALED_PATTERNS`,
+  exposed as `paths::is_sealed_relative`, nor one of the root's sealed roots), in parallel, at most 100 000 paths,
+  directories with `/`, sorted shallow first. `match_paths` returns up to 8: path prefix first, then file-name
+  substring (case-insensitive), leaving out the directory the fragment already names. `ui/complete.rs` gains
+  `CompletionKind::Path`: `word_at` finds a word that starts with `@` and ends at the cursor (any line; the char
+  after the cursor must be blank or the line end; `a@b` is not one); its rows are the matches, a directory row
+  `keep_open`. `App::with_workspace` (the runner passes `scope.project_root`) enables it; the index is built when a
+  path word appears and dropped when it goes, so each menu opening rebuilds it. Tab/Enter insert the highlighted
+  path: a file with a space (menu closes), a directory without one (the menu lists its contents); Enter on a fully
+  typed file name sends.
+  On send, `mentions::scan_mentions` finds the `@` words that resolve (through `ProjectRoot::resolve`, so `..` and
+  symlinks cannot leave the workspace) to an existing file, directory or sealed path, once each (trailing prose
+  punctuation is dropped when the word with it names nothing). `App::note_mentions` puts a dim
+  `+ N file(s) (paths)` notice under the user block (also for a Ctrl-X Ctrl-S send-next prompt) and a warning
+  `@<path> is sealed: not attached` per sealed one; the user block and the queued/held texts stay as typed. The
+  runner expands where the text goes to the session (`Runner::start_turn` before the retry check, so a retried
+  prompt compares the expanded text the session holds, and `Runner::steer`) with `mentions::expand_mentions`:
+  after the prompt, per file `<file path="rel">` + content + `</file>` (UTF-8 only; at most 64 KiB, cut on a char
+  boundary with a `[truncated]` line; 256 KiB for all blocks together), a binary/non-UTF-8 file or one past the
+  budget as `<file path="…" note="not attached: …" />`, per directory `<directory path="rel/">` with its entries
+  one per line (gitignore honoured, sealed skipped, at most 200, then `[… and N more]`). Sealed paths are never
+  opened.
+- Index time (`mentions::tests::index_build_time`, ignored, run with
+  `cargo nextest run --all-features --run-ignored all --no-capture -E 'test(index_build_time)'`): this repository,
+  139 paths in 3.8–5.4 ms; a synthetic 20 200-path tree (200 directories × 100 files) 105 ms with the serial walk,
+  63 ms with the parallel walk, in the debug test build; a match over it 0.8 ms. Removing the sealed-path filter
+  changed nothing (65 ms), so the walk itself dominates. The same parallel walk in a standalone release build of
+  the `ignore` crate on the same tree shape: 10–13 ms over three runs. So the ~50 ms budget holds in release; the
+  debug build is about 25% over it.
+- Tests: `mentions::tests::{the_index_honours_gitignore_and_skips_sealed_paths (a gitignored target/, .git,
+  .rkat), matching_is_path_prefix_then_name_substring, scanning_finds_words_that_start_with_at_and_name_something
+  (punctuation, a@b, @nobody, a sealed path, a repeat, ../outside), expansion_attaches_files_listings_and_notes
+  (a file, a directory, a binary file, a sealed path, a 128 KiB two-byte-char file cut to 64 KiB),
+  the_total_budget_turns_later_files_into_notes, a_long_directory_listing_is_capped}`;
+  `ui::complete::tests::{a_path_word_starts_with_at_and_ends_at_the_cursor,
+  path_candidates_keep_the_menu_open_for_directories}`;
+  `ui::tests::the_at_menu_completes_paths_and_stays_open_for_directories` (Tab into a directory, Enter on a file,
+  substring, Enter sending a typed file, no sealed rows, no menu for `a@READ`) and
+  `a_prompt_with_mentions_notes_what_it_attaches_and_what_is_sealed` (the StartTurn text as typed, the
+  `+ 2 files (src/main.rs, src/ui/)` and sealed notices, singular, none for `a@b`);
+  `render_snapshot::the_at_menu_renders_matching_paths_above_the_input`; end to end
+  `integrator::an_at_mention_attaches_the_file_the_session_receives` (the scripted model's request and the stored
+  session both hold the prompt plus the `<file path="notes.txt">` block).
+- Docs: HELP_TEXT Keys gains the `@ (ending a word)` row; README "Keys and commands"; CHANGELOG; the module list in
+  `lib.rs`.
+- Commands: `cargo fmt --all` exit 0; `cargo clippy --all-targets --all-features -- -D warnings` exit 0;
+  `cargo nextest run --all-features` 805 passed, 7 skipped (the ignored timing test is the new skip), exit 0.

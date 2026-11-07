@@ -600,6 +600,10 @@ Keys:
   / (one-line input)             a menu of the matching commands opens above the input:
                                  ↑/↓ choose, Tab completes, Enter completes a partial name
                                  (a full one sends), Esc closes it
+  @ (ending a word)              a menu of matching workspace paths (.gitignore honoured, .git
+                                 and .rkat left out): Tab or Enter inserts one (a directory
+                                 lists its contents next); on send each @file is attached
+                                 (64 KiB each, 256 KiB in all) and @dir/ as a listing
   Home/End                       scroll to top/bottom when the input is empty (Ctrl+Home/End always)
 Approval prompt:
   1, y                           yes, allow once
@@ -982,6 +986,7 @@ mod tests {
             "Ctrl+Up/Down",
             "? (empty input)",
             "Tab completes",
+            "@ (ending a word)",
         ] {
             assert!(help_text().contains(needle), "help is missing {needle}");
         }

@@ -133,6 +133,7 @@ pub async fn run(args: Args) -> Result<(), TuiError> {
         .with_compaction_policy(template.policy)
         .with_helper_view(runtime.ui.helpers)
         .with_bell(runtime.ui.bell)
+        .with_workspace(runtime.scope.project_root.clone())
         .with_history(history.entries().to_vec())
         .with_global_history(
             global_history
@@ -817,6 +818,8 @@ impl Runner {
 
     /// [`Effect::StartTurn`]: admit a `Queue` input.
     async fn start_turn(&mut self, text: &str) {
+        let expanded = self.expand_mentions(text);
+        let text = expanded.as_str();
         let submitted = self.retry_input(text).await.unwrap_or(text);
         match self.session.start_turn(submitted).await {
             Ok(admission) => self.track(
@@ -847,6 +850,7 @@ impl Runner {
             });
             return;
         }
+        let text = self.expand_mentions(&text);
         match self.session.steer(&text).await {
             Ok(admission) => {
                 self.track(
@@ -863,6 +867,15 @@ impl Runner {
                 result: Err(SteerFailure::Rejected(err.to_string())),
             }),
         }
+    }
+
+    /// The prompt as the session receives it: the files and directories its
+    /// `@` mentions name attached ([`crate::mentions::expand_mentions`]).
+    fn expand_mentions(&self, text: &str) -> String {
+        if !text.contains('@') {
+            return text.to_string();
+        }
+        crate::mentions::expand_mentions(text, &self.runtime.scope.project_root).text
     }
 
     /// Add an admitted input to the turn and wait for its terminal.

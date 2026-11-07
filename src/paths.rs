@@ -115,6 +115,13 @@ fn sealed_set() -> &'static ProtectedSet {
     SET.get_or_init(|| ProtectedSet::build(SEALED_PATTERNS))
 }
 
+/// Whether `relative` (a path relative to the project root) matches
+/// [`SEALED_PATTERNS`].
+#[must_use]
+pub fn is_sealed_relative(relative: &Path) -> bool {
+    sealed_set().is_match(relative)
+}
+
 /// Whether `name` is an environment file that typically holds secrets:
 /// `.env`, `.env.<anything>` or `.envrc`. The approval classifier's
 /// read-only tools never read such files, nor anything below a directory of

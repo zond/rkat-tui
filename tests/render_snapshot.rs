@@ -968,3 +968,34 @@ fn the_slash_menu_renders_above_the_input_with_the_highlight() {
     );
     assert!(!closed[9].contains("Tab completes"), "{:?}", closed[9]);
 }
+
+#[test]
+fn the_at_menu_renders_matching_paths_above_the_input() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent};
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("src/ui")).unwrap();
+    std::fs::write(dir.path().join("src/main.rs"), "").unwrap();
+    std::fs::write(dir.path().join("src/ui/render.rs"), "").unwrap();
+    std::fs::write(dir.path().join("README.md"), "").unwrap();
+    let root = rkat_tui::paths::ProjectRoot::new(dir.path()).unwrap();
+    let mut app = App::new(StatusInfo::default()).with_workspace(root);
+    for c in "read @src/".chars() {
+        app.update(Msg::Key(KeyEvent::from(KeyCode::Char(c))));
+    }
+    let buffer = render_buffer(&mut app, W, H);
+    let drawn = rows(&buffer);
+    assert_eq!(
+        drawn[5..11],
+        [
+            "",
+            " src/main.rs",
+            " src/ui/",
+            " src/ui/render.rs",
+            " Tab completes · ↑/↓ choose · Esc closes the menu ──────────",
+            "› read @src/",
+        ]
+    );
+    assert!(buffer[(2, 6)].modifier.contains(Modifier::REVERSED));
+    assert!(buffer[(59, 6)].modifier.contains(Modifier::REVERSED));
+    assert_eq!(buffer[(2, 7)].fg, Color::Cyan);
+}

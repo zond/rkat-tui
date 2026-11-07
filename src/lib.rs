@@ -31,6 +31,7 @@
 //! - `mobs` — helpers (sub-agents) as mob members: approval gate, model binding, observation
 //! - `session` — session handle: create, resume, turns, steer, interrupt
 //! - `runner` — the event loop joining the session and the UI
+//! - `mentions` — `@path` mentions: the workspace path index and the attachment of mentioned files
 //! - `ui` — ratatui application
 
 /// Declare the internal modules: crate-private, public with the
@@ -50,8 +51,8 @@ macro_rules! internal_modules {
 }
 
 internal_modules!(
-    approval, bootstrap, cli, delivery, endpoints, error, fork, http, memory, mobs, models,
-    overlay, paths, pricing, runner, session, tools, ui,
+    approval, bootstrap, cli, delivery, endpoints, error, fork, http, memory, mentions, mobs,
+    models, overlay, paths, pricing, runner, session, tools, ui,
 );
 
 /// The headless runner the integration tests drive (see

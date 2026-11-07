@@ -23,6 +23,7 @@ pub mod transcript;
 
 use crate::delivery::{PendingId, SteerFailure};
 use crate::models::ModelGroup;
+use crate::paths::ProjectRoot;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -816,6 +817,12 @@ pub struct App {
     /// The word Esc closed the menu for: it stays closed until the word
     /// changes.
     menu_dismissed: Option<complete::Word>,
+    /// The workspace `@` mentions complete and resolve against (`None`:
+    /// no path menu, no mention notices).
+    workspace: Option<ProjectRoot>,
+    /// The workspace paths, built when a path menu opens and dropped when
+    /// it closes.
+    path_index: Option<Vec<crate::mentions::PathEntry>>,
     dirty: bool,
 }
 
@@ -863,8 +870,18 @@ impl App {
             ring: false,
             menu: None,
             menu_dismissed: None,
+            workspace: None,
+            path_index: None,
             dirty: true,
         }
+    }
+
+    /// The workspace `@` mentions complete against (the path menu) and
+    /// resolve in (the attachment notices).
+    #[must_use]
+    pub fn with_workspace(mut self, root: ProjectRoot) -> Self {
+        self.workspace = Some(root);
+        self
     }
 
     /// Whether to ring the bell when a turn ends or an approval prompt opens
@@ -1722,6 +1739,12 @@ impl App {
             InputMode::Normal => complete::word_at(self.input.lines(), self.input.cursor()),
             InputMode::Search(_) => None,
         };
+        let word = word.filter(|word| {
+            word.kind != complete::CompletionKind::Path || self.workspace.is_some()
+        });
+        if word.as_ref().is_none_or(|word| word.kind != complete::CompletionKind::Path) {
+            self.path_index = None;
+        }
         let Some(word) = word else {
             self.menu = None;
             self.menu_dismissed = None;
@@ -1735,7 +1758,13 @@ impl App {
         if self.menu.as_ref().is_some_and(|menu| menu.word == word) {
             return;
         }
-        let items = complete::candidates(&word);
+        let paths: &[crate::mentions::PathEntry] = match (&word.kind, &self.workspace) {
+            (complete::CompletionKind::Path, Some(root)) => self
+                .path_index
+                .get_or_insert_with(|| crate::mentions::workspace_paths(root)),
+            _ => &[],
+        };
+        let items = complete::candidates(&word, paths);
         self.menu = complete::Menu::open(word, items);
     }
 
@@ -1774,6 +1803,12 @@ impl App {
             return;
         };
         let word = &menu.word;
+        if item.keep_open {
+            // A directory: the menu goes on with what is in it.
+            self.input
+                .replace_in_line(word.row, word.start, word.end, &item.insert);
+            return;
+        }
         let spaced = self
             .input
             .lines()
@@ -2109,12 +2144,43 @@ impl App {
                     Some(rest) => format!("/{rest}"),
                     None => commands::unescape_hash(&raw).unwrap_or(raw),
                 };
+                let noted = prompt.clone();
                 if self.running {
                     self.enqueue(prompt, fx);
                 } else {
                     self.start_turn(prompt, now, fx);
                 }
+                self.note_mentions(&noted);
             }
+        }
+    }
+
+    /// Under a prompt's block: a dim `+ N file(s)` line naming what its `@`
+    /// mentions attach (the runner expands them as it sends the prompt),
+    /// and a warning per sealed path it mentions, which is never read.
+    fn note_mentions(&mut self, prompt: &str) {
+        let Some(root) = &self.workspace else {
+            return;
+        };
+        if !prompt.contains('@') {
+            return;
+        }
+        let (sealed, attached): (Vec<_>, Vec<_>) = crate::mentions::scan_mentions(prompt, root)
+            .into_iter()
+            .partition(|m| m.kind == crate::mentions::MentionKind::Sealed);
+        if !attached.is_empty() {
+            let names: Vec<&str> = attached.iter().map(|m| m.path.as_str()).collect();
+            let plural = if attached.len() == 1 { "" } else { "s" };
+            self.transcript.push_notice(
+                NoticeLevel::Info,
+                format!("+ {} file{plural} ({})", attached.len(), names.join(", ")),
+            );
+        }
+        for mention in sealed {
+            self.transcript.push_notice(
+                NoticeLevel::Warn,
+                format!("@{} is sealed: not attached", mention.path),
+            );
         }
     }
 
@@ -2549,7 +2615,8 @@ impl App {
         if let Some(next) = self.send_next.take() {
             let mut texts = self.unsent_as_user(unsent);
             texts.push(next.clone());
-            self.transcript.push(Block::User { text: next });
+            self.transcript.push(Block::User { text: next.clone() });
+            self.note_mentions(&next);
             self.begin_turn(texts.join("\n\n"), false, now, fx);
         } else if !succeeded && !interrupted {
             if !unsent.is_empty() {
@@ -4130,6 +4197,92 @@ mod tests {
         assert_eq!(app.input.text(), "/model gpt-5.5");
         assert_eq!(app.input.cursor(), (0, 7));
         assert!(app.menu().is_none());
+    }
+
+    fn mention_app() -> (tempfile::TempDir, App) {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        std::fs::create_dir_all(p.join("src/ui")).unwrap();
+        std::fs::create_dir_all(p.join(".rkat")).unwrap();
+        std::fs::write(p.join("src/main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(p.join("src/ui/render.rs"), "").unwrap();
+        std::fs::write(p.join("README.md"), "# r\n").unwrap();
+        std::fs::write(p.join(".rkat/config.toml"), "").unwrap();
+        let app = App::new(StatusInfo::default()).with_workspace(ProjectRoot::new(p).unwrap());
+        (dir, app)
+    }
+
+    #[test]
+    fn the_at_menu_completes_paths_and_stays_open_for_directories() {
+        let (_dir, mut app) = mention_app();
+        type_str(&mut app, "look at @");
+        assert_eq!(menu_rows(&app), ["@README.md", "@src/", "@src/main.rs", "@src/ui/", "@src/ui/render.rs"]);
+        type_str(&mut app, "s");
+        assert_eq!(menu_rows(&app), ["@src/", "@src/main.rs", "@src/ui/", "@src/ui/render.rs"]);
+        // A directory completes without a space and the menu lists its
+        // contents.
+        app.update(key(KeyCode::Tab));
+        assert_eq!(app.input.text(), "look at @src/");
+        assert_eq!(menu_rows(&app), ["@src/main.rs", "@src/ui/", "@src/ui/render.rs"]);
+        // Enter completes the highlighted file and a space; the menu closes.
+        app.update(key(KeyCode::Enter));
+        assert_eq!(app.input.text(), "look at @src/main.rs ");
+        assert!(app.menu().is_none());
+        assert!(app.take_submitted().is_empty());
+        // A name fragment matches by substring; Enter on a fully typed file
+        // sends.
+        app.input.clear();
+        type_str(&mut app, "@rend");
+        assert_eq!(menu_rows(&app), ["@src/ui/render.rs"]);
+        app.input.clear();
+        type_str(&mut app, "see @README.md");
+        assert_eq!(menu_rows(&app), ["@README.md"]);
+        assert_eq!(
+            app.update(key(KeyCode::Enter)),
+            vec![Effect::StartTurn("see @README.md".into())]
+        );
+        // Sealed paths are not offered; e-mail addresses open nothing.
+        type_str(&mut app, "@.rk");
+        assert!(app.menu().is_none());
+        app.input.clear();
+        type_str(&mut app, "mail a@READ");
+        assert!(app.menu().is_none());
+    }
+
+    #[test]
+    fn a_prompt_with_mentions_notes_what_it_attaches_and_what_is_sealed() {
+        let (_dir, mut app) = mention_app();
+        let fx = submit(&mut app, "fix @src/main.rs and @src/ui, ignore @.rkat/config.toml and @bob");
+        // The session gets the text as typed; the runner expands it.
+        assert_eq!(
+            fx,
+            vec![Effect::StartTurn(
+                "fix @src/main.rs and @src/ui, ignore @.rkat/config.toml and @bob".into()
+            )]
+        );
+        let tail: Vec<Block> = app.transcript.blocks().iter().rev().take(3).rev().cloned().collect();
+        assert_eq!(
+            tail,
+            [
+                Block::User {
+                    text: "fix @src/main.rs and @src/ui, ignore @.rkat/config.toml and @bob".into()
+                },
+                Block::Notice {
+                    level: NoticeLevel::Info,
+                    text: "+ 2 files (src/main.rs, src/ui/)".into()
+                },
+                Block::Notice {
+                    level: NoticeLevel::Warn,
+                    text: "@.rkat/config.toml is sealed: not attached".into()
+                },
+            ]
+        );
+        // One file: singular. No mention: no line.
+        let before = app.transcript.len();
+        submit(&mut app, "and @README.md");
+        assert_eq!(last_notice(&app), Some((NoticeLevel::Info, "+ 1 file (README.md)".into())));
+        submit(&mut app, "thanks a@b");
+        assert_eq!(app.transcript.len(), before + 3);
     }
 
     #[test]

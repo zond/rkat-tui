@@ -24,6 +24,7 @@ mod read_only;
 mod write;
 
 pub use diff::FileDiff;
+pub(crate) use glob::mention_walker;
 pub use grep::OutputMode;
 pub use read_only::{READ_ONLY_TOOL_NAMES, ReadOnlyProjectTools};
 

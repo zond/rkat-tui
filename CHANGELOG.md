@@ -152,6 +152,13 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
     ↑/↓ choose, Tab completes, Enter completes a partial name and sends a
     complete one, Esc closes it for the word. The parser, `/help`'s command
     list and the menu share one `CommandSpec` table.
+  - `@` at the start of a word opens the same menu on workspace paths
+    (`.gitignore` honoured, sealed paths left out; a directory keeps the
+    menu open on its contents). On send, each `@file` is attached after the
+    prompt as a `<file path="…">` block (UTF-8, 64 KiB per file, 256 KiB in
+    all; binary or over-budget files as a one-line note) and each `@dir` as
+    a listing; the transcript keeps the typed text with a `+ N files` line,
+    and sealed paths are never read.
 
 ### Changed
 

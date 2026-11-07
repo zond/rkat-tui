@@ -57,6 +57,24 @@ async fn creates_a_session_and_completes_a_turn() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_at_mention_attaches_the_file_the_session_receives() {
+    let ws = Workspace::new();
+    std::fs::write(ws.root.join("notes.txt"), "the build uses make\n").unwrap();
+    let llm = ScriptedLlmClient::new(vec![Step::Text("read it")]);
+    let mut rig = Rig::start(&ws.root, &llm, Start::New).await;
+    rig.send(Effect::StartTurn("what does @notes.txt say?".into()));
+    rig.turn_finished().await;
+    let expected = vec![
+        "what does @notes.txt say?\n\n<file path=\"notes.txt\">\nthe build uses make\n</file>"
+            .to_string(),
+    ];
+    assert_eq!(user_texts(&llm.requests()[0]), expected);
+    let session = rig.session(&rig.first_session).await;
+    assert_eq!(user_texts(session.messages()), expected);
+    rig.quit().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_prompt_queued_behind_a_running_turn_runs_next() {
     let ws = Workspace::new();
     let gate = Arc::new(Notify::new());

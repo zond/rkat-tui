@@ -1,5 +1,6 @@
 //! The completion menu above the input: `/` commands while the first word of
-//! a one-line input is a slash command.
+//! a one-line input is a slash command, `@` workspace paths while the cursor
+//! ends a word that starts with `@`.
 //!
 //! The menu is a pure function of the input text and cursor
 //! ([`word_at`] finds the word it completes, [`candidates`] what it offers);
@@ -7,6 +8,7 @@
 //! it for.
 
 use super::commands;
+use crate::mentions::{self, PathEntry};
 
 /// Rows the menu shows at most (a longer list scrolls with the highlight).
 pub const MAX_ROWS: usize = 8;
@@ -16,6 +18,8 @@ pub const MAX_ROWS: usize = 8;
 pub enum CompletionKind {
     /// A slash command (the first word of a one-line input).
     Command,
+    /// A workspace path after `@`.
+    Path,
 }
 
 /// The word under the cursor a menu completes.
@@ -25,23 +29,26 @@ pub struct Word {
     pub kind: CompletionKind,
     /// Input line.
     pub row: usize,
-    /// Char column of its first char (the `/`).
+    /// Char column of its first char (the `/` or `@`).
     pub start: usize,
     /// Char column just past it.
     pub end: usize,
-    /// The word without its leading `/`.
+    /// The word without its leading `/` or `@`.
     pub text: String,
 }
 
 /// One menu row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {
-    /// The text that replaces the word (its `/` included).
+    /// The text that replaces the word (its `/` or `@` included).
     pub insert: String,
     /// The row's left part (`/name usage`).
     pub label: String,
     /// The row's dim right part (the summary).
     pub detail: String,
+    /// Completing it keeps the menu open, for what is below it (a
+    /// directory: no space follows it).
+    pub keep_open: bool,
 }
 
 /// An open menu.
@@ -82,12 +89,16 @@ impl Menu {
         self.items.get(self.selected)
     }
 
-    /// Whether the typed word already names a command exactly (Enter then
-    /// sends instead of completing).
+    /// Whether the typed word is complete already, so Enter sends instead
+    /// of completing: it names a command exactly, or it is the highlighted
+    /// file's path.
     #[must_use]
     pub fn is_complete(&self) -> bool {
         match self.word.kind {
             CompletionKind::Command => commands::spec(&self.word.text).is_some(),
+            CompletionKind::Path => self.current().is_some_and(|item| {
+                !item.keep_open && item.insert.strip_prefix('@') == Some(self.word.text.as_str())
+            }),
         }
     }
 
@@ -106,9 +117,33 @@ impl Menu {
 
 /// The word under the cursor that a menu would complete: the first word of
 /// a one-line input that starts with `/` (not `//`), while the cursor is in
-/// it.
+/// it; else a word that starts with `@` and ends at the cursor (anywhere in
+/// the input; `a@b` is not one).
 #[must_use]
 pub fn word_at(lines: &[String], cursor: (usize, usize)) -> Option<Word> {
+    command_word(lines, cursor).or_else(|| mention_word(lines, cursor))
+}
+
+fn mention_word(lines: &[String], (row, col): (usize, usize)) -> Option<Word> {
+    let chars: Vec<char> = lines.get(row)?.chars().collect();
+    if chars.get(col).is_some_and(|c| !c.is_whitespace()) {
+        return None;
+    }
+    let before = chars.get(..col)?;
+    let start = before
+        .iter()
+        .rposition(|c| c.is_whitespace())
+        .map_or(0, |i| i + 1);
+    (before.get(start) == Some(&'@')).then(|| Word {
+        kind: CompletionKind::Path,
+        row,
+        start,
+        end: col,
+        text: before.get(start + 1..).unwrap_or_default().iter().collect(),
+    })
+}
+
+fn command_word(lines: &[String], cursor: (usize, usize)) -> Option<Word> {
     let (row, col) = cursor;
     let [line] = lines else {
         return None;
@@ -127,10 +162,20 @@ pub fn word_at(lines: &[String], cursor: (usize, usize)) -> Option<Word> {
     })
 }
 
-/// The rows a menu offers for `word`.
+/// The rows a menu offers for `word`; `paths` is the workspace index (see
+/// [`mentions::workspace_paths`]) a path word is matched against.
 #[must_use]
-pub fn candidates(word: &Word) -> Vec<Candidate> {
+pub fn candidates(word: &Word, paths: &[PathEntry]) -> Vec<Candidate> {
     match word.kind {
+        CompletionKind::Path => mentions::match_paths(paths, &word.text, MAX_ROWS)
+            .into_iter()
+            .map(|entry| Candidate {
+                insert: format!("@{}", entry.path),
+                label: entry.path.clone(),
+                detail: String::new(),
+                keep_open: entry.is_dir(),
+            })
+            .collect(),
         CompletionKind::Command => commands::completions(&word.text)
             .map(|(spec, name)| Candidate {
                 insert: format!("/{name}"),
@@ -140,6 +185,7 @@ pub fn candidates(word: &Word) -> Vec<Candidate> {
                     format!("/{name} {}", spec.usage)
                 },
                 detail: spec.summary.to_string(),
+                keep_open: false,
             })
             .collect(),
     }
@@ -171,21 +217,58 @@ mod tests {
     }
 
     #[test]
+    fn a_path_word_starts_with_at_and_ends_at_the_cursor() {
+        let word = word_at(&line("read @src/ma please"), (0, 12)).unwrap();
+        assert_eq!(word.kind, CompletionKind::Path);
+        assert_eq!((word.start, word.end, word.text.as_str()), (5, 12, "src/ma"));
+        assert_eq!(word_at(&line("@"), (0, 1)).unwrap().text, "");
+        // In a later line, and after a command's first word.
+        let lines = vec!["one".to_string(), "two @x".to_string()];
+        assert_eq!(word_at(&lines, (1, 6)).unwrap().text, "x");
+        assert_eq!(word_at(&line("/model @x"), (0, 9)).unwrap().kind, CompletionKind::Path);
+        // Not inside a word, not after a non-blank, not for a@b.
+        assert!(word_at(&line("@src/ma"), (0, 4)).is_none());
+        assert!(word_at(&line("mail a@b"), (0, 8)).is_none());
+        assert!(word_at(&line("@x y"), (0, 4)).is_none());
+    }
+
+    #[test]
+    fn path_candidates_keep_the_menu_open_for_directories() {
+        let index: Vec<PathEntry> = ["src/", "src/main.rs", "src/ui/"]
+            .into_iter()
+            .map(|path| PathEntry { path: path.into() })
+            .collect();
+        let word = word_at(&line("@src/"), (0, 5)).unwrap();
+        let mut menu = Menu::open(word.clone(), candidates(&word, &index)).unwrap();
+        let rows: Vec<(&str, bool)> = menu
+            .items
+            .iter()
+            .map(|item| (item.insert.as_str(), item.keep_open))
+            .collect();
+        assert_eq!(rows, [("@src/main.rs", false), ("@src/ui/", true)]);
+        assert!(!menu.is_complete());
+        let typed = word_at(&line("@src/main.rs"), (0, 12)).unwrap();
+        assert!(Menu::open(typed.clone(), candidates(&typed, &index)).unwrap().is_complete());
+        menu.step(true);
+        assert!(!menu.is_complete());
+    }
+
+    #[test]
     fn candidates_show_usage_and_summary() {
         let word = word_at(&line("/mo"), (0, 3)).unwrap();
-        let items = candidates(&word);
+        let items = candidates(&word, &[]);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].insert, "/model");
         assert_eq!(items[0].label, "/model [[endpoint:]id | refresh]");
         assert_eq!(items[0].detail, "pick or switch the model");
         let none = word_at(&line("/zz"), (0, 3)).unwrap();
-        assert!(Menu::open(none.clone(), candidates(&none)).is_none());
+        assert!(Menu::open(none.clone(), candidates(&none, &[])).is_none());
     }
 
     #[test]
     fn the_highlight_wraps_and_the_window_follows_it() {
         let word = word_at(&line("/"), (0, 1)).unwrap();
-        let mut menu = Menu::open(word.clone(), candidates(&word)).unwrap();
+        let mut menu = Menu::open(word.clone(), candidates(&word, &[])).unwrap();
         let len = menu.items.len();
         assert!(len > MAX_ROWS);
         assert_eq!(menu.window(), (0, MAX_ROWS));
@@ -200,6 +283,6 @@ mod tests {
         assert_eq!(menu.window(), (1, MAX_ROWS));
         assert!(!menu.is_complete());
         let exact = word_at(&line("/help"), (0, 5)).unwrap();
-        assert!(Menu::open(exact.clone(), candidates(&exact)).unwrap().is_complete());
+        assert!(Menu::open(exact.clone(), candidates(&exact, &[])).unwrap().is_complete());
     }
 }

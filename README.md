@@ -691,6 +691,26 @@ typing reopens it. `//` never opens it, and nor does a word nothing
 matches. The parser and `/help`'s command list are generated from one
 table (`COMMANDS` in `src/ui/commands.rs`), which the menu reads too.
 
+`@` mentions a workspace file or directory. While the cursor ends a word
+that starts with `@` (anywhere in the input; `a@b` is not a mention), the
+same menu lists up to eight workspace paths: those that start with what
+follows the `@`, then those whose name contains it (case-insensitive),
+directories with a trailing `/`. The paths are the ones the `glob` tool sees
+(`.gitignore` honoured, hidden files included), minus the sealed `.git` and
+`.rkat` and the realm and user config directories; the list is built when
+the menu opens (about 4 ms for this repository, 63 ms for 20 000 files in a
+debug build, about 11 ms in a release build). Tab or Enter inserts the
+highlighted path; a file gets a space after it and closes the menu, a
+directory keeps it open on what is inside; Enter on a fully typed file name
+sends. When the prompt is sent, every `@path` naming a file inside the
+workspace is attached after the prompt as `<file path="…">` with its
+content (UTF-8 text, at most 64 KiB each with a `[truncated]` line, 256 KiB
+in all; a binary file or one past the budget is a one-line `<file path="…"
+note="…" />`), and a directory as a `<directory path="…/">` listing of its
+entries (at most 200). The transcript shows the prompt as typed with a dim
+`+ N files (…)` line under it; a sealed path is never read and gets a
+warning instead; a word that names nothing (`@someone`) stays plain text.
+
 `?` on an empty input opens a panel with the keys part of `/help` (the
 editor title shows `? keys` while idle and empty); `?`, Esc or any other
 key closes it without being typed, and with text in the input `?` is just
