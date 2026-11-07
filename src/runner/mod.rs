@@ -816,6 +816,8 @@ impl Runner {
             Effect::NewSession => self.new_session().await,
             Effect::ResumeSession(reference) => self.resume_session(&reference).await,
             Effect::RequestResumePicker => self.show_resume_picker().await,
+            Effect::RequestRewindMenu => self.show_rewind_menu().await,
+            Effect::Rewind(point) => self.rewind(point).await,
             effect @ (Effect::RespondEscalation(..)
             | Effect::AddRule { .. }
             | Effect::RemoveRule(_)

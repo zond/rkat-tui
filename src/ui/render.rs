@@ -281,6 +281,8 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect, now: Instant) {
         " press Ctrl-D (or /quit) again to quit anyway ".into()
     } else if app.quit_confirm_armed(now) {
         " Ctrl-D again to quit ".into()
+    } else if app.esc_clear_armed(now) && app.input.is_empty() {
+        " Esc again to rewind (pick a message to continue from) ".into()
     } else if app.esc_clear_armed(now) {
         " Esc again to clear the input (saved to history) ".into()
     } else if app.chord_pending(now) {

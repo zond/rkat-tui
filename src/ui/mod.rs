@@ -17,6 +17,7 @@ pub mod keymap;
 pub mod markdown;
 pub mod modal;
 pub mod render;
+pub mod rewind;
 pub mod runtime;
 pub mod search;
 pub mod selection;
@@ -54,6 +55,7 @@ pub use modal::{
     EscalationAnswer, EscalationDialog, EscalationId, EscalationPrompt, Modal, ModelPicker,
     PLAN_CHOICES, PlanChoice, PlanDialog, ResumePicker,
 };
+pub use rewind::{RewindKey, RewindMenu, RewindPoint, Rewound};
 pub use runtime::{TerminalGuard, UiChannels, UiError, install_panic_hook, run_ui};
 pub use search::{HistorySearch, SearchOutcome};
 pub use selection::{CellPos, SelectMode, Selection};
@@ -380,6 +382,13 @@ pub enum Msg {
     Status(StatusUpdate),
     /// Open the resume picker with `(ref, label)` items.
     ShowResumePicker(Vec<(String, String)>),
+    /// Open the rewind menu (answer to [`Effect::RequestRewindMenu`]): the
+    /// session's user messages, newest first.
+    ShowRewindMenu(Vec<RewindPoint>),
+    /// The runner forked the session before the chosen message and the TUI
+    /// runs on the fork now (answer to [`Effect::Rewind`]; a refusal is a
+    /// notice).
+    Rewound(Rewound),
     /// Open the model picker (answer to [`Effect::RequestModelPicker`]): one
     /// group per endpoint, the current endpoint and model first; a group's
     /// warning says why its list is missing.
@@ -497,6 +506,13 @@ pub enum Effect {
     ResumeSession(String),
     /// Load session list; answer with [`Msg::ShowResumePicker`].
     RequestResumePicker,
+    /// `/rewind` (Esc Esc on an empty idle input): list the session's user
+    /// messages; answer with [`Msg::ShowRewindMenu`].
+    RequestRewindMenu,
+    /// Fork the idle session just before this user message and switch to
+    /// the fork (the previous session stays as it was); answered with
+    /// [`Msg::Rewound`] or a notice.
+    Rewind(RewindPoint),
     /// Answer an escalation.
     RespondEscalation(EscalationId, EscalationAnswer),
     /// Persist an approval rule.
@@ -1354,8 +1370,8 @@ impl App {
             .is_some_and(|t| now.saturating_duration_since(t) < DOUBLE_CTRL_C_WINDOW)
     }
 
-    /// Whether a second Esc at `now` would clear the input (used for the
-    /// input hint).
+    /// Whether a second Esc at `now` would clear the input, or open the
+    /// rewind menu on an empty one (used for the input hint).
     pub fn esc_clear_armed(&self, now: Instant) -> bool {
         self.last_esc
             .is_some_and(|t| now.saturating_duration_since(t) < DOUBLE_ESC_WINDOW)
@@ -1857,6 +1873,8 @@ impl App {
                     Some(_) => {}
                 }
             }
+            Msg::ShowRewindMenu(points) => self.show_rewind_menu(points),
+            Msg::Rewound(rewound) => self.rewound(rewound),
             Msg::ShowModelPicker(groups) => {
                 if matches!(self.modal, None | Some(Modal::Keys)) && self.parked.is_none() {
                     self.modal = Some(Modal::Model(ModelPicker::new(groups)));
@@ -2270,6 +2288,25 @@ impl App {
                 KeyCode::Esc | KeyCode::Char('q') => self.modal = None,
                 _ => {}
             },
+            Some(Modal::Rewind(menu)) => {
+                if repeat && matches!(key.code, KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q')) {
+                    return;
+                }
+                if ctrl_c {
+                    if !repeat {
+                        self.modal = None;
+                    }
+                    return;
+                }
+                match menu.key(key.code) {
+                    RewindKey::Stay => {}
+                    RewindKey::Cancel => self.modal = None,
+                    RewindKey::Choose(point) => {
+                        self.modal = None;
+                        fx.push(Effect::Rewind(point));
+                    }
+                }
+            }
             Some(Modal::Model(picker)) => match key.code {
                 KeyCode::Enter | KeyCode::Esc if repeat => {}
                 _ if ctrl_c && repeat => {}
@@ -2831,14 +2868,17 @@ impl App {
     ///
     /// Idle, Esc twice within [`DOUBLE_ESC_WINDOW`] on an input with text
     /// clears it and saves it to the prompt history (`esc_armed`: the
-    /// previous key was such an Esc); one Esc only arms it.
+    /// previous key was such an Esc); on an empty input it opens the rewind
+    /// menu (as `/rewind`). One Esc only arms it.
     fn escape(&mut self, esc_armed: bool, now: Instant, fx: &mut Vec<Effect>) {
         if self.running {
             self.interrupt(fx);
         } else if self.shell_run.is_some() {
             fx.push(Effect::CancelShell);
+        } else if self.input.is_empty() && esc_armed {
+            self.request_rewind(fx);
         } else if self.input.is_empty() {
-            // Esc Esc on an empty input is reserved for rewind.
+            self.last_esc = Some(now);
         } else if esc_armed {
             let text = self.input.take();
             if !text.trim().is_empty() {
@@ -2847,6 +2887,69 @@ impl App {
         } else {
             self.last_esc = Some(now);
         }
+    }
+
+    /// `/rewind` or Esc Esc on an empty input: ask for the menu when the
+    /// session is idle with nothing queued, else say what is in the way.
+    fn request_rewind(&mut self, fx: &mut Vec<Effect>) {
+        let blocked = if self.running {
+            Some("a turn is running; interrupt it first (Ctrl-C), then rewind")
+        } else if self.compacting {
+            Some("the session is being rebuilt for /compact; wait for it to finish")
+        } else if self.shell_run.is_some() {
+            Some("a ! command is running; wait for it or cancel it (Esc)")
+        } else if !self.pending.is_empty() || self.send_next.is_some() || self.recalling {
+            Some("messages are still queued; wait for them or take them back (↑ on an empty input)")
+        } else {
+            None
+        };
+        match blocked {
+            Some(why) => {
+                self.transcript.push_notice(NoticeLevel::Warn, why);
+                self.scroll.bottom();
+            }
+            None => fx.push(Effect::RequestRewindMenu),
+        }
+    }
+
+    /// [`Msg::ShowRewindMenu`]: open the menu (nothing to rewind to is a
+    /// notice). A turn started meanwhile, or another dialog, wins.
+    fn show_rewind_menu(&mut self, points: Vec<RewindPoint>) {
+        if points.is_empty() {
+            self.transcript
+                .push_notice(NoticeLevel::Info, "nothing to rewind to: this session has no messages of yours yet");
+            self.scroll.bottom();
+        } else if !self.running && matches!(self.modal, None | Some(Modal::Keys)) {
+            self.modal = Some(Modal::Rewind(RewindMenu::new(points)));
+        }
+    }
+
+    /// [`Msg::Rewound`]: the TUI runs on the fork. Cut the transcript before
+    /// the chosen message (or show the fork's history when the transcript
+    /// does not line up), drop the helper selection and the stale context
+    /// gauge, and put the message back in the editor (a draft typed
+    /// meanwhile goes to the prompt history).
+    fn rewound(&mut self, rewound: Rewound) {
+        let Rewound {
+            from_end,
+            text,
+            blocks,
+            notice,
+        } = rewound;
+        self.clear_selection();
+        self.panel_selected = None;
+        self.helper_view = None;
+        if !self.transcript.cut_before_user(from_end, &text) {
+            self.transcript.reset(blocks);
+        }
+        self.run_first_block = self.transcript.len();
+        self.status.context_used = None;
+        self.status.context_approx = false;
+        // A draft typed meanwhile stays reachable with ↑ (take records it).
+        let _ = self.input.take();
+        self.input.set_text(&text);
+        self.transcript.push_notice(NoticeLevel::Info, notice);
+        self.scroll.bottom();
     }
 
     /// Messages handed to the runner (admitted, or not acknowledged yet)
@@ -3262,6 +3365,7 @@ impl App {
                     fx.push(reference.map_or(Effect::RequestResumePicker, Effect::ResumeSession));
                 }
             }
+            Command::Rewind => self.request_rewind(fx),
             Command::Remember(text) => {
                 self.transcript
                     .push_notice(NoticeLevel::Info, format!("remembering: {text}"));
@@ -4355,12 +4459,130 @@ mod tests {
         app.update_at(key(KeyCode::Esc), late);
         assert_eq!(app.input.text(), "a draft");
         assert!(app.take_submitted().is_empty());
-        // An empty input: Esc Esc does nothing (reserved for rewind).
+        // An empty input: Esc Esc asks for the rewind menu (and saves
+        // nothing to history).
         let mut app = App::new(StatusInfo::default());
         assert!(app.update_at(key(KeyCode::Esc), t0).is_empty());
-        assert!(app.update_at(key(KeyCode::Esc), t0).is_empty());
+        assert!(app.esc_clear_armed(t0));
+        assert_eq!(
+            app.update_at(key(KeyCode::Esc), t0),
+            vec![Effect::RequestRewindMenu]
+        );
         assert!(!app.esc_clear_armed(t0));
         assert!(app.take_submitted().is_empty());
+    }
+
+    fn rewind_point(index: usize, text: &str) -> RewindPoint {
+        RewindPoint {
+            message_index: index,
+            text: text.into(),
+        }
+    }
+
+    #[test]
+    fn rewind_asks_for_the_menu_only_when_idle_with_nothing_queued() {
+        let mut app = App::new(StatusInfo::default());
+        assert_eq!(submit(&mut app, "/rewind"), vec![Effect::RequestRewindMenu]);
+        assert_eq!(submit(&mut app, "/checkpoint"), vec![Effect::RequestRewindMenu]);
+        // While a turn runs: a notice, and Esc interrupts as always.
+        let mut app = running_app();
+        assert!(submit(&mut app, "/rewind").is_empty());
+        assert!(matches!(
+            app.transcript.blocks().last(),
+            Some(Block::Notice { level: NoticeLevel::Warn, text }) if text.contains("interrupt it first")
+        ));
+        // A message typed while it ran is still held: refused too.
+        submit(&mut app, "queued");
+        assert!(!app.pending.is_empty());
+        assert!(submit(&mut app, "/rewind").is_empty());
+        // Esc Esc on an empty input interrupts, never rewinds, meanwhile.
+        assert!(!app.update(key(KeyCode::Esc)).contains(&Effect::RequestRewindMenu));
+    }
+
+    #[test]
+    fn the_rewind_menu_opens_chooses_and_cancels() {
+        let mut app = App::new(StatusInfo::default());
+        // Nothing to rewind to: a notice, no menu.
+        app.update(Msg::ShowRewindMenu(Vec::new()));
+        assert!(app.modal.is_none());
+        assert!(matches!(
+            app.transcript.blocks().last(),
+            Some(Block::Notice { text, .. }) if text.contains("nothing to rewind to")
+        ));
+        let points = vec![rewind_point(4, "second"), rewind_point(1, "first")];
+        app.update(Msg::ShowRewindMenu(points.clone()));
+        assert!(matches!(app.modal, Some(Modal::Rewind(_))));
+        assert!(app.update(key(KeyCode::Esc)).is_empty());
+        assert!(app.modal.is_none());
+        app.update(Msg::ShowRewindMenu(points));
+        assert!(app.update(key(KeyCode::Down)).is_empty());
+        assert_eq!(
+            app.update(key(KeyCode::Enter)),
+            vec![Effect::Rewind(rewind_point(1, "first"))]
+        );
+        assert!(app.modal.is_none());
+        // Typed keys do not reach the input while it is open.
+        app.update(Msg::ShowRewindMenu(vec![rewind_point(1, "first")]));
+        type_str(&mut app, "x");
+        assert!(app.input.is_empty());
+        app.update(ctrl('c'));
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn rewound_cuts_the_transcript_and_refills_the_input() {
+        let mut app = App::new(StatusInfo::default());
+        for (seq, (prompt, answer)) in [("one", "first"), ("two", "second"), ("three", "third")]
+            .into_iter()
+            .enumerate()
+        {
+            submit(&mut app, prompt);
+            app.update(agent_at(
+                AgentEvent::TextDelta {
+                    delta: answer.into(),
+                    assistant_message_id: None,
+                },
+                seq as u64 + 1,
+            ));
+            app.update(finished(Ok(summary()), &[]));
+        }
+        app.status.context_used = Some(1234);
+        app.update(Msg::Rewound(Rewound {
+            from_end: 2,
+            text: "two".into(),
+            blocks: vec![Block::User { text: "fallback".into() }],
+            notice: "rewound".into(),
+        }));
+        let users: Vec<&str> = app
+            .transcript
+            .blocks()
+            .iter()
+            .filter_map(|b| match b {
+                Block::User { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(users, vec!["one"]);
+        assert!(app.transcript.blocks().contains(&Block::Assistant { md: "first".into() }));
+        assert!(!app.transcript.blocks().contains(&Block::Assistant { md: "second".into() }));
+        assert!(matches!(
+            app.transcript.blocks().last(),
+            Some(Block::Notice { text, .. }) if text == "rewound"
+        ));
+        assert_eq!(app.input.text(), "two");
+        assert_eq!(app.status.context_used, None);
+        // A transcript that does not line up shows the fork's history.
+        app.update(Msg::Rewound(Rewound {
+            from_end: 5,
+            text: "zero".into(),
+            blocks: vec![Block::User { text: "fallback".into() }],
+            notice: "again".into(),
+        }));
+        assert_eq!(
+            app.transcript.blocks().first(),
+            Some(&Block::User { text: "fallback".into() })
+        );
+        assert_eq!(app.input.text(), "zero");
     }
 
     #[test]

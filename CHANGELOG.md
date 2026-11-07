@@ -4,12 +4,18 @@
 
 Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository as the `rkat-tui` package. The entries below are the harness's history in that PR; `docs/evidence.md` holds the detailed record and `docs/ux-parity.md` the Claude Code parity audit.
 
-### Fixed
-
-- An escalation whose timeout ran out while it waited behind another dialog is denied before it is shown; before, it could reach the user with no budget left (also the cause of the flaky `parallel_escalations_share_one_timeout_including_the_queue` test).
-
 ### Added
 
+- `/rewind` (aliases `/checkpoint`, `/undo`), and Esc Esc on an empty idle
+  input, open a menu of the session's messages (newest first, one numbered
+  line each; ↑/↓, Enter, Esc). Choosing one forks the session just before
+  that message through the engine's transcript fork
+  (`SessionServiceTranscriptEditExt::fork_session_at`) and switches to the
+  fork: the transcript is cut before the message, the helper panel loses
+  what came after, the message goes back in the input, and a notice names
+  the previous session, which keeps the whole conversation (`/resume` it).
+  Idle only, with nothing queued; files are not restored, and the fork's
+  task checklist starts empty (the engine scopes tasks by session).
 - Ctrl+T shows or hides a task checklist under the input (before the
   helper panel): the session's tasks from the engine's task store
   (`task_create`/`task_update`), `☐` pending, `◐` in progress, `☑` done,
@@ -221,6 +227,7 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Fixed
 
+- An escalation whose timeout ran out while it waited behind another dialog is denied before it is shown; before, it could reach the user with no budget left (also the cause of the flaky `parallel_escalations_share_one_timeout_including_the_queue` test).
 - The shell lexer no longer treats a carriage return as a blank. bash, dash
   and zsh read `\r` as a word character, so `git status \r# ; rm -rf x` was
   judged as the allowlisted `git status` while the shell ran `rm`. Any control

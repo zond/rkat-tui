@@ -13,6 +13,7 @@ use ratatui::widgets::{Block as BorderBlock, Borders, Clear, Paragraph};
 
 use super::markdown::{truncate_to_width, wrap_text};
 use super::render::fmt_ctx_tokens;
+use super::rewind::RewindMenu;
 use crate::endpoints::describe_endpoint;
 use crate::models::{ModelEntry, ModelGroup, ModelSource};
 
@@ -350,6 +351,8 @@ pub enum Modal {
     },
     /// Session picker.
     Resume(ResumePicker),
+    /// `/rewind`: the session's earlier user messages, newest first.
+    Rewind(RewindMenu),
     /// Model picker.
     Model(ModelPicker),
     /// The `?` shortcut panel: the keys part of the help.
@@ -391,6 +394,10 @@ pub fn draw_modal(frame: &mut Frame<'_>, area: Rect, modal: &Modal) {
         Modal::Resume(picker) => (
             " Resume session ".to_string(),
             picker_lines(picker, inner_w, usize::from(area.height.saturating_sub(4))),
+        ),
+        Modal::Rewind(menu) => (
+            " Rewind to before a message ".to_string(),
+            rewind_lines(menu, inner_w, usize::from(area.height.saturating_sub(4))),
         ),
         Modal::Model(picker) => (
             " Select model ".to_string(),
@@ -617,6 +624,37 @@ fn picker_lines(picker: &ResumePicker, width: usize, max_rows: usize) -> Vec<Lin
             }
         })
         .collect()
+}
+
+/// The rewind menu: one numbered line per message (newest first, the list
+/// scrolling to keep the selection visible), then a key hint.
+fn rewind_lines(menu: &RewindMenu, width: usize, max_rows: usize) -> Vec<Line<'static>> {
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let rows = max_rows.saturating_sub(1).max(1);
+    let start = menu.selected.saturating_sub(rows.saturating_sub(1));
+    let mut lines: Vec<Line<'static>> = menu
+        .points
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(rows)
+        .map(|(i, point)| {
+            let text = truncate_to_width(&format!("{:>2}. {}", i + 1, point.label()), width);
+            if i == menu.selected {
+                Line::styled(text, Style::default().add_modifier(Modifier::REVERSED))
+            } else {
+                Line::from(text)
+            }
+        })
+        .collect();
+    lines.push(Line::styled(
+        truncate_to_width(
+            "↑/↓ choose · Enter rewinds to before it (its text goes back in the input) · Esc closes",
+            width,
+        ),
+        dim,
+    ));
+    lines
 }
 
 /// Filter line, then per endpoint a header, its warning and its models,

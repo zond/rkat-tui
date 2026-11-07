@@ -1468,3 +1468,63 @@ Task checklist on Ctrl+T (`docs/ux-parity.md` row 22; candidate 7).
   CHANGELOG.
 - Commands: `cargo fmt --all` exit 0; `cargo clippy --all-targets --all-features -- -D warnings` exit 0;
   `cargo nextest run --all-features --no-fail-fast` 846 passed, 7 skipped, exit 0.
+
+## Batch 3 C (2026-11-07)
+
+Conversation rewind: `/rewind` (aliases `/checkpoint`, `/undo`) and Esc Esc on an empty idle input
+(`docs/ux-parity.md` row 7; candidate 2). Code restore is out of scope.
+
+- Before: Esc Esc on an empty input did nothing ("reserved for rewind"); no `/rewind`.
+- Engine path (Step 1): the engine has two public ways to get "this session's history up to and excluding user
+  message N", both on `SessionServiceTranscriptEditExt`, which `PersistentSessionService` (the TUI's
+  `TuiService`) implements: (a) `rewrite_session_transcript` (same session id; the legacy
+  `TranscriptRewriteSelection::MessageRange` with an empty replacement truncates; refuses a running session with
+  `Busy`, converges the idle live session, keeps the old head as a retained revision that
+  `restore_session_transcript_revision` brings back), and (b) `fork_session_at` (a new durable session with the
+  prefix `Session::fork_at_complete_boundary` cuts, refusing a running source and a cut through a tool-use /
+  tool-result pair; the source is untouched; the copied prefix keeps the system prompt and the metadata carries the
+  model over, usage starts at zero). Chosen:
+  (b). The same session id would keep the engine's per-session task store (`tasks.db`, scoped by session id)
+  holding the tasks created after the cut, which the model's `task_list` would still see, and the TUI has no way
+  to show or restore a retained transcript revision; a fork leaves the full conversation in a session `/resume`
+  already lists, and switching to it reuses the `/resume` path (event follow, classifier transcript seeded from
+  the fork, helper registration, checklist read, compaction trigger). No engine change and no engine ask.
+  `inherited_instructions: ReactivateInherited`, so the fork never refuses over instruction activation rows.
+- Runner (`runner/lifecycle.rs`): `Effect::RequestRewindMenu` reads the session and answers
+  `Msg::ShowRewindMenu(rewind_points(..))`: every conversational user message with text, newest first, as typed
+  (`ui::rewind::typed_text` drops the `@` mention attachments `expand_mentions` appended), leaving out the
+  `(retrying the request above)` placeholder. `Effect::Rewind(point)` refuses while a turn runs, re-reads the
+  session and refuses a point it no longer has ("the session changed since the rewind menu opened"), then
+  `fork_session_at(message_index)`, `SessionHandle::resume`s the fork with the policy's compaction trigger, and
+  `switch_to(.., reset = false)` (the previous session is retired, not archived), and sends
+  `Msg::Rewound { from_end, text, blocks, notice }`. `from_end` counts the session's points from the chosen one to
+  the end; `blocks` is the fork's history (`blocks_from_session`) for when the transcript does not line up.
+- UI (`ui/rewind.rs`, `ui/mod.rs`, `ui/modal.rs`, `ui/transcript.rs`): `RewindMenu` (↑/↓ or k/j move, Enter
+  chooses, Esc/q cancel; Ctrl-C closes) drawn as `Modal::Rewind`, one numbered one-line label per message and a
+  key hint. `/rewind` and Esc Esc on an empty input (`escape`: a first Esc on an empty idle input now arms, the
+  title says "Esc again to rewind") run `request_rewind`, which refuses with a notice while a turn runs, during a
+  `/compact` rebuild, while a `!` command runs, or while anything is held (queued, send-next, a recall). An empty
+  list is a notice. `Msg::Rewound`: `Transcript::cut_before_user(from_end, text)` truncates before the
+  `from_end`-th top-level user block from the end when its typed text matches (`Transcript::truncate` keeps the
+  tool index, helper folds, owners and open streams consistent), else the transcript is reset to the fork's
+  blocks; the helper selection and full view close (the panel is derived from the kept blocks), the context gauge
+  is cleared until the next call, the message's text goes into the editor, and the notice says the new session's
+  id, that the previous session keeps the whole conversation (`/resume <id>`), and that files are not restored
+  and the fork's task list starts empty. The checklist itself is the fork's, read by `switch_to`.
+- Persisted: only what the engine's fork writes (the child session). Nothing in the TUI's own files.
+- Tests: `ui::rewind::tests::{the_menu_moves_chooses_and_cancels, labels_are_one_line,
+  typed_text_leaves_the_attachments_out}`; `ui::transcript::tests::a_rewind_cuts_before_the_chosen_user_block`;
+  `ui::tests::{esc_esc_clears_the_draft_into_history (empty input now asks for the menu),
+  rewind_asks_for_the_menu_only_when_idle_with_nothing_queued, the_rewind_menu_opens_chooses_and_cancels,
+  rewound_cuts_the_transcript_and_refills_the_input}`; `ui::commands::tests` (`/rewind`, `/checkpoint`,
+  `/undo`, usage error, spec count 31); render snapshot `rewind_menu_and_hint_snapshot`; end to end
+  `integrator::rewind_forks_before_the_chosen_message_and_keeps_the_old_session` (three scripted turns; the menu
+  lists three, two, one; rewinding to "two" switches to a new session id, `Rewound { from_end: 2, text: "two" }`
+  with the fork's blocks "one"/"first answer"; the next turn's model request carries exactly the user messages
+  "one" and the new prompt plus the persona; the old session still holds one/two/three and is listed; a stale
+  point is refused).
+- Docs: HELP_TEXT row for `/rewind` (from the spec table) and the keys panel's Esc Esc (empty input) row; editor
+  title hint; README "Rewind" paragraph under Sessions, the command list and the idle-only list; CHANGELOG
+  (also merged the second `### Fixed` heading under `[Unreleased]` into the original section).
+- Commands: `cargo fmt --all` exit 0; `cargo clippy --all-targets --all-features -- -D warnings` exit 0;
+  `cargo nextest run --all-features --no-fail-fast` 855 passed, 7 skipped, exit 0.

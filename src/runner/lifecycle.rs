@@ -3,7 +3,8 @@
 //! the transcript and status seeding of a resumed session.
 
 use meerkat_core::{
-    AssistantBlock, Message, Session, SessionId, TranscriptUserRole,
+    AssistantBlock, ForkInstructionPolicy, Message, Session, SessionForkAtRequest, SessionId,
+    SessionServiceTranscriptEditExt, TranscriptEditRunningBehavior, TranscriptUserRole,
 };
 
 use super::cost::session_cost;
@@ -16,7 +17,11 @@ use meerkat_core::service::SessionSummary;
 use crate::session::{
     SessionHandle, SessionIdentity, SessionOptions, list_sessions, resolve_session_ref,
 };
-use crate::ui::{Block, Effect, Msg, NoticeLevel, SessionCost, StatusUpdate, ToolState, TurnFailure};
+use crate::ui::rewind::typed_text;
+use crate::ui::{
+    Block, Effect, Msg, NoticeLevel, RewindPoint, Rewound, SessionCost, StatusUpdate, ToolState,
+    TurnFailure,
+};
 
 /// The session the TUI starts with.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -206,7 +211,7 @@ impl Runner {
         match SessionHandle::create(&self.runtime, self.template.options(Some(choice), trigger))
             .await
         {
-            Ok(session) => self.switch_to(session, None).await,
+            Ok(session) => self.switch_to(session, None, true).await,
             Err(err) => self.notice(
                 NoticeLevel::Error,
                 format!("could not start a new session: {err}"),
@@ -245,7 +250,7 @@ impl Runner {
                 }
             };
         match opened.read().await {
-            Ok(transcript) => self.switch_to(opened, Some(transcript)).await,
+            Ok(transcript) => self.switch_to(opened, Some(transcript), true).await,
             Err(err) => {
                 self.notice(
                     NoticeLevel::Error,
@@ -315,6 +320,112 @@ impl Runner {
         }
     }
 
+    /// [`Effect::RequestRewindMenu`]: offer the session's user messages,
+    /// newest first ([`Msg::ShowRewindMenu`]).
+    pub(super) async fn show_rewind_menu(&mut self) {
+        if self.refuse_switch_while_busy() {
+            return;
+        }
+        match self.session.read().await {
+            Ok(session) => self.send(Msg::ShowRewindMenu(rewind_points(&session))),
+            Err(err) => self.notice(
+                NoticeLevel::Error,
+                format!("could not read the session to rewind it: {err}"),
+            ),
+        }
+    }
+
+    /// [`Effect::Rewind`]: fork the idle session just before `point`'s
+    /// message through the service's transcript fork (the source stays as
+    /// it is, listed by `/resume`), resume the fork, switch to it, and tell
+    /// the UI ([`Msg::Rewound`]). The point must still be one of the
+    /// session's ([`rewind_points`]): a session that changed since the menu
+    /// opened is not cut at a stale index.
+    pub(super) async fn rewind(&mut self, point: RewindPoint) {
+        if self.refuse_switch_while_busy() {
+            return;
+        }
+        let source = match self.session.read().await {
+            Ok(session) => session,
+            Err(err) => {
+                self.notice(
+                    NoticeLevel::Error,
+                    format!("could not read the session to rewind it: {err}"),
+                );
+                return;
+            }
+        };
+        let Some(from_end) = rewind_points(&source)
+            .iter()
+            .position(|p| *p == point)
+            .map(|at| at + 1)
+        else {
+            self.notice(
+                NoticeLevel::Warn,
+                "the session changed since the rewind menu opened; run /rewind again",
+            );
+            return;
+        };
+        let previous = self.session.id().clone();
+        let request = SessionForkAtRequest {
+            message_index: point.message_index,
+            running_behavior: TranscriptEditRunningBehavior::Reject,
+            tool_access_policy: None,
+            // The fork carries the source's instructions on, whatever
+            // activation rows the prefix holds.
+            inherited_instructions: Some(ForkInstructionPolicy::ReactivateInherited),
+        };
+        let fork = match self.runtime.service.fork_session_at(&previous, request).await {
+            Ok(fork) => fork,
+            Err(err) => {
+                self.notice(NoticeLevel::Error, format!("could not rewind: {err}"));
+                return;
+            }
+        };
+        let trigger = self.session_trigger();
+        let opened = match SessionHandle::resume(
+            &self.runtime,
+            &fork.session_id,
+            self.template.options(None, trigger),
+        )
+        .await
+        {
+            Ok(session) => session,
+            Err(err) => {
+                self.notice(
+                    NoticeLevel::Error,
+                    format!(
+                        "could not open the rewound session {}: {err}; this session is unchanged",
+                        fork.session_id
+                    ),
+                );
+                return;
+            }
+        };
+        let blocks = match opened.read().await {
+            Ok(transcript) => blocks_from_session(&transcript),
+            Err(err) => {
+                tracing::warn!(error = %err, "cannot read the rewound session");
+                Vec::new()
+            }
+        };
+        self.switch_to(opened, None, false).await;
+        let old = previous.to_string();
+        let notice = format!(
+            "rewound to before “{}”: this is a new session ({}) with the conversation up to there, and your message is back in the input. The full conversation stays in session {} (/resume {}); files are not restored, and this session's task list starts empty",
+            quote_label(&point),
+            short_id(&fork.session_id.to_string()),
+            short_id(&old),
+            short_id(&old),
+        );
+        self.send(Msg::Rewound(Rewound {
+            from_end,
+            text: point.text,
+            blocks,
+            notice,
+        }));
+    }
+
     /// `/resume` without a reference: offer the realm's sessions.
     pub(super) async fn show_resume_picker(&mut self) {
         let ui_tx = self.ui_tx.clone();
@@ -341,8 +452,9 @@ impl Runner {
 
     /// Make `session` current: follow its events, leave the previous one
     /// (its waiters and interrupt tasks aborted, its approval state
-    /// dropped) and reseed the UI.
-    async fn switch_to(&mut self, session: SessionHandle, transcript: Option<Session>) {
+    /// dropped) and reseed the UI (its transcript from `transcript`, or
+    /// cleared when `reset` is set; see [`session_messages`]).
+    async fn switch_to(&mut self, session: SessionHandle, transcript: Option<Session>, reset: bool) {
         let previous = std::mem::replace(&mut self.session, session);
         self.compact_now_pending = false;
         self.tasks.abort_all();
@@ -351,7 +463,7 @@ impl Runner {
             tracing::warn!(error = %err, session = %previous.id(), "could not retire the previous session");
         }
         self.refresh_identity().await;
-        self.show_session(transcript.as_ref(), true);
+        self.show_session(transcript.as_ref(), reset);
         self.refresh_checklist().await;
         // A resumed session on another model than the current one.
         self.ensure_trigger().await;
@@ -424,6 +536,41 @@ pub fn blocks_from_session(session: &Session) -> Vec<Block> {
         }
     }
     blocks
+}
+
+/// The session's rewind points, newest first: each conversational user
+/// message with text (as typed, see [`typed_text`]), except the placeholder
+/// a retried turn sends ([`RETRY_INPUT`]).
+#[must_use]
+pub fn rewind_points(session: &Session) -> Vec<RewindPoint> {
+    let mut points: Vec<RewindPoint> = session
+        .messages()
+        .iter()
+        .enumerate()
+        .filter_map(|(message_index, message)| match message {
+            Message::User(user) if user.transcript_role == TranscriptUserRole::Conversational => {
+                let sent = user.text_content();
+                let text = typed_text(&sent).trim_end();
+                (!text.trim().is_empty() && text.trim() != RETRY_INPUT).then(|| RewindPoint {
+                    message_index,
+                    text: text.to_string(),
+                })
+            }
+            _ => None,
+        })
+        .collect();
+    points.reverse();
+    points
+}
+
+/// `point`'s label, cut to 60 characters for a notice.
+fn quote_label(point: &RewindPoint) -> String {
+    let label = point.label();
+    if label.chars().count() > 60 {
+        format!("{}…", label.chars().take(59).collect::<String>())
+    } else {
+        label
+    }
 }
 
 fn restored_tool_block(name: &str, args: serde_json::Value) -> Block {

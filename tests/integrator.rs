@@ -1453,3 +1453,100 @@ async fn the_task_tools_fill_the_checklist_and_resume_restores_it() {
     assert!(matches!(msg, Msg::Checklist(list) if list.is_empty()));
     rig.quit().await;
 }
+
+/// Rewind: three turns, rewind to before the second; the TUI runs on a
+/// fork that holds only the first turn (the next model request carries
+/// nothing else), the chosen message comes back for the editor, and the
+/// previous session keeps the whole conversation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rewind_forks_before_the_chosen_message_and_keeps_the_old_session() {
+    use rkat_tui::ui::{RewindPoint, Rewound};
+
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Text("first answer"),
+        Step::Text("second answer"),
+        Step::Text("third answer"),
+        Step::Text("a new second answer"),
+    ]);
+    let mut rig = Rig::start(&ws.root, &llm, Start::New).await;
+    let first = rig.first_session.clone();
+    for prompt in ["one", "two", "three"] {
+        rig.send(Effect::StartTurn(prompt.into()));
+        rig.turn_finished().await;
+    }
+
+    rig.send(Effect::RequestRewindMenu);
+    let points = match rig
+        .wait_for(|msg| matches!(msg, Msg::ShowRewindMenu(_)))
+        .await
+    {
+        Msg::ShowRewindMenu(points) => points,
+        other => panic!("{other:?}"),
+    };
+    let texts: Vec<&str> = points.iter().map(|p| p.text.as_str()).collect();
+    assert_eq!(texts, vec!["three", "two", "one"], "newest first");
+    let two: RewindPoint = points[1].clone();
+
+    rig.send(Effect::Rewind(two));
+    let session = match rig
+        .wait_for(|msg| matches!(msg, Msg::Status(StatusUpdate::Session(_))))
+        .await
+    {
+        Msg::Status(StatusUpdate::Session(id)) => id,
+        other => panic!("{other:?}"),
+    };
+    assert_ne!(session, first.to_string(), "the TUI runs on a fork");
+    let rewound = match rig.wait_for(|msg| matches!(msg, Msg::Rewound(_))).await {
+        Msg::Rewound(rewound) => rewound,
+        other => panic!("{other:?}"),
+    };
+    let Rewound {
+        from_end,
+        text,
+        blocks,
+        notice,
+    } = rewound;
+    assert_eq!((from_end, text.as_str()), (2, "two"));
+    assert_eq!(
+        blocks,
+        vec![
+            Block::User { text: "one".into() },
+            Block::Assistant {
+                md: "first answer".into()
+            },
+        ]
+    );
+    assert!(notice.contains(&first.to_string()[..8]), "{notice}");
+
+    // The next request carries the first turn only, then the new message.
+    rig.send(Effect::StartTurn("two, differently".into()));
+    rig.turn_finished().await;
+    assert_eq!(
+        user_texts(llm.requests().last().unwrap()),
+        vec!["one".to_string(), "two, differently".to_string()]
+    );
+    // The fork kept the session's system prompt.
+    assert!(llm.requests().last().unwrap().iter().any(|m| matches!(
+        m,
+        Message::System(system) if system.content.contains("interactive coding agent")
+    )));
+    // The previous session is untouched and still listed.
+    let old = rig.session(&first).await;
+    assert_eq!(
+        user_texts(old.messages()),
+        vec!["one".to_string(), "two".to_string(), "three".to_string()]
+    );
+    let listed = rkat_tui::session::list_sessions(&*rig.store).await.unwrap();
+    assert!(listed.iter().any(|s| s.session_id == first));
+    // A point the session no longer has is refused, not cut at a stale index.
+    rig.send(Effect::Rewind(RewindPoint {
+        message_index: 5,
+        text: "three".into(),
+    }));
+    let refusal = rig
+        .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text.contains("changed since")))
+        .await;
+    assert!(matches!(refusal, Msg::Notice { .. }));
+    rig.quit().await;
+}

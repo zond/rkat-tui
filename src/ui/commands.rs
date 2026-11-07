@@ -111,6 +111,9 @@ pub enum Command {
     Clear,
     /// `/resume [ref]`.
     Resume(Option<String>),
+    /// `/rewind` (`/checkpoint`, `/undo`): pick one of the session's
+    /// messages and continue from just before it.
+    Rewind,
     /// `/rules ...`.
     Rules(RulesCommand),
     /// `/auto [on|off|resume]`.
@@ -261,6 +264,17 @@ pub static COMMANDS: &[CommandSpec] = &[
             "resume a session (last, ~N, or id prefix); no ref opens a picker\n(so does rkat-tui --resume without a ref; archived sessions\nare not offered)",
         )],
         parse: parse_resume,
+    },
+    CommandSpec {
+        name: "rewind",
+        aliases: &["checkpoint", "undo"],
+        usage: "",
+        summary: "continue from before one of your messages (idle only)",
+        help: &[(
+            "/rewind, /checkpoint, /undo",
+            "pick one of your messages (newest first) and continue from just\nbefore it: a new session gets the history up to there and the\nmessage goes back in the input; the full conversation stays\nin the previous session (/resume). Esc Esc on an empty input\nopens it too. Files are not restored (idle only)",
+        )],
+        parse: |rest| arg_free(rest, Command::Rewind, "/rewind"),
     },
     CommandSpec {
         name: "permissions",
@@ -601,6 +615,7 @@ Keys:
   Ctrl-C                         interrupt the turn (as Esc) · clear the input · press twice to quit
   Esc                            interrupt the turn; queued messages are sent next
   Esc Esc (idle, with text)      clear the input and save it to the prompt history (↑ recalls it)
+  Esc Esc (idle, empty input)    rewind: pick one of your messages to continue from (as /rewind)
   Up (empty input)               take queued messages back into the editor
   Ctrl-D                         quit on an empty input: press again within 3 s (while a turn
                                  runs or messages are queued the turn is then interrupted and
@@ -814,11 +829,11 @@ mod tests {
             "quit", "exit", "q", "clear", "new", "help", "?", "memory", "init", "export",
             "status", "context", "usage", "cost", "stats", "copy", "compact", "resume", "model",
             "auto", "permissions", "rules", "trust", "mcp", "helpers", "tasks", "remember",
-            "mode",
+            "mode", "rewind", "checkpoint", "undo",
         ] {
             assert!(super::spec(name).is_some(), "/{name} has no spec");
         }
-        assert_eq!(seen.len(), 28);
+        assert_eq!(seen.len(), 31);
         // `/help`'s "Commands:" rows come from the specs, in their order.
         let commands = help_text().split_once("Keys:").unwrap().0;
         let mut at = 0;
@@ -862,6 +877,10 @@ mod tests {
         }
         assert_eq!(ok("/resume"), Command::Resume(None));
         assert_eq!(ok("/resume ~2"), Command::Resume(Some("~2".into())));
+        assert_eq!(ok("/rewind"), Command::Rewind);
+        assert_eq!(ok("/checkpoint"), Command::Rewind);
+        assert_eq!(ok("/undo"), Command::Rewind);
+        assert_eq!(parse("/rewind 2"), Some(Err(CommandError::Usage("/rewind"))));
         assert_eq!(
             ok("/model gpt-5.4"),
             Command::Model(ModelCommand::Set("gpt-5.4".into()))

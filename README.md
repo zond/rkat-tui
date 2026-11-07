@@ -72,6 +72,22 @@ happened to an input; never resubmit it blindly). A steered message counts
 as delivered only when the runtime reports it written at a boundary or its
 input consumed.
 
+**Rewind.** `/rewind` (also `/checkpoint`, `/undo`), or Esc twice on an
+empty idle editor, opens a menu of your messages in this session, newest
+first, one numbered line each (↑/↓ choose, Enter rewinds, Esc closes).
+Choosing one continues the conversation from just before that message: the
+engine forks the session there (its typed transcript fork,
+`SessionServiceTranscriptEditExt::fork_session_at`) and rkat-tui switches
+to the fork. The
+transcript is cut before the message, helpers that came after leave the
+panel, and the message's text is back in the editor to edit and send again.
+The previous session is left exactly as it was, with the whole
+conversation; the notice names it, and `/resume <id>` (or the picker) goes
+back to it. Rewind runs only when idle with nothing queued. It restores the
+conversation, not files: edits the agent made after that message stay on
+disk. The fork is a new session, so its task checklist starts empty (the
+engine keeps tasks per session) and its cost starts at zero.
+
 Ctrl-D on an empty editor quits on a second press within 3 s (the editor
 title asks for it); `/quit` quits at once when idle. While a turn runs or
 messages are pending both warn first; pressing again within 3 s
@@ -704,7 +720,7 @@ behind these controls; its table describes the state before the change).
 
 
 `/help` (alias `/?`), `/quit` (aliases `/exit`, `/q`), `/clear` (alias `/new`), `/resume [ref]`,
-`/permissions [list|add allow|deny <tool> [pattern]|rm <n>|trust]` (alias `/rules`; `remove` for `rm`),
+`/rewind` (aliases `/checkpoint`, `/undo`), `/permissions [list|add allow|deny <tool> [pattern]|rm <n>|trust]` (alias `/rules`; `remove` for `rm`),
 `/mode [default|accept-edits|plan|auto]`, `/auto [on|off|resume]`, `/model [[endpoint:]id|refresh]`,
 `/remember <text>`, `/memory [user|system]`, `/init`, `/compact [now|status|<instructions>]`, `/context`, `/status`, `/export [file]`, `/usage` (aliases `/cost`, `/stats`), `/copy [N]`, `/trust` (alias `/mcp trust`),
 `/helpers [expand|fold <label>|all]` (alias `/tasks`). `/status` prints the
@@ -723,7 +739,7 @@ fixed prompt as an ordinary turn, shown in the transcript: inspect the
 project and write or update the workspace `AGENTS.md` with the build and
 test commands, the layout and the conventions, under 200 lines. The agent
 writes it with its file tools, so the usual approval, protected-path and
-sealed-path rules apply. `/clear`, `/resume`, `/model` and `/compact` work only while
+sealed-path rules apply. `/clear`, `/resume`, `/rewind`, `/model` and `/compact` work only while
 idle; the transcript is replaced only once the new session is live.
 
 Typing `/` at the start of a one-line input opens a menu of the commands
@@ -789,7 +805,8 @@ Ctrl-S); Shift+Enter, Alt+Enter or Ctrl-J insert a newline, and so does a
 `\` typed right before Enter at the end of a line (the backslash is
 dropped); Esc or Ctrl-C interrupts a running turn and the queued
 messages are sent next (Ctrl-C twice quits when idle); when idle, Esc twice on a draft clears it
-and saves it to the prompt history (↑ brings it back); ↑ on an empty editor takes queued
+and saves it to the prompt history (↑ brings it back), and on an empty editor opens the
+[rewind](#sessions) menu; ↑ on an empty editor takes queued
 messages back, else recalls prompt history (Ctrl-P/Ctrl-N are ↑/↓); Ctrl-R searches history (workspace,
 then global); Ctrl-X Ctrl-S interrupts and sends the input; Ctrl-O shows or
 hides detail (the last reasoning block and the last tool output together);
