@@ -248,7 +248,7 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
   linker and cargo could not run rustc: `Operation not permitted`). On the
   TUI side, workspace mode grants `/etc/alternatives` (Debian's `cc` link)
   and `/usr/libexec` (gcc's `collect2` and LTO plugin) read-only. Inside
-  the sandbox a command is now pid 1 and sees no host process. A test
+  the sandbox a command runs as pid 2 under a small init and sees no host process (its `/proc` holds task entries only). A test
   compiles, links and runs a program in the sandbox.
 - An escalation whose timeout ran out while it waited behind another dialog is denied before it is shown; before, it could reach the user with no budget left (also the cause of the flaky `parallel_escalations_share_one_timeout_including_the_queue` test).
 - The shell lexer no longer treats a carriage return as a blank. bash, dash

@@ -86,7 +86,7 @@ deadline after reacquiring any lock.
 The gate runs from the harness's confined shell: the workspace, the temp
 dir and the Cargo home are writable, the rustup home, `/etc/alternatives`
 and `/usr/libexec` are readable, the network is open for `cargo fetch`, and
-each launch has its own pid namespace with a fresh `/proc` (so `$$` is 1
+each launch has its own pid namespace with a fresh `/proc` (so `$$` is 2 under a small init
 and no host process is visible). `cargo check`, `cargo test` and `cargo
 nextest` are tier-1 commands when the harness was started with
 `--trust-project-builds` (or `auto.trust_project_builds = true` in

@@ -113,7 +113,7 @@ the main session); keep a limitation explicit and typed instead.
 The agent's shell runs under the engine's Linux confinement: an empty
 private mount view with the workspace, the temp dir, the Cargo home and a
 few system directories granted, its own pid namespace with a fresh
-`/proc`, and a seccomp filter. Inside it `$$` is 1, host processes are
+`/proc`, and a seccomp filter. Inside it the command is pid 2 under a small init, host processes are
 invisible, and `/etc/alternatives` and `/usr/libexec` are granted so a
 Rust toolchain can link. `--no-confinement` runs the shell as the trusted
 host. The curated environment passes no provider keys into the sandbox.

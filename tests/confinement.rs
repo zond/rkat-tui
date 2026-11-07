@@ -362,7 +362,7 @@ async fn workspace_mode_runs_the_rust_toolchain() {
     let output = tool_text(&llm.requests()[1], "sh");
     rig.quit().await;
     assert!(output.contains("END"), "{output}");
-    assert!(output.contains("pid=1\n"), "{output}");
+    assert!(output.contains("pid=2\n"), "{output}");
     assert!(output.contains("linked-ok"), "{output}");
 }
 
