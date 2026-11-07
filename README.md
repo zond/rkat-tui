@@ -913,6 +913,9 @@ given).
 
 ## Testing
 
+`docs/testing.md` is the test protocol: the gate CI runs, how to scope a
+run, where each kind of test lives, and a manual smoke list.
+
 The default lane needs no keys, no network and no sandbox (unit tests plus
 headless runner tests over the real runtime-backed service with a scripted
 LLM):
