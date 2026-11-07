@@ -214,6 +214,13 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Changed
 
+- The engine pin moved to `zond/meerkat` `cbb45a2910` (branch
+  `rkat-tui-pin`: upstream `main` plus the sandbox fixes of
+  lukacf/meerkat#2094, the hook-source trust of #2096 and the narrowed
+  thinking-block binding of #2095). With it, an uncatalogued Anthropic id
+  such as a LiteLLM alias gets the binding control when `[thinking]`
+  configures adaptive or enabled thinking for it; with thinking omitted the
+  request keeps the shape upstream `main` sends.
 - The engine pin moved to upstream Meerkat `main` (70121a6157) plus two
   sandbox fixes (a pid namespace and procfs per Linux confined launch; Unix
   stream/seqpacket socketpairs alongside IP). The implicit-mob customizer

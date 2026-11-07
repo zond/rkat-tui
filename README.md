@@ -77,11 +77,14 @@ rkat-tui --allow 'shell=cargo nextest run*' --set auto.compact=auto
 ## Status
 
 Early, and moving fast. The engine comes from a pinned revision of a fork
-of Meerkat (`zond/meerkat`): upstream `main` plus the sandbox fixes the
-confined shell needs, proposed upstream as
-[lukacf/meerkat#2094](https://github.com/lukacf/meerkat/pull/2094). A
-second proposal, [lukacf/meerkat#2095](https://github.com/lukacf/meerkat/pull/2095),
-covers thinking replay on proxied Anthropic models. The pin moves to
+of Meerkat (`zond/meerkat`): upstream `main` plus three fixes proposed
+upstream as bug reports with the fix attached:
+[lukacf/meerkat#2094](https://github.com/lukacf/meerkat/pull/2094) (the
+sandbox fixes the confined shell needs),
+[lukacf/meerkat#2095](https://github.com/lukacf/meerkat/pull/2095) (thinking
+replay on proxied Anthropic models) and
+[lukacf/meerkat#2096](https://github.com/lukacf/meerkat/pull/2096) (project
+hook trust judged over the bytes the engine reads). The pin moves to
 upstream once they land, and to a crates.io release after that.
 
 ## License

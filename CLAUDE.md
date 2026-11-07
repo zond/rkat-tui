@@ -64,7 +64,7 @@ shell (`src/user_shell.rs`), and they stay the only ones.
 | `src/mobs/` | Helpers (delegate) as mob members: customizer, follower, registry |
 | `src/fork/` | The `fork` tool: a child helper started with the parent's rendered conversation |
 | `src/memory/` | Notes at user and workspace scope, memory tools |
-| `src/endpoints.rs`, `src/models.rs`, `src/pricing.rs` | LLM endpoints, model listing, price table |
+| `src/endpoints.rs`, `src/models.rs`, `src/pricing.rs`, `src/thinking.rs` | LLM endpoints, model listing, price table, the per-model `[thinking]` setting |
 | `tests/` | Integration tests over the internal modules through the `test-support` feature; `tests/common/mod.rs` holds the scripted LLM and the rig |
 | `docs/` | `testing.md` (protocol), `evidence.md` (what was built, why, with the probes and test names), `ux-parity.md` (Claude Code parity audit), `spec.yaml` / `checklist.yaml` / `traceability.md` (the RCT artifacts) |
 
