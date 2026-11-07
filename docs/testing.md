@@ -76,14 +76,23 @@ deadline after reacquiring any lock.
 
 ## Running from inside rkat-tui
 
-The gate works from the harness's confined shell: the workspace, the temp
-dir and the Cargo home are writable and the network is open for `cargo
-fetch`. `cargo check`, `cargo test` and `cargo nextest` are tier-1 commands
-when the harness was started with `--trust-project-builds` (or
-`auto.trust_project_builds = true` in `tui.toml`; the default is `false`), so
-they run without an approval prompt. Otherwise the classifier reviews each
-build command, or manual mode asks you. The confinement tests will print `SKIPPED:` lines when the
-sandbox refuses to nest; that is a pass.
+Until the engine's sandbox mounts a procfs, the Rust toolchain cannot run in
+a confined shell: the rustup proxies, rustc's own library lookup, `cargo
+clippy`, `cargo fmt` and the linker wrapper all resolve `/proc/self/exe` and
+fail with `no /proc/self/exe available. Is /proc mounted?`. Start the
+harness with `--no-confinement` to run the gate from inside it (the shell
+then runs as the trusted host, so approvals are the only guard). A sandbox
+fix (a pid namespace plus a fresh `/proc` per launch) is in progress in the
+`zond/meerkat` fork.
+
+With confinement on, the workspace, the temp dir and the Cargo home are
+writable and the network is open, which is enough for everything but the
+toolchain itself. `cargo check`, `cargo test` and `cargo nextest` are tier-1
+commands when the harness was started with `--trust-project-builds` (or
+`auto.trust_project_builds = true` in `tui.toml`; the default is `false`),
+so they run without an approval prompt; otherwise the classifier reviews
+each build command, or manual mode asks you. The confinement tests print
+`SKIPPED:` lines when the sandbox refuses to nest; that is a pass.
 
 ## Before committing
 
