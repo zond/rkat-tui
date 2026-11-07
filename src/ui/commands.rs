@@ -173,55 +173,394 @@ const HELPERS_USAGE: &str = "/helpers [expand <label>|all | fold <label>|all]";
 /// The prompt `/init` sends as an ordinary user turn.
 pub const INIT_PROMPT: &str = "Please inspect this project and write an AGENTS.md file in the workspace root (update the existing one if there is one, keeping what is still true) for future agents working here. Cover: the build, test, lint and run commands (including how to run a single test); the layout of the code (the main directories and what lives where); and the conventions a newcomer would not guess (style, naming, error handling, testing, commit habits). Be concrete and specific to this repository, skip generic advice, and keep the file under 200 lines.";
 
-/// Help text shown by `/help`: every slash command and key binding.
-pub const HELP_TEXT: &str = "\
-Commands:
-  /help, /?                      show this help
-  /quit, /exit, /q               leave rkat-tui (asks again while a turn runs or messages are queued)
-                                 and release its lease on the realm
-  /clear, /new                   clear the transcript and start a new session (idle only)
-  /resume [ref]                  resume a session (last, ~N, or id prefix); no ref opens a picker
-                                 (so does rkat-tui --resume without a ref; archived sessions
-                                 are not offered)
-  /permissions [list]            list approval rules (/rules is an alias)
-  /permissions add allow|deny <tool> [pattern]
-                                 add an approval rule
-  /permissions rm <n>            remove rule n (rm or remove)
-  /permissions trust             show the realm tui.toml and trust it as it is now
-  /trust                         trust the project's .rkat/mcp.toml, .rkat/config.toml and
-                                 workspace realm config.toml as they are now (their MCP
-                                 servers and hooks run from the next session; /mcp trust
-                                 is an alias; rkat-tui --trust-project trusts them for one
-                                 run without recording)
-  /auto                          show auto-mode state and denial counters
-  /auto on|off|resume            enable, disable, or resume auto mode after a pause (Shift+Tab
-                                 switches it off and on)
-  /model                         pick a model from every endpoint's list (type to filter)
-  /model [endpoint:]<id>         switch to a model (idle only); a bare id is looked up
-  /model refresh                 refetch every endpoint's model list and pick
-  /remember <text>, #<text>      add a line to the workspace AGENTS.md and to this session
-                                 (\\# sends a literal #)
-  /compact [now]                 compact: rebuild the session so its next model call
-                                 compacts (idle only)
-  /compact <instructions>        the same; focus instructions are not supported yet (ignored)
-  /compact status                show the compaction policy (tui.toml [auto] compact =
-                                 \"warn\" (default) warns at 75% and 85%; \"auto\" or
-                                 --auto-compact lets the runtime compact at 85%)
-  /status                        version, model, session, workspace, realm, confinement, auto
-                                 mode, trust of tui.toml and of each file /trust covers,
-                                 helper depth limit
-  /memory [user | system]        edit the workspace AGENTS.md, the user AGENTS.md or SYSTEM.md
-                                 in $VISUAL / $EDITOR / vi; an edited AGENTS.md reaches this
-                                 session (also while a turn runs), SYSTEM.md the next one
-  /init                          ask the agent to write or update AGENTS.md for this project (idle only)
-  /export [file]                 write the transcript as plain text (default:
-                                 .rkat/tui/export-<session>-<time>.txt in the workspace)
-  /context                       context usage, the compaction policy and what the context holds
-  /copy [N]                      copy the latest (or Nth latest) answer to the clipboard (OSC 52)
-  /usage, /cost, /stats          token usage and cost per model (footer: $0.42, ~ estimate, $? unpriced)
-  /helpers, /tasks               list the helpers (sub-agents) and their state
-  /helpers expand|fold <label>|all
-                                 show a helper's work in the transcript, or fold it to one line
+/// One slash command: its names, its arguments and its `/help` rows. The
+/// parser dispatches through [`COMMANDS`] and `/help`'s "Commands:" section
+/// is generated from it, so the two cannot drift apart.
+#[derive(Debug, Clone, Copy)]
+pub struct CommandSpec {
+    /// The command's name, without the `/`.
+    pub name: &'static str,
+    /// Other names that run the same command.
+    pub aliases: &'static [&'static str],
+    /// The arguments, as the completion menu shows them (empty: none).
+    pub usage: &'static str,
+    /// One line on what the command does (the completion menu's).
+    pub summary: &'static str,
+    /// `/help` rows: the left column and the description, whose `\n`
+    /// separates continuation lines. Empty: the command is described in
+    /// another one's rows (`/mcp trust` under `/trust`).
+    pub help: &'static [(&'static str, &'static str)],
+    /// Parse the text after the name (trimmed).
+    parse: fn(&str) -> Result<Command, CommandError>,
+}
+
+impl CommandSpec {
+    /// Whether `/word` runs this command.
+    #[must_use]
+    pub fn is_named(&self, word: &str) -> bool {
+        self.name == word || self.aliases.contains(&word)
+    }
+
+    /// The spelling of this command that starts with `prefix` (compared
+    /// case-insensitively): the name when it does, else the first alias that
+    /// does.
+    #[must_use]
+    pub fn completion_for(&self, prefix: &str) -> Option<&'static str> {
+        let prefix = prefix.to_lowercase();
+        std::iter::once(self.name)
+            .chain(self.aliases.iter().copied())
+            .find(|name| name.starts_with(&prefix))
+    }
+}
+
+/// Every slash command, in `/help` order.
+pub static COMMANDS: &[CommandSpec] = &[
+    CommandSpec {
+        name: "help",
+        aliases: &["?"],
+        usage: "",
+        summary: "show the commands and keys",
+        help: &[("/help, /?", "show this help")],
+        parse: |_| Ok(Command::Help),
+    },
+    CommandSpec {
+        name: "quit",
+        aliases: &["exit", "q"],
+        usage: "",
+        summary: "leave rkat-tui",
+        help: &[(
+            "/quit, /exit, /q",
+            "leave rkat-tui (asks again while a turn runs or messages are queued)\nand release its lease on the realm",
+        )],
+        parse: |_| Ok(Command::Quit),
+    },
+    CommandSpec {
+        name: "clear",
+        aliases: &["new"],
+        usage: "",
+        summary: "clear the transcript and start a new session",
+        help: &[(
+            "/clear, /new",
+            "clear the transcript and start a new session (idle only)",
+        )],
+        parse: |_| Ok(Command::Clear),
+    },
+    CommandSpec {
+        name: "resume",
+        aliases: &[],
+        usage: "[ref]",
+        summary: "resume a session (no ref: pick one)",
+        help: &[(
+            "/resume [ref]",
+            "resume a session (last, ~N, or id prefix); no ref opens a picker\n(so does rkat-tui --resume without a ref; archived sessions\nare not offered)",
+        )],
+        parse: parse_resume,
+    },
+    CommandSpec {
+        name: "permissions",
+        aliases: &["rules"],
+        usage: "[list | add allow|deny <tool> [pattern] | rm <n> | trust]",
+        summary: "list or edit the approval rules",
+        help: &[
+            ("/permissions [list]", "list approval rules (/rules is an alias)"),
+            ("/permissions add allow|deny <tool> [pattern]", "add an approval rule"),
+            ("/permissions rm <n>", "remove rule n (rm or remove)"),
+            (
+                "/permissions trust",
+                "show the realm tui.toml and trust it as it is now",
+            ),
+        ],
+        parse: |rest| parse_rules(&words(rest)).map(Command::Rules),
+    },
+    CommandSpec {
+        name: "trust",
+        aliases: &[],
+        usage: "",
+        summary: "trust the project's MCP and config files as they are now",
+        help: &[(
+            "/trust",
+            "trust the project's .rkat/mcp.toml, .rkat/config.toml and\nworkspace realm config.toml as they are now (their MCP\nservers and hooks run from the next session; /mcp trust\nis an alias; rkat-tui --trust-project trusts them for one\nrun without recording)",
+        )],
+        parse: |rest| arg_free(rest, Command::TrustProject, "/trust"),
+    },
+    CommandSpec {
+        name: "mcp",
+        aliases: &[],
+        usage: "trust",
+        summary: "the same as /trust",
+        help: &[],
+        parse: |rest| match words(rest).as_slice() {
+            ["trust"] => Ok(Command::TrustProject),
+            _ => Err(CommandError::Usage("/trust (or /mcp trust)")),
+        },
+    },
+    CommandSpec {
+        name: "auto",
+        aliases: &[],
+        usage: "[on | off | resume]",
+        summary: "show, enable, disable or resume auto mode",
+        help: &[
+            ("/auto", "show auto-mode state and denial counters"),
+            (
+                "/auto on|off|resume",
+                "enable, disable, or resume auto mode after a pause (Shift+Tab\nswitches it off and on)",
+            ),
+        ],
+        parse: parse_auto,
+    },
+    CommandSpec {
+        name: "model",
+        aliases: &[],
+        usage: "[[endpoint:]id | refresh]",
+        summary: "pick or switch the model",
+        help: &[
+            ("/model", "pick a model from every endpoint's list (type to filter)"),
+            (
+                "/model [endpoint:]<id>",
+                "switch to a model (idle only); a bare id is looked up",
+            ),
+            (
+                "/model refresh",
+                "refetch every endpoint's model list and pick",
+            ),
+        ],
+        parse: parse_model,
+    },
+    CommandSpec {
+        name: "remember",
+        aliases: &[],
+        usage: "<text>",
+        summary: "add a line to the workspace AGENTS.md",
+        help: &[(
+            "/remember <text>, #<text>",
+            "add a line to the workspace AGENTS.md and to this session\n(\\# sends a literal #)",
+        )],
+        parse: |rest| {
+            if rest.is_empty() {
+                Err(CommandError::Usage("/remember <text>"))
+            } else {
+                Ok(Command::Remember(rest.to_string()))
+            }
+        },
+    },
+    CommandSpec {
+        name: "compact",
+        aliases: &[],
+        usage: "[now | status | <instructions>]",
+        summary: "compact the context (idle only)",
+        help: &[
+            (
+                "/compact [now]",
+                "compact: rebuild the session so its next model call\ncompacts (idle only)",
+            ),
+            (
+                "/compact <instructions>",
+                "the same; focus instructions are not supported yet (ignored)",
+            ),
+            (
+                "/compact status",
+                "show the compaction policy (tui.toml [auto] compact =\n\"warn\" (default) warns at 75% and 85%; \"auto\" or\n--auto-compact lets the runtime compact at 85%)",
+            ),
+        ],
+        parse: |rest| {
+            Ok(Command::Compact(match words(rest).as_slice() {
+                [] | ["now"] => CompactCommand::Now,
+                ["status"] => CompactCommand::Status,
+                words => CompactCommand::Focused(words.join(" ")),
+            }))
+        },
+    },
+    CommandSpec {
+        name: "status",
+        aliases: &[],
+        usage: "",
+        summary: "version, model, session, workspace and trust state",
+        help: &[(
+            "/status",
+            "version, model, session, workspace, realm, confinement, auto\nmode, trust of tui.toml and of each file /trust covers,\nhelper depth limit",
+        )],
+        parse: |rest| arg_free(rest, Command::Status, "/status"),
+    },
+    CommandSpec {
+        name: "memory",
+        aliases: &[],
+        usage: "[user | system]",
+        summary: "edit AGENTS.md or SYSTEM.md in your editor",
+        help: &[(
+            "/memory [user | system]",
+            "edit the workspace AGENTS.md, the user AGENTS.md or SYSTEM.md\nin $VISUAL / $EDITOR / vi; an edited AGENTS.md reaches this\nsession (also while a turn runs), SYSTEM.md the next one",
+        )],
+        parse: |rest| match words(rest).as_slice() {
+            [] => Ok(Command::Memory(MemoryTarget::Workspace)),
+            ["user"] => Ok(Command::Memory(MemoryTarget::User)),
+            ["system"] => Ok(Command::Memory(MemoryTarget::System)),
+            _ => Err(CommandError::Usage("/memory [user | system]")),
+        },
+    },
+    CommandSpec {
+        name: "init",
+        aliases: &[],
+        usage: "",
+        summary: "ask the agent to write AGENTS.md for this project",
+        help: &[(
+            "/init",
+            "ask the agent to write or update AGENTS.md for this project (idle only)",
+        )],
+        parse: |rest| arg_free(rest, Command::Init, "/init"),
+    },
+    CommandSpec {
+        name: "export",
+        aliases: &[],
+        usage: "[file]",
+        summary: "write the transcript as plain text",
+        help: &[(
+            "/export [file]",
+            "write the transcript as plain text (default:\n.rkat/tui/export-<session>-<time>.txt in the workspace)",
+        )],
+        parse: |rest| match words(rest).as_slice() {
+            [] => Ok(Command::Export(None)),
+            words => Ok(Command::Export(Some(words.join(" ")))),
+        },
+    },
+    CommandSpec {
+        name: "context",
+        aliases: &[],
+        usage: "",
+        summary: "context usage and what the context holds",
+        help: &[(
+            "/context",
+            "context usage, the compaction policy and what the context holds",
+        )],
+        parse: |rest| match words(rest).as_slice() {
+            [] | ["all"] => Ok(Command::Context),
+            _ => Err(CommandError::Usage("/context")),
+        },
+    },
+    CommandSpec {
+        name: "copy",
+        aliases: &[],
+        usage: "[N]",
+        summary: "copy the latest (or Nth latest) answer to the clipboard",
+        help: &[(
+            "/copy [N]",
+            "copy the latest (or Nth latest) answer to the clipboard (OSC 52)",
+        )],
+        parse: parse_copy,
+    },
+    CommandSpec {
+        name: "usage",
+        aliases: &["cost", "stats"],
+        usage: "",
+        summary: "token usage and cost per model",
+        help: &[(
+            "/usage, /cost, /stats",
+            "token usage and cost per model (footer: $0.42, ~ estimate, $? unpriced)",
+        )],
+        parse: |rest| arg_free(rest, Command::Cost, "/usage"),
+    },
+    CommandSpec {
+        name: "helpers",
+        aliases: &["tasks"],
+        usage: "[expand|fold <label>|all]",
+        summary: "list the helpers (sub-agents), or show or fold their work",
+        help: &[
+            (
+                "/helpers, /tasks",
+                "list the helpers (sub-agents) and their state",
+            ),
+            (
+                "/helpers expand|fold <label>|all",
+                "show a helper's work in the transcript, or fold it to one line",
+            ),
+        ],
+        parse: parse_helpers,
+    },
+];
+
+/// The command `/word` names, if any.
+#[must_use]
+pub fn spec(word: &str) -> Option<&'static CommandSpec> {
+    COMMANDS.iter().find(|spec| spec.is_named(word))
+}
+
+/// The commands with a spelling that starts with `prefix` (case-insensitive),
+/// in `/help` order, each with that spelling.
+pub fn completions(prefix: &str) -> impl Iterator<Item = (&'static CommandSpec, &'static str)> + '_ {
+    COMMANDS
+        .iter()
+        .filter_map(move |spec| spec.completion_for(prefix).map(|name| (spec, name)))
+}
+
+/// `command` when `rest` is empty, else a usage error.
+fn arg_free(rest: &str, command: Command, usage: &'static str) -> Result<Command, CommandError> {
+    if rest.is_empty() {
+        Ok(command)
+    } else {
+        Err(CommandError::Usage(usage))
+    }
+}
+
+fn words(rest: &str) -> Vec<&str> {
+    rest.split_whitespace().collect()
+}
+
+fn parse_resume(rest: &str) -> Result<Command, CommandError> {
+    match words(rest).as_slice() {
+        [] => Ok(Command::Resume(None)),
+        [r] => Ok(Command::Resume(Some((*r).to_string()))),
+        _ => Err(CommandError::Usage("/resume [last | ~N | id-prefix]")),
+    }
+}
+
+fn parse_auto(rest: &str) -> Result<Command, CommandError> {
+    match words(rest).as_slice() {
+        [] => Ok(Command::Auto(AutoCommand::Status)),
+        ["on"] => Ok(Command::Auto(AutoCommand::On)),
+        ["off"] => Ok(Command::Auto(AutoCommand::Off)),
+        ["resume"] => Ok(Command::Auto(AutoCommand::Resume)),
+        _ => Err(CommandError::Usage(AUTO_USAGE)),
+    }
+}
+
+fn parse_model(rest: &str) -> Result<Command, CommandError> {
+    match words(rest).as_slice() {
+        [] => Ok(Command::Model(ModelCommand::Pick)),
+        ["refresh"] => Ok(Command::Model(ModelCommand::Refresh)),
+        [m] => Ok(Command::Model(ModelCommand::Set((*m).to_string()))),
+        _ => Err(CommandError::Usage("/model [[endpoint:]id | refresh]")),
+    }
+}
+
+fn parse_copy(rest: &str) -> Result<Command, CommandError> {
+    const USAGE: &str = "/copy [N] (N ≥ 1, 1 = the latest answer)";
+    match words(rest).as_slice() {
+        [] => Ok(Command::Copy(1)),
+        [n] => match n.parse::<usize>() {
+            Ok(n) if n >= 1 => Ok(Command::Copy(n)),
+            _ => Err(CommandError::Usage(USAGE)),
+        },
+        _ => Err(CommandError::Usage(USAGE)),
+    }
+}
+
+fn parse_helpers(rest: &str) -> Result<Command, CommandError> {
+    let target = |t: &str| match t {
+        "all" => HelperTarget::All,
+        label => HelperTarget::Label(label.to_string()),
+    };
+    match words(rest).as_slice() {
+        [] | ["list"] => Ok(Command::Helpers(HelpersCommand::List)),
+        ["expand", t] => Ok(Command::Helpers(HelpersCommand::Expand(target(t)))),
+        ["fold", t] => Ok(Command::Helpers(HelpersCommand::Fold(target(t)))),
+        _ => Err(CommandError::Usage(HELPERS_USAGE)),
+    }
+}
+
+/// Width of `/help`'s left column, its two-space indent included.
+const HELP_COLUMN: usize = 33;
+
+/// The keys and the approval prompt, as `/help` and the `?` panel list them.
+const KEYS_HELP: &str = "\
 Keys:
   ? (empty input)                show these keys; any key closes them (with text, ? is typed)
   Enter                          send; while the agent is working, queues the message
@@ -258,6 +597,9 @@ Keys:
   Ctrl-Z                         suspend to the shell (fg resumes; Unix)
   Shift+Tab                      switch auto mode off/on (same as /auto off|on)
   Alt+P                          pick a model (as /model) without clearing the input
+  / (one-line input)             a menu of the matching commands opens above the input:
+                                 ↑/↓ choose, Tab completes, Enter completes a partial name
+                                 (a full one sends), Esc closes it
   Home/End                       scroll to top/bottom when the input is empty (Ctrl+Home/End always)
 Approval prompt:
   1, y                           yes, allow once
@@ -265,17 +607,44 @@ Approval prompt:
   3, n, Esc                      no: type what the agent should do instead and Enter sends it
                                  with the denial (empty Enter or Esc denies without a comment)
   Up/Down, j/k, Enter            move between the rows and pick one
-  s                              stop the turn (Ctrl-C stops every open prompt)
-Start a prompt with // to send a literal leading slash.";
+  s                              stop the turn (Ctrl-C stops every open prompt)";
 
-/// The "Keys" and "Approval prompt" parts of [`HELP_TEXT`]: what the `?`
+/// The line that ends `/help`.
+const HELP_FOOTER: &str = "Start a prompt with // to send a literal leading slash.";
+
+/// Help text shown by `/help`: every slash command (from [`COMMANDS`]) and
+/// key binding.
+#[must_use]
+pub fn help_text() -> &'static str {
+    static TEXT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    TEXT.get_or_init(|| {
+        let mut out = String::from("Commands:\n");
+        let pad = " ".repeat(HELP_COLUMN);
+        for (left, text) in COMMANDS.iter().flat_map(|spec| spec.help) {
+            let mut lines = text.split('\n');
+            let first = lines.next().unwrap_or_default();
+            if left.chars().count() + 2 < HELP_COLUMN {
+                let width = HELP_COLUMN - 2;
+                out.push_str(&format!("  {left:<width$}{first}\n"));
+            } else {
+                out.push_str(&format!("  {left}\n{pad}{first}\n"));
+            }
+            for line in lines {
+                out.push_str(&format!("{pad}{line}\n"));
+            }
+        }
+        out.push_str(KEYS_HELP);
+        out.push('\n');
+        out.push_str(HELP_FOOTER);
+        out
+    })
+}
+
+/// The "Keys" and "Approval prompt" parts of [`help_text`]: what the `?`
 /// shortcut panel lists.
 #[must_use]
 pub fn keys_help() -> &'static str {
-    let start = HELP_TEXT.find("Keys:").unwrap_or(0);
-    let keys = HELP_TEXT.get(start..).unwrap_or(HELP_TEXT);
-    keys.split_once("\nStart a prompt")
-        .map_or(keys, |(keys, _)| keys)
+    KEYS_HELP
 }
 
 /// A single-line `#text` input (not `##…`) as a remember request: returns the
@@ -306,110 +675,14 @@ pub fn parse(input: &str) -> Option<Result<Command, CommandError>> {
     if body.starts_with('/') {
         return None;
     }
-    let mut words = body.split_whitespace();
-    let name = words.next().unwrap_or_default();
-    if name == "remember" {
-        // Keep the text verbatim (inner whitespace included).
-        let text = body
-            .trim_start()
-            .get(name.len()..)
-            .unwrap_or_default()
-            .trim();
-        return Some(if text.is_empty() {
-            Err(CommandError::Usage("/remember <text>"))
-        } else {
-            Ok(Command::Remember(text.to_string()))
-        });
-    }
-    let args: Vec<&str> = words.collect();
-    Some(parse_command(name, &args))
-}
-
-fn parse_command(name: &str, args: &[&str]) -> Result<Command, CommandError> {
-    match name {
-        "quit" | "exit" | "q" => Ok(Command::Quit),
-        "clear" | "new" => Ok(Command::Clear),
-        "help" | "?" => Ok(Command::Help),
-        "memory" => match args {
-            [] => Ok(Command::Memory(MemoryTarget::Workspace)),
-            ["user"] => Ok(Command::Memory(MemoryTarget::User)),
-            ["system"] => Ok(Command::Memory(MemoryTarget::System)),
-            _ => Err(CommandError::Usage("/memory [user | system]")),
-        },
-        "init" => match args {
-            [] => Ok(Command::Init),
-            _ => Err(CommandError::Usage("/init")),
-        },
-        "export" => match args {
-            [] => Ok(Command::Export(None)),
-            words => Ok(Command::Export(Some(words.join(" ")))),
-        },
-        "status" => match args {
-            [] => Ok(Command::Status),
-            _ => Err(CommandError::Usage("/status")),
-        },
-        "context" => match args {
-            [] | ["all"] => Ok(Command::Context),
-            _ => Err(CommandError::Usage("/context")),
-        },
-        "usage" | "cost" | "stats" => match args {
-            [] => Ok(Command::Cost),
-            _ => Err(CommandError::Usage("/usage")),
-        },
-        "copy" => match args {
-            [] => Ok(Command::Copy(1)),
-            [n] => match n.parse::<usize>() {
-                Ok(n) if n >= 1 => Ok(Command::Copy(n)),
-                _ => Err(CommandError::Usage("/copy [N] (N ≥ 1, 1 = the latest answer)")),
-            },
-            _ => Err(CommandError::Usage("/copy [N] (N ≥ 1, 1 = the latest answer)")),
-        },
-        "compact" => Ok(Command::Compact(match args {
-            [] | ["now"] => CompactCommand::Now,
-            ["status"] => CompactCommand::Status,
-            words => CompactCommand::Focused(words.join(" ")),
-        })),
-        "resume" => match args {
-            [] => Ok(Command::Resume(None)),
-            [r] => Ok(Command::Resume(Some((*r).to_string()))),
-            _ => Err(CommandError::Usage("/resume [last | ~N | id-prefix]")),
-        },
-        "model" => match args {
-            [] => Ok(Command::Model(ModelCommand::Pick)),
-            ["refresh"] => Ok(Command::Model(ModelCommand::Refresh)),
-            [m] => Ok(Command::Model(ModelCommand::Set((*m).to_string()))),
-            _ => Err(CommandError::Usage("/model [[endpoint:]id | refresh]")),
-        },
-        "auto" => match args {
-            [] => Ok(Command::Auto(AutoCommand::Status)),
-            ["on"] => Ok(Command::Auto(AutoCommand::On)),
-            ["off"] => Ok(Command::Auto(AutoCommand::Off)),
-            ["resume"] => Ok(Command::Auto(AutoCommand::Resume)),
-            _ => Err(CommandError::Usage(AUTO_USAGE)),
-        },
-        "permissions" | "rules" => parse_rules(args).map(Command::Rules),
-        "trust" => match args {
-            [] => Ok(Command::TrustProject),
-            _ => Err(CommandError::Usage("/trust")),
-        },
-        "mcp" => match args {
-            ["trust"] => Ok(Command::TrustProject),
-            _ => Err(CommandError::Usage("/trust (or /mcp trust)")),
-        },
-        "helpers" | "tasks" => {
-            let target = |t: &str| match t {
-                "all" => HelperTarget::All,
-                label => HelperTarget::Label(label.to_string()),
-            };
-            match args {
-                [] | ["list"] => Ok(Command::Helpers(HelpersCommand::List)),
-                ["expand", t] => Ok(Command::Helpers(HelpersCommand::Expand(target(t)))),
-                ["fold", t] => Ok(Command::Helpers(HelpersCommand::Fold(target(t)))),
-                _ => Err(CommandError::Usage(HELPERS_USAGE)),
-            }
-        }
-        other => Err(CommandError::Unknown(other.to_string())),
-    }
+    let body = body.trim_start();
+    let name = body.split_whitespace().next().unwrap_or_default();
+    // The rest verbatim (inner whitespace included, for `/remember`).
+    let rest = body.get(name.len()..).unwrap_or_default().trim();
+    Some(match spec(name) {
+        Some(spec) => (spec.parse)(rest),
+        None => Err(CommandError::Unknown(name.to_string())),
+    })
 }
 
 fn parse_rules(args: &[&str]) -> Result<RulesCommand, CommandError> {
@@ -444,6 +717,60 @@ mod tests {
 
     fn ok(s: &str) -> Command {
         parse(s).unwrap().unwrap()
+    }
+
+    #[test]
+    fn every_spec_parses_and_every_name_has_a_spec() {
+        // Sample arguments for the commands that need some.
+        let args = |name: &str| match name {
+            "remember" => " a note",
+            "mcp" => " trust",
+            _ => "",
+        };
+        let mut seen = std::collections::HashSet::new();
+        for spec in COMMANDS {
+            for name in std::iter::once(spec.name).chain(spec.aliases.iter().copied()) {
+                assert!(seen.insert(name), "/{name} is named twice");
+                let line = format!("/{name}{}", args(spec.name));
+                assert!(
+                    matches!(parse(&line), Some(Ok(_))),
+                    "{line}: {:?}",
+                    parse(&line)
+                );
+                assert!(std::ptr::eq(super::spec(name).unwrap(), spec));
+            }
+            // Every spec is in /help: its own rows, or (/mcp) another's.
+            assert!(help_text().contains(&format!("/{}", spec.name)), "{}", spec.name);
+            assert!(!spec.summary.is_empty());
+        }
+        // The names the parser has always understood all have a spec.
+        for name in [
+            "quit", "exit", "q", "clear", "new", "help", "?", "memory", "init", "export",
+            "status", "context", "usage", "cost", "stats", "copy", "compact", "resume", "model",
+            "auto", "permissions", "rules", "trust", "mcp", "helpers", "tasks", "remember",
+        ] {
+            assert!(super::spec(name).is_some(), "/{name} has no spec");
+        }
+        assert_eq!(seen.len(), 27);
+        // `/help`'s "Commands:" rows come from the specs, in their order.
+        let commands = help_text().split_once("Keys:").unwrap().0;
+        let mut at = 0;
+        for (left, _) in COMMANDS.iter().flat_map(|spec| spec.help) {
+            let found = commands[at..].find(left).unwrap_or_else(|| panic!("{left}"));
+            at += found + left.len();
+        }
+    }
+
+    #[test]
+    fn completions_match_names_and_aliases_by_prefix() {
+        let names = |prefix: &str| completions(prefix).map(|(_, n)| n).collect::<Vec<_>>();
+        assert_eq!(names("he"), ["help", "helpers"]);
+        assert_eq!(names("HE"), ["help", "helpers"]);
+        // An alias offers itself when the name does not match.
+        assert_eq!(names("ex"), ["exit", "export"]);
+        assert_eq!(names("ta"), ["tasks"]);
+        assert_eq!(names("zz"), Vec::<&str>::new());
+        assert_eq!(completions("").count(), COMMANDS.len());
     }
 
     #[test]
@@ -654,8 +981,9 @@ mod tests {
             "/helpers",
             "Ctrl+Up/Down",
             "? (empty input)",
+            "Tab completes",
         ] {
-            assert!(HELP_TEXT.contains(needle), "help is missing {needle}");
+            assert!(help_text().contains(needle), "help is missing {needle}");
         }
     }
 

@@ -390,6 +390,22 @@ impl InputEditor {
         self.col = char_len(self.current());
     }
 
+    /// Replace the chars `start..end` of line `row` with `text` (no
+    /// newlines) and put the cursor after it: a completion. Ctrl-_ undoes it.
+    pub fn replace_in_line(&mut self, row: usize, start: usize, end: usize, text: &str) {
+        let Some(line) = self.lines.get(row) else {
+            return;
+        };
+        let (a, b) = (byte_index(line, start), byte_index(line, end.max(start)));
+        self.push_undo();
+        self.last = LastEdit::Other;
+        if let Some(line) = self.lines.get_mut(row) {
+            line.replace_range(a..b, text);
+        }
+        self.row = row;
+        self.col = start + char_len(text);
+    }
+
     /// Add non-blank `text` to the prompt history (unless it is the newest
     /// entry already).
     pub fn remember(&mut self, text: &str) {

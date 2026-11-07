@@ -6,6 +6,7 @@
 
 pub mod commands;
 pub mod compaction;
+pub mod complete;
 pub mod cost;
 pub mod delivery;
 pub mod editor;
@@ -810,6 +811,11 @@ pub struct App {
     focused: bool,
     /// A bell is due ([`Self::take_bell`]).
     ring: bool,
+    /// The completion menu above the input, while open.
+    menu: Option<complete::Menu>,
+    /// The word Esc closed the menu for: it stays closed until the word
+    /// changes.
+    menu_dismissed: Option<complete::Word>,
     dirty: bool,
 }
 
@@ -855,6 +861,8 @@ impl App {
             bell: true,
             focused: true,
             ring: false,
+            menu: None,
+            menu_dismissed: None,
             dirty: true,
         }
     }
@@ -1695,8 +1703,93 @@ impl App {
         }
         self.status.queued = self.pending.len();
         self.status.helper_panel = !self.transcript.panel_helpers().is_empty();
+        self.refresh_menu();
         self.dirty |= dirty;
         fx
+    }
+
+    /// The open completion menu, if any.
+    pub fn menu(&self) -> Option<&complete::Menu> {
+        self.menu.as_ref()
+    }
+
+    /// Open, keep or close the completion menu for the word under the
+    /// cursor. The same word keeps the menu (and its highlight); a new word
+    /// rebuilds it; no word, a dismissed word, search mode or no matches
+    /// close it.
+    fn refresh_menu(&mut self) {
+        let word = match self.mode {
+            InputMode::Normal => complete::word_at(self.input.lines(), self.input.cursor()),
+            InputMode::Search(_) => None,
+        };
+        let Some(word) = word else {
+            self.menu = None;
+            self.menu_dismissed = None;
+            return;
+        };
+        if self.menu_dismissed.as_ref() == Some(&word) {
+            self.menu = None;
+            return;
+        }
+        self.menu_dismissed = None;
+        if self.menu.as_ref().is_some_and(|menu| menu.word == word) {
+            return;
+        }
+        let items = complete::candidates(&word);
+        self.menu = complete::Menu::open(word, items);
+    }
+
+    /// A key while the completion menu is open: ↑/↓ move the highlight, Tab
+    /// completes, Enter completes a partial word (a complete one sends as
+    /// usual), Esc closes the menu for this word. Returns whether the key
+    /// was the menu's.
+    fn menu_key(&mut self, key: &KeyEvent) -> bool {
+        if self.modal.is_some() || !key.modifiers.is_empty() {
+            return false;
+        }
+        let Some(menu) = &mut self.menu else {
+            return false;
+        };
+        match key.code {
+            KeyCode::Up => menu.step(false),
+            KeyCode::Down => menu.step(true),
+            KeyCode::Tab => self.accept_completion(),
+            KeyCode::Enter if !menu.is_complete() => self.accept_completion(),
+            KeyCode::Esc => {
+                self.menu_dismissed = Some(menu.word.clone());
+                self.menu = None;
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Put the highlighted row in place of the word, followed by a space
+    /// unless one follows already.
+    fn accept_completion(&mut self) {
+        let Some(menu) = self.menu.take() else {
+            return;
+        };
+        let Some(item) = menu.current() else {
+            return;
+        };
+        let word = &menu.word;
+        let spaced = self
+            .input
+            .lines()
+            .get(word.row)
+            .and_then(|line| line.chars().nth(word.end))
+            .is_some_and(char::is_whitespace);
+        let text = if spaced {
+            item.insert.clone()
+        } else {
+            format!("{} ", item.insert)
+        };
+        self.input.replace_in_line(word.row, word.start, word.end, &text);
+        if spaced {
+            // Step over the space that is there.
+            self.input.right();
+        }
     }
 
     fn main_key(&mut self, key: &KeyEvent, now: Instant, fx: &mut Vec<Effect>) {
@@ -1731,6 +1824,11 @@ impl App {
                 // Anything else cancels the chord and is processed normally.
                 _ => {}
             }
+        }
+        if self.menu_key(key) {
+            self.last_ctrl_c = None;
+            self.last_esc = None;
+            return;
         }
         if key.code == KeyCode::Char('?')
             && !key
@@ -2589,7 +2687,7 @@ impl App {
             Command::Quit => self.request_quit(now, fx),
             Command::Help => {
                 self.transcript
-                    .push_notice(NoticeLevel::Info, commands::HELP_TEXT);
+                    .push_notice(NoticeLevel::Info, commands::help_text());
             }
             Command::Copy(n) => self.copy_answer(n),
             Command::Context => fx.push(Effect::ContextReport(self.context_header())),
@@ -3976,6 +4074,101 @@ mod tests {
             )]
         );
         assert_eq!(app.modal.as_ref(), Some(&picker));
+    }
+
+    fn menu_rows(app: &App) -> Vec<String> {
+        app.menu()
+            .map(|menu| menu.items.iter().map(|item| item.insert.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn the_slash_menu_filters_moves_completes_and_closes() {
+        let mut app = App::new(StatusInfo::default()).with_history(vec!["older".into()]);
+        type_str(&mut app, "/he");
+        assert_eq!(menu_rows(&app), ["/help", "/helpers"]);
+        assert_eq!(app.menu().unwrap().selected, 0);
+        // ↓ moves the highlight (not history); Tab inserts it and a space,
+        // which closes the menu.
+        app.update(key(KeyCode::Down));
+        assert_eq!(app.menu().unwrap().selected, 1);
+        app.update(key(KeyCode::Up));
+        app.update(key(KeyCode::Up));
+        assert_eq!(app.menu().unwrap().selected, 1, "wraps");
+        assert_eq!(app.input.text(), "/he");
+        assert!(app.update(key(KeyCode::Tab)).is_empty());
+        assert_eq!(app.input.text(), "/helpers ");
+        assert!(app.menu().is_none());
+        // Ctrl-_ undoes the completion; the menu comes back for the word.
+        app.update(ctrl('_'));
+        assert_eq!(app.input.text(), "/he");
+        assert_eq!(menu_rows(&app), ["/help", "/helpers"]);
+        // Enter on a partial name completes it instead of sending.
+        assert!(app.update(key(KeyCode::Enter)).is_empty());
+        assert_eq!(app.input.text(), "/help ");
+        assert!(app.take_submitted().is_empty());
+        // Enter on a full name sends, args and all.
+        app.input.clear();
+        type_str(&mut app, "/stat");
+        assert_eq!(menu_rows(&app), ["/status", "/stats"]);
+        type_str(&mut app, "us");
+        assert_eq!(menu_rows(&app), ["/status"]);
+        assert_eq!(app.update(key(KeyCode::Enter)), vec![Effect::StatusReport]);
+        assert!(app.input.is_empty());
+        // An alias completes as itself; a single match completes on Tab.
+        type_str(&mut app, "/tas");
+        app.update(key(KeyCode::Tab));
+        assert_eq!(app.input.text(), "/tasks ");
+        // Tab before existing args keeps them and steps over the space.
+        app.input.clear();
+        type_str(&mut app, "/mo gpt-5.5");
+        for _ in 0.."gpt-5.5 ".len() {
+            app.update(key(KeyCode::Left));
+        }
+        assert_eq!(menu_rows(&app), ["/model"]);
+        app.update(key(KeyCode::Tab));
+        assert_eq!(app.input.text(), "/model gpt-5.5");
+        assert_eq!(app.input.cursor(), (0, 7));
+        assert!(app.menu().is_none());
+    }
+
+    #[test]
+    fn esc_closes_the_slash_menu_until_the_word_changes() {
+        let mut app = App::new(StatusInfo::default());
+        type_str(&mut app, "/co");
+        assert_eq!(menu_rows(&app), ["/compact", "/context", "/copy", "/cost"]);
+        assert!(app.update(key(KeyCode::Esc)).is_empty());
+        assert!(app.menu().is_none());
+        assert_eq!(app.input.text(), "/co", "Esc only closes the menu");
+        // Without the menu, ↑ is history again and Enter sends.
+        app.update(agent(AgentEvent::TextDelta {
+            delta: "x".into(),
+            assistant_message_id: None,
+        }));
+        assert!(app.menu().is_none(), "other messages keep it closed");
+        type_str(&mut app, "p");
+        assert_eq!(menu_rows(&app), ["/copy"]);
+        app.update(key(KeyCode::Esc));
+        app.update(key(KeyCode::Enter));
+        assert_eq!(app.take_submitted(), ["/cop"]);
+        assert_eq!(
+            last_notice(&app),
+            Some((NoticeLevel::Warn, "unknown command /cop (try /help)".into()))
+        );
+        // No menu: no match, `//`, a second line, the cursor past the
+        // first word.
+        for text in ["/zz", "//he", "hi /he"] {
+            app.input.clear();
+            type_str(&mut app, text);
+            assert!(app.menu().is_none(), "{text}");
+        }
+        app.input.clear();
+        type_str(&mut app, "/he");
+        app.update(Msg::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)));
+        assert!(app.menu().is_none(), "multi-line input");
+        app.input.clear();
+        type_str(&mut app, "/help x");
+        assert!(app.menu().is_none());
     }
 
     #[test]

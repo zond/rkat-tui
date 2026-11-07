@@ -1210,3 +1210,43 @@ Controls changed by batch 1 (before → after):
 Commands for the docs pass: `cargo clippy --all-targets --all-features -- -D warnings` exit 0; `cargo fmt --all`
 exit 0; `cargo nextest run --all-features` 785 passed, 6 skipped, exit 0 (`help_mentions_every_command_and_key`
 covers the HELP_TEXT edits).
+
+## Batch 2 A (2026-11-07)
+
+### 1. `/` command menu with Tab completion
+
+- Before: commands were parsed by a hand-written `match` in `ui/commands.rs` `parse_command`, and `/help`'s
+  "Commands:" section was a separate hand-written string (`HELP_TEXT`); typing `/` offered nothing, Tab was unbound.
+- After: `ui/commands.rs` `COMMANDS` is one `CommandSpec { name, aliases, usage, summary, help, parse }` table in
+  `/help` order (19 commands, 27 names; `/mcp` has no help rows of its own, `/trust`'s row names it). `parse` looks
+  the first word up with `spec(name)` and calls the spec's parser; `help_text()` (built once) generates the
+  "Commands:" rows from the specs' `help` rows (left column padded to 33, continuation lines indented), then the
+  hand-written `KEYS_HELP` and the `//` footer; `keys_help()` is `KEYS_HELP`. The generated text was checked
+  byte-for-byte against the old `HELP_TEXT` before the Keys section gained its new row.
+  `ui/complete.rs`: `word_at` finds the first word of a one-line input that starts with `/` (not `//`) while the
+  cursor is in it; `candidates` lists `commands::completions(prefix)` (name or alias prefix, case-insensitive; an
+  alias offers itself when the name does not match, e.g. `/ex` → `/exit`, `/export`) as `/name usage — summary`;
+  `Menu` holds the rows, the highlight (wrapping) and an 8-row window that follows it. `App` keeps `menu` and
+  `menu_dismissed`, refreshed after every message (the same word keeps the menu and its highlight). With the menu
+  open, plain ↑/↓ move the highlight (not history), Tab replaces the word with the highlighted command plus a space
+  (stepping over a space already there, so `/mo| gpt-5.5` → `/model gpt-5.5`), Enter does the same unless the word
+  already names a command exactly (then it sends as before, arguments included), Esc closes the menu for that word
+  (a changed word reopens it). Ctrl-_ undoes a completion (`InputEditor::replace_in_line`). `render.rs` `draw_menu`
+  draws the rows over the bottom of the transcript right above the input (cleared first; highlighted row reversed,
+  the others cyan label and dim summary, cut to the width), only without a modal; the editor title reads
+  `Tab completes · ↑/↓ choose · Esc closes the menu` while it is open.
+- Tests: `ui::commands::tests::every_spec_parses_and_every_name_has_a_spec` (every name and alias parses to a
+  command and looks up its own spec, no name twice, the 27 names the old parser knew all have a spec, every spec is
+  in `/help`, the help rows appear in spec order), `completions_match_names_and_aliases_by_prefix`;
+  `ui::complete::tests::{the_command_word_is_the_first_word_of_a_one_line_slash_input,
+  candidates_show_usage_and_summary, the_highlight_wraps_and_the_window_follows_it}`;
+  `ui::tests::the_slash_menu_filters_moves_completes_and_closes` (filtering, ↓/↑ with a history entry present, Tab,
+  undo, Enter completing `/he`, Enter sending `/status`, an alias, Tab before arguments) and
+  `esc_closes_the_slash_menu_until_the_word_changes` (Esc, an agent event, retyping, Enter sending `/cop` as an
+  unknown command, no menu for `/zz`, `//he`, `hi /he`, two lines, `/help x`);
+  `render_snapshot::the_slash_menu_renders_above_the_input_with_the_highlight` (full 70×12 snapshot of `/co` with
+  ↓: four rows over the transcript, the second reversed edge to edge, cyan labels, the title hint; Esc restores
+  the transcript rows and the title). The helper panel, keys panel and title-hint snapshots pass unchanged.
+- Docs: HELP_TEXT Keys gains the `/ (one-line input)` row; README "Keys and commands"; CHANGELOG.
+- Commands: `cargo fmt --all` exit 0; `cargo clippy --all-targets --all-features -- -D warnings` exit 0;
+  `cargo nextest run --all-features` 793 passed, 6 skipped, exit 0.

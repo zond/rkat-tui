@@ -925,3 +925,46 @@ fn a_pending_ctrl_x_chord_names_its_second_keys() {
         lines[9]
     );
 }
+
+#[test]
+fn the_slash_menu_renders_above_the_input_with_the_highlight() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent};
+    let mut app = sample_app();
+    for c in "/co".chars() {
+        app.update(Msg::Key(KeyEvent::from(KeyCode::Char(c))));
+    }
+    app.update(Msg::Key(KeyEvent::from(KeyCode::Down)));
+    let buffer = render_buffer(&mut app, 70, H);
+    let drawn = rows(&buffer);
+    assert_eq!(
+        drawn,
+        [
+            "› list files",
+            "",
+            "• Sure, let me look.",
+            "",
+            "◐ glob({\"pattern\":\"*.rs\"}) running…",
+            " /compact [now | status | <instructions>] — compact the context (idle…",
+            " /context — context usage and what the context holds",
+            " /copy [N] — copy the latest (or Nth latest) answer to the clipboard",
+            " /cost — token usage and cost per model",
+            " Tab completes · ↑/↓ choose · Esc closes the menu ────────────────────",
+            "› /co",
+            " anthropic/claude-sonnet-4-6 │ session abc123ef │ ↑1.2k ↓345",
+        ]
+    );
+    // The highlighted row (↓: the second) is reversed, the others are not.
+    assert!(buffer[(3, 6)].modifier.contains(Modifier::REVERSED));
+    assert!(buffer[(69, 6)].modifier.contains(Modifier::REVERSED));
+    assert!(!buffer[(3, 5)].modifier.contains(Modifier::REVERSED));
+    assert_eq!(buffer[(3, 7)].fg, Color::Cyan);
+    // Esc closes it: the transcript shows through again and the title
+    // goes back to normal.
+    app.update(Msg::Key(KeyEvent::from(KeyCode::Esc)));
+    let closed = rows(&render_buffer(&mut app, 70, H));
+    assert!(
+        closed[5..9].iter().all(|row| !row.contains(" — ")),
+        "{closed:?}"
+    );
+    assert!(!closed[9].contains("Tab completes"), "{:?}", closed[9]);
+}

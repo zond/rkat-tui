@@ -147,6 +147,11 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
     Enter or Esc denies without a comment.
   - `?` on an empty input opens a shortcut panel (the keys part of
     `/help`); any key closes it. The idle editor title hints `? keys`.
+  - `/` at the start of a one-line input opens a command menu above the
+    input (`/name usage — summary`, filtered by name or alias prefix):
+    ↑/↓ choose, Tab completes, Enter completes a partial name and sends a
+    complete one, Esc closes it for the word. The parser, `/help`'s command
+    list and the menu share one `CommandSpec` table.
 
 ### Changed
 

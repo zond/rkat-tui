@@ -6,7 +6,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block as BorderBlock, Borders, Paragraph};
+use ratatui::widgets::{Block as BorderBlock, Borders, Clear, Paragraph};
 
 use super::markdown::{display_width, render_markdown, sanitize, truncate_to_width, wrap_text};
 use super::modal::draw_modal;
@@ -64,6 +64,9 @@ pub fn draw_at(frame: &mut Frame<'_>, app: &mut App, now: Instant) {
         None => draw_transcript(frame, app, transcript_area),
     }
     draw_input(frame, app, input_area, now);
+    if app.modal.is_none() {
+        draw_menu(frame, app, transcript_area, input_area);
+    }
     if !panel.is_empty() {
         draw_panel(frame, app, &panel, panel_area);
     }
@@ -171,6 +174,57 @@ pub fn panel_window(len: usize, selected: Option<usize>) -> (usize, usize, usize
     (first, shown, len - shown)
 }
 
+/// The completion menu: up to [`super::complete::MAX_ROWS`] rows over the
+/// bottom of the transcript, right above the input, the highlighted row
+/// reversed. Each row is `label — detail`, cut to the width.
+fn draw_menu(frame: &mut Frame<'_>, app: &App, transcript: Rect, input: Rect) {
+    let Some(menu) = app.menu() else {
+        return;
+    };
+    let (first, shown) = menu.window();
+    let height = u16::try_from(shown).unwrap_or(u16::MAX).min(transcript.height);
+    if height == 0 {
+        return;
+    }
+    let area = Rect {
+        x: input.x,
+        y: input.y.saturating_sub(height),
+        width: input.width,
+        height,
+    };
+    let w = usize::from(area.width);
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let lines: Vec<Line<'static>> = menu
+        .items
+        .iter()
+        .enumerate()
+        .skip(first)
+        .take(usize::from(height))
+        .map(|(i, item)| {
+            let label = truncate_to_width(&format!(" {}", sanitize(&item.label)), w);
+            let room = w.saturating_sub(display_width(&label));
+            let detail = if item.detail.is_empty() || room < 4 {
+                String::new()
+            } else {
+                truncate_to_width(&format!(" — {}", sanitize(&item.detail)), room)
+            };
+            let pad = " ".repeat(w.saturating_sub(display_width(&label) + display_width(&detail)));
+            if i == menu.selected {
+                Line::from(format!("{label}{detail}{pad}"))
+                    .style(Style::default().add_modifier(Modifier::REVERSED))
+            } else {
+                Line::from(vec![
+                    Span::styled(label, Style::default().fg(Color::Cyan)),
+                    Span::styled(detail, dim),
+                    Span::raw(pad),
+                ])
+            }
+        })
+        .collect();
+    frame.render_widget(Clear, area);
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
 fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect, now: Instant) {
     // The helper panel's keys are named here, like every other key, while
     // the panel lists something and nothing in it is selected yet.
@@ -191,6 +245,8 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect, now: Instant) {
         " C-x- · C-s send now · C-e edit in $EDITOR ".into()
     } else if app.search().is_some() {
         " Ctrl-R older · Enter accept · Esc cancel ".into()
+    } else if app.menu().is_some() {
+        " Tab completes · ↑/↓ choose · Esc closes the menu ".into()
     } else if app.helper_view().is_some() {
         " Esc back to the transcript · PgUp/PgDn scroll · Enter sends typed text ".into()
     } else if app.panel_selection().is_some() {

@@ -680,6 +680,17 @@ writes it with its file tools, so the usual approval, protected-path and
 sealed-path rules apply. `/clear`, `/resume`, `/model` and `/compact` work only while
 idle; the transcript is replaced only once the new session is live.
 
+Typing `/` at the start of a one-line input opens a menu of the commands
+whose name or alias starts with what follows (case-insensitive) right above
+the input, each as `/name usage — summary`, up to eight rows at a time
+(the list scrolls with the highlight). ↑/↓ choose a row (not history while
+the menu is open), Tab puts the highlighted command and a space in place of
+the word, Enter does the same for a partial name and sends a complete one
+(with its arguments) as before, and Esc closes the menu for that word;
+typing reopens it. `//` never opens it, and nor does a word nothing
+matches. The parser and `/help`'s command list are generated from one
+table (`COMMANDS` in `src/ui/commands.rs`), which the menu reads too.
+
 `?` on an empty input opens a panel with the keys part of `/help` (the
 editor title shows `? keys` while idle and empty); `?`, Esc or any other
 key closes it without being typed, and with text in the input `?` is just
