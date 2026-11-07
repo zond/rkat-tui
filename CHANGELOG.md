@@ -4,6 +4,10 @@
 
 Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository as the `rkat-tui` package. The entries below are the harness's history in that PR; `docs/evidence.md` holds the detailed record and `docs/ux-parity.md` the Claude Code parity audit.
 
+### Fixed
+
+- An escalation whose timeout ran out while it waited behind another dialog is denied before it is shown; before, it could reach the user with no budget left (also the cause of the flaky `parallel_escalations_share_one_timeout_including_the_queue` test).
+
 ### Added
 
 - `meerkat-tui`: a new crate whose `rkat-tui` binary is an interactive

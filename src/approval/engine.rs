@@ -987,8 +987,16 @@ impl ApprovalEngine {
             record: None,
             settled: false,
         };
-        let asked = tokio::time::timeout(self.escalation_timeout, async {
+        // One budget per call, from its entry: a call whose budget ran out
+        // while it queued behind another dialog is denied before it is put
+        // to the human (the timeout alone would only be checked after the
+        // prompt was sent, on the next poll).
+        let deadline = tokio::time::Instant::now() + self.escalation_timeout;
+        let asked = tokio::time::timeout_at(deadline, async {
             let guard = broker.serial().await;
+            if tokio::time::Instant::now() >= deadline {
+                return Asked::Settled(deny_at(tier, DenyReason::EscalationTimedOut));
+            }
             if self.stopped(session_id) {
                 return Asked::Settled(deny_at(tier, DenyReason::Stopped));
             }
@@ -2017,15 +2025,23 @@ mod tests {
     // milliseconds after the first still has that much budget left when the
     // first times out, so it reaches the human too (a real behaviour, not
     // the one this test pins).
+    //
+    // No ledger here: its writes run on the blocking pool, and a task parked
+    // on a blocking-pool handle counts as idle to the paused clock, which
+    // then auto-advances. A later call could enter its timeout after that
+    // jump, keep a fresh budget, and reach the human as a second dialog
+    // (the flake seen as "delivered: 2 vs 1"). The ledger's own behaviour
+    // is pinned by the tests above.
     #[tokio::test(start_paused = true)]
     async fn parallel_escalations_share_one_timeout_including_the_queue() {
         // Five calls escalate at once; the human answers none. Each call
         // waits for the serial lock and the answer inside one timeout, so
         // all of them are denied after about one timeout, not five.
         let timeout = Duration::from_millis(300);
-        let mut rig = rig(
+        let mut rig = rig_with(
             (0..5).map(|_| Err(ClassifierError::Timeout)).collect(),
             timeout,
+            None,
         );
         let started = tokio::time::Instant::now();
         let ids = ["p1", "p2", "p3", "p4", "p5"];
