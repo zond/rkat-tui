@@ -32,6 +32,9 @@ pub enum PendingState {
     /// Held by the UI (compaction is running, or no turn was running to
     /// steer into); sent as a new turn when the current work ends.
     Deferred,
+    /// A `!` command (its text is the input as typed), held by the UI
+    /// until the turn ends; it runs before the messages held with it.
+    Shell,
 }
 
 impl PendingState {
@@ -42,6 +45,7 @@ impl PendingState {
             Self::Queued => QueuedLabel::Queued,
             Self::Admitted => QueuedLabel::Delivering,
             Self::Deferred => QueuedLabel::Deferred,
+            Self::Shell => QueuedLabel::Shell,
         }
     }
 
@@ -50,7 +54,7 @@ impl PendingState {
     /// recall through the runner).
     #[must_use]
     pub fn recallable(self) -> bool {
-        matches!(self, Self::Deferred)
+        matches!(self, Self::Deferred | Self::Shell)
     }
 }
 

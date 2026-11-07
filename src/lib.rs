@@ -32,6 +32,7 @@
 //! - `session` — session handle: create, resume, turns, steer, interrupt
 //! - `runner` — the event loop joining the session and the UI
 //! - `mentions` — `@path` mentions: the workspace path index and the attachment of mentioned files
+//! - `user_shell` — `!` shell mode: the user's commands under the agent shell's confinement
 //! - `ui` — ratatui application
 
 /// Declare the internal modules: crate-private, public with the
@@ -52,7 +53,7 @@ macro_rules! internal_modules {
 
 internal_modules!(
     approval, bootstrap, cli, delivery, endpoints, error, fork, http, memory, mentions, mobs,
-    models, overlay, paths, pricing, runner, session, tools, ui,
+    models, overlay, paths, pricing, runner, session, tools, ui, user_shell,
 );
 
 /// The headless runner the integration tests drive (see

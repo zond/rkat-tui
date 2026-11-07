@@ -423,3 +423,44 @@ async fn no_confinement_below_a_realm_policy_is_a_typed_startup_error() {
         "{err}"
     );
 }
+
+/// A `!` command runs under the shell's own confinement: it writes the
+/// workspace, not outside it, and gets the curated environment.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_bang_command_runs_under_the_shells_confinement() {
+    use rkat_tui::ui::{Msg, ShellOutcome, ShellRunId};
+
+    let ws = Workspace::new();
+    let outside = ws.sibling("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let Some(mut rig) = confined_rig(&ws, &llm, "workspace").await else {
+        return;
+    };
+    rig.send(Effect::RunShell {
+        id: ShellRunId(1),
+        command: format!(
+            "echo in > inside.txt; echo out > {}/outside.txt; echo \"KEY=[${{ANTHROPIC_API_KEY:-unset}}]\"; echo END",
+            outside.display()
+        ),
+    });
+    let msg = rig
+        .wait_for(|msg| matches!(msg, Msg::ShellFinished { .. }))
+        .await;
+    let Msg::ShellFinished {
+        outcome: ShellOutcome::Ran { run, context },
+        ..
+    } = msg
+    else {
+        panic!("{msg:?}");
+    };
+    assert!(run.output.contains("END"), "{run:?}");
+    assert!(run.output.contains("KEY=[unset]"), "{run:?}");
+    assert!(ws.root.join("inside.txt").exists(), "{run:?}");
+    assert!(
+        !outside.join("outside.txt").exists(),
+        "a confined ! command wrote outside the workspace: {run:?}"
+    );
+    assert_eq!(context, Ok(()));
+    rig.quit().await;
+}

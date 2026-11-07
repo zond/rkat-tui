@@ -62,6 +62,7 @@ impl Runner {
             }
         }
         self.tasks.abort_all();
+        self.cancel_shell();
         if let Err(err) = self.session.close().await {
             tracing::warn!(error = %err, "could not take the session off the runtime on quit");
         }

@@ -38,7 +38,7 @@
 //! (see [`SessionHandle::interrupt`]).
 //!
 //! `/remember` and the compaction trigger (`/compact now`, model switches)
-//! live in [`context`].
+//! live in [`context`], `!` shell mode in [`shell`].
 
 mod approval;
 mod context;
@@ -48,6 +48,7 @@ mod lifecycle;
 mod models;
 mod export;
 mod quit;
+mod shell;
 mod status;
 #[doc(hidden)]
 pub mod testing;
@@ -133,6 +134,7 @@ pub async fn run(args: Args) -> Result<(), TuiError> {
         .with_compaction_policy(template.policy)
         .with_helper_view(runtime.ui.helpers)
         .with_bell(runtime.ui.bell)
+        .with_shell_confined(runtime.confinement.requirement().is_some())
         .with_workspace(runtime.scope.project_root.clone())
         .with_history(history.entries().to_vec())
         .with_global_history(
@@ -593,6 +595,10 @@ pub(crate) struct Runner {
     /// `/memory`: the file being edited and its bytes before (`None`:
     /// missing), to tell an edit from an unchanged close.
     memory_before: Option<(PathBuf, Option<Vec<u8>>)>,
+    /// What runs `!` commands (the agent shell's confinement).
+    user_shell: Arc<crate::user_shell::UserShell>,
+    /// The `!` command running now.
+    shell_task: Option<shell::ShellTask>,
     /// The prompt of the last turn when that turn failed (not interrupted):
     /// the failed run already committed it to this session, so the same text
     /// sent right after is a retry, not a new message.
@@ -630,6 +636,13 @@ impl Runner {
             provider: runtime.choice.provider,
             auth_binding: runtime.choice.auth_binding.clone(),
         };
+        let user_shell = Arc::new(crate::user_shell::UserShell::new(
+            bootstrap::approval::resolved_shell_program(),
+            runtime.scope.project_root.as_path(),
+            &runtime.confinement.shell,
+            runtime.confinement.shell_env.as_ref(),
+            runtime.user_shell_timeout,
+        ));
         let mut runner = Self {
             runtime,
             template,
@@ -660,6 +673,8 @@ impl Runner {
             compact_now_pending: false,
             memory_before: None,
             failed_prompt: None,
+            user_shell,
+            shell_task: None,
         };
         runner.refresh_identity().await;
         runner.push_auto_status();
@@ -782,6 +797,8 @@ impl Runner {
     async fn handle_effect(&mut self, effect: Effect) {
         match effect {
             Effect::StartTurn(text) => self.start_turn(&text).await,
+            Effect::RunShell { id, command } => self.run_shell(id, command),
+            Effect::CancelShell => self.cancel_shell(),
             Effect::Steer { id, text } => self.steer(id, text).await,
             // The UI keeps the text of `InterruptAndSend` and starts the next
             // turn itself once `TurnFinished` arrives.

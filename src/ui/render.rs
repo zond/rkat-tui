@@ -11,8 +11,8 @@ use ratatui::widgets::{Block as BorderBlock, Borders, Clear, Paragraph};
 use super::markdown::{display_width, render_markdown, sanitize, truncate_to_width, wrap_text};
 use super::modal::draw_modal;
 use super::transcript::{
-    Block, BlockId, DiffView, HelperFold, HelperState, NoticeLevel, ToolState, args_preview,
-    result_line_count,
+    Block, BlockId, DiffView, HelperFold, HelperState, NoticeLevel, ShellState, ToolState,
+    args_preview, result_line_count,
 };
 use super::{App, HistorySearch, StatusInfo};
 
@@ -247,6 +247,8 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect, now: Instant) {
         " Ctrl-R older · Enter accept · Esc cancel ".into()
     } else if app.menu().is_some() {
         " Tab completes · ↑/↓ choose · Esc closes the menu ".into()
+    } else if app.shell_mode() {
+        app.shell_mode_hint().into()
     } else if app.helper_view().is_some() {
         " Esc back to the transcript · PgUp/PgDn scroll · Enter sends typed text ".into()
     } else if app.panel_selection().is_some() {
@@ -715,9 +717,66 @@ pub fn block_lines(block: &Block, width: u16) -> Vec<Line<'static>> {
             prefixed(text, w, "", "", style, &mut out);
         }
         Block::Helper(fold) => out.push(helper_header(fold, w)),
+        Block::Shell {
+            command,
+            state,
+            output,
+            collapsed,
+        } => shell_lines(command, state, output.as_deref(), *collapsed, w, &mut out),
     }
     out.push(Line::default());
     out
+}
+
+/// A `!` command's block: `$ <cmd>` (later lines of a multi-line command
+/// indented) with its state (`✓ exit 0 (12ms)`), then the output.
+fn shell_lines(
+    command: &str,
+    state: &ShellState,
+    output: Option<&str>,
+    collapsed: bool,
+    w: usize,
+    out: &mut Vec<Line<'static>>,
+) {
+    let (mut status, color) = match state {
+        ShellState::Running { .. } => (" · running…".to_string(), Color::Yellow),
+        ShellState::Done { exit, duration_ms } => (
+            format!(" · {} {exit} ({duration_ms}ms)", if exit.success() { "✓" } else { "✗" }),
+            if exit.success() {
+                Color::Green
+            } else {
+                Color::Red
+            },
+        ),
+        ShellState::Cancelled => (" · cancelled".to_string(), Color::Yellow),
+        ShellState::Failed(reason) => (format!(" · could not run: {reason}"), Color::Red),
+    };
+    if output.is_some() {
+        status.push_str(&tool_toggle_hint(collapsed, output, None));
+    }
+    let mut lines = command.lines();
+    let first = lines.next().unwrap_or_default();
+    let header = format!("$ {first}");
+    let header_w = w.saturating_sub(display_width(&status));
+    out.push(Line::from(vec![
+        Span::styled(
+            truncate_to_width(&sanitize(&header), header_w),
+            Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            truncate_to_width(&sanitize(&status), w),
+            Style::default().fg(color),
+        ),
+    ]));
+    for line in lines {
+        out.push(Line::styled(
+            truncate_to_width(&sanitize(&format!("  {line}")), w),
+            Style::default().fg(Color::Magenta),
+        ));
+    }
+    if !collapsed {
+        tool_body("", output, None, w, out);
+    }
 }
 
 /// A helper's one-line header in the transcript: `▸ [scout · model] ⠋
@@ -940,6 +999,26 @@ mod tests {
         };
         let header = line_text(&block_lines(&block, 60)[0]);
         assert_eq!(header, "◐ shell({}) running…");
+    }
+
+    #[test]
+    fn a_shell_block_shows_the_command_its_exit_and_its_output() {
+        let mut block = Block::Shell {
+            command: "ls\n-a".into(),
+            state: ShellState::Done {
+                exit: crate::user_shell::ShellExit::Code(2),
+                duration_ms: 7,
+            },
+            output: Some("x\ny".into()),
+            collapsed: false,
+        };
+        let lines: Vec<String> = block_lines(&block, 60).iter().map(line_text).collect();
+        assert_eq!(lines, ["$ ls · ✗ exit 2 (7ms) ▾", "  -a", "  │ x", "  │ y", ""]);
+        if let Block::Shell { collapsed, .. } = &mut block {
+            *collapsed = true;
+        }
+        let header = line_text(&block_lines(&block, 60)[0]);
+        assert_eq!(header, "$ ls · ✗ exit 2 (7ms) ▸ 2 lines");
     }
 
     #[test]

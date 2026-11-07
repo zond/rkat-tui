@@ -159,6 +159,18 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
     all; binary or over-budget files as a one-line note) and each `@dir` as
     a listing; the transcript keeps the typed text with a `+ N files` line,
     and sealed paths are never read.
+  - `!` shell mode: an input starting with `!` (not `!!`; `\!` sends a
+    literal `!`) runs the rest as a command under the agent shell's own
+    confinement and curated environment, in the workspace, with no approval
+    prompt, for at most `[shell] user_timeout_secs` (default 120). Its
+    output (stdout and stderr together, 64 KiB at most) shows as a foldable
+    `$ <cmd>` block with the exit code and joins the session as durable
+    system context (`[shell run by the user] $ <cmd>`, output, `(exit N)`),
+    which the model reads on its next call; no turn starts. A command typed
+    while the agent works waits as a queued `$ <cmd>` and runs when the turn
+    ends, before the queued messages are sent; ↑ takes it back, and Esc or
+    Ctrl-C cancels a running one. The editor title says when the input is in
+    shell mode.
 
 ### Changed
 

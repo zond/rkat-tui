@@ -1222,3 +1222,53 @@ async fn references_resolve_over_the_service_listing() {
     assert!(resolve_session_ref(&*rig.store, prefix).await.is_err());
     rig.quit().await;
 }
+
+/// `!echo hi` through the runner: the command runs in the workspace (here
+/// unconfined, like the agent's shell under `--no-confinement`), its output
+/// comes back, and the next model call reads it as system context without a
+/// turn having been started for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_bang_command_runs_and_joins_the_context_without_a_turn() {
+    use rkat_tui::ui::{ShellOutcome, ShellRunId};
+    use rkat_tui::user_shell::ShellExit;
+
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![Step::Text("seen")]);
+    let mut rig = Rig::start(&ws.root, &llm, Start::New).await;
+    rig.send(Effect::RunShell {
+        id: ShellRunId(1),
+        command: "echo hi; pwd".into(),
+    });
+    let msg = rig
+        .wait_for(|msg| matches!(msg, Msg::ShellFinished { .. }))
+        .await;
+    let Msg::ShellFinished {
+        id,
+        outcome: ShellOutcome::Ran { run, context },
+    } = msg
+    else {
+        panic!("{msg:?}");
+    };
+    assert_eq!(id, ShellRunId(1));
+    assert_eq!(run.exit, ShellExit::Code(0));
+    let root = std::fs::canonicalize(&ws.root).unwrap();
+    assert!(run.output.contains("hi\n"), "{run:?}");
+    assert!(run.output.contains(&root.display().to_string()), "{run:?}");
+    assert_eq!(context, Ok(()));
+    // No model call yet: the command started no turn.
+    assert!(llm.recorded().is_empty());
+
+    rig.send(Effect::StartTurn("what did it say?".into()));
+    rig.turn_finished().await;
+    let system = llm.recorded()[0].system();
+    assert!(
+        system.contains("[shell run by the user] $ echo hi; pwd\nhi\n"),
+        "{system}"
+    );
+    assert!(system.contains("(exit 0)"), "{system}");
+    assert_eq!(
+        user_texts(&llm.requests()[0]),
+        vec!["what did it say?".to_string()]
+    );
+    rig.quit().await;
+}

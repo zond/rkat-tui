@@ -1303,3 +1303,66 @@ covers the HELP_TEXT edits).
   `lib.rs`.
 - Commands: `cargo fmt --all` exit 0; `cargo clippy --all-targets --all-features -- -D warnings` exit 0;
   `cargo nextest run --all-features` 805 passed, 7 skipped (the ignored timing test is the new skip), exit 0.
+
+## Batch 2 B (2026-11-07)
+
+### `!` shell mode
+
+- Before: an input starting with `!` was sent to the model as text (parity row 24, candidate 3 in
+  `docs/ux-parity.md`).
+- Engine finding: the agent's shell runs only as the `shell` tool (`meerkat_tools::builtin::shell::ShellTool`,
+  dispatched behind the approval gate). Its confined launch path (`custody_spawn::spawn_in_custody`, the
+  `ConfinementBinding` it compiles) is `pub(super)`, so the engine offers no host-callable confined runner. A user
+  command is therefore launched through `meerkat_sandbox` directly (new `src/user_shell.rs`): `UserShell::new`
+  takes the bootstrap's `ConfinementPlan::shell` and, for `ShellConfinement::Required`, compiles that exact
+  requirement once with `CompiledConfinement::compile`; each run binds one `ProcessLaunchSpec` (program: the tool's
+  resolved shell, `bootstrap::approval::resolved_shell_program`; args `-c <cmd>`; directory: the canonical
+  workspace; environment: `PWD` plus `ConfinementPlan::shell_env`, the curated set, as the tool's
+  `custody_spawn::environment` builds it) and spawns it with null stdin. A refused requirement refuses the run;
+  nothing runs unconfined in a confined session. Under `ShellConfinement::TrustedHost` (`--no-confinement`) it runs
+  with `tokio::process::Command` in its own process group, inheriting the environment, like the tool's
+  trusted-host branch. No custody records: the run is not a tool call and lives only as long as its task.
+- After: `ui::commands::parse_shell` (first non-blank character `!`, not `!!`; one optional space dropped; later
+  lines belong to the command) and `unescape_bang` (`\!x` sends `!x`), checked in `App::submit` beside
+  `parse_remember`, not as a `CommandSpec`. Idle: a `Block::Shell` (`$ <cmd>`, running) and `Effect::RunShell`.
+  The runner (`runner/shell.rs`) runs it off the loop in a task, appends
+  `[shell run by the user] $ <cmd>\n<output>\n(exit N)` (`user_shell::context_text`) with
+  `SessionHandle::append_system_context` (the `/remember` call) under a per-run key
+  (`rkat-tui:shell:<pid>-<nanos>-<counter>`), and only then answers `Msg::ShellFinished`, so a message sent after
+  the command finds the context. The block shows `✓/✗ exit N (ms)` and the output preview (tool-result cap),
+  foldable by click and Ctrl-O like tool output, and is exported by `/export`. Output: stdout and stderr read
+  concurrently into one buffer in arrival order, capped at 64 KiB with `[output truncated at 64 KiB]` (reading
+  continues past the cap so the command never blocks). Timeout: `[shell] user_timeout_secs` (new `ShellSection` in
+  `tui.toml`, default 120, at least 1; a project file may only lower it; `--set shell.user_timeout_secs=N`); on a
+  timeout, a cancel (Esc or Ctrl-C while one runs: `Effect::CancelShell` aborts the task) or the command's exit, its
+  processes are killed (the process group of a plain run; on Linux the confined child's PID namespace dies with
+  it). While a turn runs, or a command runs or waits, a `!` input becomes a `PendingState::Shell` item with a
+  `$ <cmd>` placeholder labelled "runs after this turn"; messages typed while a command runs are held
+  (`Deferred`). When the turn ends, `turn_finished` keeps what would start the next turn (unsent messages, the
+  Ctrl-X Ctrl-S prompt) held and runs the oldest command in place of its placeholder; each `ShellFinished` runs the
+  next, and after the last the held messages go as one turn through `next_after_turn` (a failed turn still returns
+  its messages to the editor). ↑ takes a held command back as typed (`!cmd`). `/clear` and `/resume` wait for a
+  running command. The editor title in shell mode: " shell mode: Enter runs it in the sandbox · output joins the
+  context " (unconfined: "runs it (unconfined)"; busy: "runs it after the current work").
+- Tests: `ui::commands::tests::bang_is_shell_mode_and_escapes` (`!`, `! `, `!  ls`, leading blanks, multi-line,
+  `!!`, `!! wow`, `\!`, a mid-line `!`); `ui::tests::{bang_runs_a_command_and_escapes_send_text (RunShell, Esc →
+  CancelShell, the done block, a late answer ignored, a bare `!`, `\!important` → `!important`, `!! wow` as text),
+  shell_mode_shows_in_the_editor_title, commands_typed_during_a_turn_run_after_it_before_the_queued_messages (two
+  commands and a steered message during a turn: the turn ends with the message undelivered → only the first
+  command runs; a message typed meanwhile is held; the second runs; then one turn `two\n\nfour`),
+  up_takes_a_held_command_back}`; `ui::render::tests::a_shell_block_shows_the_command_its_exit_and_its_output`;
+  `user_shell::tests::{the_context_names_the_command_its_output_and_its_exit, output_is_capped_with_a_marker,
+  a_plain_run_merges_both_streams_and_reports_the_exit, a_run_past_the_timeout_is_killed (a backgrounded `sleep`
+  holding the pipes does not stall it), long_output_is_capped}`;
+  `approval::rules::tests::the_user_shell_timeout_layers_and_the_project_only_lowers_it`;
+  `runner::shell::tests::run_keys_are_unique`; end to end
+  `integrator::a_bang_command_runs_and_joins_the_context_without_a_turn` (`echo hi; pwd` through the runner on
+  the test rigs' `--no-confinement`: output `hi` and the canonical workspace, no model call, then the next turn's
+  system prompt holds `[shell run by the user] $ echo hi; pwd\nhi\n` and `(exit 0)`) and
+  `confinement::a_bang_command_runs_under_the_shells_confinement` (gated like the other confined cases by the
+  direct sandbox probe, printing `SKIPPED:` where the backend is unavailable; on this host it ran: the write inside
+  the workspace landed, the one outside did not, `ANTHROPIC_API_KEY` was unset inside).
+- Docs: HELP_TEXT Keys gains the `! (first character)` row; README "Shell mode" paragraph and the
+  `shell.user_timeout_secs` row of the configuration reference; CHANGELOG; the module list in `lib.rs`.
+- Commands: `cargo fmt --all` exit 0; `cargo clippy --all-targets --all-features -- -D warnings` exit 0;
+  `cargo nextest run --all-features` 820 passed, 7 skipped, exit 0.

@@ -714,6 +714,32 @@ pub struct HelpersSection {
     pub max_depth: Option<u8>,
 }
 
+/// `[shell]` section of a rules file: `!` shell mode. Unset fields inherit
+/// from lower layers; the project file may only lower them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShellSection {
+    /// See [`ShellSettings::user_timeout_secs`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_timeout_secs: Option<u64>,
+}
+
+/// `!` shell-mode settings after layering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShellSettings {
+    /// How long a command the user runs with `!` may take before it is
+    /// killed, in seconds (at least 1).
+    pub user_timeout_secs: u64,
+}
+
+impl Default for ShellSettings {
+    fn default() -> Self {
+        Self {
+            user_timeout_secs: crate::user_shell::DEFAULT_USER_TIMEOUT_SECS,
+        }
+    }
+}
+
 /// `[ui]` section of a rules file: how the transcript looks. Unset fields
 /// inherit from lower layers.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -922,6 +948,9 @@ pub struct RulesFile {
     /// Helper (sub-agent) limits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub helpers: Option<HelpersSection>,
+    /// `!` shell-mode settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell: Option<ShellSection>,
     /// Transcript display settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui: Option<UiSection>,
@@ -1185,6 +1214,8 @@ pub struct Layered {
     pub confinement: ConfinementSection,
     /// Merged `[helpers]` settings.
     pub helpers: HelperSettings,
+    /// Merged `[shell]` settings.
+    pub shell: ShellSettings,
     /// Merged `[ui]` settings.
     pub ui: UiSettings,
     /// Non-fatal observations to show once.
@@ -1249,6 +1280,7 @@ pub fn load_layered_with(
     let mut pricing: BTreeMap<String, PricingSection> = BTreeMap::new();
     let mut confinement = ConfinementSection::default();
     let mut helpers = HelperSettings::default();
+    let mut shell = ShellSettings::default();
     let mut ui = UiSettings::default();
 
     let mut user_layers: Vec<(Option<PathBuf>, RuleOrigin, RulesFile)> = Vec::new();
@@ -1328,6 +1360,9 @@ pub fn load_layered_with(
         if let Some(depth) = file.helpers.as_ref().and_then(|h| h.max_depth) {
             helpers.max_depth = depth;
         }
+        if let Some(secs) = file.shell.and_then(|s| s.user_timeout_secs) {
+            shell.user_timeout_secs = secs.max(1);
+        }
         if let Some(section) = &file.ui {
             ui.apply(section);
         }
@@ -1387,6 +1422,10 @@ pub fn load_layered_with(
     if let Some(depth) = project.helpers.as_ref().and_then(|h| h.max_depth) {
         helpers.max_depth = helpers.max_depth.min(depth);
     }
+    // Nor may it let the user's own commands run longer.
+    if let Some(secs) = project.shell.and_then(|s| s.user_timeout_secs) {
+        shell.user_timeout_secs = shell.user_timeout_secs.min(secs.max(1));
+    }
     // Project files never define endpoints, not even new ones: a cloned
     // repository could route prompts and credentials to its own server.
     for name in project.endpoints.keys() {
@@ -1443,6 +1482,7 @@ pub fn load_layered_with(
         pricing,
         confinement,
         helpers,
+        shell,
         ui,
         notices,
     })
@@ -1728,6 +1768,9 @@ mod tests {
                 extra_write: vec![PathBuf::from("/scratch")],
             }),
             helpers: Some(HelpersSection { max_depth: Some(2) }),
+            shell: Some(ShellSection {
+                user_timeout_secs: Some(300),
+            }),
             ui: Some(UiSection {
                 helpers: Some(HelperView::Expanded),
                 bell: Some(false),
@@ -2227,6 +2270,29 @@ mod tests {
         write(&project, "[helpers]\nmax_depth = 5\n");
         let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
         assert_eq!(layered.helpers.max_depth, 1);
+    }
+
+    #[test]
+    fn the_user_shell_timeout_layers_and_the_project_only_lowers_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (realm, project) = (tmp.path().join("realm"), tmp.path().join("p"));
+        write(&realm, "");
+        write(&project, "");
+        let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+        assert_eq!(layered.shell.user_timeout_secs, 120);
+        write(&realm, "[shell]\nuser_timeout_secs = 600\n");
+        let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+        assert_eq!(layered.shell.user_timeout_secs, 600);
+        write(&project, "[shell]\nuser_timeout_secs = 30\n");
+        let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+        assert_eq!(layered.shell.user_timeout_secs, 30);
+        write(&project, "[shell]\nuser_timeout_secs = 6000\n");
+        let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+        assert_eq!(layered.shell.user_timeout_secs, 600);
+        write(&realm, "[shell]\nuser_timeout_secs = 0\n");
+        write(&project, "");
+        let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+        assert_eq!(layered.shell.user_timeout_secs, 1);
     }
 
     #[test]

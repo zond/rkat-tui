@@ -600,6 +600,12 @@ Keys:
   / (one-line input)             a menu of the matching commands opens above the input:
                                  ↑/↓ choose, Tab completes, Enter completes a partial name
                                  (a full one sends), Esc closes it
+  ! (first character)            shell mode: the rest runs as a command in the agent's sandbox
+                                 (no approval: you typed it; [shell] user_timeout_secs, 120 s);
+                                 its output shows here and joins the context without a turn.
+                                 While the agent works it waits for the turn to end and runs
+                                 before queued messages (↑ takes it back); Esc or Ctrl-C
+                                 cancels a running one. \\! sends a literal !
   @ (ending a word)              a menu of matching workspace paths (.gitignore honoured, .git
                                  and .rkat left out): Tab or Enter inserts one (a directory
                                  lists its contents next); on send each @file is attached
@@ -669,6 +675,28 @@ pub fn unescape_hash(input: &str) -> Option<String> {
     let start = input.len() - input.trim_start().len();
     let rest = input.get(start..)?.strip_prefix("\\#")?;
     Some(format!("#{rest}"))
+}
+
+/// A `!` shell-mode input: the command after the leading `!` (one optional
+/// space after it dropped; later lines belong to the command), or `None`
+/// when the input is not one (`!!…` is a prompt, and so is a `\!` escape).
+/// The command may be empty (a bare `!`).
+#[must_use]
+pub fn parse_shell(input: &str) -> Option<&str> {
+    let trimmed = input.trim_start();
+    if trimmed.starts_with("!!") {
+        return None;
+    }
+    let rest = trimmed.strip_prefix('!')?;
+    Some(rest.strip_prefix(' ').unwrap_or(rest).trim_end())
+}
+
+/// Undo a leading `\!` escape (`\!foo` sends the prompt `!foo`).
+#[must_use]
+pub fn unescape_bang(input: &str) -> Option<String> {
+    let start = input.len() - input.trim_start().len();
+    let rest = input.get(start..)?.strip_prefix("\\!")?;
+    Some(format!("!{rest}"))
 }
 
 /// Parse a submitted line. Returns `None` when the line is not a slash command
@@ -870,6 +898,25 @@ mod tests {
         assert_eq!(parse_remember("plain"), None);
         assert_eq!(unescape_hash("\\#tag it"), Some("#tag it".into()));
         assert_eq!(unescape_hash("#tag"), None);
+    }
+
+    #[test]
+    fn bang_is_shell_mode_and_escapes() {
+        assert_eq!(parse_shell("!ls -la"), Some("ls -la"));
+        assert_eq!(parse_shell("! ls -la "), Some("ls -la"));
+        assert_eq!(parse_shell("!  ls"), Some(" ls"));
+        assert_eq!(parse_shell("  !pwd"), Some("pwd"));
+        assert_eq!(parse_shell("!"), Some(""));
+        assert_eq!(parse_shell("! "), Some(""));
+        assert_eq!(parse_shell("!for f in *; do\n  echo $f\ndone"), Some("for f in *; do\n  echo $f\ndone"));
+        assert_eq!(parse_shell("!!"), None);
+        assert_eq!(parse_shell("!! wow"), None);
+        assert_eq!(parse_shell("\\!ls"), None);
+        assert_eq!(parse_shell("say !ls"), None);
+        assert_eq!(parse_shell("/help"), None);
+        assert_eq!(unescape_bang("\\!important"), Some("!important".into()));
+        assert_eq!(unescape_bang("  \\! x"), Some("! x".into()));
+        assert_eq!(unescape_bang("!x"), None);
     }
 
     #[test]

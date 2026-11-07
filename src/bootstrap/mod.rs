@@ -186,6 +186,8 @@ pub struct Runtime {
     /// How deep helpers may nest (`[helpers] max_depth`; 0 refuses every
     /// helper).
     pub helper_max_depth: u8,
+    /// How long a `!` command may run (`[shell] user_timeout_secs`).
+    pub user_shell_timeout: std::time::Duration,
     /// Start-up notices (warnings) for the transcript.
     pub notices: Vec<String>,
 }
@@ -442,6 +444,7 @@ pub async fn bootstrap_with(
     let ui = layered.ui;
     approval_notices.extend(endpoint_notices.iter().map(ToString::to_string));
     let helper_depth = layered.helpers.max_depth;
+    let user_shell_timeout = std::time::Duration::from_secs(layered.shell.user_timeout_secs);
     let approval = approval::build(
         &scope,
         layered,
@@ -535,6 +538,7 @@ pub async fn bootstrap_with(
         memory,
         ui,
         helper_max_depth: helper_depth,
+        user_shell_timeout,
         notices,
     })
 }

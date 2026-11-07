@@ -458,6 +458,7 @@ are never written to a file.
 | `endpoints.<name>.dialect`, `.base_url`, `.api_key_env`, `.priority` (an inline `.api_key` is refused at start-up) | `--endpoint-def <name>=<dialect>=<url>[,key_env=VAR]` | |
 | `helpers.max_depth` (levels of helpers; a project file may only lower it) | `--set helpers.max_depth=N` | `1` |
 | `ui.helpers` (`"folded"`/`"expanded"`: how helper headers start) | `--set ui.helpers=expanded` | `"folded"` |
+| `shell.user_timeout_secs` (how long a `!` command may run; a project file may only lower it) | `--set shell.user_timeout_secs=N` | `120` |
 | `pricing."<model id>".input`, `.output`, `.cached_input`, `.cache_write` (USD per 1M tokens) | `--set 'pricing."<id>".input=15'` | fetched prices |
 
 Other flags: `--model`/`-m <[endpoint:]id>`, `--endpoint <name>`
@@ -710,6 +711,29 @@ note="…" />`), and a directory as a `<directory path="…/">` listing of its
 entries (at most 200). The transcript shows the prompt as typed with a dim
 `+ N files (…)` line under it; a sealed path is never read and gets a
 warning instead; a word that names nothing (`@someone`) stays plain text.
+
+**Shell mode.** An input whose first line starts with `!` is a shell
+command: `!ls -la` (or `! ls -la`; the rest of the input, later lines
+included, is the command). The editor title says so while you type it.
+Enter runs it with the agent's own shell setup: the same program (the
+shell the `shell` tool resolves), the workspace as working directory, the
+same confinement (`--confinement`, the realm floor, the extra grants) and
+the same curated environment, so provider keys stay outside; under
+`--no-confinement` it runs plain, as the agent's commands then do. There is
+no approval prompt, since you typed it. It may run for `[shell]
+user_timeout_secs` (default 120; `--set shell.user_timeout_secs=N`; a
+project file may only lower it), and Esc or Ctrl-C cancels it; whatever it
+started is killed when it ends. Its output, stdout and stderr together in
+arrival order and capped at 64 KiB (`[output truncated at 64 KiB]`), shows
+as a `$ <cmd>` block with the exit code, folded and unfolded like tool
+output (a click, Ctrl-O), and joins the session as durable system context
+(`[shell run by the user] $ <cmd>`, the output, `(exit N)`) through the
+same call `/remember` uses: the model reads it on its next call, and no
+turn starts for it. While the agent works, a `!` command waits as a queued
+`$ <cmd>` line and runs when the turn ends, before the queued messages are
+sent (several run in order); messages typed while a command runs wait for
+it the same way, and ↑ takes a waiting command back into the editor. `!!`
+at the start is sent as text, and `\!` sends a literal `!`.
 
 `?` on an empty input opens a panel with the keys part of `/help` (the
 editor title shows `? keys` while idle and empty); `?`, Esc or any other

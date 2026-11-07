@@ -56,8 +56,25 @@ pub use search::{HistorySearch, SearchOutcome};
 pub use selection::{CellPos, SelectMode, Selection};
 pub use transcript::{
     Block, BlockId, DiffView, HelperFold, HelperLast, HelperState, HelperView, NoticeLevel,
-    QueuedLabel, ToolState, Transcript,
+    QueuedLabel, ShellState, ToolState, Transcript,
 };
+
+/// The transcript placeholder of a held item: the message, or `$ <cmd>`
+/// for a `!` command.
+fn placeholder(item: &Pending) -> Block {
+    let text = match item.state {
+        PendingState::Shell => format!(
+            "$ {}",
+            commands::parse_shell(&item.text).unwrap_or(&item.text)
+        ),
+        _ => item.text.clone(),
+    };
+    Block::Queued {
+        id: item.id,
+        text,
+        label: item.state.label(),
+    }
+}
 
 /// Window in which a second Ctrl-C on an idle, empty prompt quits.
 pub const DOUBLE_CTRL_C_WINDOW: Duration = Duration::from_millis(1500);
@@ -384,8 +401,36 @@ pub enum Msg {
     },
     /// The UI loop's answer to [`Effect::ExternalEditor`].
     EditorClosed(EditorClosed),
+    /// The runner's answer to [`Effect::RunShell`] (or to
+    /// [`Effect::CancelShell`]).
+    ShellFinished {
+        /// The run's id.
+        id: ShellRunId,
+        /// How it went.
+        outcome: ShellOutcome,
+    },
     /// Animation tick.
     Tick,
+}
+
+/// Identifies one `!` command run ([`Effect::RunShell`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ShellRunId(pub u64);
+
+/// How a `!` command run ended ([`Msg::ShellFinished`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShellOutcome {
+    /// It ran; `context` says whether the session took its output.
+    Ran {
+        /// The run.
+        run: crate::user_shell::ShellRun,
+        /// `Err`: why its output could not join the context.
+        context: Result<(), String>,
+    },
+    /// It could not start.
+    Failed(String),
+    /// The user cancelled it.
+    Cancelled,
 }
 
 /// Notice for `/compact <instructions>`: the engine cannot use them.
@@ -400,6 +445,17 @@ pub const COMPACT_REBUILT: &str = "the context will be compacted at the start of
 pub enum Effect {
     /// Run a turn with this prompt; answer with [`Msg::TurnFinished`].
     StartTurn(String),
+    /// Run a `!` command under the agent shell's confinement and add its
+    /// output to the session's context; answer with [`Msg::ShellFinished`].
+    RunShell {
+        /// The run's id.
+        id: ShellRunId,
+        /// The command line.
+        command: String,
+    },
+    /// Cancel the running `!` command (answered with
+    /// [`ShellOutcome::Cancelled`] unless it already finished).
+    CancelShell,
     /// Interrupt the running turn.
     Interrupt,
     /// Pull back every steered message the runtime still holds queued (not
@@ -823,7 +879,23 @@ pub struct App {
     /// The workspace paths, built when a path menu opens and dropped when
     /// it closes.
     path_index: Option<Vec<crate::mentions::PathEntry>>,
+    /// The `!` command running now, if any.
+    shell_run: Option<RunningShell>,
+    /// The last allocated [`ShellRunId`].
+    last_shell_id: u64,
+    /// Whether `!` commands run confined (the editor title says so).
+    shell_confined: bool,
     dirty: bool,
+}
+
+/// A `!` command on its way ([`Effect::RunShell`] sent, no
+/// [`Msg::ShellFinished`] yet).
+#[derive(Debug, Clone)]
+struct RunningShell {
+    id: ShellRunId,
+    block: BlockId,
+    command: String,
+    since: Instant,
 }
 
 impl App {
@@ -872,8 +944,48 @@ impl App {
             menu_dismissed: None,
             workspace: None,
             path_index: None,
+            shell_run: None,
+            last_shell_id: 0,
+            shell_confined: true,
             dirty: true,
         }
+    }
+
+    /// Whether `!` commands run in the sandbox (default) or plain
+    /// (`--no-confinement`); only the editor title uses it.
+    #[must_use]
+    pub fn with_shell_confined(mut self, confined: bool) -> Self {
+        self.shell_confined = confined;
+        self
+    }
+
+    /// Whether the input is a `!` command (shell mode).
+    pub fn shell_mode(&self) -> bool {
+        !self.input.is_empty() && commands::parse_shell(&self.input.text()).is_some()
+    }
+
+    /// The editor title in shell mode.
+    pub fn shell_mode_hint(&self) -> &'static str {
+        if self.running || self.shell_busy() {
+            " shell mode: Enter runs it after the current work · output joins the context "
+        } else if self.shell_confined {
+            " shell mode: Enter runs it in the sandbox · output joins the context "
+        } else {
+            " shell mode: Enter runs it (unconfined) · output joins the context "
+        }
+    }
+
+    /// Whether a `!` command runs or waits to.
+    fn shell_busy(&self) -> bool {
+        self.shell_run.is_some() || self.has_held_shell()
+    }
+
+    /// Whether a `!` command waits for the turn to end.
+    fn has_held_shell(&self) -> bool {
+        self.pending
+            .items()
+            .iter()
+            .any(|p| p.state == PendingState::Shell)
     }
 
     /// The workspace `@` mentions complete against (the path menu) and
@@ -1172,7 +1284,10 @@ impl App {
     /// Whether quitting now would interrupt a turn or leave messages
     /// undelivered (a quit then asks again).
     pub fn quit_is_busy(&self) -> bool {
-        self.running || !self.pending.is_empty() || self.send_next.is_some()
+        self.running
+            || !self.pending.is_empty()
+            || self.send_next.is_some()
+            || self.shell_run.is_some()
     }
 
     /// Whether a second Ctrl-D (or, while busy, `/quit`) at `now` would quit
@@ -1680,10 +1795,14 @@ impl App {
                 self.pending.clear_settled();
                 // Keep placeholders for messages still in flight.
                 for item in self.pending.iter_mut() {
-                    item.block = self.transcript.push(Block::Queued {
-                        id: item.id,
-                        text: item.text.clone(),
-                        label: item.state.label(),
+                    item.block = self.transcript.push(placeholder(item));
+                }
+                if let Some(run) = &mut self.shell_run {
+                    run.block = self.transcript.push(Block::Shell {
+                        command: run.command.clone(),
+                        state: ShellState::Running { since: run.since },
+                        output: None,
+                        collapsed: false,
                     });
                 }
                 self.run_first_block = self.transcript.len();
@@ -1694,6 +1813,7 @@ impl App {
                 fx.push(Effect::ExternalEditor(EditorTarget::Memory { target, path }));
             }
             Msg::EditorClosed(closed) => self.editor_closed(closed, &mut fx),
+            Msg::ShellFinished { id, outcome } => self.shell_finished(id, outcome, now, &mut fx),
             Msg::HelperUnmeasured(label) => {
                 self.transcript.helper_unmeasured(&label);
                 self.status.cost.mark_unmeasured(&label);
@@ -2136,17 +2256,26 @@ impl App {
                     .push_notice(NoticeLevel::Warn, err.to_string());
             }
             None => {
+                if let Some(command) = commands::parse_shell(&raw) {
+                    let command = command.to_string();
+                    self.shell_input(command, raw, now, fx);
+                    return;
+                }
                 if let Some(text) = commands::parse_remember(&raw) {
                     self.run_command(Command::Remember(text), now, fx);
                     return;
                 }
                 let prompt = match raw.trim_start().strip_prefix("//") {
                     Some(rest) => format!("/{rest}"),
-                    None => commands::unescape_hash(&raw).unwrap_or(raw),
+                    None => commands::unescape_hash(&raw)
+                        .or_else(|| commands::unescape_bang(&raw))
+                        .unwrap_or(raw),
                 };
                 let noted = prompt.clone();
                 if self.running {
                     self.enqueue(prompt, fx);
+                } else if self.shell_busy() {
+                    self.hold(prompt);
                 } else {
                     self.start_turn(prompt, now, fx);
                 }
@@ -2203,6 +2332,162 @@ impl App {
         self.status.running_since = Some(now);
         self.scroll.bottom();
         fx.push(Effect::StartTurn(prompt));
+    }
+
+    /// A `!` command typed (`raw` is the input as typed, for ↑): run it now
+    /// when nothing else is, else hold it until the turn (and the commands
+    /// before it) end.
+    fn shell_input(&mut self, command: String, raw: String, now: Instant, fx: &mut Vec<Effect>) {
+        if command.trim().is_empty() {
+            self.transcript.push_notice(
+                NoticeLevel::Warn,
+                "type a command after ! (\\! sends a literal !)",
+            );
+            self.scroll.bottom();
+            return;
+        }
+        if self.running || self.shell_busy() {
+            let id = self.pending.alloc_id();
+            let item = Pending {
+                id,
+                text: raw,
+                state: PendingState::Shell,
+                block: BlockId(0),
+            };
+            let block = self.transcript.push(placeholder(&item));
+            self.pending.push(Pending { block, ..item });
+        } else {
+            let block = self.transcript.push(Block::Shell {
+                command: command.clone(),
+                state: ShellState::Running { since: now },
+                output: None,
+                collapsed: false,
+            });
+            self.launch_shell(command, block, now, fx);
+        }
+        self.scroll.bottom();
+    }
+
+    /// Send a `!` command whose block is `block` to the runner.
+    fn launch_shell(&mut self, command: String, block: BlockId, now: Instant, fx: &mut Vec<Effect>) {
+        self.last_shell_id += 1;
+        let id = ShellRunId(self.last_shell_id);
+        self.shell_run = Some(RunningShell {
+            id,
+            block,
+            command: command.clone(),
+            since: now,
+        });
+        fx.push(Effect::RunShell { id, command });
+    }
+
+    /// Run the oldest held `!` command in place of its placeholder. Returns
+    /// whether there was one.
+    fn run_next_shell(&mut self, now: Instant, fx: &mut Vec<Effect>) -> bool {
+        let Some(id) = self
+            .pending
+            .items()
+            .iter()
+            .find(|p| p.state == PendingState::Shell)
+            .map(|p| p.id)
+        else {
+            return false;
+        };
+        let Some(item) = self.pending.remove(id) else {
+            return false;
+        };
+        let command = commands::parse_shell(&item.text)
+            .unwrap_or_default()
+            .to_string();
+        self.transcript.replace_block(
+            item.block,
+            Block::Shell {
+                command: command.clone(),
+                state: ShellState::Running { since: now },
+                output: None,
+                collapsed: false,
+            },
+        );
+        self.launch_shell(command, item.block, now, fx);
+        true
+    }
+
+    /// [`Msg::ShellFinished`]: show the result, then run the next held
+    /// command, or (with none left and no turn running) send the messages
+    /// held behind them.
+    fn shell_finished(&mut self, id: ShellRunId, outcome: ShellOutcome, now: Instant, fx: &mut Vec<Effect>) {
+        let Some(run) = self.shell_run.take_if(|run| run.id == id) else {
+            return;
+        };
+        let (state, output) = match outcome {
+            ShellOutcome::Ran { run: done, context } => {
+                if let Err(err) = context {
+                    self.transcript.push_notice(
+                        NoticeLevel::Warn,
+                        format!("the command's output could not join the context: {err}"),
+                    );
+                }
+                (
+                    ShellState::Done {
+                        exit: done.exit,
+                        duration_ms: u64::try_from(done.duration.as_millis()).unwrap_or(u64::MAX),
+                    },
+                    transcript::shell_output_preview(&done.output),
+                )
+            }
+            ShellOutcome::Failed(reason) => (ShellState::Failed(reason), None),
+            ShellOutcome::Cancelled => (ShellState::Cancelled, None),
+        };
+        self.transcript.replace_block(
+            run.block,
+            Block::Shell {
+                command: run.command,
+                state,
+                output,
+                collapsed: false,
+            },
+        );
+        self.scroll.bottom();
+        if self.running || self.run_next_shell(now, fx) {
+            return;
+        }
+        let held = self
+            .pending
+            .take_where(|p| p.state == PendingState::Deferred);
+        if !held.is_empty() || self.send_next.is_some() {
+            self.next_after_turn(held, false, true, now, fx);
+        }
+    }
+
+    /// Hold an unsent message (its placeholder kept) until the `!`
+    /// commands before it ran.
+    fn hold_again(&mut self, item: Pending) {
+        self.transcript.replace_block(
+            item.block,
+            Block::Queued {
+                id: item.id,
+                text: item.text.clone(),
+                label: QueuedLabel::Deferred,
+            },
+        );
+        self.pending.push(Pending {
+            state: PendingState::Deferred,
+            ..item
+        });
+    }
+
+    /// Hold a message until the running `!` commands end.
+    fn hold(&mut self, text: String) {
+        let id = self.pending.alloc_id();
+        let item = Pending {
+            id,
+            text,
+            state: PendingState::Deferred,
+            block: BlockId(0),
+        };
+        let block = self.transcript.push(placeholder(&item));
+        self.pending.push(Pending { block, ..item });
+        self.scroll.bottom();
     }
 
     /// Enter while a turn runs: queue the message and steer it into the turn.
@@ -2328,6 +2613,11 @@ impl App {
                 self.helper_view = self.helper_view.take().and_then(|view| {
                     shift(view.header).map(|header| OpenHelperView { header, ..view })
                 });
+                if let Some(run) = &mut self.shell_run
+                    && let Some(moved) = shift(run.block)
+                {
+                    run.block = moved;
+                }
                 if self.run_first_block > block.0 {
                     self.run_first_block -= 1;
                 }
@@ -2372,7 +2662,7 @@ impl App {
             Ok(()) => self.set_pending_state(id, PendingState::Admitted),
             // The turn ended before the message reached the runtime: hold it
             // for the turn's end (the runner's `TurnFinished` follows).
-            Err(SteerFailure::NotRunning) if self.running => {
+            Err(SteerFailure::NotRunning) if self.running || self.shell_busy() => {
                 self.set_pending_state(id, PendingState::Deferred);
             }
             Err(SteerFailure::NotRunning) => {
@@ -2407,6 +2697,8 @@ impl App {
     fn escape(&mut self, esc_armed: bool, now: Instant, fx: &mut Vec<Effect>) {
         if self.running {
             self.interrupt(fx);
+        } else if self.shell_run.is_some() {
+            fx.push(Effect::CancelShell);
         } else if self.input.is_empty() {
             // Esc Esc on an empty input is reserved for rewind.
         } else if esc_armed {
@@ -2565,7 +2857,19 @@ impl App {
         }
         self.streamed_text = false;
         let unsent = self.collect_unsent(&undelivered);
-        self.next_after_turn(unsent, interrupted, succeeded, now, fx);
+        // `!` commands typed during the turn run first; what would start the
+        // next turn waits for them (a failed turn's messages still go back
+        // to the editor).
+        if self.shell_busy() && (self.send_next.is_some() || succeeded || interrupted) {
+            for item in unsent {
+                self.hold_again(item);
+            }
+        } else {
+            self.next_after_turn(unsent, interrupted, succeeded, now, fx);
+        }
+        if self.shell_run.is_none() && !self.running {
+            self.run_next_shell(now, fx);
+        }
         self.check_context();
     }
 
@@ -2663,6 +2967,9 @@ impl App {
         if self.running {
             self.last_ctrl_c = None;
             self.interrupt(fx);
+        } else if self.shell_run.is_some() {
+            self.last_ctrl_c = None;
+            fx.push(Effect::CancelShell);
         } else if !self.input.is_empty() {
             self.last_ctrl_c = None;
             self.input.clear();
@@ -2780,6 +3087,11 @@ impl App {
                     busy(self);
                 } else if self.compacting {
                     compacting(self);
+                } else if self.shell_run.is_some() {
+                    self.transcript.push_notice(
+                        NoticeLevel::Warn,
+                        "a ! command is running; wait for it or cancel it (Esc)",
+                    );
                 } else if !self.pending.is_empty() {
                     self.transcript.push_notice(
                         NoticeLevel::Warn,
@@ -2796,6 +3108,11 @@ impl App {
                     busy(self);
                 } else if self.compacting {
                     compacting(self);
+                } else if self.shell_run.is_some() {
+                    self.transcript.push_notice(
+                        NoticeLevel::Warn,
+                        "a ! command is running; wait for it or cancel it (Esc)",
+                    );
                 } else if !self.pending.is_empty() {
                     self.transcript.push_notice(
                         NoticeLevel::Warn,
@@ -3477,6 +3794,129 @@ mod tests {
             id: PendingId(id),
             text: text.into(),
         }
+    }
+
+    fn shell_done(id: u64, output: &str) -> Msg {
+        Msg::ShellFinished {
+            id: ShellRunId(id),
+            outcome: ShellOutcome::Ran {
+                run: crate::user_shell::ShellRun {
+                    output: output.into(),
+                    exit: crate::user_shell::ShellExit::Code(0),
+                    duration: Duration::from_millis(5),
+                },
+                context: Ok(()),
+            },
+        }
+    }
+
+    fn run_shell(id: u64, command: &str) -> Effect {
+        Effect::RunShell {
+            id: ShellRunId(id),
+            command: command.into(),
+        }
+    }
+
+    #[test]
+    fn bang_runs_a_command_and_escapes_send_text() {
+        let mut app = App::new(StatusInfo::default());
+        assert_eq!(submit(&mut app, "! ls -a"), vec![run_shell(1, "ls -a")]);
+        assert!(!app.is_running());
+        assert!(matches!(
+            app.transcript.blocks().last(),
+            Some(Block::Shell { command, state: ShellState::Running { .. }, .. }) if command == "ls -a"
+        ));
+        // Esc cancels it.
+        assert_eq!(app.update(key(KeyCode::Esc)), vec![Effect::CancelShell]);
+        assert!(app.update(shell_done(1, "a\nb\n")).is_empty());
+        assert!(matches!(
+            app.transcript.blocks().last(),
+            Some(Block::Shell { state: ShellState::Done { .. }, output: Some(out), collapsed: false, .. })
+                if out == "a\nb"
+        ));
+        // A late answer for a finished run changes nothing.
+        assert!(app.update(shell_done(1, "again")).is_empty());
+        // A bare ! runs nothing.
+        assert!(submit(&mut app, "!").is_empty());
+        assert!(matches!(app.transcript.blocks().last(), Some(Block::Notice { .. })));
+        let mut app = App::new(StatusInfo::default());
+        assert_eq!(
+            submit(&mut app, "\\!important"),
+            vec![Effect::StartTurn("!important".into())]
+        );
+        let mut app = App::new(StatusInfo::default());
+        assert_eq!(
+            submit(&mut app, "!! wow"),
+            vec![Effect::StartTurn("!! wow".into())]
+        );
+    }
+
+    #[test]
+    fn shell_mode_shows_in_the_editor_title() {
+        let mut app = App::new(StatusInfo::default());
+        type_str(&mut app, "!ls");
+        assert!(app.shell_mode());
+        assert!(app.shell_mode_hint().contains("in the sandbox"));
+        let mut plain = App::new(StatusInfo::default()).with_shell_confined(false);
+        type_str(&mut plain, "!ls");
+        assert!(plain.shell_mode_hint().contains("unconfined"));
+        let mut app = App::new(StatusInfo::default());
+        type_str(&mut app, "!!ls");
+        assert!(!app.shell_mode());
+    }
+
+    #[test]
+    fn commands_typed_during_a_turn_run_after_it_before_the_queued_messages() {
+        let mut app = running_app();
+        assert!(submit(&mut app, "!echo a").is_empty());
+        assert_eq!(submit(&mut app, "two"), vec![steer(2, "two")]);
+        app.update(ack(2, Ok(())));
+        assert!(submit(&mut app, "!echo b").is_empty());
+        assert_eq!(
+            app.transcript.blocks(),
+            &[
+                user("one"),
+                queued_block(1, "$ echo a", QueuedLabel::Shell),
+                queued_block(2, "two", QueuedLabel::Delivering),
+                queued_block(3, "$ echo b", QueuedLabel::Shell),
+            ]
+        );
+        // The turn ends with "two" undelivered: the commands run first, in
+        // order, each in place of its placeholder.
+        assert_eq!(
+            app.update(finished(Ok(summary()), &[2])),
+            vec![run_shell(1, "echo a")]
+        );
+        assert!(!app.is_running());
+        assert!(matches!(app.transcript.block(BlockId(1)), Some(Block::Shell { command, .. }) if command == "echo a"));
+        assert_eq!(
+            app.transcript.block(BlockId(2)),
+            Some(&queued_block(2, "two", QueuedLabel::Deferred))
+        );
+        // A message typed meanwhile waits too.
+        assert!(submit(&mut app, "four").is_empty());
+        assert_eq!(app.update(shell_done(1, "a\n")), vec![run_shell(2, "echo b")]);
+        // Then the messages go, as one turn.
+        assert_eq!(
+            app.update(shell_done(2, "b\n")),
+            vec![Effect::StartTurn("two\n\nfour".into())]
+        );
+        assert!(app.is_running());
+        assert!(app.pending.is_empty());
+    }
+
+    #[test]
+    fn up_takes_a_held_command_back() {
+        let mut app = running_app();
+        submit(&mut app, "!make lint");
+        assert!(app.can_take_back());
+        assert!(app.update(key(KeyCode::Up)).is_empty());
+        assert_eq!(app.input.text(), "!make lint");
+        assert!(app.pending.is_empty());
+        assert_eq!(app.transcript.blocks(), &[user("one")]);
+        // Nothing is left to run after the turn.
+        app.input.clear();
+        assert!(app.update(finished(Ok(summary()), &[])).is_empty());
     }
 
     #[test]

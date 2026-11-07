@@ -69,6 +69,27 @@ pub enum ToolState {
     },
 }
 
+/// Lifecycle of a `!` command's [`Block::Shell`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShellState {
+    /// The command is running.
+    Running {
+        /// When it started.
+        since: Instant,
+    },
+    /// It ended.
+    Done {
+        /// How.
+        exit: crate::user_shell::ShellExit,
+        /// Wall-clock time.
+        duration_ms: u64,
+    },
+    /// The user cancelled it (Esc, Ctrl-C).
+    Cancelled,
+    /// It could not run.
+    Failed(String),
+}
+
 /// Delivery state shown on a [`Block::Queued`] placeholder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueuedLabel {
@@ -79,6 +100,8 @@ pub enum QueuedLabel {
     Delivering,
     /// Held by the UI; sent when the current work ends.
     Deferred,
+    /// A `!` command held until the turn ends.
+    Shell,
 }
 
 impl QueuedLabel {
@@ -89,6 +112,7 @@ impl QueuedLabel {
             Self::Queued => "queued",
             Self::Delivering => "delivering…",
             Self::Deferred => "will send after this turn",
+            Self::Shell => "runs after this turn",
         }
     }
 }
@@ -323,6 +347,17 @@ pub enum Block {
     },
     /// A helper's header (see [`HelperFold`]).
     Helper(HelperFold),
+    /// A command the user ran with `!`, and its output.
+    Shell {
+        /// The command line.
+        command: String,
+        /// Lifecycle state.
+        state: ShellState,
+        /// The output preview (capped like a tool result).
+        output: Option<String>,
+        /// Whether the output is hidden behind the header.
+        collapsed: bool,
+    },
 }
 
 /// Cached wrapped lines for one block at one width.
@@ -728,6 +763,17 @@ impl Transcript {
                         }
                     }
                 }
+                Block::Shell {
+                    command,
+                    state,
+                    output,
+                    collapsed,
+                } => {
+                    let _ = writeln!(out, "## shell $ {command} ({})", shell_state_text(state));
+                    if let (Some(output), false) = (output, collapsed) {
+                        body(&mut out, output);
+                    }
+                }
                 Block::Approval {
                     tool,
                     tier,
@@ -1021,13 +1067,19 @@ impl Transcript {
                     } | Block::Tool {
                         collapsed: true,
                         ..
+                    } | Block::Shell {
+                        collapsed: true,
+                        ..
                     }
                 )
             )
         });
         for id in targets {
-            if let Some(Block::Reasoning { collapsed, .. } | Block::Tool { collapsed, .. }) =
-                self.block_mut(id)
+            if let Some(
+                Block::Reasoning { collapsed, .. }
+                | Block::Tool { collapsed, .. }
+                | Block::Shell { collapsed, .. },
+            ) = self.block_mut(id)
             {
                 *collapsed = !expand;
             }
@@ -1042,7 +1094,7 @@ impl Transcript {
             return None;
         }
         match self.block_mut(id) {
-            Some(Block::Tool { collapsed, .. }) => {
+            Some(Block::Tool { collapsed, .. } | Block::Shell { collapsed, .. }) => {
                 *collapsed = !*collapsed;
                 Some(*collapsed)
             }
@@ -1716,6 +1768,25 @@ fn helper_args_preview(args: &Value) -> String {
 fn tool_has_output(block: &Block) -> bool {
     matches!(block, Block::Tool { result_preview, diff, .. }
         if result_preview.is_some() || diff.is_some())
+        || matches!(block, Block::Shell { output: Some(_), .. })
+}
+
+/// A `!` command's state as the export and the header say it.
+pub fn shell_state_text(state: &ShellState) -> String {
+    match state {
+        ShellState::Running { .. } => "running".to_string(),
+        ShellState::Done { exit, duration_ms } => format!("{exit}, {duration_ms} ms"),
+        ShellState::Cancelled => "cancelled".to_string(),
+        ShellState::Failed(reason) => format!("could not run: {reason}"),
+    }
+}
+
+/// A `!` command's output as its block shows it: capped like a tool
+/// result, `None` when there is none.
+#[must_use]
+pub fn shell_output_preview(output: &str) -> Option<String> {
+    let output = output.trim_end_matches('\n');
+    (!output.is_empty()).then(|| preview_result(output))
 }
 
 /// Number of lines in the tool result a preview was made from (the preview
