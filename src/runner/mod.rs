@@ -599,6 +599,9 @@ pub(crate) struct Runner {
     user_shell: Arc<crate::user_shell::UserShell>,
     /// The `!` command running now.
     shell_task: Option<shell::ShellTask>,
+    /// The session told last that plan mode is on (its latest plan-mode
+    /// note says "on"); `None` when no session is.
+    plan_noted: Option<SessionId>,
     /// The prompt of the last turn when that turn failed (not interrupted):
     /// the failed run already committed it to this session, so the same text
     /// sent right after is a retry, not a new message.
@@ -675,9 +678,10 @@ impl Runner {
             failed_prompt: None,
             user_shell,
             shell_task: None,
+            plan_noted: None,
         };
         runner.refresh_identity().await;
-        runner.push_auto_status();
+        runner.push_mode_status();
         for notice in runner.runtime.confinement.notices.clone() {
             runner.notice(NoticeLevel::Info, notice);
         }
@@ -812,9 +816,9 @@ impl Runner {
             effect @ (Effect::RespondEscalation(..)
             | Effect::AddRule { .. }
             | Effect::RemoveRule(_)
-            | Effect::ListRules
-            | Effect::SetAutoMode(_)
-            | Effect::ResumeAutoMode) => self.handle_approval_effect(effect),
+            | Effect::ListRules) => self.handle_approval_effect(effect),
+            Effect::SetMode(mode) => self.set_mode(mode).await,
+            Effect::ResumeAutoMode => self.resume_auto().await,
             Effect::SetModel(reference) => self.set_model(reference).await,
             Effect::RequestModelPicker { refresh } => self.request_model_picker(refresh),
             Effect::Remember(text) => self.remember(&text).await,
@@ -835,6 +839,8 @@ impl Runner {
 
     /// [`Effect::StartTurn`]: admit a `Queue` input.
     async fn start_turn(&mut self, text: &str) {
+        // A session opened (or resumed) in plan mode learns it first.
+        self.note_plan_mode().await;
         let expanded = self.expand_mentions(text);
         let text = expanded.as_str();
         let submitted = self.retry_input(text).await.unwrap_or(text);

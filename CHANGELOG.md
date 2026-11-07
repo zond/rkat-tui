@@ -103,7 +103,8 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
   - Ctrl+S stashes the input and, on an empty input, restores it (Ctrl+X
     Ctrl+S still sends now).
   - Ctrl+L clears the screen and redraws it.
-  - Shift+Tab switches auto mode off and on (as `/auto off|on`).
+  - Shift+Tab switches auto mode off and on (as `/auto off|on`; now it
+    cycles the permission modes, below).
   - Ctrl+D on an idle empty input asks for a second press (within 3 s)
     before quitting.
   - Esc (like Ctrl+C) always interrupts a running turn, and the messages
@@ -171,6 +172,21 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
     ends, before the queued messages are sent; ↑ takes it back, and Esc or
     Ctrl-C cancels a running one. The editor title says when the input is in
     shell mode.
+  - Permission modes, as in Claude Code: Shift+Tab cycles manual → accept
+    edits → plan → auto, `/mode [default|accept-edits|plan|auto]` shows or
+    sets one, and the status bar names it (`manual`, `accept edits`,
+    `plan`, `auto (deny …)`; a denial pause still shows `auto: PAUSED`).
+    Manual mode (`/auto off`, `--no-auto`) asks you for in-project edits and
+    for what the classifier would review, instead of denying the latter;
+    accept-edits mode allows in-project, unprotected edits and asks for the
+    rest; plan mode denies writes and commands that are not read-only with a
+    tool error asking for a plan, tells the session through a system note
+    when it starts and ends, and opens a "Plan ready" dialog (proceed in
+    accept-edits mode, keep planning, or proceed in manual mode) when a turn
+    ends with an answer; auto mode is unchanged. Helpers act under the
+    session's mode. The mode is saved as `[auto] mode` in the realm
+    `tui.toml`, so the next start comes back in it; a project `tui.toml`
+    cannot choose one. The idle editor title hints `Shift+Tab mode`.
 
 ### Changed
 

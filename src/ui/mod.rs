@@ -21,6 +21,7 @@ pub mod search;
 pub mod selection;
 pub mod transcript;
 
+use crate::approval::mode::PermissionMode;
 use crate::delivery::{PendingId, SteerFailure};
 use crate::models::ModelGroup;
 use crate::paths::ProjectRoot;
@@ -49,7 +50,7 @@ pub use input::{InputEditor, StashOutcome};
 pub use keymap::{Action, EditAction};
 pub use modal::{
     EscalationAnswer, EscalationDialog, EscalationId, EscalationPrompt, Modal, ModelPicker,
-    ResumePicker,
+    PLAN_CHOICES, PlanChoice, PlanDialog, ResumePicker,
 };
 pub use runtime::{TerminalGuard, UiChannels, UiError, install_panic_hook, run_ui};
 pub use search::{HistorySearch, SearchOutcome};
@@ -218,10 +219,12 @@ pub enum StatusUpdate {
         /// Output tokens.
         output: u64,
     },
-    /// Auto-mode state and denial counters.
-    Auto {
-        /// Display state, e.g. `active`, `PAUSED`, `off`.
-        state: String,
+    /// The permission mode, auto mode's pause and the denial counters.
+    Mode {
+        /// The permission mode.
+        mode: PermissionMode,
+        /// Whether auto mode is paused after too many classifier blocks.
+        paused: bool,
         /// `(consecutive, consecutive_limit, total, total_limit)`.
         denials: (u32, u32, u32, u32),
     },
@@ -508,8 +511,8 @@ pub enum Effect {
     /// in the host trust record; their servers and hooks run from the next
     /// session.
     TrustProject,
-    /// Enable/disable auto mode.
-    SetAutoMode(bool),
+    /// Switch the permission mode (`Shift+Tab`, `/mode`, `/auto on|off`).
+    SetMode(PermissionMode),
     /// Resume auto mode after a denial-limit pause.
     ResumeAutoMode,
     /// Switch model.
@@ -583,8 +586,11 @@ pub struct StatusInfo {
     pub input_tokens: u64,
     /// Cumulative output tokens.
     pub output_tokens: u64,
-    /// Auto-mode display state (`active`, `PAUSED`, `off`; empty hides the segment).
-    pub auto_state: String,
+    /// The permission mode (`None`, before the runner reports it, hides
+    /// the segment).
+    pub mode: Option<PermissionMode>,
+    /// Whether auto mode is paused after too many classifier blocks.
+    pub auto_paused: bool,
     /// `(consecutive, consecutive_limit, total, total_limit)` denials.
     pub denials: (u32, u32, u32, u32),
     /// When the running turn started.
@@ -611,6 +617,9 @@ pub struct StatusInfo {
     /// Prices for the cost readout.
     pub prices: Arc<crate::pricing::PriceTable>,
 }
+
+/// The prompt the "Plan ready" dialog's proceed choices send.
+pub const PROCEED_PROMPT: &str = "Proceed with the plan";
 
 /// The model a helper's usage is counted under when neither the provider
 /// nor the helper host named one.
@@ -643,10 +652,25 @@ impl StatusInfo {
         self.output_tokens = self.output_tokens.saturating_add(output);
     }
 
-    /// Set auto-mode state and denial counters.
-    pub fn set_auto(&mut self, state: impl Into<String>, denials: (u32, u32, u32, u32)) {
-        self.auto_state = state.into();
+    /// Set the permission mode, auto mode's pause and the denial counters.
+    pub fn set_mode(&mut self, mode: PermissionMode, paused: bool, denials: (u32, u32, u32, u32)) {
+        self.mode = Some(mode);
+        self.auto_paused = paused;
         self.denials = denials;
+    }
+
+    /// The mode as `/auto` and `/mode` describe it.
+    #[must_use]
+    pub fn mode_text(&self) -> String {
+        let (c, cm, t, tm) = self.denials;
+        match self.mode {
+            None => "unknown".to_string(),
+            Some(PermissionMode::Auto) => format!(
+                "auto{} (consecutive denials {c}/{cm}, total {t}/{tm})",
+                if self.auto_paused { ", PAUSED" } else { "" }
+            ),
+            Some(mode) => mode.label().to_string(),
+        }
     }
 
     /// Set the classifier-running flag.
@@ -660,7 +684,11 @@ impl StatusInfo {
             StatusUpdate::Model { provider, model } => self.set_model(provider, model),
             StatusUpdate::Session(id) => self.set_session(&id),
             StatusUpdate::Tokens { input, output } => self.set_tokens(input, output),
-            StatusUpdate::Auto { state, denials } => self.set_auto(state, denials),
+            StatusUpdate::Mode {
+                mode,
+                paused,
+                denials,
+            } => self.set_mode(mode, paused, denials),
             StatusUpdate::Classifying(c) => self.set_classifying(c),
             StatusUpdate::Context { used, approx } => {
                 self.context_used = used;
@@ -1598,7 +1626,7 @@ impl App {
                     }
                 }
                 if self.modal.is_some() {
-                    self.modal_key(&key, &mut fx);
+                    self.modal_key(&key, now, &mut fx);
                 } else {
                     self.main_key(&key, now, &mut fx);
                 }
@@ -2057,8 +2085,8 @@ impl App {
                 self.run_command(Command::Model(ModelCommand::Pick), now, fx);
             }
             Action::CycleMode => {
-                let on = self.status.auto_state.eq_ignore_ascii_case("off");
-                self.run_command(Command::Auto(if on { AutoCommand::On } else { AutoCommand::Off }), now, fx);
+                let next = self.status.mode.unwrap_or_default().next();
+                fx.push(Effect::SetMode(next));
             }
             Action::HistorySearch => self.start_search(),
             Action::ChordPrefix => self.chord = Some(now),
@@ -2140,7 +2168,7 @@ impl App {
         }
     }
 
-    fn modal_key(&mut self, key: &KeyEvent, fx: &mut Vec<Effect>) {
+    fn modal_key(&mut self, key: &KeyEvent, now: Instant, fx: &mut Vec<Effect>) {
         let ctrl_c =
             key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c');
         // A held key must not answer, select or close: repeats only move,
@@ -2210,10 +2238,62 @@ impl App {
                 }
                 _ => {}
             },
+            Some(Modal::PlanReady(dialog)) => {
+                if ctrl_c && !repeat {
+                    self.modal = None;
+                    return;
+                }
+                let moves = matches!(
+                    key.code,
+                    KeyCode::Up | KeyCode::Down | KeyCode::Char('j' | 'k')
+                );
+                if (repeat && !moves)
+                    || key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                {
+                    return;
+                }
+                if let Some(choice) = dialog.key(key.code) {
+                    self.modal = None;
+                    self.plan_chosen(choice, now, fx);
+                }
+            }
             // Any key closes the panel and is not typed; a held `?` does
             // not close what it just opened.
             Some(Modal::Keys) if !repeat => self.modal = None,
             Some(Modal::Keys) | None => {}
+        }
+    }
+
+    /// The answer to the "Plan ready" dialog: proceed in accept-edits or
+    /// manual mode with a fixed prompt, or keep planning.
+    fn plan_chosen(&mut self, choice: PlanChoice, now: Instant, fx: &mut Vec<Effect>) {
+        let mode = match choice {
+            PlanChoice::KeepPlanning => return,
+            PlanChoice::Proceed => PermissionMode::AcceptEdits,
+            PlanChoice::ProceedManual => PermissionMode::Manual,
+        };
+        fx.push(Effect::SetMode(mode));
+        let prompt = PROCEED_PROMPT.to_string();
+        if self.running {
+            self.enqueue(prompt, fx);
+        } else if self.shell_busy() {
+            self.hold(prompt);
+        } else {
+            self.start_turn(prompt, now, fx);
+        }
+    }
+
+    /// After a turn: in plan mode an answer opens the "Plan ready" dialog
+    /// (unless another dialog is open or the next turn already started).
+    fn offer_plan(&mut self, answered: bool) {
+        if answered
+            && !self.running
+            && self.status.mode == Some(PermissionMode::Plan)
+            && matches!(self.modal, None | Some(Modal::Keys))
+        {
+            self.modal = Some(Modal::PlanReady(PlanDialog::default()));
         }
     }
 
@@ -2836,6 +2916,7 @@ impl App {
         self.status.classifying = false;
         let interrupted = matches!(&result, Err(TurnFailure::Interrupted));
         let succeeded = result.is_ok();
+        let answered = matches!(&result, Ok(summary) if !summary.text.trim().is_empty());
         match result {
             Ok(summary) => {
                 if !self.streamed_text && !summary.text.is_empty() {
@@ -2870,6 +2951,7 @@ impl App {
         if self.shell_run.is_none() && !self.running {
             self.run_next_shell(now, fx);
         }
+        self.offer_plan(answered);
         self.check_context();
     }
 
@@ -3161,16 +3243,16 @@ impl App {
                     });
                 }
             }
-            Command::Auto(AutoCommand::Status) => {
-                let (c, cm, t, tm) = self.status.denials;
+            Command::Auto(AutoCommand::Status) | Command::Mode(None) => {
                 let text = format!(
-                    "auto mode: {} (consecutive denials {c}/{cm}, total {t}/{tm})",
-                    self.status.auto_state
+                    "permission mode: {} (Shift+Tab cycles manual → accept edits → plan → auto; /mode <name> sets one)",
+                    self.status.mode_text()
                 );
                 self.transcript.push_notice(NoticeLevel::Info, text);
             }
-            Command::Auto(AutoCommand::On) => fx.push(Effect::SetAutoMode(true)),
-            Command::Auto(AutoCommand::Off) => fx.push(Effect::SetAutoMode(false)),
+            Command::Auto(AutoCommand::On) => fx.push(Effect::SetMode(PermissionMode::Auto)),
+            Command::Auto(AutoCommand::Off) => fx.push(Effect::SetMode(PermissionMode::Manual)),
+            Command::Mode(Some(mode)) => fx.push(Effect::SetMode(mode)),
             Command::Auto(AutoCommand::Resume) => fx.push(Effect::ResumeAutoMode),
             Command::Rules(RulesCommand::List) => fx.push(Effect::ListRules),
             Command::Rules(RulesCommand::Add {
@@ -4628,11 +4710,12 @@ mod tests {
         assert_eq!(app.input.text(), "/tasks ");
         // Tab before existing args keeps them and steps over the space.
         app.input.clear();
-        type_str(&mut app, "/mo gpt-5.5");
+        type_str(&mut app, "/mod gpt-5.5");
         for _ in 0.."gpt-5.5 ".len() {
             app.update(key(KeyCode::Left));
         }
-        assert_eq!(menu_rows(&app), ["/model"]);
+        assert_eq!(menu_rows(&app), ["/mode", "/model"]);
+        app.update(key(KeyCode::Down));
         app.update(key(KeyCode::Tab));
         assert_eq!(app.input.text(), "/model gpt-5.5");
         assert_eq!(app.input.cursor(), (0, 7));
@@ -4987,7 +5070,29 @@ mod tests {
             run(&mut app, "/model gpt-5.4"),
             vec![Effect::SetModel("gpt-5.4".into())]
         );
-        assert_eq!(run(&mut app, "/auto off"), vec![Effect::SetAutoMode(false)]);
+        assert_eq!(
+            run(&mut app, "/auto off"),
+            vec![Effect::SetMode(PermissionMode::Manual)]
+        );
+        assert_eq!(
+            run(&mut app, "/auto on"),
+            vec![Effect::SetMode(PermissionMode::Auto)]
+        );
+        assert_eq!(
+            run(&mut app, "/mode plan"),
+            vec![Effect::SetMode(PermissionMode::Plan)]
+        );
+        assert_eq!(
+            run(&mut app, "/mode accept-edits"),
+            vec![Effect::SetMode(PermissionMode::AcceptEdits)]
+        );
+        app.status.set_mode(PermissionMode::AcceptEdits, false, (0, 3, 0, 20));
+        assert!(run(&mut app, "/mode").is_empty());
+        assert!(
+            last_notice(&app).is_some_and(|(_, t)| t.starts_with("permission mode: accept edits")),
+            "{:?}",
+            last_notice(&app)
+        );
         assert_eq!(run(&mut app, "/resume"), vec![Effect::RequestResumePicker]);
         assert_eq!(
             run(&mut app, "/resume last"),
@@ -5466,12 +5571,18 @@ mod tests {
         assert!(app.take_dirty());
         app.update(Msg::Tick);
         assert!(!app.take_dirty());
-        app.update(Msg::Status(StatusUpdate::Auto {
-            state: "PAUSED".into(),
+        app.update(Msg::Status(StatusUpdate::Mode {
+            mode: PermissionMode::Auto,
+            paused: true,
             denials: (3, 3, 5, 20),
         }));
         assert!(app.take_dirty());
-        assert_eq!(app.status.auto_state, "PAUSED");
+        assert_eq!(app.status.mode, Some(PermissionMode::Auto));
+        assert!(app.status.auto_paused);
+        assert_eq!(
+            app.status.mode_text(),
+            "auto, PAUSED (consecutive denials 3/3, total 5/20)"
+        );
         app.update(Msg::Status(StatusUpdate::Session(
             "0123456789abcdef".into(),
         )));
@@ -5673,17 +5784,98 @@ mod tests {
     }
 
     #[test]
-    fn shift_tab_switches_auto_mode_off_and_on() {
+    fn shift_tab_cycles_the_permission_mode() {
         let back_tab = || Msg::Key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
         let mut app = App::new(StatusInfo::default());
-        app.status.set_auto("active", (0, 3, 0, 20));
-        assert_eq!(app.update(back_tab()), vec![Effect::SetAutoMode(false)]);
-        // The runner answers with the new state; the next press turns it on.
-        app.status.set_auto("off", (0, 3, 0, 20));
-        assert_eq!(app.update(back_tab()), vec![Effect::SetAutoMode(true)]);
-        // A paused auto mode counts as on.
-        app.status.set_auto("PAUSED", (3, 3, 3, 20));
-        assert_eq!(app.update(back_tab()), vec![Effect::SetAutoMode(false)]);
+        // Before the runner reports a mode the engine is in its default, auto.
+        assert_eq!(app.update(back_tab()), vec![Effect::SetMode(PermissionMode::Manual)]);
+        // The runner answers with the new mode; each press moves one on.
+        for (now, next) in [
+            (PermissionMode::Manual, PermissionMode::AcceptEdits),
+            (PermissionMode::AcceptEdits, PermissionMode::Plan),
+            (PermissionMode::Plan, PermissionMode::Auto),
+            (PermissionMode::Auto, PermissionMode::Manual),
+        ] {
+            app.status.set_mode(now, false, (0, 3, 0, 20));
+            assert_eq!(app.update(back_tab()), vec![Effect::SetMode(next)], "{now:?}");
+        }
+        // A paused auto mode is auto mode.
+        app.status.set_mode(PermissionMode::Auto, true, (3, 3, 3, 20));
+        assert_eq!(app.update(back_tab()), vec![Effect::SetMode(PermissionMode::Manual)]);
+        // It works while a turn runs too.
+        submit(&mut app, "work");
+        assert!(app.is_running());
+        app.status.set_mode(PermissionMode::Plan, false, (0, 3, 0, 20));
+        assert_eq!(app.update(back_tab()), vec![Effect::SetMode(PermissionMode::Auto)]);
+    }
+
+    fn answered(text: &str) -> Msg {
+        Msg::TurnFinished(TurnOutcome::plain(Ok(TurnSummary {
+            text: text.into(),
+            input_tokens: 1,
+            output_tokens: 1,
+        })))
+    }
+
+    /// A turn that ends in plan mode with an answer opens "Plan ready":
+    /// 1 proceeds in accept-edits mode, 3 in manual mode, Esc (or 2) keeps
+    /// planning; nothing opens outside plan mode or without an answer.
+    #[test]
+    fn plan_ready_dialog() {
+        let mut app = App::new(StatusInfo::default());
+        app.status.set_mode(PermissionMode::Plan, false, (0, 3, 0, 20));
+        submit(&mut app, "plan the refactor");
+        app.update(answered("1. Split the module\n2. Move the tests"));
+        assert_eq!(app.modal, Some(Modal::PlanReady(PlanDialog::default())));
+        // A held key does not choose.
+        let mut held = KeyEvent::from(KeyCode::Char('1'));
+        held.kind = KeyEventKind::Repeat;
+        assert!(app.update(Msg::Key(held)).is_empty());
+        assert!(app.modal.is_some());
+        assert_eq!(
+            app.update(key(KeyCode::Char('1'))),
+            vec![
+                Effect::SetMode(PermissionMode::AcceptEdits),
+                Effect::StartTurn(PROCEED_PROMPT.into())
+            ]
+        );
+        assert_eq!(app.modal, None);
+        assert!(app.is_running());
+
+        // Esc keeps planning: no effect, the mode stays.
+        app.update(answered("revised plan"));
+        assert!(matches!(app.modal, Some(Modal::PlanReady(_))));
+        assert!(app.update(key(KeyCode::Esc)).is_empty());
+        assert_eq!(app.modal, None);
+        assert!(!app.is_running());
+
+        // Down to row 3, Enter: proceed in manual mode.
+        submit(&mut app, "again");
+        app.update(answered("plan"));
+        app.update(key(KeyCode::Down));
+        app.update(key(KeyCode::Down));
+        assert_eq!(app.modal, Some(Modal::PlanReady(PlanDialog { cursor: 2 })));
+        assert_eq!(
+            app.update(key(KeyCode::Enter)),
+            vec![
+                Effect::SetMode(PermissionMode::Manual),
+                Effect::StartTurn(PROCEED_PROMPT.into())
+            ]
+        );
+
+        // Row 2 keeps planning too.
+        app.update(answered("plan"));
+        assert!(app.update(key(KeyCode::Char('2'))).is_empty());
+        assert_eq!(app.modal, None);
+
+        // An empty answer, or another mode, opens nothing.
+        submit(&mut app, "x");
+        app.update(answered("  "));
+        assert_eq!(app.modal, None);
+        app.status.set_mode(PermissionMode::AcceptEdits, false, (0, 3, 0, 20));
+        submit(&mut app, "y");
+        app.update(answered("done"));
+        assert_eq!(app.modal, None);
     }
 
     #[test]

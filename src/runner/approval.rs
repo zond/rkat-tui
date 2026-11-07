@@ -1,5 +1,7 @@
 //! The runner's side of the approval gate: escalation dialogs, `/rules`,
-//! `/auto`, decision notices, auto-mode status and classifier usage.
+//! the permission mode (`Shift+Tab`, `/mode`, `/auto`) and plan mode's
+//! system-context notes, decision notices, the mode's status and
+//! classifier usage.
 //!
 //! The engine asks the human through the escalation broker; the runner
 //! shows each request as [`Msg::Escalation`] (the UI queues them behind its
@@ -11,6 +13,8 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use meerkat_core::SessionId;
 use tokio::sync::{mpsc, oneshot};
@@ -20,6 +24,7 @@ use crate::approval::counters::{
     AutoModeState, MAX_CONSECUTIVE_DENIALS, MAX_TOTAL_DENIALS, PauseCause,
 };
 use crate::approval::escalation::{EscalationRequest, HumanDecision};
+use crate::approval::mode::PermissionMode;
 use crate::approval::policy::{Decider, Tier, VerdictSummary};
 use crate::approval::rules::{Rule, RuleId, RuleKind, RuleOrigin, RuleSet};
 use crate::approval::{ApprovalEngine, ApprovalEvent};
@@ -60,11 +65,118 @@ impl ApprovalDesk {
     }
 }
 
+/// The system context plan mode adds when it starts.
+pub(super) const PLAN_ON_NOTE: &str = "\
+# Plan mode is on
+
+The user switched to plan mode: research and plan, do not change anything. \
+Use read-only tools only; file writes, edits and commands that are not \
+read-only are refused while plan mode is on. When you know enough, present a \
+concise, numbered plan of the changes you would make and stop: the user \
+approves it before anything is changed.";
+
+/// The system context added when plan mode ends.
+pub(super) const PLAN_OFF_NOTE: &str = "\
+# Plan mode is off
+
+The user left plan mode: the approval policy of the current permission mode \
+applies again, and you may make changes.";
+
+/// A per-process counter for plan-mode notes' idempotency keys.
+static PLAN_NOTES: AtomicU64 = AtomicU64::new(0);
+
+/// An idempotency key no other plan-mode note shares (a session keeps the
+/// notes of earlier transitions and of earlier processes).
+fn plan_note_key(on: bool) -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    format!(
+        "rkat-tui:plan-mode:{}:{}-{nanos}-{}",
+        if on { "on" } else { "off" },
+        std::process::id(),
+        PLAN_NOTES.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+/// What a mode switch tells the user.
+fn mode_notice(mode: PermissionMode) -> &'static str {
+    match mode {
+        PermissionMode::Manual => {
+            "permission mode: manual (every edit and command asks you; Shift+Tab cycles)"
+        }
+        PermissionMode::AcceptEdits => {
+            "permission mode: accept edits (in-project edits run; commands ask you)"
+        }
+        PermissionMode::Plan => {
+            "permission mode: plan (read-only; the agent presents a plan before changing anything)"
+        }
+        PermissionMode::Auto => {
+            "permission mode: auto (the classifier reviews what is not always allowed)"
+        }
+    }
+}
+
 impl Runner {
-    /// The auto-mode status segment.
-    pub(super) fn push_auto_status(&self) {
-        let (state, denials) = auto_status(&self.approval.engine);
-        self.send(Msg::Status(StatusUpdate::Auto { state, denials }));
+    /// The permission-mode status segment.
+    pub(super) fn push_mode_status(&self) {
+        let (mode, paused, denials) = mode_status(&self.approval.engine);
+        self.send(Msg::Status(StatusUpdate::Mode {
+            mode,
+            paused,
+            denials,
+        }));
+    }
+
+    /// [`Effect::SetMode`]: switch, record the mode in the realm rules file
+    /// and tell the session when plan mode starts or ends.
+    pub(super) async fn set_mode(&mut self, mode: PermissionMode) {
+        self.approval.engine.set_mode(mode);
+        self.mode_changed().await;
+        self.notice(NoticeLevel::Info, mode_notice(mode));
+    }
+
+    /// [`Effect::ResumeAutoMode`] (`/auto resume`; in another mode it
+    /// switches to auto mode).
+    pub(super) async fn resume_auto(&mut self) {
+        self.approval.engine.resume_auto();
+        self.mode_changed().await;
+        self.notice(NoticeLevel::Info, "auto mode resumed");
+    }
+
+    async fn mode_changed(&mut self) {
+        self.push_mode_status();
+        if let Err(err) = self.approval.engine.persist_mode() {
+            self.notice(
+                NoticeLevel::Warn,
+                format!("the mode applies to this run but was not saved: {err}"),
+            );
+        }
+        self.note_plan_mode().await;
+    }
+
+    /// Bring the session's plan-mode note up to date: "on" when plan mode
+    /// is on and the session has not been told, "off" when it was told and
+    /// plan mode ended. A session that cannot take the note now hears it
+    /// before its next turn (and the tool errors say it anyway).
+    pub(super) async fn note_plan_mode(&mut self) {
+        let plan = self.approval.engine.mode() == PermissionMode::Plan;
+        let told = self.plan_noted.as_ref() == Some(self.session.id());
+        if plan == told {
+            return;
+        }
+        let note = if plan { PLAN_ON_NOTE } else { PLAN_OFF_NOTE };
+        match self
+            .session
+            .append_system_context(note.to_string(), plan_note_key(plan))
+            .await
+        {
+            Ok(_) => self.plan_noted = plan.then(|| self.session.id().clone()),
+            Err(err) => self.notice(
+                NoticeLevel::Warn,
+                format!("the session could not be told about plan mode now: {err}"),
+            ),
+        }
     }
 
     /// Answer the approval effects of the UI.
@@ -84,23 +196,6 @@ impl Runner {
             }
             Effect::RemoveRule(n) => self.remove_rule(n),
             Effect::ListRules => self.list_rules(),
-            Effect::SetAutoMode(enabled) => {
-                self.approval.engine.set_enabled(enabled);
-                self.push_auto_status();
-                self.notice(
-                    NoticeLevel::Info,
-                    if enabled {
-                        "auto mode on"
-                    } else {
-                        "auto mode off: actions that need review are denied"
-                    },
-                );
-            }
-            Effect::ResumeAutoMode => {
-                self.approval.engine.resume_auto();
-                self.push_auto_status();
-                self.notice(NoticeLevel::Info, "auto mode resumed");
-            }
             other => tracing::debug!(?other, "not an approval effect"),
         }
     }
@@ -226,12 +321,12 @@ impl Runner {
                         tool_use_id,
                         text: classifier_allow_note(reason.as_deref()),
                     });
-                } else if !allowed || matches!(tier, Tier::Classifier | Tier::AskUser) {
-                    let decider = match verdict {
-                        VerdictSummary::Allowed { by, .. } | VerdictSummary::Denied { by, .. } => {
-                            by
-                        }
-                    };
+                } else if let VerdictSummary::Allowed { by: decider, .. }
+                | VerdictSummary::Denied { by: decider, .. } = verdict
+                    && (!allowed
+                        || decider == Decider::Human
+                        || matches!(tier, Tier::Classifier | Tier::AskUser))
+                {
                     self.send(Msg::Approval(ApprovalNotice {
                         tool,
                         tier: format!("{tier} · {decider:?}").to_lowercase(),
@@ -239,10 +334,10 @@ impl Runner {
                         reason,
                     }));
                 }
-                self.push_auto_status();
+                self.push_mode_status();
             }
             ApprovalEvent::Paused(cause) => {
-                self.push_auto_status();
+                self.push_mode_status();
                 if cause != PauseCause::UserDisabled {
                     self.notice(
                         NoticeLevel::Warn,
@@ -252,7 +347,7 @@ impl Runner {
                     );
                 }
             }
-            ApprovalEvent::Resumed => self.push_auto_status(),
+            ApprovalEvent::Resumed => self.push_mode_status(),
             ApprovalEvent::RulesDropped(rules) => {
                 let listed: Vec<String> = rules.iter().map(describe_rule).collect();
                 self.notice(
@@ -320,18 +415,17 @@ impl Runner {
     }
 }
 
-/// Status-bar form of the auto-mode state.
-pub(super) fn auto_status(engine: &ApprovalEngine) -> (String, (u32, u32, u32, u32)) {
+/// The permission mode, whether auto mode is paused after classifier
+/// blocks, and the denial counters with their limits.
+pub(super) fn mode_status(engine: &ApprovalEngine) -> (PermissionMode, bool, (u32, u32, u32, u32)) {
     let (counters, state) = engine.auto_state();
-    let label = match state {
-        AutoModeState::Active => "active".to_string(),
-        AutoModeState::Paused {
-            cause: PauseCause::UserDisabled,
-        } => "off".to_string(),
-        AutoModeState::Paused { .. } => "PAUSED".to_string(),
-    };
+    let paused = matches!(
+        state,
+        AutoModeState::Paused { cause } if cause != PauseCause::UserDisabled
+    );
     (
-        label,
+        engine.mode(),
+        paused,
         (
             counters.consecutive,
             MAX_CONSECUTIVE_DENIALS,

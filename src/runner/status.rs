@@ -4,6 +4,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 use super::Runner;
+use crate::approval::mode::PermissionMode;
 use crate::approval::trust::TrustStatus;
 use crate::approval::rules::RULES_FILE_NAME;
 use crate::ui::NoticeLevel;
@@ -51,7 +52,7 @@ impl fmt::Display for StatusReport {
         writeln!(f, "workspace: {}", self.workspace.display())?;
         writeln!(f, "realm: {} (id {})", self.realm.display(), self.realm_id)?;
         writeln!(f, "shell confinement: {}", self.confinement)?;
-        writeln!(f, "auto mode: {}", self.auto)?;
+        writeln!(f, "permission mode: {}", self.auto)?;
         writeln!(
             f,
             "realm {}: {}",
@@ -76,7 +77,7 @@ impl Runner {
     /// [`crate::ui::Effect::StatusReport`].
     pub(super) fn status_report(&self) {
         let scope = &self.runtime.scope;
-        let (state, (c, cm, t, tm)) = super::approval::auto_status(&self.approval.engine);
+        let (mode, paused, (c, cm, t, tm)) = super::approval::mode_status(&self.approval.engine);
         let realm = scope.realm_root();
         let rules = realm.join(RULES_FILE_NAME);
         let rules_trust = trust_words(&self.runtime.approval.trust.lock().check(&rules));
@@ -105,7 +106,13 @@ impl Runner {
             realm,
             realm_id: scope.realm_id.clone(),
             confinement,
-            auto: format!("{state} (consecutive denials {c}/{cm}, total {t}/{tm})"),
+            auto: match mode {
+                PermissionMode::Auto => format!(
+                    "auto{} (consecutive denials {c}/{cm}, total {t}/{tm})",
+                    if paused { ", PAUSED" } else { "" }
+                ),
+                mode => mode.label().to_string(),
+            },
             realm_rules: (rules, rules_trust),
             project_inputs,
             helper_depth: self
@@ -133,7 +140,7 @@ mod tests {
             realm: PathBuf::from("/w/.rkat/tui"),
             realm_id: "tui".into(),
             confinement: "workspace".into(),
-            auto: "active (consecutive denials 0/3, total 0/20)".into(),
+            auto: "auto (consecutive denials 0/3, total 0/20)".into(),
             realm_rules: (PathBuf::from("/w/.rkat/tui/tui.toml"), "absent".into()),
             project_inputs: vec![
                 (
@@ -156,7 +163,7 @@ mod tests {
         assert_eq!(lines[3], "workspace: /w");
         assert_eq!(lines[4], "realm: /w/.rkat/tui (id tui)");
         assert_eq!(lines[5], "shell confinement: workspace");
-        assert!(lines[6].starts_with("auto mode: active"));
+        assert!(lines[6].starts_with("permission mode: auto"));
         assert_eq!(lines[7], "realm /w/.rkat/tui/tui.toml: absent");
         assert!(lines[8].starts_with("project /w/.rkat/mcp.toml: not trusted: it changed"));
         assert_eq!(lines[9], "project /w/.rkat/config.toml: absent");

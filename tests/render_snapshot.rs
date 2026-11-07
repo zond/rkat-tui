@@ -86,7 +86,7 @@ fn renders_blocks_input_and_status_bar() {
     assert_eq!(rows[4], "◐ glob({\"pattern\":\"*.rs\"}) running…");
     // Input box: top border (idle and empty: the `?` hint) then the prompt line.
     assert!(
-        rows[9].starts_with(" ? keys ────"),
+        rows[9].starts_with(" ? keys · Shift+Tab mode ────"),
         "border row: {:?}",
         rows[9]
     );
@@ -287,7 +287,10 @@ fn keys_panel_snapshot() {
     let mut app = App::new(StatusInfo::default());
     // Idle with an empty input, the editor title offers the panel.
     let idle = rows(&render_buffer(&mut app, W, H));
-    assert!(idle[H as usize - 3].starts_with(" ? keys ──"), "{idle:?}");
+    assert!(
+        idle[H as usize - 3].starts_with(" ? keys · Shift+Tab mode ──"),
+        "{idle:?}"
+    );
     app.update(Msg::Key(KeyEvent::from(KeyCode::Char('?'))));
     // Wide enough for the help's columns; cut to the height with a pointer
     // to /help. The dialog spans columns 3..107.

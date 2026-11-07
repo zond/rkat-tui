@@ -13,6 +13,11 @@
 //! Tier-3 actions are escalated to the human through the
 //! [`escalation::EscalationBroker`].
 //!
+//! That is auto mode, the default [`mode::PermissionMode`]. Manual mode asks
+//! the human for tiers 2 and 3 instead, accept-edits mode for Tier 3 only,
+//! and plan mode denies writes and every action above Tier 1 except the
+//! policy's own read-only shell commands.
+//!
 //! The gate is [`admission::ApprovalGate`], Meerkat's `ToolDispatchAdmission`
 //! seam: the agent's dispatcher consults it immediately before every tool
 //! call, and a denial comes back to the model as an ordinary tool error
@@ -32,6 +37,7 @@ pub mod counters;
 pub mod engine;
 pub mod escalation;
 pub mod ledger;
+pub mod mode;
 pub mod patch_targets;
 pub mod policy;
 pub mod prompts;
@@ -56,6 +62,12 @@ pub use transcript::InputKey;
 /// Typed code of the tool error a denial returns to the model
 /// (`ToolError::PolicyDenied`, rendered as `Tool call denied (auto_mode): …`).
 pub const DENIAL_CODE: &str = "auto_mode";
+
+/// Why plan mode denied a call: the tool error the model reads.
+pub const PLAN_MODE_DENIAL: &str = "plan mode is on: the user wants a plan before any change, \
+so file writes, edits and commands that are not read-only are not run. Do not try another way \
+to make the change. Keep researching with read-only tools, then present your plan and wait for \
+the user to approve it";
 
 /// Final decision for one tool call.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,8 +143,8 @@ pub enum DenyReason {
     },
     /// The human stopped the turn.
     Stopped,
-    /// Auto mode is disabled; Tier-3 actions are not run.
-    AutoDisabled,
+    /// Plan mode is on: the call would change something.
+    PlanMode,
     /// The classifier failed and no human could be asked.
     ClassifierUnavailable(String),
     /// Nobody answered the escalation in time.
@@ -149,7 +161,7 @@ impl DenyReason {
         match self {
             Self::UserRule { .. }
             | Self::Sealed { .. }
-            | Self::AutoDisabled
+            | Self::PlanMode
             | Self::ClassifierUnavailable(_)
             | Self::LedgerUnavailable(_) => Decider::Policy,
             Self::Classifier { .. } => Decider::Classifier,
@@ -186,9 +198,7 @@ impl fmt::Display for DenyReason {
                 comment: Some(comment),
             } => write!(f, "denied by the user: {comment}"),
             Self::Stopped => f.write_str("the user stopped this turn"),
-            Self::AutoDisabled => {
-                f.write_str("auto mode is disabled, so actions that need safety review are not run")
-            }
+            Self::PlanMode => f.write_str(PLAN_MODE_DENIAL),
             Self::ClassifierUnavailable(err) => {
                 write!(f, "the safety classifier is unavailable ({err})")
             }
@@ -365,7 +375,7 @@ mod tests {
         assert_eq!(classifier.rule_label().as_deref(), Some("D1"));
         assert_eq!(DenyReason::Human { comment: None }.decider(), Decider::Human);
         assert_eq!(DenyReason::EscalationTimedOut.decider(), Decider::Human);
-        assert_eq!(DenyReason::AutoDisabled.decider(), Decider::Policy);
+        assert_eq!(DenyReason::PlanMode.decider(), Decider::Policy);
         assert_eq!(DenyReason::Stopped.rule_label(), None);
     }
 }

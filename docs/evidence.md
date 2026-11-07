@@ -1366,3 +1366,60 @@ covers the HELP_TEXT edits).
   `shell.user_timeout_secs` row of the configuration reference; CHANGELOG; the module list in `lib.rs`.
 - Commands: `cargo fmt --all` exit 0; `cargo clippy --all-targets --all-features -- -D warnings` exit 0;
   `cargo nextest run --all-features` 820 passed, 7 skipped, exit 0.
+
+## Batch 3 A (2026-11-07)
+
+Permission modes on Shift+Tab (`docs/ux-parity.md` rows 9, 27, 28; candidate 5).
+
+- Before: Shift+Tab toggled auto mode off/on. `/auto off` (and `--no-auto`) left tier 2 (in-project edits)
+  allowed and denied every tier-3 action outright (`DenyReason::AutoDisabled`, no dialog); there was no
+  accept-edits or plan mode. The on/off state was not saved at runtime (only `[auto] enabled` in a `tui.toml`
+  the user edited).
+- After: `approval::mode::PermissionMode` (`Manual` = Claude Code's `default`, `AcceptEdits`, `Plan`, `Auto`,
+  the default) lives in the engine beside auto mode's counters (`AutoMode::mode`; `Paused{UserDisabled}` exactly
+  when the mode is not auto). `ApprovalEngine::route` maps a tier decision through the mode: deny rules and
+  sealed paths deny and tier 1 allows in every mode; a protected write asks in every mode but plan; manual asks
+  the human for tier 2 and tier 3 (`Asking::Mode`, no classifier, counters untouched); accept-edits allows tier 2
+  and asks for tier 3; auto is unchanged (classifier, pause, escalation); plan denies writes (file tools, patches,
+  notes, protected ones included), shell commands unless tier 1 by the policy itself (not by an allow rule) and
+  everything else above tier 1, with `DenyReason::PlanMode` (`PLAN_MODE_DENIAL`: "plan mode is on: … present your
+  plan …"), which replaces the now unused `AutoDisabled`. An escalation queued behind another is routed again
+  under the current mode when it gets the lock. Helpers inherit the mode (one engine).
+  Deviation from the brief's wording: the brief described `/auto off` as escalating; it denied. Manual mode now
+  asks, as the brief's mode table (and Claude Code's `default`) requires; `/auto off` and `--no-auto` mean manual.
+- UI: `Effect::SetMode`, `StatusUpdate::Mode { mode, paused, denials }`; Shift+Tab sends the next mode in the
+  cycle manual → accept edits → plan → auto → manual (a paused auto counts as auto); `/mode [name]` (spec table
+  entry; `default|manual|accept-edits|acceptEdits|accept_edits|plan|auto`); `/auto` shows the mode, `/auto on|off`
+  = auto/manual, `/auto resume` as before (from another mode it switches to auto). Status bar: `manual`,
+  `accept edits`, `plan` (bold), `auto (deny c/3, t/20)`, `auto: PAUSED (…)` on yellow. Idle editor title
+  ` ? keys · Shift+Tab mode `. `Modal::PlanReady(PlanDialog)`: when a turn ends in plan mode with a non-empty
+  answer and nothing else is open, "1. Proceed (switch to accept edits and send "Proceed with the plan")
+  2. Keep planning (Esc) 3. Proceed in manual mode"; ↑/↓/j/k + Enter, 1-3, Esc; held keys only move.
+- Runner: `set_mode` switches the engine, pushes the status, saves `[auto] mode` in the realm `tui.toml`
+  (`rules::persist_realm_mode`, drops the old `enabled` key, records the write in the host trust record like rule
+  writes), and `note_plan_mode` appends `# Plan mode is on` / `# Plan mode is off` through
+  `append_system_context` (keys `rkat-tui:plan-mode:on|off:<pid>-<nanos>-<n>`, unique per transition so a second
+  entry into plan mode is not swallowed by idempotency; the brief said "fixed"). The runner remembers which
+  session holds the "on" note; `start_turn` tells a session opened or resumed in plan mode before its first turn.
+  Decision notices now also show human-decided calls of any tier (a manual-mode edit the user allowed).
+- Layering: `[auto] mode` in global/realm/CLI layers (`mode` beats `enabled` in one layer, later layers win);
+  `--set auto.mode=plan` works; a project `tui.toml` cannot pick a mode, its `enabled = false` only moves auto to
+  manual (`enabled = true` is ignored now).
+- Tests: `approval::mode::tests::{shift_tab_cycles_manual_accept_edits_plan_auto,
+  names_parse_and_round_trip_through_toml}`; `approval::engine::tests::{manual_mode_still_asks_for_protected_writes,
+  manual_mode_asks_for_tier_three_and_auto_resumes, accept_edits_allows_in_project_edits_that_manual_mode_asks_for
+  (no classifier call, no dialog), accept_edits_asks_for_protected_writes_and_the_shell,
+  plan_mode_denies_writes_and_commands_with_the_plan_error, a_helper_inherits_plan_mode,
+  auto_mode_still_classifies_tier_three, a_queued_question_follows_a_mode_switch,
+  the_mode_persists_in_the_realm_rules_file}`; `approval::rules::tests::the_permission_mode_layers`;
+  `ui::commands::tests::mode_commands`; `ui::tests::{shift_tab_cycles_the_permission_mode, plan_ready_dialog,
+  slash_commands_map_to_effects, status_updates_and_dirty_tracking}`;
+  `ui::render::tests::{status_bar_modes_and_classifying, status_line_segments}`; render snapshots for the new
+  idle title; end to end `integrator::plan_mode_refuses_a_write_and_the_model_reads_why` (SetMode(Plan) → the
+  model's `write_file` comes back `is_error` with "plan mode is on", no file, no dialog, the system prompt holds
+  `# Plan mode is on`, realm `tui.toml` holds `mode = "plan"`; switching to accept edits adds `# Plan mode is off`
+  and saves `mode = "accept-edits"`).
+- Docs: HELP_TEXT (Shift+Tab row, `/mode` and `/auto` rows), README "Permission modes" section (replaces the
+  Shift+Tab-toggles-auto description; tier table and config reference rows), CHANGELOG.
+- Commands: `cargo fmt --all` exit 0; `cargo clippy --all-targets --all-features -- -D warnings` exit 0;
+  `cargo nextest run --all-features --no-fail-fast` 833 passed, 7 skipped, exit 0.

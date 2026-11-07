@@ -5,14 +5,16 @@ hosts its sessions in-process on Meerkat's runtime-backed session path (the
 one `rkat`, REST and RPC use) and gates every tool call through an
 **auto-mode** approval model: routine actions run without interruption,
 risky ones are judged by a reasoning-blind classifier, and you are asked only
-after repeated blocks. The shell runs inside an OS sandbox by default.
+after repeated blocks. Shift+Tab switches to Claude Code's other permission
+modes (manual, accept edits, plan). The shell runs inside an OS sandbox by
+default.
 
 ```bash
 cargo run -- "fix the failing test"
 rkat-tui -c                       # continue the latest session of this workspace
 rkat-tui --resume ~2
 rkat-tui --model gpt-5.5 --classifier-model gpt-5.5
-rkat-tui --no-auto                # tier-3 actions are denied instead of classified
+rkat-tui --no-auto                # start in manual mode: you answer what the classifier would review
 rkat-tui --model llama3:8b        # bare ids are looked up in every endpoint's model list
 rkat-tui --endpoint-def litellm=openai=http://localhost:4000,key_env=LITELLM_KEY --model litellm:gpt-5.5
 rkat-tui --allow 'shell=cargo nextest run*' --set auto.compact=auto
@@ -86,9 +88,12 @@ resumed sessions and helpers carry it too. First match wins:
 |---|---|---|
 | 0 | A user **deny** rule matches, or `write_file` / `edit_file` (or any target of a patch) is a **sealed** path: the project's `.rkat/` (the realm's `config.toml`, rules, MCP servers, sessions) and every `.git` inside it, and, wherever they lie, the git directories governing the project (an enclosing repository's `.git` when the workspace is a subdirectory, a worktree's git dir and the common dir its `commondir` names, with the hooks), the realm directory (`--realm`/`--state-root`: `config.toml`, approvals, `tui.toml`) and the user config directory (`~/.rkat/tui`: global rules, trust records). Neither the classifier nor an allow rule opens a sealed path, and reading one is not sealed; a shell command that writes there is still judged by the classifier | denied |
 | 1 | Read-only tools (`read_file`, `glob`, `grep` inside the project, task tools, `memory_search`, `note_list`/`note_read`, `blob_inspect`, skill browsing, `shell_jobs`, read-only `mob_*` queries, `delegate`, `fork`), read-only shell commands (`cat`, `ls`, `rg`, `git status/diff/log`, `cargo check/test` when builds are trusted, …), narrow user **allow** rules | allowed |
-| 2 | `write_file` / `edit_file` where every target is inside the project and not protected (`.rkat/`, `.git/` and any `.git` file, `.env*`, …); workspace notes | allowed |
+| 2 | `write_file` / `edit_file` where every target is inside the project and not protected (`.rkat/`, `.git/` and any `.git` file, `.env*`, …); workspace notes | allowed (manual mode asks you) |
 | ask | `write_file` / `edit_file` (or any target of a patch) is a **protected** path in the project: `.env*`, `.envrc`, `build.rs`, `.cargo/`, `rust-toolchain*`, `AGENTS.md`, `.claude/`, `.gitmodules`, `.gitattributes`, `tui.toml`, `.vscode/`, `.idea/`. Never the classifier, whatever auto mode's state: the dialog names each path and what it is (`protected path: .env.local (secrets); the policy always asks for these`). A user allow rule for the path (what the dialog's "allow and add a rule" adds) allows it, a deny rule denies it | asks you, every time |
-| 3 | Everything else: other shell commands, MCP tools, web search, comms sends, mutating mob tools, out-of-project paths, user-level notes | classifier |
+| 3 | Everything else: other shell commands, MCP tools, web search, comms sends, mutating mob tools, out-of-project paths, user-level notes | classifier (manual and accept-edits modes ask you) |
+
+That is auto mode, the default [permission mode](#permission-modes); plan
+mode denies writes and everything above tier 1.
 
 A tool counts as a builtin, file or note tool only when its definition's
 provenance says so: an MCP tool or one of unknown origin with the same name
@@ -153,9 +158,47 @@ the rule it adds; an action with no rule subject shows
 for the call's first subject to the realm `tui.toml`: for a file write the
 project-relative path (`write_file` `.env.local`), which matches that file
 only, and only when every target of the call matches it. `/auto resume` resumes; `/auto` shows the
-state and counters. Every escalation is recorded through the realm's own
+mode and counters. Every escalation is recorded through the realm's own
 approval issuer (`approvals.json`); when that record cannot be written the
 action is denied.
+
+### Permission modes
+
+As in Claude Code, Shift+Tab cycles four modes, manual → accept edits →
+plan → auto → manual, and the status bar names the one in force (`manual`,
+`accept edits`, `plan`, or `auto (deny 0/3, 0/20)`; `auto: PAUSED (…)` on
+yellow after a denial pause). `/mode` shows it and `/mode
+default|accept-edits|plan|auto` sets it (`manual` and `acceptEdits` are
+accepted too); `/auto on` is `/mode auto` and `/auto off` is `/mode default`.
+
+| Mode | Tier 2 (in-project edits) | Tier 3 | Shell |
+|---|---|---|---|
+| `default` (shown as `manual`) | asks you | asks you (no classifier) | read-only commands run, others ask you |
+| `accept-edits` | allowed | asks you (no classifier) | as manual |
+| `plan` | denied | denied | only the commands tier 1 itself finds read-only (an allow rule does not count) |
+| `auto` (the default) | allowed | classifier | read-only commands run, others go to the classifier |
+
+In every mode deny rules and sealed paths deny, tier-1 reads run and a
+protected write asks you, except in plan mode, which denies every write.
+The mode is the gate's, so helpers act under it too, and a dialog already
+queued is judged again under the mode in force when its turn comes
+(switching to accept edits settles a waiting in-project edit). Manual and
+accept-edits questions leave auto mode's denial counters alone.
+
+**Plan mode** is read-only: a denied call's tool error says plan mode is on
+and asks the model to present a plan instead, and entering plan mode adds a
+system note telling the session to research and plan (leaving it adds one
+saying it is off; a session opened later in plan mode hears it before its
+first turn). When a turn ends in plan mode with an answer, a "Plan ready"
+dialog offers `1. Proceed` (switch to accept edits and send "Proceed with
+the plan"), `2. Keep planning` (Esc) and `3. Proceed in manual mode`.
+
+The mode is saved as `[auto] mode` in the realm's `tui.toml` (the file
+`/permissions add` writes), so the next start, a resumed session included,
+comes back in it. `--no-auto` (`auto.enabled = false`) starts in manual
+mode for one run, and `--set auto.mode=plan` in any mode. A project
+`tui.toml` cannot choose a mode; its `enabled = false` only moves auto mode
+to manual.
 
 **What runs as the host and when it is trusted.** The gate and the sandbox
 cover the agent's tool calls. Local MCP stdio servers and command hooks are
@@ -447,7 +490,8 @@ are never written to a file.
 
 | Key | Flag | Default |
 |---|---|---|
-| `auto.enabled` | `--no-auto` (= `false`) | `true` |
+| `auto.mode` (`"default"`/`"accept-edits"`/`"plan"`/`"auto"`; `/mode` writes it to the realm file) | `--set auto.mode=plan` | `"auto"` |
+| `auto.enabled` (the older form: `false` is `mode = "default"`) | `--no-auto` (= `false`) | `true` |
 | `auto.classifier_model` | `--classifier-model <id>` | per-dialect default of the start-up endpoint |
 | `auto.trust_project_builds` | `--trust-project-builds` / `--no-trust-project-builds` | `false` |
 | `auto.compact` (`"warn"`/`"auto"`) | `--auto-compact` / `--no-auto-compact` | `"warn"` |
@@ -660,11 +704,11 @@ behind these controls; its table describes the state before the change).
 
 `/help` (alias `/?`), `/quit` (aliases `/exit`, `/q`), `/clear` (alias `/new`), `/resume [ref]`,
 `/permissions [list|add allow|deny <tool> [pattern]|rm <n>|trust]` (alias `/rules`; `remove` for `rm`),
-`/auto [on|off|resume]`, `/model [[endpoint:]id|refresh]`,
+`/mode [default|accept-edits|plan|auto]`, `/auto [on|off|resume]`, `/model [[endpoint:]id|refresh]`,
 `/remember <text>`, `/memory [user|system]`, `/init`, `/compact [now|status|<instructions>]`, `/context`, `/status`, `/export [file]`, `/usage` (aliases `/cost`, `/stats`), `/copy [N]`, `/trust` (alias `/mcp trust`),
 `/helpers [expand|fold <label>|all]` (alias `/tasks`). `/status` prints the
 rkat-tui version, the model and its endpoint, the session id, the workspace
-and realm directories, the shell confinement, the auto-mode state, whether
+and realm directories, the shell confinement, the permission mode, whether
 the realm `tui.toml` is trusted, the trust state of each project input
 `/trust` covers (`.rkat/mcp.toml`, `.rkat/config.toml`, the workspace
 realm's `config.toml`; "trusted for this run" under `--trust-project`), and
@@ -751,8 +795,8 @@ hides detail (the last reasoning block and the last tool output together);
 Ctrl+↑/↓ select a helper in the panel under the
 input and Enter on an empty input opens its full view (Esc returns);
 PgUp/PgDn and Shift+↑/↓ scroll; Home/End jump when the editor is empty;
-Ctrl-L clears the screen and redraws it; Shift+Tab switches auto mode off
-and on (the same as `/auto off` and `/auto on`); Alt+P opens the model
+Ctrl-L clears the screen and redraws it; Shift+Tab cycles the permission
+mode (see [Permission modes](#permission-modes)); Alt+P opens the model
 picker (as `/model`) and leaves the draft in the editor; Ctrl-Z suspends
 rkat-tui to the shell (on Unix: it gives the terminal back and stops with
 SIGTSTP; `fg` resumes it and repaints the screen, while the session's work

@@ -19,6 +19,7 @@
 //! [`crate::bootstrap::confinement`]); like endpoints and prices, those are
 //! honoured from the user's own layers only.
 
+use crate::approval::mode::PermissionMode;
 use crate::approval::trust::{TrustStatus, Untrusted};
 use crate::bootstrap::confinement::ConfinementSection;
 use crate::ui::compaction::{CompactMode, CompactionPolicy};
@@ -604,8 +605,9 @@ impl RuleSet {
 /// Auto-mode settings after layering.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AutoSettings {
-    /// Whether auto mode is on; when off, Tier-3 actions are denied outright.
-    pub enabled: bool,
+    /// The permission mode at start (`[auto] mode`; `enabled = false`, or
+    /// `--no-auto`, is [`PermissionMode::Manual`]).
+    pub mode: PermissionMode,
     /// Classifier model override.
     pub classifier_model: Option<String>,
     /// Whether `cargo build|test|nextest|check|clippy` are Tier 1. Off by
@@ -630,7 +632,7 @@ impl Default for AutoSettings {
     fn default() -> Self {
         let compaction = CompactionPolicy::default();
         Self {
-            enabled: true,
+            mode: PermissionMode::Auto,
             classifier_model: None,
             trust_project_builds: false,
             compact: compaction.mode,
@@ -660,9 +662,14 @@ impl AutoSettings {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AutoSection {
-    /// See [`AutoSettings::enabled`].
+    /// `true`: start in auto mode, `false`: in manual mode (the older
+    /// spelling of `mode`; `mode` wins when a file sets both).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
+    /// See [`AutoSettings::mode`]: `"default"`, `"accept-edits"`, `"plan"`
+    /// or `"auto"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<PermissionMode>,
     /// See [`AutoSettings::classifier_model`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub classifier_model: Option<String>,
@@ -1439,6 +1446,15 @@ pub fn load_layered_with(
             auto.trust_project_builds = None;
             notices.push(Notice::ProjectTrustIgnored { path: project_path });
         }
+        // The permission mode is the user's choice: a cloned repository
+        // cannot pick one (`/mode` writes the realm file, never this one),
+        // it can only turn the classifier off (`enabled = false` moves auto
+        // mode to manual; any other mode stays).
+        auto.mode = None;
+        let classifier_off = auto.enabled.take() == Some(false);
+        let classifier_off_by_cli = cli
+            .and_then(|c| c.auto.as_ref())
+            .is_some_and(|c| c.enabled.is_some() || c.mode.is_some());
         // File contents a cloned repository wrote must not reach the
         // classifier against the user's choice: the project may only turn
         // the classifier's file reads off.
@@ -1460,6 +1476,9 @@ pub fn load_layered_with(
             }
         }
         apply_auto(&mut settings, &auto);
+        if classifier_off && !classifier_off_by_cli && settings.mode == PermissionMode::Auto {
+            settings.mode = PermissionMode::Manual;
+        }
     }
     let (policy, clamped) = CompactionPolicy {
         mode: settings.compact,
@@ -1494,7 +1513,8 @@ fn project_auto_without(project: AutoSection, cli: &AutoSection) -> AutoSection 
         if overridden { None } else { value }
     }
     AutoSection {
-        enabled: keep(project.enabled, cli.enabled.is_some()),
+        enabled: keep(project.enabled, cli.enabled.is_some() || cli.mode.is_some()),
+        mode: keep(project.mode, cli.enabled.is_some() || cli.mode.is_some()),
         classifier_model: keep(project.classifier_model, cli.classifier_model.is_some()),
         trust_project_builds: keep(
             project.trust_project_builds,
@@ -1515,7 +1535,14 @@ fn project_auto_without(project: AutoSection, cli: &AutoSection) -> AutoSection 
 
 fn apply_auto(settings: &mut AutoSettings, auto: &AutoSection) {
     if let Some(enabled) = auto.enabled {
-        settings.enabled = enabled;
+        settings.mode = if enabled {
+            PermissionMode::Auto
+        } else {
+            PermissionMode::Manual
+        };
+    }
+    if let Some(mode) = auto.mode {
+        settings.mode = mode;
     }
     if let Some(model) = &auto.classifier_model {
         settings.classifier_model = Some(model.clone());
@@ -1601,6 +1628,20 @@ pub fn persist_realm_rules(path: &Path, rules: &RuleSet) -> Result<(), RulesErro
     deny.extend(session_deny);
     file.allow = allow;
     file.deny = deny;
+    save_realm(path, &file)
+}
+
+/// Record `mode` as the realm's `[auto] mode` (the older `enabled` key is
+/// dropped: `mode` says it), keeping everything else in the file.
+///
+/// # Errors
+///
+/// Returns [`RulesError`] when the file cannot be read, parsed or written.
+pub fn persist_realm_mode(path: &Path, mode: PermissionMode) -> Result<(), RulesError> {
+    let mut file = RulesFile::load(path)?;
+    let auto = file.auto.get_or_insert_with(AutoSection::default);
+    auto.enabled = None;
+    auto.mode = Some(mode);
     save_realm(path, &file)
 }
 
@@ -1834,7 +1875,7 @@ mod tests {
         assert_eq!(rules.allow[0].1.origin, RuleOrigin::Realm);
         assert_eq!(rules.deny.len(), 2);
         assert!(!settings.trust_project_builds);
-        assert!(!settings.enabled);
+        assert_eq!(settings.mode, PermissionMode::Manual);
         assert_eq!(settings.classifier_model.as_deref(), Some("gpt-5.2"));
         assert_eq!(notices.len(), 2);
         assert!(
@@ -2333,6 +2374,53 @@ mod tests {
         assert_eq!(layered.ui.helpers, HelperView::Expanded);
     }
 
+    /// The realm's `[auto] mode` (what `/mode` records) sets the start
+    /// mode; a project cannot pick one, only move auto mode to manual with
+    /// `enabled = false`; the command line beats both.
+    #[test]
+    fn the_permission_mode_layers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (realm, project) = (tmp.path().join("realm"), tmp.path().join("p"));
+        let mode = |realm_text: &str, project_text: &str, overlay: Option<&str>| {
+            write(&realm, realm_text);
+            write(&project, project_text);
+            let overlay = overlay.map(cli);
+            load_layered_with(&realm, None, &project, RealmTrust::Owned, overlay.as_ref())
+                .unwrap()
+                .settings
+                .mode
+        };
+        assert_eq!(mode("", "", None), PermissionMode::Auto);
+        assert_eq!(mode("[auto]\nmode = \"plan\"\n", "", None), PermissionMode::Plan);
+        assert_eq!(
+            mode("[auto]\nenabled = true\nmode = \"accept-edits\"\n", "", None),
+            PermissionMode::AcceptEdits,
+            "mode wins over enabled"
+        );
+        assert_eq!(mode("[auto]\nenabled = false\n", "", None), PermissionMode::Manual);
+        assert_eq!(
+            mode("", "[auto]\nmode = \"accept-edits\"\nenabled = true\n", None),
+            PermissionMode::Auto,
+            "a project picks no mode"
+        );
+        assert_eq!(mode("", "[auto]\nenabled = false\n", None), PermissionMode::Manual);
+        assert_eq!(
+            mode("[auto]\nmode = \"plan\"\n", "[auto]\nenabled = false\n", None),
+            PermissionMode::Plan,
+            "only auto mode moves to manual"
+        );
+        assert_eq!(
+            mode("[auto]\nmode = \"plan\"\n", "", Some("[auto]\nenabled = false\n")),
+            PermissionMode::Manual,
+            "--no-auto beats the realm"
+        );
+        assert_eq!(
+            mode("", "[auto]\nenabled = false\n", Some("[auto]\nmode = \"auto\"\n")),
+            PermissionMode::Auto,
+            "the command line beats the project"
+        );
+    }
+
     #[test]
     fn cli_layer_beats_realm_but_project_deny_and_lowering_still_apply() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2351,7 +2439,7 @@ mod tests {
         let layered =
             load_layered_with(&realm, None, &project, RealmTrust::Owned, Some(&overlay)).unwrap();
         let s = &layered.settings;
-        assert!(!s.enabled, "cli beats realm");
+        assert_eq!(s.mode, PermissionMode::Manual, "cli beats realm");
         assert_eq!(s.compact, CompactMode::Auto, "cli beats project");
         assert_eq!(s.classifier_model.as_deref(), Some("realm-model"));
         assert_eq!(

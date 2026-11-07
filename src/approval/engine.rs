@@ -53,6 +53,7 @@ use super::classifier::{ActionClassifier, ClassifierInput, ClassifierVerdict, En
 use super::counters::{AutoMode, AutoModeState, DenialCounters, PauseCause};
 use super::escalation::{EscalationBroker, EscalationPrompt, HumanDecision};
 use super::ledger::{self, EscalationEntry, EscalationLedger};
+use super::mode::PermissionMode;
 use super::policy::{
     Action, ActionKind, Decider, PolicyContext, Tier, TierDecision, classify_tier_with,
 };
@@ -277,7 +278,7 @@ impl ApprovalEngine {
         if !dropped.is_empty() {
             let _ = events.send(ApprovalEvent::RulesDropped(dropped));
         }
-        let auto = AutoMode::new(settings.enabled);
+        let auto = AutoMode::new(settings.mode);
         Arc::new(Self {
             root,
             rules: RwLock::new(rules),
@@ -580,26 +581,62 @@ impl ApprovalEngine {
         }
     }
 
-    /// Turn auto mode on (`/auto on`, resets counters) or off (`/auto off`:
-    /// Tier-3 actions are denied outright).
-    pub fn set_enabled(&self, enabled: bool) {
-        self.settings.write().enabled = enabled;
-        let event = {
+    /// The permission mode now.
+    #[must_use]
+    pub fn mode(&self) -> PermissionMode {
+        self.auto.lock().mode
+    }
+
+    /// Switch the permission mode (`Shift+Tab`, `/mode`, `/auto on|off`).
+    /// Entering auto mode resets the denial counters and ends a pause, as
+    /// `/auto on` always did; any other mode stops classifier review.
+    /// Returns the previous mode. Dialogs already open stay open; queued
+    /// ones are judged again under the new mode when their turn comes.
+    pub fn set_mode(&self, mode: PermissionMode) -> PermissionMode {
+        self.settings.write().mode = mode;
+        let (previous, event) = {
             let mut auto = self.auto.lock();
-            if enabled {
+            let previous = std::mem::replace(&mut auto.mode, mode);
+            let event = if mode == PermissionMode::Auto {
                 auto.resume(true).then_some(ApprovalEvent::Resumed)
             } else {
                 auto.pause(PauseCause::UserDisabled)
                     .then_some(ApprovalEvent::Paused(PauseCause::UserDisabled))
-            }
+            };
+            (previous, event)
         };
         if let Some(event) = event {
             self.emit(event);
         }
+        previous
     }
 
-    /// `/auto resume`: clear a pause (including the total-denials pause) and reset counters.
+    /// Record the mode in the realm rules file (`[auto] mode`), so the next
+    /// start comes back in it; a no-op without a realm rules file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RulesError`] when the file cannot be written.
+    pub fn persist_mode(&self) -> Result<(), RulesError> {
+        let Some(path) = &self.rules_path else {
+            return Ok(());
+        };
+        rules::persist_realm_mode(path, self.mode())?;
+        if let Some(trust) = &self.rules_trust
+            && let Err(err) = trust.lock().record_file(path)
+        {
+            tracing::warn!(error = %err, "realm rules written but not recorded as trusted");
+        }
+        Ok(())
+    }
+
+    /// `/auto resume`: clear a pause (including the total-denials pause) and
+    /// reset counters; in another mode, switch to auto mode.
     pub fn resume_auto(&self) {
+        if self.mode() != PermissionMode::Auto {
+            self.set_mode(PermissionMode::Auto);
+            return;
+        }
         let resumed = self.auto.lock().resume(true);
         if resumed {
             self.emit(ApprovalEvent::Resumed);
@@ -735,6 +772,51 @@ impl ApprovalEngine {
         }
     }
 
+    /// What the permission mode makes of a tier decision.
+    ///
+    /// Every mode: deny rules and sealed paths deny, Tier 1 allows, and a
+    /// protected write asks the user. Plan mode first denies writes, shell
+    /// commands that are not read-only by the policy itself (an allow rule
+    /// does not count) and everything above Tier 1. Then manual mode asks
+    /// for in-project edits and Tier 3, accept-edits mode allows the edits
+    /// and asks for Tier 3, and auto mode allows the edits and has the
+    /// classifier review Tier 3.
+    fn route(&self, facts: &Facts<'_>, decision: TierDecision, mode: PermissionMode) -> Route {
+        let tier = decision.tier;
+        if mode == PermissionMode::Plan
+            && !matches!(tier, Tier::UserDeny | Tier::Sealed)
+            && plan_forbids(&facts.action, &decision)
+        {
+            return Route::Settled(deny_at(tier, DenyReason::PlanMode));
+        }
+        match (tier, mode) {
+            (Tier::AskUser, _) => Route::Ask(Asking::Policy(decision.detail)),
+            (Tier::InProjectEdit, PermissionMode::Manual) => Route::Ask(Asking::Mode {
+                tier,
+                reason: format!(
+                    "manual mode asks for every edit ({}; Shift+Tab to accept edits)",
+                    decision.detail
+                ),
+            }),
+            (Tier::Classifier, PermissionMode::Auto) => Route::Review,
+            (Tier::Classifier, _) => Route::Ask(Asking::Mode {
+                tier,
+                reason: format!(
+                    "{mode} mode asks for what auto mode's classifier would review ({})",
+                    decision.detail
+                ),
+            }),
+            _ => match self.static_verdict(decision) {
+                Some(verdict) => Route::Settled(verdict),
+                None if mode == PermissionMode::Auto => Route::Review,
+                None => Route::Ask(Asking::Mode {
+                    tier: Tier::Classifier,
+                    reason: format!("{mode} mode asks for this action"),
+                }),
+            },
+        }
+    }
+
     async fn evaluate(
         &self,
         session_id: &SessionId,
@@ -743,36 +825,25 @@ impl ApprovalEngine {
         facts: &Facts<'_>,
     ) -> Verdict {
         let decision = self.tier_of(facts);
-        if decision.tier == Tier::AskUser {
-            // A protected write: the human answers, every time; the
-            // classifier, auto mode and its pause play no part.
-            if self.stopped(session_id) {
-                return deny_at(Tier::AskUser, DenyReason::Stopped);
+        let mode = self.mode();
+        match self.route(facts, decision, mode) {
+            Route::Settled(verdict) => return verdict,
+            Route::Ask(asking) => {
+                // A protected write, or a question the mode puts to the
+                // human: the classifier and its pause play no part.
+                if self.stopped(session_id) {
+                    return deny_at(asking.tier(), DenyReason::Stopped);
+                }
+                return self
+                    .escalate(session_id, agent, tool_use_id, facts, asking, None)
+                    .await;
             }
-            return self
-                .escalate(
-                    session_id,
-                    agent,
-                    tool_use_id,
-                    facts,
-                    Asking::Policy(decision.detail),
-                    None,
-                )
-                .await;
-        }
-        if let Some(verdict) = self.static_verdict(decision) {
-            return verdict;
+            Route::Review => {}
         }
         if self.stopped(session_id) {
             return deny3(DenyReason::Stopped);
         }
-        let (disabled, escalating) = {
-            let auto = self.auto.lock();
-            (auto.disabled(), auto.escalating())
-        };
-        if disabled {
-            return deny3(DenyReason::AutoDisabled);
-        }
+        let escalating = self.auto.lock().escalating();
 
         let payload = self.payload(&facts.action).await;
         let key = payload.cache_key(&facts.action);
@@ -883,12 +954,12 @@ impl ApprovalEngine {
 
     /// Put a call to the human. Waiting for the serial lock and for the
     /// answer share one escalation timeout; after the lock is acquired the
-    /// Stop, the rules, auto mode and the pause are checked again (they may
-    /// have changed while other dialogs were open): a call whose pause has
+    /// Stop, the rules, the permission mode and the pause are checked again
+    /// (they may have changed while other dialogs were open): a call the
+    /// new mode decides is settled without asking, and one whose pause has
     /// ended meanwhile gets the classifier's `fallback` verdict instead. A
-    /// policy question ([`Asking::Policy`]) ignores auto mode and its pause,
-    /// and its answer leaves the denial counters alone. A ledger write that
-    /// fails denies the call.
+    /// policy or mode question ([`Asking::Policy`], [`Asking::Mode`]) leaves
+    /// the denial counters alone. A ledger write that fails denies the call.
     async fn escalate(
         &self,
         session_id: &SessionId,
@@ -899,6 +970,7 @@ impl ApprovalEngine {
         fallback: Option<ClassifierVerdict>,
     ) -> Verdict {
         let tier = asking.tier();
+        let counted = matches!(asking, Asking::Classifier(_));
         let Some(broker) = &self.broker else {
             return deny_at(
                 tier,
@@ -920,19 +992,16 @@ impl ApprovalEngine {
             if self.stopped(session_id) {
                 return Asked::Settled(deny_at(tier, DenyReason::Stopped));
             }
-            if let Some(verdict) = self.static_verdict(self.tier_of(facts)) {
-                return Asked::Settled(verdict);
-            }
-            let (disabled, escalating) = {
-                let auto = self.auto.lock();
-                (auto.disabled(), auto.escalating())
-            };
-            if tier == Tier::AskUser {
-                // Neither auto mode nor its pause changes a policy question.
-            } else if disabled {
-                return Asked::Settled(deny3(DenyReason::AutoDisabled));
-            } else if !escalating && let Some(verdict) = fallback.clone() {
-                return Asked::Settled(self.apply_classifier(session_id, verdict, None));
+            match self.route(facts, self.tier_of(facts), self.mode()) {
+                Route::Settled(verdict) => return Asked::Settled(verdict),
+                // The human is asked either way.
+                Route::Ask(_) => {}
+                Route::Review => {
+                    let escalating = self.auto.lock().escalating();
+                    if !escalating && let Some(verdict) = fallback.clone() {
+                        return Asked::Settled(self.apply_classifier(session_id, verdict, None));
+                    }
+                }
             }
             match self
                 .record_request(session_id, tool_use_id, facts, &hint)
@@ -943,7 +1012,9 @@ impl ApprovalEngine {
             }
             let (classifier_hint, policy_reason) = match &asking {
                 Asking::Classifier(hint) => (Some(hint.clone()), None),
-                Asking::Policy(reason) => (None, Some(reason.clone())),
+                Asking::Policy(reason) | Asking::Mode { reason, .. } => {
+                    (None, Some(reason.clone()))
+                }
             };
             let prompt = EscalationPrompt {
                 id,
@@ -983,7 +1054,7 @@ impl ApprovalEngine {
                 {
                     return self.ledger_failed(tier, err);
                 }
-                self.human_allowed(tier);
+                self.human_allowed(counted);
                 allow_at(tier, Decider::Human, "allowed once by the user")
             }
             HumanDecision::AllowAndAddRule(rule) => {
@@ -1000,7 +1071,7 @@ impl ApprovalEngine {
                         "the allow rule is active for this run but was not saved: {err}"
                     )));
                 }
-                self.human_allowed(tier);
+                self.human_allowed(counted);
                 allow_at(tier, Decider::Human, "allowed by the user (rule added)")
             }
             HumanDecision::Deny { comment } => {
@@ -1058,11 +1129,11 @@ impl ApprovalEngine {
         deny_at(tier, DenyReason::LedgerUnavailable(err))
     }
 
-    /// The human allowed a call: a classifier escalation counts as an allow
-    /// and ends a denial pause; a policy question ([`Tier::AskUser`]) is
+    /// The human allowed a call: a classifier escalation (`counted`) counts
+    /// as an allow and ends a denial pause; a policy or mode question is
     /// outside auto mode and changes nothing there.
-    fn human_allowed(&self, tier: Tier) {
-        if tier == Tier::AskUser {
+    fn human_allowed(&self, counted: bool) {
+        if !counted {
             return;
         }
         let resumed = {
@@ -1346,6 +1417,14 @@ enum Asking {
     Classifier(String),
     /// The policy always asks ([`Tier::AskUser`]): why.
     Policy(String),
+    /// The permission mode asks (manual or accept-edits mode) for a call of
+    /// `tier`: why.
+    Mode {
+        /// The call's tier.
+        tier: Tier,
+        /// Why the human is asked.
+        reason: String,
+    },
 }
 
 impl Asking {
@@ -1353,13 +1432,37 @@ impl Asking {
         match self {
             Self::Classifier(_) => Tier::Classifier,
             Self::Policy(_) => Tier::AskUser,
+            Self::Mode { tier, .. } => *tier,
         }
     }
 
     fn text(&self) -> &str {
         match self {
-            Self::Classifier(text) | Self::Policy(text) => text,
+            Self::Classifier(text) | Self::Policy(text) | Self::Mode { reason: text, .. } => text,
         }
+    }
+}
+
+/// What the permission mode makes of a call ([`ApprovalEngine::route`]).
+enum Route {
+    /// Decided without anyone's review.
+    Settled(Verdict),
+    /// Put to the human.
+    Ask(Asking),
+    /// Reviewed by the classifier (auto mode, Tier 3).
+    Review,
+}
+
+/// Whether plan mode denies a call: every write, a shell command unless the
+/// policy itself (not an allow rule) finds it read-only, and anything else
+/// above Tier 1.
+fn plan_forbids(action: &Action<'_>, decision: &TierDecision) -> bool {
+    match action.kind {
+        ActionKind::FileWrite { .. } | ActionKind::NoteWrite { .. } => true,
+        ActionKind::Shell { .. } => {
+            !(decision.tier == Tier::AlwaysAllow && decision.rule.is_none())
+        }
+        _ => decision.tier != Tier::AlwaysAllow,
     }
 }
 
@@ -2168,11 +2271,11 @@ mod tests {
         assert_eq!(records.len(), 4);
     }
 
-    /// Auto mode off denies Tier 3 outright; a protected write still asks.
+    /// Manual mode (`/auto off`): a protected write still asks.
     #[tokio::test]
-    async fn auto_off_still_asks_for_protected_writes() {
+    async fn manual_mode_still_asks_for_protected_writes() {
         let mut rig = rig(vec![], DEFAULT_ESCALATION_TIMEOUT);
-        rig.engine.set_enabled(false);
+        rig.engine.set_mode(PermissionMode::Manual);
         let task = spawn_call(&rig, "w1", "write_file", env_write());
         let request = rig.escalations.recv().await.unwrap();
         request.respond.send(HumanDecision::AllowOnce).unwrap();
@@ -2187,23 +2290,280 @@ mod tests {
         ));
     }
 
+    /// Manual mode asks the human for Tier 3 without the classifier; auto
+    /// mode reviews it again.
     #[tokio::test]
-    async fn auto_off_denies_tier_three_and_on_resumes() {
+    async fn manual_mode_asks_for_tier_three_and_auto_resumes() {
         let mut rig = rig(vec![], DEFAULT_ESCALATION_TIMEOUT);
-        rig.engine.set_enabled(false);
+        assert_eq!(rig.engine.set_mode(PermissionMode::Manual), PermissionMode::Auto);
+        let task = spawn_decide(&rig, "c1", push());
+        let request = rig.escalations.recv().await.unwrap();
+        assert!(request.prompt.classifier_hint.is_none());
+        assert!(
+            request
+                .prompt
+                .policy_reason
+                .as_deref()
+                .is_some_and(|r| r.starts_with("manual mode asks")),
+            "{:?}",
+            request.prompt.policy_reason
+        );
+        request
+            .respond
+            .send(HumanDecision::Deny { comment: None })
+            .unwrap();
         assert_eq!(
-            decide(&rig, "c1", &push()).await,
+            task.await.unwrap(),
             Verdict::Deny {
                 tier: Tier::Classifier,
-                reason: DenyReason::AutoDisabled
+                reason: DenyReason::Human { comment: None }
             }
         );
         assert_eq!(rig.classifier.calls(), 0);
-        rig.engine.set_enabled(true);
+        // A mode question leaves the denial counters alone.
+        assert_eq!(rig.engine.auto_state().0, DenialCounters::default());
+        assert_eq!(rig.engine.set_mode(PermissionMode::Auto), PermissionMode::Manual);
         assert!(decide(&rig, "c2", &push()).await.is_allowed());
+        assert_eq!(rig.classifier.calls(), 1);
         let events = drain(&mut rig.events);
         assert!(events.contains(&ApprovalEvent::Paused(PauseCause::UserDisabled)));
         assert!(events.contains(&ApprovalEvent::Resumed));
+    }
+
+    fn src_write() -> Value {
+        json!({"path": "src/lib.rs", "content": "pub fn f() {}\n"})
+    }
+
+    /// Manual mode asks for an in-project edit too; accept-edits mode allows
+    /// it without the classifier or a dialog, and auto mode as Tier 2.
+    #[tokio::test]
+    async fn accept_edits_allows_in_project_edits_that_manual_mode_asks_for() {
+        let mut rig = rig(vec![], DEFAULT_ESCALATION_TIMEOUT);
+        rig.engine.set_mode(PermissionMode::Manual);
+        let task = spawn_call(&rig, "w1", "write_file", src_write());
+        let request = rig.escalations.recv().await.unwrap();
+        assert!(
+            request
+                .prompt
+                .policy_reason
+                .as_deref()
+                .is_some_and(|r| r.contains("manual mode asks for every edit")),
+            "{:?}",
+            request.prompt.policy_reason
+        );
+        request.respond.send(HumanDecision::AllowOnce).unwrap();
+        assert_eq!(
+            task.await.unwrap(),
+            Verdict::Allow {
+                tier: Tier::InProjectEdit,
+                by: Decider::Human,
+                why: "allowed once by the user".into()
+            }
+        );
+
+        rig.engine.set_mode(PermissionMode::AcceptEdits);
+        let verdict = call(&rig, "w2", "write_file", &src_write()).await;
+        assert!(
+            matches!(
+                verdict,
+                Verdict::Allow {
+                    tier: Tier::InProjectEdit,
+                    by: Decider::Policy,
+                    ..
+                }
+            ),
+            "{verdict:?}"
+        );
+        let edit = json!({"path": "src/lib.rs", "old_string": "f", "new_string": "g"});
+        assert!(call(&rig, "w3", "edit_file", &edit).await.is_allowed());
+        assert!(rig.escalations.try_recv().is_err(), "no dialog");
+        assert_eq!(rig.classifier.calls(), 0);
+
+        rig.engine.set_mode(PermissionMode::Auto);
+        assert!(call(&rig, "w4", "write_file", &src_write()).await.is_allowed());
+        assert!(rig.escalations.try_recv().is_err());
+        assert_eq!(rig.classifier.calls(), 0);
+    }
+
+    /// Accept-edits mode still asks for a protected write, and for a shell
+    /// command exactly as manual mode does; reads stay allowed.
+    #[tokio::test]
+    async fn accept_edits_asks_for_protected_writes_and_the_shell() {
+        let mut rig = rig(vec![], DEFAULT_ESCALATION_TIMEOUT);
+        rig.engine.set_mode(PermissionMode::AcceptEdits);
+        let task = spawn_call(&rig, "w1", "write_file", env_write());
+        let request = rig.escalations.recv().await.unwrap();
+        assert!(
+            request
+                .prompt
+                .policy_reason
+                .as_deref()
+                .is_some_and(|r| r.contains("protected path")),
+            "{:?}",
+            request.prompt.policy_reason
+        );
+        request
+            .respond
+            .send(HumanDecision::Deny { comment: None })
+            .unwrap();
+        assert!(!task.await.unwrap().is_allowed());
+
+        let task = spawn_decide(&rig, "c1", push());
+        let request = rig.escalations.recv().await.unwrap();
+        assert_eq!(request.prompt.tool, "shell");
+        assert!(
+            request
+                .prompt
+                .policy_reason
+                .as_deref()
+                .is_some_and(|r| r.starts_with("accept edits mode asks")),
+            "{:?}",
+            request.prompt.policy_reason
+        );
+        request.respond.send(HumanDecision::AllowOnce).unwrap();
+        assert!(task.await.unwrap().is_allowed());
+        assert!(call(&rig, "r1", "read_file", &json!({"path": "src/lib.rs"})).await.is_allowed());
+        assert!(decide(&rig, "c2", &json!({"command": "ls"})).await.is_allowed());
+        assert_eq!(rig.classifier.calls(), 0);
+    }
+
+    /// Plan mode denies writes (protected ones included), notes and shell
+    /// commands the policy does not itself find read-only, with the plan
+    /// error; reads and read-only commands run; nobody is asked.
+    #[tokio::test]
+    async fn plan_mode_denies_writes_and_commands_with_the_plan_error() {
+        let mut rig = rig(vec![], DEFAULT_ESCALATION_TIMEOUT);
+        rig.engine
+            .add_rule(
+                Rule::new(RuleKind::Allow, "shell", Some("cargo nextest run*"), RuleOrigin::Realm)
+                    .unwrap(),
+            )
+            .unwrap();
+        rig.engine.set_mode(PermissionMode::Plan);
+        let plan = |tier| Verdict::Deny {
+            tier,
+            reason: DenyReason::PlanMode,
+        };
+        assert_eq!(
+            call(&rig, "w1", "write_file", &src_write()).await,
+            plan(Tier::InProjectEdit)
+        );
+        assert_eq!(
+            call(&rig, "w2", "write_file", &env_write()).await,
+            plan(Tier::AskUser)
+        );
+        let note = json!({"scope": "workspace", "name": "n", "content": "x"});
+        assert_eq!(call(&rig, "n1", "note_save", &note).await, plan(Tier::InProjectEdit));
+        assert_eq!(decide(&rig, "c1", &push()).await, plan(Tier::Classifier));
+        // An allow rule does not make a command read-only.
+        assert_eq!(
+            decide(&rig, "c2", &json!({"command": "cargo nextest run"})).await,
+            plan(Tier::AlwaysAllow)
+        );
+        assert!(decide(&rig, "c3", &json!({"command": "ls src"})).await.is_allowed());
+        assert!(call(&rig, "r1", "read_file", &json!({"path": "src/lib.rs"})).await.is_allowed());
+        assert!(call(&rig, "g1", "grep", &json!({"pattern": "fn"})).await.is_allowed());
+        assert!(rig.escalations.try_recv().is_err(), "nobody is asked");
+        assert_eq!(rig.classifier.calls(), 0);
+        assert!(DenyReason::PlanMode.to_string().starts_with("plan mode is on"));
+        assert!(rig.engine.agent_written(&rig.session).is_empty());
+    }
+
+    /// Helpers act under the session's mode: their calls are judged by the
+    /// same engine.
+    #[tokio::test]
+    async fn a_helper_inherits_plan_mode() {
+        let rig = rig(vec![], DEFAULT_ESCALATION_TIMEOUT);
+        rig.engine.set_mode(PermissionMode::Plan);
+        let args = raw(&src_write());
+        let origin = origin("write_file");
+        let verdict = rig
+            .engine
+            .decide_as(
+                Caller::helper(&rig.session, "helper-1"),
+                ToolCall {
+                    id: "h1",
+                    name: "write_file",
+                    args: &args,
+                    origin: Some(&origin),
+                },
+            )
+            .await;
+        assert_eq!(
+            verdict,
+            Verdict::Deny {
+                tier: Tier::InProjectEdit,
+                reason: DenyReason::PlanMode
+            }
+        );
+    }
+
+    /// Auto mode is unchanged: Tier 3 goes to the classifier, whose block
+    /// counts.
+    #[tokio::test]
+    async fn auto_mode_still_classifies_tier_three() {
+        let rig = rig(vec![block("D1")], DEFAULT_ESCALATION_TIMEOUT);
+        assert_eq!(rig.engine.mode(), PermissionMode::Auto);
+        assert!(!decide(&rig, "c1", &push()).await.is_allowed());
+        assert_eq!(rig.classifier.calls(), 1);
+        assert_eq!(rig.engine.auto_state().0.consecutive, 1);
+    }
+
+    /// An escalation queued behind another is judged again under the mode
+    /// in force when its turn comes: switching to accept-edits settles a
+    /// waiting edit without a dialog.
+    #[tokio::test]
+    async fn a_queued_question_follows_a_mode_switch() {
+        let mut rig = rig(vec![], DEFAULT_ESCALATION_TIMEOUT);
+        rig.engine.set_mode(PermissionMode::Manual);
+        let first = spawn_decide(&rig, "c1", push());
+        let open = rig.escalations.recv().await.unwrap();
+        let edit = spawn_call(&rig, "w1", "write_file", src_write());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        rig.engine.set_mode(PermissionMode::AcceptEdits);
+        open.respond.send(HumanDecision::AllowOnce).unwrap();
+        assert!(first.await.unwrap().is_allowed());
+        assert!(matches!(
+            edit.await.unwrap(),
+            Verdict::Allow {
+                by: Decider::Policy,
+                ..
+            }
+        ));
+        assert!(rig.escalations.try_recv().is_err());
+    }
+
+    /// The mode is recorded in the realm rules file and read back.
+    #[test]
+    fn the_mode_persists_in_the_realm_rules_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tui.toml");
+        std::fs::write(&path, "[auto]\nenabled = true\n[[deny]]\ntool = \"shell\"\narg = \"rm *\"\n").unwrap();
+        let root = ProjectRoot::new(dir.path()).unwrap();
+        let (tx, _events) = mpsc::unbounded_channel();
+        let engine = ApprovalEngine::new(ApprovalConfig {
+            root: root.clone(),
+            rules: RuleSet::default(),
+            settings: AutoSettings::default(),
+            classifier: Scripted::new(vec![]) as Arc<dyn ActionClassifier>,
+            broker: None,
+            ledger: None,
+            escalation_timeout: DEFAULT_ESCALATION_TIMEOUT,
+            environment: Environment::basic(root.as_path(), root.as_path()),
+            posix_shell: true,
+            events: tx,
+            rules_path: Some(path.clone()),
+            rules_trust: None,
+        });
+        engine.set_mode(PermissionMode::Plan);
+        engine.persist_mode().unwrap();
+        let file = rules::RulesFile::load(&path).unwrap();
+        let auto = file.auto.unwrap();
+        assert_eq!(auto.mode, Some(PermissionMode::Plan));
+        assert_eq!(auto.enabled, None);
+        assert_eq!(file.deny.len(), 1, "the rest of the file stays");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("mode = \"plan\""), "{text}");
     }
 
     #[tokio::test]

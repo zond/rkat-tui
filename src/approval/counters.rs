@@ -3,6 +3,7 @@
 //! Only classifier blocks count. Three consecutive blocks or twenty in total
 //! pause auto mode; while paused, every Tier-3 action is escalated to the human.
 
+use super::mode::PermissionMode;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -28,7 +29,7 @@ pub enum PauseCause {
     ConsecutiveDenials,
     /// [`MAX_TOTAL_DENIALS`] reached; only an explicit resume clears it.
     TotalDenials,
-    /// The user turned auto mode off (`--no-auto`, `/auto off`): Tier-3 actions are denied.
+    /// The user chose another permission mode than auto (`--no-auto`, `/auto off`, `/mode`): the classifier reviews nothing.
     UserDisabled,
 }
 
@@ -50,16 +51,22 @@ impl fmt::Display for PauseCause {
 pub enum AutoModeState {
     /// The classifier decides Tier-3 actions.
     Active,
-    /// Tier-3 actions go to the human (or are denied when [`PauseCause::UserDisabled`]).
+    /// Tier-3 actions go to the human (with [`PauseCause::UserDisabled`] the
+    /// permission mode decides them, see [`PermissionMode`]).
     Paused {
         /// Why.
         cause: PauseCause,
     },
 }
 
-/// Counters plus state, mutated together under one lock.
+/// The permission mode, counters and state, mutated together under one lock.
+///
+/// `state` is [`AutoModeState::Paused`] with [`PauseCause::UserDisabled`]
+/// exactly when `mode` is not [`PermissionMode::Auto`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AutoMode {
+    /// The permission mode.
+    pub mode: PermissionMode,
     /// Denial counters.
     pub counters: DenialCounters,
     /// Current state.
@@ -67,11 +74,13 @@ pub struct AutoMode {
 }
 
 impl AutoMode {
-    /// Fresh state; `enabled == false` starts paused with [`PauseCause::UserDisabled`].
-    pub fn new(enabled: bool) -> Self {
+    /// Fresh state in `mode`; any mode but auto starts paused with
+    /// [`PauseCause::UserDisabled`].
+    pub fn new(mode: PermissionMode) -> Self {
         Self {
+            mode,
             counters: DenialCounters::default(),
-            state: if enabled {
+            state: if mode == PermissionMode::Auto {
                 AutoModeState::Active
             } else {
                 AutoModeState::Paused {
@@ -134,7 +143,7 @@ impl AutoMode {
         true
     }
 
-    /// Whether Tier-3 actions are denied outright.
+    /// Whether the permission mode is not auto (the classifier reviews nothing).
     pub fn disabled(&self) -> bool {
         self.state
             == AutoModeState::Paused {
@@ -155,7 +164,7 @@ impl AutoMode {
 
 impl Default for AutoMode {
     fn default() -> Self {
-        Self::new(true)
+        Self::new(PermissionMode::Auto)
     }
 }
 
@@ -209,7 +218,7 @@ mod tests {
 
     #[test]
     fn disabled_state() {
-        let mut m = AutoMode::new(false);
+        let mut m = AutoMode::new(PermissionMode::Manual);
         assert!(m.disabled());
         assert!(!m.escalating());
         assert!(!m.resume(false));

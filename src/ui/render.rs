@@ -15,6 +15,7 @@ use super::transcript::{
     args_preview, result_line_count,
 };
 use super::{App, HistorySearch, StatusInfo};
+use crate::approval::mode::PermissionMode;
 
 /// Maximum visible input rows (visual rows: long lines wrap; the field
 /// scrolls to keep the cursor's row visible).
@@ -260,7 +261,7 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect, now: Instant) {
     } else if app.input.is_empty() && app.input.has_stash() {
         format!(" Ctrl-S restores the stashed prompt{helpers} ")
     } else if helpers.is_empty() && app.input.is_empty() && !app.is_running() {
-        " ? keys ".into()
+        " ? keys · Shift+Tab mode ".into()
     } else if helpers.is_empty() {
         String::new()
     } else {
@@ -468,19 +469,27 @@ fn spinner_frame(since: Option<Instant>, now: Instant) -> char {
         .unwrap_or('⠋')
 }
 
-/// Style of the `auto:` segment for a display state.
-fn auto_style(state: &str) -> Style {
-    if state.eq_ignore_ascii_case("paused") {
-        Style::default()
-            .fg(Color::Black)
-            .bg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-            .remove_modifier(Modifier::REVERSED)
-    } else if state.eq_ignore_ascii_case("off") {
-        Style::default().add_modifier(Modifier::DIM)
-    } else {
-        Style::default()
-    }
+/// The permission-mode segment: `manual`, `accept edits`, `plan`, or
+/// `auto (deny c/cm, t/tm)` (`auto: PAUSED (…)` on yellow while paused).
+fn mode_segment(status: &StatusInfo) -> Option<Span<'static>> {
+    let mode = status.mode?;
+    let (c, cm, t, tm) = status.denials;
+    Some(match mode {
+        PermissionMode::Auto if status.auto_paused => Span::styled(
+            format!("auto: PAUSED (deny {c}/{cm}, {t}/{tm})"),
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+                .remove_modifier(Modifier::REVERSED),
+        ),
+        PermissionMode::Auto => Span::raw(format!("auto (deny {c}/{cm}, {t}/{tm})")),
+        PermissionMode::Plan => Span::styled(
+            mode.label(),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        PermissionMode::Manual | PermissionMode::AcceptEdits => Span::raw(mode.label()),
+    })
 }
 
 /// The styled status bar (drawn on a reversed background).
@@ -499,15 +508,7 @@ pub fn status_bar(status: &StatusInfo, now: Instant) -> Line<'static> {
     )));
     segs.extend(super::cost::cost_segment_text(&status.cost, &status.prices).map(Span::raw));
     segs.extend(context_segment(status));
-    if !status.auto_state.is_empty() {
-        let (c, cm, t, tm) = status.denials;
-        let text = if status.auto_state.eq_ignore_ascii_case("off") {
-            format!("auto: {}", status.auto_state)
-        } else {
-            format!("auto: {} (deny {c}/{cm}, {t}/{tm})", status.auto_state)
-        };
-        segs.push(Span::styled(text, auto_style(&status.auto_state)));
-    }
+    segs.extend(mode_segment(status));
     if status.classifying {
         let frame = spinner_frame(status.running_since, now);
         segs.push(Span::styled(
@@ -892,13 +893,13 @@ mod tests {
         s.set_model("anthropic", "claude-sonnet-4-6");
         s.set_session("abc12345-ffff");
         s.set_tokens(1500, 20);
-        s.set_auto("active", (1, 3, 4, 20));
+        s.set_mode(PermissionMode::Auto, false, (1, 3, 4, 20));
         s.running_since = Some(now);
         s.queued = 2;
         let line = status_line(&s, now);
         assert_eq!(
             line,
-            " anthropic/claude-sonnet-4-6 │ session abc12345 │ ↑1.5k ↓20 │ auto: active (deny 1/3, 4/20) │ ⠋ running 0s │ queued 2"
+            " anthropic/claude-sonnet-4-6 │ session abc12345 │ ↑1.5k ↓20 │ auto (deny 1/3, 4/20) │ ⠋ running 0s │ queued 2"
         );
     }
 
@@ -1039,23 +1040,32 @@ mod tests {
     }
 
     #[test]
-    fn status_bar_auto_states_and_classifying() {
+    fn status_bar_modes_and_classifying() {
         let now = Instant::now();
         let mut s = StatusInfo::default();
-        s.set_auto("PAUSED", (3, 3, 5, 20));
+        assert!(!status_line(&s, now).contains("auto"), "no mode before the runner reports one");
+        s.set_mode(PermissionMode::Auto, true, (3, 3, 5, 20));
         s.set_classifying(true);
         let bar = status_bar(&s, now);
         assert_eq!(seg_style(&bar, "auto: PAUSED").bg, Some(Color::Yellow));
         assert!(status_line(&s, now).ends_with("auto: PAUSED (deny 3/3, 5/20) │ ⠋ classifying…"));
-        s.set_auto("off", (0, 3, 0, 20));
         s.set_classifying(false);
-        let bar = status_bar(&s, now);
+        for (mode, shown) in [
+            (PermissionMode::Manual, "│ manual"),
+            (PermissionMode::AcceptEdits, "│ accept edits"),
+            (PermissionMode::Plan, "│ plan"),
+            (PermissionMode::Auto, "│ auto (deny 0/3, 0/20)"),
+        ] {
+            s.set_mode(mode, false, (0, 3, 0, 20));
+            let line = status_line(&s, now);
+            assert!(line.ends_with(shown), "{mode:?}: {line}");
+        }
+        s.set_mode(PermissionMode::Plan, false, (0, 3, 0, 20));
         assert!(
-            seg_style(&bar, "auto: off")
+            seg_style(&status_bar(&s, now), "plan")
                 .add_modifier
-                .contains(Modifier::DIM)
+                .contains(Modifier::BOLD)
         );
-        assert!(status_line(&s, now).ends_with("│ auto: off"));
     }
 
     #[test]

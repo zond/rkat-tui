@@ -255,12 +255,15 @@ mod tests {
 
     #[test]
     fn candidates_show_usage_and_summary() {
-        let word = word_at(&line("/mo"), (0, 3)).unwrap();
+        let word = word_at(&line("/mode"), (0, 5)).unwrap();
         let items = candidates(&word, &[]);
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].insert, "/model");
-        assert_eq!(items[0].label, "/model [[endpoint:]id | refresh]");
-        assert_eq!(items[0].detail, "pick or switch the model");
+        assert_eq!(items.len(), 2, "/mode and /model");
+        assert_eq!(items[0].insert, "/mode");
+        assert_eq!(items[0].label, "/mode [default | accept-edits | plan | auto]");
+        assert_eq!(items[0].detail, "show or set the permission mode");
+        assert_eq!(items[1].insert, "/model");
+        assert_eq!(items[1].label, "/model [[endpoint:]id | refresh]");
+        assert_eq!(items[1].detail, "pick or switch the model");
         let none = word_at(&line("/zz"), (0, 3)).unwrap();
         assert!(Menu::open(none.clone(), candidates(&none, &[])).is_none());
     }

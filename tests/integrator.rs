@@ -1032,7 +1032,7 @@ async fn status_report_names_the_session_and_the_workspace() {
         "{text}"
     );
     assert!(text.contains("shell confinement: "), "{text}");
-    assert!(text.contains("auto mode: "), "{text}");
+    assert!(text.contains("permission mode: auto"), "{text}");
     assert!(text.contains("tui.toml: "), "{text}");
     assert!(text.contains("mcp.toml: absent"), "{text}");
     assert!(text.contains("helpers: "), "{text}");
@@ -1269,6 +1269,76 @@ async fn a_bang_command_runs_and_joins_the_context_without_a_turn() {
     assert_eq!(
         user_texts(&llm.requests()[0]),
         vec!["what did it say?".to_string()]
+    );
+    rig.quit().await;
+}
+
+/// Plan mode end to end: the session is told, a write the model tries is
+/// refused with the plan-mode error the model reads (nothing is written,
+/// nobody is asked), the mode is recorded in the realm's `tui.toml`, and
+/// leaving plan mode tells the session so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn plan_mode_refuses_a_write_and_the_model_reads_why() {
+    use rkat_tui::approval::mode::PermissionMode;
+
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Tool {
+            id: "w",
+            name: "write_file",
+            args: json!({ "path": "src/new.rs", "content": "pub fn f() {}\n" }),
+        },
+        Step::Text("1. Add src/new.rs with f()"),
+        Step::Text("ok"),
+    ]);
+    let mut rig = Rig::start(&ws.root, &llm, Start::New).await;
+    let mode_is = |want: PermissionMode| move |msg: &Msg| matches!(msg, Msg::Status(StatusUpdate::Mode { mode, .. }) if *mode == want);
+    rig.send(Effect::SetMode(PermissionMode::Plan));
+    rig.wait_for(mode_is(PermissionMode::Plan)).await;
+    rig.send(Effect::StartTurn("plan a new module".into()));
+    assert_eq!(
+        rig.turn_finished().await.result.expect("turn").text,
+        "1. Add src/new.rs with f()"
+    );
+    assert!(!ws.root.join("src/new.rs").exists());
+    assert!(
+        !rig.seen
+            .iter()
+            .any(|msg| matches!(msg, Msg::Escalation(..))),
+        "nobody is asked"
+    );
+    let result = llm
+        .requests()
+        .iter()
+        .flatten()
+        .find_map(|m| match m {
+            Message::ToolResults { results, .. } => {
+                results.iter().find(|r| r.tool_use_id == "w").cloned()
+            }
+            _ => None,
+        })
+        .expect("a result for the write");
+    assert!(result.is_error, "{result:?}");
+    assert!(
+        result.text_content().contains("plan mode is on"),
+        "{}",
+        result.text_content()
+    );
+    let system = llm.recorded()[0].system();
+    assert!(system.contains("# Plan mode is on"), "{system}");
+    let realm_rules = std::fs::read_to_string(ws.root.join(".rkat/tui/tui.toml")).unwrap();
+    assert!(realm_rules.contains("mode = \"plan\""), "{realm_rules}");
+
+    rig.send(Effect::SetMode(PermissionMode::AcceptEdits));
+    rig.wait_for(mode_is(PermissionMode::AcceptEdits)).await;
+    rig.send(Effect::StartTurn("go".into()));
+    rig.turn_finished().await;
+    let system = llm.recorded().last().unwrap().system();
+    assert!(system.contains("# Plan mode is off"), "{system}");
+    let realm_rules = std::fs::read_to_string(ws.root.join(".rkat/tui/tui.toml")).unwrap();
+    assert!(
+        realm_rules.contains("mode = \"accept-edits\""),
+        "{realm_rules}"
     );
     rig.quit().await;
 }

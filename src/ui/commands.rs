@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use crate::approval::mode::PermissionMode;
+
 /// Whether a rule allows or denies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuleEffect {
@@ -37,9 +39,9 @@ pub enum RulesCommand {
 pub enum AutoCommand {
     /// Show the auto-mode state.
     Status,
-    /// Enable auto mode.
+    /// Switch to auto mode.
     On,
-    /// Disable auto mode (every non-trivial call escalates).
+    /// Switch to manual mode (the human answers what auto mode reviews).
     Off,
     /// Resume after a denial-limit pause.
     Resume,
@@ -113,6 +115,9 @@ pub enum Command {
     Rules(RulesCommand),
     /// `/auto [on|off|resume]`.
     Auto(AutoCommand),
+    /// `/mode [default|accept-edits|plan|auto]`: show (`None`) or set the
+    /// permission mode.
+    Mode(Option<PermissionMode>),
     /// `/model [id | refresh]`.
     Model(ModelCommand),
     /// `/help`.
@@ -168,6 +173,7 @@ impl fmt::Display for CommandError {
 
 const RULES_USAGE: &str = "/permissions [list | add allow|deny <tool> [pattern] | rm <n> | trust]";
 const AUTO_USAGE: &str = "/auto [on | off | resume]";
+const MODE_USAGE: &str = "/mode [default | accept-edits | plan | auto]";
 const HELPERS_USAGE: &str = "/helpers [expand <label>|all | fold <label>|all]";
 
 /// The prompt `/init` sends as an ordinary user turn.
@@ -295,15 +301,29 @@ pub static COMMANDS: &[CommandSpec] = &[
         },
     },
     CommandSpec {
+        name: "mode",
+        aliases: &[],
+        usage: "[default | accept-edits | plan | auto]",
+        summary: "show or set the permission mode",
+        help: &[
+            ("/mode", "show the permission mode (Shift+Tab cycles manual → accept\nedits → plan → auto)"),
+            (
+                "/mode default|accept-edits|plan|auto",
+                "set it: default (manual) asks for every edit and command,\naccept-edits allows in-project edits, plan is read-only and\nends in a plan to approve, auto has the classifier review",
+            ),
+        ],
+        parse: parse_mode,
+    },
+    CommandSpec {
         name: "auto",
         aliases: &[],
         usage: "[on | off | resume]",
-        summary: "show, enable, disable or resume auto mode",
+        summary: "show the mode; switch auto mode on, off, or resume it",
         help: &[
-            ("/auto", "show auto-mode state and denial counters"),
+            ("/auto", "show the permission mode and auto mode's denial counters"),
             (
                 "/auto on|off|resume",
-                "enable, disable, or resume auto mode after a pause (Shift+Tab\nswitches it off and on)",
+                "auto mode (= /mode auto), manual mode (= /mode default), or\nresume auto mode after a denial pause",
             ),
         ],
         parse: parse_auto,
@@ -522,6 +542,16 @@ fn parse_auto(rest: &str) -> Result<Command, CommandError> {
     }
 }
 
+fn parse_mode(rest: &str) -> Result<Command, CommandError> {
+    match words(rest).as_slice() {
+        [] => Ok(Command::Mode(None)),
+        [name] => PermissionMode::parse(name)
+            .map(|mode| Command::Mode(Some(mode)))
+            .ok_or(CommandError::Usage(MODE_USAGE)),
+        _ => Err(CommandError::Usage(MODE_USAGE)),
+    }
+}
+
 fn parse_model(rest: &str) -> Result<Command, CommandError> {
     match words(rest).as_slice() {
         [] => Ok(Command::Model(ModelCommand::Pick)),
@@ -595,7 +625,8 @@ Keys:
   PgUp/PgDn, Shift+Up/Down       scroll the transcript
   Ctrl-L                         clear the screen and redraw it
   Ctrl-Z                         suspend to the shell (fg resumes; Unix)
-  Shift+Tab                      switch auto mode off/on (same as /auto off|on)
+  Shift+Tab                      cycle the permission mode: manual → accept edits → plan → auto
+                                 (the status bar shows it; /mode sets one directly)
   Alt+P                          pick a model (as /model) without clearing the input
   / (one-line input)             a menu of the matching commands opens above the input:
                                  ↑/↓ choose, Tab completes, Enter completes a partial name
@@ -780,10 +811,11 @@ mod tests {
             "quit", "exit", "q", "clear", "new", "help", "?", "memory", "init", "export",
             "status", "context", "usage", "cost", "stats", "copy", "compact", "resume", "model",
             "auto", "permissions", "rules", "trust", "mcp", "helpers", "tasks", "remember",
+            "mode",
         ] {
             assert!(super::spec(name).is_some(), "/{name} has no spec");
         }
-        assert_eq!(seen.len(), 27);
+        assert_eq!(seen.len(), 28);
         // `/help`'s "Commands:" rows come from the specs, in their order.
         let commands = help_text().split_once("Keys:").unwrap().0;
         let mut at = 0;
@@ -917,6 +949,33 @@ mod tests {
         assert_eq!(unescape_bang("\\!important"), Some("!important".into()));
         assert_eq!(unescape_bang("  \\! x"), Some("! x".into()));
         assert_eq!(unescape_bang("!x"), None);
+    }
+
+    #[test]
+    fn mode_commands() {
+        use crate::approval::mode::PermissionMode;
+        assert_eq!(ok("/mode"), Command::Mode(None));
+        assert_eq!(ok("/mode default"), Command::Mode(Some(PermissionMode::Manual)));
+        assert_eq!(ok("/mode manual"), Command::Mode(Some(PermissionMode::Manual)));
+        assert_eq!(
+            ok("/mode accept-edits"),
+            Command::Mode(Some(PermissionMode::AcceptEdits))
+        );
+        assert_eq!(
+            ok("/mode acceptEdits"),
+            Command::Mode(Some(PermissionMode::AcceptEdits))
+        );
+        assert_eq!(ok("/mode plan"), Command::Mode(Some(PermissionMode::Plan)));
+        assert_eq!(ok("/mode auto"), Command::Mode(Some(PermissionMode::Auto)));
+        for bad in ["/mode yolo", "/mode plan auto"] {
+            assert_eq!(
+                parse(bad),
+                Some(Err(CommandError::Usage(
+                    "/mode [default | accept-edits | plan | auto]"
+                ))),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

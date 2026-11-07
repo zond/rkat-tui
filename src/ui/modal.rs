@@ -1,5 +1,5 @@
-//! Modal dialogs: the escalation (approval) prompt, the resume picker and
-//! the model picker.
+//! Modal dialogs: the escalation (approval) prompt, the resume picker, the
+//! model picker, the shortcut panel and plan mode's "Plan ready" dialog.
 //!
 //! Modals are driven by plain data so the UI stays decoupled from the approval
 //! engine and session modules.
@@ -165,6 +165,59 @@ impl EscalationDialog {
     }
 }
 
+/// What the user chose in the "Plan ready" dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanChoice {
+    /// Switch to accept-edits mode and tell the agent to proceed.
+    Proceed,
+    /// Stay in plan mode (the dialog closes).
+    KeepPlanning,
+    /// Switch to manual mode and tell the agent to proceed.
+    ProceedManual,
+}
+
+/// The rows of the "Plan ready" dialog, in order.
+pub const PLAN_CHOICES: [(PlanChoice, &str); 3] = [
+    (
+        PlanChoice::Proceed,
+        "Proceed (switch to accept edits and send \"Proceed with the plan\")",
+    ),
+    (PlanChoice::KeepPlanning, "Keep planning (Esc)"),
+    (PlanChoice::ProceedManual, "Proceed in manual mode"),
+];
+
+/// The "Plan ready" dialog, shown when a turn ends in plan mode with an
+/// answer: the highlighted row.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PlanDialog {
+    /// Index into [`PLAN_CHOICES`].
+    pub cursor: usize,
+}
+
+impl PlanDialog {
+    /// Apply a key: arrows (and `j`/`k`) move, Enter picks the highlighted
+    /// row, `1`-`3` pick directly and Esc keeps planning. `None`: no choice
+    /// yet.
+    pub fn key(&mut self, code: KeyCode) -> Option<PlanChoice> {
+        match code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.cursor = self.cursor.saturating_sub(1);
+                None
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.cursor = (self.cursor + 1).min(PLAN_CHOICES.len() - 1);
+                None
+            }
+            KeyCode::Enter => PLAN_CHOICES.get(self.cursor).map(|(choice, _)| *choice),
+            KeyCode::Char(c @ '1'..='3') => {
+                PLAN_CHOICES.get(usize::from(c as u8 - b'1')).map(|(choice, _)| *choice)
+            }
+            KeyCode::Esc => Some(PlanChoice::KeepPlanning),
+            _ => None,
+        }
+    }
+}
+
 /// Session picker for `/resume` without a reference.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResumePicker {
@@ -301,6 +354,8 @@ pub enum Modal {
     Model(ModelPicker),
     /// The `?` shortcut panel: the keys part of the help.
     Keys,
+    /// A turn ended in plan mode with an answer: proceed or keep planning.
+    PlanReady(PlanDialog),
 }
 
 /// Center a `width`×`height` rectangle inside `area` (clamped to fit).
@@ -341,6 +396,7 @@ pub fn draw_modal(frame: &mut Frame<'_>, area: Rect, modal: &Modal) {
             " Select model ".to_string(),
             model_picker_lines(picker, inner_w, usize::from(area.height.saturating_sub(4))),
         ),
+        Modal::PlanReady(dialog) => (" Plan ready ".to_string(), plan_lines(*dialog, inner_w)),
         Modal::Keys => {
             // Wider than the other dialogs: the help's columns.
             let width = area.width.saturating_sub(2).clamp(20, 104);
@@ -505,6 +561,35 @@ fn escalation_lines(
         .into_iter()
         .map(|l| Line::styled(l, dim)),
     );
+    lines
+}
+
+fn plan_lines(dialog: PlanDialog, width: usize) -> Vec<Line<'static>> {
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let highlight = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+    let mut lines: Vec<Line<'static>> = wrap_text(
+        "The agent answered in plan mode. Proceed with its plan?",
+        width,
+    )
+    .into_iter()
+    .map(Line::from)
+    .collect();
+    lines.push(Line::default());
+    for (i, (_, choice)) in PLAN_CHOICES.iter().enumerate() {
+        let (mark, style) = if i == dialog.cursor {
+            ("❯ ", highlight)
+        } else {
+            ("  ", Style::default())
+        };
+        lines.push(Line::styled(
+            truncate_to_width(&format!("{mark}{}. {choice}", i + 1), width),
+            style,
+        ));
+    }
+    lines.push(Line::default());
+    lines.push(Line::styled("Enter select · 1-3 pick · Esc keep planning", dim));
     lines
 }
 
