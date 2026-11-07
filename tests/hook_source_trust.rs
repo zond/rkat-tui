@@ -1,0 +1,289 @@
+//! The project `.rkat/config.toml` is judged over the bytes the factory
+//! reads, not only by the guard's earlier read.
+//!
+//! A session build reads the realm config through `RealmConfigStore` (whose
+//! `ProjectInputs::guard` checks the project hook file and shadows an
+//! untrusted file's hooks) and then hands that config to
+//! `AgentFactory::build_agent`, which reads the project hook file again
+//! (meerkat's `FactoryAgentBuilder` does exactly these two steps). These
+//! tests write the file in that interval, between the store's `get` and the
+//! factory's build, with the factory configured as bootstrap configures it
+//! (`with_hook_source_trust(ProjectInputs)`), and a control without it that
+//! shows the interval is real.
+
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+mod common;
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use async_trait::async_trait;
+use clap::Parser;
+use common::{MODEL, ScriptedLlmClient, Step, within};
+use meerkat::{AgentBuildConfig, AgentFactory, LlmClient};
+use meerkat_core::confinement::ConfinementRefusal;
+use meerkat_core::{
+    AgentEvent, AgentToolDispatcher, Config, ConfigStore, HookAdapterConfig, HookCapability,
+    HookEntryConfig, HookFailureReason, HookId, HookPoint, ToolCallView, ToolDef,
+    ToolDispatchOutcome, ToolError, ToolResult,
+};
+use rkat_tui::Args;
+use rkat_tui::bootstrap::project_trust::ProjectInputs;
+use rkat_tui::bootstrap::{RealmConfigStore, approval::trust_record, resolve_scope};
+use serde_json::json;
+
+/// A tool a `pre_tool_execution` guardrail guards; counts its dispatches.
+#[derive(Default)]
+struct GuardedTool(AtomicUsize);
+
+#[async_trait]
+impl AgentToolDispatcher for GuardedTool {
+    fn tools(&self) -> Arc<[Arc<ToolDef>]> {
+        vec![Arc::new(ToolDef::new(
+            "guarded_tool",
+            "A tool a PreTool hook guards",
+            json!({"type": "object"}),
+        ))]
+        .into()
+    }
+
+    async fn dispatch(&self, call: ToolCallView<'_>) -> Result<ToolDispatchOutcome, ToolError> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(ToolResult::new(call.id.into(), "tool completed".into(), false).into())
+    }
+}
+
+/// A workspace with a separate user config root, and its project inputs.
+struct Fixture {
+    _dir: tempfile::TempDir,
+    base: PathBuf,
+    ws: PathBuf,
+    home: PathBuf,
+    inputs: ProjectInputs,
+    store: RealmConfigStore,
+}
+
+fn fixture() -> Fixture {
+    let dir = tempfile::tempdir().unwrap();
+    let base = std::fs::canonicalize(dir.path()).unwrap();
+    let ws = base.join("ws");
+    let home = base.join("home");
+    std::fs::create_dir_all(ws.join(".rkat")).unwrap();
+    std::fs::create_dir_all(home.join(".rkat")).unwrap();
+    let args = Args::try_parse_from([
+        "rkat-tui",
+        "-w",
+        ws.to_str().unwrap(),
+        "--user-config-root",
+        home.to_str().unwrap(),
+        "--config-dir",
+        base.join("cfg").to_str().unwrap(),
+    ])
+    .unwrap();
+    let scope = resolve_scope(&args).unwrap();
+    let record = Arc::new(parking_lot::Mutex::new(trust_record(&scope)));
+    let inputs = ProjectInputs::new(&scope, record, false);
+    let store = RealmConfigStore::new(&scope.config_path(), scope.config_state_path(), None)
+        .with_inputs(inputs.clone());
+    Fixture {
+        _dir: dir,
+        base,
+        ws,
+        home,
+        inputs,
+        store,
+    }
+}
+
+/// A guardrail whose only effect, when it runs, is to create `marker`.
+fn marker_guardrail(id: &str, marker: &Path) -> HookEntryConfig {
+    HookEntryConfig {
+        id: HookId::new(id),
+        point: HookPoint::PreToolExecution,
+        capability: HookCapability::Guardrail,
+        timeout_ms: Some(5_000),
+        runtime: HookAdapterConfig::command(
+            "/bin/sh",
+            vec![
+                "-c".into(),
+                "printf entered > \"$1\"; cat >/dev/null; printf '{}'".into(),
+                "hook-probe".into(),
+                marker.display().to_string(),
+            ],
+            HashMap::new(),
+        ),
+        ..Default::default()
+    }
+}
+
+/// `file` as a conventions config stating `entries` as its hooks.
+fn write_hooks(file: &Path, entries: Vec<HookEntryConfig>) {
+    #[derive(serde::Serialize)]
+    struct Conventions {
+        hooks: meerkat_core::HooksConfig,
+    }
+    let text = toml::to_string(&Conventions {
+        hooks: meerkat_core::HooksConfig {
+            entries,
+            ..Default::default()
+        },
+    })
+    .unwrap();
+    std::fs::write(file, text).unwrap();
+}
+
+struct Run {
+    dispatched: usize,
+    refused: Vec<(HookId, HookFailureReason)>,
+}
+
+/// Builds an agent as bootstrap's factory does (with `trust` installed when
+/// given) over `config`, and runs one turn that calls the guarded tool.
+async fn build_and_run(fx: &Fixture, config: &Config, trust: Option<&ProjectInputs>) -> Run {
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Tool {
+            id: "guarded-call",
+            name: "guarded_tool",
+            args: json!({}),
+        },
+        Step::Text("continued"),
+    ]);
+    let tool = Arc::new(GuardedTool::default());
+    let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+    let mut build = AgentBuildConfig::new(MODEL);
+    build.llm_client_override = Some(llm as Arc<dyn LlmClient>);
+    build.external_tools = Some(Arc::clone(&tool) as Arc<dyn AgentToolDispatcher>);
+    build.event_tx = Some(tx);
+    let mut factory = AgentFactory::new(fx.base.join("sessions"))
+        .session_store(Arc::new(meerkat_store::MemoryStore::new()))
+        .runtime_root(fx.base.join("runtime"))
+        .project_root(fx.ws.as_path())
+        .context_root(fx.ws.clone())
+        .user_config_root(fx.home.clone())
+        .builtins(false)
+        .shell(false);
+    if let Some(trust) = trust {
+        factory = factory.with_hook_source_trust(Arc::new(trust.clone()));
+    }
+    let mut agent = within(factory.build_agent(build, config)).await.unwrap();
+    let result = within(agent.run("Attempt the guarded operation".to_string().into()))
+        .await
+        .unwrap();
+    assert_eq!(result.text, "continued");
+    let mut refused = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        if let AgentEvent::HookLaunchRefused {
+            hook_id, reason, ..
+        } = event
+        {
+            refused.push((hook_id, reason));
+        }
+    }
+    Run {
+        dispatched: tool.0.load(Ordering::SeqCst),
+        refused,
+    }
+}
+
+fn untrusted_source(id: &str) -> (HookId, HookFailureReason) {
+    (
+        HookId::new(id),
+        HookFailureReason::ConfinementRefused {
+            refusal: ConfinementRefusal::UntrustedConfigurationSource,
+        },
+    )
+}
+
+/// The race the guard alone left open: the project file is trusted (no
+/// hooks) when the store serves the build config, a hook is written into it
+/// before the factory reads it, and the factory's question about the bytes
+/// it read refuses the hook. Without the trust installed the same sequence
+/// runs it.
+#[tokio::test]
+async fn a_hook_written_between_the_guard_and_the_build_never_runs() {
+    for installed in [true, false] {
+        let fx = fixture();
+        let project = fx.ws.join(".rkat/config.toml");
+        let marker = fx.base.join("planted-hook-entered");
+        write_hooks(&project, vec![]);
+        fx.inputs.trust_all().unwrap();
+        let config = fx.store.get().await.unwrap();
+        assert!(config.hooks.entries.is_empty(), "nothing to shadow");
+
+        // The interval between the guard's read and the factory's.
+        write_hooks(&project, vec![marker_guardrail("planted", &marker)]);
+
+        let run = build_and_run(&fx, &config, installed.then_some(&fx.inputs)).await;
+        if installed {
+            assert!(!marker.exists(), "the planted hook never ran");
+            assert_eq!(run.dispatched, 0, "the tool it gates is withheld");
+            assert_eq!(run.refused, [untrusted_source("planted")]);
+        } else {
+            assert!(marker.exists(), "control: the interval is real");
+            assert_eq!(run.dispatched, 1);
+            assert!(run.refused.is_empty());
+        }
+    }
+}
+
+/// A hook the user's `~/.rkat/config.toml` states identically stays the
+/// user's when the project file's content is refused; the same id with a
+/// different definition in the user file does not let the project's run.
+#[tokio::test]
+async fn a_hook_the_user_file_states_identically_survives_the_refusal() {
+    for identical in [true, false] {
+        let fx = fixture();
+        let project = fx.ws.join(".rkat/config.toml");
+        let user = fx.home.join(".rkat/config.toml");
+        let marker = fx.base.join("hook-entered");
+        let user_marker = fx.base.join("user-variant-entered");
+        let hook = marker_guardrail("fmt", &marker);
+        write_hooks(&project, vec![]);
+        fx.inputs.trust_all().unwrap();
+        write_hooks(
+            &user,
+            vec![if identical {
+                hook.clone()
+            } else {
+                marker_guardrail("fmt", &user_marker)
+            }],
+        );
+        let config = fx.store.get().await.unwrap();
+
+        write_hooks(&project, vec![hook]);
+
+        let run = build_and_run(&fx, &config, Some(&fx.inputs)).await;
+        assert!(!user_marker.exists());
+        if identical {
+            assert!(marker.exists(), "the user's own hook ran");
+            assert_eq!(run.dispatched, 1);
+            assert!(run.refused.is_empty());
+        } else {
+            assert!(!marker.exists(), "the project's definition never ran");
+            assert_eq!(run.dispatched, 0);
+            assert_eq!(run.refused, [untrusted_source("fmt")]);
+        }
+    }
+}
+
+/// A project file untrusted when the store serves the build config keeps
+/// today's behaviour: its hooks are shadowed by disabled entries, so they
+/// run nothing and gate nothing, and the factory has nothing to refuse.
+#[tokio::test]
+async fn a_project_file_untrusted_before_the_build_stays_inert() {
+    let fx = fixture();
+    let project = fx.ws.join(".rkat/config.toml");
+    let marker = fx.base.join("planted-hook-entered");
+    write_hooks(&project, vec![marker_guardrail("planted", &marker)]);
+    let config = fx.store.get().await.unwrap();
+    assert_eq!(config.hooks.entries.len(), 1);
+    assert!(!config.hooks.entries[0].enabled);
+
+    let run = build_and_run(&fx, &config, Some(&fx.inputs)).await;
+    assert!(!marker.exists());
+    assert_eq!(run.dispatched, 1);
+    assert!(run.refused.is_empty());
+}

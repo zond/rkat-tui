@@ -439,6 +439,7 @@ pub async fn bootstrap_with(
             memory,
         },
         &confinement.shell,
+        Arc::new(project_inputs.clone()),
     );
     let pricing = PricingSetup::load(
         std::mem::take(&mut layered.pricing),
@@ -678,9 +679,13 @@ fn build_factory(
     store_path: PathBuf,
     toggles: FactoryToggles,
     shell_confinement: &ShellConfinement,
+    hook_source_trust: Arc<dyn meerkat::HookSourceTrust>,
 ) -> AgentFactory {
     let mut factory = AgentFactory::new(store_path)
         .with_shell_confinement(shell_confinement.clone())
+        // The factory judges the project hook file over the bytes it reads
+        // on each build (see `project_trust`).
+        .with_hook_source_trust(hook_source_trust)
         .runtime_root(scope.realm_root())
         .project_root(scope.project_root.as_path())
         .context_root(scope.context_root.clone())
@@ -961,6 +966,11 @@ mod tests {
                     memory: false,
                 },
                 &shell,
+                Arc::new(project_trust::ProjectInputs::new(
+                    &scope,
+                    Arc::new(parking_lot::Mutex::new(approval::trust_record(&scope))),
+                    false,
+                )),
             );
             assert_eq!(factory.shell_confinement(), &shell, "{mode}");
             assert_eq!(

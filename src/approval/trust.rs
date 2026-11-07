@@ -221,6 +221,17 @@ impl HostTrustRecord {
         }
     }
 
+    /// Whether the digest recorded for `file` is `hex_sha256` (lower-case
+    /// hex, as [`hex_digest`] writes it): a judgment over content someone
+    /// else read, without reading the file again.
+    #[must_use]
+    pub fn holds_digest(&self, file: &Path, hex_sha256: &str) -> bool {
+        self.record
+            .files
+            .get(&self.key(file))
+            .is_some_and(|digest| digest == hex_sha256)
+    }
+
     /// Trust `file` as it is now (rkat-tui just wrote it, or the user
     /// trusted it after seeing a summary) and save the record. A missing
     /// file forgets its digest.

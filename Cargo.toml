@@ -29,21 +29,22 @@ path = "src/main.rs"
 # sandbox fixes the confined shell needs (a pid namespace and procfs per
 # Linux launch; Unix stream/seqpacket socketpairs alongside IP). Upstream main
 # already names the session's provider route for the implicit `delegate` mob
-# and grants a final-symlink read-only file. Switch to crates.io once the
-# sandbox fixes land upstream.
-meerkat = { git = "https://github.com/zond/meerkat.git", rev = "bab0dc4c499709281f3c54ad922100135710a936", features = ["anthropic", "openai", "gemini", "session-store", "jsonl-store", "session-compaction", "memory-store-session", "skills", "comms"] }
-meerkat-core = { git = "https://github.com/zond/meerkat.git", rev = "bab0dc4c499709281f3c54ad922100135710a936" }
-meerkat-runtime = { git = "https://github.com/zond/meerkat.git", rev = "bab0dc4c499709281f3c54ad922100135710a936", features = ["sqlite-store"] }
-meerkat-store = { git = "https://github.com/zond/meerkat.git", rev = "bab0dc4c499709281f3c54ad922100135710a936" }
-meerkat-sqlite = { git = "https://github.com/zond/meerkat.git", rev = "bab0dc4c499709281f3c54ad922100135710a936" }
+# and grants a final-symlink read-only file. On top: the factory asks the
+# host (`HookSourceTrust`) about the hook source bytes it read (branch
+# `rkat-tui-pin`). Switch to crates.io once these fixes land upstream.
+meerkat = { git = "https://github.com/zond/meerkat.git", rev = "414265f6837c9d392a8b73f33ebc64b559905629", features = ["anthropic", "openai", "gemini", "session-store", "jsonl-store", "session-compaction", "memory-store-session", "skills", "comms"] }
+meerkat-core = { git = "https://github.com/zond/meerkat.git", rev = "414265f6837c9d392a8b73f33ebc64b559905629" }
+meerkat-runtime = { git = "https://github.com/zond/meerkat.git", rev = "414265f6837c9d392a8b73f33ebc64b559905629", features = ["sqlite-store"] }
+meerkat-store = { git = "https://github.com/zond/meerkat.git", rev = "414265f6837c9d392a8b73f33ebc64b559905629" }
+meerkat-sqlite = { git = "https://github.com/zond/meerkat.git", rev = "414265f6837c9d392a8b73f33ebc64b559905629" }
 # `sqlite`: the session task store the Ctrl+T checklist reads.
-meerkat-tools = { git = "https://github.com/zond/meerkat.git", rev = "bab0dc4c499709281f3c54ad922100135710a936", features = ["sqlite"] }
-meerkat-models = { git = "https://github.com/zond/meerkat.git", rev = "bab0dc4c499709281f3c54ad922100135710a936" }
-meerkat-llm-core = { git = "https://github.com/zond/meerkat.git", rev = "bab0dc4c499709281f3c54ad922100135710a936" }
-meerkat-memory = { git = "https://github.com/zond/meerkat.git", rev = "bab0dc4c499709281f3c54ad922100135710a936" }
-meerkat-sandbox = { git = "https://github.com/zond/meerkat.git", rev = "bab0dc4c499709281f3c54ad922100135710a936" }
-meerkat-mob = { git = "https://github.com/zond/meerkat.git", rev = "bab0dc4c499709281f3c54ad922100135710a936", optional = true }
-meerkat-mob-mcp = { git = "https://github.com/zond/meerkat.git", rev = "bab0dc4c499709281f3c54ad922100135710a936", optional = true }
+meerkat-tools = { git = "https://github.com/zond/meerkat.git", rev = "414265f6837c9d392a8b73f33ebc64b559905629", features = ["sqlite"] }
+meerkat-models = { git = "https://github.com/zond/meerkat.git", rev = "414265f6837c9d392a8b73f33ebc64b559905629" }
+meerkat-llm-core = { git = "https://github.com/zond/meerkat.git", rev = "414265f6837c9d392a8b73f33ebc64b559905629" }
+meerkat-memory = { git = "https://github.com/zond/meerkat.git", rev = "414265f6837c9d392a8b73f33ebc64b559905629" }
+meerkat-sandbox = { git = "https://github.com/zond/meerkat.git", rev = "414265f6837c9d392a8b73f33ebc64b559905629" }
+meerkat-mob = { git = "https://github.com/zond/meerkat.git", rev = "414265f6837c9d392a8b73f33ebc64b559905629", optional = true }
+meerkat-mob-mcp = { git = "https://github.com/zond/meerkat.git", rev = "414265f6837c9d392a8b73f33ebc64b559905629", optional = true }
 
 # Async + serialization
 tokio = { version = "1.43", features = ["full"] }

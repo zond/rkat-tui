@@ -238,6 +238,15 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Fixed
 
+- A hook written into the project `.rkat/config.toml` while a session was
+  being built (for example by a confined shell command) could run once
+  without trust: rkat-tui checked the file before the build and the engine
+  read it again. The engine pin moved to `zond/meerkat` `414265f683`
+  (branch `rkat-tui-pin`: the previous pin plus "fix: the factory asks the
+  host about the hook source bytes it read"), and rkat-tui answers the
+  factory's `HookSourceTrust` question over the exact bytes it read: a
+  project hook file whose digest the trust record does not hold (and no
+  `--trust-project`) has every hook refused when it would run.
 - A Rust toolchain runs in the confined shell. Two engine fixes (pinned
   from the `zond/meerkat` fork, branch `fix/sandbox-procfs`): the Linux
   sandbox gives each launch its own pid namespace and a fresh `/proc`,

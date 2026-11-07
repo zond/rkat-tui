@@ -30,12 +30,22 @@
 //! first, so the project file's entry never runs). User-global files
 //! (`~/.rkat/config.toml`, `~/.rkat/mcp.toml`, `~/.rkat/tui`) are the
 //! user's own and stay trusted.
+//!
+//! The guard reads the project `.rkat/config.toml` before the factory reads
+//! it again while building, so on its own it cannot cover content written
+//! in between. [`ProjectInputs`] is therefore also the factory's
+//! [`HookSourceTrust`] (installed with
+//! `AgentFactory::with_hook_source_trust`): the factory asks it about the
+//! exact bytes it parsed hooks from, and every hook of content whose digest
+//! the record does not hold is refused at each invocation
+//! (`UntrustedConfigurationSource`), whatever the guard saw.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use meerkat::{HookSource, HookSourceDecision, HookSourceTrust};
 use meerkat_core::Config;
 use meerkat_core::mcp_config::project_mcp_path_in;
 
@@ -217,6 +227,15 @@ impl ProjectInputs {
     /// trusted, and with every hook of an untrusted project
     /// `.rkat/config.toml` shadowed by a disabled entry of its id. Returns
     /// what was refused.
+    ///
+    /// The shadowing is kept although the factory's [`HookSourceTrust`]
+    /// question refuses an untrusted project file's hooks on its own: a
+    /// refused hook keeps its slot and withholds what it gates (a refused
+    /// `pre_tool_execution` guardrail blocks the tool), while a shadowed one
+    /// is disabled and gates nothing. A file known to be untrusted before
+    /// the build therefore stays inert, as the start-up notice says, and
+    /// the refusal covers only content that changed after this read, which
+    /// fails closed.
     pub async fn guard(&self, config: &mut Config) -> Vec<Refused> {
         let mut refused = Vec::new();
         if let Some(file) = self.realm_config.as_deref()
@@ -288,6 +307,28 @@ impl ProjectInputs {
             "\n/trust trusts every project input as it is now (from the next session); --trust-project trusts them for one run",
         );
         Some(text)
+    }
+}
+
+/// The factory's question about a convention hook file it read: the
+/// project `.rkat/config.toml` is trusted when the record holds the digest
+/// of exactly the bytes the factory parsed, or under `--trust-project`.
+/// Any other source (the user's `~/.rkat/config.toml`, or a workspace that
+/// is the user config root) is the user's own and trusted.
+impl HookSourceTrust for ProjectInputs {
+    fn decide(&self, source: HookSource<'_>) -> HookSourceDecision {
+        if self.by_flag || self.hooks_are_the_users() || source.path != self.hooks {
+            return HookSourceDecision::Trusted;
+        }
+        if self
+            .record
+            .lock()
+            .holds_digest(&self.hooks, &source.sha256.to_string())
+        {
+            HookSourceDecision::Trusted
+        } else {
+            HookSourceDecision::Untrusted
+        }
     }
 }
 
@@ -485,6 +526,75 @@ mod tests {
         let mut config = Config::default();
         assert!(inputs.guard(&mut config).await.is_empty());
         assert!(config.hooks.entries.is_empty());
+    }
+
+    fn decide(inputs: &ProjectInputs, path: &Path, bytes: &[u8]) -> HookSourceDecision {
+        inputs.decide(HookSource {
+            path,
+            sha256: meerkat::HookSourceDigest::of(bytes),
+        })
+    }
+
+    /// The factory's question is answered over the bytes it read, not the
+    /// file as it is when asked.
+    #[test]
+    fn the_hook_source_trust_judges_the_bytes_the_factory_read() {
+        let fx = fixture();
+        let project = fx.ws.join(".rkat/config.toml");
+        std::fs::write(&project, HOOK).unwrap();
+        let inputs = ProjectInputs::new(&fx.scope, record(&fx.scope), false);
+        // Not recorded: untrusted.
+        assert_eq!(
+            decide(&inputs, &project, HOOK.as_bytes()),
+            HookSourceDecision::Untrusted
+        );
+        inputs.trust_all().unwrap();
+        // The recorded digest: trusted, even after the file changed on disk.
+        std::fs::write(&project, HOOK.replace("fmt", "fmt2")).unwrap();
+        assert_eq!(
+            decide(&inputs, &project, HOOK.as_bytes()),
+            HookSourceDecision::Trusted
+        );
+        // Other bytes than the recorded ones: untrusted.
+        let planted = HOOK.replace("fmt", "planted");
+        assert_eq!(
+            decide(&inputs, &project, planted.as_bytes()),
+            HookSourceDecision::Untrusted
+        );
+        // `--trust-project` trusts any content for the run.
+        let flagged = ProjectInputs::new(&fx.scope, record(&fx.scope), true);
+        assert_eq!(
+            decide(&flagged, &project, planted.as_bytes()),
+            HookSourceDecision::Trusted
+        );
+        // The user's file is the user's own, whatever it holds.
+        assert_eq!(
+            decide(&inputs, &fx.home.join(".rkat/config.toml"), planted.as_bytes()),
+            HookSourceDecision::Trusted
+        );
+    }
+
+    /// A workspace that is the user config root reads the user's own file.
+    #[test]
+    fn the_hook_source_trust_keeps_a_workspace_that_is_the_user_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = std::fs::canonicalize(dir.path()).unwrap();
+        let args = crate::cli::Args::try_parse_from([
+            "rkat-tui",
+            "-w",
+            ws.to_str().unwrap(),
+            "--user-config-root",
+            ws.to_str().unwrap(),
+            "--config-dir",
+            ws.join("cfg").to_str().unwrap(),
+        ])
+        .unwrap();
+        let scope = super::super::resolve_scope(&args).unwrap();
+        let inputs = ProjectInputs::new(&scope, record(&scope), false);
+        assert_eq!(
+            decide(&inputs, &ws.join(".rkat/config.toml"), HOOK.as_bytes()),
+            HookSourceDecision::Trusted
+        );
     }
 
     #[test]

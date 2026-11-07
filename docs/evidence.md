@@ -984,11 +984,28 @@ Two defects from the Meerkat maintainer's review of the harness, one commit each
   `status::tests::the_status_report_names_everything_on_its_own_line`.
 - Commands: `cargo clippy --all-targets --all-features -- -D warnings` exit 0; `cargo fmt --all -- --check` exit 0;
   `cargo nextest run --all-features` 769 passed, 6 skipped, exit 0.
-- Residual: the guard reads the project `.rkat/config.toml` when it serves the build config and the factory reads it
-  again while building; a hook id a concurrently running confined command adds between the two reads is not
-  shadowed for that one build (the next build's guard sees it). Closing that needs an engine seam (a factory-level
-  predicate for untrusted hook sources without full host confinement; `HostConfinement::untrusted_source` exists
-  but comes with confining every launch kind). The realm config's other sections (endpoints, models) still load
+- Residual (closed): the guard reads the project `.rkat/config.toml` when it serves the build config and the factory
+  reads it again while building, so a hook a concurrently running confined command added between the two reads was
+  not shadowed for that one build. The engine now asks the host about the bytes it read: zond/meerkat `414265f683`
+  ("fix: the factory asks the host about the hook source bytes it read", branch `rkat-tui-pin`) adds
+  `meerkat::HookSourceTrust` and `AgentFactory::with_hook_source_trust`; the factory reads each convention hook file
+  once, hashes the exact bytes it parsed (`HookSourceDigest`, SHA-256) and calls `decide(HookSource { path, sha256 })`;
+  every hook of an `Untrusted` source keeps its slot and is refused at each invocation with
+  `ConfinementRefusal::UntrustedConfigurationSource` (an entry a trusted user file states identically stays the
+  user's). `ProjectInputs` implements it (`HostTrustRecord::holds_digest`: the project `.rkat/config.toml` is trusted
+  when the record holds the digest of those bytes, or under `--trust-project`; any other path, the user file
+  included, is the user's) and bootstrap installs it on the one factory every build uses. The guard's disabled-entry
+  shadowing stays: a refused guardrail withholds what it gates (a `pre_tool_execution` one blocks the tool) while a
+  shadowed one is disabled, so a file known untrusted before the build stays inert as the notice says, and only
+  content changed after the guard's read fails closed. The guard still owns the start-up notice and the realm
+  config's MCP servers and hooks, which the engine predicate does not cover. Tests:
+  `project_trust::tests::{the_hook_source_trust_judges_the_bytes_the_factory_read,
+  the_hook_source_trust_keeps_a_workspace_that_is_the_user_root}`; `tests/hook_source_trust.rs`
+  (`a_hook_written_between_the_guard_and_the_build_never_runs` writes the hook between `RealmConfigStore::get` and
+  `AgentFactory::build_agent`, the two steps `FactoryAgentBuilder` takes, with a control without the trust that runs
+  it; `a_hook_the_user_file_states_identically_survives_the_refusal`;
+  `a_project_file_untrusted_before_the_build_stays_inert`); the engine's reproducer is
+  `crates/meerkat/tests/hook_source_trust.rs`. The realm config's other sections (endpoints, models) still load
   untrusted; they start no process, but a planted endpoint `base_url` could receive an environment key. Not in
   this change's scope.
 
