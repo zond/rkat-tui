@@ -1777,3 +1777,94 @@ exits), `client::catchup`, `client::runner` (model references, the stop
 target, a turn's end), `cli::tests::attach_defaults_to_auto_and_no_attach_is_in_process`,
 `ui::tests::a_remote_turn_shows_its_prompt_and_keeps_the_ui_busy_until_it_ends`,
 `ui::render::tests::the_attach_state_leads_the_status_line`.
+
+## P3: approvals on the daemon side (2026-11-08)
+
+The daemon's orchestrator and its helpers run behind the TUI's approval
+engine; consent is presented in the attached TUI and decided over the
+engine's `approval/*` methods (`docs/mob-split.md` Status has the design).
+Engine facts this relied on (read in the pinned checkout, then observed):
+
+- `SessionRuntime::approval_service()` is `persistence.approval_issuer()`
+  (session_runtime.rs:4232), the same `ApprovalService` the bootstrap hands
+  the escalation ledger, so every escalation record the ledger writes is
+  what `approval/list|get|decide` serve. The service is in-process state
+  behind an `Arc` (clones share it); it has no notification for a plain
+  decision (only `subscribe_consent_deliveries` for R3 consent), so the
+  daemon's desk polls `get` every 100 ms and the client polls `approval/list`
+  every 250 ms while a turn runs or a dialog is open.
+- `approval/decide` takes `{approval_id, decision: approve|deny, actor,
+  reason, provenance}` (`ApprovalDecideParams`); the record keeps `reason`
+  and `provenance` in its `decision`. A second decision is refused
+  `AlreadyDecided` (-32602 over the wire): the first client wins and a late
+  one is a no-op. When the engine then records the answer it waited for,
+  `EscalationLedger::settle` confirms a record already decided the same way
+  instead of failing (it used to be a ledger failure, i.e. a denial).
+- `approval/list` has only a status filter; the client filters requester
+  (`rkat-tui-approval-gate`) and owner session itself. A helper's escalation
+  is owned by the session it works for, so the orchestrator's client sees
+  it, with the helper named (`RecordedPrompt.agent` in the request body).
+- The published tool definitions (`published_live_visible_tool_defs`) are
+  not reachable through the RPC runtime (`persistent_service` is
+  `pub(crate)`); `MobSessionService::live_visible_tool_defs` is a session
+  command that answers nothing while a turn runs, so the gate's catalog is
+  read at start and after each run (`DaemonToolOrigins`), with the TUI's
+  own tools known before that.
+- `ToolConsequencePolicyRegistry`: a provider returns `Allow`, `Deny` or
+  `Indeterminate`; `Indeterminate` refuses the call, so a narrow-only policy
+  must allow what it does not deny. Evaluations run on supervisor worker
+  threads with a 50 ms default deadline, and a missed deadline marks the
+  provider mechanically unhealthy for good (every later call refused); the
+  daemon sets 2 s. Installing the registry makes the host "managed": child
+  mobs (`delegate`'s implicit mob, `mob_create`) then require
+  `with_child_application_tool_policy`; host mobs keep the spawn's own
+  binding, so the customizer sets it on the orchestrator and its same-mob
+  helpers. The binding is persisted in the session metadata
+  (`tooling.application_tool_policy`) and resolved at every build.
+  Observed: a daemon started without the registry comes up (the member is
+  rebuilt lazily) and the first `mob/member_send` fails with "member main
+  failed to restore session …: a governed application tool policy requires
+  the host policy registry".
+- The orchestrator's member tools do not include `delegate` (that is the
+  standalone session's tool); it spawns helpers with `spawn_member
+  {profile, member_id, initial_message}`, which manual mode puts to the
+  human like any Tier-3 call.
+- `mob/turn_start` takes `provider_params` as `{"action": "set", "value":
+  WireProviderParamsOverride}` or `{"action": "clear"}`; a resumed member
+  takes new params through `SpawnMemberSpec::resume_provider_params`.
+- Engine semantics worth knowing (unchanged from in-process): in manual mode
+  an allow rule does not skip the question for an in-project edit (the
+  edit's Tier 2 is decided before allow rules); "allow + add rule" stops
+  repeat prompts for Tier-3 calls such as shell commands.
+- Shutdown: a connection task aborted at shutdown must abort the proxy it
+  spawned, or the client's socket stays open and it never reconnects (seen
+  as `the_client_reconnects_to_a_restarted_daemon` hanging); the proxy's
+  tasks are abort-on-drop.
+
+Not built as briefed: `rkat/reload_rules` (the client writing `tui.toml`
+and asking the daemon to reload). `/rules` is `rkat/rules`, run on the
+daemon's engine, which already persists and trusts the realm rules file:
+one writer, no reload of the trust checks. "Allow for this session" maps to
+the in-process dialog's second choice (allow + add a literal rule): the
+in-process gate has no session-scoped allow, and gated-tool grants
+(`tool_grants/*`) do not apply to these tools.
+
+Tests: `tests/attach_approvals.rs`: `a_tier_one_call_runs_without_a_prompt`,
+`a_reviewed_call_shows_the_dialog_and_runs_after_approve`,
+`deny_with_a_comment_refuses_and_the_comment_reaches_the_model`,
+`allow_and_add_rule_skips_the_dialog_the_second_time`,
+`an_unanswered_request_times_out_denied_and_the_ui_recovers`,
+`two_clients_see_the_same_request_and_the_first_answer_wins`,
+`auto_mode_needs_no_dialog_and_plan_mode_refuses_writes` (also: the
+classifier read the user's words, the plan-mode note reached the model),
+`a_deny_rule_added_in_attach_mode_refuses_the_next_call`,
+`a_helpers_reviewed_call_raises_an_approval_too`,
+`a_restarted_daemon_keeps_the_application_policy_binding`,
+`the_local_methods_answer_before_the_engine`;
+`tests/attach.rs::a_bang_command_runs_in_this_process_and_joins_the_agents_context`;
+unit tests in `approval::remote` (answer ↔ record mapping, recorded prompt,
+wire forms), `approval::ledger::tests::settling_confirms_a_record_a_client_already_decided_the_same_way`,
+`daemon::approvals` (desk: decision handed back, interrupt stops only the
+session's escalations, a dropped responder ends the wait), `daemon::policy`,
+`daemon::local`, `client::approvals`. `tests/daemon.rs` now runs with an
+allow-all classifier (its shell call is reviewed now).

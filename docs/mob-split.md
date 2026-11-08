@@ -23,10 +23,8 @@ with a JSON-RPC error and closed before the engine sees it
 
 Known limits of P1:
 
-- No approval gate on the orchestrator's own calls yet (the customizer's
-  `RootMember::admission` is the P3 hook); its helpers keep the TUI's
-  helper gate, but nothing in the daemon answers an escalation or records
-  user intent, so their reviewed calls are refused.
+- (Lifted in P3, below: the orchestrator and its helpers are gated, and
+  escalations are answered over `approval/*`.)
 - `mob/turn_start` is request-scoped: its run is cancelled when the
   connection that sent it closes. A client that may detach sends
   `mob/member_send` (answered at once; the run is the member's). P2's
@@ -61,12 +59,96 @@ mark, which then moves to it; the mark is saved in
 `<workspace>/.rkat/tui/attach.cursor`. A run found in progress is shown as
 running (`Msg::RemoteTurn`).
 
-Deferred: approvals over the daemon (P3; the orchestrator runs ungated and
-the TUI says so on attach); `/new`, `/resume`, `/rewind`, helpers' follower
-view, `fork` (P4); `/compact`, `/remember`, `/memory`, the permission modes,
-`!` commands and the model picker (each answers "not available in attach
-mode yet"); `/model` on a custom endpoint (needs the auth binding); a
-reconnect never restarts a dead daemon; `attach = true` in `tui.toml` (P4).
+Deferred after P2: `/new`, `/resume`, `/rewind`, helpers' follower
+view, `fork` (P4); `/compact`, `/remember`, `/memory` and the model picker
+(each answers "not available in attach mode yet"); `/model` on a custom
+endpoint (needs the auth binding); a reconnect never restarts a dead
+daemon; `attach = true` in `tui.toml` (P4).
+
+P3 is in: approvals on the daemon side.
+
+- The daemon's approval engine is the in-process one, built by the shared
+  bootstrap (tiers, layered rules, the classifier on the same endpoint and
+  model, permission modes, escalation timeout, the ledger). The orchestrator
+  gets it as its `ToolDispatchAdmission` (`daemon::approvals::RootGate`, the
+  in-process `ApprovalGate` resolved to the orchestrator's session through
+  the helper registry); its helpers keep the helper gate on the same engine.
+- A call that needs the human is the escalation record the ledger already
+  writes in the realm's approval store (`runtime.approval_service()` is the
+  persistence bundle's one issuer, the same the ledger uses), with the
+  dialog's content as its `request_body`. The daemon's `Desk` waits on the
+  record (polls `get` every 100 ms) and hands the engine the decision a
+  client recorded with `approval/decide`; the human's comment, "allow + add
+  rule" and "deny and stop" travel in the decision's `provenance`
+  (`{"rkat_tui": {"answer", "comment"}}`); a plain approve or deny from any
+  other client is allow once or deny with its reason. The engine's own
+  timeout, serialisation and re-checks are unchanged; when it settles the
+  record a client already decided, the ledger confirms instead of failing.
+- The client lists `approval/list` (status pending, requester the TUI's
+  gate, owner the orchestrator's session) on attach, on every
+  `tool_call_requested`, and every 250 ms while a turn runs or a dialog is
+  open, shows the in-process dialog, and decides. Any attached client may
+  answer; the first decision wins, the others' dialogs close on their next
+  list with a notice, and a late decision is refused by the engine and
+  dropped.
+- The human's words reach the classifier: the daemon reads every
+  `mob/member_send` and `mob/turn_start` for the orchestrator on its way to
+  the router and records the content as user input (the in-process session
+  records it at admission). An interrupt (`mob/stop_member_run`,
+  `mob/force_cancel`) stops review for the session and answers its open
+  escalations with Stop; a run start (followed with
+  `subscribe_agent_events`) lifts it, as in-process.
+- Tool provenance: the RPC runtime exposes no published tool definitions,
+  only the command read, which waits behind a running turn, so the daemon
+  reads each session's catalog while it is idle (at start and after every
+  run) and caches it; until the first read only the TUI's own file and note
+  tools are known (everything else is judged a foreign tool). A helper's
+  catalog is never read (its calls are judged with the TUI's tools known,
+  the rest foreign).
+- Durable refusals: the daemon installs a `ToolConsequencePolicyRegistry`
+  with one provider (`rkat-tui` / `deny-rules`, `daemon::policy`) and binds
+  the orchestrator, its same-mob helpers (customizer) and child-mob members
+  (`with_child_application_tool_policy`) to it. The policy is narrow-only:
+  it denies a call a deny rule matches or a file write into a sealed path
+  and allows the rest. Observed: a daemon started without the registry
+  starts, and the member's first delivery fails its restore with "a
+  governed application tool policy requires the host policy registry".
+- `[thinking]`: the profile carries the start-up model's provider params;
+  a rebuild re-applies the setting of the session's model
+  (`resume_provider_params`); a `mob/turn_start` model switch gets the new
+  model's params (or a clear) added by the daemon unless it names its own.
+- The user's `!` shell runs in the client, built as in-process (the
+  confinement plan from the same flags and `tui.toml` layers); its output
+  goes to the orchestrator with `mob/append_system_context`.
+
+#### The `rkat/*` local methods
+
+The engine's wire has no field or method for an application's permission
+mode or rule list, so the daemon answers three methods itself, before a
+line reaches the router (`daemon::serve::proxy`, `daemon::local`); with
+`rkat/attach` they are the only non-engine methods:
+
+| Method | Params | Result |
+|---|---|---|
+| `rkat/get_mode` | `{}` | `{"mode", "paused", "denials": [consecutive, max, total, max]}` |
+| `rkat/set_mode` | `{"mode": "default"\|"accept-edits"\|"plan"\|"auto"}` | `{"status", "notice", "warning"?}` |
+| `rkat/rules` | `{"op": "list"}`, `{"op": "add", "deny", "tool", "pattern"?}`, `{"op": "remove", "n"}` | `{"ok", "text"}` |
+
+The mode is the daemon's (one per daemon; it governs the orchestrator and
+its helpers, as the in-process mode governs a session and its helpers), is
+recorded in the realm rules file and tells the orchestrator when plan mode
+starts or ends. `/rules` runs on the daemon's engine, which writes the realm
+rules file as the in-process `/rules` does (the brief's "client writes the
+file, then `rkat/reload_rules`" was not built: two writers of one file and a
+reload that re-runs the trust checks, for no gain). A future engine
+extension (an application method namespace, or the governed realm's review
+policy) could replace them.
+
+Deferred after P3 (P4): helpers' follower view and their own tool catalog,
+`fork`, `/new`, `/resume`, `/rewind`, `/compact`; `/rules trust` and
+`/trust` in attach mode; a push notification for pending approvals (engine
+ask 2); approval decision events (the client reads the counters with
+`rkat/get_mode`, not the per-call notices).
 
 Decision (2026-11-08): rkat-tui becomes two binaries. A daemon embeds the
 Meerkat engine, holds the realm, runs one durable mob member as the
@@ -203,7 +285,7 @@ Each phase keeps the current in-process TUI working and ships with tests.
   model switch, resume via `mob/lifecycle`), the runner unchanged above
   it; catch-up with `events/list_since`; start-on-demand. Tests: the
   scripted-LLM runner tests run against the daemon.
-- **P3 approvals over the daemon.** Admission on the daemon side raising
+- **P3 approvals over the daemon (done).** Admission on the daemon side raising
   approvals; the TUI's dialog over `approval/*`; timeouts and escalation
   carried over; consequence registry for durable refusals; `tool_grants`
   for session allows. Tests: the approval routing tests against the

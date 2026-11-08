@@ -6,6 +6,19 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Added
 
+- Approvals in attach mode (experimental): the `rkat-tui-mob` daemon's
+  agent and its helpers run behind the TUI's approval gate (tiers, rules,
+  classifier, permission modes, escalation timeout). A call that needs you
+  is a record in the realm's approval store; every attached TUI shows the
+  dialog (listed with `approval/list`) and the first `approval/decide`
+  wins, comments, "allow + add rule" and "deny and stop" included.
+  Shift+Tab, `/mode`, `/auto resume` and `/rules` act on the daemon through
+  its own `rkat/get_mode`, `rkat/set_mode` and `rkat/rules` methods. The
+  deny rules are installed as the members' application tool policy
+  (`ToolConsequencePolicyRegistry`), which the engine records with each
+  member. `[thinking]` now applies to the daemon's agent (spawn, rebuild
+  and `/model`), and `!` commands work in attach mode (run by the TUI,
+  output to the agent's context).
 - `rkat-tui --attach` (experimental): the TUI as a client of the
   workspace's `rkat-tui-mob` daemon. It reads `.rkat/tui/mob.endpoint`,
   attaches with its token and drives the orchestrator member with Meerkat's

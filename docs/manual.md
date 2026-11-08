@@ -1014,17 +1014,40 @@ sessions stay in the realm and the next start restores the member.
 (steers), Esc (stops the run; a second Esc a second later force-cancels the
 member), `/model <provider>:<id>` (anthropic, openai, gemini, or a catalogued
 bare id; the switch rides your next message and the session keeps the
-model), the context gauge, token counts, `/status`, `/export`, `/cost`,
-`/copy`, `/context` (the gauge only).
+model, with its `[thinking]` setting), the context gauge, token counts,
+`/status`, `/export`, `/cost`, `/copy`, `/context` (the gauge only),
+approvals, the permission modes, `/rules` and `!` commands.
+
+**Approvals.** The daemon's agent and its helpers run behind the same
+approval gate as the in-process TUI: tiers, your rules, the classifier
+(same endpoint and model), the permission mode and the escalation timeout.
+When a call needs you, every attached TUI shows the same dialog (a helper's
+call names the helper); answer it in any of them. The first answer counts;
+the other TUIs close their dialog and say it was answered from another
+client. A request nobody answers in time is denied, as in-process. The
+requests are records in the realm's approval store, so any client of the
+daemon's `approval/list` and `approval/decide` can answer them too.
+
+**Modes and rules.** Shift+Tab, `/mode` and `/auto resume` switch the
+daemon's mode: one mode for the daemon, shown in every attached TUI's
+status bar (refreshed on attach and after every turn). `/rules list`,
+`/rules add allow|deny <tool> [pattern]` and `/rules remove <n>` act on the
+daemon's rules and are saved in the realm rules file, as in-process. Deny
+rules (and writes into `.git/` or `.rkat/`) are also the agent's recorded
+application tool policy: the daemon refuses to rebuild the agent without it.
+
+**`!` commands** run in this TUI's process, confined as the agent's shell
+is, and their output goes to the agent's context.
 
 **Limits for now:**
 
-- **No approval gate.** The daemon's agent runs its shell and file tools
-  without review or prompts (its shell stays confined as configured). The
-  TUI says so when it attaches. Approvals over the daemon are the next step.
-- `/new`, `/resume`, `/rewind`, `/compact`, `/remember`, `/memory`, the
-  permission modes and rules, `!` commands, the model picker, helpers' nested
-  view and the `fork` tool answer "not available in attach mode yet".
+- `/new`, `/resume`, `/rewind`, `/compact`, `/remember`, `/memory`,
+  `/rules trust`, `/trust`, the model picker, helpers' nested view and the
+  `fork` tool answer "not available in attach mode yet".
+- Until the agent's first run after a daemon start, the gate knows only
+  rkat-tui's own file and note tools; other tools (the shell included) are
+  reviewed as foreign tools until then. A helper's tools other than
+  rkat-tui's are always reviewed that way.
 - A model switch's turn is tied to the connection that sent it: detaching
   during that one turn cancels it. Ordinary prompts are not.
 - The in-process TUI and the daemon cannot share one workspace at the same
