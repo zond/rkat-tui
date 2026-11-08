@@ -15,7 +15,10 @@ Product direction: a focused coding application with Claude Code's keys and
 feel, hosted on Meerkat's runtime-backed session path. Everything the engine
 owns (session lifecycle, persistence, tool dispatch, mobs, confinement) is
 used through its public API; the application owns the UI, the approval
-policy, the classifier, prompts, tool selection and consent presentation.
+policy, the classifier, prompts, tool selection and consent presentation. There are two binaries: `rkat-tui`, the interactive TUI hosting the
+agent in-process, and `rkat-tui-mob` (experimental), a daemon that hosts
+it as a mob member and serves the engine's JSON-RPC over loopback TCP
+(`docs/mob-split.md`).
 
 ## Build and test
 
@@ -62,6 +65,7 @@ shell (`src/user_shell.rs`), and they stay the only ones.
 | `src/ui/` | Elm-style UI: `App::update(Msg) -> Vec<Effect>`, rendering, input editor, command table (`commands.rs`), completion, modals, checklist |
 | `src/tools/` | File tools and the shell tool the agent gets |
 | `src/mobs/` | Helpers (delegate) as mob members: customizer, follower, registry |
+| `src/daemon/`, `src/bin/rkat-tui-mob.rs` | The `rkat-tui-mob` daemon: engine composition over `bootstrap::assemble` (`engine.rs`), the orchestrator member (`orchestrator.rs`), the TCP serve loop (`serve.rs`), the `rkat/attach` token handshake (`handshake.rs`) and the endpoint file (`endpoint.rs`) |
 | `src/fork/` | The `fork` tool: a child helper started with the parent's rendered conversation |
 | `src/memory/` | Notes at user and workspace scope, memory tools |
 | `src/endpoints.rs`, `src/models.rs`, `src/pricing.rs`, `src/thinking.rs` | LLM endpoints, model listing, price table, the per-model `[thinking]` setting |

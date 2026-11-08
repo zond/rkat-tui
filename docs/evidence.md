@@ -1598,3 +1598,100 @@ Conversation rewind: `/rewind` (aliases `/checkpoint`, `/undo`) and Esc Esc on a
   resume; with no setting the tag equals today's).
 - Commands: `cargo fmt --all -- --check` exit 0; `cargo clippy --all-targets --all-features -- -D warnings` exit 0;
   `cargo nextest run --all-features` 873 passed, 7 skipped, exit 0.
+
+## P1: the `rkat-tui-mob` daemon (2026-11-08)
+
+A second binary that embeds the engine, holds the workspace realm, runs the
+agent as one host-root mob member (mob `tui`, member `main`) and serves the
+engine's own `MethodRouter` to any number of clients over loopback TCP
+(`docs/mob-split.md` has the design; this is what the build relied on).
+
+- Composition (`src/daemon/engine.rs`): `bootstrap::assemble` is the shared
+  first half of `bootstrap_with` (endpoints, model, confinement plan, project
+  trust, approval engine, MCP set, persistence opened, realm lease taken under
+  a surface name, factory built); the TUI composes its `TuiService` on it, the
+  daemon `meerkat_rpc::session_runtime::SessionRuntime::new_with_config_store`
+  (crates/meerkat-rpc/src/session_runtime.rs:4373) with
+  `require_hosting_mode`, `set_realm_context`, `set_config_runtime` and
+  `set_default_llm_client` (the scripted client of the tests). Our own
+  `MobMcpState` mirrors `compose_rpc_mob_state` (router.rs:173) without the
+  connection callback-tool routes (`rpc_mob_external_tools_provider_from_parts`,
+  `rpc_mob_slot_external_tools_provider`, `index_mob_callback_route_slot` are
+  crate-private) and with `with_child_spawn_member_customizer`; it is set with
+  `set_mob_state` before any `MethodRouter::new`, which then reuses it and
+  installs its mob tools (router.rs:1724-1747).
+- `meerkat-rpc` with `default-features = false, features = ["mob", "mcp",
+  "comms"]` compiles: no `openai-realtime`, no `local-authorization` (the
+  governed paths are cfg'd out). It still pulls axum and meerkat-live.
+- The customizer (`src/mobs/customizer.rs`): `HelperCustomizer::with_root`
+  names a `RootMember` (key `tui/main`) that is shaped as an owner (file and
+  note tools as `external_tools`, the curated shell env, the TUI tool access
+  policy, the persona and instruction files on a fresh spawn, the endpoint's
+  auth binding) instead of a helper. `creation_origin` is `pub(crate)` in
+  `SpawnMemberSpec` (meerkat-mob handle.rs:7357), so the root is recognised by
+  mob and identity. `customize_resume` re-supplies the tools (verified: a
+  restarted daemon's orchestrator calls `read_file`) and registers the
+  member's durable session as a root owner in the `HelperRegistry`
+  (`register_root`), so helpers it spawns or delegates to resolve to it. The
+  root's `admission` is `None`: the P3 hook.
+- The orchestrator (`src/daemon/orchestrator.rs`): the definition is
+  `MobDefinition::implicit_with_provider` re-keyed to profile `main`, durable,
+  `TurnDriven`, with builtins, shell, comms, mob, memory and the MCP servers
+  on the profile (durable, unlike `external_tools`). `mob_list()` restores the
+  persisted mobs first (`ensure_restored`); a missing member is spawned with
+  `SpawnMemberSpec::host_root`; `mob_member_status` gives the session.
+- Shutdown: `SessionRuntime::try_shutdown` stands the mob state down but
+  "does not shut down the state's managed mobs" (session_runtime.rs, the
+  `release_mob_state` doc). Without shutting them down, a second daemon in
+  the same process failed to restore the mob: `MobQuarantined { ResumeRefused,
+  ParticipantNameOccupied "tui/__mob_supervisor__" }`. The daemon now closes
+  mob admission, shuts every mob in `mob_handles_snapshot` down, then shuts
+  the runtime down (`stop_mobs`, the order `MobMcpState::stand_down`'s doc
+  asks of a host).
+- Transport: loopback TCP, decided over a Unix socket (versatility: the same
+  loop as `rkat-rpc --tcp`, SSH port-forwarding, no platform differences).
+  `serve_tcp_with_options_until` (server.rs:2309) binds its own listener, so it
+  cannot report an ephemeral port or run a handshake; its structure is copied
+  (`src/daemon/serve.rs`). Its connection/request admission, per-connection
+  shutdown signal and shutdown hold are private, so shutdown is: stop
+  accepting, remove the endpoint file, 2 s for connections to end, mobs and
+  runtime shut down, remaining connections aborted. The engine's TCP path has
+  no authentication (`--allow-remote` is "not an auth mechanism"), so each
+  connection first sends `rkat/attach {token}` (`src/daemon/handshake.rs`);
+  the token, address and pid are in `<workspace>/.rkat/tui/mob.endpoint`
+  (0600, written by rename, removed on shutdown; a stale file is replaced when
+  nothing accepts at its address).
+- Not as the map says / worth knowing: `mob/turn_start` is request-scoped. It
+  goes through `turn::start_turn_with_params` (handlers/mob.rs:2990), answers
+  only when the turn has ended, and when its connection closes the server
+  cancels the connection's requests at once (server.rs
+  `hold_requests_for_shared_runtime_shutdown`: only a process shutdown holds
+  them), which cancels the run at its next boundary: observed under load as
+  `turn_completed` followed by `run_failed {class: cancelled, "Run was
+  cancelled"}` 56 ms later. A client that may detach must use
+  `mob/member_send {mob_id, agent_identity, content}` instead: it hands the
+  input to the member and answers with a receipt at once, and the run is the
+  member's. It needs the profile's `external_addressable = true` ("mob member
+  is not externally addressable: main" otherwise), which the orchestrator's
+  profile now sets. `events/list_since {scope: {type: "session",
+  session_id}}` does work on a member session (the map had it untested): it
+  replays `run_started` through `run_completed` after the sending client left.
+- Limits: no approval gate on the orchestrator; helpers keep the helper gate
+  but nothing serves an escalation and no user intent is recorded, and the
+  gate has no tool origins (`ServiceToolOrigins` needs a `TuiService`), so
+  their reviewed calls fail closed; no `fork` tool on the orchestrator (it
+  needs the TUI's service); `[thinking]` provider params are not applied to
+  the orchestrator; `RpcServer::new` resets the runtime's process-wide
+  notification sink per connection (map risk (c)); running the TUI and the
+  daemon on one workspace at once is unsupported (shared mob store).
+- Tests: `tests/daemon.rs`: `a_client_attaches_and_finds_the_orchestrator`
+  (endpoint file 0600, removed on shutdown), `a_connection_without_the_token_never_reaches_the_router`,
+  `a_turn_streams_to_every_attached_client`,
+  `a_client_leaving_mid_turn_leaves_the_turn_running` (`mob/member_send`,
+  catch-up via `events/list_since`), `the_orchestrator_has_the_tui_file_tools`,
+  `the_orchestrator_shell_runs_confined` (`SKIPPED:` without a sandbox),
+  `a_restarted_daemon_restores_the_orchestrator_with_its_tools`,
+  `a_second_daemon_on_a_live_workspace_is_refused`; unit tests in
+  `daemon::handshake`, `daemon::endpoint`, `daemon::tests`,
+  `mobs::customizer::tests::the_root_member_is_shaped_as_an_owner`,
+  `mobs::registry::tests::a_host_root_member_owns_what_it_spawns`.

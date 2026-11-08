@@ -1,9 +1,48 @@
 # rkat-tui as a client of a running mob
 
+## Status (2026-11-08)
+
+P1 is in: `rkat-tui-mob` (experimental, `src/bin/rkat-tui-mob.rs`,
+`src/daemon/`) bootstraps the workspace realm exactly as the TUI does,
+composes the engine's JSON-RPC `SessionRuntime` with our own
+`MobMcpState`, seats the orchestrator (mob `tui`, member `main`,
+turn-driven, durable, host root) or restores it, and serves the engine's
+whole `MethodRouter` (`initialize`, `mob/*`, `turn/*`, `events/*`,
+`approval/*`, …) over loopback TCP to any number of clients; a client
+leaving does not stop the runtime or a running turn.
+
+Transport: loopback TCP (`--listen 127.0.0.1:<port>`, default port 0),
+not a Unix socket: it is the loop `rkat-rpc --tcp` already runs, it
+forwards over SSH, and it behaves the same on every platform. Any local
+process can reach a loopback port, so each connection must first send
+`rkat/attach` with the per-daemon token from the endpoint file
+`<workspace>/.rkat/tui/mob.endpoint` (mode 0600: `{"address", "token",
+"pid"}`, one JSON line, removed on shutdown); anything else is answered
+with a JSON-RPC error and closed before the engine sees it
+(`src/daemon/handshake.rs`, the only non-engine thing on the wire).
+
+Known limits of P1:
+
+- No approval gate on the orchestrator's own calls yet (the customizer's
+  `RootMember::admission` is the P3 hook); its helpers keep the TUI's
+  helper gate, but nothing in the daemon answers an escalation or records
+  user intent, so their reviewed calls are refused.
+- `mob/turn_start` is request-scoped: its run is cancelled when the
+  connection that sent it closes. A client that may detach sends
+  `mob/member_send` (answered at once; the run is the member's). P2's
+  client uses it for prompts.
+- `mob/stream_open` has no cursor; a reattaching client catches up with
+  `events/list_since` on the member's session (works, see
+  `docs/evidence.md`).
+- No start-on-demand, no daemonising (`--foreground` only), and running
+  the daemon and the in-process TUI on the same workspace at once is not
+  supported (they share the realm's mob store).
+
 Decision (2026-11-08): rkat-tui becomes two binaries. A daemon embeds the
 Meerkat engine, holds the realm, runs one durable mob member as the
-orchestrator and exposes Meerkat's own JSON-RPC methods over a Unix domain
-socket. The TUI becomes a client of that socket: it attaches, sends turns,
+orchestrator and exposes Meerkat's own JSON-RPC methods over loopback TCP
+(first decided as a Unix domain socket; changed the same day, see Status).
+The TUI becomes a client of that endpoint: it attaches, sends turns,
 renders the member's event stream, answers approvals, and can detach while
 the mob keeps running. The protocol is Meerkat's existing method router and
 wire types, not a protocol of our own, so other clients can attach and the
@@ -39,14 +78,19 @@ rkat-tui-mob (daemon, one per workspace realm)
       orchestrator; re-supplied on resume
     orchestrator: SpawnMemberSpec::host_root("main", identity), TurnDriven,
       spawned by the daemon in Rust at start (or restored)
-  MethodRouter served per connection over <workspace>/.rkat/tui/mob.sock
-    (newline-delimited JSON; RpcServer over UnixStream, shared runtime,
-    skip_shutdown_on_eof; the loop copies serve_tcp_with_options_until)
-  realm lease + pid/socket file; start-on-demand by the TUI
+  MethodRouter served per connection over loopback TCP after an
+    `rkat/attach` token handshake (newline-delimited JSON; RpcServer per
+    connection, shared runtime, skip_shutdown_on_eof; the loop copies
+    serve_tcp_with_options_until)
+  realm lease + <workspace>/.rkat/tui/mob.endpoint (address, token, pid);
+    start-on-demand by the TUI
 
 rkat-tui (client)
-  connects to the socket (starts the daemon if none answers)
-  mob/turn_start (prompt, model/provider/auth_binding overrides for /model)
+  reads the endpoint file, connects and attaches with the token (starts
+    the daemon if none answers)
+  mob/member_send for prompts (detach-safe; mob/turn_start's run dies with
+    its connection), mob/turn_start only for model/provider/auth_binding
+    overrides (/model)
   mob/stream_open for live events + events/list_since for catch-up
   mob/stop_member_run, mob/force_cancel for Esc
   approval/list + approval/decide for the approval dialog (pending requests
@@ -113,19 +157,19 @@ host-installed consent surface, the same classifier moves behind
 
 Each phase keeps the current in-process TUI working and ships with tests.
 
-- **P1 daemon skeleton.** `src/bin/rkat-tui-mob.rs` plus `src/daemon/`:
+- **P1 daemon skeleton (done).** `src/bin/rkat-tui-mob.rs` plus `src/daemon/`:
   reuse `bootstrap` (realm, config, factory, confinement, project trust,
   instructions, MCP) to build the factory; `SessionRuntime` + our
   `MobMcpState`; the customizer generalised from `mobs::HelperCustomizer`
   to treat the host-root orchestrator as the owner; spawn or restore the
-  orchestrator; serve the router over the socket with a shared runtime;
-  lease, pid file, clean shutdown on SIGTERM, `--foreground`. Tests: start
-  the daemon in-process in a temp workspace, talk JSON-RPC over the socket
+  orchestrator; serve the router over loopback TCP with a shared runtime;
+  lease, endpoint file, clean shutdown on SIGTERM, `--foreground`. Tests: start
+  the daemon in-process in a temp workspace, talk JSON-RPC over TCP
   (`initialize`, `mob/members`, `mob/turn_start` with a scripted LLM,
   `mob/stream_open`), two connections at once, reconnect after a client
   drops.
 - **P2 client mode.** `rkat-tui --attach` (later the default): a
-  `session` implementation over the socket (turn, interrupt, events,
+  `session` implementation over the daemon connection (turn, interrupt, events,
   model switch, resume via `mob/lifecycle`), the runner unchanged above
   it; catch-up with `events/list_since`; start-on-demand. Tests: the
   scripted-LLM runner tests run against the daemon.

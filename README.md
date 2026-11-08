@@ -35,6 +35,22 @@ rkat-tui --model llama3:8b        # bare ids are looked up in every endpoint's m
 rkat-tui --allow 'shell=cargo nextest run*' --set auto.compact=auto
 ```
 
+### The mob daemon (experimental)
+
+`rkat-tui-mob` hosts the agent as a long-lived Meerkat mob member instead of
+inside the terminal UI, and serves Meerkat's own JSON-RPC methods for the
+workspace to any number of clients, which can disconnect and come back while
+it works. It listens on loopback TCP and writes the address and an access
+token to `.rkat/tui/mob.endpoint`; every connection must first send
+`rkat/attach` with that token. It takes the same engine flags as `rkat-tui`:
+
+```bash
+rkat-tui-mob --foreground -w . --model claude-sonnet-4-6
+```
+
+The TUI cannot attach to it yet, and the agent's calls in the daemon pass no
+approval gate yet; see [`docs/mob-split.md`](docs/mob-split.md).
+
 ## Highlights
 
 - **Sessions that survive restarts.** The transcript, the model and the cost

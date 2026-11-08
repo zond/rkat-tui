@@ -6,6 +6,21 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Added
 
+- `rkat-tui-mob` (experimental): a second binary, the workspace's mob
+  daemon. It bootstraps the workspace realm exactly as `rkat-tui` does
+  (config layers, endpoints, confinement, project trust, instructions, MCP)
+  and takes the same engine flags, but hosts the agent as a durable,
+  turn-driven mob member (mob `tui`, member `main`) with the TUI's file,
+  note and shell tools, and serves Meerkat's own JSON-RPC methods
+  (`mob/member_send`, `mob/turn_start`, `mob/stream_open`, `mob/members`,
+  `events/list_since`, …) to any number of clients over loopback TCP
+  (`--listen`, default an ephemeral port on 127.0.0.1). Clients find it, and
+  the token every connection must present first with `rkat/attach`, in
+  `<workspace>/.rkat/tui/mob.endpoint` (mode 0600). Clients may disconnect
+  and reattach while a turn sent with `mob/member_send` runs; a restart
+  restores the member and its session. The member's own calls pass no
+  approval gate yet, and the TUI does not attach to it yet
+  (`docs/mob-split.md`).
 - `/rewind` (aliases `/checkpoint`, `/undo`), and Esc Esc on an empty idle
   input, open a menu of the session's messages (newest first, one numbered
   line each; ↑/↓, Enter, Esc). Choosing one forks the session just before
