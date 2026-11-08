@@ -16,6 +16,7 @@ helpers, rules, endpoints, memory and the keys work. The
 - [Instructions and memory](#instructions-and-memory) ([Context and compaction](#context-and-compaction))
 - [Keys and commands](#keys-and-commands) ([Task checklist](#task-checklist))
 - [Where things live](#where-things-live)
+- [Attach mode (experimental)](#attach-mode-experimental)
 - [Testing](#testing)
 
 ## Overview
@@ -956,6 +957,78 @@ directory and the realm directory are the same or one holds the other,
 naming both, so pass `--config-dir <other dir>` there. The price-list cache lives
 in the user cache directory (`<config-dir>/cache` when `--config-dir` is
 given).
+
+## Attach mode (experimental)
+
+`rkat-tui --attach` runs the same TUI against the workspace's
+`rkat-tui-mob` daemon instead of hosting the agent in this process. The
+agent then lives in the daemon (a durable mob member: mob `tui`, member
+`main`), keeps working when you detach, and any number of TUIs can attach
+to it. The default, `--no-attach`, is the in-process TUI described in the
+rest of this manual.
+
+| Flag | Meaning |
+|---|---|
+| `--attach`, `--attach=auto` | Attach to the workspace's daemon; start it when none answers |
+| `--attach=existing` | Attach only to a running daemon; refuse otherwise |
+| `--no-attach` | Host the agent in this process (the default; overrides `--attach`) |
+
+The value needs `=`: `rkat-tui --attach "fix the test"` attaches and sends
+the prompt.
+
+**Finding the daemon.** The daemon writes `<workspace>/.rkat/tui/mob.endpoint`
+(mode 0600: its loopback address, a per-daemon token and its pid) and removes
+it when it shuts down. The TUI reads it, connects, and presents the token
+with `rkat/attach` before anything else; then it speaks Meerkat's own
+JSON-RPC methods. A file whose address no longer accepts is stale.
+
+**Start on demand.** With `--attach` (auto) and no live endpoint, the TUI
+starts `rkat-tui-mob` (the one next to the `rkat-tui` binary, else from
+`PATH`) with the engine flags of this command line (workspace, model,
+endpoints, `--set`, rules, confinement, trust, realm flags), in its own
+process group, stdin closed, its output appended to
+`<realm>/logs/rkat-tui-mob.stderr.log`. The status bar shows `daemon
+starting` until the endpoint file appears (up to 60 s); a daemon that exits
+first, or never comes up, is reported with the log's path. You can also run
+it yourself: `rkat-tui-mob --foreground -w . --model …`.
+
+**Status bar.** The first segment is the connection: `connecting`,
+`daemon starting`, `attached 127.0.0.1:<port>`, `reconnecting`,
+`detached` or `daemon stopped`.
+
+**Detach and reattach.** `/quit` (and Ctrl-D) detaches: the daemon and a
+running turn go on. When the connection drops (the daemon restarted, say),
+the TUI re-reads the endpoint file and reconnects with backoff; a reconnect
+never starts a daemon. On every attach the TUI replays what it has not shown
+yet from the member's durable events and then follows the live stream; a
+turn that is still running shows as running (Esc interrupts it). What was
+shown is remembered per workspace in `.rkat/tui/attach.cursor`, so a later
+`rkat-tui --attach` shows only what happened since.
+
+**Stopping the daemon.** `/daemon stop` sends SIGTERM to the pid in the
+endpoint file, after checking that the file still names the daemon this TUI
+is attached to. The daemon removes its endpoint file and shuts down; its
+sessions stay in the realm and the next start restores the member.
+
+**What works:** prompts and streaming output, messages typed mid-turn
+(steers), Esc (stops the run; a second Esc a second later force-cancels the
+member), `/model <provider>:<id>` (anthropic, openai, gemini, or a catalogued
+bare id; the switch rides your next message and the session keeps the
+model), the context gauge, token counts, `/status`, `/export`, `/cost`,
+`/copy`, `/context` (the gauge only).
+
+**Limits for now:**
+
+- **No approval gate.** The daemon's agent runs its shell and file tools
+  without review or prompts (its shell stays confined as configured). The
+  TUI says so when it attaches. Approvals over the daemon are the next step.
+- `/new`, `/resume`, `/rewind`, `/compact`, `/remember`, `/memory`, the
+  permission modes and rules, `!` commands, the model picker, helpers' nested
+  view and the `fork` tool answer "not available in attach mode yet".
+- A model switch's turn is tied to the connection that sent it: detaching
+  during that one turn cancels it. Ordinary prompts are not.
+- The in-process TUI and the daemon cannot share one workspace at the same
+  time.
 
 ## Testing
 

@@ -50,8 +50,10 @@ propagates errors with typed enums (`thiserror`) and `?`; a test module
 opens with `#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]`
 when it needs them. The agent's shell is launched only through the engine's
 confinement; the only direct `std::process::Command` launches in library
-code are the user's own editor (`src/ui/editor.rs`) and the user's `!`
-shell (`src/user_shell.rs`), and they stay the only ones.
+code are the user's own editor (`src/ui/editor.rs`), the user's `!`
+shell (`src/user_shell.rs`) and attach mode's start-on-demand of the
+`rkat-tui-mob` daemon (`src/client/launch.rs`, in its own process group,
+output to the realm's log), and they stay the only ones.
 
 ## Layout
 
@@ -67,6 +69,7 @@ shell (`src/user_shell.rs`), and they stay the only ones.
 | `src/mobs/` | Helpers (delegate) as mob members: customizer, follower, registry |
 | `src/daemon/`, `src/bin/rkat-tui-mob.rs` | The `rkat-tui-mob` daemon: engine composition over `bootstrap::assemble` (`engine.rs`), the orchestrator member (`orchestrator.rs`), the TCP serve loop (`serve.rs`), the `rkat/attach` token handshake (`handshake.rs`) and the endpoint file (`endpoint.rs`) |
 | `src/fork/` | The `fork` tool: a child helper started with the parent's rendered conversation |
+| `src/client/` | Attach mode (`--attach`, experimental): the daemon connection (`transport.rs`), start-on-demand (`launch.rs`), the member's methods (`remote.rs`), catch-up and de-duplication (`catchup.rs`), the attach runner (`runner.rs`) |
 | `src/memory/` | Notes at user and workspace scope, memory tools |
 | `src/endpoints.rs`, `src/models.rs`, `src/pricing.rs`, `src/thinking.rs` | LLM endpoints, model listing, price table, the per-model `[thinking]` setting |
 | `tests/` | Integration tests over the internal modules through the `test-support` feature; `tests/common/mod.rs` holds the scripted LLM and the rig |

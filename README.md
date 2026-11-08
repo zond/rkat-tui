@@ -48,8 +48,11 @@ token to `.rkat/tui/mob.endpoint`; every connection must first send
 rkat-tui-mob --foreground -w . --model claude-sonnet-4-6
 ```
 
-The TUI cannot attach to it yet, and the agent's calls in the daemon pass no
-approval gate yet; see [`docs/mob-split.md`](docs/mob-split.md).
+`rkat-tui --attach` runs the TUI against it (starting it when none
+answers); `/quit` detaches and `/daemon stop` shuts it down. The agent's calls
+in the daemon pass no approval gate yet; see
+[Attach mode](docs/manual.md#attach-mode-experimental) and
+[`docs/mob-split.md`](docs/mob-split.md).
 
 ## Highlights
 

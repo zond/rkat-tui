@@ -1695,3 +1695,85 @@ engine's own `MethodRouter` to any number of clients over loopback TCP
   `daemon::handshake`, `daemon::endpoint`, `daemon::tests`,
   `mobs::customizer::tests::the_root_member_is_shaped_as_an_owner`,
   `mobs::registry::tests::a_host_root_member_owns_what_it_spawns`.
+
+## P2: `rkat-tui --attach` (2026-11-08)
+
+The TUI as a client of the `rkat-tui-mob` daemon (`src/client/`,
+`docs/mob-split.md` Status). Engine facts this relied on, probed against the
+P1 daemon with a scripted LLM before the client was written:
+
+- Sequence numbers: a `mob/stream_event` notification has two. Its own
+  `sequence` is a per-stream counter (1, 2, … from `mob/stream_open`); the
+  carried envelope's `seq` is the session's durable sequence, the same
+  number `events/list_since` reports as `cursor.sequence` for the same
+  event, and it keeps counting across a daemon restart (a third turn after a
+  restart: live `seq` 12..17, replay 12..17, stream `sequence` 1..6). The
+  de-duplication rule rests on that: one high-water mark per session
+  (`client::catchup::Mark`), an event is shown only when its envelope `seq`
+  is above it; the live stream is opened before the replay is read, so
+  nothing falls between them, and whichever delivers an event first shows
+  it. The mark is saved in `<workspace>/.rkat/tui/attach.cursor` on every
+  run terminal and on detach.
+- The replay projection lags the live stream: right after `run_completed`
+  arrived live, `events/list_since` returned only up to `text_complete`
+  (4 of 6). A client attaching just after a turn ended can therefore find
+  the tail in neither (published before its stream opened, not yet
+  projected). The runner reads the replay again 500 ms after every attach
+  and, while a turn runs, 500 ms after the last event
+  (`CATCH_UP_EVERY`); the mark drops the overlap. Seen in
+  `a_client_that_left_mid_turn_sees_the_turn_once_on_reattach` before the
+  re-read existed (the reattached client stopped at `text_delta`).
+- A run found in progress (its `run_started` already shown by the client
+  that detached) is recognised by its first run-scoped event
+  (`turn_started`, text, tool execution, `turn_completed`, run terminal)
+  arriving while no turn is active: the UI gets `Msg::RemoteTurn { prompt:
+  None }` and is busy until the run's end. A `run_started` while idle
+  (another client's prompt) gets `RemoteTurn` with the prompt.
+- `/model`: `mob/turn_start` with `model` needs `provider` for a model
+  that is not the session's (`claude-opus-4-6` without one: -32602 "no
+  capability profile is registered for provider 'anthropic' and model …";
+  `claude-opus-4-8` with `provider: "anthropic"` works). The override
+  persists: the next `mob/member_send` turn and a turn after a daemon
+  restart ran on the new model. A prompt-less switch is not needed
+  (`reconfigure_session_llm_identity` is not reachable over RPC for a
+  member session; not probed further). Custom endpoints need an
+  `auth_binding` override and are refused in attach mode for now.
+- `mob/stop_member_run` takes `{mob_id, agent_identity, run_id, reason}`
+  (`MobStopMemberRunParams`, `deny_unknown_fields`); the run id comes from
+  the stream's `run_started` identity. On a scripted LLM call that never
+  returns it ends the run with `run_failed`, which the client reports as
+  interrupted. `mob/force_cancel` takes `{mob_id, agent_identity}`; it is
+  sent on a second Esc after 1 s or when no run was reported yet, and an
+  interrupt the daemon does not confirm within 10 s gives the UI back.
+- `events/snapshot {scope}` gives the session's `model` and `provider` (the
+  status bar and the context window on attach).
+- `mob/member_status` gives `current_session_id`; the client re-reads it on
+  every attach and starts from 0 when the cursor is for another session.
+
+Design: the attach runner serves the UI's `Effect`/`Msg` contract itself
+(`client::runner::AttachRunner`) instead of going under the in-process
+runner through a session trait, because that runner is built on the
+in-process `Runtime` (approval desk, helper host, `fork`, model lists, the
+user shell's confinement plan). Events go to the UI as `Msg::Agent` on the
+integrator channel so the turn messages stay ordered with them. A turn ends
+300 ms after its last run ended with no new run (a steer that missed the
+boundary runs as a follow-up run). Start-on-demand spawns `rkat-tui-mob`
+with the shared engine flags (`client::launch::daemon_argv`, round-trip
+tested through `DaemonCli`) in its own process group (`process_group(0)`;
+`setsid` needs `pre_exec`, which is `unsafe`), and only on the first
+connect; a reconnect waits for a live endpoint with backoff (100 ms to 2 s).
+`/daemon stop` signals the endpoint file's pid only when the file's address
+is the one this client is attached to. `rkat-tui-mob` refuses `--attach`.
+
+Tests: `tests/attach.rs`: `a_prompt_is_answered_and_rendered`,
+`esc_interrupts_a_hanging_turn`, `model_switches_with_the_next_prompt_and_stays`,
+`a_client_that_left_mid_turn_sees_the_turn_once_on_reattach`,
+`the_client_reconnects_to_a_restarted_daemon`,
+`what_the_daemon_cannot_do_yet_says_so`; unit tests in `client::transport`
+(handshake, refusals, pipelining, a call pending when the connection drops,
+timeout, nothing listening), `client::launch` (decision for absent,
+unparseable, live and stale files; the daemon argv round trip; a daemon that
+exits), `client::catchup`, `client::runner` (model references, the stop
+target, a turn's end), `cli::tests::attach_defaults_to_auto_and_no_attach_is_in_process`,
+`ui::tests::a_remote_turn_shows_its_prompt_and_keeps_the_ui_busy_until_it_ends`,
+`ui::render::tests::the_attach_state_leads_the_status_line`.

@@ -6,6 +6,24 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Added
 
+- `rkat-tui --attach` (experimental): the TUI as a client of the
+  workspace's `rkat-tui-mob` daemon. It reads `.rkat/tui/mob.endpoint`,
+  attaches with its token and drives the orchestrator member with Meerkat's
+  own methods: prompts and steers through `mob/member_send`, live output
+  from `mob/stream_open`, Esc through `mob/stop_member_run` (a second Esc
+  `mob/force_cancel`), `/model <provider>:<id>` riding the next prompt's
+  `mob/turn_start`. `--attach` (= `--attach=auto`) starts the daemon in the
+  background when none answers (output in
+  `<realm>/logs/rkat-tui-mob.stderr.log`), `--attach=existing` does not,
+  `--no-attach` (the default) keeps the in-process TUI. `/quit` detaches and
+  leaves the daemon and a running turn going; a dropped connection is
+  re-made with backoff; every attach catches up from the member's durable
+  events (`events/list_since`) and shows each event once (the cursor is kept
+  in `.rkat/tui/attach.cursor`). A status-bar segment shows the connection;
+  `/daemon stop` shuts the daemon down. The daemon's agent runs without the
+  approval gate for now, which the TUI says on attach; `/new`, `/resume`,
+  `/rewind`, `/compact`, approvals, `!`, helpers and `fork` answer "not
+  available in attach mode yet".
 - `rkat-tui-mob` (experimental): a second binary, the workspace's mob
   daemon. It bootstraps the workspace realm exactly as `rkat-tui` does
   (config layers, endpoints, confinement, project trust, instructions, MCP)

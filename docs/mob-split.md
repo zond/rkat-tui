@@ -38,6 +38,36 @@ Known limits of P1:
   the daemon and the in-process TUI on the same workspace at once is not
   supported (they share the realm's mob store).
 
+P2 is in (experimental): `rkat-tui --attach` runs the TUI against the
+daemon (`src/client/`). What works: prompts and streaming (`mob/member_send`
++ `mob/stream_open`), steers, Esc (`mob/stop_member_run` for the run the
+stream reported, `mob/force_cancel` on a second Esc after 1 s or when no run
+was reported), `/model <provider>:<id>` (the next prompt goes through
+`mob/turn_start` with `model`/`provider`; the session keeps the model, also
+across a daemon restart), the context gauge and token counts from
+`turn_completed`, detach (`/quit`), reattach with catch-up, reconnect with
+backoff after the daemon restarts, start-on-demand (`--attach=auto`), a
+status-bar segment and `/daemon stop`. The attach runner serves the UI's
+`Effect`/`Msg` contract itself rather than sitting under the in-process
+runner: that runner is built on the in-process `Runtime` (approval desk,
+helper host, `fork`, model lists, the user shell's confinement plan).
+
+Catch-up rule: the live stream's envelope `seq` and the replay's
+`cursor.sequence` are the same durable per-session sequence (the
+notification's own `sequence` is a per-stream counter and is not used). The
+client opens the live stream, then pages `events/list_since` from its saved
+cursor, and shows an event only when its sequence is above the high-water
+mark, which then moves to it; the mark is saved in
+`<workspace>/.rkat/tui/attach.cursor`. A run found in progress is shown as
+running (`Msg::RemoteTurn`).
+
+Deferred: approvals over the daemon (P3; the orchestrator runs ungated and
+the TUI says so on attach); `/new`, `/resume`, `/rewind`, helpers' follower
+view, `fork` (P4); `/compact`, `/remember`, `/memory`, the permission modes,
+`!` commands and the model picker (each answers "not available in attach
+mode yet"); `/model` on a custom endpoint (needs the auth binding); a
+reconnect never restarts a dead daemon; `attach = true` in `tui.toml` (P4).
+
 Decision (2026-11-08): rkat-tui becomes two binaries. A daemon embeds the
 Meerkat engine, holds the realm, runs one durable mob member as the
 orchestrator and exposes Meerkat's own JSON-RPC methods over loopback TCP
@@ -168,7 +198,7 @@ Each phase keeps the current in-process TUI working and ships with tests.
   (`initialize`, `mob/members`, `mob/turn_start` with a scripted LLM,
   `mob/stream_open`), two connections at once, reconnect after a client
   drops.
-- **P2 client mode.** `rkat-tui --attach` (later the default): a
+- **P2 client mode (done, experimental).** `rkat-tui --attach` (later the default): a
   `session` implementation over the daemon connection (turn, interrupt, events,
   model switch, resume via `mob/lifecycle`), the runner unchanged above
   it; catch-up with `events/list_since`; start-on-demand. Tests: the
