@@ -3740,6 +3740,7 @@ dependencies = [
  "ignore",
  "indexmap",
  "meerkat",
+ "meerkat-contracts",
  "meerkat-core",
  "meerkat-llm-core",
  "meerkat-memory",

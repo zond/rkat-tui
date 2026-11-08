@@ -178,6 +178,26 @@ pub struct Args {
     /// the cached copy and `[pricing]` from tui.toml only.
     #[arg(long)]
     pub no_pricing_fetch: bool,
+
+    /// Experimental: run against the workspace's `rkat-tui-mob` daemon
+    /// instead of hosting the agent in this process. `auto` (the default
+    /// when the flag is given without a value) starts the daemon when none
+    /// answers; `--attach=existing` only attaches to a running one. `/quit` detaches
+    /// and leaves the daemon running; `/daemon stop` shuts it down.
+    #[arg(
+        long,
+        value_enum,
+        value_name = "MODE",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "auto",
+        overrides_with = "no_attach"
+    )]
+    pub attach: Option<AttachMode>,
+
+    /// Host the agent in this process (the default; overrides `--attach`).
+    #[arg(long, overrides_with = "attach")]
+    pub no_attach: bool,
 }
 
 impl Args {
@@ -185,6 +205,13 @@ impl Args {
     #[must_use]
     pub fn mouse_capture(&self) -> bool {
         !self.no_mouse
+    }
+
+    /// The attach mode, `None` in-process (`--no-attach` given last, or
+    /// no `--attach`).
+    #[must_use]
+    pub fn attach_mode(&self) -> Option<AttachMode> {
+        if self.no_attach { None } else { self.attach }
     }
 
     /// The selected process confinement: `--no-confinement` wins over
@@ -197,6 +224,15 @@ impl Args {
             self.confinement
         }
     }
+}
+
+/// `--attach`: whether a missing daemon is started.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum AttachMode {
+    /// Attach to the workspace's daemon, starting it when none answers.
+    Auto,
+    /// Attach only to a daemon that is already running.
+    Existing,
 }
 
 /// `--confinement`: how the session confines the processes it launches.
@@ -340,6 +376,28 @@ mod tests {
             vec![PathBuf::from("/a"), PathBuf::from("/b")]
         );
         assert_eq!(args.confinement_write, vec![PathBuf::from("/c")]);
+    }
+
+    #[test]
+    fn attach_defaults_to_auto_and_no_attach_is_in_process() {
+        let mode = |argv: &[&str]| Args::try_parse_from(argv).unwrap().attach_mode();
+        assert_eq!(mode(&["rkat-tui"]), None);
+        assert_eq!(mode(&["rkat-tui", "--attach"]), Some(AttachMode::Auto));
+        assert_eq!(mode(&["rkat-tui", "--attach=auto"]), Some(AttachMode::Auto));
+        assert_eq!(
+            mode(&["rkat-tui", "--attach=existing"]),
+            Some(AttachMode::Existing)
+        );
+        assert_eq!(mode(&["rkat-tui", "--no-attach"]), None);
+        assert_eq!(mode(&["rkat-tui", "--attach", "--no-attach"]), None);
+        assert_eq!(
+            mode(&["rkat-tui", "--no-attach", "--attach"]),
+            Some(AttachMode::Auto)
+        );
+        // A prompt after a bare --attach is still the prompt.
+        let args = Args::try_parse_from(["rkat-tui", "--attach", "fix it"]).unwrap();
+        assert_eq!(args.prompt.as_deref(), Some("fix it"));
+        assert!(Args::try_parse_from(["rkat-tui", "--attach=bogus"]).is_err());
     }
 
     #[test]

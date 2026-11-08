@@ -169,6 +169,9 @@ pub enum TuiError {
     /// or the command line asks for less than the realm's `[confinement]`.
     #[error("process confinement: {0}")]
     Confinement(#[from] crate::bootstrap::confinement::ConfinementError),
+    /// `--attach` in a build without the `mob` feature.
+    #[error("this rkat-tui was built without attach mode (the `mob` feature)")]
+    AttachUnsupported,
 }
 
 impl TuiError {
@@ -195,6 +198,7 @@ impl TuiError {
             | Self::Approval(_)
             | Self::Confinement(_)
             | Self::ConfigDirCollision { .. }
+            | Self::AttachUnsupported
             | Self::NotATerminal => 2,
             Self::Io { .. }
             | Self::Persistence(_)

@@ -1,0 +1,410 @@
+//! Start-on-demand: find a daemon that answers for the workspace, or start
+//! `rkat-tui-mob` in the background and wait for its endpoint file.
+//!
+//! This is the one place the TUI launches a process besides the user's
+//! editor and the user's `!` shell. The daemon is started in its own
+//! process group (so the terminal's Ctrl+C and job control never reach
+//! it), with stdin closed and stdout and stderr appended to
+//! `<realm>/logs/rkat-tui-mob.stderr.log`; it keeps running when the TUI
+//! exits.
+
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use super::ClientError;
+use crate::cli::{Args, AttachMode, ConfinementArg, RealmBackendArg};
+use crate::daemon::endpoint::Endpoint;
+
+/// The daemon's binary name.
+pub const DAEMON_BINARY: &str = "rkat-tui-mob";
+
+/// How long a started daemon may take to write its endpoint file.
+pub const START_TIMEOUT: Duration = Duration::from_mins(1);
+
+/// How long the liveness probe waits for the address to accept.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// How often the endpoint file is polled while the daemon starts.
+const POLL: Duration = Duration::from_millis(100);
+
+/// What the endpoint file says about a daemon.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Liveness {
+    /// No endpoint file (or one that cannot be read or parsed).
+    Absent,
+    /// A file whose address does not accept: the daemon died.
+    Stale(Endpoint),
+    /// A file whose address accepts.
+    Live(Endpoint),
+}
+
+/// Read the endpoint file at `file` and probe its address.
+pub async fn probe(file: &Path) -> Liveness {
+    let Ok(endpoint) = Endpoint::read(file) else {
+        return Liveness::Absent;
+    };
+    let accepted = tokio::time::timeout(
+        PROBE_TIMEOUT,
+        tokio::net::TcpStream::connect(endpoint.address),
+    )
+    .await;
+    if matches!(accepted, Ok(Ok(_))) {
+        Liveness::Live(endpoint)
+    } else {
+        Liveness::Stale(endpoint)
+    }
+}
+
+/// What to do about the endpoint file's state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Decision {
+    /// Attach to this endpoint.
+    Attach(Endpoint),
+    /// Start the daemon and wait for its endpoint.
+    Start,
+    /// No daemon answers and none may be started.
+    Refuse,
+}
+
+/// The start-on-demand decision.
+#[must_use]
+pub fn decide(liveness: Liveness, mode: AttachMode) -> Decision {
+    match (liveness, mode) {
+        (Liveness::Live(endpoint), _) => Decision::Attach(endpoint),
+        (Liveness::Absent | Liveness::Stale(_), AttachMode::Auto) => Decision::Start,
+        (Liveness::Absent | Liveness::Stale(_), AttachMode::Existing) => Decision::Refuse,
+    }
+}
+
+/// The daemon binary: next to the running `rkat-tui` when it is there,
+/// else `rkat-tui-mob` from `PATH`.
+#[must_use]
+pub fn daemon_program() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join(DAEMON_BINARY)))
+        .filter(|candidate| candidate.is_file())
+        .unwrap_or_else(|| PathBuf::from(DAEMON_BINARY))
+}
+
+/// The daemon's arguments for the TUI's `args`: every engine flag the two
+/// binaries share (realm, model, endpoints, confinement, trust, `--set`),
+/// with the workspace made explicit; the UI-only ones (prompt, resume,
+/// mouse, attach) are left out.
+#[must_use]
+pub fn daemon_argv(args: &Args, workspace: &Path) -> Vec<OsString> {
+    let mut argv: Vec<OsString> = vec!["--foreground".into(), "-w".into(), workspace.into()];
+    let mut value = |flag: &str, v: Option<&OsString>| {
+        if let Some(v) = v {
+            argv.push(flag.into());
+            argv.push(v.clone());
+        }
+    };
+    let os = |s: &String| OsString::from(s);
+    value("--model", args.model.as_ref().map(os).as_ref());
+    value("--endpoint", args.endpoint.as_ref().map(os).as_ref());
+    value("--provider", args.provider.as_ref().map(os).as_ref());
+    value(
+        "--user-config-root",
+        args.user_config_root.as_ref().map(OsString::from).as_ref(),
+    );
+    value(
+        "--config-dir",
+        args.config_dir.as_ref().map(OsString::from).as_ref(),
+    );
+    value("--realm", args.realm.as_ref().map(os).as_ref());
+    value(
+        "--state-root",
+        args.state_root.as_ref().map(OsString::from).as_ref(),
+    );
+    value(
+        "--realm-backend",
+        args.realm_backend
+            .map(|backend| {
+                OsString::from(match backend {
+                    RealmBackendArg::Jsonl => "jsonl",
+                    RealmBackendArg::Sqlite => "sqlite",
+                    RealmBackendArg::Memory => "memory",
+                })
+            })
+            .as_ref(),
+    );
+    value(
+        "--classifier-model",
+        args.classifier_model.as_ref().map(os).as_ref(),
+    );
+    value(
+        "--confinement",
+        Some(&OsString::from(match args.confinement {
+            ConfinementArg::Workspace => "workspace",
+            ConfinementArg::Strict => "strict",
+            ConfinementArg::Off => "off",
+        })),
+    );
+    let repeated: [(&str, Vec<OsString>); 6] = [
+        ("--set", args.set.iter().map(OsString::from).collect()),
+        ("--allow", args.allow.iter().map(OsString::from).collect()),
+        ("--deny", args.deny.iter().map(OsString::from).collect()),
+        (
+            "--endpoint-def",
+            args.endpoint_def.iter().map(OsString::from).collect(),
+        ),
+        (
+            "--confinement-read",
+            args.confinement_read.iter().map(OsString::from).collect(),
+        ),
+        (
+            "--confinement-write",
+            args.confinement_write.iter().map(OsString::from).collect(),
+        ),
+    ];
+    for (flag, values) in repeated {
+        for v in values {
+            argv.push(flag.into());
+            argv.push(v);
+        }
+    }
+    let switches = [
+        (args.trust_project_builds, "--trust-project-builds"),
+        (args.no_trust_project_builds, "--no-trust-project-builds"),
+        (args.isolated, "--isolated"),
+        (args.no_confinement, "--no-confinement"),
+        (args.no_auto, "--no-auto"),
+        (args.trust_project, "--trust-project"),
+        (args.wait_for_mcp, "--wait-for-mcp"),
+        (args.auto_compact, "--auto-compact"),
+        (args.no_auto_compact, "--no-auto-compact"),
+        (args.no_pricing_fetch, "--no-pricing-fetch"),
+    ];
+    argv.extend(
+        switches
+            .into_iter()
+            .filter(|(given, _)| *given)
+            .map(|(_, flag)| OsString::from(flag)),
+    );
+    argv
+}
+
+/// Where a started daemon's stdout and stderr go.
+#[must_use]
+pub fn daemon_log(realm_root: &Path) -> PathBuf {
+    realm_root.join("logs").join("rkat-tui-mob.stderr.log")
+}
+
+/// Start `program` with `argv` in the background (its own process group,
+/// stdin closed, stdout and stderr appended to `log`) and reap it on a
+/// thread when it exits. Returns its pid and a receiver that yields its
+/// exit status if it exits.
+///
+/// # Errors
+///
+/// [`ClientError::Spawn`] when the log cannot be opened or the program
+/// cannot be started.
+pub fn spawn_daemon(
+    program: &Path,
+    argv: &[OsString],
+    log: &Path,
+) -> Result<(u32, tokio::sync::oneshot::Receiver<String>), ClientError> {
+    let spawn_error = |source| ClientError::Spawn {
+        program: program.to_path_buf(),
+        source,
+    };
+    if let Some(dir) = log.parent() {
+        std::fs::create_dir_all(dir).map_err(spawn_error)?;
+    }
+    let out = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log)
+        .map_err(spawn_error)?;
+    let err = out.try_clone().map_err(spawn_error)?;
+    let mut command = std::process::Command::new(program);
+    command
+        .args(argv)
+        .stdin(std::process::Stdio::null())
+        .stdout(out)
+        .stderr(err);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        command.process_group(0);
+    }
+    let mut child = command.spawn().map_err(spawn_error)?;
+    let pid = child.id();
+    let (exited_tx, exited_rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let status = child
+            .wait()
+            .map_or_else(|err| err.to_string(), |status| status.to_string());
+        let _ = exited_tx.send(status);
+    });
+    Ok((pid, exited_rx))
+}
+
+/// Wait (up to `timeout`) for a live endpoint at `file`; fail early when
+/// the started daemon exits (`exited`).
+///
+/// # Errors
+///
+/// [`ClientError::DaemonExited`] or [`ClientError::NeverCameUp`].
+pub async fn wait_for_endpoint(
+    file: &Path,
+    timeout: Duration,
+    exited: &mut tokio::sync::oneshot::Receiver<String>,
+    log: &Path,
+) -> Result<Endpoint, ClientError> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if let Liveness::Live(endpoint) = probe(file).await {
+            return Ok(endpoint);
+        }
+        if let Ok(status) = exited.try_recv() {
+            return Err(ClientError::DaemonExited {
+                status,
+                log: log.to_path_buf(),
+            });
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(ClientError::NeverCameUp {
+                waited: timeout,
+                log: log.to_path_buf(),
+            });
+        }
+        tokio::time::sleep(POLL).await;
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use clap::Parser as _;
+
+    fn endpoint(address: std::net::SocketAddr) -> Endpoint {
+        Endpoint {
+            address,
+            token: "t".into(),
+            pid: 1,
+        }
+    }
+
+    #[tokio::test]
+    async fn the_decision_follows_the_endpoint_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("mob.endpoint");
+        // Absent.
+        assert_eq!(probe(&file).await, Liveness::Absent);
+        assert_eq!(decide(Liveness::Absent, AttachMode::Auto), Decision::Start);
+        assert_eq!(
+            decide(Liveness::Absent, AttachMode::Existing),
+            Decision::Refuse
+        );
+        // Unparseable: as absent (the daemon replaces it).
+        std::fs::write(&file, "garbage").unwrap();
+        assert_eq!(probe(&file).await, Liveness::Absent);
+        // Live.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let live = endpoint(listener.local_addr().unwrap());
+        live.write(&file).unwrap();
+        assert_eq!(probe(&file).await, Liveness::Live(live.clone()));
+        assert_eq!(
+            decide(Liveness::Live(live.clone()), AttachMode::Existing),
+            Decision::Attach(live.clone())
+        );
+        // Stale: nothing accepts there any more.
+        drop(listener);
+        assert_eq!(probe(&file).await, Liveness::Stale(live.clone()));
+        assert_eq!(
+            decide(Liveness::Stale(live.clone()), AttachMode::Auto),
+            Decision::Start
+        );
+        assert_eq!(
+            decide(Liveness::Stale(live), AttachMode::Existing),
+            Decision::Refuse
+        );
+    }
+
+    #[test]
+    fn the_daemon_gets_every_shared_engine_flag_and_no_ui_flag() {
+        let tui = Args::try_parse_from([
+            "rkat-tui",
+            "--model",
+            "anthropic:claude-sonnet-4-6",
+            "--set",
+            "auto.compact=auto",
+            "--set",
+            "a=1",
+            "--allow",
+            "shell=ls*",
+            "--deny",
+            "write_file",
+            "--endpoint-def",
+            "x=openai=http://h",
+            "--confinement",
+            "strict",
+            "--confinement-read",
+            "/r",
+            "--realm-backend",
+            "jsonl",
+            "--config-dir",
+            "/cfg",
+            "--user-config-root",
+            "/u",
+            "--trust-project",
+            "--no-pricing-fetch",
+            "--no-auto",
+            "--classifier-model",
+            "claude-haiku-4-5",
+            "--no-mouse",
+            "-c",
+            "a prompt",
+        ])
+        .unwrap();
+        let mut argv = vec![OsString::from("rkat-tui-mob")];
+        argv.extend(daemon_argv(&tui, Path::new("/ws")));
+        let daemon = crate::daemon::DaemonCli::try_parse_from(argv).unwrap();
+        daemon.check().unwrap();
+        assert!(daemon.foreground);
+        let shared = daemon.tui;
+        assert_eq!(shared.context_root.as_deref(), Some(Path::new("/ws")));
+        // Every engine flag survives the round trip; the UI ones do not.
+        let mut expected = tui;
+        expected.context_root = Some(PathBuf::from("/ws"));
+        expected.prompt = None;
+        expected.continue_last = false;
+        expected.resume = None;
+        expected.no_mouse = false;
+        expected.attach = None;
+        assert_eq!(format!("{shared:?}"), format!("{expected:?}"));
+    }
+
+    #[test]
+    fn the_daemon_binary_is_found_next_to_the_tui_or_on_the_path() {
+        let program = daemon_program();
+        assert!(program.ends_with(DAEMON_BINARY), "{}", program.display());
+    }
+
+    #[tokio::test]
+    async fn a_daemon_that_exits_is_reported_with_its_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = daemon_log(dir.path());
+        let (_, mut exited) = spawn_daemon(Path::new("/bin/false"), &[], &log).unwrap();
+        let waited = wait_for_endpoint(
+            &dir.path().join("mob.endpoint"),
+            Duration::from_secs(10),
+            &mut exited,
+            &log,
+        )
+        .await;
+        assert!(
+            matches!(&waited, Err(ClientError::DaemonExited { log: at, .. }) if at == &log),
+            "{waited:?}"
+        );
+        assert!(log.exists());
+        assert!(matches!(
+            spawn_daemon(Path::new("/nonexistent/rkat-tui-mob"), &[], &log),
+            Err(ClientError::Spawn { .. })
+        ));
+    }
+}

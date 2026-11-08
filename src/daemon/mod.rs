@@ -94,6 +94,7 @@ impl DaemonCli {
             (tui.prompt.is_some(), "a prompt argument"),
             (tui.resume.is_some(), "--resume"),
             (tui.continue_last, "--continue"),
+            (tui.attach_mode().is_some(), "--attach"),
         ];
         match refused.into_iter().find(|(given, _)| *given) {
             Some((_, flag)) => Err(DaemonError::Unsupported(flag)),
