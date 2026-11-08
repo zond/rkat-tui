@@ -415,6 +415,16 @@ changes here:
   clients authorized for that decision, which for one principal is every
   attached client, and for a future multi-person daemon means one
   authenticated principal per connection and per-decision filtering.
+  Planned subscription API (maintainer candidate, not merged):
+  `SessionRuntime::decision_service()` /
+  `PersistenceBundle::decision_owner()`, then
+  `DurableDecisionService::subscribe_openings() -> DecisionOpenings`, whose
+  `next().await` yields `Opened(Arc<StoredDecision>)` or `Missed { missed }`
+  (non-exhaustive), `None` when the owner is gone. In-process only, from
+  the moment of subscribing: subscribe first, then list open decisions,
+  deduplicate by decision id, list again after `Missed`. An opening is not
+  presentation or approval; the daemon presents and submits the answer
+  through `dispatch_with_decision_event`.
 - **Forks and rewind (#2117).** `mob/fork_member` becomes an operator method
   that gives the child a new identity, after the admission fix of #2112.
   Same-identity rewind is deferred to a design note. Resuming onto another
