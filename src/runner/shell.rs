@@ -66,7 +66,7 @@ impl Runner {
 
 /// An idempotency key no other run shares, in this process or another
 /// (a resumed session keeps the keys of earlier processes' runs).
-fn run_key() -> String {
+pub(crate) fn run_key() -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());

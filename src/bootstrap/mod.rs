@@ -324,6 +324,37 @@ fn extra_grants(args: &Args, layered: &crate::approval::rules::Layered) -> confi
     extra
 }
 
+/// The user's `!` shell of `scope` as the in-process TUI builds it (the
+/// agent shell's confinement plan, curated environment and the `[shell]`
+/// timeout), for a host that runs no engine of its own (attach mode).
+///
+/// # Errors
+///
+/// [`TuiError`] when the layered `tui.toml` cannot be read or the
+/// confinement cannot be planned.
+pub fn user_shell(
+    scope: &RuntimeScope,
+    config: &Config,
+    args: &Args,
+    host_paths: &HostPaths,
+) -> Result<crate::user_shell::UserShell, TuiError> {
+    let (layered, _) = approval::load_layers(scope, args)?;
+    let plan = confinement::plan(
+        args.effective_confinement(),
+        scope.project_root.as_path(),
+        config,
+        host_paths,
+        &extra_grants(args, &layered),
+    )?;
+    Ok(crate::user_shell::UserShell::new(
+        approval::resolved_shell_program(),
+        scope.project_root.as_path(),
+        &plan.shell,
+        plan.shell_env.as_ref(),
+        std::time::Duration::from_secs(layered.shell.user_timeout_secs),
+    ))
+}
+
 /// Resolve the runtime scope and load the realm config.
 ///
 /// # Errors

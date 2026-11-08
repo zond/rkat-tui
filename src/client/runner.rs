@@ -27,19 +27,22 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use super::ClientError;
+use super::approvals::{Approvals, decide_params};
 use super::catchup::{Cursor, CursorFile, Mark};
 use super::launch::{self, Decision};
 use super::remote;
 use super::transport::{ATTACH_TIMEOUT, Connection, Notification};
+use crate::approval::remote::{ModeStatus, RuleCommand, RuleOutcome};
 use crate::bootstrap::RuntimeScope;
 use crate::cli::AttachMode;
 use crate::daemon::endpoint::Endpoint;
 use crate::delivery::{PendingId, SteerFailure};
 use crate::endpoints::WireDialect;
 use crate::ui::{
-    CompactFailure, Effect, Msg, NoticeLevel, ShellOutcome, StatusUpdate, TurnFailure, TurnOutcome,
-    TurnSummary,
+    CompactFailure, Effect, EscalationAnswer, EscalationId, Msg, NoticeLevel, RuleEffect,
+    ShellOutcome, ShellRunId, StatusUpdate, TurnFailure, TurnOutcome, TurnSummary,
 };
+use crate::user_shell::UserShell;
 
 /// The status-bar segment while the first connection is made.
 pub const CONNECTING: &str = "connecting";
@@ -52,7 +55,11 @@ pub const RECONNECTING: &str = "reconnecting";
 pub const NOT_AVAILABLE: &str = "not available in attach mode yet";
 
 /// The notice shown on every attach.
-pub const EXPERIMENTAL_NOTICE: &str = "attach mode is experimental: the agent runs in this workspace's rkat-tui-mob daemon, and its own shell and file tools run WITHOUT the approval gate for now (no review, no prompts). /quit detaches and leaves the daemon running; /daemon stop shuts it down.";
+pub const EXPERIMENTAL_NOTICE: &str = "attach mode is experimental: the agent runs in this workspace's rkat-tui-mob daemon, behind the same approval gate (its approval requests show here, and in every other attached client; the first answer counts). /quit detaches and leaves the daemon running; /daemon stop shuts it down.";
+
+/// How often the pending approvals are listed while a turn runs or a
+/// dialog is open (the engine has no push notification for them yet).
+pub const APPROVAL_POLL: Duration = Duration::from_millis(250);
 
 /// How long a turn whose runs all ended waits for a follow-up run.
 pub const RUN_GRACE: Duration = Duration::from_millis(300);
@@ -104,6 +111,9 @@ pub struct AttachConfig {
     pub config: Option<meerkat_core::Config>,
     /// How to start a missing daemon (`None`: `--attach=existing`).
     pub spawn: Option<SpawnPlan>,
+    /// The user's `!` shell (this process's own, as in-process), or why
+    /// there is none.
+    pub user_shell: Result<Arc<UserShell>, String>,
 }
 
 impl AttachConfig {
@@ -144,6 +154,14 @@ enum Report {
     Interrupt(String),
     /// A catch-up read (on the session it was read for).
     Replayed(SessionId, Vec<EventEnvelope<AgentEvent>>),
+    /// The pending approval records, and those shown before that ended.
+    Approvals {
+        session: SessionId,
+        pending: Vec<meerkat_core::ApprovalRecord>,
+        ended: Vec<meerkat_core::ApprovalRecord>,
+    },
+    /// The daemon's permission mode.
+    Mode(ModeStatus),
 }
 
 /// The UI's current turn.
@@ -212,6 +230,14 @@ pub struct AttachRunner {
     catch_up_at: Option<Instant>,
     /// A catch-up read is running.
     catching_up: bool,
+    /// The approval dialogs shown.
+    approvals: Approvals,
+    /// When the pending approvals are listed next.
+    approvals_at: Option<Instant>,
+    /// A listing is running.
+    listing_approvals: bool,
+    /// The running `!` command.
+    shell_task: Option<(ShellRunId, JoinHandle<()>)>,
 }
 
 impl AttachRunner {
@@ -239,6 +265,10 @@ impl AttachRunner {
             stopping: false,
             catch_up_at: None,
             catching_up: false,
+            approvals: Approvals::default(),
+            approvals_at: None,
+            listing_approvals: false,
+            shell_task: None,
         }
     }
 
@@ -264,9 +294,13 @@ impl AttachRunner {
                 Some(report) = self.reports_rx.recv() => self.on_report(report),
                 () = sleep_until(self.turn.deadline()) => self.on_deadline(),
                 () = sleep_until(self.catch_up_at) => self.catch_up(),
+                () = sleep_until(self.approvals_at) => self.list_approvals(),
             }
         }
         self.save_cursor();
+        if let Some((_, task)) = self.shell_task.take() {
+            task.abort();
+        }
         if let Some(task) = self.connecting.take() {
             task.abort();
         }
@@ -376,6 +410,84 @@ impl AttachRunner {
             self.on_event(envelope);
         }
         self.catch_up_at = Some(Instant::now() + CATCH_UP_EVERY);
+        self.approvals_at = Some(Instant::now());
+        self.refresh_mode();
+    }
+
+    /// List the pending approvals in the background (see [`APPROVAL_POLL`]).
+    fn list_approvals(&mut self) {
+        self.approvals_at = None;
+        let Some(link) = &self.link else {
+            return;
+        };
+        if self.listing_approvals {
+            return;
+        }
+        self.listing_approvals = true;
+        let connection = Arc::clone(&link.connection);
+        let session = link.session.clone();
+        let shown = self.approvals.shown();
+        let reports = self.reports_tx.clone();
+        tokio::spawn(async move {
+            let listed = tokio::time::timeout(CALL_TIMEOUT, async {
+                let pending = remote::pending_approvals(&connection).await?;
+                let mut ended = Vec::new();
+                for id in shown {
+                    if !pending.iter().any(|record| record.approval_id == id)
+                        && let Ok(record) = remote::approval(&connection, &id).await
+                    {
+                        ended.push(record);
+                    }
+                }
+                Ok::<_, ClientError>((pending, ended))
+            })
+            .await;
+            let (pending, ended) = match listed {
+                Ok(Ok(listed)) => listed,
+                Ok(Err(err)) => {
+                    tracing::debug!(error = %err, "cannot list the pending approvals");
+                    (Vec::new(), Vec::new())
+                }
+                Err(_) => (Vec::new(), Vec::new()),
+            };
+            let _ = reports.send(Report::Approvals {
+                session,
+                pending,
+                ended,
+            });
+        });
+    }
+
+    /// Read the daemon's permission mode into the status bar.
+    fn refresh_mode(&self) {
+        let Some(connection) = self.connection() else {
+            return;
+        };
+        let reports = self.reports_tx.clone();
+        tokio::spawn(async move {
+            let read = tokio::time::timeout(
+                CALL_TIMEOUT,
+                remote::local(
+                    &connection,
+                    crate::daemon::local::GET_MODE,
+                    serde_json::json!({}),
+                ),
+            )
+            .await;
+            if let Ok(Ok(value)) = read
+                && let Ok(status) = serde_json::from_value::<ModeStatus>(value)
+            {
+                let _ = reports.send(Report::Mode(status));
+            }
+        });
+    }
+
+    fn push_mode(&self, status: ModeStatus) {
+        self.send(Msg::Status(StatusUpdate::Mode {
+            mode: status.mode,
+            paused: status.paused,
+            denials: status.denials,
+        }));
     }
 
     /// Read the durable events after the mark again (see
@@ -412,6 +524,10 @@ impl AttachRunner {
     fn lost(&mut self) {
         self.link = None;
         self.save_cursor();
+        // What is still pending shows again after the reattach.
+        for id in self.approvals.clear() {
+            self.send(Msg::EscalationResolved(id));
+        }
         if self.stopping {
             self.send(Msg::Status(StatusUpdate::Attach(Some(
                 "daemon stopped".into(),
@@ -505,6 +621,10 @@ impl AttachRunner {
                     self.turn.current_run = Some(run.clone());
                 }
             }
+            AgentEvent::ToolCallRequested { .. } => {
+                // The gate may raise an approval for it.
+                self.approvals_at = Some(Instant::now());
+            }
             AgentEvent::BoundaryAppendApplied { .. } => {
                 if let Some(id) = self.turn.steers.pop_front() {
                     self.send(Msg::SteerDelivered(id));
@@ -585,6 +705,8 @@ impl AttachRunner {
             turn.result.unwrap_or_else(|| Ok(TurnSummary::default())),
         )));
         self.save_cursor();
+        // The denial counters may have moved.
+        self.refresh_mode();
     }
 
     fn on_report(&mut self, report: Report) {
@@ -617,6 +739,28 @@ impl AttachRunner {
                     self.catch_up_at = Some(Instant::now() + CATCH_UP_EVERY);
                 }
             }
+            Report::Approvals {
+                session,
+                pending,
+                ended,
+            } => {
+                self.listing_approvals = false;
+                let Some(link) = &self.link else {
+                    return;
+                };
+                if link.session != session {
+                    return;
+                }
+                for change in self.approvals.update(&session, &pending, &ended) {
+                    for msg in change.messages() {
+                        self.send(msg);
+                    }
+                }
+                if (self.turn.active || !self.approvals.is_empty()) && self.approvals_at.is_none() {
+                    self.approvals_at = Some(Instant::now() + APPROVAL_POLL);
+                }
+            }
+            Report::Mode(status) => self.push_mode(status),
         }
     }
 
@@ -633,10 +777,8 @@ impl AttachRunner {
                 recalled: Vec::new(),
                 errors: vec![format!("taking back a sent message is {NOT_AVAILABLE}")],
             }),
-            Effect::RunShell { id, .. } => self.send(Msg::ShellFinished {
-                id,
-                outcome: ShellOutcome::Failed(format!("! commands are {NOT_AVAILABLE}")),
-            }),
+            Effect::RunShell { id, command } => self.run_shell(id, command),
+            Effect::CancelShell => self.cancel_shell(),
             Effect::SetModel(reference) => self.set_model(&reference),
             Effect::CompactNow => self.send(Msg::CompactRebuilt(Err(CompactFailure::Rebuild(
                 NOT_AVAILABLE.to_string(),
@@ -657,20 +799,30 @@ impl AttachRunner {
             ),
             Effect::Remember(_) => self.unavailable("/remember"),
             Effect::OpenMemory(_) | Effect::MemoryEdited { .. } => self.unavailable("/memory"),
-            Effect::RespondEscalation(..)
-            | Effect::AddRule { .. }
-            | Effect::RemoveRule(_)
-            | Effect::ListRules
-            | Effect::TrustRealmRules
-            | Effect::TrustProject
-            | Effect::SetMode(_)
-            | Effect::ResumeAutoMode => self.notice(
-                NoticeLevel::Warn,
-                format!("approvals are {NOT_AVAILABLE}: the daemon's orchestrator runs without the approval gate for now"),
-            ),
+            Effect::RespondEscalation(id, answer) => self.respond_escalation(id, &answer),
+            Effect::SetMode(mode) => self.set_mode(mode.name()).await,
+            Effect::ResumeAutoMode => {
+                self.set_mode(crate::approval::mode::PermissionMode::Auto.name())
+                    .await;
+            }
+            Effect::AddRule {
+                effect,
+                tool,
+                pattern,
+            } => {
+                self.rule_command(&RuleCommand::Add {
+                    deny: effect == RuleEffect::Deny,
+                    tool,
+                    pattern,
+                })
+                .await;
+            }
+            Effect::RemoveRule(n) => self.rule_command(&RuleCommand::Remove { n }).await,
+            Effect::ListRules => self.rule_command(&RuleCommand::List).await,
+            Effect::TrustRealmRules => self.unavailable("/rules trust"),
+            Effect::TrustProject => self.unavailable("/trust"),
             Effect::Quit
             | Effect::SaveUnsent(_)
-            | Effect::CancelShell
             | Effect::SetChecklistView(_)
             | Effect::CostSnapshot(_)
             | Effect::Redraw
@@ -681,6 +833,172 @@ impl AttachRunner {
 
     fn unavailable(&self, what: &str) {
         self.notice(NoticeLevel::Warn, format!("{what} is {NOT_AVAILABLE}"));
+    }
+
+    /// The UI answered an approval dialog: decide its record. A record
+    /// another client (or the timeout) settled first refuses the decision,
+    /// which is then dropped; "deny and stop" also interrupts the turn.
+    fn respond_escalation(&mut self, id: EscalationId, answer: &EscalationAnswer) {
+        let Some(record) = self.approvals.answer(id) else {
+            return;
+        };
+        self.send(Msg::EscalationResolved(id));
+        let Some(connection) = self.connection() else {
+            self.notice(
+                NoticeLevel::Warn,
+                "not attached: the answer was not sent (the request is still pending in the daemon)",
+            );
+            return;
+        };
+        let params = decide_params(&record, answer);
+        let ui_tx = self.ui_tx.clone();
+        tokio::spawn(async move {
+            match tokio::time::timeout(CALL_TIMEOUT, remote::decide(&connection, params)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(ClientError::Rpc { message, .. })) => {
+                    // Decided elsewhere first, or expired: a no-op.
+                    tracing::debug!(%message, "approval already settled");
+                    let _ = ui_tx.send(Msg::Notice {
+                        level: NoticeLevel::Info,
+                        text: "that approval request was already settled; your answer was not used"
+                            .to_string(),
+                    });
+                }
+                Ok(Err(err)) => {
+                    let _ = ui_tx.send(Msg::Notice {
+                        level: NoticeLevel::Warn,
+                        text: format!("the answer was not sent: {err}"),
+                    });
+                }
+                Err(_) => {
+                    let _ = ui_tx.send(Msg::Notice {
+                        level: NoticeLevel::Warn,
+                        text: "the daemon did not take the answer in time".to_string(),
+                    });
+                }
+            }
+        });
+        if matches!(answer, EscalationAnswer::Stop) {
+            self.interrupt();
+        }
+    }
+
+    /// Shift+Tab, `/mode`, `/auto resume`: switch the daemon's mode.
+    async fn set_mode(&mut self, mode: &str) {
+        let Some(connection) = self.connection() else {
+            self.notice(NoticeLevel::Warn, "not attached: the mode was not changed");
+            return;
+        };
+        let answer = tokio::time::timeout(
+            CALL_TIMEOUT,
+            remote::local(
+                &connection,
+                crate::daemon::local::SET_MODE,
+                serde_json::json!({"mode": mode}),
+            ),
+        )
+        .await;
+        match answer {
+            Ok(Ok(value)) => {
+                if let Some(status) = value
+                    .get("status")
+                    .cloned()
+                    .and_then(|status| serde_json::from_value::<ModeStatus>(status).ok())
+                {
+                    self.push_mode(status);
+                }
+                if let Some(warning) = value.get("warning").and_then(serde_json::Value::as_str) {
+                    self.notice(NoticeLevel::Warn, warning);
+                }
+                if let Some(notice) = value.get("notice").and_then(serde_json::Value::as_str) {
+                    self.notice(NoticeLevel::Info, notice);
+                }
+            }
+            Ok(Err(err)) => self.notice(NoticeLevel::Error, format!("mode not changed: {err}")),
+            Err(_) => self.notice(NoticeLevel::Error, "the daemon did not answer in time"),
+        }
+    }
+
+    /// `/rules …` on the daemon's engine.
+    async fn rule_command(&self, command: &RuleCommand) {
+        let Some(connection) = self.connection() else {
+            self.notice(NoticeLevel::Warn, "not attached: /rules needs the daemon");
+            return;
+        };
+        let params = serde_json::to_value(command).unwrap_or_default();
+        let answer = tokio::time::timeout(
+            CALL_TIMEOUT,
+            remote::local(&connection, crate::daemon::local::RULES, params),
+        )
+        .await;
+        match answer {
+            Ok(Ok(value)) => match serde_json::from_value::<RuleOutcome>(value) {
+                Ok(outcome) => {
+                    let level = if outcome.ok {
+                        NoticeLevel::Info
+                    } else {
+                        NoticeLevel::Error
+                    };
+                    self.notice(level, outcome.text);
+                }
+                Err(err) => self.notice(NoticeLevel::Error, format!("/rules: {err}")),
+            },
+            Ok(Err(err)) => self.notice(NoticeLevel::Error, format!("/rules failed: {err}")),
+            Err(_) => self.notice(NoticeLevel::Error, "the daemon did not answer in time"),
+        }
+    }
+
+    /// `!command`: the user's own shell, in this process (as in-process);
+    /// its output goes to the orchestrator's context.
+    fn run_shell(&mut self, id: ShellRunId, command: String) {
+        self.cancel_shell();
+        let shell = match &self.config.user_shell {
+            Ok(shell) => Arc::clone(shell),
+            Err(why) => {
+                self.send(Msg::ShellFinished {
+                    id,
+                    outcome: ShellOutcome::Failed(why.clone()),
+                });
+                return;
+            }
+        };
+        let connection = self.connection();
+        let ui_tx = self.ui_tx.clone();
+        let task = tokio::spawn(async move {
+            let outcome = match shell.run(&command).await {
+                Ok(run) => {
+                    let text = crate::user_shell::context_text(&command, &run);
+                    let context = match connection {
+                        Some(connection) => remote::append_system_context(
+                            &connection,
+                            &text,
+                            &crate::runner::shell::run_key(),
+                        )
+                        .await
+                        .map_err(|err| err.to_string()),
+                        None => Err("not attached to the daemon".to_string()),
+                    };
+                    ShellOutcome::Ran { run, context }
+                }
+                Err(reason) => ShellOutcome::Failed(reason),
+            };
+            let _ = ui_tx.send(Msg::ShellFinished { id, outcome });
+        });
+        self.shell_task = Some((id, task));
+    }
+
+    fn cancel_shell(&mut self) {
+        let Some((id, task)) = self.shell_task.take() else {
+            return;
+        };
+        if task.is_finished() {
+            return;
+        }
+        task.abort();
+        self.send(Msg::ShellFinished {
+            id,
+            outcome: ShellOutcome::Cancelled,
+        });
     }
 
     async fn start_turn(&mut self, text: &str) {
@@ -855,7 +1173,10 @@ impl AttachRunner {
             "endpoint file: {}",
             self.config.endpoint_file.display()
         ));
-        lines.push("approval gate: none on the orchestrator yet".to_string());
+        lines.push(
+            "approval gate: in the daemon (requests show here; /rules and Shift+Tab act on the daemon)"
+                .to_string(),
+        );
         self.notice(NoticeLevel::Info, lines.join("\n"));
     }
 

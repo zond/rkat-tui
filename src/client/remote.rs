@@ -222,3 +222,80 @@ pub async fn force_cancel(connection: &Connection) -> Result<(), ClientError> {
         .await
         .map(drop)
 }
+
+/// The approval store's pending records (every requester and owner; the
+/// caller filters).
+///
+/// # Errors
+///
+/// The call's error, or [`ClientError::Decode`].
+pub async fn pending_approvals(
+    connection: &Connection,
+) -> Result<Vec<meerkat_core::ApprovalRecord>, ClientError> {
+    let listed: meerkat_contracts::ApprovalListResult = decode(
+        "approval/list",
+        connection
+            .call("approval/list", json!({"filter": {"status": "pending"}}))
+            .await?,
+    )?;
+    Ok(listed.approvals)
+}
+
+/// One approval record.
+///
+/// # Errors
+///
+/// The call's error, or [`ClientError::Decode`].
+pub async fn approval(
+    connection: &Connection,
+    id: &meerkat_core::ApprovalId,
+) -> Result<meerkat_core::ApprovalRecord, ClientError> {
+    decode(
+        "approval/get",
+        connection
+            .call("approval/get", json!({"approval_id": id}))
+            .await?,
+    )
+}
+
+/// Decide an approval record (`approval/decide` with `params`, see
+/// [`super::approvals::decide_params`]).
+///
+/// # Errors
+///
+/// The call's error: an already decided or expired record is refused.
+pub async fn decide(connection: &Connection, params: Value) -> Result<(), ClientError> {
+    connection.call("approval/decide", params).await.map(drop)
+}
+
+/// Call one of the daemon's own `rkat/*` methods.
+///
+/// # Errors
+///
+/// The call's error.
+pub async fn local(
+    connection: &Connection,
+    method: &str,
+    params: Value,
+) -> Result<Value, ClientError> {
+    connection.call(method, params).await
+}
+
+/// Append `text` to the orchestrator's system context under `key`.
+///
+/// # Errors
+///
+/// The call's error.
+pub async fn append_system_context(
+    connection: &Connection,
+    text: &str,
+    key: &str,
+) -> Result<(), ClientError> {
+    connection
+        .call(
+            "mob/append_system_context",
+            with_member(json!({"text": text, "source": "rkat-tui", "idempotency_key": key})),
+        )
+        .await
+        .map(drop)
+}

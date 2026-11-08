@@ -11,17 +11,22 @@
 //!   `events/list_since`, `mob/stop_member_run`, `mob/force_cancel`).
 //! - [`catchup`]: the replay/live de-duplication rule and the per-workspace
 //!   cursor.
+//! - [`approvals`]: the approval dialogs over the daemon's records
+//!   (`approval/list`, `approval/decide`).
 //! - [`runner`]: the loop between the UI and the daemon. It serves the same
 //!   [`Effect`]/[`Msg`] contract as the in-process runner, so the UI is the
-//!   same; what the daemon cannot do yet (`/new`, `/resume`, `/rewind`,
-//!   `/compact`, approvals, helpers, `fork`, `!`) is answered with a
-//!   "not available in attach mode yet" notice.
+//!   same: approval dialogs, permission modes and `/rules` act on the
+//!   daemon's gate (`rkat/*` methods, see [`crate::daemon::local`]); the
+//!   user's `!` shell runs here, as in-process. What the daemon cannot do
+//!   yet (`/new`, `/resume`, `/rewind`, `/compact`, helpers' view, `fork`)
+//!   is answered with a "not available in attach mode yet" notice.
 //!
 //! The in-process runner is not reused under a session trait: it is built
 //! on the in-process [`crate::bootstrap::Runtime`] (approval desk, helper
-//! host, `fork`, model lists, the user shell's confinement plan), none of
-//! which exists on this side of the wire.
+//! host, `fork`, model lists), none of which exists on this side of the
+//! wire.
 
+pub mod approvals;
 pub mod catchup;
 pub mod launch;
 pub mod remote;
@@ -149,11 +154,20 @@ pub async fn configure(args: &Args, mode: AttachMode) -> Result<AttachConfig, Tu
         }),
         AttachMode::Existing => None,
     };
+    let user_shell = crate::bootstrap::user_shell(
+        &scope,
+        &config,
+        args,
+        &crate::bootstrap::HostPaths::detect(),
+    )
+    .map(std::sync::Arc::new)
+    .map_err(|err| format!("the ! shell is unavailable: {err}"));
     Ok(AttachConfig {
         endpoint_file: crate::daemon::endpoint_file(&scope.context_root),
         cursor: catchup::CursorFile::of_workspace(&scope.context_root),
         config: Some(config),
         spawn,
+        user_shell,
         scope,
     })
 }

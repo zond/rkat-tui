@@ -154,7 +154,7 @@ async fn a_prompt_is_answered_and_rendered() {
     let llm = ScriptedLlmClient::new(vec![Step::Text("hello from the daemon")]);
     let daemon = Running::start(&ws.root, &llm).await;
     let mut client = Client::attach(&ws.root).await;
-    assert!(client.notices().contains("WITHOUT the approval gate"));
+    assert!(client.notices().contains("behind the same approval gate"));
     client.send(Effect::StartTurn("say hello".into()));
     let outcome = client.turn_finished().await;
     let summary = outcome.result.expect("completed");
@@ -335,7 +335,7 @@ async fn what_the_daemon_cannot_do_yet_says_so() {
         Effect::NewSession,
         Effect::RequestResumePicker,
         Effect::RequestRewindMenu,
-        Effect::ListRules,
+        Effect::TrustRealmRules,
     ] {
         client.send(effect);
         client
@@ -355,6 +355,36 @@ async fn what_the_daemon_cannot_do_yet_says_so() {
     client
         .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text.contains("attach mode") && text.contains("orchestrator `main`")))
         .await;
+    client.quit().await;
+    daemon.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_bang_command_runs_in_this_process_and_joins_the_agents_context() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![Step::Text("seen it")]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let mut client = Client::attach(&ws.root).await;
+    client.send(Effect::RunShell {
+        id: rkat_tui::ui::ShellRunId(1),
+        command: "echo bang-$((40+2))".into(),
+    });
+    let finished = client
+        .wait_for(|msg| matches!(msg, Msg::ShellFinished { .. }))
+        .await;
+    let Msg::ShellFinished {
+        outcome: rkat_tui::ui::ShellOutcome::Ran { run, context },
+        ..
+    } = finished
+    else {
+        panic!("{finished:?}");
+    };
+    assert!(run.output.contains("bang-42"), "{}", run.output);
+    context.expect("the output joined the orchestrator's context");
+    client.send(Effect::StartTurn("what did I run?".into()));
+    client.turn_finished().await.result.unwrap();
+    let request = format!("{:?}", llm.requests()[0]);
+    assert!(request.contains("bang-42"), "the agent read the output");
     client.quit().await;
     daemon.stop().await;
 }
