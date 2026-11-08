@@ -251,6 +251,9 @@ pub enum StatusUpdate {
     ApproxContextWindow(u64),
     /// Replace the session's cost totals (new or resumed session).
     CostTotals(SessionCostSnapshot),
+    /// Attach mode: the daemon connection's state, shown first in the
+    /// status bar.
+    Attach(Option<String>),
     /// The price table changed (start-up, fetched lists); the cost readout
     /// is recomputed.
     Prices(Arc<crate::pricing::PriceTable>),
@@ -395,6 +398,14 @@ pub enum Msg {
     ShowModelPicker(Vec<ModelGroup>),
     /// Replace the transcript (e.g. after resuming a session).
     ResetTranscript(Vec<Block>),
+    /// Attach mode: a turn this UI did not start runs on the daemon (another
+    /// client's, or one the catch-up found in progress): show `prompt` as
+    /// the user's message when there is one and count the UI busy until
+    /// [`Msg::TurnFinished`], as if it had started it.
+    RemoteTurn {
+        /// The run's prompt (`None`: a continuation without one).
+        prompt: Option<String>,
+    },
     /// `/compact now`: the integrator rebuilt the session with a one-turn
     /// compaction trigger, so its next model call compacts (or why it could
     /// not). The `CompactionStarted`/`Completed` events confirm the
@@ -576,6 +587,9 @@ pub enum Effect {
     /// the version, model, session, workspace, realm, confinement, auto
     /// mode, trust state and helper depth limit.
     StatusReport,
+    /// `/daemon stop`: ask the attached daemon to shut down (attach mode;
+    /// answered with a notice).
+    DaemonStop,
     /// `/memory`: resolve the instruction file (creating `SYSTEM.md` with
     /// a comment header) and answer with [`Msg::EditFile`].
     OpenMemory(MemoryTarget),
@@ -643,6 +657,9 @@ pub struct StatusInfo {
     pub cost: SessionCost,
     /// Prices for the cost readout.
     pub prices: Arc<crate::pricing::PriceTable>,
+    /// Attach mode: the daemon connection's state (`attached <addr>`,
+    /// `reconnecting`, `daemon starting`); `None` in-process.
+    pub attach: Option<String>,
 }
 
 /// The prompt the "Plan ready" dialog's proceed choices send.
@@ -732,6 +749,7 @@ impl StatusInfo {
             StatusUpdate::Helpers(helpers) => self.helpers = helpers.len(),
             StatusUpdate::CostTotals(cost) => self.cost = cost,
             StatusUpdate::Prices(prices) => self.prices = prices,
+            StatusUpdate::Attach(state) => self.attach = state,
         }
     }
 }
@@ -1884,6 +1902,7 @@ impl App {
                     }
                 }
             }
+            Msg::RemoteTurn { prompt } => self.remote_turn(prompt, now),
             Msg::ResetTranscript(blocks) => {
                 self.clear_selection();
                 self.panel_selected = None;
@@ -2507,6 +2526,23 @@ impl App {
         self.status.running_since = Some(now);
         self.scroll.bottom();
         fx.push(Effect::StartTurn(prompt));
+    }
+
+    /// [`Msg::RemoteTurn`]: a turn the daemon runs without this UI having
+    /// started it; the UI is busy until its [`Msg::TurnFinished`].
+    fn remote_turn(&mut self, prompt: Option<String>, now: Instant) {
+        if self.running {
+            return;
+        }
+        self.transcript.retire_finished_helpers();
+        self.run_first_block = self.transcript.len();
+        self.streamed_text = false;
+        if let Some(text) = prompt {
+            self.transcript.push(Block::User { text });
+        }
+        self.running = true;
+        self.status.running_since = Some(now);
+        self.scroll.bottom();
     }
 
     /// A `!` command typed (`raw` is the input as typed, for ↑): run it now
@@ -3309,6 +3345,7 @@ impl App {
             Command::Copy(n) => self.copy_answer(n),
             Command::Context => fx.push(Effect::ContextReport(self.context_header())),
             Command::Status => fx.push(Effect::StatusReport),
+            Command::DaemonStop => fx.push(Effect::DaemonStop),
             Command::Init => {
                 if self.running || !self.pending.is_empty() {
                     busy(self);
@@ -3527,6 +3564,32 @@ mod tests {
             input_tokens: 0,
             output_tokens: 0,
         }
+    }
+
+    #[test]
+    fn a_remote_turn_shows_its_prompt_and_keeps_the_ui_busy_until_it_ends() {
+        let mut app = App::new(StatusInfo::default());
+        let fx = app.update(Msg::RemoteTurn {
+            prompt: Some("from another client".into()),
+        });
+        assert!(fx.is_empty(), "nothing is sent for a turn the daemon runs");
+        assert!(app.is_running());
+        assert_eq!(
+            app.transcript.blocks(),
+            &[Block::User {
+                text: "from another client".into()
+            }]
+        );
+        // A second announcement while busy changes nothing.
+        app.update(Msg::RemoteTurn { prompt: None });
+        assert_eq!(app.transcript.blocks().len(), 1);
+        // Esc interrupts it like a turn this UI started.
+        assert_eq!(app.update(key(KeyCode::Esc)), vec![Effect::Interrupt]);
+        app.update(Msg::TurnFinished(TurnOutcome::plain(Ok(summary()))));
+        assert!(!app.is_running());
+        // `/daemon stop` is handed to the integrator.
+        type_str(&mut app, "/daemon stop");
+        assert_eq!(app.update(key(KeyCode::Enter)), vec![Effect::DaemonStop]);
     }
 
     #[test]

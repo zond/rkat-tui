@@ -544,6 +544,12 @@ fn mode_segment(status: &StatusInfo) -> Option<Span<'static>> {
 /// The styled status bar (drawn on a reversed background).
 pub fn status_bar(status: &StatusInfo, now: Instant) -> Line<'static> {
     let mut segs: Vec<Span<'static>> = Vec::new();
+    if let Some(attach) = &status.attach {
+        segs.push(Span::styled(
+            attach.clone(),
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+    }
     if !status.provider.is_empty() || !status.model.is_empty() {
         segs.push(Span::raw(format!("{}/{}", status.provider, status.model)));
     }
@@ -950,6 +956,21 @@ mod tests {
             line,
             " anthropic/claude-sonnet-4-6 │ session abc12345 │ ↑1.5k ↓20 │ auto (deny 1/3, 4/20) │ ⠋ running 0s │ queued 2"
         );
+    }
+
+    #[test]
+    fn the_attach_state_leads_the_status_line() {
+        let now = Instant::now();
+        let mut s = StatusInfo::default();
+        s.set_model("anthropic", "claude-sonnet-4-6");
+        s.apply(crate::ui::StatusUpdate::Attach(Some("attached 127.0.0.1:4000".into())));
+        let line = status_line(&s, now);
+        assert!(
+            line.starts_with(" attached 127.0.0.1:4000 │ anthropic/claude-sonnet-4-6"),
+            "{line}"
+        );
+        s.apply(crate::ui::StatusUpdate::Attach(None));
+        assert!(status_line(&s, now).starts_with(" anthropic/"));
     }
 
     fn line_text(line: &Line<'_>) -> String {

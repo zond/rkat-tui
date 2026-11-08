@@ -11,7 +11,7 @@ use crate::ui::NoticeLevel;
 
 /// Where `/export` writes: `typed` (relative to `workspace`), or
 /// `<workspace>/.rkat/tui/export-<session>-<unix seconds>.txt`.
-pub(super) fn export_path(
+pub(crate) fn export_path(
     workspace: &Path,
     typed: Option<&str>,
     session: &str,

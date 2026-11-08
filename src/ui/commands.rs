@@ -154,6 +154,8 @@ pub enum Command {
     TrustProject,
     /// `/helpers [expand|fold <label>|all]`.
     Helpers(HelpersCommand),
+    /// `/daemon stop`: shut the attached `rkat-tui-mob` down (attach mode).
+    DaemonStop,
 }
 
 /// Slash-command parse failure.
@@ -414,6 +416,20 @@ pub static COMMANDS: &[CommandSpec] = &[
             "version, model, session, workspace, realm, confinement, auto\nmode, trust of tui.toml and of each file /trust covers,\nhelper depth limit",
         )],
         parse: |rest| arg_free(rest, Command::Status, "/status"),
+    },
+    CommandSpec {
+        name: "daemon",
+        aliases: &[],
+        usage: "stop",
+        summary: "attach mode: shut the workspace's daemon down",
+        help: &[(
+            "/daemon stop",
+            "attach mode (rkat-tui --attach): shut the workspace's\nrkat-tui-mob down (its sessions stay; /quit only detaches)",
+        )],
+        parse: |rest| match words(rest).as_slice() {
+            ["stop"] => Ok(Command::DaemonStop),
+            _ => Err(CommandError::Usage("/daemon stop")),
+        },
     },
     CommandSpec {
         name: "memory",
@@ -806,6 +822,7 @@ mod tests {
         let args = |name: &str| match name {
             "remember" => " a note",
             "mcp" => " trust",
+            "daemon" => " stop",
             _ => "",
         };
         let mut seen = std::collections::HashSet::new();
@@ -833,7 +850,7 @@ mod tests {
         ] {
             assert!(super::spec(name).is_some(), "/{name} has no spec");
         }
-        assert_eq!(seen.len(), 31);
+        assert_eq!(seen.len(), 32);
         // `/help`'s "Commands:" rows come from the specs, in their order.
         let commands = help_text().split_once("Keys:").unwrap().0;
         let mut at = 0;

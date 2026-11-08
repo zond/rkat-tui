@@ -11,15 +11,36 @@
 //!   `events/list_since`, `mob/stop_member_run`, `mob/force_cancel`).
 //! - [`catchup`]: the replay/live de-duplication rule and the per-workspace
 //!   cursor.
+//! - [`runner`]: the loop between the UI and the daemon. It serves the same
+//!   [`Effect`]/[`Msg`] contract as the in-process runner, so the UI is the
+//!   same; what the daemon cannot do yet (`/new`, `/resume`, `/rewind`,
+//!   `/compact`, approvals, helpers, `fork`, `!`) is answered with a
+//!   "not available in attach mode yet" notice.
+//!
+//! The in-process runner is not reused under a session trait: it is built
+//! on the in-process [`crate::bootstrap::Runtime`] (approval desk, helper
+//! host, `fork`, model lists, the user shell's confinement plan), none of
+//! which exists on this side of the wire.
 
 pub mod catchup;
 pub mod launch;
 pub mod remote;
+pub mod runner;
 pub mod transport;
 
+use std::io::IsTerminal as _;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
+
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use tokio::sync::mpsc;
+
+use crate::cli::{Args, AttachMode};
+use crate::error::TuiError;
+use crate::ui::{App, Effect, History, Msg, StatusInfo, UiChannels, run_ui};
+
+pub use runner::{AttachConfig, AttachRunner, SpawnPlan};
 
 /// Why attach mode cannot reach or use the daemon.
 #[derive(Debug, thiserror::Error)]
@@ -109,4 +130,129 @@ pub enum ClientError {
         /// Its output.
         log: PathBuf,
     },
+}
+
+/// Resolve what attach mode needs from `args`: the workspace, the endpoint
+/// and cursor files, the realm config (context windows) and how a missing
+/// daemon is started.
+///
+/// # Errors
+///
+/// [`TuiError`] when the workspace or the realm config cannot be resolved.
+pub async fn configure(args: &Args, mode: AttachMode) -> Result<AttachConfig, TuiError> {
+    let (scope, config) = crate::bootstrap::prepare(args).await?;
+    let spawn = match mode {
+        AttachMode::Auto => Some(SpawnPlan {
+            program: launch::daemon_program(),
+            argv: launch::daemon_argv(args, &scope.context_root),
+            log: launch::daemon_log(&scope.realm_root()),
+        }),
+        AttachMode::Existing => None,
+    };
+    Ok(AttachConfig {
+        endpoint_file: crate::daemon::endpoint_file(&scope.context_root),
+        cursor: catchup::CursorFile::of_workspace(&scope.context_root),
+        config: Some(config),
+        spawn,
+        scope,
+    })
+}
+
+/// Run the TUI attached to the workspace's daemon until the user quits
+/// (which detaches; the daemon keeps running).
+///
+/// # Errors
+///
+/// [`TuiError::NotATerminal`] without a terminal, otherwise when the
+/// workspace cannot be resolved or the terminal cannot be driven. A daemon
+/// that cannot be reached is reported in the UI.
+pub async fn run(args: Args, mode: AttachMode) -> Result<(), TuiError> {
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        return Err(TuiError::NotATerminal);
+    }
+    let config = configure(&args, mode).await?;
+    let realm_root = config.scope.realm_root();
+    crate::runner::init_logging(&realm_root)?;
+    let status = StatusInfo {
+        attach: Some(runner::CONNECTING.to_string()),
+        ..StatusInfo::default()
+    };
+    let history = History::load(realm_root.join("tui_history"));
+    let global_history = config
+        .scope
+        .global
+        .as_ref()
+        .map(|global| History::load(global.history_file()));
+    let mut app = App::new(status)
+        .with_workspace(config.scope.project_root.clone())
+        .with_history(history.entries().to_vec())
+        .with_global_history(
+            global_history
+                .as_ref()
+                .map(|h| h.entries().to_vec())
+                .unwrap_or_default(),
+        );
+    let histories: Vec<History> = std::iter::once(history).chain(global_history).collect();
+    // Attach mode sends every event on the integrator channel (in order with
+    // the turn messages); the agent channel stays idle.
+    let (_agent_tx, agent_rx) = mpsc::channel(1);
+    let (ui_tx, ui_rx) = mpsc::unbounded_channel::<Msg>();
+    let (effect_tx, effect_rx) = mpsc::unbounded_channel::<Effect>();
+    if let Some(prompt) = args.prompt.clone() {
+        let mut first = app.update(Msg::Paste(prompt));
+        first.extend(app.update(Msg::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))));
+        for effect in first {
+            let _ = effect_tx.send(effect);
+        }
+    }
+    let runner = AttachRunner::new(config, ui_tx, effect_rx);
+    let runner_task = tokio::spawn(runner.run());
+    let ui_result = run_ui(
+        app,
+        UiChannels { agent_rx, ui_rx },
+        effect_tx,
+        args.mouse_capture(),
+        histories,
+        realm_root.join("drafts"),
+    )
+    .await;
+    match tokio::time::timeout(Duration::from_secs(5), runner_task).await {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => tracing::warn!(error = %err, "attach runner failed"),
+        Err(_) => tracing::warn!("attach runner did not shut down in time"),
+    }
+    ui_result.map_err(TuiError::from)
+}
+
+/// Test seam: an attach runner driven headless. Not a stable API.
+#[cfg(feature = "test-support")]
+pub mod testing {
+    use tokio::sync::mpsc;
+    use tokio::task::JoinHandle;
+
+    use super::{AttachConfig, AttachRunner};
+    use crate::ui::{Effect, Msg};
+
+    /// A running attach runner and the UI's ends of its channels.
+    pub struct AttachHarness {
+        /// Effects, as the UI would send them.
+        pub effects: mpsc::UnboundedSender<Effect>,
+        /// Everything the runner tells the UI (events included).
+        pub ui_rx: mpsc::UnboundedReceiver<Msg>,
+        /// The runner; resolves after [`Effect::Quit`].
+        pub task: JoinHandle<()>,
+    }
+
+    /// Spawn an attach runner on `config`.
+    #[must_use]
+    pub fn spawn_attach_runner(config: AttachConfig) -> AttachHarness {
+        let (ui_tx, ui_rx) = mpsc::unbounded_channel();
+        let (effects, effect_rx) = mpsc::unbounded_channel();
+        let runner = AttachRunner::new(config, ui_tx, effect_rx);
+        AttachHarness {
+            effects,
+            ui_rx,
+            task: tokio::spawn(runner.run()),
+        }
+    }
 }

@@ -95,5 +95,11 @@ pub use ui::UiError;
 /// Returns a [`TuiError`] when there is no terminal, bootstrap fails, the
 /// session cannot be opened, or the terminal cannot be driven.
 pub async fn run(args: Args) -> Result<(), TuiError> {
-    runner::run(args).await
+    match args.attach_mode() {
+        None => runner::run(args).await,
+        #[cfg(feature = "mob")]
+        Some(mode) => client::run(args, mode).await,
+        #[cfg(not(feature = "mob"))]
+        Some(_) => Err(TuiError::AttachUnsupported),
+    }
 }

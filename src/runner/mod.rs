@@ -47,7 +47,7 @@ mod cost;
 pub mod cost_store;
 mod lifecycle;
 mod models;
-mod export;
+pub(crate) mod export;
 mod quit;
 mod shell;
 mod status;
@@ -208,7 +208,7 @@ pub async fn run(args: Args) -> Result<(), TuiError> {
 
 /// Route tracing to a log file inside the realm so nothing writes to the
 /// terminal while the UI owns it.
-fn init_logging(realm_root: &Path) -> Result<(), TuiError> {
+pub(crate) fn init_logging(realm_root: &Path) -> Result<(), TuiError> {
     let log_dir = realm_root.join("logs");
     std::fs::create_dir_all(&log_dir).map_err(|e| TuiError::io("create log directory", e))?;
     let file = std::fs::OpenOptions::new()
@@ -839,6 +839,10 @@ impl Runner {
             Effect::MemoryEdited { target, path } => self.memory_edited(target, &path).await,
             Effect::ContextReport(header) => self.context_report(&header).await,
             Effect::StatusReport => self.status_report(),
+            Effect::DaemonStop => self.notice(
+                NoticeLevel::Info,
+                "/daemon stop applies in attach mode (rkat-tui --attach); this TUI runs the agent itself",
+            ),
             Effect::Export { path, text } => self.export(path.as_deref(), &text),
         }
     }
