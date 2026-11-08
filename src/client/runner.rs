@@ -2312,7 +2312,11 @@ async fn first_endpoint(
         (Decision::Attach(endpoint), _) => Ok(endpoint),
         (Decision::Start, Some(plan)) => {
             let _ = ui_tx.send(Msg::Status(StatusUpdate::Attach(Some(STARTING.into()))));
-            let (pid, mut exited) = launch::spawn_daemon(&plan.program, &plan.argv, &plan.log)?;
+            let (pid, mut exited) = launch::spawn_daemon(
+                &plan.program,
+                &launch::with_endpoint_file(&plan.argv, file),
+                &plan.log,
+            )?;
             let _ = ui_tx.send(Msg::Notice {
                 level: NoticeLevel::Info,
                 text: format!(
@@ -2336,7 +2340,11 @@ async fn restart(
     ui_tx: &mpsc::UnboundedSender<Msg>,
 ) -> Result<Endpoint, ClientError> {
     let _ = ui_tx.send(Msg::Status(StatusUpdate::Attach(Some(STARTING.into()))));
-    let (pid, mut exited) = launch::spawn_daemon(&plan.program, &plan.argv, &plan.log)?;
+    let (pid, mut exited) = launch::spawn_daemon(
+        &plan.program,
+        &launch::with_endpoint_file(&plan.argv, file),
+        &plan.log,
+    )?;
     let _ = ui_tx.send(Msg::Notice {
         level: NoticeLevel::Warn,
         text: format!(

@@ -12,9 +12,12 @@
 //! proving it holds the daemon's token ([`handshake`]). Clients come and
 //! go; the runtime, the mob and its members stay.
 //!
-//! Where to connect: the endpoint file `<workspace>/.rkat/tui/mob.endpoint`
-//! ([`endpoint`], mode 0600, removed on shutdown) holds the bound address,
-//! the per-daemon token and the pid.
+//! Where to connect: the endpoint file
+//! `<state>/rkat-tui/<workspace key>/mob.endpoint` ([`endpoint`], in the
+//! user's state directory, never in the workspace; mode 0600, removed on
+//! shutdown) holds the bound address, the per-daemon token and the pid. The
+//! token is the whole access control, so it lives where the agent's
+//! confined shell cannot read it.
 //!
 //! Approvals (P3): every member's tool calls pass the TUI's approval engine
 //! ([`approvals`]); a call that needs the human becomes a record in the
@@ -61,7 +64,8 @@ pub const MOB_ID: &str = "tui";
 /// The orchestrator's member identity (and its profile name).
 pub const ORCHESTRATOR: &str = "main";
 
-/// The endpoint file name under `<workspace>/.rkat/tui/`.
+/// The endpoint file name (in the workspace's directory under the user's
+/// state directory, see [`endpoint::default_file`]).
 pub const ENDPOINT_NAME: &str = "mob.endpoint";
 
 /// The default listen address: loopback, an ephemeral port.
@@ -79,9 +83,16 @@ pub const DEFAULT_LISTEN: &str = "127.0.0.1:0";
 pub struct DaemonCli {
     /// Loopback address to listen on (port 0: an ephemeral port). The
     /// bound address and the token clients must present are written to
-    /// `<workspace>/.rkat/tui/mob.endpoint`.
+    /// the endpoint file (see `--endpoint-file`).
     #[arg(long, value_name = "ADDR", default_value = DEFAULT_LISTEN)]
     pub listen: std::net::SocketAddr,
+
+    /// Where to write the endpoint file (default:
+    /// `$XDG_STATE_HOME/rkat-tui/<workspace key>/mob.endpoint`, else under
+    /// `~/.local/state`). It holds the attach token: the daemon refuses a
+    /// path the agent's confined shell could read.
+    #[arg(long, value_name = "PATH")]
+    pub endpoint_file: Option<PathBuf>,
 
     /// Stay in the foreground (the only mode in this version).
     #[arg(long)]
@@ -152,6 +163,18 @@ pub enum DaemonError {
         /// Its endpoint file.
         file: PathBuf,
     },
+    /// The endpoint file would be readable by the agent's confined shell.
+    #[error(
+        "refusing to write the endpoint file {}: the agent's confined shell is granted {} and could read the attach token; choose another place with --endpoint-file or XDG_STATE_HOME",
+        file.display(),
+        grant.display()
+    )]
+    EndpointExposed {
+        /// The endpoint file.
+        file: PathBuf,
+        /// The shell's grant that contains it.
+        grant: PathBuf,
+    },
     /// The listen address is not a loopback address.
     #[error("refusing to listen on {0}: only loopback addresses are served")]
     NotLoopback(std::net::SocketAddr),
@@ -206,6 +229,9 @@ impl DaemonError {
 pub struct DaemonOptions {
     /// The loopback address to listen on (default [`DEFAULT_LISTEN`]).
     pub listen: std::net::SocketAddr,
+    /// Where to write the endpoint file (default:
+    /// [`endpoint::default_file`] of the workspace).
+    pub endpoint_file: Option<PathBuf>,
     pub(crate) bootstrap: BootstrapOptions,
     pub(crate) policy: engine::PolicyOptions,
 }
@@ -214,6 +240,7 @@ impl Default for DaemonOptions {
     fn default() -> Self {
         Self {
             listen: std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+            endpoint_file: None,
             bootstrap: BootstrapOptions::default(),
             policy: engine::PolicyOptions::default(),
         }
@@ -221,6 +248,13 @@ impl Default for DaemonOptions {
 }
 
 impl DaemonOptions {
+    /// Write the endpoint file at `file` instead of the default place.
+    #[must_use]
+    pub fn with_endpoint_file(mut self, file: PathBuf) -> Self {
+        self.endpoint_file = Some(file);
+        self
+    }
+
     /// Bootstrap with `bootstrap` (a scripted LLM, host paths, a lister).
     #[cfg(feature = "test-support")]
     #[must_use]
@@ -239,10 +273,40 @@ impl DaemonOptions {
     }
 }
 
-/// The endpoint file of the workspace at `context_root`.
-#[must_use]
-pub fn endpoint_file(context_root: &Path) -> PathBuf {
-    context_root.join(".rkat").join("tui").join(ENDPOINT_NAME)
+/// The endpoint file of the workspace at `context_root`, in the user's
+/// state directory ([`endpoint::default_file`]).
+///
+/// # Errors
+///
+/// [`DaemonError::Io`] when there is no state directory.
+pub fn endpoint_file(context_root: &Path) -> Result<PathBuf, DaemonError> {
+    endpoint::default_file(context_root)
+        .map_err(|err| DaemonError::io("find the endpoint file of", context_root, err))
+}
+
+/// Refuse an endpoint file the agent's confined shell could read: create
+/// its directory (0700) and check the canonical directory against every
+/// grant of the shell's `plan`.
+///
+/// # Errors
+///
+/// [`DaemonError::EndpointExposed`], or [`DaemonError::Io`] when the
+/// directory cannot be created or resolved.
+pub fn check_endpoint_private(
+    plan: &bootstrap::ConfinementPlan,
+    file: &Path,
+) -> Result<(), DaemonError> {
+    let dir = file.parent().unwrap_or_else(|| Path::new("."));
+    endpoint::create_private_dir(dir)?;
+    let canonical = std::fs::canonicalize(dir)
+        .map_err(|err| DaemonError::io("resolve endpoint directory", dir, err))?;
+    match endpoint::exposing_grant(plan, &canonical) {
+        Some(grant) => Err(DaemonError::EndpointExposed {
+            file: file.to_path_buf(),
+            grant,
+        }),
+        None => Ok(()),
+    }
 }
 
 /// A started daemon: the runtime and its mob host are composed, the
@@ -299,11 +363,15 @@ impl Daemon {
         if !options.listen.ip().is_loopback() {
             return Err(DaemonError::NotLoopback(options.listen));
         }
-        let file = endpoint_file(&scope.context_root);
+        let file = match options.endpoint_file {
+            Some(file) => file,
+            None => endpoint_file(&scope.context_root)?,
+        };
         // Refuse before taking the realm: a live daemon keeps its endpoint.
         endpoint::check_stale(&file).await?;
         let parts =
             bootstrap::assemble(scope, config, args, options.bootstrap, LEASE_SURFACE).await?;
+        check_endpoint_private(&parts.confinement, &file)?;
         let composed = engine::compose(parts, options.policy)?;
         let orchestrator = orchestrator::ensure(&composed.state, &composed.root).await?;
         // The orchestrator is idle now: its tool catalog can be read.
@@ -498,6 +566,7 @@ pub async fn run(cli: DaemonCli) -> Result<(), DaemonError> {
         &cli.tui,
         DaemonOptions {
             listen: cli.listen,
+            endpoint_file: cli.endpoint_file.clone(),
             ..DaemonOptions::default()
         },
     )
@@ -575,7 +644,7 @@ fn init_logging(realm_root: &Path) {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -612,10 +681,76 @@ mod tests {
     }
 
     #[test]
-    fn the_endpoint_file_lives_with_the_workspace_state() {
-        assert_eq!(
-            endpoint_file(Path::new("/w")),
-            PathBuf::from("/w/.rkat/tui/mob.endpoint")
-        );
+    fn the_endpoint_file_lives_in_the_user_state_dir_keyed_by_workspace() {
+        let state = Path::new("/state");
+        let file = endpoint::file_in(state, Path::new("/w"));
+        let key = endpoint::workspace_key(Path::new("/w"));
+        assert_eq!(key.len(), endpoint::KEY_DIGITS);
+        assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(file, state.join("rkat-tui").join(&key).join(ENDPOINT_NAME));
+        assert_ne!(key, endpoint::workspace_key(Path::new("/v")));
+        let default = endpoint_file(Path::new("/w")).unwrap();
+        assert!(!default.starts_with("/w"), "{}", default.display());
+        assert!(default.ends_with(Path::new("rkat-tui").join(&key).join(ENDPOINT_NAME)));
+    }
+
+    /// The finding this guards: the token was in `<workspace>/.rkat/tui`,
+    /// which the agent's confined shell can read.
+    #[test]
+    fn the_confined_shell_is_granted_nothing_that_holds_the_endpoint_file() {
+        let workspace = tempfile::tempdir().unwrap();
+        let workspace = std::fs::canonicalize(workspace.path()).unwrap();
+        let requirement = bootstrap::confinement::lower(
+            crate::cli::ConfinementArg::Workspace,
+            &workspace,
+            &bootstrap::HostPaths::detect(),
+        )
+        .unwrap()
+        .unwrap();
+        let spec = requirement.specification();
+        let meerkat_core::confinement::FilesystemAccess::Paths(granted) = &spec.read else {
+            panic!("a workspace plan grants named paths");
+        };
+        let default = endpoint_file(&workspace).unwrap();
+        let dir = default.parent().unwrap();
+        // The state directory may not exist yet: resolve its deepest
+        // existing ancestor, as the grants are canonical.
+        let mut existing = dir.to_path_buf();
+        while !existing.exists() {
+            existing.pop();
+        }
+        let resolved = std::fs::canonicalize(&existing)
+            .unwrap()
+            .join(dir.strip_prefix(&existing).unwrap());
+        for grant in granted {
+            assert!(
+                !resolved.starts_with(grant.path()) && !dir.starts_with(grant.path()),
+                "{} is inside the grant {}",
+                dir.display(),
+                grant.path().display()
+            );
+        }
+        let plan = bootstrap::ConfinementPlan {
+            mode: crate::cli::ConfinementArg::Workspace,
+            shell: meerkat_tools::builtin::shell::ShellConfinement::Required { requirement },
+            notices: Vec::new(),
+            shell_env: None,
+        };
+        assert_eq!(endpoint::exposing_grant(&plan, &resolved), None);
+        // The old place, and any place in the workspace, is refused (the
+        // grant is the workspace, or the temp dir that holds it).
+        let old = workspace.join(".rkat").join("tui").join(ENDPOINT_NAME);
+        assert!(matches!(
+            check_endpoint_private(&plan, &old),
+            Err(DaemonError::EndpointExposed { grant, .. }) if workspace.starts_with(&grant)
+        ));
+        // An unconfined shell is the trusted host: nothing to keep from it.
+        let off = bootstrap::ConfinementPlan {
+            mode: crate::cli::ConfinementArg::Off,
+            shell: meerkat_tools::builtin::shell::ShellConfinement::TrustedHost,
+            notices: Vec::new(),
+            shell_env: None,
+        };
+        check_endpoint_private(&off, &old).unwrap();
     }
 }

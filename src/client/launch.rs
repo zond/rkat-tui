@@ -192,6 +192,16 @@ pub fn daemon_argv(args: &Args, workspace: &Path) -> Vec<OsString> {
     argv
 }
 
+/// `argv` with `--endpoint-file <file>`: the daemon writes its endpoint
+/// where this client waits for it.
+#[must_use]
+pub fn with_endpoint_file(argv: &[OsString], file: &Path) -> Vec<OsString> {
+    let mut argv = argv.to_vec();
+    argv.push("--endpoint-file".into());
+    argv.push(file.into());
+    argv
+}
+
 /// Where a started daemon's stdout and stderr go.
 #[must_use]
 pub fn daemon_log(realm_root: &Path) -> PathBuf {
@@ -409,10 +419,18 @@ mod tests {
         ])
         .unwrap();
         let mut argv = vec![OsString::from("rkat-tui-mob")];
-        argv.extend(daemon_argv(&tui, Path::new("/ws")));
+        argv.extend(with_endpoint_file(
+            &daemon_argv(&tui, Path::new("/ws")),
+            Path::new("/state/mob.endpoint"),
+        ));
         let daemon = crate::daemon::DaemonCli::try_parse_from(argv).unwrap();
         daemon.check().unwrap();
         assert!(daemon.foreground);
+        // The daemon writes its endpoint where the client waits for it.
+        assert_eq!(
+            daemon.endpoint_file.as_deref(),
+            Some(Path::new("/state/mob.endpoint"))
+        );
         let shared = daemon.tui;
         assert_eq!(shared.context_root.as_deref(), Some(Path::new("/ws")));
         // Every engine flag survives the round trip; the UI ones do not.

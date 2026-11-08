@@ -9,7 +9,9 @@ mod common;
 use std::path::Path;
 use std::sync::Arc;
 
-use common::{ScriptedLlmClient, Step, TIMEOUT, Workspace, args_for, no_lists, within};
+use common::{
+    ScriptedLlmClient, Step, TIMEOUT, Workspace, args_for, endpoint_file_for, no_lists, within,
+};
 use meerkat::LlmClient;
 use meerkat_core::AgentEvent;
 use rkat_tui::bootstrap::{BootstrapOptions, HostPaths};
@@ -29,12 +31,14 @@ struct Running {
 
 impl Running {
     async fn start(root: &Path, llm: &Arc<ScriptedLlmClient>) -> Self {
-        let options = DaemonOptions::default().with_bootstrap(BootstrapOptions {
-            llm_override: Some(Arc::clone(llm) as Arc<dyn LlmClient>),
-            lister: Some(no_lists()),
-            host_paths: Some(HostPaths::default()),
-            ..BootstrapOptions::default()
-        });
+        let options = DaemonOptions::default()
+            .with_bootstrap(BootstrapOptions {
+                llm_override: Some(Arc::clone(llm) as Arc<dyn LlmClient>),
+                lister: Some(no_lists()),
+                host_paths: Some(HostPaths::default()),
+                ..BootstrapOptions::default()
+            })
+            .with_endpoint_file(endpoint_file_for(root));
         let daemon = within(Daemon::start(&args_for(root), options))
             .await
             .expect("daemon starts");
@@ -63,6 +67,7 @@ impl Client {
             .await
             .unwrap();
         config.lister = no_lists();
+        config.endpoint_file = endpoint_file_for(root);
         let mut client = Self {
             harness: spawn_attach_runner(config),
             seen: Vec::new(),
@@ -507,6 +512,7 @@ async fn a_reconnect_restarts_a_daemon_that_died() {
         .await
         .unwrap();
     config.lister = no_lists();
+    config.endpoint_file = endpoint_file_for(&ws.root);
     if let Some(plan) = &mut config.spawn {
         plan.program = std::path::PathBuf::from(env!("CARGO_BIN_EXE_rkat-tui-mob"));
     }

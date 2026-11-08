@@ -16,10 +16,32 @@ not a Unix socket: it is the loop `rkat-rpc --tcp` already runs, it
 forwards over SSH, and it behaves the same on every platform. Any local
 process can reach a loopback port, so each connection must first send
 `rkat/attach` with the per-daemon token from the endpoint file
-`<workspace>/.rkat/tui/mob.endpoint` (mode 0600: `{"address", "token",
-"pid"}`, one JSON line, removed on shutdown); anything else is answered
-with a JSON-RPC error and closed before the engine sees it
-(`src/daemon/handshake.rs`, the only non-engine thing on the wire).
+`$XDG_STATE_HOME/rkat-tui/<key>/mob.endpoint` (else under
+`~/.local/state`; `<key>` is the first 32 hex digits of the SHA-256 of the
+canonical workspace path; directory 0700, file 0600: `{"address", "token",
+"pid"}`, one JSON line, removed on shutdown; `--endpoint-file` overrides
+it, and the TUI passes the path it waits on to a daemon it starts);
+anything else is answered with a JSON-RPC error and closed before the
+engine sees it (`src/daemon/handshake.rs`, the only non-engine thing on
+the wire).
+
+**The token is the whole access control.** A connection that presents it
+can do everything a TUI can: answer `approval/decide`, switch the
+permission mode with `rkat/set_mode`, add rules with `rkat/rules`. Nothing
+on a loopback TCP connection proves which program sent it, so the daemon
+does not try to tell a TUI from any other holder of the token. The token
+therefore must stay out of the agent's reach: the agent's confined shell is
+granted the workspace (`.rkat` included; the Linux backend has no deny
+lists), the temp dir, the Cargo home and the user cache dir, and loopback
+is reachable from it, so the file lives in the user's state directory, which
+none of these hold, and the daemon refuses to start when its confinement
+plan grants the file's directory after all (`DaemonError::EndpointExposed`:
+a workspace that contains the state directory, an `XDG_STATE_HOME` in the
+temp dir, an extra `--confinement-read`). With `--no-confinement` the shell
+is the trusted host and can read the file like any other process of the
+user; nothing is kept from it then. (Until the review fixes the file was
+`<workspace>/.rkat/tui/mob.endpoint`, which the confined shell could read:
+`docs/evidence.md`, "Review fixes for P1–P4".)
 
 Known limits of P1:
 
@@ -265,7 +287,8 @@ rkat-tui-mob (daemon, one per workspace realm)
     `rkat/attach` token handshake (newline-delimited JSON; RpcServer per
     connection, shared runtime, skip_shutdown_on_eof; the loop copies
     serve_tcp_with_options_until)
-  realm lease + <workspace>/.rkat/tui/mob.endpoint (address, token, pid);
+  realm lease + $XDG_STATE_HOME/rkat-tui/<key>/mob.endpoint (address,
+    token, pid; outside every path the agent's shell is granted);
     start-on-demand by the TUI
 
 rkat-tui (client)

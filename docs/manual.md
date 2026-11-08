@@ -981,11 +981,28 @@ ignored with a notice, like its other trusted-only keys).
 The value needs `=`: `rkat-tui --attach "fix the test"` attaches and sends
 the prompt.
 
-**Finding the daemon.** The daemon writes `<workspace>/.rkat/tui/mob.endpoint`
-(mode 0600: its loopback address, a per-daemon token and its pid) and removes
-it when it shuts down. The TUI reads it, connects, and presents the token
-with `rkat/attach` before anything else; then it speaks Meerkat's own
-JSON-RPC methods. A file whose address no longer accepts is stale.
+**Finding the daemon.** The daemon writes its endpoint file (its loopback
+address, a per-daemon token and its pid) to
+`$XDG_STATE_HOME/rkat-tui/<key>/mob.endpoint`, or
+`~/.local/state/rkat-tui/<key>/mob.endpoint` when `XDG_STATE_HOME` is not
+set; `<key>` is the first 32 hex digits of the SHA-256 of the workspace's
+canonical path. The directory is created with mode 0700, the file with
+0600, and the file is removed when the daemon shuts down. The TUI reads
+it, connects, and presents the token with `rkat/attach` before anything
+else; then it speaks Meerkat's own JSON-RPC methods. A file whose address
+no longer accepts is stale. `rkat-tui-mob --endpoint-file <path>` writes it
+elsewhere (a TUI that starts the daemon passes the path it reads).
+
+The token is the only thing that keeps other programs out: whoever holds it
+can answer approval dialogs, switch the permission mode and add rules. That
+is why the file is not in the workspace: the agent's confined shell can
+read the whole workspace (and the temp dir, the Cargo home and the cache
+directory) and reach loopback. The daemon refuses to start when the shell's
+confinement would grant the file's directory (for example a workspace that
+contains `~/.local/state`, such as your home directory); point
+`XDG_STATE_HOME` or `--endpoint-file` elsewhere then. With
+`--no-confinement` the agent's shell runs as you and can read the file like
+anything else of yours.
 
 **Start on demand.** With `--attach` (auto) and no live endpoint, the TUI
 starts `rkat-tui-mob` (the one next to the `rkat-tui` binary, else from

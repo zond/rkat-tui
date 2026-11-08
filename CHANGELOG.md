@@ -36,7 +36,7 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
   and `/model`), and `!` commands work in attach mode (run by the TUI,
   output to the agent's context).
 - `rkat-tui --attach` (experimental): the TUI as a client of the
-  workspace's `rkat-tui-mob` daemon. It reads `.rkat/tui/mob.endpoint`,
+  workspace's `rkat-tui-mob` daemon. It reads the daemon's endpoint file,
   attaches with its token and drives the orchestrator member with Meerkat's
   own methods: prompts and steers through `mob/member_send`, live output
   from `mob/stream_open`, Esc through `mob/stop_member_run` (a second Esc
@@ -63,7 +63,8 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
   `events/list_since`, …) to any number of clients over loopback TCP
   (`--listen`, default an ephemeral port on 127.0.0.1). Clients find it, and
   the token every connection must present first with `rkat/attach`, in
-  `<workspace>/.rkat/tui/mob.endpoint` (mode 0600). Clients may disconnect
+  `$XDG_STATE_HOME/rkat-tui/<workspace key>/mob.endpoint` (else under
+  `~/.local/state`; mode 0600). Clients may disconnect
   and reattach while a turn sent with `mob/member_send` runs; a restart
   restores the member and its session. The member's own calls pass no
   approval gate yet, and the TUI does not attach to it yet
@@ -315,6 +316,14 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
   reader lock too. The trust record follows each write inside the lock.
 
 ### Fixed
+
+- The daemon's endpoint file, which holds the attach token, moved out of the
+  workspace (`<workspace>/.rkat/tui/mob.endpoint`, readable by the agent's
+  confined shell, which could then attach and approve its own escalations)
+  to `$XDG_STATE_HOME/rkat-tui/<workspace key>/mob.endpoint` (else under
+  `~/.local/state`; directory 0700). The daemon refuses to start when the
+  shell's confinement would grant that directory; `rkat-tui-mob
+  --endpoint-file` places it explicitly.
 
 - A hook written into the project `.rkat/config.toml` while a session was
   being built (for example by a confined shell command) could run once

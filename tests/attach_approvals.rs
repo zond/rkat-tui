@@ -15,7 +15,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use common::{ScriptedLlmClient, Step, TIMEOUT, Workspace, args_for, no_lists, within};
+use common::{
+    ScriptedLlmClient, Step, TIMEOUT, Workspace, args_for, endpoint_file_for, no_lists, within,
+};
 use meerkat::LlmClient;
 use meerkat_core::Message;
 use meerkat_core::types::ToolResult;
@@ -108,7 +110,13 @@ impl Running {
         llm: &Arc<ScriptedLlmClient>,
         setup: &Setup,
     ) -> Result<Daemon, DaemonError> {
-        Daemon::start(&args_for(root), setup.options(llm)).await
+        Daemon::start(
+            &args_for(root),
+            setup
+                .options(llm)
+                .with_endpoint_file(endpoint_file_for(root)),
+        )
+        .await
     }
 
     fn serve(daemon: Daemon) -> Self {
@@ -147,9 +155,10 @@ struct Client {
 
 impl Client {
     async fn attach(root: &Path) -> Self {
-        let config = rkat_tui::client::configure(&args_for(root), AttachMode::Existing)
+        let mut config = rkat_tui::client::configure(&args_for(root), AttachMode::Existing)
             .await
             .unwrap();
+        config.endpoint_file = endpoint_file_for(root);
         let mut client = Self {
             harness: spawn_attach_runner(config),
             seen: Vec::new(),

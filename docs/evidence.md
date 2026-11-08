@@ -1963,3 +1963,46 @@ registry's error for a bare unknown id); unit tests in `client::helpers`,
 `client::launch::tests::a_started_daemon_leaves_the_terminals_session_when_setsid_exists`,
 `daemon::conversations`, `approval::rules::tests::rules_file_round_trip`
 (`attach` written before the tables).
+
+## Review fixes for P1–P4 (2026-11-08)
+
+A code review of the daemon and attach mode found ten problems; each fix
+below names the test that failed before it and passes after.
+
+**Security: the attach token was readable by the agent.** The endpoint
+file (address, token, pid) was `<workspace>/.rkat/tui/mob.endpoint`. The
+agent's confined shell runs as the same uid, is granted the workspace read
+and write (`.rkat` included: the Linux backend has no deny lists) and may
+reach 127.0.0.1, so a prompt-injected agent could `cat` the file, send
+`rkat/attach` and then `approval/decide` its own escalations, or
+`rkat/set_mode auto`, or `rkat/rules` add an allow rule. Mode 0600 does not
+stop a same-uid read. Nothing on a loopback TCP connection can prove which
+program sent it (no peer credentials over TCP), so no "only the TUI binary
+may decide" check was invented; the token's secrecy stays the whole access
+control and the file moved where the shell is not granted: the user's state
+directory, `$XDG_STATE_HOME/rkat-tui/<key>/mob.endpoint` (else
+`~/.local/state/...`), `<key>` the first 32 hex digits of the SHA-256 of the
+canonical workspace path, directory 0700, file 0600, nothing left in the
+workspace. The confinement grants (`bootstrap::confinement::grants`) are
+the workspace, the temp dir, the Cargo home and the user cache dir (writable)
+and toolchain and system directories (read-only); `~/.local/state` is none
+of them. Because a workspace can contain the state directory (a workspace at
+`$HOME`) or `XDG_STATE_HOME` can point into the temp dir, the daemon checks
+the canonical directory against the read grants of its own confinement plan
+before it binds and refuses with `DaemonError::EndpointExposed`
+(`daemon::check_endpoint_private`, `endpoint::exposing_grant`); an
+unconfined shell (`--no-confinement`) is the trusted host and is not
+checked. `rkat-tui-mob --endpoint-file` places the file explicitly; the TUI
+passes the path it waits on to a daemon it starts
+(`launch::with_endpoint_file`). Tests:
+`daemon::tests::the_confined_shell_is_granted_nothing_that_holds_the_endpoint_file`
+(a workspace plan over the detected host paths; the old place refused),
+`daemon::tests::the_endpoint_file_lives_in_the_user_state_dir_keyed_by_workspace`,
+`tests/daemon.rs`: `the_orchestrator_shell_runs_confined` (the confined
+shell `cat`s the default endpoint file; the token is not in what the model
+sees), `an_endpoint_file_the_confined_shell_could_read_is_refused`,
+`a_client_attaches_and_finds_the_orchestrator` (no file in the workspace
+holds the token), `client::launch::tests::the_daemon_gets_every_shared_engine_flag_and_no_ui_flag`
+(`--endpoint-file` round trip). The integration tests put the file beside
+the workspace (`common::endpoint_file_for`), as they run the shell
+unconfined.

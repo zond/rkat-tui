@@ -318,6 +318,13 @@ pub fn args_with(root: &Path, extra: &[&str]) -> Args {
     Args::try_parse_from(argv).unwrap()
 }
 
+/// The endpoint file a test daemon for the workspace `root` writes and its
+/// clients read: beside the workspace, not in it, and not in the user's
+/// real state directory (the tests run the shell unconfined).
+pub fn endpoint_file_for(root: &Path) -> PathBuf {
+    root.parent().unwrap().join("state").join("mob.endpoint")
+}
+
 /// Arguments for a workspace-local realm at `root`.
 pub fn args_for(root: &Path) -> Args {
     args_with(root, &[])

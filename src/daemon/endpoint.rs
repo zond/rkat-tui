@@ -1,7 +1,8 @@
 //! The endpoint file: where a running daemon listens and the token a
 //! client must present ([`super::handshake`]).
 //!
-//! `<workspace>/.rkat/tui/mob.endpoint`, mode 0600, one line of JSON:
+//! `<state>/rkat-tui/<key>/mob.endpoint` ([`default_file`]), mode 0600 in
+//! a directory of mode 0700, one line of JSON:
 //!
 //! ```json
 //! {"address":"127.0.0.1:43123","token":"<64 lowercase hex digits>","pid":12345}
@@ -10,12 +11,125 @@
 //! Written (atomically, by rename) once the listener is bound, removed on
 //! shutdown. A file left by a daemon that died is stale: the next daemon
 //! replaces it when nothing accepts at its address.
+//!
+//! **The token is the whole access control.** Anyone who reads it can
+//! attach, answer `approval/decide` and change the permission mode and the
+//! rules; nothing on a loopback TCP connection says which program sent it.
+//! So the file lives in the user's state directory (`$XDG_STATE_HOME`, else
+//! `~/.local/state`), under a key derived from the canonical workspace path
+//! (the first 32 hex digits of its SHA-256), never inside the workspace:
+//! the agent's confined shell is granted the workspace (`.rkat` included),
+//! the temp dir, the Cargo home and the user cache dir, none of which holds
+//! it. The daemon refuses to start when the shell's confinement plan would
+//! grant the file's directory after all ([`exposing_grant`]).
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use super::DaemonError;
+
+/// The directory under the user's state directory that holds the
+/// per-workspace endpoint directories.
+pub const STATE_DIR: &str = "rkat-tui";
+
+/// Hex digits of the workspace key (of the SHA-256 of its canonical path).
+pub const KEY_DIGITS: usize = 32;
+
+/// The user's state directory: `$XDG_STATE_HOME` when it is an absolute
+/// path, else `~/.local/state`; `None` without a home directory.
+#[must_use]
+pub fn state_home() -> Option<PathBuf> {
+    std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| dirs::home_dir().map(|home| home.join(".local").join("state")))
+}
+
+/// The key of `workspace`: the first [`KEY_DIGITS`] hex digits of the
+/// SHA-256 of its canonical path (the path as given when it cannot be
+/// resolved).
+#[must_use]
+pub fn workspace_key(workspace: &Path) -> String {
+    use sha2::Digest as _;
+    let canonical = std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
+    let digest = sha2::Sha256::digest(canonical.as_os_str().as_encoded_bytes());
+    let mut hex = String::with_capacity(KEY_DIGITS);
+    for byte in digest.iter().take(KEY_DIGITS / 2) {
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{byte:02x}");
+    }
+    hex
+}
+
+/// The endpoint file of `workspace` under the state directory `state_home`.
+#[must_use]
+pub fn file_in(state_home: &Path, workspace: &Path) -> PathBuf {
+    state_home
+        .join(STATE_DIR)
+        .join(workspace_key(workspace))
+        .join(super::ENDPOINT_NAME)
+}
+
+/// The endpoint file of `workspace` in this user's state directory.
+///
+/// # Errors
+///
+/// [`std::io::ErrorKind::NotFound`] when there is no state directory (no
+/// `$XDG_STATE_HOME` and no home directory).
+pub fn default_file(workspace: &Path) -> Result<PathBuf, std::io::Error> {
+    state_home()
+        .map(|state| file_in(&state, workspace))
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no state directory: set XDG_STATE_HOME or HOME",
+            )
+        })
+}
+
+/// Create `dir` and its missing parents with mode 0700 (an existing
+/// directory is left as it is).
+///
+/// # Errors
+///
+/// [`DaemonError::Io`] when it cannot be created.
+pub fn create_private_dir(dir: &Path) -> Result<(), DaemonError> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder
+        .create(dir)
+        .map_err(|err| DaemonError::io("create endpoint directory", dir, err))
+}
+
+/// The grant of the agent shell's confinement `plan` that would let the
+/// shell read `path` (canonical), if any: `Some` when its read access is
+/// unrestricted or a granted subtree contains `path` (or a granted file is
+/// it). An unconfined shell (`--no-confinement`) is the trusted host and
+/// reads what the user reads; it yields `None`, as there is nothing to
+/// keep from it.
+#[must_use]
+pub fn exposing_grant(plan: &crate::bootstrap::ConfinementPlan, path: &Path) -> Option<PathBuf> {
+    use meerkat_core::confinement::{FilesystemAccess, PathAccess};
+    let meerkat_tools::builtin::shell::ShellConfinement::Required { requirement } = &plan.shell
+    else {
+        return None;
+    };
+    let spec = requirement.specification();
+    let grants: &[PathAccess] = match &spec.read {
+        FilesystemAccess::Unrestricted => return Some(PathBuf::from("/")),
+        FilesystemAccess::Paths(paths) => paths,
+    };
+    grants.iter().find_map(|grant| {
+        let hit = match grant {
+            PathAccess::Subtree(dir) => path.starts_with(dir),
+            PathAccess::Literal(file) => path == file,
+        };
+        hit.then(|| grant.path().to_path_buf())
+    })
+}
 
 /// Bytes of randomness in a token (hex-encoded: twice as many digits).
 pub const TOKEN_BYTES: usize = 32;
@@ -61,8 +175,7 @@ impl Endpoint {
         use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 
         let dir = path.parent().unwrap_or_else(|| Path::new("."));
-        std::fs::create_dir_all(dir)
-            .map_err(|err| DaemonError::io("create endpoint directory", dir, err))?;
+        create_private_dir(dir)?;
         let tmp = temp_path(path);
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create(true).truncate(true);

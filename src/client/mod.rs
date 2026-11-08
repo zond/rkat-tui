@@ -182,7 +182,13 @@ pub async fn configure(args: &Args, mode: AttachMode) -> Result<AttachConfig, Tu
     .map(std::sync::Arc::new)
     .map_err(|err| format!("the ! shell is unavailable: {err}"));
     Ok(AttachConfig {
-        endpoint_file: crate::daemon::endpoint_file(&scope.context_root),
+        endpoint_file: crate::daemon::endpoint::default_file(&scope.context_root).map_err(
+            |source| TuiError::Io {
+                context: "find the per-user state directory for the daemon's endpoint file"
+                    .to_string(),
+                source,
+            },
+        )?,
         cursor: catchup::CursorFile::of_workspace(&scope.context_root),
         config: Some(config),
         spawn,

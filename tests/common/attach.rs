@@ -22,7 +22,7 @@ use rkat_tui::daemon::endpoint::Endpoint;
 use rkat_tui::daemon::{Daemon, DaemonError, DaemonOptions};
 use rkat_tui::ui::{Msg, StatusUpdate, TurnOutcome};
 
-use crate::common::{ScriptedLlmClient, TIMEOUT, args_for, no_lists, within};
+use crate::common::{ScriptedLlmClient, TIMEOUT, args_for, endpoint_file_for, no_lists, within};
 
 /// Allows every reviewed call (these tests are not about the gate).
 pub struct AllowAll;
@@ -49,15 +49,17 @@ pub struct Running {
 
 impl Running {
     pub async fn start(root: &Path, llm: &Arc<ScriptedLlmClient>) -> Self {
-        let options = DaemonOptions::default().with_bootstrap(BootstrapOptions {
-            llm_override: Some(Arc::clone(llm) as Arc<dyn LlmClient>),
-            lister: Some(no_lists()),
-            host_paths: Some(HostPaths::default()),
-            approval: ApprovalOverrides {
-                classifier: Some(Arc::new(AllowAll) as Arc<dyn ActionClassifier>),
-                escalation_timeout: None,
-            },
-        });
+        let options = DaemonOptions::default()
+            .with_bootstrap(BootstrapOptions {
+                llm_override: Some(Arc::clone(llm) as Arc<dyn LlmClient>),
+                lister: Some(no_lists()),
+                host_paths: Some(HostPaths::default()),
+                approval: ApprovalOverrides {
+                    classifier: Some(Arc::new(AllowAll) as Arc<dyn ActionClassifier>),
+                    escalation_timeout: None,
+                },
+            })
+            .with_endpoint_file(endpoint_file_for(root));
         let daemon = within(Daemon::start(&args_for(root), options))
             .await
             .expect("daemon starts");
@@ -106,6 +108,7 @@ impl Client {
             .await
             .unwrap();
         config.lister = no_lists();
+        config.endpoint_file = endpoint_file_for(root);
         let mut client = Self {
             harness: spawn_attach_runner(config),
             seen: Vec::new(),

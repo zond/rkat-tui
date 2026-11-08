@@ -10,7 +10,10 @@ mod common;
 use std::path::Path;
 use std::sync::Arc;
 
-use common::{ScriptedLlmClient, Step, TIMEOUT, Workspace, args_for, args_with, no_lists, within};
+use common::{
+    ScriptedLlmClient, Step, TIMEOUT, Workspace, args_for, args_with, endpoint_file_for, no_lists,
+    within,
+};
 use meerkat::LlmClient;
 use rkat_tui::approval::classifier::{
     ActionClassifier, ClassifierError, ClassifierInput, ClassifierVerdict,
@@ -50,15 +53,18 @@ struct Running {
 
 impl Running {
     async fn start(root: &Path, llm: &Arc<ScriptedLlmClient>) -> Self {
-        Self::start_args(&args_for(root), llm, None).await
+        Self::start_args(&args_for(root), llm, None, Some(endpoint_file_for(root))).await
     }
 
+    /// `endpoint_file` `None`: the default place, in the user's state
+    /// directory.
     async fn start_args(
         args: &rkat_tui::Args,
         llm: &Arc<ScriptedLlmClient>,
         host_paths: Option<HostPaths>,
+        endpoint_file: Option<std::path::PathBuf>,
     ) -> Self {
-        let options = DaemonOptions::default().with_bootstrap(BootstrapOptions {
+        let mut options = DaemonOptions::default().with_bootstrap(BootstrapOptions {
             llm_override: Some(Arc::clone(llm) as Arc<dyn LlmClient>),
             lister: Some(no_lists()),
             host_paths: Some(host_paths.unwrap_or_default()),
@@ -67,6 +73,7 @@ impl Running {
                 escalation_timeout: None,
             },
         });
+        options.endpoint_file = endpoint_file;
         let daemon = within(Daemon::start(args, options))
             .await
             .expect("daemon starts");
@@ -240,10 +247,11 @@ async fn a_client_attaches_and_finds_the_orchestrator() {
     let endpoint = daemon.endpoint();
     assert!(endpoint.address.ip().is_loopback());
     assert_eq!(endpoint.pid, std::process::id());
-    assert_eq!(
-        daemon.endpoint_file,
-        ws.root.join(".rkat").join("tui").join("mob.endpoint")
-    );
+    assert_eq!(daemon.endpoint_file, endpoint_file_for(&ws.root));
+    // Nothing in the workspace holds the token (the agent's confined shell
+    // can read the whole workspace).
+    let holders = files_containing(&ws.root, endpoint.token.as_bytes());
+    assert!(holders.is_empty(), "the token is in {holders:?}");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
@@ -446,23 +454,86 @@ async fn the_orchestrator_shell_runs_confined() {
         println!("SKIPPED: --confinement=workspace is unavailable on this host: {reason}");
         return;
     }
+    // The temp dir is granted to the shell here, so the endpoint file
+    // goes to its default place in the user's state directory.
+    let default = rkat_tui::daemon::endpoint_file(&ws.root).unwrap();
     let llm = ScriptedLlmClient::new(vec![
         Step::Tool {
             id: "sh",
             name: "shell",
-            args: json!({"command": "echo confined-$((40+2))"}),
+            args: json!({"command": format!(
+                "echo confined-$((40+2)); cat '{}' 2>&1; ls -a '{}' 2>&1",
+                default.display(),
+                ws.root.join(".rkat").display(),
+            )}),
         },
         Step::Text("ran it"),
     ]);
     let args = args_with(&ws.root, &["--confinement=workspace"]);
-    let daemon = Running::start_args(&args, &llm, Some(HostPaths::detect())).await;
+    let daemon = Running::start_args(&args, &llm, Some(HostPaths::detect()), None).await;
+    assert_eq!(daemon.endpoint_file, default);
+    let token = daemon.endpoint().token;
     let mut client = daemon.connect().await;
     let stream = client.open_stream().await;
     client.ok("mob/turn_start", turn("echo")).await;
     client.run_completed(&stream).await;
     let request = last_request(&llm);
     assert!(request.contains("confined-42"), "{request}");
+    // The agent's shell cannot read the attach token.
+    assert!(!request.contains(&token), "{request}");
     daemon.stop().await;
+    if let Some(dir) = default.parent() {
+        let _ = std::fs::remove_dir(dir);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_endpoint_file_the_confined_shell_could_read_is_refused() {
+    let ws = Workspace::new();
+    if let Some(reason) = sandbox_unavailable(&ws.root).await {
+        println!("SKIPPED: --confinement=workspace is unavailable on this host: {reason}");
+        return;
+    }
+    let llm = ScriptedLlmClient::new(vec![]);
+    let inside = ws.root.join(".rkat").join("tui").join("mob.endpoint");
+    let options = DaemonOptions::default()
+        .with_bootstrap(BootstrapOptions {
+            llm_override: Some(Arc::clone(&llm) as Arc<dyn LlmClient>),
+            lister: Some(no_lists()),
+            host_paths: Some(HostPaths::default()),
+            ..BootstrapOptions::default()
+        })
+        .with_endpoint_file(inside.clone());
+    let args = args_with(&ws.root, &["--confinement=workspace"]);
+    let refused = within(Daemon::start(&args, options)).await;
+    assert!(
+        matches!(&refused, Err(DaemonError::EndpointExposed { file, grant })
+            if *file == inside && *grant == ws.root),
+        "{refused:?}"
+    );
+    assert!(!inside.exists());
+}
+
+/// The files under `dir` whose content contains `needle`.
+fn files_containing(dir: &Path, needle: &[u8]) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if std::fs::read(&path)
+                .is_ok_and(|bytes| bytes.windows(needle.len()).any(|w| w == needle))
+            {
+                found.push(path);
+            }
+        }
+    }
+    found
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -512,12 +583,14 @@ async fn a_second_daemon_on_a_live_workspace_is_refused() {
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![]);
     let daemon = Running::start(&ws.root, &llm).await;
-    let options = DaemonOptions::default().with_bootstrap(BootstrapOptions {
-        llm_override: Some(Arc::clone(&llm) as Arc<dyn LlmClient>),
-        lister: Some(no_lists()),
-        host_paths: Some(HostPaths::default()),
-        ..BootstrapOptions::default()
-    });
+    let options = DaemonOptions::default()
+        .with_bootstrap(BootstrapOptions {
+            llm_override: Some(Arc::clone(&llm) as Arc<dyn LlmClient>),
+            lister: Some(no_lists()),
+            host_paths: Some(HostPaths::default()),
+            ..BootstrapOptions::default()
+        })
+        .with_endpoint_file(endpoint_file_for(&ws.root));
     let refused = within(Daemon::start(&args_for(&ws.root), options)).await;
     assert!(
         matches!(refused, Err(DaemonError::AlreadyRunning { .. })),
