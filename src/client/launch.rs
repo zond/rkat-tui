@@ -2,11 +2,17 @@
 //! `rkat-tui-mob` in the background and wait for its endpoint file.
 //!
 //! This is the one place the TUI launches a process besides the user's
-//! editor and the user's `!` shell. The daemon is started in its own
-//! process group (so the terminal's Ctrl+C and job control never reach
-//! it), with stdin closed and stdout and stderr appended to
-//! `<realm>/logs/rkat-tui-mob.stderr.log`; it keeps running when the TUI
-//! exits.
+//! editor and the user's `!` shell. The daemon is detached from the TUI's
+//! terminal: through `setsid(1)` when it is on `PATH` (a new session with
+//! no controlling terminal, so closing the terminal sends it no SIGHUP),
+//! else in its own process group (`process_group(0)`: the terminal's
+//! Ctrl+C and job control never reach it; `setsid(2)` itself would need an
+//! `unsafe` `pre_exec`). It has stdin closed and stdout and stderr
+//! appended to `<realm>/logs/rkat-tui-mob.stderr.log`, and keeps running
+//! when the TUI exits. Without `setsid(1)` it stays in the terminal's
+//! session: a shell that hangs up every process group of the session
+//! when the terminal closes would stop it too (bash and zsh hang up only
+//! their own jobs).
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -219,17 +225,37 @@ pub fn spawn_daemon(
         .open(log)
         .map_err(spawn_error)?;
     let err = out.try_clone().map_err(spawn_error)?;
-    let mut command = std::process::Command::new(program);
+    // Through `setsid` a missing program would only show as `setsid`
+    // exiting; refuse it here, as a direct spawn would.
+    if !program_exists(program) {
+        return Err(spawn_error(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "no such program",
+        )));
+    }
+    let mut command = match setsid_program() {
+        // `setsid` runs the daemon in place (same pid) when it is not a
+        // process group leader, which a child of the TUI is not.
+        Some(setsid) => {
+            let mut command = std::process::Command::new(setsid);
+            command.arg(program);
+            command
+        }
+        None => {
+            let mut command = std::process::Command::new(program);
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt as _;
+                command.process_group(0);
+            }
+            command
+        }
+    };
     command
         .args(argv)
         .stdin(std::process::Stdio::null())
         .stdout(out)
         .stderr(err);
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt as _;
-        command.process_group(0);
-    }
     let mut child = command.spawn().map_err(spawn_error)?;
     let pid = child.id();
     let (exited_tx, exited_rx) = tokio::sync::oneshot::channel();
@@ -240,6 +266,27 @@ pub fn spawn_daemon(
         let _ = exited_tx.send(status);
     });
     Ok((pid, exited_rx))
+}
+
+/// Whether `program` is a file, or a bare name found on `PATH`.
+fn program_exists(program: &Path) -> bool {
+    if program.components().count() > 1 {
+        return program.is_file();
+    }
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
+}
+
+/// `setsid(1)`, when it is on `PATH` (Unix only).
+#[must_use]
+pub fn setsid_program() -> Option<PathBuf> {
+    if !cfg!(unix) {
+        return None;
+    }
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join("setsid"))
+        .find(|candidate| candidate.is_file())
 }
 
 /// Wait (up to `timeout`) for a live endpoint at `file`; fail early when
@@ -383,6 +430,54 @@ mod tests {
     fn the_daemon_binary_is_found_next_to_the_tui_or_on_the_path() {
         let program = daemon_program();
         assert!(program.ends_with(DAEMON_BINARY), "{}", program.display());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_started_daemon_leaves_the_terminals_session_when_setsid_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = daemon_log(dir.path());
+        let (pid, mut exited) = spawn_daemon(Path::new("/bin/sleep"), &["5".into()], &log).unwrap();
+        // Once `setsid` has run (it execs the program in place).
+        for _ in 0..200 {
+            let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
+            if comm.trim() == "sleep" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // /proc/<pid>/stat: pid (comm) state ppid pgrp session …
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+        let fields: Vec<&str> = stat
+            .rsplit_once(')')
+            .unwrap()
+            .1
+            .split_whitespace()
+            .collect();
+        let (pgrp, session) = (fields[2], fields[3]);
+        let ours = std::fs::read_to_string("/proc/self/stat").unwrap();
+        let ours: Vec<&str> = ours
+            .rsplit_once(')')
+            .unwrap()
+            .1
+            .split_whitespace()
+            .collect();
+        assert_ne!(pgrp, ours[2], "the daemon is in its own process group");
+        if setsid_program().is_some() {
+            assert_eq!(
+                session,
+                pid.to_string(),
+                "setsid made it a session leader in place"
+            );
+            assert_ne!(session, ours[3]);
+        } else {
+            eprintln!("SKIPPED: no setsid on PATH; the daemon only has its own process group");
+        }
+        assert!(exited.try_recv().is_err(), "still running");
+        let _ = nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(i32::try_from(pid).unwrap()),
+            nix::sys::signal::Signal::SIGTERM,
+        );
     }
 
     #[tokio::test]

@@ -566,6 +566,23 @@ impl Assembled {
     }
 }
 
+/// Whether the TUI runs attached to the workspace's daemon: `--attach` or
+/// `--no-attach` when given, else `attach = true` in a user layer of
+/// `tui.toml` (a project file's `attach` is ignored with a notice at
+/// bootstrap, like its other trusted-only keys).
+///
+/// # Errors
+///
+/// [`TuiError`] when the workspace or the `tui.toml` layers cannot be read.
+pub fn attach_mode(args: &Args) -> Result<Option<crate::cli::AttachMode>, TuiError> {
+    if args.no_attach || args.attach.is_some() {
+        return Ok(args.attach_mode());
+    }
+    let scope = resolve_scope(args)?;
+    let (layered, _) = approval::load_layers(&scope, args)?;
+    Ok(layered.attach.then_some(crate::cli::AttachMode::Auto))
+}
+
 /// Resolve endpoints, model, confinement, trust, approval engine and MCP
 /// set, open the realm persistence, take the realm lease under
 /// `lease_surface` and build the factory: everything [`bootstrap_with`]

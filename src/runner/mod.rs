@@ -42,7 +42,7 @@
 
 pub(crate) mod approval;
 mod checklist;
-mod context;
+pub(crate) mod context;
 mod cost;
 pub mod cost_store;
 mod lifecycle;
@@ -88,7 +88,7 @@ use crate::ui::{
     StatusUpdate, TurnFailure, TurnOutcome, TurnSummary, UiChannels, run_ui,
 };
 
-pub use lifecycle::{Start, blocks_from_session, open_start, session_messages};
+pub use lifecycle::{Start, blocks_from_messages, blocks_from_session, open_start, session_messages};
 pub use models::DEFAULT_CONTEXT_WINDOW;
 pub use quit::SavedUnsent;
 

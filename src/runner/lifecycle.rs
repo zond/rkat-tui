@@ -509,8 +509,15 @@ impl Runner {
 /// notices, injected context and compaction summaries are not shown.
 #[must_use]
 pub fn blocks_from_session(session: &Session) -> Vec<Block> {
+    blocks_from_messages(session.messages())
+}
+
+/// [`blocks_from_session`] over a session's `messages` (attach mode reads
+/// them from the daemon).
+#[must_use]
+pub fn blocks_from_messages(messages: &[Message]) -> Vec<Block> {
     let mut blocks = Vec::new();
-    for message in session.messages() {
+    for message in messages {
         match message {
             Message::User(user) if user.transcript_role == TranscriptUserRole::Conversational => {
                 let text = user.text_content();

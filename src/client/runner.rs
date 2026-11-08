@@ -29,18 +29,23 @@ use tokio::time::Instant;
 use super::ClientError;
 use super::approvals::{Approvals, decide_params};
 use super::catchup::{Cursor, CursorFile, Mark};
+use super::helpers::{self, Action as FollowerAction, Followers, HelperId};
 use super::launch::{self, Decision};
-use super::remote;
+use super::remote::{self, ModelSwitch};
+use super::sessions;
 use super::transport::{ATTACH_TIMEOUT, Connection, Notification};
 use crate::approval::remote::{ModeStatus, RuleCommand, RuleOutcome};
 use crate::bootstrap::RuntimeScope;
 use crate::cli::AttachMode;
 use crate::daemon::endpoint::Endpoint;
 use crate::delivery::{PendingId, SteerFailure};
-use crate::endpoints::WireDialect;
+use crate::endpoints::{
+    EndpointRegistry, ModelRefError, WireDialect, needs_lookup, parse_model_ref,
+};
+use crate::models::{FetchResults, ModelCache, ModelGroup, fetch_warning, with_current};
 use crate::ui::{
-    CompactFailure, Effect, EscalationAnswer, EscalationId, Msg, NoticeLevel, RuleEffect,
-    ShellOutcome, ShellRunId, StatusUpdate, TurnFailure, TurnOutcome, TurnSummary,
+    Block, CompactFailure, Effect, EscalationAnswer, EscalationId, MemoryTarget, Msg, NoticeLevel,
+    RuleEffect, ShellOutcome, ShellRunId, StatusUpdate, TurnFailure, TurnOutcome, TurnSummary,
 };
 use crate::user_shell::UserShell;
 
@@ -53,6 +58,23 @@ pub const RECONNECTING: &str = "reconnecting";
 
 /// What attach mode answers for what the daemon cannot do yet.
 pub const NOT_AVAILABLE: &str = "not available in attach mode yet";
+
+/// Why `/compact now` is refused in attach mode.
+pub const COMPACT_NOW_UNAVAILABLE: &str = "not available in attach mode: the engine has no compact-now for a mob member yet (the in-process TUI rebuilds its own session for it); the daemon compacts at the policy's threshold (/compact shows it)";
+
+/// How often the orchestrator's current session is read (another client's
+/// `/new` or `/resume` moves it).
+pub const SESSION_POLL: Duration = Duration::from_secs(1);
+
+/// How often the mobs are listed while a tool that seats helpers runs.
+pub const DISCOVER_EVERY: Duration = Duration::from_millis(250);
+
+/// How long after such a tool starts the mobs are listed.
+pub const DISCOVER_FOR: Duration = Duration::from_secs(10);
+
+/// How many events of streams not known yet are held (see
+/// [`AttachRunner`]'s `orphans`).
+const ORPHANS_MAX: usize = 2_000;
 
 /// The notice shown on every attach.
 pub const EXPERIMENTAL_NOTICE: &str = "attach mode is experimental: the agent runs in this workspace's rkat-tui-mob daemon, behind the same approval gate (its approval requests show here, and in every other attached client; the first answer counts). /quit detaches and leaves the daemon running; /daemon stop shuts it down.";
@@ -80,6 +102,13 @@ pub const CATCH_UP_EVERY: Duration = Duration::from_millis(500);
 /// Bound on the calls that answer at once (sends, stops).
 const CALL_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// Bound on a conversation switch (the daemon retires and seats the
+/// orchestrator) and on reading the new conversation.
+const SWITCH_TIMEOUT: Duration = Duration::from_mins(1);
+
+/// How often a reconnect may start a daemon that died.
+const RESTART_EVERY: Duration = Duration::from_secs(30);
+
 /// Reconnect backoff: first and longest wait.
 const BACKOFF_FIRST: Duration = Duration::from_millis(100);
 const BACKOFF_MAX: Duration = Duration::from_secs(2);
@@ -99,7 +128,7 @@ pub struct SpawnPlan {
 }
 
 /// What an attach runner needs.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AttachConfig {
     /// The workspace and realm.
     pub scope: RuntimeScope,
@@ -114,6 +143,25 @@ pub struct AttachConfig {
     /// The user's `!` shell (this process's own, as in-process), or why
     /// there is none.
     pub user_shell: Result<Arc<UserShell>, String>,
+    /// This process's LLM endpoints (the model picker, `/model`).
+    pub endpoints: crate::endpoints::EndpointRegistry,
+    /// Fetches the endpoints' model lists (tests list nothing).
+    pub lister: crate::models::ModelLister,
+    /// The `[ui]` settings of the `tui.toml` layers.
+    pub ui: crate::approval::rules::UiSettings,
+    /// The context-compaction policy of the `tui.toml` layers.
+    pub compaction: crate::ui::CompactionPolicy,
+}
+
+impl std::fmt::Debug for AttachConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AttachConfig")
+            .field("workspace", &self.scope.context_root)
+            .field("endpoint_file", &self.endpoint_file)
+            .field("spawn", &self.spawn)
+            .field("endpoints", &self.endpoints.names())
+            .finish_non_exhaustive()
+    }
 }
 
 impl AttachConfig {
@@ -162,6 +210,48 @@ enum Report {
     },
     /// The daemon's permission mode.
     Mode(ModeStatus),
+    /// The mobs the daemon hosts (a discovery round).
+    Mobs(Vec<String>),
+    /// A mob's stream opened, with its members' sessions; or not.
+    MobOpened {
+        mob: String,
+        opened: Result<(String, Vec<(String, Option<SessionId>)>), String>,
+    },
+    /// A helper session's durable events.
+    Backfilled {
+        helper: HelperId,
+        events: Vec<EventEnvelope<AgentEvent>>,
+    },
+    /// A helper's model.
+    HelperModel { helper: HelperId, model: String },
+    /// The orchestrator's current session, as just read.
+    SessionNow(SessionId),
+    /// It could not be read.
+    SessionUnread,
+    /// A conversation switch (this client's, `fresh` for `/new`; `None`:
+    /// another client's) and what the new conversation shows.
+    Switched {
+        result: Result<Adopted, String>,
+        own: Option<bool>,
+        warning: Option<String>,
+    },
+    /// The resume picker's rows.
+    Picker(Result<Vec<(String, String)>, String>),
+    /// A notice to show.
+    Notice(NoticeLevel, String),
+    /// The endpoints' model lists.
+    ModelLists(FetchResults),
+}
+
+/// What a client shows of the conversation it switched to.
+struct Adopted {
+    session: SessionId,
+    /// The orchestrator's stream, opened again.
+    stream: String,
+    blocks: Vec<Block>,
+    /// The last durable sequence of the session (shown as the transcript).
+    last_seq: u64,
+    identity: Option<(String, String)>,
 }
 
 /// The UI's current turn.
@@ -220,8 +310,8 @@ pub struct AttachRunner {
     reports_rx: mpsc::UnboundedReceiver<Report>,
     mark: Option<Mark>,
     turn: Turn,
-    /// `/model`: the model (and provider) the next prompt switches to.
-    pending_model: Option<(String, Option<String>)>,
+    /// `/model`: the model the next prompt switches to.
+    pending_model: Option<ModelSwitch>,
     /// `(provider, model)` as last read or switched to.
     model: Option<(String, String)>,
     /// `/daemon stop` was sent: a lost connection is not re-made.
@@ -238,6 +328,34 @@ pub struct AttachRunner {
     listing_approvals: bool,
     /// The running `!` command.
     shell_task: Option<(ShellRunId, JoinHandle<()>)>,
+    /// The orchestrator's helpers.
+    followers: Followers,
+    /// Events of streams opened but not registered yet, by stream id.
+    orphans: std::collections::HashMap<String, Vec<meerkat_mob::AttributedEvent>>,
+    /// When the mobs are listed next, and until when the listing repeats.
+    discover_at: Option<Instant>,
+    discover_until: Option<Instant>,
+    /// A listing is running.
+    discovering: bool,
+    /// When the orchestrator's current session is read next.
+    session_check_at: Option<Instant>,
+    checking_session: bool,
+    /// A conversation switch (this client's, or adopting another's) runs.
+    switching: bool,
+    /// The last `/model` switch (carried to a `/new` conversation).
+    last_switch: Option<ModelSwitch>,
+    /// The endpoint the status bar names.
+    current_endpoint: Option<String>,
+    /// The endpoints' model lists, once fetched.
+    models: Option<ModelCache>,
+    /// A model-list fetch runs.
+    fetching_models: bool,
+    /// The picker opens when the lists arrive.
+    picker_waiting: bool,
+    /// A `/model <ref>` waiting for the lists.
+    pending_set: Option<String>,
+    /// The file `/memory` opened and its bytes before.
+    memory_before: Option<(PathBuf, Option<Vec<u8>>)>,
 }
 
 impl AttachRunner {
@@ -269,6 +387,21 @@ impl AttachRunner {
             approvals_at: None,
             listing_approvals: false,
             shell_task: None,
+            followers: Followers::default(),
+            orphans: std::collections::HashMap::new(),
+            discover_at: None,
+            discover_until: None,
+            discovering: false,
+            session_check_at: None,
+            checking_session: false,
+            switching: false,
+            last_switch: None,
+            current_endpoint: None,
+            models: None,
+            fetching_models: false,
+            picker_waiting: false,
+            pending_set: None,
+            memory_before: None,
         }
     }
 
@@ -295,6 +428,8 @@ impl AttachRunner {
                 () = sleep_until(self.turn.deadline()) => self.on_deadline(),
                 () = sleep_until(self.catch_up_at) => self.catch_up(),
                 () = sleep_until(self.approvals_at) => self.list_approvals(),
+                () = sleep_until(self.discover_at) => self.discover(),
+                () = sleep_until(self.session_check_at) => self.check_session(),
             }
         }
         self.save_cursor();
@@ -338,14 +473,47 @@ impl AttachRunner {
                 establish(endpoint, saved.as_ref()).await
             })
         } else {
+            let spawn = self.config.spawn.clone();
             tokio::spawn(async move {
                 let mut wait = BACKOFF_FIRST;
+                let mut restarted: Option<Instant> = None;
                 loop {
-                    if let Ok(endpoint) = Endpoint::read(&file) {
-                        match establish(endpoint, saved.as_ref()).await {
-                            Ok(established) => return Ok(established),
-                            Err(err) => tracing::debug!(error = %err, "reconnect failed"),
+                    match launch::probe(&file).await {
+                        launch::Liveness::Live(endpoint) => {
+                            match establish(endpoint, saved.as_ref()).await {
+                                Ok(established) => return Ok(established),
+                                Err(err) => tracing::debug!(error = %err, "reconnect failed"),
+                            }
                         }
+                        // The daemon died and left its endpoint file:
+                        // start it again (auto mode), at most every
+                        // RESTART_EVERY. A daemon that shut down removed
+                        // its file and is waited for.
+                        launch::Liveness::Stale(_)
+                            if restarted.is_none_or(|at| at.elapsed() >= RESTART_EVERY) =>
+                        {
+                            if let Some(plan) = &spawn {
+                                restarted = Some(Instant::now());
+                                match restart(&file, plan, &ui_tx).await {
+                                    Ok(endpoint) => match establish(endpoint, saved.as_ref()).await
+                                    {
+                                        Ok(established) => return Ok(established),
+                                        Err(err) => {
+                                            tracing::debug!(error = %err, "reattach failed");
+                                        }
+                                    },
+                                    Err(err) => {
+                                        let _ = ui_tx.send(Msg::Notice {
+                                            level: NoticeLevel::Error,
+                                            text: format!(
+                                                "the daemon could not be restarted: {err}"
+                                            ),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                        launch::Liveness::Stale(_) | launch::Liveness::Absent => {}
                     }
                     tokio::time::sleep(wait).await;
                     wait = (wait * 2).min(BACKOFF_MAX);
@@ -399,18 +567,33 @@ impl AttachRunner {
                 format!("reattached to the daemon at {address}"),
             );
         }
-        if let Some((model, provider)) = identity
-            && self.pending_model.is_none()
-        {
-            self.set_model_status(&provider, &model);
+        if let Some((model, provider)) = identity {
+            self.followers.set_default_model(&model);
+            if self.pending_model.is_none() {
+                self.set_model_status(&provider, &model);
+            }
+        }
+        if fresh {
+            self.load_cost(&link.session);
         }
         self.status(&format!("attached {address}"));
+        // The helpers of this conversation: what was shown before a
+        // reconnect stays shown.
+        if fresh || self.followers.owner() != Some(&link.session) {
+            self.followers.reset(link.session.clone());
+        } else {
+            self.followers.streams_lost();
+        }
+        self.orphans.clear();
         self.link = Some(link);
         for envelope in replay {
             self.on_event(envelope);
         }
-        self.catch_up_at = Some(Instant::now() + CATCH_UP_EVERY);
-        self.approvals_at = Some(Instant::now());
+        let now = Instant::now();
+        self.catch_up_at = Some(now + CATCH_UP_EVERY);
+        self.approvals_at = Some(now);
+        self.discover_at = Some(now);
+        self.session_check_at = Some(now + SESSION_POLL);
         self.refresh_mode();
     }
 
@@ -524,6 +707,11 @@ impl AttachRunner {
     fn lost(&mut self) {
         self.link = None;
         self.save_cursor();
+        self.followers.streams_lost();
+        self.orphans.clear();
+        self.discover_at = None;
+        self.session_check_at = None;
+        self.switching = false;
         // What is still pending shows again after the reattach.
         for id in self.approvals.clear() {
             self.send(Msg::EscalationResolved(id));
@@ -552,17 +740,170 @@ impl AttachRunner {
         };
         if let Some(envelope) = remote::stream_event(note, &link.stream) {
             self.on_event(envelope);
+            return;
+        }
+        if let Some(stream) = remote::stream_end(note) {
+            self.followers.ended(stream);
+            return;
+        }
+        let Some((stream, attributed)) = remote::attributed_event(note) else {
+            return;
+        };
+        if helpers::starts_helpers(&attributed.envelope.payload) {
+            self.start_discovery();
+        }
+        if self.followers.owns(&stream) {
+            let actions = self.followers.event(&stream, attributed);
+            self.follow(actions);
+        } else if self.orphans.values().map(Vec::len).sum::<usize>() < ORPHANS_MAX {
+            // A stream whose open has not answered yet.
+            self.orphans.entry(stream).or_default().push(attributed);
         }
     }
 
+    /// Carry out what the followers ask.
+    fn follow(&self, actions: Vec<FollowerAction>) {
+        for action in actions {
+            match action {
+                FollowerAction::Ui(msg) => self.send(msg),
+                FollowerAction::Backfill {
+                    helper,
+                    session,
+                    after,
+                } => {
+                    let Some(connection) = self.connection() else {
+                        continue;
+                    };
+                    let reports = self.reports_tx.clone();
+                    tokio::spawn(async move {
+                        let events = tokio::time::timeout(
+                            CALL_TIMEOUT,
+                            replay_to_end(&connection, &session, after),
+                        )
+                        .await
+                        .ok()
+                        .and_then(Result::ok)
+                        .map(|(events, _)| events)
+                        .unwrap_or_default();
+                        let _ = reports.send(Report::Backfilled { helper, events });
+                    });
+                }
+                FollowerAction::Snapshot { helper, session } => {
+                    let Some(connection) = self.connection() else {
+                        continue;
+                    };
+                    let reports = self.reports_tx.clone();
+                    tokio::spawn(async move {
+                        if let Ok(Ok((model, _))) = tokio::time::timeout(
+                            CALL_TIMEOUT,
+                            remote::identity(&connection, &session),
+                        )
+                        .await
+                        {
+                            let _ = reports.send(Report::HelperModel { helper, model });
+                        }
+                    });
+                }
+            }
+        }
+    }
+
+    /// A tool that seats helpers started: list the mobs for a while, so a
+    /// new one (an implicit `delegate` mob) is followed.
+    fn start_discovery(&mut self) {
+        let now = Instant::now();
+        self.discover_until = Some(now + DISCOVER_FOR);
+        if self.discover_at.is_none() {
+            self.discover_at = Some(now);
+        }
+    }
+
+    /// List the daemon's mobs and follow the new ones.
+    fn discover(&mut self) {
+        self.discover_at = None;
+        let Some(connection) = self.connection() else {
+            return;
+        };
+        if self.discovering {
+            return;
+        }
+        self.discovering = true;
+        let reports = self.reports_tx.clone();
+        tokio::spawn(async move {
+            let mobs = tokio::time::timeout(CALL_TIMEOUT, remote::mobs(&connection))
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or_default();
+            let _ = reports.send(Report::Mobs(mobs));
+        });
+    }
+
+    /// Open `mob`'s mob-wide stream and read its members' sessions.
+    fn open_mob(&self, mob: String) {
+        let Some(connection) = self.connection() else {
+            return;
+        };
+        let reports = self.reports_tx.clone();
+        tokio::spawn(async move {
+            let opened = tokio::time::timeout(CALL_TIMEOUT, async {
+                let stream = remote::open_mob_stream(&connection, &mob).await?;
+                let mut members = Vec::new();
+                for label in remote::members(&connection, &mob).await.unwrap_or_default() {
+                    let session = remote::member_session(&connection, &mob, &label).await.ok();
+                    members.push((label, session));
+                }
+                Ok::<_, ClientError>((stream, members))
+            })
+            .await;
+            let opened = match opened {
+                Ok(Ok(opened)) => Ok(opened),
+                Ok(Err(err)) => Err(err.to_string()),
+                Err(_) => Err("timed out".to_string()),
+            };
+            let _ = reports.send(Report::MobOpened { mob, opened });
+        });
+    }
+
+    /// Read the orchestrator's current session (another client may have
+    /// switched it).
+    fn check_session(&mut self) {
+        self.session_check_at = None;
+        let Some(connection) = self.connection() else {
+            return;
+        };
+        if self.checking_session || self.switching {
+            self.session_check_at = Some(Instant::now() + SESSION_POLL);
+            return;
+        }
+        self.checking_session = true;
+        let reports = self.reports_tx.clone();
+        tokio::spawn(async move {
+            match tokio::time::timeout(CALL_TIMEOUT, remote::session_id(&connection)).await {
+                Ok(Ok(session)) => {
+                    let _ = reports.send(Report::SessionNow(session));
+                }
+                _ => {
+                    let _ = reports.send(Report::SessionUnread);
+                }
+            }
+        });
+    }
+
     fn set_model_status(&mut self, provider: &str, model: &str) {
-        self.model = Some((provider.to_string(), model.to_string()));
+        self.show_model(provider, WireDialect::parse(provider), model);
+    }
+
+    /// The status bar names `model` on `endpoint` (of `dialect`).
+    fn show_model(&mut self, endpoint: &str, dialect: Option<WireDialect>, model: &str) {
+        self.model = Some((endpoint.to_string(), model.to_string()));
+        self.current_endpoint = Some(endpoint.to_string());
         self.send(Msg::Status(StatusUpdate::Model {
-            provider: provider.to_string(),
+            provider: endpoint.to_string(),
             model: model.to_string(),
         }));
         let window = self.config.config.as_ref().and_then(|config| {
-            let provider = WireDialect::parse(provider)?.into();
+            let provider = dialect?.into();
             crate::endpoints::registry_context_window(config, provider, model)
         });
         self.send(Msg::Status(StatusUpdate::ContextWindow(window)));
@@ -583,6 +924,9 @@ impl AttachRunner {
             && !mark.admit(envelope.seq)
         {
             return;
+        }
+        if helpers::starts_helpers(&envelope.payload) {
+            self.start_discovery();
         }
         let mut terminal = false;
         // A run already going when this client attached (its start was shown
@@ -624,6 +968,12 @@ impl AttachRunner {
             AgentEvent::ToolCallRequested { .. } => {
                 // The gate may raise an approval for it.
                 self.approvals_at = Some(Instant::now());
+            }
+            AgentEvent::ToolExecutionCompleted { name, .. }
+                if helpers::HELPER_TOOLS.contains(&name.as_str()) =>
+            {
+                // Once more: a mob made while the tool ran.
+                self.discover_at = Some(Instant::now());
             }
             AgentEvent::BoundaryAppendApplied { .. } => {
                 if let Some(id) = self.turn.steers.pop_front() {
@@ -761,6 +1111,94 @@ impl AttachRunner {
                 }
             }
             Report::Mode(status) => self.push_mode(status),
+            Report::Mobs(mobs) => {
+                self.discovering = false;
+                for mob in mobs {
+                    if self.followers.should_open(&mob) {
+                        self.open_mob(mob);
+                    }
+                }
+                let now = Instant::now();
+                if self.discover_until.is_some_and(|until| until > now)
+                    && self.discover_at.is_none()
+                {
+                    self.discover_at = Some(now + DISCOVER_EVERY);
+                }
+            }
+            Report::MobOpened { mob, opened } => match opened {
+                Ok((stream, members)) => {
+                    if self.link.is_none() {
+                        return;
+                    }
+                    self.followers.opened(stream.clone(), &mob);
+                    let mut actions = Vec::new();
+                    for event in self.orphans.remove(&stream).unwrap_or_default() {
+                        actions.extend(self.followers.event(&stream, event));
+                    }
+                    for (label, session) in members {
+                        actions.extend(self.followers.member(&mob, &label, session));
+                    }
+                    self.follow(actions);
+                }
+                Err(why) => {
+                    tracing::debug!(%mob, %why, "cannot follow the mob");
+                    self.followers.open_failed(&mob);
+                }
+            },
+            Report::Backfilled { helper, events } => {
+                let actions = self.followers.backfilled(&helper, events);
+                self.follow(actions);
+            }
+            Report::HelperModel { helper, model } => {
+                let actions = self.followers.model(&helper, model);
+                self.follow(actions);
+            }
+            Report::SessionNow(session) => {
+                self.checking_session = false;
+                if self.link.is_some() {
+                    self.session_check_at = Some(Instant::now() + SESSION_POLL);
+                }
+                let moved = self
+                    .link
+                    .as_ref()
+                    .is_some_and(|link| link.session != session);
+                if moved && !self.switching {
+                    self.adopt_switch(session, None, None);
+                }
+            }
+            Report::SessionUnread => {
+                self.checking_session = false;
+                if self.link.is_some() {
+                    self.session_check_at = Some(Instant::now() + SESSION_POLL);
+                }
+            }
+            Report::Switched {
+                result,
+                own,
+                warning,
+            } => {
+                self.switching = false;
+                match result {
+                    Ok(adopted) => self.adopted(adopted, own, warning),
+                    Err(why) if own.is_some() => self.notice(
+                        NoticeLevel::Error,
+                        format!("could not switch conversations: {why}"),
+                    ),
+                    Err(why) => {
+                        tracing::warn!(%why, "cannot show the orchestrator's new conversation");
+                    }
+                }
+            }
+            Report::Picker(Ok(items)) => self.send(Msg::ShowResumePicker(items)),
+            Report::Picker(Err(why)) => self.notice(
+                NoticeLevel::Error,
+                format!("could not list the conversations: {why}"),
+            ),
+            Report::Notice(level, text) => {
+                self.switching = false;
+                self.notice(level, text);
+            }
+            Report::ModelLists(results) => self.model_lists(results),
         }
     }
 
@@ -781,7 +1219,7 @@ impl AttachRunner {
             Effect::CancelShell => self.cancel_shell(),
             Effect::SetModel(reference) => self.set_model(&reference),
             Effect::CompactNow => self.send(Msg::CompactRebuilt(Err(CompactFailure::Rebuild(
-                NOT_AVAILABLE.to_string(),
+                COMPACT_NOW_UNAVAILABLE.to_string(),
             )))),
             Effect::StatusReport => self.status_report(),
             Effect::ContextReport(header) => self.notice(
@@ -790,15 +1228,17 @@ impl AttachRunner {
             ),
             Effect::Export { path, text } => self.export(path.as_deref(), &text),
             Effect::DaemonStop => self.daemon_stop().await,
-            Effect::NewSession => self.unavailable("/new"),
-            Effect::ResumeSession(_) | Effect::RequestResumePicker => self.unavailable("/resume"),
-            Effect::RequestRewindMenu | Effect::Rewind(_) => self.unavailable("/rewind"),
-            Effect::RequestModelPicker { .. } => self.notice(
-                NoticeLevel::Info,
-                format!("the model picker is {NOT_AVAILABLE}; use /model <provider>:<id> (anthropic, openai, gemini)"),
-            ),
-            Effect::Remember(_) => self.unavailable("/remember"),
-            Effect::OpenMemory(_) | Effect::MemoryEdited { .. } => self.unavailable("/memory"),
+            Effect::NewSession => self.switch_conversation(None),
+            Effect::ResumeSession(reference) => self.resume_session(reference),
+            Effect::RequestResumePicker => self.show_resume_picker(),
+            Effect::RequestRewindMenu | Effect::Rewind(_) => {
+                self.notice(NoticeLevel::Warn, sessions::REWIND_UNAVAILABLE);
+            }
+            Effect::RequestModelPicker { refresh } => self.request_model_picker(refresh),
+            Effect::Remember(text) => self.remember(&text).await,
+            Effect::OpenMemory(target) => self.open_memory(target),
+            Effect::MemoryEdited { target, path } => self.memory_edited(target, &path).await,
+            Effect::CostSnapshot(snapshot) => self.save_cost(&snapshot),
             Effect::RespondEscalation(id, answer) => self.respond_escalation(id, &answer),
             Effect::SetMode(mode) => self.set_mode(mode.name()).await,
             Effect::ResumeAutoMode => {
@@ -824,7 +1264,6 @@ impl AttachRunner {
             Effect::Quit
             | Effect::SaveUnsent(_)
             | Effect::SetChecklistView(_)
-            | Effect::CostSnapshot(_)
             | Effect::Redraw
             | Effect::Suspend
             | Effect::ExternalEditor(_) => {}
@@ -1020,12 +1459,10 @@ impl AttachRunner {
         } else {
             text.to_string()
         };
-        if let Some((model, provider)) = self.pending_model.take() {
+        if let Some(switch) = self.pending_model.take() {
             let reports = self.reports_tx.clone();
             tokio::spawn(async move {
-                if let Err(err) =
-                    remote::turn_with_model(&connection, &text, &model, provider.as_deref()).await
-                {
+                if let Err(err) = remote::turn_with_model(&connection, &text, &switch).await {
                     let _ = reports.send(Report::TurnStart(err));
                 }
             });
@@ -1126,22 +1563,530 @@ impl AttachRunner {
         });
     }
 
-    /// `/model <provider>:<id>` (or a catalogued bare id): the next prompt
-    /// carries the switch (`mob/turn_start` with the identity overrides);
-    /// the session keeps the model from then on.
+    /// `/model <reference>` or a picker selection: the next prompt carries
+    /// the switch (`mob/turn_start` with the model, provider and the
+    /// endpoint's auth binding); the session keeps the model from then on.
+    /// A bare id is resolved against this process's endpoints as
+    /// in-process (their lists fetched first when several could serve it).
     fn set_model(&mut self, reference: &str) {
-        match parse_model(reference) {
-            Ok((model, provider)) => {
-                let shown = provider.clone().unwrap_or_default();
+        match model_switch(
+            reference,
+            &self.config.endpoints,
+            self.models.as_ref(),
+            self.current_endpoint.as_deref(),
+        ) {
+            Ok(switch) => {
                 self.notice(
                     NoticeLevel::Info,
-                    format!("switching to {model} with your next message"),
+                    format!(
+                        "switching to {} on {} with your next message",
+                        switch.model, switch.endpoint
+                    ),
                 );
-                self.set_model_status(&shown, &model);
-                self.pending_model = Some((model, provider));
+                let dialect = switch.provider.as_deref().and_then(WireDialect::parse);
+                self.show_model(&switch.endpoint, dialect, &switch.model);
+                self.last_switch = Some(switch.clone());
+                self.pending_model = Some(switch);
             }
-            Err(why) => self.notice(NoticeLevel::Warn, why),
+            Err(_)
+                if self.models.is_none()
+                    && needs_lookup(reference, self.config.endpoints.as_slice()) =>
+            {
+                self.pending_set = Some(reference.to_string());
+                self.fetch_models(true);
+            }
+            Err(err) => self.notice(NoticeLevel::Warn, err.to_string()),
         }
+    }
+
+    /// Fetch the endpoints' model lists in the background, once at a time.
+    fn fetch_models(&mut self, announce: bool) {
+        if self.fetching_models {
+            return;
+        }
+        self.fetching_models = true;
+        let endpoints: Vec<_> = self
+            .config
+            .endpoints
+            .iter()
+            .filter(|endpoint| endpoint.has_key())
+            .cloned()
+            .collect();
+        let lister = Arc::clone(&self.config.lister);
+        let reports = self.reports_tx.clone();
+        tokio::spawn(async move {
+            let _ = reports.send(Report::ModelLists(lister(endpoints).await));
+        });
+        if announce {
+            self.notice(NoticeLevel::Info, "fetching the model lists…");
+        }
+    }
+
+    /// `/model` without an id: the picker, from the lists (fetched first).
+    fn request_model_picker(&mut self, refresh: bool) {
+        if refresh {
+            self.models = None;
+        }
+        if self.models.is_some() || self.config.endpoints.is_empty() {
+            self.send(Msg::ShowModelPicker(self.picker_groups()));
+            return;
+        }
+        self.picker_waiting = true;
+        self.fetch_models(true);
+    }
+
+    fn model_lists(&mut self, results: FetchResults) {
+        self.fetching_models = false;
+        let (cache, _prices) = ModelCache::from_results(results);
+        self.models = Some(cache);
+        if std::mem::take(&mut self.picker_waiting) {
+            self.send(Msg::ShowModelPicker(self.picker_groups()));
+        }
+        if let Some(reference) = self.pending_set.take() {
+            self.set_model(&reference);
+        }
+    }
+
+    /// The picker: one group per endpoint, the current endpoint first with
+    /// the current model first (as in-process).
+    fn picker_groups(&self) -> Vec<ModelGroup> {
+        let endpoints = &self.config.endpoints;
+        let current_name = self.current_endpoint.as_deref().unwrap_or("");
+        let current_model = self.model.as_ref().map_or("", |(_, model)| model.as_str());
+        let current = endpoints.iter().filter(|e| e.name == current_name);
+        let others = endpoints.iter().filter(|e| e.name != current_name);
+        current
+            .chain(others)
+            .map(|endpoint| {
+                let listed = self.models.as_ref().and_then(|m| m.get(&endpoint.name));
+                let (models, warning) = match listed {
+                    Some(Ok(list)) => (list.clone(), None),
+                    Some(Err(err)) => (Vec::new(), Some(fetch_warning(err))),
+                    None if !endpoint.has_key() => (
+                        Vec::new(),
+                        Some("model listing needs an API key the TUI can read".to_string()),
+                    ),
+                    None => (Vec::new(), None),
+                };
+                let current = if endpoint.name == current_name {
+                    current_model
+                } else {
+                    ""
+                };
+                ModelGroup {
+                    endpoint: endpoint.name.clone(),
+                    dialect: endpoint.dialect,
+                    base_url: endpoint.base_url.clone(),
+                    models: with_current(current, models),
+                    warning,
+                }
+            })
+            .collect()
+    }
+
+    /// `/new` (`target: None`) or `/resume <session>`: ask the daemon to
+    /// switch the orchestrator's conversation, then show the new one.
+    fn switch_conversation(&mut self, target: Option<SessionId>) {
+        if !self.may_switch() {
+            return;
+        }
+        let Some(link) = &self.link else {
+            return;
+        };
+        self.switching = true;
+        let connection = Arc::clone(&link.connection);
+        let stream = link.stream.clone();
+        let reports = self.reports_tx.clone();
+        let fresh = target.is_none();
+        tokio::spawn(async move {
+            let switched =
+                tokio::time::timeout(SWITCH_TIMEOUT, remote::switch(&connection, target.as_ref()))
+                    .await;
+            let (session, warning) = match switched {
+                Ok(Ok(switched)) => switched,
+                Ok(Err(err)) => {
+                    let _ = reports.send(Report::Switched {
+                        result: Err(err.to_string()),
+                        own: Some(fresh),
+                        warning: None,
+                    });
+                    return;
+                }
+                Err(_) => {
+                    let _ = reports.send(Report::Switched {
+                        result: Err("the daemon did not answer in time".to_string()),
+                        own: Some(fresh),
+                        warning: None,
+                    });
+                    return;
+                }
+            };
+            let result = adopt(&connection, &stream, session).await;
+            let _ = reports.send(Report::Switched {
+                result,
+                own: Some(fresh),
+                warning,
+            });
+        });
+    }
+
+    /// Whether a conversation switch may start now (else says why).
+    fn may_switch(&self) -> bool {
+        if self.turn.active {
+            self.notice(
+                NoticeLevel::Warn,
+                "a turn is running; interrupt it first (Esc)",
+            );
+            return false;
+        }
+        if self.switching {
+            self.notice(NoticeLevel::Info, "a conversation switch is under way");
+            return false;
+        }
+        if self.link.is_none() {
+            self.notice(
+                NoticeLevel::Warn,
+                "not attached to the daemon (see the status bar)",
+            );
+            return false;
+        }
+        true
+    }
+
+    /// Show the conversation the orchestrator moved to (another client
+    /// switched it).
+    fn adopt_switch(&mut self, session: SessionId, own: Option<bool>, warning: Option<String>) {
+        let Some(link) = &self.link else {
+            return;
+        };
+        self.switching = true;
+        let connection = Arc::clone(&link.connection);
+        let stream = link.stream.clone();
+        let reports = self.reports_tx.clone();
+        tokio::spawn(async move {
+            let result = adopt(&connection, &stream, session).await;
+            let _ = reports.send(Report::Switched {
+                result,
+                own,
+                warning,
+            });
+        });
+    }
+
+    /// The orchestrator runs as `adopted.session` now: follow it, and show
+    /// its transcript, model and cost.
+    fn adopted(&mut self, adopted: Adopted, own: Option<bool>, warning: Option<String>) {
+        let Adopted {
+            session,
+            stream,
+            blocks,
+            last_seq,
+            identity,
+        } = adopted;
+        let Some(link) = &mut self.link else {
+            return;
+        };
+        link.session = session.clone();
+        link.stream = stream;
+        // The old conversation's turn and dialogs are over.
+        if self.turn.active {
+            self.turn.record(Err(TurnFailure::Interrupted));
+            self.finish_turn();
+        }
+        for id in self.approvals.clear() {
+            self.send(Msg::EscalationResolved(id));
+        }
+        let id = session.to_string();
+        self.mark = Some(Mark::resume(
+            &id,
+            Some(&Cursor {
+                session_id: id.clone(),
+                sequence: last_seq,
+            }),
+        ));
+        self.save_cursor();
+        self.followers.reset(session.clone());
+        self.orphans.clear();
+        self.send(Msg::Status(StatusUpdate::Session(id.clone())));
+        self.send(Msg::ResetTranscript(blocks));
+        self.send(Msg::Status(StatusUpdate::Tokens {
+            input: 0,
+            output: 0,
+        }));
+        self.load_cost(&session);
+        if let Some((model, provider)) = identity {
+            self.followers.set_default_model(&model);
+            self.set_model_status(&provider, &model);
+            // A fresh conversation starts on the daemon's start-up model:
+            // this client's last `/model` carries over, as in-process.
+            if own == Some(true)
+                && let Some(switch) = self.last_switch.clone()
+                && switch.model != model
+            {
+                self.notice(
+                    NoticeLevel::Info,
+                    format!("switching to {} with your next message", switch.model),
+                );
+                let dialect = switch.provider.as_deref().and_then(WireDialect::parse);
+                self.show_model(&switch.endpoint, dialect, &switch.model);
+                self.pending_model = Some(switch);
+            }
+        }
+        let short = id.get(..8).unwrap_or(&id).to_string();
+        let text = match own {
+            Some(true) => {
+                format!("a new conversation ({short}); the previous one stays in /resume")
+            }
+            Some(false) => format!("resumed conversation {short}"),
+            None => format!("another client switched the agent to conversation {short}"),
+        };
+        self.notice(NoticeLevel::Info, text);
+        if let Some(warning) = warning {
+            self.notice(NoticeLevel::Warn, warning);
+        }
+        let now = Instant::now();
+        self.approvals_at = Some(now);
+        self.discover_at = Some(now);
+    }
+
+    /// `/resume <reference>`: resolve it against the conversations, then
+    /// switch.
+    fn resume_session(&mut self, reference: String) {
+        if !self.may_switch() {
+            return;
+        }
+        let Some(link) = &self.link else {
+            return;
+        };
+        self.switching = true;
+        let connection = Arc::clone(&link.connection);
+        let stream = link.stream.clone();
+        let current = link.session.clone();
+        let reports = self.reports_tx.clone();
+        tokio::spawn(async move {
+            let listed = match remote::conversations(&connection).await {
+                Ok(listed) => listed,
+                Err(err) => {
+                    let _ = reports.send(Report::Notice(
+                        NoticeLevel::Error,
+                        format!("could not list the conversations: {err}"),
+                    ));
+                    return;
+                }
+            };
+            let target = match sessions::resolve(&reference, &listed) {
+                Ok(target) if target == current => {
+                    let _ = reports.send(Report::Notice(
+                        NoticeLevel::Info,
+                        "already in this conversation".to_string(),
+                    ));
+                    return;
+                }
+                Ok(target) => target,
+                Err(why) => {
+                    let _ = reports.send(Report::Notice(NoticeLevel::Warn, why));
+                    return;
+                }
+            };
+            let switched =
+                tokio::time::timeout(SWITCH_TIMEOUT, remote::switch(&connection, Some(&target)))
+                    .await;
+            let (session, warning) = match switched {
+                Ok(Ok(switched)) => switched,
+                Ok(Err(err)) => {
+                    let _ = reports.send(Report::Switched {
+                        result: Err(err.to_string()),
+                        own: Some(false),
+                        warning: None,
+                    });
+                    return;
+                }
+                Err(_) => {
+                    let _ = reports.send(Report::Switched {
+                        result: Err("the daemon did not answer in time".to_string()),
+                        own: Some(false),
+                        warning: None,
+                    });
+                    return;
+                }
+            };
+            let result = adopt(&connection, &stream, session).await;
+            let _ = reports.send(Report::Switched {
+                result,
+                own: Some(false),
+                warning,
+            });
+        });
+    }
+
+    /// `/resume` alone: the picker over the conversations.
+    fn show_resume_picker(&self) {
+        let Some(connection) = self.connection() else {
+            self.notice(NoticeLevel::Warn, "not attached to the daemon");
+            return;
+        };
+        let reports = self.reports_tx.clone();
+        tokio::spawn(async move {
+            let listed = tokio::time::timeout(CALL_TIMEOUT, remote::conversations(&connection))
+                .await
+                .map_err(|_| "the daemon did not answer in time".to_string())
+                .and_then(|listed| listed.map_err(|err| err.to_string()));
+            let _ = reports.send(Report::Picker(
+                listed.map(|listed| sessions::picker_items(&listed)),
+            ));
+        });
+    }
+
+    /// `/remember <text>`: append it to the workspace `AGENTS.md` here and
+    /// hand it to the orchestrator as system context (as in-process).
+    async fn remember(&self, text: &str) {
+        use crate::bootstrap::instructions::{
+            append_remember_line, remember_line, remember_target, remembered_context,
+        };
+        let Some(line) = remember_line(text) else {
+            self.notice(NoticeLevel::Warn, "nothing to remember");
+            return;
+        };
+        let path = remember_target(&self.config.scope.context_root);
+        if let Err(err) = append_remember_line(&path, &line) {
+            self.notice(
+                NoticeLevel::Error,
+                format!("could not write {}: {err}", path.display()),
+            );
+            return;
+        }
+        let key = crate::runner::context::remember_key(&line);
+        match self.push_context(&remembered_context(&line), &key).await {
+            Ok(()) => self.notice(
+                NoticeLevel::Info,
+                format!(
+                    "remembered in {}: the agent reads it from its next model call; it is fully applied (as part of AGENTS.md) from the next conversation",
+                    path.display()
+                ),
+            ),
+            Err(err) => self.notice(
+                NoticeLevel::Warn,
+                format!(
+                    "remembered in {}, but the agent could not take it now ({err}); it applies from the next conversation",
+                    path.display()
+                ),
+            ),
+        }
+    }
+
+    /// Hand `text` to the orchestrator as system context under `key`.
+    async fn push_context(&self, text: &str, key: &str) -> Result<(), String> {
+        let Some(connection) = self.connection() else {
+            return Err("not attached to the daemon".to_string());
+        };
+        match tokio::time::timeout(
+            CALL_TIMEOUT,
+            remote::append_system_context(&connection, text, key),
+        )
+        .await
+        {
+            Ok(result) => result.map_err(|err| err.to_string()),
+            Err(_) => Err("the daemon did not answer in time".to_string()),
+        }
+    }
+
+    /// `/memory`: open the instruction file here (as in-process).
+    fn open_memory(&mut self, target: MemoryTarget) {
+        let scope = &self.config.scope;
+        let path = match crate::runner::context::memory_path(
+            target,
+            &scope.context_root,
+            scope.global.as_ref(),
+        ) {
+            Ok(path) => path,
+            Err(why) => {
+                self.notice(NoticeLevel::Warn, why);
+                return;
+            }
+        };
+        if let Err(err) = crate::runner::context::prepare_memory_file(target, &path) {
+            self.notice(
+                NoticeLevel::Error,
+                format!("could not prepare {}: {err}", path.display()),
+            );
+            return;
+        }
+        self.memory_before = Some((path.clone(), std::fs::read(&path).ok()));
+        self.send(Msg::EditFile { target, path });
+    }
+
+    /// An instruction file was edited: an `AGENTS.md` reaches the
+    /// orchestrator as system context; `SYSTEM.md` applies from the next
+    /// conversation (as in-process).
+    async fn memory_edited(&mut self, target: MemoryTarget, path: &std::path::Path) {
+        let before = match self.memory_before.take() {
+            Some((p, before)) if p == path => before,
+            _ => None,
+        };
+        let now = std::fs::read(path).ok();
+        if now == before {
+            self.notice(
+                NoticeLevel::Info,
+                format!("{} is unchanged", path.display()),
+            );
+            return;
+        }
+        let next = format!(
+            "saved {}; it applies from the next conversation (/new)",
+            path.display()
+        );
+        let content = now
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .unwrap_or_default();
+        let context = match target {
+            MemoryTarget::System => None,
+            MemoryTarget::Workspace | MemoryTarget::User => {
+                crate::bootstrap::instructions::edited_context(path, &content)
+            }
+        };
+        let Some(context) = context else {
+            self.notice(NoticeLevel::Info, next);
+            return;
+        };
+        let key = crate::runner::context::memory_key(&context);
+        match self.push_context(&context, &key).await {
+            Ok(()) => self.notice(
+                NoticeLevel::Info,
+                format!(
+                    "saved {}: the agent reads the new content from its next model call; new conversations load it as usual",
+                    path.display()
+                ),
+            ),
+            Err(err) => self.notice(
+                NoticeLevel::Warn,
+                format!("{next} (the agent could not take it now: {err})"),
+            ),
+        }
+    }
+
+    /// Store the cost totals next to the conversation's session (as
+    /// in-process), so a reattach shows them again.
+    fn save_cost(&self, snapshot: &crate::ui::SessionCostSnapshot) {
+        let Some(link) = &self.link else {
+            return;
+        };
+        if let Err(err) = crate::runner::cost_store::save_cost(
+            &self.config.scope.realm_root(),
+            &link.session.to_string(),
+            snapshot,
+        ) {
+            tracing::warn!(error = %err, "could not record the conversation's cost");
+        }
+    }
+
+    /// Show `session`'s stored cost totals (none: zero).
+    fn load_cost(&self, session: &SessionId) {
+        let cost = crate::runner::cost_store::load_cost(
+            &self.config.scope.realm_root(),
+            &session.to_string(),
+        )
+        .unwrap_or_default();
+        self.send(Msg::Status(StatusUpdate::CostTotals(cost)));
     }
 
     fn status_report(&self) {
@@ -1275,31 +2220,80 @@ fn terminate(_pid: u32) -> Result<(), String> {
     Err("stopping the daemon is supported on Unix only".to_string())
 }
 
-/// `/model` in attach mode: `<provider>:<id>` with a built-in provider, or a
-/// bare id the catalog names a provider for.
+/// `/model <reference>` in attach mode: resolved against this process's
+/// endpoints and their fetched lists as in-process
+/// ([`parse_model_ref`]); a configured endpoint's switch carries its auth
+/// binding, a built-in one's clears it.
 ///
 /// # Errors
 ///
-/// Why the reference cannot be switched to from attach mode.
-pub fn parse_model(reference: &str) -> Result<(String, Option<String>), String> {
-    let reference = reference.trim();
-    if let Some((endpoint, id)) = reference.split_once(':') {
-        return match WireDialect::parse(endpoint) {
-            Some(dialect) if !id.trim().is_empty() => {
-                Ok((id.trim().to_string(), Some(dialect.as_str().to_string())))
-            }
-            Some(_) => Err("usage: /model <provider>:<id>".to_string()),
-            None => Err(format!(
-                "attach mode switches only on the built-in endpoints (anthropic, openai, gemini) for now, not `{endpoint}`"
-            )),
-        };
+/// [`ModelRefError`] when the reference picks no single endpoint.
+pub fn model_switch(
+    reference: &str,
+    endpoints: &EndpointRegistry,
+    models: Option<&ModelCache>,
+    current: Option<&str>,
+) -> Result<ModelSwitch, ModelRefError> {
+    let index = models.map(ModelCache::index).unwrap_or_default();
+    let target = parse_model_ref(reference, endpoints.as_slice(), &index, current)?;
+    let endpoint =
+        endpoints
+            .get(&target.endpoint)
+            .ok_or_else(|| ModelRefError::UnknownEndpoint {
+                name: target.endpoint.clone(),
+                known: endpoints.names(),
+            })?;
+    Ok(ModelSwitch {
+        model: target.model,
+        provider: Some(endpoint.dialect.as_str().to_string()),
+        auth_binding: endpoint.binding(),
+        endpoint: endpoint.name.clone(),
+    })
+}
+
+/// Every durable event of `session` after `after`, and the last sequence.
+async fn replay_to_end(
+    connection: &Connection,
+    session: &SessionId,
+    after: u64,
+) -> Result<(Vec<EventEnvelope<AgentEvent>>, u64), ClientError> {
+    let mut events = Vec::new();
+    let mut after = after;
+    loop {
+        let (page, more) = remote::replay(connection, session, after).await?;
+        after = page.last().map_or(after, |envelope| envelope.seq);
+        let empty = page.is_empty();
+        events.extend(page);
+        if !more || empty {
+            return Ok((events, after));
+        }
     }
-    match WireDialect::of_catalog_model(reference) {
-        Some(dialect) => Ok((reference.to_string(), Some(dialect.as_str().to_string()))),
-        None => Err(format!(
-            "`{reference}` is not a catalogued model; name its provider: /model <provider>:{reference}"
-        )),
-    }
+}
+
+/// Follow the orchestrator's conversation `session` on `connection`: its
+/// stream opened again (the old one follows the retired session), its last
+/// sequence (what is shown starts after it) and its committed transcript.
+async fn adopt(
+    connection: &Connection,
+    old_stream: &str,
+    session: SessionId,
+) -> Result<Adopted, String> {
+    tokio::time::timeout(SWITCH_TIMEOUT, async {
+        let stream = remote::reopen_stream(connection, old_stream).await?;
+        let (_, last_seq) = replay_to_end(connection, &session, 0).await?;
+        let messages = remote::transcript(connection, &session).await?;
+        let identity = remote::identity(connection, &session).await.ok();
+        Ok::<_, ClientError>(Adopted {
+            blocks: crate::runner::blocks_from_messages(&messages),
+            session,
+            stream,
+            last_seq,
+            identity,
+        })
+    })
+    .await
+    .map_err(|_| "timed out reading the new conversation".to_string())?
+    .map_err(|err| err.to_string())
 }
 
 /// The endpoint the first connect attaches to: a live one, or (auto mode)
@@ -1332,6 +2326,25 @@ async fn first_endpoint(
             file: file.to_path_buf(),
         }),
     }
+}
+
+/// Start the daemon again after it died (its endpoint file is stale) and
+/// wait for its endpoint.
+async fn restart(
+    file: &std::path::Path,
+    plan: &SpawnPlan,
+    ui_tx: &mpsc::UnboundedSender<Msg>,
+) -> Result<Endpoint, ClientError> {
+    let _ = ui_tx.send(Msg::Status(StatusUpdate::Attach(Some(STARTING.into()))));
+    let (pid, mut exited) = launch::spawn_daemon(&plan.program, &plan.argv, &plan.log)?;
+    let _ = ui_tx.send(Msg::Notice {
+        level: NoticeLevel::Warn,
+        text: format!(
+            "the daemon died (its endpoint file is stale); restarted rkat-tui-mob (pid {pid}; output in {})",
+            plan.log.display()
+        ),
+    });
+    launch::wait_for_endpoint(file, launch::START_TIMEOUT, &mut exited, &plan.log).await
 }
 
 /// Attach, find the orchestrator's session, open its live stream and read
@@ -1415,22 +2428,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn model_references_name_a_built_in_provider() {
-        assert_eq!(
-            parse_model("anthropic:claude-opus-4-8"),
-            Ok(("claude-opus-4-8".into(), Some("anthropic".into())))
-        );
-        assert_eq!(
-            parse_model(" claude-sonnet-4-6 "),
-            Ok(("claude-sonnet-4-6".into(), Some("anthropic".into())))
-        );
-        assert!(
-            parse_model("litellm:gpt-x")
-                .unwrap_err()
-                .contains("built-in")
-        );
-        assert!(parse_model("my-alias").unwrap_err().contains("provider"));
-        assert!(parse_model("openai:").is_err());
+    fn model_references_resolve_on_this_processs_endpoints() {
+        let mut endpoints = EndpointRegistry::from_endpoints(Vec::new());
+        endpoints.add_keyless_builtins();
+        let switch = model_switch("anthropic:claude-opus-4-8", &endpoints, None, None).unwrap();
+        assert_eq!(switch.model, "claude-opus-4-8");
+        assert_eq!(switch.provider.as_deref(), Some("anthropic"));
+        assert_eq!(switch.auth_binding, None);
+        assert_eq!(switch.endpoint, "anthropic");
+        // A catalogued bare id finds its endpoint.
+        let switch = model_switch("claude-sonnet-4-6", &endpoints, None, None).unwrap();
+        assert_eq!(switch.endpoint, "anthropic");
+        assert!(model_switch("my-alias", &endpoints, None, None).is_err());
+        assert!(model_switch("litellm:x", &endpoints, None, None).is_err());
     }
 
     #[test]

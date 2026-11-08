@@ -24,6 +24,9 @@ use crate::daemon::{MOB_ID, ORCHESTRATOR};
 /// The notification that carries a member stream's events.
 pub const STREAM_EVENT: &str = "mob/stream_event";
 
+/// The notification that ends a stream.
+pub const STREAM_END: &str = "mob/stream_end";
+
 /// How many replayed events one `events/list_since` page asks for.
 pub const REPLAY_PAGE: usize = 500;
 
@@ -53,12 +56,7 @@ fn decode<T: serde::de::DeserializeOwned>(
 ///
 /// The call's error, or [`ClientError::NoSession`].
 pub async fn session_id(connection: &Connection) -> Result<SessionId, ClientError> {
-    let status = connection.call("mob/member_status", member()).await?;
-    let id = status
-        .get("current_session_id")
-        .and_then(Value::as_str)
-        .ok_or(ClientError::NoSession)?;
-    SessionId::parse(id).map_err(|_| ClientError::NoSession)
+    member_session(connection, MOB_ID, ORCHESTRATOR).await
 }
 
 /// The model and provider the session runs on (`events/snapshot`).
@@ -174,7 +172,38 @@ pub async fn send(connection: &Connection, text: &str, steer: bool) -> Result<()
         .map(drop)
 }
 
-/// Run `text` as a turn on `model` (and `provider`), which the session keeps
+/// A model switch: the model, its provider and the endpoint's auth binding
+/// (`None`: a built-in endpoint, whose binding is cleared).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelSwitch {
+    /// The model id.
+    pub model: String,
+    /// Its provider (`anthropic`, `openai`, `gemini`).
+    pub provider: Option<String>,
+    /// The configured endpoint's binding, or `None` for a built-in one.
+    pub auth_binding: Option<meerkat_core::AuthBindingRef>,
+    /// The endpoint's name (the status bar shows it).
+    pub endpoint: String,
+}
+
+/// The `mob/turn_start` params of `text` with `switch`.
+#[must_use]
+pub fn turn_params(text: &str, switch: &ModelSwitch) -> Value {
+    let mut params = with_member(json!({"prompt": text, "model": switch.model}));
+    if let Some(provider) = &switch.provider {
+        params["provider"] = json!(provider);
+    }
+    params["auth_binding"] = match &switch.auth_binding {
+        Some(binding) => json!({
+            "action": "set",
+            "value": meerkat_contracts::WireAuthBindingRef::from(binding.clone()),
+        }),
+        None => json!({"action": "clear"}),
+    };
+    params
+}
+
+/// Run `text` as a turn on the model of `switch`, which the session keeps
 /// from then on. Answers when the turn ends.
 ///
 /// # Errors
@@ -183,14 +212,11 @@ pub async fn send(connection: &Connection, text: &str, steer: bool) -> Result<()
 pub async fn turn_with_model(
     connection: &Connection,
     text: &str,
-    model: &str,
-    provider: Option<&str>,
+    switch: &ModelSwitch,
 ) -> Result<Value, ClientError> {
-    let mut params = with_member(json!({"prompt": text, "model": model}));
-    if let Some(provider) = provider {
-        params["provider"] = json!(provider);
-    }
-    connection.call("mob/turn_start", params).await
+    connection
+        .call("mob/turn_start", turn_params(text, switch))
+        .await
 }
 
 /// Stop the orchestrator's run `run_id`.
@@ -298,4 +324,198 @@ pub async fn append_system_context(
         )
         .await
         .map(drop)
+}
+
+/// Open the mob-wide stream of `mob` (every member's events, attributed);
+/// returns its id.
+///
+/// # Errors
+///
+/// The call's error (a mob that does not exist yet is refused).
+pub async fn open_mob_stream(connection: &Connection, mob: &str) -> Result<String, ClientError> {
+    let opened: meerkat_contracts::MobStreamOpenResult = decode(
+        "mob/stream_open",
+        connection
+            .call("mob/stream_open", json!({"mob_id": mob}))
+            .await?,
+    )?;
+    Ok(opened.stream_id)
+}
+
+/// Close a stream.
+///
+/// # Errors
+///
+/// The call's error.
+pub async fn close_stream(connection: &Connection, stream: &str) -> Result<(), ClientError> {
+    connection
+        .call("mob/stream_close", json!({"stream_id": stream}))
+        .await
+        .map(drop)
+}
+
+/// The orchestrator's live stream, opened again (after a conversation
+/// switch the old one still follows the retired session).
+///
+/// # Errors
+///
+/// The call's error.
+pub async fn reopen_stream(connection: &Connection, old: &str) -> Result<String, ClientError> {
+    if let Err(err) = close_stream(connection, old).await {
+        tracing::debug!(error = %err, "the old stream did not close");
+    }
+    open_stream(connection).await
+}
+
+/// The mobs the daemon hosts.
+///
+/// # Errors
+///
+/// The call's error, or [`ClientError::Decode`].
+pub async fn mobs(connection: &Connection) -> Result<Vec<String>, ClientError> {
+    let listed: meerkat_contracts::MobListResult =
+        decode("mob/list", connection.call("mob/list", json!({})).await?)?;
+    Ok(listed.mobs.into_iter().map(|mob| mob.mob_id).collect())
+}
+
+/// The member identities of `mob`.
+///
+/// # Errors
+///
+/// The call's error.
+pub async fn members(connection: &Connection, mob: &str) -> Result<Vec<String>, ClientError> {
+    let listed = connection
+        .call("mob/members", json!({"mob_id": mob}))
+        .await?;
+    Ok(listed
+        .get("members")
+        .and_then(Value::as_array)
+        .map(|members| {
+            members
+                .iter()
+                .filter_map(|member| member.get("agent_identity").and_then(Value::as_str))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// The session `identity` of `mob` runs as.
+///
+/// # Errors
+///
+/// The call's error, or [`ClientError::NoSession`].
+pub async fn member_session(
+    connection: &Connection,
+    mob: &str,
+    identity: &str,
+) -> Result<SessionId, ClientError> {
+    let status = connection
+        .call(
+            "mob/member_status",
+            json!({"mob_id": mob, "agent_identity": identity}),
+        )
+        .await?;
+    status
+        .get("current_session_id")
+        .and_then(Value::as_str)
+        .and_then(|id| SessionId::parse(id).ok())
+        .ok_or(ClientError::NoSession)
+}
+
+/// The attributed event a mob-wide stream's notification carries, and the
+/// stream's id.
+#[must_use]
+pub fn attributed_event(
+    notification: &Notification,
+) -> Option<(String, meerkat_mob::AttributedEvent)> {
+    if notification.method != STREAM_EVENT {
+        return None;
+    }
+    let stream = notification.params.get("stream_id")?.as_str()?.to_string();
+    let event = notification.params.get("event")?.clone();
+    match serde_json::from_value(event) {
+        Ok(event) => Some((stream, event)),
+        Err(err) => {
+            tracing::debug!(error = %err, "not an attributed event");
+            None
+        }
+    }
+}
+
+/// The stream a `mob/stream_end` notification ends.
+#[must_use]
+pub fn stream_end(notification: &Notification) -> Option<&str> {
+    (notification.method == STREAM_END)
+        .then(|| notification.params.get("stream_id")?.as_str())
+        .flatten()
+}
+
+/// The orchestrator's conversations (`rkat/conversations`).
+///
+/// # Errors
+///
+/// The call's error, or [`ClientError::Decode`].
+pub async fn conversations(
+    connection: &Connection,
+) -> Result<Vec<crate::daemon::conversations::Listed>, ClientError> {
+    let answer = local(connection, crate::daemon::local::CONVERSATIONS, json!({})).await?;
+    decode(
+        "rkat/conversations",
+        answer.get("conversations").cloned().unwrap_or(Value::Null),
+    )
+}
+
+/// `/new` (`session: None`) or `/resume` (`rkat/new`, `rkat/resume`): the
+/// session the orchestrator runs as afterwards, and a warning.
+///
+/// # Errors
+///
+/// The call's error (the daemon refused or failed the switch).
+pub async fn switch(
+    connection: &Connection,
+    session: Option<&SessionId>,
+) -> Result<(SessionId, Option<String>), ClientError> {
+    let answer = match session {
+        None => local(connection, crate::daemon::local::NEW, json!({})).await?,
+        Some(session) => {
+            local(
+                connection,
+                crate::daemon::local::RESUME,
+                json!({"session_id": session}),
+            )
+            .await?
+        }
+    };
+    let session = answer
+        .get("session_id")
+        .and_then(Value::as_str)
+        .and_then(|id| SessionId::parse(id).ok())
+        .ok_or(ClientError::NoSession)?;
+    let warning = answer
+        .get("warning")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    Ok((session, warning))
+}
+
+/// A conversation's committed messages (`rkat/transcript`).
+///
+/// # Errors
+///
+/// The call's error, or [`ClientError::Decode`].
+pub async fn transcript(
+    connection: &Connection,
+    session: &SessionId,
+) -> Result<Vec<meerkat_core::Message>, ClientError> {
+    let answer = local(
+        connection,
+        crate::daemon::local::TRANSCRIPT,
+        json!({"session_id": session}),
+    )
+    .await?;
+    decode(
+        "rkat/transcript",
+        answer.get("messages").cloned().unwrap_or(Value::Null),
+    )
 }

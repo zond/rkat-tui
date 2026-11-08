@@ -17,9 +17,16 @@
 //!   [`Effect`]/[`Msg`] contract as the in-process runner, so the UI is the
 //!   same: approval dialogs, permission modes and `/rules` act on the
 //!   daemon's gate (`rkat/*` methods, see [`crate::daemon::local`]); the
-//!   user's `!` shell runs here, as in-process. What the daemon cannot do
-//!   yet (`/new`, `/resume`, `/rewind`, `/compact`, helpers' view, `fork`)
-//!   is answered with a "not available in attach mode yet" notice.
+//!   user's `!` shell runs here, as in-process; so do the model picker (this
+//!   process's endpoints), `/remember` and `/memory` (the files are local;
+//!   the new content reaches the orchestrator with
+//!   `mob/append_system_context`). What the daemon cannot do (`/rewind`,
+//!   `/compact now`, `/rules trust`, `/trust`) says why.
+//! - [`helpers`]: the follower view of the orchestrator's helpers, from the
+//!   mobs' own event streams.
+//! - [`sessions`]: `/new`, `/resume` (the daemon's `rkat/new`,
+//!   `rkat/resume`, `rkat/conversations`, `rkat/transcript`) and why
+//!   `/rewind` is not offered.
 //!
 //! The in-process runner is not reused under a session trait: it is built
 //! on the in-process [`crate::bootstrap::Runtime`] (approval desk, helper
@@ -28,9 +35,11 @@
 
 pub mod approvals;
 pub mod catchup;
+pub mod helpers;
 pub mod launch;
 pub mod remote;
 pub mod runner;
+pub mod sessions;
 pub mod transport;
 
 use std::io::IsTerminal as _;
@@ -146,6 +155,16 @@ pub enum ClientError {
 /// [`TuiError`] when the workspace or the realm config cannot be resolved.
 pub async fn configure(args: &Args, mode: AttachMode) -> Result<AttachConfig, TuiError> {
     let (scope, config) = crate::bootstrap::prepare(args).await?;
+    // The layers the in-process TUI reads for its display and endpoints:
+    // the picker lists this process's endpoints, and a switch to a
+    // configured one carries its auth binding.
+    let (layered, _) = crate::bootstrap::approval::load_layers(&scope, args)?;
+    let realm = meerkat_core::connection::RealmId::parse(scope.realm_id.clone()).ok();
+    let (mut endpoints, _) =
+        crate::endpoints::EndpointRegistry::discover(&config, realm.as_ref(), &layered.endpoints)?;
+    // The daemon calls the providers, not this process: a built-in
+    // endpoint is offered even when this process holds no key for it.
+    endpoints.add_keyless_builtins();
     let spawn = match mode {
         AttachMode::Auto => Some(SpawnPlan {
             program: launch::daemon_program(),
@@ -168,6 +187,10 @@ pub async fn configure(args: &Args, mode: AttachMode) -> Result<AttachConfig, Tu
         config: Some(config),
         spawn,
         user_shell,
+        endpoints,
+        lister: crate::models::live_lister(),
+        ui: layered.ui,
+        compaction: layered.settings.compaction_policy(None),
         scope,
     })
 }
@@ -198,6 +221,10 @@ pub async fn run(args: Args, mode: AttachMode) -> Result<(), TuiError> {
         .as_ref()
         .map(|global| History::load(global.history_file()));
     let mut app = App::new(status)
+        .with_compaction_policy(config.compaction)
+        .with_helper_view(config.ui.helpers)
+        .with_checklist_view(config.ui.checklist)
+        .with_bell(config.ui.bell)
         .with_workspace(config.scope.project_root.clone())
         .with_history(history.entries().to_vec())
         .with_global_history(

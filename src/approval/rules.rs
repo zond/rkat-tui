@@ -947,6 +947,11 @@ pub struct LayeredEndpoint {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RulesFile {
+    /// Run the TUI attached to the workspace's `rkat-tui-mob` daemon, as
+    /// `--attach` (user layers only; `--attach`/`--no-attach` win). First:
+    /// a plain key is written before the tables.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attach: Option<bool>,
     /// Auto-mode settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto: Option<AutoSection>,
@@ -1102,6 +1107,12 @@ pub enum Notice {
         /// Number of ignored model entries.
         count: usize,
     },
+    /// A file the user does not own (the project file) set `attach`; only
+    /// user layers may (it decides where the agent runs).
+    AttachIgnored {
+        /// The rules file.
+        path: PathBuf,
+    },
     /// A `[pricing."<model>"]` entry has a negative or non-finite price.
     PricingInvalid {
         /// Model id.
@@ -1182,6 +1193,11 @@ impl fmt::Display for Notice {
                 "ignored {count} [thinking] setting(s) in {}: only your own tui.toml files set thinking",
                 path.display()
             ),
+            Self::AttachIgnored { path } => write!(
+                f,
+                "ignored `attach` in {}: only your own tui.toml files choose attach mode",
+                path.display()
+            ),
             Self::PricingInvalid { model, field } => write!(
                 f,
                 "ignored [pricing.\"{model}\"]: `{field}` must be a non-negative number"
@@ -1260,6 +1276,8 @@ pub struct Layered {
     pub shell: ShellSettings,
     /// Merged `[ui]` settings.
     pub ui: UiSettings,
+    /// `attach = true` in a user layer.
+    pub attach: bool,
     /// Non-fatal observations to show once.
     pub notices: Vec<Notice>,
 }
@@ -1325,6 +1343,7 @@ pub fn load_layered_with(
     let mut helpers = HelperSettings::default();
     let mut shell = ShellSettings::default();
     let mut ui = UiSettings::default();
+    let mut attach = false;
 
     let mut user_layers: Vec<(Option<PathBuf>, RuleOrigin, RulesFile)> = Vec::new();
     if let Some(global) = global_rules_file {
@@ -1414,6 +1433,9 @@ pub fn load_layered_with(
         if let Some(section) = &file.ui {
             ui.apply(section);
         }
+        if let Some(on) = file.attach {
+            attach = on;
+        }
     }
 
     let project_path = project_rkat_dir.join(RULES_FILE_NAME);
@@ -1450,6 +1472,11 @@ pub fn load_layered_with(
         notices.push(Notice::ThinkingIgnored {
             path: project_path.clone(),
             count: project.thinking.len(),
+        });
+    }
+    if project.attach.is_some() {
+        notices.push(Notice::AttachIgnored {
+            path: project_path.clone(),
         });
     }
     pricing.retain(|model, section| match section.invalid_field() {
@@ -1552,6 +1579,7 @@ pub fn load_layered_with(
         helpers,
         shell,
         ui,
+        attach,
         notices,
     })
 }
@@ -1826,6 +1854,7 @@ mod tests {
     #[test]
     fn rules_file_round_trip() {
         let file = RulesFile {
+            attach: Some(true),
             auto: Some(AutoSection {
                 enabled: Some(true),
                 classifier_model: Some("claude-sonnet-4-6".into()),

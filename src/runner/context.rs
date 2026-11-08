@@ -453,7 +453,7 @@ pub(super) fn context_breakdown(
 /// # Errors
 ///
 /// A notice when there is no user config directory for the global files.
-pub(super) fn memory_path(
+pub(crate) fn memory_path(
     target: MemoryTarget,
     workspace: &Path,
     global: Option<&GlobalDirs>,
@@ -470,7 +470,7 @@ pub(super) fn memory_path(
 
 /// Create `path`'s directory, and a missing `SYSTEM.md` with
 /// [`SYSTEM_MD_HEADER`] (an `AGENTS.md` the editor creates itself).
-fn prepare_memory_file(target: MemoryTarget, path: &Path) -> std::io::Result<()> {
+pub(crate) fn prepare_memory_file(target: MemoryTarget, path: &Path) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -482,7 +482,7 @@ fn prepare_memory_file(target: MemoryTarget, path: &Path) -> std::io::Result<()>
 
 /// The idempotency key of an edited instruction file's system context (a
 /// SHA-256 digest of it, which names the path).
-fn memory_key(context: &str) -> String {
+pub(crate) fn memory_key(context: &str) -> String {
     let digest = Sha256::digest(context.as_bytes());
     let mut key = String::with_capacity(16 + 64);
     key.push_str("rkat-tui:memory:");
@@ -495,7 +495,7 @@ fn memory_key(context: &str) -> String {
 /// The idempotency key of a remembered line (per session: the same line
 /// twice is one system message). A SHA-256 digest of the line, so the key
 /// is the same across processes, builds and toolchains.
-fn remember_key(line: &str) -> String {
+pub(crate) fn remember_key(line: &str) -> String {
     let digest = Sha256::digest(line.as_bytes());
     let mut key = String::with_capacity(18 + 64);
     key.push_str("rkat-tui:remember:");
