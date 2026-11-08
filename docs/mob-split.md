@@ -400,10 +400,14 @@ changes here:
   through durable decisions: `decision/notice` when a decision opens. The
   daemon's consent should therefore move from `approval/*` to `decision/*`,
   which also gives the durable record the ownership line asks for. Open
-  question asked on the PR: `decision/decide` is dispatched on a plain
-  connection only with a decision operator, which the engine installs on
-  stdio only; TCP clients need either the operator or the
-  `dispatch_with_decision_event` route.
+  Answer from the maintainers (same day): the daemon, as the trusted host
+  that authenticates each TCP connection, wraps a client's `decision/decide`
+  as an `AuthenticatedDecisionEvent` and calls
+  `MethodRouter::dispatch_with_decision_event` itself; push comes from an
+  in-process subscription to the decision service's open events, which the
+  daemon forwards to attached clients. No per-connection TCP operator; plain
+  `rkat-rpc --tcp` gets no decision notices by design. Subscription names
+  and the implementation are pending.
 - **Forks and rewind (#2117).** `mob/fork_member` becomes an operator method
   that gives the child a new identity, after the admission fix of #2112.
   Same-identity rewind is deferred to a design note. Resuming onto another
