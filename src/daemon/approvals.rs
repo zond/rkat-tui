@@ -335,17 +335,21 @@ impl ToolOrigins for DaemonToolOrigins {
 
 /// Follow the orchestrator's events until the task is aborted: every run
 /// start goes to the engine (it lifts a Stop given to an earlier run),
-/// every run end refreshes the session's tool catalog.
+/// every run end refreshes the session's tool catalog. After a
+/// conversation switch (`current` names another session) it subscribes
+/// again: the member's old stream does not end by itself.
 pub fn watch(
     state: Arc<MobMcpState>,
     mob: MobId,
     identity: AgentIdentity,
     engine: Arc<ApprovalEngine>,
     origins: Arc<DaemonToolOrigins>,
+    current: Arc<super::conversations::Conversations>,
 ) -> tokio::task::JoinHandle<()> {
     use futures::StreamExt as _;
     tokio::spawn(async move {
         loop {
+            let following = current.current();
             let subscribed = match state.handle_for(&mob).await {
                 Ok(handle) => handle.subscribe_agent_events(&identity).await,
                 Err(err) => Err(err),
@@ -358,7 +362,21 @@ pub fn watch(
                     continue;
                 }
             };
-            while let Some(envelope) = stream.next().await {
+            let mut check = tokio::time::interval(RESUBSCRIBE);
+            check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                let envelope = tokio::select! {
+                    envelope = stream.next() => match envelope {
+                        Some(envelope) => envelope,
+                        None => break,
+                    },
+                    _ = check.tick() => {
+                        if current.current() != following {
+                            break;
+                        }
+                        continue;
+                    }
+                };
                 match &envelope.payload {
                     AgentEvent::RunStarted {
                         session_id,

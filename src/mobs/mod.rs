@@ -48,7 +48,7 @@ pub mod bindings;
 #[cfg(feature = "mob")]
 pub mod customizer;
 #[cfg(feature = "mob")]
-mod follow;
+pub(crate) mod follow;
 
 use std::sync::Arc;
 
@@ -195,20 +195,33 @@ impl Helpers {
     /// the gate already denies the helpers' reviewed calls once the owner is
     /// stopped.
     pub async fn cancel_for(&self, owner: &SessionId) {
-        for key in self.registry.live_for(owner) {
-            let handle = match self.state.handle_for(&key.mob).await {
-                Ok(handle) => handle,
-                Err(err) => {
-                    tracing::warn!(helper = %key, error = %err, "cannot reach helper's mob");
-                    continue;
-                }
-            };
-            if let Err(err) = handle.force_cancel_member(key.member.clone()).await {
-                tracing::debug!(helper = %key, error = %err, "helper run not cancelled");
+        cancel_helpers(&self.state, &self.registry, owner).await;
+    }
+}
+
+/// Stop every running helper `registry` lists for `owner` in `state`'s mobs:
+/// force-cancel its run, then retire it (see [`Helpers::cancel_for`]; the
+/// mob daemon calls it when the orchestrator's run is interrupted and
+/// before it switches conversations).
+#[cfg(feature = "mob")]
+pub(crate) async fn cancel_helpers(
+    state: &MobMcpState,
+    registry: &HelperRegistry,
+    owner: &SessionId,
+) {
+    for key in registry.live_for(owner) {
+        let handle = match state.handle_for(&key.mob).await {
+            Ok(handle) => handle,
+            Err(err) => {
+                tracing::warn!(helper = %key, error = %err, "cannot reach helper's mob");
+                continue;
             }
-            if let Err(err) = handle.retire(key.member.clone()).await {
-                tracing::warn!(helper = %key, error = %err, "cannot retire helper");
-            }
+        };
+        if let Err(err) = handle.force_cancel_member(key.member.clone()).await {
+            tracing::debug!(helper = %key, error = %err, "helper run not cancelled");
+        }
+        if let Err(err) = handle.retire(key.member.clone()).await {
+            tracing::warn!(helper = %key, error = %err, "cannot retire helper");
         }
     }
 }

@@ -18,6 +18,17 @@
 //!   engine, which persists to the realm rules file as the in-process one
 //!   does.
 //!
+//! - [`CONVERSATIONS`] `{}` → `{"conversations": [Listed]}`: the
+//!   orchestrator's conversations, last used first
+//!   ([`super::conversations`]);
+//! - [`NEW`] `{}` → `{"session_id"}`: `/new`, the orchestrator on a fresh
+//!   session;
+//! - [`RESUME`] `{"session_id"}` → `{"session_id"}`: `/resume`, the
+//!   orchestrator back on an earlier session of its own;
+//! - [`TRANSCRIPT`] `{"session_id"}` → `{"messages": [Message]}`: a
+//!   conversation's committed messages (the client renders a resumed
+//!   conversation from them, as the in-process `/resume` does).
+//!
 //! A future engine extension (an application-defined method namespace, or
 //! the governed realm's own review policy) could replace them.
 //!
@@ -27,8 +38,8 @@
 //! transcript as the in-process session records them at admission (the
 //! connection proved it holds the daemon's token); an interrupt
 //! (`mob/stop_member_run`, `mob/force_cancel`) stops the session's review
-//! and answers its open escalations with Stop, as the in-process runner
-//! does; and a `mob/turn_start` that switches the model carries the
+//! and answers its open escalations with Stop, and stops the session's
+//! running helpers, as the in-process runner does; and a `mob/turn_start` that switches the model carries the
 //! `[thinking]` provider params for the new model unless it names its own.
 
 use std::sync::Arc;
@@ -40,12 +51,14 @@ use meerkat_mob_mcp::MobMcpState;
 use parking_lot::Mutex;
 use serde_json::{Value, json};
 
-use super::approvals::Desk;
+use super::approvals::{DaemonToolOrigins, Desk};
+use super::conversations::{Conversations, Target};
 use super::{MOB_ID, ORCHESTRATOR};
 use crate::approval::mode::PermissionMode;
 use crate::approval::remote::{ModeStatus, RuleCommand, mode_notice, run_rule_command};
 use crate::approval::{ApprovalEngine, InputKey};
-use crate::endpoints::WireDialect;
+use crate::endpoints::{ENDPOINT_REALM, WireDialect};
+use crate::mobs::HelperRegistry;
 use crate::thinking::{self, ThinkingTable};
 
 /// Every local method starts with this.
@@ -56,11 +69,22 @@ pub const GET_MODE: &str = "rkat/get_mode";
 pub const SET_MODE: &str = "rkat/set_mode";
 /// A `/rules` command.
 pub const RULES: &str = "rkat/rules";
+/// The orchestrator's conversations.
+pub const CONVERSATIONS: &str = "rkat/conversations";
+/// `/new`.
+pub const NEW: &str = "rkat/new";
+/// `/resume <session>`.
+pub const RESUME: &str = "rkat/resume";
+/// A conversation's committed messages.
+pub const TRANSCRIPT: &str = "rkat/transcript";
 
 /// JSON-RPC "method not found".
 pub const METHOD_NOT_FOUND: i64 = -32601;
 /// JSON-RPC "invalid params".
 pub const INVALID_PARAMS: i64 = -32602;
+/// A conversation switch or read the engine refused (an application
+/// error code).
+pub const SWITCH_FAILED: i64 = -32010;
 
 /// The idempotency source of the daemon's system-context notes.
 const SYSTEM_CONTEXT_SOURCE: &str = "rkat-tui";
@@ -69,7 +93,9 @@ const SYSTEM_CONTEXT_SOURCE: &str = "rkat-tui";
 pub struct Local {
     engine: Arc<ApprovalEngine>,
     state: Arc<MobMcpState>,
-    session: SessionId,
+    conversations: Arc<Conversations>,
+    registry: Arc<HelperRegistry>,
+    origins: Arc<DaemonToolOrigins>,
     desk: Arc<Desk>,
     thinking: ThinkingTable,
     /// The orchestrator was told plan mode is on.
@@ -80,7 +106,7 @@ pub struct Local {
 impl std::fmt::Debug for Local {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Local")
-            .field("session", &self.session)
+            .field("conversations", &self.conversations)
             .finish_non_exhaustive()
     }
 }
@@ -89,19 +115,23 @@ impl std::fmt::Debug for Local {
 pub type Refusal = (i64, String);
 
 impl Local {
-    /// The local surface for the orchestrator running as `session`.
+    /// The local surface for the orchestrator and its `conversations`.
     #[must_use]
     pub fn new(
         engine: Arc<ApprovalEngine>,
         state: Arc<MobMcpState>,
-        session: SessionId,
+        conversations: Arc<Conversations>,
+        registry: Arc<HelperRegistry>,
+        origins: Arc<DaemonToolOrigins>,
         desk: Arc<Desk>,
         thinking: ThinkingTable,
     ) -> Self {
         Self {
             engine,
             state,
-            session,
+            conversations,
+            registry,
+            origins,
             desk,
             thinking,
             plan_noted: Mutex::new(false),
@@ -136,8 +166,51 @@ impl Local {
                     .map_err(|err| (INVALID_PARAMS, err.to_string()))?;
                 Ok(json!(run_rule_command(&self.engine, &command)))
             }
+            CONVERSATIONS => Ok(json!({"conversations": self.conversations.list().await})),
+            NEW => self.switch(Target::Fresh).await,
+            RESUME => {
+                let session = session_param(&params)?;
+                self.switch(Target::Resume(session)).await
+            }
+            TRANSCRIPT => {
+                let session = session_param(&params)?;
+                let messages = self
+                    .conversations
+                    .messages(&session)
+                    .await
+                    .map_err(|err| (SWITCH_FAILED, err))?;
+                Ok(json!({"messages": messages}))
+            }
             other => Err((METHOD_NOT_FOUND, format!("unknown method `{other}`"))),
         }
+    }
+
+    /// `/new` or `/resume`: switch the orchestrator's conversation, then
+    /// tell the new one about plan mode when it is on, and read its tools.
+    async fn switch(&self, target: Target) -> Result<Value, Refusal> {
+        let session = self
+            .conversations
+            .switch(target)
+            .await
+            .map_err(|err| (SWITCH_FAILED, err.to_string()))?;
+        *self.plan_noted.lock() = false;
+        let mut answer = json!({"session_id": session});
+        if self.engine.mode() == PermissionMode::Plan
+            && let Some(warning) = self.note_plan_mode(true).await
+        {
+            answer["warning"] = json!(warning);
+        }
+        let origins = Arc::clone(&self.origins);
+        let idle = session.clone();
+        tokio::spawn(async move {
+            origins.refresh(&idle).await;
+        });
+        Ok(answer)
+    }
+
+    /// The session the orchestrator runs as now.
+    fn session(&self) -> Option<SessionId> {
+        self.conversations.current()
     }
 
     async fn set_mode(&self, mode: PermissionMode) -> Value {
@@ -219,18 +292,28 @@ impl Local {
                 };
                 if let Some(text) = params.get(field).and_then(content_text)
                     && !text.trim().is_empty()
+                    && let Some(session) = self.session()
                 {
                     let n = self.inputs.fetch_add(1, Ordering::Relaxed);
                     let key = InputKey::new(format!("rkat-attach:{}:{n}", std::process::id()));
-                    self.engine.record_user_input(&self.session, key, &text);
+                    self.engine.record_user_input(&session, key, &text);
                 }
                 if method == "mob/turn_start" {
                     self.with_thinking(params);
                 }
             }
             "mob/stop_member_run" | "mob/force_cancel" => {
-                self.engine.stop(&self.session);
-                self.desk.stop(&self.session);
+                if let Some(session) = self.session() {
+                    self.engine.stop(&session);
+                    self.desk.stop(&session);
+                    // The `delegate` call that would retire a helper is
+                    // abandoned with the run: stop the helpers too.
+                    let state = Arc::clone(&self.state);
+                    let registry = Arc::clone(&self.registry);
+                    tokio::spawn(async move {
+                        crate::mobs::cancel_helpers(&state, &registry, &session).await;
+                    });
+                }
             }
             _ => {}
         }
@@ -253,7 +336,13 @@ impl Local {
             return;
         };
         let provider_kind: Provider = dialect.into();
-        let configured = self.thinking.resolve(Some(provider), provider_kind, model);
+        // A configured endpoint is named by its auth binding.
+        let endpoint = params
+            .pointer("/auth_binding/value")
+            .filter(|binding| binding.get("realm").and_then(Value::as_str) == Some(ENDPOINT_REALM))
+            .and_then(|binding| binding.get("binding").and_then(Value::as_str))
+            .unwrap_or(provider);
+        let configured = self.thinking.resolve(Some(endpoint), provider_kind, model);
         params["provider_params"] = thinking_override(configured.as_ref());
     }
 }
@@ -271,6 +360,20 @@ pub fn thinking_override(
         }),
         None => json!({"action": "clear"}),
     }
+}
+
+/// The `session_id` parameter.
+fn session_param(params: &Value) -> Result<SessionId, Refusal> {
+    params
+        .get("session_id")
+        .and_then(Value::as_str)
+        .and_then(|id| SessionId::parse(id).ok())
+        .ok_or_else(|| {
+            (
+                INVALID_PARAMS,
+                "`session_id` must be a session id".to_string(),
+            )
+        })
 }
 
 /// The text of a wire content input: a string, or the text blocks of a

@@ -28,6 +28,7 @@
 //! client polls `approval/list`).
 
 pub mod approvals;
+pub mod conversations;
 pub mod endpoint;
 pub mod engine;
 pub mod handshake;
@@ -311,17 +312,28 @@ impl Daemon {
                 "the orchestrator's tool catalog is read after its first run; until then only the TUI's own tools are known to the gate"
             );
         }
+        let conversations = Arc::new(conversations::Conversations::open(
+            Arc::clone(&composed.state),
+            Arc::clone(&composed.root.registry),
+            &composed.scope.context_root,
+            &orchestrator.session_id,
+            composed.root.model.clone(),
+            composed.root.auth_binding.clone(),
+        ));
         let watcher = approvals::watch(
             Arc::clone(&composed.state),
             orchestrator.mob_id.clone(),
             orchestrator.identity.clone(),
             Arc::clone(&composed.engine),
             Arc::clone(&composed.origins),
+            Arc::clone(&conversations),
         );
         let local = Arc::new(local::Local::new(
             Arc::clone(&composed.engine),
             Arc::clone(&composed.state),
-            orchestrator.session_id.clone(),
+            conversations,
+            Arc::clone(&composed.root.registry),
+            Arc::clone(&composed.origins),
             Arc::clone(&composed.desk),
             composed.thinking.clone(),
         ));
@@ -345,7 +357,7 @@ impl Daemon {
             engine: composed.engine,
             desk: composed.desk,
             local,
-            tasks: vec![composed.desk_task, watcher],
+            tasks: vec![composed.desk_task, composed.follower_task, watcher],
         })
     }
 

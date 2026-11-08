@@ -70,6 +70,8 @@ pub struct Composed {
     pub desk: Arc<Desk>,
     /// The desk's task.
     pub desk_task: tokio::task::JoinHandle<()>,
+    /// The helper follower's task.
+    pub follower_task: tokio::task::JoinHandle<()>,
     /// The members' tool catalogs.
     pub origins: Arc<DaemonToolOrigins>,
     /// The `[thinking]` table (model switches over the wire).
@@ -140,8 +142,8 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
 
     let realm_root = scope.realm_root();
     let (registry, updates) = HelperRegistry::persistent(&realm_root);
-    // Nobody renders helper updates in the daemon (P4 streams them to the
-    // client).
+    // Nobody renders the registry's helper updates in the daemon: clients
+    // follow the helpers on the mobs' event streams.
     drop(updates);
     let registry = Arc::new(registry);
     let root_tools = orchestrator_tools(&scope)?;
@@ -200,8 +202,11 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         Arc::new(FileToolDispatcher::new(project_root.clone(), None))
             as Arc<dyn AgentToolDispatcher>
     });
-    // No follower in the daemon: the spawn notices go nowhere.
-    let (spawning, _) = mpsc::unbounded_channel();
+    // The daemon follows its helpers as the in-process host does: the
+    // registry's running set (an interrupt cancels it), and each helper's
+    // session bound for the helpers it delegates to in turn. Clients see
+    // the helpers' events on the mobs' own streams.
+    let (spawning, spawning_rx) = mpsc::unbounded_channel();
     let customizer = HelperCustomizer::new(
         Arc::clone(&registry),
         Arc::clone(&approval.engine),
@@ -256,6 +261,11 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         .with_child_spawn_member_customizer(Arc::new(customizer))
         .into_shared();
     crate::mobs::install_mob_hooks(&state, &registry);
+    let follower = tokio::spawn(crate::mobs::follow::watch(
+        Arc::downgrade(&state),
+        Arc::clone(&registry),
+        spawning_rx,
+    ));
     if let Err(error) = state.bind_continuations(
         runtime.runtime_delivery_inbox(),
         runtime.continuation_bindings(),
@@ -265,6 +275,14 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     state.start_workgraph_flow_reconciler();
     // Before any `MethodRouter::new`, which would compose a default one.
     runtime.set_mob_state(Arc::clone(&state));
+    // The agent-facing mob tools (`delegate`, `mob_*`, …) reach a session
+    // build through the builder's mob-tools slot. `MethodRouter::new` fills
+    // it on the first connection, which is after the orchestrator's spawn:
+    // without this its build mounts only the operator family
+    // (`spawn_member`, …) and no `delegate`.
+    runtime.set_mob_tools(Arc::new(meerkat_mob_mcp::AgentMobToolSurfaceFactory::new(
+        Arc::clone(&state),
+    )));
 
     Ok(Composed {
         runtime,
@@ -284,6 +302,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         engine,
         desk,
         desk_task,
+        follower_task: follower,
         origins,
         thinking,
     })
