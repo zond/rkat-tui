@@ -297,6 +297,22 @@ impl Conversations {
             .map_err(|err| err.to_string())
     }
 
+    /// A conversation's total token usage, as the engine keeps it with the
+    /// session (`SessionService::read`'s billing; the wire's
+    /// `events/snapshot` and `session/read` carry no usage).
+    ///
+    /// # Errors
+    ///
+    /// The engine's refusal, as text.
+    pub async fn usage(&self, session: &SessionId) -> Result<meerkat_core::Usage, String> {
+        self.state
+            .session_service()
+            .read(session)
+            .await
+            .map(|view| view.billing.usage)
+            .map_err(|err| err.to_string())
+    }
+
     /// Make `target` the orchestrator's conversation: stop the current
     /// one's helpers, retire the member and spawn it again on `target`.
     /// When the spawn fails the member is spawned back on the session it

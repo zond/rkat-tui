@@ -519,3 +519,27 @@ pub async fn transcript(
         answer.get("messages").cloned().unwrap_or(Value::Null),
     )
 }
+
+/// A conversation's total token usage, `(input, output)` (`rkat/usage`).
+///
+/// # Errors
+///
+/// The call's error, or [`ClientError::Decode`].
+pub async fn usage(
+    connection: &Connection,
+    session: &SessionId,
+) -> Result<(u64, u64), ClientError> {
+    #[derive(serde::Deserialize)]
+    struct Totals {
+        input_tokens: u64,
+        output_tokens: u64,
+    }
+    let answer = local(
+        connection,
+        crate::daemon::local::USAGE,
+        json!({"session_id": session}),
+    )
+    .await?;
+    let totals: Totals = decode("rkat/usage", answer)?;
+    Ok((totals.input_tokens, totals.output_tokens))
+}

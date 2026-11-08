@@ -29,7 +29,20 @@
 //!   client's turn);
 //! - [`TRANSCRIPT`] `{"session_id"}` → `{"messages": [Message]}`: a
 //!   conversation's committed messages (the client renders a resumed
-//!   conversation from them, as the in-process `/resume` does).
+//!   conversation from them, as the in-process `/resume` does);
+//! - [`USAGE`] `{"session_id"}` → `{"input_tokens", "output_tokens"}`: a
+//!   conversation's total usage as the engine keeps it with the session (the
+//!   client seeds its token counter from it on attach and after a switch,
+//!   as the in-process runner does from `Session::total_usage`; the engine's
+//!   wire reports usage only per turn);
+//! - [`TRUST`] `{"op": "list"|"project"|"rules"}` → `{"ok", "text",
+//!   "files"?}`: the project trust record the daemon owns. `list` states
+//!   each project input (`.rkat/mcp.toml`, `.rkat/config.toml`, the
+//!   workspace realm's `config.toml`) and its trust; `project` is `/trust`
+//!   (every present input recorded as it is now, in the host trust record
+//!   the daemon's realm config store and factory read on every session
+//!   build); `rules` is `/rules trust` (the realm rules file's summary, then
+//!   its digest recorded and its allow rules applied).
 //!
 //! A future engine extension (an application-defined method namespace, or
 //! the governed realm's own review policy) could replace them.
@@ -57,8 +70,12 @@ use super::approvals::{DaemonToolOrigins, Desk};
 use super::conversations::{Conversations, Target};
 use super::{MOB_ID, ORCHESTRATOR};
 use crate::approval::mode::PermissionMode;
-use crate::approval::remote::{ModeStatus, RuleCommand, mode_notice, run_rule_command};
+use crate::approval::remote::{
+    ModeStatus, RuleCommand, RuleOutcome, mode_notice, run_rule_command,
+};
+use crate::approval::trust::TrustStatus;
 use crate::approval::{ApprovalEngine, InputKey};
+use crate::bootstrap::project_trust::ProjectInputs;
 use crate::endpoints::{ENDPOINT_REALM, WireDialect};
 use crate::mobs::HelperRegistry;
 use crate::thinking::{self, ThinkingTable};
@@ -79,6 +96,10 @@ pub const NEW: &str = "rkat/new";
 pub const RESUME: &str = "rkat/resume";
 /// A conversation's committed messages.
 pub const TRANSCRIPT: &str = "rkat/transcript";
+/// A conversation's total token usage.
+pub const USAGE: &str = "rkat/usage";
+/// The project trust record: `/trust`, `/rules trust`.
+pub const TRUST: &str = "rkat/trust";
 
 /// JSON-RPC "method not found".
 pub const METHOD_NOT_FOUND: i64 = -32601;
@@ -109,6 +130,9 @@ pub struct Local {
     /// says so.
     plan_noted: Mutex<bool>,
     inputs: AtomicU64,
+    /// The workspace's project inputs and their trust (`None`: `rkat/trust`
+    /// has nothing to act on).
+    project: Option<ProjectInputs>,
 }
 
 impl std::fmt::Debug for Local {
@@ -145,7 +169,15 @@ impl Local {
             thinking,
             plan_noted: Mutex::new(in_plan),
             inputs: AtomicU64::new(0),
+            project: None,
         }
+    }
+
+    /// Answer `rkat/trust` over `project`'s inputs.
+    #[must_use]
+    pub fn with_project_inputs(mut self, project: ProjectInputs) -> Self {
+        self.project = Some(project);
+        self
     }
 
     /// Answer the local method `method`.
@@ -190,6 +222,39 @@ impl Local {
                     .map_err(|err| (SWITCH_FAILED, err))?;
                 Ok(json!({"messages": messages}))
             }
+            USAGE => {
+                let session = session_param(&params)?;
+                let usage = self
+                    .conversations
+                    .usage(&session)
+                    .await
+                    .map_err(|err| (SWITCH_FAILED, err))?;
+                Ok(json!({
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": usage.output_tokens,
+                }))
+            }
+            TRUST => {
+                let op = params.get("op").and_then(Value::as_str).unwrap_or("list");
+                match op {
+                    "list" => Ok(self.trust_list()),
+                    "project" => Ok(json!(self.trust_project())),
+                    "rules" => Ok(json!(match self.engine.trust_realm_rules() {
+                        Ok(summary) => RuleOutcome {
+                            ok: true,
+                            text: summary
+                        },
+                        Err(err) => RuleOutcome {
+                            ok: false,
+                            text: format!("not trusted: {err}"),
+                        },
+                    })),
+                    other => Err((
+                        INVALID_PARAMS,
+                        format!("`op` must be list, project or rules, not `{other}`"),
+                    )),
+                }
+            }
             other => Err((METHOD_NOT_FOUND, format!("unknown method `{other}`"))),
         }
     }
@@ -217,6 +282,83 @@ impl Local {
             origins.refresh(&idle).await;
         });
         Ok(answer)
+    }
+
+    /// `rkat/trust {"op": "list"}`: every project input and its trust.
+    fn trust_list(&self) -> Value {
+        let Some(project) = &self.project else {
+            return json!({"ok": false, "text": "the daemon has no project trust record", "files": []});
+        };
+        let files: Vec<Value> = project
+            .files()
+            .map(|file| {
+                let (status, reason) = match project.status(file) {
+                    TrustStatus::Missing => ("missing", None),
+                    TrustStatus::Trusted => ("trusted", None),
+                    TrustStatus::Untrusted(why) => ("untrusted", Some(why.to_string())),
+                };
+                let mut entry = json!({"path": file.display().to_string(), "status": status});
+                if let Some(reason) = reason {
+                    entry["reason"] = json!(reason);
+                }
+                entry
+            })
+            .collect();
+        let text = files
+            .iter()
+            .map(|entry| {
+                format!(
+                    "{}: {}{}",
+                    entry["path"].as_str().unwrap_or_default(),
+                    entry["status"].as_str().unwrap_or_default(),
+                    entry["reason"]
+                        .as_str()
+                        .map(|why| format!(" ({why})"))
+                        .unwrap_or_default()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        json!({"ok": true, "text": text, "files": files, "by_flag": project.by_flag()})
+    }
+
+    /// `rkat/trust {"op": "project"}`: `/trust`, every present project
+    /// input recorded as it is now. The record is the one the realm config
+    /// store's guard and the factory's hook-source check read on every
+    /// session build, so the hooks run from the orchestrator's next build
+    /// (`/new`, `/resume`, a daemon restart). The orchestrator's MCP servers
+    /// are part of its mob's definition, made when the mob was first
+    /// created; trusting `.rkat/mcp.toml` here does not add them to it.
+    fn trust_project(&self) -> RuleOutcome {
+        let Some(project) = &self.project else {
+            return RuleOutcome {
+                ok: false,
+                text: "the daemon has no project trust record".to_string(),
+            };
+        };
+        match project.trust_all() {
+            Ok(recorded) if recorded.is_empty() => RuleOutcome {
+                ok: true,
+                text: "the project has no .rkat/mcp.toml, .rkat/config.toml or workspace realm config.toml to trust".to_string(),
+            },
+            Ok(recorded) => {
+                let files = recorded
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                RuleOutcome {
+                    ok: true,
+                    text: format!(
+                        "trusted {files} as they are now; their hooks run from the agent's next session (/new, /resume or a daemon restart); in attach mode the agent's MCP servers are the ones its mob was created with"
+                    ),
+                }
+            }
+            Err(err) => RuleOutcome {
+                ok: false,
+                text: format!("not trusted: {err}"),
+            },
+        }
     }
 
     /// The session the orchestrator runs as now.

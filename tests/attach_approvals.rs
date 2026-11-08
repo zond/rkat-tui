@@ -72,6 +72,9 @@ struct Setup {
     classifier: Arc<ScriptedClassifier>,
     escalation_timeout: Option<Duration>,
     without_registry: bool,
+    /// The user config root outside the workspace (so the workspace's
+    /// `.rkat/config.toml` is a project input, not the user's own file).
+    user_root_outside: bool,
 }
 
 impl Setup {
@@ -98,6 +101,7 @@ struct Running {
     stop: tokio::sync::oneshot::Sender<()>,
     task: tokio::task::JoinHandle<Result<(), DaemonError>>,
     endpoint_file: std::path::PathBuf,
+    origins: Arc<rkat_tui::daemon::approvals::DaemonToolOrigins>,
 }
 
 impl Running {
@@ -113,8 +117,13 @@ impl Running {
         llm: &Arc<ScriptedLlmClient>,
         setup: &Setup,
     ) -> Result<Daemon, DaemonError> {
+        let args = if setup.user_root_outside {
+            args_with_user_root(root)
+        } else {
+            args_for(root)
+        };
         Daemon::start(
-            &args_for(root),
+            &args,
             setup
                 .options(llm)
                 .with_endpoint_file(endpoint_file_for(root)),
@@ -124,6 +133,7 @@ impl Running {
 
     fn serve(daemon: Daemon) -> Self {
         let endpoint_file = daemon.endpoint_file().to_path_buf();
+        let origins = Arc::clone(daemon.tool_origins());
         let (stop, stopped) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(daemon.serve_until(async move {
             let _ = stopped.await;
@@ -132,6 +142,7 @@ impl Running {
             stop,
             task,
             endpoint_file,
+            origins,
         }
     }
 
@@ -260,6 +271,29 @@ fn tool_result(messages: &[Message], id: &str) -> ToolResult {
 /// The text of the tool result `id` the model read in request `n`.
 fn result_text(llm: &ScriptedLlmClient, n: usize, id: &str) -> String {
     tool_result(&llm.requests()[n], id).text_content()
+}
+
+/// [`args_for`] with the user config root beside the workspace.
+fn args_with_user_root(root: &Path) -> rkat_tui::Args {
+    use clap::Parser as _;
+    let home = root.parent().unwrap().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let root = root.to_str().unwrap();
+    let cfg = format!("{root}/.cfg");
+    rkat_tui::Args::try_parse_from([
+        "rkat-tui",
+        "-w",
+        root,
+        "--user-config-root",
+        home.to_str().unwrap(),
+        "--config-dir",
+        &cfg,
+        "--no-pricing-fetch",
+        "--model",
+        common::MODEL,
+        "--no-confinement",
+    ])
+    .unwrap()
 }
 
 fn write(id: &'static str, path: &str, content: &str) -> Step {
@@ -865,6 +899,190 @@ async fn plan_mode_survives_a_restart_and_leaving_it_is_announced() {
         .unwrap();
     let request = format!("{:?}", llm.requests()[1]);
     assert!(request.contains("Plan mode is off"), "{request}");
+    drop(connection);
+    daemon.stop().await;
+}
+
+/// `/trust` and `/rules trust` in attach mode act on the daemon's trust
+/// record: a project hook file nobody trusted is refused (its hook does not
+/// run), `/trust` from the client records it, and a restarted daemon keeps
+/// it trusted (the hook runs on the rebuilt agent's next call).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn trust_from_the_client_records_the_project_hooks_across_a_restart() {
+    let ws = Workspace::new();
+    std::fs::create_dir_all(ws.root.join(".rkat")).unwrap();
+    std::fs::write(ws.root.join("notes.txt"), "NOTES\n").unwrap();
+    let marker = ws.sibling("hook-entered");
+    let hooks = format!(
+        r#"[[hooks.entries]]
+id = "probe"
+point = "pre_tool_execution"
+capability = "guardrail"
+timeout_ms = 5000
+
+[hooks.entries.runtime]
+type = "command"
+command = "/bin/sh"
+args = ["-c", "printf entered > \"$1\"; cat >/dev/null; printf '{{}}'", "hook-probe", "{}"]
+"#,
+        marker.display()
+    );
+    std::fs::write(ws.root.join(".rkat/config.toml"), hooks).unwrap();
+    let read = |id: &'static str| Step::Tool {
+        id,
+        name: "read_file",
+        args: json!({"path": "notes.txt"}),
+    };
+    let llm = ScriptedLlmClient::new(vec![
+        read("r1"),
+        Step::Text("read, untrusted"),
+        read("r2"),
+        Step::Text("read, trusted"),
+    ]);
+    let setup = Setup {
+        user_root_outside: true,
+        ..Setup::default()
+    };
+    let daemon = Running::start(&ws.root, &llm, &setup).await;
+    let connection = daemon.connect().await;
+    let status = |listed: &Value| {
+        listed["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|file| {
+                file["path"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with(".rkat/config.toml")
+            })
+            .map(|file| file["status"].as_str().unwrap().to_string())
+    };
+    let listed = connection
+        .call("rkat/trust", json!({"op": "list"}))
+        .await
+        .unwrap();
+    assert_eq!(status(&listed).as_deref(), Some("untrusted"), "{listed}");
+    let mut client = Client::attach(&ws.root).await;
+    client.send(Effect::StartTurn("read notes.txt".into()));
+    client.turn_finished().await.result.unwrap();
+    assert!(!marker.exists(), "an untrusted project hook does not run");
+
+    client.send(Effect::TrustProject);
+    client
+        .wait_for(|msg| {
+            matches!(msg, Msg::Notice { text, .. } if text.starts_with("trusted ") && text.contains(".rkat/config.toml"))
+        })
+        .await;
+    // `/rules trust` reaches the daemon too: the realm rules file a rule
+    // created is summarised and trusted.
+    client.send(Effect::AddRule {
+        effect: RuleEffect::Allow,
+        tool: "grep".into(),
+        pattern: None,
+    });
+    client
+        .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text == "rule added"))
+        .await;
+    client.send(Effect::TrustRealmRules);
+    client
+        .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text.contains("trusted; 1 allow rule(s) apply now")))
+        .await;
+    client.quit().await;
+    drop(connection);
+    daemon.stop().await;
+
+    let daemon = Running::start(&ws.root, &llm, &setup).await;
+    let connection = daemon.connect().await;
+    let listed = connection
+        .call("rkat/trust", json!({"op": "list"}))
+        .await
+        .unwrap();
+    assert_eq!(status(&listed).as_deref(), Some("trusted"), "{listed}");
+    let mut client = Client::attach(&ws.root).await;
+    client.send(Effect::StartTurn("read notes.txt again".into()));
+    client.turn_finished().await.result.unwrap();
+    assert!(marker.exists(), "the trusted hook ran on the rebuilt agent");
+    client.quit().await;
+    drop(connection);
+    daemon.stop().await;
+}
+
+/// A seated helper's own tool catalog is read once its first run has
+/// ended (the session is idle then), and cached for its later calls, as
+/// the orchestrator's is.
+#[cfg(feature = "mob")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_seated_helpers_catalog_is_read_after_its_first_run() {
+    let ws = Workspace::new();
+    let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
+        let results: Vec<String> = messages
+            .iter()
+            .filter_map(|m| match m {
+                Message::ToolResults { results, .. } => Some(
+                    results
+                        .iter()
+                        .map(|r| r.tool_use_id.clone())
+                        .collect::<Vec<_>>(),
+                ),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        let asked_helper = common::user_texts(messages)
+            .iter()
+            .any(|text| text.contains("HELPER-TASK"));
+        if asked_helper {
+            Step::Text("helper done")
+        } else if results.iter().any(|id| id == "s1") {
+            Step::Text("spawned")
+        } else {
+            Step::Tool {
+                id: "s1",
+                name: "spawn_member",
+                args: json!({
+                    "profile": "main",
+                    "member_id": "scout",
+                    "initial_message": "HELPER-TASK: say done",
+                }),
+            }
+        }
+    }));
+    let llm = ScriptedLlmClient::new(vec![step.clone(), step.clone(), step]);
+    let daemon = Running::start(&ws.root, &llm, &Setup::default()).await;
+    let connection = daemon.connect().await;
+    connection
+        .call(
+            "mob/turn_start",
+            json!({"mob_id": "tui", "agent_identity": "main", "prompt": "seat a scout"}),
+        )
+        .await
+        .unwrap();
+    let helper = within(async {
+        loop {
+            let status = connection
+                .call(
+                    "mob/member_status",
+                    json!({"mob_id": "tui", "agent_identity": "scout"}),
+                )
+                .await;
+            if let Ok(status) = status
+                && let Some(session) = status["current_session_id"].as_str()
+            {
+                return meerkat_core::SessionId::parse(session).unwrap();
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    within(async {
+        while !daemon.origins.has(&helper) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    // Its own catalog: the native shell as the engine defines it.
+    assert!(daemon.origins.origin(&helper, "shell").is_some());
     drop(connection);
     daemon.stop().await;
 }

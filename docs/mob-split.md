@@ -1,6 +1,6 @@
 # rkat-tui as a client of a running mob
 
-## Status (2026-11-08, P1–P4)
+## Status (2026-11-08, P1–P4, P4b)
 
 P1 is in: `rkat-tui-mob` (experimental, `src/bin/rkat-tui-mob.rs`,
 `src/daemon/`) bootstraps the workspace realm exactly as the TUI does,
@@ -125,8 +125,8 @@ P3 is in: approvals on the daemon side.
   reads each session's catalog while it is idle (at start and after every
   run) and caches it; until the first read only the TUI's own file and note
   tools are known (everything else is judged a foreign tool). A helper's
-  catalog is never read (its calls are judged with the TUI's tools known,
-  the rest foreign).
+  catalog is read after its first run (P4b); until then it is judged by the
+  TUI's tools and the natives of the catalogs read so far.
 - Durable refusals: the daemon installs a `ToolConsequencePolicyRegistry`
   with one provider (`rkat-tui` / `deny-rules`, `daemon::policy`) and binds
   the orchestrator, its same-mob helpers (customizer) and child-mob members
@@ -166,12 +166,11 @@ reload that re-runs the trust checks, for no gain). A future engine
 extension (an application method namespace, or the governed realm's review
 policy) could replace them.
 
-Deferred after P3 (done in P4 unless named below): helpers' follower view,
-`fork`, `/new`, `/resume`, `/rewind`, `/compact`; `/rules trust` and
-`/trust` in attach mode (still not); a helper's own tool catalog (still
-not); a push notification for pending approvals (engine
-ask 2); approval decision events (the client reads the counters with
-`rkat/get_mode`, not the per-call notices).
+Deferred after P3 (done in P4 or P4b unless named below): helpers'
+follower view, `fork`, `/new`, `/resume`, `/rewind`, `/compact`; a push
+notification for pending approvals (engine ask 2); approval decision events
+(the client reads the counters with `rkat/get_mode`, not the per-call
+notices).
 
 P4 is in: helpers, conversations and detach in attach mode.
 
@@ -234,8 +233,28 @@ P4 is in: helpers, conversations and detach in attach mode.
   `rkat/resume {session_id}` → `{"session_id", "warning"?}`,
   `rkat/transcript {session_id}` → `{"messages": [Message]}`.
 
-What remains: P5 (governed realm, asks 3); `/rewind`, `/compact now`,
-`/rules trust`, `/trust` and the TUI's `fork` in attach mode. Engine asks
+P4b is in: the polish P4 left.
+
+- Token counter and gauge: the daemon answers `rkat/usage {session_id}` →
+  `{"input_tokens", "output_tokens"}` from the session service's `read`
+  (`SessionView::billing`; the wire's `events/snapshot` and `session/read`
+  carry no usage). The client seeds the counter from it on attach, on
+  reconnect and after `/new`/`/resume`, and the gauge after a switch from
+  the last `turn_completed` in the replay it reads anyway.
+- `/trust` and `/rules trust`: `rkat/trust {"op": "list"|"project"|"rules"}`
+  on the daemon's trust record (`ProjectInputs::trust_all`,
+  `ApprovalEngine::trust_realm_rules`), answered `{"ok", "text", "files"?}`.
+  Trusted hooks run from the agent's next build; its MCP servers stay the
+  ones in its mob's definition (made when the mob was created).
+- Helper catalogs: the helper registry's updates (dropped before) feed
+  `daemon::approvals::watch_helpers`, which reads a helper's tool
+  definitions after its first run and caches them per session. A
+  `spawn_member` helper is judged by its own catalog from its second run;
+  a `delegate` helper retires after its one run, so the fallback stays.
+
+What remains: P5 (governed realm, asks 3); `/rewind`, `/compact now` and
+the TUI's `fork` in attach mode; MCP servers added or trusted after the
+daemon's mob was created. Engine asks
 outstanding (no PRs yet): 1 stream cursor, 2 approval notice, 5 a
 notification sink that survives `RpcServer::new` per connection (map risk
 (c)), 6 fork-seat admission (fork children ungated; our reproducer PR is

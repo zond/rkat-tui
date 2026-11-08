@@ -1047,7 +1047,9 @@ token counts, `/status`, `/export`, `/cost` (helpers included, kept per
 conversation), `/copy`, `/context` (the gauge only), `/compact` (the
 policy), `/remember` and `/memory` (the files are edited here; the agent
 reads the new content from its next model call), approvals, the permission
-modes, `/rules` and `!` commands.
+modes, `/rules`, `/trust`, `/rules trust` and `!` commands. The token
+counter shows the conversation's totals on attach and after `/new` or
+`/resume`, as in-process.
 
 **Helpers.** The agent delegates with the engine's `delegate` (and seats
 team members with `spawn_member`); the helpers run in the daemon behind the
@@ -1096,12 +1098,17 @@ is, and their output goes to the agent's context.
 - `/rewind` is not offered: the engine refuses a transcript fork of a mob
   member's session, and a member fork copies the whole history (or its last
   messages) as text, never the conversation up to a chosen message.
-  `/compact now` waits for the engine's compact-now; `/rules trust`,
-  `/trust` and the `fork` tool are not available either.
+  `/compact now` waits for the engine's compact-now; the `fork` tool is
+  not available either.
+- `/trust` records the project files in the daemon's trust record: their
+  hooks run from the agent's next conversation (`/new`, `/resume`) or a
+  daemon restart. The agent's MCP servers are the ones its daemon mob was
+  created with; a `.rkat/mcp.toml` trusted later does not reach it.
 - Until the agent's first run after a daemon start, the gate knows only
   rkat-tui's own file and note tools; other tools (the shell included) are
-  reviewed as foreign tools until then. A helper's tools other than
-  rkat-tui's are always reviewed that way.
+  reviewed as foreign tools until then. A helper is judged by those and the
+  engine's own tools until its first run has ended, and by its own tools
+  after that (a `delegate` helper has only the one run).
 - A model switch's turn is tied to the connection that sent it: detaching
   during that one turn cancels it. Ordinary prompts are not.
 - The in-process TUI and the daemon cannot share one workspace at the same

@@ -195,3 +195,61 @@ async fn a_switch_is_refused_while_another_clients_turn_runs() {
     drop((running, other));
     daemon.stop().await;
 }
+
+/// The token counter and the context gauge follow the conversation: after
+/// `/resume` they show the resumed conversation's own usage (the daemon's
+/// `rkat/usage`, the last turn's context), after `/new` nothing, and a TUI
+/// that attaches later starts from the session's totals, not from 0.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_token_counter_and_gauge_follow_the_conversation() {
+    use rkat_tui::ui::StatusUpdate;
+    let tokens = |m: &Msg| match m {
+        Msg::Status(StatusUpdate::Tokens { input, output }) => Some((*input, *output)),
+        _ => None,
+    };
+    let gauge = |m: &Msg| match m {
+        Msg::Status(StatusUpdate::Context { used, .. }) => Some(*used),
+        _ => None,
+    };
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![Step::TextUsage("one", 100), Step::TextUsage("two", 7)]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let first = daemon.session.to_string();
+    let mut client = Client::attach(&ws.root).await;
+    client.send(Effect::StartTurn("first".into()));
+    client.turn_finished().await.result.unwrap();
+
+    client.send(Effect::NewSession);
+    client.wait_for(|m| reset(m).is_some()).await;
+    assert_eq!(
+        tokens(&client.wait_for(|m| tokens(m).is_some()).await),
+        Some((0, 0))
+    );
+    assert_eq!(
+        gauge(&client.wait_for(|m| gauge(m).is_some()).await),
+        Some(None)
+    );
+    client.send(Effect::StartTurn("second".into()));
+    client.turn_finished().await.result.unwrap();
+
+    client.send(Effect::ResumeSession(first));
+    client
+        .wait_for(|m| reset(m).is_some_and(|blocks| !blocks.is_empty()))
+        .await;
+    // Each scripted call reports its input and 5 output tokens.
+    assert_eq!(
+        tokens(&client.wait_for(|m| tokens(m).is_some()).await),
+        Some((100, 5))
+    );
+    assert_eq!(
+        gauge(&client.wait_for(|m| gauge(m).is_some()).await),
+        Some(Some(105))
+    );
+
+    // A TUI attaching now starts from the resumed conversation's totals.
+    let mut late = Client::attach(&ws.root).await;
+    late.saw(|m| tokens(m) == Some((100, 5))).await;
+    late.quit().await;
+    client.quit().await;
+    daemon.stop().await;
+}

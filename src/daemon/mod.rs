@@ -322,6 +322,7 @@ pub struct Daemon {
     scope: RuntimeScope,
     engine: Arc<crate::approval::ApprovalEngine>,
     desk: Arc<approvals::Desk>,
+    origins: Arc<approvals::DaemonToolOrigins>,
     local: Arc<local::Local>,
     /// The desk and the event watcher, aborted at shutdown.
     tasks: Vec<tokio::task::JoinHandle<()>>,
@@ -396,15 +397,18 @@ impl Daemon {
             Arc::clone(&composed.origins),
             Arc::clone(&conversations),
         );
-        let local = Arc::new(local::Local::new(
-            Arc::clone(&composed.engine),
-            Arc::clone(&composed.state),
-            conversations,
-            Arc::clone(&composed.root.registry),
-            Arc::clone(&composed.origins),
-            Arc::clone(&composed.desk),
-            composed.thinking.clone(),
-        ));
+        let local = Arc::new(
+            local::Local::new(
+                Arc::clone(&composed.engine),
+                Arc::clone(&composed.state),
+                conversations,
+                Arc::clone(&composed.root.registry),
+                Arc::clone(&composed.origins),
+                Arc::clone(&composed.desk),
+                composed.thinking.clone(),
+            )
+            .with_project_inputs(composed.project_inputs.clone()),
+        );
         if let Some(warning) = local.announce_plan_mode().await {
             tracing::warn!(%warning, "plan mode");
         }
@@ -427,8 +431,14 @@ impl Daemon {
             scope: composed.scope,
             engine: composed.engine,
             desk: composed.desk,
+            origins: Arc::clone(&composed.origins),
             local,
-            tasks: vec![composed.desk_task, composed.follower_task, watcher],
+            tasks: vec![
+                composed.desk_task,
+                composed.follower_task,
+                composed.helper_catalogs_task,
+                watcher,
+            ],
         })
     }
 
@@ -442,6 +452,12 @@ impl Daemon {
     #[must_use]
     pub fn desk(&self) -> &Arc<approvals::Desk> {
         &self.desk
+    }
+
+    /// The members' tool catalogs the gate judges calls by.
+    #[must_use]
+    pub fn tool_origins(&self) -> &Arc<approvals::DaemonToolOrigins> {
+        &self.origins
     }
 
     /// The bound address clients connect to.

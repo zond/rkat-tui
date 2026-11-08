@@ -338,9 +338,9 @@ async fn what_the_daemon_cannot_do_yet_says_so() {
     let llm = ScriptedLlmClient::new(vec![]);
     let daemon = Running::start(&ws.root, &llm).await;
     let mut client = Client::attach(&ws.root).await;
-    client.send(Effect::TrustRealmRules);
+    client.send(Effect::RecallQueued);
     client
-        .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text.contains(NOT_AVAILABLE)))
+        .wait_for(|msg| matches!(msg, Msg::Recalled { errors, .. } if errors.iter().any(|e| e.contains(NOT_AVAILABLE))))
         .await;
     client.send(Effect::RequestRewindMenu);
     client

@@ -2067,3 +2067,70 @@ unconfined.
 - Pending calls leaked on a caller's timeout: `Connection::call` now holds
   a guard that removes its id when the call ends or is dropped. Test:
   `client::transport::tests::a_dropped_call_forgets_its_pending_entry`.
+
+## P4b: attach-mode polish (2026-11-08)
+
+Three gaps P4 left in attach mode.
+
+**Token counter and gauge after a switch.** The attach client set the
+counter to 0 after `/new`/`/resume` and started from 0 on a fresh attach,
+counting only the turns it saw. In-process the counter is the session's
+total usage (`Session::total_usage`, `runner::lifecycle::session_messages`).
+What the engine exposes: `events/snapshot` and `session/read` answer a
+`WireSessionInfo`, which has no usage (the mob arm of `session/read` drops
+`SessionView::billing`); `session/history` carries messages only; the
+replayed `turn_completed` events carry each model call's usage, and
+summing them would need the whole log on every reconnect. The session
+service's `read` returns `SessionView { billing: SessionUsage { usage } }`,
+so the daemon answers a new local method `rkat/usage {session_id}` →
+`{"input_tokens", "output_tokens"}` from it (`Conversations::usage`). The
+client reads it after a switch (`adopt`) and on every attach and reconnect
+(`establish`, after the catch-up replay, whose turns the total already
+holds; a run ending between the replay's last page and the usage read is
+counted twice, its live event adding to a total that already holds it: an
+accepted race). After a switch the gauge is the last `turn_completed` usage
+in the replay the switch already reads (none for a fresh conversation); the
+in-process switch leaves the gauge as it was until the next model call. Test: `tests/attach_sessions.rs`
+`the_token_counter_and_gauge_follow_the_conversation` (prompt, `/new`,
+prompt, `/resume` back: the counter shows the first conversation's 100/5
+and the gauge 105, not 0; a TUI attaching afterwards starts from 100/5).
+
+**`/trust` and `/rules trust`.** The daemon owns the trust record
+(`bootstrap::project_trust::ProjectInputs` over the host trust record,
+which its realm config store's guard and its factory's hook-source check
+read on every session build); `engine::compose` now keeps the inputs and
+`Local` answers `rkat/trust {"op": "list"|"project"|"rules"}`: `list` each
+project input and its state, `project` `ProjectInputs::trust_all` (the
+in-process `/trust`), `rules` `ApprovalEngine::trust_realm_rules` (the
+summary, then the digest and the allow rules). The in-process flow has no
+confirmation dialog (the summary comes after), so none was added; the
+client routes both effects there and shows the outcome. The in-process
+`/trust` also reloads the MCP set for the next session; the daemon's agent
+takes its MCP servers from its mob's definition, written when the mob was
+first created and restored as it is, so a trusted `.rkat/mcp.toml` does not
+reach the agent in attach mode (the notice says so); its hooks do, from the
+agent's next build. Test: `tests/attach_approvals.rs`
+`trust_from_the_client_records_the_project_hooks_across_a_restart` (a
+`pre_tool_execution` hook in the workspace `.rkat/config.toml`, with the
+user config root outside the workspace so the file is a project input:
+listed untrusted, does not run; `/trust` from the client; `/rules trust`
+summarises the rules file; after a daemon restart it is listed trusted and
+runs on the rebuilt agent's next call). `tests/attach.rs`
+`what_the_daemon_cannot_do_yet_says_so` now checks another unavailable
+action.
+
+**Helper tool catalogs.** The review fix judged a helper by the TUI's tools
+plus the natives of the catalogs read so far. The daemon now also reads a
+helper's own catalog the first time its session is idle: the helper
+registry's update channel (dropped before; the follower forwards every
+helper event into it) goes to `daemon::approvals::watch_helpers`, which on
+a helper's first `run_completed`/`run_failed` reads its session's live tool
+definitions and caches them per session, as the orchestrator's. A helper
+seated with `spawn_member` is judged by its own catalog from its second run
+on. Probe: a `delegate` helper's catalog is read too (its session still
+answers right after the run), but the helper is retired then and never
+runs again, so for it the fallback stays what decides; its cache entry
+stays until the daemon stops, as an earlier conversation's does. Test:
+`tests/attach_approvals.rs`
+`a_seated_helpers_catalog_is_read_after_its_first_run` (times out with the
+watcher's read disabled).

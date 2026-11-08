@@ -6,6 +6,14 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Added
 
+- Attach mode polish (experimental, P4b): the token counter and context
+  gauge show the conversation's own usage on attach, on reconnect and after
+  `/new` or `/resume` (new daemon method `rkat/usage`), instead of 0;
+  `/trust` and `/rules trust` work in attach mode, on the daemon's trust
+  record (new daemon method `rkat/trust`; trusted project hooks run from
+  the agent's next conversation or a daemon restart); the daemon reads a
+  helper's own tool catalog after its first run, so a seated helper's later
+  calls are judged by its own tools.
 - Attach mode reaches the in-process TUI on what the daemon can own
   (experimental, P4): the daemon's agent delegates with the engine's
   `delegate` (and `spawn_member`), and every attached TUI shows the helpers

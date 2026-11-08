@@ -72,10 +72,15 @@ pub struct Composed {
     pub desk_task: tokio::task::JoinHandle<()>,
     /// The helper follower's task.
     pub follower_task: tokio::task::JoinHandle<()>,
+    /// The task reading helpers' tool catalogs after their runs.
+    pub helper_catalogs_task: tokio::task::JoinHandle<()>,
     /// The members' tool catalogs.
     pub origins: Arc<DaemonToolOrigins>,
     /// The `[thinking]` table (model switches over the wire).
     pub thinking: ThinkingTable,
+    /// The workspace's project inputs and the trust record they are judged
+    /// by (`rkat/trust`).
+    pub project_inputs: crate::bootstrap::project_trust::ProjectInputs,
 }
 
 /// How the daemon composes its approval side (tests vary it).
@@ -109,6 +114,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         factory,
         mut approval,
         mcp_servers,
+        project_inputs,
         memory,
         helper_max_depth,
         llm_override,
@@ -141,10 +147,10 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     let runtime = Arc::new(runtime);
 
     let realm_root = scope.realm_root();
+    // Nobody renders the registry's helper updates in the daemon (clients
+    // follow the helpers on the mobs' event streams); they tell the daemon
+    // when a helper's run ended, so its tool catalog can be read.
     let (registry, updates) = HelperRegistry::persistent(&realm_root);
-    // Nobody renders the registry's helper updates in the daemon: clients
-    // follow the helpers on the mobs' event streams.
-    drop(updates);
     let registry = Arc::new(registry);
     let root_tools = orchestrator_tools(&scope)?;
     let tools_for_root = Arc::clone(&root_tools.0);
@@ -155,6 +161,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         &[Arc::clone(&root_tools.0)],
     ));
     engine.set_tool_origins(Arc::clone(&origins) as Arc<dyn crate::approval::ToolOrigins>);
+    let helper_catalogs = super::approvals::watch_helpers(updates, Arc::clone(&origins));
     let Some(escalations) = approval.escalations.take() else {
         return Err(DaemonError::Approval(
             "the approval engine has no escalation channel".to_string(),
@@ -303,8 +310,10 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         desk,
         desk_task,
         follower_task: follower,
+        helper_catalogs_task: helper_catalogs,
         origins,
         thinking,
+        project_inputs,
     })
 }
 

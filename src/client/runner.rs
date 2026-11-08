@@ -192,6 +192,8 @@ struct Established {
     mark: Mark,
     replay: Vec<EventEnvelope<AgentEvent>>,
     identity: Option<(String, String)>,
+    /// The session's total usage `(input, output)`, read after the replay.
+    usage: Option<(u64, u64)>,
 }
 
 /// What a background task reports.
@@ -255,6 +257,10 @@ struct Adopted {
     /// The last durable sequence of the session (shown as the transcript).
     last_seq: u64,
     identity: Option<(String, String)>,
+    /// The session's total usage `(input, output)`.
+    usage: Option<(u64, u64)>,
+    /// The context of its last model call (the gauge).
+    context: Option<u64>,
 }
 
 /// The UI's current turn.
@@ -550,6 +556,7 @@ impl AttachRunner {
             mark,
             replay,
             identity,
+            usage,
         } = established;
         let address = link.endpoint.address;
         let session = link.session.to_string();
@@ -591,6 +598,11 @@ impl AttachRunner {
         self.link = Some(link);
         for envelope in replay {
             self.on_event(envelope);
+        }
+        // The counters are the session's totals, as in-process; after the
+        // replay, whose turns they already hold.
+        if let Some((input, output)) = usage {
+            self.send(Msg::Status(StatusUpdate::Tokens { input, output }));
         }
         let now = Instant::now();
         self.catch_up_at = Some(now + CATCH_UP_EVERY);
@@ -1263,8 +1275,8 @@ impl AttachRunner {
             }
             Effect::RemoveRule(n) => self.rule_command(&RuleCommand::Remove { n }).await,
             Effect::ListRules => self.rule_command(&RuleCommand::List).await,
-            Effect::TrustRealmRules => self.unavailable("/rules trust"),
-            Effect::TrustProject => self.unavailable("/trust"),
+            Effect::TrustRealmRules => self.trust_command("rules", "/rules trust").await,
+            Effect::TrustProject => self.trust_command("project", "/trust").await,
             Effect::Quit
             | Effect::SaveUnsent(_)
             | Effect::SetChecklistView(_)
@@ -1272,10 +1284,6 @@ impl AttachRunner {
             | Effect::Suspend
             | Effect::ExternalEditor(_) => {}
         }
-    }
-
-    fn unavailable(&self, what: &str) {
-        self.notice(NoticeLevel::Warn, format!("{what} is {NOT_AVAILABLE}"));
     }
 
     /// The UI answered an approval dialog: decide its record. A record
@@ -1361,6 +1369,42 @@ impl AttachRunner {
                 }
             }
             Ok(Err(err)) => self.notice(NoticeLevel::Error, format!("mode not changed: {err}")),
+            Err(_) => self.notice(NoticeLevel::Error, "the daemon did not answer in time"),
+        }
+    }
+
+    /// `/trust` (`op` `project`) or `/rules trust` (`rules`) on the
+    /// daemon's trust record (`rkat/trust`).
+    async fn trust_command(&self, op: &str, name: &str) {
+        let Some(connection) = self.connection() else {
+            self.notice(
+                NoticeLevel::Warn,
+                format!("not attached: {name} needs the daemon"),
+            );
+            return;
+        };
+        let answer = tokio::time::timeout(
+            CALL_TIMEOUT,
+            remote::local(
+                &connection,
+                crate::daemon::local::TRUST,
+                serde_json::json!({"op": op}),
+            ),
+        )
+        .await;
+        match answer {
+            Ok(Ok(value)) => match serde_json::from_value::<RuleOutcome>(value) {
+                Ok(outcome) => {
+                    let level = if outcome.ok {
+                        NoticeLevel::Info
+                    } else {
+                        NoticeLevel::Error
+                    };
+                    self.notice(level, outcome.text);
+                }
+                Err(err) => self.notice(NoticeLevel::Error, format!("{name}: {err}")),
+            },
+            Ok(Err(err)) => self.notice(NoticeLevel::Error, format!("{name} failed: {err}")),
             Err(_) => self.notice(NoticeLevel::Error, "the daemon did not answer in time"),
         }
     }
@@ -1789,6 +1833,8 @@ impl AttachRunner {
             blocks,
             last_seq,
             identity,
+            usage,
+            context,
         } = adopted;
         let Some(link) = &mut self.link else {
             return;
@@ -1816,9 +1862,13 @@ impl AttachRunner {
         self.orphans.clear();
         self.send(Msg::Status(StatusUpdate::Session(id.clone())));
         self.send(Msg::ResetTranscript(blocks));
-        self.send(Msg::Status(StatusUpdate::Tokens {
-            input: 0,
-            output: 0,
+        // The conversation's own totals and gauge, as the in-process
+        // switch reads them from the session.
+        let (input, output) = usage.unwrap_or_default();
+        self.send(Msg::Status(StatusUpdate::Tokens { input, output }));
+        self.send(Msg::Status(StatusUpdate::Context {
+            used: context,
+            approx: false,
         }));
         self.load_cost(&session);
         if let Some((model, provider)) = identity {
@@ -2277,6 +2327,20 @@ async fn replay_to_end(
     }
 }
 
+/// The context of the last model call `events` report (the gauge's
+/// reading), `None` when no turn reported its usage.
+fn last_context(events: &[EventEnvelope<AgentEvent>]) -> Option<u64> {
+    events
+        .iter()
+        .rev()
+        .find_map(|envelope| match &envelope.payload {
+            AgentEvent::TurnCompleted {
+                usage: Some(usage), ..
+            } => Some(crate::ui::context_tokens(usage)),
+            _ => None,
+        })
+}
+
 /// Follow the orchestrator's conversation `session` on `connection`: its
 /// stream opened again (the old one follows the retired session), its last
 /// sequence (what is shown starts after it) and its committed transcript.
@@ -2287,15 +2351,18 @@ async fn adopt(
 ) -> Result<Adopted, String> {
     tokio::time::timeout(SWITCH_TIMEOUT, async {
         let stream = remote::reopen_stream(connection, old_stream).await?;
-        let (_, last_seq) = replay_to_end(connection, &session, 0).await?;
+        let (events, last_seq) = replay_to_end(connection, &session, 0).await?;
         let messages = remote::transcript(connection, &session).await?;
         let identity = remote::identity(connection, &session).await.ok();
+        let usage = remote::usage(connection, &session).await.ok();
         Ok::<_, ClientError>(Adopted {
             blocks: crate::runner::blocks_from_messages(&messages),
             session,
             stream,
             last_seq,
             identity,
+            usage,
+            context: last_context(&events),
         })
     })
     .await
@@ -2384,6 +2451,7 @@ async fn establish(endpoint: Endpoint, saved: Option<&Cursor>) -> Result<Establi
             }
         }
         let identity = remote::identity(&connection, &session).await.ok();
+        let usage = remote::usage(&connection, &session).await.ok();
         Ok(Established {
             link: Link {
                 connection: Arc::new(connection),
@@ -2395,6 +2463,7 @@ async fn establish(endpoint: Endpoint, saved: Option<&Cursor>) -> Result<Establi
             mark,
             replay,
             identity,
+            usage,
         })
     })
     .await

@@ -768,7 +768,7 @@ fn quote_short(text: &str) -> String {
 }
 
 /// Tokens in the context after a model call: everything sent plus the reply.
-fn context_tokens(usage: &meerkat_core::Usage) -> u64 {
+pub(crate) fn context_tokens(usage: &meerkat_core::Usage) -> u64 {
     usage
         .input_tokens
         .saturating_add(usage.output_tokens)

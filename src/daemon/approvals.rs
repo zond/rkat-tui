@@ -31,7 +31,10 @@
 //!
 //! [`watch`] follows the orchestrator's events: a run start lifts a Stop
 //! (as the in-process runner reports `RunStarted`), a run end refreshes
-//! the tool catalog.
+//! the tool catalog. [`watch_helpers`] reads a helper's catalog after its
+//! first run, from the helper events the follower forwards; a helper that
+//! stays seated (`spawn_member`) is judged by its own catalog from its
+//! second run on, one retired after its run (`delegate`) never is.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -415,6 +418,42 @@ pub fn watch(
                 }
             }
             tokio::time::sleep(RESUBSCRIBE).await;
+        }
+    })
+}
+
+/// Read a helper's tool catalog the first time its session is idle: every
+/// helper event the follower forwards (`updates`, the helper registry's
+/// channel) is looked at, and a run end of a session whose catalog is not
+/// read yet reads it (the read waits behind a run still closing). A helper
+/// that leaves its mob after its one run (`delegate`) is gone before the
+/// read answers; it stays judged by the known tools. Runs until `updates`
+/// closes.
+pub fn watch_helpers(
+    mut updates: tokio::sync::mpsc::UnboundedReceiver<crate::mobs::HelperUpdate>,
+    origins: Arc<DaemonToolOrigins>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut reading = std::collections::HashSet::new();
+        while let Some(update) = updates.recv().await {
+            let crate::mobs::HelperUpdate::Event(scoped) = update else {
+                continue;
+            };
+            let (AgentEvent::RunCompleted { session_id, .. }
+            | AgentEvent::RunFailed { session_id, .. }) = &scoped.event
+            else {
+                continue;
+            };
+            if origins.has(session_id) || !reading.insert(session_id.clone()) {
+                continue;
+            }
+            let origins = Arc::clone(&origins);
+            let session = session_id.clone();
+            tokio::spawn(async move {
+                if !origins.refresh(&session).await {
+                    tracing::debug!(%session, "a helper's tool catalog was not readable after its run");
+                }
+            });
         }
     })
 }
