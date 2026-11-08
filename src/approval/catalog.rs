@@ -163,6 +163,31 @@ impl ToolCatalog {
         self.tools.get(name)
     }
 
+    /// The engine-native tools of this catalog
+    /// ([`ToolFamily::Native`]).
+    #[must_use]
+    pub fn natives(&self) -> Self {
+        Self {
+            tools: self
+                .tools
+                .iter()
+                .filter(|(_, origin)| origin.family() == ToolFamily::Native)
+                .map(|(name, origin)| (name.clone(), origin.clone()))
+                .collect(),
+        }
+    }
+
+    /// This catalog with every tool of `other` it does not name.
+    #[must_use]
+    pub fn or(mut self, other: &Self) -> Self {
+        for (name, origin) in &other.tools {
+            self.tools
+                .entry(name.clone())
+                .or_insert_with(|| origin.clone());
+        }
+        self
+    }
+
     /// Number of tools.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -273,6 +298,18 @@ mod tests {
             catalog.get(READ_FILE).map(|o| o.mutation),
             Some(ToolMutationClass::ReadOnly)
         );
+        // The natives alone, and a catalog extended with them: what the
+        // daemon judges a session it has not read yet by.
+        let natives = catalog.natives();
+        assert_eq!(natives.len(), 1);
+        assert_eq!(
+            natives.get("shell").map(ToolOrigin::family),
+            Some(ToolFamily::Native)
+        );
+        let own = ToolCatalog::default().with(WRITE_FILE, ToolOrigin::tui(FILE_TOOLS_SOURCE, WRITE_FILE));
+        let joined = own.or(&natives).or(&catalog);
+        assert_eq!(joined.get(WRITE_FILE).map(ToolOrigin::family), Some(ToolFamily::Files));
+        assert_eq!(joined.get("shell").map(ToolOrigin::family), Some(ToolFamily::Native));
         assert_eq!(
             catalog.get(NOTE_SAVE).map(|o| o.mutation),
             Some(ToolMutationClass::Mutating)

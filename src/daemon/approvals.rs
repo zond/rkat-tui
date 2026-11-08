@@ -20,9 +20,14 @@
 //!   published tool definitions are not reachable through the RPC
 //!   runtime's public API (only the command-based read, which answers
 //!   nothing while a turn runs), so the catalog is read when the session is
-//!   idle (at start and after every run) and cached; until the first read
-//!   the TUI's own file and note tools are known and everything else is
-//!   judged as a foreign tool (the classifier or the human decides it).
+//!   idle (at start and after every run) and cached. A session not read
+//!   yet (a helper, which runs from its spawn on and so is never idle
+//!   before its first call; a fresh conversation) is judged by the TUI's
+//!   own file and note tools plus the engine-native tools of the catalogs
+//!   read so far: every session of the daemon is built by the same factory,
+//!   so its native `shell` is the orchestrator's (as the in-process gate
+//!   reads it from the helper's own definitions). Everything else is judged
+//!   as a foreign tool (the classifier or the human decides it).
 //!
 //! [`watch`] follows the orchestrator's events: a run start lifts a Stop
 //! (as the in-process runner reports `RunStarted`), a run end refreshes
@@ -50,7 +55,8 @@ use crate::approval::remote::human_decision;
 use crate::approval::{ApprovalEngine, ApprovalGate, DenyReason};
 use crate::mobs::{HelperKey, HelperRegistry};
 
-/// How often a waiting escalation's record is read.
+/// How often a waiting escalation's record is read (on the blocking pool:
+/// the store's calls block).
 pub const DECISION_POLL: Duration = Duration::from_millis(100);
 
 /// How long one read of a session's tool definitions may take.
@@ -222,7 +228,18 @@ impl Desk {
                 }
                 _ = tick.tick() => {}
             }
-            match self.service.get(&record) {
+            // The store's calls block (a file or SQLite store): off the
+            // executor, as the ledger runs them.
+            let service = self.service.clone();
+            let id = record.clone();
+            let read = match tokio::task::spawn_blocking(move || service.get(&id)).await {
+                Ok(read) => read,
+                Err(err) => {
+                    tracing::debug!(error = %err, "the escalation record read did not finish");
+                    continue;
+                }
+            };
+            match read {
                 Ok(current) if current.status != ApprovalStatus::Pending => {
                     break human_decision(&current, &shown);
                 }
@@ -245,7 +262,9 @@ impl Desk {
 pub struct DaemonToolOrigins {
     service: Arc<dyn MobSessionService>,
     cache: RwLock<HashMap<SessionId, ToolCatalog>>,
-    known: ToolCatalog,
+    /// The TUI's own tools, and the engine-native tools of every catalog
+    /// read: what a session not read yet is judged by.
+    known: RwLock<ToolCatalog>,
 }
 
 impl std::fmt::Debug for DaemonToolOrigins {
@@ -274,7 +293,7 @@ impl DaemonToolOrigins {
         Self {
             service,
             cache: RwLock::new(HashMap::new()),
-            known: ToolCatalog::from_defs(&defs),
+            known: RwLock::new(ToolCatalog::from_defs(&defs)),
         }
     }
 
@@ -285,9 +304,12 @@ impl DaemonToolOrigins {
             tokio::time::timeout(CATALOG_READ, self.service.live_visible_tool_defs(session)).await;
         match read {
             Ok(Ok(Some(defs))) => {
-                self.cache
-                    .write()
-                    .insert(session.clone(), ToolCatalog::from_defs(&defs));
+                let catalog = ToolCatalog::from_defs(&defs);
+                {
+                    let mut known = self.known.write();
+                    *known = known.clone().or(&catalog.natives());
+                }
+                self.cache.write().insert(session.clone(), catalog);
                 true
             }
             Ok(Ok(None)) => false,
@@ -311,12 +333,10 @@ impl DaemonToolOrigins {
     /// The origin of `name` for `session` (diagnostics and tests).
     #[must_use]
     pub fn origin(&self, session: &SessionId, name: &str) -> Option<ToolOrigin> {
-        self.cache
-            .read()
-            .get(session)
-            .unwrap_or(&self.known)
-            .get(name)
-            .cloned()
+        match self.cache.read().get(session) {
+            Some(catalog) => catalog.get(name).cloned(),
+            None => self.known.read().get(name).cloned(),
+        }
     }
 }
 
@@ -328,7 +348,7 @@ impl ToolOrigins for DaemonToolOrigins {
                 .read()
                 .get(session_id)
                 .cloned()
-                .unwrap_or_else(|| self.known.clone()),
+                .unwrap_or_else(|| self.known.read().clone()),
         )
     }
 }

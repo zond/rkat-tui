@@ -34,6 +34,13 @@ pub const LOG_NAME: &str = "conversations.json";
 /// How long a conversation's title may be.
 const TITLE_CHARS: usize = 72;
 
+/// How many leading messages [`Conversations::list`] reads per
+/// conversation for its title (the count comes from the page's metadata).
+pub const TITLE_PAGE: usize = 16;
+
+/// How many conversations [`Conversations::list`] reads at once.
+const LIST_READS: usize = 8;
+
 /// One conversation the orchestrator ran.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entry {
@@ -142,6 +149,10 @@ pub enum SwitchError {
     /// `/resume` named the current conversation.
     #[error("already in this conversation")]
     Current,
+    /// The orchestrator's run is open (a turn is running): a switch would
+    /// retire the member mid-turn.
+    #[error("a turn is running; interrupt it first (Esc)")]
+    Running,
     /// The engine refused a step.
     #[error("{step}: {source}")]
     Mob {
@@ -236,22 +247,34 @@ impl Conversations {
     }
 
     /// The conversations, last used first, with their size and first
-    /// message.
+    /// message: each conversation's first [`TITLE_PAGE`] messages are read
+    /// (the size is the page's message count), [`LIST_READS`] at a time.
     pub async fn list(&self) -> Vec<Listed> {
+        use futures::StreamExt as _;
         let entries = self.log.lock().newest_first();
         let current = self.current();
-        let mut listed = Vec::with_capacity(entries.len());
-        for entry in entries {
-            let messages = self.messages(&entry.session_id).await.ok();
-            listed.push(Listed {
-                current: current.as_ref() == Some(&entry.session_id),
-                title: messages.as_deref().and_then(title),
-                messages: messages.as_ref().map(Vec::len),
-                session_id: entry.session_id,
-                last_used: entry.last_used,
-            });
-        }
-        listed
+        let service = self.state.session_service();
+        futures::stream::iter(entries)
+            .map(|entry| {
+                let service = Arc::clone(&service);
+                let current = current.as_ref() == Some(&entry.session_id);
+                async move {
+                    let page = service
+                        .read_history(
+                            &entry.session_id,
+                            SessionHistoryQuery {
+                                offset: 0,
+                                limit: Some(TITLE_PAGE),
+                            },
+                        )
+                        .await
+                        .ok();
+                    listed_row(entry, page.as_ref(), current)
+                }
+            })
+            .buffered(LIST_READS)
+            .collect()
+            .await
     }
 
     /// `session`'s committed messages.
@@ -295,6 +318,16 @@ impl Conversations {
         }
         let mob = MobId::from(MOB_ID);
         let identity = AgentIdentity::from(ORCHESTRATOR);
+        // Another client may be running a turn: its own guard is in
+        // another process. The engine's run phase decides.
+        let status = self
+            .state
+            .mob_member_status(&mob, &identity)
+            .await
+            .map_err(|err| SwitchError::mob("reading the orchestrator", err))?;
+        if run_open(&status) {
+            return Err(SwitchError::Running);
+        }
         if let Some(previous) = &previous {
             crate::mobs::cancel_helpers(&self.state, &self.registry, previous).await;
         }
@@ -353,6 +386,32 @@ impl Conversations {
     }
 }
 
+/// The `rkat/conversations` row of `entry`, from the first page of its
+/// history (`None`: unreadable).
+#[must_use]
+pub fn listed_row(
+    entry: Entry,
+    page: Option<&meerkat_core::SessionHistoryPage>,
+    current: bool,
+) -> Listed {
+    Listed {
+        current,
+        title: page.and_then(|page| title(&page.messages)),
+        messages: page.map(|page| page.message_count),
+        session_id: entry.session_id,
+        last_used: entry.last_used,
+    }
+}
+
+/// Whether the member's snapshot says its run is open.
+#[must_use]
+pub fn run_open(status: &meerkat_mob::MobMemberSnapshot) -> bool {
+    status
+        .progress
+        .as_ref()
+        .is_some_and(|progress| progress.run_state == meerkat_mob::MemberRunState::RunOpen)
+}
+
 /// The first conversational user message of `messages`, cut to
 /// [`TITLE_CHARS`] on one line.
 #[must_use]
@@ -406,6 +465,33 @@ mod tests {
         }
         std::fs::write(&file, "garbage").unwrap();
         assert!(Log::load(&file).sessions.is_empty());
+    }
+
+    #[test]
+    fn a_listed_row_counts_from_the_page_metadata_and_titles_from_its_messages() {
+        let user = |text: &str| Message::User(meerkat_core::UserMessage::text(text.to_string()));
+        let session = SessionId::new();
+        let entry = Entry {
+            session_id: session.clone(),
+            started_at: 1,
+            last_used: 2,
+        };
+        // A long history: only its first page was read.
+        let page = meerkat_core::SessionHistoryPage {
+            session_id: session,
+            message_count: 500,
+            offset: 0,
+            limit: Some(TITLE_PAGE),
+            has_more: true,
+            messages: vec![user("fix the bug")],
+        };
+        let row = listed_row(entry.clone(), Some(&page), true);
+        assert_eq!(row.messages, Some(500));
+        assert_eq!(row.title.as_deref(), Some("fix the bug"));
+        assert!(row.current);
+        assert_eq!(row.last_used, 2);
+        let unreadable = listed_row(entry, None, false);
+        assert_eq!((unreadable.messages, unreadable.title), (None, None));
     }
 
     #[test]

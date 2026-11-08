@@ -43,6 +43,8 @@ use serde_json::{Value, json};
 struct ScriptedClassifier {
     verdicts: Mutex<Vec<ClassifierVerdict>>,
     seen: Mutex<Vec<String>>,
+    /// The tool of every action it was asked about.
+    tools: Mutex<Vec<String>>,
 }
 
 #[async_trait]
@@ -52,6 +54,7 @@ impl ActionClassifier for ScriptedClassifier {
         input: ClassifierInput<'_>,
     ) -> Result<ClassifierVerdict, ClassifierError> {
         self.seen.lock().push(input.transcript.render());
+        self.tools.lock().push(input.tool.to_string());
         let mut verdicts = self.verdicts.lock();
         if verdicts.is_empty() {
             Ok(ClassifierVerdict::Allow {
@@ -752,6 +755,116 @@ async fn the_local_methods_answer_before_the_engine() {
         .await
         .unwrap();
     assert!(members.to_string().contains("main"), "{members}");
+    drop(connection);
+    daemon.stop().await;
+}
+
+/// A helper's `shell` is the engine's native shell to the gate, as
+/// in-process (where the gate reads the helper's own definitions): an allow
+/// rule for it matches, and the classifier is not asked. The helper runs
+/// from its spawn on, so its own catalog is never read before its first
+/// call; the daemon judges it by the natives of the catalogs it has read.
+#[cfg(feature = "mob")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_helpers_shell_is_judged_as_the_native_shell() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Tool {
+            id: "d1",
+            name: "delegate",
+            args: json!({
+                "member_id": "scout",
+                "task": "HELPER-TASK run it",
+                "result_label": "result",
+                "max_text_bytes": 4000,
+            }),
+        },
+        Step::Tool {
+            id: "sh",
+            name: "shell",
+            args: json!({"command": "echo HELPER-SHELL-RAN"}),
+        },
+        Step::Text("HELPER-DONE"),
+        Step::Text("parent done"),
+    ]);
+    let setup = Setup::default();
+    let daemon = Running::start(&ws.root, &llm, &setup).await;
+    let connection = daemon.connect().await;
+    let added = connection
+        .call(
+            "rkat/rules",
+            json!({"op": "add", "deny": false, "tool": "shell", "pattern": "echo HELPER-SHELL*"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(added["text"], "rule added", "{added}");
+    connection
+        .call(
+            "mob/turn_start",
+            json!({"mob_id": "tui", "agent_identity": "main", "prompt": "delegate it"}),
+        )
+        .await
+        .unwrap();
+    let recorded = llm.recorded();
+    let helper_after_shell = recorded
+        .iter()
+        // The command's output, after the result's exit-code line (the
+        // call's arguments hold no newline before it).
+        .find(|request| format!("{request:?}").contains("\\nHELPER-SHELL-RAN"))
+        .map(|request| format!("{request:?}"));
+    assert!(
+        helper_after_shell.is_some(),
+        "the helper's shell ran: {recorded:?}"
+    );
+    let asked = setup.classifier.tools.lock().clone();
+    assert!(
+        !asked.iter().any(|tool| tool == "shell"),
+        "the allow rule decided the helper's shell, not the classifier: {asked:?}"
+    );
+    drop(connection);
+    daemon.stop().await;
+}
+
+/// A daemon restarted in a persisted plan mode tells the orchestrator, and
+/// leaving plan mode afterwards says so (its "told" state starts from the
+/// persisted mode, not from "never told").
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn plan_mode_survives_a_restart_and_leaving_it_is_announced() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![Step::Text("in plan"), Step::Text("out of plan")]);
+    let setup = Setup::default();
+    let daemon = Running::start(&ws.root, &llm, &setup).await;
+    let connection = daemon.connect().await;
+    let set = connection
+        .call("rkat/set_mode", json!({"mode": "plan"}))
+        .await
+        .unwrap();
+    assert!(set.get("warning").is_none(), "{set}");
+    drop(connection);
+    daemon.stop().await;
+
+    let daemon = Running::start(&ws.root, &llm, &setup).await;
+    let connection = daemon.connect().await;
+    let mode = connection.call("rkat/get_mode", json!({})).await.unwrap();
+    assert_eq!(mode["mode"], "plan", "{mode}");
+    let turn = |prompt: &str| json!({"mob_id": "tui", "agent_identity": "main", "prompt": prompt});
+    connection
+        .call("mob/turn_start", turn("first"))
+        .await
+        .unwrap();
+    let request = format!("{:?}", llm.requests()[0]);
+    assert!(request.contains("Plan mode is on"), "{request}");
+    let set = connection
+        .call("rkat/set_mode", json!({"mode": "default"}))
+        .await
+        .unwrap();
+    assert!(set.get("warning").is_none(), "{set}");
+    connection
+        .call("mob/turn_start", turn("second"))
+        .await
+        .unwrap();
+    let request = format!("{:?}", llm.requests()[1]);
+    assert!(request.contains("Plan mode is off"), "{request}");
     drop(connection);
     daemon.stop().await;
 }

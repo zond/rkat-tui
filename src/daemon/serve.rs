@@ -6,8 +6,10 @@
 //! shared runtime, `skip_shutdown_on_eof` so a client leaving never shuts the
 //! runtime down. Each connection first passes [`super::handshake`]; only then
 //! is the stream handed to `RpcServer`, through [`proxy`]: the daemon's own
-//! `rkat/*` methods ([`super::local`]) are answered there, every other line
-//! goes to the engine (after [`super::local::Local::observe`] read it).
+//! `rkat/*` methods ([`super::local`]) are answered there, each in a task of
+//! its own (a slow `rkat/resume` or `rkat/conversations` must not hold back
+//! the client's next lines: its Esc, its `approval/decide`), and every other
+//! line goes to the engine (after [`super::local::Local::observe`] read it).
 //!
 //! The engine's own TCP connection and request admission
 //! (`RpcTcpConnectionAdmission`, `RpcRequestAdmission`), its per-connection
@@ -197,15 +199,40 @@ impl Drop for AbortOnDrop {
     }
 }
 
+/// What [`proxy`] answers itself and what it learns from the rest
+/// ([`Local`]; tests substitute their own).
+#[async_trait::async_trait]
+pub trait LocalMethods: Send + Sync {
+    /// Answer the local method `method`.
+    async fn call(&self, method: &str, params: Value) -> Result<Value, local::Refusal>;
+    /// Learn from an engine request on its way; returns it as forwarded.
+    fn observe(&self, request: Value) -> Value;
+}
+
+#[async_trait::async_trait]
+impl LocalMethods for Local {
+    async fn call(&self, method: &str, params: Value) -> Result<Value, local::Refusal> {
+        Local::call(self, method, params).await
+    }
+
+    fn observe(&self, request: Value) -> Value {
+        Local::observe(self, request)
+    }
+}
+
 /// Carry one client's lines: from the client, a local method is answered
-/// here and anything else goes (observed) to the engine; the engine's lines
-/// go back to the client. Ends when the client closes (the engine then sees
-/// its end of input) or the engine's side closes.
-pub async fn proxy<R, W, E>(client_read: R, mut client_write: W, engine: E, local: Arc<Local>)
+/// here (in a task of its own, the answer going out when it is ready) and
+/// anything else goes (observed) to the engine; the engine's lines go back
+/// to the client. Ends when the client closes (the engine then sees its end
+/// of input) or the engine's side closes; a local call still running then
+/// finishes (a conversation switch is not cut in half), and its answer is
+/// dropped.
+pub async fn proxy<R, W, E, L>(client_read: R, mut client_write: W, engine: E, local: Arc<L>)
 where
     R: AsyncBufRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
     E: tokio::io::AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    L: LocalMethods + ?Sized + 'static,
 {
     let (engine_read, mut engine_write) = tokio::io::split(engine);
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
@@ -245,9 +272,18 @@ where
             Ok(0) | Err(_) => break,
             Ok(_) => {}
         }
-        match route(&line, &local).await {
-            Routed::Answer(answer) => {
-                let _ = out_tx.send(answer);
+        match route(&line, &*local) {
+            Routed::Local { id, method, params } => {
+                let local = Arc::clone(&local);
+                // Weak: a call still running when the client leaves does
+                // not keep the writer waiting for its answer.
+                let out_tx = out_tx.downgrade();
+                tokio::spawn(async move {
+                    let line = answer(&*local, id, &method, params).await;
+                    if let Some(out_tx) = out_tx.upgrade() {
+                        let _ = out_tx.send(line);
+                    }
+                });
             }
             Routed::Forward(forward) => {
                 if engine_write.write_all(forward.as_bytes()).await.is_err() {
@@ -265,37 +301,135 @@ where
 /// Where one client line goes.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Routed {
-    /// The answer to a local method (a line, newline included).
-    Answer(String),
+    /// A local method call, to answer with [`answer`].
+    Local {
+        /// The request id.
+        id: Value,
+        /// The method.
+        method: String,
+        /// Its params (`Null` when absent).
+        params: Value,
+    },
     /// The line for the engine (newline included).
     Forward(String),
 }
 
-/// Answer `line` when it calls a local method, else hand it on (observed).
-pub async fn route(line: &str, local: &Local) -> Routed {
+/// Pick out a local method call, else hand `line` on (observed).
+pub fn route<L: LocalMethods + ?Sized>(line: &str, local: &L) -> Routed {
     let Ok(request) = serde_json::from_str::<Value>(line.trim_end()) else {
         // Not JSON: the engine answers it with its own parse error.
         return Routed::Forward(line.to_string());
     };
     let method = request.get("method").and_then(Value::as_str);
     match method {
-        Some(method) if method.starts_with(local::PREFIX) => {
-            let id = request.get("id").cloned().unwrap_or(Value::Null);
-            let params = request.get("params").cloned().unwrap_or(Value::Null);
-            let reply = match local.call(method, params).await {
-                Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
-                Err((code, message)) => json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "error": {"code": code, "message": message},
-                }),
-            };
-            Routed::Answer(format!("{reply}\n"))
-        }
+        Some(method) if method.starts_with(local::PREFIX) => Routed::Local {
+            id: request.get("id").cloned().unwrap_or(Value::Null),
+            method: method.to_string(),
+            params: request.get("params").cloned().unwrap_or(Value::Null),
+        },
         Some(_) => {
             let observed = local.observe(request);
             Routed::Forward(format!("{observed}\n"))
         }
         None => Routed::Forward(line.to_string()),
+    }
+}
+
+/// The answer line (newline included) of the local call `method`.
+pub async fn answer<L: LocalMethods + ?Sized>(
+    local: &L,
+    id: Value,
+    method: &str,
+    params: Value,
+) -> String {
+    let reply = match local.call(method, params).await {
+        Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
+        Err((code, message)) => json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": {"code": code, "message": message},
+        }),
+    };
+    format!("{reply}\n")
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    /// `rkat/slow` waits for its gate; everything else passes unchanged.
+    struct Slow {
+        gate: tokio::sync::Notify,
+    }
+
+    #[async_trait::async_trait]
+    impl LocalMethods for Slow {
+        async fn call(&self, method: &str, _params: Value) -> Result<Value, local::Refusal> {
+            if method == "rkat/slow" {
+                self.gate.notified().await;
+            }
+            Ok(json!({"method": method}))
+        }
+
+        fn observe(&self, request: Value) -> Value {
+            request
+        }
+    }
+
+    async fn next_line<R: AsyncBufRead + Unpin>(reader: &mut R) -> String {
+        let mut line = String::new();
+        tokio::time::timeout(Duration::from_secs(5), reader.read_line(&mut line))
+            .await
+            .expect("not held back")
+            .unwrap();
+        line
+    }
+
+    /// The finding this guards: the proxy awaited each local call before
+    /// reading the client's next line, so a slow `rkat/resume` held back
+    /// the client's Esc (`mob/stop_member_run`) and its other calls.
+    #[tokio::test]
+    async fn a_slow_local_call_holds_back_no_other_line() {
+        let (client, client_side) = tokio::io::duplex(1 << 16);
+        let (engine, engine_side) = tokio::io::duplex(1 << 16);
+        let (client_read, client_write) = tokio::io::split(client_side);
+        let local = Arc::new(Slow {
+            gate: tokio::sync::Notify::new(),
+        });
+        let proxied = tokio::spawn(proxy(
+            BufReader::new(client_read),
+            client_write,
+            engine_side,
+            Arc::clone(&local),
+        ));
+        let (client_in, mut client_out) = tokio::io::split(client);
+        let mut client_in = BufReader::new(client_in);
+        let (engine_in, engine_out) = tokio::io::split(engine);
+        let mut engine_in = BufReader::new(engine_in);
+        for line in [
+            json!({"jsonrpc": "2.0", "id": 1, "method": "rkat/slow"}),
+            json!({"jsonrpc": "2.0", "id": 2, "method": "mob/stop_member_run", "params": {}}),
+            json!({"jsonrpc": "2.0", "id": 3, "method": "rkat/quick"}),
+        ] {
+            client_out
+                .write_all(format!("{line}\n").as_bytes())
+                .await
+                .unwrap();
+        }
+        // The stop reaches the engine while `rkat/slow` still runs.
+        let line = next_line(&mut engine_in).await;
+        assert!(line.contains("mob/stop_member_run"), "{line}");
+        // The quick local call is answered first.
+        let line = next_line(&mut client_in).await;
+        assert!(line.contains("\"id\":3"), "{line}");
+        local.gate.notify_one();
+        let line = next_line(&mut client_in).await;
+        assert!(line.contains("\"id\":1"), "{line}");
+        drop((client_out, client_in, engine_out, engine_in));
+        tokio::time::timeout(Duration::from_secs(5), proxied)
+            .await
+            .expect("the proxy ends with the client")
+            .unwrap();
     }
 }

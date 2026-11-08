@@ -405,6 +405,9 @@ impl Daemon {
             Arc::clone(&composed.desk),
             composed.thinking.clone(),
         ));
+        if let Some(warning) = local.announce_plan_mode().await {
+            tracing::warn!(%warning, "plan mode");
+        }
         let listener = serve::Listener::bind(options.listen, &file).await?;
         tracing::info!(
             address = %listener.address(),

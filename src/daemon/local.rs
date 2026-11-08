@@ -24,7 +24,9 @@
 //! - [`NEW`] `{}` → `{"session_id"}`: `/new`, the orchestrator on a fresh
 //!   session;
 //! - [`RESUME`] `{"session_id"}` → `{"session_id"}`: `/resume`, the
-//!   orchestrator back on an earlier session of its own;
+//!   orchestrator back on an earlier session of its own; both are refused
+//!   with [`SWITCH_BUSY`] while the orchestrator's run is open (another
+//!   client's turn);
 //! - [`TRANSCRIPT`] `{"session_id"}` → `{"messages": [Message]}`: a
 //!   conversation's committed messages (the client renders a resumed
 //!   conversation from them, as the in-process `/resume` does).
@@ -85,6 +87,9 @@ pub const INVALID_PARAMS: i64 = -32602;
 /// A conversation switch or read the engine refused (an application
 /// error code).
 pub const SWITCH_FAILED: i64 = -32010;
+/// A conversation switch refused because the orchestrator's turn is
+/// running (an application error code).
+pub const SWITCH_BUSY: i64 = -32011;
 
 /// The idempotency source of the daemon's system-context notes.
 const SYSTEM_CONTEXT_SOURCE: &str = "rkat-tui";
@@ -98,7 +103,10 @@ pub struct Local {
     origins: Arc<DaemonToolOrigins>,
     desk: Arc<Desk>,
     thinking: ThinkingTable,
-    /// The orchestrator was told plan mode is on.
+    /// The orchestrator was told plan mode is on. Starts as the persisted
+    /// mode says (a daemon started in plan mode tells the orchestrator,
+    /// [`Local::announce_plan_mode`]), so leaving plan mode after a restart
+    /// says so.
     plan_noted: Mutex<bool>,
     inputs: AtomicU64,
 }
@@ -126,6 +134,7 @@ impl Local {
         desk: Arc<Desk>,
         thinking: ThinkingTable,
     ) -> Self {
+        let in_plan = engine.mode() == PermissionMode::Plan;
         Self {
             engine,
             state,
@@ -134,7 +143,7 @@ impl Local {
             origins,
             desk,
             thinking,
-            plan_noted: Mutex::new(false),
+            plan_noted: Mutex::new(in_plan),
             inputs: AtomicU64::new(0),
         }
     }
@@ -188,11 +197,13 @@ impl Local {
     /// `/new` or `/resume`: switch the orchestrator's conversation, then
     /// tell the new one about plan mode when it is on, and read its tools.
     async fn switch(&self, target: Target) -> Result<Value, Refusal> {
-        let session = self
-            .conversations
-            .switch(target)
-            .await
-            .map_err(|err| (SWITCH_FAILED, err.to_string()))?;
+        let session = self.conversations.switch(target).await.map_err(|err| {
+            let code = match err {
+                super::conversations::SwitchError::Running => SWITCH_BUSY,
+                _ => SWITCH_FAILED,
+            };
+            (code, err.to_string())
+        })?;
         *self.plan_noted.lock() = false;
         let mut answer = json!({"session_id": session});
         if self.engine.mode() == PermissionMode::Plan
@@ -234,11 +245,26 @@ impl Local {
         answer
     }
 
+    /// At start: when the persisted mode is plan, tell the orchestrator
+    /// (a fresh one never heard it; a restored one may have been switched
+    /// to plan mode by another process). Returns a warning when it could
+    /// not be told.
+    pub async fn announce_plan_mode(&self) -> Option<String> {
+        if self.engine.mode() != PermissionMode::Plan {
+            return None;
+        }
+        self.append_plan_note(true).await
+    }
+
     /// Tell the orchestrator plan mode started or ended, once per change.
     async fn note_plan_mode(&self, plan: bool) -> Option<String> {
         if *self.plan_noted.lock() == plan {
             return None;
         }
+        self.append_plan_note(plan).await
+    }
+
+    async fn append_plan_note(&self, plan: bool) -> Option<String> {
         let note = if plan {
             crate::runner::approval::PLAN_ON_NOTE
         } else {
