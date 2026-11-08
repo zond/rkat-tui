@@ -220,7 +220,7 @@ impl Helpers {
 /// closed (no mob's creator is recorded, so every helper spawn that no
 /// helper makes is refused).
 #[cfg(feature = "mob")]
-fn install_mob_hooks(state: &Arc<MobMcpState>, registry: &Arc<HelperRegistry>) {
+pub(crate) fn install_mob_hooks(state: &Arc<MobMcpState>, registry: &Arc<HelperRegistry>) {
     let created = Arc::downgrade(registry);
     let created_hook = state.set_before_create(Arc::new(
         move |request: meerkat_mob_mcp::MobCreateRequest| -> std::pin::Pin<

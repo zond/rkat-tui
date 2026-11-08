@@ -228,7 +228,7 @@ fn init_logging(realm_root: &Path) -> Result<(), TuiError> {
 }
 
 /// Directory of the workspace's memory notes.
-fn workspace_notes_dir(workspace: &Path) -> PathBuf {
+pub(crate) fn workspace_notes_dir(workspace: &Path) -> PathBuf {
     workspace.join(".rkat").join("tui").join("notes")
 }
 

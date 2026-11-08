@@ -361,6 +361,195 @@ pub async fn bootstrap_with(
     args: &Args,
     options: BootstrapOptions,
 ) -> Result<Runtime, TuiError> {
+    let wait_for_mcp = args.wait_for_mcp;
+    let Assembled {
+        scope,
+        config,
+        realm_config,
+        effective,
+        choice,
+        thinking,
+        endpoints,
+        models,
+        lister,
+        pricing,
+        confinement,
+        persistence,
+        backend,
+        realm_lease,
+        factory,
+        approval,
+        mcp_servers,
+        project_inputs,
+        memory,
+        tasks_db,
+        ui,
+        helper_max_depth: helper_depth,
+        user_shell_timeout,
+        notices,
+        llm_override,
+    } = assemble(scope, config, args, options, LEASE_SURFACE).await?;
+    let mut builder = FactoryAgentBuilder::new_with_config_store(
+        factory,
+        effective.clone(),
+        Arc::clone(&realm_config) as Arc<dyn ConfigStore>,
+    );
+    builder.default_llm_client.clone_from(&llm_override);
+    builder.wait_for_mcp = wait_for_mcp;
+    let mob_tools_slot = Arc::clone(&builder.default_mob_tools);
+    let workgraph = meerkat::WorkGraphService::with_scope(
+        persistence.workgraph_store(),
+        scope.realm_id.clone(),
+        meerkat::WorkNamespace::default(),
+    );
+    let (service, machine) = build_runtime_backed_service_with_default_reconfigure_host(
+        builder,
+        MAX_SESSIONS,
+        persistence,
+        realm_config.state_path().to_path_buf(),
+    )?;
+    // Every gate judges a call by where the session's tool of that name
+    // comes from (its live tool definitions), never by the name alone.
+    approval
+        .engine
+        .set_tool_origins(Arc::new(crate::approval::ServiceToolOrigins::new(&service)));
+    let effective = Arc::new(parking_lot::RwLock::new(effective));
+    let helpers = start_helpers(
+        &service,
+        &machine,
+        &scope,
+        &approval.engine,
+        llm_override,
+        &mob_tools_slot,
+        workgraph,
+        confinement.shell_env.clone(),
+        helper_depth,
+    )?;
+
+    let scope_workspace = scope.context_root.clone();
+    let scope_global = scope.global.clone();
+    Ok(Runtime {
+        scope,
+        config,
+        realm_config,
+        effective,
+        profile_generation: Arc::new(AtomicU64::new(0)),
+        choice,
+        thinking,
+        endpoints,
+        models,
+        lister,
+        pricing,
+        confinement,
+        service,
+        machine,
+        backend,
+        realm_lease: Some(realm_lease),
+        approval,
+        helpers,
+        instructions: InstructionSources {
+            workspace: scope_workspace,
+            global: scope_global,
+            home: dirs_home(),
+        },
+        mcp_servers,
+        project_inputs,
+        memory,
+        tasks_db,
+        ui,
+        helper_max_depth: helper_depth,
+        user_shell_timeout,
+        notices,
+    })
+}
+
+/// What every host of a workspace realm builds the same way, before it
+/// composes its session substrate: the in-process TUI
+/// ([`bootstrap_with`]: a [`TuiService`] and helpers) and the mob daemon
+/// (`crate::daemon`: the JSON-RPC `SessionRuntime` and its mob state).
+/// The persistence is still unopened by any service; the realm lease is
+/// held.
+pub struct Assembled {
+    /// Project, conventions roots and realm.
+    pub scope: RuntimeScope,
+    /// Realm config with env overrides applied, as loaded at start-up.
+    pub config: Config,
+    /// The realm document the factory reads on every build.
+    pub realm_config: Arc<RealmConfigStore>,
+    /// The effective config at start-up.
+    pub effective: Config,
+    /// Model of new sessions.
+    pub choice: ModelChoice,
+    /// The `[thinking]` settings.
+    pub thinking: ThinkingTable,
+    /// The LLM endpoints of this process.
+    pub endpoints: EndpointRegistry,
+    /// Model lists fetched during start-up, if any.
+    pub models: Option<ModelCache>,
+    /// Fetches the endpoints' model lists.
+    pub lister: ModelLister,
+    /// The price table and where to refresh it.
+    pub pricing: PricingSetup,
+    /// The shell's OS confinement.
+    pub confinement: ConfinementPlan,
+    /// The realm's stores, for the session substrate to take.
+    pub persistence: meerkat::PersistenceBundle,
+    /// Backend pinned in the realm manifest.
+    pub backend: RealmBackend,
+    /// This process's realm lease.
+    pub realm_lease: RealmLeaseGuard,
+    /// The agent factory every session and member is built with.
+    pub factory: AgentFactory,
+    /// The approval engine and the channels a UI serves.
+    pub approval: ApprovalParts,
+    /// The declarative MCP servers every session build carries.
+    pub mcp_servers: Vec<McpServerConfig>,
+    /// The workspace files that make the host run something, and their trust.
+    pub project_inputs: project_trust::ProjectInputs,
+    /// Whether sessions get native semantic memory.
+    pub memory: bool,
+    /// The engine's task store.
+    pub tasks_db: PathBuf,
+    /// The `tui.toml` `[ui]` settings.
+    pub ui: crate::approval::rules::UiSettings,
+    /// How deep helpers may nest.
+    pub helper_max_depth: u8,
+    /// How long a `!` command may run.
+    pub user_shell_timeout: std::time::Duration,
+    /// Start-up notices (warnings).
+    pub notices: Vec<String>,
+    /// The client every session uses instead of resolving credentials
+    /// ([`BootstrapOptions::llm_override`]).
+    pub llm_override: Option<Arc<dyn LlmClient>>,
+}
+
+impl Assembled {
+    /// Where the instruction files of every session build come from.
+    #[must_use]
+    pub fn instructions(&self) -> InstructionSources {
+        InstructionSources {
+            workspace: self.scope.context_root.clone(),
+            global: self.scope.global.clone(),
+            home: dirs_home(),
+        }
+    }
+}
+
+/// Resolve endpoints, model, confinement, trust, approval engine and MCP
+/// set, open the realm persistence, take the realm lease under
+/// `lease_surface` and build the factory: everything [`bootstrap_with`]
+/// and the mob daemon share.
+///
+/// # Errors
+///
+/// See [`bootstrap_with`].
+pub async fn assemble(
+    scope: RuntimeScope,
+    config: Config,
+    args: &Args,
+    options: BootstrapOptions,
+    lease_surface: &str,
+) -> Result<Assembled, TuiError> {
     let (mut layered, mut approval_notices) = approval::load_layers(&scope, args)?;
     let realm = RealmId::parse(scope.realm_id.clone()).ok();
     let (mut endpoints, endpoint_notices) =
@@ -426,7 +615,7 @@ pub async fn bootstrap_with(
         realm_id: scope.realm_id.clone(),
         source: Box::new(source),
     })?;
-    let realm_lease = start_realm_lease_in(&scope.state_root, &scope.realm_id, None, LEASE_SURFACE)
+    let realm_lease = start_realm_lease_in(&scope.state_root, &scope.realm_id, None, lease_surface)
         .await
         .map_err(|source| TuiError::RealmLease {
             realm_id: scope.realm_id.clone(),
@@ -496,51 +685,11 @@ pub async fn bootstrap_with(
     }
     notices.extend(project_inputs.notice(&refused));
     notices.extend(mcp.notices);
-    let mut builder = FactoryAgentBuilder::new_with_config_store(
-        factory,
-        effective.clone(),
-        Arc::clone(&realm_config) as Arc<dyn ConfigStore>,
-    );
-    builder.default_llm_client.clone_from(&options.llm_override);
-    builder.wait_for_mcp = args.wait_for_mcp;
-    let mob_tools_slot = Arc::clone(&builder.default_mob_tools);
-    let workgraph = meerkat::WorkGraphService::with_scope(
-        persistence.workgraph_store(),
-        scope.realm_id.clone(),
-        meerkat::WorkNamespace::default(),
-    );
-    let (service, machine) = build_runtime_backed_service_with_default_reconfigure_host(
-        builder,
-        MAX_SESSIONS,
-        persistence,
-        realm_config.state_path().to_path_buf(),
-    )?;
-    // Every gate judges a call by where the session's tool of that name
-    // comes from (its live tool definitions), never by the name alone.
-    approval
-        .engine
-        .set_tool_origins(Arc::new(crate::approval::ServiceToolOrigins::new(&service)));
-    let effective = Arc::new(parking_lot::RwLock::new(effective));
-    let helpers = start_helpers(
-        &service,
-        &machine,
-        &scope,
-        &approval.engine,
-        options.llm_override,
-        &mob_tools_slot,
-        workgraph,
-        confinement.shell_env.clone(),
-        helper_depth,
-    )?;
-
-    let scope_workspace = scope.context_root.clone();
-    let scope_global = scope.global.clone();
-    Ok(Runtime {
+    Ok(Assembled {
         scope,
         config,
         realm_config,
         effective,
-        profile_generation: Arc::new(AtomicU64::new(0)),
         choice,
         thinking,
         endpoints,
@@ -548,17 +697,11 @@ pub async fn bootstrap_with(
         lister,
         pricing,
         confinement,
-        service,
-        machine,
+        persistence,
         backend: manifest.backend,
-        realm_lease: Some(realm_lease),
+        realm_lease,
+        factory,
         approval,
-        helpers,
-        instructions: InstructionSources {
-            workspace: scope_workspace,
-            global: scope_global,
-            home: dirs_home(),
-        },
         mcp_servers: mcp.servers,
         project_inputs,
         memory,
@@ -567,6 +710,7 @@ pub async fn bootstrap_with(
         helper_max_depth: helper_depth,
         user_shell_timeout,
         notices,
+        llm_override: options.llm_override,
     })
 }
 

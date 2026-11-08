@@ -184,6 +184,10 @@ mod owned {
     pub struct HelperRegistry {
         /// TUI sessions open in this process.
         sessions: RwLock<HashMap<SessionId, SessionModel>>,
+        /// Host-root members that are owners themselves (the mob daemon's
+        /// orchestrator), and the session each runs as: a member they spawn
+        /// works for that session.
+        roots: RwLock<HashMap<HelperKey, SessionId>>,
         /// Whom each helper and each agent-created mob works for.
         bindings: HelperBindings,
         /// Running helpers, in spawn order.
@@ -213,6 +217,7 @@ mod owned {
             (
                 Self {
                     sessions: RwLock::new(HashMap::new()),
+                    roots: RwLock::new(HashMap::new()),
                     bindings,
                     live: Mutex::new(IndexMap::new()),
                     updates,
@@ -242,6 +247,27 @@ mod owned {
                     auth_binding: auth_binding.cloned(),
                 },
             );
+        }
+
+        /// The host-root member `key` runs as `session` on `model` through
+        /// `auth_binding` and is an owner itself: helpers it spawns into its
+        /// own mob, and helpers its session delegates to, work for
+        /// `session` (see [`Self::owner_for_spawn`]).
+        pub fn register_root(
+            &self,
+            key: HelperKey,
+            session: &SessionId,
+            model: &str,
+            auth_binding: Option<&AuthBindingRef>,
+        ) {
+            self.register_session(session, model, auth_binding);
+            self.roots.write().insert(key, session.clone());
+        }
+
+        /// The session the host-root member `key` runs as, when it is one.
+        #[must_use]
+        pub fn root_session(&self, key: &HelperKey) -> Option<SessionId> {
+            self.roots.read().get(key).cloned()
         }
 
         /// `session` is no longer open here: drop it, its running helpers
@@ -286,6 +312,9 @@ mod owned {
         ) -> Result<Owner, OwnerError> {
             if let Some(spawner) = spawner {
                 let key = HelperKey::new(mob.clone(), spawner.clone());
+                if let Some(session) = self.root_session(&key) {
+                    return self.owner_of_session(&session);
+                }
                 let binding = self
                     .bindings
                     .member(&key)
@@ -475,6 +504,34 @@ mod tests {
             profile: None,
             origin: meerkat_core::BindingOrigin::Configured,
         }
+    }
+
+    #[cfg(feature = "mob")]
+    #[test]
+    fn a_host_root_member_owns_what_it_spawns() {
+        use meerkat_mob::{AgentIdentity, MobId};
+
+        let (registry, _rx) = HelperRegistry::new();
+        let mob = MobId::from("tui");
+        let main = AgentIdentity::from("main");
+        // Before it is registered, a spawn of `main` is an unknown spawner.
+        assert!(matches!(
+            registry.owner_for_spawn(&mob, Some(&main)),
+            Err(OwnerError::UnknownSpawner(_))
+        ));
+        let session = SessionId::new();
+        let key = HelperKey::new(mob.clone(), main.clone());
+        registry.register_root(key.clone(), &session, "m-root", Some(&binding()));
+        assert_eq!(registry.root_session(&key), Some(session.clone()));
+        let owner = registry.owner_for_spawn(&mob, Some(&main)).unwrap();
+        assert_eq!(owner.session, session);
+        assert_eq!(owner.model, "m-root");
+        assert_eq!(owner.auth_binding, Some(binding()));
+        assert!(owner.path.is_empty());
+        // `delegate` from its session: the implicit mob its session created.
+        let implicit = MobId::from(format!("implicit-{session}"));
+        registry.record_mob(&implicit, &session).unwrap();
+        assert_eq!(registry.owner_for_spawn(&implicit, None).unwrap().session, session);
     }
 
     #[cfg(feature = "mob")]

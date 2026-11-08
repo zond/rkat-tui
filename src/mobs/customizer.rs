@@ -2,11 +2,17 @@
 //! approval gate of the session it works for, that session's model binding,
 //! the TUI's file tools and the helper instructions, and tells the
 //! [`super::follow`] task to observe it.
+//!
+//! A host that runs its main agent as a mob member (the `rkat-tui-mob`
+//! daemon's orchestrator) names it as the customizer's [`RootMember`]: that
+//! member is shaped as the owner itself (the session's tools, persona,
+//! instructions, curated shell environment and model binding), and the
+//! helpers it spawns work for its session.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use meerkat_core::{AgentToolDispatcher, SessionId};
+use meerkat_core::{AgentToolDispatcher, AuthBindingRef, SessionId, ToolDispatchAdmission};
 use meerkat_mob::{
     MobError, ResumedMemberView, SpawnCustomizationContext, SpawnMemberCustomizer,
     SpawnMemberSpec, SpawnSource,
@@ -35,6 +41,41 @@ pub struct Spawning {
     pub tag: HelperTag,
 }
 
+/// Builds the instruction sections of a fresh root member (the persona
+/// first), read again on every fresh spawn.
+pub type RootInstructions = Arc<dyn Fn() -> Vec<String> + Send + Sync>;
+
+/// A host-root member that is an owner itself, not a helper: the mob
+/// daemon's orchestrator.
+pub struct RootMember {
+    /// Its mob and member identity.
+    pub key: HelperKey,
+    /// Its external tools (the TUI session's file and note tools); not
+    /// persisted by the engine, so supplied again on every rebuild.
+    pub tools: HelperTools,
+    /// Its instruction sections on a fresh spawn.
+    pub instructions: RootInstructions,
+    /// The model it starts on (a rebuilt member keeps its session's).
+    pub model: String,
+    /// The start-up endpoint's auth binding.
+    pub auth_binding: Option<AuthBindingRef>,
+    /// P3 hook: the approval gate for the root member's own calls. `None`
+    /// in P1 (the orchestrator's calls are not gated yet); P3 installs the
+    /// daemon-side classifier and tier policy here as its
+    /// `ToolDispatchAdmission`.
+    pub admission: Option<Arc<dyn ToolDispatchAdmission>>,
+}
+
+impl std::fmt::Debug for RootMember {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RootMember")
+            .field("key", &self.key)
+            .field("model", &self.model)
+            .field("gated", &self.admission.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
 /// The TUI's [`SpawnMemberCustomizer`].
 pub struct HelperCustomizer {
     registry: Arc<HelperRegistry>,
@@ -46,6 +87,8 @@ pub struct HelperCustomizer {
     spawning: mpsc::UnboundedSender<Spawning>,
     /// How deep helpers may nest (`[helpers] max_depth`).
     max_depth: u8,
+    /// The host-root member treated as an owner, if any.
+    root: Option<RootMember>,
 }
 
 impl std::fmt::Debug for HelperCustomizer {
@@ -74,8 +117,48 @@ impl HelperCustomizer {
             shell_env,
             spawning,
             max_depth,
+            root: None,
         }
     }
+
+    /// Treat `root` as an owner itself rather than as a helper.
+    #[must_use]
+    pub fn with_root(mut self, root: RootMember) -> Self {
+        self.root = Some(root);
+        self
+    }
+
+    /// The root member, when `key` names it.
+    fn root_for(&self, key: &HelperKey) -> Option<&RootMember> {
+        self.root.as_ref().filter(|root| &root.key == key)
+    }
+}
+
+/// Shape the root member's `spec` as an owner session: its tools, the
+/// curated shell environment, the TUI's tool access policy, its binding
+/// and (fresh only) its instructions. The model is the mob profile's.
+fn shape_root(
+    spec: &mut SpawnMemberSpec,
+    root: &RootMember,
+    shell_env: Option<&HashMap<String, String>>,
+    fresh: bool,
+) {
+    if spec.auth_binding.is_none() {
+        spec.auth_binding.clone_from(&root.auth_binding);
+    }
+    if let Some(admission) = &root.admission {
+        spec.tool_dispatch_admission = Some(Arc::clone(admission));
+    }
+    if spec.external_tools.is_none() {
+        spec.external_tools = Some((root.tools)());
+    }
+    inherit_shell_env(spec, shell_env);
+    if fresh {
+        spec.additional_instructions
+            .get_or_insert_with(Vec::new)
+            .extend((root.instructions)());
+    }
+    deny_ungated_tools(spec, &[]);
 }
 
 /// The model `spec` asks for, when it names one (an explicit override or an
@@ -320,6 +403,11 @@ impl SpawnMemberCustomizer for HelperCustomizer {
         spec: &mut SpawnMemberSpec,
     ) -> Result<(), MobError> {
         let key = HelperKey::new(ctx.mob_id.clone(), spec.identity.clone());
+        if let Some(root) = self.root_for(&key) {
+            let fresh = !matches!(ctx.spawn_source, SpawnSource::Resume);
+            shape_root(spec, root, self.shell_env.as_ref(), fresh);
+            return Ok(());
+        }
         // A fork-derived member's rebuild asks with `Resume`: it keeps the
         // owner it was bound to, when it was.
         let persisted = if matches!(ctx.spawn_source, SpawnSource::Resume) {
@@ -349,6 +437,18 @@ impl SpawnMemberCustomizer for HelperCustomizer {
         // A restored member is gated for the owner it was bound to, whether
         // or not that session is open; a member nobody bound is refused.
         let key = HelperKey::new(ctx.mob_id.clone(), spec.identity.clone());
+        if let Some(root) = self.root_for(&key) {
+            // Rebuilt on its durable session: it keeps that session's model
+            // and binding, and its helpers work for that session.
+            let (model, binding) = durable.llm_identity.as_ref().map_or_else(
+                || (root.model.clone(), root.auth_binding.clone()),
+                |identity| (identity.model.clone(), identity.auth_binding.clone()),
+            );
+            self.registry
+                .register_root(key, &durable.session_id, &model, binding.as_ref());
+            shape_root(spec, root, self.shell_env.as_ref(), false);
+            return Ok(());
+        }
         let owner = self.persisted_owner(&key)?;
         self.admit(key, &owner, spec, Some(&durable.session_id), false)
     }
@@ -499,6 +599,43 @@ mod tests {
         // A restored member from before the limit was lowered keeps running
         // with the tools denied.
         assert_eq!(Depth::admit("inner", 2, 1, false).unwrap(), Depth::Last);
+    }
+
+    fn root() -> RootMember {
+        RootMember {
+            key: HelperKey::new(
+                meerkat_mob::MobId::from("tui"),
+                meerkat_mob::AgentIdentity::from("main"),
+            ),
+            tools: Arc::new(|| {
+                Arc::new(meerkat_tools::EmptyToolDispatcher) as Arc<dyn AgentToolDispatcher>
+            }),
+            instructions: Arc::new(|| vec!["persona".to_string(), "agents".to_string()]),
+            model: "m".to_string(),
+            auth_binding: None,
+            admission: None,
+        }
+    }
+
+    #[test]
+    fn the_root_member_is_shaped_as_an_owner() {
+        let curated = HashMap::from([("PATH".to_string(), "/bin".to_string())]);
+        let root = root();
+        let mut spec = SpawnMemberSpec::host_root("main", "main");
+        shape_root(&mut spec, &root, Some(&curated), true);
+        assert!(spec.external_tools.is_some());
+        assert!(spec.tool_dispatch_admission.is_none(), "P1: no gate yet");
+        assert_eq!(spec.shell_env.as_ref(), Some(&curated));
+        assert_eq!(
+            spec.additional_instructions,
+            Some(vec!["persona".to_string(), "agents".to_string()])
+        );
+        assert_eq!(spec.tool_access_policy, Some(crate::session::tool_access_policy()));
+        // A rebuild gets its tools back, not a second set of instructions.
+        let mut resumed = SpawnMemberSpec::host_root("main", "main");
+        shape_root(&mut resumed, &root, Some(&curated), false);
+        assert!(resumed.external_tools.is_some());
+        assert_eq!(resumed.additional_instructions, None);
     }
 
     #[test]
