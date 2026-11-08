@@ -973,6 +973,11 @@ rest of this manual.
 | `--attach=existing` | Attach only to a running daemon; refuse otherwise |
 | `--no-attach` | Host the agent in this process (the default; overrides `--attach`) |
 
+`attach = true` at the top of your own `tui.toml` (the user-global one, or
+the realm's) makes attach mode (auto) the default; `--no-attach` and
+`--attach=…` still win. A project's `.rkat/tui.toml` cannot choose it (it is
+ignored with a notice, like its other trusted-only keys).
+
 The value needs `=`: `rkat-tui --attach "fix the test"` attaches and sends
 the prompt.
 
@@ -985,8 +990,11 @@ JSON-RPC methods. A file whose address no longer accepts is stale.
 **Start on demand.** With `--attach` (auto) and no live endpoint, the TUI
 starts `rkat-tui-mob` (the one next to the `rkat-tui` binary, else from
 `PATH`) with the engine flags of this command line (workspace, model,
-endpoints, `--set`, rules, confinement, trust, realm flags), in its own
-process group, stdin closed, its output appended to
+endpoints, `--set`, rules, confinement, trust, realm flags), detached from
+the terminal: through `setsid` when it is on `PATH` (its own session, so
+closing the terminal does not stop it), else in its own process group (a
+shell that hangs up every process group of the terminal's session would
+then stop it too; bash and zsh do not), stdin closed, its output appended to
 `<realm>/logs/rkat-tui-mob.stderr.log`. The status bar shows `daemon
 starting` until the endpoint file appears (up to 60 s); a daemon that exits
 first, or never comes up, is reported with the log's path. You can also run
@@ -998,8 +1006,10 @@ it yourself: `rkat-tui-mob --foreground -w . --model …`.
 
 **Detach and reattach.** `/quit` (and Ctrl-D) detaches: the daemon and a
 running turn go on. When the connection drops (the daemon restarted, say),
-the TUI re-reads the endpoint file and reconnects with backoff; a reconnect
-never starts a daemon. On every attach the TUI replays what it has not shown
+the TUI re-reads the endpoint file and reconnects with backoff. A daemon
+that died and left a stale endpoint file is started again (auto mode, at
+most every 30 s); one that shut down cleanly (no endpoint file) is waited
+for. On every attach the TUI replays what it has not shown
 yet from the member's durable events and then follows the live stream; a
 turn that is still running shows as running (Esc interrupts it). What was
 shown is remembered per workspace in `.rkat/tui/attach.cursor`, so a later
@@ -1011,12 +1021,35 @@ is attached to. The daemon removes its endpoint file and shuts down; its
 sessions stay in the realm and the next start restores the member.
 
 **What works:** prompts and streaming output, messages typed mid-turn
-(steers), Esc (stops the run; a second Esc a second later force-cancels the
-member), `/model <provider>:<id>` (anthropic, openai, gemini, or a catalogued
-bare id; the switch rides your next message and the session keeps the
-model, with its `[thinking]` setting), the context gauge, token counts,
-`/status`, `/export`, `/cost`, `/copy`, `/context` (the gauge only),
-approvals, the permission modes, `/rules` and `!` commands.
+(steers, from any attached TUI), Esc (stops the run and the helpers it
+started; a second Esc a second later force-cancels the member), the model
+picker and `/model` (this TUI's endpoints, configured ones included: the
+switch rides your next message, carries the endpoint's auth binding and
+`[thinking]` setting, and the session keeps the model), the context gauge,
+token counts, `/status`, `/export`, `/cost` (helpers included, kept per
+conversation), `/copy`, `/context` (the gauge only), `/compact` (the
+policy), `/remember` and `/memory` (the files are edited here; the agent
+reads the new content from its next model call), approvals, the permission
+modes, `/rules` and `!` commands.
+
+**Helpers.** The agent delegates with the engine's `delegate` (and seats
+team members with `spawn_member`); the helpers run in the daemon behind the
+same gate and show here as in-process: a `[helper · model]` header, its
+progress and result, the running count, its usage under `/cost`. Every
+attached TUI shows them. The TUI's own `fork` tool is not offered in attach
+mode: it is built on the in-process session service, the engine's
+`fork_off` stays denied (its children are not gated yet), and the engine's
+`fork_helper` is a host method, not a tool the agent can call.
+
+**Conversations.** `/new` starts a fresh conversation for the daemon's
+agent, `/resume` lists this workspace's conversations (newest first, with
+their size and first message) and switches back to one, showing its
+transcript as the in-process `/resume` does; `/resume <ref>` takes `last`,
+`~N`, an id or an id prefix. A switch retires the agent's member and seats
+it again on the other session; every attached TUI follows it. A `/model`
+switch carries over to a `/new` conversation. Neither runs while a turn
+does. The daemon lists the conversations in
+`<workspace>/.rkat/tui/conversations.json`.
 
 **Approvals.** The daemon's agent and its helpers run behind the same
 approval gate as the in-process TUI: tiers, your rules, the classifier
@@ -1041,9 +1074,11 @@ is, and their output goes to the agent's context.
 
 **Limits for now:**
 
-- `/new`, `/resume`, `/rewind`, `/compact`, `/remember`, `/memory`,
-  `/rules trust`, `/trust`, the model picker, helpers' nested view and the
-  `fork` tool answer "not available in attach mode yet".
+- `/rewind` is not offered: the engine refuses a transcript fork of a mob
+  member's session, and a member fork copies the whole history (or its last
+  messages) as text, never the conversation up to a chosen message.
+  `/compact now` waits for the engine's compact-now; `/rules trust`,
+  `/trust` and the `fork` tool are not available either.
 - Until the agent's first run after a daemon start, the gate knows only
   rkat-tui's own file and note tools; other tools (the shell included) are
   reviewed as foreign tools until then. A helper's tools other than

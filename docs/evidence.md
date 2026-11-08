@@ -1868,3 +1868,98 @@ wire forms), `approval::ledger::tests::settling_confirms_a_record_a_client_alrea
 session's escalations, a dropped responder ends the wait), `daemon::policy`,
 `daemon::local`, `client::approvals`. `tests/daemon.rs` now runs with an
 allow-all classifier (its shell call is reviewed now).
+
+## P4: helpers, conversations and detach in attach mode (2026-11-08)
+
+Attach mode reaches the in-process TUI on everything the daemon can own
+(`docs/mob-split.md` Status has the design). Engine facts, probed against
+the P3 daemon with a scripted LLM before the client was written:
+
+- Why the orchestrator had no `delegate` (P3's note was wrong about the
+  cause): a `tools.mob` member mounts two families, the operator tools
+  composed into its external tools (`spawn_member`, …) and the agent mob
+  surface (`delegate`, `mob_*`, `council`, `fork_off`) through the
+  factory's mob-tools slot. `MethodRouter::new` fills that slot
+  (`runtime.set_mob_tools(AgentMobToolSurfaceFactory)`, router.rs:1741)
+  on the first connection, after the daemon has spawned the orchestrator,
+  so its build had none. The daemon now fills it before the spawn; the
+  first request then lists `delegate`, `mob_create`, `council`, … and no
+  `fork_off` (the TUI's deny list). `fork_helper` is not an agent tool:
+  it is the host method `mob/fork_helper`.
+- `delegate` creates the implicit mob `implicit-<orchestrator session>`
+  (`MobDefinition::implicit_with_provider`) on its first call;
+  `mob/stream_open` on it before then is refused (-32602 "mob not found").
+  A mob-wide `mob/stream_open {mob_id}` carries `AttributedEvent`s
+  (`{source: {identity, generation}, source_fence_token, role,
+  envelope}`); the envelope's `seq` is the member session's durable
+  sequence, the same `events/list_since` reports. A member that joins after
+  the stream opened is subscribed from its live events on
+  (`subscribe_authorized_agent_session_events` with `Live`): a stream
+  opened while the helper ran missed its `run_started` and `turn_started`;
+  `events/list_since` on the helper's (non-durable) session replayed all
+  six events. Hence the client's backfill per helper, with its live events
+  held until it returns. The orchestrator's events also appear on the `tui`
+  mob-wide stream with the same sequences (the client keeps its per-member
+  stream for them).
+- Conversations: `mob_retire` of `main` (archives its session, 226 ms on
+  the scripted LLM), then `mob_spawn_spec(host_root("main", "main"))` seats
+  generation 1 on a fresh session; a later retire and spawn with
+  `launch_mode = Resume { bridge_session_id: <first> }` seats generation 2
+  on the first session again (the archived session is revived): its next
+  request carried `["first", "third"]`. `session/history` reads an archived
+  session (3 messages); `session/list` listed only the live one. The engine
+  keeps no list of a member's earlier sessions, hence
+  `.rkat/tui/conversations.json`.
+- `/rewind`: `session/fork_at` on the member's session answers -32602
+  "mob-owned session transcripts cannot be edited through the generic
+  session surface"; `ForkContext` is `FullHistory` or `LastMessages
+  {count}`, rendered as text into a fresh session. No boundary: recorded
+  as an ask (mob-split ask 7).
+- Interrupting the orchestrator abandons its `delegate` call but not the
+  helper: the daemon now runs the in-process follower for the registry's
+  running set and, on `mob/stop_member_run`/`mob/force_cancel` of the
+  orchestrator, force-cancels and retires its live helpers
+  (`mobs::cancel_helpers`, shared with `Helpers::cancel_for`); the implicit
+  mob is empty afterwards.
+- The real daemon without a provider key exits at start ("no LLM endpoint
+  is configured"); an inline `api_key` in `tui.toml` is refused
+  (`InlineApiKey`), so the restart test names an endpoint whose
+  `api_key_env` is set and never calls it.
+- `setsid(1)` runs its program in place when the caller is not a process
+  group leader (a child of the TUI is not), so the pid the client reports
+  is the daemon's. Verified with the real binaries: `rkat-tui --attach`
+  under `script` (a pty) started `rkat-tui-mob` with session id = its pid
+  (the TUI's session was another); a SIGHUP to the terminal's session
+  ended `script` and the TUI, the daemon kept running (`Ssl`) and SIGTERM
+  then stopped it and removed its endpoint file.
+
+Session mapping chosen: one identity, many sessions (retire and seat again)
+over a member per conversation (`main-2`, …): the latter makes the root a
+set of identities through the customizer, `RootGate`, the event watcher
+and the `rkat/*` methods, keeps every old conversation seated, and gains
+nothing `/resume` needs. The daemon's `Local` and watcher now read the
+current session from the registry (the watcher subscribes again when it
+moves); clients poll `mob/member_status` every second and follow a switch
+(stream reopened, transcript from `rkat/transcript` rendered with
+`runner::blocks_from_messages`, mark at the session's last sequence). A
+`/new` conversation starts on the start-up model; the client carries its
+last `/model` to the next prompt, as in-process `/new` keeps the model.
+
+Tests: `tests/attach_helpers.rs`:
+`a_delegated_helper_is_followed_with_its_result_and_cost` (the header
+`[scout · claude-sonnet-4-6]` drawn, one `run_started` after the backfill,
+helper and total cost), `esc_during_a_helper_stops_the_orchestrator_and_the_helper`;
+`tests/attach_sessions.rs`:
+`new_starts_fresh_and_resume_brings_the_old_conversation_back` (a second
+client follows the switch), `rewind_says_why_it_is_not_offered` (the
+engine's refusal pinned); `tests/attach.rs`:
+`attach_true_in_a_users_tui_toml_selects_attach_mode`,
+`two_clients_steer_in_turn_and_both_see_the_whole_conversation`,
+`a_reconnect_restarts_a_daemon_that_died` (the real `rkat-tui-mob`),
+`what_the_daemon_cannot_do_yet_says_so` (now `/rules trust`, `/rewind`,
+`/compact now`), `model_switches_with_the_next_prompt_and_stays` (the
+registry's error for a bare unknown id); unit tests in `client::helpers`,
+`client::sessions`, `client::runner::tests::model_references_resolve_on_this_processs_endpoints`,
+`client::launch::tests::a_started_daemon_leaves_the_terminals_session_when_setsid_exists`,
+`daemon::conversations`, `approval::rules::tests::rules_file_round_trip`
+(`attach` written before the tables).

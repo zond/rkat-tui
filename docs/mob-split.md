@@ -1,6 +1,6 @@
 # rkat-tui as a client of a running mob
 
-## Status (2026-11-08)
+## Status (2026-11-08, P1–P4)
 
 P1 is in: `rkat-tui-mob` (experimental, `src/bin/rkat-tui-mob.rs`,
 `src/daemon/`) bootstraps the workspace realm exactly as the TUI does,
@@ -144,11 +144,82 @@ reload that re-runs the trust checks, for no gain). A future engine
 extension (an application method namespace, or the governed realm's review
 policy) could replace them.
 
-Deferred after P3 (P4): helpers' follower view and their own tool catalog,
+Deferred after P3 (done in P4 unless named below): helpers' follower view,
 `fork`, `/new`, `/resume`, `/rewind`, `/compact`; `/rules trust` and
-`/trust` in attach mode; a push notification for pending approvals (engine
+`/trust` in attach mode (still not); a helper's own tool catalog (still
+not); a push notification for pending approvals (engine
 ask 2); approval decision events (the client reads the counters with
 `rkat/get_mode`, not the per-call notices).
+
+P4 is in: helpers, conversations and detach in attach mode.
+
+- Helpers: the orchestrator's build mounts the engine's agent mob tools
+  (`delegate`, `mob_*`, `council`) beside the operator family
+  (`spawn_member`, …): the daemon fills the builder's mob-tools slot
+  (`set_mob_tools`) before it spawns the orchestrator (`MethodRouter::new`
+  filled it only on the first connection, after the spawn, which is why P3
+  saw no `delegate`). `fork_off` stays denied. The TUI's own `fork` tool is
+  not offered (it is built on the in-process service); the engine's
+  `fork_helper` is the host method `mob/fork_helper`, not an agent tool, so
+  there is nothing to alias. The daemon runs the in-process helper follower
+  (`mobs::follow`) for its bookkeeping (running set, helper sessions for
+  nesting), and an interrupt (`mob/stop_member_run`, `mob/force_cancel` of
+  the orchestrator) also force-cancels and retires the orchestrator's
+  running helpers, as in-process.
+- Follower view: the client lists the mobs (`mob/list`) on attach and while
+  a tool that seats helpers runs, opens a mob-wide `mob/stream_open
+  {mob_id}` on each (`tui` and every `implicit-<session>`), maps each
+  `AttributedEvent` to the in-process `Msg::Scoped` and the running set to
+  `StatusUpdate::Helpers` (`client::helpers`). A helper first seen has its
+  session's durable events read (`events/list_since`) and its live events
+  held until then (the router subscribes a late member from its live
+  events on); its model comes from `events/snapshot`. Cost is the UI's own
+  sum over `turn_completed`, kept per conversation in the cost sidecar.
+- Conversations: one member identity (`tui/main`), many sessions. `/new`
+  retires the member (the engine archives its session) and spawns it again
+  fresh (host root, turn-driven); `/resume` retires it and spawns it with
+  `launch_mode = resume` on an earlier session, which the engine revives.
+  The identity, gate, `rkat/*` methods and every client's addressing stay;
+  only `current_session_id` moves, which every client polls (1 s) and
+  follows (stream reopened, transcript from `rkat/transcript`, mark at the
+  session's last sequence). Chosen over a member per conversation
+  (`main-2`, …): that would make the root a set of identities through the
+  customizer, the gate, the watcher and the local methods, keep every old
+  conversation seated, and gain nothing `/resume` needs. The daemon keeps
+  the list in `<workspace>/.rkat/tui/conversations.json` (the engine keeps
+  no list of a member's earlier sessions).
+- `/rewind` is not offered: `session/fork_at` is refused for a mob-owned
+  session ("mob-owned session transcripts cannot be edited through the
+  generic session surface"), and a member fork (`MemberLaunchMode::Fork`,
+  `mob/fork_helper`) takes `ForkContext::FullHistory` or `LastMessages
+  {count}` rendered as text into a fresh session: no boundary. Ask 7 below.
+- Model picker and `/model`: the client's endpoint registry (the `tui.toml`
+  layers, keyless built-ins added) and lister; a switch carries
+  `auth_binding` (`set` for a configured endpoint, `clear` for a built-in)
+  on `mob/turn_start`; the daemon resolves `[thinking]` by the binding's
+  endpoint name.
+- `/compact` reports the policy (the client reads the `tui.toml` layers);
+  `/compact now` is refused with the reason (no compact-now for a member).
+  `/remember` and `/memory` edit the files locally and send
+  `mob/append_system_context`.
+- Detach: `attach = true` in a user `tui.toml` selects attach mode
+  (`bootstrap::attach_mode`); a reconnect starts a daemon that died (stale
+  endpoint file; auto mode; at most every 30 s); the daemon is started
+  through `setsid(1)` when it is on `PATH` (in place: a child of the TUI is
+  no group leader), else in its own process group.
+- New `rkat/*` methods: `rkat/conversations {}` → `{"conversations":
+  [{session_id, last_used, messages, title, current}]}`, `rkat/new {}` and
+  `rkat/resume {session_id}` → `{"session_id", "warning"?}`,
+  `rkat/transcript {session_id}` → `{"messages": [Message]}`.
+
+What remains: P5 (governed realm, asks 3); `/rewind`, `/compact now`,
+`/rules trust`, `/trust` and the TUI's `fork` in attach mode. Engine asks
+outstanding (no PRs yet): 1 stream cursor, 2 approval notice, 5 a
+notification sink that survives `RpcServer::new` per connection (map risk
+(c)), 6 fork-seat admission (fork children ungated; our reproducer PR is
+pending), 7 a member fork at a message boundary (or `session/fork_at` for a
+member's session), 8 compact-now for a member, 9 `delegate` naming the
+helper's session in its result (the client finds helpers by listing mobs).
 
 Decision (2026-11-08): rkat-tui becomes two binaries. A daemon embeds the
 Meerkat engine, holds the realm, runs one durable mob member as the

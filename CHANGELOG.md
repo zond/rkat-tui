@@ -6,6 +6,22 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Added
 
+- Attach mode reaches the in-process TUI on what the daemon can own
+  (experimental, P4): the daemon's agent delegates with the engine's
+  `delegate` (and `spawn_member`), and every attached TUI shows the helpers
+  as in-process (`[helper · model]`, progress, result, running count,
+  `/cost`), from the mobs' own event streams; Esc stops the helpers with
+  the run. `/new` and `/resume` switch the agent's conversation (the
+  member is seated again on a fresh or an earlier session; every attached
+  TUI follows; the list is in `.rkat/tui/conversations.json`); `/rewind`
+  says why it is not offered. The model picker and `/model` use this TUI's
+  endpoints, configured ones included (the switch carries the endpoint's
+  auth binding). `/compact` shows the policy, `/remember` and `/memory`
+  work, cost is kept per conversation. `attach = true` in your own
+  `tui.toml` makes attach mode the default; a reconnect restarts a daemon
+  that died; a started daemon is detached with `setsid` when it is on
+  `PATH`. New daemon methods `rkat/conversations`, `rkat/new`,
+  `rkat/resume`, `rkat/transcript`.
 - Approvals in attach mode (experimental): the `rkat-tui-mob` daemon's
   agent and its helpers run behind the TUI's approval gate (tiers, rules,
   classifier, permission modes, escalation timeout). A call that needs you

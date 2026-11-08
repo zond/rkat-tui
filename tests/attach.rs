@@ -16,9 +16,10 @@ use rkat_tui::bootstrap::{BootstrapOptions, HostPaths};
 use rkat_tui::cli::AttachMode;
 use rkat_tui::client::catchup::CursorFile;
 use rkat_tui::client::runner::NOT_AVAILABLE;
+use rkat_tui::client::sessions::REWIND_UNAVAILABLE;
 use rkat_tui::client::testing::{AttachHarness, spawn_attach_runner};
 use rkat_tui::daemon::{Daemon, DaemonError, DaemonOptions};
-use rkat_tui::ui::{Effect, Msg, StatusUpdate, TurnFailure, TurnOutcome};
+use rkat_tui::ui::{CompactFailure, Effect, Msg, StatusUpdate, TurnFailure, TurnOutcome};
 
 /// A daemon serving in the background.
 struct Running {
@@ -58,9 +59,10 @@ struct Client {
 
 impl Client {
     async fn attach(root: &Path) -> Self {
-        let config = rkat_tui::client::configure(&args_for(root), AttachMode::Existing)
+        let mut config = rkat_tui::client::configure(&args_for(root), AttachMode::Existing)
             .await
             .unwrap();
+        config.lister = no_lists();
         let mut client = Self {
             harness: spawn_attach_runner(config),
             seen: Vec::new(),
@@ -226,7 +228,7 @@ async fn model_switches_with_the_next_prompt_and_stays() {
     // A model this mode cannot name is refused before anything is sent.
     client.send(Effect::SetModel("my-alias".into()));
     client
-        .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text.contains("not a catalogued model")))
+        .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text.contains("cannot tell which endpoint serves `my-alias`")))
         .await;
     client.quit().await;
     daemon.stop().await;
@@ -331,26 +333,18 @@ async fn what_the_daemon_cannot_do_yet_says_so() {
     let llm = ScriptedLlmClient::new(vec![]);
     let daemon = Running::start(&ws.root, &llm).await;
     let mut client = Client::attach(&ws.root).await;
-    for effect in [
-        Effect::NewSession,
-        Effect::RequestResumePicker,
-        Effect::RequestRewindMenu,
-        Effect::TrustRealmRules,
-    ] {
-        client.send(effect);
-        client
-            .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text.contains(NOT_AVAILABLE)))
-            .await;
-    }
+    client.send(Effect::TrustRealmRules);
+    client
+        .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text.contains(NOT_AVAILABLE)))
+        .await;
+    client.send(Effect::RequestRewindMenu);
+    client
+        .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text == REWIND_UNAVAILABLE))
+        .await;
     client.send(Effect::CompactNow);
     client
-        .wait_for(|msg| matches!(msg, Msg::CompactRebuilt(Err(_))))
+        .wait_for(|msg| matches!(msg, Msg::CompactRebuilt(Err(CompactFailure::Rebuild(why))) if why.contains("compact-now")))
         .await;
-    assert!(
-        client
-            .notices()
-            .contains("/new is not available in attach mode yet")
-    );
     client.send(Effect::StatusReport);
     client
         .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text.contains("attach mode") && text.contains("orchestrator `main`")))
@@ -387,4 +381,161 @@ async fn a_bang_command_runs_in_this_process_and_joins_the_agents_context() {
     assert!(request.contains("bang-42"), "the agent read the output");
     client.quit().await;
     daemon.stop().await;
+}
+
+#[test]
+fn attach_true_in_a_users_tui_toml_selects_attach_mode() {
+    use rkat_tui::bootstrap::attach_mode;
+    let ws = Workspace::new();
+    let args = args_for(&ws.root);
+    assert_eq!(attach_mode(&args).unwrap(), None);
+    // A user layer (the --config-dir tui.toml) turns it on.
+    let user = ws.root.join(".cfg");
+    std::fs::create_dir_all(&user).unwrap();
+    std::fs::write(user.join("tui.toml"), "attach = true\n").unwrap();
+    assert_eq!(attach_mode(&args).unwrap(), Some(AttachMode::Auto));
+    // The flags win.
+    assert_eq!(
+        attach_mode(&common::args_with(&ws.root, &["--no-attach"])).unwrap(),
+        None
+    );
+    assert_eq!(
+        attach_mode(&common::args_with(&ws.root, &["--attach=existing"])).unwrap(),
+        Some(AttachMode::Existing)
+    );
+    // A project file cannot choose it.
+    std::fs::remove_file(user.join("tui.toml")).unwrap();
+    std::fs::create_dir_all(ws.root.join(".rkat")).unwrap();
+    std::fs::write(ws.root.join(".rkat/tui.toml"), "attach = true\n").unwrap();
+    assert_eq!(attach_mode(&args).unwrap(), None);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_clients_steer_in_turn_and_both_see_the_whole_conversation() {
+    use rkat_tui::delivery::PendingId;
+    let ws = Workspace::new();
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Gated(Arc::clone(&gate), Box::new(Step::Text("first answer"))),
+        Step::Text("second answer"),
+        Step::Text("third answer"),
+    ]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let mut a = Client::attach(&ws.root).await;
+    let mut b = Client::attach(&ws.root).await;
+    a.send(Effect::StartTurn("from A".into()));
+    llm.wait_call(0).await;
+    // B sees A's turn running and steers into it.
+    b.wait_for(|m| matches!(m, Msg::RemoteTurn { prompt: Some(p) } if p == "from A"))
+        .await;
+    b.send(Effect::Steer {
+        id: PendingId(1),
+        text: "steer from B".into(),
+    });
+    b.wait_for(|m| {
+        matches!(
+            m,
+            Msg::SteerAck {
+                id: PendingId(1),
+                result: Ok(())
+            }
+        )
+    })
+    .await;
+    gate.notify_one();
+    llm.wait_call(1).await;
+    let steered = common::user_texts(&llm.recorded()[1].messages);
+    assert!(
+        steered.iter().any(|t| t.contains("steer from B")),
+        "{steered:?}"
+    );
+    // Then B prompts and A sees it (once both showed the steered run end,
+    // in the first turn or as a turn of its own).
+    let settled = |client: &Client| {
+        let shown = client.seen.iter().position(|m| {
+            matches!(m, Msg::Agent(env) if matches!(&env.payload, AgentEvent::TextComplete { content, .. } if content == "second answer"))
+        });
+        shown.is_some_and(|at| {
+            client.seen[at..]
+                .iter()
+                .any(|m| matches!(m, Msg::TurnFinished(_)))
+        })
+    };
+    within(async {
+        while !settled(&a) || !settled(&b) {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            for client in [&mut a, &mut b] {
+                while let Ok(msg) = client.harness.ui_rx.try_recv() {
+                    client.seen.push(msg);
+                }
+            }
+        }
+    })
+    .await;
+    b.send(Effect::StartTurn("from B".into()));
+    assert_eq!(b.turn_finished().await.result.unwrap().text, "third answer");
+    a.wait_for(|m| matches!(m, Msg::RemoteTurn { prompt: Some(p) } if p == "from B"))
+        .await;
+    a.turn_finished().await.result.unwrap();
+    for client in [&a, &b] {
+        for text in ["first answer", "second answer", "third answer"] {
+            assert_eq!(client.texts(text), 1, "{text}");
+        }
+    }
+    a.quit().await;
+    b.quit().await;
+    daemon.stop().await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reconnect_restarts_a_daemon_that_died() {
+    let ws = Workspace::new();
+    // The real daemon below needs an endpoint with a key (any variable that
+    // is set: it never calls the endpoint).
+    let user = ws.root.join(".cfg");
+    std::fs::create_dir_all(&user).unwrap();
+    std::fs::write(
+        user.join("tui.toml"),
+        "[endpoints.fake]\ndialect = \"anthropic\"\nbase_url = \"http://127.0.0.1:9\"\napi_key_env = \"HOME\"\n",
+    )
+    .unwrap();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let args = args_for(&ws.root);
+    let mut config = rkat_tui::client::configure(&args, AttachMode::Auto)
+        .await
+        .unwrap();
+    config.lister = no_lists();
+    if let Some(plan) = &mut config.spawn {
+        plan.program = std::path::PathBuf::from(env!("CARGO_BIN_EXE_rkat-tui-mob"));
+    }
+    let endpoint_file = config.endpoint_file.clone();
+    let mut client = Client {
+        harness: spawn_attach_runner(config),
+        seen: Vec::new(),
+    };
+    client.attached().await;
+    // The daemon dies and leaves its endpoint file behind.
+    let left = std::fs::read(&endpoint_file).unwrap();
+    daemon.stop().await;
+    std::fs::write(&endpoint_file, left).unwrap();
+    client
+        .wait_for(
+            |m| matches!(m, Msg::Notice { text, .. } if text.contains("restarted rkat-tui-mob")),
+        )
+        .await;
+    client.attached().await;
+    // Stop the restarted one, which removes its endpoint file.
+    client.send(Effect::DaemonStop);
+    client
+        .wait_for(|m| matches!(m, Msg::Notice { text, .. } if text.contains("asked the daemon")))
+        .await;
+    within(async {
+        while endpoint_file.exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    client.quit().await;
 }
