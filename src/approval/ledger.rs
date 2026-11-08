@@ -33,12 +33,13 @@ use meerkat_core::{
 };
 use serde_json::Value;
 
+use super::escalation::EscalationPrompt;
 use super::policy::{Action, ActionKind};
 
 /// Principal that requests escalations (the TUI's approval gate).
-const REQUESTER: &str = "rkat-tui-approval-gate";
+pub const REQUESTER: &str = "rkat-tui-approval-gate";
 /// Principal of decisions the human made.
-const HUMAN: &str = "rkat-tui-user";
+pub const HUMAN: &str = "rkat-tui-user";
 /// Principal of decisions made without the human (timeouts, abandoned
 /// calls, restarts).
 const RUNTIME: &str = "rkat-tui-runtime";
@@ -83,6 +84,9 @@ pub struct EscalationEntry<'a> {
     pub timeout: Duration,
     /// The classifier's opinion shown with the escalation, if any.
     pub hint: Option<&'a str>,
+    /// The dialog the escalation shows; when given it is the record's
+    /// request body ([`super::escalation::RecordedPrompt`]), so a remote client can show it.
+    pub prompt: Option<&'a EscalationPrompt>,
 }
 
 /// The escalation records of one realm.
@@ -181,7 +185,10 @@ impl EscalationLedger {
                 })),
             },
             risk,
-            request_body: entry.hint.map(|hint| Value::String(hint.to_string())),
+            request_body: match entry.prompt {
+                Some(prompt) => serde_json::to_value(prompt.recorded()).ok(),
+                None => entry.hint.map(|hint| Value::String(hint.to_string())),
+            },
             allowed_decisions: [ApprovalDecision::Approve, ApprovalDecision::Deny]
                 .into_iter()
                 .collect(),
@@ -220,6 +227,58 @@ impl EscalationLedger {
             Some(reason.to_string()),
             None,
         )?)
+    }
+
+    /// Settle a pending record, or confirm that it already carries the
+    /// same outcome: a client of the daemon decides the record itself
+    /// (`approval/decide`) before the engine records the answer it waited
+    /// for, so `AlreadyDecided` with the matching status is success.
+    ///
+    /// # Errors
+    ///
+    /// [`LedgerError`] when the record is unknown, or decided otherwise.
+    pub fn settle(
+        &self,
+        id: &ApprovalId,
+        decision: ApprovalDecision,
+        by: Decider,
+        reason: &str,
+    ) -> Result<ApprovalRecord, LedgerError> {
+        match self.decide(id, decision, by, reason) {
+            Ok(record) => Ok(record),
+            Err(LedgerError::Service(meerkat_core::ApprovalError::AlreadyDecided { .. })) => {
+                let record = self.service.get(id)?;
+                let expected = match decision {
+                    ApprovalDecision::Approve => ApprovalStatus::Approved,
+                    ApprovalDecision::Deny => ApprovalStatus::Denied,
+                };
+                if record.status == expected {
+                    Ok(record)
+                } else {
+                    Err(LedgerError::Service(
+                        meerkat_core::ApprovalError::AlreadyDecided {
+                            approval_id: id.clone(),
+                        },
+                    ))
+                }
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    /// One record.
+    ///
+    /// # Errors
+    ///
+    /// [`LedgerError`] when it is unknown or the store cannot be read.
+    pub fn get(&self, id: &ApprovalId) -> Result<ApprovalRecord, LedgerError> {
+        Ok(self.service.get(id)?)
+    }
+
+    /// The approval service the ledger records through.
+    #[must_use]
+    pub fn service(&self) -> &ApprovalService {
+        &self.service
     }
 
     /// Every record, oldest first.
@@ -279,6 +338,7 @@ mod tests {
             action: &action,
             timeout: Duration::from_mins(5),
             hint: Some("classifier: BLOCK [D2]"),
+            prompt: None,
         };
 
         let ledger = EscalationLedger::new(service(dir.path()));
@@ -345,6 +405,44 @@ mod tests {
         // The records live in the realm's canonical approval store.
         assert!(dir.path().join("approvals.json").exists());
         assert!(!dir.path().join("tool-approvals.json").exists());
+    }
+
+    #[test]
+    fn settling_confirms_a_record_a_client_already_decided_the_same_way() {
+        let session = SessionId::new();
+        let args = raw(&json!({"command": "git push"}));
+        let origin = ToolOrigin::native(ToolSourceKind::Shell);
+        let action = Action::parse("shell", &args, Some(&origin));
+        let ledger = EscalationLedger::in_memory();
+        let entry = EscalationEntry {
+            session_id: &session,
+            tool_use_id: "call",
+            action: &action,
+            timeout: Duration::from_mins(5),
+            hint: None,
+            prompt: None,
+        };
+        let id = ledger.request(entry).unwrap();
+        // The client decided it over `approval/decide`.
+        ledger
+            .decide(&id, ApprovalDecision::Approve, Decider::Human, "client")
+            .unwrap();
+        let record = ledger
+            .settle(&id, ApprovalDecision::Approve, Decider::Human, "allowed once")
+            .unwrap();
+        assert_eq!(record.status, ApprovalStatus::Approved);
+        // A contradicting settle is still an error.
+        assert!(
+            ledger
+                .settle(&id, ApprovalDecision::Deny, Decider::Human, "denied")
+                .is_err()
+        );
+        // An undecided record is decided by the settle itself.
+        let fresh = ledger.request(entry).unwrap();
+        let record = ledger
+            .settle(&fresh, ApprovalDecision::Deny, Decider::Runtime, "timeout")
+            .unwrap();
+        assert_eq!(record.status, ApprovalStatus::Denied);
     }
 
     #[test]

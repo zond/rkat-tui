@@ -6,7 +6,7 @@
 //! gone, responder dropped) resolves as [`HumanDecision::Deny`] without a comment: fail closed.
 
 use super::rules::Rule;
-use meerkat_core::SessionId;
+use meerkat_core::{ApprovalId, SessionId};
 use tokio::sync::{Mutex, MutexGuard, mpsc, oneshot};
 
 /// The human's answer.
@@ -47,6 +47,50 @@ pub struct EscalationPrompt {
     pub classifier_hint: Option<String>,
     /// Why the policy itself asks, without the classifier (a protected
     /// path: [`super::policy::Tier::AskUser`]).
+    pub policy_reason: Option<String>,
+    /// The escalation's record in the realm's approval store, when a ledger
+    /// is kept: the daemon's desk waits for its decision there
+    /// (`approval/decide`), see `crate::daemon::approvals`.
+    pub record: Option<ApprovalId>,
+}
+
+impl EscalationPrompt {
+    /// What the escalation's approval record carries as its request body:
+    /// everything a remote client needs to show the same dialog.
+    #[must_use]
+    pub fn recorded(&self) -> RecordedPrompt {
+        RecordedPrompt {
+            tool: self.tool.clone(),
+            agent: self.agent.clone(),
+            args_preview: self.args_preview.clone(),
+            subjects: self.subjects.clone(),
+            classifier_hint: self.classifier_hint.clone(),
+            policy_reason: self.policy_reason.clone(),
+        }
+    }
+}
+
+/// The dialog's content as an approval record's `request_body` (the
+/// requester is the TUI's gate): a client of the daemon reads it back to
+/// render the dialog the in-process UI shows.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub struct RecordedPrompt {
+    /// Tool name.
+    pub tool: String,
+    /// The helper making the call (`None`: the session's own agent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// Short rendering of the arguments.
+    #[serde(default)]
+    pub args_preview: String,
+    /// Canonical rule subjects; "allow + add rule" uses the first.
+    #[serde(default)]
+    pub subjects: Vec<String>,
+    /// The classifier's opinion, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub classifier_hint: Option<String>,
+    /// Why the policy itself asks, if it does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy_reason: Option<String>,
 }
 
@@ -128,6 +172,7 @@ mod tests {
             subjects: vec!["{}".into()],
             classifier_hint: None,
             policy_reason: None,
+            record: None,
         }
     }
 

@@ -20,13 +20,13 @@ use meerkat_core::SessionId;
 use tokio::sync::{mpsc, oneshot};
 
 use super::Runner;
-use crate::approval::counters::{
-    AutoModeState, MAX_CONSECUTIVE_DENIALS, MAX_TOTAL_DENIALS, PauseCause,
-};
+use crate::approval::counters::PauseCause;
 use crate::approval::escalation::{EscalationRequest, HumanDecision};
 use crate::approval::mode::PermissionMode;
 use crate::approval::policy::{Decider, Tier, VerdictSummary};
-use crate::approval::rules::{Rule, RuleId, RuleKind, RuleOrigin, RuleSet};
+use crate::approval::remote::{
+    ModeStatus, RuleCommand, allow_rule, describe_rule, mode_notice, run_rule_command,
+};
 use crate::approval::{ApprovalEngine, ApprovalEvent};
 use crate::ui::{
     ApprovalNotice, Effect, EscalationAnswer, EscalationId, EscalationPrompt, Msg, NoticeLevel,
@@ -66,7 +66,7 @@ impl ApprovalDesk {
 }
 
 /// The system context plan mode adds when it starts.
-pub(super) const PLAN_ON_NOTE: &str = "\
+pub(crate) const PLAN_ON_NOTE: &str = "\
 # Plan mode is on
 
 The user switched to plan mode: research and plan, do not change anything. \
@@ -76,7 +76,7 @@ concise, numbered plan of the changes you would make and stop: the user \
 approves it before anything is changed.";
 
 /// The system context added when plan mode ends.
-pub(super) const PLAN_OFF_NOTE: &str = "\
+pub(crate) const PLAN_OFF_NOTE: &str = "\
 # Plan mode is off
 
 The user left plan mode: the approval policy of the current permission mode \
@@ -87,7 +87,7 @@ static PLAN_NOTES: AtomicU64 = AtomicU64::new(0);
 
 /// An idempotency key no other plan-mode note shares (a session keeps the
 /// notes of earlier transitions and of earlier processes).
-fn plan_note_key(on: bool) -> String {
+pub(crate) fn plan_note_key(on: bool) -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
@@ -97,24 +97,6 @@ fn plan_note_key(on: bool) -> String {
         std::process::id(),
         PLAN_NOTES.fetch_add(1, Ordering::Relaxed)
     )
-}
-
-/// What a mode switch tells the user.
-fn mode_notice(mode: PermissionMode) -> &'static str {
-    match mode {
-        PermissionMode::Manual => {
-            "permission mode: manual (every edit and command asks you; Shift+Tab cycles)"
-        }
-        PermissionMode::AcceptEdits => {
-            "permission mode: accept edits (in-project edits run; commands ask you)"
-        }
-        PermissionMode::Plan => {
-            "permission mode: plan (read-only; the agent presents a plan before changing anything)"
-        }
-        PermissionMode::Auto => {
-            "permission mode: auto (the classifier reviews what is not always allowed)"
-        }
-    }
 }
 
 impl Runner {
@@ -187,15 +169,13 @@ impl Runner {
                 effect,
                 tool,
                 pattern,
-            } => {
-                let kind = match effect {
-                    RuleEffect::Allow => RuleKind::Allow,
-                    RuleEffect::Deny => RuleKind::Deny,
-                };
-                self.add_rule(kind, &tool, pattern.as_deref());
-            }
-            Effect::RemoveRule(n) => self.remove_rule(n),
-            Effect::ListRules => self.list_rules(),
+            } => self.rule_command(&RuleCommand::Add {
+                deny: effect == RuleEffect::Deny,
+                tool,
+                pattern,
+            }),
+            Effect::RemoveRule(n) => self.rule_command(&RuleCommand::Remove { n }),
+            Effect::ListRules => self.rule_command(&RuleCommand::List),
             other => tracing::debug!(?other, "not an approval effect"),
         }
     }
@@ -245,14 +225,7 @@ impl Runner {
             EscalationAnswer::AllowAndAddRule => {
                 // A literal rule over the canonical subject: matches exactly
                 // this command / path, no glob semantics to escape.
-                let rule = match pending.subject {
-                    Some(subject) => {
-                        Rule::literal(RuleKind::Allow, &pending.tool, subject, RuleOrigin::Realm)
-                            .map_err(|e| e.to_string())
-                    }
-                    None => Err("the action has no rule subject".to_string()),
-                };
-                match rule {
+                match allow_rule(&pending.tool, pending.subject.as_deref()) {
                     Ok(rule) => HumanDecision::AllowAndAddRule(Box::new(rule)),
                     Err(err) => {
                         self.notice(NoticeLevel::Warn, format!("rule not added: {err}"));
@@ -378,96 +351,23 @@ impl Runner {
         }
     }
 
-    fn add_rule(&self, kind: RuleKind, tool: &str, pattern: Option<&str>) {
-        match Rule::new(kind, tool, pattern, RuleOrigin::Realm)
-            .and_then(|rule| self.approval.engine.add_rule(rule))
-        {
-            Ok(()) => self.notice(NoticeLevel::Info, "rule added"),
-            Err(err) => self.notice(NoticeLevel::Error, format!("rule not added: {err}")),
-        }
-    }
-
-    fn remove_rule(&self, n: usize) {
-        let Some(id) = nth_rule_id(&self.approval.engine.rules(), n) else {
-            self.notice(NoticeLevel::Error, format!("no rule #{n}"));
-            return;
-        };
-        match self.approval.engine.remove_rule(id) {
-            Ok(Some(rule)) => self.notice(
-                NoticeLevel::Info,
-                format!("removed {}", describe_rule(&rule)),
-            ),
-            Ok(None) => self.notice(NoticeLevel::Error, format!("no rule #{n}")),
-            Err(err) => self.notice(NoticeLevel::Error, format!("rule not removed: {err}")),
-        }
-    }
-
-    fn list_rules(&self) {
-        let rules = self.approval.engine.rules();
-        let lines: Vec<String> = numbered_rules(&rules)
-            .map(|(n, rule)| rule_list_line(n, rule))
-            .collect();
-        if lines.is_empty() {
-            self.notice(NoticeLevel::Info, "no rules");
+    fn rule_command(&self, command: &RuleCommand) {
+        let outcome = run_rule_command(&self.approval.engine, command);
+        let level = if outcome.ok {
+            NoticeLevel::Info
         } else {
-            self.notice(NoticeLevel::Info, lines.join("\n"));
-        }
+            NoticeLevel::Error
+        };
+        self.notice(level, outcome.text);
     }
+
 }
 
 /// The permission mode, whether auto mode is paused after classifier
 /// blocks, and the denial counters with their limits.
 pub(super) fn mode_status(engine: &ApprovalEngine) -> (PermissionMode, bool, (u32, u32, u32, u32)) {
-    let (counters, state) = engine.auto_state();
-    let paused = matches!(
-        state,
-        AutoModeState::Paused { cause } if cause != PauseCause::UserDisabled
-    );
-    (
-        engine.mode(),
-        paused,
-        (
-            counters.consecutive,
-            MAX_CONSECUTIVE_DENIALS,
-            counters.total,
-            MAX_TOTAL_DENIALS,
-        ),
-    )
-}
-
-/// Every rule with the number `/rules list` shows and `/rules remove`
-/// takes: its stable serial ([`RuleId::serial`]), which never shifts when
-/// other rules are removed.
-fn numbered_rules(rules: &RuleSet) -> impl Iterator<Item = (u64, &Rule)> {
-    rules
-        .allow()
-        .chain(rules.deny())
-        .map(|(id, rule)| (id.serial, rule))
-}
-
-fn nth_rule_id(rules: &RuleSet, n: usize) -> Option<RuleId> {
-    let serial = u64::try_from(n).ok()?;
-    rules
-        .allow()
-        .chain(rules.deny())
-        .map(|(id, _)| id)
-        .find(|id| id.serial == serial)
-}
-
-/// One `/rules list` line: number, rule and the layer it came from.
-fn rule_list_line(n: u64, rule: &Rule) -> String {
-    format!("{n}. {} ({})", describe_rule(rule), rule.origin.as_str())
-}
-
-fn describe_rule(rule: &Rule) -> String {
-    let kind = match rule.kind {
-        RuleKind::Allow => "allow",
-        RuleKind::Deny => "deny",
-    };
-    match &rule.arg {
-        Some(arg) => format!("{kind} {} {}", rule.tool.as_str(), arg.as_str()),
-        None => format!("{kind} {}", rule.tool.as_str()),
-    }
+    let status = ModeStatus::of(engine);
+    (status.mode, status.paused, status.denials)
 }
 
 /// Most characters of the classifier's reason in an allow note.
@@ -498,6 +398,8 @@ fn classifier_allow_note(reason: Option<&str>) -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::approval::remote::{nth_rule_id, numbered_rules, rule_list_line};
+    use crate::approval::rules::{Rule, RuleKind, RuleOrigin, RuleSet};
 
     #[test]
     fn classifier_allow_note_is_one_short_line() {

@@ -41,6 +41,7 @@ pub mod mode;
 pub mod patch_targets;
 pub mod policy;
 pub mod prompts;
+pub mod remote;
 pub mod rules;
 pub mod shell;
 pub(crate) mod shell_subject;

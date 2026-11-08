@@ -1033,20 +1033,13 @@ impl ApprovalEngine {
                     }
                 }
             }
-            match self
-                .record_request(session_id, tool_use_id, facts, &hint)
-                .await
-            {
-                Ok(record) => pending.record = record,
-                Err(err) => return Asked::Settled(self.ledger_failed(tier, err)),
-            }
             let (classifier_hint, policy_reason) = match &asking {
                 Asking::Classifier(hint) => (Some(hint.clone()), None),
                 Asking::Policy(reason) | Asking::Mode { reason, .. } => {
                     (None, Some(reason.clone()))
                 }
             };
-            let prompt = EscalationPrompt {
+            let mut prompt = EscalationPrompt {
                 id,
                 session_id: session_id.clone(),
                 agent: agent.map(str::to_string),
@@ -1055,7 +1048,18 @@ impl ApprovalEngine {
                 subjects: facts.subjects.clone(),
                 classifier_hint,
                 policy_reason,
+                record: None,
             };
+            match self
+                .record_request(session_id, tool_use_id, facts, &hint, &prompt)
+                .await
+            {
+                Ok(record) => {
+                    pending.record.clone_from(&record);
+                    prompt.record = record;
+                }
+                Err(err) => return Asked::Settled(self.ledger_failed(tier, err)),
+            }
             let answer = broker.ask_locked(&guard, prompt).await;
             // A Stop applies before the serial lock is released, so an
             // escalation queued behind this one sees it.
@@ -1130,6 +1134,7 @@ impl ApprovalEngine {
         tool_use_id: &str,
         facts: &Facts<'_>,
         hint: &str,
+        prompt: &EscalationPrompt,
     ) -> Result<Option<ApprovalId>, String> {
         let Some(ledger) = &self.ledger else {
             return Ok(None);
@@ -1140,6 +1145,7 @@ impl ApprovalEngine {
             action: &facts.action,
             timeout: self.escalation_timeout,
             hint: Some(hint),
+            prompt: Some(prompt),
         })
         .map_err(|e| e.to_string())?;
         let ledger = ledger.clone();
@@ -1356,7 +1362,7 @@ impl PendingEscalation<'_> {
         };
         let reason = reason.to_string();
         match tokio::task::spawn_blocking(move || {
-            ledger.decide(&record, decision, ledger::Decider::Human, &reason)
+            ledger.settle(&record, decision, ledger::Decider::Human, &reason)
         })
         .await
         {
@@ -2675,6 +2681,7 @@ mod tests {
                     action: &action,
                     timeout: DEFAULT_ESCALATION_TIMEOUT,
                     hint: None,
+                    prompt: None,
                 })
                 .unwrap();
         }

@@ -40,7 +40,7 @@
 //! `/remember` and the compaction trigger (`/compact now`, model switches)
 //! live in [`context`], `!` shell mode in [`shell`].
 
-mod approval;
+pub(crate) mod approval;
 mod checklist;
 mod context;
 mod cost;
@@ -49,7 +49,7 @@ mod lifecycle;
 mod models;
 pub(crate) mod export;
 mod quit;
-mod shell;
+pub(crate) mod shell;
 mod status;
 #[doc(hidden)]
 pub mod testing;
