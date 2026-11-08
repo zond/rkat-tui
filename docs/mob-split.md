@@ -428,6 +428,11 @@ changes here:
 
 None of this is merged or released yet; the plan tracks 0.9.11.
 
+The three gaps behind the governed-realm direction (P5) are mapped in
+lukacf/meerkat#2122: a governed connection serves no mob methods, a
+governed connection owns its runtime, and consent is scoped to the open
+pipe.
+
 ## Phases
 
 Each phase keeps the current in-process TUI working and ships with tests.
