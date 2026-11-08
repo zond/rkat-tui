@@ -35,6 +35,7 @@
 //! - `mentions` — `@path` mentions: the workspace path index and the attachment of mentioned files
 //! - `user_shell` — `!` shell mode: the user's commands under the agent shell's confinement
 //! - `ui` — ratatui application
+//! - `daemon` — the `rkat-tui-mob` daemon: the engine's JSON-RPC router over loopback TCP
 
 /// Declare the internal modules: crate-private, public with the
 /// `test-support` feature (the crate's integration tests). Without it, an
@@ -56,6 +57,11 @@ internal_modules!(
     approval, bootstrap, cli, delivery, endpoints, error, fork, http, memory, mentions, mobs,
     models, overlay, paths, pricing, runner, session, thinking, tools, ui, user_shell,
 );
+
+/// `rkat-tui-mob`: the workspace's mob daemon (experimental). Not a
+/// stable API.
+#[cfg(feature = "mob")]
+pub mod daemon;
 
 /// The headless runner the integration tests drive (see
 /// `runner::testing`). Not a stable API.

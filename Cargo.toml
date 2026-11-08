@@ -18,6 +18,12 @@ path = "src/lib.rs"
 name = "rkat-tui"
 path = "src/main.rs"
 
+# Experimental: the mob daemon (see docs/mob-split.md).
+[[bin]]
+name = "rkat-tui-mob"
+path = "src/bin/rkat-tui-mob.rs"
+required-features = ["mob"]
+
 [workspace]
 
 [dependencies]
@@ -45,6 +51,10 @@ meerkat-memory = { git = "https://github.com/zond/meerkat.git", rev = "fb1295de4
 meerkat-sandbox = { git = "https://github.com/zond/meerkat.git", rev = "fb1295de4a181c49b9acc126c53b46c316e31351" }
 meerkat-mob = { git = "https://github.com/zond/meerkat.git", rev = "fb1295de4a181c49b9acc126c53b46c316e31351", optional = true }
 meerkat-mob-mcp = { git = "https://github.com/zond/meerkat.git", rev = "fb1295de4a181c49b9acc126c53b46c316e31351", optional = true }
+# The `rkat-tui-mob` daemon serves Meerkat's own JSON-RPC method router
+# (`MethodRouter`, `RpcServer`, `SessionRuntime`) over a Unix socket. Default
+# features off: no realtime voice and no governed-realm host.
+meerkat-rpc = { git = "https://github.com/zond/meerkat.git", rev = "fb1295de4a181c49b9acc126c53b46c316e31351", default-features = false, features = ["mob", "mcp", "comms"], optional = true }
 
 # Async + serialization
 tokio = { version = "1.43", features = ["full"] }
@@ -90,7 +100,9 @@ nix = { version = "0.29", features = ["signal", "process", "fs", "user"] }
 default = ["mcp", "mob"]
 mcp = ["meerkat/mcp"]
 # Sub-agents run as mob members (`delegate` / `fork_off`).
-mob = ["dep:meerkat-mob", "dep:meerkat-mob-mcp"]
+# The `rkat-tui-mob` daemon needs it too (it hosts the orchestrator as a
+# mob member).
+mob = ["dep:meerkat-mob", "dep:meerkat-mob-mcp", "dep:meerkat-rpc"]
 # Makes the internal modules public and adds `harness` (the headless
 # runner) for this crate's own integration tests. Not a stable API.
 test-support = []
