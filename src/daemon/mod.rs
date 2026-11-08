@@ -16,15 +16,24 @@
 //! ([`endpoint`], mode 0600, removed on shutdown) holds the bound address,
 //! the per-daemon token and the pid.
 //!
-//! Known limits of P1: the orchestrator's own tool calls pass no approval
-//! gate yet (the [`crate::mobs::customizer::RootMember::admission`] hook is
-//! where P3 installs it); `mob/stream_open` has no resume cursor (catch up
-//! with `events/list_since`); nothing starts the daemon on demand.
+//! Approvals (P3): every member's tool calls pass the TUI's approval engine
+//! ([`approvals`]); a call that needs the human becomes a record in the
+//! realm's approval store that a client decides with `approval/decide`;
+//! the permission mode and the rules are reached through the daemon's own
+//! `rkat/*` methods ([`local`]); the deny rules are the members' durable
+//! application tool policy ([`policy`]).
+//!
+//! Known limits: `mob/stream_open` has no resume cursor (catch up with
+//! `events/list_since`); no push notification for a pending approval (the
+//! client polls `approval/list`).
 
+pub mod approvals;
 pub mod endpoint;
 pub mod engine;
 pub mod handshake;
+pub mod local;
 pub mod orchestrator;
+pub mod policy;
 pub mod serve;
 
 use std::path::{Path, PathBuf};
@@ -113,6 +122,9 @@ pub enum DaemonError {
     /// The realm declares a hosting mode its stores cannot provide.
     #[error("{0}")]
     Hosting(#[from] meerkat::HostingUnavailable),
+    /// The approval side cannot be composed.
+    #[error("cannot compose the approval gate: {0}")]
+    Approval(String),
     /// The runtime refused the composition.
     #[error("cannot compose the session runtime: {0}")]
     Composition(#[from] meerkat::surface::RuntimeBackedCompositionError),
@@ -194,6 +206,7 @@ pub struct DaemonOptions {
     /// The loopback address to listen on (default [`DEFAULT_LISTEN`]).
     pub listen: std::net::SocketAddr,
     pub(crate) bootstrap: BootstrapOptions,
+    pub(crate) policy: engine::PolicyOptions,
 }
 
 impl Default for DaemonOptions {
@@ -201,6 +214,7 @@ impl Default for DaemonOptions {
         Self {
             listen: std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
             bootstrap: BootstrapOptions::default(),
+            policy: engine::PolicyOptions::default(),
         }
     }
 }
@@ -211,6 +225,15 @@ impl DaemonOptions {
     #[must_use]
     pub fn with_bootstrap(mut self, bootstrap: BootstrapOptions) -> Self {
         self.bootstrap = bootstrap;
+        self
+    }
+
+    /// Compose without the consequence-policy registry (to observe what
+    /// the engine does with a member whose durable binding names it).
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn without_policy_registry(mut self) -> Self {
+        self.policy.without_registry = true;
         self
     }
 }
@@ -232,6 +255,11 @@ pub struct Daemon {
     lease: Option<RealmLeaseGuard>,
     listener: serve::Listener,
     scope: RuntimeScope,
+    engine: Arc<crate::approval::ApprovalEngine>,
+    desk: Arc<approvals::Desk>,
+    local: Arc<local::Local>,
+    /// The desk and the event watcher, aborted at shutdown.
+    tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl std::fmt::Debug for Daemon {
@@ -275,8 +303,28 @@ impl Daemon {
         endpoint::check_stale(&file).await?;
         let parts =
             bootstrap::assemble(scope, config, args, options.bootstrap, LEASE_SURFACE).await?;
-        let composed = engine::compose(parts)?;
+        let composed = engine::compose(parts, options.policy)?;
         let orchestrator = orchestrator::ensure(&composed.state, &composed.root).await?;
+        // The orchestrator is idle now: its tool catalog can be read.
+        if !composed.origins.refresh(&orchestrator.session_id).await {
+            tracing::info!(
+                "the orchestrator's tool catalog is read after its first run; until then only the TUI's own tools are known to the gate"
+            );
+        }
+        let watcher = approvals::watch(
+            Arc::clone(&composed.state),
+            orchestrator.mob_id.clone(),
+            orchestrator.identity.clone(),
+            Arc::clone(&composed.engine),
+            Arc::clone(&composed.origins),
+        );
+        let local = Arc::new(local::Local::new(
+            Arc::clone(&composed.engine),
+            Arc::clone(&composed.state),
+            orchestrator.session_id.clone(),
+            Arc::clone(&composed.desk),
+            composed.thinking.clone(),
+        ));
         let listener = serve::Listener::bind(options.listen, &file).await?;
         tracing::info!(
             address = %listener.address(),
@@ -294,7 +342,23 @@ impl Daemon {
             lease: Some(composed.lease),
             listener,
             scope: composed.scope,
+            engine: composed.engine,
+            desk: composed.desk,
+            local,
+            tasks: vec![composed.desk_task, watcher],
         })
+    }
+
+    /// The approval engine every member's gate shares.
+    #[must_use]
+    pub fn approval_engine(&self) -> &Arc<crate::approval::ApprovalEngine> {
+        &self.engine
+    }
+
+    /// Where escalations wait for their decision.
+    #[must_use]
+    pub fn desk(&self) -> &Arc<approvals::Desk> {
+        &self.desk
     }
 
     /// The bound address clients connect to.
@@ -349,6 +413,7 @@ impl Daemon {
             &mut self.listener,
             &self.runtime,
             &self.config_store,
+            &self.local,
             shutdown,
         )
         .await;
@@ -359,6 +424,9 @@ impl Daemon {
             Ok(connections) => (Ok(()), connections),
             Err(err) => (Err(err), tokio::task::JoinSet::new()),
         };
+        for task in self.tasks.drain(..) {
+            task.abort();
+        }
         stop_mobs(&self.state).await;
         let shutdown = self.runtime.try_shutdown().await;
         connections.abort_all();

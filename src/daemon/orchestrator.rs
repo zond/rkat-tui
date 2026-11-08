@@ -50,6 +50,9 @@ fn definition(plan: &RootPlan) -> MobDefinition {
             profile.tools.mob = true;
             profile.tools.memory = plan.memory;
             profile.tools.mcp_servers.clone_from(&plan.mcp_servers);
+            // The `[thinking]` of the start-up model; a rebuild re-applies
+            // the setting of the session's model (the customizer).
+            profile.provider_params = crate::thinking::params_for(plan.thinking.as_ref());
             definition.profiles.insert(
                 ProfileName::from(ORCHESTRATOR),
                 ProfileBinding::Inline(profile),

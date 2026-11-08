@@ -45,6 +45,14 @@ pub struct Spawning {
 /// first), read again on every fresh spawn.
 pub type RootInstructions = Arc<dyn Fn() -> Vec<String> + Send + Sync>;
 
+/// The `[thinking]` a rebuilt root member's identity is configured with
+/// (its model may have been switched since the spawn).
+pub type RootThinking = Arc<
+    dyn Fn(&meerkat_core::SessionLlmIdentity) -> Option<meerkat_core::lifecycle::run_primitive::AnthropicThinkingConfig>
+        + Send
+        + Sync,
+>;
+
 /// A host-root member that is an owner itself, not a helper: the mob
 /// daemon's orchestrator.
 pub struct RootMember {
@@ -59,11 +67,14 @@ pub struct RootMember {
     pub model: String,
     /// The start-up endpoint's auth binding.
     pub auth_binding: Option<AuthBindingRef>,
-    /// P3 hook: the approval gate for the root member's own calls. `None`
-    /// in P1 (the orchestrator's calls are not gated yet); P3 installs the
-    /// daemon-side classifier and tier policy here as its
-    /// `ToolDispatchAdmission`.
+    /// The approval gate for the root member's own calls (the daemon's
+    /// `RootGate`: the TUI's tiers, rules, classifier and modes, consent
+    /// through the approval store). Re-installed on every rebuild: the
+    /// engine does not persist an admission.
     pub admission: Option<Arc<dyn ToolDispatchAdmission>>,
+    /// The `[thinking]` of a rebuilt member's model; `None`: the persisted
+    /// provider params stay as they are.
+    pub thinking: Option<RootThinking>,
 }
 
 impl std::fmt::Debug for RootMember {
@@ -72,6 +83,7 @@ impl std::fmt::Debug for RootMember {
             .field("key", &self.key)
             .field("model", &self.model)
             .field("gated", &self.admission.is_some())
+            .field("thinking", &self.thinking.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -89,6 +101,9 @@ pub struct HelperCustomizer {
     max_depth: u8,
     /// The host-root member treated as an owner, if any.
     root: Option<RootMember>,
+    /// The application tool policy every member this customizer shapes is
+    /// built with (`None`: the spawn's own).
+    application_tool_policy: Option<meerkat_core::ApplicationToolPolicyBinding>,
 }
 
 impl std::fmt::Debug for HelperCustomizer {
@@ -118,6 +133,25 @@ impl HelperCustomizer {
             spawning,
             max_depth,
             root: None,
+            application_tool_policy: None,
+        }
+    }
+
+    /// Build every member it shapes (the root and its helpers) with the
+    /// application tool policy `binding`: the engine records it with the
+    /// member and refuses to rebuild the member without its registry.
+    #[must_use]
+    pub fn with_application_tool_policy(
+        mut self,
+        binding: meerkat_core::ApplicationToolPolicyBinding,
+    ) -> Self {
+        self.application_tool_policy = Some(binding);
+        self
+    }
+
+    fn bind_policy(&self, spec: &mut SpawnMemberSpec) {
+        if let Some(binding) = &self.application_tool_policy {
+            spec.application_tool_policy = Some(binding.clone());
         }
     }
 
@@ -380,6 +414,7 @@ impl HelperCustomizer {
         if depth != Depth::MayNest {
             drop_mob_tools(spec);
         }
+        self.bind_policy(spec);
         let _ = self.spawning.send(Spawning { key, tag });
         Ok(())
     }
@@ -406,6 +441,7 @@ impl SpawnMemberCustomizer for HelperCustomizer {
         if let Some(root) = self.root_for(&key) {
             let fresh = !matches!(ctx.spawn_source, SpawnSource::Resume);
             shape_root(spec, root, self.shell_env.as_ref(), fresh);
+            self.bind_policy(spec);
             return Ok(());
         }
         // A fork-derived member's rebuild asks with `Resume`: it keeps the
@@ -447,6 +483,15 @@ impl SpawnMemberCustomizer for HelperCustomizer {
             self.registry
                 .register_root(key, &durable.session_id, &model, binding.as_ref());
             shape_root(spec, root, self.shell_env.as_ref(), false);
+            if let (Some(thinking), Some(identity)) = (&root.thinking, &durable.llm_identity)
+                && let Some(params) = crate::thinking::reapplied(
+                    identity.provider_params.as_ref(),
+                    thinking(identity).as_ref(),
+                )
+            {
+                spec.resume_provider_params = Some(params.unwrap_or_default());
+            }
+            self.bind_policy(spec);
             return Ok(());
         }
         let owner = self.persisted_owner(&key)?;
@@ -614,6 +659,7 @@ mod tests {
             model: "m".to_string(),
             auth_binding: None,
             admission: None,
+            thinking: None,
         }
     }
 
@@ -624,7 +670,7 @@ mod tests {
         let mut spec = SpawnMemberSpec::host_root("main", "main");
         shape_root(&mut spec, &root, Some(&curated), true);
         assert!(spec.external_tools.is_some());
-        assert!(spec.tool_dispatch_admission.is_none(), "P1: no gate yet");
+        assert!(spec.tool_dispatch_admission.is_none(), "no gate was given");
         assert_eq!(spec.shell_env.as_ref(), Some(&curated));
         assert_eq!(
             spec.additional_instructions,

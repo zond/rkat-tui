@@ -12,13 +12,32 @@ use std::sync::Arc;
 
 use common::{ScriptedLlmClient, Step, TIMEOUT, Workspace, args_for, args_with, no_lists, within};
 use meerkat::LlmClient;
-use rkat_tui::bootstrap::{BootstrapOptions, HostPaths};
+use rkat_tui::approval::classifier::{
+    ActionClassifier, ClassifierError, ClassifierInput, ClassifierVerdict,
+};
+use rkat_tui::bootstrap::{ApprovalOverrides, BootstrapOptions, HostPaths};
 use rkat_tui::daemon::endpoint::Endpoint;
 use rkat_tui::daemon::{Daemon, DaemonError, DaemonOptions, MOB_ID, ORCHESTRATOR};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+
+/// Allows every reviewed call: these tests drive the engine's methods,
+/// not the approval gate (`tests/attach_approvals.rs` does).
+struct AllowAll;
+
+#[async_trait::async_trait]
+impl ActionClassifier for AllowAll {
+    async fn classify(
+        &self,
+        _input: ClassifierInput<'_>,
+    ) -> Result<ClassifierVerdict, ClassifierError> {
+        Ok(ClassifierVerdict::Allow {
+            reason: "test".into(),
+        })
+    }
+}
 
 /// A daemon serving in the background.
 struct Running {
@@ -43,7 +62,10 @@ impl Running {
             llm_override: Some(Arc::clone(llm) as Arc<dyn LlmClient>),
             lister: Some(no_lists()),
             host_paths: Some(host_paths.unwrap_or_default()),
-            ..BootstrapOptions::default()
+            approval: ApprovalOverrides {
+                classifier: Some(Arc::new(AllowAll) as Arc<dyn ActionClassifier>),
+                escalation_timeout: None,
+            },
         });
         let daemon = within(Daemon::start(args, options))
             .await
