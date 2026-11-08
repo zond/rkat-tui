@@ -41,7 +41,9 @@ temp dir, an extra `--confinement-read`). With `--no-confinement` the shell
 is the trusted host and can read the file like any other process of the
 user; nothing is kept from it then. (Until the review fixes the file was
 `<workspace>/.rkat/tui/mob.endpoint`, which the confined shell could read:
-`docs/evidence.md`, "Review fixes for P1–P4".)
+`docs/evidence.md`, "Review fixes for P1–P4". The daemon and the client
+still look there: a daemon of that version that answers keeps the
+workspace until `/daemon stop`; a stale file is deleted.)
 
 Known limits of P1:
 
@@ -241,9 +243,9 @@ P4b is in: the polish P4 left.
   carry no usage). The client seeds the counter from it on attach, on
   reconnect and after `/new`/`/resume`, and the gauge after a switch from
   the last `turn_completed` in the replay it reads anyway.
-- `/trust` and `/rules trust`: `rkat/trust {"op": "list"|"project"|"rules"}`
+- `/trust` and `/rules trust`: `rkat/trust {"op": "project"|"rules"}`
   on the daemon's trust record (`ProjectInputs::trust_all`,
-  `ApprovalEngine::trust_realm_rules`), answered `{"ok", "text", "files"?}`.
+  `ApprovalEngine::trust_realm_rules`), answered `{"ok", "text"}`.
   Trusted hooks run from the agent's next build; its MCP servers stay the
   ones in its mob's definition (made when the mob was created).
 - Helper catalogs: the helper registry's updates (dropped before) feed

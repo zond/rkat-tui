@@ -238,19 +238,92 @@ pub async fn check_stale(path: &Path) -> Result<(), DaemonError> {
     let Ok(endpoint) = Endpoint::read(path) else {
         return Ok(());
     };
-    let probe = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        tokio::net::TcpStream::connect(endpoint.address),
-    )
-    .await;
-    if matches!(probe, Ok(Ok(_))) {
+    if answers(&endpoint).await {
         return Err(DaemonError::AlreadyRunning {
             address: endpoint.address,
+            pid: endpoint.pid,
             file: path.to_path_buf(),
         });
     }
     tracing::info!(file = %path.display(), address = %endpoint.address, "replacing a stale endpoint file");
     Ok(())
+}
+
+/// Whether something accepts at `endpoint`'s address (within 2 s).
+pub async fn answers(endpoint: &Endpoint) -> bool {
+    let probe = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        tokio::net::TcpStream::connect(endpoint.address),
+    )
+    .await;
+    matches!(probe, Ok(Ok(_)))
+}
+
+/// Where a daemon of an earlier version wrote its endpoint file: inside
+/// the workspace, `<workspace>/.rkat/tui/mob.endpoint`, which the agent's
+/// confined shell can read.
+#[must_use]
+pub fn legacy_file(workspace: &Path) -> PathBuf {
+    workspace
+        .join(".rkat")
+        .join("tui")
+        .join(super::ENDPOINT_NAME)
+}
+
+/// What the legacy endpoint file ([`legacy_file`]) says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Legacy {
+    /// No legacy file (or it was stale and is now removed).
+    Clear,
+    /// A daemon of an earlier version still answers at its address.
+    Live(Endpoint),
+}
+
+/// Look at the legacy endpoint file of `workspace`: a daemon of an earlier
+/// version that still answers there is [`Legacy::Live`]; a file nothing
+/// answers for (or one that cannot be parsed) is removed, as it holds a
+/// token the agent's shell could read, and that is logged.
+pub async fn check_legacy(workspace: &Path) -> Legacy {
+    let file = legacy_file(workspace);
+    if !file.exists() {
+        return Legacy::Clear;
+    }
+    if let Ok(endpoint) = Endpoint::read(&file)
+        && answers(&endpoint).await
+    {
+        return Legacy::Live(endpoint);
+    }
+    match std::fs::remove_file(&file) {
+        Ok(()) => tracing::info!(
+            file = %file.display(),
+            "removed the stale endpoint file an earlier rkat-tui-mob left in the workspace"
+        ),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => tracing::warn!(
+            file = %file.display(),
+            error = %err,
+            "cannot remove the stale endpoint file an earlier rkat-tui-mob left in the workspace"
+        ),
+    }
+    Legacy::Clear
+}
+
+/// Refuse to start while a daemon of an earlier version serves `workspace`
+/// from its legacy endpoint file ([`check_legacy`]; a stale legacy file is
+/// removed).
+///
+/// # Errors
+///
+/// [`DaemonError::AlreadyRunning`] naming the legacy file and its pid.
+pub async fn refuse_legacy(workspace: &Path) -> Result<(), DaemonError> {
+    match check_legacy(workspace).await {
+        Legacy::Clear => Ok(()),
+        Legacy::Live(endpoint) => Err(DaemonError::AlreadyRunning {
+            address: endpoint.address,
+            pid: endpoint.pid,
+            file: legacy_file(workspace),
+        }),
+    }
 }
 
 #[cfg(test)]
@@ -304,5 +377,50 @@ mod tests {
         ));
         drop(listener);
         check_stale(&path).await.unwrap();
+    }
+
+    /// The upgrade path: a daemon of the previous version wrote its
+    /// endpoint (and token) into the workspace.
+    #[tokio::test]
+    async fn a_stale_legacy_file_is_removed_and_a_live_legacy_daemon_refuses() {
+        let workspace = tempfile::tempdir().unwrap();
+        let legacy = legacy_file(workspace.path());
+        assert!(legacy.ends_with(".rkat/tui/mob.endpoint"));
+        assert_eq!(check_legacy(workspace.path()).await, Legacy::Clear);
+        refuse_legacy(workspace.path()).await.unwrap();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let live = Endpoint {
+            address: listener.local_addr().unwrap(),
+            token: "t".into(),
+            pid: 4242,
+        };
+        live.write(&legacy).unwrap();
+        assert_eq!(
+            check_legacy(workspace.path()).await,
+            Legacy::Live(live.clone())
+        );
+        let refused = refuse_legacy(workspace.path()).await;
+        assert!(
+            matches!(&refused, Err(DaemonError::AlreadyRunning { pid: 4242, file, .. }) if *file == legacy),
+            "{refused:?}"
+        );
+        let text = refused.unwrap_err().to_string();
+        assert!(
+            text.contains("pid 4242") && text.contains("/daemon stop"),
+            "{text}"
+        );
+        assert!(legacy.exists(), "a live daemon keeps its file");
+
+        drop(listener);
+        refuse_legacy(workspace.path()).await.unwrap();
+        assert!(
+            !legacy.exists(),
+            "the stale legacy file (a token) is removed"
+        );
+        // An unparsable one holds nothing to keep either.
+        std::fs::write(&legacy, "garbage").unwrap();
+        assert_eq!(check_legacy(workspace.path()).await, Legacy::Clear);
+        assert!(!legacy.exists());
     }
 }

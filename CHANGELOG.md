@@ -325,6 +325,13 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Fixed
 
+- Upgrading attach mode while a daemon of the previous version runs: the
+  daemon and `rkat-tui --attach` look at the old endpoint file
+  `<workspace>/.rkat/tui/mob.endpoint` too. While that daemon answers, no
+  second one is started (the TUI says so, with its pid, and `/daemon stop`
+  stops it and then starts the current one); a stale old file, which holds
+  a token the agent's shell can read, is deleted.
+
 - Attach mode, from a review of the daemon and its clients: the daemon
   refuses `/new` and `/resume` while the agent's turn runs, whichever client
   started it (it retired the member mid-turn); `/resume last` (`~0`, `~N`)

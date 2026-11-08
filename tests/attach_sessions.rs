@@ -199,7 +199,8 @@ async fn a_switch_is_refused_while_another_clients_turn_runs() {
 /// The token counter and the context gauge follow the conversation: after
 /// `/resume` they show the resumed conversation's own usage (the daemon's
 /// `rkat/usage`, the last turn's context), after `/new` nothing, and a TUI
-/// that attaches later starts from the session's totals, not from 0.
+/// that attaches later starts from the session's totals and its last
+/// context, not from nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_token_counter_and_gauge_follow_the_conversation() {
     use rkat_tui::ui::StatusUpdate;
@@ -249,6 +250,9 @@ async fn the_token_counter_and_gauge_follow_the_conversation() {
     // A TUI attaching now starts from the resumed conversation's totals.
     let mut late = Client::attach(&ws.root).await;
     late.saw(|m| tokens(m) == Some((100, 5))).await;
+    // Its cursor is past the last turn (the replay holds no turn end): the
+    // gauge is seeded from the events before it, as a switch seeds it.
+    late.saw(|m| gauge(m) == Some(Some(105))).await;
     late.quit().await;
     client.quit().await;
     daemon.stop().await;

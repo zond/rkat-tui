@@ -169,6 +169,11 @@ pub enum TuiError {
     /// or the command line asks for less than the realm's `[confinement]`.
     #[error("process confinement: {0}")]
     Confinement(#[from] crate::bootstrap::confinement::ConfinementError),
+    /// The workspace daemon's side failed (its endpoint file cannot be
+    /// placed, or it cannot start).
+    #[cfg(feature = "mob")]
+    #[error(transparent)]
+    Daemon(Box<crate::daemon::DaemonError>),
     /// `--attach` in a build without the `mob` feature.
     #[error("this rkat-tui was built without attach mode (the `mob` feature)")]
     AttachUnsupported,
@@ -216,6 +221,8 @@ impl TuiError {
             | Self::EventStream(_)
             | Self::Admission(_)
             | Self::Ui(_) => 1,
+            #[cfg(feature = "mob")]
+            Self::Daemon(_) => 1,
         }
     }
 }

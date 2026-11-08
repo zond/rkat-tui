@@ -35,10 +35,9 @@
 //!   client seeds its token counter from it on attach and after a switch,
 //!   as the in-process runner does from `Session::total_usage`; the engine's
 //!   wire reports usage only per turn);
-//! - [`TRUST`] `{"op": "list"|"project"|"rules"}` → `{"ok", "text",
-//!   "files"?}`: the project trust record the daemon owns. `list` states
-//!   each project input (`.rkat/mcp.toml`, `.rkat/config.toml`, the
-//!   workspace realm's `config.toml`) and its trust; `project` is `/trust`
+//! - [`TRUST`] `{"op": "project"|"rules"}` → `{"ok", "text"}`: the
+//!   project trust record the daemon owns (a missing `op` is refused).
+//!   `project` is `/trust`
 //!   (every present input recorded as it is now, in the host trust record
 //!   the daemon's realm config store and factory read on every session
 //!   build); `rules` is `/rules trust` (the realm rules file's summary, then
@@ -63,7 +62,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use meerkat_core::{AppendSystemContextRequest, Provider, SessionId};
 use meerkat_mob::{AgentIdentity, MobId};
 use meerkat_mob_mcp::MobMcpState;
-use parking_lot::Mutex;
 use serde_json::{Value, json};
 
 use super::approvals::{DaemonToolOrigins, Desk};
@@ -73,7 +71,6 @@ use crate::approval::mode::PermissionMode;
 use crate::approval::remote::{
     ModeStatus, RuleCommand, RuleOutcome, mode_notice, run_rule_command,
 };
-use crate::approval::trust::TrustStatus;
 use crate::approval::{ApprovalEngine, InputKey};
 use crate::bootstrap::project_trust::ProjectInputs;
 use crate::endpoints::{ENDPOINT_REALM, WireDialect};
@@ -127,8 +124,10 @@ pub struct Local {
     /// The orchestrator was told plan mode is on. Starts as the persisted
     /// mode says (a daemon started in plan mode tells the orchestrator,
     /// [`Local::announce_plan_mode`]), so leaving plan mode after a restart
-    /// says so.
-    plan_noted: Mutex<bool>,
+    /// says so. An async lock held across the note's append, so two
+    /// overlapping mode changes (on any connections) cannot interleave
+    /// their check and their note.
+    plan_noted: tokio::sync::Mutex<bool>,
     inputs: AtomicU64,
     /// The workspace's project inputs and their trust (`None`: `rkat/trust`
     /// has nothing to act on).
@@ -167,7 +166,7 @@ impl Local {
             origins,
             desk,
             thinking,
-            plan_noted: Mutex::new(in_plan),
+            plan_noted: tokio::sync::Mutex::new(in_plan),
             inputs: AtomicU64::new(0),
             project: None,
         }
@@ -235,9 +234,13 @@ impl Local {
                 }))
             }
             TRUST => {
-                let op = params.get("op").and_then(Value::as_str).unwrap_or("list");
+                let op = params.get("op").and_then(Value::as_str).ok_or_else(|| {
+                    (
+                        INVALID_PARAMS,
+                        "`op` (project or rules) is required".to_string(),
+                    )
+                })?;
                 match op {
-                    "list" => Ok(self.trust_list()),
                     "project" => Ok(json!(self.trust_project())),
                     "rules" => Ok(json!(match self.engine.trust_realm_rules() {
                         Ok(summary) => RuleOutcome {
@@ -251,7 +254,7 @@ impl Local {
                     })),
                     other => Err((
                         INVALID_PARAMS,
-                        format!("`op` must be list, project or rules, not `{other}`"),
+                        format!("`op` must be project or rules, not `{other}`"),
                     )),
                 }
             }
@@ -269,11 +272,10 @@ impl Local {
             };
             (code, err.to_string())
         })?;
-        *self.plan_noted.lock() = false;
+        // The new conversation was never told anything.
+        *self.plan_noted.lock().await = false;
         let mut answer = json!({"session_id": session});
-        if self.engine.mode() == PermissionMode::Plan
-            && let Some(warning) = self.note_plan_mode(true).await
-        {
+        if let Some(warning) = self.note_plan_mode().await {
             answer["warning"] = json!(warning);
         }
         let origins = Arc::clone(&self.origins);
@@ -282,44 +284,6 @@ impl Local {
             origins.refresh(&idle).await;
         });
         Ok(answer)
-    }
-
-    /// `rkat/trust {"op": "list"}`: every project input and its trust.
-    fn trust_list(&self) -> Value {
-        let Some(project) = &self.project else {
-            return json!({"ok": false, "text": "the daemon has no project trust record", "files": []});
-        };
-        let files: Vec<Value> = project
-            .files()
-            .map(|file| {
-                let (status, reason) = match project.status(file) {
-                    TrustStatus::Missing => ("missing", None),
-                    TrustStatus::Trusted => ("trusted", None),
-                    TrustStatus::Untrusted(why) => ("untrusted", Some(why.to_string())),
-                };
-                let mut entry = json!({"path": file.display().to_string(), "status": status});
-                if let Some(reason) = reason {
-                    entry["reason"] = json!(reason);
-                }
-                entry
-            })
-            .collect();
-        let text = files
-            .iter()
-            .map(|entry| {
-                format!(
-                    "{}: {}{}",
-                    entry["path"].as_str().unwrap_or_default(),
-                    entry["status"].as_str().unwrap_or_default(),
-                    entry["reason"]
-                        .as_str()
-                        .map(|why| format!(" ({why})"))
-                        .unwrap_or_default()
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        json!({"ok": true, "text": text, "files": files, "by_flag": project.by_flag()})
     }
 
     /// `rkat/trust {"op": "project"}`: `/trust`, every present project
@@ -374,7 +338,7 @@ impl Local {
                 "the mode applies to this run but was not saved: {err}"
             ));
         }
-        if let Some(warning) = self.note_plan_mode(mode == PermissionMode::Plan).await {
+        if let Some(warning) = self.note_plan_mode().await {
             warnings.push(warning);
         }
         let mut answer = json!({
@@ -392,18 +356,32 @@ impl Local {
     /// to plan mode by another process). Returns a warning when it could
     /// not be told.
     pub async fn announce_plan_mode(&self) -> Option<String> {
+        let mut noted = self.plan_noted.lock().await;
         if self.engine.mode() != PermissionMode::Plan {
             return None;
         }
-        self.append_plan_note(true).await
+        let warning = self.append_plan_note(true).await;
+        if warning.is_none() {
+            *noted = true;
+        }
+        warning
     }
 
     /// Tell the orchestrator plan mode started or ended, once per change.
-    async fn note_plan_mode(&self, plan: bool) -> Option<String> {
-        if *self.plan_noted.lock() == plan {
+    /// The mode is read under the lock, not taken from the caller: of two
+    /// overlapping changes, the later note always matches the mode that
+    /// holds, and the notes alternate.
+    async fn note_plan_mode(&self) -> Option<String> {
+        let mut noted = self.plan_noted.lock().await;
+        let plan = self.engine.mode() == PermissionMode::Plan;
+        if *noted == plan {
             return None;
         }
-        self.append_plan_note(plan).await
+        let warning = self.append_plan_note(plan).await;
+        if warning.is_none() {
+            *noted = plan;
+        }
+        warning
     }
 
     async fn append_plan_note(&self, plan: bool) -> Option<String> {
@@ -424,10 +402,7 @@ impl Local {
             )
             .await
         {
-            Ok(_) => {
-                *self.plan_noted.lock() = plan;
-                None
-            }
+            Ok(_) => None,
             Err(err) => Some(format!(
                 "the agent could not be told about plan mode now (the tool errors say it): {err}"
             )),

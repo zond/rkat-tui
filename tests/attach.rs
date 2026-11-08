@@ -545,3 +545,90 @@ async fn a_reconnect_restarts_a_daemon_that_died() {
     .await;
     client.quit().await;
 }
+
+/// The upgrade path in the client: a daemon of an earlier version that
+/// still answers at the legacy endpoint file inside the workspace is not
+/// joined by a second daemon; the client says so and offers `/daemon stop`,
+/// which stops it, waits for it to exit, and then starts the current daemon
+/// and attaches. The stale legacy file is removed on the way.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_live_legacy_daemon_is_stopped_on_request_and_then_replaced() {
+    let ws = Workspace::new();
+    let user = ws.root.join(".cfg");
+    std::fs::create_dir_all(&user).unwrap();
+    std::fs::write(
+        user.join("tui.toml"),
+        "[endpoints.fake]\ndialect = \"anthropic\"\nbase_url = \"http://127.0.0.1:9\"\napi_key_env = \"HOME\"\n",
+    )
+    .unwrap();
+    // The "earlier daemon": a process to signal and a socket that answers.
+    let mut old = tokio::process::Command::new("sleep")
+        .arg("120")
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let pid = old.id().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let legacy = rkat_tui::daemon::endpoint::legacy_file(&ws.root);
+    rkat_tui::daemon::endpoint::Endpoint {
+        address: listener.local_addr().unwrap(),
+        token: "old".into(),
+        pid,
+    }
+    .write(&legacy)
+    .unwrap();
+
+    let mut config = rkat_tui::client::configure(&args_for(&ws.root), AttachMode::Auto)
+        .await
+        .unwrap();
+    config.lister = no_lists();
+    config.endpoint_file = endpoint_file_for(&ws.root);
+    if let Some(plan) = &mut config.spawn {
+        plan.program = std::path::PathBuf::from(env!("CARGO_BIN_EXE_rkat-tui-mob"));
+    }
+    let endpoint_file = config.endpoint_file.clone();
+    let mut client = Client {
+        harness: spawn_attach_runner(config),
+        seen: Vec::new(),
+    };
+    let refused = client
+        .wait_for(|m| matches!(m, Msg::Notice { text, .. } if text.contains("earlier version")))
+        .await;
+    let Msg::Notice { text, .. } = refused else {
+        unreachable!()
+    };
+    assert!(
+        text.contains(&format!("pid {pid}")) && text.contains("/daemon stop"),
+        "{text}"
+    );
+    assert!(!endpoint_file.exists(), "no second daemon was started");
+
+    client.send(Effect::DaemonStop);
+    client
+        .wait_for(
+            |m| matches!(m, Msg::Notice { text, .. } if text.contains("asked the earlier daemon")),
+        )
+        .await;
+    drop(listener);
+    let status = within(old.wait()).await.unwrap();
+    assert!(!status.success(), "SIGTERM ended it: {status}");
+    client.attached().await;
+    assert!(
+        !legacy.exists(),
+        "the stale legacy endpoint file is removed"
+    );
+    assert!(endpoint_file.exists());
+
+    client.send(Effect::DaemonStop);
+    client
+        .wait_for(|m| matches!(m, Msg::Notice { text, .. } if text.contains("asked the daemon")))
+        .await;
+    within(async {
+        while endpoint_file.exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    client.quit().await;
+}

@@ -32,7 +32,7 @@ pub const START_TIMEOUT: Duration = Duration::from_mins(1);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// How often the endpoint file is polled while the daemon starts.
-const POLL: Duration = Duration::from_millis(100);
+pub const POLL: Duration = Duration::from_millis(100);
 
 /// What the endpoint file says about a daemon.
 #[derive(Debug, Clone, PartialEq, Eq)]

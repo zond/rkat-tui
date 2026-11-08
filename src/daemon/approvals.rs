@@ -308,10 +308,7 @@ impl DaemonToolOrigins {
         match read {
             Ok(Ok(Some(defs))) => {
                 let catalog = ToolCatalog::from_defs(&defs);
-                {
-                    let mut known = self.known.write();
-                    *known = known.clone().or(&catalog.natives());
-                }
+                self.known.write().add_missing_natives(&catalog);
                 self.cache.write().insert(session.clone(), catalog);
                 true
             }
@@ -430,32 +427,61 @@ pub fn watch(
 /// read answers; it stays judged by the known tools. Runs until `updates`
 /// closes.
 pub fn watch_helpers(
-    mut updates: tokio::sync::mpsc::UnboundedReceiver<crate::mobs::HelperUpdate>,
+    updates: tokio::sync::mpsc::UnboundedReceiver<crate::mobs::HelperUpdate>,
     origins: Arc<DaemonToolOrigins>,
 ) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut reading = std::collections::HashSet::new();
-        while let Some(update) = updates.recv().await {
-            let crate::mobs::HelperUpdate::Event(scoped) = update else {
-                continue;
-            };
-            let (AgentEvent::RunCompleted { session_id, .. }
-            | AgentEvent::RunFailed { session_id, .. }) = &scoped.event
-            else {
-                continue;
-            };
-            if origins.has(session_id) || !reading.insert(session_id.clone()) {
-                continue;
+    let has = {
+        let origins = Arc::clone(&origins);
+        move |session: &SessionId| origins.has(session)
+    };
+    let refresh = move |session: SessionId| {
+        let origins = Arc::clone(&origins);
+        async move {
+            let read = origins.refresh(&session).await;
+            if !read {
+                tracing::debug!(%session, "a helper's tool catalog was not readable after its run; the next run end tries again");
             }
-            let origins = Arc::clone(&origins);
-            let session = session_id.clone();
-            tokio::spawn(async move {
-                if !origins.refresh(&session).await {
-                    tracing::debug!(%session, "a helper's tool catalog was not readable after its run");
-                }
-            });
         }
-    })
+    };
+    tokio::spawn(follow_helper_runs(updates, has, refresh))
+}
+
+/// [`watch_helpers`]'s loop over `has` (the catalog was read) and
+/// `refresh` (read it, recording it on success). One read per session at a
+/// time; a session leaves the in-flight set when its read ends, so a read
+/// that failed (the session was busy again, the helper's next turn
+/// already running) is tried again at its next run end, and the set holds
+/// only reads still running.
+pub async fn follow_helper_runs<H, R, F>(
+    mut updates: tokio::sync::mpsc::UnboundedReceiver<crate::mobs::HelperUpdate>,
+    has: H,
+    refresh: R,
+) where
+    H: Fn(&SessionId) -> bool,
+    R: Fn(SessionId) -> F,
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    let reading = Arc::new(parking_lot::Mutex::new(std::collections::HashSet::new()));
+    while let Some(update) = updates.recv().await {
+        let crate::mobs::HelperUpdate::Event(scoped) = update else {
+            continue;
+        };
+        let (AgentEvent::RunCompleted { session_id, .. }
+        | AgentEvent::RunFailed { session_id, .. }) = &scoped.event
+        else {
+            continue;
+        };
+        if has(session_id) || !reading.lock().insert(session_id.clone()) {
+            continue;
+        }
+        let read = refresh(session_id.clone());
+        let reading = Arc::clone(&reading);
+        let session = session_id.clone();
+        tokio::spawn(async move {
+            read.await;
+            reading.lock().remove(&session);
+        });
+    }
 }
 
 #[cfg(test)]
@@ -469,6 +495,69 @@ mod tests {
         ApprovalProposedAction, ApprovalRequest, ApprovalResourceId, ApprovalResourceKind,
         ApprovalResourceRef, ApprovalRisk, SurfaceMetadata,
     };
+
+    fn run_completed(session: &SessionId) -> crate::mobs::HelperUpdate {
+        let usage = serde_json::to_value(meerkat_core::CumulativeUsage::default()).unwrap();
+        let event: AgentEvent = serde_json::from_value(serde_json::json!({
+            "type": "run_completed",
+            "session_id": session,
+            "result": "done",
+            "usage": usage,
+        }))
+        .unwrap();
+        crate::mobs::HelperUpdate::Event(meerkat_core::ScopedAgentEvent::primary(
+            session.to_string(),
+            event,
+        ))
+    }
+
+    /// A helper whose catalog could not be read after one run (it was
+    /// busy again) is read again after a later run end, and a read session
+    /// leaves the in-flight set.
+    #[tokio::test]
+    async fn a_failed_helper_catalog_read_is_tried_again_at_the_next_run_end() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let session = SessionId::new();
+        let read = Arc::new(Mutex::new(std::collections::HashSet::<SessionId>::new()));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (tx, rx) = mpsc::unbounded_channel();
+        let task = tokio::spawn(follow_helper_runs(
+            rx,
+            {
+                let read = Arc::clone(&read);
+                move |s: &SessionId| read.lock().contains(s)
+            },
+            {
+                let read = Arc::clone(&read);
+                let calls = Arc::clone(&calls);
+                move |s: SessionId| {
+                    let read = Arc::clone(&read);
+                    let n = calls.fetch_add(1, Ordering::SeqCst);
+                    async move {
+                        // The first read finds the session busy.
+                        if n > 0 {
+                            read.lock().insert(s);
+                        }
+                    }
+                }
+            },
+        ));
+        for _ in 0..200 {
+            if read.lock().contains(&session) {
+                break;
+            }
+            tx.send(run_completed(&session)).unwrap();
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(read.lock().contains(&session), "the catalog was read again");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        // Once read, later run ends read nothing.
+        tx.send(run_completed(&session)).unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        drop(tx);
+        task.await.unwrap();
+    }
 
     fn record(service: &ApprovalService, session: &SessionId) -> meerkat_core::ApprovalId {
         service

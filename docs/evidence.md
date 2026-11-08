@@ -2068,6 +2068,88 @@ unconfined.
   a guard that removes its id when the call ends or is dropped. Test:
   `client::transport::tests::a_dropped_call_forgets_its_pending_entry`.
 
+**Second round (after P4b).** A second review of the fixes and P4b found
+ten more; each names its test.
+
+- Upgrade path: with the endpoint file in the state directory, nothing
+  looked at the old `<workspace>/.rkat/tui/mob.endpoint` any more, so a
+  client started a second daemon next to a running one of the previous
+  version (it fails taking the realm lease, or worse), and the old file,
+  a live token the confined shell can read, stayed. Both the daemon at
+  start (`endpoint::refuse_legacy`, after `check_stale`) and the client's
+  first connect (`first_endpoint`) now look at it (`endpoint::check_legacy`):
+  a daemon that answers there makes the daemon refuse with
+  `DaemonError::AlreadyRunning` (which now names the pid and says that
+  `/daemon stop` or SIGTERM to it ends it) and the client refuse with
+  `ClientError::LegacyDaemon` instead of starting one; `/daemon stop` in
+  that detached client signals the old pid (after re-reading the legacy
+  file), waits for the process to exit (`LEGACY_EXIT`, 30 s) and runs the
+  first connect again, which starts the current daemon. A legacy file
+  nothing answers for (or one that does not parse) is removed and the
+  removal logged. Tests: `daemon::endpoint::tests::a_stale_legacy_file_is_removed_and_a_live_legacy_daemon_refuses`,
+  `tests/daemon.rs`
+  `a_legacy_endpoint_in_the_workspace_refuses_while_live_and_is_removed_when_stale`,
+  `tests/attach.rs` `a_live_legacy_daemon_is_stopped_on_request_and_then_replaced`
+  (a `sleep` process and a listener stand in for the old daemon).
+- Helper catalog reads were tried once: `watch_helpers` put a session in
+  its `reading` set and never took it out, so a read that answered `None`
+  (the helper's next turn already running) was never retried and the set
+  grew. The loop (`approvals::follow_helper_runs`, generic over the read
+  for the test) now removes a session when its read ends: a failed read is
+  tried again at the next run end, and the set holds only running reads.
+  Test: `daemon::approvals::tests::a_failed_helper_catalog_read_is_tried_again_at_the_next_run_end`.
+- Plan notes of overlapping `rkat/set_mode` calls (local calls run in their
+  own tasks) could be appended out of order or skipped:
+  `Local::note_plan_mode` checked and set `plan_noted` across an await.
+  It is now one step under a `tokio::sync::Mutex` held across the append,
+  and it reads the mode under the lock instead of taking the caller's, so
+  the last note always matches the mode that holds (slow read-only calls
+  stay concurrent; no per-connection serialization was needed). Test:
+  `tests/attach_approvals.rs`
+  `overlapping_mode_changes_leave_the_plan_note_matching_the_mode` (twelve
+  concurrent changes on two connections; a race, so it does not fail on
+  every run before the fix).
+- The switch's Running guard read the status once before cancelling the
+  helpers: it now reads it again right before `mob_retire`
+  (`Conversations::refuse_running`). The remaining gap is the engine's: no
+  lock holds turns off between that read and the retire, so a turn
+  admitted in between still loses its member; asked of the engine as
+  "retire only if idle". No deterministic test (the window is one status
+  read); `a_switch_is_refused_while_another_clients_turn_runs` covers the
+  guard.
+- Attach double-counted a turn ending between the replay's last page and
+  the `rkat/usage` answer (its live `TurnCompleted` was added on top of
+  totals that held it). `establish` now drains the notifications already
+  read when the usage answers and `connected` shows them before setting
+  the counter to the totals; live ends after that add to them. What remains
+  is the daemon-side delay between an event and its line reaching the
+  connection's writer. No deterministic test (the turn would have to end
+  inside that one call).
+- The context gauge was not seeded on attach when the replay since the
+  cursor held no turn end. `establish` now reads back from the mark for the
+  last `TurnCompleted` (`last_context_before`: windows of 256 events,
+  doubling, 4096 at most) and `connected` seeds the gauge as a switch does.
+  Test: `tests/attach_sessions.rs`
+  `the_token_counter_and_gauge_follow_the_conversation` (the late client;
+  fails before).
+- `/resume` titles came from the first 16 messages only: `count_and_title`
+  pages on until the first user message, `TITLE_PAGES` (8) pages at most.
+  Test: `daemon::conversations::tests::the_title_is_looked_for_past_the_first_page`
+  (replaces the `listed_row` test).
+- A catalog refresh copied the whole known catalog under the write lock:
+  `ToolCatalog::add_missing_natives` inserts the missing natives in place
+  (`ToolCatalog::or` is gone). Test:
+  `approval::catalog::tests::families_follow_provenance_not_names`.
+- The client looked the endpoint file up itself: it calls
+  `daemon::endpoint_file` and converts `DaemonError` once
+  (`TuiError::Daemon`).
+- `rkat/trust` had a `list` op no client used, and a missing `op` was
+  answered as a list. The in-process `/trust` has no list form, so `list`
+  is gone and a missing or unknown `op` is refused (`INVALID_PARAMS`). Test:
+  `tests/attach_approvals.rs`
+  `trust_from_the_client_records_the_project_hooks_across_a_restart` (the
+  refusals; trust is observed through the hook running, as before).
+
 ## P4b: attach-mode polish (2026-11-08)
 
 Three gaps P4 left in attach mode.

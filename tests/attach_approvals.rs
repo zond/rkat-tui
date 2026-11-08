@@ -945,24 +945,14 @@ args = ["-c", "printf entered > \"$1\"; cat >/dev/null; printf '{{}}'", "hook-pr
     };
     let daemon = Running::start(&ws.root, &llm, &setup).await;
     let connection = daemon.connect().await;
-    let status = |listed: &Value| {
-        listed["files"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|file| {
-                file["path"]
-                    .as_str()
-                    .unwrap()
-                    .ends_with(".rkat/config.toml")
-            })
-            .map(|file| file["status"].as_str().unwrap().to_string())
-    };
-    let listed = connection
-        .call("rkat/trust", json!({"op": "list"}))
-        .await
-        .unwrap();
-    assert_eq!(status(&listed).as_deref(), Some("untrusted"), "{listed}");
+    // `rkat/trust` names its op; there is no list form (as in-process).
+    for params in [json!({}), json!({"op": "list"})] {
+        let refused = connection.call("rkat/trust", params.clone()).await;
+        assert!(
+            matches!(&refused, Err(rkat_tui::client::ClientError::Rpc { code, .. }) if *code == rkat_tui::daemon::local::INVALID_PARAMS),
+            "{params}: {refused:?}"
+        );
+    }
     let mut client = Client::attach(&ws.root).await;
     client.send(Effect::StartTurn("read notes.txt".into()));
     client.turn_finished().await.result.unwrap();
@@ -994,11 +984,6 @@ args = ["-c", "printf entered > \"$1\"; cat >/dev/null; printf '{{}}'", "hook-pr
 
     let daemon = Running::start(&ws.root, &llm, &setup).await;
     let connection = daemon.connect().await;
-    let listed = connection
-        .call("rkat/trust", json!({"op": "list"}))
-        .await
-        .unwrap();
-    assert_eq!(status(&listed).as_deref(), Some("trusted"), "{listed}");
     let mut client = Client::attach(&ws.root).await;
     client.send(Effect::StartTurn("read notes.txt again".into()));
     client.turn_finished().await.result.unwrap();
@@ -1084,5 +1069,46 @@ async fn a_seated_helpers_catalog_is_read_after_its_first_run() {
     // Its own catalog: the native shell as the engine defines it.
     assert!(daemon.origins.origin(&helper, "shell").is_some());
     drop(connection);
+    daemon.stop().await;
+}
+
+/// Overlapping mode changes (a client's timed-out `plan` and the user's
+/// switch back, here many at once on two connections) leave the
+/// orchestrator's last plan-mode note matching the mode that holds: the
+/// check and the note are one step under the daemon's lock, and the note
+/// follows the current mode, not the caller's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn overlapping_mode_changes_leave_the_plan_note_matching_the_mode() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![Step::Text("ok")]);
+    let daemon = Running::start(&ws.root, &llm, &Setup::default()).await;
+    let a = daemon.connect().await;
+    let b = daemon.connect().await;
+    let calls = (0..12).map(|i| {
+        let connection = if i % 2 == 0 { &a } else { &b };
+        let mode = if i % 3 == 0 { "default" } else { "plan" };
+        connection.call("rkat/set_mode", json!({"mode": mode}))
+    });
+    for answer in futures::future::join_all(calls).await {
+        let answer = answer.unwrap();
+        assert!(answer.get("warning").is_none(), "{answer}");
+    }
+    let mode = a.call("rkat/get_mode", json!({})).await.unwrap();
+    let plan = mode["mode"] == "plan";
+    a.call(
+        "mob/turn_start",
+        json!({"mob_id": "tui", "agent_identity": "main", "prompt": "go"}),
+    )
+    .await
+    .unwrap();
+    let request = format!("{:?}", llm.requests()[0]);
+    let on = request.rfind("Plan mode is on");
+    let off = request.rfind("Plan mode is off");
+    if plan {
+        assert!(on.is_some() && on > off, "{mode}: {request}");
+    } else {
+        assert!(on.is_none() || off > on, "{mode}: {request}");
+    }
+    drop((a, b));
     daemon.stop().await;
 }

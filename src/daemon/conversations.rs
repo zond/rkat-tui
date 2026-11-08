@@ -38,6 +38,10 @@ const TITLE_CHARS: usize = 72;
 /// conversation for its title (the count comes from the page's metadata).
 pub const TITLE_PAGE: usize = 16;
 
+/// How many pages of [`TITLE_PAGE`] messages [`Conversations::list`]
+/// reads at most looking for a conversation's first user message.
+pub const TITLE_PAGES: usize = 8;
+
 /// How many conversations [`Conversations::list`] reads at once.
 const LIST_READS: usize = 8;
 
@@ -247,8 +251,10 @@ impl Conversations {
     }
 
     /// The conversations, last used first, with their size and first
-    /// message: each conversation's first [`TITLE_PAGE`] messages are read
-    /// (the size is the page's message count), [`LIST_READS`] at a time.
+    /// message: each conversation's history is read [`TITLE_PAGE`]
+    /// messages at a time until its first user message (at most
+    /// [`TITLE_PAGES`] pages; the size is the first page's message count),
+    /// [`LIST_READS`] conversations at a time.
     pub async fn list(&self) -> Vec<Listed> {
         use futures::StreamExt as _;
         let entries = self.log.lock().newest_first();
@@ -259,17 +265,31 @@ impl Conversations {
                 let service = Arc::clone(&service);
                 let current = current.as_ref() == Some(&entry.session_id);
                 async move {
-                    let page = service
-                        .read_history(
-                            &entry.session_id,
-                            SessionHistoryQuery {
-                                offset: 0,
-                                limit: Some(TITLE_PAGE),
-                            },
-                        )
-                        .await
-                        .ok();
-                    listed_row(entry, page.as_ref(), current)
+                    let session = entry.session_id.clone();
+                    let read = |offset| {
+                        let service = Arc::clone(&service);
+                        let session = session.clone();
+                        async move {
+                            service
+                                .read_history(
+                                    &session,
+                                    SessionHistoryQuery {
+                                        offset,
+                                        limit: Some(TITLE_PAGE),
+                                    },
+                                )
+                                .await
+                                .ok()
+                        }
+                    };
+                    let (count, title) = count_and_title(read).await;
+                    Listed {
+                        current,
+                        title,
+                        messages: count,
+                        session_id: entry.session_id,
+                        last_used: entry.last_used,
+                    }
                 }
             })
             .buffered(LIST_READS)
@@ -336,17 +356,16 @@ impl Conversations {
         let identity = AgentIdentity::from(ORCHESTRATOR);
         // Another client may be running a turn: its own guard is in
         // another process. The engine's run phase decides.
-        let status = self
-            .state
-            .mob_member_status(&mob, &identity)
-            .await
-            .map_err(|err| SwitchError::mob("reading the orchestrator", err))?;
-        if run_open(&status) {
-            return Err(SwitchError::Running);
-        }
+        self.refuse_running(&mob, &identity).await?;
         if let Some(previous) = &previous {
             crate::mobs::cancel_helpers(&self.state, &self.registry, previous).await;
         }
+        // Once more right before the retire: a turn another client started
+        // while the helpers were being cancelled is not retired mid-run.
+        // The engine offers no way to hold turns off across the read and
+        // the retire, so a turn admitted in between still loses its member
+        // (see `docs/evidence.md`); the window is that of one status read.
+        self.refuse_running(&mob, &identity).await?;
         self.state
             .mob_retire(&mob, identity.clone())
             .await
@@ -385,6 +404,23 @@ impl Conversations {
         Ok(session)
     }
 
+    /// [`SwitchError::Running`] when the orchestrator's run is open now.
+    async fn refuse_running(
+        &self,
+        mob: &MobId,
+        identity: &AgentIdentity,
+    ) -> Result<(), SwitchError> {
+        let status = self
+            .state
+            .mob_member_status(mob, identity)
+            .await
+            .map_err(|err| SwitchError::mob("reading the orchestrator", err))?;
+        if run_open(&status) {
+            return Err(SwitchError::Running);
+        }
+        Ok(())
+    }
+
     async fn spawn(&self, mob: &MobId, target: &Target) -> Result<(), SwitchError> {
         let mut spec = SpawnMemberSpec::host_root(ORCHESTRATOR, ORCHESTRATOR);
         spec.runtime_mode = Some(MobRuntimeMode::TurnDriven);
@@ -402,21 +438,35 @@ impl Conversations {
     }
 }
 
-/// The `rkat/conversations` row of `entry`, from the first page of its
-/// history (`None`: unreadable).
-#[must_use]
-pub fn listed_row(
-    entry: Entry,
-    page: Option<&meerkat_core::SessionHistoryPage>,
-    current: bool,
-) -> Listed {
-    Listed {
-        current,
-        title: page.and_then(|page| title(&page.messages)),
-        messages: page.map(|page| page.message_count),
-        session_id: entry.session_id,
-        last_used: entry.last_used,
+/// A conversation's message count (from its first page) and title (its
+/// first user message), reading pages of [`TITLE_PAGE`] with `read(offset)`
+/// until a title is found, the history ends, or [`TITLE_PAGES`] pages were
+/// read. `(None, None)` when the first page is unreadable.
+pub async fn count_and_title<R, F>(read: R) -> (Option<usize>, Option<String>)
+where
+    R: Fn(usize) -> F,
+    F: std::future::Future<Output = Option<meerkat_core::SessionHistoryPage>>,
+{
+    let Some(first) = read(0).await else {
+        return (None, None);
+    };
+    let count = Some(first.message_count);
+    let mut page = first;
+    let mut offset = 0;
+    for _ in 1..TITLE_PAGES {
+        if let Some(title) = title(&page.messages) {
+            return (count, Some(title));
+        }
+        offset += page.messages.len();
+        if !page.has_more || page.messages.is_empty() {
+            return (count, None);
+        }
+        match read(offset).await {
+            Some(next) => page = next,
+            None => return (count, None),
+        }
     }
+    (count, title(&page.messages))
 }
 
 /// Whether the member's snapshot says its run is open.
@@ -483,31 +533,49 @@ mod tests {
         assert!(Log::load(&file).sessions.is_empty());
     }
 
-    #[test]
-    fn a_listed_row_counts_from_the_page_metadata_and_titles_from_its_messages() {
-        let user = |text: &str| Message::User(meerkat_core::UserMessage::text(text.to_string()));
+    /// A conversation that opens with notes before the first prompt is
+    /// titled from a later page; the paging is bounded.
+    #[tokio::test]
+    async fn the_title_is_looked_for_past_the_first_page() {
+        use meerkat_core::{SessionHistoryPage, SystemMessage};
         let session = SessionId::new();
-        let entry = Entry {
-            session_id: session.clone(),
-            started_at: 1,
-            last_used: 2,
+        let history = |prompt_at: usize, len: usize| {
+            let session = session.clone();
+            move |offset: usize| {
+                let messages: Vec<Message> = (offset..len.min(offset + TITLE_PAGE))
+                    .map(|i| {
+                        if i == prompt_at {
+                            Message::User(meerkat_core::UserMessage::text("the real prompt"))
+                        } else {
+                            Message::System(SystemMessage::new(format!("note {i}")))
+                        }
+                    })
+                    .collect();
+                let page = SessionHistoryPage {
+                    session_id: session.clone(),
+                    message_count: len,
+                    offset,
+                    limit: Some(TITLE_PAGE),
+                    has_more: offset + messages.len() < len,
+                    messages,
+                };
+                async move { Some(page) }
+            }
         };
-        // A long history: only its first page was read.
-        let page = meerkat_core::SessionHistoryPage {
-            session_id: session,
-            message_count: 500,
-            offset: 0,
-            limit: Some(TITLE_PAGE),
-            has_more: true,
-            messages: vec![user("fix the bug")],
-        };
-        let row = listed_row(entry.clone(), Some(&page), true);
-        assert_eq!(row.messages, Some(500));
-        assert_eq!(row.title.as_deref(), Some("fix the bug"));
-        assert!(row.current);
-        assert_eq!(row.last_used, 2);
-        let unreadable = listed_row(entry, None, false);
-        assert_eq!((unreadable.messages, unreadable.title), (None, None));
+        let late = TITLE_PAGE * 2 + 3;
+        assert_eq!(
+            count_and_title(history(late, 200)).await,
+            (Some(200), Some("the real prompt".to_string()))
+        );
+        // Beyond the bound: counted, untitled.
+        assert_eq!(
+            count_and_title(history(TITLE_PAGE * TITLE_PAGES + 1, 500)).await,
+            (Some(500), None)
+        );
+        // A short history without a prompt ends at its end.
+        assert_eq!(count_and_title(history(99, 5)).await, (Some(5), None));
+        let unreadable = |_offset: usize| async { None };
+        assert_eq!(count_and_title(unreadable).await, (None, None));
     }
 
     #[test]

@@ -177,15 +177,14 @@ impl ToolCatalog {
         }
     }
 
-    /// This catalog with every tool of `other` it does not name.
-    #[must_use]
-    pub fn or(mut self, other: &Self) -> Self {
+    /// Add, in place, every engine-native tool of `other` this catalog
+    /// does not name yet (no copy of either catalog).
+    pub fn add_missing_natives(&mut self, other: &Self) {
         for (name, origin) in &other.tools {
-            self.tools
-                .entry(name.clone())
-                .or_insert_with(|| origin.clone());
+            if origin.family() == ToolFamily::Native && !self.tools.contains_key(name) {
+                self.tools.insert(name.clone(), origin.clone());
+            }
         }
-        self
     }
 
     /// Number of tools.
@@ -306,10 +305,16 @@ mod tests {
             natives.get("shell").map(ToolOrigin::family),
             Some(ToolFamily::Native)
         );
-        let own = ToolCatalog::default().with(WRITE_FILE, ToolOrigin::tui(FILE_TOOLS_SOURCE, WRITE_FILE));
-        let joined = own.or(&natives).or(&catalog);
+        let mut joined = ToolCatalog::default()
+            .with(WRITE_FILE, ToolOrigin::tui(FILE_TOOLS_SOURCE, WRITE_FILE));
+        joined.add_missing_natives(&catalog);
+        // Only the natives come in; what the catalog already names stays.
+        assert_eq!(joined.len(), 2);
         assert_eq!(joined.get(WRITE_FILE).map(ToolOrigin::family), Some(ToolFamily::Files));
         assert_eq!(joined.get("shell").map(ToolOrigin::family), Some(ToolFamily::Native));
+        let mut shadowed = ToolCatalog::default().with("shell", ToolOrigin::tui(FILE_TOOLS_SOURCE, "shell"));
+        shadowed.add_missing_natives(&catalog);
+        assert_eq!(shadowed.get("shell").map(ToolOrigin::family), Some(ToolFamily::Files));
         assert_eq!(
             catalog.get(NOTE_SAVE).map(|o| o.mutation),
             Some(ToolMutationClass::Mutating)

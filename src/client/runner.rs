@@ -113,6 +113,10 @@ const RESTART_EVERY: Duration = Duration::from_secs(30);
 const BACKOFF_FIRST: Duration = Duration::from_millis(100);
 const BACKOFF_MAX: Duration = Duration::from_secs(2);
 
+/// How long a stopped daemon of an earlier version may take to exit
+/// before this client starts the current one.
+const LEGACY_EXIT: Duration = Duration::from_secs(30);
+
 /// The reason recorded with an interrupt.
 const INTERRUPT_REASON: &str = "rkat-tui: interrupted by the user";
 
@@ -194,6 +198,13 @@ struct Established {
     identity: Option<(String, String)>,
     /// The session's total usage `(input, output)`, read after the replay.
     usage: Option<(u64, u64)>,
+    /// The live notifications that arrived before the usage answer: their
+    /// turns are in `usage` already, so they are shown before the counter
+    /// is set to it.
+    queued: Vec<Notification>,
+    /// The context of the session's last model call when the replay holds
+    /// no turn end (the gauge's seed), read from the events before the mark.
+    context: Option<u64>,
 }
 
 /// What a background task reports.
@@ -315,6 +326,12 @@ pub struct AttachRunner {
     connecting: Option<JoinHandle<Result<Established, ClientError>>>,
     /// The daemon may still be started (only the first connect does).
     first_connect: bool,
+    /// A daemon of an earlier version serves the workspace from the legacy
+    /// endpoint file (the first connect refused): `/daemon stop` stops it.
+    legacy: Option<Endpoint>,
+    /// The pid of a stopped legacy daemon the next first connect waits
+    /// for to exit.
+    legacy_exiting: Option<u32>,
     reports_tx: mpsc::UnboundedSender<Report>,
     reports_rx: mpsc::UnboundedReceiver<Report>,
     mark: Option<Mark>,
@@ -383,6 +400,8 @@ impl AttachRunner {
             link: None,
             connecting: None,
             first_connect: true,
+            legacy: None,
+            legacy_exiting: None,
             reports_tx,
             reports_rx,
             mark: None,
@@ -477,8 +496,13 @@ impl AttachRunner {
         let ui_tx = self.ui_tx.clone();
         let task = if std::mem::take(&mut self.first_connect) {
             let spawn = self.config.spawn.clone();
+            let workspace = self.config.scope.context_root.clone();
+            let exiting = self.legacy_exiting.take();
             tokio::spawn(async move {
-                let endpoint = first_endpoint(&file, spawn.as_ref(), &ui_tx).await?;
+                if let Some(pid) = exiting {
+                    wait_for_exit(pid, LEGACY_EXIT).await;
+                }
+                let endpoint = first_endpoint(&file, &workspace, spawn.as_ref(), &ui_tx).await?;
                 establish(endpoint, saved.as_ref()).await
             })
         } else {
@@ -539,6 +563,13 @@ impl AttachRunner {
         let established = match joined {
             Ok(Ok(established)) => established,
             Ok(Err(err)) => {
+                if let ClientError::LegacyDaemon { address, pid, .. } = &err {
+                    self.legacy = Some(Endpoint {
+                        address: *address,
+                        token: String::new(),
+                        pid: *pid,
+                    });
+                }
                 self.send(Msg::Status(StatusUpdate::Attach(Some("detached".into()))));
                 self.notice(
                     NoticeLevel::Error,
@@ -557,6 +588,8 @@ impl AttachRunner {
             replay,
             identity,
             usage,
+            queued,
+            context,
         } = established;
         let address = link.endpoint.address;
         let session = link.session.to_string();
@@ -599,8 +632,22 @@ impl AttachRunner {
         for envelope in replay {
             self.on_event(envelope);
         }
+        // The gauge, as a switch seeds it: the replay since the cursor may
+        // hold no turn end although the session has a context.
+        if context.is_some() {
+            self.send(Msg::Status(StatusUpdate::Context {
+                used: context,
+                approx: false,
+            }));
+        }
+        // What the live stream delivered before the usage answer: its turns
+        // are in the totals.
+        for note in queued {
+            self.on_notification(&note);
+        }
         // The counters are the session's totals, as in-process; after the
-        // replay, whose turns they already hold.
+        // replay and the live events queued before the usage read, whose
+        // turns they already hold. Live turn ends after this add to them.
         if let Some((input, output)) = usage {
             self.send(Msg::Status(StatusUpdate::Tokens { input, output }));
         }
@@ -2218,6 +2265,13 @@ impl AttachRunner {
     /// `/daemon stop`: SIGTERM to the pid the endpoint file names, once the
     /// file still names the daemon this client is attached to.
     async fn daemon_stop(&mut self) {
+        if self.link.is_none()
+            && self.connecting.is_none()
+            && let Some(old) = self.legacy.take()
+        {
+            self.stop_legacy(&old).await;
+            return;
+        }
         let connected = self.link.as_ref().map(|link| link.endpoint.address);
         let liveness = launch::probe(&self.config.endpoint_file).await;
         match stop_target(&liveness, connected) {
@@ -2236,6 +2290,80 @@ impl AttachRunner {
             Err(why) => self.notice(NoticeLevel::Warn, why),
         }
     }
+}
+
+impl AttachRunner {
+    /// `/daemon stop` while a daemon of an earlier version holds the
+    /// workspace: SIGTERM to it once its legacy endpoint file still names
+    /// it, then the first connect again (it waits for the pid to exit and
+    /// starts the current daemon).
+    async fn stop_legacy(&mut self, old: &Endpoint) {
+        let workspace = self.config.scope.context_root.clone();
+        match crate::daemon::endpoint::check_legacy(&workspace).await {
+            crate::daemon::endpoint::Legacy::Live(endpoint) if endpoint.pid == old.pid => {
+                match terminate(endpoint.pid) {
+                    Ok(()) => {
+                        self.notice(
+                            NoticeLevel::Info,
+                            format!(
+                                "asked the earlier daemon (pid {}) to shut down; attaching to the current one once it has",
+                                endpoint.pid
+                            ),
+                        );
+                        self.legacy_exiting = Some(endpoint.pid);
+                    }
+                    Err(err) => {
+                        self.legacy = Some(endpoint);
+                        self.notice(
+                            NoticeLevel::Error,
+                            format!("cannot stop the earlier daemon: {err}"),
+                        );
+                        return;
+                    }
+                }
+            }
+            crate::daemon::endpoint::Legacy::Live(endpoint) => {
+                self.notice(
+                    NoticeLevel::Warn,
+                    format!(
+                        "the legacy endpoint file names another daemon now (pid {}); not stopping it",
+                        endpoint.pid
+                    ),
+                );
+                self.legacy = Some(endpoint);
+                return;
+            }
+            crate::daemon::endpoint::Legacy::Clear => {
+                self.notice(NoticeLevel::Info, "the earlier daemon is gone; attaching");
+            }
+        }
+        self.first_connect = true;
+        self.status(CONNECTING);
+        self.connect();
+    }
+}
+
+/// Wait (up to `timeout`) for the process `pid` to exit.
+async fn wait_for_exit(pid: u32, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    while process_alive(pid) && Instant::now() < deadline {
+        tokio::time::sleep(launch::POLL).await;
+    }
+}
+
+#[cfg(unix)]
+fn process_alive(pid: u32) -> bool {
+    i32::try_from(pid).is_ok_and(|pid| {
+        !matches!(
+            nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None),
+            Err(nix::errno::Errno::ESRCH)
+        )
+    })
+}
+
+#[cfg(not(unix))]
+fn process_alive(_pid: u32) -> bool {
+    false
 }
 
 /// The pid `/daemon stop` signals: the endpoint file's, when its address
@@ -2341,6 +2469,46 @@ fn last_context(events: &[EventEnvelope<AgentEvent>]) -> Option<u64> {
         })
 }
 
+/// How many events before the mark the first look for the last turn end
+/// reads, and how many it reads at most (the window doubles each time).
+const CONTEXT_WINDOW: u64 = 256;
+const CONTEXT_SEARCH_MAX: u64 = 4096;
+
+/// The context of the last model call among `session`'s events up to
+/// `before` (the gauge's seed on attach), looking back in doubling windows,
+/// [`CONTEXT_SEARCH_MAX`] events at most. `None` when there is none, or it
+/// cannot be read.
+async fn last_context_before(
+    connection: &Connection,
+    session: &SessionId,
+    before: u64,
+) -> Option<u64> {
+    let mut end = before;
+    let mut window = CONTEXT_WINDOW;
+    let mut searched = 0;
+    while end > 0 && searched < CONTEXT_SEARCH_MAX {
+        let start = end.saturating_sub(window);
+        let mut after = start;
+        let mut events = Vec::new();
+        loop {
+            let (page, more) = remote::replay(connection, session, after).await.ok()?;
+            after = page.last().map_or(after, |envelope| envelope.seq);
+            let empty = page.is_empty();
+            events.extend(page.into_iter().filter(|envelope| envelope.seq <= end));
+            if !more || empty || after >= end {
+                break;
+            }
+        }
+        if let Some(context) = last_context(&events) {
+            return Some(context);
+        }
+        searched += end - start;
+        end = start;
+        window = window.saturating_mul(2);
+    }
+    None
+}
+
 /// Follow the orchestrator's conversation `session` on `connection`: its
 /// stream opened again (the old one follows the retired session), its last
 /// sequence (what is shown starts after it) and its committed transcript.
@@ -2374,6 +2542,7 @@ async fn adopt(
 /// the one a started daemon writes.
 async fn first_endpoint(
     file: &std::path::Path,
+    workspace: &std::path::Path,
     spawn: Option<&SpawnPlan>,
     ui_tx: &mpsc::UnboundedSender<Msg>,
 ) -> Result<Endpoint, ClientError> {
@@ -2382,7 +2551,21 @@ async fn first_endpoint(
     } else {
         AttachMode::Existing
     };
-    match (launch::decide(launch::probe(file).await, mode), spawn) {
+    let decision = launch::decide(launch::probe(file).await, mode);
+    // A daemon of an earlier version that still answers at the legacy
+    // endpoint file holds the realm: never start a second one next to it.
+    // A stale legacy file (a token the agent's shell can read) is removed.
+    if let crate::daemon::endpoint::Legacy::Live(old) =
+        crate::daemon::endpoint::check_legacy(workspace).await
+        && !matches!(decision, Decision::Attach(_))
+    {
+        return Err(ClientError::LegacyDaemon {
+            address: old.address,
+            pid: old.pid,
+            file: crate::daemon::endpoint::legacy_file(workspace),
+        });
+    }
+    match (decision, spawn) {
         (Decision::Attach(endpoint), _) => Ok(endpoint),
         (Decision::Start, Some(plan)) => {
             let _ = ui_tx.send(Msg::Status(StatusUpdate::Attach(Some(STARTING.into()))));
@@ -2432,7 +2615,7 @@ async fn restart(
 /// Attach, find the orchestrator's session, open its live stream and read
 /// what the saved cursor has not shown yet.
 async fn establish(endpoint: Endpoint, saved: Option<&Cursor>) -> Result<Established, ClientError> {
-    let (connection, notifications) = Connection::attach(&endpoint, ATTACH_TIMEOUT).await?;
+    let (connection, mut notifications) = Connection::attach(&endpoint, ATTACH_TIMEOUT).await?;
     tokio::time::timeout(CALL_TIMEOUT, async {
         connection.call("initialize", serde_json::json!({})).await?;
         let session = remote::session_id(&connection).await?;
@@ -2451,7 +2634,18 @@ async fn establish(endpoint: Endpoint, saved: Option<&Cursor>) -> Result<Establi
             }
         }
         let identity = remote::identity(&connection, &session).await.ok();
+        let context = match last_context(&replay) {
+            Some(_) => None,
+            None => last_context_before(&connection, &session, mark.sequence()).await,
+        };
         let usage = remote::usage(&connection, &session).await.ok();
+        // Every notification read before the usage answer: a turn that
+        // ended after the replay's last page and before the usage read is
+        // in the totals; its live end must not be added on top.
+        let mut queued = Vec::new();
+        while let Ok(note) = notifications.try_recv() {
+            queued.push(note);
+        }
         Ok(Established {
             link: Link {
                 connection: Arc::new(connection),
@@ -2464,6 +2658,8 @@ async fn establish(endpoint: Endpoint, saved: Option<&Cursor>) -> Result<Establi
             replay,
             identity,
             usage,
+            queued,
+            context,
         })
     })
     .await
