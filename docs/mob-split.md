@@ -407,7 +407,14 @@ changes here:
   in-process subscription to the decision service's open events, which the
   daemon forwards to attached clients. No per-connection TCP operator; plain
   `rkat-rpc --tcp` gets no decision notices by design. Subscription names
-  and the implementation are pending.
+  and the implementation are pending. Two authority conditions the daemon
+  must keep: the shared token grants access, not identity, so the approver
+  on an `AuthenticatedDecisionEvent` is a fixed principal bound to the
+  token by host configuration (the daemon is single-person by design), never
+  an actor named in the client's JSON; and open-decision notices go only to
+  clients authorized for that decision, which for one principal is every
+  attached client, and for a future multi-person daemon means one
+  authenticated principal per connection and per-decision filtering.
 - **Forks and rewind (#2117).** `mob/fork_member` becomes an operator method
   that gives the child a new identity, after the admission fix of #2112.
   Same-identity rewind is deferred to a design note. Resuming onto another
