@@ -380,6 +380,43 @@ host-installed consent surface, the same classifier moves behind
 4. Optional: a flag letting a trusted connection's `mob/spawn` request
    `host_root`; the daemon spawns the orchestrator in Rust meanwhile.
 
+## Upstream dispositions (2026-11-08)
+
+The maintainers answered the asks on the test-only PRs (zond/rkat-tui#1,
+lukacf/meerkat#2113, #2114, #2115, #2117). What they decided, and what it
+changes here:
+
+- **Compaction (#2113).** The lost `CompactionCompleted` after a recovery is a
+  defect, fixed for 0.9.11 by forwarding queued events before post-commit
+  reconciliation returns. The per-build threshold stays caller-scoped: the
+  daemon keeps re-supplying it on rebuild and recovery, as it does. A typed
+  compact-now arrives as `session/compact` plus a mob-member variant, so
+  `/compact now` in attach mode waits for that release.
+- **Stream resume (#2114).** `mob/stream_open` gets an `{epoch, seq}` cursor
+  and each event carries its epoch; a stale epoch replays from the earliest
+  event. The client's replay-plus-live catch-up can then become one stream.
+  The request-id loss on parameter refusals is fixed with it.
+- **Approval push (#2115).** Plain approval records stay pull-only. Push goes
+  through durable decisions: `decision/notice` when a decision opens. The
+  daemon's consent should therefore move from `approval/*` to `decision/*`,
+  which also gives the durable record the ownership line asks for. Open
+  question asked on the PR: `decision/decide` is dispatched on a plain
+  connection only with a decision operator, which the engine installs on
+  stdio only; TCP clients need either the operator or the
+  `dispatch_with_decision_event` route.
+- **Forks and rewind (#2117).** `mob/fork_member` becomes an operator method
+  that gives the child a new identity, after the admission fix of #2112.
+  Same-identity rewind is deferred to a design note. Resuming onto another
+  member's session gets a typed refusal. For `/rewind` in attach mode this
+  means the rewound conversation would live under a new member identity, so
+  the conversations model (one identity, many sessions) needs to follow a
+  chosen member rather than always `main`.
+- **Fix order for the behaviour reports:** #2112 (fork children inherit the
+  admission), #2116 (session events to the turn's connection), #2102
+  (delegate follows the current identity), plus the `HookSource` constructor.
+
+None of this is merged or released yet; the plan tracks 0.9.11.
+
 ## Phases
 
 Each phase keeps the current in-process TUI working and ships with tests.
