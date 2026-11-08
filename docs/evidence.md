@@ -2216,3 +2216,43 @@ stays until the daemon stops, as an earlier conversation's does. Test:
 `tests/attach_approvals.rs`
 `a_seated_helpers_catalog_is_read_after_its_first_run` (times out with the
 watcher's read disabled).
+
+## The pin moves to upstream `main` (2026-11-08)
+
+The three engine fixes the harness carried on the `zond/meerkat` branch
+`rkat-tui-pin` landed upstream in the maintainers' own versions:
+lukacf/meerkat#2100 (sandbox: pid namespace, a static init as pid 1 and the
+command as pid 2, a read-only `subset=pid` procfs mounted best effort, Unix
+stream/seqpacket socketpairs alongside IP, a network namespace of its own
+without IP), #2104 (the thinking-block binding control for uncatalogued
+Anthropic ids, its beta value now the constant
+`meerkat_models::ANTHROPIC_THINKING_BINDING_CONTROLS_BETA`) and #2105 (the
+factory asks a host `HookSourceTrust` about the hook source bytes it read).
+Every `meerkat-*` dependency now names `lukacf/meerkat` at `74a4f843b7` (the
+merge of #2100); the fork branch is retired.
+
+API drift was one item. Upstream's `HookSource` and `HookSourceDecision`
+are `#[non_exhaustive]`, and `HookSource` has no constructor, so only the
+factory builds one; the unit tests in `bootstrap::project_trust` that built
+a `HookSource { path, sha256 }` could not compile. The decision moved into
+`ProjectInputs::decide_source(path, digest)`, which the trait's `decide`
+calls with the source's two fields, and the unit tests
+(`the_hook_source_trust_judges_the_bytes_the_factory_read`,
+`the_hook_source_trust_keeps_a_workspace_that_is_the_user_root`) call it
+with the same cases as before. Two integration tests run the trusted side
+through a real factory build, beside the refusal cases already there:
+`tests/hook_source_trust.rs` `recorded_bytes_and_the_flag_run_the_project_hook`
+(the recorded project hook runs; a hook planted after `/trust` runs under
+`--trust-project`) and `a_user_file_hook_runs_without_a_record`. The trait
+doc now says `decide` runs on the build's task and must not block or do
+I/O; ours is a lookup in the in-memory trust record under one short
+`parking_lot` lock, no file read.
+
+Nothing else drifted: `meerkat-rpc` and `meerkat-contracts` (the daemon and
+the attach client), the sandbox types the confinement plan uses, and the
+request shapes `tests/models.rs` asserts compile and pass unchanged; the
+confined shell's `$$` is still 2 (`tests/confinement.rs`). Behaviour change
+to note: a host that refuses the procfs mount now launches the command
+without `/proc` instead of refusing the launch, so a Rust toolchain fails
+there on `/proc/self/exe` rather than at the capability probe
+(`docs/testing.md`).

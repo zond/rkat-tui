@@ -62,6 +62,8 @@ struct Fixture {
     base: PathBuf,
     ws: PathBuf,
     home: PathBuf,
+    scope: rkat_tui::bootstrap::RuntimeScope,
+    record: rkat_tui::bootstrap::project_trust::SharedTrustRecord,
     inputs: ProjectInputs,
     store: RealmConfigStore,
 }
@@ -85,7 +87,7 @@ fn fixture() -> Fixture {
     .unwrap();
     let scope = resolve_scope(&args).unwrap();
     let record = Arc::new(parking_lot::Mutex::new(trust_record(&scope)));
-    let inputs = ProjectInputs::new(&scope, record, false);
+    let inputs = ProjectInputs::new(&scope, Arc::clone(&record), false);
     let store = RealmConfigStore::new(&scope.config_path(), scope.config_state_path(), None)
         .with_inputs(inputs.clone());
     Fixture {
@@ -93,6 +95,8 @@ fn fixture() -> Fixture {
         base,
         ws,
         home,
+        scope,
+        record,
         inputs,
         store,
     }
@@ -284,6 +288,48 @@ async fn a_project_file_untrusted_before_the_build_stays_inert() {
 
     let run = build_and_run(&fx, &config, Some(&fx.inputs)).await;
     assert!(!marker.exists());
+    assert_eq!(run.dispatched, 1);
+    assert!(run.refused.is_empty());
+}
+
+/// The trusted side of the same question, through the factory: the recorded
+/// bytes run their hook, and `--trust-project` admits bytes nobody recorded
+/// (a hook planted after `/trust`) for the run.
+#[tokio::test]
+async fn recorded_bytes_and_the_flag_run_the_project_hook() {
+    let fx = fixture();
+    let project = fx.ws.join(".rkat/config.toml");
+    let marker = fx.base.join("recorded-hook-entered");
+    write_hooks(&project, vec![marker_guardrail("fmt", &marker)]);
+    fx.inputs.trust_all().unwrap();
+    let config = fx.store.get().await.unwrap();
+    let run = build_and_run(&fx, &config, Some(&fx.inputs)).await;
+    assert!(marker.exists(), "the recorded hook ran");
+    assert_eq!(run.dispatched, 1);
+    assert!(run.refused.is_empty());
+
+    let planted = fx.base.join("planted-hook-entered");
+    write_hooks(&project, vec![marker_guardrail("planted", &planted)]);
+    let flagged = ProjectInputs::new(&fx.scope, Arc::clone(&fx.record), true);
+    let run = build_and_run(&fx, &config, Some(&flagged)).await;
+    assert!(planted.exists(), "--trust-project admits it for the run");
+    assert_eq!(run.dispatched, 1);
+    assert!(run.refused.is_empty());
+}
+
+/// The user's own `~/.rkat/config.toml` is never judged by the record: its
+/// hook runs with the trust installed and nothing recorded.
+#[tokio::test]
+async fn a_user_file_hook_runs_without_a_record() {
+    let fx = fixture();
+    let marker = fx.base.join("user-hook-entered");
+    write_hooks(
+        &fx.home.join(".rkat/config.toml"),
+        vec![marker_guardrail("fmt", &marker)],
+    );
+    let config = fx.store.get().await.unwrap();
+    let run = build_and_run(&fx, &config, Some(&fx.inputs)).await;
+    assert!(marker.exists(), "the user's hook ran");
     assert_eq!(run.dispatched, 1);
     assert!(run.refused.is_empty());
 }

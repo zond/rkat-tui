@@ -45,7 +45,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use meerkat::{HookSource, HookSourceDecision, HookSourceTrust};
+use meerkat::{HookSource, HookSourceDecision, HookSourceDigest, HookSourceTrust};
 use meerkat_core::Config;
 use meerkat_core::mcp_config::project_mcp_path_in;
 
@@ -315,15 +315,27 @@ impl ProjectInputs {
 /// of exactly the bytes the factory parsed, or under `--trust-project`.
 /// Any other source (the user's `~/.rkat/config.toml`, or a workspace that
 /// is the user config root) is the user's own and trusted.
+///
+/// The engine runs `decide` on the build's own task and asks that it not
+/// block or do I/O: this is a lookup in the in-memory trust record (one
+/// short mutex hold, no file read).
 impl HookSourceTrust for ProjectInputs {
     fn decide(&self, source: HookSource<'_>) -> HookSourceDecision {
-        if self.by_flag || self.hooks_are_the_users() || source.path != self.hooks {
+        self.decide_source(source.path, source.sha256)
+    }
+}
+
+impl ProjectInputs {
+    /// [`HookSourceTrust::decide`] over its two fields (the engine's
+    /// `HookSource` is `#[non_exhaustive]`, so only the factory builds one).
+    fn decide_source(&self, path: &Path, sha256: HookSourceDigest) -> HookSourceDecision {
+        if self.by_flag || self.hooks_are_the_users() || path != self.hooks {
             return HookSourceDecision::Trusted;
         }
         if self
             .record
             .lock()
-            .holds_digest(&self.hooks, &source.sha256.to_string())
+            .holds_digest(&self.hooks, &sha256.to_string())
         {
             HookSourceDecision::Trusted
         } else {
@@ -529,10 +541,7 @@ mod tests {
     }
 
     fn decide(inputs: &ProjectInputs, path: &Path, bytes: &[u8]) -> HookSourceDecision {
-        inputs.decide(HookSource {
-            path,
-            sha256: meerkat::HookSourceDigest::of(bytes),
-        })
+        inputs.decide_source(path, HookSourceDigest::of(bytes))
     }
 
     /// The factory's question is answered over the bytes it read, not the

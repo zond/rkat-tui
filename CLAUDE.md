@@ -8,7 +8,7 @@ Guidance for agents working in this repository.
 the Meerkat agent engine. It is a standalone crate, not part of the Meerkat
 monorepo: plain `cargo` is correct here, and none of the monorepo's wrappers,
 lanes or environment variables apply. The engine is pulled in as git
-dependencies on `zond/meerkat` (a fork), pinned to one revision in
+dependencies on upstream `lukacf/meerkat`, pinned to one revision in
 `Cargo.toml`; see "Engine dependency" below.
 
 Product direction: a focused coding application with Claude Code's keys and
@@ -97,15 +97,14 @@ The README is the front page; the full user manual is `docs/manual.md`.
 
 ## Engine dependency
 
-`Cargo.toml` pins every `meerkat-*` crate to one git revision of
-`zond/meerkat`. That revision is upstream `lukacf/meerkat` `main` plus the
-fork's open fixes, kept as branches on the fork and as open upstream PRs
-(the changelog names them). Moving the pin: change the revision in every
-dependency line, `cargo check --all-targets --all-features`, adapt to API
-drift by reading upstream's replacement in the fetched checkout under
-`~/.cargo/git/checkouts/`, run the gate, and record the move in the
-changelog. The goal is to depend on a crates.io release once upstream
-carries every fix.
+`Cargo.toml` pins every `meerkat-*` crate to one git revision of upstream
+`lukacf/meerkat` `main`; there is no fork pin (the fixes the application
+needed landed upstream, the changelog names them). Moving the pin: change
+the revision in every dependency line, `cargo check --all-targets
+--all-features`, adapt to API drift by reading upstream's replacement in the
+fetched checkout under `~/.cargo/git/checkouts/`, run the gate, and record
+the move in the changelog. The goal is to depend on a crates.io release
+next.
 
 Upstream policy: keep upstream work minimal. A gap with no application-side
 workaround gets a small, contained PR to `lukacf/meerkat` written as a bug
@@ -119,8 +118,9 @@ the main session); keep a limitation explicit and typed instead.
 
 The agent's shell runs under the engine's Linux confinement: an empty
 private mount view with the workspace, the temp dir, the Cargo home and a
-few system directories granted, its own pid namespace with a fresh
-`/proc`, and a seccomp filter. Inside it the command is pid 2 under a small init, host processes are
-invisible, and `/etc/alternatives` and `/usr/libexec` are granted so a
+few system directories granted, its own pid namespace with a read-only
+`/proc` of its own (best effort: a host that refuses the mount launches
+without it), and a seccomp filter. Inside it the command is pid 2 under a
+small init, host processes are invisible, and `/etc/alternatives` and `/usr/libexec` are granted so a
 Rust toolchain can link. `--no-confinement` runs the shell as the trusted
 host. The curated environment passes no provider keys into the sandbox.

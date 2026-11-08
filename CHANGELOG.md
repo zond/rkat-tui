@@ -285,6 +285,17 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Changed
 
+- The engine pin moved to upstream `lukacf/meerkat` `main` `74a4f843b7`.
+  All three fixes the harness carried on the fork are upstream now, in the
+  maintainers' versions: the sandbox fixes (lukacf/meerkat#2100: a pid
+  namespace with a static init as pid 1 and the command as pid 2, a
+  read-only best-effort procfs, Unix stream/seqpacket socketpairs alongside
+  IP, a network namespace of its own without IP), the thinking-block
+  binding for uncatalogued model ids (#2104) and host trust over the hook
+  source bytes the factory reads (#2105). The `zond/meerkat` fork branch
+  `rkat-tui-pin` is retired; the next move is to a crates.io release. A
+  host that refuses the confined launch's `/proc` mount now runs the
+  command without `/proc` instead of refusing the launch.
 - The engine pin moved to `zond/meerkat` `fb1295de4a` (branch
   `rkat-tui-pin`: upstream `main` plus the sandbox fixes of
   lukacf/meerkat#2094 (the relay now tears down and reaps the namespace
