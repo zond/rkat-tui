@@ -2006,3 +2006,64 @@ holds the token), `client::launch::tests::the_daemon_gets_every_shared_engine_fl
 (`--endpoint-file` round trip). The integration tests put the file beside
 the workspace (`common::endpoint_file_for`), as they run the shell
 unconfined.
+
+**The other nine.**
+
+- `/new` and `/resume` while a turn runs: only the client's own guard
+  (`may_switch`) stopped them, in another process. `Conversations::switch`
+  now reads the member's snapshot and refuses with `SwitchError::Running`
+  (`rkat/*` code `SWITCH_BUSY`, -32011) while `progress.run_state` is
+  `RunOpen` (the engine's machine-owned run phase, which answers during a
+  turn). A run starting between that read and the retire is not excluded
+  (no engine lock spans both). Test: `tests/attach_sessions.rs`
+  `a_switch_is_refused_while_another_clients_turn_runs` (a second
+  connection's `rkat/new` refused, the turn finishes on its session, the
+  switch goes through afterwards).
+- An answered dialog reappeared: `Approvals::answer` forgot the record,
+  so an `approval/list` read before the decide landed showed it again. The
+  record now stays in a `deciding` set until a list no longer has it
+  pending; an undelivered decide (`Report::Undecided`) lets it show again.
+  Test: `client::approvals::tests::an_answered_dialog_stays_closed_while_its_decision_is_on_its_way`.
+- Helpers had no tool catalog: `DaemonToolOrigins` cached only sessions it
+  read while idle, and a helper runs from its spawn on, so its own
+  definitions are never readable before its first call. A session not read
+  yet is now judged by the TUI's own tools plus the engine-native tools of
+  every catalog read so far (`ToolCatalog::natives`, `ToolCatalog::or`):
+  every daemon session comes from the same factory, so the helper's native
+  `shell` is the orchestrator's. Probe: an allow rule for a command with
+  `$((…))` does not match even for the orchestrator (the policy sends it to
+  the classifier), so the test uses a plain `echo`. Tests:
+  `tests/attach_approvals.rs` `a_helpers_shell_is_judged_as_the_native_shell`
+  (fails before: the classifier was asked about `shell`),
+  `approval::catalog::tests::families_follow_provenance_not_names`.
+- Inline local calls: the proxy awaited each `rkat/*` call before reading
+  the client's next line. Each now runs in its own task and answers through
+  the connection's writer (a weak sender, so a call still running when the
+  client leaves does not hold the writer; the call itself finishes, so a
+  switch is not cut in half). Local calls of one client may now answer out
+  of order (clients match answers by id). The proxy is generic over
+  `serve::LocalMethods` for the test. Test:
+  `daemon::serve::tests::a_slow_local_call_holds_back_no_other_line` (fails
+  before: the stop reached the engine only after the slow call).
+- The desk polled the approval store on the executor: each read now runs in
+  `spawn_blocking`, as the ledger's do. No test can tell a blocking read on
+  a worker thread from one on the blocking pool without instrumenting the
+  store; the desk tests (`daemon::approvals::tests::*`) pin its behaviour.
+- `rkat/conversations` read every history whole and in series: it now reads
+  the first `TITLE_PAGE` (16) messages of each, `LIST_READS` (8) at a time,
+  and takes the size from the page's `message_count`. Test:
+  `daemon::conversations::tests::a_listed_row_counts_from_the_page_metadata_and_titles_from_its_messages`.
+- `/resume last` named the current conversation (the newest in the list):
+  `last` and `~N` now count the others, as the in-process `last` names the
+  session before the current one. Test:
+  `client::sessions::tests::references_resolve_as_in_process`.
+- Plan mode after a restart: `plan_noted` started false, so leaving a
+  persisted plan mode sent no "plan mode is off" note. It now starts from
+  the persisted mode, and a daemon started in plan mode tells the
+  orchestrator (`Local::announce_plan_mode`; a restored one may have been
+  switched by another process, and a repeated note is harmless). Test:
+  `tests/attach_approvals.rs`
+  `plan_mode_survives_a_restart_and_leaving_it_is_announced` (fails before).
+- Pending calls leaked on a caller's timeout: `Connection::call` now holds
+  a guard that removes its id when the call ends or is dropped. Test:
+  `client::transport::tests::a_dropped_call_forgets_its_pending_entry`.

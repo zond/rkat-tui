@@ -208,6 +208,9 @@ enum Report {
         pending: Vec<meerkat_core::ApprovalRecord>,
         ended: Vec<meerkat_core::ApprovalRecord>,
     },
+    /// An `approval/decide` was not delivered (the record may still be
+    /// pending; its dialog may show again).
+    Undecided(meerkat_core::ApprovalId),
     /// The daemon's permission mode.
     Mode(ModeStatus),
     /// The mobs the daemon hosts (a discovery round).
@@ -1110,6 +1113,7 @@ impl AttachRunner {
                     self.approvals_at = Some(Instant::now() + APPROVAL_POLL);
                 }
             }
+            Report::Undecided(record) => self.approvals.undecided(&record),
             Report::Mode(status) => self.push_mode(status),
             Report::Mobs(mobs) => {
                 self.discovering = false;
@@ -1291,6 +1295,7 @@ impl AttachRunner {
         };
         let params = decide_params(&record, answer);
         let ui_tx = self.ui_tx.clone();
+        let reports = self.reports_tx.clone();
         tokio::spawn(async move {
             match tokio::time::timeout(CALL_TIMEOUT, remote::decide(&connection, params)).await {
                 Ok(Ok(())) => {}
@@ -1304,12 +1309,14 @@ impl AttachRunner {
                     });
                 }
                 Ok(Err(err)) => {
+                    let _ = reports.send(Report::Undecided(record));
                     let _ = ui_tx.send(Msg::Notice {
                         level: NoticeLevel::Warn,
                         text: format!("the answer was not sent: {err}"),
                     });
                 }
                 Err(_) => {
+                    let _ = reports.send(Report::Undecided(record));
                     let _ = ui_tx.send(Msg::Notice {
                         level: NoticeLevel::Warn,
                         text: "the daemon did not take the answer in time".to_string(),

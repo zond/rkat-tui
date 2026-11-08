@@ -1061,11 +1061,13 @@ mode: it is built on the in-process session service, the engine's
 **Conversations.** `/new` starts a fresh conversation for the daemon's
 agent, `/resume` lists this workspace's conversations (newest first, with
 their size and first message) and switches back to one, showing its
-transcript as the in-process `/resume` does; `/resume <ref>` takes `last`,
-`~N`, an id or an id prefix. A switch retires the agent's member and seats
-it again on the other session; every attached TUI follows it. A `/model`
-switch carries over to a `/new` conversation. Neither runs while a turn
-does. The daemon lists the conversations in
+transcript as the in-process `/resume` does; `/resume <ref>` takes `last`
+(the most recent conversation other than this one), `~N` (counting the
+others), an id or an id prefix. A switch retires the agent's member and
+seats it again on the other session; every attached TUI follows it. A
+`/model` switch carries over to a `/new` conversation. Neither runs while a
+turn does, whichever TUI started it: the daemon refuses the switch until
+the turn ends or is interrupted. The daemon lists the conversations in
 `<workspace>/.rkat/tui/conversations.json`.
 
 **Approvals.** The daemon's agent and its helpers run behind the same

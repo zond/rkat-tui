@@ -58,6 +58,9 @@ pub fn picker_items(listed: &[Listed]) -> Vec<(String, String)> {
 /// Resolve a `/resume` reference against the conversations (last used
 /// first), as the in-process `/resume` resolves one against the realm's
 /// sessions: `last` (`~`, `~0`), `~N`, a full id, or a unique id prefix.
+/// `last` and `~N` count the conversations other than the current one (the
+/// current one is the most recently used, so `last` would always name it):
+/// `last` is the one before it.
 ///
 /// # Errors
 ///
@@ -78,12 +81,15 @@ pub fn resolve(reference: &str, listed: &[Listed]) -> Result<SessionId, String> 
         },
     };
     if let Some(offset) = offset {
-        return match listed.get(offset) {
+        let others: Vec<&Listed> = listed.iter().filter(|row| !row.current).collect();
+        return match others.get(offset) {
             Some(row) => Ok(row.session_id.clone()),
-            None if listed.is_empty() => Err("no conversations in this workspace".to_string()),
+            None if others.is_empty() => {
+                Err("no other conversations in this workspace".to_string())
+            }
             None => Err(format!(
-                "only {} conversation(s) exist; ~{offset} is out of range",
-                listed.len()
+                "only {} other conversation(s) exist; ~{offset} is out of range",
+                others.len()
             )),
         };
     }
@@ -120,19 +126,30 @@ mod tests {
 
     #[test]
     fn references_resolve_as_in_process() {
-        let listed = vec![row(true), row(false)];
-        assert_eq!(resolve("last", &listed).unwrap(), listed[0].session_id);
-        assert_eq!(resolve("~1", &listed).unwrap(), listed[1].session_id);
+        let listed = vec![row(true), row(false), row(false)];
+        // `last` is the most recent conversation other than the current one.
+        for last in ["last", "~", "~0"] {
+            assert_eq!(resolve(last, &listed).unwrap(), listed[1].session_id);
+        }
+        assert_eq!(resolve("~1", &listed).unwrap(), listed[2].session_id);
         assert!(resolve("~2", &listed).unwrap_err().contains("out of range"));
+        assert!(
+            resolve("last", &listed[..1])
+                .unwrap_err()
+                .contains("no other conversations")
+        );
         assert!(resolve("~x", &listed).is_err());
         let full = listed[1].session_id.to_string();
         assert_eq!(resolve(&full, &listed).unwrap(), listed[1].session_id);
+        // A full id may name the current one (the daemon says so).
+        let current = listed[0].session_id.to_string();
+        assert_eq!(resolve(&current, &listed).unwrap(), listed[0].session_id);
         assert!(resolve("zzzz", &listed).unwrap_err().contains("matches"));
         assert!(resolve("", &listed).is_err());
         assert!(
             resolve("last", &[])
                 .unwrap_err()
-                .contains("no conversations")
+                .contains("no other conversations")
         );
     }
 

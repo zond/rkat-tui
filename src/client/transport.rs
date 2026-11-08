@@ -46,6 +46,21 @@ type Reply = Result<Value, ClientError>;
 /// Calls waiting for their response; `None` once the connection is gone.
 type Pending = Arc<Mutex<Option<HashMap<u64, oneshot::Sender<Reply>>>>>;
 
+/// Removes a call's pending entry when the call ends or is dropped (the
+/// reader already removed it when the answer came).
+struct Forget<'a> {
+    pending: &'a Pending,
+    id: u64,
+}
+
+impl Drop for Forget<'_> {
+    fn drop(&mut self) {
+        if let Some(map) = self.pending.lock().as_mut() {
+            map.remove(&self.id);
+        }
+    }
+}
+
 /// One attached connection to the daemon.
 pub struct Connection {
     address: SocketAddr,
@@ -192,13 +207,16 @@ impl Connection {
             };
             map.insert(id, tx);
         }
+        // A caller that gives up (a timeout drops this future) takes its
+        // entry with it: an answer that never comes leaks nothing.
+        let _forget = Forget {
+            pending: &self.pending,
+            id,
+        };
         let mut line =
             json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}).to_string();
         line.push('\n');
         if self.outgoing.send(line).is_err() {
-            if let Some(map) = self.pending.lock().as_mut() {
-                map.remove(&id);
-            }
             return Err(ClientError::Disconnected);
         }
         match rx.await {
@@ -381,6 +399,29 @@ mod tests {
             },
             attach,
         )
+    }
+
+    /// A call whose caller gave up (a timeout dropped it) leaves no
+    /// pending entry behind, though its answer never comes.
+    #[tokio::test]
+    async fn a_dropped_call_forgets_its_pending_entry() {
+        let (mut server, attach) = pair();
+        let server_task = tokio::spawn(async move {
+            server.accept("secret").await;
+            let unanswered = server.line().await.unwrap();
+            assert_eq!(unanswered["method"], "never");
+            server
+        });
+        let (connection, _notifications) = attach.await.unwrap();
+        let gave_up = tokio::time::timeout(
+            Duration::from_millis(50),
+            connection.call("never", json!({})),
+        )
+        .await;
+        assert!(gave_up.is_err());
+        let left = connection.pending.lock().as_ref().map(HashMap::len);
+        assert_eq!(left, Some(0));
+        drop(server_task.await.unwrap());
     }
 
     #[tokio::test]

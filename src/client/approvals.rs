@@ -11,7 +11,7 @@
 //! ([`Msg::EscalationResolved`]); a late decision of this client is
 //! refused by the engine and dropped.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use meerkat_core::{ApprovalId, ApprovalRecord, ApprovalStatus, SessionId};
 use serde_json::{Value, json};
@@ -55,6 +55,10 @@ impl Change {
 pub struct Approvals {
     shown: HashMap<ApprovalId, u64>,
     by_local: HashMap<u64, ApprovalId>,
+    /// Records this client answered whose decision may not have landed
+    /// yet: a list read before it still has them pending, and they must
+    /// not show again. Kept until a list no longer has them pending.
+    deciding: HashSet<ApprovalId>,
     next: u64,
 }
 
@@ -86,6 +90,8 @@ impl Approvals {
             .filter(|record| record.status == ApprovalStatus::Pending)
             .filter(|record| is_gate_record(record, session))
             .collect();
+        self.deciding
+            .retain(|id| ours.iter().any(|record| &record.approval_id == id));
         let gone: Vec<ApprovalId> = self
             .shown
             .keys()
@@ -102,6 +108,7 @@ impl Approvals {
         let mut fresh: Vec<&ApprovalRecord> = ours
             .into_iter()
             .filter(|record| !self.shown.contains_key(&record.approval_id))
+            .filter(|record| !self.deciding.contains(&record.approval_id))
             .collect();
         fresh.sort_by_key(|record| record.created_at);
         for record in fresh {
@@ -118,17 +125,26 @@ impl Approvals {
     }
 
     /// The UI answered dialog `id`: the record to decide (the dialog is
-    /// closed from now on).
+    /// closed from now on, and is not shown again while the record is
+    /// still listed pending: the decision is on its way).
     pub fn answer(&mut self, id: EscalationId) -> Option<ApprovalId> {
         let approval = self.by_local.remove(&id.0)?;
         self.shown.remove(&approval);
+        self.deciding.insert(approval.clone());
         Some(approval)
+    }
+
+    /// The decision for `approval` was not delivered: the next list shows
+    /// its dialog again while it is pending.
+    pub fn undecided(&mut self, approval: &ApprovalId) {
+        self.deciding.remove(approval);
     }
 
     /// Forget every dialog (the connection is gone; the next list after a
     /// reattach shows what is still pending). Returns the dialogs to close.
     pub fn clear(&mut self) -> Vec<EscalationId> {
         self.shown.clear();
+        self.deciding.clear();
         self.by_local
             .drain()
             .map(|(local, _)| EscalationId(local))
@@ -307,6 +323,40 @@ mod tests {
         assert_eq!(approvals.answer(id), Some(record.approval_id.clone()));
         assert_eq!(approvals.answer(id), None, "answered once");
         assert!(approvals.is_empty());
+    }
+
+    /// A list read before the decision landed still has the record
+    /// pending: the answered dialog does not come back.
+    #[test]
+    fn an_answered_dialog_stays_closed_while_its_decision_is_on_its_way() {
+        let service = ApprovalService::new();
+        let session = SessionId::new();
+        let record = request(&service, &session, crate::approval::ledger::REQUESTER);
+        let pending = std::slice::from_ref(&record);
+        let mut approvals = Approvals::default();
+        let Some(Change::Show(_, id)) = approvals.update(&session, pending, &[]).into_iter().next()
+        else {
+            unreachable!("a dialog");
+        };
+        approvals.answer(id).unwrap();
+        // The in-flight list: still pending, nothing shown.
+        assert!(approvals.update(&session, pending, &[]).is_empty());
+        assert!(approvals.is_empty());
+        // The decision landed: the record leaves the list, and is forgotten.
+        assert!(approvals.update(&session, &[], &[]).is_empty());
+        assert!(approvals.deciding.is_empty());
+        // An answer that was not delivered shows its dialog again.
+        let Some(Change::Show(_, id)) = approvals.update(&session, pending, &[]).into_iter().next()
+        else {
+            unreachable!("shown again: it is pending and not being decided");
+        };
+        let approval = approvals.answer(id).unwrap();
+        assert!(approvals.update(&session, pending, &[]).is_empty());
+        approvals.undecided(&approval);
+        assert!(matches!(
+            &approvals.update(&session, pending, &[])[..],
+            [Change::Show(..)]
+        ));
     }
 
     #[test]

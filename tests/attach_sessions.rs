@@ -90,8 +90,9 @@ async fn new_starts_fresh_and_resume_brings_the_old_conversation_back() {
     client.send(Effect::StartTurn("third".into()));
     assert_eq!(client.turn_finished().await.result.unwrap().text, "three");
     assert_eq!(user_texts(&llm.recorded()[2].messages), ["first", "third"]);
-    // Resuming the current one is a no-op.
-    client.send(Effect::ResumeSession("last".into()));
+    // Resuming the current one is a no-op (`last` names the most recent
+    // other one, as in-process).
+    client.send(Effect::ResumeSession(first.clone()));
     client
         .wait_for(
             |m| matches!(m, Msg::Notice { text, .. } if text == "already in this conversation"),
@@ -131,5 +132,66 @@ async fn rewind_says_why_it_is_not_offered() {
         "{refused}"
     );
     client.quit().await;
+    daemon.stop().await;
+}
+
+/// The daemon itself refuses a switch while the orchestrator's run is
+/// open: the client's guard is in another process (another client's turn).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_switch_is_refused_while_another_clients_turn_runs() {
+    let ws = Workspace::new();
+    let gate = std::sync::Arc::new(tokio::sync::Notify::new());
+    let llm = ScriptedLlmClient::new(vec![Step::Gated(
+        std::sync::Arc::clone(&gate),
+        Box::new(Step::Text("finished")),
+    )]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let running = daemon.connect().await;
+    running
+        .call(
+            "mob/member_send",
+            json!({"mob_id": "tui", "agent_identity": "main", "content": "long work"}),
+        )
+        .await
+        .unwrap();
+    llm.wait_call(0).await;
+    let other = daemon.connect().await;
+    let refused = other.call("rkat/new", json!({})).await.unwrap_err();
+    assert!(
+        matches!(&refused, rkat_tui::client::ClientError::Rpc { code, message, .. }
+            if *code == rkat_tui::daemon::local::SWITCH_BUSY && message.contains("interrupt")),
+        "{refused}"
+    );
+    // The turn was not cut off: it finishes on the same session.
+    gate.notify_one();
+    let status = other
+        .call(
+            "mob/member_status",
+            json!({"mob_id": "tui", "agent_identity": "main"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        status["current_session_id"],
+        json!(daemon.session.to_string())
+    );
+    // Once the run has ended the switch goes through.
+    let deadline = tokio::time::Instant::now() + common::TIMEOUT;
+    loop {
+        match other.call("rkat/new", json!({})).await {
+            Ok(answer) => {
+                assert_ne!(answer["session_id"], json!(daemon.session.to_string()));
+                break;
+            }
+            Err(rkat_tui::client::ClientError::Rpc { code, .. })
+                if code == rkat_tui::daemon::local::SWITCH_BUSY
+                    && tokio::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            Err(err) => panic!("{err}"),
+        }
+    }
+    drop((running, other));
     daemon.stop().await;
 }

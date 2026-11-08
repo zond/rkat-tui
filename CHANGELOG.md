@@ -317,6 +317,19 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Fixed
 
+- Attach mode, from a review of the daemon and its clients: the daemon
+  refuses `/new` and `/resume` while the agent's turn runs, whichever client
+  started it (it retired the member mid-turn); `/resume last` (`~0`, `~N`)
+  counts the conversations other than the current one, as in-process (it
+  named the current one and was refused); an answered approval dialog no
+  longer comes back from a list read before the answer landed; a helper's
+  `shell` is judged as the native shell, so allow rules match it as
+  in-process; a slow `rkat/*` call (`/resume`, the conversation list) no
+  longer holds back the same client's Esc and approval answers; the
+  conversation list reads only the first page of each history; a daemon
+  restarted in plan mode tells the agent, and leaving plan mode afterwards
+  says so; a timed-out call leaves nothing behind in the client.
+
 - The daemon's endpoint file, which holds the attach token, moved out of the
   workspace (`<workspace>/.rkat/tui/mob.endpoint`, readable by the agent's
   confined shell, which could then attach and approve its own escalations)
