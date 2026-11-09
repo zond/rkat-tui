@@ -546,7 +546,7 @@ are never written to a file.
 | `thinking."<endpoint:id or id>"` (`"adaptive"`, `{ enabled = <budget tokens> }` or `"default"`; Anthropic-dialect endpoints only, see "Thinking") | `--set 'thinking."proxy:my-alias"=adaptive'` | the engine's default |
 
 Other flags: `--model`/`-m <[endpoint:]id>`, `--endpoint <name>`
-(`--provider` for the built-ins), `--resume [ref]`, `-c`/`--continue`,
+(alias `--provider`), `--resume [ref]`, `-c`/`--continue`,
 `-w`/`--workspace`, `--config-dir`, `--user-config-root`, `--realm`,
 `--isolated`, `--realm-backend`, `--state-root`, `--confinement`,
 `--confinement-read`, `--confinement-write`, `--no-confinement`, `--no-mouse`, `--wait-for-mcp`, `--trust-project` (alias `--allow-project-mcp`),

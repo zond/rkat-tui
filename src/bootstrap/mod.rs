@@ -927,7 +927,7 @@ fn build_factory(
 
 /// The model of new sessions, and the lists fetched to choose it.
 ///
-/// `--model` (`endpoint:id` or a bare id), `--endpoint`/`--provider` and the
+/// `--model` (`endpoint:id` or a bare id), `--endpoint` and the
 /// realm config's `agent.model` are planned with [`plan_startup`]; the
 /// endpoints' lists are fetched first when a bare `--model` id could belong
 /// to several endpoints, or when the plan asks for an endpoint's first listed
@@ -945,7 +945,7 @@ pub async fn plan_model(
 ) -> Result<(ModelChoice, Option<ModelCache>), TuiError> {
     let request = StartupRequest {
         model: args.model.as_deref(),
-        endpoint: args.endpoint.as_deref().or(args.provider.as_deref()),
+        endpoint: args.endpoint.as_deref(),
         config_model: &config.agent.model,
     };
     let fetch = || async {

@@ -2818,3 +2818,18 @@ except `client` for `blocks_from_messages` (transcript rendering, left
 for the runner's removal). Both runners read their `AppSetup` their own
 way (runtime vs layers); the test that they agree for the same
 configuration is `attach::both_runners_build_the_same_app_for_the_same_config`.
+
+### `--user-config-root` and `--config-dir` stay two flags
+
+The review asked whether one can be folded into the other. Neither
+expresses the other. `--user-config-root` stands in for the home
+directory: the engine's factory takes it as `user_config_root` (the
+user-level `.rkat/` conventions: AGENTS.md, skills, hooks, `mcp.toml`),
+the user `tui.toml` legacy notice and the user hook trust read it, and the
+default config dir moves under it; that is what isolates the integration
+tests from the developer's home. `--config-dir` moves only rkat-tui's own
+files (rules, notes, history, trust record, caches) and is the way out of
+`-w ~`, where the default config dir is the realm directory, without
+touching the engine's conventions. Each flag's help now says what it moves
+and what it leaves. Tests: `bootstrap::scope::tests::global_dirs_follow_flags`,
+`a_config_dir_colliding_with_the_realm_dir_is_refused`.

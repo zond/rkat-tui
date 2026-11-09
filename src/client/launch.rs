@@ -110,7 +110,6 @@ pub fn daemon_argv(args: &Args, workspace: &Path) -> Vec<OsString> {
     let os = |s: &String| OsString::from(s);
     value("--model", args.model.as_ref().map(os).as_ref());
     value("--endpoint", args.endpoint.as_ref().map(os).as_ref());
-    value("--provider", args.provider.as_ref().map(os).as_ref());
     value(
         "--user-config-root",
         args.user_config_root.as_ref().map(OsString::from).as_ref(),
@@ -195,7 +194,6 @@ pub const NOT_FORWARDED: &[&str] = &[
     "resume",
     "continue_last",
     "no_mouse",
-    "mouse",
     "attach",
     "no_attach",
     "context_root",

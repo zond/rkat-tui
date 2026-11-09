@@ -270,6 +270,8 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Changed
 
+- `--provider` is an alias of `--endpoint` (it was a separate flag that
+  conflicted with it), and the hidden no-op `--mouse` is gone.
 - The `mob` and `mcp` cargo features are gone: helpers, MCP servers, the
   `rkat-tui-mob` daemon and attach mode are always built.
 - `/remember`, `/memory`, `/export`, `!` shell mode, the cost readout and

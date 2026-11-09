@@ -22,12 +22,9 @@ pub struct Args {
 
     /// Endpoint for a bare `--model` id and the default endpoint (a built-in
     /// `anthropic`/`openai`/`gemini`, or a `[endpoints.<name>]` from tui.toml).
-    #[arg(long, conflicts_with = "provider")]
+    /// `--provider` is an alias.
+    #[arg(long, visible_alias = "provider")]
     pub endpoint: Option<String>,
-
-    /// Built-in provider endpoint (anthropic, openai, gemini); same as `--endpoint`.
-    #[arg(long)]
-    pub provider: Option<String>,
 
     /// Set any tui.toml key for this run: `--set auto.compact=auto`,
     /// `--set endpoints.litellm.base_url=http://host:4000`,
@@ -76,16 +73,20 @@ pub struct Args {
     #[arg(short = 'w', long = "workspace", alias = "context-root")]
     pub context_root: Option<PathBuf>,
 
-    /// User-global conventions root (defaults to the home directory).
+    /// Stand-in for the home directory (defaults to it): the engine's
+    /// user-global conventions (`<root>/.rkat`: AGENTS.md, skills, hooks,
+    /// mcp.toml) and the default of `--config-dir` both move under it, so
+    /// one flag isolates every user-level input.
     #[arg(long)]
     pub user_config_root: Option<PathBuf>,
 
     /// Directory for user-global rkat-tui files: AGENTS.md, SYSTEM.md, tui.toml
     /// rules, notes, history, trust records. Defaults to ~/.rkat/tui (under
     /// --user-config-root when given); an existing legacy ~/.config/rkat-tui
-    /// ($XDG_CONFIG_HOME/rkat-tui) is used until ~/.rkat/tui exists. It may
-    /// not be, hold or lie inside the realm directory (with `-w ~`, pass
-    /// another one).
+    /// ($XDG_CONFIG_HOME/rkat-tui) is used until ~/.rkat/tui exists. Moves
+    /// only rkat-tui's own files; the engine's conventions stay under
+    /// --user-config-root. It may not be, hold or lie inside the realm
+    /// directory (with `-w ~`, pass another one).
     #[arg(long)]
     pub config_dir: Option<PathBuf>,
 
@@ -146,12 +147,8 @@ pub struct Args {
     /// Do not capture mouse events. The mouse is captured by default for wheel
     /// scrolling and click-to-expand tool output; most terminals still allow
     /// native text selection with Shift held. This flag restores plain selection.
-    #[arg(long, conflicts_with = "mouse")]
+    #[arg(long)]
     pub no_mouse: bool,
-
-    /// Accepted for compatibility: mouse capture is now the default.
-    #[arg(long, hide = true)]
-    pub mouse: bool,
 
     /// Trust the project inputs (`.rkat/mcp.toml`, `.rkat/config.toml`'s
     /// hooks, the workspace realm's `config.toml`) for this run even though
@@ -336,8 +333,12 @@ mod tests {
             ])
             .is_err()
         );
-        assert!(
-            Args::try_parse_from(["rkat-tui", "--endpoint", "x", "--provider", "openai"]).is_err()
+        assert_eq!(
+            Args::try_parse_from(["rkat-tui", "--provider", "openai"])
+                .unwrap()
+                .endpoint
+                .as_deref(),
+            Some("openai")
         );
         let args = Args::try_parse_from([
             "rkat-tui", "--set", "a=1", "--set", "b=2", "--allow", "x", "--deny", "y",

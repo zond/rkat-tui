@@ -1112,7 +1112,7 @@ pub fn registry_context_window(config: &Config, provider: Provider, model: &str)
 pub struct StartupRequest<'a> {
     /// `--model` (`endpoint:id` or a bare id).
     pub model: Option<&'a str>,
-    /// `--endpoint` (or `--provider`): endpoint for a bare id and the default.
+    /// `--endpoint` (alias `--provider`): endpoint for a bare id and the default.
     pub endpoint: Option<&'a str>,
     /// The realm config's `agent.model` (may be empty).
     pub config_model: &'a str,
