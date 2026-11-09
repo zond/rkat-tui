@@ -379,28 +379,33 @@ async fn resume_and_continue_choose_the_conversation_at_attach() {
     daemon.stop().await;
 }
 
-/// The probe of P3 item 3: a session the in-process TUI created cannot
-/// become the daemon's conversation. It is listed view only (P4 item 2):
-/// `--resume <it>` attaches, shows its transcript and says why the agent
-/// stays on its conversation; the next prompt goes there, `/export` saves
-/// what is shown, and `/resume <current>` shows the conversation again.
-/// The reason holds:
-/// even with the session put into the daemon's conversation log, the
-/// engine refuses to seat the member on it and the member stays on the
-/// conversation it had.
+/// The probe of P3 item 3: a session created outside the mob (as the
+/// in-process TUI created them before P4; here the engine's own
+/// `session/create` over the daemon's wire, which makes a plain session in
+/// the realm) cannot become the daemon's conversation. It is listed view
+/// only (P4 item 2): `--resume <it>` attaches, shows its transcript and
+/// says why the agent stays on its conversation; the next prompt goes
+/// there, `/export` saves what is shown, and `/resume <current>` shows the
+/// conversation again. The reason holds: even with the session put into
+/// the daemon's conversation log, the engine refuses to seat the member on
+/// it and the member stays on the conversation it had.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_in_process_session_cannot_be_seated_on_the_member() {
+async fn a_session_outside_the_mob_cannot_be_seated_on_the_member() {
     use rkat_tui::daemon::conversations::Log;
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![Step::Text("in-process"), Step::Text("daemon")]);
-    let mut rig = common::Rig::start(&ws.root, &llm, rkat_tui::runner::Start::New).await;
-    let in_process_id = rig.first_session.clone();
-    let in_process = in_process_id.to_string();
-    rig.send(Effect::StartTurn("hello in process".into()));
-    rig.turn_finished().await.result.unwrap();
-    rig.quit().await;
-
     let daemon = Running::start(&ws.root, &llm).await;
+    let created = daemon
+        .connect()
+        .await
+        .call(
+            "session/create",
+            json!({"prompt": "hello in process", "model": common::MODEL}),
+        )
+        .await
+        .unwrap();
+    let in_process = created["session_id"].as_str().unwrap().to_string();
+    let in_process_id = meerkat_core::SessionId::parse(&in_process).unwrap();
     // Listed, marked, after the daemon's own conversations.
     let connection = daemon.connect().await;
     let listed = connection

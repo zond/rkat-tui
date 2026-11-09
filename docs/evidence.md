@@ -3622,6 +3622,18 @@ and listed here.
   compared the history files with an in-process bootstrap's; it compares
   them with the scope `bootstrap::read_layers` resolves (the daemon's own
   resolution), assertions otherwise kept.
+- `tests/attach_sessions.rs`: the P3 probe created its pre-daemon session
+  with the in-process `Rig`. It is now
+  `a_session_outside_the_mob_cannot_be_seated_on_the_member` and creates
+  the session with the engine's own `session/create` over the daemon's
+  wire: a plain session in the realm with no durable `comms_name`, which
+  is what made an in-process session view only. No library seam was
+  needed; every assertion (listed view only and titled, the transcript
+  shown, the notice, `/export`, the agent staying on its conversation, the
+  engine's "missing durable comms_name" refusal) is kept. Not checked
+  here: whether a session a client creates that way runs behind the
+  approval gate (the daemon's own conversations do; the wire needs the
+  endpoint token).
 
 ### The daemon's stop waits for the realm's databases to close
 
