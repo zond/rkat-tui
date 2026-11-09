@@ -3365,12 +3365,15 @@ impl App {
                     if queued == 1 { "" } else { "s" }
                 ));
             }
+            // Attach mode detaches: the daemon's turn goes on.
+            let after = if self.status.attach.is_some() {
+                "the turn goes on in the daemon, messages it has not received are saved"
+            } else {
+                "the turn is interrupted, undelivered messages are saved"
+            };
             self.transcript.push_notice(
                 NoticeLevel::Warn,
-                format!(
-                    "{}; press again to quit anyway (the turn is interrupted, undelivered messages are saved)",
-                    what.join(" / ")
-                ),
+                format!("{}; press again to quit anyway ({after})", what.join(" / ")),
             );
             self.scroll.bottom();
             return;
@@ -5717,6 +5720,26 @@ mod tests {
             submit(&mut app, "/model gpt-5.2"),
             vec![Effect::SetModel("gpt-5.2".into())]
         );
+    }
+
+    #[test]
+    fn quitting_a_busy_attached_ui_says_the_turn_goes_on_in_the_daemon() {
+        let t0 = Instant::now();
+        let mut app = running_app();
+        app.update_at(ctrl('d'), t0);
+        assert!(matches!(
+            last_notice(&app),
+            Some((NoticeLevel::Warn, text)) if text.contains("the turn is interrupted")
+        ));
+        let mut app = running_app();
+        app.update(Msg::Status(StatusUpdate::Attach(Some("attached".into()))));
+        app.update_at(ctrl('d'), t0);
+        assert!(matches!(
+            last_notice(&app),
+            Some((NoticeLevel::Warn, text))
+                if text.contains("the turn goes on in the daemon")
+                    && !text.contains("interrupted")
+        ));
     }
 
     #[test]

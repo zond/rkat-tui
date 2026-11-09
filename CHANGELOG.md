@@ -346,6 +346,10 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Fixed
 
+- Quitting a busy attached TUI no longer warns that the turn is
+  interrupted: attach mode detaches and the turn goes on in the daemon, and
+  the warning now says so.
+
 - `--isolated` with `attach = true` in your `tui.toml` no longer reads two
   different throwaway realms: the workspace and its `tui.toml` layers are
   read once at start and handed to whichever mode runs.
