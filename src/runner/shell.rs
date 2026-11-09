@@ -39,7 +39,7 @@ impl Runner {
                         .map_err(|err| err.to_string());
                     ShellOutcome::Ran { run, context }
                 }
-                Err(reason) => ShellOutcome::Failed(reason),
+                Err(err) => ShellOutcome::Failed(err.to_string()),
             };
             let _ = tx.send(Msg::ShellFinished { id, outcome });
         });

@@ -184,13 +184,10 @@ impl UserShell {
     ///
     /// # Errors
     ///
-    /// A description when it cannot start: no shell, a refused
-    /// confinement, a failed spawn.
-    pub async fn run(&self, command: &str) -> Result<ShellRun, String> {
-        let program = self
-            .program
-            .as_ref()
-            .ok_or_else(|| "no shell found (nu, $SHELL, bash, zsh or sh)".to_string())?;
+    /// [`UserShellError`] when it cannot start (no shell, a refused
+    /// confinement, a failed spawn) or cannot be waited for.
+    pub async fn run(&self, command: &str) -> Result<ShellRun, UserShellError> {
+        let program = self.program.as_ref().ok_or(UserShellError::NoShell)?;
         let started = Instant::now();
         let args = [OsString::from("-c"), OsString::from(command)];
         let mut child = match &self.launch {
@@ -211,7 +208,7 @@ impl UserShell {
             Ok(Ok(status)) => exit_of(status),
             Ok(Err(err)) => {
                 child.kill();
-                return Err(format!("could not wait for the command: {err}"));
+                return Err(UserShellError::Wait(err));
             }
             Err(_) => ShellExit::TimedOut(self.timeout.as_secs()),
         };
@@ -242,7 +239,7 @@ impl UserShell {
         out
     }
 
-    fn spawn_trusted(&self, program: &Path, args: &[OsString]) -> Result<Child, String> {
+    fn spawn_trusted(&self, program: &Path, args: &[OsString]) -> Result<Child, UserShellError> {
         let mut command = tokio::process::Command::new(program);
         command
             .args(args)
@@ -254,9 +251,10 @@ impl UserShell {
             .kill_on_drop(true);
         #[cfg(unix)]
         command.process_group(0);
-        let child = command
-            .spawn()
-            .map_err(|err| format!("could not start {}: {err}", program.display()))?;
+        let child = command.spawn().map_err(|source| UserShellError::Start {
+            program: program.to_path_buf(),
+            source,
+        })?;
         Ok(Child::trusted(child))
     }
 
@@ -270,8 +268,8 @@ impl UserShell {
         env: &HashMap<String, String>,
         program: &Path,
         args: &[OsString],
-    ) -> Result<Child, String> {
-        let refused = |refusal| format!("the sandbox refuses the command: {refusal}");
+    ) -> Result<Child, UserShellError> {
+        let refused = UserShellError::Refused;
         let compiled = compiled.as_ref().map_err(|r| refused(*r))?;
         let launch = meerkat_sandbox::ProcessLaunchSpec::new(
             program.to_path_buf(),
@@ -281,9 +279,7 @@ impl UserShell {
         )
         .map_err(refused)?;
         let prepared = compiled.bind_launch(launch).map_err(refused)?;
-        let child = prepared
-            .spawn()
-            .map_err(|err| format!("could not start the confined command: {err}"))?;
+        let child = prepared.spawn().map_err(UserShellError::StartConfined)?;
         Ok(Child::Confined(child))
     }
 
@@ -297,9 +293,38 @@ impl UserShell {
         _env: &HashMap<String, String>,
         _program: &Path,
         _args: &[OsString],
-    ) -> Result<Child, String> {
-        Err("this platform has no sandbox backend".to_string())
+    ) -> Result<Child, UserShellError> {
+        Err(UserShellError::NoBackend)
     }
+}
+
+/// Why a `!` command could not run.
+#[derive(Debug, thiserror::Error)]
+pub enum UserShellError {
+    /// No shell program was found.
+    #[error("no shell found (nu, $SHELL, bash, zsh or sh)")]
+    NoShell,
+    /// The sandbox refuses the launch.
+    #[error("the sandbox refuses the command: {0}")]
+    Refused(meerkat_sandbox::ConfinementRefusal),
+    /// The shell could not be started.
+    #[error("could not start {}: {source}", program.display())]
+    Start {
+        /// The shell program.
+        program: std::path::PathBuf,
+        /// Why.
+        source: std::io::Error,
+    },
+    /// The confined shell could not be started.
+    #[error("could not start the confined command: {0}")]
+    StartConfined(std::io::Error),
+    /// The command's exit could not be read.
+    #[error("could not wait for the command: {0}")]
+    Wait(std::io::Error),
+    /// Confinement is required and this platform has no sandbox backend.
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[error("this platform has no sandbox backend")]
+    NoBackend,
 }
 
 /// A running command.

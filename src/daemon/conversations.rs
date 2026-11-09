@@ -302,7 +302,10 @@ impl Conversations {
     /// # Errors
     ///
     /// The engine's error reading the history.
-    pub async fn messages(&self, session: &SessionId) -> Result<Vec<Message>, String> {
+    pub async fn messages(
+        &self,
+        session: &SessionId,
+    ) -> Result<Vec<Message>, meerkat_core::service::SessionError> {
         let service = self.state.session_service();
         service
             .read_history(
@@ -314,7 +317,6 @@ impl Conversations {
             )
             .await
             .map(|page| page.messages)
-            .map_err(|err| err.to_string())
     }
 
     /// A conversation's total token usage, as the engine keeps it with the
@@ -323,14 +325,16 @@ impl Conversations {
     ///
     /// # Errors
     ///
-    /// The engine's refusal, as text.
-    pub async fn usage(&self, session: &SessionId) -> Result<meerkat_core::Usage, String> {
+    /// The engine's refusal.
+    pub async fn usage(
+        &self,
+        session: &SessionId,
+    ) -> Result<meerkat_core::Usage, meerkat_core::service::SessionError> {
         self.state
             .session_service()
             .read(session)
             .await
             .map(|view| view.billing.usage)
-            .map_err(|err| err.to_string())
     }
 
     /// Make `target` the orchestrator's conversation: stop the current

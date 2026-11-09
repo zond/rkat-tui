@@ -23,7 +23,7 @@ use super::ApprovalEngine;
 use super::counters::{MAX_CONSECUTIVE_DENIALS, MAX_TOTAL_DENIALS};
 use super::escalation::{HumanDecision, RecordedPrompt};
 use super::mode::PermissionMode;
-use super::rules::{Rule, RuleId, RuleKind, RuleOrigin, RuleSet};
+use super::rules::{Rule, RuleId, RuleKind, RuleOrigin, RuleSet, RulesError};
 
 /// The human's answer to an escalation dialog.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,18 +109,31 @@ impl RemoteAnswer {
     }
 }
 
+/// Why "allow + add rule" made no rule.
+#[derive(Debug, thiserror::Error)]
+pub enum AllowRuleError {
+    /// The action has no rule subject (an MCP tool's call, for one).
+    #[error("the action has no rule subject")]
+    NoSubject,
+    /// The subject does not make a valid rule.
+    #[error(transparent)]
+    Rule(#[from] RulesError),
+}
+
 /// The literal allow rule "allow + add rule" adds for `tool` and its first
 /// rule `subject` (matches exactly this command or path).
 ///
 /// # Errors
 ///
-/// Why no rule can be made.
-pub fn allow_rule(tool: &str, subject: Option<&str>) -> Result<Rule, String> {
-    match subject {
-        Some(subject) => Rule::literal(RuleKind::Allow, tool, subject, RuleOrigin::Realm)
-            .map_err(|e| e.to_string()),
-        None => Err("the action has no rule subject".to_string()),
-    }
+/// [`AllowRuleError`]: why no rule can be made.
+pub fn allow_rule(tool: &str, subject: Option<&str>) -> Result<Rule, AllowRuleError> {
+    let subject = subject.ok_or(AllowRuleError::NoSubject)?;
+    Ok(Rule::literal(
+        RuleKind::Allow,
+        tool,
+        subject,
+        RuleOrigin::Realm,
+    )?)
 }
 
 /// What the engine is told for the human's `answer` to the dialog that
@@ -131,7 +144,7 @@ pub fn allow_rule(tool: &str, subject: Option<&str>) -> Result<Rule, String> {
 pub fn answered(
     answer: EscalationAnswer,
     prompt: &RecordedPrompt,
-) -> (HumanDecision, Option<String>) {
+) -> (HumanDecision, Option<AllowRuleError>) {
     match answer {
         EscalationAnswer::AllowOnce => (HumanDecision::AllowOnce, None),
         EscalationAnswer::AllowAndAddRule => {
@@ -415,7 +428,7 @@ mod tests {
         };
         let (decision, why) = answered(EscalationAnswer::AllowAndAddRule, &shown);
         assert_eq!(decision, HumanDecision::AllowOnce);
-        assert!(why.is_some_and(|why| why.contains("no rule subject")));
+        assert!(matches!(why, Some(AllowRuleError::NoSubject)));
     }
 
     #[test]

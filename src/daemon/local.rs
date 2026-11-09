@@ -233,7 +233,7 @@ impl Local {
                     .conversations
                     .messages(&session)
                     .await
-                    .map_err(|err| (SWITCH_FAILED, err))?;
+                    .map_err(|err| (SWITCH_FAILED, err.to_string()))?;
                 Ok(json!({"messages": messages}))
             }
             USAGE => {
@@ -242,7 +242,7 @@ impl Local {
                     .conversations
                     .usage(&session)
                     .await
-                    .map_err(|err| (SWITCH_FAILED, err))?;
+                    .map_err(|err| (SWITCH_FAILED, err.to_string()))?;
                 Ok(json!({
                     "input_tokens": usage.input_tokens,
                     "output_tokens": usage.output_tokens,

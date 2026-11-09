@@ -213,6 +213,17 @@ pub enum TrustRulesError {
     Trust(#[from] super::trust::TrustError),
 }
 
+/// Why rules could not be persisted off the executor.
+#[derive(Debug, thiserror::Error)]
+pub enum PersistError {
+    /// The rules file could not be written.
+    #[error(transparent)]
+    Rules(#[from] RulesError),
+    /// The blocking write did not finish (it panicked or was cancelled).
+    #[error("the rules write did not finish: {0}")]
+    Join(#[from] tokio::task::JoinError),
+}
+
 /// A callback run when a session's per-session state is forgotten.
 pub type ForgetHook = Arc<dyn Fn(&SessionId) + Send + Sync>;
 
@@ -528,18 +539,14 @@ impl ApprovalEngine {
     }
 
     /// [`Self::persist`] off the async executor (the escalation path).
-    async fn persist_blocking(&self, rules: RuleSet) -> Result<(), String> {
+    async fn persist_blocking(&self, rules: RuleSet) -> Result<(), PersistError> {
         let Some(path) = self.rules_path.clone() else {
             return Ok(());
         };
         let trust = self.rules_trust.clone();
-        match tokio::task::spawn_blocking(move || persist_trusted(&path, &rules, trust.as_ref()))
-            .await
-        {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(err)) => Err(err.to_string()),
-            Err(err) => Err(err.to_string()),
-        }
+        tokio::task::spawn_blocking(move || persist_trusted(&path, &rules, trust.as_ref()))
+            .await??;
+        Ok(())
     }
 
     /// The permission mode now.

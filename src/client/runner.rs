@@ -1432,7 +1432,7 @@ impl AttachRunner {
                     };
                     ShellOutcome::Ran { run, context }
                 }
-                Err(reason) => ShellOutcome::Failed(reason),
+                Err(err) => ShellOutcome::Failed(err.to_string()),
             };
             let _ = ui_tx.send(Msg::ShellFinished { id, outcome });
         });
