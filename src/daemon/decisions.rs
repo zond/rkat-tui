@@ -238,9 +238,14 @@ struct Client {
     scope: HostAuthenticationScope,
     /// Cleared when the connection ends: no decide on it is eligible then.
     open: Arc<AtomicBool>,
-    /// The decisions presented on this connection. Its lock is a
-    /// presentation pass: a decide waits for one in flight.
+    /// The decisions presented on this connection (shown, and the
+    /// presentation recorded). Its lock is a presentation pass: a decide
+    /// waits for one in flight.
     presented: tokio::sync::Mutex<HashSet<DecisionId>>,
+    /// The decisions whose notice reached this connection, recorded or not
+    /// (a decision another client decided first refuses the record): each is
+    /// offered once, and the client hears how it ended.
+    shown: Mutex<HashSet<DecisionId>>,
 }
 
 /// Whether a client authenticated as `approver_id` may be shown, and may
@@ -402,6 +407,7 @@ impl Decisions {
             scope: HostAuthenticationScope::new(format!("{INGRESS}:{}:{id}", std::process::id())),
             open: Arc::new(AtomicBool::new(true)),
             presented: tokio::sync::Mutex::new(HashSet::new()),
+            shown: Mutex::new(HashSet::new()),
         });
         self.clients.lock().insert(id, Arc::clone(&client));
         let hub = Arc::clone(self);
@@ -477,7 +483,7 @@ impl Decisions {
             return;
         }
         let mut presented = client.presented.lock().await;
-        if presented.contains(&row.decision_id) {
+        if client.shown.lock().contains(&row.decision_id) {
             return;
         }
         let Ok(at_ms) = SystemDecisionClock.now_ms() else {
@@ -514,6 +520,7 @@ impl Decisions {
         ) {
             return;
         }
+        client.shown.lock().insert(row.decision_id.clone());
         let record = PresentationRecord::complete(
             PresentationAudience::Approver {
                 approver_id: row.descriptor.approver_id.clone(),
@@ -648,7 +655,10 @@ impl Decisions {
             })
         );
         for client in clients {
-            if client.presented.lock().await.contains(id) {
+            // After a presentation pass in flight on the client: its notice
+            // goes out before this one.
+            let _pass = client.presented.lock().await;
+            if client.shown.lock().contains(id) {
                 let _ = client.out.send(Outgoing {
                     line: line.clone(),
                     written: None,
