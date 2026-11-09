@@ -606,6 +606,24 @@ impl ApprovalEngine {
         })
     }
 
+    /// Record the checklist panel's view (Ctrl+T) in the realm rules file
+    /// (`[ui] checklist`), recorded as trusted as the other writes are; a
+    /// no-op without a realm rules file. The daemon saves an attached
+    /// client's choice with it (`rkat/checklist_view`): the file and its
+    /// trust record are the daemon's.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RulesError`] when the file cannot be written.
+    pub fn persist_checklist_view(&self, view: crate::ui::ChecklistView) -> Result<(), RulesError> {
+        let Some(path) = &self.rules_path else {
+            return Ok(());
+        };
+        config::write_trusted(path, self.rules_trust.as_deref(), |path| {
+            config::persist_realm_checklist(path, view)
+        })
+    }
+
     /// `/auto resume`: clear a pause (including the total-denials pause) and
     /// reset counters; in another mode, switch to auto mode.
     pub fn resume_auto(&self) {

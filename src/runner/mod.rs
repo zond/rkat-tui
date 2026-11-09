@@ -947,7 +947,7 @@ impl Runner {
         let msgs = self.observe(&env.payload);
         let tasks_changed = matches!(
             &env.payload,
-            AgentEvent::ToolExecutionCompleted { name, .. } if checklist::changes_tasks(name)
+            AgentEvent::ToolExecutionCompleted { name, .. } if crate::workbench::tasks::changes_tasks(name)
         );
         if self.agent_tx.send(env).await.is_err() {
             tracing::debug!("UI event receiver closed");

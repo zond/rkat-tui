@@ -88,6 +88,8 @@ pub struct Composed {
     /// The workspace's project inputs and the trust record they are judged
     /// by (`rkat/trust`).
     pub project_inputs: crate::bootstrap::project_trust::ProjectInputs,
+    /// The engine's task store (`rkat/tasks`).
+    pub tasks_db: std::path::PathBuf,
 }
 
 /// How the daemon composes its approval side (tests vary it).
@@ -126,6 +128,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         helper_max_depth,
         llm_override,
         daemon_principal,
+        tasks_db,
         ..
     } = parts;
     // Nobody renders the engine's decision events in the daemon (the
@@ -349,6 +352,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         origins,
         thinking,
         project_inputs,
+        tasks_db,
     })
 }
 

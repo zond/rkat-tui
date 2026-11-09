@@ -2876,3 +2876,20 @@ going away. Tests:
 `ui::tests::the_path_listing_is_asked_for_once_and_a_stale_answer_is_dropped`,
 `ui::tests::the_runners_mention_report_notes_what_was_attached_and_what_is_sealed`,
 `integrator::an_at_mention_attaches_the_file_the_session_receives`.
+
+### The task checklist in attach mode (`rkat/tasks`)
+
+The attach runner dropped `Effect::SetChecklistView` and never showed a
+checklist: the in-process runner reads the engine's task store
+(`tasks.db`) itself. The reader moved to `workbench::tasks`
+(`read_tasks`, `read_checklist`, `changes_tasks`) and the daemon answers
+`rkat/tasks {"session_id"}` with the store's tasks; the client turns them
+into the checklist as in-process (on attach, after a conversation switch,
+after each `task_create`/`task_update` the orchestrator completes) and
+drops a list read for a conversation it has left since. The view is not
+written by the client: the realm `tui.toml` and the trust record it is
+recorded in are the daemon's (a write the record does not know would make
+the daemon's next start apply only the file's deny rules), so the client
+asks `rkat/checklist_view` and the daemon writes through
+`ApprovalEngine::persist_checklist_view`, as it persists the mode. Test:
+`attach::the_task_tools_fill_the_checklist_over_the_daemon`.

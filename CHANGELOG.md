@@ -6,6 +6,10 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Added
 
+- Ctrl+T's task checklist works in attach mode: the daemon reads the
+  conversation's tasks from the engine's task store (`rkat/tasks`) on
+  attach, after a switch and after each of the agent's task calls, and
+  saves the view as the realm's `[ui] checklist` (`rkat/checklist_view`).
 - An in-process `/model` switch no longer retires and resumes the session so
   that helpers follow it: the engine's `delegate` reads the session's
   current model (#2102). The session is still rebuilt when the switch moves

@@ -48,11 +48,12 @@ use crate::endpoints::{EndpointRegistry, ModelRefError, WireDialect, parse_model
 use crate::models::{FetchResults, ModelCache};
 use crate::ui::delivery::{PendingId, SteerFailure};
 use crate::ui::{
-    Block, CompactFailure, Effect, EscalationAnswer, EscalationId, Msg, NoticeLevel, RuleEffect,
-    StatusUpdate, TurnFailure, TurnOutcome, TurnSummary,
+    Block, Checklist, ChecklistView, CompactFailure, Effect, EscalationAnswer, EscalationId, Msg,
+    NoticeLevel, RuleEffect, StatusUpdate, TurnFailure, TurnOutcome, TurnSummary,
 };
 use crate::user_shell::UserShell;
 use crate::workbench::models::Current;
+use crate::workbench::tasks;
 use crate::workbench::{AgentContext, SavedUnsent, Workbench, WorkbenchParts};
 
 /// The status-bar segment while the first connection is made.
@@ -252,6 +253,11 @@ enum Report {
     Rerendered(Result<Adopted, String>),
     /// The resume picker's rows.
     Picker(Result<Vec<(String, String)>, String>),
+    /// The tasks of `session` (`rkat/tasks`), or why they were not read.
+    Tasks {
+        session: SessionId,
+        tasks: Result<Vec<meerkat_tools::builtin::types::Task>, String>,
+    },
     /// A conversation switch of this client's did not start (the
     /// conversations could not be listed, the reference resolved to none
     /// or to the current one): why. Ends the switch.
@@ -709,6 +715,7 @@ impl AttachRunner {
         self.discover_at = Some(now);
         self.session_check_at = Some(now + SESSION_POLL);
         self.refresh_mode();
+        self.refresh_tasks();
     }
 
     /// Read the daemon's permission mode into the status bar.
@@ -1023,6 +1030,9 @@ impl AttachRunner {
                 // Once more: a mob made while the tool ran.
                 self.discover_at = Some(Instant::now());
             }
+            AgentEvent::ToolExecutionCompleted { name, .. } if tasks::changes_tasks(name) => {
+                self.refresh_tasks();
+            }
             AgentEvent::BoundaryAppendApplied { .. } => {
                 // First in, first out: `mob/member_send` answered no input
                 // id to match this event's with, so with two clients
@@ -1244,7 +1254,80 @@ impl AttachRunner {
                 self.switching = false;
                 self.notice(level, text);
             }
+            Report::Tasks { session, tasks } => {
+                // A list read for a conversation left since is not shown.
+                if self
+                    .link
+                    .as_ref()
+                    .is_none_or(|link| link.session != session)
+                {
+                    return;
+                }
+                self.send(match tasks {
+                    Ok(tasks) => Msg::Checklist(Checklist::from_tasks(&tasks)),
+                    Err(why) => {
+                        tracing::warn!(%why, "cannot read the session's tasks");
+                        Msg::ChecklistUnavailable(why)
+                    }
+                });
+            }
         }
+    }
+
+    /// Read the conversation's tasks from the daemon (`rkat/tasks`) for the
+    /// Ctrl+T checklist, as the in-process runner reads its session's.
+    fn refresh_tasks(&self) {
+        let Some(link) = &self.link else {
+            return;
+        };
+        let connection = Arc::clone(&link.connection);
+        let session = link.session.clone();
+        let reports = self.reporter();
+        tokio::spawn(async move {
+            let params = protocol::SessionParams {
+                session_id: session.clone(),
+            };
+            let tasks = bounded(
+                CALL_TIMEOUT,
+                remote::local::<_, protocol::Tasks>(&connection, protocol::TASKS, &params),
+            )
+            .await
+            .map(|read| read.tasks)
+            .map_err(|err| err.to_string());
+            reports.send(Report::Tasks { session, tasks });
+        });
+    }
+
+    /// Ctrl+T: the daemon records the view as the realm's `[ui] checklist`
+    /// (the realm file and its trust record are the daemon's).
+    fn set_checklist_view(&self, view: ChecklistView) {
+        const UNSAVED: &str = "the checklist view applies to this run but was not saved";
+        let Some(connection) = self.connection() else {
+            self.notice(
+                NoticeLevel::Warn,
+                format!("{UNSAVED}: not attached to the daemon"),
+            );
+            return;
+        };
+        let ui_tx = self.ui_tx.clone();
+        tokio::spawn(async move {
+            let params = protocol::ChecklistViewParams { view };
+            let saved = bounded(
+                CALL_TIMEOUT,
+                remote::local::<_, serde_json::Value>(
+                    &connection,
+                    protocol::CHECKLIST_VIEW,
+                    &params,
+                ),
+            )
+            .await;
+            if let Err(err) = saved {
+                let _ = ui_tx.send(Msg::Notice {
+                    level: NoticeLevel::Warn,
+                    text: format!("{UNSAVED}: {err}"),
+                });
+            }
+        });
     }
 
     fn connection(&self) -> Option<Arc<Connection>> {
@@ -1341,7 +1424,8 @@ impl AttachRunner {
                     .await;
             }
             Effect::SaveUnsent(held) => self.bench.hold_unsent(held),
-            Effect::Quit | Effect::SetChecklistView(_) => {}
+            Effect::SetChecklistView(view) => self.set_checklist_view(view),
+            Effect::Quit => {}
         }
     }
 
@@ -1778,6 +1862,7 @@ impl AttachRunner {
             approx: false,
         }));
         self.load_cost(&session);
+        self.refresh_tasks();
         if let Some((model, provider)) = identity {
             self.followers.set_default_model(&model);
             self.set_model_status(&provider, &model);

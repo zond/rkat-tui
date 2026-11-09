@@ -221,6 +221,101 @@ async fn the_client_reconnects_to_a_restarted_daemon() {
     daemon.stop().await;
 }
 
+/// Ctrl+T in attach mode: the agent's task tools fill the checklist from
+/// the daemon's task store (`rkat/tasks`), the view is saved as the realm's
+/// `[ui] checklist` by the daemon, and a client attaching later gets the
+/// list before any turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_task_tools_fill_the_checklist_over_the_daemon() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rkat_tui::ui::{App, ChecklistView, ItemState};
+
+    let ws = Workspace::new();
+    let create = |subject: &str| serde_json::json!({ "subject": subject, "description": "" });
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Tools(vec![
+            ("c1", "task_create", create("read the parser")),
+            ("c2", "task_create", create("write the fix")),
+        ]),
+        Step::Dynamic(Arc::new(|messages| Step::Tool {
+            id: "u1",
+            name: "task_update",
+            args: serde_json::json!({
+                "id": common::task_id(messages, "read the parser"),
+                "status": "completed",
+            }),
+        })),
+        Step::Text("on it"),
+    ]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let mut client = Client::attach(&ws.root).await;
+    client.send(Effect::StartTurn("fix the parser".into()));
+    client.turn_finished().await.result.unwrap();
+    let want = vec![
+        ("write the fix".to_string(), ItemState::Pending),
+        ("read the parser".to_string(), ItemState::Done),
+    ];
+    let items = |list: &rkat_tui::ui::Checklist| -> Vec<(String, ItemState)> {
+        list.items()
+            .iter()
+            .map(|i| (i.text.clone(), i.state))
+            .collect()
+    };
+    let updated = |msg: &Msg| matches!(msg, Msg::Checklist(list) if list.items().iter().any(|i| i.state == ItemState::Done));
+    client.saw(updated).await;
+    let Some(Msg::Checklist(list)) = client.seen.iter().find(|msg| updated(msg)).cloned() else {
+        unreachable!()
+    };
+    assert_eq!(items(&list), want);
+    // The creates showed before the update.
+    assert!(
+        client.seen.iter().any(|m| matches!(m, Msg::Checklist(list)
+            if list.items().len() == 2 && list.items().iter().all(|i| i.state == ItemState::Pending))),
+        "{:?}",
+        client.seen
+    );
+    // Ctrl+T, as the UI turns it into an effect.
+    let mut app = App::new(StatusInfo::default());
+    app.update(Msg::Checklist(list));
+    let fx = app.update(Msg::Key(KeyEvent::new(
+        KeyCode::Char('t'),
+        KeyModifiers::CONTROL,
+    )));
+    assert!(fx.contains(&Effect::SetChecklistView(ChecklistView::Shown)));
+    for effect in fx {
+        client.send(effect);
+    }
+    let realm = ws.root.join(".rkat/tui/tui.toml");
+    within(async {
+        loop {
+            let text = std::fs::read_to_string(&realm).unwrap_or_default();
+            if text.contains("checklist = \"shown\"") {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(
+        !client.notices().contains("was not saved"),
+        "{}",
+        client.notices()
+    );
+    client.quit().await;
+
+    // Another client, later: the list before any turn.
+    let mut later = Client::attach(&ws.root).await;
+    let msg = later
+        .wait_for(|msg| matches!(msg, Msg::Checklist(list) if !list.is_empty()))
+        .await;
+    let Msg::Checklist(list) = msg else {
+        unreachable!()
+    };
+    assert_eq!(items(&list), want);
+    later.quit().await;
+    daemon.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn what_the_daemon_cannot_do_yet_says_so() {
     let ws = Workspace::new();

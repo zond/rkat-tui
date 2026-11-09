@@ -12,7 +12,7 @@ mod common;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use common::{Rig, RigOptions, ScriptedLlmClient, Step, Workspace, copy_tree, user_texts};
+use common::{Rig, RigOptions, ScriptedLlmClient, Step, Workspace, copy_tree, task_id, user_texts};
 use meerkat_core::{AgentEvent, Message};
 use rkat_tui::approval::classifier::{
     ActionClassifier, ClassifierError, ClassifierInput, ClassifierVerdict,
@@ -1373,21 +1373,6 @@ async fn plan_mode_refuses_a_write_and_the_model_reads_why() {
         "{realm_rules}"
     );
     rig.quit().await;
-}
-
-/// The id of the task `subject` as a `task_create` result in `messages`
-/// returned it.
-fn task_id(messages: &[Message], subject: &str) -> String {
-    messages
-        .iter()
-        .find_map(|m| match m {
-            Message::ToolResults { results, .. } => results.iter().find_map(|r| {
-                let task: serde_json::Value = serde_json::from_str(&r.text_content()).ok()?;
-                (task["subject"] == subject).then(|| task["id"].as_str().unwrap().to_string())
-            }),
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("no task_create result for {subject}"))
 }
 
 /// The model's task tools fill the Ctrl+T checklist from the engine's task

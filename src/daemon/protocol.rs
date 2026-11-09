@@ -45,6 +45,12 @@ pub const USAGE: &str = "rkat/usage";
 /// [`TrustParams`] → [`crate::approval::desk::RuleOutcome`]: the project
 /// trust record (`/trust`, `/rules trust`).
 pub const TRUST: &str = "rkat/trust";
+/// [`SessionParams`] → [`Tasks`]: a conversation's tasks in the engine's
+/// task store (the Ctrl+T checklist).
+pub const TASKS: &str = "rkat/tasks";
+/// [`ChecklistViewParams`] → `{}`: record the checklist panel's view
+/// (Ctrl+T) as the realm's `[ui] checklist`.
+pub const CHECKLIST_VIEW: &str = "rkat/checklist_view";
 /// The notification that a decision a client was shown ended:
 /// [`DecisionEnded`].
 pub const DECISION_ENDED: &str = "rkat/decision_ended";
@@ -242,6 +248,20 @@ pub struct Usage {
     pub input_tokens: u64,
     /// Output tokens.
     pub output_tokens: u64,
+}
+
+/// [`TASKS`]'s result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Tasks {
+    /// The conversation's tasks as the store lists them.
+    pub tasks: Vec<meerkat_tools::builtin::types::Task>,
+}
+
+/// [`CHECKLIST_VIEW`]'s parameters.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct ChecklistViewParams {
+    /// `hidden` or `shown`.
+    pub view: crate::ui::ChecklistView,
 }
 
 /// What [`TRUST`] acts on.

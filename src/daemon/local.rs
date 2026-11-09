@@ -44,6 +44,14 @@
 //!   build); `rules` is `/rules trust` (the realm rules file's summary, then
 //!   its digest recorded and its allow rules applied).
 //!
+//! - [`TASKS`] `{"session_id"}` → `{"tasks": [Task]}`: a conversation's
+//!   tasks in the engine's task store (the Ctrl+T checklist; the client
+//!   reads them on attach, after a switch and after each of the agent's
+//!   `task_create` and `task_update` calls);
+//! - [`CHECKLIST_VIEW`] `{"view": "hidden"|"shown"}` → `{}`: Ctrl+T's
+//!   choice saved as the realm's `[ui] checklist`, through the engine that
+//!   owns the realm file and its trust record.
+//!
 //! A future engine extension (an application-defined method namespace, or
 //! the governed realm's own review policy) could replace them.
 //!
@@ -80,6 +88,7 @@ use super::protocol::{
     self, ConversationList, METHOD_NOT_FOUND, ModeSet, SWITCH_BUSY, SWITCH_FAILED, SessionParams,
     SetModeParams, Switched, Transcript, TrustOp, TrustParams, Usage, engine,
 };
+use super::protocol::{CHECKLIST_VIEW, ChecklistViewParams, TASKS, Tasks};
 use super::protocol::{
     CONVERSATIONS, GET_MODE, NEW, RESUME, RULES, Refusal, SET_MODE, TRANSCRIPT, TRUST, USAGE,
 };
@@ -108,6 +117,8 @@ pub struct Local {
     project: ProjectInputs,
     /// The consent surface: the decisions offered to the clients.
     decisions: Arc<super::decisions::Decisions>,
+    /// The engine's task store (`rkat/tasks`).
+    tasks_db: std::path::PathBuf,
 }
 
 /// What [`Local`] is made of.
@@ -130,6 +141,8 @@ pub struct LocalParts {
     pub project: ProjectInputs,
     /// The consent surface.
     pub decisions: Arc<super::decisions::Decisions>,
+    /// The engine's task store.
+    pub tasks_db: std::path::PathBuf,
 }
 
 impl std::fmt::Debug for Local {
@@ -154,6 +167,7 @@ impl Local {
             thinking,
             project,
             decisions,
+            tasks_db,
         } = parts;
         let in_plan = engine.mode() == PermissionMode::Plan;
         Self {
@@ -168,6 +182,7 @@ impl Local {
             inputs: AtomicU64::new(0),
             project,
             decisions,
+            tasks_db,
         }
     }
 
@@ -228,6 +243,20 @@ impl Local {
                     input_tokens: usage.input_tokens,
                     output_tokens: usage.output_tokens,
                 })
+            }
+            TASKS => {
+                let SessionParams { session_id } = protocol::params(params)?;
+                let tasks = crate::workbench::tasks::read_tasks(&self.tasks_db, &session_id)
+                    .await
+                    .map_err(|err| Refusal::new(protocol::INTERNAL_ERROR, err.to_string()))?;
+                answer(Tasks { tasks })
+            }
+            CHECKLIST_VIEW => {
+                let ChecklistViewParams { view } = protocol::params(params)?;
+                self.engine
+                    .persist_checklist_view(view)
+                    .map_err(|err| Refusal::new(protocol::INTERNAL_ERROR, err.to_string()))?;
+                answer(json!({}))
             }
             TRUST => {
                 let TrustParams { op } = protocol::params(params)?;

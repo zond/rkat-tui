@@ -202,6 +202,8 @@ methods on the wire, and `daemon::protocol` types each one for both ends:
 | `rkat/transcript` | `{"session_id"}` | `{"messages": [Message]}` |
 | `rkat/usage` | `{"session_id"}` | `{"input_tokens", "output_tokens"}` |
 | `rkat/trust` | `{"op": "project"\|"rules"}` | `{"ok", "text"}` |
+| `rkat/tasks` | `{"session_id"}` | `{"tasks": [Task]}` (the engine's task store) |
+| `rkat/checklist_view` | `{"view": "hidden"\|"shown"}` | `{}` (saved as `[ui] checklist`) |
 | `rkat/decision_ended` | notification, daemon to client | a decision the client was shown ended |
 
 The mode is the daemon's (one per daemon; it governs the orchestrator and

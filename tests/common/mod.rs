@@ -545,3 +545,18 @@ pub fn copy_tree(from: &Path, to: &Path) {
         }
     }
 }
+
+/// The id of the task `subject` as a `task_create` result in `messages`
+/// returned it.
+pub fn task_id(messages: &[Message], subject: &str) -> String {
+    messages
+        .iter()
+        .find_map(|m| match m {
+            Message::ToolResults { results, .. } => results.iter().find_map(|r| {
+                let task: serde_json::Value = serde_json::from_str(&r.text_content()).ok()?;
+                (task["subject"] == subject).then(|| task["id"].as_str().unwrap().to_string())
+            }),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no task_create result for {subject}"))
+}

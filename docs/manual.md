@@ -918,7 +918,8 @@ has some. The list is the engine's own task store (the realm's `tasks.db`,
 scoped to the session), read when a session opens and after each task call,
 so a resumed session gets its list back and a new one starts empty. Ctrl-T
 saves the choice as `[ui] checklist = "shown"` (or `"hidden"`, the default)
-in the realm `tui.toml`.
+in the realm `tui.toml`. In attach mode the daemon reads the list and saves the
+choice, the same way.
 
 ## Where things live
 
@@ -1051,7 +1052,7 @@ token counts, `/status`, `/export`, `/cost` (helpers included, kept per
 conversation), `/copy`, `/context` (the gauge only), `/compact` (the
 policy) and `/compact now` (the agent's next model call compacts first; the
 ✓ compacted notice and the gauge confirm it), `/remember` and `/memory` (the files are edited here; the agent
-reads the new content from its next model call), approvals, the permission
+reads the new content from its next model call), the Ctrl-T task checklist, approvals, the permission
 modes, `/rules`, `/trust`, `/rules trust` and `!` commands. The token
 counter shows the conversation's totals on attach and after `/new` or
 `/resume`, as in-process.
