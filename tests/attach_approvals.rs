@@ -6,7 +6,6 @@
 //! runs in-process with a scripted LLM and a scripted classifier; the
 //! clients are attach runners driven through the UI's channels.
 
-#![cfg(feature = "mob")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;

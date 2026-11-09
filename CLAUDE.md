@@ -36,7 +36,7 @@ Every step must exit 0 before a commit. Never commit on red, never loosen a
 lint or delete a test to get there. While iterating, scope the run
 (`--lib`, `--test <name>`, `-E 'test(<substring>)'`), then run the full gate
 once. The first clippy run must always be `--all-targets --all-features`; the
-second builds the library and binaries with default features only, so an
+second builds the library and binaries without `test-support`, so an
 item nothing but the tests use is reported as dead. Put such items under
 `#[cfg(any(test, feature = "test-support"))]` rather than making them
 public. `cargo fmt --all` fixes formatting. `docs/testing.md` is the full protocol: where each kind

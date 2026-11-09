@@ -223,7 +223,6 @@ impl Template {
             .add_dispatcher(Arc::clone(&notes) as Arc<dyn AgentToolDispatcher>);
         // `fork` belongs to the sessions' own builds only: helpers (and so
         // fork children) get their tools from the helper host.
-        #[cfg(feature = "mob")]
         let gateway = match &runtime.helpers {
             Some(helpers) => gateway.add_dispatcher(Arc::new(crate::fork::ForkToolDispatcher::new(
                 Arc::clone(helpers),

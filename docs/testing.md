@@ -48,10 +48,10 @@ cargo nextest run --all-features --no-fail-fast        # see every failure at on
 ```
 
 Clippy must be run with `--all-targets --all-features`; a narrower
-invocation misses the test targets and the `mob` and `test-support` code.
+invocation misses the test targets and the `test-support` code.
 
-The second clippy lane builds the library and the binaries with the
-default features, without `test-support`. Under `test-support` every
+The second clippy lane builds the library and the binaries without
+`test-support` (the crate's only feature). Under `test-support` every
 internal module is public (the paired `pub mod` / `pub(crate) mod`
 declarations in `src/lib.rs`), so an item nothing calls is never reported
 there; in this lane the modules are crate-private and an unused item or
@@ -68,7 +68,7 @@ removed.
 | Unit | `#[cfg(test)]` modules next to the code in `src/` | Pure logic: lexer, rules, keymap, input editing, completion, approval routing |
 | Integration | `tests/*.rs` | Drive the internal modules through the `test-support` feature (the crate's dev-dependency on itself turns it on) |
 | Headless runner | `tests/integrator.rs`, `tests/fork.rs`, `tests/compact.rs`, … | A real runtime-backed session with a scripted LLM (`tests/common/mod.rs`: `ScriptedClient`, `Step`, `args_for`, `Workspace`); no keys, no network |
-| Daemon and attach mode | `tests/daemon.rs` (the raw JSON-RPC wire), `tests/attach.rs`, `tests/attach_approvals.rs`, `tests/attach_helpers.rs`, `tests/attach_sessions.rs` | The `rkat-tui-mob` daemon started in-process with a scripted LLM; attach runners driven through the UI's `Effect`/`Msg` channels. The shared rig is `tests/common/attach.rs` (`Running`, `Client`, `AllowAll`); each file is compiled only with the `mob` feature |
+| Daemon and attach mode | `tests/daemon.rs` (the raw JSON-RPC wire), `tests/attach.rs`, `tests/attach_approvals.rs`, `tests/attach_helpers.rs`, `tests/attach_sessions.rs` | The `rkat-tui-mob` daemon started in-process with a scripted LLM; attach runners driven through the UI's `Effect`/`Msg` channels. The shared rig is `tests/common/attach.rs` (`Running`, `Client`, `AllowAll`) |
 | Rendering | `tests/render_snapshot.rs` | Draws the UI into a ratatui `TestBackend` and asserts on rows; there are no snapshot files to update |
 | Confinement | `tests/confinement.rs` | Probes the host sandbox; prints `SKIPPED: <reason>` and passes where the backend is unavailable (nested namespaces, Ubuntu's user-namespace restriction) |
 | Live | `tests/e2e_classifier.rs`, `--lib e2e_list_models` | `#[ignore]`; need provider keys. Not part of the gate |

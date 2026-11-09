@@ -140,20 +140,19 @@ pub(crate) mod workbench;
 // like the modules above; its binary enters through `run_daemon`. (Plain
 // comments: an outer doc here would make rustdoc resolve the module's own
 // intra-doc links from the crate root.)
-#[cfg(all(feature = "mob", feature = "test-support"))]
+#[cfg(feature = "test-support")]
 pub mod daemon;
-#[cfg(all(feature = "mob", not(feature = "test-support")))]
+#[cfg(not(feature = "test-support"))]
 pub(crate) mod daemon;
 
 // Attach mode (experimental): the TUI as a client of the workspace's
 // `rkat-tui-mob` daemon. Internal like the modules above.
-#[cfg(all(feature = "mob", feature = "test-support"))]
+#[cfg(feature = "test-support")]
 pub mod client;
-#[cfg(all(feature = "mob", not(feature = "test-support")))]
+#[cfg(not(feature = "test-support"))]
 pub(crate) mod client;
 
 /// The `rkat-tui-mob` daemon's command line and entry point.
-#[cfg(feature = "mob")]
 pub use daemon::{DaemonCli, run as run_daemon};
 
 /// The headless runner the integration tests drive (see
@@ -187,9 +186,6 @@ pub async fn run(args: Args) -> Result<(), TuiError> {
     let layers = bootstrap::read_layers(&args)?;
     match bootstrap::attach_mode(&args, &layers) {
         None => runner::run(args, layers).await,
-        #[cfg(feature = "mob")]
         Some(mode) => client::run(args, mode, layers).await,
-        #[cfg(not(feature = "mob"))]
-        Some(_) => Err(TuiError::AttachUnsupported),
     }
 }

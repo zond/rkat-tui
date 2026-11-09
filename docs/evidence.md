@@ -215,7 +215,7 @@ the mob split are numbered in `docs/mob-split.md`, "Open engine asks"):
 
 ## P5 — Mobs (helpers as mob members)
 
-- Hosting (`src/mobs/`, feature `mob`, default on): `MobMcpState::new_with_runtime_adapter(service, Some(machine), Owner)`
+- Hosting (`src/mobs/`): `MobMcpState::new_with_runtime_adapter(service, Some(machine), Owner)`
   over the TUI's own `PersistentSessionService` + `MeerkatMachine`, `.with_persistent_storage_root(Some(<realm>))`
   (durable mob state under the realm, as `rkat` does; cheap: one SQLite profile store), `.with_workgraph_service`
   (realm-scoped `WorkGraphService` from the persistence bundle; without it a member build that resolves WorkGraph on

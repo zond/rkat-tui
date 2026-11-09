@@ -2,7 +2,6 @@
 //! `rkat-tui-mob` daemon started in-process with a scripted LLM, driven
 //! through the same `Effect`/`Msg` channels the UI uses.
 
-#![cfg(feature = "mob")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;

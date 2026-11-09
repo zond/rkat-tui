@@ -99,19 +99,6 @@ pub async fn load(
         .map(|s| s.server.name.as_str())
         .collect();
     let mut notices = Vec::new();
-    if !cfg!(feature = "mcp") {
-        if !servers.is_empty() {
-            notices.push(format!(
-                "{} MCP server(s) configured, but this build has no MCP support (feature `mcp`)",
-                servers.len()
-            ));
-        }
-        return Ok(LoadedMcp {
-            servers: Vec::new(),
-            refused,
-            notices,
-        });
-    }
     if !project.is_empty() {
         notices.push(format!(
             "MCP servers from the project's .rkat/mcp.toml start with your privileges: {}",
@@ -185,17 +172,13 @@ mod tests {
         );
         let loaded = load(&scope, &Config::default(), &flagged).await.unwrap();
         assert!(loaded.refused.is_empty());
-        if cfg!(feature = "mcp") {
-            assert_eq!(names(&loaded), ["proj", "usr"]);
-            assert_eq!(loaded.notices.len(), 1);
-            assert!(
-                loaded.notices[0].ends_with(": proj"),
-                "{:?}",
-                loaded.notices
-            );
-        } else {
-            assert!(names(&loaded).is_empty());
-        }
+        assert_eq!(names(&loaded), ["proj", "usr"]);
+        assert_eq!(loaded.notices.len(), 1);
+        assert!(
+            loaded.notices[0].ends_with(": proj"),
+            "{:?}",
+            loaded.notices
+        );
 
         // Untrusted: the project's servers are refused and listed; the
         // user's still start.
@@ -207,9 +190,7 @@ mod tests {
         assert!(!untrusted.mcp_trusted());
         let loaded = load(&scope, &Config::default(), &untrusted).await.unwrap();
         assert_eq!(loaded.refused, [Refused::mcp_server(&project, "proj")]);
-        if cfg!(feature = "mcp") {
-            assert_eq!(names(&loaded), ["usr"]);
-        }
+        assert_eq!(names(&loaded), ["usr"]);
         // `/trust` records the digest: trusted until the file changes.
         untrusted.trust_all().unwrap();
         assert!(untrusted.mcp_trusted());
@@ -251,9 +232,7 @@ mod tests {
         inputs.trust_all().unwrap();
         let loaded = load(&scope, &config, &inputs).await.unwrap();
         assert!(loaded.refused.is_empty());
-        if cfg!(feature = "mcp") {
-            assert_eq!(names(&loaded), ["realm", "usr"]);
-        }
+        assert_eq!(names(&loaded), ["realm", "usr"]);
 
         // Changed after trust: refused again.
         std::fs::write(

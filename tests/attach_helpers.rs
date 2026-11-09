@@ -4,7 +4,6 @@
 //! result, the running count, its usage in `/cost`), from the mobs' own
 //! event streams. Esc stops the orchestrator's run and its helpers.
 
-#![cfg(feature = "mob")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;

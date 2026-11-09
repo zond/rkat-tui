@@ -43,11 +43,8 @@
 
 pub mod registry;
 
-#[cfg(feature = "mob")]
 pub mod bindings;
-#[cfg(feature = "mob")]
 pub mod customizer;
-#[cfg(feature = "mob")]
 pub(crate) mod follow;
 
 use std::sync::Arc;
@@ -56,21 +53,16 @@ use meerkat_core::{AuthBindingRef, SessionId};
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
-#[cfg(feature = "mob")]
 pub use registry::{HelperKey, HelperRegistry};
 pub use registry::{HelperStatus, HelperTag, HelperUpdate};
 
-#[cfg(feature = "mob")]
 use meerkat_mob_mcp::MobMcpState;
-#[cfg(feature = "mob")]
 use meerkat_runtime::MeerkatMachine;
 
 /// The TUI's helper host.
 pub struct Helpers {
-    #[cfg(feature = "mob")]
     registry: Arc<HelperRegistry>,
     updates: Mutex<Option<mpsc::UnboundedReceiver<HelperUpdate>>>,
-    #[cfg(feature = "mob")]
     state: Arc<MobMcpState>,
 }
 
@@ -83,7 +75,6 @@ impl std::fmt::Debug for Helpers {
 }
 
 /// What [`Helpers::start`] needs.
-#[cfg(feature = "mob")]
 pub struct HelperHostParts {
     /// The session service members are created on.
     pub service: Arc<crate::bootstrap::TuiService>,
@@ -112,7 +103,6 @@ pub struct HelperHostParts {
     pub max_depth: u8,
 }
 
-#[cfg(feature = "mob")]
 impl Helpers {
     /// Host helpers on `parts.service`; returns the host and the mob-tools
     /// factory every session build gets.
@@ -203,7 +193,6 @@ impl Helpers {
 /// force-cancel its run, then retire it (see [`Helpers::cancel_for`]; the
 /// mob daemon calls it when the orchestrator's run is interrupted and
 /// before it switches conversations).
-#[cfg(feature = "mob")]
 pub(crate) async fn cancel_helpers(
     state: &MobMcpState,
     registry: &HelperRegistry,
@@ -232,7 +221,6 @@ pub(crate) async fn cancel_helpers(
 /// The state is fresh, so the hooks bind; a failure is logged and fails
 /// closed (no mob's creator is recorded, so every helper spawn that no
 /// helper makes is refused).
-#[cfg(feature = "mob")]
 pub(crate) fn install_mob_hooks(state: &Arc<MobMcpState>, registry: &Arc<HelperRegistry>) {
     let created = Arc::downgrade(registry);
     let created_hook = state.set_before_create(Arc::new(
@@ -264,7 +252,6 @@ pub(crate) fn install_mob_hooks(state: &Arc<MobMcpState>, registry: &Arc<HelperR
     }
 }
 
-#[cfg(feature = "mob")]
 impl Helpers {
     /// The bookkeeping shared with the customizer and the followers.
     #[must_use]
@@ -302,29 +289,4 @@ impl Helpers {
     pub fn take_updates(&self) -> Option<mpsc::UnboundedReceiver<HelperUpdate>> {
         self.updates.lock().take()
     }
-}
-
-#[cfg(not(feature = "mob"))]
-impl Helpers {
-    /// Without the `mob` feature no helper inherits anything.
-    pub fn register_session(
-        &self,
-        _session: &SessionId,
-        _model: &str,
-        _auth_binding: Option<&AuthBindingRef>,
-    ) {
-    }
-
-    /// Without the `mob` feature there is nothing to forget.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn forget_session(&self, _session: &SessionId) {}
-
-    /// Without the `mob` feature no helper runs.
-    #[must_use]
-    pub fn live(&self) -> Vec<HelperStatus> {
-        Vec::new()
-    }
-
-    /// Without the `mob` feature there are no helpers to cancel.
-    pub async fn cancel_for(&self, _owner: &SessionId) {}
 }

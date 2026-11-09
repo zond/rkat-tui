@@ -3,7 +3,6 @@
 //! read the endpoint file, attach with its token, then speak the engine's
 //! own JSON-RPC methods.
 
-#![cfg(feature = "mob")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;

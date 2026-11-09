@@ -9,7 +9,6 @@
 //! Also the probe that decided how `fork` is built: the engine refuses a
 //! durable fork of the session from inside its own running turn.
 
-#![cfg(feature = "mob")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;

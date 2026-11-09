@@ -14,13 +14,17 @@
 //! helper's own session. A spawn whose owner does not resolve to a session
 //! open in this TUI is refused.
 
-use meerkat_core::{AgentEvent, ScopedAgentEvent, SessionId, StreamScopeFrame};
-use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::Path;
 
-#[cfg(all(feature = "mob", any(test, feature = "test-support")))]
-pub use owned::OwnerError;
-#[cfg(feature = "mob")]
-pub use owned::{HelperKey, HelperRegistry, Owner};
+use indexmap::IndexMap;
+use meerkat_core::{AgentEvent, AuthBindingRef, ScopedAgentEvent, SessionId, StreamScopeFrame};
+use meerkat_mob::{AgentIdentity, MobId};
+use parking_lot::{Mutex, RwLock};
+use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
+
+use crate::mobs::bindings::{BindingsError, HelperBindings};
 
 /// What a helper is and whom it works for.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,398 +104,380 @@ pub enum HelperUpdate {
     Unmeasured(String),
 }
 
-#[cfg(feature = "mob")]
-mod owned {
-    use std::collections::HashMap;
-    use std::path::Path;
+/// A helper's key: its mob and its member identity.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct HelperKey {
+    /// The mob the helper is a member of.
+    pub mob: MobId,
+    /// Its member identity in that mob.
+    pub member: AgentIdentity,
+}
 
-    use indexmap::IndexMap;
-    use meerkat_core::{AgentEvent, AuthBindingRef, SessionId};
-    use meerkat_mob::{AgentIdentity, MobId};
-    use parking_lot::{Mutex, RwLock};
-    use serde::{Deserialize, Serialize};
-    use tokio::sync::mpsc;
+impl HelperKey {
+    /// The key of `member` in `mob`.
+    #[must_use]
+    pub fn new(mob: MobId, member: AgentIdentity) -> Self {
+        Self { mob, member }
+    }
+}
 
-    use super::{HelperStatus, HelperTag, HelperUpdate};
-    use crate::mobs::bindings::{BindingsError, HelperBindings};
+impl std::fmt::Display for HelperKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.mob, self.member)
+    }
+}
 
-    /// A helper's key: its mob and its member identity.
-    #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-    pub struct HelperKey {
-        /// The mob the helper is a member of.
-        pub mob: MobId,
-        /// Its member identity in that mob.
-        pub member: AgentIdentity,
+/// The session a new helper works for, and what it inherits from it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Owner {
+    /// The TUI session.
+    pub session: SessionId,
+    /// Labels of the helpers between the session and the new helper.
+    pub path: Vec<String>,
+    /// The model the new helper inherits (the session's, or its parent
+    /// helper's).
+    pub model: String,
+    /// The session's explicit auth binding (a configured endpoint's).
+    pub auth_binding: Option<AuthBindingRef>,
+}
+
+/// Why a helper's owner does not resolve: the spawn (or rebuild) is
+/// refused.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum OwnerError {
+    /// The spawning member is no helper this TUI bound.
+    #[error("the spawning member {0} works for no session of this TUI")]
+    UnknownSpawner(HelperKey),
+    /// The mob was not created by a session of this TUI.
+    #[error("mob {0} was created by no session of this TUI")]
+    UnknownMob(MobId),
+    /// The mob's creator is neither a TUI session nor a helper.
+    #[error("session {0} is neither a session of this TUI nor a helper")]
+    UnknownSession(SessionId),
+    /// The owner session is not open in this TUI.
+    #[error("session {0} is not open")]
+    OwnerNotOpen(SessionId),
+    /// A restored member has no persisted owner.
+    #[error("helper {0} has no recorded owner")]
+    UnknownMember(HelperKey),
+}
+
+/// A TUI session's model, as helpers inherit it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SessionModel {
+    model: String,
+    auth_binding: Option<AuthBindingRef>,
+}
+
+/// The TUI's helper bookkeeping, shared by the spawn customizer, the
+/// event followers, the session handles and the runner.
+#[derive(Debug)]
+pub struct HelperRegistry {
+    /// TUI sessions open in this process.
+    sessions: RwLock<HashMap<SessionId, SessionModel>>,
+    /// Host-root members that are owners themselves (the mob daemon's
+    /// orchestrator), and the session each runs as: a member they spawn
+    /// works for that session.
+    roots: RwLock<HashMap<HelperKey, SessionId>>,
+    /// Whom each helper and each agent-created mob works for.
+    bindings: HelperBindings,
+    /// Running helpers, in spawn order.
+    live: Mutex<IndexMap<HelperKey, HelperTag>>,
+    updates: mpsc::UnboundedSender<HelperUpdate>,
+}
+
+impl HelperRegistry {
+    /// An empty registry, its bindings in memory only, and the receiver
+    /// of its updates.
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn new() -> (Self, mpsc::UnboundedReceiver<HelperUpdate>) {
+        Self::with_bindings(HelperBindings::in_memory())
     }
 
-    impl HelperKey {
-        /// The key of `member` in `mob`.
-        #[must_use]
-        pub fn new(mob: MobId, member: AgentIdentity) -> Self {
-            Self { mob, member }
-        }
+    /// A registry whose bindings persist under `realm_root` (an
+    /// unreadable bindings file is logged and replaced).
+    #[must_use]
+    pub fn persistent(realm_root: &Path) -> (Self, mpsc::UnboundedReceiver<HelperUpdate>) {
+        Self::with_bindings(HelperBindings::open_or_empty(realm_root))
     }
 
-    impl std::fmt::Display for HelperKey {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "{}/{}", self.mob, self.member)
-        }
+    fn with_bindings(bindings: HelperBindings) -> (Self, mpsc::UnboundedReceiver<HelperUpdate>) {
+        let (updates, rx) = mpsc::unbounded_channel();
+        (
+            Self {
+                sessions: RwLock::new(HashMap::new()),
+                roots: RwLock::new(HashMap::new()),
+                bindings,
+                live: Mutex::new(IndexMap::new()),
+                updates,
+            },
+            rx,
+        )
     }
 
-    /// The session a new helper works for, and what it inherits from it.
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub struct Owner {
-        /// The TUI session.
-        pub session: SessionId,
-        /// Labels of the helpers between the session and the new helper.
-        pub path: Vec<String>,
-        /// The model the new helper inherits (the session's, or its parent
-        /// helper's).
-        pub model: String,
-        /// The session's explicit auth binding (a configured endpoint's).
-        pub auth_binding: Option<AuthBindingRef>,
+    /// The persisted bindings (tests and diagnostics).
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn bindings(&self) -> &HelperBindings {
+        &self.bindings
     }
 
-    /// Why a helper's owner does not resolve: the spawn (or rebuild) is
-    /// refused.
-    #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-    pub enum OwnerError {
-        /// The spawning member is no helper this TUI bound.
-        #[error("the spawning member {0} works for no session of this TUI")]
-        UnknownSpawner(HelperKey),
-        /// The mob was not created by a session of this TUI.
-        #[error("mob {0} was created by no session of this TUI")]
-        UnknownMob(MobId),
-        /// The mob's creator is neither a TUI session nor a helper.
-        #[error("session {0} is neither a session of this TUI nor a helper")]
-        UnknownSession(SessionId),
-        /// The owner session is not open in this TUI.
-        #[error("session {0} is not open")]
-        OwnerNotOpen(SessionId),
-        /// A restored member has no persisted owner.
-        #[error("helper {0} has no recorded owner")]
-        UnknownMember(HelperKey),
+    /// `session` (re)opened or switched to `model` on `auth_binding`:
+    /// its helpers inherit both.
+    pub fn register_session(
+        &self,
+        session: &SessionId,
+        model: &str,
+        auth_binding: Option<&AuthBindingRef>,
+    ) {
+        self.sessions.write().insert(
+            session.clone(),
+            SessionModel {
+                model: model.to_string(),
+                auth_binding: auth_binding.cloned(),
+            },
+        );
     }
 
-    /// A TUI session's model, as helpers inherit it.
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    struct SessionModel {
-        model: String,
-        auth_binding: Option<AuthBindingRef>,
+    /// The host-root member `key` runs as `session` on `model` through
+    /// `auth_binding` and is an owner itself: helpers it spawns into its
+    /// own mob, and helpers its session delegates to, work for
+    /// `session` (see [`Self::owner_for_spawn`]).
+    pub fn register_root(
+        &self,
+        key: HelperKey,
+        session: &SessionId,
+        model: &str,
+        auth_binding: Option<&AuthBindingRef>,
+    ) {
+        self.register_session(session, model, auth_binding);
+        self.roots.write().insert(key, session.clone());
     }
 
-    /// The TUI's helper bookkeeping, shared by the spawn customizer, the
-    /// event followers, the session handles and the runner.
-    #[derive(Debug)]
-    pub struct HelperRegistry {
-        /// TUI sessions open in this process.
-        sessions: RwLock<HashMap<SessionId, SessionModel>>,
-        /// Host-root members that are owners themselves (the mob daemon's
-        /// orchestrator), and the session each runs as: a member they spawn
-        /// works for that session.
-        roots: RwLock<HashMap<HelperKey, SessionId>>,
-        /// Whom each helper and each agent-created mob works for.
-        bindings: HelperBindings,
-        /// Running helpers, in spawn order.
-        live: Mutex<IndexMap<HelperKey, HelperTag>>,
-        updates: mpsc::UnboundedSender<HelperUpdate>,
+    /// The session the host-root member `key` runs as, when it is one.
+    #[must_use]
+    pub fn root_session(&self, key: &HelperKey) -> Option<SessionId> {
+        self.roots.read().get(key).cloned()
     }
 
-    impl HelperRegistry {
-        /// An empty registry, its bindings in memory only, and the receiver
-        /// of its updates.
-        #[must_use]
-        #[cfg(any(test, feature = "test-support"))]
-        pub fn new() -> (Self, mpsc::UnboundedReceiver<HelperUpdate>) {
-            Self::with_bindings(HelperBindings::in_memory())
-        }
-
-        /// A registry whose bindings persist under `realm_root` (an
-        /// unreadable bindings file is logged and replaced).
-        #[must_use]
-        pub fn persistent(realm_root: &Path) -> (Self, mpsc::UnboundedReceiver<HelperUpdate>) {
-            Self::with_bindings(HelperBindings::open_or_empty(realm_root))
-        }
-
-        fn with_bindings(
-            bindings: HelperBindings,
-        ) -> (Self, mpsc::UnboundedReceiver<HelperUpdate>) {
-            let (updates, rx) = mpsc::unbounded_channel();
-            (
-                Self {
-                    sessions: RwLock::new(HashMap::new()),
-                    roots: RwLock::new(HashMap::new()),
-                    bindings,
-                    live: Mutex::new(IndexMap::new()),
-                    updates,
-                },
-                rx,
-            )
-        }
-
-        /// The persisted bindings (tests and diagnostics).
-        #[must_use]
-        #[cfg(any(test, feature = "test-support"))]
-        pub fn bindings(&self) -> &HelperBindings {
-            &self.bindings
-        }
-
-        /// `session` (re)opened or switched to `model` on `auth_binding`:
-        /// its helpers inherit both.
-        pub fn register_session(
-            &self,
-            session: &SessionId,
-            model: &str,
-            auth_binding: Option<&AuthBindingRef>,
-        ) {
-            self.sessions.write().insert(
-                session.clone(),
-                SessionModel {
-                    model: model.to_string(),
-                    auth_binding: auth_binding.cloned(),
-                },
-            );
-        }
-
-        /// The host-root member `key` runs as `session` on `model` through
-        /// `auth_binding` and is an owner itself: helpers it spawns into its
-        /// own mob, and helpers its session delegates to, work for
-        /// `session` (see [`Self::owner_for_spawn`]).
-        pub fn register_root(
-            &self,
-            key: HelperKey,
-            session: &SessionId,
-            model: &str,
-            auth_binding: Option<&AuthBindingRef>,
-        ) {
-            self.register_session(session, model, auth_binding);
-            self.roots.write().insert(key, session.clone());
-        }
-
-        /// The session the host-root member `key` runs as, when it is one.
-        #[must_use]
-        pub fn root_session(&self, key: &HelperKey) -> Option<SessionId> {
-            self.roots.read().get(key).cloned()
-        }
-
-        /// `session` is no longer open here: drop it, its running helpers
-        /// and its bindings from memory (the bindings file keeps them for a
-        /// later resume). New spawns for it are refused until it registers
-        /// again. Idempotent. Its helpers' mob members are not retired here
-        /// ([`crate::mobs::Helpers::cancel_for`] does that).
-        pub fn forget_session(&self, session: &SessionId) {
-            self.sessions.write().remove(session);
-            let dropped = {
-                let mut live = self.live.lock();
-                let before = live.len();
-                live.retain(|_, tag| &tag.owner != session);
-                live.len() != before
-            };
-            self.bindings.forget_owner(session);
-            if dropped {
-                self.publish_live();
-            }
-        }
-
-        /// `mob` was created for the bridge session `owner`.
-        ///
-        /// # Errors
-        ///
-        /// [`BindingsError`] when the binding cannot be persisted.
-        pub fn record_mob(&self, mob: &MobId, owner: &SessionId) -> Result<(), BindingsError> {
-            self.bindings.set_mob_owner(mob, owner)
-        }
-
-        /// Whom a helper spawned into `mob` works for: the owner of
-        /// `spawner` when a member of the mob spawned it, else the owner of
-        /// the bridge session that created the mob.
-        ///
-        /// # Errors
-        ///
-        /// [`OwnerError`] when that does not resolve to a session open here.
-        pub fn owner_for_spawn(
-            &self,
-            mob: &MobId,
-            spawner: Option<&AgentIdentity>,
-        ) -> Result<Owner, OwnerError> {
-            if let Some(spawner) = spawner {
-                let key = HelperKey::new(mob.clone(), spawner.clone());
-                if let Some(session) = self.root_session(&key) {
-                    return self.owner_of_session(&session);
-                }
-                let binding = self
-                    .bindings
-                    .member(&key)
-                    .ok_or(OwnerError::UnknownSpawner(key))?;
-                return self.inherit(&binding.tag);
-            }
-            let creator = self
-                .bindings
-                .mob_owner(mob)
-                .ok_or_else(|| OwnerError::UnknownMob(mob.clone()))?;
-            self.owner_of_session(&creator)
-        }
-
-        /// The owner of work a `session` starts: the TUI session itself, or
-        /// the owner of the helper running as it.
-        fn owner_of_session(&self, session: &SessionId) -> Result<Owner, OwnerError> {
-            if let Some(model) = self.sessions.read().get(session) {
-                return Ok(Owner {
-                    session: session.clone(),
-                    path: Vec::new(),
-                    model: model.model.clone(),
-                    auth_binding: model.auth_binding.clone(),
-                });
-            }
-            let (_, binding) = self
-                .bindings
-                .member_by_session(session)
-                .ok_or_else(|| OwnerError::UnknownSession(session.clone()))?;
-            self.inherit(&binding.tag)
-        }
-
-        /// The owner a helper below the helper `parent` inherits.
-        fn inherit(&self, parent: &HelperTag) -> Result<Owner, OwnerError> {
-            let sessions = self.sessions.read();
-            let model = sessions
-                .get(&parent.owner)
-                .ok_or_else(|| OwnerError::OwnerNotOpen(parent.owner.clone()))?;
-            Ok(Owner {
-                session: parent.owner.clone(),
-                path: parent.path.clone(),
-                model: parent.model.clone(),
-                auth_binding: model.auth_binding.clone(),
-            })
-        }
-
-        /// The persisted tag of a member being rebuilt (a restore after a
-        /// restart, or a resume).
-        ///
-        /// # Errors
-        ///
-        /// [`OwnerError::UnknownMember`] when none was recorded.
-        pub fn owner_for_resume(&self, key: &HelperKey) -> Result<HelperTag, OwnerError> {
-            self.bindings
-                .member(key)
-                .map(|binding| binding.tag)
-                .ok_or_else(|| OwnerError::UnknownMember(key.clone()))
-        }
-
-        /// The auth binding of `session`, when it is open here.
-        #[must_use]
-        pub fn auth_binding_of(&self, session: &SessionId) -> Option<AuthBindingRef> {
-            self.sessions
-                .read()
-                .get(session)
-                .and_then(|model| model.auth_binding.clone())
-        }
-
-        /// The model of `session`, when it is open here.
-        #[must_use]
-        pub fn model_of(&self, session: &SessionId) -> Option<String> {
-            self.sessions
-                .read()
-                .get(session)
-                .map(|model| model.model.clone())
-        }
-
-        /// The helper `key` is being spawned (or rebuilt) with `tag`: bind
-        /// it durably, then list it as running.
-        ///
-        /// # Errors
-        ///
-        /// [`BindingsError`] when the binding cannot be persisted (the spawn
-        /// is refused: a member whose owner would be lost on restart never
-        /// runs).
-        pub fn spawning(&self, key: HelperKey, tag: HelperTag) -> Result<(), BindingsError> {
-            self.bindings.bind(&key, &tag)?;
-            self.live.lock().insert(key, tag);
+    /// `session` is no longer open here: drop it, its running helpers
+    /// and its bindings from memory (the bindings file keeps them for a
+    /// later resume). New spawns for it are refused until it registers
+    /// again. Idempotent. Its helpers' mob members are not retired here
+    /// ([`crate::mobs::Helpers::cancel_for`] does that).
+    pub fn forget_session(&self, session: &SessionId) {
+        self.sessions.write().remove(session);
+        let dropped = {
+            let mut live = self.live.lock();
+            let before = live.len();
+            live.retain(|_, tag| &tag.owner != session);
+            live.len() != before
+        };
+        self.bindings.forget_owner(session);
+        if dropped {
             self.publish_live();
-            Ok(())
         }
+    }
 
-        /// The helper `key` runs as `session`: helpers it delegates to
-        /// inherit its owner.
-        pub fn bind_session(&self, key: &HelperKey, tag: &HelperTag, session: &SessionId) {
-            if let Err(err) = self.bindings.set_member_session(key, tag, session) {
-                tracing::warn!(helper = %key, error = %err, "cannot record the helper's session");
+    /// `mob` was created for the bridge session `owner`.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingsError`] when the binding cannot be persisted.
+    pub fn record_mob(&self, mob: &MobId, owner: &SessionId) -> Result<(), BindingsError> {
+        self.bindings.set_mob_owner(mob, owner)
+    }
+
+    /// Whom a helper spawned into `mob` works for: the owner of
+    /// `spawner` when a member of the mob spawned it, else the owner of
+    /// the bridge session that created the mob.
+    ///
+    /// # Errors
+    ///
+    /// [`OwnerError`] when that does not resolve to a session open here.
+    pub fn owner_for_spawn(
+        &self,
+        mob: &MobId,
+        spawner: Option<&AgentIdentity>,
+    ) -> Result<Owner, OwnerError> {
+        if let Some(spawner) = spawner {
+            let key = HelperKey::new(mob.clone(), spawner.clone());
+            if let Some(session) = self.root_session(&key) {
+                return self.owner_of_session(&session);
             }
+            let binding = self
+                .bindings
+                .member(&key)
+                .ok_or(OwnerError::UnknownSpawner(key))?;
+            return self.inherit(&binding.tag);
         }
+        let creator = self
+            .bindings
+            .mob_owner(mob)
+            .ok_or_else(|| OwnerError::UnknownMob(mob.clone()))?;
+        self.owner_of_session(&creator)
+    }
 
-        /// The helper `key` is not running here (its mob stopped, or it was
-        /// never observable); its binding stays for a rebuild.
-        pub fn finished(&self, key: &HelperKey) {
-            if self.live.lock().shift_remove(key).is_some() {
-                self.publish_live();
-            }
+    /// The owner of work a `session` starts: the TUI session itself, or
+    /// the owner of the helper running as it.
+    fn owner_of_session(&self, session: &SessionId) -> Result<Owner, OwnerError> {
+        if let Some(model) = self.sessions.read().get(session) {
+            return Ok(Owner {
+                session: session.clone(),
+                path: Vec::new(),
+                model: model.model.clone(),
+                auth_binding: model.auth_binding.clone(),
+            });
         }
+        let (_, binding) = self
+            .bindings
+            .member_by_session(session)
+            .ok_or_else(|| OwnerError::UnknownSession(session.clone()))?;
+        self.inherit(&binding.tag)
+    }
 
-        /// The helper `key` left its mob for good: drop it everywhere.
-        /// Idempotent.
-        pub fn retired(&self, key: &HelperKey) {
-            self.finished(key);
-            if let Err(err) = self.bindings.remove_member(key) {
-                tracing::warn!(helper = %key, error = %err, "cannot drop the helper's binding");
-            }
-        }
+    /// The owner a helper below the helper `parent` inherits.
+    fn inherit(&self, parent: &HelperTag) -> Result<Owner, OwnerError> {
+        let sessions = self.sessions.read();
+        let model = sessions
+            .get(&parent.owner)
+            .ok_or_else(|| OwnerError::OwnerNotOpen(parent.owner.clone()))?;
+        Ok(Owner {
+            session: parent.owner.clone(),
+            path: parent.path.clone(),
+            model: parent.model.clone(),
+            auth_binding: model.auth_binding.clone(),
+        })
+    }
 
-        /// `mob` was destroyed: drop its helpers everywhere. Idempotent.
-        pub fn mob_destroyed(&self, mob: &MobId) {
-            let dropped = {
-                let mut live = self.live.lock();
-                let before = live.len();
-                live.retain(|key, _| &key.mob != mob);
-                live.len() != before
-            };
-            if dropped {
-                self.publish_live();
-            }
-            if let Err(err) = self.bindings.remove_mob(mob) {
-                tracing::warn!(mob = %mob, error = %err, "cannot drop the mob's bindings");
-            }
-        }
+    /// The persisted tag of a member being rebuilt (a restore after a
+    /// restart, or a resume).
+    ///
+    /// # Errors
+    ///
+    /// [`OwnerError::UnknownMember`] when none was recorded.
+    pub fn owner_for_resume(&self, key: &HelperKey) -> Result<HelperTag, OwnerError> {
+        self.bindings
+            .member(key)
+            .map(|binding| binding.tag)
+            .ok_or_else(|| OwnerError::UnknownMember(key.clone()))
+    }
 
-        /// Running helpers that work for `owner`.
-        #[must_use]
-        pub fn live_for(&self, owner: &SessionId) -> Vec<HelperKey> {
-            self.live
-                .lock()
-                .iter()
-                .filter(|(_, tag)| &tag.owner == owner)
-                .map(|(key, _)| key.clone())
-                .collect()
-        }
+    /// The auth binding of `session`, when it is open here.
+    #[must_use]
+    pub fn auth_binding_of(&self, session: &SessionId) -> Option<AuthBindingRef> {
+        self.sessions
+            .read()
+            .get(session)
+            .and_then(|model| model.auth_binding.clone())
+    }
 
-        /// Running helpers.
-        #[must_use]
-        pub fn live(&self) -> Vec<HelperStatus> {
-            self.live
-                .lock()
-                .values()
-                .map(|tag| HelperStatus {
-                    label: tag.label().to_string(),
-                    model: tag.model.clone(),
-                    depth: tag.depth(),
-                })
-                .collect()
-        }
+    /// The model of `session`, when it is open here.
+    #[must_use]
+    pub fn model_of(&self, session: &SessionId) -> Option<String> {
+        self.sessions
+            .read()
+            .get(session)
+            .map(|model| model.model.clone())
+    }
 
-        /// Forward a helper event to the UI.
-        pub fn emit(&self, tag: &HelperTag, event: AgentEvent) {
-            let _ = self.updates.send(HelperUpdate::Event(tag.scope(event)));
-        }
+    /// The helper `key` is being spawned (or rebuilt) with `tag`: bind
+    /// it durably, then list it as running.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingsError`] when the binding cannot be persisted (the spawn
+    /// is refused: a member whose owner would be lost on restart never
+    /// runs).
+    pub fn spawning(&self, key: HelperKey, tag: HelperTag) -> Result<(), BindingsError> {
+        self.bindings.bind(&key, &tag)?;
+        self.live.lock().insert(key, tag);
+        self.publish_live();
+        Ok(())
+    }
 
-        /// A helper's events cannot be followed: report its usage as
-        /// unmeasured.
-        pub fn follow_failed(&self, tag: &HelperTag) {
-            let _ = self
-                .updates
-                .send(HelperUpdate::Unmeasured(tag.label().to_string()));
+    /// The helper `key` runs as `session`: helpers it delegates to
+    /// inherit its owner.
+    pub fn bind_session(&self, key: &HelperKey, tag: &HelperTag, session: &SessionId) {
+        if let Err(err) = self.bindings.set_member_session(key, tag, session) {
+            tracing::warn!(helper = %key, error = %err, "cannot record the helper's session");
         }
+    }
 
-        fn publish_live(&self) {
-            let _ = self.updates.send(HelperUpdate::Live(self.live()));
+    /// The helper `key` is not running here (its mob stopped, or it was
+    /// never observable); its binding stays for a rebuild.
+    pub fn finished(&self, key: &HelperKey) {
+        if self.live.lock().shift_remove(key).is_some() {
+            self.publish_live();
         }
+    }
+
+    /// The helper `key` left its mob for good: drop it everywhere.
+    /// Idempotent.
+    pub fn retired(&self, key: &HelperKey) {
+        self.finished(key);
+        if let Err(err) = self.bindings.remove_member(key) {
+            tracing::warn!(helper = %key, error = %err, "cannot drop the helper's binding");
+        }
+    }
+
+    /// `mob` was destroyed: drop its helpers everywhere. Idempotent.
+    pub fn mob_destroyed(&self, mob: &MobId) {
+        let dropped = {
+            let mut live = self.live.lock();
+            let before = live.len();
+            live.retain(|key, _| &key.mob != mob);
+            live.len() != before
+        };
+        if dropped {
+            self.publish_live();
+        }
+        if let Err(err) = self.bindings.remove_mob(mob) {
+            tracing::warn!(mob = %mob, error = %err, "cannot drop the mob's bindings");
+        }
+    }
+
+    /// Running helpers that work for `owner`.
+    #[must_use]
+    pub fn live_for(&self, owner: &SessionId) -> Vec<HelperKey> {
+        self.live
+            .lock()
+            .iter()
+            .filter(|(_, tag)| &tag.owner == owner)
+            .map(|(key, _)| key.clone())
+            .collect()
+    }
+
+    /// Running helpers.
+    #[must_use]
+    pub fn live(&self) -> Vec<HelperStatus> {
+        self.live
+            .lock()
+            .values()
+            .map(|tag| HelperStatus {
+                label: tag.label().to_string(),
+                model: tag.model.clone(),
+                depth: tag.depth(),
+            })
+            .collect()
+    }
+
+    /// Forward a helper event to the UI.
+    pub fn emit(&self, tag: &HelperTag, event: AgentEvent) {
+        let _ = self.updates.send(HelperUpdate::Event(tag.scope(event)));
+    }
+
+    /// A helper's events cannot be followed: report its usage as
+    /// unmeasured.
+    pub fn follow_failed(&self, tag: &HelperTag) {
+        let _ = self
+            .updates
+            .send(HelperUpdate::Unmeasured(tag.label().to_string()));
+    }
+
+    fn publish_live(&self) {
+        let _ = self.updates.send(HelperUpdate::Live(self.live()));
     }
 }
 
@@ -500,7 +486,6 @@ mod owned {
 mod tests {
     use super::*;
 
-    #[cfg(feature = "mob")]
     fn binding() -> meerkat_core::AuthBindingRef {
         meerkat_core::AuthBindingRef {
             realm: meerkat_core::RealmId::parse(crate::endpoints::ENDPOINT_REALM).unwrap(),
@@ -510,7 +495,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "mob")]
     #[test]
     fn a_host_root_member_owns_what_it_spawns() {
         use meerkat_mob::{AgentIdentity, MobId};
@@ -541,7 +525,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "mob")]
     #[test]
     fn owners_follow_mob_creators_spawners_and_nesting() {
         use meerkat_mob::{AgentIdentity, MobId};
@@ -626,7 +609,6 @@ mod tests {
         assert_eq!(lives, vec![1, 0]);
     }
 
-    #[cfg(feature = "mob")]
     #[test]
     fn forgetting_a_session_prunes_its_helpers() {
         use meerkat_mob::{AgentIdentity, MobId};
@@ -656,7 +638,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "mob")]
     #[test]
     fn a_helper_that_cannot_be_followed_is_reported_unmeasured() {
         let (registry, mut rx) = HelperRegistry::new();

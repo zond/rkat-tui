@@ -7,7 +7,6 @@
 //! the cost breakdown and the sidecar; an interrupt leaves no running
 //! helper; a configured endpoint's session hands its model and binding on.
 
-#![cfg(feature = "mob")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;

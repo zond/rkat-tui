@@ -171,12 +171,8 @@ pub enum TuiError {
     Confinement(#[from] crate::bootstrap::confinement::ConfinementError),
     /// The workspace daemon's side failed (its endpoint file cannot be
     /// placed, or it cannot start).
-    #[cfg(feature = "mob")]
     #[error(transparent)]
     Daemon(Box<crate::daemon::DaemonError>),
-    /// `--attach` in a build without the `mob` feature.
-    #[error("this rkat-tui was built without attach mode (the `mob` feature)")]
-    AttachUnsupported,
     /// `--resume` or `--continue` with attach mode: the daemon's
     /// orchestrator runs its own current conversation.
     #[error(
@@ -212,7 +208,6 @@ impl TuiError {
             | Self::Approval(_)
             | Self::Confinement(_)
             | Self::ConfigDirCollision { .. }
-            | Self::AttachUnsupported
             | Self::AttachResume { .. }
             | Self::NotATerminal => 2,
             Self::Io { .. }
@@ -230,9 +225,8 @@ impl TuiError {
             | Self::Runtime(_)
             | Self::EventStream(_)
             | Self::Admission(_)
+            | Self::Daemon(_)
             | Self::Ui(_) => 1,
-            #[cfg(feature = "mob")]
-            Self::Daemon(_) => 1,
         }
     }
 }

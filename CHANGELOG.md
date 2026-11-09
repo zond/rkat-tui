@@ -270,6 +270,8 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Changed
 
+- The `mob` and `mcp` cargo features are gone: helpers, MCP servers, the
+  `rkat-tui-mob` daemon and attach mode are always built.
 - `/remember`, `/memory`, `/export`, `!` shell mode, the cost readout and
   the model picker are one implementation shared by the in-process and the
   attach runner; their notices now read the same in both modes ("the agent

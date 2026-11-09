@@ -20,10 +20,8 @@
 //! forks do not nest.
 
 pub mod context;
-#[cfg(feature = "mob")]
 mod dispatcher;
 
-#[cfg(feature = "mob")]
 pub use dispatcher::ForkToolDispatcher;
 
 /// Tool name.

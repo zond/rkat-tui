@@ -80,9 +80,7 @@ use crate::mobs::Helpers;
 use crate::models::{ModelCache, ModelEntry, ModelLister, live_lister};
 use crate::pricing::PricingSetup;
 use crate::thinking::ThinkingTable;
-#[cfg(feature = "mob")]
 use crate::tools::FileToolDispatcher;
-#[cfg(feature = "mob")]
 use meerkat_core::AgentToolDispatcher;
 use meerkat_core::lifecycle::run_primitive::AnthropicThinkingConfig;
 
@@ -836,7 +834,6 @@ type MobToolsSlot = Arc<std::sync::RwLock<Option<Arc<dyn meerkat_core::service::
 
 /// Host helpers on the composed service and offer their tools to every
 /// session build (see [`crate::mobs`]).
-#[cfg(feature = "mob")]
 #[allow(clippy::too_many_arguments)]
 fn start_helpers(
     service: &Arc<TuiService>,
@@ -870,31 +867,14 @@ fn start_helpers(
     Ok(Some(helpers))
 }
 
-/// Without the `mob` feature no helpers are hosted.
-#[cfg(not(feature = "mob"))]
-#[allow(clippy::too_many_arguments)]
-fn start_helpers(
-    _service: &Arc<TuiService>,
-    _machine: &Arc<MeerkatMachine>,
-    _scope: &RuntimeScope,
-    _engine: &Arc<crate::approval::ApprovalEngine>,
-    _llm_override: Option<Arc<dyn LlmClient>>,
-    _slot: &MobToolsSlot,
-    _workgraph: meerkat::WorkGraphService,
-    _shell_env: Option<HashMap<String, String>>,
-    _max_depth: u8,
-) -> Result<Option<Arc<Helpers>>, TuiError> {
-    Ok(None)
-}
-
 /// The agent factory every session is built with.
 ///
 /// `project_root` and `context_root` are the workspace, so the factory's
 /// native `AGENTS.md`, skills and hooks discovery see the project. Builtin
 /// tools and the shell are on: every call passes the approval gate each
 /// session installs, and the shell runs under the OS confinement the caller
-/// installs ([`confinement::plan`]). Mob tools are on with the `mob` feature
-/// (helpers, see [`crate::mobs`]); semantic memory when `toggles.memory`
+/// installs ([`confinement::plan`]). Mob tools are on (helpers, see
+/// [`crate::mobs`]); semantic memory when `toggles.memory`
 /// (the index lives under `store_path`, see [`memory_dir`]). The file
 /// and note tools come in per session as external tools (see
 /// [`crate::session`]). The factory's `runtime_root` is the realm, so every
@@ -929,7 +909,7 @@ fn build_factory(
         .builtins(true)
         .shell(true)
         .memory(toggles.memory)
-        .mob(cfg!(feature = "mob"));
+        .mob(true);
     if let Some(user_root) = &scope.user_config_root {
         factory = factory.user_config_root(user_root.clone());
     }

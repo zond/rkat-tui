@@ -4,7 +4,6 @@
 //! committed messages), another attached client follows the switch, and
 //! `/rewind` says why it is not offered.
 
-#![cfg(feature = "mob")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;

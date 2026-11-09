@@ -22,7 +22,6 @@ path = "src/main.rs"
 [[bin]]
 name = "rkat-tui-mob"
 path = "src/bin/rkat-tui-mob.rs"
-required-features = ["mob"]
 
 [workspace]
 
@@ -34,7 +33,7 @@ required-features = ["mob"]
 # One crates.io release for every `meerkat-*` line; 0.9.11 carries every
 # engine fix the application needs. Moving the version on every line is the
 # pin move.
-meerkat = { version = "0.9.11", features = ["anthropic", "openai", "gemini", "session-store", "jsonl-store", "session-compaction", "memory-store-session", "skills", "comms"] }
+meerkat = { version = "0.9.11", features = ["anthropic", "openai", "gemini", "session-store", "jsonl-store", "session-compaction", "memory-store-session", "skills", "comms", "mcp"] }
 meerkat-core = { version = "0.9.11" }
 meerkat-runtime = { version = "0.9.11", features = ["sqlite-store"] }
 meerkat-store = { version = "0.9.11" }
@@ -45,15 +44,15 @@ meerkat-models = { version = "0.9.11" }
 meerkat-llm-core = { version = "0.9.11" }
 meerkat-memory = { version = "0.9.11" }
 meerkat-sandbox = { version = "0.9.11" }
-meerkat-mob = { version = "0.9.11", optional = true }
-meerkat-mob-mcp = { version = "0.9.11", optional = true }
+meerkat-mob = { version = "0.9.11" }
+meerkat-mob-mcp = { version = "0.9.11" }
 # The `rkat-tui-mob` daemon serves Meerkat's own JSON-RPC method router
 # (`MethodRouter`, `RpcServer`, `SessionRuntime`) over loopback TCP. Default
 # features off: no realtime voice and no governed-realm host.
-meerkat-rpc = { version = "0.9.11", default-features = false, features = ["mob", "mcp", "comms"], optional = true }
+meerkat-rpc = { version = "0.9.11", default-features = false, features = ["mob", "mcp", "comms"] }
 # The attach client (`rkat-tui --attach`) reads the daemon's replies with the
 # engine's own wire types (`events/list_since`, `events/snapshot`).
-meerkat-contracts = { version = "0.9.11", optional = true }
+meerkat-contracts = { version = "0.9.11" }
 
 # Async + serialization
 tokio = { version = "1.43", features = ["full"] }
@@ -96,12 +95,6 @@ similar = "2"
 nix = { version = "0.29", features = ["signal", "process", "fs", "user"] }
 
 [features]
-default = ["mcp", "mob"]
-mcp = ["meerkat/mcp"]
-# Sub-agents run as mob members (`delegate` / `fork_off`).
-# The `rkat-tui-mob` daemon needs it too (it hosts the orchestrator as a
-# mob member).
-mob = ["dep:meerkat-mob", "dep:meerkat-mob-mcp", "dep:meerkat-rpc", "dep:meerkat-contracts"]
 # Makes the internal modules public and adds `harness` (the headless
 # runner) for this crate's own integration tests. Not a stable API.
 test-support = []
