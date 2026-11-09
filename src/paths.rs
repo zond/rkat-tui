@@ -234,12 +234,7 @@ impl ProjectRoot {
         if raw.contains('\0') {
             return Err(PathError::NulByte);
         }
-        let expanded = expand_tilde(raw)?;
-        let joined = if expanded.is_absolute() {
-            expanded
-        } else {
-            self.root.join(expanded)
-        };
+        let joined = self.join_literal(raw)?;
         let abs = resolve_physically(&joined)?;
         let relative = abs.strip_prefix(&self.root).ok().map(Path::to_path_buf);
         let protected = relative
@@ -254,6 +249,23 @@ impl ProjectRoot {
             relative,
             protected: protected || sealed,
             sealed,
+        })
+    }
+
+    /// `raw` with a leading `~` expanded and joined onto the root, *without*
+    /// resolving `.`, `..` or symlinks (the file tools inspect the final
+    /// component of this path with `lstat`). [`Self::resolve`] starts from it.
+    ///
+    /// # Errors
+    ///
+    /// [`PathError::NoHome`] when `raw` starts with `~` and the home
+    /// directory is unknown.
+    pub fn join_literal(&self, raw: &str) -> Result<PathBuf, PathError> {
+        let expanded = expand_tilde(raw)?;
+        Ok(if expanded.is_absolute() {
+            expanded
+        } else {
+            self.root.join(expanded)
         })
     }
 
@@ -593,6 +605,31 @@ mod tests {
         std::fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
         let root = ProjectRoot::new(dir.path()).unwrap();
         (dir, root)
+    }
+
+    /// The file tools' literal path and the resolver share one tilde
+    /// expansion and one join; the literal path keeps `..` and symlinks.
+    #[test]
+    fn join_literal_expands_tilde_and_keeps_the_path_literal() {
+        let (_dir, root) = root();
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(root.join_literal("~").unwrap(), home);
+        assert_eq!(
+            root.join_literal("~/notes.md").unwrap(),
+            home.join("notes.md")
+        );
+        assert_eq!(
+            root.join_literal("src/../src/main.rs").unwrap(),
+            root.as_path().join("src/../src/main.rs")
+        );
+        assert_eq!(
+            root.join_literal("/etc/hosts").unwrap(),
+            PathBuf::from("/etc/hosts")
+        );
+        assert_eq!(
+            root.join_literal("~other/x").unwrap(),
+            root.as_path().join("~other/x")
+        );
     }
 
     #[test]

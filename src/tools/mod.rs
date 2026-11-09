@@ -277,7 +277,7 @@ impl Shared {
         resolved: &ResolvedPath,
     ) -> Result<Option<String>, ToolFailure> {
         let display = self.display(resolved);
-        let literal = self.literal_path(raw);
+        let literal = self.root.join_literal(raw).ok();
         for candidate in [literal.as_deref(), Some(resolved.abs.as_path())]
             .into_iter()
             .flatten()
@@ -376,23 +376,6 @@ impl Shared {
         let diff = FileDiff::new(call.id, PathBuf::from(&display), old, content);
         self.emit_diff(diff.clone());
         Ok(diff)
-    }
-
-    /// The model-supplied path joined onto the root *without* resolving
-    /// symlinks, so the final component can be inspected with `lstat`.
-    fn literal_path(&self, raw: &str) -> Option<PathBuf> {
-        let expanded = if raw == "~" {
-            dirs::home_dir()?
-        } else if let Some(rest) = raw.strip_prefix("~/") {
-            dirs::home_dir()?.join(rest)
-        } else {
-            PathBuf::from(raw)
-        };
-        Some(if expanded.is_absolute() {
-            expanded
-        } else {
-            self.root.as_path().join(expanded)
-        })
     }
 }
 

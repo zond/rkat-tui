@@ -73,7 +73,8 @@ pub enum Action {
     /// Ctrl-S: stash the input, or restore the stash on an empty input
     /// (after Ctrl-X it completes the send-now chord instead).
     Stash,
-    /// Shift+Tab: switch auto mode off → on → off (as `/auto on|off`).
+    /// Shift+Tab: cycle the permission mode manual → accept edits → plan →
+    /// auto → manual (as `/mode`; see `PermissionMode::next`).
     CycleMode,
     /// Ctrl-L: clear the screen and repaint everything.
     Redraw,
