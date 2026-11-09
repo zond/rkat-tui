@@ -237,6 +237,14 @@ async fn a_reviewed_call_shows_the_dialog_and_runs_after_approve() {
         std::fs::read_to_string(ws.root.join("a.txt")).unwrap(),
         "APPROVED"
     );
+    // The decision is the record: the realm's approval store holds none.
+    let listed = daemon
+        .connect()
+        .await
+        .call("approval/list", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(listed["approvals"], json!([]), "{listed}");
     client.quit().await;
     daemon.stop().await;
 }

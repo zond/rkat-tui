@@ -6,6 +6,10 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Added
 
+- The `rkat-tui-mob` daemon no longer writes each escalation to the realm's
+  approval store (`approvals.json`) as well as holding it as a durable
+  decision: the decision is its one record. Records an earlier daemon left
+  pending there are ignored, with a start-up log line; they expire.
 - `/compact now` in-process asks the engine to compact at the session's next
   model call (`MeerkatMachine::request_compaction`) instead of rebuilding the
   session twice around a one-token threshold; a long tool loop no longer

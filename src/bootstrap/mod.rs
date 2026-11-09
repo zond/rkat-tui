@@ -417,7 +417,15 @@ pub async fn bootstrap_with(
         daemon_principal: _,
         notices,
         llm_override,
-    } = assemble(scope, config, args, options, LEASE_SURFACE).await?;
+    } = assemble(
+        scope,
+        config,
+        args,
+        options,
+        LEASE_SURFACE,
+        approval::EscalationRecords::Ledger,
+    )
+    .await?;
     let mut builder = FactoryAgentBuilder::new_with_config_store(
         factory,
         effective.clone(),
@@ -582,7 +590,7 @@ pub fn attach_mode(args: &Args) -> Result<Option<crate::cli::AttachMode>, TuiErr
 /// Resolve endpoints, model, confinement, trust, approval engine and MCP
 /// set, open the realm persistence, take the realm lease under
 /// `lease_surface` and build the factory: everything [`bootstrap_with`]
-/// and the mob daemon share.
+/// and the mob daemon share. `records` is where escalations are recorded.
 ///
 /// # Errors
 ///
@@ -593,6 +601,7 @@ pub async fn assemble(
     args: &Args,
     options: BootstrapOptions,
     lease_surface: &str,
+    records: approval::EscalationRecords,
 ) -> Result<Assembled, TuiError> {
     let (mut layered, mut approval_notices) = approval::load_layers(&scope, args)?;
     let realm = RealmId::parse(scope.realm_id.clone()).ok();
@@ -717,7 +726,7 @@ pub async fn assemble(
             llm_override: options.llm_override.clone(),
         },
         &options.approval,
-        persistence.approval_issuer(),
+        records.ledger(persistence.approval_issuer()),
         trust,
     )
     .await?;

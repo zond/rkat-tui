@@ -39,8 +39,12 @@
 //!
 //! A decision's waiting dispatch lives in this process: a decision a
 //! previous daemon left open is withdrawn at start
-//! ([`Decisions::withdraw_leftovers`]), as the ledger denies the approval
-//! records a previous process left pending.
+//! ([`Decisions::withdraw_leftovers`]), as the in-process ledger denies the
+//! approval records a previous process left pending. The decisions are the
+//! daemon's only record of its escalations: its engine keeps no ledger
+//! ([`crate::bootstrap::approval::EscalationRecords::Decisions`]), and the
+//! records an earlier daemon left in the realm's approval store are ignored
+//! (a start-up log line counts them; they expire).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

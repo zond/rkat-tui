@@ -47,6 +47,43 @@ pub struct ApprovalOverrides {
     pub escalation_timeout: Option<Duration>,
 }
 
+/// Where a host keeps the record of its escalations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EscalationRecords {
+    /// The in-process TUI: an approval record in the realm's store per
+    /// escalation ([`EscalationLedger`]), denied as a leftover on resume.
+    Ledger,
+    /// The `rkat-tui-mob` daemon: its durable decisions are the record
+    /// (`crate::daemon::decisions`); the engine keeps no ledger.
+    Decisions,
+}
+
+impl EscalationRecords {
+    /// The ledger the approval engine keeps over the realm's approval
+    /// `issuer`, if any. The daemon keeps none, and logs how many records
+    /// an earlier daemon left pending there (ignored; they expire).
+    #[must_use]
+    pub fn ledger(self, issuer: meerkat_core::ApprovalService) -> Option<EscalationLedger> {
+        let ledger = EscalationLedger::new(issuer);
+        match self {
+            Self::Ledger => Some(ledger),
+            Self::Decisions => {
+                match ledger.pending_gate_records() {
+                    Ok(0) => {}
+                    Ok(left) => tracing::info!(
+                        left,
+                        "ignoring the escalation records an earlier rkat-tui-mob left pending in the realm's approval store (the daemon's record is its durable decisions); they expire"
+                    ),
+                    Err(err) => {
+                        tracing::debug!(error = %err, "cannot read the realm's approval store");
+                    }
+                }
+                None
+            }
+        }
+    }
+}
+
 /// The approval engine plus what the runner serves.
 pub struct ApprovalParts {
     /// The engine every session's gate uses.
@@ -145,7 +182,7 @@ pub(crate) async fn build(
     mut notices: Vec<String>,
     source: ClassifierSource<'_>,
     overrides: &ApprovalOverrides,
-    issuer: meerkat_core::ApprovalService,
+    ledger: Option<EscalationLedger>,
     trust: Arc<parking_lot::Mutex<HostTrustRecord>>,
 ) -> Result<ApprovalParts, TuiError> {
     let realm_dir = scope.realm_root();
@@ -168,14 +205,13 @@ pub(crate) async fn build(
             classifier
         }
     };
-    let ledger = EscalationLedger::new(issuer);
     let engine = ApprovalEngine::new(ApprovalConfig {
         root: scope.project_root.clone(),
         rules: layered.rules,
         settings: layered.settings,
         classifier,
         broker: Some(broker),
-        ledger: Some(ledger),
+        ledger,
         escalation_timeout: overrides
             .escalation_timeout
             .unwrap_or(DEFAULT_ESCALATION_TIMEOUT),

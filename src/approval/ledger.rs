@@ -110,6 +110,22 @@ impl EscalationLedger {
         Self { service }
     }
 
+    /// How many records the TUI's gate left pending, of every session.
+    ///
+    /// # Errors
+    ///
+    /// [`LedgerError`] when the records cannot be read.
+    pub fn pending_gate_records(&self) -> Result<usize, LedgerError> {
+        let requester = ApprovalPrincipalId::new(REQUESTER)?;
+        let pending = self.service.list(ApprovalListFilter {
+            status: Some(ApprovalStatus::Pending),
+        })?;
+        Ok(pending
+            .iter()
+            .filter(|record| record.requester == requester)
+            .count())
+    }
+
     /// Deny every record the TUI's gate left pending for `session_id` (an
     /// earlier process ended before its human answered; the dispatch it
     /// waited for is gone). Records of other sessions, and records other
@@ -394,6 +410,11 @@ mod tests {
 
         // A new process opens `session`: only its own gate's leftover is denied.
         let reopened = EscalationLedger::new(service);
+        assert_eq!(
+            reopened.pending_gate_records().unwrap(),
+            2,
+            "the gate's own, of every session"
+        );
         assert_eq!(reopened.deny_leftovers(&session).unwrap(), 1);
         assert_eq!(reopened.deny_leftovers(&session).unwrap(), 0);
         let records = reopened.records().unwrap();

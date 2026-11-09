@@ -195,9 +195,10 @@ the rule it adds; an action with no rule subject shows
 for the call's first subject to the realm `tui.toml`: for a file write the
 project-relative path (`write_file` `.env.local`), which matches that file
 only, and only when every target of the call matches it. `/auto resume` resumes; `/auto` shows the
-mode and counters. Every escalation is recorded through the realm's own
-approval issuer (`approvals.json`); when that record cannot be written the
-action is denied.
+mode and counters. In-process, every escalation is recorded through the
+realm's own approval issuer (`approvals.json`); when that record cannot be
+written the action is denied. In attach mode the daemon's durable decision
+is the record instead.
 
 ### Permission modes
 

@@ -384,8 +384,15 @@ impl Daemon {
         };
         // Refuse before taking the realm: a live daemon keeps its endpoint.
         endpoint::check_stale(&file).await?;
-        let parts =
-            bootstrap::assemble(scope, config, args, options.bootstrap, LEASE_SURFACE).await?;
+        let parts = bootstrap::assemble(
+            scope,
+            config,
+            args,
+            options.bootstrap,
+            LEASE_SURFACE,
+            bootstrap::approval::EscalationRecords::Decisions,
+        )
+        .await?;
         check_endpoint_private(&parts.confinement, &file)?;
         let composed = engine::compose(parts, options.policy)?;
         let orchestrator = orchestrator::ensure(&composed.state, &composed.root).await?;

@@ -1,8 +1,9 @@
 //! The approval gate on the daemon side (P3 of `docs/mob-split.md`).
 //!
 //! The daemon runs the same [`ApprovalEngine`] the in-process TUI does
-//! (tiers, rules, classifier, permission modes, escalation timeouts, the
-//! ledger), built by the shared bootstrap. Three things differ, all here:
+//! (tiers, rules, classifier, permission modes, escalation timeouts), built
+//! by the shared bootstrap without the escalation ledger: the durable
+//! decisions are the record. Three things differ, all here:
 //!
 //! - [`RootGate`]: the orchestrator's `ToolDispatchAdmission`. It is the
 //!   in-process [`ApprovalGate`], resolved per call to the orchestrator's
@@ -13,8 +14,7 @@
 //!   as it opens and decides with `decision/decide`, and hands the engine
 //!   the [`crate::approval::escalation::HumanDecision`] the decision
 //!   carries ([`crate::approval::remote::answered`]). The engine keeps its
-//!   own timeout, serialisation and ledger (the approval record of the
-//!   escalation, settled with the human's answer).
+//!   own timeout and serialisation.
 //! - [`DaemonToolOrigins`]: where a session's tools come from. The engine's
 //!   published tool definitions are not reachable through the RPC
 //!   runtime's public API (only the command-based read, which answers
