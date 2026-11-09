@@ -39,12 +39,8 @@
 //!
 //! A decision's waiting dispatch lives in this process: a decision a
 //! previous daemon left open is withdrawn at start
-//! ([`Decisions::withdraw_leftovers`]), as the in-process ledger denies the
-//! approval records a previous process left pending. The decisions are the
-//! daemon's only record of its escalations: its engine keeps no ledger
-//! ([`crate::bootstrap::approval::EscalationRecords::Decisions`]), and the
-//! records an earlier daemon left in the realm's approval store are ignored
-//! (a start-up log line counts them; they expire).
+//! ([`Decisions::withdraw_leftovers`]). The decisions are the daemon's only
+//! record of its escalations: the approval engine keeps none of its own.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -97,7 +93,7 @@ pub const INGRESS: &str = "rkat-tui-mob";
 pub const TRUST_DOMAIN: &str = "rkat-tui.local";
 
 /// The requester of every decision: the TUI's approval gate.
-pub const GATE: &str = crate::approval::ledger::REQUESTER;
+pub const GATE: &str = "rkat-tui-approval-gate";
 
 /// The notification that tells a client a decision it was shown ended.
 pub const ENDED: &str = "rkat/decision_ended";
@@ -567,15 +563,12 @@ impl Decisions {
             prompt: prompt.recorded(),
         };
         let rendering = serde_json::to_string(&shown).map_err(|err| err.to_string())?;
-        let subject = match &prompt.record {
-            Some(record) => format!("escalation:{record}"),
-            None => format!(
-                "escalation:{}:{}:{}",
-                prompt.session_id,
-                std::process::id(),
-                prompt.id
-            ),
-        };
+        let subject = format!(
+            "escalation:{}:{}:{}",
+            prompt.session_id,
+            std::process::id(),
+            prompt.id
+        );
         let now = SystemDecisionClock
             .now_ms()
             .map_err(|err| err.to_string())?;
@@ -929,7 +922,6 @@ mod tests {
             subjects: vec!["ls".into()],
             classifier_hint: None,
             policy_reason: Some("manual mode asks".into()),
-            record: None,
         }
     }
 

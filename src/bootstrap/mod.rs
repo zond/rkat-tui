@@ -379,8 +379,8 @@ pub async fn bootstrap(args: &Args, options: BootstrapOptions) -> Result<Runtime
 /// [`TuiError::Endpoint`] when no start-up model can be chosen,
 /// [`TuiError::Confinement`] when `--confinement` cannot be enforced,
 /// [`TuiError::Persistence`] when the realm cannot be opened,
-/// [`TuiError::Overlay`] / [`TuiError::Approval`] when the approval rules or
-/// ledger cannot be loaded, and [`TuiError::Composition`] when the runtime
+/// [`TuiError::Overlay`] / [`TuiError::Approval`] when the approval rules
+/// cannot be loaded, and [`TuiError::Composition`] when the runtime
 /// refuses the composition.
 pub async fn bootstrap_with(
     scope: RuntimeScope,
@@ -415,15 +415,7 @@ pub async fn bootstrap_with(
         daemon_principal: _,
         notices,
         llm_override,
-    } = assemble(
-        scope,
-        config,
-        args,
-        options,
-        LEASE_SURFACE,
-        approval::EscalationRecords::Ledger,
-    )
-    .await?;
+    } = assemble(scope, config, args, options, LEASE_SURFACE).await?;
     let mut builder = FactoryAgentBuilder::new_with_config_store(
         factory,
         effective.clone(),
@@ -599,7 +591,6 @@ pub async fn assemble(
     args: &Args,
     options: BootstrapOptions,
     lease_surface: &str,
-    records: approval::EscalationRecords,
 ) -> Result<Assembled, TuiError> {
     let (mut layered, mut approval_notices) = approval::load_layers(&scope, args)?;
     let realm = RealmId::parse(scope.realm_id.clone()).ok();
@@ -722,7 +713,6 @@ pub async fn assemble(
             llm_override: options.llm_override.clone(),
         },
         &options.approval,
-        records.ledger(persistence.approval_issuer()),
         trust,
     )
     .await?;

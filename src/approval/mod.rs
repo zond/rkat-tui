@@ -26,9 +26,8 @@
 //! [`engine::ApprovalEngine`] joins the parts below: tier policy
 //! ([`policy`]), rules and settings ([`rules`]), shell analysis ([`shell`]),
 //! the classifier and its prompts ([`classifier`], [`prompts`]), denial
-//! counters ([`counters`]), the escalation broker ([`escalation`]), the
-//! durable escalation ledger ([`ledger`]) and the reasoning-blind classifier
-//! transcript ([`transcript`]).
+//! counters ([`counters`]), the escalation broker ([`escalation`]) and the
+//! reasoning-blind classifier transcript ([`transcript`]).
 
 pub mod admission;
 pub mod catalog;
@@ -37,7 +36,6 @@ pub mod counters;
 pub mod desk;
 pub mod engine;
 pub mod escalation;
-pub mod ledger;
 pub mod mode;
 pub mod patch_targets;
 pub mod policy;
@@ -149,9 +147,6 @@ pub enum DenyReason {
     ClassifierUnavailable(String),
     /// Nobody answered the escalation in time.
     EscalationTimedOut,
-    /// The escalation (or the human's answer) could not be recorded in the
-    /// realm's approval store: the call fails closed.
-    LedgerUnavailable(String),
 }
 
 impl DenyReason {
@@ -162,8 +157,7 @@ impl DenyReason {
             Self::UserRule { .. }
             | Self::Sealed { .. }
             | Self::PlanMode
-            | Self::ClassifierUnavailable(_)
-            | Self::LedgerUnavailable(_) => Decider::Policy,
+            | Self::ClassifierUnavailable(_) => Decider::Policy,
             Self::Classifier { .. } => Decider::Classifier,
             Self::Human { .. } | Self::Stopped | Self::EscalationTimedOut => Decider::Human,
         }
@@ -205,9 +199,6 @@ impl fmt::Display for DenyReason {
             }
             Self::EscalationTimedOut => {
                 f.write_str("the user did not answer the approval request in time")
-            }
-            Self::LedgerUnavailable(err) => {
-                write!(f, "the approval request could not be recorded ({err})")
             }
         }
     }
@@ -273,8 +264,8 @@ pub enum ApprovalEvent {
     /// An escalation ended without the human's answer (it timed out or its
     /// tool call was abandoned): the dialog for it should close.
     EscalationWithdrawn(u64),
-    /// Something the human should know about the approval machinery (a
-    /// ledger write failed, a rules file was not trusted).
+    /// Something the human should know about the approval machinery (an
+    /// allow rule could not be saved, a rules file was not trusted).
     Notice(String),
 }
 
@@ -284,9 +275,6 @@ pub enum ApprovalError {
     /// Rules could not be loaded or persisted.
     #[error(transparent)]
     Rules(#[from] RulesError),
-    /// The escalation ledger could not be opened.
-    #[error(transparent)]
-    Ledger(#[from] ledger::LedgerError),
 }
 
 #[cfg(test)]

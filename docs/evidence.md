@@ -2483,3 +2483,38 @@ Every `meerkat-*` dependency now names `version = "0.9.11"` from crates.io;
 the lock has no git source left. The tag `v0.9.11` (`97699863ea`) contains
 the previous pin `bffcd8f98a`; there was no API drift (`cargo check
 --all-targets --all-features` compiled unchanged).
+
+## The approval engine after the senior review (2026-11-09)
+
+### The in-process escalation ledger is gone
+
+**Removed (2026-11-09):** `src/approval/ledger.rs` (`EscalationLedger`),
+`bootstrap::approval::EscalationRecords`, `DenyReason::LedgerUnavailable`,
+`ApprovalError::Ledger` and `EscalationPrompt.record`.
+
+What it was for: every escalation was first requested as an approval record
+in the realm's `approvals.json` (through `PersistenceBundle::approval_issuer`),
+and the human's answer, a timeout or an abandoned call decided it; on resume
+the records an earlier process left pending were denied. It was written for
+the first daemon design, in which a client decided the record itself with
+`approval/decide` and the engine waited for it there. P3b replaced that with
+the engine's durable decisions (`daemon::decisions`), which are the daemon's
+record, and the daemon already ran without a ledger. In-process, nothing read
+the records afterwards except the ledger's own leftover clean-up: it was
+write-only. And it failed closed: a record write that failed after the human
+answered turned the human's "allow" into `LedgerUnavailable`, a denial
+(`engine.rs` around `escalate`).
+
+Now the human's answer is the decision. The dialog's withdrawal on a timeout
+or an abandoned call stays (`PendingEscalation`'s `Drop`: the dispatcher can
+drop the admission future). Records an older build left pending in
+`approvals.json` are not touched; they carry the escalation timeout as their
+expiry. The daemon's decision subject is always
+`escalation:<session>:<pid>:<id>` now (it used the ledger record's id when
+there was one, which there never was in the daemon).
+
+Tests: `approval::engine::tests::a_human_allow_is_an_allow` (allow once and
+allow-and-add-rule both allow, the latter even when the realm rules file
+cannot be written), `an_abandoned_escalation_is_withdrawn`,
+`an_unanswered_escalation_times_out_as_a_denial`; the ledger's own tests
+went with it.

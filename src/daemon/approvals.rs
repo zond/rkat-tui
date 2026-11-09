@@ -2,8 +2,8 @@
 //!
 //! The daemon runs the same [`ApprovalEngine`] the in-process TUI does
 //! (tiers, rules, classifier, permission modes, escalation timeouts), built
-//! by the shared bootstrap without the escalation ledger: the durable
-//! decisions are the record. Three things differ, all here:
+//! by the shared bootstrap; the durable decisions are the record of its
+//! escalations. Three things differ, all here:
 //!
 //! - [`RootGate`]: the orchestrator's `ToolDispatchAdmission`. It is the
 //!   in-process [`ApprovalGate`], resolved per call to the orchestrator's
@@ -621,7 +621,6 @@ mod tests {
             subjects: vec!["ls".into()],
             classifier_hint: None,
             policy_reason: None,
-            record: None,
         }
     }
 

@@ -162,7 +162,7 @@ pub enum TuiError {
     /// A command-line rule or setting flag is invalid.
     #[error(transparent)]
     Overlay(#[from] crate::overlay::OverlayError),
-    /// The approval rules or the escalation ledger could not be loaded.
+    /// The approval rules could not be loaded.
     #[error("approval setup failed: {0}")]
     Approval(#[from] crate::approval::ApprovalError),
     /// The selected process confinement cannot be installed on this host,

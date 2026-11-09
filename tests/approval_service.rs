@@ -3,9 +3,8 @@
 //! tool call passes the gate the session's build installed as its
 //! `ToolDispatchAdmission`. A Tier-1 read runs; a classifier block reaches
 //! the model as a reason and the run continues; a classifier allow runs the
-//! call; an escalation is answered through the runner's effect channel and
-//! recorded in the ledger; a resumed session's classifier transcript is
-//! seeded from its history.
+//! call; an escalation is answered through the runner's effect channel; a
+//! resumed session's classifier transcript is seeded from its history.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -17,7 +16,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use common::{Rig, ScriptedLlmClient, Step, Workspace, within};
 use meerkat_core::types::ToolResult;
-use meerkat_core::{AgentEvent, ApprovalStatus, Message};
+use meerkat_core::{AgentEvent, Message};
 use parking_lot::Mutex;
 use rkat_tui::approval::classifier::{
     ActionClassifier, ClassifierError, ClassifierInput, ClassifierVerdict,
@@ -241,10 +240,6 @@ async fn an_escalation_is_answered_through_the_runner() {
     assert_eq!(outcome.result.expect("turn succeeds").text, "done");
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "HUMAN-OK\n");
 
-    // The escalation is on record, decided by the human.
-    let records = rig.approval.ledger().unwrap().records().unwrap();
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].status, ApprovalStatus::Approved);
     rig.quit().await;
 }
 
@@ -288,17 +283,11 @@ async fn an_unanswered_escalation_times_out_as_a_denial() {
         text.contains("did not answer the approval request in time"),
         "{text}"
     );
-    let records = rig.approval.ledger().unwrap().records().unwrap();
-    assert!(matches!(
-        records[0].status,
-        ApprovalStatus::Expired | ApprovalStatus::Denied
-    ));
     rig.quit().await;
 }
 
 /// "No, and tell the agent what to do instead": the comment the user wrote
-/// reaches the model in the denied call's tool error, and the approval
-/// record keeps it.
+/// reaches the model in the denied call's tool error.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_deny_comment_reaches_the_model_as_the_tool_error() {
     let ws = Workspace::new();
@@ -336,15 +325,6 @@ async fn a_deny_comment_reaches_the_model_as_the_tool_error() {
         "{text}"
     );
     assert!(text.contains("Do what the user says instead"), "{text}");
-    let records = rig.approval.ledger().unwrap().records().unwrap();
-    assert_eq!(records[0].status, ApprovalStatus::Denied);
-    assert_eq!(
-        records[0]
-            .decision
-            .as_ref()
-            .and_then(|d| d.reason.as_deref()),
-        Some("denied: put it in .env.example instead")
-    );
     rig.quit().await;
 }
 

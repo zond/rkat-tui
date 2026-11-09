@@ -169,11 +169,10 @@ fixed principal bound to the token by host configuration, never an actor
 named in the client's JSON; and notices go only to clients authorized for
 the decision, which for one principal is every attached client. Timeouts and
 interrupts withdraw the decision; `rkat/decision_ended` closes the other
-dialogs. The decisions are the daemon's only record
-(`bootstrap::approval::EscalationRecords::Decisions`): nothing goes to the
-realm's approval store, an older daemon's records there are ignored with a
-start-up log line, and decisions a stopped daemon left open are withdrawn at
-start. The in-process TUI keeps its ledger. The client never polls
+dialogs. The decisions are the daemon's only record: nothing goes to the
+realm's approval store, and decisions a stopped daemon left open are
+withdrawn at start. The in-process TUI keeps no record beyond the dialog
+itself. The client never polls
 `approval/list`: a daemon whose `initialize` lacks `decision/notice` and
 `decision/decide` is refused at attach with "too old; restart it"
 (`ClientError::DaemonTooOld`).

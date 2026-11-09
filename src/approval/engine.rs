@@ -4,9 +4,10 @@
 //! layered rules, reviews Tier-3 calls with the classifier (allow cache,
 //! denial counters, pause), and escalates to the human through the
 //! [`EscalationBroker`] when auto mode is paused or the classifier fails.
-//! Escalations are recorded in the realm's approval store
-//! ([`EscalationLedger`]) and time out as denials; a ledger write that fails
-//! is a denial too. The engine is shared by every session's
+//! An escalation nobody answers in time is a denial. The engine keeps no
+//! record of escalations of its own: the human's answer is the decision (the
+//! daemon's durable decisions are its record, see `crate::daemon::decisions`).
+//! The engine is shared by every session's
 //! [`super::admission::ApprovalGate`].
 //!
 //! The classifier sees a reasoning-blind transcript per session: the user's
@@ -41,7 +42,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use meerkat_core::{ApprovalDecision, ApprovalId, RunId, Session, SessionId};
+use meerkat_core::{RunId, Session, SessionId};
 use parking_lot::{MappedMutexGuard, Mutex, MutexGuard, RwLock};
 use serde_json::Value;
 use serde_json::value::RawValue;
@@ -52,7 +53,6 @@ use super::catalog::{ToolOrigin, ToolOrigins};
 use super::classifier::{ActionClassifier, ClassifierInput, ClassifierVerdict, Environment};
 use super::counters::{AutoMode, AutoModeState, DenialCounters, PauseCause};
 use super::escalation::{EscalationBroker, EscalationPrompt, HumanDecision};
-use super::ledger::{self, EscalationEntry, EscalationLedger};
 use super::mode::PermissionMode;
 use super::policy::{
     Action, ActionKind, Decider, PolicyContext, Tier, TierDecision, classify_tier_with,
@@ -92,9 +92,6 @@ pub struct ApprovalConfig {
     pub classifier: Arc<dyn ActionClassifier>,
     /// Human escalation; `None` ⇒ escalations are denied.
     pub broker: Option<EscalationBroker>,
-    /// Record of escalations in the realm's approval store; `None` keeps
-    /// none (escalations still reach the human).
-    pub ledger: Option<EscalationLedger>,
     /// How long the human has to answer an escalation.
     pub escalation_timeout: Duration,
     /// Environment facts for the classifier.
@@ -226,7 +223,6 @@ pub struct ApprovalEngine {
     auto: Mutex<AutoMode>,
     classifier: Arc<dyn ActionClassifier>,
     broker: Option<EscalationBroker>,
-    ledger: Option<EscalationLedger>,
     escalation_timeout: Duration,
     next_escalation: AtomicU64,
     environment: Environment,
@@ -266,7 +262,6 @@ impl ApprovalEngine {
             settings,
             classifier,
             broker,
-            ledger,
             escalation_timeout,
             environment,
             posix_shell,
@@ -287,7 +282,6 @@ impl ApprovalEngine {
             auto: Mutex::new(auto),
             classifier,
             broker,
-            ledger,
             escalation_timeout,
             next_escalation: AtomicU64::new(1),
             environment,
@@ -330,13 +324,6 @@ impl ApprovalEngine {
     #[must_use]
     pub fn escalation_timeout(&self) -> Duration {
         self.escalation_timeout
-    }
-
-    /// The escalation ledger, when one is kept.
-    #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn ledger(&self) -> Option<&EscalationLedger> {
-        self.ledger.as_ref()
     }
 
     /// Where the gates learn each session's tool definitions (set once,
@@ -382,25 +369,11 @@ impl ApprovalEngine {
     /// Adopt a session this process opened from its authoritative history
     /// (on resume): seed its transcript from typed authorship (the human's
     /// turn inputs and tool calls, never assistant prose, tool output or
-    /// peer messages), and deny the escalation records an earlier process
-    /// left pending for it.
+    /// peer messages).
     pub fn seed_transcript(&self, session: &Session) {
         let mut transcript = ApprovalTranscript::default();
         transcript.seed_from_session(session);
         self.session(session.id()).transcript = transcript;
-        if let Some(ledger) = &self.ledger {
-            match ledger.deny_leftovers(session.id()) {
-                Ok(0) => {}
-                Ok(n) => tracing::info!(
-                    session = %session.id(),
-                    denied = n,
-                    "denied escalations left pending by an earlier run"
-                ),
-                Err(err) => self.emit(ApprovalEvent::Notice(format!(
-                    "cannot settle approval requests an earlier run left pending: {err}"
-                ))),
-            }
-        }
     }
 
     /// Record words the human submitted to a session (a prompt or a steer)
@@ -673,7 +646,7 @@ impl ApprovalEngine {
         let action = Action::parse(call.name, call.args, call.origin);
         let subjects = action.subjects(&self.root);
         let facts = Facts { action, subjects };
-        let verdict = self.evaluate(session_id, agent, call.id, &facts).await;
+        let verdict = self.evaluate(session_id, agent, &facts).await;
         let (tier, reason) = match &verdict {
             // A classifier allow carries the classifier's stated reason;
             // other allows carry none.
@@ -830,7 +803,6 @@ impl ApprovalEngine {
         &self,
         session_id: &SessionId,
         agent: Option<&str>,
-        tool_use_id: &str,
         facts: &Facts<'_>,
     ) -> Verdict {
         let decision = self.tier_of(facts);
@@ -843,9 +815,7 @@ impl ApprovalEngine {
                 if self.stopped(session_id) {
                     return deny_at(asking.tier(), DenyReason::Stopped);
                 }
-                return self
-                    .escalate(session_id, agent, tool_use_id, facts, asking, None)
-                    .await;
+                return self.escalate(session_id, agent, facts, asking, None).await;
             }
             Route::Review => {}
         }
@@ -873,14 +843,7 @@ impl ApprovalEngine {
             };
             let fallback = result.ok();
             return self
-                .escalate(
-                    session_id,
-                    agent,
-                    tool_use_id,
-                    facts,
-                    Asking::Classifier(hint),
-                    fallback,
-                )
+                .escalate(session_id, agent, facts, Asking::Classifier(hint), fallback)
                 .await;
         }
 
@@ -892,7 +855,6 @@ impl ApprovalEngine {
                     self.escalate(
                         session_id,
                         agent,
-                        tool_use_id,
                         facts,
                         Asking::Classifier(format!("classifier error: {err}")),
                         None,
@@ -968,12 +930,12 @@ impl ApprovalEngine {
     /// new mode decides is settled without asking, and one whose pause has
     /// ended meanwhile gets the classifier's `fallback` verdict instead. A
     /// policy or mode question ([`Asking::Policy`], [`Asking::Mode`]) leaves
-    /// the denial counters alone. A ledger write that fails denies the call.
+    /// the denial counters alone. The human's allow is an allow: nothing
+    /// after the answer turns it into a denial.
     async fn escalate(
         &self,
         session_id: &SessionId,
         agent: Option<&str>,
-        tool_use_id: &str,
         facts: &Facts<'_>,
         asking: Asking,
         fallback: Option<ClassifierVerdict>,
@@ -988,12 +950,10 @@ impl ApprovalEngine {
                 ),
             );
         };
-        let hint = asking.text().to_string();
         let id = self.next_escalation.fetch_add(1, Ordering::Relaxed);
         let mut pending = PendingEscalation {
             engine: self,
             id,
-            record: None,
             settled: false,
         };
         // One budget per call, from its entry: a call whose budget ran out
@@ -1026,7 +986,7 @@ impl ApprovalEngine {
                     (None, Some(reason.clone()))
                 }
             };
-            let mut prompt = EscalationPrompt {
+            let prompt = EscalationPrompt {
                 id,
                 session_id: session_id.clone(),
                 agent: agent.map(str::to_string),
@@ -1035,18 +995,7 @@ impl ApprovalEngine {
                 subjects: facts.subjects.clone(),
                 classifier_hint,
                 policy_reason,
-                record: None,
             };
-            match self
-                .record_request(session_id, tool_use_id, facts, &hint, &prompt)
-                .await
-            {
-                Ok(record) => {
-                    pending.record.clone_from(&record);
-                    prompt.record = record;
-                }
-                Err(err) => return Asked::Settled(self.ledger_failed(tier, err)),
-            }
             let answer = broker.ask_locked(&guard, prompt).await;
             // A Stop applies before the serial lock is released, so an
             // escalation queued behind this one sees it.
@@ -1058,9 +1007,7 @@ impl ApprovalEngine {
         .await;
         let decision = match asked {
             Err(_) => {
-                pending
-                    .settle_without_human("nobody answered in time")
-                    .await;
+                pending.withdraw();
                 return deny_at(tier, DenyReason::EscalationTimedOut);
             }
             Ok(Asked::Settled(verdict)) => {
@@ -1069,24 +1016,13 @@ impl ApprovalEngine {
             }
             Ok(Asked::Answered(decision)) => decision,
         };
+        pending.settled = true;
         match decision {
             HumanDecision::AllowOnce => {
-                if let Err(err) = pending
-                    .settle(ApprovalDecision::Approve, "allowed once")
-                    .await
-                {
-                    return self.ledger_failed(tier, err);
-                }
                 self.human_allowed(counted);
                 allow_at(tier, Decider::Human, "allowed once by the user")
             }
             HumanDecision::AllowAndAddRule(rule) => {
-                if let Err(err) = pending
-                    .settle(ApprovalDecision::Approve, "allowed; allow rule added")
-                    .await
-                {
-                    return self.ledger_failed(tier, err);
-                }
                 let snapshot = self.push_rule(*rule);
                 if let Err(err) = self.persist_blocking(snapshot).await {
                     tracing::warn!(error = %err, "failed to persist rule");
@@ -1097,61 +1033,9 @@ impl ApprovalEngine {
                 self.human_allowed(counted);
                 allow_at(tier, Decider::Human, "allowed by the user (rule added)")
             }
-            HumanDecision::Deny { comment } => {
-                // A denial stands whether or not it could be recorded.
-                let reason = match &comment {
-                    Some(comment) => format!("denied: {comment}"),
-                    None => "denied".to_string(),
-                };
-                let _ = pending.settle(ApprovalDecision::Deny, &reason).await;
-                deny_at(tier, DenyReason::Human { comment })
-            }
-            HumanDecision::Stop => {
-                let _ = pending
-                    .settle(ApprovalDecision::Deny, "denied; turn stopped")
-                    .await;
-                deny_at(tier, DenyReason::Stopped)
-            }
+            HumanDecision::Deny { comment } => deny_at(tier, DenyReason::Human { comment }),
+            HumanDecision::Stop => deny_at(tier, DenyReason::Stopped),
         }
-    }
-
-    /// Record the escalation request in the ledger (off the executor).
-    /// `Ok(None)` when no ledger is kept.
-    async fn record_request(
-        &self,
-        session_id: &SessionId,
-        tool_use_id: &str,
-        facts: &Facts<'_>,
-        hint: &str,
-        prompt: &EscalationPrompt,
-    ) -> Result<Option<ApprovalId>, String> {
-        let Some(ledger) = &self.ledger else {
-            return Ok(None);
-        };
-        let request = EscalationLedger::prepare(EscalationEntry {
-            session_id,
-            tool_use_id,
-            action: &facts.action,
-            timeout: self.escalation_timeout,
-            hint: Some(hint),
-            prompt: Some(prompt),
-        })
-        .map_err(|e| e.to_string())?;
-        let ledger = ledger.clone();
-        match tokio::task::spawn_blocking(move || ledger.submit(request)).await {
-            Ok(Ok(id)) => Ok(Some(id)),
-            Ok(Err(err)) => Err(err.to_string()),
-            Err(err) => Err(err.to_string()),
-        }
-    }
-
-    /// The ledger failed: deny, and tell the human why.
-    fn ledger_failed(&self, tier: Tier, err: String) -> Verdict {
-        tracing::warn!(error = %err, "approval ledger write failed; denying");
-        self.emit(ApprovalEvent::Notice(format!(
-            "an approval request could not be recorded, so the action was denied: {err}"
-        )));
-        deny_at(tier, DenyReason::LedgerUnavailable(err))
     }
 
     /// The human allowed a call: a classifier escalation (`counted`) counts
@@ -1290,7 +1174,7 @@ impl Payload {
 
 /// Outcome of the locked part of an escalation.
 enum Asked {
-    /// Decided without asking (re-checks after the lock, ledger failure).
+    /// Decided without asking (re-checks after the lock).
     Settled(Verdict),
     /// The human answered.
     Answered(HumanDecision),
@@ -1334,83 +1218,26 @@ fn persist_trusted(
 }
 
 /// An escalation put to the human. Dropped unsettled (the tool call was
-/// abandoned while waiting), it records a denial and withdraws the dialog.
+/// abandoned while waiting), it withdraws the dialog.
 struct PendingEscalation<'a> {
     engine: &'a ApprovalEngine,
     id: u64,
-    record: Option<ApprovalId>,
     settled: bool,
 }
 
 impl PendingEscalation<'_> {
-    /// The human answered: record it (off the executor).
-    async fn settle(&mut self, decision: ApprovalDecision, reason: &str) -> Result<(), String> {
-        self.settled = true;
-        let (Some(ledger), Some(record)) = (self.engine.ledger.clone(), self.record.clone()) else {
-            return Ok(());
-        };
-        let reason = reason.to_string();
-        match tokio::task::spawn_blocking(move || {
-            ledger.settle(&record, decision, ledger::Decider::Human, &reason)
-        })
-        .await
-        {
-            Ok(Ok(_)) => Ok(()),
-            Ok(Err(err)) => Err(err.to_string()),
-            Err(err) => Err(err.to_string()),
-        }
-    }
-
-    /// No answer will come: deny it and close the dialog.
-    async fn settle_without_human(&mut self, reason: &str) {
+    /// No answer will come: close the dialog.
+    fn withdraw(&mut self) {
         self.settled = true;
         self.engine
             .emit(ApprovalEvent::EscalationWithdrawn(self.id));
-        let (Some(ledger), Some(record)) = (self.engine.ledger.clone(), self.record.clone()) else {
-            return;
-        };
-        let reason = reason.to_string();
-        let decided = tokio::task::spawn_blocking(move || {
-            ledger.decide(
-                &record,
-                ApprovalDecision::Deny,
-                ledger::Decider::Runtime,
-                &reason,
-            )
-        })
-        .await;
-        if let Ok(Err(err)) = decided {
-            // A timed-out escalation's record has usually expired on its own.
-            tracing::debug!(error = %err, "escalation denial not recorded");
-        }
     }
 }
 
 impl Drop for PendingEscalation<'_> {
     fn drop(&mut self) {
-        if self.settled {
-            return;
-        }
-        self.engine
-            .emit(ApprovalEvent::EscalationWithdrawn(self.id));
-        let (Some(ledger), Some(record)) = (self.engine.ledger.clone(), self.record.take()) else {
-            return;
-        };
-        let deny = move || {
-            if let Err(err) = ledger.decide(
-                &record,
-                ApprovalDecision::Deny,
-                ledger::Decider::Runtime,
-                "the tool call was abandoned before an answer",
-            ) {
-                tracing::debug!(error = %err, "abandoned escalation not recorded");
-            }
-        };
-        match tokio::runtime::Handle::try_current() {
-            Ok(handle) => {
-                handle.spawn_blocking(deny);
-            }
-            Err(_) => deny(),
+        if !self.settled {
+            self.withdraw();
         }
     }
 }
@@ -1458,12 +1285,6 @@ impl Asking {
             Self::Classifier(_) => Tier::Classifier,
             Self::Policy(_) => Tier::AskUser,
             Self::Mode { tier, .. } => *tier,
-        }
-    }
-
-    fn text(&self) -> &str {
-        match self {
-            Self::Classifier(text) | Self::Policy(text) | Self::Mode { reason: text, .. } => text,
         }
     }
 }
@@ -1609,7 +1430,7 @@ mod tests {
     use crate::memory::{NOTE_TOOL_NAMES, NOTES_SOURCE};
     use crate::tools::{FILE_TOOL_NAMES, FILE_TOOLS_SOURCE};
     use async_trait::async_trait;
-    use meerkat_core::{ApprovalStatus, ToolSourceKind};
+    use meerkat_core::ToolSourceKind;
     use serde_json::json;
     use std::sync::atomic::AtomicUsize;
 
@@ -1682,7 +1503,6 @@ mod tests {
     fn rig_with(
         verdicts: Vec<Result<ClassifierVerdict, ClassifierError>>,
         timeout: Duration,
-        ledger: Option<EscalationLedger>,
     ) -> Rig {
         let dir = tempfile::tempdir().unwrap();
         let root = ProjectRoot::new(dir.path()).unwrap();
@@ -1695,7 +1515,6 @@ mod tests {
             settings: AutoSettings::default(),
             classifier: Arc::clone(&classifier) as Arc<dyn ActionClassifier>,
             broker: Some(broker),
-            ledger,
             escalation_timeout: timeout,
             environment: Environment::basic(root.as_path(), root.as_path()),
             posix_shell: true,
@@ -1714,7 +1533,7 @@ mod tests {
     }
 
     fn rig(verdicts: Vec<Result<ClassifierVerdict, ClassifierError>>, timeout: Duration) -> Rig {
-        rig_with(verdicts, timeout, Some(EscalationLedger::in_memory()))
+        rig_with(verdicts, timeout)
     }
 
     fn push() -> Value {
@@ -1988,9 +1807,6 @@ mod tests {
         );
         // A human allow resumes auto mode.
         assert!(matches!(rig.engine.auto_state().1, AutoModeState::Active));
-        let records = rig.engine.ledger().unwrap().records().unwrap();
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].status, ApprovalStatus::Approved);
     }
 
     #[tokio::test]
@@ -2039,11 +1855,6 @@ mod tests {
         assert!(
             drain(&mut rig.events).contains(&ApprovalEvent::EscalationWithdrawn(request.prompt.id))
         );
-        let records = rig.engine.ledger().unwrap().records().unwrap();
-        assert!(matches!(
-            records[0].status,
-            ApprovalStatus::Expired | ApprovalStatus::Denied
-        ));
     }
 
     // Paused time: the five calls enter the escalation at the same virtual
@@ -2052,13 +1863,6 @@ mod tests {
     // milliseconds after the first still has that much budget left when the
     // first times out, so it reaches the human too (a real behaviour, not
     // the one this test pins).
-    //
-    // No ledger here: its writes run on the blocking pool, and a task parked
-    // on a blocking-pool handle counts as idle to the paused clock, which
-    // then auto-advances. A later call could enter its timeout after that
-    // jump, keep a fresh budget, and reach the human as a second dialog
-    // (the flake seen as "delivered: 2 vs 1"). The ledger's own behaviour
-    // is pinned by the tests above.
     #[tokio::test(start_paused = true)]
     async fn parallel_escalations_share_one_timeout_including_the_queue() {
         // Five calls escalate at once; the human answers none. Each call
@@ -2068,7 +1872,6 @@ mod tests {
         let mut rig = rig_with(
             (0..5).map(|_| Err(ClassifierError::Timeout)).collect(),
             timeout,
-            None,
         );
         let started = tokio::time::Instant::now();
         let ids = ["p1", "p2", "p3", "p4", "p5"];
@@ -2136,50 +1939,79 @@ mod tests {
         assert!(
             drain(&mut rig.events).contains(&ApprovalEvent::EscalationWithdrawn(request.prompt.id))
         );
-        // The denial is recorded off the executor.
-        let mut status = None;
-        for _ in 0..50 {
-            status = rig
-                .engine
-                .ledger()
-                .unwrap()
-                .records()
-                .unwrap()
-                .first()
-                .map(|r| r.status);
-            if status == Some(ApprovalStatus::Denied) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert_eq!(status, Some(ApprovalStatus::Denied));
     }
 
+    /// The human's allow is the decision: neither "allow once" nor "allow
+    /// and add a rule" can turn into a denial afterwards, not even when the
+    /// rule cannot be saved (it is active for the run and a notice says so).
     #[tokio::test]
-    async fn a_failing_ledger_denies_the_escalation() {
-        let ledger = EscalationLedger::new(meerkat_core::ApprovalService::unavailable(
-            "store offline".to_string(),
-        ));
-        let mut rig = rig_with(
-            vec![Err(ClassifierError::Timeout)],
-            DEFAULT_ESCALATION_TIMEOUT,
-            Some(ledger),
-        );
-        let verdict = decide(&rig, "c1", &push()).await;
-        let Verdict::Deny {
-            reason: DenyReason::LedgerUnavailable(_),
-            ..
-        } = verdict
-        else {
-            panic!("expected a ledger denial, got {verdict:?}");
+    async fn a_human_allow_is_an_allow() {
+        let dir = tempfile::tempdir().unwrap();
+        // The rules file's parent is a regular file: every write fails.
+        let blocker = dir.path().join("not-a-dir");
+        std::fs::write(&blocker, "").unwrap();
+        let root = ProjectRoot::new(dir.path()).unwrap();
+        let (broker, mut escalations) = EscalationBroker::new(4);
+        let (tx, mut events) = mpsc::unbounded_channel();
+        let engine = ApprovalEngine::new(ApprovalConfig {
+            root: root.clone(),
+            rules: RuleSet::default(),
+            settings: AutoSettings::default(),
+            classifier: Scripted::new(vec![
+                Err(ClassifierError::Timeout),
+                Err(ClassifierError::Timeout),
+            ]) as Arc<dyn ActionClassifier>,
+            broker: Some(broker),
+            escalation_timeout: DEFAULT_ESCALATION_TIMEOUT,
+            environment: Environment::basic(root.as_path(), root.as_path()),
+            posix_shell: true,
+            events: tx,
+            rules_path: Some(blocker.join("tui.toml")),
+            rules_trust: None,
+        });
+        let session = SessionId::new();
+        let ask = |id: &'static str| {
+            let engine = Arc::clone(&engine);
+            let session = session.clone();
+            tokio::spawn(async move { call_as(&engine, &session, id, "shell", &push()).await })
         };
-        assert!(
-            rig.escalations.try_recv().is_err(),
-            "the human was not asked"
+
+        let task = ask("c1");
+        let request = escalations.recv().await.unwrap();
+        request.respond.send(HumanDecision::AllowOnce).unwrap();
+        assert_eq!(
+            task.await.unwrap().summary(),
+            VerdictSummary::Allowed {
+                tier: Tier::Classifier,
+                by: Decider::Human
+            }
         );
-        assert!(drain(&mut rig.events).iter().any(
-            |e| matches!(e, ApprovalEvent::Notice(text) if text.contains("could not be recorded"))
-        ));
+
+        let task = ask("c2");
+        let request = escalations.recv().await.unwrap();
+        let rule = Rule::literal(
+            RuleKind::Allow,
+            "shell",
+            request.prompt.subjects[0].clone(),
+            RuleOrigin::Realm,
+        )
+        .unwrap();
+        request
+            .respond
+            .send(HumanDecision::AllowAndAddRule(Box::new(rule)))
+            .unwrap();
+        assert_eq!(
+            task.await.unwrap().summary(),
+            VerdictSummary::Allowed {
+                tier: Tier::Classifier,
+                by: Decider::Human
+            }
+        );
+        assert!(
+            drain(&mut events).iter().any(
+                |e| matches!(e, ApprovalEvent::Notice(text) if text.contains("was not saved"))
+            )
+        );
     }
 
     #[tokio::test]
@@ -2324,8 +2156,6 @@ mod tests {
         );
         // Human answers to protected writes leave the denial counters alone.
         assert_eq!(rig.engine.auto_state().0.consecutive, 0);
-        let records = rig.engine.ledger().unwrap().records().unwrap();
-        assert_eq!(records.len(), 4);
     }
 
     /// Manual mode (`/auto off`): a protected write still asks.
@@ -2650,7 +2480,6 @@ mod tests {
             settings: AutoSettings::default(),
             classifier: Scripted::new(vec![]) as Arc<dyn ActionClassifier>,
             broker: None,
-            ledger: None,
             escalation_timeout: DEFAULT_ESCALATION_TIMEOUT,
             environment: Environment::basic(root.as_path(), root.as_path()),
             posix_shell: true,
@@ -2709,60 +2538,5 @@ mod tests {
         assert!(rig.engine.agent_written(&rig.session).is_empty());
         assert!(rig.engine.transcript(&rig.session).is_none());
         assert_eq!(hits.load(Ordering::SeqCst), 2);
-    }
-
-    #[tokio::test]
-    async fn resume_denies_this_sessions_leftover_escalations_only() {
-        let dir = tempfile::tempdir().unwrap();
-        let issuer = || {
-            meerkat::ApprovalIssuerSelection::Persistent {
-                store_path: dir.path().to_path_buf(),
-            }
-            .open()
-        };
-        // An earlier process left an escalation pending for two sessions.
-        let rig = rig_with(
-            vec![],
-            DEFAULT_ESCALATION_TIMEOUT,
-            Some(EscalationLedger::new(issuer())),
-        );
-        let mine = Session::new();
-        let theirs = SessionId::new();
-        let ledger = rig.engine.ledger().unwrap().clone();
-        let args = raw(&push());
-        let origin = origin("shell");
-        let action = Action::parse("shell", &args, Some(&origin));
-        for session in [mine.id(), &theirs] {
-            ledger
-                .request(EscalationEntry {
-                    session_id: session,
-                    tool_use_id: "t",
-                    action: &action,
-                    timeout: DEFAULT_ESCALATION_TIMEOUT,
-                    hint: None,
-                    prompt: None,
-                })
-                .unwrap();
-        }
-        drop(rig);
-        // This process resumes `mine`.
-        let fresh = rig_with(
-            vec![],
-            DEFAULT_ESCALATION_TIMEOUT,
-            Some(EscalationLedger::new(issuer())),
-        );
-        fresh.engine.seed_transcript(&mine);
-        let records = fresh.engine.ledger().unwrap().records().unwrap();
-        let status_of = |session: &SessionId| {
-            records
-                .iter()
-                .filter(|r| {
-                    matches!(&r.owner, meerkat_core::ApprovalOwnerRef::Session { session_id } if session_id == session)
-                })
-                .map(|r| r.status)
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(status_of(mine.id()), [ApprovalStatus::Denied]);
-        assert_eq!(status_of(&theirs), [ApprovalStatus::Pending]);
     }
 }

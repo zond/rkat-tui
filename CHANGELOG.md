@@ -340,6 +340,11 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Fixed
 
+- An approval the human gives is never turned into a denial afterwards.
+  The in-process TUI recorded every escalation in the realm's approval store
+  and denied the call when that write failed, even after the human allowed
+  it; nothing read those records, so the record is gone. The dialog still
+  closes when the call times out or is abandoned.
 - Attach mode, from a review of the daemon and its clients: the daemon
   refuses `/new` and `/resume` while the agent's turn runs, whichever client
   started it (it retired the member mid-turn); `/resume last` (`~0`, `~N`)

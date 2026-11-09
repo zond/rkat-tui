@@ -6,7 +6,7 @@
 //! gone, responder dropped) resolves as [`HumanDecision::Deny`] without a comment: fail closed.
 
 use super::rules::Rule;
-use meerkat_core::{ApprovalId, SessionId};
+use meerkat_core::SessionId;
 use tokio::sync::{Mutex, MutexGuard, mpsc, oneshot};
 
 /// The human's answer.
@@ -48,10 +48,6 @@ pub struct EscalationPrompt {
     /// Why the policy itself asks, without the classifier (a protected
     /// path: [`super::policy::Tier::AskUser`]).
     pub policy_reason: Option<String>,
-    /// The escalation's record in the realm's approval store, when a ledger
-    /// is kept: the daemon's desk waits for its decision there
-    /// (`approval/decide`), see `crate::daemon::approvals`.
-    pub record: Option<ApprovalId>,
 }
 
 impl EscalationPrompt {
@@ -175,7 +171,6 @@ mod tests {
             subjects: vec!["{}".into()],
             classifier_hint: None,
             policy_reason: None,
-            record: None,
         }
     }
 
