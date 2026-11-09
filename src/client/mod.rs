@@ -159,19 +159,45 @@ pub enum ClientError {
     },
 }
 
-/// Resolve what attach mode needs from `args`: the workspace, the endpoint
-/// and cursor files, the realm config (context windows) and how a missing
-/// daemon is started.
+/// [`configure_with`] on the layers `args` name, read now.
 ///
 /// # Errors
 ///
-/// [`TuiError`] when the workspace or the realm config cannot be resolved.
+/// [`TuiError`] when the workspace, its layers or the realm config cannot
+/// be read.
+#[cfg(any(test, feature = "test-support"))]
 pub async fn configure(args: &Args, mode: AttachMode) -> Result<AttachConfig, TuiError> {
-    let (scope, config) = crate::bootstrap::prepare(args).await?;
+    configure_with(crate::bootstrap::read_layers(args)?, args, mode).await
+}
+
+/// Resolve what attach mode needs from `args` and the `tui.toml` `layers`
+/// read at start: the workspace, the endpoint and cursor files, the realm
+/// config (context windows) and how a missing daemon is started.
+///
+/// # Errors
+///
+/// [`TuiError`] when the realm config cannot be read.
+pub async fn configure_with(
+    layers: crate::bootstrap::Layers,
+    args: &Args,
+    mode: AttachMode,
+) -> Result<AttachConfig, TuiError> {
+    let config = crate::bootstrap::load_config(&layers.scope).await?;
+    // The `!` shell, from the layers' confinement grants and timeout.
+    let user_shell = crate::bootstrap::user_shell(
+        &layers,
+        &config,
+        args,
+        &crate::bootstrap::HostPaths::detect(),
+    )
+    .map(std::sync::Arc::new)
+    .map_err(|err| format!("the ! shell is unavailable: {err}"));
     // The layers the in-process TUI reads for its display and endpoints:
     // the picker lists this process's endpoints, and a switch to a
     // configured one carries its auth binding.
-    let (mut layered, _) = crate::bootstrap::approval::load_layers(&scope, args)?;
+    let crate::bootstrap::Layers {
+        scope, mut layered, ..
+    } = layers;
     let realm = meerkat_core::connection::RealmId::parse(scope.realm_id.clone()).ok();
     let (mut endpoints, _) =
         crate::endpoints::EndpointRegistry::discover(&config, realm.as_ref(), &layered.endpoints)?;
@@ -186,14 +212,6 @@ pub async fn configure(args: &Args, mode: AttachMode) -> Result<AttachConfig, Tu
         }),
         AttachMode::Existing => None,
     };
-    let user_shell = crate::bootstrap::user_shell(
-        &scope,
-        &config,
-        args,
-        &crate::bootstrap::HostPaths::detect(),
-    )
-    .map(std::sync::Arc::new)
-    .map_err(|err| format!("the ! shell is unavailable: {err}"));
     let pricing = crate::pricing::PricingSetup::load(
         std::mem::take(&mut layered.pricing),
         scope
@@ -268,12 +286,16 @@ pub fn build_app(config: &AttachConfig, history: &[String], global_history: &[St
 /// [`TuiError::NotATerminal`] without a terminal, otherwise when the
 /// workspace cannot be resolved or the terminal cannot be driven. A daemon
 /// that cannot be reached is reported in the UI.
-pub async fn run(args: Args, mode: AttachMode) -> Result<(), TuiError> {
+pub async fn run(
+    args: Args,
+    mode: AttachMode,
+    layers: crate::bootstrap::Layers,
+) -> Result<(), TuiError> {
     check_args(&args)?;
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         return Err(TuiError::NotATerminal);
     }
-    let config = configure(&args, mode).await?;
+    let config = configure_with(layers, &args, mode).await?;
     let realm_root = config.scope.realm_root();
     crate::runner::init_logging(&realm_root)?;
     let history = History::load(realm_root.join("tui_history"));

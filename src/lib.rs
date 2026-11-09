@@ -177,10 +177,13 @@ pub use ui::UiError;
 /// Returns a [`TuiError`] when there is no terminal, bootstrap fails, the
 /// session cannot be opened, or the terminal cannot be driven.
 pub async fn run(args: Args) -> Result<(), TuiError> {
-    match bootstrap::attach_mode(&args)? {
-        None => runner::run(args).await,
+    // The workspace and its `tui.toml` layers are read once, here, and
+    // handed to the host that runs.
+    let layers = bootstrap::read_layers(&args)?;
+    match bootstrap::attach_mode(&args, &layers) {
+        None => runner::run(args, layers).await,
         #[cfg(feature = "mob")]
-        Some(mode) => client::run(args, mode).await,
+        Some(mode) => client::run(args, mode, layers).await,
         #[cfg(not(feature = "mob"))]
         Some(_) => Err(TuiError::AttachUnsupported),
     }

@@ -108,14 +108,14 @@ const RUN_EVENT_GRACE: Duration = Duration::from_secs(1);
 /// [`TuiError::NotATerminal`] without a terminal (checked first, so a
 /// script fails fast), otherwise when bootstrap fails, the session cannot be
 /// opened, or the terminal cannot be driven.
-pub async fn run(args: Args) -> Result<(), TuiError> {
+pub async fn run(args: Args, layers: bootstrap::Layers) -> Result<(), TuiError> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         return Err(TuiError::NotATerminal);
     }
-    let (scope, config) = bootstrap::prepare(&args).await?;
-    init_logging(&scope.realm_root())?;
+    let config = bootstrap::load_config(&layers.scope).await?;
+    init_logging(&layers.scope.realm_root())?;
     let runtime =
-        bootstrap::bootstrap_with(scope, config, &args, BootstrapOptions::default()).await?;
+        bootstrap::bootstrap_with(layers, config, &args, BootstrapOptions::default()).await?;
     let (template, diff_rx) = Template::new(&runtime)?;
     let start = Start::from_args(&args);
     let trigger = template.startup_trigger(&runtime);

@@ -2782,3 +2782,18 @@ argument of `Args::command()`, gives it alone (a non-default value where
 clap lists them), and requires the daemon's parser to read it back as it
 went in; an argument neither forwarded nor listed fails it (checked by
 dropping `--isolated`).
+
+### The `tui.toml` layers are read once at start
+
+`bootstrap::attach_mode` resolved the workspace and loaded every
+`tui.toml` layer to read one bool; the chosen host then resolved and
+loaded them again (attach mode a third time, for the `!` shell). Besides
+the waste, `--isolated` mints a fresh realm id on every resolve, so with
+`attach = true` in a user `tui.toml` the attach runner ran on a different
+throwaway realm than the one whose layers chose it. Now
+`bootstrap::read_layers` returns `Layers { scope, layered, notices }`
+once; `attach_mode(args, &layers)` is pure, and `runner::run`,
+`client::run`/`configure_with`, `bootstrap_with`, `assemble`,
+`user_shell` and `Daemon::start_with` take the `Layers`. Test:
+`attach::attach_mode_runs_on_the_layers_read_at_start` (and
+`attach::attach_true_in_a_users_tui_toml_selects_attach_mode`).

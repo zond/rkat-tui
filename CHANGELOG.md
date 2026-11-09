@@ -340,6 +340,9 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Fixed
 
+- `--isolated` with `attach = true` in your `tui.toml` no longer reads two
+  different throwaway realms: the workspace and its `tui.toml` layers are
+  read once at start and handed to whichever mode runs.
 - Attach mode caught up with the in-process TUI: `/cost` is priced (the
   `[pricing]` overrides, the community list and the endpoints' prices; it
   showed `$?`), the `!` hint says "unconfined" under `--no-confinement`,

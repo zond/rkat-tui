@@ -49,7 +49,7 @@ use meerkat_mob_mcp::MobMcpState;
 use meerkat_rpc::session_runtime::SessionRuntime;
 use meerkat_store::RealmLeaseGuard;
 
-use crate::bootstrap::{self, BootstrapOptions, RuntimeScope};
+use crate::bootstrap::{self, BootstrapOptions};
 use crate::cli::Args;
 use crate::error::TuiError;
 
@@ -332,7 +332,7 @@ pub struct Daemon {
     lease: Option<RealmLeaseGuard>,
     listener: serve::Listener,
     #[cfg(any(test, feature = "test-support"))]
-    scope: RuntimeScope,
+    scope: bootstrap::RuntimeScope,
     #[cfg(any(test, feature = "test-support"))]
     desk: Arc<approvals::Desk>,
     #[cfg(any(test, feature = "test-support"))]
@@ -361,17 +361,17 @@ impl Daemon {
     /// [`DaemonError`] for every step.
     #[cfg(any(test, feature = "test-support"))]
     pub async fn start(args: &Args, options: DaemonOptions) -> Result<Self, DaemonError> {
-        let (scope, config) = bootstrap::prepare(args).await?;
-        Self::start_with(scope, config, args, options).await
+        let (layers, config) = bootstrap::prepare(args).await?;
+        Self::start_with(layers, config, args, options).await
     }
 
-    /// [`Daemon::start`] on an already resolved scope and config.
+    /// [`Daemon::start`] on already read layers and config.
     ///
     /// # Errors
     ///
     /// See [`Daemon::start`].
     pub async fn start_with(
-        scope: RuntimeScope,
+        layers: bootstrap::Layers,
         config: meerkat_core::Config,
         args: &Args,
         options: DaemonOptions,
@@ -381,12 +381,12 @@ impl Daemon {
         }
         let file = match options.endpoint_file {
             Some(file) => file,
-            None => endpoint_file(&scope.context_root)?,
+            None => endpoint_file(&layers.scope.context_root)?,
         };
         // Refuse before taking the realm: a live daemon keeps its endpoint.
         endpoint::check_stale(&file).await?;
         let parts =
-            bootstrap::assemble(scope, config, args, options.bootstrap, LEASE_SURFACE).await?;
+            bootstrap::assemble(layers, config, args, options.bootstrap, LEASE_SURFACE).await?;
         check_endpoint_private(&parts.confinement, &file)?;
         let composed = engine::compose(parts, options.policy)?;
         let orchestrator = orchestrator::ensure(&composed.state, &composed.root).await?;
@@ -510,7 +510,7 @@ impl Daemon {
     /// The realm and workspace the daemon serves.
     #[must_use]
     #[cfg(any(test, feature = "test-support"))]
-    pub fn scope(&self) -> &RuntimeScope {
+    pub fn scope(&self) -> &bootstrap::RuntimeScope {
         &self.scope
     }
 
@@ -595,10 +595,10 @@ async fn stop_mobs(state: &Arc<MobMcpState>) {
 /// [`DaemonError`] when it cannot start or does not shut down cleanly.
 pub async fn run(cli: DaemonCli) -> Result<(), DaemonError> {
     cli.check()?;
-    let (scope, config) = bootstrap::prepare(&cli.tui).await?;
-    init_logging(&scope.realm_root());
+    let (layers, config) = bootstrap::prepare(&cli.tui).await?;
+    init_logging(&layers.scope.realm_root());
     let daemon = Daemon::start_with(
-        scope,
+        layers,
         config,
         &cli.tui,
         DaemonOptions {

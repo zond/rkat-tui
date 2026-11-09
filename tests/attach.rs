@@ -275,29 +275,30 @@ async fn a_bang_command_runs_in_this_process_and_joins_the_agents_context() {
 
 #[test]
 fn attach_true_in_a_users_tui_toml_selects_attach_mode() {
-    use rkat_tui::bootstrap::attach_mode;
+    use rkat_tui::bootstrap::{attach_mode as of_layers, read_layers};
+    let attach_mode = |args: &rkat_tui::Args| of_layers(args, &read_layers(args).unwrap());
     let ws = Workspace::new();
     let args = args_for(&ws.root);
-    assert_eq!(attach_mode(&args).unwrap(), None);
+    assert_eq!(attach_mode(&args), None);
     // A user layer (the --config-dir tui.toml) turns it on.
     let user = ws.root.join(".cfg");
     std::fs::create_dir_all(&user).unwrap();
     std::fs::write(user.join("tui.toml"), "attach = true\n").unwrap();
-    assert_eq!(attach_mode(&args).unwrap(), Some(AttachMode::Auto));
+    assert_eq!(attach_mode(&args), Some(AttachMode::Auto));
     // The flags win.
     assert_eq!(
-        attach_mode(&common::args_with(&ws.root, &["--no-attach"])).unwrap(),
+        attach_mode(&common::args_with(&ws.root, &["--no-attach"])),
         None
     );
     assert_eq!(
-        attach_mode(&common::args_with(&ws.root, &["--attach=existing"])).unwrap(),
+        attach_mode(&common::args_with(&ws.root, &["--attach=existing"])),
         Some(AttachMode::Existing)
     );
     // A project file cannot choose it.
     std::fs::remove_file(user.join("tui.toml")).unwrap();
     std::fs::create_dir_all(ws.root.join(".rkat")).unwrap();
     std::fs::write(ws.root.join(".rkat/tui.toml"), "attach = true\n").unwrap();
-    assert_eq!(attach_mode(&args).unwrap(), None);
+    assert_eq!(attach_mode(&args), None);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -514,4 +515,28 @@ async fn unsent_messages_are_saved_at_quit_and_announced_at_the_next_attach() {
         .await;
     assert!(again.quit().await.is_none());
     daemon.stop().await;
+}
+
+/// The finding this guards: the workspace and its `tui.toml` layers were
+/// read once to pick attach mode and again by the runner; with
+/// `--isolated` the two reads minted two realms. The runner is configured
+/// from the layers read at start.
+#[tokio::test]
+async fn attach_mode_runs_on_the_layers_read_at_start() {
+    let ws = Workspace::new();
+    let args = common::args_with(&ws.root, &["--isolated"]);
+    let layers = rkat_tui::bootstrap::read_layers(&args).unwrap();
+    let realm = layers.scope.realm_id.clone();
+    let config = rkat_tui::client::configure_with(layers, &args, AttachMode::Existing)
+        .await
+        .unwrap();
+    assert_eq!(config.scope.realm_id, realm);
+    assert_ne!(
+        rkat_tui::bootstrap::read_layers(&args)
+            .unwrap()
+            .scope
+            .realm_id,
+        realm,
+        "a second read mints another isolated realm"
+    );
 }

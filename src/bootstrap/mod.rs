@@ -8,8 +8,9 @@
 //! which also installs the session-LLM reconfigure host (the model hot swap
 //! of a later phase relies on it).
 //!
-//! 1. [`prepare`] resolves the [`RuntimeScope`] and loads the realm [`Config`]
-//!    (for `--isolated` this mints a fresh realm id, so call it once).
+//! 1. [`read_layers`] resolves the [`RuntimeScope`] and reads the layered
+//!    `tui.toml` once ([`Layers`]; for `--isolated` this mints a fresh
+//!    realm id, so call it once); [`prepare`] adds the realm [`Config`].
 //! 2. [`bootstrap_with`] opens the realm persistence and composes the service.
 //!
 //! [`bootstrap`] runs both back to back.
@@ -328,18 +329,18 @@ fn extra_grants(
 /// [`TuiError`] when the layered `tui.toml` cannot be read or the
 /// confinement cannot be planned.
 pub fn user_shell(
-    scope: &RuntimeScope,
+    layers: &Layers,
     config: &Config,
     args: &Args,
     host_paths: &HostPaths,
 ) -> Result<crate::user_shell::UserShell, TuiError> {
-    let (layered, _) = approval::load_layers(scope, args)?;
+    let Layers { scope, layered, .. } = layers;
     let plan = confinement::plan(
         args.effective_confinement(),
         scope.project_root.as_path(),
         config,
         host_paths,
-        &extra_grants(args, &layered),
+        &extra_grants(args, layered),
     )?;
     Ok(crate::user_shell::UserShell::new(
         approval::resolved_shell_program(),
@@ -350,15 +351,43 @@ pub fn user_shell(
     ))
 }
 
-/// Resolve the runtime scope and load the realm config.
+/// The workspace and its layered `tui.toml`, read once at start and handed
+/// to whichever host runs (in-process, attach mode, the daemon).
+#[derive(Debug)]
+pub struct Layers {
+    /// The workspace and realm.
+    pub scope: RuntimeScope,
+    /// The `tui.toml` layers (global, realm, project, command line).
+    pub layered: crate::approval::rules::Layered,
+    /// What reading them had to say.
+    pub notices: Vec<String>,
+}
+
+/// Resolve the runtime scope and read its `tui.toml` layers.
 ///
 /// # Errors
 ///
-/// See [`resolve_scope`] and [`load_config`].
-pub async fn prepare(args: &Args) -> Result<(RuntimeScope, Config), TuiError> {
+/// See [`resolve_scope`]; [`TuiError::Overlay`] / [`TuiError::Approval`]
+/// when the layers cannot be read.
+pub fn read_layers(args: &Args) -> Result<Layers, TuiError> {
     let scope = resolve_scope(args)?;
-    let config = load_config(&scope).await?;
-    Ok((scope, config))
+    let (layered, notices) = approval::load_layers(&scope, args)?;
+    Ok(Layers {
+        scope,
+        layered,
+        notices,
+    })
+}
+
+/// [`read_layers`], then the realm config.
+///
+/// # Errors
+///
+/// See [`read_layers`] and [`load_config`].
+pub async fn prepare(args: &Args) -> Result<(Layers, Config), TuiError> {
+    let layers = read_layers(args)?;
+    let config = load_config(&layers.scope).await?;
+    Ok((layers, config))
 }
 
 /// [`prepare`] followed by [`bootstrap_with`].
@@ -368,8 +397,8 @@ pub async fn prepare(args: &Args) -> Result<(RuntimeScope, Config), TuiError> {
 /// See [`prepare`] and [`bootstrap_with`].
 #[cfg(any(test, feature = "test-support"))]
 pub async fn bootstrap(args: &Args, options: BootstrapOptions) -> Result<Runtime, TuiError> {
-    let (scope, config) = prepare(args).await?;
-    bootstrap_with(scope, config, args, options).await
+    let (layers, config) = prepare(args).await?;
+    bootstrap_with(layers, config, args, options).await
 }
 
 /// Open the realm persistence and compose the runtime-backed service.
@@ -383,7 +412,7 @@ pub async fn bootstrap(args: &Args, options: BootstrapOptions) -> Result<Runtime
 /// cannot be loaded, and [`TuiError::Composition`] when the runtime
 /// refuses the composition.
 pub async fn bootstrap_with(
-    scope: RuntimeScope,
+    layers: Layers,
     config: Config,
     args: &Args,
     options: BootstrapOptions,
@@ -415,7 +444,7 @@ pub async fn bootstrap_with(
         daemon_principal: _,
         notices,
         llm_override,
-    } = assemble(scope, config, args, options, LEASE_SURFACE).await?;
+    } = assemble(layers, config, args, options, LEASE_SURFACE).await?;
     let mut builder = FactoryAgentBuilder::new_with_config_store(
         factory,
         effective.clone(),
@@ -562,19 +591,17 @@ impl Assembled {
 
 /// Whether the TUI runs attached to the workspace's daemon: `--attach` or
 /// `--no-attach` when given, else `attach = true` in a user layer of
-/// `tui.toml` (a project file's `attach` is ignored with a notice at
-/// bootstrap, like its other trusted-only keys).
-///
-/// # Errors
-///
-/// [`TuiError`] when the workspace or the `tui.toml` layers cannot be read.
-pub fn attach_mode(args: &Args) -> Result<Option<crate::cli::AttachMode>, TuiError> {
+/// `tui.toml` (`layers`; a project file's `attach` is ignored with a
+/// notice at bootstrap, like its other trusted-only keys).
+#[must_use]
+pub fn attach_mode(args: &Args, layers: &Layers) -> Option<crate::cli::AttachMode> {
     if args.no_attach || args.attach.is_some() {
-        return Ok(args.attach_mode());
+        return args.attach_mode();
     }
-    let scope = resolve_scope(args)?;
-    let (layered, _) = approval::load_layers(&scope, args)?;
-    Ok(layered.attach.then_some(crate::cli::AttachMode::Auto))
+    layers
+        .layered
+        .attach
+        .then_some(crate::cli::AttachMode::Auto)
 }
 
 /// Resolve endpoints, model, confinement, trust, approval engine and MCP
@@ -586,13 +613,17 @@ pub fn attach_mode(args: &Args) -> Result<Option<crate::cli::AttachMode>, TuiErr
 ///
 /// See [`bootstrap_with`].
 pub async fn assemble(
-    scope: RuntimeScope,
+    layers: Layers,
     config: Config,
     args: &Args,
     options: BootstrapOptions,
     lease_surface: &str,
 ) -> Result<Assembled, TuiError> {
-    let (mut layered, mut approval_notices) = approval::load_layers(&scope, args)?;
+    let Layers {
+        scope,
+        mut layered,
+        notices: mut approval_notices,
+    } = layers;
     let realm = RealmId::parse(scope.realm_id.clone()).ok();
     let (mut endpoints, endpoint_notices) =
         EndpointRegistry::discover(&config, realm.as_ref(), &layered.endpoints)?;
