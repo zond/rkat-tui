@@ -966,6 +966,21 @@ impl AttachRunner {
             }
             return;
         }
+        if note.method == protocol::APPROVAL_NOTE {
+            match serde_json::from_value::<protocol::ApprovalNote>(note.params.clone()) {
+                Ok(approval) => {
+                    let (msgs, mode) = super::approvals::note_messages(approval);
+                    for msg in msgs {
+                        self.send(msg);
+                    }
+                    if mode {
+                        self.refresh_mode();
+                    }
+                }
+                Err(err) => tracing::debug!(error = %err, "unreadable approval note"),
+            }
+            return;
+        }
         if note.method == protocol::FILE_DIFF {
             match serde_json::from_value::<protocol::FileDiffNote>(note.params.clone()) {
                 Ok(diff) => self.send(Msg::Diff {

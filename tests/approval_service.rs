@@ -1,77 +1,31 @@
-//! The approval gate end to end, through the real runtime-backed service
-//! (`PersistentSessionService` + `MeerkatMachine`) with a scripted LLM: every
-//! tool call passes the gate the session's build installed as its
+//! The approval gate end to end, through the `rkat-tui-mob` daemon with a
+//! scripted LLM and an attached client: every tool call of the
+//! orchestrator passes the gate the daemon installed as its
 //! `ToolDispatchAdmission`. A Tier-1 read runs; a classifier block reaches
 //! the model as a reason and the run continues; a classifier allow runs the
-//! call; an escalation is answered through the runner's effect channel; a
-//! resumed session's classifier transcript is seeded from its history.
+//! call; an escalation is answered through the client's effect channel; a
+//! conversation the daemon restores has its classifier transcript seeded
+//! from its history.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;
+#[path = "common/attach.rs"]
+mod rig;
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
-use common::{Rig, ScriptedLlmClient, Step, Workspace, within};
+use common::{ScriptedLlmClient, Step, Workspace, within};
 use meerkat_core::types::ToolResult;
 use meerkat_core::{AgentEvent, Message};
-use parking_lot::Mutex;
-use rkat_tui::approval::classifier::{
-    ActionClassifier, ClassifierError, ClassifierInput, ClassifierVerdict,
-};
-use rkat_tui::bootstrap::ApprovalOverrides;
-use rkat_tui::runner::Start;
+use rig::{Attached, ScriptedClassifier, Setup};
+use rkat_tui::approval::classifier::{ActionClassifier, ClassifierError, ClassifierVerdict};
 use rkat_tui::ui::{ApprovalNotice, Effect, EscalationAnswer, Msg};
-use serde_json::{Value, json};
+use serde_json::json;
 
-/// A classifier that replays verdicts and records what it was shown.
-#[derive(Default)]
-struct ScriptedClassifier {
-    verdicts: Mutex<Vec<Result<ClassifierVerdict, ClassifierError>>>,
-    seen: Mutex<Vec<(String, Value, String)>>,
-}
-
-impl ScriptedClassifier {
-    fn new(verdicts: Vec<Result<ClassifierVerdict, ClassifierError>>) -> Arc<Self> {
-        Arc::new(Self {
-            verdicts: Mutex::new(verdicts),
-            seen: Mutex::new(Vec::new()),
-        })
-    }
-
-    /// `(tool, args, transcript)` of every review.
-    fn seen(&self) -> Vec<(String, Value, String)> {
-        self.seen.lock().clone()
-    }
-}
-
-#[async_trait]
-impl ActionClassifier for ScriptedClassifier {
-    async fn classify(
-        &self,
-        input: ClassifierInput<'_>,
-    ) -> Result<ClassifierVerdict, ClassifierError> {
-        self.seen.lock().push((
-            input.tool.to_string(),
-            input.args.clone(),
-            input.transcript.render(),
-        ));
-        let mut verdicts = self.verdicts.lock();
-        if verdicts.is_empty() {
-            Err(ClassifierError::Provider("script exhausted".into()))
-        } else {
-            verdicts.remove(0)
-        }
-    }
-}
-
-fn overrides(classifier: &Arc<ScriptedClassifier>) -> ApprovalOverrides {
-    ApprovalOverrides {
-        classifier: Some(Arc::clone(classifier) as Arc<dyn ActionClassifier>),
-        escalation_timeout: None,
-    }
+fn setup(classifier: &Arc<ScriptedClassifier>) -> Setup {
+    Setup::default().classifier(Arc::clone(classifier) as Arc<dyn ActionClassifier>)
 }
 
 /// The result of tool call `id` in `messages`.
@@ -104,7 +58,7 @@ async fn a_tier_one_read_runs_without_review() {
         },
         Step::Text("read it"),
     ]);
-    let mut rig = Rig::start_with(&ws.root, &llm, Start::New, overrides(&classifier)).await;
+    let mut rig = Attached::start_with(&ws.root, &llm, setup(&classifier)).await;
     rig.send(Effect::StartTurn("read notes.txt".into()));
     let outcome = rig.turn_finished().await;
     assert_eq!(outcome.result.expect("turn succeeds").text, "read it");
@@ -132,7 +86,7 @@ async fn a_classifier_block_reaches_the_model_and_the_run_continues() {
         },
         Step::Text("understood, I will not do that"),
     ]);
-    let mut rig = Rig::start_with(&ws.root, &llm, Start::New, overrides(&classifier)).await;
+    let mut rig = Attached::start_with(&ws.root, &llm, setup(&classifier)).await;
     rig.send(Effect::StartTurn("USER-ASK tidy up".into()));
 
     let notice = rig
@@ -157,7 +111,7 @@ async fn a_classifier_block_reaches_the_model_and_the_run_continues() {
     );
     assert!(!marker.exists(), "the denied command never ran");
     // The UI's tool block for the call ends as an error.
-    assert!(rig.events.lock().iter().any(|event| matches!(
+    assert!(rig.events().iter().any(|event| matches!(
         event,
         AgentEvent::ToolExecutionCompleted { id, is_error: true, .. } if id == "s1"
     )));
@@ -193,7 +147,7 @@ async fn a_classifier_allow_runs_the_call() {
         },
         Step::Text("written"),
     ]);
-    let mut rig = Rig::start_with(&ws.root, &llm, Start::New, overrides(&classifier)).await;
+    let mut rig = Attached::start_with(&ws.root, &llm, setup(&classifier)).await;
     rig.send(Effect::StartTurn("write the file outside".into()));
     let outcome = rig.turn_finished().await;
     assert_eq!(outcome.result.expect("turn succeeds").text, "written");
@@ -225,7 +179,7 @@ async fn an_escalation_is_answered_through_the_runner() {
         },
         Step::Text("done"),
     ]);
-    let mut rig = Rig::start_with(&ws.root, &llm, Start::New, overrides(&classifier)).await;
+    let mut rig = Attached::start_with(&ws.root, &llm, setup(&classifier)).await;
     rig.send(Effect::StartTurn("write it".into()));
     let msg = rig.wait_for(|msg| matches!(msg, Msg::Escalation(..))).await;
     let Msg::Escalation(prompt, id) = msg else {
@@ -262,16 +216,9 @@ async fn an_unanswered_escalation_times_out_as_a_denial() {
         },
         Step::Text("gave up"),
     ]);
-    let mut rig = Rig::start_with(
-        &ws.root,
-        &llm,
-        Start::New,
-        ApprovalOverrides {
-            classifier: Some(Arc::clone(&classifier) as Arc<dyn ActionClassifier>),
-            escalation_timeout: Some(Duration::from_millis(200)),
-        },
-    )
-    .await;
+    let mut setup = setup(&classifier);
+    setup.escalation_timeout = Some(Duration::from_millis(200));
+    let mut rig = Attached::start_with(&ws.root, &llm, setup).await;
     rig.send(Effect::StartTurn("write it".into()));
     let Msg::Escalation(_, id) = rig.wait_for(|msg| matches!(msg, Msg::Escalation(..))).await
     else {
@@ -305,7 +252,7 @@ async fn a_deny_comment_reaches_the_model_as_the_tool_error() {
         },
         Step::Text("understood"),
     ]);
-    let mut rig = Rig::start_with(&ws.root, &llm, Start::New, overrides(&classifier)).await;
+    let mut rig = Attached::start_with(&ws.root, &llm, setup(&classifier)).await;
     rig.send(Effect::StartTurn("configure the token".into()));
     let Msg::Escalation(_, id) = rig.wait_for(|msg| matches!(msg, Msg::Escalation(..))).await
     else {
@@ -337,14 +284,14 @@ async fn a_deny_comment_reaches_the_model_as_the_tool_error() {
 async fn a_resumed_session_reseeds_the_classifier_transcript() {
     let ws = Workspace::new();
     let first = ScriptedLlmClient::new(vec![Step::Text("noted")]);
-    let mut rig = Rig::start(&ws.root, &first, Start::New).await;
+    let mut rig = Attached::start(&ws.root, &first).await;
     rig.send(Effect::StartTurn("USER-EARLIER remember the plan".into()));
     rig.turn_finished().await;
-    let id = rig.first_session.clone();
+    let id = rig.current_session().await;
     rig.quit().await;
 
-    // A new process resumes the session: its first reviewed call carries the
-    // earlier user words, not the assistant's.
+    // A restarted daemon restores the conversation: its first reviewed
+    // call carries the earlier user words, not the assistant's.
     let marker = ws.sibling("resumed");
     let command = leak(format!("touch {}", marker.display()));
     let classifier = ScriptedClassifier::new(vec![Ok(ClassifierVerdict::Block {
@@ -359,15 +306,13 @@ async fn a_resumed_session_reseeds_the_classifier_transcript() {
         },
         Step::Text("ok"),
     ]);
-    let mut rig = Rig::start_with(
-        &ws.root,
-        &second,
-        Start::Resume(id.to_string()),
-        overrides(&classifier),
-    )
-    .await;
-    assert_eq!(rig.first_session, id);
-    let seeded = rig.approval.transcript(&id).expect("seeded on resume");
+    let mut rig = Attached::start_with(&ws.root, &second, setup(&classifier)).await;
+    assert_eq!(rig.current_session().await, id);
+    rig.send(Effect::StartTurn("USER-NOW go on".into()));
+    within(rig.turn_finished()).await;
+    let seen = classifier.seen();
+    assert_eq!(seen.len(), 1);
+    let seeded = &seen[0].2;
     assert!(
         seeded.contains("USER-EARLIER remember the plan"),
         "{seeded}"
@@ -376,11 +321,6 @@ async fn a_resumed_session_reseeds_the_classifier_transcript() {
         !seeded.contains("noted"),
         "assistant prose stays out: {seeded}"
     );
-    rig.send(Effect::StartTurn("USER-NOW go on".into()));
-    within(rig.turn_finished()).await;
-    let seen = classifier.seen();
-    assert_eq!(seen.len(), 1);
-    assert!(seen[0].2.contains("USER-EARLIER"), "{}", seen[0].2);
     assert!(seen[0].2.contains("USER-NOW go on"), "{}", seen[0].2);
     assert!(!marker.exists());
     rig.quit().await;
@@ -420,7 +360,7 @@ async fn a_protected_write_asks_the_user_and_allow_always_stops_the_prompts() {
         },
         Step::Text("second"),
     ]);
-    let mut rig = Rig::start_with(&ws.root, &llm, Start::New, overrides(&classifier)).await;
+    let mut rig = Attached::start_with(&ws.root, &llm, setup(&classifier)).await;
 
     rig.send(Effect::StartTurn("set a secret".into()));
     let Msg::Escalation(prompt, id) = rig.wait_for(|msg| matches!(msg, Msg::Escalation(..))).await
@@ -464,18 +404,17 @@ async fn a_protected_write_asks_the_user_and_allow_always_stops_the_prompts() {
         "first"
     );
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "FIRST=1\n");
-    let rules = rig.approval.rules();
-    let added: Vec<String> = rules
-        .allow()
-        .map(|(_, rule)| {
-            format!(
-                "{} {}",
-                rule.tool.as_str(),
-                rule.arg.as_ref().map_or("", |a| a.as_str())
-            )
-        })
-        .collect();
-    assert_eq!(added, ["write_file .env.local"]);
+    let listed = rig
+        .daemon
+        .connect()
+        .await
+        .call("rkat/rules", json!({"op": "list"}))
+        .await
+        .unwrap();
+    let listed = listed["text"].as_str().unwrap().to_string();
+    let added: Vec<&str> = listed.lines().filter(|l| l.contains("allow ")).collect();
+    assert_eq!(added.len(), 1, "{listed}");
+    assert!(added[0].contains("allow write_file .env.local"), "{listed}");
 
     rig.send(Effect::StartTurn("change it".into()));
     assert_eq!(

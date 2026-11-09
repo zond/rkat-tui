@@ -416,6 +416,26 @@ impl Conversations {
             .map(|page| page.messages)
     }
 
+    /// Seed the approval `engine`'s classifier transcript of `session` from
+    /// its committed history (the human's words and tool calls), as the
+    /// in-process resume did: the classifier of a restored or resumed
+    /// conversation then sees what the user asked before. A session that
+    /// cannot be read is left unseeded.
+    pub async fn seed(&self, engine: &crate::approval::ApprovalEngine, session: &SessionId) {
+        match self
+            .state
+            .session_service()
+            .load_persisted_session(session)
+            .await
+        {
+            Ok(Some(stored)) => engine.seed_transcript(&stored),
+            Ok(None) => {}
+            Err(err) => {
+                tracing::warn!(%session, error = %err, "cannot seed the classifier transcript");
+            }
+        }
+    }
+
     /// The configured endpoint `session`'s durable auth binding names
     /// (`None`: a built-in endpoint, or unreadable).
     pub async fn endpoint_of(&self, session: &SessionId) -> Option<String> {

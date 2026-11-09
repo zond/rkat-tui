@@ -471,6 +471,13 @@ impl Daemon {
             composed.root.model.clone(),
             composed.root.auth_binding.clone(),
         ));
+        // A restored orchestrator's classifier sees what the user asked in
+        // the conversation so far.
+        if !orchestrator.created {
+            conversations
+                .seed(&composed.engine, &orchestrator.session_id)
+                .await;
+        }
         let watcher = approvals::watch(
             Arc::clone(&composed.state),
             orchestrator.mob_id.clone(),
@@ -545,6 +552,7 @@ impl Daemon {
                 composed.desk_task,
                 composed.decisions_task,
                 composed.diffs_task,
+                composed.notes_task,
                 composed.follower_task,
                 composed.helper_catalogs_task,
                 watcher,

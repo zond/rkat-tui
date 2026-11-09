@@ -445,6 +445,12 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Fixed
 
+- Attach mode shows what the approval engine reports, as the in-process
+  TUI did: the classifier's note under a tool call it allowed, a line for
+  a blocked call or a human's answer, the auto-mode pause notice, the
+  classifying indicator and the classifier's usage in `/cost`. The
+  classifier of a conversation the daemon restored or `/resume` switched
+  to sees what the user asked earlier in it.
 - `/model` to a model only a configured endpoint lists works with the
   daemon: the daemon registers the model's profile from the endpoint's
   list (rebuilding the agent on its conversation when the profile is

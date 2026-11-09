@@ -3478,3 +3478,24 @@ and listed here.
   run, was refused with "Runtime not ready: destroyed" (the same window
   as `/compact now`'s, see the manual's limits), so the test runs a turn
   first.
+- `tests/approval_service.rs`: the eight tests run over the daemon
+  harness with the shared `rig::ScriptedClassifier` (one double for every
+  file: replays verdicts, records `(tool, args, transcript)`, fails or
+  allows when the script runs out). The added rule is read with
+  `rkat/rules list`; the reseed test restarts the daemon and asserts the
+  seeded words on the transcript the classifier was shown (the engine's
+  transcript map is not on the wire). Two gaps found and fixed:
+  1. The daemon dropped the approval engine's events ("nobody renders
+     them"), so attach mode showed no classifier-allow note under a tool
+     block, no line for a block or a human's answer, no auto-mode pause
+     notice, no classifying indicator and no classifier usage in `/cost`.
+     They now go to every client as `rkat/approval_note`
+     (`protocol::ApprovalNote`, pushed through the consent surface's
+     client list, `Decisions::broadcast`), and the client renders them as
+     the in-process runner did (`client::approvals::note_messages`,
+     re-reading the mode status after a decision or a pause).
+  2. A conversation the daemon restored at start, or one `/resume`
+     switched to, had an empty classifier transcript: the in-process
+     resume seeded it from the session's history. The daemon now seeds it
+     (`Conversations::seed`, `ApprovalEngine::seed_transcript` over the
+     stored session) on restore and after every `/resume`.

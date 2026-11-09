@@ -20,8 +20,116 @@ use serde_json::Value;
 
 use crate::approval::escalation::RecordedPrompt;
 use crate::daemon::decisions::{DialogRendering, KIND};
-use crate::daemon::protocol::{DecideParams, DecisionEnded};
-use crate::ui::{EscalationAnswer, EscalationId, Msg};
+use crate::daemon::protocol::{ApprovalNote, DecideParams, DecisionEnded};
+use crate::ui::{ApprovalNotice, EscalationAnswer, EscalationId, Msg, NoticeLevel, StatusUpdate};
+
+/// Most characters of the classifier's reason in an allow note.
+pub const MAX_ALLOW_REASON_CHARS: usize = 100;
+
+/// The note under a tool block the classifier allowed:
+/// `allowed by classifier: <reason>`, the reason on one line and cut to
+/// [`MAX_ALLOW_REASON_CHARS`].
+#[must_use]
+pub fn classifier_allow_note(reason: Option<&str>) -> String {
+    let one_line = reason
+        .unwrap_or_default()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if one_line.is_empty() {
+        return "allowed by classifier".to_string();
+    }
+    let reason = if one_line.chars().count() > MAX_ALLOW_REASON_CHARS {
+        let kept: String = one_line.chars().take(MAX_ALLOW_REASON_CHARS - 1).collect();
+        format!("{kept}…")
+    } else {
+        one_line
+    };
+    format!("allowed by classifier: {reason}")
+}
+
+/// What the UI shows for an approval note the daemon pushed
+/// ([`crate::daemon::protocol::APPROVAL_NOTE`]), as the in-process runner
+/// showed the engine's events, and whether the permission-mode status
+/// should be read again (a decision moves the denial counters; a pause or
+/// resume changes the mode). Tier-1/2 allows are routine and show
+/// nothing; a classifier allow is one dim line under its tool block; other
+/// reviewed or denied actions get a line of their own.
+#[must_use]
+pub fn note_messages(note: ApprovalNote) -> (Vec<Msg>, bool) {
+    use crate::approval::policy::{Decider, Tier, VerdictSummary};
+    match note {
+        ApprovalNote::Decision {
+            agent,
+            tool_use_id,
+            tool,
+            verdict,
+            reason,
+        } => {
+            let tool = match agent {
+                Some(agent) => format!("[{agent}] {tool}"),
+                None => tool,
+            };
+            let (tier, decider, allowed) = match verdict {
+                VerdictSummary::Allowed { tier, by } => (tier, by, true),
+                VerdictSummary::Denied { tier, by } => (tier, by, false),
+            };
+            let msgs = if allowed && decider == Decider::Classifier {
+                vec![Msg::ToolNote {
+                    tool_use_id,
+                    text: classifier_allow_note(reason.as_deref()),
+                }]
+            } else if !allowed
+                || decider == Decider::Human
+                || matches!(tier, Tier::Classifier | Tier::AskUser)
+            {
+                vec![Msg::Approval(ApprovalNotice {
+                    tool,
+                    tier: format!("{tier} · {decider:?}").to_lowercase(),
+                    allowed,
+                    reason,
+                })]
+            } else {
+                Vec::new()
+            };
+            (msgs, true)
+        }
+        ApprovalNote::Paused { cause } => (
+            vec![Msg::Notice {
+                level: NoticeLevel::Warn,
+                text: format!(
+                    "auto mode paused ({cause}): reviewed actions now ask you; /auto resume to continue"
+                ),
+            }],
+            true,
+        ),
+        ApprovalNote::Resumed => (Vec::new(), true),
+        ApprovalNote::RulesDropped { rules } => (
+            vec![Msg::Notice {
+                level: NoticeLevel::Warn,
+                text: format!(
+                    "auto mode dropped {} broad allow rule(s): {}",
+                    rules.len(),
+                    rules.join(", ")
+                ),
+            }],
+            false,
+        ),
+        ApprovalNote::Classifying { running } => {
+            (vec![Msg::Status(StatusUpdate::Classifying(running))], false)
+        }
+        ApprovalNote::ClassifierUsage { model, usage } => {
+            (vec![Msg::ClassifierUsage { model, usage }], false)
+        }
+        ApprovalNote::Notice { text } => (
+            vec![Msg::Notice {
+                level: NoticeLevel::Warn,
+                text,
+            }],
+            false,
+        ),
+    }
+}
 
 /// What a pushed decision changes in the UI.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,6 +263,31 @@ pub fn decision_params(decision: &str, digest: &str, answer: &EscalationAnswer) 
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classifier_allow_note_is_one_short_line() {
+        assert_eq!(
+            classifier_allow_note(Some("in-project scratch file the user asked to clean up")),
+            "allowed by classifier: in-project scratch file the user asked to clean up"
+        );
+        assert_eq!(
+            classifier_allow_note(Some("  line one\n  line two ")),
+            "allowed by classifier: line one line two"
+        );
+        assert_eq!(classifier_allow_note(None), "allowed by classifier");
+        assert_eq!(classifier_allow_note(Some(" \n")), "allowed by classifier");
+        let exact = "x".repeat(MAX_ALLOW_REASON_CHARS);
+        assert_eq!(
+            classifier_allow_note(Some(&exact)),
+            format!("allowed by classifier: {exact}")
+        );
+        let long = "é".repeat(MAX_ALLOW_REASON_CHARS + 30);
+        let note = classifier_allow_note(Some(&long));
+        let reason = note.strip_prefix("allowed by classifier: ").unwrap();
+        assert_eq!(reason.chars().count(), MAX_ALLOW_REASON_CHARS);
+        assert!(reason.ends_with('…'));
+        assert!(!note.contains('\n'));
+    }
     use serde_json::json;
     fn notice(decision: &str, session: &SessionId) -> Value {
         let rendering = serde_json::to_string(&DialogRendering {

@@ -468,3 +468,72 @@ pub async fn stored_session(root: &Path, id: &meerkat_core::SessionId) -> meerka
         .unwrap()
         .expect("the session is stored")
 }
+
+/// A classifier that replays verdicts and records what it was shown. When
+/// the script runs out it fails ([`Self::new`]) or allows
+/// ([`Self::allowing`]).
+#[derive(Default)]
+pub struct ScriptedClassifier {
+    verdicts: parking_lot::Mutex<Vec<Result<ClassifierVerdict, ClassifierError>>>,
+    seen: parking_lot::Mutex<Vec<(String, serde_json::Value, String)>>,
+    allow_when_done: bool,
+}
+
+impl ScriptedClassifier {
+    /// These verdicts, then a provider error.
+    pub fn new(verdicts: Vec<Result<ClassifierVerdict, ClassifierError>>) -> Arc<Self> {
+        Arc::new(Self {
+            verdicts: parking_lot::Mutex::new(verdicts),
+            ..Self::default()
+        })
+    }
+
+    /// These verdicts, then allow.
+    pub fn allowing(verdicts: Vec<ClassifierVerdict>) -> Arc<Self> {
+        Arc::new(Self {
+            verdicts: parking_lot::Mutex::new(verdicts.into_iter().map(Ok).collect()),
+            allow_when_done: true,
+            ..Self::default()
+        })
+    }
+
+    /// `(tool, args, transcript)` of every review.
+    pub fn seen(&self) -> Vec<(String, serde_json::Value, String)> {
+        self.seen.lock().clone()
+    }
+
+    /// The transcript of every review.
+    pub fn transcripts(&self) -> Vec<String> {
+        self.seen().into_iter().map(|(_, _, t)| t).collect()
+    }
+
+    /// The tool of every review.
+    pub fn tools(&self) -> Vec<String> {
+        self.seen().into_iter().map(|(tool, _, _)| tool).collect()
+    }
+}
+
+#[async_trait::async_trait]
+impl ActionClassifier for ScriptedClassifier {
+    async fn classify(
+        &self,
+        input: ClassifierInput<'_>,
+    ) -> Result<ClassifierVerdict, ClassifierError> {
+        self.seen.lock().push((
+            input.tool.to_string(),
+            input.args.clone(),
+            input.transcript.render(),
+        ));
+        let mut verdicts = self.verdicts.lock();
+        if !verdicts.is_empty() {
+            return verdicts.remove(0);
+        }
+        if self.allow_when_done {
+            Ok(ClassifierVerdict::Allow {
+                reason: "scripted allow".into(),
+            })
+        } else {
+            Err(ClassifierError::Provider("script exhausted".into()))
+        }
+    }
+}

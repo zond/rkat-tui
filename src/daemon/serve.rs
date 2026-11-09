@@ -59,7 +59,7 @@ pub struct Outgoing {
 }
 
 impl Outgoing {
-    fn line(line: String) -> Self {
+    pub(crate) fn line(line: String) -> Self {
         Self {
             line,
             written: None,

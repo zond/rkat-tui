@@ -317,6 +317,102 @@ pub struct Transcript {
     pub messages: Vec<Message>,
 }
 
+/// A notification the daemon pushes to every attached client with what the
+/// approval engine reports ([`ApprovalNote`]): the classifier's verdicts,
+/// auto mode pausing and resuming, the classifier's work and token usage.
+pub const APPROVAL_NOTE: &str = "rkat/approval_note";
+
+/// What the approval engine reported, as [`APPROVAL_NOTE`] carries it (the
+/// engine's `ApprovalEvent` without the dialogs, which the consent surface
+/// pushes as decisions).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ApprovalNote {
+    /// A tool call was decided.
+    Decision {
+        /// The helper that made the call (`None`: the orchestrator).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<String>,
+        /// Its tool-use id.
+        tool_use_id: String,
+        /// The tool.
+        tool: String,
+        /// The tier and who decided.
+        verdict: crate::approval::policy::VerdictSummary,
+        /// Why it was denied, or the classifier's reason for an allow.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+    /// Auto mode paused.
+    Paused {
+        /// Why.
+        cause: crate::approval::counters::PauseCause,
+    },
+    /// Auto mode resumed.
+    Resumed,
+    /// Broad allow rules were dropped on entering auto mode (described).
+    RulesDropped {
+        /// The rules, as `/rules` lists them.
+        rules: Vec<String>,
+    },
+    /// The classifier started or finished a review.
+    Classifying {
+        /// Whether one runs now.
+        running: bool,
+    },
+    /// One classifier call's token usage.
+    ClassifierUsage {
+        /// The classifier's model.
+        model: String,
+        /// Its usage.
+        usage: meerkat_core::Usage,
+    },
+    /// Something the human should know about the approval machinery.
+    Notice {
+        /// What.
+        text: String,
+    },
+}
+
+impl ApprovalNote {
+    /// The note for `event` (`None`: a withdrawn escalation, which the
+    /// decision push already closes).
+    #[must_use]
+    pub fn of(event: crate::approval::ApprovalEvent) -> Option<Self> {
+        use crate::approval::ApprovalEvent;
+        Some(match event {
+            ApprovalEvent::Decision {
+                agent,
+                tool_use_id,
+                tool,
+                verdict,
+                reason,
+                ..
+            } => Self::Decision {
+                agent,
+                tool_use_id,
+                tool,
+                verdict,
+                reason,
+            },
+            ApprovalEvent::Paused(cause) => Self::Paused { cause },
+            ApprovalEvent::Resumed => Self::Resumed,
+            ApprovalEvent::RulesDropped(rules) => Self::RulesDropped {
+                rules: rules
+                    .iter()
+                    .map(crate::approval::desk::describe_rule)
+                    .collect(),
+            },
+            ApprovalEvent::Classifying(running) => Self::Classifying { running },
+            ApprovalEvent::ClassifierUsage { model, usage } => {
+                Self::ClassifierUsage { model, usage }
+            }
+            ApprovalEvent::Notice(text) => Self::Notice { text },
+            ApprovalEvent::EscalationWithdrawn(_) => return None,
+        })
+    }
+}
+
 /// [`ENDPOINT`]'s result.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionEndpoint {

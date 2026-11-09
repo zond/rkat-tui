@@ -87,6 +87,8 @@ pub struct Composed {
     pub decisions_task: tokio::task::JoinHandle<()>,
     /// The task that pushes the orchestrator's file changes to the clients.
     pub diffs_task: tokio::task::JoinHandle<()>,
+    /// The task that pushes the approval engine's notes to the clients.
+    pub notes_task: tokio::task::JoinHandle<()>,
     /// The helper follower's task.
     pub follower_task: tokio::task::JoinHandle<()>,
     /// The task reading helpers' tool catalogs after their runs.
@@ -169,10 +171,9 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
                 .map(StartupNotice::warn),
         )
         .collect();
-    // Nobody renders the engine's decision events in the daemon (the
-    // client reads its status with `rkat/get_mode`); dropped, they are not
-    // queued.
-    drop(approval.events.take());
+    // The engine's decision events go to every attached client
+    // (`rkat/approval_note`, forwarded once the consent surface exists).
+    let approval_events = approval.events.take();
     persistence.require_hosting_mode(effective.storage.hosting_mode())?;
     let config_store = Arc::clone(&realm_config) as Arc<dyn ConfigStore>;
     let runtime = SessionRuntime::new_with_config_store(
@@ -361,6 +362,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         .map_err(DaemonError::Approval)?;
     let decisions_task = decisions.follow();
     let diffs_task = Decisions::forward_diffs(&decisions, diff_rx);
+    let notes_task = forward_approval_notes(&decisions, approval_events);
     let (desk, desk_task) = Desk::spawn(
         Arc::clone(&decisions),
         engine.escalation_timeout(),
@@ -389,6 +391,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         desk_task,
         decisions,
         decisions_task,
+        notes_task,
         diffs_task,
         follower_task: follower,
         helper_catalogs_task: helper_catalogs,
@@ -428,4 +431,25 @@ fn orchestrator_tools(
         .build()
         .map_err(TuiError::ToolGateway)?;
     Ok((Arc::new(gateway), notes))
+}
+
+/// Push every event of the approval engine's `events` to the clients as
+/// an [`ApprovalNote`](super::protocol::ApprovalNote) (what the in-process
+/// runner showed: classifier verdicts, pauses, the classifier's work and
+/// usage), until the engine is gone.
+fn forward_approval_notes(
+    decisions: &Arc<Decisions>,
+    events: Option<tokio::sync::mpsc::UnboundedReceiver<crate::approval::ApprovalEvent>>,
+) -> tokio::task::JoinHandle<()> {
+    let decisions = Arc::clone(decisions);
+    tokio::spawn(async move {
+        let Some(mut events) = events else {
+            return;
+        };
+        while let Some(event) = events.recv().await {
+            if let Some(note) = super::protocol::ApprovalNote::of(event) {
+                decisions.broadcast(super::protocol::APPROVAL_NOTE, &note);
+            }
+        }
+    })
 }

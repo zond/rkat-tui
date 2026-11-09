@@ -435,6 +435,20 @@ impl Decisions {
         }
     }
 
+    /// Push the notification `method` with `params` to every attached
+    /// client (the approval engine's notes, [`protocol::APPROVAL_NOTE`]).
+    pub fn broadcast(&self, method: &str, params: &impl serde::Serialize) {
+        let line = format!(
+            "{}\n",
+            json!({"jsonrpc": "2.0", "method": method, "params": params})
+        );
+        for client in self.clients.lock().values() {
+            if client.open.load(Ordering::Relaxed) {
+                let _ = client.out.send(super::serve::Outgoing::line(line.clone()));
+            }
+        }
+    }
+
     /// How many clients are attached.
     #[must_use]
     #[cfg(any(test, feature = "test-support"))]
