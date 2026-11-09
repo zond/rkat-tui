@@ -445,6 +445,9 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Fixed
 
+- In attach mode, the same prompt typed again right after a failed turn
+  is a retry ("(retrying the request above)", with a notice) instead of
+  a second copy of the message, as in-process.
 - Attach mode shows what the approval engine reports, as the in-process
   TUI did: the classifier's note under a tool call it allowed, a line for
   a blocked call or a human's answer, the auto-mode pause notice, the

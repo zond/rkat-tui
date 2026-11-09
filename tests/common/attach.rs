@@ -318,6 +318,9 @@ impl Client {
 #[derive(Clone, Default)]
 pub struct Setup {
     pub args: Vec<String>,
+    /// Arguments only the client gets (`-c`, `--resume`; the daemon
+    /// refuses them).
+    pub client_args: Vec<String>,
     pub classifier: Option<Arc<dyn ActionClassifier>>,
     pub escalation_timeout: Option<Duration>,
     pub lister: Option<rkat_tui::models::ModelLister>,
@@ -384,7 +387,11 @@ impl Attached {
         let args = setup.command_line(root);
         let daemon = Running::start_with(&args, setup.options(root, llm)).await;
         let lister = setup.lister.clone().unwrap_or_else(no_lists);
-        let client = Client::attach_listing(root, &args, None, lister).await;
+        let mut client_args = setup.args.clone();
+        client_args.extend(setup.client_args.iter().cloned());
+        let client_args: Vec<&str> = client_args.iter().map(String::as_str).collect();
+        let client_args = crate::common::args_with(root, &client_args);
+        let client = Client::attach_listing(root, &client_args, None, lister).await;
         Self { daemon, client }
     }
 

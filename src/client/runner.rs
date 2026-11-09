@@ -26,7 +26,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use meerkat_core::lifecycle::RunId;
-use meerkat_core::{AgentErrorClass, AgentEvent, EventEnvelope, SessionId};
+use meerkat_core::{AgentErrorClass, AgentEvent, EventEnvelope, Message, SessionId};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
@@ -56,6 +56,10 @@ use crate::user_shell::UserShell;
 use crate::workbench::models::Current;
 use crate::workbench::{AgentContext, SavedUnsent, Workbench, WorkbenchParts};
 use crate::workbench::{context, tasks};
+
+/// What is sent in place of a prompt that repeats the one a failed turn
+/// already committed ([`AttachRunner::retry_input`]).
+const RETRY_INPUT: &str = "(retrying the request above)";
 
 /// The status-bar segment while the first connection is made.
 pub const CONNECTING: &str = "connecting";
@@ -346,6 +350,10 @@ struct Turn {
     finish_by: Option<Instant>,
     /// An interrupt the daemon has not confirmed ends the turn then.
     give_up_at: Option<Instant>,
+    /// The prompt that started it, as sent (`None`: another client's run).
+    prompt: Option<String>,
+    /// A steer of this client joined it.
+    steered: bool,
 }
 
 impl Turn {
@@ -499,6 +507,8 @@ pub struct AttachRunner {
     held: Option<Vec<Effect>>,
     /// The first connect failed (held prompts then fail as not attached).
     first_failed: bool,
+    /// The prompt of the turn that just failed, in its conversation.
+    failed_prompt: Option<(SessionId, String)>,
 }
 
 /// Lines for the terminal after the UI closed ([`AttachRunner::farewells`]).
@@ -554,6 +564,7 @@ impl AttachRunner {
             farewells: Farewells::default(),
             held: Some(Vec::new()),
             first_failed: false,
+            failed_prompt: None,
         }
     }
 
@@ -1327,6 +1338,14 @@ impl AttachRunner {
         if !turn.active {
             return;
         }
+        // A failed turn's prompt stays committed: the same text typed again
+        // is a retry, not a second copy ([`AttachRunner::retry_input`]).
+        self.failed_prompt = match (&turn.result, &turn.prompt, &self.link) {
+            (Some(Err(TurnFailure::Failed(_))), Some(prompt), Some(link)) if !turn.steered => {
+                Some((link.session.clone(), prompt.clone()))
+            }
+            _ => None,
+        };
         // Steers still held went to the runtime; it owns them now.
         for id in turn.steers {
             self.send(Msg::SteerDelivered(id));
@@ -1932,12 +1951,15 @@ impl AttachRunner {
             ))));
             return;
         };
+        let text = self.expand_mentions(text);
+        let retry = self.retry_input(&connection, &text).await;
         self.turn = Turn {
             active: true,
+            prompt: Some(text.clone()),
             ..Turn::default()
         };
-        let text = self.expand_mentions(text);
-        let Err(failure) = bounded(CALL_TIMEOUT, remote::send(&connection, &text, false)).await
+        let sent = retry.unwrap_or(&text);
+        let Err(failure) = bounded(CALL_TIMEOUT, remote::send(&connection, sent, false)).await
         else {
             return;
         };
@@ -1945,6 +1967,44 @@ impl AttachRunner {
             "the prompt was not sent: {failure}"
         ))));
         self.finish_turn();
+    }
+
+    /// What to send for the prompt `text`: [`RETRY_INPUT`] when it repeats
+    /// the prompt of the turn that just failed and that prompt is still the
+    /// conversation's last message (a failed run keeps it committed, so
+    /// the text again would be in the transcript twice), as the in-process
+    /// runner did; `None` sends `text`. Applies once.
+    async fn retry_input(&mut self, connection: &Connection, text: &str) -> Option<&'static str> {
+        let (session, failed) = self.failed_prompt.take()?;
+        if self
+            .link
+            .as_ref()
+            .is_none_or(|link| link.session != session)
+            || failed.trim() != text.trim()
+        {
+            return None;
+        }
+        let messages = bounded(CALL_TIMEOUT, remote::transcript(connection, &session))
+            .await
+            .ok()?;
+        let last = messages
+            .iter()
+            .rev()
+            .find(|message| !matches!(message, Message::System(_) | Message::SystemNotice(_)));
+        let repeated = matches!(
+            last,
+            Some(Message::User(user))
+                if user.transcript_role == meerkat_core::TranscriptUserRole::Conversational
+                    && user.text_content().trim() == text.trim()
+        );
+        if !repeated {
+            return None;
+        }
+        self.notice(
+            NoticeLevel::Info,
+            "your message is already in the transcript from the failed turn; retrying it",
+        );
+        Some(RETRY_INPUT)
     }
 
     async fn steer(&mut self, id: PendingId, text: &str) {
@@ -1965,6 +2025,7 @@ impl AttachRunner {
         let text = self.expand_mentions(text);
         let result = match bounded(CALL_TIMEOUT, remote::send(&connection, &text, true)).await {
             Ok(()) => {
+                self.turn.steered = true;
                 self.turn.steers.push_back(id);
                 self.admitted.push(id);
                 Ok(())

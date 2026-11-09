@@ -3499,3 +3499,47 @@ and listed here.
      resume seeded it from the session's history. The daemon now seeds it
      (`Conversations::seed`, `ApprovalEngine::seed_transcript` over the
      stored session) on restore and after every `/resume`.
+- `tests/integrator.rs`: 21 of its 30 tests run over the daemon harness
+  with their assertions; `-c`, `--resume <prefix>` and `--resume` alone
+  are the client's arguments (`Setup::client_args`) against a restarted
+  daemon, and a stored identity is read with `rig::stored_session`.
+  Re-expressed: `status_report_names_the_session_and_the_workspace`
+  asserts the attach `/status` (session, workspace, the daemon, the
+  approval gate); the in-process lines for shell confinement, permission
+  mode, the `tui.toml` and `mcp.toml` files and helpers are not in the
+  attach report (a gap left for the docs batch's `/status` pass);
+  `context_report_describes_the_session` asserts the attach line for the
+  TUI's tools. The migration found that attach mode sent a prompt
+  repeated after a failed turn as a second copy: the client now sends
+  "(retrying the request above)" with the in-process notice when the
+  failed prompt is still the conversation's last message
+  (`AttachRunner::retry_input`). Deleted, with what covers them now:
+  - `new_and_resume_switch_sessions_in_process` →
+    `attach_sessions::new_starts_fresh_and_resume_brings_the_old_conversation_back`
+    (its `resolve_session_ref(.., "last")` check was the in-process
+    listing; the daemon's references are `client::sessions::resolve`,
+    unit-tested);
+  - `each_open_of_a_realm_holds_its_own_lease_until_released` (two
+    in-process bootstraps of one realm; one daemon holds the realm, pinned
+    by `daemon::a_second_daemon_on_a_live_workspace_is_refused`, and
+    `quitting_releases_the_realm_lease` now stops a daemon);
+  - `references_resolve_over_the_service_listing` (`session::resolve`,
+    deleted with `src/session/`) → `client::sessions::tests::*`;
+  - `rewind_forks_before_the_chosen_message_and_keeps_the_old_session` →
+    `attach_sessions::rewind_says_why_it_is_not_offered` (the engine
+    refuses a member's transcript fork, ask 1);
+  - `interrupt_cancels_the_running_turn_and_returns_steers`,
+    `interrupting_a_slow_tool_returns_the_messages_typed_meanwhile`,
+    `esc_interrupts_and_the_queued_message_runs_next`,
+    `recalling_a_message_typed_during_a_slow_tool_leaves_the_run_alone`,
+    `recalling_a_steer_that_already_joined_the_run_leaves_it_delivered`:
+    they asserted that a steer sent into a running turn comes back on Esc
+    or recall, the in-process runner's cancel of its own runtime input.
+    `mob/member_send` answers no input id to cancel by (ask 6): in the
+    daemon a sent steer is the runtime's, marked delivered when the turn
+    ends, and recall says so (`attach::what_the_daemon_cannot_do_yet_says_so`);
+    the interrupt itself is `attach::esc_interrupts_a_hanging_turn`. A
+    probe while re-expressing them saw the runtime run the steers after
+    the interrupted run (a follow-up run consumed the next scripted
+    answer); that is the manual's documented limit ("the agent gets it at
+    its next step") and stays until ask 6 ships.
