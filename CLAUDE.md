@@ -27,14 +27,18 @@ The gate, which CI runs verbatim on Rust 1.97.0:
 ```bash
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --lib --bins -- -D warnings
 cargo nextest run --all-features
 ```
 
 Every step must exit 0 before a commit. Never commit on red, never loosen a
 lint or delete a test to get there. While iterating, scope the run
 (`--lib`, `--test <name>`, `-E 'test(<substring>)'`), then run the full gate
-once. Clippy must always be `--all-targets --all-features`. `cargo fmt --all`
-fixes formatting. `docs/testing.md` is the full protocol: where each kind
+once. The first clippy run must always be `--all-targets --all-features`; the
+second builds the library and binaries with default features only, so an
+item nothing but the tests use is reported as dead. Put such items under
+`#[cfg(any(test, feature = "test-support"))]` rather than making them
+public. `cargo fmt --all` fixes formatting. `docs/testing.md` is the full protocol: where each kind
 of test lives, the flaky-test history, running from inside the harness.
 
 `.cargo/config.toml` sets the test-thread stack and the SQLite build flags
