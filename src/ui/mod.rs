@@ -304,7 +304,6 @@ pub enum EditorClosed {
 
 /// Input to [`App::update`].
 #[derive(Debug, Clone)]
-#[allow(clippy::large_enum_variant)]
 pub enum Msg {
     /// A key press.
     Key(KeyEvent),

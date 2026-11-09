@@ -1308,7 +1308,6 @@ impl Transcript {
     }
 
     /// [`Self::apply_agent_event`] with an explicit clock (for tests).
-    #[allow(clippy::too_many_lines)]
     pub fn apply_agent_event_at(&mut self, event: &AgentEvent, now: Instant) -> Option<TurnUsage> {
         match event {
             AgentEvent::TurnStarted { .. } => {

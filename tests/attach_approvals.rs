@@ -677,7 +677,6 @@ async fn the_local_methods_answer_before_the_engine() {
 /// rule for it matches, and the classifier is not asked. The helper runs
 /// from its spawn on, so its own catalog is never read before its first
 /// call; the daemon judges it by the natives of the catalogs it has read.
-#[cfg(feature = "mob")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_helpers_shell_is_judged_as_the_native_shell() {
     let ws = Workspace::new();
@@ -875,7 +874,6 @@ args = ["-c", "printf entered > \"$1\"; cat >/dev/null; printf '{{}}'", "hook-pr
 /// A seated helper's own tool catalog is read once its first run has
 /// ended (the session is idle then), and cached for its later calls, as
 /// the orchestrator's is.
-#[cfg(feature = "mob")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_seated_helpers_catalog_is_read_after_its_first_run() {
     let ws = Workspace::new();

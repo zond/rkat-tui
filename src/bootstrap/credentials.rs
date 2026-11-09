@@ -17,8 +17,9 @@ use meerkat_core::{Config, Provider};
 
 use crate::endpoints::SecretString;
 
-/// Resolved credentials for one provider endpoint.
-#[derive(Clone)]
+/// Resolved credentials for one provider endpoint. `Debug` redacts the
+/// key ([`SecretString`] does).
+#[derive(Clone, Debug)]
 pub struct ProviderCredentials {
     /// The provider (wire dialect) these credentials belong to.
     pub provider: Provider,
@@ -28,18 +29,8 @@ pub struct ProviderCredentials {
     pub base_url: Option<String>,
 }
 
-impl std::fmt::Debug for ProviderCredentials {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ProviderCredentials")
-            .field("provider", &self.provider)
-            .field("api_key", &"<redacted>")
-            .field("base_url", &self.base_url)
-            .finish()
-    }
-}
-
-/// What a built-in endpoint resolves to.
-#[derive(Clone, PartialEq, Eq)]
+/// What a built-in endpoint resolves to. `Debug` redacts the key.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BuiltinCredentials {
     /// The key, when the source is one the TUI can read itself (an
     /// environment variable or an inline secret). `None` for token-store,
@@ -48,15 +39,6 @@ pub struct BuiltinCredentials {
     pub api_key: Option<SecretString>,
     /// The binding's base URL override.
     pub base_url: Option<String>,
-}
-
-impl std::fmt::Debug for BuiltinCredentials {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BuiltinCredentials")
-            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
-            .field("base_url", &self.base_url)
-            .finish()
-    }
 }
 
 /// The built-in endpoint of `provider`, if it exists: a binding for the

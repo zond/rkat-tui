@@ -557,7 +557,6 @@ impl SessionHandle {
             (AcceptOutcome::Deduplicated { existing_id, .. }, None) => {
                 (existing_id, Completion::AlreadyTerminal)
             }
-            #[allow(unreachable_patterns)]
             (other, _) => {
                 return Err(AdmissionError::Unexpected(format!("{other:?}")).into());
             }

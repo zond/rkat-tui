@@ -31,12 +31,9 @@ required-features = ["mob"]
 # store, auto-compaction), skills, MCP, comms and semantic memory
 # (`meerkat-memory` directly for the start-up index probe).
 #
-# The crates.io 0.9.11 release, which carries every fix the application
-# needs: the sandbox's pid namespace, best-effort read-only procfs and Unix
-# socketpairs (#2100), the thinking binding for uncatalogued model ids
-# (#2104), host trust over hook source bytes (`HookSourceTrust`, #2105) and
-# the fixes for the test-only reports (#2102, #2112-#2117). Moving the
-# version on every line is the pin move.
+# One crates.io release for every `meerkat-*` line; 0.9.11 carries every
+# engine fix the application needs. Moving the version on every line is the
+# pin move.
 meerkat = { version = "0.9.11", features = ["anthropic", "openai", "gemini", "session-store", "jsonl-store", "session-compaction", "memory-store-session", "skills", "comms"] }
 meerkat-core = { version = "0.9.11" }
 meerkat-runtime = { version = "0.9.11", features = ["sqlite-store"] }
@@ -113,14 +110,12 @@ test-support = []
 # The integration tests drive the internal modules through `test-support`.
 rkat-tui = { path = ".", features = ["test-support"] }
 tokio = { version = "1.43", features = ["full", "test-util", "macros"] }
-tempfile = "3.14"
 
 [lints]
 workspace = true
 
 [workspace.lints.rust]
 unsafe_code = "deny"
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(meerkat_internal_agent_factory_build)", "cfg(meerkat_internal_generated_authority_bridge)"] }
 
 [workspace.lints.clippy]
 # ── Lint groups (pedantic is the main "paranoid" level) ──────────────

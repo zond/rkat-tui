@@ -288,7 +288,6 @@ impl UserShell {
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    #[allow(clippy::unused_self)]
     fn spawn_confined(
         &self,
         _compiled: &Result<

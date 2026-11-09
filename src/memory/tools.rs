@@ -236,8 +236,7 @@ impl std::fmt::Debug for NoteToolDispatcher {
     }
 }
 
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[async_trait]
 impl AgentToolDispatcher for NoteToolDispatcher {
     fn tools(&self) -> Arc<[Arc<ToolDef>]> {
         Arc::clone(&self.tools)

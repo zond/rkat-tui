@@ -326,6 +326,5 @@ impl Helpers {
     }
 
     /// Without the `mob` feature there are no helpers to cancel.
-    #[allow(clippy::unused_async)]
     pub async fn cancel_for(&self, _owner: &SessionId) {}
 }

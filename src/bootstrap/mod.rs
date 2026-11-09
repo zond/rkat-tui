@@ -851,7 +851,7 @@ fn start_helpers(
 
 /// Without the `mob` feature no helpers are hosted.
 #[cfg(not(feature = "mob"))]
-#[allow(clippy::unnecessary_wraps, clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn start_helpers(
     _service: &Arc<TuiService>,
     _machine: &Arc<MeerkatMachine>,
