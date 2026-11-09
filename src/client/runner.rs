@@ -34,7 +34,7 @@ use super::launch::{self, Decision};
 use super::remote::{self, ModelSwitch};
 use super::sessions;
 use super::transport::{ATTACH_TIMEOUT, Connection, Notification};
-use crate::approval::remote::{ModeStatus, RuleCommand, RuleOutcome};
+use crate::approval::desk::{ModeStatus, RuleCommand, RuleOutcome};
 use crate::bootstrap::RuntimeScope;
 use crate::cli::AttachMode;
 use crate::daemon::endpoint::Endpoint;

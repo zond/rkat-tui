@@ -1,6 +1,6 @@
-//! The approval desk's parts a process other than the gate's can serve:
-//! the human's answer to a durable decision, rule commands, and the
-//! permission mode's status.
+//! The approval desk, shared by the in-process runner and the daemon: the
+//! human's answer to a durable decision, rule commands, and the permission
+//! mode's status.
 //!
 //! In-process, the escalation broker hands each request to the runner and
 //! the UI answers through a channel. In attach mode the gate runs in the

@@ -26,7 +26,7 @@ use crate::bootstrap::HELPER_PERSONA;
 /// The mob tools that start a member or a council: denied to a helper at
 /// the configured depth limit (`[helpers] max_depth`), so helpers nest no
 /// deeper. `fork_off` is denied to every helper of the in-process TUI
-/// ([`crate::session::UNGATED_SPAWN_TOOLS`]); the daemon's members keep it
+/// ([`crate::session::DENIED_SPAWN_TOOLS`]); the daemon's members keep it
 /// ([`HelperCustomizer::with_gated_fork_off`]) except at the depth limit.
 pub const NESTING_TOOLS: [&str; 4] = ["delegate", "mob_create", "mob_spawn_member", "council"];
 
@@ -340,7 +340,7 @@ fn deny_tools(spec: &mut SpawnMemberSpec, also: &[&str], gated_fork_off: bool) {
         denied.insert((*name).to_string());
     }
     if gated_fork_off && also.is_empty() {
-        for name in crate::session::UNGATED_SPAWN_TOOLS {
+        for name in crate::session::DENIED_SPAWN_TOOLS {
             denied.remove(name);
         }
     }

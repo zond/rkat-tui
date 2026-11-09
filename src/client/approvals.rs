@@ -17,8 +17,8 @@ use std::collections::HashMap;
 use meerkat_core::SessionId;
 use serde_json::{Value, json};
 
+use crate::approval::desk::RemoteAnswer;
 use crate::approval::escalation::RecordedPrompt;
-use crate::approval::remote::RemoteAnswer;
 use crate::daemon::decisions::{DialogRendering, KIND};
 use crate::ui::{EscalationAnswer, EscalationId, EscalationPrompt, Msg};
 

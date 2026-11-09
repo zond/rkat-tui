@@ -2,7 +2,7 @@
 //! calling agent's own conversation as context.
 //!
 //! The engine's `fork_off` is denied to every in-process TUI session and
-//! helper (see [`crate::session::UNGATED_SPAWN_TOOLS`]): it refuses a
+//! helper (see [`crate::session::DENIED_SPAWN_TOOLS`]): it refuses a
 //! caller that is not a durable mob member, and the in-process main session
 //! is not one (attach mode's daemon offers `fork_off` to its members). A
 //! durable fork of the caller's own session is no way around it either: called from

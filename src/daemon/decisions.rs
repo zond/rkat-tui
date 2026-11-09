@@ -81,8 +81,8 @@ use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 
 use super::serve::Outgoing;
+use crate::approval::desk::RemoteAnswer;
 use crate::approval::escalation::{EscalationPrompt, RecordedPrompt};
-use crate::approval::remote::RemoteAnswer;
 
 /// The kind of every decision the daemon's gate holds.
 pub const KIND: &str = "rkat-tui.tool-call";

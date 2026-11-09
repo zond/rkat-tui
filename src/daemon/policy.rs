@@ -30,8 +30,8 @@ use parking_lot::Mutex;
 use serde_json::value::RawValue;
 
 use crate::approval::catalog::ToolOrigin;
+use crate::approval::desk::describe_rule;
 use crate::approval::policy::{Action, ActionKind};
-use crate::approval::remote::describe_rule;
 use crate::approval::rules::RuleSet;
 use crate::approval::{ApprovalEngine, DENIAL_CODE, DenyReason, deny_message};
 use crate::memory::NOTES_SOURCE;

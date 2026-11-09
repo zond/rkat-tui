@@ -13,7 +13,7 @@
 //!   decision ([`super::decisions`]), which every attached client is shown
 //!   as it opens and decides with `decision/decide`, and hands the engine
 //!   the [`crate::approval::escalation::HumanDecision`] the decision
-//!   carries ([`crate::approval::remote::answered`]). The engine keeps its
+//!   carries ([`crate::approval::desk::answered`]). The engine keeps its
 //!   own timeout and serialisation.
 //! - [`DaemonToolOrigins`]: where a session's tools come from. The engine's
 //!   published tool definitions are not reachable through the RPC
@@ -53,8 +53,8 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::approval::admission::denial_error;
 use crate::approval::catalog::{ToolCatalog, ToolOrigins};
+use crate::approval::desk::answered;
 use crate::approval::escalation::{EscalationRequest, HumanDecision};
-use crate::approval::remote::answered;
 use crate::approval::{ApprovalEngine, ApprovalGate, DenyReason};
 use crate::mobs::{HelperKey, HelperRegistry};
 
@@ -529,8 +529,8 @@ pub async fn follow_helper_runs<H, R, F>(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::approval::desk::RemoteAnswer;
     use crate::approval::escalation::EscalationPrompt;
-    use crate::approval::remote::RemoteAnswer;
 
     fn run_completed(session: &SessionId) -> crate::mobs::HelperUpdate {
         let usage = serde_json::to_value(meerkat_core::CumulativeUsage::default()).unwrap();

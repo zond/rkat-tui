@@ -21,12 +21,12 @@ use tokio::sync::{mpsc, oneshot};
 
 use super::Runner;
 use crate::approval::counters::PauseCause;
+use crate::approval::desk::{
+    ModeStatus, RuleCommand, allow_rule, describe_rule, mode_notice, run_rule_command,
+};
 use crate::approval::escalation::{EscalationRequest, HumanDecision};
 use crate::approval::mode::PermissionMode;
 use crate::approval::policy::{Decider, Tier, VerdictSummary};
-use crate::approval::remote::{
-    ModeStatus, RuleCommand, allow_rule, describe_rule, mode_notice, run_rule_command,
-};
 use crate::approval::{ApprovalEngine, ApprovalEvent};
 use crate::ui::{
     ApprovalNotice, Effect, EscalationAnswer, EscalationId, EscalationPrompt, Msg, NoticeLevel,
@@ -397,7 +397,7 @@ fn classifier_allow_note(reason: Option<&str>) -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::approval::remote::{nth_rule_id, numbered_rules, rule_list_line};
+    use crate::approval::desk::{nth_rule_id, numbered_rules, rule_list_line};
     use crate::approval::rules::{Rule, RuleKind, RuleOrigin, RuleSet};
 
     #[test]

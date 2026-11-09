@@ -14,7 +14,7 @@
 //!   helpers), records it in the realm rules file and tells the
 //!   orchestrator when plan mode starts or ends;
 //! - [`RULES`] a [`RuleCommand`] (`{"op": "add"|"remove"|"list", …}`) →
-//!   [`crate::approval::remote::RuleOutcome`]: `/rules` run on the daemon's
+//!   [`crate::approval::desk::RuleOutcome`]: `/rules` run on the daemon's
 //!   engine, which persists to the realm rules file as the in-process one
 //!   does.
 //!
@@ -67,10 +67,8 @@ use serde_json::{Value, json};
 use super::approvals::{DaemonToolOrigins, Desk};
 use super::conversations::{Conversations, Target};
 use super::{MOB_ID, ORCHESTRATOR};
+use crate::approval::desk::{ModeStatus, RuleCommand, RuleOutcome, mode_notice, run_rule_command};
 use crate::approval::mode::PermissionMode;
-use crate::approval::remote::{
-    ModeStatus, RuleCommand, RuleOutcome, mode_notice, run_rule_command,
-};
 use crate::approval::{ApprovalEngine, InputKey};
 use crate::bootstrap::project_trust::ProjectInputs;
 use crate::endpoints::{ENDPOINT_REALM, WireDialect};

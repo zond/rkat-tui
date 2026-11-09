@@ -110,11 +110,11 @@ pub const TUI_OWNED_BUILTINS: [&str; 2] = ["brain_swap", "apply_patch"];
 /// Mob tools every in-process TUI session and helper is denied: the engine
 /// refuses `fork_off` to a caller that is not a durable mob member, and the
 /// in-process main session is not a mob member (delegate helpers are not
-/// durable), so the tool could only fail. (The name predates #2112, since
-/// which a fork child inherits the source's dispatch admission; the
-/// `rkat-tui-mob` daemon, whose members are durable, offers `fork_off`
-/// behind the gate.) The in-process fork is the TUI's own `fork` tool.
-pub const UNGATED_SPAWN_TOOLS: [&str; 1] = ["fork_off"];
+/// durable), so the tool could only fail. (The `rkat-tui-mob` daemon, whose
+/// members are durable, offers `fork_off` behind the gate; a fork child
+/// inherits the source's dispatch admission.) The in-process fork is the
+/// TUI's own `fork` tool.
+pub const DENIED_SPAWN_TOOLS: [&str; 1] = ["fork_off"];
 
 /// The model, provider and auth binding a session runs on, as its
 /// authoritative metadata records them.
@@ -868,7 +868,7 @@ pub fn tool_access_policy() -> ToolAccessPolicy {
     ToolAccessPolicy::DenyList(
         TUI_OWNED_BUILTINS
             .into_iter()
-            .chain(UNGATED_SPAWN_TOOLS)
+            .chain(DENIED_SPAWN_TOOLS)
             .collect::<ToolNameSet>(),
     )
 }
@@ -916,7 +916,7 @@ mod tests {
         let ToolAccessPolicy::DenyList(names) = tool_access_policy() else {
             unreachable!("a deny list");
         };
-        for name in TUI_OWNED_BUILTINS.into_iter().chain(UNGATED_SPAWN_TOOLS) {
+        for name in TUI_OWNED_BUILTINS.into_iter().chain(DENIED_SPAWN_TOOLS) {
             assert!(names.0.iter().any(|n| n.as_str() == name), "{name}");
         }
         assert!(names.0.iter().any(|n| n.as_str() == "fork_off"));

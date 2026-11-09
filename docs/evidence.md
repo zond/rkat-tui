@@ -598,7 +598,7 @@ The A4 regression (Tier-1 `read_file`/`memory_search` reaching the classifier) w
 
 - **Superseded in attach mode (2026-11-09, by #2112 `dispatch_admission_lineage`; the daemon offers `fork_off`):**
   Goal: let the agent hand a side quest to a child that starts with its own conversation, behind the gate, while
-  `fork_off` stays denied (`session::UNGATED_SPAWN_TOOLS`: its child seats through the engine's persisted-fork path
+  `fork_off` stays denied (`session::DENIED_SPAWN_TOOLS`: its child seats through the engine's persisted-fork path
   without the TUI's spawn customizer, and it refuses a caller that is not a mob member).
 - Probe, Route 1 (exact context: `PersistentSessionService::fork_durable_session` of the caller's session into a plain
   child): **dead**. A tool call runs inside the caller's turn; without a target the fork runs under
@@ -1914,7 +1914,7 @@ classifier read the user's words, the plan-mode note reached the model),
 `a_restarted_daemon_keeps_the_application_policy_binding`,
 `the_local_methods_answer_before_the_engine`;
 `tests/attach.rs::a_bang_command_runs_in_this_process_and_joins_the_agents_context`;
-unit tests in `approval::remote` (answer ↔ record mapping, recorded prompt,
+unit tests in `approval::desk` (answer ↔ record mapping, recorded prompt,
 wire forms), `approval::ledger::tests::settling_confirms_a_record_a_client_already_decided_the_same_way`,
 `daemon::approvals` (desk: decision handed back, interrupt stops only the
 session's escalations, a dropped responder ends the wait), `daemon::policy`,
@@ -2427,7 +2427,7 @@ the P3 approval tests unchanged (approve, deny with comment, allow + rule,
 timeout, two clients, helpers, plan/auto); unit tests in `daemon::decisions`
 (offered once per client, catch-up, `Missed`, leftovers, closed decide),
 `daemon::approvals` (desk over an in-memory decision store),
-`approval::remote::tests::a_decided_decision_carries_every_answer`,
+`approval::desk::tests::a_decided_decision_carries_every_answer`,
 `client::approvals::tests::a_pushed_decision_opens_one_dialog_and_another_clients_answer_closes_it`,
 `approval::rules::tests::rules_file_round_trip` (`[daemon]`).
 
