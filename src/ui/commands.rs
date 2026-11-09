@@ -402,7 +402,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         help: &[
             (
                 "/compact [now]",
-                "compact: rebuild the session so its next model call\ncompacts (idle only)",
+                "ask the engine to compact the context at the next\nmodel call (idle only)",
             ),
             (
                 "/compact <instructions>",

@@ -506,7 +506,7 @@ pub enum ShellOutcome {
 pub const COMPACT_FOCUS_UNSUPPORTED: &str =
     "focus instructions are not supported by the engine yet; compacting without them";
 
-/// Notice shown once `/compact` rebuilt the session.
+/// Notice shown once the engine took a `/compact` request.
 pub const COMPACT_REQUESTED: &str = "the context will be compacted at the start of your next message (the ✓ compacted notice confirms it)";
 
 /// Side effect requested by [`App::update`], executed by the integrator.
@@ -887,6 +887,33 @@ impl ScrollState {
             self.follow = true;
         }
         total.saturating_sub(height) - self.offset_from_bottom
+    }
+}
+
+/// What keeps a session-level command from running now
+/// ([`App::blocker`]). Its `Display` is the notice that says so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Busy {
+    /// A turn is running.
+    Turn,
+    /// A `/compact` request is on its way to the engine.
+    Compacting,
+    /// A `!` command is running.
+    Shell,
+    /// Messages wait to be delivered (queued, sent next, or being recalled).
+    Queued,
+}
+
+impl std::fmt::Display for Busy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Turn => "a turn is running; interrupt it first (Ctrl-C)",
+            Self::Compacting => "/compact is still waiting for the engine; wait for its answer",
+            Self::Shell => "a ! command is running; wait for it or cancel it (Esc)",
+            Self::Queued => {
+                "messages are still queued; wait for them or take them back (↑ on an empty input)"
+            }
+        })
     }
 }
 
@@ -2466,28 +2493,39 @@ impl App {
         }
     }
 
-    /// Whether the model may change now; pushes the reason when not.
-    fn model_switch_allowed(&mut self) -> bool {
-        if self.running || !self.pending.is_empty() {
-            self.transcript.push_notice(
-                NoticeLevel::Warn,
-                "/model is only available while idle; wait for the turn or interrupt it (Ctrl-C)",
-            );
-            false
+    /// What keeps a session-level command (`/rewind`, `/clear`,
+    /// `/resume`, `/model`, `/init`, `/compact`) from running now, if
+    /// anything. One guard for all of them so they cannot drift apart.
+    pub(crate) fn blocker(&self) -> Option<Busy> {
+        if self.running {
+            Some(Busy::Turn)
         } else if self.compacting {
-            self.transcript.push_notice(
-                NoticeLevel::Warn,
-                "the session is being rebuilt for /compact; wait for it to finish",
-            );
-            false
+            Some(Busy::Compacting)
+        } else if self.shell_run.is_some() {
+            Some(Busy::Shell)
+        } else if !self.pending.is_empty() || self.send_next.is_some() || self.recalling {
+            Some(Busy::Queued)
         } else {
-            true
+            None
+        }
+    }
+
+    /// Whether the session is idle; pushes what is in the way when not.
+    fn idle_or_notice(&mut self) -> bool {
+        match self.blocker() {
+            Some(busy) => {
+                self.transcript
+                    .push_notice(NoticeLevel::Warn, busy.to_string());
+                self.scroll.bottom();
+                false
+            }
+            None => true,
         }
     }
 
     /// `/model <id>` or a picker selection: switch when idle.
     fn switch_model(&mut self, model: String, fx: &mut Vec<Effect>) {
-        if self.model_switch_allowed() {
+        if self.idle_or_notice() {
             fx.push(Effect::SetModel(model));
         }
     }
@@ -2995,23 +3033,8 @@ impl App {
     /// `/rewind` or Esc Esc on an empty input: ask for the menu when the
     /// session is idle with nothing queued, else say what is in the way.
     fn request_rewind(&mut self, fx: &mut Vec<Effect>) {
-        let blocked = if self.running {
-            Some("a turn is running; interrupt it first (Ctrl-C), then rewind")
-        } else if self.compacting {
-            Some("the session is being rebuilt for /compact; wait for it to finish")
-        } else if self.shell_run.is_some() {
-            Some("a ! command is running; wait for it or cancel it (Esc)")
-        } else if !self.pending.is_empty() || self.send_next.is_some() || self.recalling {
-            Some("messages are still queued; wait for them or take them back (↑ on an empty input)")
-        } else {
-            None
-        };
-        match blocked {
-            Some(why) => {
-                self.transcript.push_notice(NoticeLevel::Warn, why);
-                self.scroll.bottom();
-            }
-            None => fx.push(Effect::RequestRewindMenu),
+        if self.idle_or_notice() {
+            fx.push(Effect::RequestRewindMenu);
         }
     }
 
@@ -3396,18 +3419,6 @@ impl App {
     }
 
     fn run_command(&mut self, cmd: Command, now: Instant, fx: &mut Vec<Effect>) {
-        let busy = |app: &mut Self| {
-            app.transcript.push_notice(
-                NoticeLevel::Warn,
-                "a turn is running; interrupt it first (Ctrl-C)",
-            );
-        };
-        let compacting = |app: &mut Self| {
-            app.transcript.push_notice(
-                NoticeLevel::Warn,
-                "the session is being rebuilt for /compact; wait for it to finish",
-            );
-        };
         match cmd {
             Command::Quit => self.request_quit(now, fx),
             Command::Help => {
@@ -3419,9 +3430,7 @@ impl App {
             Command::Status => fx.push(Effect::StatusReport),
             Command::DaemonStop => fx.push(Effect::DaemonStop),
             Command::Init => {
-                if self.running || !self.pending.is_empty() {
-                    busy(self);
-                } else {
+                if self.idle_or_notice() {
                     self.start_turn(commands::INIT_PROMPT.to_string(), now, fx);
                 }
             }
@@ -3435,42 +3444,14 @@ impl App {
                 self.transcript.push_notice(NoticeLevel::Info, text);
             }
             Command::Clear => {
-                if self.running {
-                    busy(self);
-                } else if self.compacting {
-                    compacting(self);
-                } else if self.shell_run.is_some() {
-                    self.transcript.push_notice(
-                        NoticeLevel::Warn,
-                        "a ! command is running; wait for it or cancel it (Esc)",
-                    );
-                } else if !self.pending.is_empty() {
-                    self.transcript.push_notice(
-                        NoticeLevel::Warn,
-                        "messages are still queued; wait for them or take them back (↑ on an empty input)",
-                    );
-                } else {
+                if self.idle_or_notice() {
                     // The integrator resets the transcript and counters once
                     // the new session is live (and keeps them on failure).
                     fx.push(Effect::NewSession);
                 }
             }
             Command::Resume(reference) => {
-                if self.running {
-                    busy(self);
-                } else if self.compacting {
-                    compacting(self);
-                } else if self.shell_run.is_some() {
-                    self.transcript.push_notice(
-                        NoticeLevel::Warn,
-                        "a ! command is running; wait for it or cancel it (Esc)",
-                    );
-                } else if !self.pending.is_empty() {
-                    self.transcript.push_notice(
-                        NoticeLevel::Warn,
-                        "messages are still queued; wait for them or take them back (↑ on an empty input)",
-                    );
-                } else {
+                if self.idle_or_notice() {
                     fx.push(reference.map_or(Effect::RequestResumePicker, Effect::ResumeSession));
                 }
             }
@@ -3485,33 +3466,29 @@ impl App {
                 self.transcript.push_notice(NoticeLevel::Info, text);
             }
             Command::Compact(cmd @ (CompactCommand::Now | CompactCommand::Focused(_))) => {
-                if self.compacting {
-                    compacting(self);
-                } else if self.running || !self.pending.is_empty() {
-                    self.transcript.push_notice(
-                        NoticeLevel::Warn,
-                        "finish or interrupt the current turn first",
-                    );
-                } else if self.status.context_used.is_some() {
-                    if matches!(cmd, CompactCommand::Focused(_)) {
-                        self.transcript
-                            .push_notice(NoticeLevel::Warn, COMPACT_FOCUS_UNSUPPORTED);
-                    }
-                    self.compacting = true;
-                    self.transcript.push_notice(
-                        NoticeLevel::Info,
-                        "asking the engine to compact at the next model call…",
-                    );
-                    self.scroll.bottom();
-                    fx.push(Effect::CompactNow);
-                } else {
+                if !self.idle_or_notice() {
+                    return;
+                }
+                if self.status.context_used.is_none() {
                     self.transcript
                         .push_notice(NoticeLevel::Info, CompactFailure::NothingYet.to_string());
+                    return;
                 }
+                if matches!(cmd, CompactCommand::Focused(_)) {
+                    self.transcript
+                        .push_notice(NoticeLevel::Warn, COMPACT_FOCUS_UNSUPPORTED);
+                }
+                self.compacting = true;
+                self.transcript.push_notice(
+                    NoticeLevel::Info,
+                    "asking the engine to compact at the next model call…",
+                );
+                self.scroll.bottom();
+                fx.push(Effect::CompactNow);
             }
             Command::Model(ModelCommand::Set(model)) => self.switch_model(model, fx),
             Command::Model(cmd @ (ModelCommand::Pick | ModelCommand::Refresh)) => {
-                if self.model_switch_allowed() {
+                if self.idle_or_notice() {
                     fx.push(Effect::RequestModelPicker {
                         refresh: cmd == ModelCommand::Refresh,
                     });
@@ -5701,7 +5678,7 @@ mod tests {
         assert!(run(&mut app, "/model gpt-5.2").is_empty());
         assert!(matches!(
             app.transcript.blocks().last(),
-            Some(Block::Notice { level: NoticeLevel::Warn, text }) if text.contains("idle")
+            Some(Block::Notice { level: NoticeLevel::Warn, text }) if *text == Busy::Turn.to_string()
         ));
         assert!(run(&mut app, "/quit").is_empty());
         assert_eq!(run(&mut app, "/quit"), vec![Effect::Quit]);
@@ -6820,10 +6797,7 @@ mod tests {
         assert!(submit(&mut app, "/compact now").is_empty());
         assert_eq!(
             last_notice(&app),
-            Some((
-                NoticeLevel::Warn,
-                "finish or interrupt the current turn first".into()
-            ))
+            Some((NoticeLevel::Warn, Busy::Turn.to_string()))
         );
         submit(&mut app, "two");
         app.update(finished(Ok(summary()), &[]));
@@ -6832,6 +6806,66 @@ mod tests {
         assert!(submit(&mut app, "/compact now").is_empty());
         assert!(!app.compacting);
         assert_eq!(last_notice(&app).map(|(l, _)| l), Some(NoticeLevel::Warn));
+    }
+
+    /// One guard for the session-level commands: each is refused, with the
+    /// same notice, by everything [`App::blocker`] knows about. These were
+    /// the drift cases when every command spelled its own guard (`/model`
+    /// and `/init` ignored a running `!` command; `/clear` and `/resume`
+    /// ignored a message being sent next or recalled).
+    #[test]
+    fn session_commands_share_one_idle_guard() {
+        let commands = [
+            "/rewind",
+            "/clear",
+            "/resume",
+            "/resume last",
+            "/model",
+            "/model other-model",
+            "/init",
+            "/compact",
+        ];
+        let blocked = |busy: Busy, setup: &dyn Fn(&mut App)| {
+            for cmd in commands {
+                let mut app = App::new(StatusInfo::default());
+                app.status.context_used = Some(10_000);
+                setup(&mut app);
+                assert_eq!(app.blocker(), Some(busy), "{cmd}");
+                let fx = submit(&mut app, cmd);
+                assert!(
+                    !fx.iter().any(|e| matches!(
+                        e,
+                        Effect::RequestRewindMenu
+                            | Effect::NewSession
+                            | Effect::RequestResumePicker
+                            | Effect::ResumeSession(_)
+                            | Effect::RequestModelPicker { .. }
+                            | Effect::SetModel(_)
+                            | Effect::StartTurn(_)
+                            | Effect::CompactNow
+                    )),
+                    "{cmd} ran while {busy:?}: {fx:?}"
+                );
+                assert_eq!(
+                    last_notice(&app),
+                    Some((NoticeLevel::Warn, busy.to_string())),
+                    "{cmd}"
+                );
+            }
+        };
+        blocked(Busy::Shell, &|app| {
+            assert_eq!(submit(app, "! sleep 5"), vec![run_shell(1, "sleep 5")]);
+        });
+        blocked(Busy::Queued, &|app| app.send_next = Some("next".into()));
+        blocked(Busy::Queued, &|app| app.recalling = true);
+        blocked(Busy::Compacting, &|app| app.compacting = true);
+        blocked(Busy::Turn, &|app| {
+            submit(app, "one");
+        });
+        // Idle: nothing in the way.
+        let app = App::new(StatusInfo::default());
+        assert_eq!(app.blocker(), None);
+        assert!(!Busy::Compacting.to_string().contains("rebuil"));
     }
 
     #[test]

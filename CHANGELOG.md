@@ -350,6 +350,12 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Fixed
 
+- `/rewind`, `/clear`, `/resume`, `/model`, `/init` and `/compact` share
+  one idle check and one notice for what is in the way: `/model` and
+  `/init` are now refused while a `!` command runs, and `/clear` and
+  `/resume` while a message waits to be sent next or recalled. `/compact`'s
+  help and notices no longer say it rebuilds the session (it asks the
+  engine to compact at the next model call).
 - Quitting a busy attached TUI no longer warns that the turn is
   interrupted: attach mode detaches and the turn goes on in the daemon, and
   the warning now says so.
