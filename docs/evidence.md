@@ -3,6 +3,42 @@
 Evidence is appended after each phase gate: exact commands, base commit,
 timestamp, and output excerpts.
 
+Entries are never deleted. One that later work fixed or replaced keeps its
+text and starts with **Resolved (date, by what, test):** or **Superseded
+(date, by what):**; one removed with its code starts with **Removed
+(date):**.
+
+## Open asks
+
+The engine asks still open, by the section that records each (the asks of
+the mob split are numbered in `docs/mob-split.md`, "Open engine asks"):
+
+- A `default_tool_dispatch_admission` slot on `FactoryAgentBuilder` (or a
+  generic composition), so a host need not wrap the builder: "Phase 2
+  (approval gate)".
+- The model registry refreshed on reconfigure, so a model switch that needs
+  a new profile does not rebuild the session: "Phase 4 (models, endpoints,
+  cost)".
+- End a retired member's event subscription, so the helper follower need
+  not poll the roster: "P5 — Mobs", gap 4.
+- A live compaction-trigger update, and the per-build trigger kept across
+  `session_recovery`: "P6", gap 2, and "Review fixes — Agent B" (Z-H5).
+- Tool provenance and mutation class in `ToolDispatchContext`: "P6", gap 5,
+  and "Review fixes — Agent A" (D#5).
+- A host-local review tier policy for ungoverned realms (Z-H1), a typed host
+  reviewer (D#19) and typed authorship on host prompts (D#6): "Review fixes
+  — Agent A".
+- A typed "no size-triggered compaction" (D#13), a "list models for this
+  binding" seam (Z-M9), a host secret-store write path (D#15) and the
+  summary call's usage in `CompactionCompleted` (B7): "Review fixes — Agent
+  B".
+- An atomic "stop this run and abandon these queued inputs": "Typing during
+  a slow tool".
+- Instruction-guided compaction (`/compact <instructions>`): "Batch 1 A2".
+- Same-identity `/rewind` of a mob member (#2126) and the governed realm
+  (#2122): "P4: helpers, conversations and detach in attach mode", "P3b and
+  the 0.9.11 adoption", and `docs/mob-split.md`.
+
 ## Phase 0 (P0a skeleton) — partial
 
 - Base commit: `c89d1ccc6e` (uncommitted working tree)
@@ -245,7 +281,9 @@ timestamp, and output excerpts.
      model. The TUI now rebuilds the session after every switch
      (`RebuildReason::ModelSwitch`); `mobs::a_helper_delegated_after_a_model_switch_runs_on_the_new_model`. Ask: the
      mob tools read the session's current model.
-  2. `fork_off` requires the caller to be a durable mob member; the TUI's primary session is not one and delegate
+  2. **Resolved in attach mode (2026-11-09, by P3b on #2112, test
+     `attach_approvals::a_fork_off_child_runs_behind_the_gate`); still true in-process, where the main session is
+     not a mob member:** `fork_off` requires the caller to be a durable mob member; the TUI's primary session is not one and delegate
      helpers are `durable: false`, so only `delegate` (and the `mob_*` tools) are usable from the TUI.
   3. Hook inheritance for members: not used (the TUI gates via admission, hooks only observe); not verified.
   4. A retired member's session event stream stays open; the follower polls the roster. Ask: end member subscriptions
@@ -321,13 +359,16 @@ timestamp, and output excerpts.
   (observed `CompactionStarted { input_tokens: 0 }`), so only a history/forecast threshold below the transcript fires.
   Gauge: `CompactionCompleted.estimated_history_tokens_after` (fallback `summary_tokens`), warning re-armed.
 - Gaps / upstream asks:
-  1. **On-demand compaction API** (ask): no `SessionService`/runtime call compacts now; `/compact now` costs two
+  1. **Resolved (2026-11-09, by `MeerkatMachine::request_compaction` in the 0.9.11 pin, test
+     `compact::warn_mode_warns_and_compacts_only_on_compact`):** **On-demand compaction API** (ask): no `SessionService`/runtime call compacts now; `/compact now` costs two
      rebuilds and, with a one-token threshold, a long tool loop in the armed turn compacts again after
      `min_turns_between_compactions` (3) boundaries. Ask: `compact_session(id)` or a one-shot "compact before the next
      model call" flag on the runtime.
   2. `auto_compact_threshold_override` is not live-reconfigurable and is dropped by `session_recovery` (recovered builds
      set it `None`), so a session the runtime rebuilds on its own falls back to upstream's model-aware default.
-  3. With a `DurableStaged` memory store (Hnsw), `CompactionCompleted` is published only when the runtime finalizes the
+  3. **Superseded (2026-11-09):** `/compact now` no longer retires and resumes the session, so it no longer takes
+     this path; #2113 forwards the completion after a recovery upstream (not re-probed here). With a `DurableStaged`
+     memory store (Hnsw), `CompactionCompleted` is published only when the runtime finalizes the
      memory projection at the session's next run (`finalize_committed_compaction_projections` via
      `default_event_tx`), and after a retire-and-resume between the two it never reached the session event stream in the
      tests. The compaction itself, the summary and the indexing work (asserted on the requests and `memory_search`).
@@ -473,7 +514,9 @@ Paths under `crates/meerkat-tui/`.
 
 Upstream asks (one line each):
 - (D#13/D#12) A typed "no size-triggered compaction" for `auto_compact_threshold_override` (today `NonZeroU64::MAX`).
-- (Z-H5, D#14) An on-demand compaction call and a live compaction-trigger update on a session, so
+- (Z-H5, D#14) **Partly resolved (2026-11-09):** the on-demand call is `request_compaction`, adopted (test
+  `compact::warn_mode_warns_and_compacts_only_on_compact`); the live trigger update is still open. An on-demand
+  compaction call and a live compaction-trigger update on a session, so
   `rebuild_session_workaround` can go away; `CompactionCompleted` delivered after a retire-and-resume (P6 gap 3).
 - (Z-M9) A runtime/provider-owned "list models for this binding" seam so the TUI's live list client can go away.
 - (D#15) A host-owned secret store write path for endpoint keys (`CredentialSourceSpec::ManagedStore` from a host) so an
@@ -553,7 +596,8 @@ The A4 regression (Tier-1 `read_file`/`memory_search` reaching the classifier) w
 
 ## Fork — the TUI's `fork` tool (2026-11-06)
 
-- Goal: let the agent hand a side quest to a child that starts with its own conversation, behind the gate, while
+- **Superseded in attach mode (2026-11-09, by #2112 `dispatch_admission_lineage`; the daemon offers `fork_off`):**
+  Goal: let the agent hand a side quest to a child that starts with its own conversation, behind the gate, while
   `fork_off` stays denied (`session::UNGATED_SPAWN_TOOLS`: its child seats through the engine's persisted-fork path
   without the TUI's spawn customizer, and it refuses a caller that is not a mob member).
 - Probe, Route 1 (exact context: `PersistentSessionService::fork_durable_session` of the caller's session into a plain
@@ -593,7 +637,9 @@ The A4 regression (Tier-1 `read_file`/`memory_search` reaching the classifier) w
   `fork_off_stays_denied_and_a_fork_cannot_fork` (parent offers `fork`, not `fork_off`; child has `read_file`/`shell`,
   neither `fork` nor `fork_off`), the probe above; unit `fork_is_tiered_like_delegate_only_from_the_tuis_own_surface`,
   `fork::context` tests, the catalog family test.
-- Upstream ask: a host hook to shape fork seats (the spawn customizer for persisted-fork children). It only matters once
+- **Resolved (2026-11-09, by #2112: fork children inherit the source's dispatch admission, test
+  `attach_approvals::a_fork_off_child_runs_behind_the_gate`):** Upstream ask: a host hook to shape fork seats (the
+  spawn customizer for persisted-fork children). It only matters once
   the main session is a durable mob member, which would make `fork_off` (exact context) usable behind the gate.
 
 ## Review fixes — 2026-11-06 (sealing, fork prompt, model switch)
@@ -724,7 +770,7 @@ The A4 regression (Tier-1 `read_file`/`memory_search` reaching the classifier) w
 
 ## Batch 1 A1 (2026-11-06)
 
-Editor and key rebinds to match Claude Code (`.rct/rkat-tui/ux-parity.md` §2). Every step: `repo-cargo clippy -p
+Editor and key rebinds to match Claude Code (`docs/ux-parity.md` §2). Every step: `repo-cargo clippy -p
 meerkat-tui --all-targets --all-features -- -D warnings` exit 0, `repo-cargo nextest run -p meerkat-tui
 --all-features` exit 0 (lane `tui-port`).
 - Ctrl+Enter = send now (`Action::SendNow` → `interrupt_and_send`, as Ctrl-X Ctrl-S); `\`+Enter at a line end
@@ -775,7 +821,7 @@ meerkat-tui --all-targets --all-features -- -D warnings` exit 0, `repo-cargo nex
 
 ## Batch 1 A2 (2026-11-06)
 
-Runner and command changes to match Claude Code (`.rct/rkat-tui/ux-parity.md` §1–2). Every step:
+Runner and command changes to match Claude Code (`docs/ux-parity.md` §1–2). Every step:
 `repo-cargo clippy -p meerkat-tui --all-targets --all-features -- -D warnings` exit 0, `repo-cargo nextest run -p
 meerkat-tui --all-features` exit 0 (lane `tui-port`).
 - Esc while running always interrupts (`Effect::Interrupt`, as Ctrl+C); after an interrupted turn the undelivered
@@ -789,7 +835,8 @@ meerkat-tui --all-features` exit 0 (lane `tui-port`).
   discarded_delivery_of_a_stopped_turn_is_sent_again, failed_turn_returns_undelivered_with_a_notice}`,
   `integrator::esc_interrupts_and_the_queued_message_runs_next` (real `App` driving the runner with the scripted
   client), `render_snapshot::queued_block_status_count_and_hints`.
-- `/compact` (bare, or `now`) → `CompactCommand::Now` → the existing `Effect::CompactNow` rebuild; `/compact status`
+- **Superseded (2026-11-09, by `request_compaction`; no rebuild):** `/compact` (bare, or `now`) →
+  `CompactCommand::Now` → the existing `Effect::CompactNow` rebuild; `/compact status`
   prints the policy (`CompactionPolicy::describe`); `/compact <instructions>` compacts the same way and adds the warn
   notice `COMPACT_FOCUS_UNSUPPORTED` (the instructions are dropped). User-facing texts say `/compact` instead of
   `/compact now`. Engine ask: **instruction-guided compaction** (a way to pass focus text to the compaction summary
@@ -1716,7 +1763,8 @@ P1 daemon with a scripted LLM before the client was written:
   nothing falls between them, and whichever delivers an event first shows
   it. The mark is saved in `<workspace>/.rkat/tui/attach.cursor` on every
   run terminal and on detach.
-- The replay projection lags the live stream: right after `run_completed`
+- **Superseded (2026-11-09, by the `{epoch, seq}` stream cursor; the re-read is gone):** The replay projection lags
+  the live stream: right after `run_completed`
   arrived live, `events/list_since` returned only up to `text_complete`
   (4 of 6). A client attaching just after a turn ended can therefore find
   the tail in neither (published before its stream opened, not yet
@@ -1749,8 +1797,9 @@ P1 daemon with a scripted LLM before the client was written:
   interrupt the daemon does not confirm within 10 s gives the UI back.
 - `events/snapshot {scope}` gives the session's `model` and `provider` (the
   status bar and the context window on attach).
-- `mob/member_status` gives `current_session_id`; the client re-reads it on
-  every attach and starts from 0 when the cursor is for another session.
+- **Superseded (2026-11-09, by the stream cursor and the daemon id in it):** `mob/member_status` gives
+  `current_session_id`; the client re-reads it on every attach and starts from 0 when the cursor is for another
+  session.
 
 Design: the attach runner serves the UI's `Effect`/`Msg` contract itself
 (`client::runner::AttachRunner`) instead of going under the in-process
@@ -1787,7 +1836,8 @@ engine; consent is presented in the attached TUI and decided over the
 engine's `approval/*` methods (`docs/mob-split.md` Status has the design).
 Engine facts this relied on (read in the pinned checkout, then observed):
 
-- `SessionRuntime::approval_service()` is `persistence.approval_issuer()`
+- **Superseded (2026-11-09, by P3b's durable decisions; the polling and the daemon's ledger are removed):**
+  `SessionRuntime::approval_service()` is `persistence.approval_issuer()`
   (session_runtime.rs:4232), the same `ApprovalService` the bootstrap hands
   the escalation ledger, so every escalation record the ledger writes is
   what `approval/list|get|decide` serve. The service is in-process state
@@ -1912,11 +1962,12 @@ the P3 daemon with a scripted LLM before the client was written:
   session (3 messages); `session/list` listed only the live one. The engine
   keeps no list of a member's earlier sessions, hence
   `.rkat/tui/conversations.json`.
-- `/rewind`: `session/fork_at` on the member's session answers -32602
+- **Partly resolved (2026-11-09):** `mob/fork_member` exists (#2117), with a new identity; same-identity rewind
+  is still open (#2126). `/rewind`: `session/fork_at` on the member's session answers -32602
   "mob-owned session transcripts cannot be edited through the generic
   session surface"; `ForkContext` is `FullHistory` or `LastMessages
   {count}`, rendered as text into a fresh session. No boundary: recorded
-  as an ask (mob-split ask 7).
+  as an ask (mob-split ask 1, #2126).
 - Interrupting the orchestrator abandons its `delegate` call but not the
   helper: the daemon now runs the in-process follower for the registry's
   running set and, on `mob/stop_member_run`/`mob/force_cancel` of the
@@ -2021,7 +2072,8 @@ unconfined.
   `a_switch_is_refused_while_another_clients_turn_runs` (a second
   connection's `rkat/new` refused, the turn finishes on its session, the
   switch goes through afterwards).
-- An answered dialog reappeared: `Approvals::answer` forgot the record,
+- **Superseded (2026-11-09, by P3b; the `approval/list` path is removed):** An answered dialog reappeared:
+  `Approvals::answer` forgot the record,
   so an `approval/list` read before the decide landed showed it again. The
   record now stays in a `deciding` set until a list no longer has it
   pending; an undelivered decide (`Report::Undecided`) lets it show again.
@@ -2073,7 +2125,8 @@ unconfined.
 **Second round (after P4b).** A second review of the fixes and P4b found
 ten more; each names its test.
 
-- Upgrade path: with the endpoint file in the state directory, nothing
+- **Removed (2026-11-09):** the legacy endpoint handling below is gone; only a daemon of 2026-11-08 wrote the old
+  file. Upgrade path: with the endpoint file in the state directory, nothing
   looked at the old `<workspace>/.rkat/tui/mob.endpoint` any more, so a
   client started a second daemon next to a running one of the previous
   version (it fails taking the realm lease, or worse), and the old file,
@@ -2271,7 +2324,8 @@ event epoch, request ids on parameter refusals), #2115
 (`subscribe_openings`), #2116 (session events to the turn's connection),
 #2117 (`mob/fork_member`) and #2102 (`delegate` follows the current
 identity). This move adopts none of them; that is a follow-up
-(`docs/mob-split.md`, "Upstream dispositions").
+(`docs/mob-split.md`, "Upstream dispositions"). **Resolved (2026-11-09):** they
+were adopted the same day, see "P3b and the 0.9.11 adoption" below.
 
 API drift was one item. `ConfigStore` gained `admission_fence` and the
 required `set_held` / `patch_held` (and `patch_held_with_warnings`, which
