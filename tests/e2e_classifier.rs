@@ -1,6 +1,6 @@
 //! Live-provider checks for `LlmClassifier` (ignored by default).
 //!
-//! Run with `./scripts/repo-cargo test -p meerkat-tui --test e2e_classifier -- --ignored`.
+//! Run with `cargo test --test e2e_classifier -- --ignored`.
 //! Each test skips when its provider's API key is not in the environment.
 //! The client comes from the facade's own credential resolution
 //! (`AgentFactory::build_llm_client_for_identity`), as in the TUI.

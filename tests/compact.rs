@@ -19,7 +19,7 @@
 
 mod common;
 
-use common::{Rig, RigOptions, ScriptedLlmClient, Step, Workspace};
+use common::{Rig, RigOptions, ScriptedLlmClient, Step, Workspace, within};
 use meerkat_core::AgentEvent;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use rkat_tui::runner::Start;
@@ -66,18 +66,18 @@ async fn turns(rig: &mut Rig, n: usize, prefix: &str) {
     }
 }
 
-/// Wait (bounded) until the session published a completed compaction.
-async fn completed(rig: &Rig) -> bool {
-    for _ in 0..100 {
-        if compactions(rig)
+/// Wait (bounded by [`within`]) until the session published a completed
+/// compaction.
+async fn completed(rig: &Rig) {
+    within(async {
+        while !compactions(rig)
             .iter()
             .any(|e| matches!(e, AgentEvent::CompactionCompleted { .. }))
         {
-            return true;
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-    false
+    })
+    .await;
 }
 
 fn started(rig: &Rig) -> usize {
@@ -155,7 +155,7 @@ async fn auto_mode_compacts_natively_at_the_threshold() {
     // The completion is published when the session runs again.
     rig.send(Effect::StartTurn("again".into()));
     rig.turn_finished().await.result.expect("turn succeeds");
-    assert!(completed(&rig).await, "{:?}", compactions(&rig));
+    completed(&rig).await;
     let left = compactions(&rig)
         .iter()
         .find_map(|e| match e {
