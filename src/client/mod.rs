@@ -7,7 +7,7 @@
 //! - [`launch`]: start-on-demand (probe the endpoint file, start the daemon
 //!   in the background when none answers, wait for its endpoint).
 //! - [`remote`]: the orchestrator member through the engine's own methods
-//!   (`mob/member_send`, `mob/turn_start`, `mob/stream_open`,
+//!   (`mob/member_send`, `mob/stream_open`,
 //!   `events/list_since`, `mob/stop_member_run`, `mob/force_cancel`).
 //! - [`catchup`]: the stream cursor `{epoch, seq}` the client reattaches
 //!   with, the once-only rule, and the per-workspace cursor file.

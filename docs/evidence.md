@@ -2902,3 +2902,26 @@ realm's `tui_history` and the user's global history file), and the UI loop
 appends every submitted line to each; the attach config's scope names the
 same files as the in-process runtime's. Nothing was missing; the test that
 pins it is `attach::attach_mode_recalls_and_searches_the_shared_input_history`.
+
+### `/model` in attach mode switches in place (`rkat/set_model`)
+
+The attach client sent a `/model` switch as per-turn overrides on the next
+prompt's `mob/turn_start`, which is request-scoped: detaching during that
+one turn cancelled it (a documented limit). The in-process switch has not
+rebuilt the session since ba5ca65; it calls the runtime's
+`SessionServiceRuntimeExt::reconfigure_session_llm_identity` on the live
+session. Probe: the daemon's `MobMcpState` is built on the same
+`MeerkatMachine` (`SessionRuntime::runtime_adapter()`), and the same call on
+the orchestrator member's bridge session is accepted and persisted: the
+next `mob/member_send` runs on the new model, from any connection, and a
+client attaching later reads the new identity. So `rkat/set_model`
+(`daemon::local::Local::set_model`) does that, with the endpoint's auth
+binding and the `[thinking]` setting resolved as the `turn_start` path
+resolved them, under the conversation switch lock and refused with
+`SWITCH_BUSY` while the orchestrator's run is open (the in-process switch
+refuses during a turn too). The client calls it at once and no longer
+holds a pending switch; its own `/new` re-applies the last switch the same
+way. The limit is gone from the manual. Tests:
+`attach::model_switches_in_place_and_stays`,
+`attach::a_model_switch_waits_for_the_turn`,
+`daemon::set_model_switches_in_place_and_waits_for_the_run`.

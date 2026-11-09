@@ -408,6 +408,29 @@ impl Conversations {
         Ok(session)
     }
 
+    /// Run `apply` on the orchestrator's current session while it is idle:
+    /// no conversation switch runs meanwhile (the switch lock is held) and
+    /// no run is open when it starts (a model switch, `rkat/set_model`).
+    ///
+    /// # Errors
+    ///
+    /// [`SwitchError::Running`] when a turn runs, [`SwitchError::NoSession`]
+    /// when the orchestrator has none, [`SwitchError::Mob`] when its status
+    /// cannot be read.
+    pub async fn while_idle<T, F>(
+        &self,
+        apply: impl FnOnce(SessionId) -> F,
+    ) -> Result<T, SwitchError>
+    where
+        F: std::future::Future<Output = T>,
+    {
+        let _one = self.switching.lock().await;
+        let session = self.current().ok_or(SwitchError::NoSession)?;
+        self.refuse_running(&MobId::from(MOB_ID), &AgentIdentity::from(ORCHESTRATOR))
+            .await?;
+        Ok(apply(session).await)
+    }
+
     /// [`SwitchError::Running`] when the orchestrator's run is open now.
     async fn refuse_running(
         &self,

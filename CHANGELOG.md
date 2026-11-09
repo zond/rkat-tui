@@ -6,6 +6,11 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Added
 
+- `/model` in attach mode switches the agent's session in place through the
+  daemon (`rkat/set_model`, the engine's LLM reconfigure, as in-process)
+  instead of riding the next prompt as a `mob/turn_start`: the next prompt
+  is an ordinary send, and detaching no longer cancels the first turn on
+  the new model. Like in-process, a switch waits for the running turn.
 - Ctrl+T's task checklist works in attach mode: the daemon reads the
   conversation's tasks from the engine's task store (`rkat/tasks`) on
   attach, after a switch and after each of the agent's task calls, and

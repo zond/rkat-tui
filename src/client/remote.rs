@@ -3,9 +3,9 @@
 //!
 //! - prompts and steers: `mob/member_send` (answered at once; the run is the
 //!   member's and outlives this client);
-//! - a prompt that carries a model switch: `mob/turn_start` with the
-//!   `model`/`provider` overrides (request-scoped: it answers when the turn
-//!   ends, and the run is cancelled if this connection closes first);
+//! - a model switch: the daemon's `rkat/set_model`, in place on the
+//!   member's session (`mob/turn_start` is not used: its run is tied to the
+//!   connection that sent it);
 //! - interrupt: `mob/stop_member_run` for the run the stream reported, then
 //!   `mob/force_cancel`;
 //! - events: `mob/stream_open`, resumed after the last event shown with its
@@ -240,39 +240,6 @@ pub struct ModelSwitch {
     pub auth_binding: Option<meerkat_core::AuthBindingRef>,
     /// The endpoint's name (the status bar shows it).
     pub endpoint: String,
-}
-
-/// The `mob/turn_start` params of `text` with `switch`.
-#[must_use]
-pub fn turn_params(text: &str, switch: &ModelSwitch) -> Value {
-    let mut params = with_member(json!({"prompt": text, "model": switch.model}));
-    if let Some(provider) = &switch.provider {
-        params["provider"] = json!(provider);
-    }
-    params["auth_binding"] = match &switch.auth_binding {
-        Some(binding) => json!({
-            "action": "set",
-            "value": meerkat_contracts::WireAuthBindingRef::from(binding.clone()),
-        }),
-        None => json!({"action": "clear"}),
-    };
-    params
-}
-
-/// Run `text` as a turn on the model of `switch`, which the session keeps
-/// from then on. Answers when the turn ends.
-///
-/// # Errors
-///
-/// The call's error (an unknown model is refused before the turn starts).
-pub async fn turn_with_model(
-    connection: &Connection,
-    text: &str,
-    switch: &ModelSwitch,
-) -> Result<Value, ClientError> {
-    connection
-        .call(engine::TURN_START, turn_params(text, switch))
-        .await
 }
 
 /// Stop the orchestrator's run `run_id`.

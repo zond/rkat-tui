@@ -423,6 +423,7 @@ impl Daemon {
             project: composed.project_inputs.clone(),
             decisions: Arc::clone(&composed.decisions),
             tasks_db: composed.tasks_db.clone(),
+            machine: composed.runtime.runtime_adapter(),
         }));
         // The decisions an earlier daemon left open held dispatches that
         // ended with it.

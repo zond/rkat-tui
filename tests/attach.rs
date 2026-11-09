@@ -71,8 +71,13 @@ async fn esc_interrupts_a_hanging_turn() {
     daemon.stop().await;
 }
 
+/// `/model` in attach mode switches the session in place
+/// (`rkat/set_model`, as the in-process switch): the session keeps the
+/// model, the next prompt is an ordinary send, and the switch is tied to no
+/// connection (the client that made it can leave; another client's prompt
+/// runs on the new model).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn model_switches_with_the_next_prompt_and_stays() {
+async fn model_switches_in_place_and_stays() {
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![
         Step::Text("one"),
@@ -85,22 +90,51 @@ async fn model_switches_with_the_next_prompt_and_stays() {
     client.turn_finished().await.result.unwrap();
     client.send(Effect::SetModel("anthropic:claude-opus-4-8".into()));
     client
-        .wait_for(|msg| matches!(msg, Msg::Status(StatusUpdate::Model { model, .. }) if model == "claude-opus-4-8"))
+        .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text.starts_with("switched to claude-opus-4-8")))
         .await;
-    client.send(Effect::StartTurn("second".into()));
-    assert_eq!(client.turn_finished().await.result.unwrap().text, "two");
-    client.send(Effect::StartTurn("third".into()));
-    assert_eq!(client.turn_finished().await.result.unwrap().text, "three");
-    let models: Vec<String> = llm.recorded().into_iter().map(|r| r.model).collect();
-    assert_eq!(
-        models,
-        vec!["claude-sonnet-4-6", "claude-opus-4-8", "claude-opus-4-8"]
+    assert!(
+        client.seen.iter().any(|msg| matches!(msg, Msg::Status(StatusUpdate::Model { model, .. }) if model == "claude-opus-4-8"))
     );
     // A model this mode cannot name is refused before anything is sent.
     client.send(Effect::SetModel("my-alias".into()));
     client
         .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text.contains("cannot tell which endpoint serves `my-alias`")))
         .await;
+    client.quit().await;
+
+    // Another client, after the first left: the session runs the new model.
+    let mut other = Client::attach(&ws.root).await;
+    other
+        .saw(|msg| matches!(msg, Msg::Status(StatusUpdate::Model { model, .. }) if model == "claude-opus-4-8"))
+        .await;
+    other.send(Effect::StartTurn("second".into()));
+    assert_eq!(other.turn_finished().await.result.unwrap().text, "two");
+    other.send(Effect::StartTurn("third".into()));
+    assert_eq!(other.turn_finished().await.result.unwrap().text, "three");
+    let models: Vec<String> = llm.recorded().into_iter().map(|r| r.model).collect();
+    assert_eq!(
+        models,
+        vec!["claude-sonnet-4-6", "claude-opus-4-8", "claude-opus-4-8"]
+    );
+    other.quit().await;
+    daemon.stop().await;
+}
+
+/// A model switch is refused while a turn runs, as in-process.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_model_switch_waits_for_the_turn() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![Step::Hang]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let mut client = Client::attach(&ws.root).await;
+    client.send(Effect::StartTurn("hang".into()));
+    llm.wait_call(0).await;
+    client.send(Effect::SetModel("anthropic:claude-opus-4-8".into()));
+    client
+        .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text.contains("a turn is running; switch models once it ends")))
+        .await;
+    client.send(Effect::Interrupt);
+    client.turn_finished().await;
     client.quit().await;
     daemon.stop().await;
 }

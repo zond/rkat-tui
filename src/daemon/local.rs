@@ -68,6 +68,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use meerkat_core::lifecycle::run_primitive::TurnMetadataOverride;
 use meerkat_core::{AppendSystemContextRequest, Provider, SessionId};
 use meerkat_mob::{AgentIdentity, MobId};
 use meerkat_mob_mcp::MobMcpState;
@@ -88,7 +89,9 @@ use super::protocol::{
     self, ConversationList, METHOD_NOT_FOUND, ModeSet, SWITCH_BUSY, SWITCH_FAILED, SessionParams,
     SetModeParams, Switched, Transcript, TrustOp, TrustParams, Usage, engine,
 };
-use super::protocol::{CHECKLIST_VIEW, ChecklistViewParams, TASKS, Tasks};
+use super::protocol::{
+    CHECKLIST_VIEW, ChecklistViewParams, ModelSet, SET_MODEL, SetModelParams, TASKS, Tasks,
+};
 use super::protocol::{
     CONVERSATIONS, GET_MODE, NEW, RESUME, RULES, Refusal, SET_MODE, TRANSCRIPT, TRUST, USAGE,
 };
@@ -119,6 +122,8 @@ pub struct Local {
     decisions: Arc<super::decisions::Decisions>,
     /// The engine's task store (`rkat/tasks`).
     tasks_db: std::path::PathBuf,
+    /// The runtime the orchestrator's session lives in (`rkat/set_model`).
+    machine: Arc<meerkat_runtime::MeerkatMachine>,
 }
 
 /// What [`Local`] is made of.
@@ -143,6 +148,8 @@ pub struct LocalParts {
     pub decisions: Arc<super::decisions::Decisions>,
     /// The engine's task store.
     pub tasks_db: std::path::PathBuf,
+    /// The runtime the members' sessions live in.
+    pub machine: Arc<meerkat_runtime::MeerkatMachine>,
 }
 
 impl std::fmt::Debug for Local {
@@ -168,6 +175,7 @@ impl Local {
             project,
             decisions,
             tasks_db,
+            machine,
         } = parts;
         let in_plan = engine.mode() == PermissionMode::Plan;
         Self {
@@ -183,6 +191,7 @@ impl Local {
             project,
             decisions,
             tasks_db,
+            machine,
         }
     }
 
@@ -250,6 +259,10 @@ impl Local {
                     .await
                     .map_err(|err| Refusal::new(protocol::INTERNAL_ERROR, err.to_string()))?;
                 answer(Tasks { tasks })
+            }
+            SET_MODEL => {
+                let params: SetModelParams = protocol::params(params)?;
+                answer(self.set_model(params).await?)
             }
             CHECKLIST_VIEW => {
                 let ChecklistViewParams { view } = protocol::params(params)?;
@@ -336,6 +349,80 @@ impl Local {
                 text: format!("not trusted: {err}"),
             },
         }
+    }
+
+    /// `rkat/set_model`: switch the orchestrator's session to another model
+    /// in place, as the in-process `/model` does (`SessionHandle::
+    /// switch_model`): the engine's LLM reconfigure on the live session,
+    /// with the endpoint's auth binding and the `[thinking]` setting the
+    /// new model is configured with. Refused while a turn runs (as
+    /// in-process); the session keeps the model, and the next prompt is an
+    /// ordinary `mob/member_send`, tied to no connection.
+    async fn set_model(&self, params: SetModelParams) -> Result<ModelSet, Refusal> {
+        use meerkat_runtime::SessionServiceRuntimeExt as _;
+
+        let SetModelParams {
+            model,
+            provider,
+            auth_binding,
+        } = params;
+        let provider_params = provider.as_deref().and_then(|provider| {
+            let dialect = WireDialect::parse(provider)?;
+            // A configured endpoint is named by its auth binding.
+            let endpoint = auth_binding
+                .as_ref()
+                .filter(|binding| binding.realm.as_str() == ENDPOINT_REALM)
+                .map_or(provider, |binding| binding.binding.as_str());
+            let configured = self
+                .thinking
+                .resolve(Some(endpoint), dialect.into(), &model);
+            Some(match thinking::params_for(configured.as_ref()) {
+                Some(params) => TurnMetadataOverride::Set(params),
+                None => TurnMetadataOverride::Clear,
+            })
+        });
+        let request = meerkat_runtime::SessionLlmReconfigureRequest {
+            model: Some(model),
+            provider,
+            self_hosted_server_id: None,
+            provider_params,
+            auth_binding: Some(match auth_binding {
+                Some(binding) => TurnMetadataOverride::Set(binding),
+                None => TurnMetadataOverride::Clear,
+            }),
+        };
+        let machine = Arc::clone(&self.machine);
+        let switched = self
+            .conversations
+            .while_idle(|session| async move {
+                let report = machine
+                    .reconfigure_session_llm_identity(&session, request)
+                    .await?;
+                Ok::<_, meerkat_runtime::RuntimeDriverError>((session, report))
+            })
+            .await
+            .map_err(|err| {
+                let code = match err {
+                    super::conversations::SwitchError::Running => SWITCH_BUSY,
+                    _ => SWITCH_FAILED,
+                };
+                let message = match err {
+                    super::conversations::SwitchError::Running => {
+                        "a turn is running; switch models once it ends (or interrupt it)"
+                            .to_string()
+                    }
+                    other => other.to_string(),
+                };
+                Refusal::new(code, message)
+            })?;
+        let (session, report) =
+            switched.map_err(|err| Refusal::new(SWITCH_FAILED, err.to_string()))?;
+        tracing::debug!(?report, "switched the orchestrator's model");
+        Ok(ModelSet {
+            session_id: session,
+            model: report.new_identity.model,
+            provider: report.new_identity.provider.as_str().to_string(),
+        })
     }
 
     /// The session the orchestrator runs as now.

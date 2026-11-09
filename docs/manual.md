@@ -1046,8 +1046,9 @@ sessions stay in the realm and the next start restores the member.
 (steers, from any attached TUI), Esc (stops the run and the helpers it
 started; a second Esc a second later force-cancels the member), the model
 picker and `/model` (this TUI's endpoints, configured ones included: the
-switch rides your next message, carries the endpoint's auth binding and
-`[thinking]` setting, and the session keeps the model), the context gauge,
+daemon switches the session in place as in-process, with the endpoint's
+auth binding and `[thinking]` setting; not while a turn runs; the session
+keeps the model), the context gauge,
 token counts, `/status`, `/export`, `/cost` (helpers included, kept per
 conversation), `/copy`, `/context` (the gauge only), `/compact` (the
 policy) and `/compact now` (the agent's next model call compacts first; the
@@ -1138,8 +1139,6 @@ conversation): attach, then switch with `/resume`.
   reviewed as foreign tools until then. A helper is judged by those and the
   engine's own tools until its first run has ended, and by its own tools
   after that (a `delegate` helper has only the one run).
-- A model switch's turn is tied to the connection that sent it: detaching
-  during that one turn cancels it. Ordinary prompts are not.
 - When two TUIs steer the same turn, each marks its own messages delivered
   in the order the agent takes steers, not by which message the agent
   took: the engine does not tell a TUI which input its message became, so

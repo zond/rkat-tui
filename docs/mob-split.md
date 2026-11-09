@@ -135,8 +135,8 @@ rkat-tui-mob (daemon, src/daemon/, one per workspace realm)
 rkat-tui --attach (client, src/client/)
   reads the endpoint file, attaches with the token (starts the daemon if
     none answers); refuses a daemon without decision/notice+decide
-  mob/member_send for prompts and steers (detach-safe); mob/turn_start
-    only for a /model switch (model, provider, auth_binding)
+  mob/member_send for prompts and steers (detach-safe); rkat/set_model
+    for a /model switch, in place (model, provider, auth_binding)
   mob/stream_open with the saved {epoch, seq} cursor; rkat/transcript and
     events/list_since to render a conversation from its start
   mob-wide mob/stream_open per mob for the helpers' follower view
@@ -202,6 +202,7 @@ methods on the wire, and `daemon::protocol` types each one for both ends:
 | `rkat/transcript` | `{"session_id"}` | `{"messages": [Message]}` |
 | `rkat/usage` | `{"session_id"}` | `{"input_tokens", "output_tokens"}` |
 | `rkat/trust` | `{"op": "project"\|"rules"}` | `{"ok", "text"}` |
+| `rkat/set_model` | `{"model", "provider"?, "auth_binding"?}` | `{"session_id", "model", "provider"}` (refused while a run is open) |
 | `rkat/tasks` | `{"session_id"}` | `{"tasks": [Task]}` (the engine's task store) |
 | `rkat/checklist_view` | `{"view": "hidden"\|"shown"}` | `{}` (saved as `[ui] checklist`) |
 | `rkat/decision_ended` | notification, daemon to client | a decision the client was shown ended |
@@ -253,7 +254,9 @@ lifts the stop.
 
 **Stream and catch-up.** `mob/turn_start` is request-scoped (its run is
 cancelled when the sending connection closes), so prompts and steers go
-through `mob/member_send`; only a `/model` switch uses `mob/turn_start`.
+through `mob/member_send`; a `/model` switch is the daemon's
+`rkat/set_model`, the engine's LLM reconfigure on the member's live session
+(the in-process switch), so no run is tied to a connection.
 Every member `mob/stream_event` carries its envelope's `seq` and the `epoch`
 of that sequence space. The client keeps a mark (session, epoch, sequence)
 in `<workspace>/.rkat/tui/attach.cursor` and reattaches with

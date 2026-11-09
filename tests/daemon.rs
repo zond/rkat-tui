@@ -529,3 +529,49 @@ async fn a_second_daemon_on_a_live_workspace_is_refused() {
     );
     daemon.stop().await;
 }
+
+/// `rkat/set_model` switches the orchestrator's session in place, and is
+/// refused with `SWITCH_BUSY` while its run is open.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn set_model_switches_in_place_and_waits_for_the_run() {
+    let ws = Workspace::new();
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Gated(Arc::clone(&gate), Box::new(Step::Text("first"))),
+        Step::Text("second"),
+    ]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let mut client = connect(&daemon).await;
+    let stream = client.open_stream().await;
+    client
+        .ok(
+            "mob/member_send",
+            json!({"mob_id": MOB_ID, "agent_identity": ORCHESTRATOR, "content": "work"}),
+        )
+        .await;
+    llm.wait_call(0).await;
+    let switch = json!({"model": "claude-opus-4-8", "provider": "anthropic"});
+    let busy = client.call("rkat/set_model", switch.clone()).await;
+    assert_eq!(
+        busy["error"]["code"],
+        json!(rkat_tui::daemon::protocol::SWITCH_BUSY),
+        "{busy}"
+    );
+    gate.notify_one();
+    client.run_completed(&stream).await;
+    let set = client.ok("rkat/set_model", switch).await;
+    assert_eq!(set["model"], "claude-opus-4-8", "{set}");
+    assert_eq!(set["session_id"], json!(daemon.session), "{set}");
+    // Only the next run's end counts below.
+    client.notifications.clear();
+    client
+        .ok(
+            "mob/member_send",
+            json!({"mob_id": MOB_ID, "agent_identity": ORCHESTRATOR, "content": "more"}),
+        )
+        .await;
+    client.run_completed(&stream).await;
+    let models: Vec<String> = llm.recorded().into_iter().map(|r| r.model).collect();
+    assert_eq!(models, vec!["claude-sonnet-4-6", "claude-opus-4-8"]);
+    daemon.stop().await;
+}

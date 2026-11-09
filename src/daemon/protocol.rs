@@ -51,6 +51,10 @@ pub const TASKS: &str = "rkat/tasks";
 /// [`ChecklistViewParams`] → `{}`: record the checklist panel's view
 /// (Ctrl+T) as the realm's `[ui] checklist`.
 pub const CHECKLIST_VIEW: &str = "rkat/checklist_view";
+/// [`SetModelParams`] → [`ModelSet`]: switch the orchestrator's current
+/// session to another model in place (`/model`), with the endpoint's auth
+/// binding and the `[thinking]` setting the model is configured with.
+pub const SET_MODEL: &str = "rkat/set_model";
 /// The notification that a decision a client was shown ended:
 /// [`DecisionEnded`].
 pub const DECISION_ENDED: &str = "rkat/decision_ended";
@@ -262,6 +266,32 @@ pub struct Tasks {
 pub struct ChecklistViewParams {
     /// `hidden` or `shown`.
     pub view: crate::ui::ChecklistView,
+}
+
+/// [`SET_MODEL`]'s parameters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetModelParams {
+    /// The model id.
+    pub model: String,
+    /// Its provider (`anthropic`, `openai`, `gemini`); `None` keeps the
+    /// session's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// The configured endpoint's binding; `None` (a built-in endpoint)
+    /// clears the session's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_binding: Option<meerkat_core::AuthBindingRef>,
+}
+
+/// [`SET_MODEL`]'s result: the session's identity after the switch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelSet {
+    /// The session the switch applied to.
+    pub session_id: SessionId,
+    /// Its model now.
+    pub model: String,
+    /// Its provider now.
+    pub provider: String,
 }
 
 /// What [`TRUST`] acts on.

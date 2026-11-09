@@ -218,8 +218,11 @@ impl Reporter {
 
 /// What a background task reports.
 enum Report {
-    /// A `mob/turn_start` (the model switch) failed.
-    TurnStart(ClientError),
+    /// A `/model` switch (`rkat/set_model`) applied, or why not.
+    ModelSet {
+        switch: ModelSwitch,
+        result: Result<protocol::ModelSet, String>,
+    },
     /// A stop or a cancel failed.
     Interrupt(String),
     /// The daemon's permission mode.
@@ -404,8 +407,6 @@ pub struct AttachRunner {
     link_epoch: u64,
     mark: Option<Mark>,
     turn: Turn,
-    /// `/model`: the model the next prompt switches to.
-    pending_model: Option<ModelSwitch>,
     /// `(provider, model)` as last read or switched to.
     model: Option<(String, String)>,
     /// `/daemon stop` was sent: a lost connection is not re-made.
@@ -472,7 +473,6 @@ impl AttachRunner {
             link_epoch: 0,
             mark: None,
             turn: Turn::default(),
-            pending_model: None,
             model: None,
             stopping: false,
             daemon_id_seen: None,
@@ -671,9 +671,7 @@ impl AttachRunner {
         }
         if let Some((model, provider)) = identity {
             self.followers.set_default_model(&model);
-            if self.pending_model.is_none() {
-                self.set_model_status(&provider, &model);
-            }
+            self.set_model_status(&provider, &model);
         }
         if fresh {
             self.load_cost(&link.session);
@@ -1143,16 +1141,24 @@ impl AttachRunner {
             }
         }
         match report {
-            Report::TurnStart(err) => {
-                self.notice(
-                    NoticeLevel::Error,
-                    format!("the model switch failed: {err}"),
-                );
-                if self.turn.active && !self.turn.saw_run {
-                    self.turn.record(Err(TurnFailure::Failed(err.to_string())));
-                    self.finish_turn();
+            Report::ModelSet { switch, result } => match result {
+                Ok(set) => {
+                    if self
+                        .link
+                        .as_ref()
+                        .is_some_and(|link| link.session == set.session_id)
+                    {
+                        let dialect = WireDialect::parse(&set.provider);
+                        self.show_model(&switch.endpoint, dialect, &set.model);
+                    }
+                    self.notice(
+                        NoticeLevel::Info,
+                        format!("switched to {} on {}", set.model, switch.endpoint),
+                    );
+                    self.last_switch = Some(switch);
                 }
-            }
+                Err(why) => self.notice(NoticeLevel::Error, format!("model not changed: {why}")),
+            },
             Report::Interrupt(err) => {
                 self.notice(NoticeLevel::Error, format!("interrupt incomplete: {err}"));
             }
@@ -1602,15 +1608,6 @@ impl AttachRunner {
             ..Turn::default()
         };
         let text = self.bench.expand_mentions(text);
-        if let Some(switch) = self.pending_model.take() {
-            let reports = self.reporter();
-            tokio::spawn(async move {
-                if let Err(err) = remote::turn_with_model(&connection, &text, &switch).await {
-                    reports.send(Report::TurnStart(err));
-                }
-            });
-            return;
-        }
         let Err(failure) = bounded(CALL_TIMEOUT, remote::send(&connection, &text, false)).await
         else {
             return;
@@ -1695,9 +1692,9 @@ impl AttachRunner {
         });
     }
 
-    /// `/model <reference>` or a picker selection: the next prompt carries
-    /// the switch (`mob/turn_start` with the model, provider and the
-    /// endpoint's auth binding); the session keeps the model from then on.
+    /// `/model <reference>` or a picker selection: the daemon switches the
+    /// session in place ([`AttachRunner::switch_model`], with the model,
+    /// provider and the endpoint's auth binding); it keeps the model.
     /// A bare id is resolved against this process's endpoints as
     /// in-process (their lists fetched first when several could serve it).
     fn set_model(&mut self, reference: &str) {
@@ -1707,25 +1704,51 @@ impl AttachRunner {
             self.bench.models(),
             self.current_endpoint.as_deref(),
         ) {
-            Ok(switch) => {
-                self.notice(
-                    NoticeLevel::Info,
-                    format!(
-                        "switching to {} on {} with your next message",
-                        switch.model, switch.endpoint
-                    ),
-                );
-                let dialect = switch.provider.as_deref().and_then(WireDialect::parse);
-                self.show_model(&switch.endpoint, dialect, &switch.model);
-                self.last_switch = Some(switch.clone());
-                self.pending_model = Some(switch);
-            }
+            Ok(switch) => self.switch_model(switch),
             Err(err) => {
                 if !self.bench.defer_until_listed(reference) {
                     self.notice(NoticeLevel::Warn, err.to_string());
                 }
             }
         }
+    }
+
+    /// Switch the orchestrator's session to `switch` in place
+    /// (`rkat/set_model`), as the in-process `/model` does: refused while a
+    /// turn runs; the next prompt is an ordinary send.
+    fn switch_model(&self, switch: ModelSwitch) {
+        if self.turn.active {
+            self.notice(
+                NoticeLevel::Warn,
+                "a turn is running; switch models once it ends (or interrupt it)",
+            );
+            return;
+        }
+        let Some(connection) = self.connection() else {
+            self.notice(
+                NoticeLevel::Warn,
+                "not attached to the daemon: the model was not changed",
+            );
+            return;
+        };
+        let reports = self.reporter();
+        tokio::spawn(async move {
+            let params = protocol::SetModelParams {
+                model: switch.model.clone(),
+                provider: switch.provider.clone(),
+                auth_binding: switch.auth_binding.clone(),
+            };
+            let result = bounded(
+                SWITCH_TIMEOUT,
+                remote::local::<_, protocol::ModelSet>(&connection, protocol::SET_MODEL, &params),
+            )
+            .await
+            .map_err(|err| match err {
+                CallFailure::Failed(ClientError::Rpc { message, .. }) => message,
+                other => other.to_string(),
+            });
+            reports.send(Report::ModelSet { switch, result });
+        });
     }
 
     /// The model lists arrived ([`Workbench::background`]): a `/model
@@ -1872,13 +1895,7 @@ impl AttachRunner {
                 && let Some(switch) = self.last_switch.clone()
                 && switch.model != model
             {
-                self.notice(
-                    NoticeLevel::Info,
-                    format!("switching to {} with your next message", switch.model),
-                );
-                let dialect = switch.provider.as_deref().and_then(WireDialect::parse);
-                self.show_model(&switch.endpoint, dialect, &switch.model);
-                self.pending_model = Some(switch);
+                self.switch_model(switch);
             }
         }
         let short = id.get(..8).unwrap_or(&id).to_string();
