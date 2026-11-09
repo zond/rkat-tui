@@ -14,6 +14,11 @@
 //!
 //! Every event is sent to the UI as [`Msg::Agent`] on the integrator
 //! channel, so the turn messages stay in order with the events.
+//!
+//! What both runners do the same way (`!` shell mode, `/remember`,
+//! `/memory`, `/export`, prices and the cost record, the model lists and
+//! picker, unsent messages) is the [`Workbench`]'s; it reaches the
+//! orchestrator through [`Linked`] (`mob/append_system_context`).
 
 use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
@@ -40,15 +45,15 @@ use crate::cli::AttachMode;
 use crate::daemon::endpoint::Endpoint;
 use crate::daemon::protocol::{self, ModeSet, SetModeParams, TrustOp, TrustParams};
 use crate::delivery::{PendingId, SteerFailure};
-use crate::endpoints::{
-    EndpointRegistry, ModelRefError, WireDialect, needs_lookup, parse_model_ref,
-};
-use crate::models::{FetchResults, ModelCache, ModelGroup, fetch_warning, with_current};
+use crate::endpoints::{EndpointRegistry, ModelRefError, WireDialect, parse_model_ref};
+use crate::models::{FetchResults, ModelCache};
 use crate::ui::{
-    Block, CompactFailure, Effect, EscalationAnswer, EscalationId, MemoryTarget, Msg, NoticeLevel,
-    RuleEffect, ShellOutcome, ShellRunId, StatusUpdate, TurnFailure, TurnOutcome, TurnSummary,
+    Block, CompactFailure, Effect, EscalationAnswer, EscalationId, Msg, NoticeLevel, RuleEffect,
+    StatusUpdate, TurnFailure, TurnOutcome, TurnSummary,
 };
 use crate::user_shell::UserShell;
+use crate::workbench::models::Current;
+use crate::workbench::{AgentContext, SavedUnsent, Workbench, WorkbenchParts};
 
 /// The status-bar segment while the first connection is made.
 pub const CONNECTING: &str = "connecting";
@@ -251,10 +256,6 @@ enum Report {
     /// conversations could not be listed, the reference resolved to none
     /// or to the current one): why. Ends the switch.
     SwitchRefused(NoticeLevel, String),
-    /// The endpoints' model lists.
-    ModelLists(FetchResults),
-    /// The community price list, refreshed.
-    Community(Result<crate::pricing::CommunityPrices, crate::pricing::PricingError>),
 }
 
 /// What a client shows of the conversation it switched to.
@@ -409,8 +410,6 @@ pub struct AttachRunner {
     daemon_id_seen: Option<String>,
     /// The approval dialogs shown.
     approvals: Approvals,
-    /// The running `!` command.
-    shell_task: Option<(ShellRunId, JoinHandle<()>)>,
     /// The orchestrator's helpers.
     followers: Followers,
     /// Events of streams opened but not registered yet, by stream id.
@@ -429,21 +428,9 @@ pub struct AttachRunner {
     last_switch: Option<ModelSwitch>,
     /// The endpoint the status bar names.
     current_endpoint: Option<String>,
-    /// The endpoints' model lists, once fetched.
-    models: Option<ModelCache>,
-    /// A model-list fetch runs.
-    fetching_models: bool,
-    /// The picker opens when the lists arrive.
-    picker_waiting: bool,
-    /// A `/model <ref>` waiting for the lists.
-    pending_set: Option<String>,
-    /// The file `/memory` opened and its bytes before.
-    memory_before: Option<(PathBuf, Option<Vec<u8>>)>,
-    /// The cost readout's prices.
-    prices: Arc<crate::pricing::PriceTable>,
-    /// The messages the UI still held when the user quit
-    /// ([`Effect::SaveUnsent`]).
-    held_unsent: Vec<(Option<PendingId>, String)>,
+    /// `!` shell mode, `/remember`, `/memory`, `/export`, prices and the
+    /// cost record, the model lists and unsent messages.
+    bench: Workbench,
     /// The steers the daemon admitted: the agent has them, or gets them
     /// after this client leaves, so quitting saves none of them.
     admitted: Vec<PendingId>,
@@ -458,7 +445,15 @@ impl AttachRunner {
         effect_rx: mpsc::UnboundedReceiver<Effect>,
     ) -> Self {
         let (reports_tx, reports_rx) = mpsc::unbounded_channel();
-        let prices = Arc::new(config.pricing.table.clone());
+        let bench = Workbench::new(WorkbenchParts {
+            ui_tx: ui_tx.clone(),
+            scope: config.scope.clone(),
+            user_shell: config.user_shell.clone(),
+            pricing: config.pricing.clone(),
+            endpoints: config.endpoints.clone(),
+            lister: Arc::clone(&config.lister),
+            models: None,
+        });
         Self {
             config,
             ui_tx,
@@ -476,7 +471,6 @@ impl AttachRunner {
             stopping: false,
             daemon_id_seen: None,
             approvals: Approvals::default(),
-            shell_task: None,
             followers: Followers::default(),
             orphans: Orphans::default(),
             discover_at: None,
@@ -487,13 +481,7 @@ impl AttachRunner {
             switching: false,
             last_switch: None,
             current_endpoint: None,
-            models: None,
-            fetching_models: false,
-            picker_waiting: false,
-            pending_set: None,
-            memory_before: None,
-            prices,
-            held_unsent: Vec::new(),
+            bench,
             admitted: Vec::new(),
         }
     }
@@ -501,13 +489,8 @@ impl AttachRunner {
     /// Serve effects until the UI quits, then detach (the daemon and any
     /// running turn go on). Returns where the messages the daemon never
     /// got were saved, when there were any.
-    pub async fn run(mut self) -> Option<crate::runner::SavedUnsent> {
-        let realm_root = self.config.scope.realm_root();
-        if let Some(text) = crate::runner::quit::unsent_notice(&realm_root) {
-            self.notice(NoticeLevel::Warn, text);
-        }
-        self.push_prices();
-        self.refresh_prices();
+    pub async fn run(mut self) -> Option<SavedUnsent> {
+        self.bench.start();
         self.status(CONNECTING);
         self.connect();
         loop {
@@ -528,43 +511,15 @@ impl AttachRunner {
                 () = sleep_until(self.turn.deadline()) => self.on_deadline(),
                 () = sleep_until(self.discover_at) => self.discover(),
                 () = sleep_until(self.session_check_at) => self.check_session(),
+                joined = self.bench.background() => self.model_lists(joined),
             }
         }
         self.save_cursor();
-        if let Some((_, task)) = self.shell_task.take() {
-            task.abort();
-        }
+        self.bench.cancel_shell();
         if let Some(task) = self.connecting.take() {
             task.abort();
         }
-        crate::runner::quit::save_unsent(
-            &realm_root,
-            std::mem::take(&mut self.held_unsent),
-            &self.admitted,
-        )
-    }
-
-    /// Send the price table to the UI.
-    fn push_prices(&self) {
-        self.send(Msg::Status(StatusUpdate::Prices(Arc::clone(&self.prices))));
-    }
-
-    /// Refresh the community price list in the background when it is due.
-    fn refresh_prices(&self) {
-        let Some(url) = self.config.pricing.refresh_url().map(str::to_string) else {
-            return;
-        };
-        let cache = self.config.pricing.cache_path.clone();
-        let reports = self.reporter();
-        tokio::spawn(async move {
-            let fetched = crate::pricing::refresh_community(
-                &url,
-                cache.as_deref(),
-                crate::pricing::FETCH_TIMEOUT,
-            )
-            .await;
-            reports.send(Report::Community(fetched));
-        });
+        self.bench.save_unsent(&self.admitted)
     }
 
     fn send(&self, msg: Msg) {
@@ -1289,14 +1244,6 @@ impl AttachRunner {
                 self.switching = false;
                 self.notice(level, text);
             }
-            Report::ModelLists(results) => self.model_lists(results),
-            Report::Community(Ok(community)) => {
-                Arc::make_mut(&mut self.prices).set_community(community);
-                self.push_prices();
-            }
-            Report::Community(Err(err)) => {
-                tracing::warn!(error = %err, "could not fetch the community price list");
-            }
         }
     }
 
@@ -1313,8 +1260,10 @@ impl AttachRunner {
                 recalled: Vec::new(),
                 errors: vec![format!("taking back a sent message is {NOT_AVAILABLE}")],
             }),
-            Effect::RunShell { id, command } => self.run_shell(id, command),
-            Effect::CancelShell => self.cancel_shell(),
+            Effect::RunShell { id, command } => {
+                self.bench.run_shell(id, command, self.linked());
+            }
+            Effect::CancelShell => self.bench.cancel_shell(),
             Effect::SetModel(reference) => self.set_model(&reference),
             Effect::CompactNow => self.compact_now(),
             Effect::StatusReport => self.status_report(),
@@ -1322,7 +1271,14 @@ impl AttachRunner {
                 NoticeLevel::Info,
                 format!("{header}\n(what the context holds is {NOT_AVAILABLE})"),
             ),
-            Effect::Export { path, text } => self.export(path.as_deref(), &text),
+            Effect::Export { path, text } => {
+                let session = self
+                    .link
+                    .as_ref()
+                    .map(|link| link.session.to_string())
+                    .unwrap_or_default();
+                self.bench.export(path.as_deref(), &text, &session);
+            }
             Effect::DaemonStop => self.daemon_stop().await,
             Effect::NewSession => self.switch_conversation(None),
             Effect::ResumeSession(reference) => self.resume_session(reference),
@@ -1330,11 +1286,21 @@ impl AttachRunner {
             Effect::RequestRewindMenu | Effect::Rewind(_) => {
                 self.notice(NoticeLevel::Warn, sessions::REWIND_UNAVAILABLE);
             }
-            Effect::RequestModelPicker { refresh } => self.request_model_picker(refresh),
-            Effect::Remember(text) => self.remember(&text).await,
-            Effect::OpenMemory(target) => self.open_memory(target),
-            Effect::MemoryEdited { target, path } => self.memory_edited(target, &path).await,
-            Effect::CostSnapshot(snapshot) => self.save_cost(&snapshot),
+            Effect::RequestModelPicker { refresh } => {
+                let current = current(self.current_endpoint.as_deref(), self.model.as_ref());
+                self.bench.request_model_picker(refresh, current);
+            }
+            Effect::Remember(text) => self.bench.remember(&text, &self.linked()).await,
+            Effect::OpenMemory(target) => self.bench.open_memory(target),
+            Effect::MemoryEdited { target, path } => {
+                let linked = self.linked();
+                self.bench.memory_edited(target, &path, &linked).await;
+            }
+            Effect::CostSnapshot(snapshot) => {
+                if let Some(link) = &self.link {
+                    self.bench.save_cost(&link.session.to_string(), &snapshot);
+                }
+            }
             Effect::RespondEscalation(id, answer) => self.respond_escalation(id, &answer),
             Effect::SetMode(mode) => self.set_mode(mode.name()).await,
             Effect::ResumeAutoMode => {
@@ -1374,7 +1340,7 @@ impl AttachRunner {
                 self.outcome_command(protocol::TRUST, &params, "/trust")
                     .await;
             }
-            Effect::SaveUnsent(held) => self.held_unsent.extend(held),
+            Effect::SaveUnsent(held) => self.bench.hold_unsent(held),
             Effect::Quit
             | Effect::SetChecklistView(_)
             | Effect::Redraw
@@ -1537,57 +1503,9 @@ impl AttachRunner {
         bounded(CALL_TIMEOUT, remote::local(&connection, method, params)).await
     }
 
-    /// `!command`: the user's own shell, in this process (as in-process);
-    /// its output goes to the orchestrator's context.
-    fn run_shell(&mut self, id: ShellRunId, command: String) {
-        self.cancel_shell();
-        let shell = match &self.config.user_shell {
-            Ok(shell) => Arc::clone(shell),
-            Err(why) => {
-                self.send(Msg::ShellFinished {
-                    id,
-                    outcome: ShellOutcome::Failed(why.clone()),
-                });
-                return;
-            }
-        };
-        let connection = self.connection();
-        let ui_tx = self.ui_tx.clone();
-        let task = tokio::spawn(async move {
-            let outcome = match shell.run(&command).await {
-                Ok(run) => {
-                    let text = crate::user_shell::context_text(&command, &run);
-                    let context = match connection {
-                        Some(connection) => remote::append_system_context(
-                            &connection,
-                            &text,
-                            &crate::runner::shell::run_key(),
-                        )
-                        .await
-                        .map_err(|err| err.to_string()),
-                        None => Err("not attached to the daemon".to_string()),
-                    };
-                    ShellOutcome::Ran { run, context }
-                }
-                Err(err) => ShellOutcome::Failed(err.to_string()),
-            };
-            let _ = ui_tx.send(Msg::ShellFinished { id, outcome });
-        });
-        self.shell_task = Some((id, task));
-    }
-
-    fn cancel_shell(&mut self) {
-        let Some((id, task)) = self.shell_task.take() else {
-            return;
-        };
-        if task.is_finished() {
-            return;
-        }
-        task.abort();
-        self.send(Msg::ShellFinished {
-            id,
-            outcome: ShellOutcome::Cancelled,
-        });
+    /// The orchestrator as the workbench reaches it, over this connection.
+    fn linked(&self) -> Linked {
+        Linked(self.connection())
     }
 
     async fn start_turn(&mut self, text: &str) {
@@ -1714,7 +1632,7 @@ impl AttachRunner {
         match model_switch(
             reference,
             &self.config.endpoints,
-            self.models.as_ref(),
+            self.bench.models(),
             self.current_endpoint.as_deref(),
         ) {
             Ok(switch) => {
@@ -1730,104 +1648,21 @@ impl AttachRunner {
                 self.last_switch = Some(switch.clone());
                 self.pending_model = Some(switch);
             }
-            Err(_)
-                if self.models.is_none()
-                    && needs_lookup(reference, self.config.endpoints.as_slice()) =>
-            {
-                self.pending_set = Some(reference.to_string());
-                self.fetch_models(true);
+            Err(err) => {
+                if !self.bench.defer_until_listed(reference) {
+                    self.notice(NoticeLevel::Warn, err.to_string());
+                }
             }
-            Err(err) => self.notice(NoticeLevel::Warn, err.to_string()),
         }
     }
 
-    /// Fetch the endpoints' model lists in the background, once at a time.
-    fn fetch_models(&mut self, announce: bool) {
-        if self.fetching_models {
-            return;
-        }
-        self.fetching_models = true;
-        let endpoints: Vec<_> = self
-            .config
-            .endpoints
-            .iter()
-            .filter(|endpoint| endpoint.has_key())
-            .cloned()
-            .collect();
-        let lister = Arc::clone(&self.config.lister);
-        let reports = self.reporter();
-        tokio::spawn(async move {
-            reports.send(Report::ModelLists(lister(endpoints).await));
-        });
-        if announce {
-            self.notice(NoticeLevel::Info, "fetching the model lists…");
-        }
-    }
-
-    /// `/model` without an id: the picker, from the lists (fetched first).
-    fn request_model_picker(&mut self, refresh: bool) {
-        if refresh {
-            self.models = None;
-        }
-        if self.models.is_some() || self.config.endpoints.is_empty() {
-            self.send(Msg::ShowModelPicker(self.picker_groups()));
-            return;
-        }
-        self.picker_waiting = true;
-        self.fetch_models(true);
-    }
-
-    fn model_lists(&mut self, results: FetchResults) {
-        self.fetching_models = false;
-        let (cache, prices) = ModelCache::from_results(results);
-        self.models = Some(cache);
-        if !prices.is_empty() || !self.prices.is_empty() {
-            Arc::make_mut(&mut self.prices).set_endpoint_prices(prices);
-            self.push_prices();
-        }
-        if std::mem::take(&mut self.picker_waiting) {
-            self.send(Msg::ShowModelPicker(self.picker_groups()));
-        }
-        if let Some(reference) = self.pending_set.take() {
+    /// The model lists arrived ([`Workbench::background`]): a `/model
+    /// <ref>` that waited for them switches now.
+    fn model_lists(&mut self, joined: Result<FetchResults, tokio::task::JoinError>) {
+        let current = current(self.current_endpoint.as_deref(), self.model.as_ref());
+        if let Some(reference) = self.bench.lists_arrived(joined, current) {
             self.set_model(&reference);
         }
-    }
-
-    /// The picker: one group per endpoint, the current endpoint first with
-    /// the current model first (as in-process).
-    fn picker_groups(&self) -> Vec<ModelGroup> {
-        let endpoints = &self.config.endpoints;
-        let current_name = self.current_endpoint.as_deref().unwrap_or("");
-        let current_model = self.model.as_ref().map_or("", |(_, model)| model.as_str());
-        let current = endpoints.iter().filter(|e| e.name == current_name);
-        let others = endpoints.iter().filter(|e| e.name != current_name);
-        current
-            .chain(others)
-            .map(|endpoint| {
-                let listed = self.models.as_ref().and_then(|m| m.get(&endpoint.name));
-                let (models, warning) = match listed {
-                    Some(Ok(list)) => (list.clone(), None),
-                    Some(Err(err)) => (Vec::new(), Some(fetch_warning(err))),
-                    None if !endpoint.has_key() => (
-                        Vec::new(),
-                        Some("model listing needs an API key the TUI can read".to_string()),
-                    ),
-                    None => (Vec::new(), None),
-                };
-                let current = if endpoint.name == current_name {
-                    current_model
-                } else {
-                    ""
-                };
-                ModelGroup {
-                    endpoint: endpoint.name.clone(),
-                    dialect: endpoint.dialect,
-                    base_url: endpoint.base_url.clone(),
-                    models: with_current(current, models),
-                    warning,
-                }
-            })
-            .collect()
     }
 
     /// `/new` (`target: None`) or `/resume <session>`: ask the daemon to
@@ -2051,149 +1886,12 @@ impl AttachRunner {
         });
     }
 
-    /// `/remember <text>`: append it to the workspace `AGENTS.md` here and
-    /// hand it to the orchestrator as system context (as in-process).
-    async fn remember(&self, text: &str) {
-        use crate::bootstrap::instructions::{
-            append_remember_line, remember_line, remember_target, remembered_context,
-        };
-        let Some(line) = remember_line(text) else {
-            self.notice(NoticeLevel::Warn, "nothing to remember");
-            return;
-        };
-        let path = remember_target(&self.config.scope.context_root);
-        if let Err(err) = append_remember_line(&path, &line) {
-            self.notice(
-                NoticeLevel::Error,
-                format!("could not write {}: {err}", path.display()),
-            );
-            return;
-        }
-        let key = crate::runner::context::remember_key(&line);
-        match self.push_context(&remembered_context(&line), &key).await {
-            Ok(()) => self.notice(
-                NoticeLevel::Info,
-                format!(
-                    "remembered in {}: the agent reads it from its next model call; it is fully applied (as part of AGENTS.md) from the next conversation",
-                    path.display()
-                ),
-            ),
-            Err(err) => self.notice(
-                NoticeLevel::Warn,
-                format!(
-                    "remembered in {}, but the agent could not take it now ({err}); it applies from the next conversation",
-                    path.display()
-                ),
-            ),
-        }
-    }
-
-    /// Hand `text` to the orchestrator as system context under `key`.
-    async fn push_context(&self, text: &str, key: &str) -> Result<(), CallFailure> {
-        let connection = self.connection().ok_or(CallFailure::NotAttached)?;
-        bounded(
-            CALL_TIMEOUT,
-            remote::append_system_context(&connection, text, key),
-        )
-        .await
-    }
-
-    /// `/memory`: open the instruction file here (as in-process).
-    fn open_memory(&mut self, target: MemoryTarget) {
-        let scope = &self.config.scope;
-        let path = match crate::runner::context::memory_path(
-            target,
-            &scope.context_root,
-            scope.global.as_ref(),
-        ) {
-            Ok(path) => path,
-            Err(why) => {
-                self.notice(NoticeLevel::Warn, why);
-                return;
-            }
-        };
-        if let Err(err) = crate::runner::context::prepare_memory_file(target, &path) {
-            self.notice(
-                NoticeLevel::Error,
-                format!("could not prepare {}: {err}", path.display()),
-            );
-            return;
-        }
-        self.memory_before = Some((path.clone(), std::fs::read(&path).ok()));
-        self.send(Msg::EditFile { target, path });
-    }
-
-    /// An instruction file was edited: an `AGENTS.md` reaches the
-    /// orchestrator as system context; `SYSTEM.md` applies from the next
-    /// conversation (as in-process).
-    async fn memory_edited(&mut self, target: MemoryTarget, path: &std::path::Path) {
-        let before = match self.memory_before.take() {
-            Some((p, before)) if p == path => before,
-            _ => None,
-        };
-        let now = std::fs::read(path).ok();
-        if now == before {
-            self.notice(
-                NoticeLevel::Info,
-                format!("{} is unchanged", path.display()),
-            );
-            return;
-        }
-        let next = format!(
-            "saved {}; it applies from the next conversation (/new)",
-            path.display()
-        );
-        let content = now
-            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-            .unwrap_or_default();
-        let context = match target {
-            MemoryTarget::System => None,
-            MemoryTarget::Workspace | MemoryTarget::User => {
-                crate::bootstrap::instructions::edited_context(path, &content)
-            }
-        };
-        let Some(context) = context else {
-            self.notice(NoticeLevel::Info, next);
-            return;
-        };
-        let key = crate::runner::context::memory_key(&context);
-        match self.push_context(&context, &key).await {
-            Ok(()) => self.notice(
-                NoticeLevel::Info,
-                format!(
-                    "saved {}: the agent reads the new content from its next model call; new conversations load it as usual",
-                    path.display()
-                ),
-            ),
-            Err(err) => self.notice(
-                NoticeLevel::Warn,
-                format!("{next} (the agent could not take it now: {err})"),
-            ),
-        }
-    }
-
-    /// Store the cost totals next to the conversation's session (as
-    /// in-process), so a reattach shows them again.
-    fn save_cost(&self, snapshot: &crate::ui::SessionCostSnapshot) {
-        let Some(link) = &self.link else {
-            return;
-        };
-        if let Err(err) = crate::runner::cost_store::save_cost(
-            &self.config.scope.realm_root(),
-            &link.session.to_string(),
-            snapshot,
-        ) {
-            tracing::warn!(error = %err, "could not record the conversation's cost");
-        }
-    }
-
     /// Show `session`'s stored cost totals (none: zero).
     fn load_cost(&self, session: &SessionId) {
-        let cost = crate::runner::cost_store::load_cost(
-            &self.config.scope.realm_root(),
-            &session.to_string(),
-        )
-        .unwrap_or_default();
+        let cost = self
+            .bench
+            .recorded_cost(&session.to_string())
+            .unwrap_or_default();
         self.send(Msg::Status(StatusUpdate::CostTotals(cost)));
     }
 
@@ -2233,39 +1931,6 @@ impl AttachRunner {
         self.notice(NoticeLevel::Info, lines.join("\n"));
     }
 
-    fn export(&self, typed: Option<&str>, text: &str) {
-        use crate::paths::{FileMode, write_atomic};
-        let workspace = &self.config.scope.context_root;
-        let session = self
-            .link
-            .as_ref()
-            .map(|link| link.session.to_string())
-            .unwrap_or_default();
-        let path = crate::runner::export::export_path(
-            workspace,
-            typed,
-            &session,
-            std::time::SystemTime::now(),
-        );
-        let trusted = if typed.is_some() {
-            path.parent().map(std::path::Path::to_path_buf)
-        } else {
-            Some(workspace.clone())
-        };
-        match write_atomic(
-            &path,
-            text.as_bytes(),
-            FileMode::Private,
-            trusted.as_deref(),
-        ) {
-            Ok(()) => self.notice(
-                NoticeLevel::Info,
-                format!("exported the transcript to {}", path.display()),
-            ),
-            Err(err) => self.notice(NoticeLevel::Error, format!("export failed: {err}")),
-        }
-    }
-
     /// `/daemon stop`: SIGTERM to the pid the endpoint file names, once the
     /// file still names the daemon this client is attached to.
     async fn daemon_stop(&mut self) {
@@ -2286,6 +1951,39 @@ impl AttachRunner {
             },
             Err(why) => self.notice(NoticeLevel::Warn, why),
         }
+    }
+}
+
+/// The orchestrator as the [`Workbench`] reaches it: system context over
+/// the connection this client holds (`None`: not attached now).
+struct Linked(Option<Arc<Connection>>);
+
+impl AgentContext for Linked {
+    type Error = CallFailure;
+
+    fn append_system_context(
+        &self,
+        text: String,
+        key: String,
+    ) -> impl std::future::Future<Output = Result<(), CallFailure>> + Send {
+        let connection = self.0.clone();
+        async move {
+            let connection = connection.ok_or(CallFailure::NotAttached)?;
+            bounded(
+                CALL_TIMEOUT,
+                remote::append_system_context(&connection, &text, &key),
+            )
+            .await
+        }
+    }
+}
+
+/// The endpoint and model the status bar names, as the picker lists them
+/// first.
+fn current<'a>(endpoint: Option<&'a str>, model: Option<&'a (String, String)>) -> Current<'a> {
+    Current {
+        endpoint: endpoint.unwrap_or(""),
+        model: model.map_or("", |(_, model)| model.as_str()),
     }
 }
 

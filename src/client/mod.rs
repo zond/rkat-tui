@@ -18,10 +18,11 @@
 //!   [`Effect`]/[`Msg`] contract as the in-process runner, so the UI is the
 //!   same: approval dialogs, permission modes and `/rules` act on the
 //!   daemon's gate (`rkat/*` methods, see [`crate::daemon::local`]); the
-//!   user's `!` shell runs here, as in-process; so do the model picker (this
-//!   process's endpoints), `/remember` and `/memory` (the files are local;
-//!   the new content reaches the orchestrator with
-//!   `mob/append_system_context`); `/trust` and `/rules trust` act on the
+//!   user's `!` shell, the model picker (this process's endpoints),
+//!   `/remember`, `/memory`, `/export` and the cost readout run here, in
+//!   the [`crate::workbench`] the in-process runner uses too (the new
+//!   context reaches the orchestrator with `mob/append_system_context`);
+//!   `/trust` and `/rules trust` act on the
 //!   daemon's trust record (`rkat/trust`); `/compact now` asks the daemon's
 //!   engine (`mob/compact_member`). What the daemon cannot do (`/rewind`)
 //!   says why.
@@ -33,8 +34,9 @@
 //!
 //! The in-process runner is not reused under a session trait: it is built
 //! on the in-process [`crate::bootstrap::Runtime`] (approval desk, helper
-//! host, `fork`, model lists), none of which exists on this side of the
-//! wire.
+//! host, `fork`), none of which exists on this side of the wire, and its
+//! turns end on completion handles the daemon's stream does not carry. What
+//! the two share is the workbench and [`crate::workbench::app::build_app`].
 
 pub mod approvals;
 pub mod catchup;
@@ -50,12 +52,12 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tokio::sync::mpsc;
 
 use crate::cli::{Args, AttachMode};
 use crate::error::TuiError;
-use crate::ui::{App, Effect, History, Msg, StatusInfo, UiChannels, run_ui};
+use crate::ui::{Effect, Msg, StatusInfo, UiChannels};
+use crate::workbench::{AppSetup, app};
 
 pub use runner::{AttachConfig, AttachRunner, SpawnPlan};
 
@@ -255,27 +257,20 @@ pub fn check_args(args: &Args) -> Result<(), TuiError> {
     }
 }
 
-/// The UI of attach mode on `config`, with these input histories.
+/// What the UI of attach mode takes from `config` (the in-process runner
+/// reads the same from its runtime, `crate::runner::app_setup`).
 #[must_use]
-pub fn build_app(config: &AttachConfig, history: &[String], global_history: &[String]) -> App {
-    let status = StatusInfo {
-        attach: Some(runner::CONNECTING.to_string()),
-        ..StatusInfo::default()
-    };
-    // Without a `!` shell nothing runs; the title says the sandbox then.
-    let confined = match &config.user_shell {
-        Ok(shell) => shell.confined(),
-        Err(_) => true,
-    };
-    App::new(status)
-        .with_compaction_policy(config.compaction)
-        .with_helper_view(config.ui.helpers)
-        .with_checklist_view(config.ui.checklist)
-        .with_bell(config.ui.bell)
-        .with_shell_confined(confined)
-        .with_workspace(config.scope.project_root.clone())
-        .with_history(history.to_vec())
-        .with_global_history(global_history.to_vec())
+pub fn app_setup(config: &AttachConfig) -> AppSetup {
+    AppSetup {
+        compaction: config.compaction.normalized().0,
+        ui: config.ui,
+        // Without a `!` shell nothing runs; the title says the sandbox then.
+        shell_confined: match &config.user_shell {
+            Ok(shell) => shell.confined(),
+            Err(_) => true,
+        },
+        workspace: config.scope.project_root.clone(),
+    }
 }
 
 /// Run the TUI attached to the workspace's daemon until the user quits
@@ -296,57 +291,35 @@ pub async fn run(
         return Err(TuiError::NotATerminal);
     }
     let config = configure_with(layers, &args, mode).await?;
-    let realm_root = config.scope.realm_root();
-    crate::runner::init_logging(&realm_root)?;
-    let history = History::load(realm_root.join("tui_history"));
-    let global_history = config
-        .scope
-        .global
-        .as_ref()
-        .map(|global| History::load(global.history_file()));
-    let mut app = build_app(
-        &config,
-        history.entries(),
-        global_history
-            .as_ref()
-            .map(History::entries)
-            .unwrap_or_default(),
-    );
-    let histories: Vec<History> = std::iter::once(history).chain(global_history).collect();
+    app::init_logging(&config.scope.realm_root())?;
     // Attach mode sends every event on the integrator channel (in order with
     // the turn messages); the agent channel stays idle.
     let (_agent_tx, agent_rx) = mpsc::channel(1);
     let (ui_tx, ui_rx) = mpsc::unbounded_channel::<Msg>();
     let (effect_tx, effect_rx) = mpsc::unbounded_channel::<Effect>();
-    if let Some(prompt) = args.prompt.clone() {
-        let mut first = app.update(Msg::Paste(prompt));
-        first.extend(app.update(Msg::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))));
-        for effect in first {
-            let _ = effect_tx.send(effect);
-        }
-    }
+    let status = StatusInfo {
+        attach: Some(runner::CONNECTING.to_string()),
+        ..StatusInfo::default()
+    };
+    let opened = app::open(
+        &app_setup(&config),
+        status,
+        &config.scope,
+        args.prompt.clone(),
+        &effect_tx,
+    );
     let runner = AttachRunner::new(config, ui_tx, effect_rx);
-    let runner_task = tokio::spawn(runner.run());
-    let ui_result = run_ui(
-        app,
+    // Quitting detaches: the runner only saves the cursor and the unsent
+    // messages.
+    app::drive(
+        opened,
         UiChannels { agent_rx, ui_rx },
         effect_tx,
         args.mouse_capture(),
-        histories,
-        realm_root.join("drafts"),
+        tokio::spawn(runner.run()),
+        Duration::from_secs(5),
     )
-    .await;
-    match tokio::time::timeout(Duration::from_secs(5), runner_task).await {
-        Ok(Ok(Some(saved))) => eprintln!(
-            "rkat-tui: {} unsent message(s) saved in {}",
-            saved.count,
-            saved.path.display()
-        ),
-        Ok(Ok(None)) => {}
-        Ok(Err(err)) => tracing::warn!(error = %err, "attach runner failed"),
-        Err(_) => tracing::warn!("attach runner did not shut down in time"),
-    }
-    ui_result.map_err(TuiError::from)
+    .await
 }
 
 /// Test seam: an attach runner driven headless. Not a stable API.
@@ -366,7 +339,7 @@ pub mod testing {
         pub ui_rx: mpsc::UnboundedReceiver<Msg>,
         /// The runner; resolves after [`Effect::Quit`], with where the
         /// messages the daemon never got were saved.
-        pub task: JoinHandle<Option<crate::runner::SavedUnsent>>,
+        pub task: JoinHandle<Option<crate::workbench::SavedUnsent>>,
     }
 
     /// Spawn an attach runner on `config`.

@@ -1,13 +1,9 @@
-//! `/model` across endpoints: the picker, switching, and the context-gauge
-//! window.
+//! `/model` across endpoints: switching and the context-gauge window.
 //!
-//! Every endpoint's model list is fetched in parallel (each request with its
-//! own timeout) in the background at start-up, unless start-up already
-//! fetched them to resolve a bare `--model` id, and cached for the process;
-//! `/model` opens the picker from the cache (fetching when it is empty),
-//! `/model refresh` refetches. The lists come from the endpoints only, never
-//! from the `meerkat-models` catalog. The cache also resolves bare ids (see
-//! [`crate::endpoints::parse_model_ref`]).
+//! The lists and the picker are the workbench's
+//! ([`crate::workbench::models`]); the in-process runner fetches them in the
+//! background at start-up, unless start-up already fetched them to resolve
+//! a bare `--model` id.
 //!
 //! A switch goes through the runtime's session-LLM reconfigure host
 //! ([`crate::session::SessionHandle::switch_model`]) between turns, after
@@ -23,27 +19,32 @@
 //! current model's profile and the gauge, but never rebuilds the session:
 //! a changed compaction trigger applies at the next switch the user makes.
 
-use std::sync::Arc;
-
 use meerkat_core::Provider;
-use tokio::task::JoinHandle;
 
 use super::Runner;
 use super::context::RebuildReason;
 use crate::bootstrap::Runtime;
 use crate::endpoints::registry_context_window;
-use crate::endpoints::{EndpointRef, ModelRefError, needs_lookup, parse_model_ref};
-use crate::models::{
-    FetchResults, ListModelsError, ModelCache, ModelGroup, fetch_warning, with_current,
-};
+use crate::endpoints::{EndpointRef, ModelRefError, parse_model_ref};
+use crate::models::{FetchResults, ModelCache};
 use crate::ui::{Msg, NoticeLevel, StatusUpdate};
+use crate::workbench::models::Current;
 
 /// The context window assumed when neither the endpoint nor the engine's
 /// model registry knows the model's (shown as `~`, an estimate).
 pub const DEFAULT_CONTEXT_WINDOW: u64 = 128_000;
 
-/// A fetch of every endpoint's list running in the background.
-pub(super) type ModelFetch = JoinHandle<FetchResults>;
+/// The current endpoint and model of a session on `endpoint`, as the
+/// picker lists them first.
+pub(super) fn current<'a>(
+    endpoint: Option<&'a crate::endpoints::EndpointName>,
+    identity: &'a crate::session::SessionIdentity,
+) -> Current<'a> {
+    Current {
+        endpoint: endpoint.map_or("", crate::endpoints::EndpointName::as_str),
+        model: &identity.model,
+    }
+}
 
 impl Runner {
     /// The current endpoint and model, when an endpoint serves the session.
@@ -60,101 +61,22 @@ impl Runner {
             .map_or("", crate::endpoints::EndpointName::as_str)
     }
 
-    /// Start the background fetch unless one is running.
-    pub(super) fn ensure_fetch(&mut self, announce: bool) {
-        if self.model_fetch.is_some() {
-            return;
-        }
-        let endpoints = self
-            .runtime
-            .endpoints
-            .iter()
-            .filter(|e| e.has_key())
-            .cloned()
-            .collect();
-        let lister = std::sync::Arc::clone(&self.runtime.lister);
-        self.model_fetch = Some(tokio::spawn(async move { lister(endpoints).await }));
-        if announce {
-            self.notice(NoticeLevel::Info, "fetching the model lists…");
-        }
-    }
-
-    /// Answer [`crate::ui::Effect::RequestModelPicker`].
-    pub(super) fn request_model_picker(&mut self, refresh: bool) {
-        if refresh {
-            self.models = None;
-        }
-        if self.models.is_some() || self.runtime.endpoints.is_empty() {
-            self.send(Msg::ShowModelPicker(self.picker_groups()));
-            return;
-        }
-        self.picker_waiting = true;
-        self.ensure_fetch(true);
-    }
-
-    /// The picker: one group per endpoint, the current endpoint first with
-    /// the current model first.
-    pub(super) fn picker_groups(&self) -> Vec<ModelGroup> {
-        let endpoints = &self.runtime.endpoints;
-        let current_name = self.current_endpoint_name();
-        let current = endpoints.iter().filter(|e| e.name == current_name);
-        let others = endpoints.iter().filter(|e| e.name != current_name);
-        current
-            .chain(others)
-            .map(|endpoint| {
-                let listed = self.models.as_ref().and_then(|m| m.get(&endpoint.name));
-                let (models, warning) = match listed {
-                    Some(Ok(list)) => (list.clone(), None),
-                    Some(Err(err)) => (Vec::new(), Some(fetch_warning(err))),
-                    None if !endpoint.has_key() => (
-                        Vec::new(),
-                        Some("model listing needs an API key the TUI can read".to_string()),
-                    ),
-                    None => (Vec::new(), None),
-                };
-                let current = if endpoint.name == current_name {
-                    self.identity.model.as_str()
-                } else {
-                    ""
-                };
-                ModelGroup {
-                    endpoint: endpoint.name.clone(),
-                    dialect: endpoint.dialect,
-                    base_url: endpoint.base_url.clone(),
-                    models: with_current(current, models),
-                    warning,
-                }
-            })
-            .collect()
-    }
-
-    /// The background fetch finished: cache the lists and their prices,
-    /// refresh the current model's profile from its listing and the gauge,
-    /// open the picker and finish a `/model <id>` waiting for them. The
-    /// session is not rebuilt here (see the module docs).
+    /// The background fetch finished: the workbench caches the lists and
+    /// their prices and opens a waiting picker; here the current model's
+    /// profile is refreshed from its listing, the gauge follows, and a
+    /// `/model <id>` waiting for the lists is finished. The session is not
+    /// rebuilt here (see the module docs).
     pub(super) async fn model_fetch_finished(
         &mut self,
         joined: Result<FetchResults, tokio::task::JoinError>,
     ) {
-        self.model_fetch = None;
-        let cache = match joined {
-            Ok(results) => {
-                let (cache, prices) = ModelCache::from_results(results);
-                self.set_endpoint_prices(prices);
-                cache
-            }
-            Err(err) => {
-                tracing::warn!(error = %err, "list-models task failed");
-                ModelCache::failed(
-                    self.runtime.endpoints.names(),
-                    &Arc::new(ListModelsError::Task(err)),
-                )
-            }
-        };
-        let listed = cache
-            .entry(self.current_endpoint_name(), &self.identity.model)
+        let current = current(self.current_endpoint.as_ref(), &self.identity);
+        let pending = self.bench.lists_arrived(joined, current);
+        let listed = self
+            .bench
+            .models()
+            .and_then(|cache| cache.entry(self.current_endpoint_name(), &self.identity.model))
             .cloned();
-        self.models = Some(cache);
         if let Some(listed) = listed
             && let Err(err) = self
                 .runtime
@@ -164,10 +86,7 @@ impl Runner {
             tracing::warn!(error = %err, "cannot refresh the model profile from its listing");
         }
         self.push_context_window();
-        if std::mem::take(&mut self.picker_waiting) {
-            self.send(Msg::ShowModelPicker(self.picker_groups()));
-        }
-        if let Some(reference) = self.pending_set.take() {
+        if let Some(reference) = pending {
             if self.turn.is_active() {
                 self.notice(
                     NoticeLevel::Warn,
@@ -182,8 +101,8 @@ impl Runner {
     /// Resolve `/model <reference>` against the cached lists.
     fn resolve_ref(&self, reference: &str) -> Result<EndpointRef, ModelRefError> {
         let index = self
-            .models
-            .as_ref()
+            .bench
+            .models()
             .map(ModelCache::index)
             .unwrap_or_default();
         parse_model_ref(
@@ -209,9 +128,7 @@ impl Runner {
             );
             return;
         }
-        if self.models.is_none() && needs_lookup(&reference, self.runtime.endpoints.as_slice()) {
-            self.pending_set = Some(reference);
-            self.ensure_fetch(true);
+        if self.bench.defer_until_listed(&reference) {
             return;
         }
         let failed = |err: String| format!("model not changed: {err}");
@@ -230,8 +147,8 @@ impl Runner {
             }
         };
         let listed = self
-            .models
-            .as_ref()
+            .bench
+            .models()
             .and_then(|m| m.entry(choice.endpoint.as_str(), &choice.model));
         if let Err(err) = self
             .runtime

@@ -29,27 +29,27 @@
 //! The approval gate's side lives in [`approval`]: escalation dialogs,
 //! `/rules`, `/auto`, decision notices and classifier usage.
 //!
-//! `/model` and the picker live in [`models`], the price table and the cost
-//! record in [`cost`] and [`cost_store`].
+//! `/model` switching lives in [`models`] and the session's cost totals in
+//! [`cost`]; what attach mode does the same way (`!` shell mode,
+//! `/remember`, `/memory`, `/export`, prices and the cost record, the model
+//! lists and picker, unsent messages, the UI's construction) is the
+//! [`Workbench`]'s.
 //!
 //! Helpers ([`crate::mobs`]): their scoped events go to the UI as
 //! [`Msg::Scoped`] (nested blocks, per-helper usage) and the running set as
 //! [`StatusUpdate::Helpers`]; an interrupt cancels the session's helpers
 //! (see [`SessionHandle::interrupt`]).
 //!
-//! `/remember` and the compaction trigger (`/compact now`, model switches)
-//! live in [`context`], `!` shell mode in [`shell`].
+//! The compaction trigger (`/compact now`, model switches) and `/context`
+//! live in [`context`].
 
 pub(crate) mod approval;
 mod checklist;
 pub(crate) mod context;
 mod cost;
-pub mod cost_store;
-pub(crate) mod export;
 mod lifecycle;
 mod models;
 pub(crate) mod quit;
-pub(crate) mod shell;
 mod status;
 #[doc(hidden)]
 #[cfg(any(test, feature = "test-support"))]
@@ -57,7 +57,6 @@ pub mod testing;
 
 use std::collections::HashSet;
 use std::io::IsTerminal;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -70,7 +69,6 @@ use meerkat_core::{
     TurnTerminalOutcome,
 };
 use meerkat_runtime::completion::{CompletionOutcome, CompletionWaitError};
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
@@ -85,13 +83,12 @@ use crate::mobs::HelperUpdate;
 use crate::session::{Admission, Completion, SessionHandle, SessionIdentity, SessionOptions};
 use crate::tools::{FileDiff, FileToolDispatcher};
 use crate::ui::{
-    App, CompactionPolicy, CompactionTrigger, Effect, History, Msg, NoticeLevel, StatusInfo,
-    StatusUpdate, TurnFailure, TurnOutcome, TurnSummary, UiChannels, run_ui,
+    CompactionPolicy, CompactionTrigger, Effect, Msg, NoticeLevel, StatusInfo, StatusUpdate,
+    TurnFailure, TurnOutcome, TurnSummary, UiChannels,
 };
+use crate::workbench::{AppSetup, SavedUnsent, Workbench, WorkbenchParts, app};
 
 pub use lifecycle::{Start, blocks_from_messages, open_start};
-
-pub use quit::SavedUnsent;
 
 /// Capacity of the primary agent-event channel.
 const AGENT_EVENT_CAPACITY: usize = 256;
@@ -113,7 +110,7 @@ pub async fn run(args: Args, layers: bootstrap::Layers) -> Result<(), TuiError> 
         return Err(TuiError::NotATerminal);
     }
     let config = bootstrap::load_config(&layers.scope).await?;
-    init_logging(&layers.scope.realm_root())?;
+    app::init_logging(&layers.scope.realm_root())?;
     let runtime =
         bootstrap::bootstrap_with(layers, config, &args, BootstrapOptions::default()).await?;
     let (template, diff_rx) = Template::new(&runtime)?;
@@ -125,51 +122,20 @@ pub async fn run(args: Args, layers: bootstrap::Layers) -> Result<(), TuiError> 
     let mut status = StatusInfo::default();
     status.set_model(runtime.choice.endpoint.as_str(), &runtime.choice.model);
     status.set_session(&session.id().to_string());
-    let realm_root = runtime.scope.realm_root();
-    let history = History::load(realm_root.join("tui_history"));
-    let global_history = runtime
-        .scope
-        .global
-        .as_ref()
-        .map(|global| History::load(global.history_file()));
-    let mut app = App::new(status)
-        .with_compaction_policy(template.policy)
-        .with_helper_view(runtime.ui.helpers)
-        .with_checklist_view(runtime.ui.checklist)
-        .with_bell(runtime.ui.bell)
-        .with_shell_confined(runtime.confinement.requirement().is_some())
-        .with_workspace(runtime.scope.project_root.clone())
-        .with_history(history.entries().to_vec())
-        .with_global_history(
-            global_history
-                .as_ref()
-                .map(|h| h.entries().to_vec())
-                .unwrap_or_default(),
-        );
-    let histories: Vec<History> = std::iter::once(history).chain(global_history).collect();
-
     let (agent_tx, agent_rx) = mpsc::channel(AGENT_EVENT_CAPACITY);
     let (ui_tx, ui_rx) = mpsc::unbounded_channel::<Msg>();
     let (effect_tx, effect_rx) = mpsc::unbounded_channel::<Effect>();
-    if let Some(text) = quit::unsent_notice(&realm_root) {
-        let _ = ui_tx.send(Msg::Notice {
-            level: NoticeLevel::Warn,
-            text,
-        });
-    }
     // `--resume` without a reference opens the picker first.
     for effect in start.first_effects() {
         let _ = effect_tx.send(effect);
     }
-    // The prompt argument is typed into the editor and submitted, so the UI
-    // shows it and knows a turn runs.
-    if let Some(prompt) = args.prompt.clone() {
-        let mut first = app.update(Msg::Paste(prompt));
-        first.extend(app.update(Msg::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))));
-        for effect in first {
-            let _ = effect_tx.send(effect);
-        }
-    }
+    let opened = app::open(
+        &app_setup(&runtime),
+        status,
+        &runtime.scope,
+        args.prompt.clone(),
+        &effect_tx,
+    );
 
     let runner = Runner::new(RunnerParts {
         runtime,
@@ -182,50 +148,41 @@ pub async fn run(args: Args, layers: bootstrap::Layers) -> Result<(), TuiError> 
         diff_rx,
     })
     .await;
-    let runner_task = tokio::spawn(runner.run());
-    let ui_result = run_ui(
-        app,
+    // The UI going (and closing the effect channel) makes the runner
+    // interrupt the turn, save unsent messages and take the session off the
+    // runtime.
+    app::drive(
+        opened,
         UiChannels { agent_rx, ui_rx },
         effect_tx,
         args.mouse_capture(),
-        histories,
-        realm_root.join("drafts"),
+        tokio::spawn(runner.run()),
+        quit::SHUTDOWN_TIMEOUT,
     )
-    .await;
-    // The UI has gone (and closed the effect channel): the runner interrupts
-    // the turn, saves unsent messages and takes the session off the runtime.
-    match tokio::time::timeout(quit::SHUTDOWN_TIMEOUT, runner_task).await {
-        Ok(Ok(Some(saved))) => eprintln!(
-            "rkat-tui: {} unsent message(s) saved in {}",
-            saved.count,
-            saved.path.display()
-        ),
-        Ok(Ok(None)) => {}
-        Ok(Err(err)) => tracing::warn!(error = %err, "runner task failed"),
-        Err(_) => tracing::warn!("runner did not shut down in time"),
-    }
-    ui_result.map_err(TuiError::from)
+    .await
 }
 
-/// Route tracing to a log file inside the realm so nothing writes to the
-/// terminal while the UI owns it.
-pub(crate) fn init_logging(realm_root: &Path) -> Result<(), TuiError> {
-    let log_dir = realm_root.join("logs");
-    std::fs::create_dir_all(&log_dir).map_err(|e| TuiError::io("create log directory", e))?;
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_dir.join("rkat-tui.log"))
-        .map_err(|e| TuiError::io("open log file", e))?;
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    // A second init (tests) is not an error worth failing the run for.
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_ansi(false)
-        .with_writer(std::sync::Mutex::new(file))
-        .try_init();
-    Ok(())
+/// What the UI of the in-process runner takes from `runtime`'s
+/// configuration (attach mode reads the same from its layers).
+#[must_use]
+pub fn app_setup(runtime: &Runtime) -> AppSetup {
+    AppSetup {
+        compaction: compaction_policy(runtime),
+        ui: runtime.ui,
+        shell_confined: runtime.confinement.requirement().is_some(),
+        workspace: runtime.scope.project_root.clone(),
+    }
+}
+
+/// The context-compaction policy of `runtime`'s `tui.toml` layers.
+fn compaction_policy(runtime: &Runtime) -> CompactionPolicy {
+    runtime
+        .approval
+        .engine
+        .settings()
+        .compaction_policy(None)
+        .normalized()
+        .0
 }
 
 /// What every session build shares: the external tools (file and note
@@ -276,13 +233,7 @@ impl Template {
             None => gateway,
         };
         let gateway = gateway.build().map_err(TuiError::ToolGateway)?;
-        let policy = runtime
-            .approval
-            .engine
-            .settings()
-            .compaction_policy(None)
-            .normalized()
-            .0;
+        let policy = compaction_policy(runtime);
         Ok((
             Self {
                 external_tools: Arc::new(gateway),
@@ -547,34 +498,16 @@ pub(crate) struct Runner {
     /// Steered messages delivered in finished turns (quitting never saves
     /// them as unsent).
     delivered: Vec<PendingId>,
-    /// Messages the UI still held when the user quit ([`Effect::SaveUnsent`]).
-    held_unsent: Vec<(Option<PendingId>, String)>,
     /// The approval engine's channels and open escalations.
     approval: approval::ApprovalDesk,
     /// The endpoint the current session runs on, derived from its identity
     /// (`None`: no endpoint of this process serves its binding).
     current_endpoint: Option<EndpointName>,
-    /// Model lists of every endpoint, once fetched.
-    models: Option<crate::models::ModelCache>,
-    /// A model-list fetch running in the background.
-    model_fetch: Option<models::ModelFetch>,
-    /// The picker opens when the running fetch finishes.
-    picker_waiting: bool,
-    /// A `/model <id>` waiting for the lists.
-    pending_set: Option<String>,
-    /// Prices for the cost readout.
-    prices: Arc<crate::pricing::PriceTable>,
-    /// A community price-list refresh running in the background.
-    price_fetch: Option<cost::PriceFetch>,
+    /// `!` shell mode, `/remember`, `/memory`, `/export`, prices and the
+    /// cost record, the model lists and unsent messages.
+    bench: Workbench,
     /// Helper events and the running set.
     helper_updates: Option<mpsc::UnboundedReceiver<HelperUpdate>>,
-    /// `/memory`: the file being edited and its bytes before (`None`:
-    /// missing), to tell an edit from an unchanged close.
-    memory_before: Option<(PathBuf, Option<Vec<u8>>)>,
-    /// What runs `!` commands (the agent shell's confinement).
-    user_shell: Arc<crate::user_shell::UserShell>,
-    /// The `!` command running now.
-    shell_task: Option<shell::ShellTask>,
     /// The session told last that plan mode is on (its latest plan-mode
     /// note says "on"); `None` when no session is.
     plan_noted: Option<SessionId>,
@@ -604,17 +537,6 @@ impl Runner {
             runtime.approval.events.take(),
         );
         let notices = std::mem::take(&mut runtime.approval.notices);
-        let models = runtime.models.take();
-        let prices = Arc::new(runtime.pricing.table.clone());
-        let price_fetch = runtime.pricing.refresh_url().map(|url| {
-            cost::spawn_price_fetch(url.to_string(), runtime.pricing.cache_path.clone())
-        });
-        let helper_updates = runtime.helpers.as_ref().and_then(|h| h.take_updates());
-        let identity = SessionIdentity {
-            model: runtime.choice.model.clone(),
-            provider: runtime.choice.provider,
-            auth_binding: runtime.choice.auth_binding.clone(),
-        };
         let user_shell = Arc::new(crate::user_shell::UserShell::new(
             bootstrap::approval::resolved_shell_program(),
             runtime.scope.project_root.as_path(),
@@ -622,6 +544,21 @@ impl Runner {
             runtime.confinement.shell_env.as_ref(),
             runtime.user_shell_timeout,
         ));
+        let bench = Workbench::new(WorkbenchParts {
+            ui_tx: ui_tx.clone(),
+            scope: runtime.scope.clone(),
+            user_shell: Ok(user_shell),
+            pricing: runtime.pricing.clone(),
+            endpoints: runtime.endpoints.clone(),
+            lister: Arc::clone(&runtime.lister),
+            models: runtime.models.take(),
+        });
+        let helper_updates = runtime.helpers.as_ref().and_then(|h| h.take_updates());
+        let identity = SessionIdentity {
+            model: runtime.choice.model.clone(),
+            provider: runtime.choice.provider,
+            auth_binding: runtime.choice.auth_binding.clone(),
+        };
         let mut runner = Self {
             runtime,
             template,
@@ -639,20 +576,11 @@ impl Runner {
             tasks: JoinSet::new(),
             turn: Turn::default(),
             delivered: Vec::new(),
-            held_unsent: Vec::new(),
             approval: desk,
             current_endpoint: None,
-            models,
-            model_fetch: None,
-            picker_waiting: false,
-            pending_set: None,
-            prices,
-            price_fetch,
+            bench,
             helper_updates,
-            memory_before: None,
             failed_prompt: None,
-            user_shell,
-            shell_task: None,
             plan_noted: None,
         };
         runner.refresh_identity().await;
@@ -666,13 +594,13 @@ impl Runner {
         {
             runner.notice(NoticeLevel::Warn, notice);
         }
-        runner.push_prices();
+        runner.bench.start();
         runner.show_session(transcript.as_ref(), false);
         runner.refresh_checklist().await;
         // Fetch the lists in the background, for the picker, bare-id
         // lookups and endpoint prices.
-        if runner.models.is_none() && runner.runtime.endpoints.iter().any(|e| e.has_key()) {
-            runner.ensure_fetch(false);
+        if runner.bench.models().is_none() && runner.runtime.endpoints.iter().any(|e| e.has_key()) {
+            runner.bench.ensure_fetch(false);
         }
         runner.follow_events().await;
         // A resumed start session on another model than the start-up one.
@@ -701,8 +629,7 @@ impl Runner {
                 Some(request) = recv(&mut self.approval.escalations) => self.on_escalation(request),
                 Some(event) = recv_unbounded(&mut self.approval.events) => self.on_approval_event(event),
                 Some(update) = recv_unbounded(&mut self.helper_updates) => self.on_helper_update(update),
-                joined = join(&mut self.model_fetch) => self.model_fetch_finished(joined).await,
-                joined = join(&mut self.price_fetch) => self.price_fetch_finished(joined),
+                joined = self.bench.background() => self.model_fetch_finished(joined).await,
                 Some(diff) = self.diff_rx.recv() => self.send(Msg::Diff {
                     tool_use_id: diff.tool_use_id,
                     path: diff.path.display().to_string(),
@@ -777,15 +704,17 @@ impl Runner {
     async fn handle_effect(&mut self, effect: Effect) {
         match effect {
             Effect::StartTurn(text) => self.start_turn(&text).await,
-            Effect::RunShell { id, command } => self.run_shell(id, command),
-            Effect::CancelShell => self.cancel_shell(),
+            Effect::RunShell { id, command } => {
+                self.bench.run_shell(id, command, self.session.clone());
+            }
+            Effect::CancelShell => self.bench.cancel_shell(),
             Effect::Steer { id, text } => self.steer(id, text).await,
             // The UI keeps the text of `InterruptAndSend` and starts the next
             // turn itself once `TurnFinished` arrives.
             Effect::Interrupt | Effect::InterruptAndSend(_) => self.interrupt(),
             Effect::RecallQueued => self.recall_queued().await,
             Effect::Quit => {}
-            Effect::SaveUnsent(held) => self.held_unsent.extend(held),
+            Effect::SaveUnsent(held) => self.bench.hold_unsent(held),
             Effect::NewSession => self.new_session().await,
             Effect::ResumeSession(reference) => self.resume_session(&reference).await,
             Effect::RequestResumePicker => self.show_resume_picker().await,
@@ -799,24 +728,35 @@ impl Runner {
             Effect::ResumeAutoMode => self.resume_auto().await,
             Effect::SetChecklistView(view) => self.set_checklist_view(view),
             Effect::SetModel(reference) => self.set_model(reference).await,
-            Effect::RequestModelPicker { refresh } => self.request_model_picker(refresh),
-            Effect::Remember(text) => self.remember(&text).await,
+            Effect::RequestModelPicker { refresh } => {
+                let current = models::current(self.current_endpoint.as_ref(), &self.identity);
+                self.bench.request_model_picker(refresh, current);
+            }
+            Effect::Remember(text) => self.bench.remember(&text, &self.session).await,
             Effect::CompactNow => self.compact_now().await,
-            Effect::CostSnapshot(snapshot) => self.save_cost_snapshot(&snapshot),
+            Effect::CostSnapshot(snapshot) => {
+                self.bench
+                    .save_cost(&self.session.id().to_string(), &snapshot);
+            }
             Effect::TrustRealmRules => self.trust_realm_rules(),
             Effect::TrustProject => self.trust_project().await,
             // The UI loop repaints the terminal and suspends itself.
             // The UI loop runs these itself.
             Effect::Redraw | Effect::Suspend | Effect::ExternalEditor(_) => {}
-            Effect::OpenMemory(target) => self.open_memory(target),
-            Effect::MemoryEdited { target, path } => self.memory_edited(target, &path).await,
+            Effect::OpenMemory(target) => self.bench.open_memory(target),
+            Effect::MemoryEdited { target, path } => {
+                self.bench.memory_edited(target, &path, &self.session).await;
+            }
             Effect::ContextReport(header) => self.context_report(&header).await,
             Effect::StatusReport => self.status_report(),
             Effect::DaemonStop => self.notice(
                 NoticeLevel::Info,
                 "/daemon stop applies in attach mode (rkat-tui --attach); this TUI runs the agent itself",
             ),
-            Effect::Export { path, text } => self.export(path.as_deref(), &text),
+            Effect::Export { path, text } => {
+                self.bench
+                    .export(path.as_deref(), &text, &self.session.id().to_string());
+            }
         }
     }
 
@@ -1207,16 +1147,6 @@ impl Runner {
 async fn next_event(events: &mut Option<EventStream>) -> Option<EventEnvelope<AgentEvent>> {
     match events {
         Some(stream) => stream.next().await,
-        None => std::future::pending().await,
-    }
-}
-
-/// The result of an optional background task, or never.
-async fn join<T>(
-    task: &mut Option<tokio::task::JoinHandle<T>>,
-) -> Result<T, tokio::task::JoinError> {
-    match task {
-        Some(handle) => handle.await,
         None => std::future::pending().await,
     }
 }

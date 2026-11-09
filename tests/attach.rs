@@ -19,7 +19,8 @@ use rkat_tui::client::catchup::CursorFile;
 use rkat_tui::client::runner::NOT_AVAILABLE;
 use rkat_tui::client::sessions::REWIND_UNAVAILABLE;
 use rkat_tui::client::testing::spawn_attach_runner;
-use rkat_tui::ui::{Effect, Msg, StatusUpdate, TurnFailure};
+use rkat_tui::ui::{Effect, Msg, StatusInfo, StatusUpdate, TurnFailure};
+use rkat_tui::workbench::build_app;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_prompt_is_answered_and_rendered() {
@@ -474,7 +475,12 @@ async fn attach_mode_prices_the_cost_readout_and_names_an_unconfined_shell() {
         .unwrap();
     config.lister = no_lists();
     config.endpoint_file = endpoint_file_for(&ws.root);
-    let app = rkat_tui::client::build_app(&config, &[], &[]);
+    let app = build_app(
+        &rkat_tui::client::app_setup(&config),
+        StatusInfo::default(),
+        &[],
+        &[],
+    );
     assert!(app.shell_mode_hint().contains("unconfined"));
     let mut harness = spawn_attach_runner(config);
     let priced = within(async {
@@ -488,6 +494,58 @@ async fn attach_mode_prices_the_cost_readout_and_names_an_unconfined_shell() {
     assert!(priced.lookup("priced-model").is_some());
     harness.effects.send(Effect::Quit).unwrap();
     within(harness.task).await.unwrap();
+}
+
+/// The finding this guards: the two runners built their UI from two copies
+/// of the start-up code, which drifted. Both now go through
+/// `workbench::build_app`, each reading its `AppSetup` its own way (the
+/// runtime in process, the `tui.toml` layers in attach mode); for the same
+/// configuration the setups, and so the UIs, are the same.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn both_runners_build_the_same_app_for_the_same_config() {
+    let ws = Workspace::new();
+    let args = common::args_with(
+        &ws.root,
+        &[
+            "--set",
+            "ui.bell=false",
+            "--set",
+            "ui.helpers=\"expanded\"",
+            "--set",
+            "auto.compact=\"warn\"",
+            "--set",
+            "auto.compact_warn_percent=60",
+            // Below the warning: both clamp it up to 60.
+            "--set",
+            "auto.compact_auto_percent=50",
+        ],
+    );
+    let llm = ScriptedLlmClient::new(vec![]);
+    let mut runtime = rkat_tui::bootstrap::bootstrap(&args, Running::bootstrap(&llm))
+        .await
+        .unwrap();
+    let in_process = rkat_tui::runner::app_setup(&runtime);
+    runtime.release_realm_lease().await;
+    let config = rkat_tui::client::configure(&args, AttachMode::Existing)
+        .await
+        .unwrap();
+    let attach = rkat_tui::client::app_setup(&config);
+    assert_eq!(in_process, attach);
+    assert!(!attach.ui.bell);
+    assert_eq!(
+        (
+            attach.compaction.warn_percent,
+            attach.compaction.auto_percent
+        ),
+        (60, 60)
+    );
+    assert!(!attach.shell_confined, "the rig runs --no-confinement");
+    let (a, b) = (
+        build_app(&in_process, StatusInfo::default(), &[], &[]),
+        build_app(&attach, StatusInfo::default(), &[], &[]),
+    );
+    assert_eq!(a.compaction_policy(), b.compaction_policy());
+    assert_eq!(a.shell_mode_hint(), b.shell_mode_hint());
 }
 
 /// The finding this guards: attach mode dropped the messages the UI still

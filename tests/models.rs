@@ -24,8 +24,8 @@ use rkat_tui::bootstrap;
 use rkat_tui::endpoints::{ENDPOINT_REALM, Endpoint};
 use rkat_tui::models::{EndpointListing, ModelEntry, ModelLister, ModelSource};
 use rkat_tui::runner::Start;
-use rkat_tui::runner::cost_store::load_cost;
 use rkat_tui::ui::{Effect, Msg, SessionCost, StatusUpdate};
+use rkat_tui::workbench::cost_store::load_cost;
 
 /// An Anthropic-dialect gateway, defined on the command line.
 fn proxy_args() -> Vec<String> {

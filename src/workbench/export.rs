@@ -5,18 +5,13 @@
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::Runner;
+use super::Workbench;
 use crate::paths::{FileMode, write_atomic};
 use crate::ui::NoticeLevel;
 
 /// Where `/export` writes: `typed` (relative to `workspace`), or
 /// `<workspace>/.rkat/tui/export-<session>-<unix seconds>.txt`.
-pub(crate) fn export_path(
-    workspace: &Path,
-    typed: Option<&str>,
-    session: &str,
-    now: SystemTime,
-) -> PathBuf {
+fn export_path(workspace: &Path, typed: Option<&str>, session: &str, now: SystemTime) -> PathBuf {
     match typed.map(str::trim).filter(|t| !t.is_empty()) {
         Some(typed) => {
             let typed = match typed.strip_prefix("~/") {
@@ -41,12 +36,12 @@ pub(crate) fn export_path(
     }
 }
 
-impl Runner {
-    /// [`crate::ui::Effect::Export`]: write `text` and say where.
-    pub(super) fn export(&self, typed: Option<&str>, text: &str) {
-        let workspace = &self.runtime.scope.context_root;
-        let session = self.session.id().to_string();
-        let path = export_path(workspace, typed, &session, SystemTime::now());
+impl Workbench {
+    /// [`crate::ui::Effect::Export`]: write `text` and say where (the
+    /// default file name carries `session`).
+    pub fn export(&self, typed: Option<&str>, text: &str, session: &str) {
+        let workspace = &self.scope.context_root;
+        let path = export_path(workspace, typed, session, SystemTime::now());
         // The default lies under the workspace the TUI already trusts; a
         // typed path is the user's own choice, so only its file is checked.
         let trusted = if typed.is_some() {

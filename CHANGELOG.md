@@ -270,6 +270,12 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Changed
 
+- `/remember`, `/memory`, `/export`, `!` shell mode, the cost readout and
+  the model picker are one implementation shared by the in-process and the
+  attach runner; their notices now read the same in both modes ("the agent
+  reads it from its next model call … from the next session"), and in
+  attach mode a `!` command's output reaching the daemon is bounded by the
+  same timeout as every other daemon call.
 - The engine is now the crates.io Meerkat 0.9.11 release: every `meerkat-*`
   dependency names `version = "0.9.11"` and no git pin is left. The release
   (tag `v0.9.11`) contains the previous pin `bffcd8f98a`.

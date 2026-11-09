@@ -26,8 +26,8 @@ use rkat_tui::bootstrap::{self, ApprovalOverrides};
 use rkat_tui::endpoints::{ENDPOINT_REALM, Endpoint};
 use rkat_tui::models::{EndpointListing, ModelEntry, ModelLister, ModelSource};
 use rkat_tui::runner::Start;
-use rkat_tui::runner::cost_store::load_cost;
 use rkat_tui::ui::{App, ApprovalNotice, Effect, Msg, StatusInfo, StatusUpdate};
+use rkat_tui::workbench::cost_store::load_cost;
 use serde_json::{Value, json};
 
 /// A classifier that replays verdicts and records `(tool, transcript)`.

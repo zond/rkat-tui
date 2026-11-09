@@ -9,11 +9,12 @@ use meerkat_core::{AgentEvent, EventEnvelope, SessionId};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-pub use super::quit::{SavedUnsent, UNSENT_FILE};
 use super::{AGENT_EVENT_CAPACITY, Runner, RunnerParts, Start, Template, open_start};
 use crate::bootstrap::Runtime;
 use crate::error::TuiError;
 use crate::ui::{Effect, Msg};
+pub use crate::workbench::SavedUnsent;
+pub use crate::workbench::unsent::UNSENT_FILE;
 
 /// A running runner and the UI's ends of its channels.
 pub struct RunnerHarness {

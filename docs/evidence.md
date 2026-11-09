@@ -2797,3 +2797,24 @@ once; `attach_mode(args, &layers)` is pure, and `runner::run`,
 `user_shell` and `Daemon::start_with` take the `Layers`. Test:
 `attach::attach_mode_runs_on_the_layers_read_at_start` (and
 `attach::attach_true_in_a_users_tui_toml_selects_attach_mode`).
+
+### The workbench: what both runners do the same way
+
+The attach runner was a copy of the in-process runner's side effects (the
+`!` shell, `/remember`, `/memory`, `/export`, the price table and cost
+record, the model lists and picker, unsent messages, the UI's
+construction), and the copy had drifted (prices never pushed, the shell
+hint, unsent messages). They now live once in `src/workbench/`
+(`Workbench`, `build_app`); both runners route those effects to it and
+keep only what differs: the turn machinery (completion handles in
+process, the daemon's event stream in attach mode, deliberately not
+unified), session lifecycle, and what a model switch does. The agent is
+reached through one call, `AgentContext::append_system_context`,
+implemented by `SessionHandle` and by the attach link (`Linked`, bounded
+like every other daemon call). With the in-process runner due to go, the
+trait is the seam that collapses to the attach link alone; the workbench
+itself stays. `daemon` and `client` no longer import `crate::runner`
+except `client` for `blocks_from_messages` (transcript rendering, left
+for the runner's removal). Both runners read their `AppSetup` their own
+way (runtime vs layers); the test that they agree for the same
+configuration is `attach::both_runners_build_the_same_app_for_the_same_config`.

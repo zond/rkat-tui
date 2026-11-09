@@ -130,6 +130,11 @@ pub(crate) mod ui;
 pub mod user_shell;
 #[cfg(not(feature = "test-support"))]
 pub(crate) mod user_shell;
+// What both runners do the same way (see the module docs).
+#[cfg(feature = "test-support")]
+pub mod workbench;
+#[cfg(not(feature = "test-support"))]
+pub(crate) mod workbench;
 
 // `rkat-tui-mob`: the workspace's mob daemon (experimental). Internal
 // like the modules above; its binary enters through `run_daemon`. (Plain

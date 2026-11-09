@@ -269,7 +269,7 @@ impl Client {
     }
 
     /// Quit; where the messages the daemon never got were saved.
-    pub async fn quit(self) -> Option<rkat_tui::runner::SavedUnsent> {
+    pub async fn quit(self) -> Option<rkat_tui::workbench::SavedUnsent> {
         self.send(Effect::Quit);
         within(self.harness.task).await.unwrap()
     }
