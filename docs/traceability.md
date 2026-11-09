@@ -1,6 +1,6 @@
 # Requirement Traceability Matrix
 
-Updated after P6 and the review fix pass (2026-11-05). Paths are under `crates/meerkat-tui/` unless absolute.
+Updated after P6 and the review fix pass (2026-11-05). Paths are relative to the repository root.
 
 | REQ-ID | Phase | Implemented In | Runtime Caller | Test Name | Status |
 | --- | --- | --- | --- | --- | --- |

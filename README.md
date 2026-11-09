@@ -15,7 +15,7 @@ rkat-tui builds with plain `cargo` on Rust 1.97 (`rust-toolchain.toml` pins
 1.97.0):
 
 ```bash
-cargo install --path .     # installs the rkat-tui binary
+cargo install --path .     # installs rkat-tui and the rkat-tui-mob daemon
 cargo run -- "fix the failing test"   # or run it from the checkout
 ```
 
@@ -26,6 +26,13 @@ other platforms have no sandbox. `--no-confinement` runs the shell
 unsandboxed.
 
 ## Quick start
+
+Set a provider key first: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or
+`GEMINI_API_KEY` (also `GOOGLE_API_KEY`; each can be given as
+`RKAT_<NAME>` too). A key in the realm config or the `rkat` token store also
+works, and other servers are added with `--endpoint-def` or
+`[endpoints.<name>]` in `tui.toml` (see
+[Models, endpoints and cost](docs/manual.md#models-endpoints-and-cost)).
 
 ```bash
 rkat-tui "fix the failing test"
@@ -97,18 +104,8 @@ approval gate, with its helpers, `/new`, `/resume` and the model picker; see
 
 ## Status
 
-Early, and moving fast. The engine is Meerkat 0.9.11 from crates.io
-(`lukacf/meerkat`, the release of
-[lukacf/meerkat#2124](https://github.com/lukacf/meerkat/pull/2124)), which
-carries the fixes for the reports from the attach-mode work
-(#2102, #2112–#2117). It carries the three fixes the in-process harness
-needed:
-[lukacf/meerkat#2100](https://github.com/lukacf/meerkat/pull/2100) (the
-sandbox fixes the confined shell needs),
-[lukacf/meerkat#2104](https://github.com/lukacf/meerkat/pull/2104) (thinking
-on Anthropic model ids the catalog does not list) and
-[lukacf/meerkat#2105](https://github.com/lukacf/meerkat/pull/2105) (project
-hook trust judged over the bytes the engine reads).
+Early, and moving fast. The engine is the crates.io release of Meerkat
+0.9.11; attach mode and the `rkat-tui-mob` daemon are experimental.
 
 ## License
 

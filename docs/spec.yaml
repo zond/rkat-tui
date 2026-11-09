@@ -1,6 +1,5 @@
 project: "rkat-tui terminal coding harness"
 last_updated: "2026-11-05"
-source_doc: "docs/source-of-truth.md"
 
 types:
   - id: TYPE-001
@@ -21,7 +20,7 @@ types:
 
 contracts:
   - id: CONTRACT-001
-    text: "Surface: `rkat-tui` is a host binary of the `meerkat-tui` crate; it parses arguments before touching the terminal or runtime and runs its async main through `meerkat_runtime::host_stack::run_host` (no `#[tokio::main]`, no sized thread stacks)."
+    text: "Surface: `rkat-tui` is a host binary of the `rkat-tui` crate; it parses arguments before touching the terminal or runtime and runs its async main through `meerkat_runtime::host_stack::run_host` (no `#[tokio::main]`, no sized thread stacks)."
     priority: must
   - id: CONTRACT-002
     text: "Sessions run on the runtime-backed path: `PersistentSessionService` with `MeerkatMachine` bindings (`RuntimeBuildMode::SessionOwned`), agents built only by `AgentFactory` through a `SessionAgentBuilder` wrapper around `FactoryAgentBuilder`."

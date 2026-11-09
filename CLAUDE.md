@@ -79,7 +79,7 @@ shell (`src/user_shell.rs`) and attach mode's start-on-demand of the
 | `src/memory/` | Notes at user and workspace scope, memory tools |
 | `src/endpoints.rs`, `src/models.rs`, `src/pricing.rs`, `src/thinking.rs` | LLM endpoints, model listing, price table, the per-model `[thinking]` setting |
 | `tests/` | Integration tests over the internal modules through the `test-support` feature; `tests/common/mod.rs` holds the scripted LLM and the rig |
-| `docs/` | `testing.md` (protocol), `evidence.md` (what was built, why, with the probes and test names), `ux-parity.md` (Claude Code parity audit), `spec.yaml` / `checklist.yaml` / `traceability.md` (the RCT artifacts) |
+| `docs/` | `testing.md` (protocol), `evidence.md` (what was built, why, with the probes and test names), `ux-parity.md` (Claude Code parity audit), `spec.yaml` / `traceability.md` (the requirements and where each is implemented and tested) |
 
 The README is the front page; the full user manual is `docs/manual.md`.
 
