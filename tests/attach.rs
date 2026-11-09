@@ -21,6 +21,32 @@ use rkat_tui::client::testing::spawn_attach_runner;
 use rkat_tui::ui::{Effect, Msg, StatusInfo, StatusUpdate, TurnFailure};
 use rkat_tui::workbench::build_app;
 
+/// The command line's prompt is sent as the UI opens, before the first
+/// attach finished: it is held until the link is up, not failed as "not
+/// attached" (with attach mode the default, `rkat-tui "fix it"` relies
+/// on it).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_prompt_sent_before_the_attach_finished_is_held_until_it_did() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![Step::Text("answered")]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let mut config = rkat_tui::client::configure(&args_for(&ws.root), AttachMode::Existing)
+        .await
+        .unwrap();
+    config.lister = no_lists();
+    config.endpoint_files = vec![endpoint_file_for(&ws.root)];
+    let mut client = Client {
+        harness: spawn_attach_runner(config),
+        seen: Vec::new(),
+    };
+    client.send(Effect::StartTurn("from the command line".into()));
+    let outcome = client.turn_finished().await;
+    assert_eq!(outcome.result.expect("completed").text, "answered");
+    assert!(llm.recorded()[0].user().contains("from the command line"));
+    client.quit().await;
+    daemon.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_prompt_is_answered_and_rendered() {
     let ws = Workspace::new();

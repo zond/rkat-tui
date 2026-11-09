@@ -459,6 +459,13 @@ pub struct AttachRunner {
     /// What to say on the terminal once the UI is gone (how this client
     /// left the daemon).
     farewells: Farewells,
+    /// Prompts sent before the first attach finished (the command line's
+    /// prompt is sent as the UI opens): held until the first link is up
+    /// and no start-up switch runs, or the first connect failed; `None`
+    /// once released.
+    held: Option<Vec<Effect>>,
+    /// The first connect failed (held prompts then fail as not attached).
+    first_failed: bool,
 }
 
 /// Lines for the terminal after the UI closed ([`AttachRunner::farewells`]).
@@ -511,6 +518,8 @@ impl AttachRunner {
             bench,
             admitted: Vec::new(),
             farewells: Farewells::default(),
+            held: Some(Vec::new()),
+            first_failed: false,
         }
     }
 
@@ -535,9 +544,17 @@ impl AttachRunner {
         self.status(CONNECTING);
         self.connect();
         loop {
+            for effect in self.releasable() {
+                self.handle_effect(effect).await;
+            }
             tokio::select! {
                 effect = self.effect_rx.recv() => match effect {
                     None | Some(Effect::Quit) => break,
+                    Some(effect @ Effect::StartTurn(_)) if self.held.is_some() => {
+                        if let Some(held) = &mut self.held {
+                            held.push(effect);
+                        }
+                    }
                     Some(effect) => self.handle_effect(effect).await,
                 },
                 note = next_notification(&mut self.link) => match note {
@@ -565,6 +582,17 @@ impl AttachRunner {
 
     fn send(&self, msg: Msg) {
         let _ = self.ui_tx.send(msg);
+    }
+
+    /// The held prompts, once they may go: the first link is up and no
+    /// start-up switch runs, or the first connect failed.
+    fn releasable(&mut self) -> Vec<Effect> {
+        let ready = self.first_failed || (self.link.is_some() && !self.switching);
+        if ready {
+            self.held.take().unwrap_or_default()
+        } else {
+            Vec::new()
+        }
     }
 
     /// The channel a background task started now reports on.
@@ -668,6 +696,7 @@ impl AttachRunner {
         let established = match joined {
             Ok(Ok(established)) => established,
             Ok(Err(err)) => {
+                self.first_failed = true;
                 self.send(Msg::Status(StatusUpdate::Attach(Some("detached".into()))));
                 self.notice(
                     NoticeLevel::Error,
@@ -676,6 +705,7 @@ impl AttachRunner {
                 return;
             }
             Err(err) => {
+                self.first_failed = true;
                 tracing::warn!(error = %err, "the connect task failed");
                 return;
             }

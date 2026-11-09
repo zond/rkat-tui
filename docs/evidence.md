@@ -3156,3 +3156,16 @@ would only have been a synonym, so the default is `Auto` and the docs
 say so. The attach notice is informational now (`ATTACH_NOTICE`, one
 sentence on what the daemon is) instead of the experimental warning.
 Test: `attach::attach_mode_is_the_default_and_a_users_tui_toml_can_turn_it_off`.
+
+### The command line's prompt waits for the first attach
+
+Found while flipping the default: `app::open` submits the prompt
+argument as the UI opens, so its `Effect::StartTurn` reached the attach
+runner before the first connect finished, and `start_turn` failed it as
+"not attached" (it had with `--attach "…"` since attach mode began; with
+attach the default it would have hit every `rkat-tui "fix it"`). The
+runner now holds `StartTurn` effects until the first link is up and no
+start-up switch (item 3's `--resume <ref>`) runs, or the first connect
+failed (then they fail as before, with the connect error shown). Test:
+`attach::a_prompt_sent_before_the_attach_finished_is_held_until_it_did`
+(fails without the hold).

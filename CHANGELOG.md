@@ -400,6 +400,8 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Fixed
 
+- Attach mode: a prompt on the command line (`rkat-tui "fix it"`) is
+  held until the TUI has attached instead of failing as "not attached".
 - Attach mode: after a `/quit` the daemon never confirmed, a connect to
   its address that timed out or failed with a local error no longer
   counts as proof it stopped; only a refused connect, its process gone or
