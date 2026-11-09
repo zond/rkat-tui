@@ -8,7 +8,7 @@
 //! is the stream handed to `RpcServer`, through [`proxy`]: the daemon's own
 //! `rkat/*` methods ([`super::local`]) are answered there, each in a task of
 //! its own (a slow `rkat/resume` or `rkat/conversations` must not hold back
-//! the client's next lines: its Esc, its `approval/decide`), and every other
+//! the client's next lines: its Esc, its `decision/decide`), and every other
 //! line goes to the engine (after [`super::local::Local::observe`] read it).
 //!
 //! The engine's own TCP connection and request admission

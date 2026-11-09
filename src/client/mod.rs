@@ -9,9 +9,10 @@
 //! - [`remote`]: the orchestrator member through the engine's own methods
 //!   (`mob/member_send`, `mob/turn_start`, `mob/stream_open`,
 //!   `events/list_since`, `mob/stop_member_run`, `mob/force_cancel`).
-//! - [`catchup`]: the replay/live de-duplication rule and the per-workspace
-//!   cursor.
-//! - [`approvals`]: the approval dialogs over the daemon's records
+//! - [`catchup`]: the stream cursor `{epoch, seq}` the client reattaches
+//!   with, the once-only rule, and the per-workspace cursor file.
+//! - [`approvals`]: the approval dialogs: the daemon's pushed decisions
+//!   (`decision/notice`, `decision/decide`), or an earlier daemon's records
 //!   (`approval/list`, `approval/decide`).
 //! - [`runner`]: the loop between the UI and the daemon. It serves the same
 //!   [`Effect`]/[`Msg`] contract as the in-process runner, so the UI is the

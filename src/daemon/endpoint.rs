@@ -13,7 +13,7 @@
 //! replaces it when nothing accepts at its address.
 //!
 //! **The token is the whole access control.** Anyone who reads it can
-//! attach, answer `approval/decide` and change the permission mode and the
+//! attach, answer `decision/decide` and change the permission mode and the
 //! rules; nothing on a loopback TCP connection says which program sent it.
 //! So the file lives in the user's state directory (`$XDG_STATE_HOME`, else
 //! `~/.local/state`), under a key derived from the canonical workspace path
