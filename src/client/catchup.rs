@@ -1,19 +1,26 @@
-//! Catch-up after an attach or a reconnect, and the one rule that keeps the
-//! replay and the live stream from showing an event twice.
+//! Reattach through the member stream's cursor, and the one rule that keeps
+//! an event from showing twice.
 //!
-//! Every event of the orchestrator's session carries the session's durable
-//! sequence: the live stream's envelope `seq` (not the notification's
-//! per-stream `sequence`) and the replay's `cursor.sequence` are the same
-//! number for the same event, and it keeps counting across daemon restarts
-//! (probed, see `docs/evidence.md`). So the client keeps one high-water mark
-//! per session ([`Mark`]): an event is shown only when its sequence is above
-//! the mark, which then moves to it. The live stream is opened *before* the
-//! replay is read, so nothing falls in the gap between them; whatever the
-//! two deliver twice is dropped by the mark, whichever arrives first.
+//! Every member `mob/stream_event` names the sequence space (`epoch`) of its
+//! envelope's `seq`, and `mob/stream_open` takes a cursor `{epoch, seq}`:
+//! the stream replays the events the member still retains after it, then is
+//! live, with no gap and no duplicate between the two. The client keeps the
+//! last position it showed per session ([`Mark`]: session, epoch, sequence)
+//! and reattaches with it. An event is shown only when it is past the mark
+//! (a later sequence of the same epoch, or any event of another epoch, whose
+//! sequences may restart), which then moves to it.
+//!
+//! A cursor of another epoch (the daemon restarted: the member's events
+//! live in a new space, and the old space's tail since the client left is
+//! gone) replays from the space's earliest retained event, which is not the
+//! start of the conversation. The client therefore does not resume a cursor
+//! of a daemon that is not the one it reads from the endpoint file (the
+//! cursor records a digest of the daemon's token, [`daemon_id`]), nor one that has no epoch yet, nor one
+//! the stream reports truncated: it renders the conversation from its start
+//! (its committed transcript) and follows the live stream from there.
 //!
 //! The mark is saved per workspace in `<workspace>/.rkat/tui/attach.cursor`
-//! ([`CursorFile`]) after every event shown, so a later `rkat-tui --attach`
-//! replays only what this workspace's client has not shown yet.
+//! ([`CursorFile`]) after every run end and on detach.
 
 use std::path::{Path, PathBuf};
 
@@ -27,8 +34,28 @@ pub const CURSOR_NAME: &str = "attach.cursor";
 pub struct Cursor {
     /// The orchestrator's session.
     pub session_id: String,
-    /// The durable sequence of the last event shown.
+    /// The sequence of the last event shown.
     pub sequence: u64,
+    /// The sequence space of `sequence` (the stream's `epoch`); `None`
+    /// before the first event of a stream named one (a cursor of an earlier
+    /// version).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epoch: Option<String>,
+    /// The daemon the events came from ([`daemon_id`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daemon: Option<String>,
+}
+
+impl Cursor {
+    /// The stream position to resume from, when this cursor can resume the
+    /// stream of `session` served by the daemon `daemon` ([`daemon_id`]):
+    /// its epoch is known and the daemon is the one that numbered it.
+    #[must_use]
+    pub fn resumable(&self, session: &str, daemon: &str) -> Option<(String, u64)> {
+        (self.session_id == session && self.daemon.as_deref() == Some(daemon))
+            .then(|| self.epoch.clone().map(|epoch| (epoch, self.sequence)))
+            .flatten()
+    }
 }
 
 /// The cursor file of a workspace.
@@ -84,6 +111,7 @@ impl CursorFile {
 pub struct Mark {
     session_id: String,
     sequence: u64,
+    epoch: Option<String>,
 }
 
 impl Mark {
@@ -91,12 +119,22 @@ impl Mark {
     /// session, else nothing shown yet.
     #[must_use]
     pub fn resume(session_id: &str, saved: Option<&Cursor>) -> Self {
-        let sequence = saved
-            .filter(|cursor| cursor.session_id == session_id)
-            .map_or(0, |cursor| cursor.sequence);
+        let saved = saved.filter(|cursor| cursor.session_id == session_id);
+        Self {
+            session_id: session_id.to_string(),
+            sequence: saved.map_or(0, |cursor| cursor.sequence),
+            epoch: saved.and_then(|cursor| cursor.epoch.clone()),
+        }
+    }
+
+    /// The mark after a render from the conversation's start whose last
+    /// event is `sequence` (in a space not named yet).
+    #[must_use]
+    pub fn rendered(session_id: &str, sequence: u64) -> Self {
         Self {
             session_id: session_id.to_string(),
             sequence,
+            epoch: None,
         }
     }
 
@@ -112,24 +150,62 @@ impl Mark {
         self.sequence
     }
 
-    /// Whether the event with `sequence` is new; if so the mark moves to it.
-    pub fn admit(&mut self, sequence: u64) -> bool {
-        if sequence > self.sequence {
+    /// The sequence space of the mark, once an event named one.
+    #[must_use]
+    pub fn epoch(&self) -> Option<&str> {
+        self.epoch.as_deref()
+    }
+
+    /// Whether the event with `sequence` of space `epoch` is new; if so the
+    /// mark moves to it. An event of another space than the mark's is new
+    /// (its sequences may restart); an event that names no space is judged
+    /// by its sequence.
+    pub fn admit(&mut self, epoch: Option<&str>, sequence: u64) -> bool {
+        let other_space =
+            matches!((self.epoch.as_deref(), epoch), (Some(mine), Some(its)) if mine != its);
+        if other_space || sequence > self.sequence {
             self.sequence = sequence;
+            if let Some(epoch) = epoch {
+                self.epoch = Some(epoch.to_string());
+            }
             true
         } else {
+            if self.epoch.is_none()
+                && let Some(epoch) = epoch
+            {
+                self.epoch = Some(epoch.to_string());
+            }
             false
         }
     }
 
-    /// The cursor to save.
+    /// The cursor to save, for events served by the daemon `daemon`.
     #[must_use]
-    pub fn cursor(&self) -> Cursor {
+    pub fn cursor(&self, daemon: Option<&str>) -> Cursor {
         Cursor {
             session_id: self.session_id.clone(),
             sequence: self.sequence,
+            epoch: self.epoch.clone(),
+            daemon: daemon.map(str::to_string),
         }
     }
+}
+
+/// Which daemon a cursor's events came from: the first 16 hex digits of
+/// the SHA-256 of its attach token (each daemon draws its own; the token
+/// itself never goes into the workspace, where the agent's shell can read
+/// it).
+#[must_use]
+pub fn daemon_id(token: &str) -> String {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(token.as_bytes()).iter().take(8).fold(
+        String::with_capacity(16),
+        |mut hex, byte| {
+            use std::fmt::Write as _;
+            let _ = write!(hex, "{byte:02x}");
+            hex
+        },
+    )
 }
 
 #[cfg(test)]
@@ -151,7 +227,7 @@ mod tests {
             .chain(&replay)
             .chain(live.iter().skip(1))
         {
-            if mark.admit(*seq) {
+            if mark.admit(None, *seq) {
                 shown.push(*seq);
             }
         }
@@ -164,7 +240,7 @@ mod tests {
         let mut mark = Mark::resume("s", None);
         let shown: Vec<u64> = [1, 2, 3, 2, 3, 4]
             .into_iter()
-            .filter(|seq| mark.admit(*seq))
+            .filter(|seq| mark.admit(None, *seq))
             .collect();
         assert_eq!(shown, vec![1, 2, 3, 4]);
     }
@@ -175,8 +251,8 @@ mod tests {
         let file = CursorFile::of_workspace(dir.path());
         assert_eq!(file.load(), None);
         let mut mark = Mark::resume("s1", None);
-        assert!(mark.admit(7));
-        file.save(&mark.cursor());
+        assert!(mark.admit(Some("e1"), 7));
+        file.save(&mark.cursor(Some("d1")));
         assert_eq!(
             file.path(),
             dir.path().join(".rkat").join("tui").join(CURSOR_NAME)
@@ -186,5 +262,28 @@ mod tests {
         // Another session (the daemon's orchestrator was replaced) starts
         // from the beginning.
         assert_eq!(Mark::resume("s2", Some(&saved)).sequence(), 0);
+        // The cursor resumes the same daemon's stream of that session only.
+        assert_eq!(saved.resumable("s1", "d1"), Some(("e1".to_string(), 7)));
+        assert_eq!(saved.resumable("s1", "d2"), None, "a restarted daemon");
+        assert_eq!(saved.resumable("s2", "d1"), None);
+        // A cursor of an earlier version (no epoch) does not resume.
+        let old: Cursor = serde_json::from_str(r#"{"session_id":"s1","sequence":7}"#).unwrap();
+        assert_eq!(old.resumable("s1", "d1"), None);
+        assert_ne!(daemon_id("token-a"), daemon_id("token-b"));
+        assert_eq!(daemon_id("token-a").len(), 16);
+    }
+
+    #[test]
+    fn another_epoch_is_a_new_space_and_the_mark_follows_it() {
+        let mut mark = Mark::rendered("s", 10);
+        // The render's last event; then the live stream names its space.
+        assert!(!mark.admit(Some("e1"), 10));
+        assert_eq!(mark.epoch(), Some("e1"));
+        assert!(mark.admit(Some("e1"), 11));
+        assert!(!mark.admit(Some("e1"), 11), "once");
+        // A new space restarts its sequences: still new.
+        assert!(mark.admit(Some("e2"), 1));
+        assert_eq!((mark.epoch(), mark.sequence()), (Some("e2"), 1));
+        assert!(!mark.admit(Some("e2"), 1));
     }
 }

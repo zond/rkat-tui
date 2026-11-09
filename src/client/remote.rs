@@ -8,8 +8,10 @@
 //!   ends, and the run is cancelled if this connection closes first);
 //! - interrupt: `mob/stop_member_run` for the run the stream reported, then
 //!   `mob/force_cancel`;
-//! - events: `mob/stream_open` (live) and `events/list_since` on the
-//!   member's session (catch-up), deserialised with the engine's types.
+//! - events: `mob/stream_open`, resumed after the last event shown with its
+//!   `{epoch, seq}` cursor; `events/list_since` on the member's session only
+//!   to render a conversation from its start (its last sequence and gauge)
+//!   and for a helper's backfill; deserialised with the engine's types.
 
 use meerkat_contracts::{
     EventReplayScope, EventsListSinceResult, EventsSnapshotBody, EventsSnapshotResult,
@@ -82,33 +84,52 @@ pub async fn identity(
     }
 }
 
-/// Open the orchestrator's live event stream; returns its id.
+/// Open the orchestrator's event stream; returns its id. Live, or with
+/// `cursor` (`(epoch, seq)` of the last event shown) the events the member
+/// still retains after it first: of another epoch, from the earliest one
+/// the member retains.
 ///
 /// # Errors
 ///
 /// The call's error, or [`ClientError::Decode`].
-pub async fn open_stream(connection: &Connection) -> Result<String, ClientError> {
+pub async fn open_stream(
+    connection: &Connection,
+    cursor: Option<(&str, u64)>,
+) -> Result<String, ClientError> {
+    let mut params = member();
+    if let Some((epoch, seq)) = cursor {
+        params["cursor"] = json!(meerkat_contracts::MobStreamCursor {
+            epoch: epoch.to_string(),
+            seq,
+        });
+    }
     let opened: meerkat_contracts::MobStreamOpenResult = decode(
         "mob/stream_open",
-        connection.call("mob/stream_open", member()).await?,
+        connection.call("mob/stream_open", params).await?,
     )?;
     Ok(opened.stream_id)
 }
 
-/// The event a `mob/stream_event` notification of `stream` carries.
+/// The event a `mob/stream_event` notification of `stream` carries, and
+/// the sequence space (`epoch`) of its `seq`.
 #[must_use]
 pub fn stream_event(
     notification: &Notification,
     stream: &str,
-) -> Option<EventEnvelope<AgentEvent>> {
+) -> Option<(EventEnvelope<AgentEvent>, Option<String>)> {
     if notification.method != STREAM_EVENT
         || notification.params.get("stream_id").and_then(Value::as_str) != Some(stream)
     {
         return None;
     }
     let event = notification.params.get("event")?.clone();
+    let epoch = notification
+        .params
+        .get("epoch")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     match serde_json::from_value(event) {
-        Ok(envelope) => Some(envelope),
+        Ok(envelope) => Some((envelope, epoch)),
         Err(err) => {
             tracing::warn!(error = %err, "a stream event this version cannot read");
             None
@@ -364,7 +385,7 @@ pub async fn reopen_stream(connection: &Connection, old: &str) -> Result<String,
     if let Err(err) = close_stream(connection, old).await {
         tracing::debug!(error = %err, "the old stream did not close");
     }
-    open_stream(connection).await
+    open_stream(connection, None).await
 }
 
 /// The mobs the daemon hosts.

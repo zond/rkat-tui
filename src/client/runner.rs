@@ -91,12 +91,6 @@ pub const STOP_GRACE: Duration = Duration::from_secs(1);
 /// before the UI is given it back.
 pub const INTERRUPT_DEADLINE: Duration = Duration::from_secs(10);
 
-/// How often the durable events are read again while a turn runs and the
-/// live stream is quiet, and once after every attach: the replay
-/// projection can lag the live stream, so events published just before
-/// the stream opened may be in neither yet.
-pub const CATCH_UP_EVERY: Duration = Duration::from_millis(500);
-
 /// Bound on the calls that answer at once (sends, stops).
 const CALL_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -194,9 +188,11 @@ struct Link {
 /// A link and what the catch-up read on it.
 struct Established {
     link: Link,
-    /// The mark the replay started from.
+    /// Where the stream resumes (or the render from the start ended).
     mark: Mark,
-    replay: Vec<EventEnvelope<AgentEvent>>,
+    /// The conversation rendered from its start, when the stream could not
+    /// resume from the saved cursor.
+    reset: Option<Vec<Block>>,
     identity: Option<(String, String)>,
     /// The session's total usage `(input, output)`, read after the replay.
     usage: Option<(u64, u64)>,
@@ -215,8 +211,6 @@ enum Report {
     TurnStart(ClientError),
     /// A stop or a cancel failed.
     Interrupt(String),
-    /// A catch-up read (on the session it was read for).
-    Replayed(SessionId, Vec<EventEnvelope<AgentEvent>>),
     /// The pending approval records, and those shown before that ended.
     Approvals {
         session: SessionId,
@@ -253,6 +247,8 @@ enum Report {
         own: Option<bool>,
         warning: Option<String>,
     },
+    /// The conversation read again from its start ([`AttachRunner::rerender`]).
+    Rerendered(Result<Adopted, String>),
     /// The resume picker's rows.
     Picker(Result<Vec<(String, String)>, String>),
     /// A notice to show.
@@ -344,10 +340,10 @@ pub struct AttachRunner {
     model: Option<(String, String)>,
     /// `/daemon stop` was sent: a lost connection is not re-made.
     stopping: bool,
-    /// When the durable events are read again ([`CATCH_UP_EVERY`]).
-    catch_up_at: Option<Instant>,
-    /// A catch-up read is running.
-    catching_up: bool,
+    /// The daemon the events shown came from (the cursor names it, see
+    /// [`super::catchup::daemon_id`]: a restarted daemon numbers its events
+    /// in a new space).
+    daemon_id_seen: Option<String>,
     /// The approval dialogs shown.
     approvals: Approvals,
     /// When the pending approvals are listed next.
@@ -411,8 +407,7 @@ impl AttachRunner {
             pending_model: None,
             model: None,
             stopping: false,
-            catch_up_at: None,
-            catching_up: false,
+            daemon_id_seen: None,
             approvals: Approvals::default(),
             approvals_at: None,
             listing_approvals: false,
@@ -456,7 +451,6 @@ impl AttachRunner {
                 }
                 Some(report) = self.reports_rx.recv() => self.on_report(report),
                 () = sleep_until(self.turn.deadline()) => self.on_deadline(),
-                () = sleep_until(self.catch_up_at) => self.catch_up(),
                 () = sleep_until(self.approvals_at) => self.list_approvals(),
                 () = sleep_until(self.discover_at) => self.discover(),
                 () = sleep_until(self.session_check_at) => self.check_session(),
@@ -493,7 +487,7 @@ impl AttachRunner {
         let saved = self
             .mark
             .as_ref()
-            .map(Mark::cursor)
+            .map(|mark| mark.cursor(self.daemon_id_seen.as_deref()))
             .or_else(|| self.config.cursor.load());
         let ui_tx = self.ui_tx.clone();
         let task = if std::mem::take(&mut self.first_connect) {
@@ -587,19 +581,23 @@ impl AttachRunner {
         let Established {
             link,
             mark,
-            replay,
+            reset,
             identity,
             usage,
             queued,
             context,
         } = established;
         let address = link.endpoint.address;
+        self.daemon_id_seen = Some(super::catchup::daemon_id(&link.endpoint.token));
         let session = link.session.to_string();
         let fresh = self.mark.is_none();
-        if self
-            .mark
-            .as_ref()
-            .is_none_or(|current| current.session_id() != mark.session_id())
+        // A render from the start replaces what was shown; a resumed
+        // stream goes on from the mark the cursor was saved from.
+        if reset.is_some()
+            || self
+                .mark
+                .as_ref()
+                .is_none_or(|current| current.session_id() != mark.session_id())
         {
             self.mark = Some(mark);
         }
@@ -631,8 +629,8 @@ impl AttachRunner {
         }
         self.orphans.clear();
         self.link = Some(link);
-        for envelope in replay {
-            self.on_event(envelope);
+        if let Some(blocks) = reset {
+            self.send(Msg::ResetTranscript(blocks));
         }
         // The gauge, as a switch seeds it: the replay since the cursor may
         // hold no turn end although the session has a context.
@@ -654,7 +652,6 @@ impl AttachRunner {
             self.send(Msg::Status(StatusUpdate::Tokens { input, output }));
         }
         let now = Instant::now();
-        self.catch_up_at = Some(now + CATCH_UP_EVERY);
         if !self.pushes_decisions() {
             self.approvals_at = Some(now);
         }
@@ -744,35 +741,6 @@ impl AttachRunner {
         }));
     }
 
-    /// Read the durable events after the mark again (see
-    /// [`CATCH_UP_EVERY`]); again later while a turn runs.
-    fn catch_up(&mut self) {
-        self.catch_up_at = None;
-        let (Some(link), Some(mark)) = (&self.link, &self.mark) else {
-            return;
-        };
-        if self.catching_up {
-            return;
-        }
-        self.catching_up = true;
-        let connection = Arc::clone(&link.connection);
-        let session = link.session.clone();
-        let after = mark.sequence();
-        let reports = self.reports_tx.clone();
-        tokio::spawn(async move {
-            let events = match tokio::time::timeout(
-                CALL_TIMEOUT,
-                remote::replay(&connection, &session, after),
-            )
-            .await
-            {
-                Ok(Ok((events, _))) => events,
-                _ => Vec::new(),
-            };
-            let _ = reports.send(Report::Replayed(session, events));
-        });
-    }
-
     /// The connection is gone: re-make it (unless the daemon was told to
     /// stop). A running turn goes on in the daemon; the catch-up shows it.
     fn lost(&mut self) {
@@ -826,8 +794,8 @@ impl AttachRunner {
             }
             return;
         }
-        if let Some(envelope) = remote::stream_event(note, &link.stream) {
-            self.on_event(envelope);
+        if let Some((envelope, epoch)) = remote::stream_event(note, &link.stream) {
+            self.on_event(envelope, epoch.as_deref());
             return;
         }
         if let Some(stream) = remote::stream_end(note) {
@@ -1001,15 +969,29 @@ impl AttachRunner {
         if let Some(mark) = &self.mark
             && mark.sequence() > 0
         {
-            self.config.cursor.save(&mark.cursor());
+            self.config
+                .cursor
+                .save(&mark.cursor(self.daemon_id_seen.as_deref()));
         }
     }
 
-    /// One of the member's events (live or replayed): shown once
-    /// ([`Mark`]), and what it means for the turn.
-    fn on_event(&mut self, envelope: EventEnvelope<AgentEvent>) {
+    /// One of the member's events (live, or replayed after the cursor; of
+    /// the space `epoch`): shown once ([`Mark`]), and what it means for the
+    /// turn. A stream that reports it lost events the member no longer
+    /// retains (the cursor was older than its window) is rendered again
+    /// from the conversation's start.
+    fn on_event(&mut self, envelope: EventEnvelope<AgentEvent>, epoch: Option<&str>) {
+        if matches!(envelope.payload, AgentEvent::StreamTruncated { .. }) {
+            if let Some(link) = &self.link
+                && !self.switching
+            {
+                let session = link.session.clone();
+                self.rerender(session);
+            }
+            return;
+        }
         if let Some(mark) = &mut self.mark
-            && !mark.admit(envelope.seq)
+            && !mark.admit(epoch, envelope.seq)
         {
             return;
         }
@@ -1105,9 +1087,6 @@ impl AttachRunner {
             _ => {}
         }
         self.send(Msg::Agent(envelope));
-        if self.turn.active && self.link.is_some() {
-            self.catch_up_at = Some(Instant::now() + CATCH_UP_EVERY);
-        }
         if terminal {
             self.save_cursor();
             if self.turn.active && self.turn.open_runs.is_empty() {
@@ -1161,21 +1140,6 @@ impl AttachRunner {
             }
             Report::Interrupt(err) => {
                 self.notice(NoticeLevel::Error, format!("interrupt incomplete: {err}"));
-            }
-            Report::Replayed(session, events) => {
-                self.catching_up = false;
-                if self
-                    .link
-                    .as_ref()
-                    .is_some_and(|link| link.session == session)
-                {
-                    for envelope in events {
-                        self.on_event(envelope);
-                    }
-                }
-                if self.turn.active && self.link.is_some() && self.catch_up_at.is_none() {
-                    self.catch_up_at = Some(Instant::now() + CATCH_UP_EVERY);
-                }
             }
             Report::Approvals {
                 session,
@@ -1271,7 +1235,7 @@ impl AttachRunner {
             } => {
                 self.switching = false;
                 match result {
-                    Ok(adopted) => self.adopted(adopted, own, warning),
+                    Ok(adopted) => self.adopted(adopted, own, warning, false),
                     Err(why) if own.is_some() => self.notice(
                         NoticeLevel::Error,
                         format!("could not switch conversations: {why}"),
@@ -1279,6 +1243,16 @@ impl AttachRunner {
                     Err(why) => {
                         tracing::warn!(%why, "cannot show the orchestrator's new conversation");
                     }
+                }
+            }
+            Report::Rerendered(result) => {
+                self.switching = false;
+                match result {
+                    Ok(adopted) => self.adopted(adopted, None, None, true),
+                    Err(why) => self.notice(
+                        NoticeLevel::Warn,
+                        format!("the stream lost events and the conversation could not be read again: {why}"),
+                    ),
                 }
             }
             Report::Picker(Ok(items)) => self.send(Msg::ShowResumePicker(items)),
@@ -1667,7 +1641,6 @@ impl AttachRunner {
             active: true,
             ..Turn::default()
         };
-        self.catch_up_at = Some(Instant::now() + CATCH_UP_EVERY);
         let text = if text.contains('@') {
             crate::mentions::expand_mentions(text, &self.config.scope.project_root).text
         } else {
@@ -1987,9 +1960,31 @@ impl AttachRunner {
         });
     }
 
+    /// Show the conversation `session` from its start again (the stream
+    /// lost events): the stream reopened live, the committed transcript.
+    fn rerender(&mut self, session: SessionId) {
+        let Some(link) = &self.link else {
+            return;
+        };
+        self.switching = true;
+        let connection = Arc::clone(&link.connection);
+        let stream = link.stream.clone();
+        let reports = self.reports_tx.clone();
+        tokio::spawn(async move {
+            let result = adopt(&connection, &stream, session).await;
+            let _ = reports.send(Report::Rerendered(result));
+        });
+    }
+
     /// The orchestrator runs as `adopted.session` now: follow it, and show
     /// its transcript, model and cost.
-    fn adopted(&mut self, adopted: Adopted, own: Option<bool>, warning: Option<String>) {
+    fn adopted(
+        &mut self,
+        adopted: Adopted,
+        own: Option<bool>,
+        warning: Option<String>,
+        rerender: bool,
+    ) {
         let Adopted {
             session,
             stream,
@@ -2013,13 +2008,7 @@ impl AttachRunner {
             self.send(Msg::EscalationResolved(id));
         }
         let id = session.to_string();
-        self.mark = Some(Mark::resume(
-            &id,
-            Some(&Cursor {
-                session_id: id.clone(),
-                sequence: last_seq,
-            }),
-        ));
+        self.mark = Some(Mark::rendered(&id, last_seq));
         self.save_cursor();
         self.followers.reset(session.clone());
         self.orphans.clear();
@@ -2054,6 +2043,9 @@ impl AttachRunner {
         }
         let short = id.get(..8).unwrap_or(&id).to_string();
         let text = match own {
+            _ if rerender => format!(
+                "the stream lost events the daemon no longer keeps; conversation {short} is shown from its start"
+            ),
             Some(true) => {
                 format!("a new conversation ({short}); the previous one stays in /resume")
             }
@@ -2730,8 +2722,10 @@ async fn restart(
     launch::wait_for_endpoint(file, launch::START_TIMEOUT, &mut exited, &plan.log).await
 }
 
-/// Attach, find the orchestrator's session, open its live stream and read
-/// what the saved cursor has not shown yet.
+/// Attach, find the orchestrator's session and open its stream: resumed
+/// from the saved cursor when it names this daemon's stream of the session
+/// (the events since come on the stream), else live after rendering the
+/// conversation from its start.
 async fn establish(endpoint: Endpoint, saved: Option<&Cursor>) -> Result<Established, ClientError> {
     let (connection, mut notifications) = Connection::attach(&endpoint, ATTACH_TIMEOUT).await?;
     tokio::time::timeout(CALL_TIMEOUT, async {
@@ -2745,29 +2739,37 @@ async fn establish(endpoint: Endpoint, saved: Option<&Cursor>) -> Result<Establi
                     .any(|method| method.as_str() == Some(crate::daemon::decisions::NOTICE))
             });
         let session = remote::session_id(&connection).await?;
-        let mark = Mark::resume(&session.to_string(), saved);
-        // The live stream first, so nothing falls between it and the replay.
-        let stream = remote::open_stream(&connection).await?;
-        let mut replay = Vec::new();
-        let mut after = mark.sequence();
-        loop {
-            let (page, more) = remote::replay(&connection, &session, after).await?;
-            after = page.last().map_or(after, |envelope| envelope.seq);
-            let empty = page.is_empty();
-            replay.extend(page);
-            if !more || empty {
-                break;
+        let id = session.to_string();
+        let resume = saved
+            .and_then(|cursor| cursor.resumable(&id, &super::catchup::daemon_id(&endpoint.token)));
+        let (stream, mark, reset, context) = match resume {
+            Some((epoch, seq)) => {
+                let stream = remote::open_stream(&connection, Some((&epoch, seq))).await?;
+                let mark = Mark::resume(&id, saved);
+                // The gauge's seed: the stream replays only what came after
+                // the mark.
+                let context = last_context_before(&connection, &session, seq).await;
+                (stream, mark, None, context)
             }
-        }
-        let identity = remote::identity(&connection, &session).await.ok();
-        let context = match last_context(&replay) {
-            Some(_) => None,
-            None => last_context_before(&connection, &session, mark.sequence()).await,
+            None => {
+                // Live first, so nothing falls between the stream and the
+                // render; the mark drops what both deliver.
+                let stream = remote::open_stream(&connection, None).await?;
+                let (events, last_seq) = replay_to_end(&connection, &session, 0).await?;
+                let messages = remote::transcript(&connection, &session).await?;
+                (
+                    stream,
+                    Mark::rendered(&id, last_seq),
+                    Some(crate::runner::blocks_from_messages(&messages)),
+                    last_context(&events),
+                )
+            }
         };
+        let identity = remote::identity(&connection, &session).await.ok();
         let usage = remote::usage(&connection, &session).await.ok();
         // Every notification read before the usage answer: a turn that
-        // ended after the replay's last page and before the usage read is
-        // in the totals; its live end must not be added on top.
+        // ended before the usage read is in the totals; its live end must
+        // not be added on top.
         let mut queued = Vec::new();
         while let Ok(note) = notifications.try_recv() {
             queued.push(note);
@@ -2782,7 +2784,7 @@ async fn establish(endpoint: Endpoint, saved: Option<&Cursor>) -> Result<Establi
                 decisions,
             },
             mark,
-            replay,
+            reset,
             identity,
             usage,
             queued,

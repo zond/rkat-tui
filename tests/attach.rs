@@ -265,6 +265,11 @@ async fn a_client_that_left_mid_turn_sees_the_turn_once_on_reattach() {
     let cursor = CursorFile::of_workspace(&ws.root)
         .load()
         .expect("cursor saved");
+    // The reattach resumes the stream from this position (same daemon).
+    assert!(
+        cursor.epoch.is_some() && cursor.daemon.is_some(),
+        "{cursor:?}"
+    );
 
     let mut client = Client::attach(&ws.root).await;
     let outcome = client.turn_finished().await;
@@ -317,6 +322,21 @@ async fn the_client_reconnects_to_a_restarted_daemon() {
         .await;
     let daemon = Running::start(&ws.root, &llm).await;
     client.attached().await;
+    // A new daemon numbers its events in a new space: the client does not
+    // resume its cursor there but renders the conversation from its start.
+    let rendered = client
+        .wait_for(|msg| matches!(msg, Msg::ResetTranscript(_)))
+        .await;
+    let Msg::ResetTranscript(blocks) = rendered else {
+        unreachable!()
+    };
+    assert!(
+        blocks
+            .iter()
+            .any(|b| matches!(b, rkat_tui::ui::Block::User { text } if text == "one")),
+        "{blocks:?}"
+    );
+    let before = CursorFile::of_workspace(&ws.root).load().unwrap();
     client.send(Effect::StartTurn("two".into()));
     assert_eq!(
         client.turn_finished().await.result.unwrap().text,
@@ -328,6 +348,9 @@ async fn the_client_reconnects_to_a_restarted_daemon() {
         "the catch-up did not repeat the first turn"
     );
     assert!(llm.recorded()[1].user().contains("two"));
+    let after = CursorFile::of_workspace(&ws.root).load().unwrap();
+    assert_ne!(after.daemon, before.daemon, "the new daemon's cursor");
+    assert!(after.epoch.is_some());
     client.quit().await;
     daemon.stop().await;
 }
