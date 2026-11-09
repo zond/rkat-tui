@@ -295,16 +295,7 @@ struct Turn {
 
 impl Turn {
     fn record(&mut self, end: Result<TurnSummary, TurnFailure>) {
-        let rank = |r: &Result<TurnSummary, TurnFailure>| match r {
-            Ok(_) => 0,
-            Err(TurnFailure::Unknown(_) | TurnFailure::Pending { .. }) => 1,
-            Err(TurnFailure::Interrupted) => 2,
-            Err(TurnFailure::Failed(_)) => 3,
-        };
-        self.result = match self.result.take() {
-            Some(current) if rank(&current) > rank(&end) => Some(current),
-            _ => Some(end),
-        };
+        self.result = Some(crate::ui::merge_turn_end(self.result.take(), end));
     }
 
     fn deadline(&self) -> Option<Instant> {

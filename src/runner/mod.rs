@@ -421,27 +421,9 @@ impl Turn {
                 Err(_) if self.cancelled.contains(&input.input_id) => Err(TurnFailure::Interrupted),
                 other => other.clone(),
             };
-            result = Some(merge(result, end));
+            result = Some(crate::ui::merge_turn_end(result, end));
         }
         result.unwrap_or_else(|| Ok(TurnSummary::default()))
-    }
-}
-
-/// Fold one input's end into the turn's (see [`Turn::result`]).
-fn merge(
-    current: Option<Result<TurnSummary, TurnFailure>>,
-    next: Result<TurnSummary, TurnFailure>,
-) -> Result<TurnSummary, TurnFailure> {
-    let rank = |r: &Result<TurnSummary, TurnFailure>| match r {
-        Ok(_) => 0,
-        Err(TurnFailure::Unknown(_) | TurnFailure::Pending { .. }) => 1,
-        Err(TurnFailure::Interrupted) => 2,
-        Err(TurnFailure::Failed(_)) => 3,
-    };
-    match current {
-        Some(current) if rank(&current) > rank(&next) => current,
-        Some(current) if rank(&current) == rank(&next) && current.is_err() => current,
-        _ => next,
     }
 }
 

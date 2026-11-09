@@ -172,6 +172,40 @@ pub enum TurnFailure {
     },
 }
 
+impl TurnFailure {
+    /// How much this end weighs against the turn's other runs' ends
+    /// ([`merge_turn_end`]): a failure outranks an interruption, which
+    /// outranks an unknown or pending end, which outranks a completion (0).
+    #[must_use]
+    pub fn rank(end: &Result<TurnSummary, Self>) -> u8 {
+        match end {
+            Ok(_) => 0,
+            Err(Self::Unknown(_) | Self::Pending { .. }) => 1,
+            Err(Self::Interrupted) => 2,
+            Err(Self::Failed(_)) => 3,
+        }
+    }
+}
+
+/// Fold one run's end `next` into the turn's end so far, in both runners:
+/// the higher [`TurnFailure::rank`] wins. On a tie a failure keeps the
+/// earlier one (the first failure is the one to show) and a completion
+/// takes the later one (the last run's text is the turn's answer).
+pub fn merge_turn_end(
+    current: Option<Result<TurnSummary, TurnFailure>>,
+    next: Result<TurnSummary, TurnFailure>,
+) -> Result<TurnSummary, TurnFailure> {
+    match current {
+        Some(current) if TurnFailure::rank(&current) > TurnFailure::rank(&next) => current,
+        Some(current)
+            if TurnFailure::rank(&current) == TurnFailure::rank(&next) && current.is_err() =>
+        {
+            current
+        }
+        _ => next,
+    }
+}
+
 /// Result of a turn (the started prompt and every follow-up run the runtime
 /// added for steered messages) plus the steered messages it never delivered.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4257,6 +4291,37 @@ mod tests {
             submit(&mut app, "!! wow"),
             vec![Effect::StartTurn("!! wow".into())]
         );
+    }
+
+    /// Both runners fold run ends with this; the attach runner used to
+    /// keep the later of two failures.
+    #[test]
+    fn a_turn_end_keeps_the_first_failure_and_the_last_completion() {
+        let done = |text: &str| {
+            Ok(TurnSummary {
+                text: text.into(),
+                ..TurnSummary::default()
+            })
+        };
+        let failed = |why: &str| Err(TurnFailure::Failed(why.into()));
+        assert_eq!(merge_turn_end(Some(failed("a")), failed("b")), failed("a"));
+        assert_eq!(merge_turn_end(Some(done("a")), done("b")), done("b"));
+        assert_eq!(
+            merge_turn_end(Some(failed("a")), Err(TurnFailure::Interrupted)),
+            failed("a")
+        );
+        assert_eq!(
+            merge_turn_end(Some(Err(TurnFailure::Interrupted)), done("b")),
+            Err(TurnFailure::Interrupted)
+        );
+        assert_eq!(
+            merge_turn_end(
+                Some(Err(TurnFailure::Unknown("u".into()))),
+                Err(TurnFailure::Interrupted)
+            ),
+            Err(TurnFailure::Interrupted)
+        );
+        assert_eq!(merge_turn_end(None, done("x")), done("x"));
     }
 
     #[test]

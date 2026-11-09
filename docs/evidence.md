@@ -2699,3 +2699,14 @@ same function. Now `bounded(limit, call)` turns a call into
 and `/rules trust`, and `switch_and_adopt` is the one `/new`/`/resume`
 path. Behaviour is unchanged; the texts of a failure now come from
 `CallFailure`. The attach suites pin it unchanged in meaning.
+
+### One rank for a turn's end
+
+The in-process runner (`runner::merge`) and the attach runner
+(`Turn::record`) each ranked a run's end (completion < unknown/pending <
+interrupted < failed) and differed on a tie: in-process kept the earlier
+failure, attach the later. `ui::TurnFailure::rank` and
+`ui::merge_turn_end` are the one rule now: on a tie a failure keeps the
+first (the first failure is the one shown, as `TurnFailure::Failed`'s doc
+always said) and a completion the last (the follow-up run's text is the
+answer). Test: `ui::tests::a_turn_end_keeps_the_first_failure_and_the_last_completion`.
