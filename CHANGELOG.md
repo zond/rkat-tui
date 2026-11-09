@@ -6,6 +6,9 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Added
 
+- The daemon's endpoint file names the workspace it serves (its canonical
+  path) and when it started (`started_at`, RFC 3339); a file an older
+  daemon wrote still reads.
 - `/context` in attach mode reports what the context holds, as
   in-process: the conversation's system prompt and message counts read
   from the daemon (`rkat/transcript`) and the instruction files on disk.

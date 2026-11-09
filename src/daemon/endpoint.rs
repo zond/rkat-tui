@@ -5,11 +5,14 @@
 //! a directory of mode 0700, one line of JSON:
 //!
 //! ```json
-//! {"address":"127.0.0.1:43123","token":"<64 lowercase hex digits>","pid":12345}
+//! {"address":"127.0.0.1:43123","token":"<64 lowercase hex digits>","pid":12345,
+//!  "workspace":"/home/me/project","started_at":"2026-11-09T12:00:00Z"}
 //! ```
 //!
-//! Written (atomically, by rename) once the listener is bound, removed on
-//! shutdown. A file left by a daemon that died is stale: the next daemon
+//! (on one line). `workspace` is the canonical workspace path the daemon
+//! serves and `started_at` when it started (RFC 3339, UTC); a file written
+//! by an older daemon has neither and still reads. Written (atomically, by
+//! rename) once the listener is bound, removed on shutdown. A file left by a daemon that died is stale: the next daemon
 //! replaces it when nothing accepts at its address.
 //!
 //! **The token is the whole access control.** Anyone who reads it can
@@ -131,6 +134,12 @@ pub fn exposing_grant(plan: &crate::bootstrap::ConfinementPlan, path: &Path) -> 
     })
 }
 
+/// `time` as the endpoint file records it: RFC 3339, UTC, whole seconds.
+#[must_use]
+pub fn timestamp(time: std::time::SystemTime) -> String {
+    chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
 /// Bytes of randomness in a token (hex-encoded: twice as many digits).
 pub const TOKEN_BYTES: usize = 32;
 
@@ -143,9 +152,26 @@ pub struct Endpoint {
     pub token: String,
     /// The daemon's process id.
     pub pid: u32,
+    /// The canonical workspace path the daemon serves (`None`: a file an
+    /// older daemon wrote).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<PathBuf>,
+    /// When the daemon started, RFC 3339 in UTC (`None`: an older file).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
 }
 
 impl Endpoint {
+    /// When the daemon started, as a time (`None`: unknown or unreadable).
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn started(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        let text = self.started_at.as_deref()?;
+        chrono::DateTime::parse_from_rfc3339(text)
+            .ok()
+            .map(|time| time.with_timezone(&chrono::Utc))
+    }
+
     /// Read the endpoint file at `path`.
     ///
     /// # Errors
@@ -272,6 +298,8 @@ mod tests {
             address: "127.0.0.1:4242".parse().unwrap(),
             token: new_token().unwrap(),
             pid: 7,
+            workspace: Some(PathBuf::from("/w")),
+            started_at: Some(timestamp(std::time::UNIX_EPOCH)),
         };
         assert_eq!(endpoint.token.len(), TOKEN_BYTES * 2);
         assert!(endpoint.token.chars().all(|c| c.is_ascii_hexdigit()));
@@ -290,6 +318,28 @@ mod tests {
             assert_eq!(mode & 0o777, 0o600);
         }
         assert_ne!(new_token().unwrap(), endpoint.token);
+        assert!(
+            text.contains("\"workspace\":\"/w\",\"started_at\":\"1970-01-01T00:00:00Z\""),
+            "{text}"
+        );
+        assert_eq!(
+            endpoint.started(),
+            Some(chrono::DateTime::<chrono::Utc>::from(std::time::UNIX_EPOCH))
+        );
+    }
+
+    #[test]
+    fn a_file_an_older_daemon_wrote_still_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mob.endpoint");
+        std::fs::write(
+            &path,
+            "{\"address\":\"127.0.0.1:1\",\"token\":\"t\",\"pid\":3}\n",
+        )
+        .unwrap();
+        let old = Endpoint::read(&path).unwrap();
+        assert_eq!((old.pid, old.started()), (3, None));
+        assert_eq!(old.workspace, None);
     }
 
     #[tokio::test]
@@ -302,6 +352,8 @@ mod tests {
             address: listener.local_addr().unwrap(),
             token: "t".into(),
             pid: 1,
+            workspace: None,
+            started_at: None,
         };
         live.write(&path).unwrap();
         assert!(matches!(

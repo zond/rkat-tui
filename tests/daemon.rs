@@ -172,6 +172,13 @@ async fn a_client_attaches_and_finds_the_orchestrator() {
     assert!(endpoint.address.ip().is_loopback());
     assert_eq!(endpoint.pid, std::process::id());
     assert_eq!(daemon.endpoint_file, endpoint_file_for(&ws.root));
+    // The file names the workspace (canonical) and the start time.
+    assert_eq!(
+        endpoint.workspace.as_deref(),
+        Some(std::fs::canonicalize(&ws.root).unwrap().as_path())
+    );
+    let started = endpoint.started().expect("an RFC 3339 start time");
+    assert!(started <= chrono::Utc::now(), "{started}");
     // Nothing in the workspace holds the token (the agent's confined shell
     // can read the whole workspace).
     let holders = files_containing(&ws.root, endpoint.token.as_bytes());

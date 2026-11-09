@@ -379,6 +379,9 @@ impl Daemon {
         if !options.listen.ip().is_loopback() {
             return Err(DaemonError::NotLoopback(options.listen));
         }
+        let started_at = endpoint::timestamp(std::time::SystemTime::now());
+        let workspace = std::fs::canonicalize(&layers.scope.context_root)
+            .unwrap_or_else(|_| layers.scope.context_root.clone());
         let file = match options.endpoint_file {
             Some(file) => file,
             None => endpoint_file(&layers.scope.context_root)?,
@@ -438,7 +441,8 @@ impl Daemon {
         if let Some(warning) = local.announce_plan_mode().await {
             tracing::warn!(%warning, "plan mode");
         }
-        let listener = serve::Listener::bind(options.listen, &file).await?;
+        let listener =
+            serve::Listener::bind(options.listen, &file, &workspace, &started_at).await?;
         tracing::info!(
             address = %listener.address(),
             endpoint = %file.display(),

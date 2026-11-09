@@ -350,6 +350,8 @@ mod tests {
             address,
             token: "t".into(),
             pid: 1,
+            workspace: None,
+            started_at: None,
         }
     }
 

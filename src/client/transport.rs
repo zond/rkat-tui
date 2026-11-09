@@ -562,6 +562,8 @@ mod tests {
             address,
             token: "t".into(),
             pid: 1,
+            workspace: None,
+            started_at: None,
         };
         let attached = Connection::attach(&endpoint, ATTACH_TIMEOUT).await;
         assert!(

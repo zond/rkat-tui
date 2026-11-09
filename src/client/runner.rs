@@ -2610,6 +2610,8 @@ mod tests {
                 address,
                 token: "t".into(),
                 pid: 1,
+                workspace: None,
+                started_at: None,
             },
         }
     }
@@ -2730,6 +2732,8 @@ mod tests {
             address: at,
             token: "t".into(),
             pid: 42,
+            workspace: None,
+            started_at: None,
         });
         assert_eq!(stop_target(&live, Some(at)), Ok(42));
         assert!(stop_target(&live, Some("127.0.0.1:4001".parse().unwrap())).is_err());

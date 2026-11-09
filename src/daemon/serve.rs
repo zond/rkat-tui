@@ -81,13 +81,19 @@ pub struct Listener {
 }
 
 impl Listener {
-    /// Bind `listen` (loopback) and write the endpoint file at `file`.
+    /// Bind `listen` (loopback) and write the endpoint file at `file`,
+    /// naming `workspace` (canonical) and the start time `started_at`.
     ///
     /// # Errors
     ///
     /// [`DaemonError::Io`] when binding or writing fails,
     /// [`DaemonError::Token`] when no token can be drawn.
-    pub async fn bind(listen: SocketAddr, file: &Path) -> Result<Self, DaemonError> {
+    pub async fn bind(
+        listen: SocketAddr,
+        file: &Path,
+        workspace: &Path,
+        started_at: &str,
+    ) -> Result<Self, DaemonError> {
         let token: Arc<str> = endpoint::new_token()?.into();
         let tcp = TcpListener::bind(listen)
             .await
@@ -99,6 +105,8 @@ impl Listener {
             address,
             token: token.to_string(),
             pid: std::process::id(),
+            workspace: Some(workspace.to_path_buf()),
+            started_at: Some(started_at.to_string()),
         }
         .write(file)?;
         Ok(Self {
