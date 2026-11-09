@@ -2686,3 +2686,16 @@ the `engine` names are ours. `tests/daemon.rs` and the raw calls in
 Tests: `daemon::protocol::tests::{answer_lines_are_json_rpc_responses,
 a_decide_naming_who_decided_is_refused_and_no_params_read_as_empty}`, and
 the daemon and attach suites unchanged in meaning.
+
+### One bounded call path in the attach runner
+
+The attach runner had 21 `tokio::time::timeout(CALL_TIMEOUT|SWITCH_TIMEOUT, …)`
+blocks, each with its own `Ok(Ok)`/`Ok(Err)`/`Err` triage and its own
+"did not answer in time" text, and `trust_command`/`rule_command` were the
+same function. Now `bounded(limit, call)` turns a call into
+`Result<T, CallFailure>` (`NotAttached`, `TimedOut`, `Failed(ClientError)`),
+`AttachRunner::call_local(method, params)` calls one of the daemon's
+`rkat/*` methods through it, `outcome_command` serves `/rules`, `/trust`
+and `/rules trust`, and `switch_and_adopt` is the one `/new`/`/resume`
+path. Behaviour is unchanged; the texts of a failure now come from
+`CallFailure`. The attach suites pin it unchanged in meaning.

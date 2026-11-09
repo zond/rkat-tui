@@ -315,6 +315,31 @@ impl Turn {
     }
 }
 
+/// Why a call to the daemon brought no answer.
+#[derive(Debug, thiserror::Error)]
+enum CallFailure {
+    /// No connection now.
+    #[error("not attached to the daemon")]
+    NotAttached,
+    /// No answer within the call's bound.
+    #[error("the daemon did not answer in time")]
+    TimedOut,
+    /// The call failed.
+    #[error(transparent)]
+    Failed(ClientError),
+}
+
+/// `call`, bounded by `limit`.
+async fn bounded<T>(
+    limit: Duration,
+    call: impl std::future::Future<Output = Result<T, ClientError>>,
+) -> Result<T, CallFailure> {
+    tokio::time::timeout(limit, call)
+        .await
+        .map_err(|_| CallFailure::TimedOut)?
+        .map_err(CallFailure::Failed)
+}
+
 /// The attach-mode runner.
 pub struct AttachRunner {
     config: AttachConfig,
@@ -698,12 +723,12 @@ impl AttachRunner {
         };
         let reports = self.reporter();
         tokio::spawn(async move {
-            let read = tokio::time::timeout(
+            let read = bounded(
                 CALL_TIMEOUT,
                 remote::local(&connection, protocol::GET_MODE, &serde_json::json!({})),
             )
             .await;
-            if let Ok(Ok(status)) = read {
+            if let Ok(status) = read {
                 reports.send(Report::Mode(status));
             }
         });
@@ -808,15 +833,12 @@ impl AttachRunner {
                     };
                     let reports = self.reporter();
                     tokio::spawn(async move {
-                        let events = tokio::time::timeout(
-                            CALL_TIMEOUT,
-                            replay_to_end(&connection, &session, after),
-                        )
-                        .await
-                        .ok()
-                        .and_then(Result::ok)
-                        .map(|(events, _)| events)
-                        .unwrap_or_default();
+                        let events =
+                            bounded(CALL_TIMEOUT, replay_to_end(&connection, &session, after))
+                                .await
+                                .ok()
+                                .map(|(events, _)| events)
+                                .unwrap_or_default();
                         reports.send(Report::Backfilled { helper, events });
                     });
                 }
@@ -826,11 +848,8 @@ impl AttachRunner {
                     };
                     let reports = self.reporter();
                     tokio::spawn(async move {
-                        if let Ok(Ok((model, _))) = tokio::time::timeout(
-                            CALL_TIMEOUT,
-                            remote::identity(&connection, &session),
-                        )
-                        .await
+                        if let Ok((model, _)) =
+                            bounded(CALL_TIMEOUT, remote::identity(&connection, &session)).await
                         {
                             reports.send(Report::HelperModel { helper, model });
                         }
@@ -862,10 +881,8 @@ impl AttachRunner {
         self.discovering = true;
         let reports = self.reporter();
         tokio::spawn(async move {
-            let mobs = tokio::time::timeout(CALL_TIMEOUT, remote::mobs(&connection))
+            let mobs = bounded(CALL_TIMEOUT, remote::mobs(&connection))
                 .await
-                .ok()
-                .and_then(Result::ok)
                 .unwrap_or_default();
             reports.send(Report::Mobs(mobs));
         });
@@ -878,7 +895,7 @@ impl AttachRunner {
         };
         let reports = self.reporter();
         tokio::spawn(async move {
-            let opened = tokio::time::timeout(CALL_TIMEOUT, async {
+            let opened = bounded(CALL_TIMEOUT, async {
                 let stream = remote::open_mob_stream(&connection, &mob).await?;
                 let mut members = Vec::new();
                 for label in remote::members(&connection, &mob).await.unwrap_or_default() {
@@ -887,12 +904,8 @@ impl AttachRunner {
                 }
                 Ok::<_, ClientError>((stream, members))
             })
-            .await;
-            let opened = match opened {
-                Ok(Ok(opened)) => Ok(opened),
-                Ok(Err(err)) => Err(err.to_string()),
-                Err(_) => Err("timed out".to_string()),
-            };
+            .await
+            .map_err(|err| err.to_string());
             reports.send(Report::MobOpened { mob, opened });
         });
     }
@@ -911,14 +924,12 @@ impl AttachRunner {
         self.checking_session = true;
         let reports = self.reporter();
         tokio::spawn(async move {
-            match tokio::time::timeout(CALL_TIMEOUT, remote::session_id(&connection)).await {
-                Ok(Ok(session)) => {
-                    reports.send(Report::SessionNow(session));
-                }
-                _ => {
-                    reports.send(Report::SessionUnread);
-                }
-            }
+            reports.send(
+                match bounded(CALL_TIMEOUT, remote::session_id(&connection)).await {
+                    Ok(session) => Report::SessionNow(session),
+                    Err(_) => Report::SessionUnread,
+                },
+            );
         });
     }
 
@@ -1291,17 +1302,34 @@ impl AttachRunner {
                 tool,
                 pattern,
             } => {
-                self.rule_command(&RuleCommand::Add {
+                let command = RuleCommand::Add {
                     deny: effect == RuleEffect::Deny,
                     tool,
                     pattern,
-                })
-                .await;
+                };
+                self.outcome_command(protocol::RULES, &command, "/rules")
+                    .await;
             }
-            Effect::RemoveRule(n) => self.rule_command(&RuleCommand::Remove { n }).await,
-            Effect::ListRules => self.rule_command(&RuleCommand::List).await,
-            Effect::TrustRealmRules => self.trust_command(TrustOp::Rules, "/rules trust").await,
-            Effect::TrustProject => self.trust_command(TrustOp::Project, "/trust").await,
+            Effect::RemoveRule(n) => {
+                self.outcome_command(protocol::RULES, &RuleCommand::Remove { n }, "/rules")
+                    .await;
+            }
+            Effect::ListRules => {
+                self.outcome_command(protocol::RULES, &RuleCommand::List, "/rules")
+                    .await;
+            }
+            Effect::TrustRealmRules => {
+                let params = TrustParams { op: TrustOp::Rules };
+                self.outcome_command(protocol::TRUST, &params, "/rules trust")
+                    .await;
+            }
+            Effect::TrustProject => {
+                let params = TrustParams {
+                    op: TrustOp::Project,
+                };
+                self.outcome_command(protocol::TRUST, &params, "/trust")
+                    .await;
+            }
             Effect::SaveUnsent(held) => self.held_unsent.extend(held),
             Effect::Quit
             | Effect::SetChecklistView(_)
@@ -1340,7 +1368,7 @@ impl AttachRunner {
         let params = decision_params(decision, digest, answer);
         let ui_tx = self.ui_tx.clone();
         tokio::spawn(async move {
-            let decided = tokio::time::timeout(
+            let decided = bounded(
                 CALL_TIMEOUT,
                 remote::local::<_, serde_json::Value>(
                     &connection,
@@ -1350,8 +1378,8 @@ impl AttachRunner {
             )
             .await;
             let text = match decided {
-                Ok(Ok(_)) => return,
-                Ok(Err(ClientError::Rpc { message, .. })) => {
+                Ok(_) => return,
+                Err(CallFailure::Failed(ClientError::Rpc { message, .. })) => {
                     tracing::debug!(%message, "decision already settled");
                     (
                         NoticeLevel::Info,
@@ -1360,11 +1388,7 @@ impl AttachRunner {
                         ),
                     )
                 }
-                Ok(Err(err)) => (NoticeLevel::Warn, format!("the answer was not sent: {err}")),
-                Err(_) => (
-                    NoticeLevel::Warn,
-                    "the daemon did not take the answer in time".to_string(),
-                ),
+                Err(err) => (NoticeLevel::Warn, format!("the answer was not sent: {err}")),
             };
             let _ = ui_tx.send(Msg::Notice {
                 level: text.0,
@@ -1411,86 +1435,62 @@ impl AttachRunner {
 
     /// Shift+Tab, `/mode`, `/auto resume`: switch the daemon's mode.
     async fn set_mode(&mut self, mode: &str) {
-        let Some(connection) = self.connection() else {
-            self.notice(NoticeLevel::Warn, "not attached: the mode was not changed");
-            return;
+        let params = SetModeParams {
+            mode: mode.to_string(),
         };
-        let answer = tokio::time::timeout(
-            CALL_TIMEOUT,
-            remote::local::<_, ModeSet>(
-                &connection,
-                protocol::SET_MODE,
-                &SetModeParams {
-                    mode: mode.to_string(),
-                },
-            ),
-        )
-        .await;
-        match answer {
-            Ok(Ok(set)) => {
+        match self
+            .call_local::<_, ModeSet>(protocol::SET_MODE, &params)
+            .await
+        {
+            Ok(set) => {
                 self.push_mode(set.status);
                 if let Some(warning) = set.warning {
                     self.notice(NoticeLevel::Warn, warning);
                 }
                 self.notice(NoticeLevel::Info, set.notice);
             }
-            Ok(Err(err)) => self.notice(NoticeLevel::Error, format!("mode not changed: {err}")),
-            Err(_) => self.notice(NoticeLevel::Error, "the daemon did not answer in time"),
+            Err(CallFailure::NotAttached) => {
+                self.notice(NoticeLevel::Warn, "not attached: the mode was not changed");
+            }
+            Err(err) => self.notice(NoticeLevel::Error, format!("mode not changed: {err}")),
         }
     }
 
-    /// `/trust` (`op` `project`) or `/rules trust` (`rules`) on the
-    /// daemon's trust record (`rkat/trust`).
-    async fn trust_command(&self, op: TrustOp, name: &str) {
-        let Some(connection) = self.connection() else {
-            self.notice(
+    /// A command whose answer is a [`RuleOutcome`] (`/rules …` on the
+    /// daemon's engine, `/trust` and `/rules trust` on its trust record),
+    /// named `name` in what goes wrong.
+    async fn outcome_command<P: serde::Serialize>(
+        &self,
+        method: &'static str,
+        params: &P,
+        name: &str,
+    ) {
+        match self.call_local::<_, RuleOutcome>(method, params).await {
+            Ok(outcome) => {
+                let level = if outcome.ok {
+                    NoticeLevel::Info
+                } else {
+                    NoticeLevel::Error
+                };
+                self.notice(level, outcome.text);
+            }
+            Err(CallFailure::NotAttached) => self.notice(
                 NoticeLevel::Warn,
                 format!("not attached: {name} needs the daemon"),
-            );
-            return;
-        };
-        let answer = tokio::time::timeout(
-            CALL_TIMEOUT,
-            remote::local::<_, RuleOutcome>(&connection, protocol::TRUST, &TrustParams { op }),
-        )
-        .await;
-        match answer {
-            Ok(Ok(outcome)) => {
-                let level = if outcome.ok {
-                    NoticeLevel::Info
-                } else {
-                    NoticeLevel::Error
-                };
-                self.notice(level, outcome.text);
-            }
-            Ok(Err(err)) => self.notice(NoticeLevel::Error, format!("{name} failed: {err}")),
-            Err(_) => self.notice(NoticeLevel::Error, "the daemon did not answer in time"),
+            ),
+            Err(err) => self.notice(NoticeLevel::Error, format!("{name} failed: {err}")),
         }
     }
 
-    /// `/rules …` on the daemon's engine.
-    async fn rule_command(&self, command: &RuleCommand) {
-        let Some(connection) = self.connection() else {
-            self.notice(NoticeLevel::Warn, "not attached: /rules needs the daemon");
-            return;
-        };
-        let answer = tokio::time::timeout(
-            CALL_TIMEOUT,
-            remote::local::<_, RuleOutcome>(&connection, protocol::RULES, command),
-        )
-        .await;
-        match answer {
-            Ok(Ok(outcome)) => {
-                let level = if outcome.ok {
-                    NoticeLevel::Info
-                } else {
-                    NoticeLevel::Error
-                };
-                self.notice(level, outcome.text);
-            }
-            Ok(Err(err)) => self.notice(NoticeLevel::Error, format!("/rules failed: {err}")),
-            Err(_) => self.notice(NoticeLevel::Error, "the daemon did not answer in time"),
-        }
+    /// Call the daemon's own `method` (one of [`protocol`]'s) with
+    /// `params`, bounded by [`CALL_TIMEOUT`].
+    async fn call_local<P: serde::Serialize, R: serde::de::DeserializeOwned>(
+        &self,
+        method: &'static str,
+        params: &P,
+    ) -> Result<R, CallFailure> {
+        let connection = self.connection().ok_or(CallFailure::NotAttached)?;
+        bounded(CALL_TIMEOUT, remote::local(&connection, method, params)).await
     }
 
     /// `!command`: the user's own shell, in this process (as in-process);
@@ -1573,14 +1573,13 @@ impl AttachRunner {
             });
             return;
         }
-        let sent =
-            tokio::time::timeout(CALL_TIMEOUT, remote::send(&connection, &text, false)).await;
-        let failure = match sent {
-            Ok(Ok(())) => return,
-            Ok(Err(err)) => err.to_string(),
-            Err(_) => "the daemon did not take the prompt in time".to_string(),
+        let Err(failure) = bounded(CALL_TIMEOUT, remote::send(&connection, &text, false)).await
+        else {
+            return;
         };
-        self.turn.record(Err(TurnFailure::Failed(failure)));
+        self.turn.record(Err(TurnFailure::Failed(format!(
+            "the prompt was not sent: {failure}"
+        ))));
         self.finish_turn();
     }
 
@@ -1604,17 +1603,13 @@ impl AttachRunner {
         } else {
             text.to_string()
         };
-        let sent = tokio::time::timeout(CALL_TIMEOUT, remote::send(&connection, &text, true)).await;
-        let result = match sent {
-            Ok(Ok(())) => {
+        let result = match bounded(CALL_TIMEOUT, remote::send(&connection, &text, true)).await {
+            Ok(()) => {
                 self.turn.steers.push_back(id);
                 self.admitted.push(id);
                 Ok(())
             }
-            Ok(Err(err)) => Err(SteerFailure::Rejected(err.to_string())),
-            Err(_) => Err(SteerFailure::Rejected(
-                "the daemon did not answer in time".into(),
-            )),
+            Err(err) => Err(SteerFailure::Rejected(err.to_string())),
         };
         self.send(Msg::SteerAck { id, result });
     }
@@ -1652,20 +1647,17 @@ impl AttachRunner {
         }
         tokio::spawn(async move {
             let result = match stop {
-                Some(run) => tokio::time::timeout(
+                Some(run) => bounded(
                     CALL_TIMEOUT,
                     remote::stop_run(&connection, &run, INTERRUPT_REASON),
                 )
                 .await
-                .map(|r| r.map(drop)),
-                None => tokio::time::timeout(CALL_TIMEOUT, remote::force_cancel(&connection)).await,
+                .map(drop),
+                None => bounded(CALL_TIMEOUT, remote::force_cancel(&connection)).await,
             };
-            let failure = match result {
-                Ok(Ok(())) => return,
-                Ok(Err(err)) => err.to_string(),
-                Err(_) => "the daemon did not answer in time".to_string(),
-            };
-            reports.send(Report::Interrupt(failure));
+            if let Err(failure) = result {
+                reports.send(Report::Interrupt(failure.to_string()));
+            }
         });
     }
 
@@ -1809,34 +1801,7 @@ impl AttachRunner {
         let reports = self.reporter();
         let fresh = target.is_none();
         tokio::spawn(async move {
-            let switched =
-                tokio::time::timeout(SWITCH_TIMEOUT, remote::switch(&connection, target.as_ref()))
-                    .await;
-            let (session, warning) = match switched {
-                Ok(Ok(switched)) => switched,
-                Ok(Err(err)) => {
-                    reports.send(Report::Switched {
-                        result: Err(err.to_string()),
-                        own: Some(fresh),
-                        warning: None,
-                    });
-                    return;
-                }
-                Err(_) => {
-                    reports.send(Report::Switched {
-                        result: Err("the daemon did not answer in time".to_string()),
-                        own: Some(fresh),
-                        warning: None,
-                    });
-                    return;
-                }
-            };
-            let result = adopt(&connection, &stream, session).await;
-            reports.send(Report::Switched {
-                result,
-                own: Some(fresh),
-                warning,
-            });
+            reports.send(switch_and_adopt(&connection, &stream, target.as_ref(), fresh).await);
         });
     }
 
@@ -2021,34 +1986,7 @@ impl AttachRunner {
                     return;
                 }
             };
-            let switched =
-                tokio::time::timeout(SWITCH_TIMEOUT, remote::switch(&connection, Some(&target)))
-                    .await;
-            let (session, warning) = match switched {
-                Ok(Ok(switched)) => switched,
-                Ok(Err(err)) => {
-                    reports.send(Report::Switched {
-                        result: Err(err.to_string()),
-                        own: Some(false),
-                        warning: None,
-                    });
-                    return;
-                }
-                Err(_) => {
-                    reports.send(Report::Switched {
-                        result: Err("the daemon did not answer in time".to_string()),
-                        own: Some(false),
-                        warning: None,
-                    });
-                    return;
-                }
-            };
-            let result = adopt(&connection, &stream, session).await;
-            reports.send(Report::Switched {
-                result,
-                own: Some(false),
-                warning,
-            });
+            reports.send(switch_and_adopt(&connection, &stream, Some(&target), false).await);
         });
     }
 
@@ -2060,10 +1998,9 @@ impl AttachRunner {
         };
         let reports = self.reporter();
         tokio::spawn(async move {
-            let listed = tokio::time::timeout(CALL_TIMEOUT, remote::conversations(&connection))
+            let listed = bounded(CALL_TIMEOUT, remote::conversations(&connection))
                 .await
-                .map_err(|_| "the daemon did not answer in time".to_string())
-                .and_then(|listed| listed.map_err(|err| err.to_string()));
+                .map_err(|err| err.to_string());
             reports.send(Report::Picker(
                 listed.map(|listed| sessions::picker_items(&listed)),
             ));
@@ -2108,19 +2045,13 @@ impl AttachRunner {
     }
 
     /// Hand `text` to the orchestrator as system context under `key`.
-    async fn push_context(&self, text: &str, key: &str) -> Result<(), String> {
-        let Some(connection) = self.connection() else {
-            return Err("not attached to the daemon".to_string());
-        };
-        match tokio::time::timeout(
+    async fn push_context(&self, text: &str, key: &str) -> Result<(), CallFailure> {
+        let connection = self.connection().ok_or(CallFailure::NotAttached)?;
+        bounded(
             CALL_TIMEOUT,
             remote::append_system_context(&connection, text, key),
         )
         .await
-        {
-            Ok(result) => result.map_err(|err| err.to_string()),
-            Err(_) => Err("the daemon did not answer in time".to_string()),
-        }
     }
 
     /// `/memory`: open the instruction file here (as in-process).
@@ -2455,6 +2386,26 @@ async fn last_context_before(
         window = window.saturating_mul(2);
     }
     None
+}
+
+/// This client's `/new` (`target` `None`, `fresh`) or `/resume`: ask the
+/// daemon to switch, then read the conversation it switched to.
+async fn switch_and_adopt(
+    connection: &Connection,
+    stream: &str,
+    target: Option<&SessionId>,
+    fresh: bool,
+) -> Report {
+    let switched = bounded(SWITCH_TIMEOUT, remote::switch(connection, target)).await;
+    let (result, warning) = match switched {
+        Ok((session, warning)) => (adopt(connection, stream, session).await, warning),
+        Err(err) => (Err(err.to_string()), None),
+    };
+    Report::Switched {
+        result,
+        own: Some(fresh),
+        warning,
+    }
 }
 
 /// Follow the orchestrator's conversation `session` on `connection`: its
