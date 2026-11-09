@@ -26,7 +26,7 @@ use indexmap::IndexMap;
 use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 
-use crate::approval::rules::PricingSection;
+use crate::config::PricingSection;
 
 /// The community price list (LiteLLM's `model_prices_and_context_window.json`).
 pub const COMMUNITY_PRICES_URL: &str =

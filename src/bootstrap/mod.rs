@@ -54,6 +54,7 @@ pub mod persona;
 pub mod project_trust;
 pub mod realm_config;
 pub mod scope;
+pub mod trust;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -193,7 +194,9 @@ pub struct Runtime {
     /// checklist reads.
     pub tasks_db: PathBuf,
     /// The `tui.toml` `[ui]` settings.
-    pub ui: crate::approval::rules::UiSettings,
+    pub ui: crate::config::UiSettings,
+    /// The context-compaction policy of the `tui.toml` `[auto]` settings.
+    pub compaction: crate::ui::compaction::CompactionPolicy,
     /// How deep helpers may nest (`[helpers] max_depth`; 0 refuses every
     /// helper).
     pub helper_max_depth: u8,
@@ -309,10 +312,7 @@ pub struct BootstrapOptions {
 /// `--confinement-write`, then the `[confinement]` grants of the user's own
 /// `tui.toml` layers (which yield to the flags, see
 /// [`confinement::grants_with`]).
-fn extra_grants(
-    args: &Args,
-    layered: &crate::approval::rules::Layered,
-) -> confinement::ExtraGrants {
+fn extra_grants(args: &Args, layered: &crate::config::Layered) -> confinement::ExtraGrants {
     let mut extra = confinement::ExtraGrants::from_args(args);
     extra.extend_from(&layered.confinement);
     extra
@@ -356,7 +356,7 @@ pub struct Layers {
     /// The workspace and realm.
     pub scope: RuntimeScope,
     /// The `tui.toml` layers (global, realm, project, command line).
-    pub layered: crate::approval::rules::Layered,
+    pub layered: crate::config::Layered,
     /// What reading them had to say.
     pub notices: Vec<String>,
 }
@@ -437,6 +437,7 @@ pub async fn bootstrap_with(
         memory: _,
         tasks_db,
         ui,
+        compaction,
         helper_max_depth: helper_depth,
         user_shell_timeout,
         daemon_principal: _,
@@ -509,6 +510,7 @@ pub async fn bootstrap_with(
         project_inputs,
         tasks_db,
         ui,
+        compaction,
         helper_max_depth: helper_depth,
         user_shell_timeout,
         notices,
@@ -561,7 +563,9 @@ pub struct Assembled {
     /// The engine's task store.
     pub tasks_db: PathBuf,
     /// The `tui.toml` `[ui]` settings.
-    pub ui: crate::approval::rules::UiSettings,
+    pub ui: crate::config::UiSettings,
+    /// The context-compaction policy of the `tui.toml` `[auto]` settings.
+    pub compaction: crate::ui::compaction::CompactionPolicy,
     /// How deep helpers may nest.
     pub helper_max_depth: u8,
     /// How long a `!` command may run.
@@ -725,6 +729,7 @@ pub async fn assemble(
         !args.no_pricing_fetch,
     );
     let ui = layered.ui;
+    let compaction = layered.settings.compaction_policy(None);
     approval_notices.extend(endpoint_notices.iter().map(ToString::to_string));
     approval_notices.extend(thinking_notices);
     let helper_depth = layered.helpers.max_depth;
@@ -775,6 +780,7 @@ pub async fn assemble(
         memory,
         tasks_db,
         ui,
+        compaction,
         helper_max_depth: helper_depth,
         user_shell_timeout,
         daemon_principal,

@@ -1202,7 +1202,7 @@ mod tests {
 
     #[test]
     fn cost_segment_follows_the_tokens() {
-        use crate::approval::rules::PricingSection;
+        use crate::config::PricingSection;
         use crate::pricing::PriceTable;
         use std::collections::BTreeMap;
         use std::sync::Arc;

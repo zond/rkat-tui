@@ -584,7 +584,7 @@ The A4 regression (Tier-1 `read_file`/`memory_search` reaching the classifier) w
 - Extra grants: `--confinement-read`/`--confinement-write <dir>` (`ExtraGrants`, validated by `grants_with`: absolute,
   existing, canonical, directory, off baseline/`/proc`/`/sys`/`/dev`, disjoint from the workspace and each other,
   not redundant; typed `ConfinementError::ExtraGrant`); refused under a realm floor. `ConfinementSection`
-  (`extra_read`/`extra_write`) is defined but not yet a `tui.toml` key (needs a field in `approval/rules.rs`).
+  (`extra_read`/`extra_write`) is defined but not yet a `tui.toml` key (needs a field in `approval/rules.rs`, now `config/file.rs`).
 - Config dir: `~/.rkat/tui` (`<--user-config-root>/.rkat/tui`), `--config-dir` overrides; an existing legacy
   `~/.config/rkat-tui` / `$XDG_CONFIG_HOME/rkat-tui` is used while the new dir is missing, with a one-line notice
   (`legacy_config_notice`). Trust-record key unchanged (`the_trust_records_move_with_the_config_dir`).
@@ -718,7 +718,7 @@ The A4 regression (Tier-1 `read_file`/`memory_search` reaching the classifier) w
 ## Helper depth limit (2026-11-06)
 
 - Dogfood: helper A delegated helper B, each carrying a full context (~150-180k tokens for five trivial calls). Helpers now nest at most `[helpers] max_depth` levels (`tui.toml`/`--set helpers.max_depth=N`, default 1, a project file may only lower it). A helper's depth is its `HelperTag.path` length; at the limit the customizer denies `delegate`, `mob_create`, `mob_spawn_member`, `council` in its tool access policy (`NESTING_TOOLS`, merged by `deny_ungated_tools`), turns the member's mob tool category off so the schemas leave its tool list (~25k fixed tokens per call), and `Depth::admit` refuses a fresh spawn beyond the limit (a restored member keeps running, tools denied). The helper persona says a helper denied delegation does the work itself.
-- Tests: `mobs::customizer::tests::{a_helper_at_the_depth_limit_is_denied_the_nesting_tools, a_helper_below_the_depth_limit_keeps_the_nesting_tools, a_spawn_beyond_the_depth_limit_is_refused}`, `approval::rules::tests::helper_depth_defaults_to_one_layers_and_the_project_only_lowers_it`, `mobs::{a_helper_at_the_default_depth_cannot_delegate, a_helper_below_a_raised_depth_limit_delegates_once_more}`.
+- Tests: `mobs::customizer::tests::{a_helper_at_the_depth_limit_is_denied_the_nesting_tools, a_helper_below_the_depth_limit_keeps_the_nesting_tools, a_spawn_beyond_the_depth_limit_is_refused}`, `config::tests::helper_depth_defaults_to_one_layers_and_the_project_only_lowers_it`, `mobs::{a_helper_at_the_default_depth_cannot_delegate, a_helper_below_a_raised_depth_limit_delegates_once_more}`.
 
 ## Typing during a slow tool (2026-11-06)
 
@@ -891,7 +891,7 @@ meerkat-tui --all-features` exit 0 (lane `tui-port`).
   `Msg::Escalation`, only while unfocused and `[ui] bell` is on (`UiSettings::bell`, default true, layered like
   `helpers`); the loop writes BEL after the next frame (`take_bell` → `ring_bell`). Tests:
   `ui::tests::the_bell_rings_only_while_unfocused_and_enabled`, `runtime::tests::{translate_filters_release_events,
-  the_bell_is_one_bel_byte}`, `rules::tests::{ui_bell_defaults_to_on_and_layers, rules_file_round_trip}`. Not run
+  the_bell_is_one_bel_byte}`, `config::tests::{ui_bell_defaults_to_on_and_layers, rules_file_round_trip}`. Not run
   in a real terminal (no interactive terminal in this session).
 - Alt+P (`Action::ModelPicker`) runs `/model`'s picker path (`Command::Model(ModelCommand::Pick)`, same idle check)
   without touching the editor: the picker modal takes the keys and the input survives Esc and a selection. Tests:
@@ -1428,7 +1428,7 @@ covers the HELP_TEXT edits).
   `user_shell::tests::{the_context_names_the_command_its_output_and_its_exit, output_is_capped_with_a_marker,
   a_plain_run_merges_both_streams_and_reports_the_exit, a_run_past_the_timeout_is_killed (a backgrounded `sleep`
   holding the pipes does not stall it), long_output_is_capped}`;
-  `approval::rules::tests::the_user_shell_timeout_layers_and_the_project_only_lowers_it`;
+  `config::tests::the_user_shell_timeout_layers_and_the_project_only_lowers_it`;
   `runner::shell::tests::run_keys_are_unique`; end to end
   `integrator::a_bang_command_runs_and_joins_the_context_without_a_turn` (`echo hi; pwd` through the runner on
   the test rigs' `--no-confinement`: output `hi` and the canonical workspace, no model call, then the next turn's
@@ -1485,7 +1485,7 @@ Permission modes on Shift+Tab (`docs/ux-parity.md` rows 9, 27, 28; candidate 5).
   (no classifier call, no dialog), accept_edits_asks_for_protected_writes_and_the_shell,
   plan_mode_denies_writes_and_commands_with_the_plan_error, a_helper_inherits_plan_mode,
   auto_mode_still_classifies_tier_three, a_queued_question_follows_a_mode_switch,
-  the_mode_persists_in_the_realm_rules_file}`; `approval::rules::tests::the_permission_mode_layers`;
+  the_mode_persists_in_the_realm_rules_file}`; `config::tests::the_permission_mode_layers`;
   `ui::commands::tests::mode_commands`; `ui::tests::{shift_tab_cycles_the_permission_mode, plan_ready_dialog,
   slash_commands_map_to_effects, status_updates_and_dirty_tracking}`;
   `ui::render::tests::{status_bar_modes_and_classifying, status_line_segments}`; render snapshots for the new
@@ -1530,7 +1530,7 @@ Task checklist on Ctrl+T (`docs/ux-parity.md` row 22; candidate 7).
 - Tests: `ui::checklist::tests::{tasks_map_to_items_newest_updated_last, the_window_keeps_the_newest_and_counts_the_rest,
   the_view_toggles}`; `runner::checklist::tests::{the_checklist_is_the_sessions_tasks_in_the_store (another
   session's task is not listed), only_the_writing_task_tools_refresh}`;
-  `approval::rules::tests::ui_checklist_defaults_to_hidden_layers_and_persists`; `ui::keymap` Ctrl+T;
+  `config::tests::ui_checklist_defaults_to_hidden_layers_and_persists`; `ui::keymap` Ctrl+T;
   `ui::tests::{ctrl_t_toggles_the_checklist_and_records_the_view, an_unreadable_task_store_is_named_once_at_the_next_ctrl_t}`;
   render snapshots `ctrl_t_with_no_tasks_draws_nothing`, `the_checklist_renders_under_the_input` (three items,
   hint both ways), `more_than_five_tasks_show_the_newest_and_a_count`, `the_checklist_comes_before_the_helper_panel`;
@@ -1643,7 +1643,7 @@ Conversation rewind: `/rewind` (aliases `/checkpoint`, `/undo`) and Esc Esc on a
   a_reference_wins_over_the_bare_id_and_default_is_no_override, a_non_anthropic_endpoint_is_ignored_with_a_notice,
   a_catalogued_model_refusing_the_type_is_ignored_with_the_engines_reason, params_carry_only_the_thinking,
   a_resume_replaces_only_the_thinking}`;
-  `approval::rules::tests::thinking_layers_replace_by_key_and_only_user_layers_count` (and the round trip);
+  `config::tests::thinking_layers_replace_by_key_and_only_user_layers_count` (and the round trip);
   end to end `models::{configured_thinking_reaches_the_request_on_create_and_after_a_switch,
   a_resume_follows_the_thinking_configured_now}` (the scripted client's `LlmRequest` tag carries the configured
   thinking on create, after `/model`, cleared on a switch to an unconfigured model, picked up and dropped again on
@@ -2017,7 +2017,7 @@ engine's refusal pinned); `tests/attach.rs`:
 registry's error for a bare unknown id); unit tests in `client::helpers`,
 `client::sessions`, `client::runner::tests::model_references_resolve_on_this_processs_endpoints`,
 `client::launch::tests::a_started_daemon_leaves_the_terminals_session_when_setsid_exists`,
-`daemon::conversations`, `approval::rules::tests::rules_file_round_trip`
+`daemon::conversations`, `config::tests::rules_file_round_trip`
 (`attach` written before the tables).
 
 ## Review fixes for P1–P4 (2026-11-08)
@@ -2432,7 +2432,7 @@ timeout, two clients, helpers, plan/auto); unit tests in `daemon::decisions`
 `daemon::approvals` (desk over an in-memory decision store),
 `approval::desk::tests::a_decided_decision_carries_every_answer`,
 `client::approvals::tests::a_pushed_decision_opens_one_dialog_and_another_clients_answer_closes_it`,
-`approval::rules::tests::rules_file_round_trip` (`[daemon]`).
+`config::tests::rules_file_round_trip` (`[daemon]`).
 
 **`fork_off` in attach mode.** #2112: `SpawnMemberSpec.dispatch_admission_lineage`
 (meerkat-mob runtime/handle.rs:7550) makes a fork seat ask the host's
@@ -2566,7 +2566,7 @@ callers already push the new mode status themselves.
 Tests: `approval::engine::tests::leaving_auto_mode_ends_a_pause`,
 `manual_mode_asks_for_tier_three_and_auto_resumes` (no pause events for a
 mode switch), `approval::counters::tests::*`,
-`approval::rules::tests::layered_loading` (the project's
+`config::tests::layered_loading` (the project's
 `enabled = false` still starts in manual mode).
 
 ### One prompt shape and one answer shape for escalations
@@ -2833,3 +2833,24 @@ files (rules, notes, history, trust record, caches) and is the way out of
 touching the engine's conventions. Each flag's help now says what it moves
 and what it leaves. Tests: `bootstrap::scope::tests::global_dirs_follow_flags`,
 `a_config_dir_colliding_with_the_realm_dir_is_refused`.
+
+### `tui.toml` is `crate::config`, not the approval engine's
+
+`RulesFile` is the whole `tui.toml` (endpoints, pricing, thinking,
+confinement, helpers, shell, ui, daemon, attach), yet it lived in
+`approval/rules.rs`, so endpoints, pricing and thinking imported their
+schema from the approval engine, the runner read the compaction policy
+through `ApprovalEngine::settings()`, and the Ctrl+T checklist preference
+was written by `ApprovalEngine::persist_checklist`. The schema
+(`config/file.rs`), the layering and its notices (`config/layers.rs`) and
+the realm file's writes (`config/persist.rs`) are now `src/config/`;
+`approval/rules.rs` keeps the patterns, `Rule`, `RuleSet` and `RulesError`
+(the file's read and write errors stay in that enum, so `ApprovalError`
+is unchanged). The host trust record moved to `bootstrap/trust.rs`. Every
+write of the realm file goes through `config::write_trusted`, which
+records the written bytes in the trust record; the engine uses it for
+rules and the mode, the runner for the checklist view. The bootstrap
+hands the runner the compaction policy (`Runtime::compaction`), computed
+from the layered `[auto]` settings as the attach runner already did. No
+behaviour change; the layering tests moved to `config::tests`, the
+pattern tests stay in `approval::rules::tests`.

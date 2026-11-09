@@ -60,7 +60,16 @@ impl Runner {
     /// [`crate::ui::Effect::SetChecklistView`]: record Ctrl+T's choice as
     /// the realm's `[ui] checklist`.
     pub(super) fn set_checklist_view(&self, view: ChecklistView) {
-        if let Err(err) = self.approval.engine.persist_checklist(view) {
+        let realm_file = self
+            .runtime
+            .scope
+            .realm_root()
+            .join(crate::config::RULES_FILE_NAME);
+        let saved =
+            crate::config::write_trusted(&realm_file, Some(&self.runtime.approval.trust), |path| {
+                crate::config::persist_realm_checklist(path, view)
+            });
+        if let Err(err) = saved {
             self.notice(
                 NoticeLevel::Warn,
                 format!("the checklist view applies to this run but was not saved: {err}"),

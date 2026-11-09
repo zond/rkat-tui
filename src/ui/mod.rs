@@ -7053,7 +7053,7 @@ mod tests {
 
     #[test]
     fn auto_compact_flag_overrides_settings() {
-        let settings = crate::approval::rules::AutoSettings::default();
+        let settings = crate::config::AutoSettings::default();
         let args =
             <crate::cli::Args as clap::Parser>::try_parse_from(["rkat-tui", "--auto-compact"])
                 .unwrap();
@@ -7076,7 +7076,7 @@ mod tests {
     }
 
     fn priced(entries: &[(&str, f64, f64)]) -> Arc<crate::pricing::PriceTable> {
-        use crate::approval::rules::PricingSection;
+        use crate::config::PricingSection;
         Arc::new(crate::pricing::PriceTable::new(
             entries
                 .iter()

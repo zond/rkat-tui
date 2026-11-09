@@ -141,7 +141,7 @@ pub struct AttachConfig {
     /// Fetches the endpoints' model lists (tests list nothing).
     pub lister: crate::models::ModelLister,
     /// The `[ui]` settings of the `tui.toml` layers.
-    pub ui: crate::approval::rules::UiSettings,
+    pub ui: crate::config::UiSettings,
     /// The context-compaction policy of the `tui.toml` layers.
     pub compaction: crate::ui::CompactionPolicy,
     /// The cost readout's prices (the `[pricing]` overrides and the cached
@@ -2387,7 +2387,7 @@ mod tests {
             user_shell: Err("none".into()),
             endpoints: EndpointRegistry::from_endpoints(Vec::new()),
             lister: crate::models::live_lister(),
-            ui: crate::approval::rules::UiSettings::default(),
+            ui: crate::config::UiSettings::default(),
             compaction: crate::ui::CompactionPolicy::default(),
             pricing: crate::pricing::PricingSetup::default(),
             scope,

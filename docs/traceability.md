@@ -7,7 +7,7 @@ Updated after P6 and the review fix pass (2026-11-05). Paths are relative to the
 | TYPE-001 | 0 | `src/cli.rs` | `rkat-tui` main | `cli::tests::*` | TYPED |
 | TYPE-002 | 0 | `src/error.rs` | `rkat-tui` main | compile-time exhaustive `exit_code()` | TYPED |
 | TYPE-003 | 2 | `src/approval/{policy,rules,engine,counters,escalation}.rs` | `ApprovalGate` (admission) | `approval::policy::tests::*`, `tests/approval_policy.rs` | TYPED |
-| TYPE-004 | 0/6 | `src/approval/rules.rs`, `src/overlay.rs`, `src/ui/compaction.rs` | `bootstrap::approval::load_layers` | `overlay::tests::*`, `rules::tests::*`, `compaction::tests::*` | TYPED |
+| TYPE-004 | 0/6 | `src/config/`, `src/overlay.rs`, `src/ui/compaction.rs` | `bootstrap::approval::load_layers` | `overlay::tests::*`, `config::tests::*`, `compaction::tests::*` | TYPED |
 | TYPE-005 | 1 | `src/delivery.rs`, `src/ui/delivery.rs`, `src/runner/mod.rs` | runner admission acks | `ui::tests::*steer*`, `tests/integrator.rs` | TYPED |
 | CONTRACT-001 | 0 | `src/main.rs` | `meerkat_runtime::host_stack::run_host` | `rkat-tui --help` smoke | VERIFIED |
 | CONTRACT-002 | 1 | `src/bootstrap/mod.rs`, `src/session/mod.rs` | `build_runtime_backed_service_with_default_reconfigure_host` | `tests/integrator.rs` | VERIFIED (no `SessionAgentBuilder` wrapper: gate installed per build, see evidence P2) |

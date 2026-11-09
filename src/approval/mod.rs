@@ -52,7 +52,6 @@ pub mod rules;
 pub mod shell;
 pub(crate) mod shell_subject;
 pub mod transcript;
-pub mod trust;
 
 use counters::PauseCause;
 use meerkat_core::{SessionId, Usage};

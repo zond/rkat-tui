@@ -11,8 +11,8 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use super::SavedUnsent;
-use crate::approval::rules::UiSettings;
 use crate::bootstrap::RuntimeScope;
+use crate::config::UiSettings;
 use crate::error::TuiError;
 use crate::paths::ProjectRoot;
 use crate::ui::{App, CompactionPolicy, Effect, History, Msg, StatusInfo, UiChannels, run_ui};

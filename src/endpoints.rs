@@ -70,8 +70,9 @@ use meerkat_core::{
     ProviderBindingConfig,
 };
 
-use crate::approval::rules::{EndpointSection, LayeredEndpoint, Notice, RuleOrigin};
+use crate::approval::rules::RuleOrigin;
 use crate::bootstrap::credentials::{ProviderCredentials, resolve_builtin};
+use crate::config::{EndpointSection, LayeredEndpoint, Notice};
 use crate::models::ModelEntry;
 
 /// Names of the built-in endpoints, in display order.

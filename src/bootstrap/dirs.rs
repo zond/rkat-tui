@@ -121,7 +121,7 @@ impl GlobalDirs {
     /// Global approval rules file (`tui.toml`).
     #[must_use]
     pub fn rules_file(&self) -> PathBuf {
-        self.config.join(crate::approval::rules::RULES_FILE_NAME)
+        self.config.join(crate::config::RULES_FILE_NAME)
     }
 
     /// User-global `AGENTS.md`.
@@ -379,7 +379,7 @@ mod tests {
         let b = tempfile::tempdir().unwrap();
         let ws = tempfile::tempdir().unwrap();
         let path = |dir: &Path| {
-            crate::approval::trust::HostTrustRecord::open(dir, ws.path(), "tui")
+            crate::bootstrap::trust::HostTrustRecord::open(dir, ws.path(), "tui")
                 .record_path()
                 .map(Path::to_path_buf)
                 .unwrap()

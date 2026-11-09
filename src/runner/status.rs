@@ -5,8 +5,8 @@ use std::path::PathBuf;
 
 use super::Runner;
 use crate::approval::mode::PermissionMode;
-use crate::approval::rules::RULES_FILE_NAME;
-use crate::approval::trust::TrustStatus;
+use crate::bootstrap::trust::TrustStatus;
+use crate::config::RULES_FILE_NAME;
 use crate::ui::NoticeLevel;
 
 /// Everything `/status` reports.
@@ -132,7 +132,7 @@ impl Runner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::approval::trust::Untrusted;
+    use crate::bootstrap::trust::Untrusted;
 
     fn report() -> StatusReport {
         StatusReport {

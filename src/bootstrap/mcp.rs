@@ -116,7 +116,7 @@ pub async fn load(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::approval::trust::HostTrustRecord;
+    use crate::bootstrap::trust::HostTrustRecord;
     use clap::Parser;
     use std::sync::Arc;
 

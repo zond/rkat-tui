@@ -1,0 +1,39 @@
+//! `tui.toml`: rkat-tui's own configuration file, its layering and the
+//! writes to the realm's copy.
+//!
+//! Three files are layered: `~/.rkat/tui/tui.toml` (global, see
+//! [`crate::bootstrap::GlobalDirs`]), `<realm>/tui.toml`
+//! (per-workspace, the default write target) and `<project>/.rkat/tui.toml`
+//! (committed with the repository, therefore untrusted: it may only add deny
+//! rules and `[auto]` settings, may not loosen `trust_project_builds`, and
+//! its endpoints are ignored). The realm file is fully applied only when
+//! the host trust record says rkat-tui wrote it or the user trusted it
+//! ([`crate::bootstrap::trust`]); otherwise only its deny rules apply. The
+//! command-line overlay ([`crate::overlay`]) is a fourth layer between the
+//! realm and project files.
+//!
+//! Besides the approval rules (`[[allow]]`/`[[deny]]`, see
+//! [`crate::approval::rules`]) and `[auto]`, the file holds
+//! `[endpoints.<name>]` (see [`crate::endpoints`]),
+//! `[pricing."<model id>"]` price overrides (see [`crate::pricing`]),
+//! `[confinement] extra_read`/`extra_write` sandbox grants (see
+//! [`crate::bootstrap::confinement`]), `[thinking]` Anthropic thinking per
+//! model (see [`crate::thinking`]), `[helpers]`, `[shell]`, `[ui]`,
+//! `[daemon]` and `attach`; like endpoints and prices, thinking,
+//! confinement grants, `[daemon]` and `attach` are honoured from the user's
+//! own layers only.
+//!
+//! - [`file`](mod@file): the schema ([`RulesFile`] and its sections, the settings
+//!   after layering);
+//! - [`layers`](mod@layers): [`load_layered_with`] and its [`Notice`]s;
+//! - [`persist`](mod@persist): the realm file's writes, recorded in the host trust record.
+
+pub mod file;
+pub mod layers;
+pub mod persist;
+#[cfg(test)]
+mod tests;
+
+pub use file::*;
+pub use layers::*;
+pub use persist::*;

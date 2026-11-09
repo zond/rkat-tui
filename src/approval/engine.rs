@@ -57,10 +57,11 @@ use super::mode::PermissionMode;
 use super::policy::{
     Action, ActionKind, Decider, PolicyContext, Tier, TierDecision, classify_tier_with,
 };
-use super::rules::{self, AutoSettings, Rule, RuleId, RuleOrigin, RuleSet, RulesError};
+use super::rules::{Rule, RuleId, RuleOrigin, RuleSet, RulesError};
 use super::transcript::{ApprovalTranscript, InputKey};
-use super::trust::HostTrustRecord;
 use super::{ApprovalEvent, DenyReason, Verdict, prompts, shell};
+use crate::bootstrap::trust::HostTrustRecord;
+use crate::config::{self, AutoSettings};
 use crate::paths::ProjectRoot;
 
 /// How long the human has to answer an escalation by default.
@@ -215,7 +216,7 @@ pub enum TrustRulesError {
     Rules(#[from] RulesError),
     /// The file cannot be trusted or the record not saved.
     #[error(transparent)]
-    Trust(#[from] super::trust::TrustError),
+    Trust(#[from] crate::bootstrap::trust::TrustError),
 }
 
 /// Why rules could not be persisted off the executor.
@@ -320,6 +321,7 @@ impl ApprovalEngine {
     }
 
     /// Current settings.
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn settings(&self) -> AutoSettings {
         self.settings.read().clone()
@@ -505,14 +507,14 @@ impl ApprovalEngine {
         let (Some(path), Some(trust)) = (&self.rules_path, &self.rules_trust) else {
             return Err(TrustRulesError::NoRealmFile);
         };
-        let file = rules::RulesFile::load(path)?;
+        let file = config::RulesFile::load(path)?;
         trust.lock().record_file(path)?;
-        let summary = rules::summarize(path, &file);
+        let summary = config::summarize(path, &file);
         let mut added = 0;
         {
             let mut set = self.rules.write();
             for rule in file.rules(RuleOrigin::Realm)? {
-                if rule.kind == rules::RuleKind::Allow && rule.broad_reason().is_none() {
+                if rule.kind == super::rules::RuleKind::Allow && rule.broad_reason().is_none() {
                     set.push(rule);
                     added += 1;
                 }
@@ -598,35 +600,10 @@ impl ApprovalEngine {
         let Some(path) = &self.rules_path else {
             return Ok(());
         };
-        rules::persist_realm_mode(path, self.mode())?;
-        if let Some(trust) = &self.rules_trust
-            && let Err(err) = trust.lock().record_file(path)
-        {
-            tracing::warn!(error = %err, "realm rules written but not recorded as trusted");
-        }
-        Ok(())
-    }
-
-    /// Record the checklist panel's view as the realm's `[ui] checklist`
-    /// (Ctrl+T), trusted like every other write of the realm rules file.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RulesError`] when the file cannot be read, parsed or written.
-    pub fn persist_checklist(
-        &self,
-        view: crate::ui::checklist::ChecklistView,
-    ) -> Result<(), RulesError> {
-        let Some(path) = &self.rules_path else {
-            return Ok(());
-        };
-        rules::persist_realm_checklist(path, view)?;
-        if let Some(trust) = &self.rules_trust
-            && let Err(err) = trust.lock().record_file(path)
-        {
-            tracing::warn!(error = %err, "realm rules written but not recorded as trusted");
-        }
-        Ok(())
+        let mode = self.mode();
+        config::write_trusted(path, self.rules_trust.as_deref(), |path| {
+            config::persist_realm_mode(path, mode)
+        })
     }
 
     /// `/auto resume`: clear a pause (including the total-denials pause) and
@@ -1214,13 +1191,9 @@ fn persist_trusted(
     rules: &RuleSet,
     trust: Option<&Arc<Mutex<HostTrustRecord>>>,
 ) -> Result<(), RulesError> {
-    rules::persist_realm_rules(path, rules)?;
-    if let Some(trust) = trust
-        && let Err(err) = trust.lock().record_file(path)
-    {
-        tracing::warn!(error = %err, "realm rules written but not recorded as trusted");
-    }
-    Ok(())
+    config::write_trusted(path, trust.map(AsRef::as_ref), |path| {
+        config::persist_realm_rules(path, rules)
+    })
 }
 
 /// An escalation put to the human. Dropped unsettled (the tool call was
@@ -2555,7 +2528,7 @@ mod tests {
         });
         engine.set_mode(PermissionMode::Plan);
         engine.persist_mode().unwrap();
-        let file = rules::RulesFile::load(&path).unwrap();
+        let file = config::RulesFile::load(&path).unwrap();
         let auto = file.auto.unwrap();
         assert_eq!(auto.mode, Some(PermissionMode::Plan));
         assert_eq!(auto.enabled, None);

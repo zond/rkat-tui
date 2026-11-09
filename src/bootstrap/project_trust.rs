@@ -50,7 +50,7 @@ use meerkat_core::Config;
 use meerkat_core::mcp_config::project_mcp_path_in;
 
 use super::scope::RuntimeScope;
-use crate::approval::trust::{HostTrustRecord, TrustError, TrustStatus, Untrusted};
+use crate::bootstrap::trust::{HostTrustRecord, TrustError, TrustStatus, Untrusted};
 
 /// The host trust record shared by the gate and the project inputs.
 pub type SharedTrustRecord = Arc<parking_lot::Mutex<HostTrustRecord>>;

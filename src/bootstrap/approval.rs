@@ -3,7 +3,7 @@
 //! [`load_layers`] layers `tui.toml` (global → realm → command line →
 //! project; the realm layer is fully applied only when the host trust
 //! record says rkat-tui wrote it or the user trusted it, see
-//! [`crate::approval::trust`]). [`build`] reads the environment facts,
+//! [`crate::bootstrap::trust`]). [`build`] reads the environment facts,
 //! builds the classifier and opens the escalation broker, and returns the
 //! engine with the channels the runner serves.
 
@@ -20,10 +20,10 @@ use crate::approval::classifier::{
 };
 use crate::approval::engine::DEFAULT_ESCALATION_TIMEOUT;
 use crate::approval::escalation::{EscalationBroker, EscalationRequest};
-use crate::approval::rules::{self, AutoSettings, RULES_FILE_NAME, RealmTrust};
-use crate::approval::trust::HostTrustRecord;
 use crate::approval::{ApprovalConfig, ApprovalEngine, ApprovalEvent};
+use crate::bootstrap::trust::HostTrustRecord;
 use crate::cli::Args;
+use crate::config::{self, AutoSettings, RULES_FILE_NAME, RealmTrust};
 use crate::error::TuiError;
 use crate::overlay::ConfigOverlay;
 use crate::paths::ProjectRoot;
@@ -94,14 +94,14 @@ pub(crate) struct ClassifierSource<'a> {
 pub(crate) fn load_layers(
     scope: &RuntimeScope,
     args: &Args,
-) -> Result<(rules::Layered, Vec<String>), TuiError> {
+) -> Result<(config::Layered, Vec<String>), TuiError> {
     let cli_layer = ConfigOverlay::from_args(args)?.rules_file()?;
     let realm_dir = scope.realm_root();
     let realm_rules = realm_dir.join(RULES_FILE_NAME);
     let mut notices = Vec::new();
     let realm_trust = RealmTrust::from_status(trust_record(scope).check(&realm_rules));
     let global_rules = scope.global.as_ref().map(super::GlobalDirs::rules_file);
-    let layered = rules::load_layered_with(
+    let layered = config::load_layered_with(
         &realm_dir,
         global_rules.as_deref(),
         &scope.context_root.join(".rkat"),
@@ -110,7 +110,7 @@ pub(crate) fn load_layers(
     )
     .map_err(crate::approval::ApprovalError::from)?;
     notices.extend(layered.notices.iter().map(ToString::to_string));
-    if let Some(notice) = rules::legacy_global_rules_notice(
+    if let Some(notice) = config::legacy_global_rules_notice(
         scope.user_config_root.as_deref(),
         global_rules.as_deref(),
     ) {
@@ -136,7 +136,7 @@ pub fn trust_record(scope: &RuntimeScope) -> HostTrustRecord {
 /// [`TuiError::Io`] when the current directory cannot be read.
 pub(crate) async fn build(
     scope: &RuntimeScope,
-    layered: rules::Layered,
+    layered: config::Layered,
     mut notices: Vec<String>,
     source: ClassifierSource<'_>,
     overrides: &ApprovalOverrides,

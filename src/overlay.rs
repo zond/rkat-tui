@@ -5,7 +5,7 @@
 //! `--classifier-model`, `--[no-]auto-compact`, `--[no-]trust-project-builds`)
 //! desugar to the same documents, so there is one code path. The documents are
 //! merged (tables recursively, scalars replace, arrays append) into one
-//! [`RulesFile`] that [`crate::approval::rules::load_layered_with`] applies as
+//! [`RulesFile`] that [`crate::config::load_layered_with`] applies as
 //! the `cli` layer: after the global and realm files, before the project
 //! file's deny-only/lower-only rules.
 
@@ -13,8 +13,9 @@ use std::fmt;
 
 use toml::{Table, Value};
 
-use crate::approval::rules::{RuleOrigin, RulesFile};
+use crate::approval::rules::RuleOrigin;
 use crate::cli::Args;
+use crate::config::RulesFile;
 use crate::endpoints::{WireDialect, is_valid_endpoint_name};
 
 /// A command-line setting that cannot be applied. Fatal at start-up.

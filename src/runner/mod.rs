@@ -167,22 +167,11 @@ pub async fn run(args: Args, layers: bootstrap::Layers) -> Result<(), TuiError> 
 #[must_use]
 pub fn app_setup(runtime: &Runtime) -> AppSetup {
     AppSetup {
-        compaction: compaction_policy(runtime),
+        compaction: runtime.compaction,
         ui: runtime.ui,
         shell_confined: runtime.confinement.requirement().is_some(),
         workspace: runtime.scope.project_root.clone(),
     }
-}
-
-/// The context-compaction policy of `runtime`'s `tui.toml` layers.
-fn compaction_policy(runtime: &Runtime) -> CompactionPolicy {
-    runtime
-        .approval
-        .engine
-        .settings()
-        .compaction_policy(None)
-        .normalized()
-        .0
 }
 
 /// What every session build shares: the external tools (file and note
@@ -232,7 +221,7 @@ impl Template {
             None => gateway,
         };
         let gateway = gateway.build().map_err(TuiError::ToolGateway)?;
-        let policy = compaction_policy(runtime);
+        let policy = runtime.compaction;
         Ok((
             Self {
                 external_tools: Arc::new(gateway),

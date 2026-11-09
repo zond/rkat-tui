@@ -411,7 +411,7 @@ pub fn cost_segment_text(cost: &SessionCost, prices: &PriceTable) -> Option<Stri
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::approval::rules::PricingSection;
+    use crate::config::PricingSection;
     use std::collections::BTreeMap;
 
     fn price(input: f64, output: f64, cached: Option<f64>, write: Option<f64>) -> PricingSection {
