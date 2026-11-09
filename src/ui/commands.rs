@@ -107,6 +107,8 @@ pub enum HelpersCommand {
 pub enum Command {
     /// `/quit`, `/exit`.
     Quit,
+    /// `/detach`: leave and keep the agent running (attach mode).
+    Detach,
     /// `/clear`: clear the transcript and start a new session.
     Clear,
     /// `/resume [ref]`.
@@ -259,9 +261,20 @@ pub static COMMANDS: &[CommandSpec] = &[
         summary: "leave rkat-tui",
         help: &[(
             "/quit, /exit, /q",
-            "leave rkat-tui (asks again while a turn runs or messages are queued)\nand release its lease on the realm; attached (--attach), detach: the\ndaemon's agent and its turn go on (/daemon stop shuts it down)",
+            "leave rkat-tui (asks again while a turn runs or messages are queued)\nand release its lease on the realm; attached (--attach): stops the\ndaemon when this rkat-tui started it and nobody detached since,\nleaves it running when other clients are attached, else asks:\ndetach or terminate",
         )],
         parse: |_| Some(Command::Quit),
+    },
+    CommandSpec {
+        name: "detach",
+        aliases: &[],
+        usage: "",
+        summary: "attach mode: leave and keep the agent running",
+        help: &[(
+            "/detach",
+            "attach mode (rkat-tui --attach): leave; the daemon's agent and its\nturn go on, and a later /quit asks before stopping the daemon\n(rkat-tui reattaches)",
+        )],
+        parse: |rest| arg_free(rest, Command::Detach),
     },
     CommandSpec {
         name: "clear",
@@ -451,7 +464,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         summary: "attach mode: shut the workspace's daemon down",
         help: &[(
             "/daemon stop",
-            "attach mode (rkat-tui --attach): shut the workspace's\nrkat-tui-mob down (its sessions stay; /quit only detaches)",
+            "attach mode (rkat-tui --attach): shut the workspace's\nrkat-tui-mob down from any client (its sessions stay)",
         )],
         parse: |rest| match words(rest).as_slice() {
             ["stop"] => Some(Command::DaemonStop),
@@ -659,8 +672,8 @@ Keys:
   Up (empty input)               take queued messages back into the editor
   Ctrl-D                         quit on an empty input: press again within 3 s (while a turn
                                  runs or messages are queued the turn is then interrupted and
-                                 undelivered messages are saved; attached, it detaches and the
-                                 turn goes on in the daemon); with text, delete forward
+                                 undelivered messages are saved; attached, as /quit: it may stop
+                                 the daemon, /detach keeps it); with text, delete forward
   Ctrl-O                         show or hide detail: the last reasoning block and the
                                  output of the last tool call (a click toggles one tool)
   Ctrl-T                         show or hide the task checklist under the input (the agent's
@@ -925,10 +938,11 @@ mod tests {
             "rewind",
             "checkpoint",
             "undo",
+            "detach",
         ] {
             assert!(super::spec(name).is_some(), "/{name} has no spec");
         }
-        assert_eq!(seen.len(), 32);
+        assert_eq!(seen.len(), 33);
         // `/help`'s "Commands:" rows come from the specs, in their order.
         let commands = help_text().split_once("Keys:").unwrap().0;
         let mut at = 0;

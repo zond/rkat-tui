@@ -3014,3 +3014,37 @@ connection's does not. Tests: `attach_lifecycle::status_reports_the_daemon_its_c
 `attach_lifecycle::shutdown_stops_the_daemon_and_removes_its_endpoint_file`,
 `daemon::lifecycle::tests::*`,
 `client::launch::tests::the_start_token_is_handed_over_in_the_environment`.
+
+### `/quit`, `/detach` and hangup in attach mode
+
+The UI cannot leave first and decide later: `Effect::Quit` ends the UI
+loop at once. So an attached `/quit` (and Ctrl-D, and Ctrl-C twice, which
+now take the same path) sends `Effect::DecideQuit`; the attach runner
+reads `rkat/status` (bounded by 3 s) and answers `Msg::QuitDecided`
+(`client::runner::quit_decision`): more than one client attached →
+leave, the daemon stays for the others (a notice says so); the owner, no
+detach → terminate; anything else, including a status that failed →
+`Modal::Quit` (detach highlighted; it says a running turn is
+interrupted). Only then does the UI send `SaveUnsent`, `Effect::Leave`
+(`rkat/detach` or `rkat/shutdown`) and `Effect::Quit`, so the unsent
+messages are saved whichever way it leaves and the quit-confirm for a
+busy UI still comes first. A second `/quit` while the runner decides
+leaves at once as a detach (an escape if the daemon hangs). Leaving the
+others' daemon sends no `rkat/detach`: a non-owner leaving is not "keep
+going without me"; the owner's connection ending is recorded as a
+detach by the daemon anyway. A daemon without `rkat/shutdown` gets
+SIGTERM, as `/daemon stop`. What the runner did is printed on the
+terminal after the UI closes (`AttachRunner::farewells`), since the
+transcript is gone by then. SIGHUP is forwarded as `Msg::Hangup`, which
+leaves like a detach with no message to the daemon, so the terminal is
+restored and the daemon keeps running. Tests:
+`attach_lifecycle::quit_stops_the_daemon_this_client_started`,
+`attach_lifecycle::detach_keeps_the_daemon_and_a_later_quit_asks`,
+`attach_lifecycle::quit_with_another_client_attached_leaves_the_daemon_to_it`,
+`attach_lifecycle::a_client_that_did_not_start_the_daemon_is_asked`,
+`attach_lifecycle::the_owner_hanging_up_keeps_the_daemon`,
+`attach_lifecycle::the_quit_decision_follows_the_rules`,
+`ui::tests::dispatch::an_attached_quit_asks_the_runner_and_follows_its_decision`,
+`ui::tests::dispatch::the_quit_dialog_detaches_by_default_terminates_on_request_and_esc_stays`,
+`ui::tests::dispatch::unsent_messages_are_saved_whichever_way_an_attached_quit_leaves`,
+`client::tests::a_hangup_reaches_the_ui`.

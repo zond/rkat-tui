@@ -523,3 +523,123 @@ fn cost_command_prints_the_breakdown() {
     assert!(text.contains("$7.50 (price: tui.toml)"), "{text}");
     assert!(text.contains("total: $7.50"), "{text}");
 }
+
+/// An idle app attached to a daemon.
+fn attached_app() -> App {
+    let mut status = StatusInfo::default();
+    status.apply(StatusUpdate::Attach(Some("attached 127.0.0.1:1".into())));
+    App::new(status)
+}
+
+#[test]
+fn an_attached_quit_asks_the_runner_and_follows_its_decision() {
+    let mut app = attached_app();
+    assert_eq!(submit(&mut app, "/quit"), vec![Effect::DecideQuit]);
+    assert_eq!(
+        app.update(Msg::QuitDecided(QuitDecision::Terminate)),
+        vec![Effect::Leave(Departure::Terminate), Effect::Quit]
+    );
+    // Other clients attached: just leave.
+    let mut app = attached_app();
+    submit(&mut app, "/quit");
+    assert_eq!(
+        app.update(Msg::QuitDecided(QuitDecision::Leave)),
+        vec![Effect::Quit]
+    );
+    // A decision nobody asked for is dropped.
+    let mut app = attached_app();
+    assert!(app.update(Msg::QuitDecided(QuitDecision::Leave)).is_empty());
+    // A second /quit while the runner decides leaves at once (a detach).
+    assert_eq!(submit(&mut app, "/quit"), vec![Effect::DecideQuit]);
+    assert_eq!(submit(&mut app, "/quit"), vec![Effect::Quit]);
+    // In-process, /quit quits.
+    let mut app = App::new(StatusInfo::default());
+    assert_eq!(submit(&mut app, "/quit"), vec![Effect::Quit]);
+}
+
+#[test]
+fn the_quit_dialog_detaches_by_default_terminates_on_request_and_esc_stays() {
+    let ask = || QuitDecision::Ask {
+        reason: "a client detached from it earlier".into(),
+        running: true,
+    };
+    let mut app = attached_app();
+    submit(&mut app, "/quit");
+    assert!(app.update(Msg::QuitDecided(ask())).is_empty());
+    let Some(Modal::Quit(dialog)) = &app.modal else {
+        panic!("no quit dialog: {:?}", app.modal);
+    };
+    assert!(dialog.running && dialog.cursor == 0);
+    assert_eq!(
+        app.update(key(KeyCode::Enter)),
+        vec![Effect::Leave(Departure::Detach), Effect::Quit]
+    );
+    let mut app = attached_app();
+    submit(&mut app, "/quit");
+    app.update(Msg::QuitDecided(ask()));
+    app.update(key(KeyCode::Down));
+    assert_eq!(
+        app.update(key(KeyCode::Enter)),
+        vec![Effect::Leave(Departure::Terminate), Effect::Quit]
+    );
+    let mut app = attached_app();
+    submit(&mut app, "/quit");
+    app.update(Msg::QuitDecided(ask()));
+    assert_eq!(
+        app.update(key(KeyCode::Char('t'))),
+        vec![Effect::Leave(Departure::Terminate), Effect::Quit]
+    );
+    let mut app = attached_app();
+    submit(&mut app, "/quit");
+    app.update(Msg::QuitDecided(ask()));
+    assert!(app.update(key(KeyCode::Esc)).is_empty());
+    assert!(app.modal.is_none());
+    // And /quit asks the runner again.
+    assert_eq!(submit(&mut app, "/quit"), vec![Effect::DecideQuit]);
+}
+
+#[test]
+fn unsent_messages_are_saved_whichever_way_an_attached_quit_leaves() {
+    let mut status = StatusInfo::default();
+    status.apply(StatusUpdate::Attach(Some("attached 127.0.0.1:1".into())));
+    let mut app = App::new(status);
+    assert_eq!(
+        submit(&mut app, "one"),
+        vec![Effect::StartTurn("one".into())]
+    );
+    submit(&mut app, "two");
+    // Busy: the first /quit warns, the second asks the runner.
+    assert!(submit(&mut app, "/quit").is_empty());
+    assert_eq!(submit(&mut app, "/quit"), vec![Effect::DecideQuit]);
+    let effects = app.update(Msg::QuitDecided(QuitDecision::Terminate));
+    assert!(
+        matches!(effects.as_slice(), [Effect::SaveUnsent(held), Effect::Leave(Departure::Terminate), Effect::Quit] if held.len() == 1),
+        "{effects:?}"
+    );
+}
+
+#[test]
+fn detach_leaves_attached_and_says_nothing_to_detach_from_in_process() {
+    let mut app = attached_app();
+    assert_eq!(
+        submit(&mut app, "/detach"),
+        vec![Effect::Leave(Departure::Detach), Effect::Quit]
+    );
+    let mut app = App::new(StatusInfo::default());
+    assert!(submit(&mut app, "/detach").is_empty());
+    assert!(matches!(
+        app.transcript.blocks().last(),
+        Some(Block::Notice { text, .. }) if text.starts_with("nothing to detach from")
+    ));
+}
+
+#[test]
+fn a_hangup_leaves_without_stopping_the_daemon() {
+    let mut app = attached_app();
+    assert_eq!(app.update(Msg::Hangup), vec![Effect::Quit]);
+    // Ctrl-C twice is /quit: attached, it asks the runner.
+    let mut app = attached_app();
+    let t0 = Instant::now();
+    assert!(app.update_at(ctrl('c'), t0).is_empty());
+    assert_eq!(app.update_at(ctrl('c'), t0), vec![Effect::DecideQuit]);
+}

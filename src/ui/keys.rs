@@ -7,10 +7,10 @@ use std::time::Instant;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::{
-    Action, App, CHORD_WINDOW, Command, DOUBLE_CTRL_C_WINDOW, DOUBLE_ESC_WINDOW, EditAction,
-    EditorClosed, EditorTarget, Effect, HistorySearch, InputMode, LocalEffect, Modal, ModalKey,
-    ModelCommand, NoticeLevel, PathIndex, PendingId, QUIT_CONFIRM_WINDOW, SearchOutcome,
-    StashOutcome, complete, keymap, search,
+    Action, App, CHORD_WINDOW, Command, DOUBLE_CTRL_C_WINDOW, DOUBLE_ESC_WINDOW, Departure,
+    EditAction, EditorClosed, EditorTarget, Effect, HistorySearch, InputMode, LocalEffect, Modal,
+    ModalKey, ModelCommand, NoticeLevel, PathIndex, PendingId, QUIT_CONFIRM_WINDOW, QuitChoice,
+    QuitDecision, QuitDialog, SearchOutcome, StashOutcome, complete, keymap, search,
 };
 
 impl App {
@@ -410,6 +410,18 @@ impl App {
                     }
                 }
             },
+            Some(Modal::Quit(dialog)) => match dialog.key(key) {
+                ModalKey::Stay => {}
+                ModalKey::Close => self.modal = None,
+                ModalKey::Choose(choice) => {
+                    self.modal = None;
+                    let departure = match choice {
+                        QuitChoice::Detach => Departure::Detach,
+                        QuitChoice::Terminate => Departure::Terminate,
+                    };
+                    self.leave(Some(departure), fx);
+                }
+            },
             Some(Modal::PlanReady(dialog)) => match dialog.key(key) {
                 ModalKey::Stay => {}
                 ModalKey::Close => self.modal = None,
@@ -498,7 +510,8 @@ impl App {
             self.last_ctrl_c = None;
             self.input.clear();
         } else if self.quit_armed(now) {
-            fx.push(Effect::Quit);
+            self.last_ctrl_c = None;
+            self.request_quit(now, fx);
         } else {
             self.last_ctrl_c = Some(now);
         }
@@ -541,9 +554,9 @@ impl App {
                     if queued == 1 { "" } else { "s" }
                 ));
             }
-            // Attach mode detaches: the daemon's turn goes on.
+            // Attach mode decides next whether the daemon stops.
             let after = if self.status.attach.is_some() {
-                "the turn goes on in the daemon, messages it has not received are saved"
+                "messages the daemon has not received are saved"
             } else {
                 "the turn is interrupted, undelivered messages are saved"
             };
@@ -555,6 +568,58 @@ impl App {
             return;
         }
         self.quit_confirm = None;
+        // Attached: the runner asks the daemon whether this client stops
+        // it, leaves it to other clients, or asks (detach or terminate). A
+        // second `/quit` while it asks leaves at once, as a detach.
+        if self.status.attach.is_some() && !std::mem::take(&mut self.deciding_quit) {
+            self.deciding_quit = true;
+            fx.push(Effect::DecideQuit);
+            return;
+        }
+        self.leave(None, fx);
+    }
+
+    /// `/detach`: attached, leave and keep the agent running (the daemon
+    /// records the detach); in-process there is nothing to detach from.
+    pub(super) fn request_detach(&mut self, fx: &mut Vec<Effect>) {
+        if self.status.attach.is_some() {
+            self.leave(Some(Departure::Detach), fx);
+        } else {
+            self.transcript.push_notice(
+                NoticeLevel::Info,
+                "nothing to detach from: this rkat-tui runs the agent itself (/quit leaves)",
+            );
+            self.scroll.bottom();
+        }
+    }
+
+    /// The runner's answer to [`Effect::DecideQuit`].
+    pub(super) fn quit_decided(&mut self, decision: QuitDecision, fx: &mut Vec<Effect>) {
+        if !std::mem::take(&mut self.deciding_quit) {
+            return;
+        }
+        match decision {
+            QuitDecision::Terminate => self.leave(Some(Departure::Terminate), fx),
+            QuitDecision::Leave => self.leave(None, fx),
+            QuitDecision::Ask { reason, running } => {
+                if matches!(self.modal, Some(Modal::Escalation { .. })) {
+                    self.transcript.push_notice(
+                        NoticeLevel::Warn,
+                        "answer the approval request first, then /quit again",
+                    );
+                    self.scroll.bottom();
+                } else {
+                    self.modal = Some(Modal::Quit(QuitDialog::new(reason, running)));
+                }
+            }
+        }
+    }
+
+    /// Leave now: hand every held message to the integrator
+    /// ([`Effect::SaveUnsent`]), say what leaving does to an attached
+    /// daemon ([`Effect::Leave`]), then [`Effect::Quit`].
+    pub(super) fn leave(&mut self, departure: Option<Departure>, fx: &mut Vec<Effect>) {
+        self.deciding_quit = false;
         // Delivered (settled) messages are in the conversation already.
         let mut held: Vec<(Option<PendingId>, String)> = self
             .pending
@@ -567,6 +632,9 @@ impl App {
         }
         if !held.is_empty() {
             fx.push(Effect::SaveUnsent(held));
+        }
+        if let Some(departure) = departure {
+            fx.push(Effect::Leave(departure));
         }
         fx.push(Effect::Quit);
     }

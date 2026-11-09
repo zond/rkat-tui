@@ -14,10 +14,12 @@ mod rig;
 use std::time::Duration;
 
 use common::{ScriptedLlmClient, TIMEOUT, Workspace, args_for};
-use rig::Running;
+use rig::{Client, Running};
 use rkat_tui::client::remote;
+use rkat_tui::client::runner::quit_decision;
 use rkat_tui::client::transport::Connection;
 use rkat_tui::daemon::protocol::{self, Status};
+use rkat_tui::ui::{Departure, Effect, Msg, QuitDecision};
 use serde_json::json;
 
 /// The start token the tests' daemons were launched with.
@@ -153,4 +155,158 @@ async fn shutdown_stops_the_daemon_and_removes_its_endpoint_file() {
     drop(owner);
     daemon.ended().await;
     assert!(!file.exists(), "the endpoint file is removed");
+}
+
+// The attach runner's `/quit`, `/detach` and hangup against a daemon.
+
+fn decided(msg: &Msg) -> Option<&QuitDecision> {
+    match msg {
+        Msg::QuitDecided(decision) => Some(decision),
+        _ => None,
+    }
+}
+
+/// `/quit`'s decision for `client`.
+async fn decide(client: &mut Client) -> QuitDecision {
+    client.send(Effect::DecideQuit);
+    let msg = client.wait_for(|m| decided(m).is_some()).await;
+    decided(&msg).cloned().unwrap()
+}
+
+/// Leave as `departure` (none: a hangup) and wait for the runner to end.
+async fn leave(client: Client, departure: Option<Departure>) {
+    if let Some(departure) = departure {
+        client.send(Effect::Leave(departure));
+    }
+    client.quit().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn quit_stops_the_daemon_this_client_started() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let daemon = owned_daemon(&ws, &llm).await;
+    let file = daemon.endpoint_file.clone();
+    let mut client = Client::attach_with(&ws.root, Some(START)).await;
+    assert_eq!(decide(&mut client).await, QuitDecision::Terminate);
+    client.send(Effect::Leave(Departure::Terminate));
+    client
+        .wait_for(
+            |m| matches!(m, Msg::Notice { text, .. } if text.starts_with("stopped the daemon")),
+        )
+        .await;
+    client.quit().await;
+    daemon.ended().await;
+    assert!(!file.exists());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn detach_keeps_the_daemon_and_a_later_quit_asks() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let daemon = owned_daemon(&ws, &llm).await;
+    let client = Client::attach_with(&ws.root, Some(START)).await;
+    leave(client, Some(Departure::Detach)).await;
+    assert!(daemon.serving());
+    // The owner is back: a detach happened, so /quit asks.
+    let mut client = Client::attach_with(&ws.root, Some(START)).await;
+    let QuitDecision::Ask { reason, running } = decide(&mut client).await else {
+        panic!("not asked");
+    };
+    assert!(reason.contains("detached"), "{reason}");
+    assert!(!running);
+    leave(client, Some(Departure::Detach)).await;
+    assert!(daemon.serving());
+    daemon.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn quit_with_another_client_attached_leaves_the_daemon_to_it() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let daemon = owned_daemon(&ws, &llm).await;
+    let mut owner = Client::attach_with(&ws.root, Some(START)).await;
+    let mut other = Client::attach(&ws.root).await;
+    assert_eq!(decide(&mut owner).await, QuitDecision::Leave);
+    assert!(
+        owner.notices().contains("1 other client is attached"),
+        "{}",
+        owner.notices()
+    );
+    leave(owner, None).await;
+    assert!(daemon.serving());
+    // The owner left it running: the other client is asked.
+    let watcher = attach(&daemon, None, true).await;
+    status_until(&watcher, |s| s.clients == 1 && s.detached).await;
+    let QuitDecision::Ask { reason, .. } = decide(&mut other).await else {
+        panic!("not asked");
+    };
+    assert!(reason.contains("detached"), "{reason}");
+    leave(other, Some(Departure::Terminate)).await;
+    daemon.ended().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_that_did_not_start_the_daemon_is_asked() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let daemon = owned_daemon(&ws, &llm).await;
+    let mut client = Client::attach(&ws.root).await;
+    let QuitDecision::Ask { reason, .. } = decide(&mut client).await else {
+        panic!("not asked");
+    };
+    assert!(reason.contains("did not start"), "{reason}");
+    leave(client, Some(Departure::Detach)).await;
+    daemon.stop().await;
+}
+
+/// A hangup (the UI quits without a departure) keeps the daemon and
+/// counts as the owner's detach.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_owner_hanging_up_keeps_the_daemon() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let daemon = owned_daemon(&ws, &llm).await;
+    let client = Client::attach_with(&ws.root, Some(START)).await;
+    leave(client, None).await;
+    let watcher = attach(&daemon, None, true).await;
+    status_until(&watcher, |s| s.clients == 0 && s.detached).await;
+    assert!(daemon.serving());
+    drop(watcher);
+    daemon.stop().await;
+}
+
+#[test]
+fn the_quit_decision_follows_the_rules() {
+    let status = |clients, detached, owner, running| Status {
+        workspace: "/w".into(),
+        pid: 1,
+        started_at: String::new(),
+        clients,
+        detached,
+        owner,
+        session_id: None,
+        running,
+    };
+    assert_eq!(
+        quit_decision(Some(&status(1, false, true, false))),
+        QuitDecision::Terminate
+    );
+    assert_eq!(
+        quit_decision(Some(&status(2, false, true, false))),
+        QuitDecision::Leave
+    );
+    assert_eq!(
+        quit_decision(Some(&status(1, true, true, true))),
+        QuitDecision::Ask {
+            reason: "a client detached from it earlier".into(),
+            running: true
+        }
+    );
+    assert!(matches!(
+        quit_decision(Some(&status(1, false, false, false))),
+        QuitDecision::Ask { .. }
+    ));
+    // The daemon could not say (the status failed, or it lost the owner).
+    assert!(matches!(quit_decision(None), QuitDecision::Ask { .. }));
 }

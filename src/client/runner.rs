@@ -51,6 +51,7 @@ use crate::ui::{
     Block, Checklist, ChecklistView, CompactFailure, Effect, EscalationAnswer, EscalationId, Msg,
     NoticeLevel, RuleEffect, StatusUpdate, TurnFailure, TurnOutcome, TurnSummary,
 };
+use crate::ui::{Departure, QuitDecision};
 use crate::user_shell::UserShell;
 use crate::workbench::models::Current;
 use crate::workbench::{AgentContext, SavedUnsent, Workbench, WorkbenchParts};
@@ -81,7 +82,7 @@ pub const DISCOVER_FOR: Duration = Duration::from_secs(10);
 const ORPHANS_MAX: usize = 2_000;
 
 /// The notice shown on every attach.
-pub const EXPERIMENTAL_NOTICE: &str = "attach mode is experimental: the agent runs in this workspace's rkat-tui-mob daemon, behind the same approval gate (its approval requests show here, and in every other attached client; the first answer counts). /quit detaches and leaves the daemon running; /daemon stop shuts it down.";
+pub const EXPERIMENTAL_NOTICE: &str = "attach mode is experimental: the agent runs in this workspace's rkat-tui-mob daemon, behind the same approval gate (its approval requests show here, and in every other attached client; the first answer counts). /detach leaves the agent running; /quit stops the daemon when this rkat-tui started it and nobody detached since (with other clients attached it detaches, otherwise it asks); /daemon stop shuts it down.";
 
 /// How long a turn whose runs all ended waits for a follow-up run.
 pub const RUN_GRACE: Duration = Duration::from_millis(300);
@@ -99,6 +100,10 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(15);
 /// Bound on a conversation switch (the daemon retires and seats the
 /// orchestrator) and on reading the new conversation.
 const SWITCH_TIMEOUT: Duration = Duration::from_mins(1);
+
+/// Bound on the calls that decide how to leave (`rkat/status`) and that
+/// leave (`rkat/detach`, `rkat/shutdown`).
+const LEAVE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// How often a reconnect may start a daemon that died.
 const RESTART_EVERY: Duration = Duration::from_secs(30);
@@ -445,7 +450,13 @@ pub struct AttachRunner {
     /// The steers the daemon admitted: the agent has them, or gets them
     /// after this client leaves, so quitting saves none of them.
     admitted: Vec<PendingId>,
+    /// What to say on the terminal once the UI is gone (how this client
+    /// left the daemon).
+    farewells: Farewells,
 }
+
+/// Lines for the terminal after the UI closed ([`AttachRunner::farewells`]).
+pub type Farewells = Arc<parking_lot::Mutex<Vec<String>>>;
 
 impl AttachRunner {
     /// A runner on `config`; it connects once [`AttachRunner::run`] runs.
@@ -493,7 +504,21 @@ impl AttachRunner {
             current_endpoint: None,
             bench,
             admitted: Vec::new(),
+            farewells: Farewells::default(),
         }
+    }
+
+    /// What the runner leaves to say on the terminal once the UI is gone
+    /// (whether the daemon keeps running).
+    #[must_use]
+    pub fn farewells(&self) -> Farewells {
+        Arc::clone(&self.farewells)
+    }
+
+    /// Say `text` now and again on the terminal after the UI closed.
+    fn farewell(&self, level: NoticeLevel, text: String) {
+        self.notice(level, text.clone());
+        self.farewells.lock().push(text);
     }
 
     /// Serve effects until the UI quits, then detach (the daemon and any
@@ -1471,6 +1496,8 @@ impl AttachRunner {
                 self.bench.export(path.as_deref(), &text, &session);
             }
             Effect::DaemonStop => self.daemon_stop().await,
+            Effect::DecideQuit => self.decide_quit().await,
+            Effect::Leave(departure) => self.depart(departure).await,
             Effect::NewSession => self.switch_conversation(None),
             Effect::ResumeSession(reference) => self.resume_session(reference),
             Effect::RequestResumePicker => self.show_resume_picker(),
@@ -2126,22 +2153,113 @@ impl AttachRunner {
     /// `/daemon stop`: SIGTERM to the pid the endpoint file names, once the
     /// file still names the daemon this client is attached to.
     async fn daemon_stop(&mut self) {
+        match self.sigterm_attached().await {
+            Ok(pid) => self.notice(
+                NoticeLevel::Info,
+                format!("asked the daemon (pid {pid}) to shut down"),
+            ),
+            Err(why) => self.notice(NoticeLevel::Warn, why),
+        }
+    }
+
+    /// SIGTERM to the daemon this client is attached to (the endpoint
+    /// file's pid, when its address is the attached one).
+    async fn sigterm_attached(&mut self) -> Result<u32, String> {
         let connected = self.link.as_ref().map(|link| link.endpoint.address);
         let liveness = launch::probe(&self.config.endpoint_file).await;
-        match stop_target(&liveness, connected) {
-            Ok(pid) => match terminate(pid) {
-                Ok(()) => {
-                    self.stopping = true;
-                    self.notice(
+        let pid = stop_target(&liveness, connected)?;
+        terminate(pid).map_err(|err| format!("cannot stop the daemon: {err}"))?;
+        self.stopping = true;
+        Ok(pid)
+    }
+
+    /// `/quit`: how to leave, from the daemon's `rkat/status`
+    /// ([`quit_decision`]); answered with [`Msg::QuitDecided`].
+    async fn decide_quit(&mut self) {
+        // The daemon is gone already (`/daemon stop`): just leave.
+        let status = match (self.stopping, self.connection()) {
+            (false, Some(connection)) => bounded(
+                LEAVE_TIMEOUT,
+                remote::local::<_, protocol::Status>(
+                    &connection,
+                    protocol::STATUS,
+                    &serde_json::json!({}),
+                ),
+            )
+            .await
+            .map_err(|err| tracing::info!(error = %err, "the daemon's status is unknown at quit"))
+            .ok(),
+            _ => None,
+        };
+        let decision = if self.stopping {
+            QuitDecision::Leave
+        } else {
+            quit_decision(status.as_ref())
+        };
+        if let (QuitDecision::Leave, Some(status)) = (&decision, &status) {
+            let others = status.clients.saturating_sub(1);
+            self.farewell(
+                NoticeLevel::Info,
+                format!(
+                    "{others} other client{} attached: detached; the daemon (pid {}) keeps running for {}",
+                    if others == 1 { " is" } else { "s are" },
+                    status.pid,
+                    if others == 1 { "it" } else { "them" },
+                ),
+            );
+        }
+        self.send(Msg::QuitDecided(decision));
+    }
+
+    /// Leave the daemon as the UI decided: record a detach, or stop it.
+    async fn depart(&mut self, departure: Departure) {
+        let Some(connection) = self.connection() else {
+            if departure == Departure::Terminate && !self.stopping {
+                self.farewell(
+                    NoticeLevel::Warn,
+                    "not attached: the daemon was not stopped (/daemon stop from an attached rkat-tui, or SIGTERM)".to_string(),
+                );
+            }
+            return;
+        };
+        let pid = self.link.as_ref().map_or(0, |link| link.endpoint.pid);
+        let method = match departure {
+            Departure::Detach => protocol::DETACH,
+            Departure::Terminate => protocol::SHUTDOWN,
+        };
+        let answered = bounded(
+            LEAVE_TIMEOUT,
+            remote::local::<_, serde_json::Value>(&connection, method, &serde_json::json!({})),
+        )
+        .await;
+        match (departure, answered) {
+            (Departure::Detach, Ok(_)) => self.farewell(
+                NoticeLevel::Info,
+                format!("detached: the agent keeps running in the daemon (pid {pid}); rkat-tui --attach reattaches"),
+            ),
+            (Departure::Detach, Err(err)) => self.farewell(
+                NoticeLevel::Warn,
+                format!("detached; the daemon (pid {pid}) was not told ({err}) and keeps running"),
+            ),
+            // The daemon may close the connection before its answer.
+            (Departure::Terminate, Ok(_) | Err(CallFailure::Failed(ClientError::Disconnected))) => {
+                self.stopping = true;
+                self.farewell(NoticeLevel::Info, format!("stopped the daemon (pid {pid})"));
+            }
+            // A daemon without `rkat/shutdown`: SIGTERM, as `/daemon stop`.
+            (Departure::Terminate, Err(err)) => {
+                tracing::info!(error = %err, "rkat/shutdown failed; sending SIGTERM");
+                match self.sigterm_attached().await {
+                    Ok(pid) => self.farewell(
                         NoticeLevel::Info,
                         format!("asked the daemon (pid {pid}) to shut down"),
-                    );
+                    ),
+                    Err(why) => self.farewell(
+                        NoticeLevel::Error,
+                        format!("the daemon was not stopped: {why}"),
+                    ),
                 }
-                Err(err) => {
-                    self.notice(NoticeLevel::Error, format!("cannot stop the daemon: {err}"));
-                }
-            },
-            Err(why) => self.notice(NoticeLevel::Warn, why),
+            }
         }
     }
 }
@@ -2176,6 +2294,34 @@ fn current<'a>(endpoint: Option<&'a str>, model: Option<&'a (String, String)>) -
     Current {
         endpoint: endpoint.unwrap_or(""),
         model: model.map_or("", |(_, model)| model.as_str()),
+    }
+}
+
+/// How an attached `/quit` leaves, from the daemon's status (`None`: it
+/// could not say): stop the daemon when this client started it, nobody
+/// detached and nobody else is attached; leave it to the other clients
+/// when there are any; else ask.
+#[must_use]
+pub fn quit_decision(status: Option<&protocol::Status>) -> QuitDecision {
+    let Some(status) = status else {
+        return QuitDecision::Ask {
+            reason: "it could not say who started it".to_string(),
+            running: false,
+        };
+    };
+    if status.clients > 1 {
+        return QuitDecision::Leave;
+    }
+    let reason = if status.detached {
+        "a client detached from it earlier"
+    } else if status.owner {
+        return QuitDecision::Terminate;
+    } else {
+        "this rkat-tui did not start it"
+    };
+    QuitDecision::Ask {
+        reason: reason.to_string(),
+        running: status.running,
     }
 }
 

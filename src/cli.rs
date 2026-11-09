@@ -179,8 +179,9 @@ pub struct Args {
     /// Experimental: run against the workspace's `rkat-tui-mob` daemon
     /// instead of hosting the agent in this process. `auto` (the default
     /// when the flag is given without a value) starts the daemon when none
-    /// answers; `--attach=existing` only attaches to a running one. `/quit` detaches
-    /// and leaves the daemon running; `/daemon stop` shuts it down.
+    /// answers; `--attach=existing` only attaches to a running one. `/detach`
+    /// leaves the daemon running; `/quit` stops a daemon this rkat-tui started
+    /// (else it detaches or asks); `/daemon stop` shuts it down.
     #[arg(
         long,
         value_enum,

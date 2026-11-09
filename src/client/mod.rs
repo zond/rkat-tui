@@ -279,8 +279,9 @@ pub fn app_setup(config: &AttachConfig) -> AppSetup {
     }
 }
 
-/// Run the TUI attached to the workspace's daemon until the user quits
-/// (which detaches; the daemon keeps running).
+/// Run the TUI attached to the workspace's daemon until the user leaves
+/// (`/detach`, or `/quit`, which stops the daemon only when this client
+/// started it and nobody detached since; a hangup is a detach).
 ///
 /// # Errors
 ///
@@ -312,10 +313,22 @@ pub async fn run(
         args.prompt.clone(),
         &effect_tx,
     );
+    // A hangup (the terminal closed) leaves as a detach: the UI restores
+    // the terminal and quits without stopping the daemon.
+    #[cfg(unix)]
+    let hangup = match forward_hangup(ui_tx.clone()) {
+        Ok(task) => Some(task),
+        Err(err) => {
+            tracing::warn!(error = %err, "cannot listen for SIGHUP");
+            None
+        }
+    };
     let runner = AttachRunner::new(config, ui_tx, effect_rx);
-    // Quitting detaches: the runner only saves the cursor and the unsent
+    let farewells = runner.farewells();
+    // The runner leaves the daemon as `/quit` decided (stopped, or running
+    // with the detach recorded), then saves the cursor and the unsent
     // messages.
-    app::drive(
+    let driven = app::drive(
         opened,
         UiChannels { agent_rx, ui_rx },
         effect_tx,
@@ -323,7 +336,35 @@ pub async fn run(
         tokio::spawn(runner.run()),
         Duration::from_secs(5),
     )
-    .await
+    .await;
+    #[cfg(unix)]
+    if let Some(hangup) = hangup {
+        hangup.abort();
+    }
+    for line in farewells.lock().drain(..) {
+        eprintln!("rkat-tui: {line}");
+    }
+    driven
+}
+
+/// Turn every SIGHUP into [`Msg::Hangup`] on `ui_tx` (the UI then leaves as
+/// a detach); the handler is installed before this returns.
+///
+/// # Errors
+///
+/// When the signal handler cannot be installed.
+#[cfg(unix)]
+pub fn forward_hangup(
+    ui_tx: mpsc::UnboundedSender<Msg>,
+) -> std::io::Result<tokio::task::JoinHandle<()>> {
+    let mut hangups = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
+    Ok(tokio::spawn(async move {
+        while hangups.recv().await.is_some() {
+            if ui_tx.send(Msg::Hangup).is_err() {
+                break;
+            }
+        }
+    }))
 }
 
 /// Test seam: an attach runner driven headless. Not a stable API.
@@ -357,5 +398,25 @@ pub mod testing {
             ui_rx,
             task: tokio::spawn(runner.run()),
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    /// A hangup reaches the UI as [`Msg::Hangup`] (which leaves as a
+    /// detach, `ui::tests`); the process is not killed by it.
+    #[tokio::test]
+    async fn a_hangup_reaches_the_ui() {
+        let (ui_tx, mut ui_rx) = mpsc::unbounded_channel();
+        let task = forward_hangup(ui_tx).unwrap();
+        nix::sys::signal::raise(nix::sys::signal::Signal::SIGHUP).unwrap();
+        let msg = tokio::time::timeout(Duration::from_secs(5), ui_rx.recv())
+            .await
+            .expect("forwarded");
+        assert!(matches!(msg, Some(Msg::Hangup)), "{msg:?}");
+        task.abort();
     }
 }

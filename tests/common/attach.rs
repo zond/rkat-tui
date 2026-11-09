@@ -159,9 +159,15 @@ pub struct Client {
 
 impl Client {
     pub async fn attach(root: &Path) -> Self {
+        Self::attach_with(root, None).await
+    }
+
+    /// Attach presenting `start_token` (the client that started the daemon).
+    pub async fn attach_with(root: &Path, start_token: Option<&str>) -> Self {
         let mut config = rkat_tui::client::configure(&args_for(root), AttachMode::Existing)
             .await
             .unwrap();
+        config.start_token = start_token.map(str::to_string);
         config.lister = no_lists();
         config.endpoint_file = endpoint_file_for(root);
         let mut client = Self {

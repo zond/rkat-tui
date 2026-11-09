@@ -547,7 +547,7 @@ fn page_and_end_keys_drive_scroll_state() {
 }
 
 #[test]
-fn quitting_a_busy_attached_ui_says_the_turn_goes_on_in_the_daemon() {
+fn quitting_a_busy_attached_ui_promises_only_what_holds_either_way() {
     let t0 = Instant::now();
     let mut app = running_app();
     app.update_at(ctrl('d'), t0);
@@ -561,7 +561,7 @@ fn quitting_a_busy_attached_ui_says_the_turn_goes_on_in_the_daemon() {
     assert!(matches!(
         last_notice(&app),
         Some((NoticeLevel::Warn, text))
-            if text.contains("the turn goes on in the daemon")
+            if text.contains("messages the daemon has not received are saved")
                 && !text.contains("interrupted")
     ));
 }

@@ -6,6 +6,14 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Added
 
+- Attach mode: `/detach` leaves and keeps the agent running. `/quit` (and
+  Ctrl-D) now stops the daemon when this rkat-tui started it and nobody
+  detached since; with other clients attached it detaches and says so;
+  otherwise it asks "detach (keep the agent running) / terminate (stop
+  the daemon)", detach by default, and says when terminating interrupts a
+  running turn. Unsent messages are saved either way. A closed terminal
+  (SIGHUP) restores the terminal and leaves as a detach. After the UI
+  closes, rkat-tui says whether the daemon is still running.
 - The daemon knows its lifecycle: how many clients are attached, whether
   anyone detached from it, and which client started it (a start token the
   launching client hands it). `rkat/status` reports them with the

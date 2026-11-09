@@ -280,9 +280,9 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect, now: Instant) {
     } else {
         " · Ctrl+↑/↓ pick a helper"
     };
-    // Attached, quitting detaches: the daemon's agent goes on.
+    // Attached, quitting may stop the daemon; /detach keeps it.
     let quit = if app.status.attach.is_some() {
-        "detach"
+        "quit (/detach keeps the agent)"
     } else {
         "quit"
     };

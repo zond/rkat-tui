@@ -702,7 +702,8 @@ impl Runner {
             Effect::Steer { id, text } => self.steer(id, text).await,
             Effect::Interrupt => self.interrupt(),
             Effect::RecallQueued => self.recall_queued().await,
-            Effect::Quit => {}
+            // Only an attached UI sends these.
+            Effect::Quit | Effect::Leave(_) | Effect::DecideQuit => {}
             Effect::SaveUnsent(held) => self.bench.hold_unsent(held),
             Effect::NewSession => self.new_session().await,
             Effect::ResumeSession(reference) => self.resume_session(&reference).await,

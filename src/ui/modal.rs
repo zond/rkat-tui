@@ -280,6 +280,85 @@ impl PlanDialog {
     }
 }
 
+/// What the user chose in the attached `/quit` dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuitChoice {
+    /// Leave the agent running (the default).
+    Detach,
+    /// Stop the daemon.
+    Terminate,
+}
+
+/// The attached `/quit` dialog: detach or terminate, detach highlighted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuitDialog {
+    /// Why it asks.
+    pub reason: String,
+    /// A turn is running (terminating interrupts it).
+    pub running: bool,
+    /// 0: detach, 1: terminate.
+    pub cursor: usize,
+}
+
+impl QuitDialog {
+    /// A dialog with detach highlighted.
+    #[must_use]
+    pub fn new(reason: String, running: bool) -> Self {
+        Self {
+            reason,
+            running,
+            cursor: 0,
+        }
+    }
+
+    /// The rows, in order.
+    fn rows(&self) -> [(QuitChoice, String); 2] {
+        let terminate = if self.running {
+            "Terminate: stop the daemon (interrupts the running turn)"
+        } else {
+            "Terminate: stop the daemon"
+        };
+        [
+            (
+                QuitChoice::Detach,
+                "Detach: keep the agent running (rkat-tui reattaches)".to_string(),
+            ),
+            (QuitChoice::Terminate, terminate.to_string()),
+        ]
+    }
+
+    /// A key: arrows (and `j`/`k`) move, Enter picks the highlighted row,
+    /// `1`/`d` detach, `2`/`t` terminate, Esc and Ctrl-C cancel the quit.
+    /// A held key only moves; other Ctrl/Alt keys do nothing.
+    pub fn key(&mut self, key: &KeyEvent) -> ModalKey<QuitChoice> {
+        if is_ctrl_c(key) && !is_held(key) {
+            return ModalKey::Close;
+        }
+        let moves = matches!(
+            key.code,
+            KeyCode::Up | KeyCode::Down | KeyCode::Char('j' | 'k')
+        );
+        if (is_held(key) && !moves) || has_ctrl_or_alt(key) {
+            return ModalKey::Stay;
+        }
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.cursor = 0;
+                ModalKey::Stay
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.cursor = 1;
+                ModalKey::Stay
+            }
+            KeyCode::Enter => ModalKey::Choose(self.rows()[self.cursor.min(1)].0),
+            KeyCode::Char('1' | 'd') => ModalKey::Choose(QuitChoice::Detach),
+            KeyCode::Char('2' | 't') => ModalKey::Choose(QuitChoice::Terminate),
+            KeyCode::Esc => ModalKey::Close,
+            _ => ModalKey::Stay,
+        }
+    }
+}
+
 /// Session picker for `/resume` without a reference.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResumePicker {
@@ -481,6 +560,8 @@ pub enum Modal {
     Keys,
     /// A turn ended in plan mode with an answer: proceed or keep planning.
     PlanReady(PlanDialog),
+    /// Attach mode: `/quit` asks whether to detach or stop the daemon.
+    Quit(QuitDialog),
 }
 
 /// Center a `width`×`height` rectangle inside `area` (clamped to fit).
@@ -526,6 +607,7 @@ pub fn draw_modal(frame: &mut Frame<'_>, area: Rect, modal: &Modal) {
             model_picker_lines(picker, inner_w, usize::from(area.height.saturating_sub(4))),
         ),
         Modal::PlanReady(dialog) => (" Plan ready ".to_string(), plan_lines(*dialog, inner_w)),
+        Modal::Quit(dialog) => (" Quit ".to_string(), quit_lines(dialog, inner_w)),
         Modal::Keys => {
             // Wider than the other dialogs: the help's columns.
             let width = area.width.saturating_sub(2).clamp(20, 104);
@@ -690,6 +772,41 @@ fn escalation_lines(
         .into_iter()
         .map(|l| Line::styled(l, dim)),
     );
+    lines
+}
+
+fn quit_lines(dialog: &QuitDialog, width: usize) -> Vec<Line<'static>> {
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let highlight = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+    let mut lines: Vec<Line<'static>> = wrap_text(
+        &format!(
+            "The agent runs in this workspace's daemon ({}). Keep it running, or stop it?",
+            dialog.reason
+        ),
+        width,
+    )
+    .into_iter()
+    .map(Line::from)
+    .collect();
+    lines.push(Line::default());
+    for (i, (_, row)) in dialog.rows().iter().enumerate() {
+        let (mark, style) = if i == dialog.cursor {
+            ("❯ ", highlight)
+        } else {
+            ("  ", Style::default())
+        };
+        lines.push(Line::styled(
+            truncate_to_width(&format!("{mark}{}. {row}", i + 1), width),
+            style,
+        ));
+    }
+    lines.push(Line::default());
+    lines.push(Line::styled(
+        "Enter select · d/1 detach · t/2 terminate · Esc stay",
+        dim,
+    ));
     lines
 }
 

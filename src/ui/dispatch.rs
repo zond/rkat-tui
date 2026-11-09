@@ -83,6 +83,7 @@ impl App {
     pub(super) fn run_command(&mut self, cmd: Command, now: Instant, fx: &mut Vec<Effect>) {
         match cmd {
             Command::Quit => self.request_quit(now, fx),
+            Command::Detach => self.request_detach(fx),
             Command::Help => {
                 self.transcript
                     .push_notice(NoticeLevel::Info, commands::help_text());

@@ -61,7 +61,7 @@ pub use input::{InputEditor, StashOutcome};
 pub use keymap::{Action, EditAction};
 pub use modal::{
     EscalationAnswer, EscalationDialog, EscalationId, Modal, ModalKey, ModelPicker, PlanChoice,
-    PlanDialog, ResumePicker,
+    PlanDialog, QuitChoice, QuitDialog, ResumePicker,
 };
 pub use rewind::{RewindMenu, RewindPoint, Rewound};
 pub use runtime::{UiChannels, UiError, run_ui};
@@ -481,8 +481,40 @@ pub enum Msg {
         /// The workspace's paths.
         paths: Vec<crate::mentions::PathEntry>,
     },
+    /// Attach mode: the runner's answer to [`Effect::DecideQuit`].
+    QuitDecided(QuitDecision),
+    /// The terminal hung up (SIGHUP): leave at once, as a detach (the
+    /// daemon keeps running; unsent messages are saved).
+    Hangup,
     /// Animation tick.
     Tick,
+}
+
+/// How an attached `/quit` leaves ([`Msg::QuitDecided`]), decided by the
+/// runner from the daemon's `rkat/status`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuitDecision {
+    /// This client started the daemon and nobody detached since: stop it.
+    Terminate,
+    /// Other clients are attached: leave, the daemon stays for them (the
+    /// runner said so).
+    Leave,
+    /// Ask: detach or terminate.
+    Ask {
+        /// Why the daemon is not just stopped.
+        reason: String,
+        /// A turn is running (terminating interrupts it).
+        running: bool,
+    },
+}
+
+/// What leaving does to the attached daemon ([`Effect::Leave`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Departure {
+    /// `/detach`: keep the agent running and record the detach.
+    Detach,
+    /// Stop the daemon (`rkat/shutdown`).
+    Terminate,
 }
 
 /// Identifies one `!` command run ([`Effect::RunShell`]).
@@ -547,7 +579,14 @@ pub enum Effect {
     },
     /// Leave the application. The integrator interrupts a running turn,
     /// persists the session and saves undelivered messages before exiting.
+    /// Attach mode leaves the daemon running (a hangup is a detach).
     Quit,
+    /// Attach mode, sent right before [`Effect::Quit`]: what leaving does
+    /// to the daemon (`rkat/detach` or `rkat/shutdown`).
+    Leave(Departure),
+    /// Attach mode: `/quit` asks the runner how to leave; answered with
+    /// [`Msg::QuitDecided`].
+    DecideQuit,
     /// Sent right before [`Effect::Quit`]: every message the UI still holds
     /// (queued, deferred, or the Ctrl-X Ctrl-S prompt as `None`). The
     /// integrator saves those the model never received.
@@ -995,6 +1034,9 @@ pub struct App {
     /// When a Ctrl-D / `/quit` was refused because work is in flight; a
     /// second one within [`QUIT_CONFIRM_WINDOW`] quits anyway.
     quit_confirm: Option<Instant>,
+    /// Attach mode: an [`Effect::DecideQuit`] waits for its
+    /// [`Msg::QuitDecided`] (another `/quit` meanwhile leaves at once).
+    deciding_quit: bool,
     /// Context-gauge policy: warn about a filling context (warn mode).
     gauge: CompactionGauge,
     /// The history estimate of a compaction that started and has not
@@ -1105,6 +1147,7 @@ impl App {
             chord: None,
             compacting: false,
             quit_confirm: None,
+            deciding_quit: false,
             gauge: CompactionGauge::default(),
             compaction_input: None,
             streamed_text: false,
@@ -1400,6 +1443,8 @@ impl App {
             Msg::SteerDelivered(id) => self.pending.show_delivered(&mut self.transcript, id),
             Msg::SteerRequeued(id) => self.pending.show_waiting_again(&mut self.transcript, id),
             Msg::Recalled { recalled, errors } => self.recalled(&recalled, &errors),
+            Msg::QuitDecided(decision) => self.quit_decided(decision, &mut fx),
+            Msg::Hangup => self.leave(None, &mut fx),
             Msg::Diff {
                 tool_use_id,
                 path,
