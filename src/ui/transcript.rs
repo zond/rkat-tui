@@ -378,10 +378,9 @@ pub struct Transcript {
     blocks: Vec<Block>,
     by_tool_id: IndexMap<String, BlockId>,
     layout: Vec<Option<CachedLayout>>,
-    open_assistant: Option<BlockId>,
-    open_reasoning: Option<BlockId>,
-    text_seen_this_turn: bool,
-    reasoning_seen_this_turn: bool,
+    /// The open prose and reasoning blocks deltas append to: the session's
+    /// own under `None`, each helper's under its header.
+    streams: IndexMap<Option<BlockId>, Stream>,
     /// The model of each helper (by label) the UI has heard of, for block
     /// labels.
     helper_models: IndexMap<String, String>,
@@ -401,22 +400,32 @@ pub struct Transcript {
     helper_clock: Option<Instant>,
     /// Number of helper headers.
     helper_count: usize,
-    /// Each helper's open prose and reasoning blocks, by its header.
-    helper_streams: IndexMap<BlockId, HelperStream>,
     /// Per block, its layout at one width as a helper's full view draws it
     /// (folded helpers do not hide it there).
     view_layout: Vec<Option<CachedLayout>>,
 }
 
-/// A helper's streaming state: the prose and reasoning blocks its deltas
-/// append to, and whether its current model call streamed any (so the
-/// completion does not repeat it).
+/// One agent's streaming state (the session's or a helper's): the prose
+/// and reasoning blocks its deltas append to, and whether its current
+/// model call streamed any (so the completion does not repeat it).
 #[derive(Debug, Clone, Copy, Default)]
-struct HelperStream {
+struct Stream {
     assistant: Option<BlockId>,
     reasoning: Option<BlockId>,
     text_seen: bool,
     reasoning_seen: bool,
+}
+
+/// Who a helper's event belongs to ([`Transcript::apply_scoped_event_at`]).
+struct HelperScope<'a> {
+    /// The helper's header block.
+    header: BlockId,
+    /// Its label as block names show it.
+    tag: String,
+    /// The stream scope id its tool-call ids are qualified with.
+    scope_id: &'a str,
+    /// How deep it is nested (its tool blocks' indent).
+    depth: usize,
 }
 
 impl Transcript {
@@ -906,9 +915,10 @@ impl Transcript {
         self.by_tool_id.get(tool_use_id).copied()
     }
 
-    /// Append a block and return its id. Closes any open streaming blocks.
+    /// Append a block and return its id. Closes the session's open
+    /// streaming blocks.
     pub fn push(&mut self, block: Block) -> BlockId {
-        self.close_streams();
+        self.close_streams(None);
         self.push_raw(block)
     }
 
@@ -997,17 +1007,15 @@ impl Transcript {
         for slot in &mut self.owner {
             *slot = slot.filter(|b| *b != id).map(shift);
         }
-        self.open_assistant = self.open_assistant.filter(|b| *b != id).map(shift);
-        self.open_reasoning = self.open_reasoning.filter(|b| *b != id).map(shift);
-        let streams = std::mem::take(&mut self.helper_streams);
-        self.helper_streams = streams
+        let streams = std::mem::take(&mut self.streams);
+        self.streams = streams
             .into_iter()
-            .filter(|(header, _)| *header != id)
+            .filter(|(header, _)| *header != Some(id))
             .map(|(header, s)| {
                 let open = |b: Option<BlockId>| b.filter(|b| *b != id).map(shift);
                 (
-                    shift(header),
-                    HelperStream {
+                    header.map(shift),
+                    Stream {
                         assistant: open(s.assistant),
                         reasoning: open(s.reasoning),
                         ..s
@@ -1033,10 +1041,9 @@ impl Transcript {
         }
         self.by_tool_id.retain(|_, b| kept(b));
         self.helper_folds.retain(|_, b| kept(b));
-        self.open_assistant = self.open_assistant.filter(kept);
-        self.open_reasoning = self.open_reasoning.filter(kept);
-        self.helper_streams.retain(|header, _| kept(header));
-        for stream in self.helper_streams.values_mut() {
+        self.streams
+            .retain(|header, _| header.as_ref().is_none_or(kept));
+        for stream in self.streams.values_mut() {
             stream.assistant = stream.assistant.filter(kept);
             stream.reasoning = stream.reasoning.filter(kept);
         }
@@ -1309,52 +1316,171 @@ impl Transcript {
 
     /// [`Self::apply_agent_event`] with an explicit clock (for tests).
     pub fn apply_agent_event_at(&mut self, event: &AgentEvent, now: Instant) -> Option<TurnUsage> {
+        self.apply_event(None, event, now)
+    }
+
+    /// Apply a scoped (sub-agent) event. Primary-scope events are ignored because they
+    /// already arrive on the primary channel.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn apply_scoped_event(&mut self, scoped: &ScopedAgentEvent) {
+        self.apply_scoped_event_at(scoped, Instant::now());
+    }
+
+    /// [`Self::apply_scoped_event`] with an explicit clock (for tests).
+    ///
+    /// The helper's blocks belong to its header (made when missing, nested
+    /// in its parent helper's), which also counts its calls, its usage and
+    /// its latest activity.
+    pub fn apply_scoped_event_at(&mut self, scoped: &ScopedAgentEvent, now: Instant) {
+        let path: Vec<&str> = scoped
+            .scope_path
+            .iter()
+            .filter_map(|frame| match frame {
+                StreamScopeFrame::MobMember { agent_identity, .. } => Some(agent_identity.as_str()),
+                _ => None,
+            })
+            .collect();
+        let Some(label) = path.last().copied() else {
+            return;
+        };
+        let helper = HelperScope {
+            header: self.ensure_fold(&path),
+            tag: self.helper_tag(label),
+            scope_id: &scoped.scope_id,
+            depth: path.len(),
+        };
+        self.apply_event(Some(&helper), &scoped.event, now);
+    }
+
+    /// Apply one event of the session (`helper` is `None`) or of a helper.
+    /// Streaming and the tool lifecycle are the same for both; a helper's
+    /// blocks belong to its header and its run updates the header, and
+    /// only the session's own events become notices. Returns the usage of
+    /// a completed model call (a call the provider sent no accounting for
+    /// returns `None`).
+    fn apply_event(
+        &mut self,
+        helper: Option<&HelperScope<'_>>,
+        event: &AgentEvent,
+        now: Instant,
+    ) -> Option<TurnUsage> {
+        let scope = helper.map(|h| h.header);
+        let key = |id: &str| match helper {
+            Some(h) => format!("{}/{id}", h.scope_id),
+            None => id.to_string(),
+        };
         match event {
-            AgentEvent::TurnStarted { .. } => {
-                self.close_streams();
-                self.text_seen_this_turn = false;
-                self.reasoning_seen_this_turn = false;
-            }
+            AgentEvent::TurnStarted { .. } => *self.stream(scope) = Stream::default(),
             AgentEvent::TurnCompleted { usage, .. } => {
-                self.close_streams();
+                self.close_streams(scope);
+                if let (Some(h), Some(usage)) = (helper, usage) {
+                    let tokens = usage.input_tokens.saturating_add(usage.output_tokens);
+                    self.update_fold(h.header, |f| {
+                        f.usage = Some(f.usage.unwrap_or(0).saturating_add(tokens));
+                    });
+                }
                 return usage.clone();
             }
-            AgentEvent::ReasoningDelta { delta, .. } => self.append_reasoning(delta),
-            AgentEvent::ReasoningComplete { content, .. } => {
-                if self.open_reasoning.is_none()
-                    && !self.reasoning_seen_this_turn
-                    && !content.is_empty()
-                {
-                    self.append_reasoning(content);
-                }
-                self.open_reasoning = None;
-            }
-            AgentEvent::TextDelta { delta, .. } => self.append_text(delta),
+            AgentEvent::TextDelta { delta, .. } => self.append_text(scope, delta),
             AgentEvent::TextComplete { content, .. } => {
-                if self.open_assistant.is_none() && !self.text_seen_this_turn && !content.is_empty()
-                {
-                    self.append_text(content);
+                let stream = *self.stream(scope);
+                if stream.assistant.is_none() && !stream.text_seen && !content.is_empty() {
+                    self.append_text(scope, content);
                 }
-                self.open_assistant = None;
+                self.stream(scope).assistant = None;
+                if let Some(h) = helper
+                    && let Some(line) = content.lines().find(|l| !l.trim().is_empty())
+                {
+                    let line = truncate_chars(line.trim(), MAX_HELPER_PREVIEW);
+                    self.update_fold(h.header, |f| f.last = HelperLast::Text(line));
+                }
             }
-            AgentEvent::ToolCallRequested { id, name, args } => {
-                self.request_tool(id.clone(), name.clone(), args.as_value().clone(), 0);
+            AgentEvent::ReasoningDelta { delta, .. } => self.append_reasoning(scope, delta),
+            AgentEvent::ReasoningComplete { content, .. } => {
+                let stream = *self.stream(scope);
+                if stream.reasoning.is_none() && !stream.reasoning_seen && !content.is_empty() {
+                    self.append_reasoning(scope, content);
+                }
+                self.stream(scope).reasoning = None;
             }
-            AgentEvent::ToolExecutionStarted { id, .. } => self.start_tool(id, now),
+            AgentEvent::ToolCallRequested { id, name, args } => match helper {
+                None => {
+                    self.request_tool(id.clone(), name.clone(), args.as_value().clone(), 0);
+                }
+                Some(h) => {
+                    self.close_streams(scope);
+                    let preview = helper_args_preview(args.as_value());
+                    self.update_fold(h.header, |f| {
+                        f.calls += 1;
+                        f.last = HelperLast::Tool {
+                            name: name.clone(),
+                            args: preview,
+                        };
+                    });
+                    let block = self.request_tool(
+                        key(id),
+                        format!("{} {name}", h.tag),
+                        args.as_value().clone(),
+                        h.depth,
+                    );
+                    self.set_owner(block, scope);
+                }
+            },
+            AgentEvent::ToolExecutionStarted { id, .. } => self.start_tool(&key(id), now),
             AgentEvent::ToolExecutionCompleted {
                 id,
                 is_error,
                 duration_ms,
                 ..
-            } => self.complete_tool(id, *is_error, *duration_ms, None),
+            } => self.complete_tool(&key(id), *is_error, *duration_ms, None),
             // The result body arrives on its own event, after the execution fact.
             AgentEvent::ToolResultReceived { id, content, .. } => {
-                self.tool_result(id, &text_content(content));
+                self.tool_result(&key(id), &text_content(content));
             }
             AgentEvent::ToolExecutionTimedOut { id, timeout_ms, .. } => {
                 let text = format!("timed out after {timeout_ms}ms");
-                self.complete_tool(id, true, *timeout_ms, Some(&text));
+                self.complete_tool(&key(id), true, *timeout_ms, Some(&text));
             }
+            AgentEvent::RunFailed { error_report, .. } => match helper {
+                None => {
+                    self.push_notice(
+                        NoticeLevel::Error,
+                        format!("error: {}", error_report.message),
+                    );
+                }
+                Some(h) => {
+                    let state = if error_report.class == meerkat_core::AgentErrorClass::Cancelled {
+                        HelperState::Cancelled
+                    } else {
+                        HelperState::Failed
+                    };
+                    self.update_fold(h.header, |f| f.state = state);
+                    let notice = self.push_notice(
+                        NoticeLevel::Error,
+                        format!("{} error: {}", h.tag, error_report.message),
+                    );
+                    self.set_owner(notice, scope);
+                }
+            },
+            AgentEvent::RunStarted { .. } if let Some(h) = helper => {
+                self.update_fold(h.header, |f| {
+                    if matches!(
+                        f.state,
+                        HelperState::Done | HelperState::Failed | HelperState::Cancelled
+                    ) {
+                        f.state = HelperState::Running;
+                    }
+                });
+            }
+            AgentEvent::RunCompleted { .. } if let Some(h) = helper => {
+                self.update_fold(h.header, |f| {
+                    if f.state.is_running() {
+                        f.state = HelperState::Done;
+                    }
+                });
+            }
+            // A helper's other events are not shown.
+            _ if helper.is_some() => {}
             AgentEvent::HookDenied {
                 hook_id,
                 point,
@@ -1426,12 +1552,6 @@ impl Transcript {
             AgentEvent::RequestedCompactionSkipped { reason, .. } => {
                 self.push_notice(NoticeLevel::Info, compaction_skipped(*reason));
             }
-            AgentEvent::RunFailed { error_report, .. } => {
-                self.push_notice(
-                    NoticeLevel::Error,
-                    format!("error: {}", error_report.message),
-                );
-            }
             AgentEvent::StreamTruncated { reason } => {
                 self.push_notice(
                     NoticeLevel::Warn,
@@ -1454,129 +1574,6 @@ impl Transcript {
         None
     }
 
-    /// Apply a scoped (sub-agent) event. Primary-scope events are ignored because they
-    /// already arrive on the primary channel.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn apply_scoped_event(&mut self, scoped: &ScopedAgentEvent) {
-        self.apply_scoped_event_at(scoped, Instant::now());
-    }
-
-    /// [`Self::apply_scoped_event`] with an explicit clock (for tests).
-    ///
-    /// The helper's blocks belong to its header (made when missing, nested
-    /// in its parent helper's), which also counts its calls, its usage and
-    /// its latest activity.
-    pub fn apply_scoped_event_at(&mut self, scoped: &ScopedAgentEvent, now: Instant) {
-        let path: Vec<&str> = scoped
-            .scope_path
-            .iter()
-            .filter_map(|frame| match frame {
-                StreamScopeFrame::MobMember { agent_identity, .. } => Some(agent_identity.as_str()),
-                _ => None,
-            })
-            .collect();
-        let Some(label) = path.last().copied() else {
-            return;
-        };
-        let depth = path.len();
-        let fold = self.ensure_fold(&path);
-        let tag = self.helper_tag(label);
-        let key = |id: &str| format!("{}/{id}", scoped.scope_id);
-        match &scoped.event {
-            AgentEvent::RunStarted { .. } => self.update_fold(fold, |f| {
-                if matches!(
-                    f.state,
-                    HelperState::Done | HelperState::Failed | HelperState::Cancelled
-                ) {
-                    f.state = HelperState::Running;
-                }
-            }),
-            AgentEvent::RunCompleted { .. } => self.update_fold(fold, |f| {
-                if f.state.is_running() {
-                    f.state = HelperState::Done;
-                }
-            }),
-            AgentEvent::TurnStarted { .. } => {
-                *self.helper_stream(fold) = HelperStream::default();
-            }
-            AgentEvent::TurnCompleted { usage, .. } => {
-                self.close_helper_streams(fold);
-                if let Some(usage) = usage {
-                    let tokens = usage.input_tokens.saturating_add(usage.output_tokens);
-                    self.update_fold(fold, |f| {
-                        f.usage = Some(f.usage.unwrap_or(0).saturating_add(tokens));
-                    });
-                }
-            }
-            AgentEvent::TextDelta { delta, .. } => self.append_helper_text(fold, delta),
-            AgentEvent::TextComplete { content, .. } => {
-                let stream = *self.helper_stream(fold);
-                if stream.assistant.is_none() && !stream.text_seen && !content.is_empty() {
-                    self.append_helper_text(fold, content);
-                }
-                self.helper_stream(fold).assistant = None;
-                if let Some(line) = content.lines().find(|l| !l.trim().is_empty()) {
-                    let line = truncate_chars(line.trim(), MAX_HELPER_PREVIEW);
-                    self.update_fold(fold, |f| f.last = HelperLast::Text(line));
-                }
-            }
-            AgentEvent::ReasoningDelta { delta, .. } => self.append_helper_reasoning(fold, delta),
-            AgentEvent::ReasoningComplete { content, .. } => {
-                let stream = *self.helper_stream(fold);
-                if stream.reasoning.is_none() && !stream.reasoning_seen && !content.is_empty() {
-                    self.append_helper_reasoning(fold, content);
-                }
-                self.helper_stream(fold).reasoning = None;
-            }
-            AgentEvent::ToolCallRequested { id, name, args } => {
-                self.close_helper_streams(fold);
-                let preview = helper_args_preview(args.as_value());
-                self.update_fold(fold, |f| {
-                    f.calls += 1;
-                    f.last = HelperLast::Tool {
-                        name: name.clone(),
-                        args: preview,
-                    };
-                });
-                let block = self.request_tool(
-                    key(id),
-                    format!("{tag} {name}"),
-                    args.as_value().clone(),
-                    depth,
-                );
-                self.set_owner(block, Some(fold));
-            }
-            AgentEvent::ToolExecutionStarted { id, .. } => self.start_tool(&key(id), now),
-            AgentEvent::ToolExecutionCompleted {
-                id,
-                is_error,
-                duration_ms,
-                ..
-            } => self.complete_tool(&key(id), *is_error, *duration_ms, None),
-            AgentEvent::ToolResultReceived { id, content, .. } => {
-                self.tool_result(&key(id), &text_content(content));
-            }
-            AgentEvent::ToolExecutionTimedOut { id, timeout_ms, .. } => {
-                let text = format!("timed out after {timeout_ms}ms");
-                self.complete_tool(&key(id), true, *timeout_ms, Some(&text));
-            }
-            AgentEvent::RunFailed { error_report, .. } => {
-                let state = if error_report.class == meerkat_core::AgentErrorClass::Cancelled {
-                    HelperState::Cancelled
-                } else {
-                    HelperState::Failed
-                };
-                self.update_fold(fold, |f| f.state = state);
-                let notice = self.push_notice(
-                    NoticeLevel::Error,
-                    format!("{tag} error: {}", error_report.message),
-                );
-                self.set_owner(notice, Some(fold));
-            }
-            _ => {}
-        }
-    }
-
     fn push_raw(&mut self, block: Block) -> BlockId {
         let id = BlockId(self.blocks.len());
         if matches!(block, Block::Helper(_)) {
@@ -1589,15 +1586,16 @@ impl Transcript {
         id
     }
 
-    /// The helper `header`'s streaming state (made when missing).
-    fn helper_stream(&mut self, header: BlockId) -> &mut HelperStream {
-        self.helper_streams.entry(header).or_default()
+    /// The streaming state of `scope` (the session's when `None`, else
+    /// the helper whose header it is), made when missing.
+    fn stream(&mut self, scope: Option<BlockId>) -> &mut Stream {
+        self.streams.entry(scope).or_default()
     }
 
-    /// Append prose of the helper `header` to its open prose block (made,
-    /// owned by the header, when none is open).
-    fn append_helper_text(&mut self, header: BlockId, delta: &str) {
-        let stream = *self.helper_stream(header);
+    /// Append prose to `scope`'s open prose block (made, owned by the
+    /// helper's header, when none is open); its reasoning block closes.
+    fn append_text(&mut self, scope: Option<BlockId>, delta: &str) {
+        let stream = *self.stream(scope);
         if let Some(id) = stream.assistant
             && let Some(Block::Assistant { md }) = self.block_mut(id)
         {
@@ -1606,18 +1604,19 @@ impl Transcript {
             let id = self.push_raw(Block::Assistant {
                 md: delta.to_string(),
             });
-            self.set_owner(id, Some(header));
-            self.helper_stream(header).assistant = Some(id);
+            self.set_owner(id, scope);
+            self.stream(scope).assistant = Some(id);
         }
-        let stream = self.helper_stream(header);
+        let stream = self.stream(scope);
         stream.reasoning = None;
         stream.text_seen = true;
     }
 
-    /// Append reasoning of the helper `header` to its open reasoning block
-    /// (made collapsed, owned by the header, when none is open).
-    fn append_helper_reasoning(&mut self, header: BlockId, delta: &str) {
-        let stream = *self.helper_stream(header);
+    /// Append reasoning to `scope`'s open reasoning block (made collapsed,
+    /// owned by the helper's header, when none is open); its prose block
+    /// closes.
+    fn append_reasoning(&mut self, scope: Option<BlockId>, delta: &str) {
+        let stream = *self.stream(scope);
         if let Some(id) = stream.reasoning
             && let Some(Block::Reasoning { text, .. }) = self.block_mut(id)
         {
@@ -1627,56 +1626,20 @@ impl Transcript {
                 text: delta.to_string(),
                 collapsed: true,
             });
-            self.set_owner(id, Some(header));
-            self.helper_stream(header).reasoning = Some(id);
+            self.set_owner(id, scope);
+            self.stream(scope).reasoning = Some(id);
         }
-        let stream = self.helper_stream(header);
+        let stream = self.stream(scope);
         stream.assistant = None;
         stream.reasoning_seen = true;
     }
 
-    /// Close the helper `header`'s open prose and reasoning blocks.
-    fn close_helper_streams(&mut self, header: BlockId) {
-        if let Some(stream) = self.helper_streams.get_mut(&header) {
+    /// Close `scope`'s open prose and reasoning blocks.
+    fn close_streams(&mut self, scope: Option<BlockId>) {
+        if let Some(stream) = self.streams.get_mut(&scope) {
             stream.assistant = None;
             stream.reasoning = None;
         }
-    }
-
-    fn close_streams(&mut self) {
-        self.open_assistant = None;
-        self.open_reasoning = None;
-    }
-
-    fn append_text(&mut self, delta: &str) {
-        self.open_reasoning = None;
-        self.text_seen_this_turn = true;
-        if let Some(id) = self.open_assistant
-            && let Some(Block::Assistant { md }) = self.block_mut(id)
-        {
-            md.push_str(delta);
-            return;
-        }
-        let id = self.push_raw(Block::Assistant {
-            md: delta.to_string(),
-        });
-        self.open_assistant = Some(id);
-    }
-
-    fn append_reasoning(&mut self, delta: &str) {
-        self.open_assistant = None;
-        self.reasoning_seen_this_turn = true;
-        if let Some(id) = self.open_reasoning
-            && let Some(Block::Reasoning { text, .. }) = self.block_mut(id)
-        {
-            text.push_str(delta);
-            return;
-        }
-        let id = self.push_raw(Block::Reasoning {
-            text: delta.to_string(),
-            collapsed: true,
-        });
-        self.open_reasoning = Some(id);
     }
 
     fn request_tool(&mut self, key: String, name: String, args: Value, depth: usize) -> BlockId {
