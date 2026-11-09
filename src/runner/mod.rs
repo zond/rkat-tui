@@ -750,7 +750,7 @@ impl Runner {
     async fn start_turn(&mut self, text: &str) {
         // A session opened (or resumed) in plan mode learns it first.
         self.note_plan_mode().await;
-        let expanded = self.expand_mentions(text);
+        let expanded = self.bench.expand_mentions(text);
         let text = expanded.as_str();
         let submitted = self.retry_input(text).await.unwrap_or(text);
         match self.session.start_turn(submitted).await {
@@ -782,7 +782,7 @@ impl Runner {
             });
             return;
         }
-        let text = self.expand_mentions(&text);
+        let text = self.bench.expand_mentions(&text);
         match self.session.steer(&text).await {
             Ok(admission) => {
                 self.track(
@@ -799,15 +799,6 @@ impl Runner {
                 result: Err(SteerFailure::Rejected(err.to_string())),
             }),
         }
-    }
-
-    /// The prompt as the session receives it: the files and directories its
-    /// `@` mentions name attached ([`crate::mentions::expand_mentions`]).
-    fn expand_mentions(&self, text: &str) -> String {
-        if !text.contains('@') {
-            return text.to_string();
-        }
-        crate::mentions::expand_mentions(text, &self.runtime.scope.project_root).text
     }
 
     /// Add an admitted input to the turn and wait for its terminal.

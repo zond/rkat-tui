@@ -142,6 +142,8 @@ struct LocalEffects {
     editor: Option<EditorTarget>,
     /// Ring the bell after the next frame.
     bell: bool,
+    /// List the workspace's paths (the generation and the root).
+    index: Option<(u64, crate::paths::ProjectRoot)>,
 }
 
 /// Leave TUI mode, run `job` with the terminal in cooked mode, then come
@@ -313,8 +315,17 @@ pub async fn run_ui(
 
     // What the updates asked the loop itself to do ([`LocalEffect`]).
     let mut local = LocalEffects::default();
+    // Path listings walked off the UI thread come back here.
+    let (index_tx, mut index_rx) = mpsc::unbounded_channel::<Msg>();
     loop {
         absorb(&mut app, &mut histories, &mut copies, &mut local);
+        if let Some((generation, root)) = local.index.take() {
+            let tx = index_tx.clone();
+            tokio::task::spawn_blocking(move || {
+                let paths = crate::mentions::workspace_paths(&root);
+                let _ = tx.send(Msg::PathIndex { generation, paths });
+            });
+        }
         if std::mem::take(&mut local.suspend) {
             #[cfg(unix)]
             outside_tui(&mut terminal, &mut events, mouse, async { stop_self() }).await?;
@@ -360,6 +371,7 @@ pub async fn run_ui(
             biased;
             Some(env) = channels.agent_rx.recv() => vec![Msg::Agent(env)],
             Some(msg) = channels.ui_rx.recv() => after_buffered_events(msg, &mut channels),
+            Some(msg) = index_rx.recv() => vec![msg],
             maybe = events.next() => match maybe {
                 Some(Ok(event)) => match translate(event, mouse) {
                     Some(msg) => vec![msg],
@@ -455,6 +467,7 @@ fn absorb(
             LocalEffect::Suspend => local.suspend = true,
             LocalEffect::Redraw => local.redraw = true,
             LocalEffect::Bell => local.bell = true,
+            LocalEffect::IndexPaths { generation, root } => local.index = Some((generation, root)),
             LocalEffect::Draw => local.draw = true,
         }
     }

@@ -61,11 +61,22 @@ async fn an_at_mention_attaches_the_file_the_session_receives() {
     let ws = Workspace::new();
     std::fs::write(ws.root.join("notes.txt"), "the build uses make\n").unwrap();
     let llm = ScriptedLlmClient::new(vec![Step::Text("read it")]);
+    std::fs::create_dir_all(ws.root.join(".rkat")).unwrap();
+    std::fs::write(ws.root.join(".rkat/config.toml"), "").unwrap();
     let mut rig = Rig::start(&ws.root, &llm, Start::New).await;
-    rig.send(Effect::StartTurn("what does @notes.txt say?".into()));
+    rig.send(Effect::StartTurn(
+        "what does @notes.txt say? (not @.rkat/config.toml or @nothing.txt)".into(),
+    ));
     rig.turn_finished().await;
+    // The UI hears what was attached as it was sent, not what it guessed.
+    assert!(rig.seen.iter().any(|msg| matches!(
+        msg,
+        Msg::Mentions { attached, sealed }
+            if attached == &["notes.txt".to_string()]
+                && sealed == &[".rkat/config.toml".to_string()]
+    )));
     let expected = vec![
-        "what does @notes.txt say?\n\n<file path=\"notes.txt\">\nthe build uses make\n</file>"
+        "what does @notes.txt say? (not @.rkat/config.toml or @nothing.txt)\n\n<file path=\"notes.txt\">\nthe build uses make\n</file>"
             .to_string(),
     ];
     assert_eq!(user_texts(&llm.requests()[0]), expected);

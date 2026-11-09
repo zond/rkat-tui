@@ -211,6 +211,24 @@ impl Workbench {
         )
     }
 
+    /// The prompt as the agent receives it: the files and directories its
+    /// `@` mentions name attached ([`crate::mentions::expand_mentions`]).
+    /// What was attached, and the sealed paths left out, go to the UI as
+    /// [`Msg::Mentions`], so its `+ N files` line names what was sent.
+    pub fn expand_mentions(&self, text: &str) -> String {
+        if !text.contains('@') {
+            return text.to_string();
+        }
+        let expanded = crate::mentions::expand_mentions(text, &self.scope.project_root);
+        if !expanded.attached.is_empty() || !expanded.sealed.is_empty() {
+            self.send(Msg::Mentions {
+                attached: expanded.attached,
+                sealed: expanded.sealed,
+            });
+        }
+        expanded.text
+    }
+
     fn send(&self, msg: Msg) {
         let _ = self.ui_tx.send(msg);
     }

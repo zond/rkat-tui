@@ -2854,3 +2854,25 @@ hands the runner the compaction policy (`Runtime::compaction`), computed
 from the layered `[auto]` settings as the attach runner already did. No
 behaviour change; the layering tests moved to `config::tests`, the
 pattern tests stay in `approval::rules::tests`.
+
+### `@` mentions: the UI neither walks nor stats the workspace
+
+`App::update` is documented as pure, but `refresh_menu` ran
+`mentions::workspace_paths` (an `ignore` walk of up to 100k paths) on the
+UI thread the first time an `@` word opened the menu, and every submitted
+prompt was scanned with `scan_mentions` (a `stat` per mention) to print
+the `+ N files` line, while the runner expanded the mentions again when
+it sent the prompt; the two could disagree (a file changed in between, or
+the size budget turned a block into a note). Now the menu asks the UI
+loop for the listing (`LocalEffect::IndexPaths`, tagged with a
+generation; the loop walks on `spawn_blocking` and answers with
+`Msg::PathIndex`, and an answer to a request the menu no longer waits for
+is dropped), and the `+ N files` and sealed-path lines come from the
+expansion itself: `Workbench::expand_mentions`, which both runners call
+as they send a prompt or a steer, reports `Msg::Mentions` with what was
+attached. The listing is a loop effect rather than an integrator one
+because it needs nothing from the session and the in-process runner is
+going away. Tests:
+`ui::tests::the_path_listing_is_asked_for_once_and_a_stale_answer_is_dropped`,
+`ui::tests::the_runners_mention_report_notes_what_was_attached_and_what_is_sealed`,
+`integrator::an_at_mention_attaches_the_file_the_session_receives`.

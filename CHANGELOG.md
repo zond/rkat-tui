@@ -350,6 +350,10 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Fixed
 
+- The `+ N files` line under a prompt with `@` mentions names what was
+  actually attached as the prompt was sent (it used to be a separate scan
+  at submit time), and the `@` menu lists the workspace without blocking
+  the UI.
 - A slash command with wrong arguments answers with the usage its
   completion row shows: `/resume`'s two usage texts disagreed
   (`[ref]` and `[last | ~N | id-prefix]`); both are now the latter.

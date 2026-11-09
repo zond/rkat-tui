@@ -1517,11 +1517,7 @@ impl AttachRunner {
             active: true,
             ..Turn::default()
         };
-        let text = if text.contains('@') {
-            crate::mentions::expand_mentions(text, &self.config.scope.project_root).text
-        } else {
-            text.to_string()
-        };
+        let text = self.bench.expand_mentions(text);
         if let Some(switch) = self.pending_model.take() {
             let reports = self.reporter();
             tokio::spawn(async move {
@@ -1556,11 +1552,7 @@ impl AttachRunner {
             });
             return;
         };
-        let text = if text.contains('@') {
-            crate::mentions::expand_mentions(text, &self.config.scope.project_root).text
-        } else {
-            text.to_string()
-        };
+        let text = self.bench.expand_mentions(text);
         let result = match bounded(CALL_TIMEOUT, remote::send(&connection, &text, true)).await {
             Ok(()) => {
                 self.turn.steers.push_back(id);

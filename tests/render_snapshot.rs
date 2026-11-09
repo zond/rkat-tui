@@ -990,6 +990,15 @@ fn the_at_menu_renders_matching_paths_above_the_input() {
     for c in "read @src/".chars() {
         app.update(Msg::Key(KeyEvent::from(KeyCode::Char(c))));
     }
+    // The UI loop walks the workspace off the UI thread and answers.
+    for effect in app.take_local() {
+        if let rkat_tui::ui::LocalEffect::IndexPaths { generation, root } = effect {
+            app.update(Msg::PathIndex {
+                generation,
+                paths: rkat_tui::mentions::workspace_paths(&root),
+            });
+        }
+    }
     let buffer = render_buffer(&mut app, W, H);
     let drawn = rows(&buffer);
     assert_eq!(

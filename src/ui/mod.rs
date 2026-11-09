@@ -478,6 +478,22 @@ pub enum Msg {
     /// The task store could not be read: the checklist stays as it is and
     /// the next Ctrl+T says why.
     ChecklistUnavailable(String),
+    /// What a prompt's `@` mentions attached as the runner sent it, and
+    /// the sealed paths it named but never read (reported by the
+    /// workbench, so the notice says what the agent actually got).
+    Mentions {
+        /// The workspace-relative paths attached, a block each.
+        attached: Vec<String>,
+        /// The sealed paths mentioned, not read.
+        sealed: Vec<String>,
+    },
+    /// The UI loop's answer to [`LocalEffect::IndexPaths`].
+    PathIndex {
+        /// The request it answers (an older one's answer is dropped).
+        generation: u64,
+        /// The workspace's paths.
+        paths: Vec<crate::mentions::PathEntry>,
+    },
     /// Animation tick.
     Tick,
 }
@@ -659,6 +675,16 @@ pub enum LocalEffect {
     Suspend,
     /// Ctrl-L: clear the terminal and repaint everything.
     Redraw,
+    /// List the workspace's paths for the `@` completion menu off the UI
+    /// thread ([`crate::mentions::workspace_paths`] walks up to
+    /// [`crate::mentions::MAX_INDEX_PATHS`]); the loop answers with
+    /// [`Msg::PathIndex`].
+    IndexPaths {
+        /// Identifies this request.
+        generation: u64,
+        /// The workspace to walk.
+        root: ProjectRoot,
+    },
     /// Ring the terminal bell (after the next frame).
     Bell,
     /// The state changed: draw a frame.
@@ -908,6 +934,17 @@ impl ScrollState {
     }
 }
 
+/// The `@` menu's workspace paths.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PathIndex {
+    /// None held (no path menu open).
+    Dropped,
+    /// Asked for with this generation ([`LocalEffect::IndexPaths`]).
+    Indexing(u64),
+    /// The paths.
+    Ready(Vec<crate::mentions::PathEntry>),
+}
+
 /// What keeps a session-level command from running now
 /// ([`App::blocker`]). Its `Display` is the notice that says so.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1035,9 +1072,11 @@ pub struct App {
     /// The workspace `@` mentions complete and resolve against (`None`:
     /// no path menu, no mention notices).
     workspace: Option<ProjectRoot>,
-    /// The workspace paths, built when a path menu opens and dropped when
-    /// it closes.
-    path_index: Option<Vec<crate::mentions::PathEntry>>,
+    /// The workspace paths, asked for when a path menu opens and dropped
+    /// when it closes.
+    path_index: PathIndex,
+    /// The last [`LocalEffect::IndexPaths`] generation.
+    path_index_generation: u64,
     /// The `!` command running now, if any.
     shell_run: Option<RunningShell>,
     /// The last allocated [`ShellRunId`].
@@ -1109,7 +1148,8 @@ impl App {
             menu: None,
             menu_dismissed: None,
             workspace: None,
-            path_index: None,
+            path_index: PathIndex::Dropped,
+            path_index_generation: 0,
             shell_run: None,
             last_shell_id: 0,
             shell_confined: true,
@@ -1157,8 +1197,7 @@ impl App {
             .any(|p| p.state == PendingState::Shell)
     }
 
-    /// The workspace `@` mentions complete against (the path menu) and
-    /// resolve in (the attachment notices).
+    /// The workspace `@` mentions complete against (the path menu).
     #[must_use]
     pub fn with_workspace(mut self, root: ProjectRoot) -> Self {
         self.workspace = Some(root);
@@ -2061,6 +2100,14 @@ impl App {
                 self.checklist_note = None;
             }
             Msg::ChecklistUnavailable(why) => self.checklist_note = Some(why),
+            Msg::Mentions { attached, sealed } => self.note_mentions(&attached, &sealed),
+            Msg::PathIndex { generation, paths } => {
+                if self.path_index == PathIndex::Indexing(generation) {
+                    self.path_index = PathIndex::Ready(paths);
+                    // Rebuild the menu for the word under the cursor.
+                    self.menu = None;
+                }
+            }
             Msg::Tick => {
                 let helpers_spun = self.transcript.tick_helpers(now);
                 dirty = helpers_spun
@@ -2107,7 +2154,7 @@ impl App {
             .as_ref()
             .is_none_or(|word| word.kind != complete::CompletionKind::Path)
         {
-            self.path_index = None;
+            self.path_index = PathIndex::Dropped;
         }
         let Some(word) = word else {
             self.menu = None;
@@ -2123,9 +2170,20 @@ impl App {
             return;
         }
         let paths: &[crate::mentions::PathEntry] = match (&word.kind, &self.workspace) {
-            (complete::CompletionKind::Path, Some(root)) => self
-                .path_index
-                .get_or_insert_with(|| crate::mentions::workspace_paths(root)),
+            (complete::CompletionKind::Path, Some(root)) => match &self.path_index {
+                PathIndex::Ready(paths) => paths,
+                PathIndex::Indexing(_) => &[],
+                PathIndex::Dropped => {
+                    self.path_index_generation += 1;
+                    let generation = self.path_index_generation;
+                    self.path_index = PathIndex::Indexing(generation);
+                    self.local.push(LocalEffect::IndexPaths {
+                        generation,
+                        root: root.clone(),
+                    });
+                    &[]
+                }
+            },
             _ => &[],
         };
         let items = complete::candidates(&word, paths);
@@ -2603,7 +2661,6 @@ impl App {
                         .or_else(|| commands::unescape_bang(&raw))
                         .unwrap_or(raw),
                 };
-                let noted = prompt.clone();
                 if self.running {
                     self.enqueue(prompt, fx);
                 } else if self.shell_busy() {
@@ -2611,36 +2668,29 @@ impl App {
                 } else {
                     self.start_turn(prompt, now, fx);
                 }
-                self.note_mentions(&noted);
             }
         }
     }
 
-    /// Under a prompt's block: a dim `+ N file(s)` line naming what its `@`
-    /// mentions attach (the runner expands them as it sends the prompt),
-    /// and a warning per sealed path it mentions, which is never read.
-    fn note_mentions(&mut self, prompt: &str) {
-        let Some(root) = &self.workspace else {
-            return;
-        };
-        if !prompt.contains('@') {
-            return;
-        }
-        let (sealed, attached): (Vec<_>, Vec<_>) = crate::mentions::scan_mentions(prompt, root)
-            .into_iter()
-            .partition(|m| m.kind == crate::mentions::MentionKind::Sealed);
+    /// [`Msg::Mentions`]: a dim `+ N file(s)` line naming what a prompt's
+    /// `@` mentions attached as the runner sent it, and a warning per
+    /// sealed path it mentioned, which was never read.
+    fn note_mentions(&mut self, attached: &[String], sealed: &[String]) {
         if !attached.is_empty() {
-            let names: Vec<&str> = attached.iter().map(|m| m.path.as_str()).collect();
             let plural = if attached.len() == 1 { "" } else { "s" };
             self.transcript.push_notice(
                 NoticeLevel::Info,
-                format!("+ {} file{plural} ({})", attached.len(), names.join(", ")),
+                format!(
+                    "+ {} file{plural} ({})",
+                    attached.len(),
+                    attached.join(", ")
+                ),
             );
         }
-        for mention in sealed {
+        for path in sealed {
             self.transcript.push_notice(
                 NoticeLevel::Warn,
-                format!("@{} is sealed: not attached", mention.path),
+                format!("@{path} is sealed: not attached"),
             );
         }
     }
@@ -3334,9 +3384,8 @@ impl App {
     ) {
         if let Some(next) = self.send_next.take() {
             let mut texts = self.unsent_as_user(unsent);
-            texts.push(next.clone());
             self.transcript.push(Block::User { text: next.clone() });
-            self.note_mentions(&next);
+            texts.push(next);
             self.begin_turn(texts.join("\n\n"), false, now, fx);
         } else if !succeeded && !interrupted {
             if !unsent.is_empty() {
@@ -5295,10 +5344,57 @@ mod tests {
         (dir, app)
     }
 
+    /// Answer the app's path-listing request as the UI loop does (the
+    /// walk runs off the UI thread there).
+    fn answer_index(app: &mut App) {
+        for effect in app.take_local() {
+            if let LocalEffect::IndexPaths { generation, root } = effect {
+                app.update(Msg::PathIndex {
+                    generation,
+                    paths: crate::mentions::workspace_paths(&root),
+                });
+            }
+        }
+    }
+
+    /// The UI never walks the workspace itself: an `@` word asks the loop
+    /// for the listing once, the menu fills when it arrives, and an answer
+    /// to a request the menu no longer waits for is dropped.
+    #[test]
+    fn the_path_listing_is_asked_for_once_and_a_stale_answer_is_dropped() {
+        let (_dir, mut app) = mention_app();
+        type_str(&mut app, "look at @src");
+        let requests: Vec<u64> = app
+            .take_local()
+            .into_iter()
+            .filter_map(|l| match l {
+                LocalEffect::IndexPaths { generation, .. } => Some(generation),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(requests, [1]);
+        assert!(app.menu().is_none());
+        // The word ends before the answer arrives: the answer is stale.
+        type_str(&mut app, " ");
+        let root = app.workspace.clone().unwrap();
+        app.update(Msg::PathIndex {
+            generation: 1,
+            paths: crate::mentions::workspace_paths(&root),
+        });
+        type_str(&mut app, "@src");
+        assert!(app.menu().is_none());
+        answer_index(&mut app);
+        assert_eq!(
+            menu_rows(&app),
+            ["@src/", "@src/main.rs", "@src/ui/", "@src/ui/render.rs"]
+        );
+    }
+
     #[test]
     fn the_at_menu_completes_paths_and_stays_open_for_directories() {
         let (_dir, mut app) = mention_app();
         type_str(&mut app, "look at @");
+        answer_index(&mut app);
         assert_eq!(
             menu_rows(&app),
             [
@@ -5331,9 +5427,11 @@ mod tests {
         // sends.
         app.input.clear();
         type_str(&mut app, "@rend");
+        answer_index(&mut app);
         assert_eq!(menu_rows(&app), ["@src/ui/render.rs"]);
         app.input.clear();
         type_str(&mut app, "see @README.md");
+        answer_index(&mut app);
         assert_eq!(menu_rows(&app), ["@README.md"]);
         assert_eq!(
             app.update(key(KeyCode::Enter)),
@@ -5348,34 +5446,28 @@ mod tests {
     }
 
     #[test]
-    fn a_prompt_with_mentions_notes_what_it_attaches_and_what_is_sealed() {
+    fn the_runners_mention_report_notes_what_was_attached_and_what_is_sealed() {
         let (_dir, mut app) = mention_app();
         let fx = submit(
             &mut app,
             "fix @src/main.rs and @src/ui, ignore @.rkat/config.toml and @bob",
         );
-        // The session gets the text as typed; the runner expands it.
+        // The session gets the text as typed; the runner expands it and
+        // reports what it attached.
         assert_eq!(
             fx,
             vec![Effect::StartTurn(
                 "fix @src/main.rs and @src/ui, ignore @.rkat/config.toml and @bob".into()
             )]
         );
-        let tail: Vec<Block> = app
-            .transcript
-            .blocks()
-            .iter()
-            .rev()
-            .take(3)
-            .rev()
-            .cloned()
-            .collect();
+        let before = app.transcript.len();
+        app.update(Msg::Mentions {
+            attached: vec!["src/main.rs".into(), "src/ui/".into()],
+            sealed: vec![".rkat/config.toml".into()],
+        });
         assert_eq!(
-            tail,
+            &app.transcript.blocks()[before..],
             [
-                Block::User {
-                    text: "fix @src/main.rs and @src/ui, ignore @.rkat/config.toml and @bob".into()
-                },
                 Block::Notice {
                     level: NoticeLevel::Info,
                     text: "+ 2 files (src/main.rs, src/ui/)".into()
@@ -5386,15 +5478,21 @@ mod tests {
                 },
             ]
         );
-        // One file: singular. No mention: no line.
-        let before = app.transcript.len();
-        submit(&mut app, "and @README.md");
+        // One file: singular. Nothing attached or sealed: no line.
+        app.update(Msg::Mentions {
+            attached: vec!["README.md".into()],
+            sealed: Vec::new(),
+        });
         assert_eq!(
             last_notice(&app),
             Some((NoticeLevel::Info, "+ 1 file (README.md)".into()))
         );
-        submit(&mut app, "thanks a@b");
-        assert_eq!(app.transcript.len(), before + 3);
+        let before = app.transcript.len();
+        app.update(Msg::Mentions {
+            attached: Vec::new(),
+            sealed: Vec::new(),
+        });
+        assert_eq!(app.transcript.len(), before);
     }
 
     #[test]
