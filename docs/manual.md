@@ -1042,7 +1042,9 @@ endpoint file, after checking that the file still names the daemon this TUI
 is attached to. The daemon removes its endpoint file and shuts down; its
 sessions stay in the realm and the next start restores the member.
 
-**What works:** prompts and streaming output, messages typed mid-turn
+**What works:** prompts and streaming output, the agent's file changes as
+diffs (in every attached TUI, as they are made; a TUI that attaches later
+sees the tool calls, as a resumed conversation does), messages typed mid-turn
 (steers, from any attached TUI), Esc (stops the run and the helpers it
 started; a second Esc a second later force-cancels the member), the model
 picker and `/model` (this TUI's endpoints, configured ones included: the

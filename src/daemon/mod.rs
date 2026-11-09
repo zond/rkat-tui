@@ -463,6 +463,7 @@ impl Daemon {
             tasks: vec![
                 composed.desk_task,
                 composed.decisions_task,
+                composed.diffs_task,
                 composed.follower_task,
                 composed.helper_catalogs_task,
                 watcher,

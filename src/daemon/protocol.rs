@@ -58,6 +58,9 @@ pub const SET_MODEL: &str = "rkat/set_model";
 /// The notification that a decision a client was shown ended:
 /// [`DecisionEnded`].
 pub const DECISION_ENDED: &str = "rkat/decision_ended";
+/// The notification of a change the orchestrator's file tools made:
+/// [`FileDiffNote`].
+pub const FILE_DIFF: &str = "rkat/file_diff";
 /// The engine's decision notice, pushed by the daemon.
 pub const DECISION_NOTICE: &str = meerkat_contracts::DECISION_NOTICE_NOTIFICATION;
 /// The engine's decide method, decided by the daemon ([`DecideParams`]).
@@ -330,6 +333,22 @@ pub struct DecideParams {
     /// The dialog's answer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answer: Option<RemoteAnswer>,
+}
+
+/// [`FILE_DIFF`]'s parameters: one file change, as the in-process file
+/// tools report it to the UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileDiffNote {
+    /// The tool call that made the change.
+    pub tool_use_id: String,
+    /// The file (relative to the workspace when inside it).
+    pub path: String,
+    /// The unified diff.
+    pub unified: String,
+    /// Lines added.
+    pub added: usize,
+    /// Lines removed.
+    pub removed: usize,
 }
 
 /// [`DECISION_ENDED`]'s parameters.

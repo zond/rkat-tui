@@ -77,6 +77,8 @@ pub struct Composed {
     pub decisions: Arc<Decisions>,
     /// The task that offers the decisions that open.
     pub decisions_task: tokio::task::JoinHandle<()>,
+    /// The task that pushes the orchestrator's file changes to the clients.
+    pub diffs_task: tokio::task::JoinHandle<()>,
     /// The helper follower's task.
     pub follower_task: tokio::task::JoinHandle<()>,
     /// The task reading helpers' tool catalogs after their runs.
@@ -163,7 +165,8 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     // when a helper's run ended, so its tool catalog can be read.
     let (registry, updates) = HelperRegistry::persistent(&realm_root);
     let registry = Arc::new(registry);
-    let root_tools = orchestrator_tools(&scope)?;
+    let (diff_tx, diff_rx) = tokio::sync::mpsc::unbounded_channel();
+    let root_tools = orchestrator_tools(&scope, diff_tx)?;
     let tools_for_root = Arc::clone(&root_tools.0);
     let notes = root_tools.1;
     let engine = Arc::clone(&approval.engine);
@@ -321,6 +324,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     let decisions = Decisions::new(decision_service, principal, Some(Arc::new(router)))
         .map_err(DaemonError::Approval)?;
     let decisions_task = decisions.follow();
+    let diffs_task = Decisions::forward_diffs(&decisions, diff_rx);
     let (desk, desk_task) = Desk::spawn(
         Arc::clone(&decisions),
         engine.escalation_timeout(),
@@ -347,6 +351,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         desk_task,
         decisions,
         decisions_task,
+        diffs_task,
         follower_task: follower,
         helper_catalogs_task: helper_catalogs,
         origins,
@@ -358,11 +363,16 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
 
 /// The orchestrator's external tools (the TUI session's file and note
 /// tools behind one gateway; no `fork`, which needs the TUI's service) and
-/// the note stores its instructions index.
+/// the note stores its instructions index. The file tools report every
+/// change they make to `diffs` (the clients show it as in-process).
 fn orchestrator_tools(
     scope: &RuntimeScope,
+    diffs: tokio::sync::mpsc::UnboundedSender<crate::tools::FileDiff>,
 ) -> Result<(Arc<dyn AgentToolDispatcher>, Arc<NoteToolDispatcher>), DaemonError> {
-    let files = Arc::new(FileToolDispatcher::new(scope.project_root.clone(), None));
+    let files = Arc::new(FileToolDispatcher::new(
+        scope.project_root.clone(),
+        Some(diffs),
+    ));
     let notes = Arc::new(NoteToolDispatcher::new(
         scope
             .global

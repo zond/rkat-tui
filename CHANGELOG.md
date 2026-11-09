@@ -362,6 +362,10 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Fixed
 
+- Attach mode showed no diffs of the agent's file changes: the daemon's
+  file tools reported none. They now report every change, and the daemon
+  pushes it to every attached client (`rkat/file_diff`), shown as
+  in-process.
 - The `+ N files` line under a prompt with `@` mentions names what was
   actually attached as the prompt was sent (it used to be a separate scan
   at submit time), and the `@` menu lists the workspace without blocking

@@ -206,6 +206,7 @@ methods on the wire, and `daemon::protocol` types each one for both ends:
 | `rkat/tasks` | `{"session_id"}` | `{"tasks": [Task]}` (the engine's task store) |
 | `rkat/checklist_view` | `{"view": "hidden"\|"shown"}` | `{}` (saved as `[ui] checklist`) |
 | `rkat/decision_ended` | notification, daemon to client | a decision the client was shown ended |
+| `rkat/file_diff` | notification, daemon to client | `{"tool_use_id", "path", "unified", "added", "removed"}`: a change the orchestrator's file tools made |
 
 The mode is the daemon's (one per daemon; it governs the orchestrator and
 its helpers, as the in-process mode governs a session and its helpers), is

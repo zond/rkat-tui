@@ -647,6 +647,40 @@ impl Decisions {
         }
     }
 
+    /// Push every file change the orchestrator's file tools report to the
+    /// attached clients as an `rkat/file_diff` notification
+    /// ([`protocol::FileDiffNote`]), until the tools are gone. A client
+    /// that is not attached when the change is made does not get it (the
+    /// diff is a view; the tool result in the conversation stays).
+    pub fn forward_diffs(
+        hub: &Arc<Self>,
+        mut diffs: mpsc::UnboundedReceiver<crate::tools::FileDiff>,
+    ) -> tokio::task::JoinHandle<()> {
+        let hub = Arc::clone(hub);
+        tokio::spawn(async move {
+            while let Some(diff) = diffs.recv().await {
+                let params = protocol::FileDiffNote {
+                    tool_use_id: diff.tool_use_id,
+                    path: diff.path.display().to_string(),
+                    unified: diff.unified,
+                    added: diff.added,
+                    removed: diff.removed,
+                };
+                let line = format!(
+                    "{}\n",
+                    json!({"jsonrpc": "2.0", "method": protocol::FILE_DIFF, "params": params})
+                );
+                let clients: Vec<Arc<Client>> = hub.clients.lock().values().cloned().collect();
+                for client in clients {
+                    let _ = client.out.send(Outgoing {
+                        line: line.clone(),
+                        written: None,
+                    });
+                }
+            }
+        })
+    }
+
     /// Tell the clients that were shown `id` that it ended in `phase`.
     pub async fn ended(&self, id: &DecisionId, phase: Option<DecisionPhase>) {
         let clients: Vec<Arc<Client>> = self.clients.lock().values().cloned().collect();

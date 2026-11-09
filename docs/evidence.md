@@ -2937,3 +2937,17 @@ builds and the in-process runtime now also use, so both name the same
 files. What neither knows is the engine's own tool count; the attach line
 names rkat-tui's tools without a count (the daemon's orchestrator has no
 `fork`). Test: `attach::context_reports_the_daemons_conversation`.
+
+### File diffs in attach mode (`rkat/file_diff`)
+
+Found while comparing the two runners' tool sets for P1: the in-process
+runner builds its `FileToolDispatcher` with a diff channel and shows each
+change as a `Msg::Diff`; the daemon built the orchestrator's with `None`,
+so attach mode showed no diffs at all (the plan did not list it). The
+daemon's file tools now report to a channel, and
+`Decisions::forward_diffs` pushes each change to every attached client as
+an `rkat/file_diff` notification (`protocol::FileDiffNote`), which the
+attach runner turns into the same `Msg::Diff`. Diffs are a view, not
+durable: a client that attaches later sees the tool calls only, as a
+resumed in-process conversation does. Helpers' file tools report no diffs
+in either mode. Test: `attach::the_agents_file_changes_show_as_diffs`.

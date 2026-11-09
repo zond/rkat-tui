@@ -379,6 +379,56 @@ async fn context_reports_the_daemons_conversation() {
     daemon.stop().await;
 }
 
+/// The agent's file changes show as diffs in every attached client, as
+/// in-process (the daemon pushes `rkat/file_diff`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_agents_file_changes_show_as_diffs() {
+    use rkat_tui::approval::mode::PermissionMode;
+
+    let ws = Workspace::new();
+    std::fs::write(ws.root.join("notes.txt"), "old line\n").unwrap();
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Tool {
+            id: "r1",
+            name: "read_file",
+            args: serde_json::json!({"path": "notes.txt"}),
+        },
+        Step::Tool {
+            id: "w1",
+            name: "write_file",
+            args: serde_json::json!({"path": "notes.txt", "content": "new line\n"}),
+        },
+        Step::Text("done"),
+    ]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let mut client = Client::attach(&ws.root).await;
+    let mut other = Client::attach(&ws.root).await;
+    client.set_mode(PermissionMode::AcceptEdits).await;
+    client.send(Effect::StartTurn("edit the notes".into()));
+    client.turn_finished().await.result.unwrap();
+    for seen in [&mut client, &mut other] {
+        let is_diff = |msg: &Msg| matches!(msg, Msg::Diff { .. });
+        seen.saw(is_diff).await;
+        let Some(Msg::Diff {
+            tool_use_id,
+            path,
+            unified,
+            added,
+            removed,
+        }) = seen.seen.iter().find(|msg| is_diff(msg)).cloned()
+        else {
+            unreachable!()
+        };
+        assert_eq!(tool_use_id, "w1");
+        assert_eq!(path, "notes.txt");
+        assert_eq!((added, removed), (1, 1));
+        assert!(unified.contains("+new line"), "{unified}");
+    }
+    client.quit().await;
+    other.quit().await;
+    daemon.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn what_the_daemon_cannot_do_yet_says_so() {
     let ws = Workspace::new();

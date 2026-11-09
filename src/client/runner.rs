@@ -787,6 +787,19 @@ impl AttachRunner {
             }
             return;
         }
+        if note.method == protocol::FILE_DIFF {
+            match serde_json::from_value::<protocol::FileDiffNote>(note.params.clone()) {
+                Ok(diff) => self.send(Msg::Diff {
+                    tool_use_id: diff.tool_use_id,
+                    path: diff.path,
+                    unified: diff.unified,
+                    added: diff.added,
+                    removed: diff.removed,
+                }),
+                Err(err) => tracing::debug!(error = %err, "unreadable file diff"),
+            }
+            return;
+        }
         if note.method == protocol::DECISION_ENDED {
             if let Some(change) = self.approvals.decision_ended(&note.params) {
                 for msg in change.messages() {
