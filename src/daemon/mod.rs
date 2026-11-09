@@ -385,6 +385,8 @@ pub struct Daemon {
     orchestrator: Orchestrator,
     lease: Option<RealmLeaseGuard>,
     listener: serve::Listener,
+    /// The realm's directory (its databases settle at shutdown).
+    realm_root: PathBuf,
     #[cfg(any(test, feature = "test-support"))]
     scope: bootstrap::RuntimeScope,
     #[cfg(any(test, feature = "test-support"))]
@@ -545,6 +547,7 @@ impl Daemon {
             orchestrator,
             lease: Some(composed.lease),
             listener,
+            realm_root: composed.scope.realm_root(),
             #[cfg(any(test, feature = "test-support"))]
             scope: composed.scope,
             #[cfg(any(test, feature = "test-support"))]
@@ -672,8 +675,12 @@ impl Daemon {
             Ok(connections) => (Ok(()), connections),
             Err(err) => (Err(err), tokio::task::JoinSet::new()),
         };
-        for task in self.tasks.drain(..) {
+        for task in &self.tasks {
             task.abort();
+        }
+        // Joined, so nothing they hold outlives the shutdown.
+        for task in self.tasks.drain(..) {
+            let _ = task.await;
         }
         stop_mobs(&self.state).await;
         let shutdown = self.runtime.try_shutdown().await;
@@ -682,9 +689,67 @@ impl Daemon {
         if let Some(lease) = self.lease.take() {
             lease.shutdown().await;
         }
+        // The engine's stores close some connections only at their idle
+        // bound, after the last handle is gone (the schedule store's worker
+        // after 250 ms): the realm is settled when the last connection of
+        // every database has closed, which removes its write-ahead log.
+        let realm_root = self.realm_root.clone();
+        drop(self);
+        settle_stores(&realm_root, STORE_SETTLE).await;
         served?;
         shutdown.map_err(DaemonError::from)
     }
+}
+
+/// How long a stopped daemon waits for the realm's databases to close.
+const STORE_SETTLE: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Wait, at most `bound`, until this process holds no SQLite database
+/// file under `realm_root` open (the databases, their write-ahead logs and
+/// shared memory), as `/proc/self/fd` shows. Past the bound the outcome is
+/// logged as unknown; where the process's descriptors cannot be listed
+/// (not Linux) nothing is waited for and nothing is claimed.
+async fn settle_stores(realm_root: &Path, bound: std::time::Duration) {
+    let deadline = tokio::time::Instant::now() + bound;
+    loop {
+        let Some(open) = open_databases(realm_root) else {
+            tracing::debug!(
+                "the process's descriptors cannot be listed; the realm's databases are not waited for"
+            );
+            return;
+        };
+        if open.is_empty() {
+            return;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            tracing::warn!(?open, "the realm's databases may still be open at exit");
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+/// The SQLite files under `realm_root` this process has open, or `None`
+/// when its descriptors cannot be listed.
+fn open_databases(realm_root: &Path) -> Option<Vec<PathBuf>> {
+    let descriptors = std::fs::read_dir("/proc/self/fd").ok()?;
+    let mut open: Vec<PathBuf> = descriptors
+        .flatten()
+        .filter_map(|fd| std::fs::read_link(fd.path()).ok())
+        .filter(|target| target.starts_with(realm_root) && is_database_file(target))
+        .collect();
+    open.sort();
+    open.dedup();
+    Some(open)
+}
+
+/// Whether `path` names a SQLite database or one of its companion files
+/// that SQLite removes at the last close (the lock files beside them stay).
+fn is_database_file(path: &Path) -> bool {
+    let name = path.to_string_lossy();
+    [".sqlite3", ".db", "-wal", "-shm", "-journal"]
+        .iter()
+        .any(|suffix| name.ends_with(suffix))
 }
 
 /// How long the managed mobs get to shut down at exit.
@@ -820,6 +885,30 @@ fn init_logging(realm_root: &Path) {
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    /// A database file this process holds open is listed, its lock files
+    /// are not, and the settle waits for the close (the negative case: an
+    /// open file is never taken as closed).
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn the_shutdown_waits_for_the_realms_open_databases() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let db = root.join("sessions.sqlite3");
+        let lock = root.join("sessions.sqlite3.mfence");
+        let held = std::fs::File::create(&db).unwrap();
+        let _lock = std::fs::File::create(&lock).unwrap();
+        assert_eq!(open_databases(&root), Some(vec![db.clone()]));
+        let closer = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            drop(held);
+        });
+        let started = std::time::Instant::now();
+        settle_stores(&root, std::time::Duration::from_secs(10)).await;
+        assert!(started.elapsed() >= std::time::Duration::from_millis(100));
+        assert_eq!(open_databases(&root), Some(Vec::new()));
+        closer.await.unwrap();
+    }
 
     #[test]
     fn the_daemon_shares_the_tui_engine_flags_and_refuses_the_ui_ones() {

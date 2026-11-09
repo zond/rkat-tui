@@ -94,10 +94,18 @@ output now says why; report it rather than retrying silently:
 - `parallel_escalations_share_one_timeout_including_the_queue`
   (`src/approval/engine.rs`): the paused tokio clock auto-advances while a task
   waits on `spawn_blocking`, so budget checks must happen after every await.
-- `workspace_state_survives_a_rename` (`tests/integrator.rs`): removes the
-  workspace right after quit and names any file left behind
-  (`left behind: …`). A leftover means something still writes after
-  `Runner::quit` returned.
+- `workspace_state_survives_a_rename` (`tests/integrator.rs`): copies and
+  removes the workspace right after quit and names any file that vanished
+  mid-copy (`copy …: No such file`) or was left behind (`left behind: …`).
+  Its hosted failure after the daemon migration was a real shutdown race:
+  the daemon's stop returned while engine store connections were still
+  open (the schedule store's worker closes its connection at a 250 ms idle
+  bound after the last handle is gone), and that close removed
+  `sessions.sqlite3-wal` and `-shm` from under the copy. The daemon's
+  shutdown now joins its own tasks and waits until the process holds no
+  database file of the realm open (`daemon::settle_stores`), so the tree is
+  quiet when quit returns. A failure now means a database stayed open past
+  that wait (the daemon logs "may still be open at exit").
 
 Paused-clock tests (`#[tokio::test(start_paused = true)]`) count a task
 blocked in `spawn_blocking` as idle, so the virtual clock jumps; re-check a

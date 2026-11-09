@@ -3614,3 +3614,32 @@ and listed here.
   could read (`DaemonError::EndpointExposed`), as it should. A start-up
   refusal is `DaemonError::Bootstrap` around the same typed
   `TuiError::Confinement` (`Attached::try_start_with`).
+
+### The daemon's stop waits for the realm's databases to close
+
+The hosted run of 983bb44 failed `integrator::workspace_state_survives_a_rename`
+with `NotFound` in `copy_tree`: a file the walk listed vanished before it
+was copied, right after the rig's quit. Root cause, by probe (snapshotting
+the workspace every 25 ms after quit): `Daemon::serve_until` returned with
+every one of its own handles dropped (the runtime's and the mob state's
+strong counts were 0), yet `sessions.sqlite3-wal` and `-shm` were removed
+about 260 ms later, consistently. The engine's schedule store runs its
+connection on a worker thread that closes it at a 250 ms idle bound
+(`SCHEDULE_CONNECTION_IDLE_TIMEOUT` in meerkat-store), and that last close
+removes the write-ahead log and shared memory. So the realm tree was still
+changing after quit returned. The fix waits instead of tolerating: the
+daemon's shutdown joins the tasks it aborts, then waits (at most 3 s) until
+`/proc/self/fd` shows no database file of the realm open
+(`daemon::settle_stores`; pinned by
+`daemon::tests::the_shutdown_waits_for_the_realms_open_databases`, whose
+open file is never taken as closed). After it the probe saw no change in
+the tree in the second after quit. A `-wal` file is not the evidence:
+`workgraph.sqlite3-wal` and `mobs/mob--tui.db-wal` stay on disk with no
+descriptor open. Where descriptors cannot be listed (not Linux) nothing is
+waited for and nothing is claimed; past the bound the daemon logs that the
+databases may still be open. `copy_tree` stays strict and now names the
+file that vanished. The custody lock files
+(`sessions.sqlite3.execution-custody`, `mob--tui.db.incarnation-custody`,
+`tool_process_custody/.incarnations/*.lock`) stay open in the process after
+the stop; they are locks, never removed by a close, so they do not race a
+copy.
