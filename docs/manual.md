@@ -975,6 +975,7 @@ rest of this manual.
 | `--attach`, `--attach=auto` | Attach to the workspace's daemon; start it when none answers |
 | `--attach=existing` | Attach only to a running daemon; refuse otherwise |
 | `--no-attach` | Host the agent in this process (the default; overrides `--attach`) |
+| `--list` | List every daemon that has an endpoint file, then exit (also `rkat-tui-mob --list`) |
 
 `attach = true` at the top of your own `tui.toml` (the user-global one, or
 the realm's) makes attach mode (auto) the default; `--no-attach` and
@@ -984,8 +985,17 @@ ignored with a notice, like its other trusted-only keys).
 The value needs `=`: `rkat-tui --attach "fix the test"` attaches and sends
 the prompt.
 
+**Listing daemons.** `rkat-tui --list` prints one line per daemon whose
+endpoint file exists, tab-separated in a fixed order: the workspace, the
+address, `pid N`, `up <uptime>`, then the attached clients, the current
+conversation and `running` or `idle`. A file nothing answers at is
+`stale`, and is removed when its process is gone (`stale (file removed)`).
+Listing attaches to each daemon with its token as a probe, which is not
+counted as a client; the token is never printed. `rkat-tui-mob --list
+--endpoint-file <path>` lists only that file.
+
 **Finding the daemon.** The daemon writes its endpoint file (its loopback
-address, a per-daemon token and its pid) to
+address, a per-daemon token, its pid, the workspace and when it started) to
 `$XDG_STATE_HOME/rkat-tui/<key>/mob.endpoint`, or
 `~/.local/state/rkat-tui/<key>/mob.endpoint` when `XDG_STATE_HOME` is not
 set; `<key>` is the first 32 hex digits of the SHA-256 of the workspace's
@@ -994,16 +1004,21 @@ canonical path. The directory is created with mode 0700, the file with
 it, connects, and presents the token with `rkat/attach` before anything
 else; then it speaks Meerkat's own JSON-RPC methods. A file whose address
 no longer accepts is stale. `rkat-tui-mob --endpoint-file <path>` writes it
-elsewhere (a TUI that starts the daemon passes the path it reads).
+elsewhere.
 
 The token is the only thing that keeps other programs out: whoever holds it
 can answer approval dialogs, switch the permission mode and add rules. That
 is why the file is not in the workspace: the agent's confined shell can
 read the whole workspace (and the temp dir, the Cargo home and the cache
-directory) and reach loopback. The daemon refuses to start when the shell's
-confinement would grant the file's directory (for example a workspace that
-contains `~/.local/state`, such as your home directory); point
-`XDG_STATE_HOME` or `--endpoint-file` elsewhere then. With
+directory) and reach loopback. When the shell's confinement would grant
+the state directory (for example a workspace that contains
+`~/.local/state`, such as your home directory), the daemon writes the file
+to `$XDG_RUNTIME_DIR/rkat-tui/<key>/mob.endpoint` instead (same modes); the
+TUI and `--list` look in both places, in that order. The temp dir is never
+used: the shell is granted it. When neither place is safe (or
+`XDG_RUNTIME_DIR` is unset, or `--endpoint-file` names a granted path) the
+daemon refuses to start; point `XDG_STATE_HOME` or `--endpoint-file`
+elsewhere then. With
 `--no-confinement` the agent's shell runs as you and can read the file like
 anything else of yours.
 
@@ -1029,8 +1044,27 @@ it restarted, as the in-process TUI shows its own at start.
 `daemon starting`, `attached 127.0.0.1:<port>`, `reconnecting`,
 `detached` or `daemon stopped`.
 
-**Detach and reattach.** `/quit` (and Ctrl-D) detaches: the daemon and a
-running turn go on. When the connection drops (the daemon restarted, say),
+**Detach and reattach.** `/detach` leaves and keeps the agent running:
+the daemon and a running turn go on, and the daemon records that someone
+detached from it (a later `/quit` then asks before stopping it). Closing
+the terminal (SIGHUP), losing the connection or a crash of the TUI is a
+detach too: the terminal is restored, and the daemon keeps running. After
+the TUI closes it says on the terminal whether the daemon still runs.
+`/quit` (also Ctrl-D, and Ctrl-C twice) means you are done, and decides
+from the daemon's state (`rkat/status`):
+
+| Situation | `/quit` |
+|---|---|
+| This TUI started the daemon, nobody detached since, no other TUI attached | Stops the daemon |
+| Other TUIs are attached | Leaves the daemon running for them, and says so |
+| Someone detached earlier, this TUI did not start the daemon, or the daemon cannot say (it restarted, or did not answer) | Asks: detach (keep the agent running, the default) or terminate (stop the daemon); when a turn is running, terminate says it interrupts it; Esc stays |
+
+Messages not yet delivered are saved either way, and while a turn runs or
+messages are queued `/quit` first asks for a second press, as in-process.
+"Started" means this TUI launched the daemon (`--attach` auto with none
+running): it hands the daemon a start token and presents it on attach. A
+daemon you ran yourself, or one a TUI restarted after it died, has no
+starter, so `/quit` asks. When the connection drops (the daemon restarted, say),
 the TUI re-reads the endpoint file and reconnects with backoff. A daemon
 that died and left a stale endpoint file is started again (auto mode, at
 most every 30 s); one that shut down cleanly (no endpoint file) is waited
@@ -1044,9 +1078,14 @@ live stream from there. Where the stream stopped is remembered per
 workspace in `.rkat/tui/attach.cursor` (with the stream's epoch and a digest
 of the daemon's token, never the token).
 
-**Stopping the daemon.** `/daemon stop` sends SIGTERM to the pid in the
-endpoint file, after checking that the file still names the daemon this TUI
-is attached to. The daemon removes its endpoint file and shuts down; its
+**Stopping the daemon.** `/quit` stops the daemon this TUI started (the
+table above) with `rkat/shutdown`; the choice "terminate" does the same.
+When the daemon does not confirm (the connection dropped), the TUI reports
+it stopped only once its endpoint file is gone, and otherwise says it may
+still be running (check with `--list`). `/daemon stop` stops it from any
+attached TUI: it sends SIGTERM to the pid in the endpoint file, after
+checking that the file still names the daemon this TUI is attached to.
+Either way the daemon removes its endpoint file and shuts down; its
 sessions stay in the realm and the next start restores the member.
 
 **What works:** prompts and streaming output, the agent's file changes as

@@ -14,6 +14,7 @@ names, is in `docs/evidence.md`:
 | Review fixes for P1–P4 | 2026-11-08 | "Review fixes for P1–P4" |
 | P4b attach-mode polish | 2026-11-08 | "P4b: attach-mode polish" |
 | P3b and the 0.9.11 adoption | 2026-11-09 | "P3b and the 0.9.11 adoption" |
+| Always-daemon P2 lifecycle (`/detach`, `/quit`, hangup, `--list`, endpoint fallback) | 2026-11-09 | "The daemon's lifecycle state and its owner (`rkat/status`)", "`/quit`, `/detach` and hangup in attach mode", "A shutdown without an answer is not reported as done", "`--list` (`daemon::list`)", "The endpoint file falls back to the runtime directory" |
 
 Attach mode is experimental; `--no-attach` is the default. Open:
 same-identity `/rewind` (lukacf/meerkat#2126); P5, the governed realm
@@ -55,7 +56,7 @@ the end state.
 - Anything else the manual's attach section lists as a limit, except multi-client steer attribution (engine gap, ask 6, stays documented).
 - Quit-confirm and other texts that assume in-process.
 
-#### P2 Lifecycle
+#### P2 Lifecycle (done 2026-11-09)
 - Endpoint file gains `workspace`, `started_at`; the daemon tracks `detached: bool` and `clients: usize` and reports them in `rkat/status`.
 - `/detach` (new command; `/quit` stops meaning detach), `rkat/detach` so the daemon records it.
 - `/quit` semantics as above, including the owner notion (the client that started the daemon holds a start token or the daemon records the owner connection id), the other-clients rule, hangup = detach.
@@ -192,7 +193,10 @@ methods on the wire, and `daemon::protocol` types each one for both ends:
 
 | Method | Params | Result |
 |---|---|---|
-| `rkat/attach` | `{"token"}` | `{"attached": true}` (first line only) |
+| `rkat/attach` | `{"token", "start_token"?, "probe"?}` | `{"attached": true}` (first line only; the start token marks the client that launched the daemon, a probe is not counted as a client) |
+| `rkat/status` | `{}` | `{"workspace", "pid", "started_at", "clients", "detached", "owner", "session_id"?, "running"}` |
+| `rkat/detach` | `{}` | `{}` (recorded: a later `/quit` asks) |
+| `rkat/shutdown` | `{}` | `{}` (the daemon removes its endpoint file and shuts down) |
 | `rkat/get_mode` | `{}` | `{"mode", "paused", "denials"}` |
 | `rkat/set_mode` | `{"mode": "default"\|"accept-edits"\|"plan"\|"auto"}` | `{"status", "notice", "warning"?}` |
 | `rkat/rules` | `{"op": "list"}`, `{"op": "add", "deny", "tool", "pattern"?}`, `{"op": "remove", "n"}` | `{"ok", "text"}` |
