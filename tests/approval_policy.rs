@@ -24,6 +24,7 @@
 
 use meerkat_core::ToolSourceKind;
 use rkat_tui::approval::catalog::ToolOrigin;
+use rkat_tui::approval::policy::TUI_OWNED_BUILTINS;
 use rkat_tui::approval::policy::{
     Action, DELEGATION_TOOLS, PolicyContext, READ_ONLY_BUILTINS, REVIEWED_BUILTINS, Tier,
     TierDecision, classify_tier,
@@ -31,7 +32,6 @@ use rkat_tui::approval::policy::{
 use rkat_tui::approval::rules::{Rule, RuleKind, RuleOrigin, RuleSet};
 use rkat_tui::memory::{NOTE_TOOL_NAMES, NOTES_SOURCE};
 use rkat_tui::paths::ProjectRoot;
-use rkat_tui::session::TUI_OWNED_BUILTINS;
 use rkat_tui::tools::{FILE_TOOL_NAMES, FILE_TOOLS_SOURCE};
 use serde_json::{Value, json};
 
@@ -247,7 +247,7 @@ fn sealed_paths_are_denied_before_rules_and_classifier() {
 }
 
 /// The native `apply_patch` is withheld from every agent by the tool
-/// policy (`session::TUI_OWNED_BUILTINS`); a call that reaches the gate
+/// policy (`approval::policy::TUI_OWNED_BUILTINS`); a call that reaches the gate
 /// anyway is sealed, whatever it patches and whatever an allow rule says.
 #[test]
 fn a_native_apply_patch_is_sealed() {

@@ -18,10 +18,12 @@ use super::render::{SPINNER, block_lines};
 
 mod helpers;
 mod notices;
+mod restore;
 
 use helpers::helper_args_preview;
 pub use helpers::{HelperFold, HelperLast, HelperState, HelperView, MAX_HELPER_PREVIEW};
 use notices::{compaction_skipped, retry_notice, upstream_notice};
+pub use restore::blocks_from_messages;
 
 /// Maximum tool-result lines kept in the preview (matches the CLI stream renderer).
 pub const MAX_TOOL_RESULT_LINES: usize = 20;

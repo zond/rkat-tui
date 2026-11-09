@@ -162,9 +162,9 @@ pub use approval::ApprovalError;
 pub use bootstrap::confinement::ConfinementError;
 pub use cli::Args;
 pub use endpoints::{EndpointError, ModelRefError};
+pub use error::AdmissionError;
 pub use error::TuiError;
 pub use overlay::OverlayError;
-pub use session::AdmissionError;
 pub use ui::UiError;
 
 /// Run the TUI with the given arguments: bootstrap the realm and the

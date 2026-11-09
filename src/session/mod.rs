@@ -43,7 +43,7 @@
 //!   ([`crate::bootstrap::mcp`]), the native auto-compaction trigger the
 //!   caller chose ([`SessionOptions::compaction`], see [`CompactionTrigger`])
 //!   and a tool access policy that denies the builtins the TUI owns itself
-//!   ([`TUI_OWNED_BUILTINS`]: model switching, file writes).
+//!   ([`crate::approval::policy::TUI_OWNED_BUILTINS`]: model switching, file writes).
 //! - A fresh session gets the persona and the caller's instruction
 //!   sections; a resumed one keeps the instructions it was created with (its
 //!   persisted build state), because the runtime does not re-render the
@@ -62,23 +62,21 @@ use meerkat::surface::{
 };
 use meerkat_core::comms::EventStream;
 use meerkat_core::lifecycle::run_primitive::{RuntimeTurnMetadata, TurnMetadataOverride};
-use meerkat_core::ops::ToolAccessPolicy;
 use meerkat_core::service::{
     AppendSystemContextRequest, AppendSystemContextStatus, CreateSessionRequest,
     DeferredPromptPolicy, InitialTurnPolicy, SessionBuildOptions, SessionServiceControlExt,
 };
 use meerkat_core::{
     AgentToolDispatcher, AuthBindingRef, ContentInput, HandlingMode, InputId, Provider, Session,
-    SessionId, SystemPromptOverride, ToolCategoryOverride, ToolNameSet,
+    SessionId, SystemPromptOverride, ToolCategoryOverride,
 };
 use meerkat_runtime::RuntimeDriverError;
 use meerkat_runtime::completion::CompletionHandle;
 use meerkat_runtime::input_state::InputLifecycleState;
 use meerkat_runtime::run_stop::RunStopReceipt;
 use meerkat_runtime::{
-    AcceptOutcome, CanonicalKeyTextError, IdempotencyKey, Input, InputAbandonReason,
-    InputTerminalOutcome, MeerkatMachine, PromptInput, RejectReason, SessionLlmReconfigureRequest,
-    SessionServiceRuntimeExt,
+    AcceptOutcome, IdempotencyKey, Input, InputAbandonReason, InputTerminalOutcome, MeerkatMachine,
+    PromptInput, SessionLlmReconfigureRequest, SessionServiceRuntimeExt,
 };
 
 use crate::approval::{ApprovalEngine, InputKey, admission};
@@ -102,18 +100,7 @@ const RECALL_REASON: &str = "rkat-tui: recalled by the user";
 /// How many passes [`SessionHandle::interrupt`] makes at most.
 const INTERRUPT_PASSES: u32 = 3;
 
-/// Builtins every TUI session is denied through its tool access policy: the
-/// TUI owns model switching (`/model`, the picker) and file writes (its own
-/// diff-reporting file tools, gated by the approval policy).
-pub const TUI_OWNED_BUILTINS: [&str; 2] = ["brain_swap", "apply_patch"];
-
-/// Mob tools every in-process TUI session and helper is denied: the engine
-/// refuses `fork_off` to a caller that is not a durable mob member, and the
-/// in-process main session is not a mob member (delegate helpers are not
-/// durable), so the tool could only fail. (The `rkat-tui-mob` daemon, whose
-/// members are durable, offers `fork_off` behind the gate; a fork child
-/// inherits the source's dispatch admission.)
-pub const DENIED_SPAWN_TOOLS: [&str; 1] = ["fork_off"];
+use crate::mobs::customizer::tool_access_policy;
 
 /// The model, provider and auth binding a session runs on, as its
 /// authoritative metadata records them.
@@ -147,20 +134,7 @@ pub struct SessionOptions {
     pub compaction: CompactionTrigger,
 }
 
-/// The runtime refused an input.
-#[derive(Debug, thiserror::Error)]
-pub enum AdmissionError {
-    /// The runtime rejected the input.
-    #[error("the runtime refused the input: {0}")]
-    Rejected(RejectReason),
-    /// The caller idempotency key is not valid key text.
-    #[error("invalid idempotency key: {0}")]
-    Key(#[source] CanonicalKeyTextError),
-    /// An admission outcome this version does not know (the runtime's
-    /// outcome type is non-exhaustive).
-    #[error("unexpected admission outcome: {0}")]
-    Unexpected(String),
-}
+pub use crate::error::AdmissionError;
 
 /// How an admitted input reaches its terminal.
 #[derive(Debug)]
@@ -860,18 +834,6 @@ fn fresh_instructions(additional: &[String]) -> Vec<String> {
     instructions
 }
 
-/// The tool access policy of every TUI session: [`TUI_OWNED_BUILTINS`]
-/// denied.
-#[must_use]
-pub fn tool_access_policy() -> ToolAccessPolicy {
-    ToolAccessPolicy::DenyList(
-        TUI_OWNED_BUILTINS
-            .into_iter()
-            .chain(DENIED_SPAWN_TOOLS)
-            .collect::<ToolNameSet>(),
-    )
-}
-
 /// Build options shared by fresh and resumed sessions: `instructions`, the
 /// external tools, the runtime's MCP servers, the compaction trigger, the
 /// tool access policy, the confined shell's curated environment
@@ -909,17 +871,6 @@ fn build_options(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_tui_owned_builtins_are_denied() {
-        let ToolAccessPolicy::DenyList(names) = tool_access_policy() else {
-            unreachable!("a deny list");
-        };
-        for name in TUI_OWNED_BUILTINS.into_iter().chain(DENIED_SPAWN_TOOLS) {
-            assert!(names.0.iter().any(|n| n.as_str() == name), "{name}");
-        }
-        assert!(names.0.iter().any(|n| n.as_str() == "fork_off"));
-    }
 
     #[test]
     fn a_fresh_session_gets_the_persona_once_then_the_sections() {

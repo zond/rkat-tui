@@ -25,10 +25,28 @@ use crate::bootstrap::HELPER_PERSONA;
 
 /// The mob tools that start a member or a council: denied to a helper at
 /// the configured depth limit (`[helpers] max_depth`), so helpers nest no
-/// deeper. `fork_off` is denied to every helper of the in-process TUI
-/// ([`crate::session::DENIED_SPAWN_TOOLS`]); the daemon's members keep it
+/// deeper. `fork_off` ([`DENIED_SPAWN_TOOLS`]) is denied unless the fork is gated;
+/// the daemon's members keep it
 /// ([`HelperCustomizer::with_gated_fork_off`]) except at the depth limit.
 pub const NESTING_TOOLS: [&str; 4] = ["delegate", "mob_create", "mob_spawn_member", "council"];
+
+/// Mob tools denied unless the member's fork is gated
+/// ([`HelperCustomizer::with_gated_fork_off`]): a fork child inherits the
+/// source's dispatch admission, so the daemon's members keep `fork_off`
+/// behind the gate except at the depth limit.
+pub const DENIED_SPAWN_TOOLS: [&str; 1] = ["fork_off"];
+
+/// The tool access policy every member's is merged with:
+/// [`crate::approval::policy::TUI_OWNED_BUILTINS`] and [`DENIED_SPAWN_TOOLS`] denied.
+#[must_use]
+pub fn tool_access_policy() -> meerkat_core::ops::ToolAccessPolicy {
+    meerkat_core::ops::ToolAccessPolicy::DenyList(
+        crate::approval::policy::TUI_OWNED_BUILTINS
+            .into_iter()
+            .chain(DENIED_SPAWN_TOOLS)
+            .collect::<meerkat_core::ToolNameSet>(),
+    )
+}
 
 /// Builds the external tools of one helper (the TUI's file tools).
 pub type HelperTools = Arc<dyn Fn() -> Arc<dyn AgentToolDispatcher> + Send + Sync>;
@@ -312,7 +330,7 @@ fn shape(
 /// A helper is a seated member, so the engine would let it `fork_off`; its
 /// fork child would seat without this customizer and so without the gate.
 /// Every helper's tool access policy denies the TUI's denied tools
-/// ([`crate::session::tool_access_policy`]), merged into whatever policy its
+/// ([`tool_access_policy`]), merged into whatever policy its
 /// spec names: none or `Inherit` becomes the TUI's deny list, a deny list
 /// gains the names, an allow list loses them, constraints gain a deny
 /// constraint, and `ReadOnly` (which already admits no mutating tool) stays.
@@ -330,17 +348,17 @@ fn deny_ungated_tools(spec: &mut SpawnMemberSpec, also: &[&str]) {
 /// may not fork either, as a fork child is a helper one level deeper).
 fn deny_tools(spec: &mut SpawnMemberSpec, also: &[&str], gated_fork_off: bool) {
     use meerkat_core::ops::{ToolAccessConstraint, ToolAccessPolicy};
-    let ToolAccessPolicy::DenyList(mut denied) = crate::session::tool_access_policy() else {
+    let ToolAccessPolicy::DenyList(mut denied) = tool_access_policy() else {
         // The TUI policy is a deny list; anything else is a programming
         // error that must not widen a helper's tools.
-        spec.tool_access_policy = Some(crate::session::tool_access_policy());
+        spec.tool_access_policy = Some(tool_access_policy());
         return;
     };
     for name in also {
         denied.insert((*name).to_string());
     }
     if gated_fork_off && also.is_empty() {
-        for name in crate::session::DENIED_SPAWN_TOOLS {
+        for name in DENIED_SPAWN_TOOLS {
             denied.remove(name);
         }
     }
@@ -547,6 +565,19 @@ impl SpawnMemberCustomizer for HelperCustomizer {
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_tui_owned_builtins_are_denied() {
+        use crate::approval::policy::TUI_OWNED_BUILTINS;
+        use meerkat_core::ops::ToolAccessPolicy;
+        let ToolAccessPolicy::DenyList(names) = tool_access_policy() else {
+            unreachable!("a deny list");
+        };
+        for name in TUI_OWNED_BUILTINS.into_iter().chain(DENIED_SPAWN_TOOLS) {
+            assert!(names.0.iter().any(|n| n.as_str() == name), "{name}");
+        }
+        assert!(names.0.iter().any(|n| n.as_str() == "fork_off"));
+    }
+
     fn denies_fork_off(names: &meerkat_core::ToolNameSet) -> bool {
         names.contains("fork_off")
     }
@@ -558,10 +589,7 @@ mod tests {
             let mut spec = SpawnMemberSpec::new("delegate", "worker");
             spec.tool_access_policy = policy;
             deny_ungated_tools(&mut spec, &[]);
-            assert_eq!(
-                spec.tool_access_policy,
-                Some(crate::session::tool_access_policy())
-            );
+            assert_eq!(spec.tool_access_policy, Some(tool_access_policy()));
         }
     }
 
@@ -731,10 +759,7 @@ mod tests {
             spec.additional_instructions,
             Some(vec!["persona".to_string(), "agents".to_string()])
         );
-        assert_eq!(
-            spec.tool_access_policy,
-            Some(crate::session::tool_access_policy())
-        );
+        assert_eq!(spec.tool_access_policy, Some(tool_access_policy()));
         // A rebuild gets its tools back, not a second set of instructions.
         let mut resumed = SpawnMemberSpec::host_root("main", "main");
         shape_root(&mut resumed, &root, Some(&curated), false, false);

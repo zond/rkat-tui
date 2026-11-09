@@ -2373,7 +2373,7 @@ impl AttachRunner {
             {
                 let blocks = bounded(CALL_TIMEOUT, remote::transcript(&connection, &target))
                     .await
-                    .map(|messages| crate::runner::blocks_from_messages(&messages))
+                    .map(|messages| crate::ui::transcript::blocks_from_messages(&messages))
                     .map_err(|err| err.to_string());
                 reports.send(Report::Viewed {
                     session: target,
@@ -2972,7 +2972,7 @@ async fn adopt(
             .flatten();
         let context = last_context_before(connection, &session, snapshot.latest).await;
         Ok::<_, ClientError>(Adopted {
-            blocks: crate::runner::blocks_from_messages(&messages),
+            blocks: crate::ui::transcript::blocks_from_messages(&messages),
             session,
             stream,
             last_seq: snapshot.latest,
@@ -3093,7 +3093,7 @@ async fn establish(
                 (
                     stream,
                     Mark::rendered(&id, latest),
-                    Some(crate::runner::blocks_from_messages(&messages)),
+                    Some(crate::ui::transcript::blocks_from_messages(&messages)),
                     context,
                 )
             }

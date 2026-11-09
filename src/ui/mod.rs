@@ -69,9 +69,9 @@ pub use search::{HistorySearch, SearchOutcome};
 pub use selection::{CellPos, SelectMode, Selection};
 #[cfg(any(test, feature = "test-support"))]
 pub use transcript::QueuedLabel;
-pub use transcript::{
-    Block, BlockId, DiffView, HelperView, NoticeLevel, ShellState, ToolState, Transcript,
-};
+#[cfg(any(test, feature = "test-support"))]
+pub use transcript::ToolState;
+pub use transcript::{Block, BlockId, DiffView, HelperView, NoticeLevel, ShellState, Transcript};
 
 /// Window in which a second Ctrl-C on an idle, empty prompt quits.
 pub const DOUBLE_CTRL_C_WINDOW: Duration = Duration::from_millis(1500);

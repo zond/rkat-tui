@@ -35,7 +35,6 @@ use super::rules::{RuleId, RuleSet};
 use super::shell;
 use crate::memory::{NOTE_FORGET, NOTE_LIST, NOTE_READ, NOTE_SAVE, Scope, slug};
 use crate::paths::ProjectRoot;
-use crate::session::TUI_OWNED_BUILTINS;
 use crate::tools::{EDIT_FILE, GLOB, GREP, READ_FILE, WRITE_FILE};
 use meerkat_core::ToolMutationClass;
 use serde::{Deserialize, Serialize};
@@ -120,6 +119,11 @@ impl VerdictSummary {
         matches!(self, Self::Allowed { .. })
     }
 }
+
+/// Builtins every member and helper is denied through its tool access policy: the
+/// TUI owns model switching (`/model`, the picker) and file writes (its own
+/// diff-reporting file tools, gated by the approval policy).
+pub const TUI_OWNED_BUILTINS: [&str; 2] = ["brain_swap", "apply_patch"];
 
 /// Builtins that only read state or manage the agent's own bookkeeping.
 ///

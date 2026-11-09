@@ -155,7 +155,7 @@ pub enum TuiError {
     EventStream(#[from] meerkat_core::comms::StreamError),
     /// The runtime refused an input.
     #[error(transparent)]
-    Admission(#[from] crate::session::AdmissionError),
+    Admission(#[from] AdmissionError),
     /// The terminal UI failed.
     #[error(transparent)]
     Ui(#[from] crate::ui::UiError),
@@ -404,4 +404,19 @@ mod tests {
         );
         assert!(text.contains("--state-root '/w/it'\\''s/.rkat'"), "{text}");
     }
+}
+
+/// The runtime refused an input.
+#[derive(Debug, thiserror::Error)]
+pub enum AdmissionError {
+    /// The runtime rejected the input.
+    #[error("the runtime refused the input: {0}")]
+    Rejected(meerkat_runtime::RejectReason),
+    /// The caller idempotency key is not valid key text.
+    #[error("invalid idempotency key: {0}")]
+    Key(#[source] meerkat_runtime::CanonicalKeyTextError),
+    /// An admission outcome this version does not know (the runtime's
+    /// outcome type is non-exhaustive).
+    #[error("unexpected admission outcome: {0}")]
+    Unexpected(String),
 }

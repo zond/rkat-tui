@@ -3,7 +3,7 @@
 //! the transcript and status seeding of a resumed session.
 
 use meerkat_core::{
-    AssistantBlock, ForkInstructionPolicy, Message, Session, SessionForkAtRequest, SessionId,
+    ForkInstructionPolicy, Message, Session, SessionForkAtRequest, SessionId,
     SessionServiceTranscriptEditExt, TranscriptEditRunningBehavior, TranscriptUserRole,
 };
 
@@ -18,8 +18,7 @@ use crate::session::{
 };
 use crate::ui::rewind::typed_text;
 use crate::ui::{
-    Block, Effect, Msg, NoticeLevel, RewindPoint, Rewound, SessionCost, StatusUpdate, ToolState,
-    TurnFailure,
+    Block, Effect, Msg, NoticeLevel, RewindPoint, Rewound, SessionCost, StatusUpdate, TurnFailure,
 };
 use meerkat_core::service::SessionSummary;
 
@@ -520,40 +519,7 @@ impl Runner {
 /// notices, injected context and compaction summaries are not shown.
 #[must_use]
 pub fn blocks_from_session(session: &Session) -> Vec<Block> {
-    blocks_from_messages(session.messages())
-}
-
-/// [`blocks_from_session`] over a session's `messages` (attach mode reads
-/// them from the daemon).
-#[must_use]
-pub fn blocks_from_messages(messages: &[Message]) -> Vec<Block> {
-    let mut blocks = Vec::new();
-    for message in messages {
-        match message {
-            Message::User(user) if user.transcript_role == TranscriptUserRole::Conversational => {
-                let text = user.text_content();
-                if !text.is_empty() {
-                    blocks.push(Block::User { text });
-                }
-            }
-            Message::BlockAssistant(assistant) => {
-                for block in &assistant.blocks {
-                    if let AssistantBlock::Text { text, .. } = block
-                        && !text.is_empty()
-                    {
-                        blocks.push(Block::Assistant { md: text.clone() });
-                    }
-                }
-                for call in assistant.tool_calls() {
-                    let args = serde_json::from_str(call.args.get())
-                        .unwrap_or_else(|_| serde_json::Value::String(call.args.get().to_string()));
-                    blocks.push(restored_tool_block(call.name, args));
-                }
-            }
-            _ => {}
-        }
-    }
-    blocks
+    crate::ui::transcript::blocks_from_messages(session.messages())
 }
 
 /// The session's rewind points, newest first: each conversational user
@@ -588,22 +554,6 @@ fn quote_label(point: &RewindPoint) -> String {
         format!("{}…", label.chars().take(59).collect::<String>())
     } else {
         label
-    }
-}
-
-fn restored_tool_block(name: &str, args: serde_json::Value) -> Block {
-    Block::Tool {
-        name: name.to_string(),
-        args,
-        state: ToolState::Done {
-            is_error: false,
-            duration_ms: 0,
-        },
-        result_preview: None,
-        diff: None,
-        note: None,
-        depth: 0,
-        collapsed: true,
     }
 }
 

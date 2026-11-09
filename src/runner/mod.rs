@@ -88,7 +88,7 @@ use crate::ui::{
 };
 use crate::workbench::{AppSetup, SavedUnsent, Workbench, WorkbenchParts, app};
 
-pub use lifecycle::{Start, blocks_from_messages, open_start};
+pub use lifecycle::{Start, open_start};
 
 /// Capacity of the primary agent-event channel.
 const AGENT_EVENT_CAPACITY: usize = 256;
