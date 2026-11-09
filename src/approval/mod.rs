@@ -1,11 +1,18 @@
 //! Auto-mode approval: tiers, rules, shell analysis, classifier and escalation.
 //!
-//! Every tool call is decided in tiers:
+//! Every tool call is decided in tiers ([`policy::Tier`]), first match wins:
 //!
-//! 0. a user deny rule matches ⇒ deny;
+//! 0. a user deny rule matches ⇒ deny ([`policy::Tier::UserDeny`]); a file
+//!    write into a sealed path (the gate's own state, a git directory) or a
+//!    call to a builtin every session's tool policy withholds ⇒ deny, before
+//!    any allow rule ([`policy::Tier::Sealed`]);
 //! 1. read-only builtins, in-project reads/searches, allowlisted shell commands
 //!    and narrow user allow rules ⇒ allow;
 //! 2. writes whose every target is inside the project and unprotected ⇒ allow;
+//!
+//!    between 2 and 3, a write with a protected target inside the project
+//!    (secrets, build scripts, agent configuration) ⇒ the human is asked,
+//!    never the classifier ([`policy::Tier::AskUser`]);
 //! 3. everything else ⇒ the reasoning-blind [`classifier::ActionClassifier`].
 //!
 //! Classifier blocks are returned to the model as denials with a reason.
@@ -27,7 +34,9 @@
 //! ([`policy`]), rules and settings ([`rules`]), shell analysis ([`shell`]),
 //! the classifier and its prompts ([`classifier`], [`prompts`]), denial
 //! counters ([`counters`]), the escalation broker ([`escalation`]) and the
-//! reasoning-blind classifier transcript ([`transcript`]).
+//! reasoning-blind classifier transcript ([`transcript`]). [`desk`] turns
+//! the human's answer into the engine's decision for both hosts (the
+//! in-process runner and the daemon).
 
 pub mod admission;
 pub mod catalog;
