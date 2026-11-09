@@ -647,7 +647,11 @@ impl AttachRunner {
             context,
         } = established;
         let address = link.endpoint.address;
-        self.daemon_id_seen = Some(super::catchup::daemon_id(&link.endpoint.token));
+        let daemon_id = super::catchup::daemon_id(&link.endpoint.token);
+        // A daemon this client has not shown yet (the first attach, or one
+        // that restarted): what its start-up had to say.
+        let new_daemon = self.daemon_id_seen.as_deref() != Some(daemon_id.as_str());
+        self.daemon_id_seen = Some(daemon_id);
         let session = link.session.to_string();
         let fresh = self.mark.is_none();
         // A render from the start replaces what was shown; a resumed
@@ -714,6 +718,47 @@ impl AttachRunner {
         self.session_check_at = Some(now + SESSION_POLL);
         self.refresh_mode();
         self.refresh_tasks();
+        if new_daemon {
+            self.startup_notices();
+        }
+    }
+
+    /// Show the daemon's start-up notices (`rkat/notices`), as the
+    /// in-process TUI shows its own at start.
+    fn startup_notices(&self) {
+        let Some(connection) = self.connection() else {
+            return;
+        };
+        let ui_tx = self.ui_tx.clone();
+        tokio::spawn(async move {
+            let read = bounded(
+                CALL_TIMEOUT,
+                remote::local::<_, protocol::Notices>(
+                    &connection,
+                    protocol::NOTICES,
+                    &serde_json::json!({}),
+                ),
+            )
+            .await;
+            match read {
+                Ok(read) => {
+                    for notice in read.notices {
+                        let level = if notice.warn {
+                            NoticeLevel::Warn
+                        } else {
+                            NoticeLevel::Info
+                        };
+                        let _ = ui_tx.send(Msg::Notice {
+                            level,
+                            text: notice.text,
+                        });
+                    }
+                }
+                Err(err) => {
+                    tracing::debug!(error = %err, "cannot read the daemon's start-up notices");
+                }
+            }
+        });
     }
 
     /// Read the daemon's permission mode into the status bar.

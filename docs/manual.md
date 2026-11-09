@@ -1018,6 +1018,11 @@ starting` until the endpoint file appears (up to 60 s); a daemon that exits
 first, or never comes up, is reported with the log's path. You can also run
 it yourself: `rkat-tui-mob --foreground -w . --model …`.
 
+**Start-up notices.** What the daemon's start had to say (its shell's
+confinement, rules it could not load, ignored project settings, semantic
+memory being off) shows when a TUI first attaches to it, and again after
+it restarted, as the in-process TUI shows its own at start.
+
 **Status bar.** The first segment is the connection: `connecting`,
 `daemon starting`, `attached 127.0.0.1:<port>`, `reconnecting`,
 `detached` or `daemon stopped`.

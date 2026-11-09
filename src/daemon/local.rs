@@ -44,6 +44,10 @@
 //!   build); `rules` is `/rules trust` (the realm rules file's summary, then
 //!   its digest recorded and its allow rules applied).
 //!
+//! - [`NOTICES`] `{}` → `{"notices": [{"warn", "text"}]}`: what the
+//!   daemon's start-up had to say (the confinement, the rules, the
+//!   configuration); a client shows them when it first attaches to this
+//!   daemon, as the in-process TUI shows its own at start;
 //! - [`TASKS`] `{"session_id"}` → `{"tasks": [Task]}`: a conversation's
 //!   tasks in the engine's task store (the Ctrl+T checklist; the client
 //!   reads them on attach, after a switch and after each of the agent's
@@ -95,6 +99,7 @@ use super::protocol::{
 use super::protocol::{
     CONVERSATIONS, GET_MODE, NEW, RESUME, RULES, Refusal, SET_MODE, TRANSCRIPT, TRUST, USAGE,
 };
+use super::protocol::{NOTICES, Notices, StartupNotice};
 
 /// The idempotency source of the daemon's system-context notes.
 const SYSTEM_CONTEXT_SOURCE: &str = "rkat-tui";
@@ -124,6 +129,8 @@ pub struct Local {
     tasks_db: std::path::PathBuf,
     /// The runtime the orchestrator's session lives in (`rkat/set_model`).
     machine: Arc<meerkat_runtime::MeerkatMachine>,
+    /// What the start-up had to say (`rkat/notices`).
+    startup_notices: Vec<StartupNotice>,
 }
 
 /// What [`Local`] is made of.
@@ -150,6 +157,8 @@ pub struct LocalParts {
     pub tasks_db: std::path::PathBuf,
     /// The runtime the members' sessions live in.
     pub machine: Arc<meerkat_runtime::MeerkatMachine>,
+    /// What the start-up had to say.
+    pub startup_notices: Vec<StartupNotice>,
 }
 
 impl std::fmt::Debug for Local {
@@ -176,6 +185,7 @@ impl Local {
             decisions,
             tasks_db,
             machine,
+            startup_notices,
         } = parts;
         let in_plan = engine.mode() == PermissionMode::Plan;
         Self {
@@ -192,6 +202,7 @@ impl Local {
             decisions,
             tasks_db,
             machine,
+            startup_notices,
         }
     }
 
@@ -260,6 +271,9 @@ impl Local {
                     .map_err(|err| Refusal::new(protocol::INTERNAL_ERROR, err.to_string()))?;
                 answer(Tasks { tasks })
             }
+            NOTICES => answer(Notices {
+                notices: self.startup_notices.clone(),
+            }),
             SET_MODEL => {
                 let params: SetModelParams = protocol::params(params)?;
                 answer(self.set_model(params).await?)

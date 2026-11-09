@@ -58,6 +58,10 @@ pub const SET_MODEL: &str = "rkat/set_model";
 /// The notification that a decision a client was shown ended:
 /// [`DecisionEnded`].
 pub const DECISION_ENDED: &str = "rkat/decision_ended";
+/// `{}` → [`Notices`]: what the daemon's start-up had to say (the
+/// confinement, the rules, the configuration), as the in-process TUI shows
+/// it at start.
+pub const NOTICES: &str = "rkat/notices";
 /// The notification of a change the orchestrator's file tools made:
 /// [`FileDiffNote`].
 pub const FILE_DIFF: &str = "rkat/file_diff";
@@ -333,6 +337,36 @@ pub struct DecideParams {
     /// The dialog's answer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answer: Option<RemoteAnswer>,
+}
+
+/// One start-up notice.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StartupNotice {
+    /// A warning (else information).
+    pub warn: bool,
+    /// What it says.
+    pub text: String,
+}
+
+impl StartupNotice {
+    /// Information.
+    #[must_use]
+    pub fn info(text: String) -> Self {
+        Self { warn: false, text }
+    }
+
+    /// A warning.
+    #[must_use]
+    pub fn warn(text: String) -> Self {
+        Self { warn: true, text }
+    }
+}
+
+/// [`NOTICES`]'s result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Notices {
+    /// In the order the in-process TUI shows them.
+    pub notices: Vec<StartupNotice>,
 }
 
 /// [`FILE_DIFF`]'s parameters: one file change, as the in-process file

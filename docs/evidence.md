@@ -2951,3 +2951,16 @@ attach runner turns into the same `Msg::Diff`. Diffs are a view, not
 durable: a client that attaches later sees the tool calls only, as a
 resumed in-process conversation does. Helpers' file tools report no diffs
 in either mode. Test: `attach::the_agents_file_changes_show_as_diffs`.
+
+### The daemon's start-up notices reach the clients (`rkat/notices`)
+
+Found under P1 item 6: the in-process runner shows the confinement's
+observations and the rules' and bootstrap's warnings at start; the daemon
+composed the same `Assembled` and dropped them (`..` in `engine::compose`),
+so an attached user never learned that the shell runs unconfined, that a
+rules file was not applied or that semantic memory is off. The daemon now
+keeps them in order (`Composed::startup_notices`) and answers
+`rkat/notices`; the attach runner shows them when it attaches to a daemon
+it has not shown yet (the first attach, or one that restarted: the daemon
+id the cursor keeps). Test:
+`attach::the_daemons_start_up_notices_show_on_attach`.

@@ -362,6 +362,10 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Fixed
 
+- Attach mode never showed the daemon's start-up notices (its shell's
+  confinement, rule-loading warnings, ignored project settings, semantic
+  memory off): the daemon now keeps them (`rkat/notices`) and a TUI shows
+  them when it first attaches to that daemon.
 - Attach mode showed no diffs of the agent's file changes: the daemon's
   file tools reported none. They now report every change, and the daemon
   pushes it to every attached client (`rkat/file_diff`), shown as

@@ -17,6 +17,7 @@
 //! held as the runtime's durable decisions, which every attached client is
 //! offered and decides through the daemon ([`super::decisions`]).
 
+use super::protocol::StartupNotice;
 use std::sync::Arc;
 
 use meerkat::ToolGatewayBuilder;
@@ -92,6 +93,8 @@ pub struct Composed {
     pub project_inputs: crate::bootstrap::project_trust::ProjectInputs,
     /// The engine's task store (`rkat/tasks`).
     pub tasks_db: std::path::PathBuf,
+    /// What the start-up had to say (`rkat/notices`).
+    pub startup_notices: Vec<StartupNotice>,
 }
 
 /// How the daemon composes its approval side (tests vary it).
@@ -131,8 +134,24 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         llm_override,
         daemon_principal,
         tasks_db,
+        notices,
         ..
     } = parts;
+    // What the in-process runner shows at start, for the clients
+    // (`rkat/notices`): the confinement's observations, then the rules'
+    // and the bootstrap's warnings.
+    let startup_notices: Vec<StartupNotice> = confinement
+        .notices
+        .iter()
+        .map(|text| StartupNotice::info(text.clone()))
+        .chain(
+            approval
+                .notices
+                .drain(..)
+                .chain(notices)
+                .map(StartupNotice::warn),
+        )
+        .collect();
     // Nobody renders the engine's decision events in the daemon (the
     // client reads its status with `rkat/get_mode`); dropped, they are not
     // queued.
@@ -358,6 +377,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         thinking,
         project_inputs,
         tasks_db,
+        startup_notices,
     })
 }
 

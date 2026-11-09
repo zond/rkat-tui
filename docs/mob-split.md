@@ -203,6 +203,7 @@ methods on the wire, and `daemon::protocol` types each one for both ends:
 | `rkat/usage` | `{"session_id"}` | `{"input_tokens", "output_tokens"}` |
 | `rkat/trust` | `{"op": "project"\|"rules"}` | `{"ok", "text"}` |
 | `rkat/set_model` | `{"model", "provider"?, "auth_binding"?}` | `{"session_id", "model", "provider"}` (refused while a run is open) |
+| `rkat/notices` | `{}` | `{"notices": [{"warn", "text"}]}` (the daemon's start-up notices) |
 | `rkat/tasks` | `{"session_id"}` | `{"tasks": [Task]}` (the engine's task store) |
 | `rkat/checklist_view` | `{"view": "hidden"\|"shown"}` | `{}` (saved as `[ui] checklist`) |
 | `rkat/decision_ended` | notification, daemon to client | a decision the client was shown ended |

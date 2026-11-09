@@ -429,6 +429,21 @@ async fn the_agents_file_changes_show_as_diffs() {
     daemon.stop().await;
 }
 
+/// The daemon's start-up notices (here: its shell runs unconfined) show in
+/// a client when it first attaches, as the in-process TUI shows its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_daemons_start_up_notices_show_on_attach() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let mut client = Client::attach(&ws.root).await;
+    client
+        .saw(|msg| matches!(msg, Msg::Notice { text, .. } if text.contains("confinement: off")))
+        .await;
+    client.quit().await;
+    daemon.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn what_the_daemon_cannot_do_yet_says_so() {
     let ws = Workspace::new();
