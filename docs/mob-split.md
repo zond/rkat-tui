@@ -427,7 +427,11 @@ changes here:
   through `dispatch_with_decision_event`.
 - **Forks and rewind (#2117).** `mob/fork_member` becomes an operator method
   that gives the child a new identity, after the admission fix of #2112.
-  Same-identity rewind is deferred to a design note. Resuming onto another
+  Same-identity rewind is deferred to a design note; ours is
+  lukacf/meerkat#2126 (`docs/internal/design/member-rewind.md`): it
+  recommends a `mob/rewind_member` that forks the member's own session at
+  the boundary into a new session born bound to the same identity, with a
+  same-session transcript rewrite as the alternative to weigh. Resuming onto another
   member's session gets a typed refusal. For `/rewind` in attach mode this
   means the rewound conversation would live under a new member identity, so
   the conversations model (one identity, many sessions) needs to follow a
@@ -436,7 +440,22 @@ changes here:
   admission), #2116 (session events to the turn's connection), #2102
   (delegate follows the current identity), plus the `HookSource` constructor.
 
-None of this is merged or released yet; the plan tracks 0.9.11.
+**On main (2026-11-09).** All of the above is merged on upstream `main` in
+the 0.9.11 release integration (`bffcd8f98a`, lukacf/meerkat#2124), and
+rkat-tui's engine pin is that commit; the crates.io publish is pending.
+On main: fork children inherit the source's dispatch admission (#2112, the
+`dispatch_admission_lineage` of a fork seat); the compaction completion is
+forwarded after a recovery, with `session/compact` and `mob/compact_member`
+(#2113); the `{epoch, seq}` cursor on `mob/stream_open`, the `epoch` on each
+member `mob/stream_event`, and request ids on parameter refusals (#2114);
+`DurableDecisionService::subscribe_openings` /`DecisionOpening` as planned
+above (#2115); session events routed to the turn's connection (#2116);
+`mob/fork_member` as an operator method, same-identity rewind still deferred
+(#2117); `delegate` following the current identity (#2102); and
+`HookSource::new`. The pin move adopted none of the new APIs: the daemon
+and the attach client still catch up with `events/list_since`, keep consent
+on `approval/*`, and `/compact now` and `/rewind` in attach mode are still
+not offered. Adopting them is the follow-up.
 
 The three gaps behind the governed-realm direction (P5) are mapped in
 lukacf/meerkat#2122: a governed connection serves no mob methods, a
