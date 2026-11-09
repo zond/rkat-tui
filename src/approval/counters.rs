@@ -29,8 +29,6 @@ pub enum PauseCause {
     ConsecutiveDenials,
     /// [`MAX_TOTAL_DENIALS`] reached; only an explicit resume clears it.
     TotalDenials,
-    /// The user chose another permission mode than auto (`--no-auto`, `/auto off`, `/mode`): the classifier reviews nothing.
-    UserDisabled,
 }
 
 impl fmt::Display for PauseCause {
@@ -40,53 +38,30 @@ impl fmt::Display for PauseCause {
                 write!(f, "{MAX_CONSECUTIVE_DENIALS} consecutive classifier blocks")
             }
             Self::TotalDenials => write!(f, "{MAX_TOTAL_DENIALS} classifier blocks in total"),
-            Self::UserDisabled => f.write_str("auto mode disabled by the user"),
         }
     }
 }
 
-/// Auto-mode state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-pub enum AutoModeState {
-    /// The classifier decides Tier-3 actions.
-    Active,
-    /// Tier-3 actions go to the human (with [`PauseCause::UserDisabled`] the
-    /// permission mode decides them, see [`PermissionMode`]).
-    Paused {
-        /// Why.
-        cause: PauseCause,
-    },
-}
-
-/// The permission mode, counters and state, mutated together under one lock.
-///
-/// `state` is [`AutoModeState::Paused`] with [`PauseCause::UserDisabled`]
-/// exactly when `mode` is not [`PermissionMode::Auto`].
+/// The permission mode, the denial counters and the pause, mutated together
+/// under one lock. The pause is auto mode's: it decides nothing in another
+/// mode, and entering auto mode clears it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AutoMode {
     /// The permission mode.
     pub mode: PermissionMode,
     /// Denial counters.
     pub counters: DenialCounters,
-    /// Current state.
-    pub state: AutoModeState,
+    /// Why auto mode is paused (Tier-3 actions go to the human), if it is.
+    pub paused: Option<PauseCause>,
 }
 
 impl AutoMode {
-    /// Fresh state in `mode`; any mode but auto starts paused with
-    /// [`PauseCause::UserDisabled`].
+    /// Fresh state in `mode`, not paused.
     pub fn new(mode: PermissionMode) -> Self {
         Self {
             mode,
             counters: DenialCounters::default(),
-            state: if mode == PermissionMode::Auto {
-                AutoModeState::Active
-            } else {
-                AutoModeState::Paused {
-                    cause: PauseCause::UserDisabled,
-                }
-            },
+            paused: None,
         }
     }
 
@@ -96,11 +71,11 @@ impl AutoMode {
     }
 
     /// The classifier blocked an action. Returns the pause cause when this
-    /// block transitioned auto mode from active to paused.
+    /// block paused auto mode.
     pub fn record_classifier_deny(&mut self) -> Option<PauseCause> {
         self.counters.consecutive = self.counters.consecutive.saturating_add(1);
         self.counters.total = self.counters.total.saturating_add(1);
-        if self.state != AutoModeState::Active {
+        if self.paused.is_some() {
             return None;
         }
         let cause = if self.counters.total >= MAX_TOTAL_DENIALS {
@@ -110,56 +85,31 @@ impl AutoMode {
         } else {
             return None;
         };
-        self.state = AutoModeState::Paused { cause };
+        self.paused = Some(cause);
         Some(cause)
     }
 
-    /// Pause (or disable) explicitly. Returns `true` when the state changed.
-    pub fn pause(&mut self, cause: PauseCause) -> bool {
-        let next = AutoModeState::Paused { cause };
-        let changed = self.state != next;
-        self.state = next;
-        changed
-    }
-
-    /// Try to resume. A [`PauseCause::TotalDenials`] or [`PauseCause::UserDisabled`]
-    /// pause only clears with `reset_total` (explicit `/auto resume` / `/auto on`).
-    /// Returns `true` when the state changed to active.
+    /// Try to resume. A [`PauseCause::TotalDenials`] pause only clears with
+    /// `reset_total` (an explicit `/auto resume`, or entering auto mode),
+    /// which also resets both counters. Returns `true` when a pause ended.
     pub fn resume(&mut self, reset_total: bool) -> bool {
-        let AutoModeState::Paused { cause } = self.state else {
-            if reset_total {
-                self.counters = DenialCounters::default();
-            }
-            return false;
-        };
-        if matches!(cause, PauseCause::TotalDenials | PauseCause::UserDisabled) && !reset_total {
-            return false;
-        }
-        self.counters.consecutive = 0;
         if reset_total {
-            self.counters.total = 0;
+            self.counters = DenialCounters::default();
         }
-        self.state = AutoModeState::Active;
-        true
-    }
-
-    /// Whether the permission mode is not auto (the classifier reviews nothing).
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn disabled(&self) -> bool {
-        self.state
-            == AutoModeState::Paused {
-                cause: PauseCause::UserDisabled,
+        match self.paused {
+            None => false,
+            Some(PauseCause::TotalDenials) if !reset_total => false,
+            Some(_) => {
+                self.counters.consecutive = 0;
+                self.paused = None;
+                true
             }
+        }
     }
 
     /// Whether Tier-3 actions are escalated to the human.
     pub fn escalating(&self) -> bool {
-        matches!(
-            self.state,
-            AutoModeState::Paused {
-                cause: PauseCause::ConsecutiveDenials | PauseCause::TotalDenials
-            }
-        )
+        self.paused.is_some()
     }
 }
 
@@ -197,7 +147,7 @@ mod tests {
         m.record_allow();
         assert_eq!(m.record_classifier_deny(), None);
         assert_eq!(m.counters.total, 3);
-        assert_eq!(m.state, AutoModeState::Active);
+        assert_eq!(m.paused, None);
     }
 
     #[test]
@@ -215,17 +165,5 @@ mod tests {
         assert!(m.escalating());
         assert!(m.resume(true));
         assert_eq!(m.counters, DenialCounters::default());
-    }
-
-    #[test]
-    fn disabled_state() {
-        let mut m = AutoMode::new(PermissionMode::Manual);
-        assert!(m.disabled());
-        assert!(!m.escalating());
-        assert!(!m.resume(false));
-        assert!(m.resume(true));
-        assert!(!m.disabled());
-        assert!(m.pause(PauseCause::UserDisabled));
-        assert!(!m.pause(PauseCause::UserDisabled));
     }
 }

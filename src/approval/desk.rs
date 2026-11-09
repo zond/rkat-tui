@@ -19,7 +19,7 @@ use meerkat_core::ApprovalDecision;
 use serde::{Deserialize, Serialize};
 
 use super::ApprovalEngine;
-use super::counters::{AutoModeState, MAX_CONSECUTIVE_DENIALS, MAX_TOTAL_DENIALS, PauseCause};
+use super::counters::{MAX_CONSECUTIVE_DENIALS, MAX_TOTAL_DENIALS};
 use super::escalation::{HumanDecision, RecordedPrompt};
 use super::mode::PermissionMode;
 use super::rules::{Rule, RuleId, RuleKind, RuleOrigin, RuleSet};
@@ -112,14 +112,10 @@ impl ModeStatus {
     /// The engine's status now.
     #[must_use]
     pub fn of(engine: &ApprovalEngine) -> Self {
-        let (counters, state) = engine.auto_state();
-        let paused = matches!(
-            state,
-            AutoModeState::Paused { cause } if cause != PauseCause::UserDisabled
-        );
+        let (counters, paused) = engine.auto_state();
         Self {
             mode: engine.mode(),
-            paused,
+            paused: paused.is_some(),
             denials: (
                 counters.consecutive,
                 MAX_CONSECUTIVE_DENIALS,

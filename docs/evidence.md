@@ -2544,3 +2544,24 @@ Tests: `approval::policy::tests::upstream_builtins_are_all_classified` (every
 upstream builtin is in exactly one of the read-only, reviewed and withheld
 lists; the withheld ones are sealed even under an allow rule), `tier_table`
 (rows `apply_patch`, `brain_swap`), `approval_policy::a_native_apply_patch_is_sealed`.
+
+### The permission mode is stored once
+
+The mode lived in three places: `AutoSettings.mode` (the layered start mode,
+which `set_mode` kept overwriting and nothing read after construction),
+`AutoMode.mode`, and `PauseCause::UserDisabled`, a pause state that held
+exactly when the mode was not auto and that every consumer filtered out
+again (`desk::ModeStatus::of`, the runner's pause notice). Now the start
+mode is `rules::Layered::mode` (handed to the engine as
+`ApprovalConfig::mode`), the engine's `AutoMode` holds the current `mode`
+and `paused: Option<PauseCause>` with only the two denial causes, and
+`AutoModeState` is gone. The pause is auto mode's: leaving auto mode ends it
+(emitting `Resumed`, so the status bar drops the marker), entering auto mode
+resets the counters as before. A mode switch emits no `Paused` event; the
+callers already push the new mode status themselves.
+
+Tests: `approval::engine::tests::leaving_auto_mode_ends_a_pause`,
+`manual_mode_asks_for_tier_three_and_auto_resumes` (no pause events for a
+mode switch), `approval::counters::tests::*`,
+`approval::rules::tests::layered_loading` (the project's
+`enabled = false` still starts in manual mode).

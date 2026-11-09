@@ -51,7 +51,7 @@ use tokio::sync::mpsc;
 
 use super::catalog::{ToolOrigin, ToolOrigins};
 use super::classifier::{ActionClassifier, ClassifierInput, ClassifierVerdict, Environment};
-use super::counters::{AutoMode, AutoModeState, DenialCounters, PauseCause};
+use super::counters::{AutoMode, DenialCounters, PauseCause};
 use super::escalation::{EscalationBroker, EscalationPrompt, HumanDecision};
 use super::mode::PermissionMode;
 use super::policy::{
@@ -88,6 +88,8 @@ pub struct ApprovalConfig {
     pub rules: RuleSet,
     /// Layered settings.
     pub settings: AutoSettings,
+    /// The permission mode at start.
+    pub mode: PermissionMode,
     /// Tier-3 reviewer.
     pub classifier: Arc<dyn ActionClassifier>,
     /// Human escalation; `None` ⇒ escalations are denied.
@@ -260,6 +262,7 @@ impl ApprovalEngine {
             root,
             mut rules,
             settings,
+            mode,
             classifier,
             broker,
             escalation_timeout,
@@ -273,7 +276,7 @@ impl ApprovalEngine {
         if !dropped.is_empty() {
             let _ = events.send(ApprovalEvent::RulesDropped(dropped));
         }
-        let auto = AutoMode::new(settings.mode);
+        let auto = AutoMode::new(mode);
         Arc::new(Self {
             root,
             rules: RwLock::new(rules),
@@ -312,11 +315,11 @@ impl ApprovalEngine {
         self.rules.read().clone()
     }
 
-    /// Current counters and state.
+    /// The denial counters, and why auto mode is paused if it is.
     #[must_use]
-    pub fn auto_state(&self) -> (DenialCounters, AutoModeState) {
+    pub fn auto_state(&self) -> (DenialCounters, Option<PauseCause>) {
         let auto = self.auto.lock();
-        (auto.counters, auto.state)
+        (auto.counters, auto.paused)
     }
 
     /// How long the human has to answer an escalation (its queue wait
@@ -546,25 +549,25 @@ impl ApprovalEngine {
     }
 
     /// Switch the permission mode (`Shift+Tab`, `/mode`, `/auto on|off`).
-    /// Entering auto mode resets the denial counters and ends a pause, as
-    /// `/auto on` always did; any other mode stops classifier review.
-    /// Returns the previous mode. Dialogs already open stay open; queued
-    /// ones are judged again under the new mode when their turn comes.
+    /// Entering auto mode resets the denial counters, as `/auto on` always
+    /// did; any other mode stops classifier review and ends a pause (it is
+    /// auto mode's). Returns the previous mode. Dialogs already open stay
+    /// open; queued ones are judged again under the new mode when their
+    /// turn comes. Callers report the new mode themselves; a pause that
+    /// ends here emits [`ApprovalEvent::Resumed`].
     pub fn set_mode(&self, mode: PermissionMode) -> PermissionMode {
-        self.settings.write().mode = mode;
-        let (previous, event) = {
+        let (previous, resumed) = {
             let mut auto = self.auto.lock();
             let previous = std::mem::replace(&mut auto.mode, mode);
-            let event = if mode == PermissionMode::Auto {
-                auto.resume(true).then_some(ApprovalEvent::Resumed)
+            let resumed = if mode == PermissionMode::Auto {
+                auto.resume(true)
             } else {
-                auto.pause(PauseCause::UserDisabled)
-                    .then_some(ApprovalEvent::Paused(PauseCause::UserDisabled))
+                auto.paused.take().is_some()
             };
-            (previous, event)
+            (previous, resumed)
         };
-        if let Some(event) = event {
-            self.emit(event);
+        if resumed {
+            self.emit(ApprovalEvent::Resumed);
         }
         previous
     }
@@ -1498,6 +1501,7 @@ mod tests {
             root: root.clone(),
             rules: RuleSet::default(),
             settings: AutoSettings::default(),
+            mode: PermissionMode::Auto,
             classifier: Arc::clone(&classifier) as Arc<dyn ActionClassifier>,
             broker: Some(broker),
             escalation_timeout: timeout,
@@ -1771,7 +1775,7 @@ mod tests {
         }
         let (counters, state) = rig.engine.auto_state();
         assert_eq!(counters.consecutive, 3);
-        assert!(matches!(state, AutoModeState::Paused { .. }));
+        assert_eq!(state, Some(PauseCause::ConsecutiveDenials));
         assert!(
             drain(&mut rig.events).contains(&ApprovalEvent::Paused(PauseCause::ConsecutiveDenials))
         );
@@ -1791,7 +1795,7 @@ mod tests {
             }
         );
         // A human allow resumes auto mode.
-        assert!(matches!(rig.engine.auto_state().1, AutoModeState::Active));
+        assert_eq!(rig.engine.auto_state().1, None);
     }
 
     #[tokio::test]
@@ -1942,6 +1946,7 @@ mod tests {
             root: root.clone(),
             rules: RuleSet::default(),
             settings: AutoSettings::default(),
+            mode: PermissionMode::Auto,
             classifier: Scripted::new(vec![
                 Err(ClassifierError::Timeout),
                 Err(ClassifierError::Timeout),
@@ -2154,12 +2159,33 @@ mod tests {
         assert!(task.await.unwrap().is_allowed());
         assert_eq!(rig.classifier.calls(), 0);
         // The human's answer does not turn auto mode back on.
-        assert!(matches!(
+        assert_eq!(rig.engine.mode(), PermissionMode::Manual);
+    }
+
+    /// The pause is auto mode's: leaving auto mode ends it (counters kept),
+    /// entering auto mode resets the counters, and a mode switch alone
+    /// reports no pause.
+    #[tokio::test]
+    async fn leaving_auto_mode_ends_a_pause() {
+        let mut rig = rig(
+            vec![block("D1"), block("D2"), block("D3")],
+            DEFAULT_ESCALATION_TIMEOUT,
+        );
+        for id in ["c1", "c2", "c3"] {
+            assert!(!decide(&rig, id, &push()).await.is_allowed());
+        }
+        assert_eq!(
             rig.engine.auto_state().1,
-            AutoModeState::Paused {
-                cause: PauseCause::UserDisabled
-            }
-        ));
+            Some(PauseCause::ConsecutiveDenials)
+        );
+        drain(&mut rig.events);
+        rig.engine.set_mode(PermissionMode::Plan);
+        assert_eq!(rig.engine.auto_state().1, None);
+        assert_eq!(rig.engine.auto_state().0.consecutive, 3);
+        assert_eq!(drain(&mut rig.events), [ApprovalEvent::Resumed]);
+        rig.engine.set_mode(PermissionMode::Auto);
+        assert_eq!(rig.engine.auto_state(), (DenialCounters::default(), None));
+        assert!(drain(&mut rig.events).is_empty());
     }
 
     /// Manual mode asks the human for Tier 3 without the classifier; auto
@@ -2204,8 +2230,12 @@ mod tests {
         assert!(decide(&rig, "c2", &push()).await.is_allowed());
         assert_eq!(rig.classifier.calls(), 1);
         let events = drain(&mut rig.events);
-        assert!(events.contains(&ApprovalEvent::Paused(PauseCause::UserDisabled)));
-        assert!(events.contains(&ApprovalEvent::Resumed));
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, ApprovalEvent::Paused(_) | ApprovalEvent::Resumed)),
+            "a mode switch is not a pause: {events:?}"
+        );
     }
 
     fn src_write() -> Value {
@@ -2463,6 +2493,7 @@ mod tests {
             root: root.clone(),
             rules: RuleSet::default(),
             settings: AutoSettings::default(),
+            mode: PermissionMode::Auto,
             classifier: Scripted::new(vec![]) as Arc<dyn ActionClassifier>,
             broker: None,
             escalation_timeout: DEFAULT_ESCALATION_TIMEOUT,

@@ -166,6 +166,7 @@ pub(crate) async fn build(
         root: scope.project_root.clone(),
         rules: layered.rules,
         settings: layered.settings,
+        mode: layered.mode,
         classifier,
         broker: Some(broker),
         escalation_timeout: overrides

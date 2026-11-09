@@ -20,7 +20,6 @@ use meerkat_core::SessionId;
 use tokio::sync::{mpsc, oneshot};
 
 use super::Runner;
-use crate::approval::counters::PauseCause;
 use crate::approval::desk::{
     ModeStatus, RuleCommand, allow_rule, describe_rule, mode_notice, run_rule_command,
 };
@@ -311,14 +310,12 @@ impl Runner {
             }
             ApprovalEvent::Paused(cause) => {
                 self.push_mode_status();
-                if cause != PauseCause::UserDisabled {
-                    self.notice(
-                        NoticeLevel::Warn,
-                        format!(
-                            "auto mode paused ({cause}): reviewed actions now ask you; /auto resume to continue"
-                        ),
-                    );
-                }
+                self.notice(
+                    NoticeLevel::Warn,
+                    format!(
+                        "auto mode paused ({cause}): reviewed actions now ask you; /auto resume to continue"
+                    ),
+                );
             }
             ApprovalEvent::Resumed => self.push_mode_status(),
             ApprovalEvent::RulesDropped(rules) => {

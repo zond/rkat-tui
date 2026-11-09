@@ -613,9 +613,6 @@ impl RuleSet {
 /// Auto-mode settings after layering.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AutoSettings {
-    /// The permission mode at start (`[auto] mode`; `enabled = false`, or
-    /// `--no-auto`, is [`PermissionMode::Manual`]).
-    pub mode: PermissionMode,
     /// Classifier model override.
     pub classifier_model: Option<String>,
     /// Whether `cargo build|test|nextest|check|clippy` are Tier 1. Off by
@@ -640,7 +637,6 @@ impl Default for AutoSettings {
     fn default() -> Self {
         let compaction = CompactionPolicy::default();
         Self {
-            mode: PermissionMode::Auto,
             classifier_model: None,
             trust_project_builds: false,
             compact: compaction.mode,
@@ -674,8 +670,8 @@ pub struct AutoSection {
     /// spelling of `mode`; `mode` wins when a file sets both).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
-    /// See [`AutoSettings::mode`]: `"default"`, `"accept-edits"`, `"plan"`
-    /// or `"auto"`.
+    /// See [`Layered::mode`]: `"default"`, `"accept-edits"`, `"plan"` or
+    /// `"auto"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<PermissionMode>,
     /// See [`AutoSettings::classifier_model`].
@@ -1290,6 +1286,10 @@ pub struct Layered {
     pub rules: RuleSet,
     /// Merged `[auto]` settings.
     pub settings: AutoSettings,
+    /// The permission mode at start (`[auto] mode`; `enabled = false`, or
+    /// `--no-auto`, is [`PermissionMode::Manual`]). The approval engine
+    /// owns the mode from then on.
+    pub mode: PermissionMode,
     /// Merged `[endpoints.<name>]` (not yet validated).
     pub endpoints: BTreeMap<String, LayeredEndpoint>,
     /// Merged `[pricing."<model>"]` overrides (invalid entries dropped).
@@ -1369,6 +1369,7 @@ pub fn load_layered_with(
 ) -> Result<Layered, RulesError> {
     let mut rules = RuleSet::default();
     let mut settings = AutoSettings::default();
+    let mut mode = PermissionMode::default();
     let mut notices = Vec::new();
     let mut endpoints: BTreeMap<String, LayeredEndpoint> = BTreeMap::new();
     let mut pricing: BTreeMap<String, PricingSection> = BTreeMap::new();
@@ -1461,7 +1462,7 @@ pub fn load_layered_with(
                 });
         }
         if let Some(auto) = &file.auto {
-            apply_auto(&mut settings, auto);
+            apply_auto(&mut settings, &mut mode, auto);
         }
         if let Some(depth) = file.helpers.as_ref().and_then(|h| h.max_depth) {
             helpers.max_depth = depth;
@@ -1597,9 +1598,9 @@ pub fn load_layered_with(
                 auto.classifier_tools = Some(false);
             }
         }
-        apply_auto(&mut settings, &auto);
-        if classifier_off && !classifier_off_by_cli && settings.mode == PermissionMode::Auto {
-            settings.mode = PermissionMode::Manual;
+        apply_auto(&mut settings, &mut mode, &auto);
+        if classifier_off && !classifier_off_by_cli && mode == PermissionMode::Auto {
+            mode = PermissionMode::Manual;
         }
     }
     let (policy, clamped) = CompactionPolicy {
@@ -1619,6 +1620,7 @@ pub fn load_layered_with(
     Ok(Layered {
         rules,
         settings,
+        mode,
         endpoints,
         pricing,
         thinking,
@@ -1658,16 +1660,16 @@ fn project_auto_without(project: AutoSection, cli: &AutoSection) -> AutoSection 
     }
 }
 
-fn apply_auto(settings: &mut AutoSettings, auto: &AutoSection) {
+fn apply_auto(settings: &mut AutoSettings, mode: &mut PermissionMode, auto: &AutoSection) {
     if let Some(enabled) = auto.enabled {
-        settings.mode = if enabled {
+        *mode = if enabled {
             PermissionMode::Auto
         } else {
             PermissionMode::Manual
         };
     }
-    if let Some(mode) = auto.mode {
-        settings.mode = mode;
+    if let Some(set) = auto.mode {
+        *mode = set;
     }
     if let Some(model) = &auto.classifier_model {
         settings.classifier_model = Some(model.clone());
@@ -2033,7 +2035,6 @@ mod tests {
         assert_eq!(rules.allow[0].1.origin, RuleOrigin::Realm);
         assert_eq!(rules.deny.len(), 2);
         assert!(!settings.trust_project_builds);
-        assert_eq!(settings.mode, PermissionMode::Manual);
         assert_eq!(settings.classifier_model.as_deref(), Some("gpt-5.2"));
         assert_eq!(notices.len(), 2);
         assert!(
@@ -2041,6 +2042,16 @@ mod tests {
                 .iter()
                 .any(|n| matches!(n, Notice::ProjectAllowIgnored { count: 1, .. }))
         );
+        // The project's `enabled = false` turns the classifier off.
+        let layered = load_layered_with(
+            &realm,
+            Some(&home.join(RULES_FILE_NAME)),
+            &project,
+            RealmTrust::Owned,
+            None,
+        )
+        .unwrap();
+        assert_eq!(layered.mode, PermissionMode::Manual);
     }
 
     #[test]
@@ -2548,7 +2559,7 @@ mod tests {
         assert_eq!(layered.ui.checklist, ChecklistView::Shown);
         // The rest of the file stays.
         assert!(!layered.ui.bell);
-        assert_eq!(layered.settings.mode, PermissionMode::Plan);
+        assert_eq!(layered.mode, PermissionMode::Plan);
         // The project's preference applies unless the command line set one.
         write(&project, "[ui]\nchecklist = \"hidden\"\n");
         let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
@@ -2574,7 +2585,6 @@ mod tests {
             let overlay = overlay.map(cli);
             load_layered_with(&realm, None, &project, RealmTrust::Owned, overlay.as_ref())
                 .unwrap()
-                .settings
                 .mode
         };
         assert_eq!(mode("", "", None), PermissionMode::Auto);
@@ -2655,7 +2665,7 @@ mod tests {
         let layered =
             load_layered_with(&realm, None, &project, RealmTrust::Owned, Some(&overlay)).unwrap();
         let s = &layered.settings;
-        assert_eq!(s.mode, PermissionMode::Manual, "cli beats realm");
+        assert_eq!(layered.mode, PermissionMode::Manual, "cli beats realm");
         assert_eq!(s.compact, CompactMode::Auto, "cli beats project");
         assert_eq!(s.classifier_model.as_deref(), Some("realm-model"));
         assert_eq!(
