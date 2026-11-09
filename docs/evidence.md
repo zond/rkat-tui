@@ -2764,3 +2764,21 @@ text. It returns `daemon::decisions::HoldError` (`Render`, `Clock`,
 still logs it and denies the call (fail closed). `Principal::new`,
 `Decisions::new` and the requester key still answer `String` (start-up
 configuration errors shown once); they are left for a later pass.
+
+### Every engine flag reaches the daemon, or is named as not forwarded
+
+`client::launch::daemon_argv` re-serialises the parsed `Args` into the
+daemon's argv by hand, with second copies of the `ValueEnum` names
+(`--realm-backend`, `--confinement`); a flag missed there was silently not
+forwarded. Forwarding the original argv minus the UI flags was considered
+and not taken: the UI flags take optional values (`--resume [REF]`), `=`
+forms and a positional prompt, so stripping them is its own parser, and
+the tests build `Args` without an argv. Now the enum names come from clap
+(`to_possible_value`), `launch::NOT_FORWARDED` names the arguments that
+stay in the TUI (prompt, resume, continue, the mouse flags, attach, and the
+workspace, which is made explicit), and
+`client::launch::tests::every_engine_flag_reaches_the_daemon` walks every
+argument of `Args::command()`, gives it alone (a non-default value where
+clap lists them), and requires the daemon's parser to read it back as it
+went in; an argument neither forwarded nor listed fails it (checked by
+dropping `--isolated`).

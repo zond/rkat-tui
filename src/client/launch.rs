@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use super::ClientError;
-use crate::cli::{Args, AttachMode, ConfinementArg, RealmBackendArg};
+use crate::cli::{Args, AttachMode};
 use crate::daemon::endpoint::Endpoint;
 
 /// The daemon's binary name.
@@ -126,28 +126,13 @@ pub fn daemon_argv(args: &Args, workspace: &Path) -> Vec<OsString> {
     );
     value(
         "--realm-backend",
-        args.realm_backend
-            .map(|backend| {
-                OsString::from(match backend {
-                    RealmBackendArg::Jsonl => "jsonl",
-                    RealmBackendArg::Sqlite => "sqlite",
-                    RealmBackendArg::Memory => "memory",
-                })
-            })
-            .as_ref(),
+        args.realm_backend.and_then(value_name).as_ref(),
     );
     value(
         "--classifier-model",
         args.classifier_model.as_ref().map(os).as_ref(),
     );
-    value(
-        "--confinement",
-        Some(&OsString::from(match args.confinement {
-            ConfinementArg::Workspace => "workspace",
-            ConfinementArg::Strict => "strict",
-            ConfinementArg::Off => "off",
-        })),
-    );
+    value("--confinement", value_name(args.confinement).as_ref());
     let repeated: [(&str, Vec<OsString>); 6] = [
         ("--set", args.set.iter().map(OsString::from).collect()),
         ("--allow", args.allow.iter().map(OsString::from).collect()),
@@ -191,6 +176,30 @@ pub fn daemon_argv(args: &Args, workspace: &Path) -> Vec<OsString> {
     );
     argv
 }
+
+/// The command-line name clap gives `value` (a `ValueEnum`), so the
+/// forwarded spelling is the one the daemon's parser reads.
+fn value_name<T: clap::ValueEnum>(value: T) -> Option<OsString> {
+    value
+        .to_possible_value()
+        .map(|possible| OsString::from(possible.get_name()))
+}
+
+/// The ids of the `rkat-tui` arguments [`daemon_argv`] does not forward:
+/// the UI's own (the prompt, resuming, the mouse, attach mode) and the
+/// workspace, which it makes explicit. Every other argument is forwarded;
+/// `tests::every_engine_flag_reaches_the_daemon` fails for one that is not.
+#[cfg(any(test, feature = "test-support"))]
+pub const NOT_FORWARDED: &[&str] = &[
+    "prompt",
+    "resume",
+    "continue_last",
+    "no_mouse",
+    "mouse",
+    "attach",
+    "no_attach",
+    "context_root",
+];
 
 /// `argv` with `--endpoint-file <file>`: the daemon writes its endpoint
 /// where this client waits for it.
@@ -333,7 +342,7 @@ pub async fn wait_for_endpoint(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use clap::Parser as _;
@@ -442,6 +451,55 @@ mod tests {
         expected.no_mouse = false;
         expected.attach = None;
         assert_eq!(format!("{shared:?}"), format!("{expected:?}"));
+    }
+
+    /// The finding this guards: every flag was hand-written into the
+    /// daemon's argv a third time, so a new one could silently not be
+    /// forwarded. Each argument clap knows is given alone and must come out
+    /// of the daemon's parser as it went in, unless it is listed in
+    /// [`NOT_FORWARDED`].
+    #[test]
+    fn every_engine_flag_reaches_the_daemon() {
+        use clap::CommandFactory as _;
+        let command = Args::command();
+        let mut checked = 0;
+        for arg in command.get_arguments() {
+            let id = arg.get_id().as_str();
+            if NOT_FORWARDED.contains(&id) || matches!(id, "help" | "version") {
+                continue;
+            }
+            let flag = arg
+                .get_long()
+                .map(|long| format!("--{long}"))
+                .expect("every forwarded argument has a long name");
+            let mut argv = vec!["rkat-tui".to_string(), flag.clone()];
+            if arg.get_action().takes_values() {
+                // A value other than the default where clap lists them.
+                let possible = arg.get_possible_values();
+                let defaults: Vec<_> = arg.get_default_values().to_vec();
+                let value = possible
+                    .iter()
+                    .map(|p| p.get_name().to_string())
+                    .find(|name| !defaults.iter().any(|d| d == name.as_str()))
+                    .unwrap_or_else(|| "/rkat-sample".to_string());
+                argv.push(value);
+            }
+            let tui = Args::try_parse_from(&argv).unwrap_or_else(|err| panic!("{argv:?}: {err}"));
+            let mut daemon = vec![OsString::from("rkat-tui-mob")];
+            daemon.extend(daemon_argv(&tui, Path::new("/ws")));
+            let shared = crate::daemon::DaemonCli::try_parse_from(&daemon)
+                .unwrap_or_else(|err| panic!("{daemon:?}: {err}"))
+                .tui;
+            let mut expected = tui;
+            expected.context_root = Some(PathBuf::from("/ws"));
+            assert_eq!(
+                format!("{shared:?}"),
+                format!("{expected:?}"),
+                "{flag} is not forwarded (or add it to NOT_FORWARDED)"
+            );
+            checked += 1;
+        }
+        assert!(checked > 20, "{checked}");
     }
 
     #[test]
