@@ -2,7 +2,8 @@
 //! line, and what the daemon learns from the engine methods it forwards.
 //!
 //! The wire is Meerkat's JSON-RPC; the only non-engine methods are these
-//! `rkat/*` ones (and [`super::handshake`]'s `rkat/attach`). They exist
+//! `rkat/*` ones (their names, parameters and results are typed in
+//! [`super::protocol`]) (and [`super::handshake`]'s `rkat/attach`). They exist
 //! because the approval policy lives in the daemon and the engine's wire
 //! has nothing for an application's permission mode or rule list:
 //!
@@ -75,37 +76,13 @@ use crate::endpoints::{ENDPOINT_REALM, WireDialect};
 use crate::mobs::HelperRegistry;
 use crate::thinking::{self, ThinkingTable};
 
-/// Every local method starts with this.
-pub const PREFIX: &str = "rkat/";
-/// The permission mode and the denial counters.
-pub const GET_MODE: &str = "rkat/get_mode";
-/// Switch the permission mode.
-pub const SET_MODE: &str = "rkat/set_mode";
-/// A `/rules` command.
-pub const RULES: &str = "rkat/rules";
-/// The orchestrator's conversations.
-pub const CONVERSATIONS: &str = "rkat/conversations";
-/// `/new`.
-pub const NEW: &str = "rkat/new";
-/// `/resume <session>`.
-pub const RESUME: &str = "rkat/resume";
-/// A conversation's committed messages.
-pub const TRANSCRIPT: &str = "rkat/transcript";
-/// A conversation's total token usage.
-pub const USAGE: &str = "rkat/usage";
-/// The project trust record: `/trust`, `/rules trust`.
-pub const TRUST: &str = "rkat/trust";
-
-/// JSON-RPC "method not found".
-pub const METHOD_NOT_FOUND: i64 = -32601;
-/// JSON-RPC "invalid params".
-pub const INVALID_PARAMS: i64 = -32602;
-/// A conversation switch or read the engine refused (an application
-/// error code).
-pub const SWITCH_FAILED: i64 = -32010;
-/// A conversation switch refused because the orchestrator's turn is
-/// running (an application error code).
-pub const SWITCH_BUSY: i64 = -32011;
+use super::protocol::{
+    self, ConversationList, METHOD_NOT_FOUND, ModeSet, SWITCH_BUSY, SWITCH_FAILED, SessionParams,
+    SetModeParams, Switched, Transcript, TrustOp, TrustParams, Usage, engine,
+};
+use super::protocol::{
+    CONVERSATIONS, GET_MODE, NEW, RESUME, RULES, Refusal, SET_MODE, TRANSCRIPT, TRUST, USAGE,
+};
 
 /// The idempotency source of the daemon's system-context notes.
 const SYSTEM_CONTEXT_SOURCE: &str = "rkat-tui";
@@ -163,9 +140,6 @@ impl std::fmt::Debug for Local {
     }
 }
 
-/// A local method's refusal: a JSON-RPC error code and message.
-pub type Refusal = (i64, String);
-
 impl Local {
     /// The local surface over `parts`.
     #[must_use]
@@ -207,107 +181,99 @@ impl Local {
     ///
     /// # Errors
     ///
-    /// [`METHOD_NOT_FOUND`] for an unknown `rkat/*` method,
-    /// [`INVALID_PARAMS`] for bad parameters.
+    /// [`protocol::METHOD_NOT_FOUND`] for an unknown `rkat/*` method,
+    /// [`protocol::INVALID_PARAMS`] for bad parameters.
     pub async fn call(&self, method: &str, params: Value) -> Result<Value, Refusal> {
         match method {
-            GET_MODE => Ok(json!(ModeStatus::of(&self.engine))),
+            GET_MODE => answer(ModeStatus::of(&self.engine)),
             SET_MODE => {
-                let mode = params
-                    .get("mode")
-                    .and_then(Value::as_str)
-                    .and_then(PermissionMode::parse)
-                    .ok_or_else(|| {
-                        (
-                            INVALID_PARAMS,
-                            "`mode` must be one of default, accept-edits, plan, auto".to_string(),
-                        )
-                    })?;
-                Ok(self.set_mode(mode).await)
-            }
-            RULES => {
-                let command: RuleCommand = serde_json::from_value(params)
-                    .map_err(|err| (INVALID_PARAMS, err.to_string()))?;
-                Ok(json!(run_rule_command(&self.engine, &command)))
-            }
-            CONVERSATIONS => Ok(json!({"conversations": self.conversations.list().await})),
-            NEW => self.switch(Target::Fresh).await,
-            RESUME => {
-                let session = session_param(&params)?;
-                self.switch(Target::Resume(session)).await
-            }
-            TRANSCRIPT => {
-                let session = session_param(&params)?;
-                let messages = self
-                    .conversations
-                    .messages(&session)
-                    .await
-                    .map_err(|err| (SWITCH_FAILED, err.to_string()))?;
-                Ok(json!({"messages": messages}))
-            }
-            USAGE => {
-                let session = session_param(&params)?;
-                let usage = self
-                    .conversations
-                    .usage(&session)
-                    .await
-                    .map_err(|err| (SWITCH_FAILED, err.to_string()))?;
-                Ok(json!({
-                    "input_tokens": usage.input_tokens,
-                    "output_tokens": usage.output_tokens,
-                }))
-            }
-            TRUST => {
-                let op = params.get("op").and_then(Value::as_str).ok_or_else(|| {
-                    (
-                        INVALID_PARAMS,
-                        "`op` (project or rules) is required".to_string(),
+                let SetModeParams { mode } = protocol::params(params)?;
+                let mode = PermissionMode::parse(&mode).ok_or_else(|| {
+                    Refusal::new(
+                        protocol::INVALID_PARAMS,
+                        "`mode` must be one of default, accept-edits, plan, auto",
                     )
                 })?;
+                answer(self.set_mode(mode).await)
+            }
+            RULES => {
+                let command: RuleCommand = protocol::params(params)?;
+                answer(run_rule_command(&self.engine, &command))
+            }
+            CONVERSATIONS => answer(ConversationList {
+                conversations: self.conversations.list().await,
+            }),
+            NEW => answer(self.switch(Target::Fresh).await?),
+            RESUME => {
+                let SessionParams { session_id } = protocol::params(params)?;
+                answer(self.switch(Target::Resume(session_id)).await?)
+            }
+            TRANSCRIPT => {
+                let SessionParams { session_id } = protocol::params(params)?;
+                let messages = self
+                    .conversations
+                    .messages(&session_id)
+                    .await
+                    .map_err(|err| Refusal::new(SWITCH_FAILED, err.to_string()))?;
+                answer(Transcript { messages })
+            }
+            USAGE => {
+                let SessionParams { session_id } = protocol::params(params)?;
+                let usage = self
+                    .conversations
+                    .usage(&session_id)
+                    .await
+                    .map_err(|err| Refusal::new(SWITCH_FAILED, err.to_string()))?;
+                answer(Usage {
+                    input_tokens: usage.input_tokens,
+                    output_tokens: usage.output_tokens,
+                })
+            }
+            TRUST => {
+                let TrustParams { op } = protocol::params(params)?;
                 match op {
-                    "project" => Ok(json!(self.trust_project())),
-                    "rules" => Ok(json!(match self.engine.trust_realm_rules() {
+                    TrustOp::Project => answer(self.trust_project()),
+                    TrustOp::Rules => answer(match self.engine.trust_realm_rules() {
                         Ok(summary) => RuleOutcome {
                             ok: true,
-                            text: summary
+                            text: summary,
                         },
                         Err(err) => RuleOutcome {
                             ok: false,
                             text: format!("not trusted: {err}"),
                         },
-                    })),
-                    other => Err((
-                        INVALID_PARAMS,
-                        format!("`op` must be project or rules, not `{other}`"),
-                    )),
+                    }),
                 }
             }
-            other => Err((METHOD_NOT_FOUND, format!("unknown method `{other}`"))),
+            other => Err(Refusal::new(
+                METHOD_NOT_FOUND,
+                format!("unknown method `{other}`"),
+            )),
         }
     }
 
     /// `/new` or `/resume`: switch the orchestrator's conversation, then
     /// tell the new one about plan mode when it is on, and read its tools.
-    async fn switch(&self, target: Target) -> Result<Value, Refusal> {
+    async fn switch(&self, target: Target) -> Result<Switched, Refusal> {
         let session = self.conversations.switch(target).await.map_err(|err| {
             let code = match err {
                 super::conversations::SwitchError::Running => SWITCH_BUSY,
                 _ => SWITCH_FAILED,
             };
-            (code, err.to_string())
+            Refusal::new(code, err.to_string())
         })?;
         // The new conversation was never told anything.
         *self.plan_noted.lock().await = false;
-        let mut answer = json!({"session_id": session});
-        if let Some(warning) = self.note_plan_mode().await {
-            answer["warning"] = json!(warning);
-        }
+        let warning = self.note_plan_mode().await;
         let origins = Arc::clone(&self.origins);
         let idle = session.clone();
         tokio::spawn(async move {
             origins.refresh(&idle).await;
         });
-        Ok(answer)
+        Ok(Switched {
+            session_id: session,
+            warning,
+        })
     }
 
     /// `rkat/trust {"op": "project"}`: `/trust`, every present project
@@ -348,7 +314,7 @@ impl Local {
         self.conversations.current()
     }
 
-    async fn set_mode(&self, mode: PermissionMode) -> Value {
+    async fn set_mode(&self, mode: PermissionMode) -> ModeSet {
         self.engine.set_mode(mode);
         let mut warnings = Vec::new();
         if let Err(err) = self.engine.persist_mode() {
@@ -359,14 +325,11 @@ impl Local {
         if let Some(warning) = self.note_plan_mode().await {
             warnings.push(warning);
         }
-        let mut answer = json!({
-            "status": ModeStatus::of(&self.engine),
-            "notice": mode_notice(mode),
-        });
-        if !warnings.is_empty() {
-            answer["warning"] = json!(warnings.join("\n"));
+        ModeSet {
+            status: ModeStatus::of(&self.engine),
+            notice: mode_notice(mode).to_string(),
+            warning: (!warnings.is_empty()).then(|| warnings.join("\n")),
         }
-        answer
     }
 
     /// At start: when the persisted mode is plan, tell the orchestrator
@@ -445,8 +408,8 @@ impl Local {
             return request;
         }
         match method.as_str() {
-            "mob/member_send" | "mob/turn_start" => {
-                let field = if method == "mob/member_send" {
+            engine::MEMBER_SEND | engine::TURN_START => {
+                let field = if method == engine::MEMBER_SEND {
                     "content"
                 } else {
                     "prompt"
@@ -459,11 +422,11 @@ impl Local {
                     let key = InputKey::new(format!("rkat-attach:{}:{n}", std::process::id()));
                     self.engine.record_user_input(&session, key, &text);
                 }
-                if method == "mob/turn_start" {
+                if method == engine::TURN_START {
                     self.with_thinking(params);
                 }
             }
-            "mob/stop_member_run" | "mob/force_cancel" => {
+            engine::STOP_MEMBER_RUN | engine::FORCE_CANCEL => {
                 if let Some(session) = self.session() {
                     self.engine.stop(&session);
                     self.desk.stop(&session);
@@ -523,18 +486,10 @@ pub fn thinking_override(
     }
 }
 
-/// The `session_id` parameter.
-fn session_param(params: &Value) -> Result<SessionId, Refusal> {
-    params
-        .get("session_id")
-        .and_then(Value::as_str)
-        .and_then(|id| SessionId::parse(id).ok())
-        .ok_or_else(|| {
-            (
-                INVALID_PARAMS,
-                "`session_id` must be a session id".to_string(),
-            )
-        })
+/// A method's answer as JSON.
+fn answer(result: impl serde::Serialize) -> Result<Value, Refusal> {
+    serde_json::to_value(result)
+        .map_err(|err| Refusal::new(protocol::INTERNAL_ERROR, err.to_string()))
 }
 
 /// The text of a wire content input: a string, or the text blocks of a

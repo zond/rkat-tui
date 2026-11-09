@@ -21,13 +21,16 @@ use serde_json::{Value, json};
 
 use super::ClientError;
 use super::transport::{Connection, Notification};
+use crate::daemon::protocol::{
+    self, ConversationList, SessionParams, Switched, Transcript, Usage, engine,
+};
 use crate::daemon::{MOB_ID, ORCHESTRATOR};
 
 /// The notification that carries a member stream's events.
-pub const STREAM_EVENT: &str = "mob/stream_event";
+pub const STREAM_EVENT: &str = engine::STREAM_EVENT;
 
 /// The notification that ends a stream.
-pub const STREAM_END: &str = "mob/stream_end";
+pub const STREAM_END: &str = engine::STREAM_END;
 
 /// How many replayed events one `events/list_since` page asks for.
 pub const REPLAY_PAGE: usize = 500;
@@ -72,11 +75,11 @@ pub async fn identity(
 ) -> Result<(String, String), ClientError> {
     let snapshot = connection
         .call(
-            "events/snapshot",
+            engine::EVENTS_SNAPSHOT,
             json!({"scope": EventReplayScope::Session { session_id: session.clone() }}),
         )
         .await?;
-    let snapshot: EventsSnapshotResult = decode("events/snapshot", snapshot)?;
+    let snapshot: EventsSnapshotResult = decode(engine::EVENTS_SNAPSHOT, snapshot)?;
     #[allow(unreachable_patterns)]
     match snapshot.snapshot {
         EventsSnapshotBody::Session { session } => Ok((session.model, session.provider)),
@@ -104,8 +107,8 @@ pub async fn open_stream(
         });
     }
     let opened: meerkat_contracts::MobStreamOpenResult = decode(
-        "mob/stream_open",
-        connection.call("mob/stream_open", params).await?,
+        engine::STREAM_OPEN,
+        connection.call(engine::STREAM_OPEN, params).await?,
     )?;
     Ok(opened.stream_id)
 }
@@ -157,8 +160,8 @@ pub async fn replay(
         params["cursor"] = json!({"scope": scope, "sequence": after});
     }
     let page: EventsListSinceResult = decode(
-        "events/list_since",
-        connection.call("events/list_since", params).await?,
+        engine::EVENTS_LIST_SINCE,
+        connection.call(engine::EVENTS_LIST_SINCE, params).await?,
     )?;
     let events = page
         .events
@@ -183,7 +186,7 @@ pub async fn replay(
 pub async fn send(connection: &Connection, text: &str, steer: bool) -> Result<(), ClientError> {
     connection
         .call(
-            "mob/member_send",
+            engine::MEMBER_SEND,
             with_member(json!({
                 "content": text,
                 "handling_mode": if steer { "steer" } else { "queue" },
@@ -236,7 +239,7 @@ pub async fn turn_with_model(
     switch: &ModelSwitch,
 ) -> Result<Value, ClientError> {
     connection
-        .call("mob/turn_start", turn_params(text, switch))
+        .call(engine::TURN_START, turn_params(text, switch))
         .await
 }
 
@@ -252,7 +255,7 @@ pub async fn stop_run(
 ) -> Result<Value, ClientError> {
     connection
         .call(
-            "mob/stop_member_run",
+            engine::STOP_MEMBER_RUN,
             with_member(json!({"run_id": run_id, "reason": reason})),
         )
         .await
@@ -265,22 +268,27 @@ pub async fn stop_run(
 /// The call's error.
 pub async fn force_cancel(connection: &Connection) -> Result<(), ClientError> {
     connection
-        .call("mob/force_cancel", member())
+        .call(engine::FORCE_CANCEL, member())
         .await
         .map(drop)
 }
 
-/// Call one of the daemon's own `rkat/*` methods.
+/// Call one of the daemon's own `rkat/*` methods (`method`, one of
+/// [`protocol`]'s) with `params`, its answer read as `R`.
 ///
 /// # Errors
 ///
-/// The call's error.
-pub async fn local(
+/// The call's error, or [`ClientError::Decode`].
+pub async fn local<P: serde::Serialize, R: serde::de::DeserializeOwned>(
     connection: &Connection,
-    method: &str,
-    params: Value,
-) -> Result<Value, ClientError> {
-    connection.call(method, params).await
+    method: &'static str,
+    params: &P,
+) -> Result<R, ClientError> {
+    let params = serde_json::to_value(params).map_err(|source| ClientError::Decode {
+        what: method,
+        source,
+    })?;
+    decode(method, connection.call(method, params).await?)
 }
 
 /// Append `text` to the orchestrator's system context under `key`.
@@ -295,7 +303,7 @@ pub async fn append_system_context(
 ) -> Result<(), ClientError> {
     connection
         .call(
-            "mob/append_system_context",
+            engine::APPEND_SYSTEM_CONTEXT,
             with_member(json!({"text": text, "source": "rkat-tui", "idempotency_key": key})),
         )
         .await
@@ -310,9 +318,9 @@ pub async fn append_system_context(
 /// The call's error (a mob that does not exist yet is refused).
 pub async fn open_mob_stream(connection: &Connection, mob: &str) -> Result<String, ClientError> {
     let opened: meerkat_contracts::MobStreamOpenResult = decode(
-        "mob/stream_open",
+        engine::STREAM_OPEN,
         connection
-            .call("mob/stream_open", json!({"mob_id": mob}))
+            .call(engine::STREAM_OPEN, json!({"mob_id": mob}))
             .await?,
     )?;
     Ok(opened.stream_id)
@@ -325,7 +333,7 @@ pub async fn open_mob_stream(connection: &Connection, mob: &str) -> Result<Strin
 /// The call's error.
 pub async fn close_stream(connection: &Connection, stream: &str) -> Result<(), ClientError> {
     connection
-        .call("mob/stream_close", json!({"stream_id": stream}))
+        .call(engine::STREAM_CLOSE, json!({"stream_id": stream}))
         .await
         .map(drop)
 }
@@ -349,8 +357,10 @@ pub async fn reopen_stream(connection: &Connection, old: &str) -> Result<String,
 ///
 /// The call's error, or [`ClientError::Decode`].
 pub async fn mobs(connection: &Connection) -> Result<Vec<String>, ClientError> {
-    let listed: meerkat_contracts::MobListResult =
-        decode("mob/list", connection.call("mob/list", json!({})).await?)?;
+    let listed: meerkat_contracts::MobListResult = decode(
+        engine::LIST,
+        connection.call(engine::LIST, json!({})).await?,
+    )?;
     Ok(listed.mobs.into_iter().map(|mob| mob.mob_id).collect())
 }
 
@@ -361,7 +371,7 @@ pub async fn mobs(connection: &Connection) -> Result<Vec<String>, ClientError> {
 /// The call's error.
 pub async fn members(connection: &Connection, mob: &str) -> Result<Vec<String>, ClientError> {
     let listed = connection
-        .call("mob/members", json!({"mob_id": mob}))
+        .call(engine::MEMBERS, json!({"mob_id": mob}))
         .await?;
     Ok(listed
         .get("members")
@@ -388,7 +398,7 @@ pub async fn member_session(
 ) -> Result<SessionId, ClientError> {
     let status = connection
         .call(
-            "mob/member_status",
+            engine::MEMBER_STATUS,
             json!({"mob_id": mob, "agent_identity": identity}),
         )
         .await?;
@@ -435,11 +445,8 @@ pub fn stream_end(notification: &Notification) -> Option<&str> {
 pub async fn conversations(
     connection: &Connection,
 ) -> Result<Vec<crate::daemon::conversations::Listed>, ClientError> {
-    let answer = local(connection, crate::daemon::local::CONVERSATIONS, json!({})).await?;
-    decode(
-        "rkat/conversations",
-        answer.get("conversations").cloned().unwrap_or(Value::Null),
-    )
+    let listed: ConversationList = local(connection, protocol::CONVERSATIONS, &json!({})).await?;
+    Ok(listed.conversations)
 }
 
 /// `/new` (`session: None`) or `/resume` (`rkat/new`, `rkat/resume`): the
@@ -452,27 +459,20 @@ pub async fn switch(
     connection: &Connection,
     session: Option<&SessionId>,
 ) -> Result<(SessionId, Option<String>), ClientError> {
-    let answer = match session {
-        None => local(connection, crate::daemon::local::NEW, json!({})).await?,
+    let switched: Switched = match session {
+        None => local(connection, protocol::NEW, &json!({})).await?,
         Some(session) => {
             local(
                 connection,
-                crate::daemon::local::RESUME,
-                json!({"session_id": session}),
+                protocol::RESUME,
+                &SessionParams {
+                    session_id: session.clone(),
+                },
             )
             .await?
         }
     };
-    let session = answer
-        .get("session_id")
-        .and_then(Value::as_str)
-        .and_then(|id| SessionId::parse(id).ok())
-        .ok_or(ClientError::NoSession)?;
-    let warning = answer
-        .get("warning")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    Ok((session, warning))
+    Ok((switched.session_id, switched.warning))
 }
 
 /// A conversation's committed messages (`rkat/transcript`).
@@ -484,16 +484,15 @@ pub async fn transcript(
     connection: &Connection,
     session: &SessionId,
 ) -> Result<Vec<meerkat_core::Message>, ClientError> {
-    let answer = local(
+    let transcript: Transcript = local(
         connection,
-        crate::daemon::local::TRANSCRIPT,
-        json!({"session_id": session}),
+        protocol::TRANSCRIPT,
+        &SessionParams {
+            session_id: session.clone(),
+        },
     )
     .await?;
-    decode(
-        "rkat/transcript",
-        answer.get("messages").cloned().unwrap_or(Value::Null),
-    )
+    Ok(transcript.messages)
 }
 
 /// A conversation's total token usage, `(input, output)` (`rkat/usage`).
@@ -505,18 +504,14 @@ pub async fn usage(
     connection: &Connection,
     session: &SessionId,
 ) -> Result<(u64, u64), ClientError> {
-    #[derive(serde::Deserialize)]
-    struct Totals {
-        input_tokens: u64,
-        output_tokens: u64,
-    }
-    let answer = local(
+    let totals: Usage = local(
         connection,
-        crate::daemon::local::USAGE,
-        json!({"session_id": session}),
+        protocol::USAGE,
+        &SessionParams {
+            session_id: session.clone(),
+        },
     )
     .await?;
-    let totals: Totals = decode("rkat/usage", answer)?;
     Ok((totals.input_tokens, totals.output_tokens))
 }
 
@@ -528,7 +523,7 @@ pub async fn usage(
 /// The call's error, as text.
 pub async fn compact_member(connection: &Connection) -> Result<(), String> {
     connection
-        .call("mob/compact_member", member())
+        .call(engine::COMPACT_MEMBER, member())
         .await
         .map(drop)
         .map_err(|err| err.to_string())
@@ -541,7 +536,7 @@ pub async fn compact_member(connection: &Connection) -> Result<(), String> {
 /// The call's error, as text.
 pub async fn compact_session(connection: &Connection, session: &SessionId) -> Result<(), String> {
     connection
-        .call("session/compact", json!({"session_id": session}))
+        .call(engine::SESSION_COMPACT, json!({"session_id": session}))
         .await
         .map(drop)
         .map_err(|err| err.to_string())

@@ -244,7 +244,11 @@ fn check_attached(line: &str) -> Result<(), ClientError> {
     }
     if let Some(error) = reply.get("error") {
         return Err(ClientError::Refused {
-            code: error.get("code").and_then(Value::as_i64).unwrap_or(0),
+            code: error
+                .get("code")
+                .and_then(Value::as_i64)
+                .and_then(|code| i32::try_from(code).ok())
+                .unwrap_or(0),
             message: error
                 .get("message")
                 .and_then(Value::as_str)
@@ -309,7 +313,11 @@ fn route(message: Value, pending: &Pending, notify: &mpsc::UnboundedSender<Notif
             let reply = match message.get("error") {
                 Some(error) => Err(ClientError::Rpc {
                     method: String::new(),
-                    code: error.get("code").and_then(Value::as_i64).unwrap_or(0),
+                    code: error
+                        .get("code")
+                        .and_then(Value::as_i64)
+                        .and_then(|code| i32::try_from(code).ok())
+                        .unwrap_or(0),
                     message: error
                         .get("message")
                         .and_then(Value::as_str)

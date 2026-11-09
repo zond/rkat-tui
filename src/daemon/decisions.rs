@@ -48,8 +48,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use meerkat_contracts::{
-    DECISION_NOTICE_NOTIFICATION, WireDecisionNotice, WireDecisionNoticeEvent,
-    WireDecisionNoticePresentation,
+    WireDecisionNotice, WireDecisionNoticeEvent, WireDecisionNoticePresentation,
 };
 use meerkat_core::approval::ApprovalAssurance;
 use meerkat_core::approval::consent::{
@@ -65,7 +64,7 @@ use meerkat_core::approval::decision::{
 };
 use meerkat_core::{PrincipalKind, PrincipalRef, SessionId, TrustDomainId};
 use meerkat_rpc::protocol::RpcRequest;
-use meerkat_rpc::router::{DECISION_DECIDE_METHOD, MethodRouter};
+use meerkat_rpc::router::MethodRouter;
 use meerkat_runtime::decision::wire::{wire_canonical_part, wire_decision_phase};
 use meerkat_runtime::decision::{
     DecisionClock, DecisionError, DecisionOpening, DecisionOpenings, DecisionWithdrawer,
@@ -76,9 +75,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 
+use super::protocol::{self, DecideParams, DecisionEnded, INTERNAL_ERROR, INVALID_PARAMS};
 use super::serve::Outgoing;
 use crate::approval::desk::RemoteAnswer;
 use crate::approval::escalation::{EscalationPrompt, RecordedPrompt};
+use meerkat_rpc::protocol::RpcId;
 
 /// The kind of every decision the daemon's gate holds.
 pub const KIND: &str = "rkat-tui.tool-call";
@@ -96,13 +97,13 @@ pub const TRUST_DOMAIN: &str = "rkat-tui.local";
 pub const GATE: &str = "rkat-tui-approval-gate";
 
 /// The notification that tells a client a decision it was shown ended.
-pub const ENDED: &str = "rkat/decision_ended";
+pub const ENDED: &str = protocol::DECISION_ENDED;
 
 /// The notification that offers a client a decision.
-pub const NOTICE: &str = DECISION_NOTICE_NOTIFICATION;
+pub const NOTICE: &str = protocol::DECISION_NOTICE;
 
 /// The method a client decides with.
-pub const DECIDE: &str = DECISION_DECIDE_METHOD;
+pub const DECIDE: &str = protocol::DECISION_DECIDE;
 
 /// How long a decision outlives the engine's escalation timeout: the engine
 /// gives up first (and the desk withdraws the decision), so a decision
@@ -118,11 +119,6 @@ const NOTICE_WRITE: Duration = Duration::from_secs(5);
 /// before the first retry (each later one waits once more as long).
 const STORE_RETRIES: u32 = 5;
 const STORE_BACKOFF: Duration = Duration::from_millis(20);
-
-/// JSON-RPC "invalid params".
-const INVALID_PARAMS: i64 = -32602;
-/// JSON-RPC "internal error".
-const INTERNAL_ERROR: i64 = -32603;
 
 /// The default principal name when `[daemon] principal` names none and the
 /// environment has no login name.
@@ -646,14 +642,13 @@ impl Decisions {
     /// Tell the clients that were shown `id` that it ended in `phase`.
     pub async fn ended(&self, id: &DecisionId, phase: Option<DecisionPhase>) {
         let clients: Vec<Arc<Client>> = self.clients.lock().values().cloned().collect();
-        let phase = phase.map(wire_decision_phase);
+        let params = DecisionEnded {
+            decision_id: id.to_string(),
+            phase: phase.map(wire_decision_phase),
+        };
         let line = format!(
             "{}\n",
-            json!({
-                "jsonrpc": "2.0",
-                "method": ENDED,
-                "params": {"decision_id": id, "phase": phase},
-            })
+            json!({"jsonrpc": "2.0", "method": ENDED, "params": params})
         );
         for client in clients {
             // After a presentation pass in flight on the client: its notice
@@ -686,20 +681,20 @@ impl Decisions {
 
     /// A client's `decision/decide` (its request `id` and `params`): the
     /// answer line (newline included). See the module docs.
-    pub async fn decide(&self, client: u64, id: Value, params: Value) -> String {
-        match self.try_decide(client, &id, params).await {
+    pub async fn decide(&self, client: u64, id: Option<RpcId>, params: Value) -> String {
+        match self.try_decide(client, id.as_ref(), params).await {
             Ok(line) => line,
-            Err((code, message)) => error_line(&id, code, &message),
+            Err((code, message)) => protocol::error_line(id, code, &message),
         }
     }
 
     async fn try_decide(
         &self,
         client_id: u64,
-        id: &Value,
+        id: Option<&RpcId>,
         params: Value,
-    ) -> Result<String, (i64, String)> {
-        let request: DecideRequest = serde_json::from_value(params).map_err(|err| {
+    ) -> Result<String, (i32, String)> {
+        let request: DecideParams = serde_json::from_value(params).map_err(|err| {
             (
                 INVALID_PARAMS,
                 format!(
@@ -780,13 +775,13 @@ impl Decisions {
             "params": engine_params,
         }))
         .map_err(|err| (INVALID_PARAMS, err.to_string()))?;
-        let busy = i64::from(meerkat_contracts::ErrorCode::ApprovalStoreUnavailable.jsonrpc_code());
+        let busy = meerkat_contracts::ErrorCode::ApprovalStoreUnavailable.jsonrpc_code();
         let mut attempt = 0;
         let response = loop {
             let response = router
                 .dispatch_with_decision_event(rpc.clone(), event.clone())
                 .await;
-            let code = response.error.as_ref().map(|error| i64::from(error.code));
+            let code = response.error.as_ref().map(|error| error.code);
             if code == Some(busy) && attempt < STORE_RETRIES {
                 attempt += 1;
                 tokio::time::sleep(STORE_BACKOFF * attempt).await;
@@ -804,29 +799,8 @@ impl Decisions {
                 },
             );
         }
-        serde_json::to_string(&response)
-            .map(|mut line| {
-                line.push('\n');
-                line
-            })
-            .map_err(|err| (INTERNAL_ERROR, err.to_string()))
+        Ok(protocol::response_line(&response))
     }
-}
-
-/// `decision/decide` as a client of the daemon sends it: the engine's
-/// closed request, and the dialog's answer (stripped before dispatch).
-/// Closed: a field that names who decided (`actor`, `approver`, …) is
-/// refused.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DecideRequest {
-    decision_id: String,
-    approve: bool,
-    presented_digest: String,
-    #[serde(default)]
-    reason: Option<String>,
-    #[serde(default)]
-    answer: Option<RemoteAnswer>,
 }
 
 /// The eligibility a decide on one connection carries: the connection was
@@ -870,13 +844,6 @@ fn notice_of(row: &StoredDecision, notice_id: String) -> WireDecisionNotice {
                 .collect(),
         }),
     }
-}
-
-fn error_line(id: &Value, code: i64, message: &str) -> String {
-    format!(
-        "{}\n",
-        json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
-    )
 }
 
 /// Run a decision-owner call off the executor (a SQLite store blocks), and
@@ -1065,7 +1032,7 @@ mod tests {
             });
             params[field] = json!("someone");
             assert!(
-                serde_json::from_value::<DecideRequest>(params).is_err(),
+                serde_json::from_value::<DecideParams>(params).is_err(),
                 "{field}"
             );
         }
@@ -1076,7 +1043,7 @@ mod tests {
             "reason": "no",
             "answer": "stop",
         });
-        let request: DecideRequest = serde_json::from_value(params).unwrap();
+        let request: DecideParams = serde_json::from_value(params).unwrap();
         assert_eq!(request.answer, Some(RemoteAnswer::Stop));
     }
 }

@@ -38,6 +38,7 @@ use crate::approval::desk::{ModeStatus, RuleCommand, RuleOutcome};
 use crate::bootstrap::RuntimeScope;
 use crate::cli::AttachMode;
 use crate::daemon::endpoint::Endpoint;
+use crate::daemon::protocol::{self, ModeSet, SetModeParams, TrustOp, TrustParams};
 use crate::delivery::{PendingId, SteerFailure};
 use crate::endpoints::{
     EndpointRegistry, ModelRefError, WireDialect, needs_lookup, parse_model_ref,
@@ -699,16 +700,10 @@ impl AttachRunner {
         tokio::spawn(async move {
             let read = tokio::time::timeout(
                 CALL_TIMEOUT,
-                remote::local(
-                    &connection,
-                    crate::daemon::local::GET_MODE,
-                    serde_json::json!({}),
-                ),
+                remote::local(&connection, protocol::GET_MODE, &serde_json::json!({})),
             )
             .await;
-            if let Ok(Ok(value)) = read
-                && let Ok(status) = serde_json::from_value::<ModeStatus>(value)
-            {
+            if let Ok(Ok(status)) = read {
                 reports.send(Report::Mode(status));
             }
         });
@@ -758,7 +753,7 @@ impl AttachRunner {
         let Some(link) = &self.link else {
             return;
         };
-        if note.method == crate::daemon::decisions::NOTICE {
+        if note.method == protocol::DECISION_NOTICE {
             let session = link.session.clone();
             if let Some(change) = self.approvals.notice(&session, &note.params) {
                 for msg in change.messages() {
@@ -767,7 +762,7 @@ impl AttachRunner {
             }
             return;
         }
-        if note.method == crate::daemon::decisions::ENDED {
+        if note.method == protocol::DECISION_ENDED {
             if let Some(change) = self.approvals.decision_ended(&note.params) {
                 for msg in change.messages() {
                     self.send(msg);
@@ -1305,8 +1300,8 @@ impl AttachRunner {
             }
             Effect::RemoveRule(n) => self.rule_command(&RuleCommand::Remove { n }).await,
             Effect::ListRules => self.rule_command(&RuleCommand::List).await,
-            Effect::TrustRealmRules => self.trust_command("rules", "/rules trust").await,
-            Effect::TrustProject => self.trust_command("project", "/trust").await,
+            Effect::TrustRealmRules => self.trust_command(TrustOp::Rules, "/rules trust").await,
+            Effect::TrustProject => self.trust_command(TrustOp::Project, "/trust").await,
             Effect::SaveUnsent(held) => self.held_unsent.extend(held),
             Effect::Quit
             | Effect::SetChecklistView(_)
@@ -1347,7 +1342,11 @@ impl AttachRunner {
         tokio::spawn(async move {
             let decided = tokio::time::timeout(
                 CALL_TIMEOUT,
-                connection.call(crate::daemon::decisions::DECIDE, params),
+                remote::local::<_, serde_json::Value>(
+                    &connection,
+                    protocol::DECISION_DECIDE,
+                    &params,
+                ),
             )
             .await;
             let text = match decided {
@@ -1418,28 +1417,22 @@ impl AttachRunner {
         };
         let answer = tokio::time::timeout(
             CALL_TIMEOUT,
-            remote::local(
+            remote::local::<_, ModeSet>(
                 &connection,
-                crate::daemon::local::SET_MODE,
-                serde_json::json!({"mode": mode}),
+                protocol::SET_MODE,
+                &SetModeParams {
+                    mode: mode.to_string(),
+                },
             ),
         )
         .await;
         match answer {
-            Ok(Ok(value)) => {
-                if let Some(status) = value
-                    .get("status")
-                    .cloned()
-                    .and_then(|status| serde_json::from_value::<ModeStatus>(status).ok())
-                {
-                    self.push_mode(status);
-                }
-                if let Some(warning) = value.get("warning").and_then(serde_json::Value::as_str) {
+            Ok(Ok(set)) => {
+                self.push_mode(set.status);
+                if let Some(warning) = set.warning {
                     self.notice(NoticeLevel::Warn, warning);
                 }
-                if let Some(notice) = value.get("notice").and_then(serde_json::Value::as_str) {
-                    self.notice(NoticeLevel::Info, notice);
-                }
+                self.notice(NoticeLevel::Info, set.notice);
             }
             Ok(Err(err)) => self.notice(NoticeLevel::Error, format!("mode not changed: {err}")),
             Err(_) => self.notice(NoticeLevel::Error, "the daemon did not answer in time"),
@@ -1448,7 +1441,7 @@ impl AttachRunner {
 
     /// `/trust` (`op` `project`) or `/rules trust` (`rules`) on the
     /// daemon's trust record (`rkat/trust`).
-    async fn trust_command(&self, op: &str, name: &str) {
+    async fn trust_command(&self, op: TrustOp, name: &str) {
         let Some(connection) = self.connection() else {
             self.notice(
                 NoticeLevel::Warn,
@@ -1458,25 +1451,18 @@ impl AttachRunner {
         };
         let answer = tokio::time::timeout(
             CALL_TIMEOUT,
-            remote::local(
-                &connection,
-                crate::daemon::local::TRUST,
-                serde_json::json!({"op": op}),
-            ),
+            remote::local::<_, RuleOutcome>(&connection, protocol::TRUST, &TrustParams { op }),
         )
         .await;
         match answer {
-            Ok(Ok(value)) => match serde_json::from_value::<RuleOutcome>(value) {
-                Ok(outcome) => {
-                    let level = if outcome.ok {
-                        NoticeLevel::Info
-                    } else {
-                        NoticeLevel::Error
-                    };
-                    self.notice(level, outcome.text);
-                }
-                Err(err) => self.notice(NoticeLevel::Error, format!("{name}: {err}")),
-            },
+            Ok(Ok(outcome)) => {
+                let level = if outcome.ok {
+                    NoticeLevel::Info
+                } else {
+                    NoticeLevel::Error
+                };
+                self.notice(level, outcome.text);
+            }
             Ok(Err(err)) => self.notice(NoticeLevel::Error, format!("{name} failed: {err}")),
             Err(_) => self.notice(NoticeLevel::Error, "the daemon did not answer in time"),
         }
@@ -1488,24 +1474,20 @@ impl AttachRunner {
             self.notice(NoticeLevel::Warn, "not attached: /rules needs the daemon");
             return;
         };
-        let params = serde_json::to_value(command).unwrap_or_default();
         let answer = tokio::time::timeout(
             CALL_TIMEOUT,
-            remote::local(&connection, crate::daemon::local::RULES, params),
+            remote::local::<_, RuleOutcome>(&connection, protocol::RULES, command),
         )
         .await;
         match answer {
-            Ok(Ok(value)) => match serde_json::from_value::<RuleOutcome>(value) {
-                Ok(outcome) => {
-                    let level = if outcome.ok {
-                        NoticeLevel::Info
-                    } else {
-                        NoticeLevel::Error
-                    };
-                    self.notice(level, outcome.text);
-                }
-                Err(err) => self.notice(NoticeLevel::Error, format!("/rules: {err}")),
-            },
+            Ok(Ok(outcome)) => {
+                let level = if outcome.ok {
+                    NoticeLevel::Info
+                } else {
+                    NoticeLevel::Error
+                };
+                self.notice(level, outcome.text);
+            }
             Ok(Err(err)) => self.notice(NoticeLevel::Error, format!("/rules failed: {err}")),
             Err(_) => self.notice(NoticeLevel::Error, "the daemon did not answer in time"),
         }
@@ -2571,7 +2553,9 @@ async fn restart(
 async fn establish(endpoint: Endpoint, saved: Option<&Cursor>) -> Result<Established, ClientError> {
     let (connection, mut notifications) = Connection::attach(&endpoint, ATTACH_TIMEOUT).await?;
     tokio::time::timeout(CALL_TIMEOUT, async {
-        let capabilities = connection.call("initialize", serde_json::json!({})).await?;
+        let capabilities = connection
+            .call(protocol::engine::INITIALIZE, serde_json::json!({}))
+            .await?;
         if !pushes_decisions(&capabilities) {
             return Err(ClientError::DaemonTooOld { pid: endpoint.pid });
         }

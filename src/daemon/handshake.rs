@@ -21,13 +21,16 @@
 
 use std::time::Duration;
 
-use serde_json::{Value, json};
+use meerkat_rpc::protocol::RpcId;
+use serde_json::Value;
+
+use super::protocol::{self, AttachParams, Attached};
 use tokio::io::{
     AsyncBufRead, AsyncBufReadExt as _, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _,
 };
 
 /// The attach method.
-pub const ATTACH_METHOD: &str = "rkat/attach";
+pub const ATTACH_METHOD: &str = protocol::ATTACH;
 
 /// How long a client may take to send its attach line.
 pub const TIMEOUT: Duration = Duration::from_secs(5);
@@ -35,11 +38,7 @@ pub const TIMEOUT: Duration = Duration::from_secs(5);
 /// The longest attach line accepted, newline included.
 pub const MAX_LINE: u64 = 4096;
 
-/// JSON-RPC "invalid request": the first line is not an attach request.
-pub const INVALID_REQUEST: i64 = -32600;
-
-/// The token is missing or wrong, or no attach arrived in time.
-pub const UNAUTHORIZED: i64 = -32001;
+pub use super::protocol::{INVALID_REQUEST, UNAUTHORIZED};
 
 /// Why a connection was refused.
 #[derive(Debug, thiserror::Error)]
@@ -82,18 +81,18 @@ where
     let read =
         tokio::time::timeout(timeout, (&mut *reader).take(MAX_LINE).read_line(&mut line)).await;
     let checked = match read {
-        Err(_) => Err((Value::Null, HandshakeError::Timeout(timeout))),
-        Ok(Err(err)) => Err((Value::Null, HandshakeError::Io(err))),
-        Ok(Ok(0)) => Err((Value::Null, HandshakeError::Closed)),
+        Err(_) => Err((None, HandshakeError::Timeout(timeout))),
+        Ok(Err(err)) => Err((None, HandshakeError::Io(err))),
+        Ok(Ok(0)) => Err((None, HandshakeError::Closed)),
         Ok(Ok(_)) if !line.ends_with('\n') => Err((
-            Value::Null,
+            None,
             HandshakeError::NotAttach(format!("no complete line within {MAX_LINE} bytes")),
         )),
         Ok(Ok(_)) => check(&line, token),
     };
     match checked {
         Ok(id) => {
-            let reply = json!({"jsonrpc": "2.0", "id": id, "result": {"attached": true}});
+            let reply = protocol::result_line(Some(id), Attached { attached: true });
             tokio::time::timeout(timeout, write_line(writer, &reply))
                 .await
                 .map_err(|_| HandshakeError::Timeout(timeout))??;
@@ -105,11 +104,7 @@ where
                     HandshakeError::NotAttach(_) => INVALID_REQUEST,
                     _ => UNAUTHORIZED,
                 };
-                let reply = json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "error": {"code": code, "message": err.to_string()},
-                });
+                let reply = protocol::error_line(id, code, &err.to_string());
                 // Bounded: a client that never reads must not hold the
                 // connection task.
                 let _ = tokio::time::timeout(timeout, async {
@@ -125,25 +120,24 @@ where
 
 /// The request id of a valid attach `line` for `token`, or the id to
 /// answer with and the refusal.
-fn check(line: &str, token: &str) -> Result<Value, (Value, HandshakeError)> {
+fn check(line: &str, token: &str) -> Result<RpcId, (Option<RpcId>, HandshakeError)> {
     let request: Value = serde_json::from_str(line.trim_end())
-        .map_err(|err| (Value::Null, HandshakeError::NotAttach(err.to_string())))?;
-    let id = request.get("id").cloned().unwrap_or(Value::Null);
+        .map_err(|err| (None, HandshakeError::NotAttach(err.to_string())))?;
+    let id = protocol::request_id(request.get("id").unwrap_or(&Value::Null));
     let method = request.get("method").and_then(Value::as_str);
-    if request.get("jsonrpc").and_then(Value::as_str) != Some("2.0")
-        || method != Some(ATTACH_METHOD)
-        || id.is_null()
-    {
+    let attach = request.get("jsonrpc").and_then(Value::as_str) == Some("2.0")
+        && method == Some(ATTACH_METHOD);
+    let Some(id) = id.clone().filter(|_| attach) else {
         let what = method.map_or_else(|| "no method".to_string(), |m| format!("`{m}`"));
         return Err((id, HandshakeError::NotAttach(what)));
-    }
+    };
     let given = request
         .get("params")
-        .and_then(|params| params.get("token"))
-        .and_then(Value::as_str);
+        .cloned()
+        .and_then(|params| serde_json::from_value::<AttachParams>(params).ok());
     match given {
-        Some(given) if same(given.as_bytes(), token.as_bytes()) => Ok(id),
-        _ => Err((id, HandshakeError::Unauthorized)),
+        Some(given) if same(given.token.as_bytes(), token.as_bytes()) => Ok(id),
+        _ => Err((Some(id), HandshakeError::Unauthorized)),
     }
 }
 
@@ -152,10 +146,8 @@ fn same(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-async fn write_line<W: AsyncWrite + Unpin>(writer: &mut W, value: &Value) -> std::io::Result<()> {
-    let mut bytes = value.to_string().into_bytes();
-    bytes.push(b'\n');
-    writer.write_all(&bytes).await?;
+async fn write_line<W: AsyncWrite + Unpin>(writer: &mut W, line: &str) -> std::io::Result<()> {
+    writer.write_all(line.as_bytes()).await?;
     writer.flush().await
 }
 
@@ -163,6 +155,7 @@ async fn write_line<W: AsyncWrite + Unpin>(writer: &mut W, value: &Value) -> std
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use tokio::io::BufReader;
 
     async fn run(input: &[u8], timeout: Duration) -> (Result<(), HandshakeError>, Value, String) {

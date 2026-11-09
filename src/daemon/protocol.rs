@@ -1,0 +1,332 @@
+//! The daemon's wire, typed once for both ends: the method names (the
+//! daemon's own `rkat/*` ones and the engine's the client calls and the
+//! daemon observes), the JSON-RPC error codes, and the parameters and
+//! results of every `rkat/*` method, of `decision/decide` as a client sends
+//! it and of the `rkat/decision_ended` notification.
+//!
+//! [`super::local`] answers the `rkat/*` methods, [`super::handshake`] the
+//! attach line, [`super::decisions`] `decision/decide`; the client
+//! (`crate::client::{remote, runner, approvals}`) calls them with these
+//! types. `tests/daemon.rs` tests the raw wire below them.
+
+use meerkat_contracts::WireDecisionPhase;
+use meerkat_core::{Message, SessionId};
+use meerkat_rpc::protocol::{RpcId, RpcResponse};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use super::conversations::Listed;
+use crate::approval::desk::{ModeStatus, RemoteAnswer};
+
+pub use meerkat_rpc::error::{INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND};
+
+/// Every local method starts with this.
+pub const PREFIX: &str = "rkat/";
+/// The attach handshake ([`super::handshake`]): [`AttachParams`] →
+/// [`Attached`].
+pub const ATTACH: &str = "rkat/attach";
+/// `{}` → [`ModeStatus`]: the permission mode and the denial counters.
+pub const GET_MODE: &str = "rkat/get_mode";
+/// [`SetModeParams`] → [`ModeSet`]: switch the permission mode.
+pub const SET_MODE: &str = "rkat/set_mode";
+/// A [`crate::approval::desk::RuleCommand`] →
+/// [`crate::approval::desk::RuleOutcome`]: a `/rules` command.
+pub const RULES: &str = "rkat/rules";
+/// `{}` → [`ConversationList`]: the orchestrator's conversations.
+pub const CONVERSATIONS: &str = "rkat/conversations";
+/// `{}` → [`Switched`]: `/new`.
+pub const NEW: &str = "rkat/new";
+/// [`SessionParams`] → [`Switched`]: `/resume <session>`.
+pub const RESUME: &str = "rkat/resume";
+/// [`SessionParams`] → [`Transcript`]: a conversation's committed messages.
+pub const TRANSCRIPT: &str = "rkat/transcript";
+/// [`SessionParams`] → [`Usage`]: a conversation's total token usage.
+pub const USAGE: &str = "rkat/usage";
+/// [`TrustParams`] → [`crate::approval::desk::RuleOutcome`]: the project
+/// trust record (`/trust`, `/rules trust`).
+pub const TRUST: &str = "rkat/trust";
+/// The notification that a decision a client was shown ended:
+/// [`DecisionEnded`].
+pub const DECISION_ENDED: &str = "rkat/decision_ended";
+/// The engine's decision notice, pushed by the daemon.
+pub const DECISION_NOTICE: &str = meerkat_contracts::DECISION_NOTICE_NOTIFICATION;
+/// The engine's decide method, decided by the daemon ([`DecideParams`]).
+pub const DECISION_DECIDE: &str = meerkat_rpc::router::DECISION_DECIDE_METHOD;
+
+/// The engine's methods the client calls (and the daemon observes on their
+/// way to the router).
+pub mod engine {
+    /// A prompt or a steer for a member.
+    pub const MEMBER_SEND: &str = "mob/member_send";
+    /// A turn with request-scoped overrides (a model switch).
+    pub const TURN_START: &str = "mob/turn_start";
+    /// Stop a member's run.
+    pub const STOP_MEMBER_RUN: &str = "mob/stop_member_run";
+    /// Cancel whatever a member runs.
+    pub const FORCE_CANCEL: &str = "mob/force_cancel";
+    /// Open a member's or a mob's event stream.
+    pub const STREAM_OPEN: &str = "mob/stream_open";
+    /// Close a stream.
+    pub const STREAM_CLOSE: &str = "mob/stream_close";
+    /// A stream's event (a notification).
+    pub const STREAM_EVENT: &str = "mob/stream_event";
+    /// A stream's end (a notification).
+    pub const STREAM_END: &str = "mob/stream_end";
+    /// Append to a member's system context.
+    pub const APPEND_SYSTEM_CONTEXT: &str = "mob/append_system_context";
+    /// The mobs a runtime hosts.
+    pub const LIST: &str = "mob/list";
+    /// A mob's members.
+    pub const MEMBERS: &str = "mob/members";
+    /// A member's status (its current session).
+    pub const MEMBER_STATUS: &str = "mob/member_status";
+    /// Compact a member at its next compaction check.
+    pub const COMPACT_MEMBER: &str = "mob/compact_member";
+    /// Compact a session.
+    pub const SESSION_COMPACT: &str = "session/compact";
+    /// A session's durable events after a cursor.
+    pub const EVENTS_LIST_SINCE: &str = "events/list_since";
+    /// A session's snapshot and its replay cursor.
+    pub const EVENTS_SNAPSHOT: &str = "events/snapshot";
+    /// The capability handshake.
+    pub const INITIALIZE: &str = "initialize";
+}
+
+/// The attach token is missing or wrong, or no attach arrived in time.
+pub const UNAUTHORIZED: i32 = -32001;
+/// A conversation switch or read the engine refused.
+pub const SWITCH_FAILED: i32 = -32010;
+/// A conversation switch refused because the orchestrator's turn is
+/// running.
+pub const SWITCH_BUSY: i32 = -32011;
+
+/// A local method's refusal: a JSON-RPC error code and message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refusal {
+    /// The JSON-RPC error code.
+    pub code: i32,
+    /// Its message.
+    pub message: String,
+}
+
+impl Refusal {
+    /// A refusal with `code`.
+    #[must_use]
+    pub fn new(code: i32, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+
+    /// [`INVALID_PARAMS`] for parameters that do not read as `T`.
+    #[must_use]
+    pub fn invalid(err: &serde_json::Error) -> Self {
+        Self::new(INVALID_PARAMS, err.to_string())
+    }
+}
+
+/// Read a method's parameters (`null`: none, read as `{}`).
+///
+/// # Errors
+///
+/// [`INVALID_PARAMS`] when they do not read as `T`.
+pub fn params<T: serde::de::DeserializeOwned>(params: Value) -> Result<T, Refusal> {
+    let params = if params.is_null() {
+        Value::Object(serde_json::Map::new())
+    } else {
+        params
+    };
+    serde_json::from_value(params).map_err(|err| Refusal::invalid(&err))
+}
+
+/// A request id as the engine's wire types it (`None`: absent, `null`, or
+/// not a number or string).
+#[must_use]
+pub fn request_id(id: &Value) -> Option<RpcId> {
+    serde_json::from_value(id.clone()).ok()
+}
+
+/// The answer line (newline included) of the request `id`: its result.
+#[must_use]
+pub fn result_line(id: Option<RpcId>, result: impl Serialize) -> String {
+    response_line(&RpcResponse::success(id, result))
+}
+
+/// The answer line (newline included) of the request `id`: a refusal.
+#[must_use]
+pub fn error_line(id: Option<RpcId>, code: i32, message: &str) -> String {
+    response_line(&RpcResponse::error(id, code, message))
+}
+
+/// `response` as a line, newline included.
+#[must_use]
+pub fn response_line(response: &RpcResponse) -> String {
+    let mut line = serde_json::to_string(response).unwrap_or_else(|err| {
+        format!(
+            r#"{{"jsonrpc":"2.0","id":null,"error":{{"code":{INTERNAL_ERROR},"message":"cannot write the answer: {err}"}}}}"#
+        )
+    });
+    line.push('\n');
+    line
+}
+
+/// [`ATTACH`]'s parameters.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttachParams {
+    /// The endpoint file's token.
+    pub token: String,
+}
+
+/// [`ATTACH`]'s result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attached {
+    /// Always `true`.
+    pub attached: bool,
+}
+
+/// [`SET_MODE`]'s parameters.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetModeParams {
+    /// `default`, `accept-edits`, `plan` or `auto` (case-insensitive).
+    pub mode: String,
+}
+
+/// [`SET_MODE`]'s result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModeSet {
+    /// The mode and the counters now.
+    pub status: ModeStatus,
+    /// What the mode does.
+    pub notice: String,
+    /// What did not work (not saved, the agent not told).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
+/// [`CONVERSATIONS`]'s result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationList {
+    /// Last used first.
+    pub conversations: Vec<Listed>,
+}
+
+/// The parameters of the methods on one conversation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionParams {
+    /// The conversation's session.
+    pub session_id: SessionId,
+}
+
+/// [`NEW`]'s and [`RESUME`]'s result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Switched {
+    /// The session the orchestrator runs as now.
+    pub session_id: SessionId,
+    /// What did not work (the new conversation not told about plan mode).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
+/// [`TRANSCRIPT`]'s result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Transcript {
+    /// The committed messages.
+    pub messages: Vec<Message>,
+}
+
+/// [`USAGE`]'s result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Usage {
+    /// Input tokens.
+    pub input_tokens: u64,
+    /// Output tokens.
+    pub output_tokens: u64,
+}
+
+/// What [`TRUST`] acts on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrustOp {
+    /// `/trust`: the project inputs.
+    Project,
+    /// `/rules trust`: the realm rules file.
+    Rules,
+}
+
+/// [`TRUST`]'s parameters.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct TrustParams {
+    /// What to trust.
+    pub op: TrustOp,
+}
+
+/// `decision/decide` as a client of the daemon sends it: the engine's
+/// closed request, and the dialog's answer (stripped before dispatch).
+/// Closed: a field that names who decided (`actor`, `approver`, …) is
+/// refused.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DecideParams {
+    /// The decision.
+    pub decision_id: String,
+    /// Approved (else rejected).
+    pub approve: bool,
+    /// The digest of the rendering the client showed.
+    pub presented_digest: String,
+    /// The decider's reason (the dialog's comment).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The dialog's answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<RemoteAnswer>,
+}
+
+/// [`DECISION_ENDED`]'s parameters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecisionEnded {
+    /// The decision.
+    pub decision_id: String,
+    /// The phase it ended in, when known.
+    pub phase: Option<WireDecisionPhase>,
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn answer_lines_are_json_rpc_responses() {
+        let ok = result_line(
+            Some(RpcId::Num(3)),
+            Usage {
+                input_tokens: 1,
+                output_tokens: 2,
+            },
+        );
+        let ok: Value = serde_json::from_str(ok.trim_end()).unwrap();
+        assert_eq!(
+            ok,
+            json!({"jsonrpc": "2.0", "id": 3, "result": {"input_tokens": 1, "output_tokens": 2}})
+        );
+        let err = error_line(request_id(&json!("a")), SWITCH_BUSY, "busy");
+        let err: Value = serde_json::from_str(err.trim_end()).unwrap();
+        assert_eq!(
+            err,
+            json!({"jsonrpc": "2.0", "id": "a", "error": {"code": SWITCH_BUSY, "message": "busy"}})
+        );
+        assert_eq!(request_id(&Value::Null), None);
+    }
+
+    #[test]
+    fn a_decide_naming_who_decided_is_refused_and_no_params_read_as_empty() {
+        assert!(params::<DecideParams>(json!({"decision_id": "d", "approve": true, "presented_digest": "x", "actor": "mallory"})).is_err());
+        assert!(params::<SetModeParams>(Value::Null).is_err());
+        let trust = params::<TrustParams>(json!({"op": "rules"})).unwrap();
+        assert_eq!(trust.op, TrustOp::Rules);
+        let refused = params::<TrustParams>(json!({})).unwrap_err();
+        assert_eq!(refused.code, INVALID_PARAMS);
+    }
+}

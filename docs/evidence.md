@@ -2661,3 +2661,28 @@ methods are required, and the proxy always registers the client and always
 adds the decision methods to `initialize`. The proxy's unit test
 (`serve::tests::a_slow_local_call_holds_back_no_other_line`) serves an
 in-memory decision owner.
+
+### The `rkat/*` wire is typed once (`daemon::protocol`)
+
+The daemon built its answers with `json!`, the client probed them with
+`.get("…")`, decision phases were string-matched (`"approved"`,
+`"rejected"`), the engine method names were literals on both sides, and
+the JSON-RPC error codes were declared three times (`local.rs`,
+`decisions.rs`, `handshake.rs`) with error lines hand-built in `serve.rs`
+and `decisions.rs`. `src/daemon/protocol.rs` now holds every method name
+(the `rkat/*` ones, the decision methods, and the engine methods the client
+calls and the daemon observes, under `protocol::engine`), the
+application error codes (`UNAUTHORIZED`, `SWITCH_FAILED`, `SWITCH_BUSY`;
+the standard ones are `meerkat_rpc::error`'s, `i32` as the engine has
+them, and `ClientError`'s codes follow), the serde types of every
+`rkat/*` request and answer, `DecideParams` (the closed `decision/decide`
+a client sends, formerly `decisions::DecideRequest`) and `DecisionEnded`
+(its phase a `WireDecisionPhase`). Answer lines are `RpcResponse`s
+(`protocol::{result_line, error_line}`), request ids `RpcId`s. The engine
+exports no method-name constants of its own besides `decision/decide`, so
+the `engine` names are ours. `tests/daemon.rs` and the raw calls in
+`tests/attach_*.rs` keep testing the wire as JSON.
+
+Tests: `daemon::protocol::tests::{answer_lines_are_json_rpc_responses,
+a_decide_naming_who_decided_is_refused_and_no_params_read_as_empty}`, and
+the daemon and attach suites unchanged in meaning.

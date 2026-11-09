@@ -827,7 +827,7 @@ args = ["-c", "printf entered > \"$1\"; cat >/dev/null; printf '{{}}'", "hook-pr
     for params in [json!({}), json!({"op": "list"})] {
         let refused = connection.call("rkat/trust", params.clone()).await;
         assert!(
-            matches!(&refused, Err(rkat_tui::client::ClientError::Rpc { code, .. }) if *code == rkat_tui::daemon::local::INVALID_PARAMS),
+            matches!(&refused, Err(rkat_tui::client::ClientError::Rpc { code, .. }) if *code == rkat_tui::daemon::protocol::INVALID_PARAMS),
             "{params}: {refused:?}"
         );
     }

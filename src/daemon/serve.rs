@@ -37,7 +37,9 @@ use super::DaemonError;
 use super::decisions::ClientGuard;
 use super::endpoint::{self, Endpoint};
 use super::handshake;
-use super::local::{self, Local};
+use super::local::Local;
+use super::protocol::{self, Refusal};
+use meerkat_rpc::protocol::RpcId;
 
 /// The in-memory pipe between the proxy and the engine's server.
 const PIPE: usize = 1 << 20;
@@ -67,7 +69,7 @@ impl Outgoing {
 /// The methods the daemon adds to the engine's `initialize`
 /// catalog: it pushes `decision/notice` to every attached client and
 /// decides `decision/decide` itself (plain TCP serves neither).
-pub const DECISION_METHODS: [&str; 2] = [super::decisions::NOTICE, super::decisions::DECIDE];
+pub const DECISION_METHODS: [&str; 2] = [protocol::DECISION_NOTICE, protocol::DECISION_DECIDE];
 
 /// The bound listener and the endpoint file announcing it.
 #[derive(Debug)]
@@ -231,19 +233,19 @@ impl Drop for AbortOnDrop {
 #[async_trait::async_trait]
 pub trait LocalMethods: Send + Sync {
     /// Answer the local method `method`.
-    async fn call(&self, method: &str, params: Value) -> Result<Value, local::Refusal>;
+    async fn call(&self, method: &str, params: Value) -> Result<Value, Refusal>;
     /// Learn from an engine request on its way; returns it as forwarded.
     fn observe(&self, request: Value) -> Value;
     /// A client attached: the daemon's consent surface offers it decisions
     /// through `out` until the guard is dropped.
     fn connect(&self, out: mpsc::UnboundedSender<Outgoing>) -> ClientGuard;
     /// The client `client`'s `decision/decide`: its answer line.
-    async fn decide(&self, client: u64, id: Value, params: Value) -> String;
+    async fn decide(&self, client: u64, id: Option<RpcId>, params: Value) -> String;
 }
 
 #[async_trait::async_trait]
 impl LocalMethods for Local {
-    async fn call(&self, method: &str, params: Value) -> Result<Value, local::Refusal> {
+    async fn call(&self, method: &str, params: Value) -> Result<Value, Refusal> {
         Local::call(self, method, params).await
     }
 
@@ -255,7 +257,7 @@ impl LocalMethods for Local {
         self.decisions().connect(out)
     }
 
-    async fn decide(&self, client: u64, id: Value, params: Value) -> String {
+    async fn decide(&self, client: u64, id: Option<RpcId>, params: Value) -> String {
         self.decisions().decide(client, id, params).await
     }
 }
@@ -374,11 +376,11 @@ where
 
 /// The id (as JSON text) of an `initialize` request `line`.
 fn initialize_id(line: &str) -> Option<String> {
-    if !line.contains("\"initialize\"") {
+    if !line.contains(protocol::engine::INITIALIZE) {
         return None;
     }
     let request: Value = serde_json::from_str(line.trim_end()).ok()?;
-    (request.get("method").and_then(Value::as_str) == Some("initialize"))
+    (request.get("method").and_then(Value::as_str) == Some(protocol::engine::INITIALIZE))
         .then(|| request.get("id").map(Value::to_string))
         .flatten()
 }
@@ -416,14 +418,14 @@ pub enum Routed {
     /// A `decision/decide`, for the daemon's consent surface.
     Decide {
         /// The request id.
-        id: Value,
+        id: Option<RpcId>,
         /// Its params (`Null` when absent).
         params: Value,
     },
     /// A local method call, to answer with [`answer`].
     Local {
         /// The request id.
-        id: Value,
+        id: Option<RpcId>,
         /// The method.
         method: String,
         /// Its params (`Null` when absent).
@@ -440,13 +442,14 @@ pub fn route<L: LocalMethods + ?Sized>(line: &str, local: &L) -> Routed {
         return Routed::Forward(line.to_string());
     };
     let method = request.get("method").and_then(Value::as_str);
+    let id = || protocol::request_id(request.get("id").unwrap_or(&Value::Null));
     match method {
-        Some(super::decisions::DECIDE) => Routed::Decide {
-            id: request.get("id").cloned().unwrap_or(Value::Null),
+        Some(protocol::DECISION_DECIDE) => Routed::Decide {
+            id: id(),
             params: request.get("params").cloned().unwrap_or(Value::Null),
         },
-        Some(method) if method.starts_with(local::PREFIX) => Routed::Local {
-            id: request.get("id").cloned().unwrap_or(Value::Null),
+        Some(method) if method.starts_with(protocol::PREFIX) => Routed::Local {
+            id: id(),
             method: method.to_string(),
             params: request.get("params").cloned().unwrap_or(Value::Null),
         },
@@ -461,19 +464,14 @@ pub fn route<L: LocalMethods + ?Sized>(line: &str, local: &L) -> Routed {
 /// The answer line (newline included) of the local call `method`.
 pub async fn answer<L: LocalMethods + ?Sized>(
     local: &L,
-    id: Value,
+    id: Option<RpcId>,
     method: &str,
     params: Value,
 ) -> String {
-    let reply = match local.call(method, params).await {
-        Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
-        Err((code, message)) => json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "error": {"code": code, "message": message},
-        }),
-    };
-    format!("{reply}\n")
+    match local.call(method, params).await {
+        Ok(result) => protocol::result_line(id, result),
+        Err(refusal) => protocol::error_line(id, refusal.code, &refusal.message),
+    }
 }
 
 #[cfg(test)]
@@ -489,7 +487,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl LocalMethods for Slow {
-        async fn call(&self, method: &str, _params: Value) -> Result<Value, local::Refusal> {
+        async fn call(&self, method: &str, _params: Value) -> Result<Value, Refusal> {
             if method == "rkat/slow" {
                 self.gate.notified().await;
             }
@@ -504,7 +502,7 @@ mod tests {
             self.decisions.connect(out)
         }
 
-        async fn decide(&self, client: u64, id: Value, params: Value) -> String {
+        async fn decide(&self, client: u64, id: Option<RpcId>, params: Value) -> String {
             self.decisions.decide(client, id, params).await
         }
     }

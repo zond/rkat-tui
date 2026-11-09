@@ -159,7 +159,7 @@ async fn a_switch_is_refused_while_another_clients_turn_runs() {
     let refused = other.call("rkat/new", json!({})).await.unwrap_err();
     assert!(
         matches!(&refused, rkat_tui::client::ClientError::Rpc { code, message, .. }
-            if *code == rkat_tui::daemon::local::SWITCH_BUSY && message.contains("interrupt")),
+            if *code == rkat_tui::daemon::protocol::SWITCH_BUSY && message.contains("interrupt")),
         "{refused}"
     );
     // The turn was not cut off: it finishes on the same session.
@@ -184,7 +184,7 @@ async fn a_switch_is_refused_while_another_clients_turn_runs() {
                 break;
             }
             Err(rkat_tui::client::ClientError::Rpc { code, .. })
-                if code == rkat_tui::daemon::local::SWITCH_BUSY
+                if code == rkat_tui::daemon::protocol::SWITCH_BUSY
                     && tokio::time::Instant::now() < deadline =>
             {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;

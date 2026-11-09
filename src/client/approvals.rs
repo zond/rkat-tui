@@ -14,11 +14,13 @@
 
 use std::collections::HashMap;
 
+use meerkat_contracts::WireDecisionPhase;
 use meerkat_core::SessionId;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::approval::escalation::RecordedPrompt;
 use crate::daemon::decisions::{DialogRendering, KIND};
+use crate::daemon::protocol::{DecideParams, DecisionEnded};
 use crate::ui::{EscalationAnswer, EscalationId, Msg};
 
 /// What a pushed decision changes in the UI.
@@ -97,13 +99,16 @@ impl Approvals {
     /// The daemon's `rkat/decision_ended` (its params): close the dialog
     /// this client did not answer, saying how it ended.
     pub fn decision_ended(&mut self, params: &Value) -> Option<Change> {
-        let decision = params.get("decision_id").and_then(Value::as_str)?;
-        let (local, _) = self.decisions.remove(decision)?;
+        let ended: DecisionEnded = serde_json::from_value(params.clone()).ok()?;
+        let (local, _) = self.decisions.remove(&ended.decision_id)?;
         self.decision_by_local.remove(&local);
-        let phase = params.get("phase").and_then(Value::as_str).unwrap_or("");
-        let text = match phase {
-            "approved" | "executed" => "an approval request was allowed from another client",
-            "rejected" => "an approval request was denied from another client",
+        let text = match ended.phase {
+            Some(WireDecisionPhase::Approved | WireDecisionPhase::Executed) => {
+                "an approval request was allowed from another client"
+            }
+            Some(WireDecisionPhase::Rejected) => {
+                "an approval request was denied from another client"
+            }
             _ => {
                 "an approval request ended unanswered (it timed out, the turn was interrupted, or its call was abandoned); the action was denied"
             }
@@ -135,24 +140,22 @@ impl Approvals {
 /// denial is the decision's reason; the dialog's answer travels beside it
 /// for the daemon, which strips it before the engine sees the request.
 #[must_use]
-pub fn decision_params(decision: &str, digest: &str, answer: &EscalationAnswer) -> Value {
+pub fn decision_params(decision: &str, digest: &str, answer: &EscalationAnswer) -> DecideParams {
     let (remote, comment) = answer.remote();
-    let mut params = json!({
-        "decision_id": decision,
-        "approve": remote.decision() == meerkat_core::ApprovalDecision::Approve,
-        "presented_digest": digest,
-        "answer": remote,
-    });
-    if let Some(comment) = comment {
-        params["reason"] = json!(comment);
+    DecideParams {
+        decision_id: decision.to_string(),
+        approve: remote.decision() == meerkat_core::ApprovalDecision::Approve,
+        presented_digest: digest.to_string(),
+        reason: comment.map(ToString::to_string),
+        answer: Some(remote),
     }
-    params
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use serde_json::json;
     fn notice(decision: &str, session: &SessionId) -> Value {
         let rendering = serde_json::to_string(&DialogRendering {
             session_id: session.clone(),
@@ -228,7 +231,7 @@ mod tests {
             },
         );
         assert_eq!(
-            params,
+            serde_json::to_value(params).unwrap(),
             json!({"decision_id": "d2", "approve": false, "presented_digest": "sha256:abc", "answer": "deny", "reason": "no"})
         );
     }

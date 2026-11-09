@@ -37,6 +37,7 @@ pub mod handshake;
 pub mod local;
 pub mod orchestrator;
 pub mod policy;
+pub mod protocol;
 pub mod serve;
 
 use std::path::{Path, PathBuf};

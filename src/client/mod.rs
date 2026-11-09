@@ -78,7 +78,7 @@ pub enum ClientError {
     #[error("the daemon refused the attach ({code}): {message}")]
     Refused {
         /// The JSON-RPC error code.
-        code: i64,
+        code: i32,
         /// Its message.
         message: String,
     },
@@ -91,7 +91,7 @@ pub enum ClientError {
         /// The method.
         method: String,
         /// The JSON-RPC error code.
-        code: i64,
+        code: i32,
         /// Its message.
         message: String,
     },
