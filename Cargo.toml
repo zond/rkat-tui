@@ -92,7 +92,7 @@ similar = "2"
 
 # Ctrl+Z: stop the process with SIGTSTP (job control).
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.29", features = ["signal", "process", "fs", "user"] }
+nix = { version = "0.29", features = ["signal", "process", "fs", "user", "hostname"] }
 
 [features]
 # Makes the internal modules public and adds `harness` (the headless

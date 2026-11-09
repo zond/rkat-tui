@@ -39,6 +39,7 @@
 //! turns end on completion handles the daemon's stream does not carry. What
 //! the two share is the workbench and [`crate::workbench::app::build_app`].
 
+pub mod address;
 pub mod alongside;
 pub mod approvals;
 pub mod catchup;
@@ -172,11 +173,55 @@ pub enum ClientError {
 /// be read.
 #[cfg(any(test, feature = "test-support"))]
 pub async fn configure(args: &Args, target: AttachTarget) -> Result<AttachConfig, TuiError> {
-    let args = match &target {
-        AttachTarget::Directory(dir) => directory_args(args, dir)?,
-        _ => args.clone(),
+    let (args, layers, reached) = retarget(args.clone(), &target, None).await?;
+    let mut config = configure_with(layers, &args, target.mode()).await?;
+    if let Some(reached) = reached {
+        reached.apply(&mut config);
+    }
+    Ok(config)
+}
+
+/// The arguments and `tui.toml` layers of the workspace `target` attaches
+/// to (`layers`: the ones read for `args`, reused when the workspace
+/// stays), and the daemon `--attach=HOST:PORT` reached. `check`: refuse a
+/// directory without an endpoint file (the start-up does; tests place
+/// their endpoint files elsewhere).
+async fn retarget(
+    args: Args,
+    target: &AttachTarget,
+    layers: Option<crate::bootstrap::Layers>,
+) -> Result<(Args, crate::bootstrap::Layers, Option<address::Reached>), TuiError> {
+    let read = |args: &Args, layers: Option<crate::bootstrap::Layers>| match layers {
+        Some(layers) => Ok(layers),
+        None => crate::bootstrap::read_layers(args),
     };
-    configure_with(crate::bootstrap::read_layers(&args)?, &args, target.mode()).await
+    match target {
+        AttachTarget::Auto | AttachTarget::Existing => {
+            let layers = read(&args, layers)?;
+            Ok((args, layers, None))
+        }
+        AttachTarget::Directory(dir) => {
+            let args = directory_args(&args, dir)?;
+            let layers = crate::bootstrap::read_layers(&args)?;
+            Ok((args, layers, None))
+        }
+        AttachTarget::Address(at) => {
+            let reached = address::reach(at, args.attach_token_file.as_deref()).await?;
+            // A workspace on this machine: run on it, as a directory
+            // attach does; else on the client's own (its history and cost
+            // record), with the file features refused.
+            let (args, layers) = if reached.remote.is_none() {
+                let mut args = args;
+                args.context_root = Some(reached.status.workspace.clone());
+                let layers = crate::bootstrap::read_layers(&args)?;
+                (args, layers)
+            } else {
+                let layers = read(&args, layers)?;
+                (args, layers)
+            };
+            Ok((args, layers, Some(reached)))
+        }
+    }
 }
 
 /// `args` attached to the workspace of `dir` (`--attach=DIRECTORY`): the
@@ -262,6 +307,8 @@ pub async fn configure_with(
         None => None,
     };
     Ok(AttachConfig {
+        address: None,
+        remote: None,
         start: StartAt::from_args(args),
         start_token,
         endpoint_files: {
@@ -348,30 +395,22 @@ pub async fn run(
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         return Err(TuiError::NotATerminal);
     }
-    let (args, layers) = match &target {
-        AttachTarget::Auto | AttachTarget::Existing => (args, layers),
-        AttachTarget::Directory(dir) => {
-            let args = directory_args(&args, dir)?;
-            let workspace = args.context_root.clone().unwrap_or_default();
-            // Before anything is written there: a directory no daemon
-            // serves is refused here, not after the UI opened.
-            if !crate::daemon::endpoint::candidates(&workspace)
-                .iter()
-                .any(|file| file.is_file())
-            {
-                return Err(TuiError::NoDaemonAt { workspace });
-            }
-            let layers = crate::bootstrap::read_layers(&args)?;
-            (args, layers)
+    if let AttachTarget::Directory(dir) = &target {
+        // Before anything is written there: a directory no daemon serves
+        // is refused here, not after the UI opened.
+        let workspace = directory_args(&args, dir)?.context_root.unwrap_or_default();
+        if !crate::daemon::endpoint::candidates(&workspace)
+            .iter()
+            .any(|file| file.is_file())
+        {
+            return Err(TuiError::NoDaemonAt { workspace });
         }
-        AttachTarget::Address(address) => {
-            return Err(TuiError::AttachAddress {
-                address: address.clone(),
-                reason: "not supported yet".to_string(),
-            });
-        }
-    };
-    let config = configure_with(layers, &args, target.mode()).await?;
+    }
+    let (args, layers, reached) = retarget(args, &target, Some(layers)).await?;
+    let mut config = configure_with(layers, &args, target.mode()).await?;
+    if let Some(reached) = reached {
+        reached.apply(&mut config);
+    }
     app::init_logging(&config.scope.realm_root())?;
     // Attach mode sends every event on the integrator channel (in order with
     // the turn messages); the agent channel stays idle.

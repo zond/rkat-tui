@@ -264,6 +264,7 @@ mod tests {
         let live = Listed {
             endpoint,
             found: Found::Live(Some(Status {
+                host: None,
                 workspace: "/w".into(),
                 pid: 9,
                 started_at: String::new(),

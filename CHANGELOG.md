@@ -6,6 +6,13 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Added
 
+- `--attach=HOST:PORT --attach-token-file <path>` attaches to a daemon
+  reached through a tunnel (the daemon still binds loopback only; the
+  manual has the `ssh -L` recipe). The token file is refused when others
+  can read it. `rkat/status` now names the daemon's host; when the
+  daemon's workspace is not on this machine, `!`, `@` mentions,
+  `/remember`, `/memory` and `/export` to a path say why they are off,
+  and everything else works.
 - `--attach=DIRECTORY` attaches to the running daemon of another
   workspace; `!`, `@` mentions, `/export`, `/remember`, `/memory` and the
   input history then use that workspace. The `--attach` value is `auto`,

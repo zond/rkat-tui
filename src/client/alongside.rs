@@ -113,7 +113,7 @@ impl LiveDaemon {
             return Err(format!("the daemon refused to stop: {err}"));
         }
         drop(connection);
-        if super::runner::daemon_ended(files, &self.endpoint, STOP_WAIT).await {
+        if super::runner::daemon_ended(files, &self.endpoint, true, STOP_WAIT).await {
             Ok(())
         } else {
             Err(format!(

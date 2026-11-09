@@ -3276,3 +3276,33 @@ polling): `daemon::serve::tests::the_client_is_counted_before_its_attach_is_ackn
 `attach_lifecycle::an_answered_attach_is_counted_for_every_other_connection_at_once`
 (seven attaches, each followed at once by another connection's
 `rkat/status`).
+
+### `--attach=HOST:PORT` with a token file
+
+The daemon keeps binding loopback (the token is the only access control
+and a non-loopback bind would expose it to the network); reaching one on
+another machine is the user's tunnel (`ssh -L`). `client::address::reach`
+reads `--attach-token-file` (refused when any "other" permission bit is
+set, `mode & 0o007`; the file may hold the token alone or be a copy of
+the endpoint file), resolves `HOST:PORT`, attaches as a probe and reads
+`rkat/status`. `Status` gained `host` (`nix::unistd::gethostname`, the
+`hostname` feature of `nix`; absent from older daemons). The workspace is
+local when the host names match and the directory exists here
+(`address::remote_reason`); then the client runs on it as a directory
+attach does. Otherwise it keeps its own scope (history, cost record,
+`/export`'s default place) and `AttachConfig::remote` holds the reason:
+the attach runner refuses `!` (as a failed shell run), `/remember`,
+`/memory` and `/export <path>` with it, and sends `@` mentions as typed
+with a notice. A daemon reached by address is always attached at that
+address (`AttachConfig::address`; reconnects retry it with backoff, never
+probe endpoint files nor start a daemon), `/daemon stop` sends
+`rkat/shutdown` instead of SIGTERM to a pid that may be another
+machine's, and `daemon_ended` ignores the pid for a remote daemon and
+takes no endpoint files as no evidence (it had counted an empty list as
+"every file gone"). Through a tunnel the local port may accept while the
+daemon is gone, so an unconfirmed shutdown there is reported as possibly
+still running. Tests:
+`attach::attach_by_address_with_a_token_file` (a test daemon on a
+loopback port reached by address: local case, then the refusals with
+`remote` set), `attach::attach_by_address_refuses_a_readable_or_missing_token_file`,
+`client::address::tests::*` (locality, token file modes and forms).

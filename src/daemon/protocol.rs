@@ -237,6 +237,12 @@ pub struct Attached {
 pub struct Status {
     /// The canonical workspace path the daemon serves.
     pub workspace: std::path::PathBuf,
+    /// The host name of the machine the daemon runs on (`None`: an older
+    /// daemon, or one that could not read it). A client reached through a
+    /// tunnel compares it with its own to tell whether the workspace is
+    /// on its machine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
     /// The daemon's process id.
     pub pid: u32,
     /// When it started, RFC 3339 in UTC.

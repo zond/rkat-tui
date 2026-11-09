@@ -137,8 +137,16 @@ pub struct AttachConfig {
     pub scope: RuntimeScope,
     /// The places of the daemon's endpoint file, in the order the daemon
     /// tries them (the state directory's, then the runtime directory's
-    /// fallback); never empty.
+    /// fallback); empty only for a daemon reached by address whose
+    /// workspace is not on this machine.
     pub endpoint_files: Vec<PathBuf>,
+    /// The daemon `--attach=HOST:PORT` reached: always attached here, never
+    /// found through the endpoint files nor started.
+    pub address: Option<Endpoint>,
+    /// Why the daemon's workspace is not on this machine (`--attach=
+    /// HOST:PORT` to another host): `!`, `@` mentions, `/remember`,
+    /// `/memory` and `/export` to a path are refused with it.
+    pub remote: Option<String>,
     /// The workspace's attach cursor.
     pub cursor: CursorFile,
     /// The realm config (context windows); `None`: unknown windows.
@@ -627,7 +635,23 @@ impl AttachRunner {
             .or_else(|| self.config.cursor.load());
         let ui_tx = self.ui_tx.clone();
         let start_token = self.config.start_token.clone();
-        let task = if std::mem::take(&mut self.first_connect) {
+        let task = if let Some(endpoint) = self.config.address.clone() {
+            // Reached by address: the same address again, with backoff.
+            let first = std::mem::take(&mut self.first_connect);
+            tokio::spawn(async move {
+                let mut wait = BACKOFF_FIRST;
+                loop {
+                    match establish(endpoint.clone(), saved.as_ref(), start_token.as_deref()).await
+                    {
+                        Ok(established) => return Ok(established),
+                        Err(err) if first => return Err(err),
+                        Err(err) => tracing::debug!(error = %err, "reconnect failed"),
+                    }
+                    tokio::time::sleep(wait).await;
+                    wait = (wait * 2).min(BACKOFF_MAX);
+                }
+            })
+        } else if std::mem::take(&mut self.first_connect) {
             let spawn = self.config.spawn.clone();
             tokio::spawn(async move {
                 let endpoint =
@@ -1511,6 +1535,39 @@ impl AttachRunner {
         });
     }
 
+    /// Whether `what` is refused because the daemon's workspace is not on
+    /// this machine (said with the reason when it is).
+    fn local_refused(&self, what: &str) -> bool {
+        let Some(why) = &self.config.remote else {
+            return false;
+        };
+        self.notice(
+            NoticeLevel::Warn,
+            format!("{what} edits the daemon's workspace, which is not on this machine: {why}"),
+        );
+        true
+    }
+
+    /// `text` with its `@` mentions expanded from the daemon's workspace;
+    /// as typed (and said why) when that workspace is not on this machine.
+    fn expand_mentions(&self, text: &str) -> String {
+        let Some(why) = &self.config.remote else {
+            return self.bench.expand_mentions(text);
+        };
+        let mentions = text
+            .split_whitespace()
+            .any(|word| word.len() > 1 && word.starts_with('@'));
+        if mentions {
+            self.notice(
+                NoticeLevel::Warn,
+                format!(
+                    "@ mentions were sent as typed, not expanded: the daemon's workspace is not on this machine ({why})"
+                ),
+            );
+        }
+        text.to_string()
+    }
+
     fn connection(&self) -> Option<Arc<Connection>> {
         self.link.as_ref().map(|link| Arc::clone(&link.connection))
     }
@@ -1524,14 +1581,23 @@ impl AttachRunner {
                 recalled: Vec::new(),
                 errors: vec![RECALL_UNAVAILABLE.to_string()],
             }),
-            Effect::RunShell { id, command } => {
-                self.bench.run_shell(id, command, self.linked());
-            }
+            Effect::RunShell { id, command } => match &self.config.remote {
+                Some(why) => self.send(Msg::ShellFinished {
+                    id,
+                    outcome: crate::ui::ShellOutcome::Failed(format!(
+                        "! commands run in the daemon's workspace, which is not on this machine: {why}"
+                    )),
+                }),
+                None => self.bench.run_shell(id, command, self.linked()),
+            },
             Effect::CancelShell => self.bench.cancel_shell(),
             Effect::SetModel(reference) => self.set_model(&reference),
             Effect::CompactNow => self.compact_now(),
             Effect::StatusReport => self.status_report(),
             Effect::ContextReport(header) => self.context_report(header),
+            Effect::Export { path: Some(_), .. } if self.local_refused("/export to a path") => {}
+            Effect::Remember(_) if self.local_refused("/remember") => {}
+            Effect::OpenMemory(_) if self.local_refused("/memory") => {}
             Effect::Export { path, text } => {
                 let session = self
                     .link
@@ -1781,7 +1847,7 @@ impl AttachRunner {
             active: true,
             ..Turn::default()
         };
-        let text = self.bench.expand_mentions(text);
+        let text = self.expand_mentions(text);
         let Err(failure) = bounded(CALL_TIMEOUT, remote::send(&connection, &text, false)).await
         else {
             return;
@@ -1807,7 +1873,7 @@ impl AttachRunner {
             });
             return;
         };
-        let text = self.bench.expand_mentions(text);
+        let text = self.expand_mentions(text);
         let result = match bounded(CALL_TIMEOUT, remote::send(&connection, &text, true)).await {
             Ok(()) => {
                 self.turn.steers.push_back(id);
@@ -2180,10 +2246,21 @@ impl AttachRunner {
         if let Some((provider, model)) = &self.model {
             lines.push(format!("model: {provider}/{model}"));
         }
-        lines.push(format!(
-            "workspace: {}",
-            self.config.scope.context_root.display()
-        ));
+        match (&self.config.remote, &self.config.address) {
+            (Some(why), _) => lines.push(format!(
+                "workspace: the daemon's, not on this machine ({why}); local files: {}",
+                self.config.scope.context_root.display()
+            )),
+            (None, address) => lines.push(format!(
+                "workspace: {}{}",
+                self.config.scope.context_root.display(),
+                if address.is_some() {
+                    " (daemon reached by address)"
+                } else {
+                    ""
+                }
+            )),
+        }
         let files: Vec<String> = self
             .config
             .endpoint_files
@@ -2201,6 +2278,33 @@ impl AttachRunner {
     /// `/daemon stop`: SIGTERM to the pid the endpoint file names, once the
     /// file still names the daemon this client is attached to.
     async fn daemon_stop(&mut self) {
+        if self.config.address.is_some() {
+            // Its pid may be another machine's: ask it.
+            let Some(connection) = self.connection() else {
+                self.notice(NoticeLevel::Warn, "not attached to the daemon");
+                return;
+            };
+            let asked = bounded(
+                LEAVE_TIMEOUT,
+                remote::local::<_, serde_json::Value>(
+                    &connection,
+                    protocol::SHUTDOWN,
+                    &serde_json::json!({}),
+                ),
+            )
+            .await;
+            match asked {
+                Ok(_) | Err(CallFailure::Failed(ClientError::Disconnected)) => {
+                    self.stopping = true;
+                    self.notice(NoticeLevel::Info, "asked the daemon to shut down");
+                }
+                Err(err) => self.notice(
+                    NoticeLevel::Warn,
+                    format!("the daemon was not stopped: {err}"),
+                ),
+            }
+            return;
+        }
         match self.sigterm_attached().await {
             Ok(pid) => self.notice(
                 NoticeLevel::Info,
@@ -2213,6 +2317,11 @@ impl AttachRunner {
     /// SIGTERM to the daemon this client is attached to (the endpoint
     /// file's pid, when its address is the attached one).
     async fn sigterm_attached(&mut self) -> Result<u32, String> {
+        if self.config.address.is_some() {
+            return Err(
+                "the daemon was reached by address: its pid may be another machine's, so it is not signalled; /daemon stop asks it to shut down".to_string(),
+            );
+        }
         let connected = self.link.as_ref().map(|link| link.endpoint.address);
         let liveness = launch::probe_any(&self.config.endpoint_files).await;
         let pid = stop_target(&liveness, connected)?;
@@ -2308,7 +2417,13 @@ impl AttachRunner {
                 tracing::info!(error = %err, "rkat/shutdown brought no answer; checking whether the daemon ended");
                 let ended = match &endpoint {
                     Some(endpoint) => {
-                        daemon_ended(&self.config.endpoint_files, endpoint, STOP_VERIFY).await
+                        daemon_ended(
+                            &self.config.endpoint_files,
+                            endpoint,
+                            self.config.remote.is_none(),
+                            STOP_VERIFY,
+                        )
+                        .await
                     }
                     None => false,
                 };
@@ -2382,12 +2497,19 @@ fn current<'a>(endpoint: Option<&'a str>, model: Option<&'a (String, String)>) -
 /// address is refused outright ([`Probe::Refused`]). A file that cannot
 /// be read or parsed is no evidence either way, and neither is a connect
 /// that timed out or failed otherwise ([`Probe::Unknown`]: a loaded host
-/// or a local socket error says nothing about the daemon).
-pub(crate) async fn daemon_ended(files: &[PathBuf], endpoint: &Endpoint, wait: Duration) -> bool {
+/// or a local socket error says nothing about the daemon). `local`: the
+/// pid is this machine's (a daemon reached by address on another host has
+/// no pid here to check). No files is no evidence.
+pub(crate) async fn daemon_ended(
+    files: &[PathBuf],
+    endpoint: &Endpoint,
+    local: bool,
+    wait: Duration,
+) -> bool {
     let deadline = Instant::now() + wait;
     loop {
         if no_file_names(files, &endpoint.token)
-            || crate::daemon::list::pid_gone(endpoint.pid)
+            || (local && crate::daemon::list::pid_gone(endpoint.pid))
             || probe_address(endpoint.address) == Probe::Refused
         {
             return true;
@@ -2402,11 +2524,12 @@ pub(crate) async fn daemon_ended(files: &[PathBuf], endpoint: &Endpoint, wait: D
 /// Whether every file of `files` is gone or names a daemon with another
 /// token (an unreadable or malformed file counts as possibly naming it).
 fn no_file_names(files: &[PathBuf], token: &str) -> bool {
-    files.iter().all(|file| match std::fs::metadata(file) {
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
-        Err(_) => false,
-        Ok(_) => Endpoint::read(file).is_ok_and(|now| now.token != token),
-    })
+    !files.is_empty()
+        && files.iter().all(|file| match std::fs::metadata(file) {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
+            Err(_) => false,
+            Ok(_) => Endpoint::read(file).is_ok_and(|now| now.token != token),
+        })
 }
 
 /// What a connect to a daemon's address says about it.
@@ -2877,6 +3000,8 @@ mod tests {
             cursor: CursorFile::of_workspace(&scope.context_root),
             config: None,
             spawn: None,
+            address: None,
+            remote: None,
             start: super::super::StartAt::Current,
             start_token: None,
             user_shell: Err("none".into()),

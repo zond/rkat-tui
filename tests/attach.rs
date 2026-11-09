@@ -580,6 +580,148 @@ async fn attach_to_a_directory_resolves_locally_against_its_workspace() {
     daemon.stop().await;
 }
 
+/// A token file for `endpoint`, mode 0600, in `dir`.
+#[cfg(unix)]
+fn token_file(dir: &std::path::Path, token: &str, mode: u32) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt as _;
+    let file = dir.join("daemon.token");
+    std::fs::write(&file, format!("{token}\n")).unwrap();
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(mode)).unwrap();
+    file
+}
+
+/// `--attach=HOST:PORT` with `--attach-token-file`: the client reaches
+/// the daemon by its address (as through a tunnel), presents the token
+/// and attaches; `rkat/status` names the workspace and host. On this
+/// machine the workspace is local and the client runs on it; when the
+/// daemon is elsewhere (`remote`), `!`, `@` mentions, `/remember`,
+/// `/memory` and `/export` to a path are refused with the reason, and
+/// prompts still work.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn attach_by_address_with_a_token_file() {
+    let served = Workspace::new();
+    let elsewhere = Workspace::new();
+    std::fs::write(served.root.join("a.txt"), "alpha-content\n").unwrap();
+    let llm = ScriptedLlmClient::new(vec![Step::Text("local"), Step::Text("remote")]);
+    let daemon = Running::start(&served.root, &llm).await;
+    let endpoint = daemon.endpoint();
+    let secrets = tempfile::tempdir().unwrap();
+    let token = token_file(secrets.path(), &endpoint.token, 0o600);
+    let at = format!("--attach={}", endpoint.address);
+    let args = common::args_with(
+        &elsewhere.root,
+        &[&at, "--attach-token-file", token.to_str().unwrap()],
+    );
+    let target = args.attach.clone().unwrap();
+    assert_eq!(target, AttachTarget::Address(endpoint.address.to_string()));
+    let mut config = rkat_tui::client::configure(&args, target.clone())
+        .await
+        .unwrap();
+    // Same host, workspace here: local, run on the daemon's workspace.
+    assert_eq!(config.remote, None);
+    assert_eq!(
+        config.scope.context_root,
+        std::fs::canonicalize(&served.root).unwrap()
+    );
+    assert_eq!(config.address.as_ref().unwrap().pid, std::process::id());
+    assert!(config.spawn.is_none());
+    config.lister = no_lists();
+    let mut client = Client {
+        harness: spawn_attach_runner(config),
+        seen: Vec::new(),
+    };
+    client.attached().await;
+    client.send(Effect::StartTurn("hello by address".into()));
+    assert_eq!(client.turn_finished().await.result.unwrap().text, "local");
+    client.quit().await;
+
+    // The daemon on another host: its workspace is not here.
+    let mut config = rkat_tui::client::configure(&args, target).await.unwrap();
+    config.remote = Some("the daemon runs on devbox".into());
+    config.endpoint_files.clear();
+    config.lister = no_lists();
+    let mut client = Client {
+        harness: spawn_attach_runner(config),
+        seen: Vec::new(),
+    };
+    client.attached().await;
+    client.send(Effect::RunShell {
+        id: rkat_tui::ui::ShellRunId(1),
+        command: "pwd".into(),
+    });
+    let refused = client
+        .wait_for(|msg| matches!(msg, Msg::ShellFinished { .. }))
+        .await;
+    assert!(
+        matches!(&refused, Msg::ShellFinished { outcome: rkat_tui::ui::ShellOutcome::Failed(why), .. } if why.contains("runs on devbox")),
+        "{refused:?}"
+    );
+    client.send(Effect::Remember("a note".into()));
+    client
+        .wait_for(|m| matches!(m, Msg::Notice { text, .. } if text.starts_with("/remember") && text.contains("devbox")))
+        .await;
+    client.send(Effect::Export {
+        path: Some("out.txt".into()),
+        text: "x".into(),
+    });
+    client
+        .wait_for(
+            |m| matches!(m, Msg::Notice { text, .. } if text.starts_with("/export to a path")),
+        )
+        .await;
+    client.send(Effect::StartTurn("look at @a.txt".into()));
+    assert_eq!(client.turn_finished().await.result.unwrap().text, "remote");
+    assert!(client.notices().contains("@ mentions were sent as typed"));
+    let request = format!("{:?}", llm.requests()[1]);
+    assert!(request.contains("@a.txt") && !request.contains("alpha-content"));
+    client.quit().await;
+    daemon.stop().await;
+}
+
+/// The token file must be private, and given.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn attach_by_address_refuses_a_readable_or_missing_token_file() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let endpoint = daemon.endpoint();
+    let secrets = tempfile::tempdir().unwrap();
+    let token = token_file(secrets.path(), &endpoint.token, 0o644);
+    let at = format!("--attach={}", endpoint.address);
+    let args = common::args_with(
+        &ws.root,
+        &[&at, "--attach-token-file", token.to_str().unwrap()],
+    );
+    let refused = rkat_tui::client::configure(&args, args.attach.clone().unwrap())
+        .await
+        .unwrap_err();
+    assert!(refused.to_string().contains("chmod 600"), "{refused}");
+    let args = common::args_with(&ws.root, &[&at]);
+    let refused = rkat_tui::client::configure(&args, args.attach.clone().unwrap())
+        .await
+        .unwrap_err();
+    assert!(
+        refused.to_string().contains("needs --attach-token-file"),
+        "{refused}"
+    );
+    // A wrong token: no daemon answers with it.
+    let wrong = token_file(secrets.path(), "0000", 0o600);
+    let args = common::args_with(
+        &ws.root,
+        &[&at, "--attach-token-file", wrong.to_str().unwrap()],
+    );
+    let refused = rkat_tui::client::configure(&args, args.attach.clone().unwrap())
+        .await
+        .unwrap_err();
+    assert!(
+        refused.to_string().contains("no daemon answered"),
+        "{refused}"
+    );
+    daemon.stop().await;
+}
+
 #[test]
 fn attach_mode_is_the_default_and_a_users_tui_toml_can_turn_it_off() {
     use rkat_tui::bootstrap::{attach_mode as of_layers, read_layers};

@@ -234,6 +234,7 @@ impl Local {
     async fn status(&self, caller: Caller) -> Status {
         Status {
             workspace: self.lifecycle.workspace().to_path_buf(),
+            host: crate::client::address::local_host(),
             pid: std::process::id(),
             started_at: self.lifecycle.started_at().to_string(),
             clients: self.lifecycle.clients(),

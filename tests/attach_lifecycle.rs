@@ -279,6 +279,7 @@ async fn the_owner_hanging_up_keeps_the_daemon() {
 #[test]
 fn the_quit_decision_follows_the_rules() {
     let status = |clients, detached, owner, running| Status {
+        host: None,
         workspace: "/w".into(),
         pid: 1,
         started_at: String::new(),

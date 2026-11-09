@@ -976,6 +976,7 @@ the in-process runner is removed.
 | (none), `--attach`, `--attach=auto` | Attach to the workspace's daemon; start it when none answers |
 | `--attach=existing` | Attach only to a running daemon; refuse otherwise |
 | `--attach=DIRECTORY` | Attach to the running daemon of the workspace at or above `DIRECTORY` (never starts one; replaces `-w`) |
+| `--attach=HOST:PORT` | Attach to a daemon reached at that address (a tunnel), with `--attach-token-file` |
 | `--no-attach` | Host the agent in this process (overrides `--attach`) |
 | `--list` | List every daemon that has an endpoint file, then exit (also `rkat-tui-mob --list`) |
 
@@ -1004,6 +1005,35 @@ refuses before the TUI opens. Everything this TUI does locally then
 happens in the daemon's workspace, not the directory you started in: `!`
 commands run there, `@` mentions resolve there, `/export`, `/remember` and
 `/memory` write there, and the input history is that workspace's.
+
+**Attaching through a tunnel.** The daemon only ever listens on
+loopback. To use one on another machine, forward a local port to it and
+bring its token along:
+
+```bash
+# on the remote host: the daemon's address and token are in its endpoint file
+rkat-tui --list                      # workspace, 127.0.0.1:DAEMON_PORT, pid, …
+# on this machine
+ssh -N -L 127.0.0.1:4100:127.0.0.1:DAEMON_PORT host &
+scp host:.local/state/rkat-tui/<key>/mob.endpoint ~/.rkat/devbox.token
+chmod 600 ~/.rkat/devbox.token
+rkat-tui --attach=127.0.0.1:4100 --attach-token-file ~/.rkat/devbox.token
+```
+
+The token file holds the token alone or is a copy of the daemon's
+endpoint file (`$XDG_STATE_HOME/rkat-tui/<key>/mob.endpoint`, see "Finding
+the daemon"; `<key>` is the one `--list` shows the file under). It is
+refused when other users can read it: the token is the whole access
+control. Before the TUI opens rkat-tui attaches as a probe and reads the
+daemon's status, which names its workspace and host. When that host is
+this machine and the workspace exists here, the TUI runs on that
+workspace as `--attach=DIRECTORY` does. Otherwise the features that read
+or write local files are refused with the reason: `!` commands, `@`
+mentions (sent as typed), `/remember`, `/memory` and `/export` to a path
+(`/export` alone writes into this machine's own workspace state). Prompts,
+approvals, modes, rules, `/model`, `/new`, `/resume`, `/cost`, `/context`
+and the pickers work as usual. `/daemon stop` asks such a daemon to shut
+down instead of signalling a pid that may be another machine's.
 
 The value needs `=`: `rkat-tui --attach "fix the test"` attaches and sends
 the prompt.
