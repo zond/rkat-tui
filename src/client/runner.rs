@@ -1341,11 +1341,7 @@ impl AttachRunner {
                     .await;
             }
             Effect::SaveUnsent(held) => self.bench.hold_unsent(held),
-            Effect::Quit
-            | Effect::SetChecklistView(_)
-            | Effect::Redraw
-            | Effect::Suspend
-            | Effect::ExternalEditor(_) => {}
+            Effect::Quit | Effect::SetChecklistView(_) => {}
         }
     }
 

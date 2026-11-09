@@ -307,7 +307,7 @@ pub struct QueuedCopy {
     pub truncated: bool,
 }
 
-/// What the user's external editor opens ([`Effect::ExternalEditor`]).
+/// What the user's external editor opens ([`LocalEffect::ExternalEditor`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EditorTarget {
     /// An instruction file (`/memory`), edited in place.
@@ -462,7 +462,7 @@ pub enum Msg {
         /// Its path.
         path: std::path::PathBuf,
     },
-    /// The UI loop's answer to [`Effect::ExternalEditor`].
+    /// The UI loop's answer to [`LocalEffect::ExternalEditor`].
     EditorClosed(EditorClosed),
     /// The runner's answer to [`Effect::RunShell`] (or to
     /// [`Effect::CancelShell`]).
@@ -638,17 +638,31 @@ pub enum Effect {
         /// Its path.
         path: std::path::PathBuf,
     },
-    /// Run the user's editor on `target` (leaving TUI mode around it). The
-    /// UI loop answers it itself ([`Msg::EditorClosed`]); it never reaches
-    /// the integrator.
+}
+
+/// What the UI loop ([`run_ui`]) does itself after an update; none of it
+/// reaches the integrator. Drained with [`App::take_local`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalEffect {
+    /// A line was submitted with Enter (a prompt or a slash command, as
+    /// typed; never blank): append it to the prompt histories.
+    Submitted(String),
+    /// Put this text on the system clipboard (OSC 52, after the next
+    /// frame); the loop reports how it went as a notice
+    /// ([`selection::copy_notice`]).
+    Copy(QueuedCopy),
+    /// Run the user's editor on `target` (leaving TUI mode around it); the
+    /// loop answers with [`Msg::EditorClosed`].
     ExternalEditor(EditorTarget),
     /// Ctrl-Z: give the terminal back and stop the process (SIGTSTP); on
-    /// `fg`, take the terminal again and repaint. The UI loop answers it
-    /// itself; it never reaches the integrator. A no-op off Unix.
+    /// `fg`, take the terminal again and repaint. A no-op off Unix.
     Suspend,
-    /// Ctrl-L: clear the terminal and repaint everything. The UI loop
-    /// answers it itself; it never reaches the integrator.
+    /// Ctrl-L: clear the terminal and repaint everything.
     Redraw,
+    /// Ring the terminal bell (after the next frame).
+    Bell,
+    /// The state changed: draw a frame.
+    Draw,
 }
 
 /// Everything the status bar shows.
@@ -992,6 +1006,10 @@ pub struct App {
     last_down: Option<LastDown>,
     /// Text to put on the system clipboard (drained by the runtime).
     clipboard: Option<QueuedCopy>,
+    /// The loop's own effects queued in order ([`LocalEffect::ExternalEditor`],
+    /// [`LocalEffect::Suspend`], [`LocalEffect::Redraw`]); the others are
+    /// kept in their own fields and coalesced.
+    local: Vec<LocalEffect>,
     /// The helper header selected in the helper panel (Ctrl+Up/Down; Enter
     /// on an empty input opens its full view).
     panel_selected: Option<BlockId>,
@@ -1080,6 +1098,7 @@ impl App {
             press: None,
             last_down: None,
             clipboard: None,
+            local: Vec::new(),
             panel_selected: None,
             helper_view: None,
             recalling: false,
@@ -1154,7 +1173,8 @@ impl App {
         self
     }
 
-    /// Whether a bell is due; clears it. The UI loop writes BEL when so.
+    /// Whether a bell is due; clears it.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn take_bell(&mut self) -> bool {
         std::mem::take(&mut self.ring)
     }
@@ -1396,8 +1416,8 @@ impl App {
     }
 
     /// Lines submitted with Enter (prompts and slash commands, as typed) since the
-    /// last call, oldest first. The integrator appends them to the persistent
-    /// [`History`]; blank submissions are never recorded.
+    /// last call, oldest first; blank submissions are never recorded.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn take_submitted(&mut self) -> Vec<String> {
         std::mem::take(&mut self.submitted)
     }
@@ -1529,9 +1549,8 @@ impl App {
         self.selection.as_ref()
     }
 
-    /// The copy queued since the last call. The runtime writes it with OSC 52
-    /// after the next frame and reports the outcome as a notice
-    /// ([`selection::copy_notice`]).
+    /// The copy queued since the last call.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn take_clipboard(&mut self) -> Option<QueuedCopy> {
         self.clipboard.take()
     }
@@ -1763,8 +1782,28 @@ impl App {
     }
 
     /// Return and reset the redraw flag.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn take_dirty(&mut self) -> bool {
         std::mem::take(&mut self.dirty)
+    }
+
+    /// Everything the UI loop has to do itself since the last call, in the
+    /// order it should: the submitted lines, the copy, the queued
+    /// editor/suspend/repaint requests, then the bell and a frame when due.
+    pub fn take_local(&mut self) -> Vec<LocalEffect> {
+        let mut out: Vec<LocalEffect> = std::mem::take(&mut self.submitted)
+            .into_iter()
+            .map(LocalEffect::Submitted)
+            .collect();
+        out.extend(self.clipboard.take().map(LocalEffect::Copy));
+        out.append(&mut self.local);
+        if std::mem::take(&mut self.ring) {
+            out.push(LocalEffect::Bell);
+        }
+        if std::mem::take(&mut self.dirty) {
+            out.push(LocalEffect::Draw);
+        }
+        out
     }
 
     /// Process one message. Pure: no I/O, only state changes and returned effects.
@@ -2004,10 +2043,11 @@ impl App {
             }
             Msg::CompactRequested(result) => self.compact_requested(result),
             Msg::EditFile { target, path } => {
-                fx.push(Effect::ExternalEditor(EditorTarget::Memory {
-                    target,
-                    path,
-                }));
+                self.local
+                    .push(LocalEffect::ExternalEditor(EditorTarget::Memory {
+                        target,
+                        path,
+                    }));
             }
             Msg::EditorClosed(closed) => self.editor_closed(closed, &mut fx),
             Msg::ShellFinished { id, outcome } => self.shell_finished(id, outcome, now, &mut fx),
@@ -2178,7 +2218,7 @@ impl App {
                 }
                 KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     self.last_ctrl_c = None;
-                    self.edit_draft_externally(fx);
+                    self.edit_draft_externally();
                     return;
                 }
                 // Anything else cancels the chord and is processed normally.
@@ -2255,9 +2295,9 @@ impl App {
                     );
                 }
             }
-            Action::Redraw => fx.push(Effect::Redraw),
-            Action::Suspend => fx.push(Effect::Suspend),
-            Action::ExternalEditor => self.edit_draft_externally(fx),
+            Action::Redraw => self.local.push(LocalEffect::Redraw),
+            Action::Suspend => self.local.push(LocalEffect::Suspend),
+            Action::ExternalEditor => self.edit_draft_externally(),
             // The draft stays in the editor behind the picker.
             Action::ModelPicker => {
                 self.run_command(Command::Model(ModelCommand::Pick), now, fx);
@@ -2296,10 +2336,11 @@ impl App {
     /// send the editor contents next (plain interrupt when the editor is empty).
     /// Ctrl-G, Ctrl-X Ctrl-E: open the draft in the user's editor (idle or
     /// running: it only edits the input).
-    fn edit_draft_externally(&mut self, fx: &mut Vec<Effect>) {
-        fx.push(Effect::ExternalEditor(EditorTarget::Draft(
-            self.input.text(),
-        )));
+    fn edit_draft_externally(&mut self) {
+        self.local
+            .push(LocalEffect::ExternalEditor(EditorTarget::Draft(
+                self.input.text(),
+            )));
     }
 
     fn interrupt_and_send(&mut self, now: Instant, fx: &mut Vec<Effect>) {
@@ -6476,14 +6517,54 @@ mod tests {
         assert_eq!(app.modal, None);
     }
 
+    /// The loop's own requests among [`App::take_local`] (frames, bells,
+    /// history lines and copies left out).
+    fn loop_requests(app: &mut App) -> Vec<LocalEffect> {
+        app.take_local()
+            .into_iter()
+            .filter(|l| {
+                matches!(
+                    l,
+                    LocalEffect::ExternalEditor(_) | LocalEffect::Suspend | LocalEffect::Redraw
+                )
+            })
+            .collect()
+    }
+
     #[test]
     fn ctrl_z_requests_a_suspend() {
         let mut app = App::new(StatusInfo::default());
         type_str(&mut app, "draft");
-        assert_eq!(app.update(ctrl('z')), vec![Effect::Suspend]);
+        assert!(app.update(ctrl('z')).is_empty());
+        assert_eq!(loop_requests(&mut app), vec![LocalEffect::Suspend]);
         assert_eq!(app.input.text(), "draft");
         let mut running = running_app();
-        assert_eq!(running.update(ctrl('z')), vec![Effect::Suspend]);
+        assert!(running.update(ctrl('z')).is_empty());
+        assert_eq!(loop_requests(&mut running), vec![LocalEffect::Suspend]);
+    }
+
+    /// One drain carries everything the loop does itself, in order, and
+    /// leaves nothing behind.
+    #[test]
+    fn take_local_drains_every_loop_effect_once() {
+        let mut app = App::new(StatusInfo::default()).with_bell(true);
+        assert_eq!(app.take_local(), vec![LocalEffect::Draw]);
+        assert!(app.take_local().is_empty());
+        submit(&mut app, "hi");
+        app.update(Msg::Focus(false));
+        app.update(finished(Ok(summary()), &[]));
+        app.update(ctrl('l'));
+        let local = app.take_local();
+        assert_eq!(
+            local,
+            vec![
+                LocalEffect::Submitted("hi".into()),
+                LocalEffect::Redraw,
+                LocalEffect::Bell,
+                LocalEffect::Draw,
+            ]
+        );
+        assert!(app.take_local().is_empty());
     }
 
     #[test]
@@ -6491,15 +6572,21 @@ mod tests {
         let mut app = App::new(StatusInfo::default());
         let t0 = Instant::now();
         type_str(&mut app, "draft");
+        assert!(app.update_at(ctrl('g'), t0).is_empty());
         assert_eq!(
-            app.update_at(ctrl('g'), t0),
-            vec![Effect::ExternalEditor(EditorTarget::Draft("draft".into()))]
+            loop_requests(&mut app),
+            vec![LocalEffect::ExternalEditor(EditorTarget::Draft(
+                "draft".into()
+            ))]
         );
         assert_eq!(app.input.text(), "draft");
         assert!(app.update_at(ctrl('x'), t0).is_empty());
+        assert!(app.update_at(ctrl('e'), t0).is_empty());
         assert_eq!(
-            app.update_at(ctrl('e'), t0),
-            vec![Effect::ExternalEditor(EditorTarget::Draft("draft".into()))]
+            loop_requests(&mut app),
+            vec![LocalEffect::ExternalEditor(EditorTarget::Draft(
+                "draft".into()
+            ))]
         );
         assert!(app.chord.is_none());
         // Bare Ctrl-E still goes to the line end.
@@ -6507,9 +6594,12 @@ mod tests {
         // While a turn runs too: it only edits the input.
         let mut running = running_app();
         type_str(&mut running, "steer");
+        assert!(running.update(ctrl('g')).is_empty());
         assert_eq!(
-            running.update(ctrl('g')),
-            vec![Effect::ExternalEditor(EditorTarget::Draft("steer".into()))]
+            loop_requests(&mut running),
+            vec![LocalEffect::ExternalEditor(EditorTarget::Draft(
+                "steer".into()
+            ))]
         );
     }
 
@@ -6558,12 +6648,16 @@ mod tests {
         );
         let path = std::path::PathBuf::from("/c/SYSTEM.md");
         let target = MemoryTarget::System;
-        assert_eq!(
+        assert!(
             app.update(Msg::EditFile {
                 target,
                 path: path.clone()
-            }),
-            vec![Effect::ExternalEditor(EditorTarget::Memory {
+            })
+            .is_empty()
+        );
+        assert_eq!(
+            loop_requests(&mut app),
+            vec![LocalEffect::ExternalEditor(EditorTarget::Memory {
                 target,
                 path: path.clone()
             })]
@@ -6600,7 +6694,8 @@ mod tests {
     fn ctrl_l_requests_a_redraw() {
         let mut app = App::new(StatusInfo::default());
         type_str(&mut app, "kept");
-        assert_eq!(app.update(ctrl('l')), vec![Effect::Redraw]);
+        assert!(app.update(ctrl('l')).is_empty());
+        assert_eq!(loop_requests(&mut app), vec![LocalEffect::Redraw]);
         assert_eq!(app.input.text(), "kept");
     }
 

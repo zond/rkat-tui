@@ -729,9 +729,6 @@ impl Runner {
             }
             Effect::TrustRealmRules => self.trust_realm_rules(),
             Effect::TrustProject => self.trust_project().await,
-            // The UI loop repaints the terminal and suspends itself.
-            // The UI loop runs these itself.
-            Effect::Redraw | Effect::Suspend | Effect::ExternalEditor(_) => {}
             Effect::OpenMemory(target) => self.bench.open_memory(target),
             Effect::MemoryEdited { target, path } => {
                 self.bench.memory_edited(target, &path, &self.session).await;

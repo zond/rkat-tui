@@ -28,7 +28,7 @@ use tokio::sync::mpsc;
 use super::editor::{edit_draft, editor_from_env, run_editor};
 use super::render::draw;
 use super::selection::{copy_notice, osc52};
-use super::{App, EditorClosed, EditorTarget, Effect, History, Msg, QueuedCopy};
+use super::{App, EditorClosed, EditorTarget, Effect, History, LocalEffect, Msg, QueuedCopy};
 
 /// Render tick interval (~30 fps).
 pub const TICK: Duration = Duration::from_millis(33);
@@ -127,16 +127,21 @@ fn enter_tui_mode(mouse: bool) -> io::Result<()> {
     Ok(())
 }
 
-/// What the loop does itself after applying a batch (effects that never
-/// reach the integrator).
+/// What the loop still has to do, collected from the [`LocalEffect`]s of
+/// the updates since it last acted (copies and history lines are handled
+/// as they arrive).
 #[derive(Debug, Default)]
 struct LocalEffects {
+    /// The state changed: draw a frame.
+    draw: bool,
     /// Ctrl-L: a full repaint.
     redraw: bool,
     /// Ctrl-Z: suspend to the shell.
     suspend: bool,
     /// `/memory`, Ctrl-G: run the user's editor.
     editor: Option<EditorTarget>,
+    /// Ring the bell after the next frame.
+    bell: bool,
 }
 
 /// Leave TUI mode, run `job` with the terminal in cooked mode, then come
@@ -306,10 +311,10 @@ pub async fn run_ui(
     let mut tick = tokio::time::interval(TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    // Ctrl-L asked for a full repaint ([`Effect::Redraw`]), Ctrl-Z for a
-    // suspend ([`Effect::Suspend`]; a no-op off Unix).
+    // What the updates asked the loop itself to do ([`LocalEffect`]).
     let mut local = LocalEffects::default();
     loop {
+        absorb(&mut app, &mut histories, &mut copies, &mut local);
         if std::mem::take(&mut local.suspend) {
             #[cfg(unix)]
             outside_tui(&mut terminal, &mut events, mouse, async { stop_self() }).await?;
@@ -333,11 +338,11 @@ pub async fn run_ui(
         if std::mem::take(&mut local.redraw) {
             terminal.clear()?;
             terminal.draw(|frame| draw(frame, &mut app))?;
-            app.take_dirty();
-        } else if app.take_dirty() {
+            local.draw = false;
+        } else if std::mem::take(&mut local.draw) {
             terminal.draw(|frame| draw(frame, &mut app))?;
         }
-        if app.take_bell() {
+        if std::mem::take(&mut local.bell) {
             ring_bell(terminal.backend_mut())?;
         }
         for copy in copies.drain(..) {
@@ -399,10 +404,8 @@ fn write_clipboard(text: &str, tmux: bool, out: &mut impl Write) -> io::Result<(
     out.flush()
 }
 
-/// Apply one message, queue its copy, record submitted lines and forward
-/// the effects; [`Effect::Redraw`], [`Effect::Suspend`] and
-/// [`Effect::ExternalEditor`] stay here (in `local`). Returns whether the
-/// user quit.
+/// Apply one message, take what it asks of the loop ([`absorb`]) and
+/// forward its effects to the integrator. Returns whether the user quit.
 fn apply(
     app: &mut App,
     msg: Msg,
@@ -412,34 +415,8 @@ fn apply(
     local: &mut LocalEffects,
 ) -> Result<bool, UiError> {
     let effects_now = app.update(msg);
-    copies.extend(app.take_clipboard());
-    for entry in app.take_submitted() {
-        for history in histories.iter_mut() {
-            if let Err(err) = history.append(&entry) {
-                tracing::warn!(
-                    error = %err,
-                    path = %history.path().display(),
-                    "could not append to input history"
-                );
-            }
-        }
-    }
+    absorb(app, histories, copies, local);
     for effect in effects_now {
-        match effect {
-            Effect::Redraw => {
-                local.redraw = true;
-                continue;
-            }
-            Effect::Suspend => {
-                local.suspend = true;
-                continue;
-            }
-            Effect::ExternalEditor(target) => {
-                local.editor = Some(target);
-                continue;
-            }
-            _ => {}
-        }
         let quit = effect == Effect::Quit;
         if effects.send(effect).is_err() && !quit {
             return Err(UiError::EffectChannelClosed);
@@ -449,6 +426,38 @@ fn apply(
         }
     }
     Ok(false)
+}
+
+/// Drain the app's [`LocalEffect`]s: append submitted lines to every
+/// history, queue copies (written after the next frame), and note the rest
+/// in `local` for the loop.
+fn absorb(
+    app: &mut App,
+    histories: &mut [History],
+    copies: &mut Vec<QueuedCopy>,
+    local: &mut LocalEffects,
+) {
+    for effect in app.take_local() {
+        match effect {
+            LocalEffect::Submitted(entry) => {
+                for history in histories.iter_mut() {
+                    if let Err(err) = history.append(&entry) {
+                        tracing::warn!(
+                            error = %err,
+                            path = %history.path().display(),
+                            "could not append to input history"
+                        );
+                    }
+                }
+            }
+            LocalEffect::Copy(copy) => copies.push(copy),
+            LocalEffect::ExternalEditor(target) => local.editor = Some(target),
+            LocalEffect::Suspend => local.suspend = true,
+            LocalEffect::Redraw => local.redraw = true,
+            LocalEffect::Bell => local.bell = true,
+            LocalEffect::Draw => local.draw = true,
+        }
+    }
 }
 
 #[cfg(test)]
