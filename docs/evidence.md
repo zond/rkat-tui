@@ -3614,6 +3614,14 @@ and listed here.
   could read (`DaemonError::EndpointExposed`), as it should. A start-up
   refusal is `DaemonError::Bootstrap` around the same typed
   `TuiError::Confinement` (`Attached::try_start_with`).
+- `tests/attach.rs`: `both_runners_build_the_same_app_for_the_same_config`
+  lost its purpose with one runner (it compared the in-process setup with
+  the client's); it is now `the_client_builds_its_app_from_the_config`,
+  asserting that the `[ui]`, `[auto]` and confinement settings reach the
+  client's setup and its app. `attach_mode_recalls_and_searches_the_shared_input_history`
+  compared the history files with an in-process bootstrap's; it compares
+  them with the scope `bootstrap::read_layers` resolves (the daemon's own
+  resolution), assertions otherwise kept.
 
 ### The daemon's stop waits for the realm's databases to close
 

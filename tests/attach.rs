@@ -939,13 +939,13 @@ async fn attach_mode_prices_the_cost_readout_and_names_an_unconfined_shell() {
     within(harness.task).await.unwrap();
 }
 
-/// The finding this guards: the two runners built their UI from two copies
-/// of the start-up code, which drifted. Both now go through
-/// `workbench::build_app`, each reading its `AppSetup` its own way (the
-/// runtime in process, the `tui.toml` layers in attach mode); for the same
-/// configuration the setups, and so the UIs, are the same.
+/// The client builds its UI from the configuration it read at start
+/// (`client::app_setup` over the `tui.toml` layers, then
+/// `workbench::build_app`): the `[ui]` and `[auto]` settings and the `!`
+/// shell's confinement reach the app. (Until P4 this compared the setup
+/// with the in-process runner's, which drifted from it once.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn both_runners_build_the_same_app_for_the_same_config() {
+async fn the_client_builds_its_app_from_the_config() {
     let ws = Workspace::new();
     let args = common::args_with(
         &ws.root,
@@ -958,37 +958,24 @@ async fn both_runners_build_the_same_app_for_the_same_config() {
             "auto.compact=\"warn\"",
             "--set",
             "auto.compact_warn_percent=60",
-            // Below the warning: both clamp it up to 60.
+            // Below the warning: clamped up to 60.
             "--set",
             "auto.compact_auto_percent=50",
         ],
     );
-    let llm = ScriptedLlmClient::new(vec![]);
-    let mut runtime = rkat_tui::bootstrap::bootstrap(&args, Running::bootstrap(&llm))
-        .await
-        .unwrap();
-    let in_process = rkat_tui::runner::app_setup(&runtime);
-    runtime.release_realm_lease().await;
     let config = rkat_tui::client::configure(&args, AttachTarget::Existing)
         .await
         .unwrap();
-    let attach = rkat_tui::client::app_setup(&config);
-    assert_eq!(in_process, attach);
-    assert!(!attach.ui.bell);
+    let setup = rkat_tui::client::app_setup(&config);
+    assert!(!setup.ui.bell);
     assert_eq!(
-        (
-            attach.compaction.warn_percent,
-            attach.compaction.auto_percent
-        ),
+        (setup.compaction.warn_percent, setup.compaction.auto_percent),
         (60, 60)
     );
-    assert!(!attach.shell_confined, "the rig runs --no-confinement");
-    let (a, b) = (
-        build_app(&in_process, StatusInfo::default(), &[], &[]),
-        build_app(&attach, StatusInfo::default(), &[], &[]),
-    );
-    assert_eq!(a.compaction_policy(), b.compaction_policy());
-    assert_eq!(a.shell_mode_hint(), b.shell_mode_hint());
+    assert!(!setup.shell_confined, "the rig runs --no-confinement");
+    let app = build_app(&setup, StatusInfo::default(), &[], &[]);
+    assert_eq!(app.compaction_policy(), setup.compaction);
+    assert!(app.shell_mode_hint().contains("unconfined"));
 }
 
 /// The finding this guards: attach mode dropped the messages the UI still
@@ -1043,9 +1030,9 @@ async fn attach_mode_runs_on_the_layers_read_at_start() {
 }
 
 /// ↑/↓ recall and Ctrl+R search in attach mode: the attach runner's UI
-/// loads the same history files as the in-process one (the realm's and the
-/// user's), a line submitted in one is appended to them, and the next start
-/// of either recalls it.
+/// loads the history files of the workspace's realm and of the user (the
+/// scope the daemon resolves too), a line submitted is appended to them,
+/// and the next start recalls it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn attach_mode_recalls_and_searches_the_shared_input_history() {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -1053,20 +1040,16 @@ async fn attach_mode_recalls_and_searches_the_shared_input_history() {
 
     let ws = Workspace::new();
     let args = args_for(&ws.root);
-    let llm = ScriptedLlmClient::new(vec![]);
-    let mut runtime = rkat_tui::bootstrap::bootstrap(&args, Running::bootstrap(&llm))
-        .await
-        .unwrap();
-    let (in_process, in_process_global) = load_histories(&runtime.scope);
-    runtime.release_realm_lease().await;
+    let layers = rkat_tui::bootstrap::read_layers(&args).unwrap();
+    let (resolved, resolved_global) = load_histories(&layers.scope);
     let config = rkat_tui::client::configure(&args, AttachTarget::Existing)
         .await
         .unwrap();
     let (mut history, mut global) = load_histories(&config.scope);
-    assert_eq!(history.path(), in_process.path());
+    assert_eq!(history.path(), resolved.path());
     assert_eq!(
         global.as_ref().map(|g| g.path().to_path_buf()),
-        in_process_global.map(|g| g.path().to_path_buf())
+        resolved_global.map(|g| g.path().to_path_buf())
     );
     // What the UI loop does with a submitted line: append it to each.
     let submit = |line: &str,
