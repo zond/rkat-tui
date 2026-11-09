@@ -334,6 +334,7 @@ impl ApprovalEngine {
 
     /// The escalation ledger, when one is kept.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn ledger(&self) -> Option<&EscalationLedger> {
         self.ledger.as_ref()
     }
@@ -360,6 +361,7 @@ impl ApprovalEngine {
 
     /// Rendered approval transcript for a session (diagnostics and tests).
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn transcript(&self, session_id: &SessionId) -> Option<String> {
         self.sessions
             .lock()
@@ -653,6 +655,7 @@ impl ApprovalEngine {
     }
 
     /// Decide one tool call of `session_id`'s own agent.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn decide(&self, session_id: &SessionId, call: ToolCall<'_>) -> Verdict {
         self.decide_as(Caller::session(session_id), call).await
     }
@@ -727,6 +730,7 @@ impl ApprovalEngine {
 
     /// Project files the agent of `session_id` was allowed to write, oldest
     /// first (a borrowed view; empty for an unknown session).
+    #[cfg(any(test, feature = "test-support"))]
     pub fn agent_written(&self, session_id: &SessionId) -> MappedMutexGuard<'_, [String]> {
         MutexGuard::map(self.sessions.lock(), |sessions| {
             match sessions.get_mut(session_id) {

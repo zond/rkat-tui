@@ -38,31 +38,26 @@ use ratatui::crossterm::event::{
 use ratatui::layout::Rect;
 use ratatui::text::Line;
 
-pub use commands::{
-    AutoCommand, Command, CommandError, CompactCommand, HelperTarget, HelpersCommand, MemoryTarget, ModelCommand,
-    RuleEffect, RulesCommand,
-};
-pub use compaction::{
-    COMPACT_NOW, CompactFailure, CompactMode, CompactionGauge, CompactionPolicy, CompactionTrigger,
-};
-pub use cost::{CostConfidence, CostReadout, SessionCost, SessionCostSnapshot, UsageTotals};
+pub use commands::{AutoCommand, Command, CompactCommand, HelperTarget, HelpersCommand, MemoryTarget, ModelCommand, RuleEffect, RulesCommand};
+pub use compaction::{COMPACT_NOW, CompactFailure, CompactionGauge, CompactionPolicy, CompactionTrigger};
+pub use cost::{SessionCost, SessionCostSnapshot};
 pub use delivery::{Pending, PendingQueue, PendingState};
-pub use checklist::{Checklist, ChecklistItem, ChecklistView, ItemState};
+pub use checklist::{Checklist, ChecklistView};
+#[cfg(any(test, feature = "test-support"))]
+pub use checklist::{ChecklistItem, ItemState};
+#[cfg(any(test, feature = "test-support"))]
+pub use compaction::CompactMode;
+#[cfg(any(test, feature = "test-support"))]
+pub use cost::{CostConfidence, CostReadout, UsageTotals};
 pub use history::History;
 pub use input::{InputEditor, StashOutcome};
 pub use keymap::{Action, EditAction};
-pub use modal::{
-    EscalationAnswer, EscalationDialog, EscalationId, EscalationPrompt, Modal, ModelPicker,
-    PLAN_CHOICES, PlanChoice, PlanDialog, ResumePicker,
-};
+pub use modal::{EscalationAnswer, EscalationDialog, EscalationId, EscalationPrompt, Modal, ModelPicker, PlanChoice, PlanDialog, ResumePicker};
 pub use rewind::{RewindKey, RewindMenu, RewindPoint, Rewound};
-pub use runtime::{TerminalGuard, UiChannels, UiError, install_panic_hook, run_ui};
+pub use runtime::{UiChannels, UiError, run_ui};
 pub use search::{HistorySearch, SearchOutcome};
 pub use selection::{CellPos, SelectMode, Selection};
-pub use transcript::{
-    Block, BlockId, DiffView, HelperFold, HelperLast, HelperState, HelperView, NoticeLevel,
-    QueuedLabel, ShellState, ToolState, Transcript,
-};
+pub use transcript::{Block, BlockId, DiffView, HelperView, NoticeLevel, QueuedLabel, ShellState, ToolState, Transcript};
 
 /// The transcript placeholder of a held item: the message, or `$ <cmd>`
 /// for a `!` command.
@@ -306,8 +301,8 @@ pub enum Msg {
     Key(KeyEvent),
     /// Bracketed paste.
     Paste(String),
-    /// Terminal resized to `(columns, rows)`.
-    Resize(u16, u16),
+    /// Terminal resized (the next draw lays out for the new size).
+    Resize,
     /// Mouse event (only when mouse capture is enabled).
     Mouse(MouseEvent),
     /// Primary agent stream event.
@@ -1297,6 +1292,7 @@ impl App {
     }
 
     /// The context-compaction policy in effect.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn compaction_policy(&self) -> CompactionPolicy {
         self.gauge.policy()
     }
@@ -1378,6 +1374,7 @@ impl App {
     }
 
     /// Escalations waiting behind the open modal.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn pending_escalations(&self) -> usize {
         self.pending_escalations.len()
     }
@@ -1461,6 +1458,7 @@ impl App {
     }
 
     /// The text of [`Self::take_clipboard`].
+    #[cfg(any(test, feature = "test-support"))]
     pub fn take_clipboard_text(&mut self) -> Option<String> {
         self.take_clipboard().map(|copy| copy.text)
     }
@@ -1731,7 +1729,7 @@ impl App {
                     }
                 }
             }
-            Msg::Resize(..) => {
+            Msg::Resize => {
                 // Logical lines change with the width.
                 self.clear_selection();
                 self.transcript.invalidate_all();
@@ -7135,7 +7133,7 @@ mod tests {
         assert_eq!(app.helper_panel(), vec![fork, scout]);
         assert!(matches!(
             app.transcript.block(scout),
-            Some(Block::Helper(fold)) if fold.state == HelperState::Done
+            Some(Block::Helper(fold)) if fold.state == transcript::HelperState::Done
         ));
         // The next turn starts: the finished helper drops off, the running
         // one stays; the inline header stays in the transcript.

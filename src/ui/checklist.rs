@@ -111,12 +111,14 @@ impl Checklist {
 
     /// A checklist of exactly `items`, in this order.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn from_items(items: Vec<ChecklistItem>) -> Self {
         Self { items }
     }
 
     /// Every item, newest-updated last.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn items(&self) -> &[ChecklistItem] {
         &self.items
     }

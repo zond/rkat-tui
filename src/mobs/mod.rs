@@ -58,7 +58,7 @@ use tokio::sync::mpsc;
 
 pub use registry::{HelperStatus, HelperTag, HelperUpdate};
 #[cfg(feature = "mob")]
-pub use registry::{HelperKey, HelperRegistry, Owner, OwnerError};
+pub use registry::{HelperKey, HelperRegistry};
 
 #[cfg(feature = "mob")]
 use meerkat_mob_mcp::MobMcpState;
@@ -285,6 +285,7 @@ impl Helpers {
 
     /// Drop `session`'s helper bookkeeping (it closed). Idempotent; the
     /// approval engine's forget hook calls it too.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn forget_session(&self, session: &SessionId) {
         self.registry.forget_session(session);
     }
@@ -316,6 +317,7 @@ impl Helpers {
     }
 
     /// Without the `mob` feature there is nothing to forget.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn forget_session(&self, _session: &SessionId) {}
 
     /// Without the `mob` feature no helper runs.

@@ -1058,6 +1058,7 @@ const CARGO_INFO: &[&str] = &["--version", "-V", "--list"];
 /// # Errors
 ///
 /// Returns [`NotAllowlisted`] with a reason when any segment fails.
+#[cfg(any(test, feature = "test-support"))]
 pub fn allowlisted(command: &str, ctx: &PolicyContext<'_>) -> Result<(), NotAllowlisted> {
     allowlisted_in(command, None, ctx)
 }

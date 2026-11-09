@@ -36,6 +36,7 @@ pub enum PermissionMode {
 
 impl PermissionMode {
     /// Every mode, in `Shift+Tab` order.
+    #[cfg(any(test, feature = "test-support"))]
     pub const ALL: [Self; 4] = [Self::Manual, Self::AcceptEdits, Self::Plan, Self::Auto];
 
     /// The mode `Shift+Tab` switches to: manual → accept edits → plan →

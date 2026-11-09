@@ -149,6 +149,7 @@ impl EscalationBroker {
     }
 
     /// Acquire the serial lock and ask the human.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn ask(&self, prompt: EscalationPrompt) -> HumanDecision {
         let guard = self.serial().await;
         self.ask_locked(&guard, prompt).await

@@ -77,6 +77,7 @@ impl ToolOrigin {
 
     /// A tool of an MCP server.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn mcp(server: &str) -> Self {
         Self {
             provenance: Some(ToolProvenance::new(ToolSourceKind::Mcp, server)),
@@ -152,6 +153,7 @@ impl ToolCatalog {
 
     /// Add or replace one tool.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn with(mut self, name: impl Into<String>, origin: ToolOrigin) -> Self {
         self.tools.insert(name.into(), origin);
         self
@@ -166,6 +168,7 @@ impl ToolCatalog {
     /// The engine-native tools of this catalog
     /// ([`ToolFamily::Native`]).
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn natives(&self) -> Self {
         Self {
             tools: self
@@ -189,12 +192,14 @@ impl ToolCatalog {
 
     /// Number of tools.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn len(&self) -> usize {
         self.tools.len()
     }
 
     /// Whether the catalog is empty.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn is_empty(&self) -> bool {
         self.tools.is_empty()
     }
@@ -249,9 +254,11 @@ impl ToolOrigins for ServiceToolOrigins {
 /// [`ToolOrigins`] that always answers with one fixed catalog (tests and
 /// embedders whose tool set is static).
 #[derive(Debug, Clone, Default)]
+#[cfg(any(test, feature = "test-support"))]
 pub struct StaticToolOrigins(pub ToolCatalog);
 
 #[async_trait]
+#[cfg(any(test, feature = "test-support"))]
 impl ToolOrigins for StaticToolOrigins {
     async fn catalog(&self, _session_id: &SessionId) -> Option<ToolCatalog> {
         Some(self.0.clone())

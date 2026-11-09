@@ -237,6 +237,7 @@ pub struct HelperBindings {
 impl HelperBindings {
     /// Bindings kept in memory only (tests, and hosts without a realm).
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn in_memory() -> Self {
         Self {
             store: None,
@@ -421,6 +422,7 @@ impl HelperBindings {
 
     /// Bindings held in memory (tests and diagnostics): mobs, members.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn in_memory_counts(&self) -> (usize, usize) {
         let memory = self.memory.lock();
         (memory.mobs.len(), memory.members.len())

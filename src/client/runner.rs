@@ -154,6 +154,7 @@ impl std::fmt::Debug for AttachConfig {
 impl AttachConfig {
     /// The attach mode the config stands for.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn mode(&self) -> AttachMode {
         if self.spawn.is_some() {
             AttachMode::Auto

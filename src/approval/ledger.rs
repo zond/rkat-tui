@@ -143,6 +143,7 @@ impl EscalationLedger {
 
     /// A ledger kept in memory only (tests, or a realm without a directory).
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn in_memory() -> Self {
         Self {
             service: ApprovalService::new(),
@@ -154,6 +155,7 @@ impl EscalationLedger {
     /// # Errors
     ///
     /// [`LedgerError`] when the service refuses the request.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn request(&self, entry: EscalationEntry<'_>) -> Result<ApprovalId, LedgerError> {
         self.submit(Self::prepare(entry)?)
     }
@@ -271,12 +273,14 @@ impl EscalationLedger {
     /// # Errors
     ///
     /// [`LedgerError`] when it is unknown or the store cannot be read.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn get(&self, id: &ApprovalId) -> Result<ApprovalRecord, LedgerError> {
         Ok(self.service.get(id)?)
     }
 
     /// The approval service the ledger records through.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn service(&self) -> &ApprovalService {
         &self.service
     }
@@ -286,6 +290,7 @@ impl EscalationLedger {
     /// # Errors
     ///
     /// [`LedgerError`] when the store cannot be read.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn records(&self) -> Result<Vec<ApprovalRecord>, LedgerError> {
         let mut records = self.service.list(ApprovalListFilter::default())?;
         records.sort_by_key(|record| record.created_at);

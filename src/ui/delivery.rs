@@ -98,11 +98,13 @@ impl PendingQueue {
 
     /// The most recently allocated id (`PendingId(0)` before the first).
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn last_id(&self) -> PendingId {
         PendingId(self.next_id)
     }
 
     /// Every item the queue holds, queued first then settled.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn all(&self) -> impl Iterator<Item = &Pending> {
         self.items.iter().chain(self.settled.iter())
     }
@@ -164,6 +166,7 @@ impl PendingQueue {
 
     /// Number of items in `state`-matching states.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn count(&self, pred: impl Fn(PendingState) -> bool) -> usize {
         self.items.iter().filter(|p| pred(p.state)).count()
     }

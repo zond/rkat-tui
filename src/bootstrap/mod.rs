@@ -134,6 +134,7 @@ impl ModelChoice {
 
     /// The choice as an `endpoint:model` reference.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn reference(&self) -> EndpointRef {
         EndpointRef::new(self.endpoint.as_str(), self.model.clone())
     }
@@ -143,8 +144,6 @@ impl ModelChoice {
 pub struct Runtime {
     /// Project, conventions roots and realm.
     pub scope: RuntimeScope,
-    /// Realm config with env overrides applied, as loaded at start-up.
-    pub config: Config,
     /// The realm document the factory reads on every build (see
     /// [`realm_config`]); endpoints and profiles are written into it.
     pub realm_config: Arc<RealmConfigStore>,
@@ -193,8 +192,6 @@ pub struct Runtime {
     /// The workspace files that make the host run something, and their
     /// trust (see [`project_trust`]).
     pub project_inputs: project_trust::ProjectInputs,
-    /// Whether sessions get native semantic memory (`memory_search`).
-    pub memory: bool,
     /// The engine's task store (see [`tasks_db`]), which the Ctrl+T
     /// checklist reads.
     pub tasks_db: PathBuf,
@@ -371,6 +368,7 @@ pub async fn prepare(args: &Args) -> Result<(RuntimeScope, Config), TuiError> {
 /// # Errors
 ///
 /// See [`prepare`] and [`bootstrap_with`].
+#[cfg(any(test, feature = "test-support"))]
 pub async fn bootstrap(args: &Args, options: BootstrapOptions) -> Result<Runtime, TuiError> {
     let (scope, config) = prepare(args).await?;
     bootstrap_with(scope, config, args, options).await
@@ -395,7 +393,6 @@ pub async fn bootstrap_with(
     let wait_for_mcp = args.wait_for_mcp;
     let Assembled {
         scope,
-        config,
         realm_config,
         effective,
         choice,
@@ -412,7 +409,7 @@ pub async fn bootstrap_with(
         approval,
         mcp_servers,
         project_inputs,
-        memory,
+        memory: _,
         tasks_db,
         ui,
         helper_max_depth: helper_depth,
@@ -462,7 +459,6 @@ pub async fn bootstrap_with(
     let scope_global = scope.global.clone();
     Ok(Runtime {
         scope,
-        config,
         realm_config,
         effective,
         profile_generation: Arc::new(AtomicU64::new(0)),
@@ -486,7 +482,6 @@ pub async fn bootstrap_with(
         },
         mcp_servers,
         project_inputs,
-        memory,
         tasks_db,
         ui,
         helper_max_depth: helper_depth,
@@ -504,8 +499,6 @@ pub async fn bootstrap_with(
 pub struct Assembled {
     /// Project, conventions roots and realm.
     pub scope: RuntimeScope,
-    /// Realm config with env overrides applied, as loaded at start-up.
-    pub config: Config,
     /// The realm document the factory reads on every build.
     pub realm_config: Arc<RealmConfigStore>,
     /// The effective config at start-up.
@@ -739,7 +732,6 @@ pub async fn assemble(
     notices.extend(mcp.notices);
     Ok(Assembled {
         scope,
-        config,
         realm_config,
         effective,
         choice,

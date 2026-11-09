@@ -197,6 +197,7 @@ impl Principal {
 
     /// The approver id every decision of the daemon is held for.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn approver_id(&self) -> &ApproverId {
         &self.approver_id
     }
@@ -351,12 +352,14 @@ impl Decisions {
 
     /// The decision owner.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn service(&self) -> &DurableDecisionService {
         &self.service
     }
 
     /// The daemon's principal.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn principal(&self) -> &Principal {
         &self.principal
     }
@@ -424,6 +427,7 @@ impl Decisions {
 
     /// How many clients are attached.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn clients(&self) -> usize {
         self.clients.lock().len()
     }

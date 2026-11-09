@@ -149,6 +149,7 @@ impl HostTrustRecord {
 
     /// Where the record is stored, if anywhere.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn record_path(&self) -> Option<&Path> {
         self.path.as_deref()
     }

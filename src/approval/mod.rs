@@ -52,12 +52,11 @@ use counters::PauseCause;
 use meerkat_core::{SessionId, Usage};
 use policy::{Decider, Tier, VerdictSummary};
 use rules::{Rule, RuleId, RulesError};
-use serde::Serialize;
 use std::fmt;
 
 pub use admission::ApprovalGate;
-pub use catalog::{ServiceToolOrigins, ToolCatalog, ToolOrigin, ToolOrigins};
-pub use engine::{ApprovalConfig, ApprovalEngine, Caller, ToolCall};
+pub use catalog::{ServiceToolOrigins, ToolOrigins};
+pub use engine::{ApprovalConfig, ApprovalEngine};
 pub use transcript::InputKey;
 
 /// Typed code of the tool error a denial returns to the model
@@ -172,6 +171,7 @@ impl DenyReason {
 
     /// The rule that decided (user rule id or classifier block-rule id), if any.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn rule_label(&self) -> Option<String> {
         match self {
             Self::UserRule { id, .. } => Some(id.to_string()),
@@ -211,41 +211,6 @@ impl fmt::Display for DenyReason {
             }
         }
     }
-}
-
-/// Serializes as the constant `"auto-mode"`: the `policy` tag of [`DenyPayload`].
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct AutoModePolicy;
-
-impl AutoModePolicy {
-    /// The serialized tag.
-    pub const TAG: &'static str = "auto-mode";
-}
-
-impl Serialize for AutoModePolicy {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(Self::TAG)
-    }
-}
-
-/// Typed summary of a denial, for logs and diagnostics.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct DenyPayload {
-    /// Always serialized as `"auto-mode"`.
-    pub policy: AutoModePolicy,
-    /// Tool-use id of the denied call (lets a UI match the denial to its tool block).
-    pub tool_use_id: String,
-    /// Tool name.
-    pub tool: String,
-    /// Tier the action fell into.
-    pub tier: Tier,
-    /// Rule id (user rule or classifier block rule), if any.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rule: Option<String>,
-    /// Consecutive classifier blocks.
-    pub consecutive: u32,
-    /// Total classifier blocks.
-    pub total: u32,
 }
 
 /// Model-facing denial message.
@@ -328,7 +293,6 @@ pub enum ApprovalError {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
     fn deny_message_wording() {
@@ -340,30 +304,6 @@ mod tests {
             "Blocked by auto-mode safety policy: force push rewrites shared history [D2]. Do not try"
         ));
         assert!(msg.ends_with("or stop and ask the user."));
-    }
-
-    #[test]
-    fn payload_serializes_snake_case_tier() {
-        let payload = DenyPayload {
-            policy: AutoModePolicy,
-            tool_use_id: "call_1".to_string(),
-            tool: "shell".to_string(),
-            tier: Tier::Classifier,
-            rule: None,
-            consecutive: 1,
-            total: 2,
-        };
-        assert_eq!(
-            serde_json::to_value(payload).unwrap(),
-            json!({
-                "policy": "auto-mode",
-                "tool_use_id": "call_1",
-                "tool": "shell",
-                "tier": "classifier",
-                "consecutive": 1,
-                "total": 2
-            })
-        );
     }
 
     #[test]

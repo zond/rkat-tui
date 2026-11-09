@@ -124,6 +124,7 @@ impl ConfigOverlay {
 
     /// The merged document.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn table(&self) -> &Table {
         &self.table
     }

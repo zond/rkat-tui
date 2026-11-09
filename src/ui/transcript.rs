@@ -523,6 +523,7 @@ impl Transcript {
 
     /// The helper headers on screen (not inside a folded helper), in
     /// transcript order.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn visible_helper_headers(&self) -> impl Iterator<Item = BlockId> + '_ {
         self.helper_headers()
             .map(|(id, _)| id)
@@ -538,6 +539,7 @@ impl Transcript {
     }
 
     /// Whether the transcript has any helper header.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn has_helpers(&self) -> bool {
         self.helper_count > 0
     }
@@ -882,6 +884,7 @@ impl Transcript {
     }
 
     /// Whether the transcript has no blocks.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn is_empty(&self) -> bool {
         self.blocks.is_empty()
     }
@@ -1075,6 +1078,7 @@ impl Transcript {
 
     /// Toggle collapse on the most recent reasoning block on screen.
     /// Returns whether one existed.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn toggle_last_reasoning(&mut self) -> bool {
         self.toggle_last_reasoning_in(None)
     }
@@ -1082,6 +1086,7 @@ impl Transcript {
     /// Toggle collapse on the most recent reasoning block of the transcript
     /// on screen (`None`) or of the full view of the helper `scope`.
     /// Returns whether one existed.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn toggle_last_reasoning_in(&mut self, scope: Option<BlockId>) -> bool {
         let Some(id) = self
             .scoped_blocks_rev(scope)
@@ -1161,12 +1166,14 @@ impl Transcript {
     }
 
     /// The most recent tool block on screen with output to show or hide.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn last_tool_with_output(&self) -> Option<BlockId> {
         self.last_tool_with_output_in(None)
     }
 
     /// The most recent tool block with output of the transcript on screen
     /// (`None`) or of the full view of the helper `scope`.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn last_tool_with_output_in(&self, scope: Option<BlockId>) -> Option<BlockId> {
         self.scoped_blocks_rev(scope)
             .into_iter()
@@ -1288,6 +1295,7 @@ impl Transcript {
 
     /// Apply a primary-agent event. Returns the usage of a completed LLM turn, if any
     /// (a turn the provider sent no accounting for returns `None`).
+    #[cfg(any(test, feature = "test-support"))]
     pub fn apply_agent_event(&mut self, event: &AgentEvent) -> Option<TurnUsage> {
         self.apply_agent_event_at(event, Instant::now())
     }
@@ -1439,6 +1447,7 @@ impl Transcript {
 
     /// Apply a scoped (sub-agent) event. Primary-scope events are ignored because they
     /// already arrive on the primary channel.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn apply_scoped_event(&mut self, scoped: &ScopedAgentEvent) {
         self.apply_scoped_event_at(scoped, Instant::now());
     }

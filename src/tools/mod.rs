@@ -25,8 +25,8 @@ mod write;
 
 pub use diff::FileDiff;
 pub(crate) use glob::mention_walker;
-pub use grep::OutputMode;
-pub use read_only::{READ_ONLY_TOOL_NAMES, ReadOnlyProjectTools};
+
+pub use read_only::{ReadOnlyProjectTools};
 
 use crate::paths::{PathError, ProjectRoot, ResolvedPath};
 use async_trait::async_trait;
@@ -70,6 +70,7 @@ pub const GLOB: &str = "glob";
 pub const GREP: &str = "grep";
 
 /// Names of every tool exposed by [`FileToolDispatcher`].
+#[cfg(any(test, feature = "test-support"))]
 pub const FILE_TOOL_NAMES: &[&str] = &[READ_FILE, WRITE_FILE, EDIT_FILE, GLOB, GREP];
 
 /// Number of leading bytes inspected for a NUL byte when detecting binary files.
@@ -438,6 +439,7 @@ impl FileToolDispatcher {
     /// session are recorded and checked as `session`'s. A context that names
     /// a session still wins.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn for_session(
         root: ProjectRoot,
         diff_tx: Option<mpsc::UnboundedSender<FileDiff>>,

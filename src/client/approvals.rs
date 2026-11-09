@@ -64,6 +64,7 @@ pub struct Approvals {
 impl Approvals {
     /// Whether a dialog is open.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn is_empty(&self) -> bool {
         self.decisions.is_empty()
     }

@@ -40,15 +40,16 @@
 
 /// Declare the internal modules: crate-private, public with the
 /// `test-support` feature (the crate's integration tests). Without it, an
-/// item or re-export only the tests use is dead code to the binary, which
-/// is expected; the all-features lint lanes still check every item.
+/// item or re-export nothing in the binaries uses is dead code, which the
+/// default-features clippy lane (`cargo clippy --lib --bins`) refuses: an
+/// item only tests use is declared under
+/// `#[cfg(any(test, feature = "test-support"))]` (see `docs/testing.md`).
 macro_rules! internal_modules {
     ($($name:ident),* $(,)?) => {
         $(
             #[cfg(feature = "test-support")]
             pub mod $name;
             #[cfg(not(feature = "test-support"))]
-            #[allow(dead_code, unused_imports)]
             pub(crate) mod $name;
         )*
     };
@@ -59,15 +60,23 @@ internal_modules!(
     models, overlay, paths, pricing, runner, session, thinking, tools, ui, user_shell,
 );
 
-/// `rkat-tui-mob`: the workspace's mob daemon (experimental). Not a
-/// stable API.
-#[cfg(feature = "mob")]
+/// `rkat-tui-mob`: the workspace's mob daemon (experimental). Internal
+/// like the modules above; its binary enters through [`run_daemon`].
+#[cfg(all(feature = "mob", feature = "test-support"))]
 pub mod daemon;
+#[cfg(all(feature = "mob", not(feature = "test-support")))]
+pub(crate) mod daemon;
 
 /// Attach mode (experimental): the TUI as a client of the workspace's
-/// `rkat-tui-mob` daemon. Not a stable API.
-#[cfg(feature = "mob")]
+/// `rkat-tui-mob` daemon. Internal like the modules above.
+#[cfg(all(feature = "mob", feature = "test-support"))]
 pub mod client;
+#[cfg(all(feature = "mob", not(feature = "test-support")))]
+pub(crate) mod client;
+
+/// The `rkat-tui-mob` daemon's command line and entry point.
+#[cfg(feature = "mob")]
+pub use daemon::{DaemonCli, run as run_daemon};
 
 /// The headless runner the integration tests drive (see
 /// `runner::testing`). Not a stable API.

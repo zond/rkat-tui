@@ -2,7 +2,7 @@
 //! daemon, serving Meerkat's JSON-RPC methods over loopback TCP.
 
 use clap::Parser;
-use rkat_tui::daemon::{DaemonCli, run};
+use rkat_tui::{DaemonCli, run_daemon};
 use std::process::ExitCode;
 
 const BINARY_NAME: &str = "rkat-tui-mob";
@@ -14,7 +14,7 @@ fn main() -> ExitCode {
     let _ = unsafe { meerkat_sqlite::disable_memory_statistics_at_process_start() };
     let cli = DaemonCli::parse();
     match meerkat_runtime::host_stack::run_host(BINARY_NAME, || async move {
-        match run(cli).await {
+        match run_daemon(cli).await {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => {
                 eprintln!("{BINARY_NAME}: {err}");

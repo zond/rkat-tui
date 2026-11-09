@@ -179,6 +179,7 @@ impl Connection {
 
     /// The daemon's address.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn address(&self) -> SocketAddr {
         self.address
     }

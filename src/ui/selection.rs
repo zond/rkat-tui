@@ -197,6 +197,7 @@ impl Selection {
     }
 
     /// Whether the cell at (`line`, `col`) is selected.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn contains(&self, line: usize, col: usize) -> bool {
         let (start, end) = self.range();
         let pos = CellPos::new(line, col);
@@ -212,6 +213,7 @@ impl Selection {
     }
 
     /// The selected text; `lines[i]` is logical line `i`.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn extract(&self, lines: &[Line<'_>]) -> String {
         self.extract_window(0, lines)
     }

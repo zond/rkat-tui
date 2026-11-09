@@ -859,6 +859,7 @@ pub fn describe(mode: ConfinementArg) -> &'static str {
 ///
 /// [`ConfinementError`] when the requirement is invalid (a relative
 /// workspace root).
+#[cfg(any(test, feature = "test-support"))]
 pub fn lower(
     mode: ConfinementArg,
     workspace: &Path,

@@ -52,7 +52,7 @@ use parking_lot::{Mutex, RwLock};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::approval::admission::denial_error;
-use crate::approval::catalog::{ToolCatalog, ToolOrigin, ToolOrigins};
+use crate::approval::catalog::{ToolCatalog, ToolOrigins};
 use crate::approval::escalation::{EscalationRequest, HumanDecision};
 use crate::approval::remote::answered;
 use crate::approval::{ApprovalEngine, ApprovalGate, DenyReason};
@@ -209,6 +209,7 @@ impl Desk {
 
     /// How many escalations wait for a decision.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn waiting(&self) -> usize {
         self.waiting.lock().len()
     }
@@ -367,7 +368,12 @@ impl DaemonToolOrigins {
 
     /// The origin of `name` for `session` (diagnostics and tests).
     #[must_use]
-    pub fn origin(&self, session: &SessionId, name: &str) -> Option<ToolOrigin> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn origin(
+        &self,
+        session: &SessionId,
+        name: &str,
+    ) -> Option<crate::approval::catalog::ToolOrigin> {
         match self.cache.read().get(session) {
             Some(catalog) => catalog.get(name).cloned(),
             None => self.known.read().get(name).cloned(),

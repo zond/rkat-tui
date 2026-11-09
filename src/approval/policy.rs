@@ -160,6 +160,7 @@ pub const READ_ONLY_BUILTINS: &[&str] = &[
 /// generation, comms sends, councils and objective conclusions. The
 /// mutating `mob_*` tools need review too (any `mob_*` not in
 /// [`READ_ONLY_BUILTINS`]).
+#[cfg(any(test, feature = "test-support"))]
 pub const REVIEWED_BUILTINS: &[&str] = &[
     "shell",
     "shell_job_cancel",
@@ -456,6 +457,7 @@ impl TierDecision {
 }
 
 /// Classify an action into a tier.
+#[cfg(any(test, feature = "test-support"))]
 pub fn classify_tier(
     action: &Action<'_>,
     rules: &RuleSet,

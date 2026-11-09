@@ -41,6 +41,7 @@ const RESERVED_SLUG: &str = "memory";
 /// Workspace notes directory, relative to the workspace root.
 pub const WORKSPACE_NOTES_REL: &str = ".rkat/tui/notes";
 /// User notes directory, relative to the config directory.
+#[cfg(any(test, feature = "test-support"))]
 pub const USER_NOTES_REL: &str = "notes";
 /// Label heading the untrusted notes section of the system prompt.
 pub const UNTRUSTED_INDEX_LABEL: &str =
@@ -172,12 +173,14 @@ impl NoteStore {
     /// The workspace notes store, `<workspace>/.rkat/tui/notes`, trusting only
     /// `workspace` itself.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn workspace(workspace: PathBuf) -> Self {
         Self::open_in(workspace, Path::new(WORKSPACE_NOTES_REL), Scope::Workspace)
     }
 
     /// The user notes store, `<config>/notes`, trusting the config directory.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn user(config_dir: PathBuf) -> Self {
         Self::open_in(config_dir, Path::new(USER_NOTES_REL), Scope::User)
     }
@@ -216,6 +219,7 @@ impl NoteStore {
 
     /// The trusted base directory (not checked for symlinks).
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn trusted_root(&self) -> &Path {
         &self.root
     }
@@ -230,6 +234,7 @@ impl NoteStore {
     /// prompt section (see [`prompt_index`]), or `None` when it holds no
     /// notes or cannot be listed.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn render_untrusted_index(&self) -> Option<String> {
         render_untrusted(&[self])
     }

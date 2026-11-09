@@ -18,7 +18,9 @@ use meerkat_core::{AgentEvent, ScopedAgentEvent, SessionId, StreamScopeFrame};
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "mob")]
-pub use owned::{HelperKey, HelperRegistry, Owner, OwnerError};
+pub use owned::{HelperKey, HelperRegistry, Owner};
+#[cfg(all(feature = "mob", any(test, feature = "test-support")))]
+pub use owned::OwnerError;
 
 /// What a helper is and whom it works for.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -199,6 +201,7 @@ mod owned {
         /// An empty registry, its bindings in memory only, and the receiver
         /// of its updates.
         #[must_use]
+        #[cfg(any(test, feature = "test-support"))]
         pub fn new() -> (Self, mpsc::UnboundedReceiver<HelperUpdate>) {
             Self::with_bindings(HelperBindings::in_memory())
         }
@@ -228,6 +231,7 @@ mod owned {
 
         /// The persisted bindings (tests and diagnostics).
         #[must_use]
+        #[cfg(any(test, feature = "test-support"))]
         pub fn bindings(&self) -> &HelperBindings {
             &self.bindings
         }

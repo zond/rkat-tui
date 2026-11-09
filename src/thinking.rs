@@ -236,23 +236,33 @@ pub fn params_for(thinking: Option<&AnthropicThinkingConfig>) -> Option<Provider
     })
 }
 
+/// What a resumed session's build does with its persisted provider params
+/// ([`reapplied`]).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Reapplied {
+    /// They already carry the configured thinking: the build keeps them.
+    Keep,
+    /// The build carries these instead (`None`: nothing is left).
+    Replace(Option<ProviderParamsOverride>),
+}
+
 /// The provider params a resumed session's build must carry so that its
-/// thinking is `thinking`, starting from the `persisted` ones: `None` when
-/// they already say so (the build keeps the persisted params), else the
-/// persisted params with only the Anthropic tag's `thinking` replaced
-/// (`Some(None)`: nothing is left). Whatever else they hold stays.
+/// thinking is `thinking`, starting from the `persisted` ones:
+/// [`Reapplied::Keep`] when they already say so, else the persisted params
+/// with only the Anthropic tag's `thinking` replaced. Whatever else they
+/// hold stays.
 #[must_use]
 pub fn reapplied(
     persisted: Option<&ProviderParamsOverride>,
     thinking: Option<&AnthropicThinkingConfig>,
-) -> Option<Option<ProviderParamsOverride>> {
+) -> Reapplied {
     let current = persisted
         .and_then(|params| match &params.provider_tag {
             Some(ProviderTag::Anthropic(tag)) => tag.thinking.as_ref(),
             _ => None,
         });
     if current == thinking {
-        return None;
+        return Reapplied::Keep;
     }
     let mut params = persisted.cloned().unwrap_or_default();
     let mut tag = match params.provider_tag.take() {
@@ -261,7 +271,7 @@ pub fn reapplied(
         // beside the thinking; nothing else may be lost.
         Some(other) if thinking.is_none() => {
             params.provider_tag = Some(other);
-            return Some((!params.is_empty()).then_some(params));
+            return Reapplied::Replace((!params.is_empty()).then_some(params));
         }
         _ => AnthropicProviderTag::default(),
     };
@@ -269,7 +279,7 @@ pub fn reapplied(
     if tag != AnthropicProviderTag::default() {
         params.provider_tag = Some(ProviderTag::Anthropic(tag));
     }
-    Some((!params.is_empty()).then_some(params))
+    Reapplied::Replace((!params.is_empty()).then_some(params))
 }
 
 #[cfg(test)]
@@ -491,14 +501,23 @@ mod tests {
     fn a_resume_replaces_only_the_thinking() {
         let adaptive = AnthropicThinkingConfig::Adaptive;
         // Nothing persisted, nothing configured: the build keeps it.
-        assert_eq!(reapplied(None, None), None);
+        assert_eq!(reapplied(None, None), Reapplied::Keep);
         // Already what the config says.
         let persisted = params_for(Some(&adaptive));
-        assert_eq!(reapplied(persisted.as_ref(), Some(&adaptive)), None);
+        assert_eq!(
+            reapplied(persisted.as_ref(), Some(&adaptive)),
+            Reapplied::Keep
+        );
         // Newly configured.
-        assert_eq!(reapplied(None, Some(&adaptive)), Some(persisted.clone()));
+        assert_eq!(
+            reapplied(None, Some(&adaptive)),
+            Reapplied::Replace(persisted.clone())
+        );
         // No longer configured: nothing is left.
-        assert_eq!(reapplied(persisted.as_ref(), None), Some(None));
+        assert_eq!(
+            reapplied(persisted.as_ref(), None),
+            Reapplied::Replace(None)
+        );
         // Other knobs stay.
         let mut rich = persisted.unwrap();
         rich.temperature = Some(0.5);
@@ -506,7 +525,7 @@ mod tests {
             tag.top_k = Some(5);
         }
         let budget = AnthropicThinkingConfig::Enabled { budget_tokens: 2048 };
-        let Some(Some(next)) = reapplied(Some(&rich), Some(&budget)) else {
+        let Reapplied::Replace(Some(next)) = reapplied(Some(&rich), Some(&budget)) else {
             panic!("a change");
         };
         assert_eq!(next.temperature, Some(0.5));

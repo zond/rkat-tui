@@ -71,9 +71,6 @@ use meerkat_core::{
 };
 
 use crate::approval::rules::{EndpointSection, LayeredEndpoint, Notice, RuleOrigin};
-/// The per-session cost record moved to [`crate::runner::cost_store`];
-/// re-exported here for existing callers.
-pub use crate::runner::cost_store::load_cost;
 use crate::bootstrap::credentials::{ProviderCredentials, resolve_builtin};
 use crate::models::ModelEntry;
 
@@ -271,6 +268,7 @@ impl Endpoint {
 
     /// `anthropic dialect` or `openai dialect, http://localhost:4000`.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn describe(&self) -> String {
         describe_endpoint(self.dialect, self.base_url.as_deref())
     }
@@ -513,6 +511,7 @@ impl ModelIndex {
 
     /// Whether nothing is indexed.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn is_empty(&self) -> bool {
         self.listed.is_empty()
     }
@@ -631,6 +630,7 @@ impl EndpointRegistry {
     /// A registry over exactly these endpoints (tests, or a caller that
     /// resolved them itself).
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn from_endpoints(endpoints: Vec<Endpoint>) -> Self {
         Self { endpoints }
     }

@@ -181,6 +181,7 @@ impl WrapLayout {
     }
 
     /// Always false: a layout has at least one row.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn is_empty(&self) -> bool {
         self.rows.is_empty()
     }
@@ -215,7 +216,7 @@ impl WrapLayout {
     /// last char boundary of the row at or left of `vcol`. Only the last row
     /// of a line can hold the position after its last char (elsewhere that
     /// position is the next row's start). `None` past the last row.
-    pub fn from_visual(&self, lines: &[String], vrow: usize, vcol: usize) -> Option<(usize, usize)> {
+    pub fn logical_at(&self, lines: &[String], vrow: usize, vcol: usize) -> Option<(usize, usize)> {
         let r = *self.rows.get(vrow)?;
         let text = lines.get(r.line).map_or("", String::as_str);
         let (mut col, mut used) = (r.start, 0usize);
@@ -790,7 +791,7 @@ impl InputEditor {
 
     /// Move the cursor to visual row `vrow` at display column `vcol` (clamped).
     fn move_to_visual(&mut self, layout: &WrapLayout, vrow: usize, vcol: usize) {
-        if let Some((row, col)) = layout.from_visual(&self.lines, vrow, vcol) {
+        if let Some((row, col)) = layout.logical_at(&self.lines, vrow, vcol) {
             self.row = row;
             self.col = col;
         }
@@ -1219,10 +1220,10 @@ mod tests {
         assert_eq!(layout.to_visual(&ls, 0, 20), (2, 0));
         // A column past a row's end clamps to its last char, except on the
         // line's last row.
-        assert_eq!(layout.from_visual(&ls, 0, 99), Some((0, 9)));
-        assert_eq!(layout.from_visual(&ls, 2, 99), Some((0, 25)));
-        assert_eq!(layout.from_visual(&ls, 1, 4), Some((0, 14)));
-        assert_eq!(layout.from_visual(&ls, 3, 0), None);
+        assert_eq!(layout.logical_at(&ls, 0, 99), Some((0, 9)));
+        assert_eq!(layout.logical_at(&ls, 2, 99), Some((0, 25)));
+        assert_eq!(layout.logical_at(&ls, 1, 4), Some((0, 14)));
+        assert_eq!(layout.logical_at(&ls, 3, 0), None);
     }
 
     #[test]
@@ -1231,8 +1232,8 @@ mod tests {
         let layout = wrap_layout(&ls, 10);
         assert_eq!(spans(&layout), vec![(0, 0, 10), (0, 10, 10), (1, 0, 1)]);
         assert_eq!(layout.to_visual(&ls, 0, 10), (1, 0));
-        assert_eq!(layout.from_visual(&ls, 1, 0), Some((0, 10)));
-        assert_eq!(layout.from_visual(&ls, 0, 99), Some((0, 9)));
+        assert_eq!(layout.logical_at(&ls, 1, 0), Some((0, 10)));
+        assert_eq!(layout.logical_at(&ls, 0, 99), Some((0, 9)));
     }
 
     #[test]

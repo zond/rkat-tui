@@ -604,6 +604,7 @@ pub fn status_bar(status: &StatusInfo, now: Instant) -> Line<'static> {
 }
 
 /// The status-bar text (unstyled [`status_bar`]).
+#[cfg(any(test, feature = "test-support"))]
 pub fn status_line(status: &StatusInfo, now: Instant) -> String {
     status_bar(status, now)
         .spans

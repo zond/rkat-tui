@@ -26,6 +26,7 @@ pub const NOTE_FORGET: &str = "note_forget";
 pub const NOTE_LIST: &str = "note_list";
 
 /// Names of every tool exposed by [`NoteToolDispatcher`].
+#[cfg(any(test, feature = "test-support"))]
 pub const NOTE_TOOL_NAMES: &[&str] = &[NOTE_SAVE, NOTE_READ, NOTE_FORGET, NOTE_LIST];
 
 /// Provenance source id of the note tools (see [`crate::tools::FILE_TOOLS_SOURCE`]).

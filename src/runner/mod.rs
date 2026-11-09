@@ -52,6 +52,7 @@ mod quit;
 pub(crate) mod shell;
 mod status;
 #[doc(hidden)]
+#[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 
 use std::collections::HashSet;
@@ -88,8 +89,8 @@ use crate::ui::{
     StatusUpdate, TurnFailure, TurnOutcome, TurnSummary, UiChannels, run_ui,
 };
 
-pub use lifecycle::{Start, blocks_from_messages, blocks_from_session, open_start, session_messages};
-pub use models::DEFAULT_CONTEXT_WINDOW;
+pub use lifecycle::{Start, blocks_from_messages, open_start};
+
 pub use quit::SavedUnsent;
 
 /// Capacity of the primary agent-event channel.

@@ -295,7 +295,9 @@ impl SessionHandle {
         let durable = session
             .session_metadata()
             .and_then(|meta| meta.provider_params);
-        if let Some(params) = thinking::reapplied(durable.as_ref(), configured.as_ref()) {
+        if let thinking::Reapplied::Replace(params) =
+            thinking::reapplied(durable.as_ref(), configured.as_ref())
+        {
             build.provider_params = params;
             build.resume_override_mask.provider_params = true;
         }
@@ -380,6 +382,7 @@ impl SessionHandle {
 
     /// The approval engine gating this session's tool calls, if any.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn approval(&self) -> Option<&Arc<ApprovalEngine>> {
         self.approval.as_ref()
     }

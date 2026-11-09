@@ -77,6 +77,7 @@ impl CursorFile {
 
     /// Its path.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -152,6 +153,7 @@ impl Mark {
 
     /// The sequence space of the mark, once an event named one.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn epoch(&self) -> Option<&str> {
         self.epoch.as_deref()
     }

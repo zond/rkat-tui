@@ -189,6 +189,7 @@ Answer with exactly one word: ALLOW or BLOCK. If you are unsure, answer BLOCK.";
 /// own words do not cover. The classifier sees only those words, never the
 /// files they point to, so the reason asks for confirmation instead of
 /// claiming the user never asked or that the agent invented the request.
+#[cfg(any(test, feature = "test-support"))]
 pub const NOT_COVERED_REASON: &str =
     "Not covered by what the user asked for in this session; ask the user to confirm before doing it.";
 

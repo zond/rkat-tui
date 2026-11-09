@@ -1318,6 +1318,7 @@ pub struct Layered {
 /// # Errors
 ///
 /// Returns [`RulesError`] when a file cannot be read or parsed.
+#[cfg(any(test, feature = "test-support"))]
 pub fn load_layered(
     realm_dir: &Path,
     global_rules_file: Option<&Path>,

@@ -253,6 +253,7 @@ impl SessionCost {
     /// The cost of the priced models in USD, and whether every model was
     /// priced. Unpriced models are left out.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn cost_usd(&self, prices: &PriceTable) -> (f64, bool) {
         let mut usd = 0.0;
         let mut all = true;

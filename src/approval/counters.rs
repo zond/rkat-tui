@@ -144,6 +144,7 @@ impl AutoMode {
     }
 
     /// Whether the permission mode is not auto (the classifier reviews nothing).
+    #[cfg(any(test, feature = "test-support"))]
     pub fn disabled(&self) -> bool {
         self.state
             == AutoModeState::Paused {

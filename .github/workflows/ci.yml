@@ -20,4 +20,7 @@ jobs:
       - uses: taiki-e/install-action@nextest
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
+      # Default features, no test-support: the internal modules are
+      # crate-private here, so an unused item is reported as dead code.
+      - run: cargo clippy --lib --bins -- -D warnings
       - run: cargo nextest run --all-features

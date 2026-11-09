@@ -384,6 +384,7 @@ impl LlmClassifier {
 
     /// Override the time budget of both stages.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn with_stage_timeout(mut self, timeout: Duration) -> Self {
         self.stage_timeout = timeout;
         self.stage2_timeout = timeout;
@@ -392,6 +393,7 @@ impl LlmClassifier {
 
     /// Override the stage-2 time budget (the whole tool loop).
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn with_stage2_timeout(mut self, timeout: Duration) -> Self {
         self.stage2_timeout = timeout;
         self
@@ -407,6 +409,7 @@ impl LlmClassifier {
 
     /// Override the output token budgets of both stages.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn with_max_tokens(mut self, stage1: u32, stage2: u32) -> Self {
         self.stage1_max_tokens = stage1;
         self.stage2_max_tokens = stage2;
@@ -423,6 +426,7 @@ impl LlmClassifier {
 
     /// The classifier model.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn model(&self) -> &str {
         &self.model
     }

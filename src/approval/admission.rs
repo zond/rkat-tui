@@ -95,12 +95,14 @@ impl ApprovalGate {
 
     /// The session this gate decides for.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn session_id(&self) -> &SessionId {
         &self.session_id
     }
 
     /// The helper this gate decides for, if any.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn helper(&self) -> Option<&str> {
         self.helper.as_deref()
     }

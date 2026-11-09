@@ -15,12 +15,10 @@
 pub mod store;
 pub mod tools;
 
-pub use store::{
-    INDEX_FILE, MAX_NOTES, NOTE_MAX_BYTES, NoteError, NoteStore, NoteSummary,
-    PROMPT_INDEX_MAX_BYTES, Scope, UNTRUSTED_INDEX_LABEL, UNTRUSTED_INDEX_WARNING, USER_NOTES_REL,
-    WORKSPACE_NOTES_REL, prompt_index, slug,
-};
-pub use tools::{
-    NOTE_FORGET, NOTE_LIST, NOTE_READ, NOTE_SAVE, NOTE_TOOL_NAMES, NOTES_SOURCE, NoteToolDispatcher,
-};
+pub use store::{NoteStore, Scope, prompt_index, slug};
+#[cfg(any(test, feature = "test-support"))]
+pub use store::{INDEX_FILE, UNTRUSTED_INDEX_LABEL};
+#[cfg(any(test, feature = "test-support"))]
+pub use tools::NOTE_TOOL_NAMES;
+pub use tools::{NOTE_FORGET, NOTE_LIST, NOTE_READ, NOTE_SAVE, NOTES_SOURCE, NoteToolDispatcher};
 

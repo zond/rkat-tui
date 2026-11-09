@@ -45,6 +45,7 @@ impl InputKey {
 
     /// The key.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -277,16 +278,19 @@ impl ApprovalTranscript {
     }
 
     /// Entries, oldest first.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn entries(&self) -> impl Iterator<Item = &TranscriptEntry> {
         self.entries.iter().map(|(e, _)| e)
     }
 
     /// Number of entries.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
     /// Whether the transcript is empty.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }

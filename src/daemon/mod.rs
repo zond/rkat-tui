@@ -260,6 +260,7 @@ impl Default for DaemonOptions {
 impl DaemonOptions {
     /// Write the endpoint file at `file` instead of the default place.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn with_endpoint_file(mut self, file: PathBuf) -> Self {
         self.endpoint_file = Some(file);
         self
@@ -329,8 +330,11 @@ pub struct Daemon {
     orchestrator: Orchestrator,
     lease: Option<RealmLeaseGuard>,
     listener: serve::Listener,
+    #[cfg(any(test, feature = "test-support"))]
     scope: RuntimeScope,
+    #[cfg(any(test, feature = "test-support"))]
     desk: Arc<approvals::Desk>,
+    #[cfg(any(test, feature = "test-support"))]
     origins: Arc<approvals::DaemonToolOrigins>,
     local: Arc<local::Local>,
     /// The desk and the event watcher, aborted at shutdown.
@@ -354,6 +358,7 @@ impl Daemon {
     /// # Errors
     ///
     /// [`DaemonError`] for every step.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn start(args: &Args, options: DaemonOptions) -> Result<Self, DaemonError> {
         let (scope, config) = bootstrap::prepare(args).await?;
         Self::start_with(scope, config, args, options).await
@@ -447,8 +452,11 @@ impl Daemon {
             orchestrator,
             lease: Some(composed.lease),
             listener,
+            #[cfg(any(test, feature = "test-support"))]
             scope: composed.scope,
+            #[cfg(any(test, feature = "test-support"))]
             desk: composed.desk,
+            #[cfg(any(test, feature = "test-support"))]
             origins: Arc::clone(&composed.origins),
             local,
             tasks: vec![
@@ -463,12 +471,14 @@ impl Daemon {
 
     /// Where escalations wait for their decision.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn desk(&self) -> &Arc<approvals::Desk> {
         &self.desk
     }
 
     /// The members' tool catalogs the gate judges calls by.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn tool_origins(&self) -> &Arc<approvals::DaemonToolOrigins> {
         &self.origins
     }
@@ -493,12 +503,14 @@ impl Daemon {
 
     /// The JSON-RPC session runtime.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn runtime(&self) -> &Arc<SessionRuntime> {
         &self.runtime
     }
 
     /// The realm and workspace the daemon serves.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn scope(&self) -> &RuntimeScope {
         &self.scope
     }

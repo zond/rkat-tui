@@ -164,20 +164,6 @@ pub struct ModelGroup {
     pub warning: Option<String>,
 }
 
-/// List the models of `endpoint`. For OpenAI-dialect endpoints with a base
-/// URL, LiteLLM's `GET /model/info` is also tried to fill in context windows
-/// and output limits; any failure there is ignored.
-///
-/// # Errors
-///
-/// See [`list_models`].
-pub async fn list_endpoint_models(
-    endpoint: &Endpoint,
-    timeout: Duration,
-) -> Result<Vec<ModelEntry>, ListModelsError> {
-    Ok(list_endpoint(endpoint, timeout).await?.models)
-}
-
 /// What listing one endpoint yields: its models and, for a LiteLLM proxy,
 /// the per-model prices from `/model/info` (USD per million tokens).
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -188,7 +174,10 @@ pub struct EndpointListing {
     pub prices: Vec<(String, ModelPrice)>,
 }
 
-/// [`list_endpoint_models`] plus the LiteLLM prices, when there are any.
+/// List the models of `endpoint`, with the LiteLLM prices when there are
+/// any. For OpenAI-dialect endpoints with a base URL, LiteLLM's
+/// `GET /model/info` is also tried to fill in context windows, output
+/// limits and prices; any failure there is ignored.
 ///
 /// # Errors
 ///

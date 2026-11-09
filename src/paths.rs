@@ -340,6 +340,7 @@ impl ResolvedPath {
     /// Whether the path may be written without classifier review: inside the
     /// root and not protected.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn freely_writable(&self) -> bool {
         self.inside() && !self.protected
     }

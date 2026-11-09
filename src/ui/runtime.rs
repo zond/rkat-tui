@@ -263,7 +263,7 @@ fn translate(event: Event, mouse: bool) -> Option<Msg> {
             Some(Msg::Key(key))
         }
         Event::Paste(text) => Some(Msg::Paste(text)),
-        Event::Resize(w, h) => Some(Msg::Resize(w, h)),
+        Event::Resize(..) => Some(Msg::Resize),
         Event::Mouse(m) if mouse => Some(Msg::Mouse(m)),
         Event::FocusGained => Some(Msg::Focus(true)),
         Event::FocusLost => Some(Msg::Focus(false)),
@@ -611,7 +611,7 @@ mod tests {
         ));
         assert!(matches!(
             translate(Event::Resize(1, 2), false),
-            Some(Msg::Resize(1, 2))
+            Some(Msg::Resize)
         ));
         assert!(matches!(
             translate(Event::FocusGained, false),

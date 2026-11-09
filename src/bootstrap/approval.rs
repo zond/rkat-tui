@@ -60,8 +60,6 @@ pub struct ApprovalParts {
     /// The host trust record of this workspace and realm (`/rules trust`,
     /// and the project inputs' `/trust`).
     pub trust: Arc<parking_lot::Mutex<HostTrustRecord>>,
-    /// The realm rules file.
-    pub realm_rules: std::path::PathBuf,
 }
 
 impl std::fmt::Debug for ApprovalParts {
@@ -184,7 +182,7 @@ pub(crate) async fn build(
         environment,
         posix_shell: shell_is_posix(),
         events: events_tx,
-        rules_path: Some(realm_rules.clone()),
+        rules_path: Some(realm_rules),
         rules_trust: Some(Arc::clone(&trust)),
     });
     Ok(ApprovalParts {
@@ -193,7 +191,6 @@ pub(crate) async fn build(
         events: Some(events_rx),
         notices,
         trust,
-        realm_rules,
     })
 }
 

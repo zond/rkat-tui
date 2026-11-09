@@ -73,6 +73,7 @@ impl History {
 
     /// Consume the history, returning its entries (oldest first), e.g. for
     /// [`super::App::with_history`].
+    #[cfg(any(test, feature = "test-support"))]
     pub fn into_entries(self) -> Vec<String> {
         self.entries
     }

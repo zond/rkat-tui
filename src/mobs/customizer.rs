@@ -513,7 +513,7 @@ impl SpawnMemberCustomizer for HelperCustomizer {
                 .register_root(key, &durable.session_id, &model, binding.as_ref());
             shape_root(spec, root, self.shell_env.as_ref(), false, self.gated_fork_off);
             if let (Some(thinking), Some(identity)) = (&root.thinking, &durable.llm_identity)
-                && let Some(params) = crate::thinking::reapplied(
+                && let crate::thinking::Reapplied::Replace(params) = crate::thinking::reapplied(
                     identity.provider_params.as_ref(),
                     thinking(identity).as_ref(),
                 )
