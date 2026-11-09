@@ -17,21 +17,9 @@ use meerkat_tools::SqliteTaskStore;
 use meerkat_tools::builtin::TaskStore;
 use meerkat_tools::builtin::types::{Task, TaskError};
 
-use crate::ui::Checklist;
-
 /// Whether a completed call of `tool` may have changed the session's tasks.
 pub fn changes_tasks(tool: &str) -> bool {
     matches!(tool, "task_create" | "task_update")
-}
-
-/// The tasks of `session` in the store at `path`, newest-updated last. No
-/// file yet means no tasks (the store is not created by reading it).
-///
-/// # Errors
-///
-/// The store's error when the file exists but cannot be read.
-pub async fn read_checklist(path: &Path, session: &SessionId) -> Result<Checklist, TaskError> {
-    Ok(Checklist::from_tasks(&read_tasks(path, session).await?))
 }
 
 /// The tasks of `session` in the store at `path`, as the store lists them
@@ -58,7 +46,7 @@ mod tests {
     use super::*;
     use meerkat_tools::builtin::types::{NewTask, TaskStatus, TaskUpdate};
 
-    use crate::ui::ItemState;
+    use crate::ui::{Checklist, ItemState};
 
     #[tokio::test]
     async fn the_checklist_is_the_sessions_tasks_in_the_store() {
@@ -66,7 +54,7 @@ mod tests {
         let path = dir.path().join("tasks.db");
         let mine = SessionId::new();
         // No file: no tasks, and reading does not create one.
-        assert!(read_checklist(&path, &mine).await.unwrap().is_empty());
+        assert!(Checklist::from_tasks(&read_tasks(&path, &mine).await.unwrap()).is_empty());
         assert!(!path.exists());
 
         let store = SqliteTaskStore::for_session(&path, mine.to_string());
@@ -93,7 +81,7 @@ mod tests {
             .await
             .unwrap();
 
-        let list = read_checklist(&path, &mine).await.unwrap();
+        let list = Checklist::from_tasks(&read_tasks(&path, &mine).await.unwrap());
         let got: Vec<(&str, ItemState)> = list
             .items()
             .iter()

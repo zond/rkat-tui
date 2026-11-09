@@ -154,22 +154,6 @@ pub enum CostReadout {
 }
 
 impl SessionCost {
-    /// Totals derived from a session's cumulative `usage`, attributed to
-    /// `model` and marked [`CostConfidence::Approximate`]. Zero usage gives
-    /// an empty, exact cost.
-    #[must_use]
-    pub fn derived(model: &str, usage: &Usage) -> Self {
-        let totals = UsageTotals::from_usage(usage);
-        if totals.is_zero() {
-            return Self::default();
-        }
-        Self {
-            per_model: IndexMap::from([(model.to_string(), totals)]),
-            confidence: CostConfidence::Approximate,
-            helpers: IndexMap::new(),
-        }
-    }
-
     /// Add `totals` to `model`.
     pub fn add(&mut self, model: &str, totals: &UsageTotals) {
         add_to(&mut self.per_model, model, totals);
@@ -209,41 +193,6 @@ impl SessionCost {
             return;
         }
         self.add(model, &totals);
-        self.confidence = self.confidence.and(CostConfidence::Approximate);
-    }
-
-    /// Some of helper `label`'s usage could not be observed.
-    pub fn mark_unmeasured(&mut self, label: &str) {
-        self.helpers.entry(label.to_string()).or_default();
-        self.confidence = self.confidence.and(CostConfidence::Unmeasured);
-    }
-
-    /// Reconcile the recorded totals with the session's authoritative
-    /// cumulative `usage`: usage the record does not account for (calls
-    /// another surface made, a compaction published after the TUI stopped
-    /// following) makes the readout [`CostConfidence::Approximate`]; the
-    /// missing tokens are attributed to `model`.
-    pub fn reconcile(&mut self, model: &str, usage: &Usage) {
-        let authoritative = UsageTotals::from_usage(usage);
-        let recorded = self
-            .per_model
-            .values()
-            .fold(UsageTotals::default(), |mut sum, t| {
-                sum.add(t);
-                sum
-            });
-        let missing = UsageTotals {
-            input: authoritative.input.saturating_sub(recorded.input),
-            output: authoritative.output.saturating_sub(recorded.output),
-            cache_read: authoritative.cache_read.saturating_sub(recorded.cache_read),
-            cache_write: authoritative
-                .cache_write
-                .saturating_sub(recorded.cache_write),
-        };
-        if missing.is_zero() {
-            return;
-        }
-        self.add(model, &missing);
         self.confidence = self.confidence.and(CostConfidence::Approximate);
     }
 
@@ -508,21 +457,6 @@ mod tests {
     }
 
     #[test]
-    fn derived_totals_are_approximate() {
-        let prices = table(&[("a", price(1.0, 1.0, None, None))]);
-        let derived = SessionCost::derived("a", &usage(1_000_000, 0, Some(0), None));
-        assert_eq!(derived.confidence, CostConfidence::Approximate);
-        assert_eq!(
-            cost_segment_text(&derived, &prices).as_deref(),
-            Some("~$1.00")
-        );
-        assert_eq!(
-            SessionCost::derived("a", &Usage::default()),
-            SessionCost::default()
-        );
-    }
-
-    #[test]
     fn helper_usage_rolls_up_and_is_broken_down() {
         let prices = table(&[
             ("a", price(1.0, 2.0, None, None)),
@@ -553,32 +487,12 @@ mod tests {
     }
 
     #[test]
-    fn confidence_follows_reconciliation_compaction_and_helpers() {
-        let prices = table(&[("a", price(1.0, 1.0, None, None))]);
-        let mut cost = SessionCost::default();
-        cost.record("a", &usage(1_000_000, 0, None, None));
-        // The session's usage matches the record: still exact.
-        cost.reconcile("a", &usage(1_000_000, 0, None, None));
-        assert_eq!(cost.confidence, CostConfidence::Exact);
-        assert_eq!(cost_segment_text(&cost, &prices).as_deref(), Some("$1.00"));
-        // The session's usage exceeds the record: the gap is attributed
-        // and the readout is approximate.
-        cost.reconcile("a", &usage(2_000_000, 0, None, None));
-        assert_eq!(cost.confidence, CostConfidence::Approximate);
-        assert_eq!(cost.per_model["a"].input, 2_000_000);
-        assert_eq!(cost_segment_text(&cost, &prices).as_deref(), Some("~$2.00"));
-        // A compaction counts its estimated input and its summary.
+    fn a_compaction_counts_its_estimate_and_makes_the_cost_approximate() {
         let mut compacted = SessionCost::default();
         compacted.record_compaction("a", 1_000_000, 10);
         assert_eq!(compacted.per_model["a"].input, 1_000_000);
         assert_eq!(compacted.per_model["a"].output, 10);
         assert_eq!(compacted.confidence, CostConfidence::Approximate);
-        // A helper that could not be followed makes it a lower bound, which
-        // a later approximation never upgrades.
-        compacted.mark_unmeasured("scout");
-        compacted.reconcile("a", &usage(9_000_000, 0, None, None));
-        assert_eq!(compacted.confidence, CostConfidence::Unmeasured);
-        assert!(compacted.breakdown(&prices).contains("lower bound"));
     }
 
     #[test]

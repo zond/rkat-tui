@@ -17,7 +17,6 @@ use ratatui::widgets::{Block as BorderBlock, Borders, Clear, Paragraph};
 
 use super::markdown::{truncate_to_width, wrap_text};
 use super::render::fmt_ctx_tokens;
-use super::rewind::RewindMenu;
 pub use crate::approval::desk::EscalationAnswer;
 use crate::approval::escalation::RecordedPrompt;
 use crate::endpoints::describe_endpoint;
@@ -359,134 +358,6 @@ impl QuitDialog {
     }
 }
 
-/// What `--no-attach` does about a daemon that serves the workspace.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AlongsideChoice {
-    /// Attach to the daemon instead.
-    Attach,
-    /// Run in this process next to it.
-    Alongside,
-    /// Stop the daemon, then run in this process.
-    StopDaemon,
-}
-
-/// The start-up dialog of `--no-attach` while a daemon serves the
-/// workspace: attach, run alongside, or stop the daemon first; attach
-/// highlighted. Shown before the TUI opens ([`super::ask_alongside`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AlongsideDialog {
-    /// Which daemon (workspace, pid, uptime, running or idle).
-    pub daemon: String,
-    /// The highlighted row.
-    pub cursor: usize,
-}
-
-impl AlongsideDialog {
-    /// A dialog about `daemon` with attach highlighted.
-    #[must_use]
-    pub fn new(daemon: String) -> Self {
-        Self { daemon, cursor: 0 }
-    }
-
-    const ROWS: [(AlongsideChoice, &'static str); 3] = [
-        (
-            AlongsideChoice::Attach,
-            "Attach: use the daemon's agent (as without --no-attach)",
-        ),
-        (
-            AlongsideChoice::Alongside,
-            "Run alongside: no memory search, two agents in one tree",
-        ),
-        (
-            AlongsideChoice::StopDaemon,
-            "Stop the daemon, then run in this process",
-        ),
-    ];
-
-    /// A key: arrows (and `j`/`k`) move, Enter picks the highlighted row,
-    /// `1`/`a` attach, `2`/`r` run alongside, `3`/`s` stop the daemon,
-    /// Esc and Ctrl-C start nothing.
-    pub fn key(&mut self, key: &KeyEvent) -> ModalKey<AlongsideChoice> {
-        if is_ctrl_c(key) && !is_held(key) {
-            return ModalKey::Close;
-        }
-        let moves = matches!(
-            key.code,
-            KeyCode::Up | KeyCode::Down | KeyCode::Char('j' | 'k')
-        );
-        if (is_held(key) && !moves) || has_ctrl_or_alt(key) {
-            return ModalKey::Stay;
-        }
-        let last = Self::ROWS.len() - 1;
-        match key.code {
-            KeyCode::Up | KeyCode::Char('k') => {
-                self.cursor = self.cursor.saturating_sub(1);
-                ModalKey::Stay
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                self.cursor = (self.cursor + 1).min(last);
-                ModalKey::Stay
-            }
-            KeyCode::Enter => ModalKey::Choose(Self::ROWS[self.cursor.min(last)].0),
-            KeyCode::Char('1' | 'a') => ModalKey::Choose(AlongsideChoice::Attach),
-            KeyCode::Char('2' | 'r') => ModalKey::Choose(AlongsideChoice::Alongside),
-            KeyCode::Char('3' | 's') => ModalKey::Choose(AlongsideChoice::StopDaemon),
-            KeyCode::Esc => ModalKey::Close,
-            _ => ModalKey::Stay,
-        }
-    }
-
-    /// The dialog's lines, `width` wide.
-    #[must_use]
-    pub fn lines(&self, width: usize) -> Vec<Line<'static>> {
-        let dim = Style::default().add_modifier(Modifier::DIM);
-        let highlight = Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD);
-        let mut lines: Vec<Line<'static>> = wrap_text(
-            &format!(
-                "--no-attach, but {}. Running alongside it means no memory search (the daemon holds the index) and two agents editing one tree.",
-                self.daemon
-            ),
-            width,
-        )
-        .into_iter()
-        .map(Line::from)
-        .collect();
-        lines.push(Line::default());
-        for (i, (_, row)) in Self::ROWS.iter().enumerate() {
-            let (mark, style) = if i == self.cursor {
-                ("❯ ", highlight)
-            } else {
-                ("  ", Style::default())
-            };
-            lines.push(Line::styled(
-                truncate_to_width(&format!("{mark}{}. {row}", i + 1), width),
-                style,
-            ));
-        }
-        lines.push(Line::default());
-        lines.push(Line::styled(
-            "Enter select · a attach · r alongside · s stop · Esc quit",
-            dim,
-        ));
-        lines
-    }
-}
-
-/// Draw `dialog` centered over `area`.
-pub fn draw_alongside(frame: &mut Frame<'_>, area: Rect, dialog: &AlongsideDialog) {
-    let width = area.width.saturating_sub(4).clamp(20, 80);
-    let lines = dialog.lines(usize::from(width.saturating_sub(2)));
-    draw_box(
-        frame,
-        area,
-        width,
-        " A daemon serves this workspace ",
-        lines,
-    );
-}
-
 /// Session picker for `/resume` without a reference.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResumePicker {
@@ -680,8 +551,6 @@ pub enum Modal {
     },
     /// Session picker.
     Resume(ResumePicker),
-    /// `/rewind`: the session's earlier user messages, newest first.
-    Rewind(RewindMenu),
     /// Model picker.
     Model(ModelPicker),
     /// The `?` shortcut panel: the keys part of the help.
@@ -725,10 +594,6 @@ pub fn draw_modal(frame: &mut Frame<'_>, area: Rect, modal: &Modal) {
         Modal::Resume(picker) => (
             " Resume session ".to_string(),
             picker_lines(picker, inner_w, usize::from(area.height.saturating_sub(4))),
-        ),
-        Modal::Rewind(menu) => (
-            " Rewind to before a message ".to_string(),
-            rewind_lines(menu, inner_w, usize::from(area.height.saturating_sub(4))),
         ),
         Modal::Model(picker) => (
             " Select model ".to_string(),
@@ -996,37 +861,6 @@ fn picker_lines(picker: &ResumePicker, width: usize, max_rows: usize) -> Vec<Lin
         .collect()
 }
 
-/// The rewind menu: one numbered line per message (newest first, the list
-/// scrolling to keep the selection visible), then a key hint.
-fn rewind_lines(menu: &RewindMenu, width: usize, max_rows: usize) -> Vec<Line<'static>> {
-    let dim = Style::default().add_modifier(Modifier::DIM);
-    let selected = menu.cursor.index();
-    let window = windowed(selected, max_rows.saturating_sub(1));
-    let mut lines: Vec<Line<'static>> = menu
-        .points
-        .iter()
-        .enumerate()
-        .skip(window.start)
-        .take(window.len())
-        .map(|(i, point)| {
-            let text = truncate_to_width(&format!("{:>2}. {}", i + 1, point.label()), width);
-            if i == selected {
-                Line::styled(text, Style::default().add_modifier(Modifier::REVERSED))
-            } else {
-                Line::from(text)
-            }
-        })
-        .collect();
-    lines.push(Line::styled(
-        truncate_to_width(
-            "↑/↓ choose · Enter rewinds to before it (its text goes back in the input) · Esc closes",
-            width,
-        ),
-        dim,
-    ));
-    lines
-}
-
 /// Filter line, then per endpoint a header, its warning and its models,
 /// then a key hint. At most `max_lines` lines; the list scrolls to keep the
 /// selection visible.
@@ -1135,60 +969,6 @@ fn model_row(entry: &ModelEntry, id_width: usize) -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-
-    /// The `--no-attach` start-up dialog: attach highlighted, keys and
-    /// arrows choose, Esc starts nothing; drawn, it names the daemon and
-    /// what running alongside costs.
-    #[test]
-    fn the_alongside_dialog_offers_attach_alongside_and_stop() {
-        let press = |code| KeyEvent::from(code);
-        let mut dialog = AlongsideDialog::new("the daemon serves /w (pid 7, up 3m, idle)".into());
-        assert_eq!(
-            dialog.key(&press(KeyCode::Enter)),
-            ModalKey::Choose(AlongsideChoice::Attach)
-        );
-        dialog.key(&press(KeyCode::Down));
-        assert_eq!(
-            dialog.key(&press(KeyCode::Enter)),
-            ModalKey::Choose(AlongsideChoice::Alongside)
-        );
-        dialog.key(&press(KeyCode::Down));
-        dialog.key(&press(KeyCode::Down));
-        assert_eq!(
-            dialog.key(&press(KeyCode::Enter)),
-            ModalKey::Choose(AlongsideChoice::StopDaemon)
-        );
-        assert_eq!(
-            dialog.key(&press(KeyCode::Char('r'))),
-            ModalKey::Choose(AlongsideChoice::Alongside)
-        );
-        assert_eq!(
-            dialog.key(&press(KeyCode::Char('a'))),
-            ModalKey::Choose(AlongsideChoice::Attach)
-        );
-        assert_eq!(dialog.key(&press(KeyCode::Esc)), ModalKey::Close);
-        let backend = ratatui::backend::TestBackend::new(90, 16);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| draw_alongside(frame, frame.area(), &dialog))
-            .unwrap();
-        let screen: String = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(ratatui::buffer::Cell::symbol)
-            .collect();
-        for text in [
-            "pid 7",
-            "no memory search",
-            "Attach",
-            "Run alongside",
-            "Stop the daemon",
-        ] {
-            assert!(screen.contains(text), "{text}: {screen}");
-        }
-    }
 
     #[test]
     fn picker_navigation_is_clamped() {

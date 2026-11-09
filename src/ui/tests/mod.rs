@@ -168,13 +168,6 @@ fn run_shell(id: u64, command: &str) -> Effect {
     }
 }
 
-fn rewind_point(index: usize, text: &str) -> RewindPoint {
-    RewindPoint {
-        message_index: index,
-        text: text.into(),
-    }
-}
-
 fn menu_rows(app: &App) -> Vec<String> {
     app.menu()
         .map(|menu| menu.items.iter().map(|item| item.insert.clone()).collect())

@@ -208,6 +208,7 @@ impl CompactionTrigger {
 
     /// The trigger a build's override stands for.
     #[must_use]
+    #[cfg(test)]
     pub fn from_override(threshold: Option<NonZeroU64>) -> Self {
         match threshold {
             None => Self::Inherit,

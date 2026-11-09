@@ -15,10 +15,10 @@
 //! Every event is sent to the UI as [`Msg::Agent`] on the integrator
 //! channel, so the turn messages stay in order with the events.
 //!
-//! What both runners do the same way (`!` shell mode, `/remember`,
+//! What runs on this side of the agent (`!` shell mode, `/remember`,
 //! `/memory`, `/export`, prices and the cost record, the model lists and
 //! picker, unsent messages) is the [`Workbench`]'s; it reaches the
-//! orchestrator through [`Linked`] (`mob/append_system_context`).
+//! orchestrator through its [`AgentContext`] (`mob/append_system_context`).
 
 use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
@@ -371,7 +371,7 @@ impl Turn {
 
 /// Why a call to the daemon brought no answer.
 #[derive(Debug, thiserror::Error)]
-enum CallFailure {
+pub(crate) enum CallFailure {
     /// No connection now.
     #[error("not attached to the daemon")]
     NotAttached,
@@ -1720,7 +1720,7 @@ impl AttachRunner {
             Effect::NewSession => self.switch_conversation(None),
             Effect::ResumeSession(reference) => self.resume_session(reference),
             Effect::RequestResumePicker => self.show_resume_picker(),
-            Effect::RequestRewindMenu | Effect::Rewind(_) => {
+            Effect::RequestRewindMenu => {
                 self.notice(NoticeLevel::Warn, sessions::REWIND_UNAVAILABLE);
             }
             Effect::RequestModelPicker { refresh } => {
@@ -1938,8 +1938,8 @@ impl AttachRunner {
     }
 
     /// The orchestrator as the workbench reaches it, over this connection.
-    fn linked(&self) -> Linked {
-        Linked(self.connection())
+    fn linked(&self) -> AgentContext {
+        AgentContext::new(self.connection())
     }
 
     async fn start_turn(&mut self, text: &str) {
@@ -2644,28 +2644,19 @@ impl AttachRunner {
     }
 }
 
-/// The orchestrator as the [`Workbench`] reaches it: system context over
-/// the connection this client holds (`None`: not attached now).
-struct Linked(Option<Arc<Connection>>);
-
-impl AgentContext for Linked {
-    type Error = CallFailure;
-
-    fn append_system_context(
-        &self,
-        text: String,
-        key: String,
-    ) -> impl std::future::Future<Output = Result<(), CallFailure>> + Send {
-        let connection = self.0.clone();
-        async move {
-            let connection = connection.ok_or(CallFailure::NotAttached)?;
-            bounded(
-                CALL_TIMEOUT,
-                remote::append_system_context(&connection, &text, &key),
-            )
-            .await
-        }
-    }
+/// `mob/append_system_context` for the orchestrator over `connection`
+/// (`None`: not attached now), bounded ([`AgentContext`]).
+pub(crate) async fn append_system_context(
+    connection: Option<Arc<Connection>>,
+    text: &str,
+    key: &str,
+) -> Result<(), CallFailure> {
+    let connection = connection.ok_or(CallFailure::NotAttached)?;
+    bounded(
+        CALL_TIMEOUT,
+        remote::append_system_context(&connection, text, key),
+    )
+    .await
 }
 
 /// The endpoint and model the status bar names, as the picker lists them

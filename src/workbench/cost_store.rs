@@ -4,8 +4,7 @@
 //! Meerkat persists a session's cumulative usage but not which model each
 //! call went to, so the TUI records the totals the UI counted
 //! ([`crate::ui::Effect::CostSnapshot`]). The record is only an attribution
-//! of the session's usage: on resume it is reconciled with the session's
-//! authoritative `total_usage` ([`SessionCost::reconcile`]). Writes are
+//! of the session's usage. Writes are
 //! atomic and owner-only ([`crate::paths::write_atomic`]); a record that
 //! cannot be parsed is moved aside as `<id>.toml.corrupt-<unix seconds>`
 //! (never overwritten) and the session starts from its authoritative usage.

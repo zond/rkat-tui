@@ -5,9 +5,9 @@
 use std::time::Instant;
 
 use super::{
-    App, Block, BlockId, COMPACT_REQUESTED, Command, CompactFailure, Effect, Modal, NoticeLevel,
-    OpenHelperView, Pending, PendingId, PendingState, RewindMenu, RewindPoint, Rewound,
-    SteerFailure, TurnFailure, TurnOutcome, commands, quote_short,
+    App, Block, BlockId, COMPACT_REQUESTED, Command, CompactFailure, Effect, NoticeLevel,
+    OpenHelperView, Pending, PendingId, PendingState, SteerFailure, TurnFailure, TurnOutcome,
+    commands, quote_short,
 };
 
 impl App {
@@ -264,48 +264,6 @@ impl App {
         }
     }
 
-    /// [`Msg::ShowRewindMenu`](crate::ui::Msg::ShowRewindMenu): open the menu (nothing to rewind to is a
-    /// notice). A turn started meanwhile, or another dialog, wins.
-    pub(super) fn show_rewind_menu(&mut self, points: Vec<RewindPoint>) {
-        if points.is_empty() {
-            self.transcript.push_notice(
-                NoticeLevel::Info,
-                "nothing to rewind to: this session has no messages of yours yet",
-            );
-            self.scroll.bottom();
-        } else if !self.running && matches!(self.modal, None | Some(Modal::Keys)) {
-            self.modal = Some(Modal::Rewind(RewindMenu::new(points)));
-        }
-    }
-
-    /// [`Msg::Rewound`](crate::ui::Msg::Rewound): the TUI runs on the fork. Cut the transcript before
-    /// the chosen message (or show the fork's history when the transcript
-    /// does not line up), drop the helper selection and the stale context
-    /// gauge, and put the message back in the editor (a draft typed
-    /// meanwhile goes to the prompt history).
-    pub(super) fn rewound(&mut self, rewound: Rewound) {
-        let Rewound {
-            from_end,
-            text,
-            blocks,
-            notice,
-        } = rewound;
-        self.clear_selection();
-        self.panel_selected = None;
-        self.helper_view = None;
-        if !self.transcript.cut_before_user(from_end, &text) {
-            self.transcript.reset(blocks);
-        }
-        self.run_first_block = self.transcript.len();
-        self.status.context_used = None;
-        self.status.context_approx = false;
-        // A draft typed meanwhile stays reachable with ↑ (take records it).
-        let _ = self.input.take();
-        self.input.set_text(&text);
-        self.transcript.push_notice(NoticeLevel::Info, notice);
-        self.scroll.bottom();
-    }
-
     /// Messages handed to the runner (admitted, or not acknowledged yet)
     /// that no recall has found with the agent.
     pub(super) fn has_admitted_recallable(&self) -> bool {
@@ -420,10 +378,6 @@ impl App {
             Err(TurnFailure::Interrupted) => {
                 self.transcript
                     .push_notice(NoticeLevel::Warn, "turn interrupted");
-            }
-            Err(err @ (TurnFailure::Unknown(_) | TurnFailure::Pending { .. })) => {
-                self.transcript
-                    .push_notice(NoticeLevel::Warn, format!("turn ended: {err}"));
             }
         }
         self.streamed_text = false;

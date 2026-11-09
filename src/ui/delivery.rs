@@ -115,9 +115,8 @@ pub struct Pending {
 pub struct PendingQueue {
     items: Vec<Pending>,
     /// Items already shown as delivered ([`super::Msg::SteerDelivered`])
-    /// whose text is kept until the turn ends: a discarded application
-    /// ([`super::Msg::SteerRequeued`]) or an undelivered terminal brings
-    /// them back.
+    /// whose text is kept until the turn ends: an undelivered terminal
+    /// brings them back.
     settled: Vec<Pending>,
     next_id: u64,
 }
@@ -286,14 +285,6 @@ impl PendingQueue {
         }
     }
 
-    /// The runtime discarded the application of delivered item `id`: show
-    /// it as admitted and waiting again.
-    pub fn show_waiting_again(&mut self, transcript: &mut Transcript, id: PendingId) {
-        if let Some(item) = self.take_settled(id) {
-            self.put_back(transcript, item, PendingState::Admitted);
-        }
-    }
-
     /// Hold a taken item again (the turn ended without it): deferred, its
     /// placeholder back in place.
     pub fn hold_again(&mut self, transcript: &mut Transcript, item: Pending) {
@@ -394,16 +385,23 @@ mod tests {
             transcript.block(block),
             Some(&Block::User { text: "hi".into() })
         );
-        q.show_waiting_again(&mut transcript, id);
-        assert_eq!(label(&transcript), Some(QueuedLabel::Delivering));
+        // A message the turn's end left undelivered is held again.
+        let again = q.add(&mut transcript, "again".into(), PendingState::Admitted);
+        let again_block = q.get(again).unwrap().block;
+        let label = |t: &Transcript| match t.block(again_block) {
+            Some(Block::Queued { label, .. }) => Some(*label),
+            _ => None,
+        };
         let unsent = q.take_unsent(&[]);
-        assert_eq!(unsent.iter().map(|p| p.id).collect::<Vec<_>>(), [id]);
+        assert_eq!(unsent.iter().map(|p| p.id).collect::<Vec<_>>(), [again]);
         q.hold_again(&mut transcript, unsent.into_iter().next().unwrap());
         assert_eq!(label(&transcript), Some(QueuedLabel::Deferred));
-        assert_eq!(q.send_now(&mut transcript, id).as_deref(), Some("hi"));
+        assert_eq!(q.send_now(&mut transcript, again).as_deref(), Some("again"));
         assert_eq!(
-            transcript.block(block),
-            Some(&Block::User { text: "hi".into() })
+            transcript.block(again_block),
+            Some(&Block::User {
+                text: "again".into()
+            })
         );
         let shell = q.add(&mut transcript, "!ls -a".into(), PendingState::Shell);
         assert!(matches!(

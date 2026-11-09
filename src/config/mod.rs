@@ -19,9 +19,9 @@
 //! `[confinement] extra_read`/`extra_write` sandbox grants (see
 //! [`crate::bootstrap::confinement`]), `[thinking]` Anthropic thinking per
 //! model (see [`crate::thinking`]), `[helpers]`, `[shell]`, `[ui]`,
-//! `[daemon]` and `attach`; like endpoints and prices, thinking,
-//! confinement grants, `[daemon]` and `attach` are honoured from the user's
-//! own layers only.
+//! `[daemon]` (and the retired `attach`, read and ignored with a notice);
+//! like endpoints and prices, thinking, confinement grants and `[daemon]`
+//! are honoured from the user's own layers only.
 //!
 //! - [`file`](mod@file): the schema ([`RulesFile`] and its sections, the settings
 //!   after layering);

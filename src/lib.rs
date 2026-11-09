@@ -1,18 +1,17 @@
 //! `rkat-tui`: an interactive terminal coding harness built on the Meerkat agent engine.
 //!
-//! The binary hosts the agent in-process on the runtime-backed session path
-//! (a `PersistentSessionService` driven by a `MeerkatMachine`): prompts are
-//! runtime inputs, messages typed mid-turn are durable steers the runtime
-//! writes into the conversation at the next step, and sessions persist in
+//! The binary is the client of the workspace's `rkat-tui-mob` daemon
+//! ([`daemon`]), which hosts the agent as a mob member on the engine's
+//! runtime-backed session path: prompts are runtime inputs, messages typed
+//! mid-turn reach the agent at its next step, and conversations persist in
 //! the workspace (`.rkat/tui/`) for `-c` / `--resume`. Every tool call is
-//! gated by an auto-mode approval model installed as each session's
+//! gated by an auto-mode approval model installed as each member's
 //! `ToolDispatchAdmission` ([`approval`]).
 //!
 //! The public API is [`run`], [`Args`] and [`TuiError`] (with the error
 //! types its variants carry). Everything else is internal; the
 //! `test-support` feature makes the modules public for the crate's own
-//! integration tests and adds [`harness`] (headless runner). It is not a
-//! stable API.
+//! integration tests. It is not a stable API.
 //!
 //! Module map:
 //! - `cli` — command-line arguments
@@ -30,13 +29,12 @@
 //! - `thinking` — `[thinking]`: Anthropic thinking per model, carried in each session's provider params
 //! - `bootstrap` — realm/config/factory/service construction, provider credentials
 //! - `mobs` — helpers (sub-agents) as mob members: approval gate, model binding, observation
-//! - `session` — session handle: create, resume, turns, steer, interrupt
-//! - `runner` — the event loop joining the session and the UI
 //! - `mentions` — `@path` mentions: the workspace path index and the attachment of mentioned files
 //! - `user_shell` — `!` shell mode: the user's commands under the agent shell's confinement
 //! - `ui` — ratatui application
 //! - `daemon` — the `rkat-tui-mob` daemon: the engine's JSON-RPC router over loopback TCP
-//! - `client` — attach mode: the TUI against a running daemon (`--attach`)
+//! - `client` — the TUI against the workspace's daemon (attach, start on demand)
+//! - `workbench` — what the client does on this side of the agent (`!`, `/remember`, `/export`, prices, models)
 
 // The internal modules: crate-private, public with the `test-support`
 // feature (the crate's integration tests). Without it, an item or re-export
@@ -103,14 +101,6 @@ pub mod pricing;
 #[cfg(not(feature = "test-support"))]
 pub(crate) mod pricing;
 #[cfg(feature = "test-support")]
-pub mod runner;
-#[cfg(not(feature = "test-support"))]
-pub(crate) mod runner;
-#[cfg(feature = "test-support")]
-pub mod session;
-#[cfg(not(feature = "test-support"))]
-pub(crate) mod session;
-#[cfg(feature = "test-support")]
 pub mod thinking;
 #[cfg(not(feature = "test-support"))]
 pub(crate) mod thinking;
@@ -126,7 +116,7 @@ pub(crate) mod ui;
 pub mod user_shell;
 #[cfg(not(feature = "test-support"))]
 pub(crate) mod user_shell;
-// What both runners do the same way (see the module docs).
+// What the client does on this side of the agent (see the module docs).
 #[cfg(feature = "test-support")]
 pub mod workbench;
 #[cfg(not(feature = "test-support"))]
@@ -151,13 +141,6 @@ pub(crate) mod client;
 /// The `rkat-tui-mob` daemon's command line and entry point.
 pub use daemon::{DaemonCli, run as run_daemon};
 
-/// The headless runner the integration tests drive (see
-/// `runner::testing`). Not a stable API.
-#[cfg(feature = "test-support")]
-pub mod harness {
-    pub use crate::runner::testing::*;
-}
-
 pub use approval::ApprovalError;
 pub use bootstrap::confinement::ConfinementError;
 pub use cli::Args;
@@ -167,72 +150,25 @@ pub use error::TuiError;
 pub use overlay::OverlayError;
 pub use ui::UiError;
 
-/// Run the TUI with the given arguments: bootstrap the realm and the
-/// runtime-backed service, open the start session (`-c`, `--resume` or a
-/// fresh one; the prompt argument becomes its first turn) and drive the
-/// terminal until the user quits.
+/// Run the TUI with the given arguments: attach to the workspace's daemon
+/// (starting one when none runs, unless `--attach` says otherwise), open
+/// the conversation `-c`/`--resume` name or the daemon's current one (the
+/// prompt argument becomes its next turn) and drive the terminal until the
+/// user quits or detaches.
 ///
 /// # Errors
 ///
-/// Returns a [`TuiError`] when there is no terminal, bootstrap fails, the
-/// session cannot be opened, or the terminal cannot be driven.
+/// Returns a [`TuiError`] when there is no terminal, the workspace or its
+/// configuration cannot be read, no daemon can be reached, or the terminal
+/// cannot be driven.
 pub async fn run(args: Args) -> Result<(), TuiError> {
     if args.list {
         daemon::list::print(None).await;
         return Ok(());
     }
     // The workspace and its `tui.toml` layers are read once, here, and
-    // handed to the host that runs.
+    // handed to the client.
     let layers = bootstrap::read_layers(&args)?;
-    let Some(target) = bootstrap::attach_mode(&args, &layers) else {
-        return in_process(args, layers).await;
-    };
+    let target = args.attach_target();
     client::run(args, target, layers).await
-}
-
-/// `--no-attach`: the in-process runner, after saying what a daemon that
-/// serves the workspace means for it (and, at a terminal without a prompt
-/// on the command line, asking whether to attach, run alongside or stop
-/// the daemon first).
-async fn in_process(args: Args, mut layers: bootstrap::Layers) -> Result<(), TuiError> {
-    use std::io::IsTerminal as _;
-    let files = daemon::endpoint::candidates(
-        &layers.scope.context_root,
-        &daemon::endpoint::RealmKey::of(&layers.scope),
-    );
-    let Some(daemon) = client::alongside::find(&files).await else {
-        return runner::run(args, layers).await;
-    };
-    let now = chrono::Utc::now();
-    let asks =
-        args.prompt.is_none() && std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
-    let choice = if asks {
-        ui::ask_alongside(ui::AlongsideDialog::new(daemon.describe(now))).await?
-    } else {
-        Some(ui::AlongsideChoice::Alongside)
-    };
-    let daemon = match choice {
-        None => return Ok(()),
-        Some(ui::AlongsideChoice::Attach) => {
-            return client::run(args, cli::AttachTarget::Existing, layers).await;
-        }
-        Some(ui::AlongsideChoice::Alongside) => {
-            layers.notices.push(daemon.notice(now));
-            Some(daemon)
-        }
-        Some(ui::AlongsideChoice::StopDaemon) => {
-            daemon.stop(&files).await.map_err(|why| {
-                TuiError::io("stop the workspace daemon", std::io::Error::other(why))
-            })?;
-            None
-        }
-    };
-    let ran = runner::run(args, layers).await;
-    match (&ran, &daemon) {
-        (Err(err), Some(daemon)) => match client::alongside::explain(err, daemon) {
-            Some(plain) => Err(plain),
-            None => ran,
-        },
-        _ => ran,
-    }
 }

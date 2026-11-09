@@ -20,9 +20,11 @@
 //! [`super::catalog`]): a name is a builtin, file or note tool only when
 //! its provenance says so.
 //!
-//! [`install`] composes the gate into a build, after any admission the build
-//! already carries, so every agent the TUI builds (fresh or resumed) runs
-//! behind it. A helper the session delegates to (a mob member) gets a gate
+//! The daemon gives its orchestrator a gate as the root member's admission
+//! (`crate::daemon::approvals::RootGate`), composed after any admission
+//! the build already carries ([`ApprovalGate::after`]), so every build of
+//! it (fresh or restored) runs behind one. A helper it delegates to (a mob
+//! member) gets a gate
 //! from [`ApprovalGate::for_helper`], installed on its spawn spec by the
 //! TUI's spawn customizer ([`crate::mobs`]): its calls are decided as the
 //! delegating session's, naming the helper.
@@ -30,7 +32,6 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use meerkat_core::service::SessionBuildOptions;
 use meerkat_core::types::ToolCallView;
 use meerkat_core::{
     LiveBridgeEffectKind, LiveBridgeEffectOutcome, SessionId, ToolConsequenceDenial,
@@ -113,18 +114,6 @@ impl ApprovalGate {
         self.preceding = preceding;
         self
     }
-}
-
-/// Install the approval gate for `session_id` into `build`, composed after
-/// any admission `build` already carries.
-pub fn install(
-    build: &mut SessionBuildOptions,
-    engine: &Arc<ApprovalEngine>,
-    session_id: SessionId,
-) {
-    let gate = ApprovalGate::new(Arc::clone(engine), session_id)
-        .after(build.tool_dispatch_admission.take());
-    build.tool_dispatch_admission = Some(Arc::new(gate));
 }
 
 /// The model-facing error for a denial.

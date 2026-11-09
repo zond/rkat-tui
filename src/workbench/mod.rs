@@ -1,5 +1,5 @@
-//! The workbench: what both runners (in-process, [`crate::runner`], and
-//! attach mode, `crate::client`) do on this side of the agent, written once.
+//! The workbench: what the client (`crate::client`) does on this side of
+//! the agent.
 //!
 //! - [`shell`]: `!` shell mode: the user's own command, run here, its
 //!   output handed to the agent as system context.
@@ -15,13 +15,11 @@
 //!   (read here in process, by the daemon for `rkat/tasks` in attach mode).
 //! - [`unsent`]: the messages the agent never got, saved on quit and
 //!   announced at the next start.
-//! - [`app`]: the UI both runners start ([`app::build_app`]) and the log file.
+//! - [`app`]: the UI the client starts ([`app::build_app`]) and the log file.
 //!
-//! The agent is reached through one call, [`AgentContext::append_system_context`],
-//! which the in-process [`SessionHandle`] and the attach link implement.
-//! The turn machinery is not here: the two runners track turns from
-//! different sources of truth (completion handles in process, the daemon's
-//! event stream in attach mode).
+//! The agent is reached through one call, [`AgentContext::append_system_context`]
+//! over the client's connection to the daemon. The turn machinery is not
+//! here: the client tracks turns from the daemon's event stream.
 
 pub mod app;
 pub mod context;
@@ -34,7 +32,6 @@ pub mod shell;
 pub mod tasks;
 pub mod unsent;
 
-use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -45,7 +42,6 @@ use crate::bootstrap::RuntimeScope;
 use crate::endpoints::EndpointRegistry;
 use crate::models::{FetchResults, ModelCache, ModelLister};
 use crate::pricing::{PriceTable, PricingSetup};
-use crate::session::SessionHandle;
 use crate::ui::delivery::PendingId;
 use crate::ui::{Msg, NoticeLevel};
 use crate::user_shell::UserShell;
@@ -55,27 +51,30 @@ pub use app::AppSetup;
 pub use app::build_app;
 pub use unsent::SavedUnsent;
 
-/// The one thing the workbench asks of the agent: take `text` as durable
-/// system context, idempotent per `key`, read from its next model call.
-pub trait AgentContext: Send + Sync + 'static {
-    /// Why the agent could not take it.
-    type Error: std::fmt::Display + Send + 'static;
+/// The one thing the workbench asks of the agent: take text as durable
+/// system context, idempotent per key, read from its next model call. The
+/// agent is the daemon's orchestrator, reached over this client's
+/// connection (`None`: not attached now).
+#[derive(Clone)]
+pub struct AgentContext(Option<Arc<crate::client::transport::Connection>>);
+
+impl AgentContext {
+    /// The orchestrator over `connection`.
+    #[must_use]
+    pub fn new(connection: Option<Arc<crate::client::transport::Connection>>) -> Self {
+        Self(connection)
+    }
 
     /// Append `text` under the idempotency `key`.
-    fn append_system_context(
-        &self,
-        text: String,
-        key: String,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
-}
-
-impl AgentContext for SessionHandle {
-    type Error = crate::error::TuiError;
-
-    async fn append_system_context(&self, text: String, key: String) -> Result<(), Self::Error> {
-        SessionHandle::append_system_context(self, text, key)
+    ///
+    /// # Errors
+    ///
+    /// Why the agent could not take it (not attached, or the daemon's
+    /// refusal or silence).
+    pub async fn append_system_context(&self, text: String, key: String) -> Result<(), String> {
+        crate::client::runner::append_system_context(self.0.clone(), &text, &key)
             .await
-            .map(drop)
+            .map_err(|err| err.to_string())
     }
 }
 

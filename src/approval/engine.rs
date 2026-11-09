@@ -399,15 +399,6 @@ impl ApprovalEngine {
         state.allow_cache.clear();
     }
 
-    /// Forget the input admitted under `key` (it was cancelled before the
-    /// model saw it). Returns whether it was recorded.
-    pub fn forget_user_input(&self, session_id: &SessionId, key: &InputKey) -> bool {
-        self.sessions
-            .lock()
-            .get_mut(session_id)
-            .is_some_and(|state| state.transcript.forget_user_input(key))
-    }
-
     /// A run of `session_id` started. It clears a Stop only when it carries
     /// a run id the engine has not seen start before; a replayed or late
     /// start of a known run, or a start without an id, leaves the Stop.
@@ -612,19 +603,6 @@ impl ApprovalEngine {
         config::write_trusted(path, self.rules_trust.as_deref(), |path| {
             config::persist_realm_checklist(path, view)
         })
-    }
-
-    /// `/auto resume`: clear a pause (including the total-denials pause) and
-    /// reset counters; in another mode, switch to auto mode.
-    pub fn resume_auto(&self) {
-        if self.mode() != PermissionMode::Auto {
-            self.set_mode(PermissionMode::Auto);
-            return;
-        }
-        let resumed = self.auto.lock().resume(true);
-        if resumed {
-            self.emit(ApprovalEvent::Resumed);
-        }
     }
 
     fn emit(&self, event: ApprovalEvent) {
@@ -2550,18 +2528,11 @@ mod tests {
         let rig = rig(vec![block("D1")], DEFAULT_ESCALATION_TIMEOUT);
         rig.engine
             .record_user_input(&rig.session, InputKey::new("k1"), "USER-ASK deploy it");
-        rig.engine
-            .record_user_input(&rig.session, InputKey::new("k2"), "never mind");
-        assert!(
-            rig.engine
-                .forget_user_input(&rig.session, &InputKey::new("k2"))
-        );
         let _ = call(&rig, "c0", "read_file", &json!({"path": "a"})).await;
         let _ = decide(&rig, "c1", &push()).await;
         let seen = rig.classifier.seen.lock().clone();
         assert_eq!(seen.len(), 1);
         assert!(seen[0].contains("USER-ASK deploy it"));
-        assert!(!seen[0].contains("never mind"));
         assert!(seen[0].contains("read_file"));
         let denial = rig.engine.transcript(&rig.session).unwrap();
         assert!(denial.contains("git push"));

@@ -26,7 +26,7 @@ pub(super) struct ShellTask {
 impl Workbench {
     /// [`crate::ui::Effect::RunShell`]: run `command`, its output going to
     /// `agent`.
-    pub fn run_shell<C: AgentContext>(&mut self, id: ShellRunId, command: String, agent: C) {
+    pub fn run_shell(&mut self, id: ShellRunId, command: String, agent: AgentContext) {
         self.cancel_shell();
         let shell = match &self.user_shell {
             Ok(shell) => Arc::clone(shell),
@@ -44,8 +44,7 @@ impl Workbench {
                 Ok(run) => {
                     let context = agent
                         .append_system_context(context_text(&command, &run), run_key())
-                        .await
-                        .map_err(|err| err.to_string());
+                        .await;
                     ShellOutcome::Ran { run, context }
                 }
                 Err(err) => ShellOutcome::Failed(err.to_string()),

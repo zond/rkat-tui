@@ -48,6 +48,7 @@ impl HelperTag {
 
     /// Nesting depth (1 for a helper of the session's own agent).
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn depth(&self) -> usize {
         self.path.len()
     }
@@ -92,16 +93,12 @@ pub struct HelperStatus {
     pub depth: usize,
 }
 
-/// What the runner forwards to the UI.
+/// What the follower reports of a helper (the daemon reads a helper's
+/// tool catalog when its run ends).
 #[derive(Debug, Clone)]
 pub enum HelperUpdate {
     /// An event of a helper, scoped to it.
     Event(ScopedAgentEvent),
-    /// The helpers running now changed.
-    Live(Vec<HelperStatus>),
-    /// A helper's events could not be followed: its usage (cost) is
-    /// unmeasured. Carries the helper's label.
-    Unmeasured(String),
 }
 
 /// A helper's key: its mob and its member identity.
@@ -265,19 +262,11 @@ impl HelperRegistry {
     /// and its bindings from memory (the bindings file keeps them for a
     /// later resume). New spawns for it are refused until it registers
     /// again. Idempotent. Its helpers' mob members are not retired here
-    /// ([`crate::mobs::Helpers::cancel_for`] does that).
+    /// ([`crate::mobs::cancel_helpers`] does that).
     pub fn forget_session(&self, session: &SessionId) {
         self.sessions.write().remove(session);
-        let dropped = {
-            let mut live = self.live.lock();
-            let before = live.len();
-            live.retain(|_, tag| &tag.owner != session);
-            live.len() != before
-        };
+        self.live.lock().retain(|_, tag| &tag.owner != session);
         self.bindings.forget_owner(session);
-        if dropped {
-            self.publish_live();
-        }
     }
 
     /// `mob` was created for the bridge session `owner`.
@@ -393,7 +382,6 @@ impl HelperRegistry {
     pub fn spawning(&self, key: HelperKey, tag: HelperTag) -> Result<(), BindingsError> {
         self.bindings.bind(&key, &tag)?;
         self.live.lock().insert(key, tag);
-        self.publish_live();
         Ok(())
     }
 
@@ -408,9 +396,7 @@ impl HelperRegistry {
     /// The helper `key` is not running here (its mob stopped, or it was
     /// never observable); its binding stays for a rebuild.
     pub fn finished(&self, key: &HelperKey) {
-        if self.live.lock().shift_remove(key).is_some() {
-            self.publish_live();
-        }
+        self.live.lock().shift_remove(key);
     }
 
     /// The helper `key` left its mob for good: drop it everywhere.
@@ -424,15 +410,7 @@ impl HelperRegistry {
 
     /// `mob` was destroyed: drop its helpers everywhere. Idempotent.
     pub fn mob_destroyed(&self, mob: &MobId) {
-        let dropped = {
-            let mut live = self.live.lock();
-            let before = live.len();
-            live.retain(|key, _| &key.mob != mob);
-            live.len() != before
-        };
-        if dropped {
-            self.publish_live();
-        }
+        self.live.lock().retain(|key, _| &key.mob != mob);
         if let Err(err) = self.bindings.remove_mob(mob) {
             tracing::warn!(mob = %mob, error = %err, "cannot drop the mob's bindings");
         }
@@ -451,6 +429,7 @@ impl HelperRegistry {
 
     /// Running helpers.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn live(&self) -> Vec<HelperStatus> {
         self.live
             .lock()
@@ -468,16 +447,13 @@ impl HelperRegistry {
         let _ = self.updates.send(HelperUpdate::Event(tag.scope(event)));
     }
 
-    /// A helper's events cannot be followed: report its usage as
-    /// unmeasured.
+    /// A helper's events cannot be followed (clients follow it on its
+    /// mob's own stream; the daemon reads its catalog at its next call).
     pub fn follow_failed(&self, tag: &HelperTag) {
-        let _ = self
-            .updates
-            .send(HelperUpdate::Unmeasured(tag.label().to_string()));
-    }
-
-    fn publish_live(&self) {
-        let _ = self.updates.send(HelperUpdate::Live(self.live()));
+        tracing::warn!(
+            helper = tag.label(),
+            "the daemon cannot follow a helper's events"
+        );
     }
 }
 
@@ -529,7 +505,7 @@ mod tests {
     fn owners_follow_mob_creators_spawners_and_nesting() {
         use meerkat_mob::{AgentIdentity, MobId};
 
-        let (registry, mut rx) = HelperRegistry::new();
+        let (registry, _rx) = HelperRegistry::new();
         let a = SessionId::new();
         let b = SessionId::new();
         let implicit_a = MobId::from(format!("implicit-{a}"));
@@ -599,14 +575,6 @@ mod tests {
         registry.retired(&key);
         assert!(registry.owner_for_resume(&key).is_err());
         assert!(registry.owner_for_spawn(&nested_mob, None).is_err());
-
-        let mut lives = Vec::new();
-        while let Ok(update) = rx.try_recv() {
-            if let HelperUpdate::Live(live) = update {
-                lives.push(live.len());
-            }
-        }
-        assert_eq!(lives, vec![1, 0]);
     }
 
     #[test]
@@ -636,21 +604,6 @@ mod tests {
             registry.owner_for_spawn(&team, None),
             Err(OwnerError::UnknownMob(team))
         );
-    }
-
-    #[test]
-    fn a_helper_that_cannot_be_followed_is_reported_unmeasured() {
-        let (registry, mut rx) = HelperRegistry::new();
-        let tag = HelperTag {
-            owner: SessionId::new(),
-            path: vec!["fork-1".into()],
-            model: "m".into(),
-        };
-        registry.follow_failed(&tag);
-        assert!(matches!(
-            rx.try_recv(),
-            Ok(HelperUpdate::Unmeasured(label)) if label == "fork-1"
-        ));
     }
 
     #[test]

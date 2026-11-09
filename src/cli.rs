@@ -185,16 +185,14 @@ pub struct Args {
     /// after a bare `--attach` is the prompt.
     /// `/detach` leaves the daemon running; `/quit` stops a daemon this
     /// rkat-tui started (else it detaches or asks); `/daemon stop` shuts it
-    /// down. `attach = false` in your tui.toml makes `--no-attach` the
-    /// default.
+    /// down.
     #[arg(
         long,
         value_parser = parse_attach,
         value_name = "auto|existing|DIRECTORY|HOST:PORT",
         num_args = 0..=1,
         require_equals = true,
-        default_missing_value = "auto",
-        overrides_with = "no_attach"
+        default_missing_value = "auto"
     )]
     pub attach: Option<AttachTarget>,
 
@@ -203,11 +201,6 @@ pub struct Args {
     /// readable by others (0600 expected).
     #[arg(long, value_name = "PATH")]
     pub attach_token_file: Option<PathBuf>,
-
-    /// Host the agent in this process instead of the daemon (the escape
-    /// hatch until the in-process runner is removed; overrides `--attach`).
-    #[arg(long, overrides_with = "attach")]
-    pub no_attach: bool,
 
     /// List every `rkat-tui-mob` daemon that has an endpoint file
     /// (workspace, address, pid, uptime, clients, conversation, running or
@@ -224,16 +217,11 @@ impl Args {
         !self.no_mouse
     }
 
-    /// The attach mode the flags choose: `None` for `--no-attach` (given
-    /// last) and when neither flag is given (then `tui.toml` and the
-    /// default decide, [`crate::bootstrap::attach_mode`]).
+    /// The daemon `--attach` names; without it, the workspace's
+    /// ([`AttachTarget::Auto`]: the running one, else a started one).
     #[must_use]
-    pub fn attach_mode(&self) -> Option<AttachTarget> {
-        if self.no_attach {
-            None
-        } else {
-            self.attach.clone()
-        }
+    pub fn attach_target(&self) -> AttachTarget {
+        self.attach.clone().unwrap_or(AttachTarget::Auto)
     }
 
     /// The selected process confinement: `--no-confinement` wins over
@@ -463,9 +451,13 @@ mod tests {
     }
 
     #[test]
-    fn attach_values_follow_the_grammar_and_no_attach_is_in_process() {
-        let mode = |argv: &[&str]| Args::try_parse_from(argv).unwrap().attach_mode();
+    fn attach_values_follow_the_grammar_and_the_workspaces_daemon_is_the_default() {
+        let mode = |argv: &[&str]| Args::try_parse_from(argv).unwrap().attach;
         assert_eq!(mode(&["rkat-tui"]), None);
+        assert_eq!(
+            Args::try_parse_from(["rkat-tui"]).unwrap().attach_target(),
+            AttachTarget::Auto
+        );
         assert_eq!(mode(&["rkat-tui", "--attach"]), Some(AttachTarget::Auto));
         assert_eq!(
             mode(&["rkat-tui", "--attach=auto"]),
@@ -475,12 +467,8 @@ mod tests {
             mode(&["rkat-tui", "--attach=existing"]),
             Some(AttachTarget::Existing)
         );
-        assert_eq!(mode(&["rkat-tui", "--no-attach"]), None);
-        assert_eq!(mode(&["rkat-tui", "--attach", "--no-attach"]), None);
-        assert_eq!(
-            mode(&["rkat-tui", "--no-attach", "--attach"]),
-            Some(AttachTarget::Auto)
-        );
+        // The in-process runner is gone, and its flag with it.
+        assert!(Args::try_parse_from(["rkat-tui", "--no-attach"]).is_err());
         // A prompt after a bare --attach is still the prompt.
         let args = Args::try_parse_from(["rkat-tui", "--attach", "fix it"]).unwrap();
         assert_eq!(args.prompt.as_deref(), Some("fix it"));

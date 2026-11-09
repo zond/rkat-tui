@@ -29,14 +29,14 @@
 //! seam: the agent's dispatcher consults it immediately before every tool
 //! call, and a denial comes back to the model as an ordinary tool error
 //! (`policy_denied`) carrying [`deny_message`], so the run continues. The
-//! gate is installed per session build (see [`admission::install`]).
+//! daemon puts a gate on every member and helper it seats (its root
+//! member's admission and the spawn customizer, see [`crate::mobs`]).
 //! [`engine::ApprovalEngine`] joins the parts below: tier policy
 //! ([`policy`]), rules and settings ([`rules`]), shell analysis ([`shell`]),
 //! the classifier and its prompts ([`classifier`], [`prompts`]), denial
 //! counters ([`counters`]), the escalation broker ([`escalation`]) and the
 //! reasoning-blind classifier transcript ([`transcript`]). [`desk`] turns
-//! the human's answer into the engine's decision for both hosts (the
-//! in-process runner and the daemon).
+//! the human's answer into the engine's decision for the daemon.
 
 pub mod admission;
 pub mod catalog;
@@ -60,7 +60,7 @@ use rules::{Rule, RuleId, RulesError};
 use std::fmt;
 
 pub use admission::ApprovalGate;
-pub use catalog::{ServiceToolOrigins, ToolOrigins};
+pub use catalog::ToolOrigins;
 pub use engine::{ApprovalConfig, ApprovalEngine};
 pub use transcript::InputKey;
 

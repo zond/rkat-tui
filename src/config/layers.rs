@@ -96,9 +96,10 @@ pub enum Notice {
         /// Number of ignored model entries.
         count: usize,
     },
-    /// A file the user does not own (the project file) set `attach`; only
-    /// user layers may (it decides where the agent runs).
-    AttachIgnored {
+    /// A file set `attach`, which chose the in-process runner with `false`
+    /// until it was removed: the agent always runs in the workspace's
+    /// daemon now.
+    AttachRetired {
         /// The rules file.
         path: PathBuf,
     },
@@ -188,9 +189,9 @@ impl fmt::Display for Notice {
                 "ignored {count} [thinking] setting(s) in {}: only your own tui.toml files set thinking",
                 path.display()
             ),
-            Self::AttachIgnored { path } => write!(
+            Self::AttachRetired { path } => write!(
                 f,
-                "ignored `attach` in {}: only your own tui.toml files choose attach mode",
+                "ignored `attach` in {}: the agent always runs in the workspace's daemon (the in-process runner was removed); delete the key",
                 path.display()
             ),
             Self::DaemonIgnored { path } => write!(
@@ -280,9 +281,6 @@ pub struct Layered {
     pub shell: ShellSettings,
     /// Merged `[ui]` settings.
     pub ui: UiSettings,
-    /// `attach = true`/`false` in a user layer (`None`: not set, the
-    /// default attaches).
-    pub attach: Option<bool>,
     /// `[daemon] principal` of the user layers (the last one set).
     pub daemon_principal: Option<String>,
     /// Non-fatal observations to show once.
@@ -352,7 +350,6 @@ pub fn load_layered_with(
     let mut helpers = HelperSettings::default();
     let mut shell = ShellSettings::default();
     let mut ui = UiSettings::default();
-    let mut attach = None;
     let mut daemon_principal = None;
 
     let mut user_layers: Vec<(Option<PathBuf>, RuleOrigin, RulesFile)> = Vec::new();
@@ -447,8 +444,8 @@ pub fn load_layered_with(
         if let Some(section) = &file.ui {
             ui.apply(section);
         }
-        if let Some(on) = file.attach {
-            attach = Some(on);
+        if file.attach.is_some() {
+            notices.push(Notice::AttachRetired { path: path.clone() });
         }
         if let Some(principal) = file.daemon.as_ref().and_then(|d| d.principal.clone()) {
             daemon_principal = Some(principal);
@@ -492,7 +489,7 @@ pub fn load_layered_with(
         });
     }
     if project.attach.is_some() {
-        notices.push(Notice::AttachIgnored {
+        notices.push(Notice::AttachRetired {
             path: project_path.clone(),
         });
     }
@@ -602,7 +599,6 @@ pub fn load_layered_with(
         helpers,
         shell,
         ui,
-        attach,
         daemon_principal,
         notices,
     })

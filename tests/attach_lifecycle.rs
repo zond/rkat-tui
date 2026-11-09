@@ -13,7 +13,7 @@ mod rig;
 
 use std::time::Duration;
 
-use common::{ScriptedLlmClient, Step, TIMEOUT, Workspace, args_for};
+use common::{ScriptedLlmClient, TIMEOUT, Workspace, args_for};
 use rig::{Client, Running};
 use rkat_tui::client::remote;
 use rkat_tui::client::runner::quit_decision;
@@ -369,65 +369,6 @@ async fn list_shows_a_live_daemon_and_removes_a_stale_file() {
     assert_eq!(rows[0].found, Found::Stale { removed: true });
     assert!(!file.exists());
     assert!(list::line(&rows[0], chrono::Utc::now()).ends_with("\tstale (file removed)"));
-}
-
-/// `--no-attach` while a daemon serves the workspace: the daemon is found
-/// and described (workspace, pid, uptime, idle), the notice says what
-/// running alongside means; `--no-attach -c` on the daemon's current
-/// conversation gets a plain message instead of the engine's "served by
-/// another runtime owner".
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn no_attach_beside_a_live_daemon_says_so_and_explains_its_conversation() {
-    use rkat_tui::client::alongside;
-    let ws = Workspace::new();
-    let llm = ScriptedLlmClient::new(vec![Step::Text("a")]);
-    let daemon = Running::start(&ws.root, &llm).await;
-    let files = [common::endpoint_file_for(&ws.root)];
-    let live = alongside::find(&files).await.expect("the daemon is found");
-    let now = chrono::Utc::now();
-    let described = live.describe(now);
-    let workspace = std::fs::canonicalize(&ws.root).unwrap();
-    assert!(
-        described.contains(&workspace.display().to_string())
-            && described.contains(&format!("pid {}", std::process::id()))
-            && described.contains("up ")
-            && described.contains("idle"),
-        "{described}"
-    );
-    let notice = live.notice(now);
-    assert!(
-        notice.contains("no memory search") && notice.contains("two agents"),
-        "{notice}"
-    );
-    assert_eq!(live.session(), Some(&daemon.session));
-
-    // -c in-process on the daemon's conversation.
-    let refused = common::Rig::try_start_opts(
-        &ws.root,
-        &llm,
-        rkat_tui::runner::Start::Resume(daemon.session.to_string()),
-        common::RigOptions::default(),
-    )
-    .await
-    .err()
-    .expect("the engine refuses the daemon's session");
-    assert_eq!(
-        alongside::served_elsewhere(&refused),
-        Some(daemon.session.clone())
-    );
-    let plain = alongside::explain(&refused, &live).expect("explained");
-    assert!(
-        plain.to_string().starts_with("that conversation (")
-            && plain
-                .to_string()
-                .contains("is running in the workspace's daemon; attach to it"),
-        "{plain}"
-    );
-    // "Stop the daemon, then run in this process": it ends, and nothing
-    // is found any more.
-    live.stop(&files).await.unwrap();
-    daemon.ended().await;
-    assert!(alongside::find(&files).await.is_none());
 }
 
 /// The CI failure this guards (`status_reports_the_daemon_its_clients_and_the_owner`

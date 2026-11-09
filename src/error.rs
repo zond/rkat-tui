@@ -191,15 +191,6 @@ pub enum TuiError {
         /// Why not.
         reason: String,
     },
-    /// `--no-attach -c`/`--resume` named the conversation the workspace's
-    /// daemon runs.
-    #[error(
-        "that conversation ({session}) is running in the workspace's daemon; attach to it (rkat-tui -c), or stop the daemon first"
-    )]
-    RunningInDaemon {
-        /// The session.
-        session: String,
-    },
 }
 
 impl TuiError {
@@ -226,7 +217,6 @@ impl TuiError {
             | Self::Approval(_)
             | Self::Confinement(_)
             | Self::ConfigDirCollision { .. }
-            | Self::RunningInDaemon { .. }
             | Self::NoDaemonAt { .. }
             | Self::AttachAddress { .. }
             | Self::NotATerminal => 2,

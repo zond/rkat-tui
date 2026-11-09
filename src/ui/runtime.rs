@@ -284,40 +284,6 @@ fn translate(event: Event, mouse: bool) -> Option<Msg> {
     }
 }
 
-/// Ask `dialog` on the terminal before the TUI opens (`--no-attach`
-/// while a daemon serves the workspace): the choice, or `None` when the
-/// user declined (Esc, Ctrl-C, end of input). The terminal is restored
-/// before this returns.
-///
-/// # Errors
-///
-/// When the terminal cannot be driven.
-pub async fn ask_alongside(
-    mut dialog: super::modal::AlongsideDialog,
-) -> Result<Option<super::modal::AlongsideChoice>, UiError> {
-    install_panic_hook();
-    let _guard = TerminalGuard::enter(false)?;
-    let mut terminal: Terminal<CrosstermBackend<Stdout>> =
-        Terminal::new(CrosstermBackend::new(io::stdout()))?;
-    terminal.clear()?;
-    let mut events = crossterm::event::EventStream::new();
-    loop {
-        terminal.draw(|frame| super::modal::draw_alongside(frame, frame.area(), &dialog))?;
-        match events.next().await {
-            Some(Ok(Event::Key(key))) if key.kind != KeyEventKind::Release => {
-                match dialog.key(&key) {
-                    super::ModalKey::Stay => {}
-                    super::ModalKey::Close => return Ok(None),
-                    super::ModalKey::Choose(choice) => return Ok(Some(choice)),
-                }
-            }
-            Some(Ok(_)) => {}
-            Some(Err(err)) => return Err(err.into()),
-            None => return Ok(None),
-        }
-    }
-}
-
 /// Run the UI until the user quits.
 ///
 /// Effects produced by [`App::update`] are forwarded on `effects`; [`Effect::Quit`]

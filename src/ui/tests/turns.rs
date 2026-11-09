@@ -163,13 +163,6 @@ fn a_turn_end_keeps_the_first_failure_and_the_last_completion() {
         merge_turn_end(Some(Err(TurnFailure::Interrupted)), done("b")),
         Err(TurnFailure::Interrupted)
     );
-    assert_eq!(
-        merge_turn_end(
-            Some(Err(TurnFailure::Unknown("u".into()))),
-            Err(TurnFailure::Interrupted)
-        ),
-        Err(TurnFailure::Interrupted)
-    );
     assert_eq!(merge_turn_end(None, done("x")), done("x"));
 }
 
@@ -242,25 +235,6 @@ fn admitted_then_delivered_in_place() {
     let fx = app.update(finished(Ok(summary()), &[]));
     assert!(fx.is_empty());
     assert!(!app.is_running());
-}
-
-#[test]
-fn requeued_delivery_returns_to_waiting() {
-    let mut app = running_app();
-    submit(&mut app, "two");
-    app.update(ack(1, Ok(())));
-    app.update(Msg::SteerDelivered(PendingId(1)));
-    assert_eq!(app.transcript.block(BlockId(1)), Some(&user("two")));
-    app.update(Msg::SteerRequeued(PendingId(1)));
-    assert_eq!(
-        app.transcript.block(BlockId(1)),
-        Some(&queued_block(1, "two", QueuedLabel::Delivering))
-    );
-    assert_eq!(app.status.queued, 1);
-    app.update(Msg::SteerDelivered(PendingId(1)));
-    assert_eq!(app.status.queued, 0);
-    assert!(app.update(finished(Ok(summary()), &[])).is_empty());
-    assert_eq!(app.transcript.blocks(), &[user("one"), user("two")]);
 }
 
 #[test]
@@ -419,104 +393,6 @@ fn rewind_asks_for_the_menu_only_when_idle_with_nothing_queued() {
         !app.update(key(KeyCode::Esc))
             .contains(&Effect::RequestRewindMenu)
     );
-}
-
-#[test]
-fn the_rewind_menu_opens_chooses_and_cancels() {
-    let mut app = App::new(StatusInfo::default());
-    // Nothing to rewind to: a notice, no menu.
-    app.update(Msg::ShowRewindMenu(Vec::new()));
-    assert!(app.modal.is_none());
-    assert!(matches!(
-        app.transcript.blocks().last(),
-        Some(Block::Notice { text, .. }) if text.contains("nothing to rewind to")
-    ));
-    let points = vec![rewind_point(4, "second"), rewind_point(1, "first")];
-    app.update(Msg::ShowRewindMenu(points.clone()));
-    assert!(matches!(app.modal, Some(Modal::Rewind(_))));
-    assert!(app.update(key(KeyCode::Esc)).is_empty());
-    assert!(app.modal.is_none());
-    app.update(Msg::ShowRewindMenu(points));
-    assert!(app.update(key(KeyCode::Down)).is_empty());
-    assert_eq!(
-        app.update(key(KeyCode::Enter)),
-        vec![Effect::Rewind(rewind_point(1, "first"))]
-    );
-    assert!(app.modal.is_none());
-    // Typed keys do not reach the input while it is open.
-    app.update(Msg::ShowRewindMenu(vec![rewind_point(1, "first")]));
-    type_str(&mut app, "x");
-    assert!(app.input.is_empty());
-    app.update(ctrl('c'));
-    assert!(app.modal.is_none());
-}
-
-#[test]
-fn rewound_cuts_the_transcript_and_refills_the_input() {
-    let mut app = App::new(StatusInfo::default());
-    for (seq, (prompt, answer)) in [("one", "first"), ("two", "second"), ("three", "third")]
-        .into_iter()
-        .enumerate()
-    {
-        submit(&mut app, prompt);
-        app.update(agent_at(
-            AgentEvent::TextDelta {
-                delta: answer.into(),
-                assistant_message_id: None,
-            },
-            seq as u64 + 1,
-        ));
-        app.update(finished(Ok(summary()), &[]));
-    }
-    app.status.context_used = Some(1234);
-    app.update(Msg::Rewound(Rewound {
-        from_end: 2,
-        text: "two".into(),
-        blocks: vec![Block::User {
-            text: "fallback".into(),
-        }],
-        notice: "rewound".into(),
-    }));
-    let users: Vec<&str> = app
-        .transcript
-        .blocks()
-        .iter()
-        .filter_map(|b| match b {
-            Block::User { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(users, vec!["one"]);
-    assert!(
-        app.transcript
-            .blocks()
-            .contains(&Block::Assistant { md: "first".into() })
-    );
-    assert!(!app.transcript.blocks().contains(&Block::Assistant {
-        md: "second".into()
-    }));
-    assert!(matches!(
-        app.transcript.blocks().last(),
-        Some(Block::Notice { text, .. }) if text == "rewound"
-    ));
-    assert_eq!(app.input.text(), "two");
-    assert_eq!(app.status.context_used, None);
-    // A transcript that does not line up shows the fork's history.
-    app.update(Msg::Rewound(Rewound {
-        from_end: 5,
-        text: "zero".into(),
-        blocks: vec![Block::User {
-            text: "fallback".into(),
-        }],
-        notice: "again".into(),
-    }));
-    assert_eq!(
-        app.transcript.blocks().first(),
-        Some(&Block::User {
-            text: "fallback".into()
-        })
-    );
-    assert_eq!(app.input.text(), "zero");
 }
 
 #[test]
@@ -887,11 +763,6 @@ fn context_gauge_tracks_usage_compaction_and_clear() {
     app.update(Msg::Status(StatusUpdate::ContextWindow(Some(200_000))));
     assert_eq!(app.status.context_used, None);
     assert_eq!(app.status.context_window, Some(200_000));
-    app.update(Msg::Status(StatusUpdate::ApproxContextWindow(128_000)));
-    assert!(app.status.window_approx);
-    assert_eq!(app.status.context_window, Some(128_000));
-    app.update(Msg::Status(StatusUpdate::ContextWindow(Some(200_000))));
-    assert!(!app.status.window_approx);
 }
 
 #[test]
@@ -961,14 +832,6 @@ fn prompts_during_the_request_are_queued_inputs_not_held_text() {
     ));
     // The wording never claims the compaction itself happened.
     assert!(!COMPACT_REQUESTED.contains("armed"));
-}
-
-#[test]
-fn an_unmeasured_helper_marks_the_cost_a_lower_bound() {
-    let mut app = App::new(StatusInfo::default());
-    let fx = app.update(Msg::HelperUnmeasured("scout".into()));
-    assert!(matches!(fx.as_slice(), [Effect::CostSnapshot(_)]), "{fx:?}");
-    assert_eq!(app.status.cost.confidence, cost::CostConfidence::Unmeasured);
 }
 
 #[test]
@@ -1133,15 +996,10 @@ fn resume_replaces_the_cost_totals() {
     // The next call adds to the resumed total.
     app.update(completed_by("a", 580_000, 0));
     assert!(footer(&app).contains(" │ $1.00"), "{}", footer(&app));
-    // Totals derived from the session's usage are marked approximate.
-    let derived = SessionCost::derived(
-        "a",
-        &Usage {
-            input_tokens: 1_000_000,
-            ..Usage::default()
-        },
-    );
-    app.update(Msg::Status(StatusUpdate::CostTotals(derived)));
+    // Approximate totals (a compaction's estimate) are marked so.
+    let mut approx = SessionCost::default();
+    approx.record_compaction("a", 1_000_000, 0);
+    app.update(Msg::Status(StatusUpdate::CostTotals(approx)));
     assert!(footer(&app).contains(" │ ~$1.00"), "{}", footer(&app));
     // A new session starts from zero: no segment.
     app.update(Msg::Status(

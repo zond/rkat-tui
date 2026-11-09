@@ -33,14 +33,10 @@
 //!   `rkat/resume`, `rkat/conversations`, `rkat/transcript`) and why
 //!   `/rewind` is not offered.
 //!
-//! The in-process runner is not reused under a session trait: it is built
-//! on the in-process [`crate::bootstrap::Runtime`] (approval desk, helper
-//! host, `fork`), none of which exists on this side of the wire, and its
-//! turns end on completion handles the daemon's stream does not carry. What
-//! the two share is the workbench and [`crate::workbench::app::build_app`].
+//! What runs on this side of the wire is the [`crate::workbench`] and the
+//! UI it starts ([`crate::workbench::app::build_app`]).
 
 pub mod address;
-pub mod alongside;
 pub mod approvals;
 pub mod catchup;
 pub mod helpers;

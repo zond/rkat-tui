@@ -26,7 +26,7 @@ use crate::ui::{MemoryTarget, Msg, NoticeLevel};
 impl Workbench {
     /// [`crate::ui::Effect::Remember`]: write the line to `AGENTS.md` and
     /// hand it to `agent`.
-    pub async fn remember<C: AgentContext>(&self, text: &str, agent: &C) {
+    pub async fn remember(&self, text: &str, agent: &AgentContext) {
         let Some(line) = remember_line(text) else {
             self.notice(NoticeLevel::Warn, "nothing to remember");
             return;
@@ -88,12 +88,7 @@ impl Workbench {
     /// `agent` the way `/remember` does (its new content as durable system
     /// context, idempotent per path and content); `SYSTEM.md`, an emptied
     /// file and anything the agent cannot take apply from the next session.
-    pub async fn memory_edited<C: AgentContext>(
-        &mut self,
-        target: MemoryTarget,
-        path: &Path,
-        agent: &C,
-    ) {
+    pub async fn memory_edited(&mut self, target: MemoryTarget, path: &Path, agent: &AgentContext) {
         let before = match self.memory_before.take() {
             Some((p, before)) if p == path => before,
             _ => None,

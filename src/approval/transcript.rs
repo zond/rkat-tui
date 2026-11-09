@@ -232,25 +232,6 @@ impl ApprovalTranscript {
         self.push(TranscriptEntry::Context { text: text.into() });
     }
 
-    /// Remove the user entry recorded under `key` (the input was cancelled
-    /// before the model saw it). Returns whether one was found.
-    pub fn forget_user_input(&mut self, key: &InputKey) -> bool {
-        let found = self.entries.iter().rposition(
-            |(e, _)| matches!(e, TranscriptEntry::User { key: Some(k), .. } if k == key),
-        );
-        self.remove_at(found)
-    }
-
-    fn remove_at(&mut self, index: Option<usize>) -> bool {
-        match index.and_then(|i| self.entries.remove(i)) {
-            Some((_, len)) => {
-                self.bytes -= len;
-                true
-            }
-            None => false,
-        }
-    }
-
     /// Record a tool call with its verdict (arguments rendered once, here).
     pub fn push_tool_call(
         &mut self,
@@ -493,17 +474,13 @@ mod tests {
     }
 
     #[test]
-    fn forget_user_input_removes_by_key_not_text() {
+    fn recording_a_key_twice_is_idempotent_and_the_same_text_twice_is_not() {
         let mut t = ApprovalTranscript::default();
         t.push_user_input(InputKey::new("k1"), "a");
         t.push_user_input(InputKey::new("k2"), "b");
         t.push_user_input(InputKey::new("k3"), "a");
-        // Recording the same key twice is idempotent.
         t.push_user_input(InputKey::new("k2"), "b");
-        assert!(t.forget_user_input(&InputKey::new("k1")));
-        assert_eq!(t.render(), "[user] b\n[user] a\n");
-        assert!(!t.forget_user_input(&InputKey::new("zzz")));
-        assert!(!t.forget_user_input(&InputKey::new("k1")));
+        assert_eq!(t.render(), "[user] a\n[user] b\n[user] a\n");
         assert_eq!(t.bytes, t.render().len());
     }
 

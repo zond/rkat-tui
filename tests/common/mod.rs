@@ -1,7 +1,6 @@
-//! Shared harness for the headless runner and classifier tests: a temporary
-//! workspace, a scripted LLM client that records every request, and a runner
-//! over the real runtime-backed service (`PersistentSessionService` +
-//! `MeerkatMachine`) with the approval gate installed.
+//! Shared test support: a temporary workspace, a scripted LLM client that
+//! records every request, and the command lines of a test realm. The
+//! daemon rig over them is `attach.rs` beside this file.
 
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -15,17 +14,10 @@ use async_trait::async_trait;
 use clap::Parser;
 use futures::StreamExt;
 use meerkat::{LlmClient, LlmDoneOutcome, LlmError, LlmEvent, LlmRequest};
-use meerkat_core::{
-    AgentEvent, Message, Provider, ProviderTag, Session, SessionId, StopReason, TurnUsage, Usage,
-};
+use meerkat_core::{Message, Provider, ProviderTag, StopReason, TurnUsage, Usage};
 use parking_lot::Mutex;
 use rkat_tui::Args;
-use rkat_tui::approval::ApprovalEngine;
-use rkat_tui::bootstrap::{self, ApprovalOverrides, BootstrapOptions, HostPaths, TuiService};
-use rkat_tui::harness::{RunnerHarness, SavedUnsent, spawn_runner};
 use rkat_tui::models::{EndpointListing, ModelLister};
-use rkat_tui::runner::Start;
-use rkat_tui::ui::{Effect, Msg, TurnOutcome};
 use serde_json::Value;
 use tempfile::TempDir;
 use tokio::sync::{Notify, mpsc};
@@ -340,185 +332,6 @@ pub fn no_lists() -> ModelLister {
                 .collect()
         })
     })
-}
-
-/// Everything a [`Rig`] can be started with.
-#[derive(Clone, Default)]
-pub struct RigOptions {
-    /// Extra command-line arguments.
-    pub args: Vec<String>,
-    /// Approval-engine overrides.
-    pub approval: ApprovalOverrides,
-    /// Model lister (default: [`no_lists`]).
-    pub lister: Option<ModelLister>,
-    /// Directories a confined shell may use besides the workspace (default:
-    /// none, so everything outside the workspace is out of reach).
-    pub host_paths: Option<HostPaths>,
-}
-
-/// A runner over a real runtime-backed service, with its channels.
-pub struct Rig {
-    pub service: Arc<TuiService>,
-    pub machine: Arc<meerkat_runtime::MeerkatMachine>,
-    pub helpers: Option<Arc<rkat_tui::mobs::Helpers>>,
-    pub approval: Arc<ApprovalEngine>,
-    /// The session lister (`resolve_session_ref` reads the service's
-    /// `SessionService::list`).
-    pub store: Arc<dyn meerkat::SessionService>,
-    pub effects: mpsc::UnboundedSender<Effect>,
-    pub ui_rx: mpsc::UnboundedReceiver<Msg>,
-    pub events: Arc<Mutex<Vec<AgentEvent>>>,
-    pub first_session: SessionId,
-    pub unsent_path: PathBuf,
-    pub task: tokio::task::JoinHandle<Option<SavedUnsent>>,
-    /// Every message received so far.
-    pub seen: Vec<Msg>,
-}
-
-impl Rig {
-    /// Bootstrap the realm at `root` with `llm` and start a runner on `start`.
-    pub async fn start(root: &Path, llm: &Arc<ScriptedLlmClient>, start: Start) -> Self {
-        Self::start_with(root, llm, start, ApprovalOverrides::default()).await
-    }
-
-    /// [`Rig::start`] with approval-engine overrides.
-    pub async fn start_with(
-        root: &Path,
-        llm: &Arc<ScriptedLlmClient>,
-        start: Start,
-        approval: ApprovalOverrides,
-    ) -> Self {
-        Self::start_opts(
-            root,
-            llm,
-            start,
-            RigOptions {
-                approval,
-                ..RigOptions::default()
-            },
-        )
-        .await
-    }
-
-    /// [`Rig::start`] with every option.
-    pub async fn start_opts(
-        root: &Path,
-        llm: &Arc<ScriptedLlmClient>,
-        start: Start,
-        options: RigOptions,
-    ) -> Self {
-        Self::try_start_opts(root, llm, start, options)
-            .await
-            .expect("bootstrap")
-    }
-
-    /// [`Rig::start_opts`], returning a bootstrap failure.
-    pub async fn try_start_opts(
-        root: &Path,
-        llm: &Arc<ScriptedLlmClient>,
-        start: Start,
-        options: RigOptions,
-    ) -> Result<Self, rkat_tui::TuiError> {
-        let extra: Vec<&str> = options.args.iter().map(String::as_str).collect();
-        let runtime = bootstrap::bootstrap(
-            &args_with(root, &extra),
-            BootstrapOptions {
-                llm_override: Some(Arc::clone(llm) as Arc<dyn LlmClient>),
-                approval: options.approval,
-                lister: Some(options.lister.unwrap_or_else(no_lists)),
-                host_paths: Some(options.host_paths.unwrap_or_default()),
-            },
-        )
-        .await?;
-        let service = Arc::clone(&runtime.service);
-        let machine = Arc::clone(&runtime.machine);
-        let helpers = runtime.helpers.clone();
-        let approval = Arc::clone(&runtime.approval.engine);
-        let store = Arc::clone(&runtime.service) as Arc<dyn meerkat::SessionService>;
-        let RunnerHarness {
-            effects,
-            ui_rx,
-            mut agent_rx,
-            first_session,
-            unsent_path,
-            task,
-        } = within(spawn_runner(runtime, &start)).await?;
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let sink = Arc::clone(&events);
-        // The UI would render these; nobody may let the runner block.
-        tokio::spawn(async move {
-            while let Some(env) = agent_rx.recv().await {
-                sink.lock().push(env.payload);
-            }
-        });
-        Ok(Self {
-            service,
-            machine,
-            helpers,
-            approval,
-            store,
-            effects,
-            ui_rx,
-            events,
-            first_session,
-            unsent_path,
-            task,
-            seen: Vec::new(),
-        })
-    }
-
-    pub fn send(&self, effect: Effect) {
-        self.effects.send(effect).unwrap();
-    }
-
-    /// The next message matching `pred` (earlier ones are kept in `seen`).
-    pub async fn wait_for(&mut self, pred: impl Fn(&Msg) -> bool) -> Msg {
-        let seen = &mut self.seen;
-        let ui_rx = &mut self.ui_rx;
-        let found = tokio::time::timeout(TIMEOUT, async {
-            loop {
-                let msg = ui_rx.recv().await.expect("runner gone");
-                seen.push(msg.clone());
-                if pred(&msg) {
-                    return msg;
-                }
-            }
-        })
-        .await;
-        match found {
-            Ok(msg) => msg,
-            Err(_) => {
-                let tail = &self.seen[self.seen.len().saturating_sub(12)..];
-                panic!("timed out waiting for a message; the last ones: {tail:#?}")
-            }
-        }
-    }
-
-    /// The next turn outcome.
-    pub async fn turn_finished(&mut self) -> TurnOutcome {
-        match self
-            .wait_for(|msg| matches!(msg, Msg::TurnFinished(_)))
-            .await
-        {
-            Msg::TurnFinished(outcome) => outcome,
-            other => panic!("not a turn outcome: {other:?}"),
-        }
-    }
-
-    /// The committed transcript of `id`.
-    pub async fn session(&self, id: &SessionId) -> Session {
-        self.service
-            .load_authoritative_session(id)
-            .await
-            .expect("load session")
-            .expect("session exists")
-    }
-
-    /// Quit and wait for the runner's shutdown.
-    pub async fn quit(self) -> Option<SavedUnsent> {
-        self.send(Effect::Quit);
-        within(self.task).await.expect("runner task")
-    }
 }
 
 /// Texts of the user messages of `messages`.

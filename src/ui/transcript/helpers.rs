@@ -40,8 +40,6 @@ pub enum HelperState {
     Failed,
     /// Its run was cancelled.
     Cancelled,
-    /// Its events could not be followed: its usage is unmeasured.
-    Unmeasured,
 }
 
 /// What a helper did last (the running header's preview).
@@ -176,17 +174,6 @@ impl Transcript {
             });
         }
         self.live_helpers = now_live;
-    }
-
-    /// Helper `label`'s usage could not be observed: its header says so
-    /// (a header is made if it has none).
-    pub fn helper_unmeasured(&mut self, label: &str) {
-        let id = self.ensure_fold(&[label]);
-        self.update_fold(id, |fold| {
-            if matches!(fold.state, HelperState::Running | HelperState::Done) {
-                fold.state = HelperState::Unmeasured;
-            }
-        });
     }
 
     /// Advance the spinner of running helper headers. Returns whether any

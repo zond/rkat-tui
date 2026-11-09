@@ -3694,3 +3694,55 @@ conversations, `/new`, `/resume`, helpers and `fork_off`. Tests that need
 the engine past the proxy (a plain session for the view-only listing, the
 engine's own `session/fork_at` refusal) use the test-support
 `Daemon::engine_side`, which holds the runtime weakly.
+
+### P4: the in-process runner is deleted
+
+`src/runner/`, `src/session/`, `src/client/alongside.rs` and the
+in-process half of `src/bootstrap/` (`Runtime`, `bootstrap`,
+`bootstrap_with`, the `TuiService` composition, `start_helpers`) are gone,
+with `--no-attach`, `Args::attach_mode`, `bootstrap::attach_mode`, the
+alongside dialog (`ui::ask_alongside`, `AlongsideDialog`) and
+`TuiError::RunningInDaemon`; `lib::run` always runs `client::run` on
+`Args::attach_target` (`--attach`, else `auto`). `tests/common/mod.rs`
+keeps the workspace, the scripted LLM and the command lines; `Rig` is
+gone, and the daemon rig (`tests/common/attach.rs`) is the only one.
+What moved first (305cea2): `TUI_OWNED_BUILTINS` to `approval::policy`,
+`DENIED_SPAWN_TOOLS` and the members' `tool_access_policy` to
+`mobs::customizer`, `AdmissionError` to `error.rs`, `blocks_from_messages`
+to `ui::transcript`. `workbench::AgentContext` is a plain type over the
+client's connection (`mob/append_system_context`), no trait.
+
+The default-features clippy lane named everything only the in-process
+runner reached, and it is deleted rather than kept for tests:
+`mobs::Helpers` (the in-process helper host; the daemon composes the same
+customizer, registry and hooks itself), `approval::ServiceToolOrigins`,
+`admission::install`, `ApprovalEngine::forget_user_input` and
+`resume_auto` (attach `/auto resume` is `rkat/set_mode auto`, which
+clears a pause the same way), the transcript's `forget_user_input`,
+`HelperUpdate::{Live, Unmeasured}`, the UI's `TurnFailure::{Unknown,
+Pending}`, `StatusUpdate::ApproxContextWindow`, `Msg::{SteerRequeued,
+HelperUnmeasured}`, `SessionCost::{derived, reconcile, mark_unmeasured}`,
+`HelperState::Unmeasured`, `workbench::tasks::read_checklist`, and the
+`/rewind` menu (`ui/rewind.rs`, `Modal::Rewind`, `Msg::{ShowRewindMenu,
+Rewound}`, `Effect::Rewind`, `Transcript::cut_before_user`): the daemon
+has no rewind (ask 1, lukacf/meerkat#2126), so `/rewind` keeps only its
+"not available" answer (`client::sessions::REWIND_UNAVAILABLE`). Tests of
+those mechanisms went with them (`attach_lifecycle::no_attach_beside_a_live_daemon_says_so_and_explains_its_conversation`,
+`ui::modal::tests::the_alongside_dialog_offers_attach_alongside_and_stop`,
+the rewind menu and rewound tests, `requeued_delivery_returns_to_waiting`,
+`an_unmeasured_helper_marks_the_cost_a_lower_bound`,
+`a_helper_that_cannot_be_followed_is_reported_unmeasured`,
+`derived_totals_are_approximate`); the ones whose other assertions still
+apply were rewritten around them (`transitions_keep_the_placeholder_in_step`,
+`a_compaction_counts_its_estimate_and_makes_the_cost_approximate`,
+`recording_a_key_twice_is_idempotent_and_the_same_text_twice_is_not`,
+`rewind_hint_snapshot`, `the_daemon_is_the_default_and_a_tui_toml_attach_key_is_ignored_with_a_notice`).
+
+The `forget_session` the in-process session called on close had no
+caller left: the daemon now forgets the gate's state of the conversation
+`/new` or `/resume` leaves (`Local::switch`; its classifier transcript,
+allow cache and, through the forget hook, its helpers), and a `/resume`
+seeds the transcript again, pinned in
+`attach_sessions::new_starts_fresh_and_resume_brings_the_old_conversation_back`
+(the transcript is there, gone after `/new`, back after `/resume`). This
+closes the gap the `tests/mobs.rs` entry recorded.

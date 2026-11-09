@@ -145,12 +145,6 @@ impl ProjectInputs {
         self.user_hooks.as_deref() == Some(self.hooks.as_path())
     }
 
-    /// Whether `--trust-project` trusts every input for this run.
-    #[must_use]
-    pub fn by_flag(&self) -> bool {
-        self.by_flag
-    }
-
     /// The recorded trust state of `file` (the flag aside).
     #[must_use]
     pub fn status(&self, file: &Path) -> TrustStatus {

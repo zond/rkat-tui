@@ -872,7 +872,6 @@ fn helper_line(fold: &HelperFold, w: usize, lead: &str, tail: &str) -> Line<'sta
         HelperState::Done => Style::default().fg(Color::Green),
         HelperState::Failed => Style::default().fg(Color::Red),
         HelperState::Cancelled => Style::default().fg(Color::Yellow),
-        HelperState::Unmeasured => Style::default().add_modifier(Modifier::DIM),
     };
     let head = truncate_to_width(&head, w);
     let rest = w.saturating_sub(display_width(&head));

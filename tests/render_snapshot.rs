@@ -1152,9 +1152,8 @@ fn the_checklist_comes_before_the_helper_panel() {
 }
 
 #[test]
-fn rewind_menu_and_hint_snapshot() {
+fn rewind_hint_snapshot() {
     use ratatui::crossterm::event::{KeyCode, KeyEvent};
-    use rkat_tui::ui::RewindPoint;
     let mut app = App::new(StatusInfo::default());
     let now = Instant::now();
     // One Esc on an empty idle input: the editor title names the second.
@@ -1165,20 +1164,4 @@ fn rewind_menu_and_hint_snapshot() {
             .starts_with(" Esc again to rewind (pick a message to continue from) "),
         "{armed:?}"
     );
-    app.update(Msg::ShowRewindMenu(vec![
-        RewindPoint {
-            message_index: 4,
-            text: "run the tests\nand fix them".into(),
-        },
-        RewindPoint {
-            message_index: 1,
-            text: "read the parser".into(),
-        },
-    ]));
-    let drawn = render(&mut app, now);
-    let joined = drawn.join("\n");
-    assert!(joined.contains("Rewind to before a message"), "{joined}");
-    assert!(joined.contains(" 1. run the tests …"), "{joined}");
-    assert!(joined.contains(" 2. read the parser"), "{joined}");
-    assert!(joined.contains("↑/↓ choose"), "{joined}");
 }

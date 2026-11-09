@@ -357,6 +357,15 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Removed
 
+- The in-process runner and `--no-attach`: `rkat-tui` is always the
+  client of the workspace's `rkat-tui-mob` daemon (started on demand), so
+  the dialog that offered to run beside a live daemon is gone too. An
+  `attach` key in a `tui.toml` is read and ignored with a start-up notice
+  (`attach = false` chose the in-process runner).
+- The `/rewind` menu: the daemon cannot rewind a conversation (the engine
+  refuses a transcript fork of a mob member's session, lukacf/meerkat#2126);
+  `/rewind` and Esc Esc say so.
+
 - The TUI's own `fork` tool (in-process only): the agent forks with the
   engine's `fork_off` in the daemon, behind the same gate.
 

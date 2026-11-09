@@ -37,14 +37,26 @@ async fn new_starts_fresh_and_resume_brings_the_old_conversation_back() {
     let mut other = Client::attach(&ws.root).await;
     client.send(Effect::StartTurn("first".into()));
     assert_eq!(client.turn_finished().await.result.unwrap().text, "one");
+    let gate_saw = |session: &str| {
+        daemon
+            .engine()
+            .transcript(&meerkat_core::SessionId::parse(session).unwrap())
+    };
+    assert!(
+        gate_saw(&first).is_some_and(|t| t.contains("first")),
+        "{:?}",
+        gate_saw(&first)
+    );
 
-    // /new: an empty transcript, a fresh session for the next prompt.
+    // /new: an empty transcript, a fresh session for the next prompt; the
+    // gate forgot the conversation left.
     client.send(Effect::NewSession);
     let cleared = client.wait_for(|m| reset(m).is_some()).await;
     assert!(reset(&cleared).unwrap().is_empty());
     client
         .saw(|m| matches!(m, Msg::Notice { text, .. } if text.starts_with("a new conversation")))
         .await;
+    assert_eq!(gate_saw(&first), None);
     client.send(Effect::StartTurn("second".into()));
     assert_eq!(client.turn_finished().await.result.unwrap().text, "two");
     assert_eq!(user_texts(&llm.recorded()[1].messages), ["second"]);
@@ -82,6 +94,12 @@ async fn new_starts_fresh_and_resume_brings_the_old_conversation_back() {
             .iter()
             .any(|b| matches!(b, Block::Assistant { md } if md == "one")),
         "{blocks:?}"
+    );
+    // Seeded again from the stored conversation.
+    assert!(
+        gate_saw(&first).is_some_and(|t| t.contains("first")),
+        "{:?}",
+        gate_saw(&first)
     );
     client
         .saw(|m| matches!(m, Msg::Notice { text, .. } if text.starts_with("resumed conversation")))

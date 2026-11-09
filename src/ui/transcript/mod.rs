@@ -129,7 +129,6 @@ impl HelperState {
             Self::Done => "done",
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
-            Self::Unmeasured => "unmeasured",
         }
     }
 
@@ -652,63 +651,6 @@ impl Transcript {
             })
             .collect();
         Some(block)
-    }
-
-    /// Drop every block from `keep` on (the ids before it stay valid).
-    pub fn truncate(&mut self, keep: usize) {
-        if keep >= self.blocks.len() {
-            return;
-        }
-        let kept = |b: &BlockId| b.0 < keep;
-        self.blocks.truncate(keep);
-        self.layout.truncate(keep);
-        self.view_layout.truncate(keep);
-        self.owner.truncate(keep);
-        for slot in &mut self.owner {
-            *slot = slot.filter(kept);
-        }
-        self.by_tool_id.retain(|_, b| kept(b));
-        self.helper_folds.retain(|_, b| kept(b));
-        self.streams
-            .retain(|header, _| header.as_ref().is_none_or(kept));
-        for stream in self.streams.values_mut() {
-            stream.assistant = stream.assistant.filter(kept);
-            stream.reasoning = stream.reasoning.filter(kept);
-        }
-        self.helper_count = self
-            .blocks
-            .iter()
-            .filter(|b| matches!(b, Block::Helper(_)))
-            .count();
-    }
-
-    /// A rewind: cut the transcript before the `from_end`-th user block
-    /// from its end (1: the last), when that block's text (as typed: a
-    /// resumed block's `@` attachments left out) is `text`.
-    /// Returns whether it cut; a block that does not line up (or is
-    /// missing) leaves the transcript as it is.
-    pub fn cut_before_user(&mut self, from_end: usize, text: &str) -> bool {
-        let Some(nth) = from_end.checked_sub(1) else {
-            return false;
-        };
-        let at = self
-            .blocks
-            .iter()
-            .enumerate()
-            .rev()
-            .filter(|(i, b)| {
-                matches!(b, Block::User { .. }) && self.owner.get(*i).copied().flatten().is_none()
-            })
-            .nth(nth);
-        match at {
-            Some((i, Block::User { text: shown }))
-                if super::rewind::typed_text(shown).trim() == text.trim() =>
-            {
-                self.truncate(i);
-                true
-            }
-            _ => false,
-        }
     }
 
     /// Drop every cached layout (e.g. on resize).
@@ -2166,17 +2108,10 @@ mod tests {
         assert!(t.is_hidden(last));
         t.apply_scoped_event(&failed(meerkat_core::AgentErrorClass::Cancelled));
         assert_eq!(fold_of(&t, "scout").state, HelperState::Cancelled);
-        // A helper that left the live list while running is done; one whose
-        // events could not be followed is unmeasured.
+        // A helper that left the live list while running is done.
         t.note_live_helpers([("other", "m", 1)]);
         t.note_live_helpers(std::iter::empty());
         assert_eq!(fold_of(&t, "other").state, HelperState::Done);
-        t.helper_unmeasured("lost");
-        assert_eq!(fold_of(&t, "lost").state, HelperState::Unmeasured);
-        assert_eq!(
-            fold_of(&t, "lost").status_text(),
-            "unmeasured · 0 tool calls"
-        );
     }
 
     #[test]
@@ -2302,52 +2237,6 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert_eq!(result_line_count(&preview_result(&exact)), 20);
-    }
-    #[test]
-    fn a_rewind_cuts_before_the_chosen_user_block() {
-        let mut t = Transcript::new();
-        t.push(Block::User { text: "one".into() });
-        t.apply_agent_event(&text("first answer"));
-        t.push(Block::User { text: "two".into() });
-        t.apply_agent_event(&AgentEvent::ToolCallRequested {
-            id: "t1".into(),
-            name: "read_file".into(),
-            args: test_args(json!({"path": "a.rs"})),
-        });
-        t.push_notice(NoticeLevel::Info, "a note");
-        t.push(Block::User {
-            text: "three".into(),
-        });
-        t.apply_agent_event(&text("third answer"));
-        let before = t.len();
-        // A text that does not line up, or a block that is not there,
-        // leaves the transcript alone.
-        assert!(!t.cut_before_user(2, "three"));
-        assert!(!t.cut_before_user(4, "one"));
-        assert!(!t.cut_before_user(0, "three"));
-        assert_eq!(t.len(), before);
-        // The second user block from the end: "two" and what followed go.
-        assert!(t.cut_before_user(2, " two "));
-        assert_eq!(
-            t.blocks(),
-            &[
-                Block::User { text: "one".into() },
-                Block::Assistant {
-                    md: "first answer".into()
-                },
-            ]
-        );
-        assert_eq!(
-            t.tool_block("t1"),
-            None,
-            "the dropped call leaves the index"
-        );
-        // New output after the cut streams into a new block.
-        t.apply_agent_event(&text("again"));
-        assert_eq!(
-            t.blocks().last(),
-            Some(&Block::Assistant { md: "again".into() })
-        );
     }
 
     #[test]

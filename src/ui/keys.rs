@@ -391,14 +391,6 @@ impl App {
                     fx.push(Effect::ResumeSession(reference));
                 }
             },
-            Some(Modal::Rewind(menu)) => match menu.key(key) {
-                ModalKey::Stay => {}
-                ModalKey::Close => self.modal = None,
-                ModalKey::Choose(point) => {
-                    self.modal = None;
-                    fx.push(Effect::Rewind(point));
-                }
-            },
             Some(Modal::Model(picker)) => match picker.key(key) {
                 ModalKey::Stay => {}
                 ModalKey::Close => self.modal = None,

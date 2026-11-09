@@ -19,7 +19,6 @@
 //! that appears or is replaced mid-session is judged by what it is now.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
 use meerkat_core::{SessionId, ToolDef, ToolMutationClass, ToolProvenance, ToolSourceKind};
@@ -204,44 +203,6 @@ pub trait ToolOrigins: Send + Sync {
     /// The tools `session_id` currently offers. `None` when they cannot be
     /// read: every call is then judged as a [`ToolFamily::Foreign`] tool.
     async fn catalog(&self, session_id: &SessionId) -> Option<ToolCatalog>;
-}
-
-/// [`ToolOrigins`] over the TUI's runtime-backed service: the visible tool
-/// definitions the session's task last published (never waits behind a
-/// running turn).
-pub struct ServiceToolOrigins {
-    service: Weak<crate::bootstrap::TuiService>,
-}
-
-impl std::fmt::Debug for ServiceToolOrigins {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ServiceToolOrigins").finish_non_exhaustive()
-    }
-}
-
-impl ServiceToolOrigins {
-    /// Origins read from `service` (held weakly: the gate never keeps the
-    /// service alive).
-    #[must_use]
-    pub fn new(service: &Arc<crate::bootstrap::TuiService>) -> Self {
-        Self {
-            service: Arc::downgrade(service),
-        }
-    }
-}
-
-#[async_trait]
-impl ToolOrigins for ServiceToolOrigins {
-    async fn catalog(&self, session_id: &SessionId) -> Option<ToolCatalog> {
-        let service = self.service.upgrade()?;
-        match service.published_live_visible_tool_defs(session_id).await {
-            Ok(defs) => Some(ToolCatalog::from_defs(&defs)),
-            Err(err) => {
-                tracing::debug!(error = %err, session = %session_id, "tool definitions unavailable");
-                None
-            }
-        }
-    }
 }
 
 /// [`ToolOrigins`] that always answers with one fixed catalog (tests and

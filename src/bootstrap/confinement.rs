@@ -764,8 +764,6 @@ fn trusted_final_link(
 /// What the TUI installs for the shell, and what to tell the user.
 #[derive(Debug, Clone)]
 pub struct ConfinementPlan {
-    /// The selected mode.
-    pub mode: ConfinementArg,
     /// The shell's requirement (`TrustedHost` for `off`).
     pub shell: ShellConfinement,
     /// One-line start-up notices.
@@ -852,6 +850,7 @@ pub fn confined_environment(
 impl ConfinementPlan {
     /// The lowered requirement, `None` for `off`.
     #[must_use]
+    #[cfg(test)]
     pub fn requirement(&self) -> Option<&ExecutionConfinement> {
         match &self.shell {
             ShellConfinement::Required { requirement } => Some(requirement),
@@ -1084,7 +1083,6 @@ pub fn plan(
             );
         }
         return Ok(ConfinementPlan {
-            mode,
             shell: ShellConfinement::TrustedHost,
             notices,
             shell_env: None,
@@ -1105,7 +1103,6 @@ pub fn plan(
         }
     })?;
     Ok(ConfinementPlan {
-        mode,
         shell: ShellConfinement::Required { requirement },
         notices,
         shell_env: Some(confined_environment(std::env::vars_os())),

@@ -22,7 +22,6 @@ pub mod markdown;
 pub mod modal;
 mod mouse;
 pub mod render;
-pub mod rewind;
 pub mod runtime;
 pub mod search;
 pub mod selection;
@@ -51,7 +50,7 @@ pub use commands::{
 };
 #[cfg(any(test, feature = "test-support"))]
 pub use compaction::CompactMode;
-pub use compaction::{CompactFailure, CompactionGauge, CompactionPolicy, CompactionTrigger};
+pub use compaction::{CompactFailure, CompactionGauge, CompactionPolicy};
 #[cfg(any(test, feature = "test-support"))]
 pub use cost::{CostConfidence, CostReadout, UsageTotals};
 pub use cost::{SessionCost, SessionCostSnapshot};
@@ -60,11 +59,10 @@ pub use history::History;
 pub use input::{InputEditor, StashOutcome};
 pub use keymap::{Action, EditAction};
 pub use modal::{
-    AlongsideChoice, AlongsideDialog, EscalationAnswer, EscalationDialog, EscalationId, Modal,
-    ModalKey, ModelPicker, PlanChoice, PlanDialog, QuitChoice, QuitDialog, ResumePicker,
+    EscalationAnswer, EscalationDialog, EscalationId, Modal, ModalKey, ModelPicker, PlanChoice,
+    PlanDialog, QuitChoice, QuitDialog, ResumePicker,
 };
-pub use rewind::{RewindMenu, RewindPoint, Rewound};
-pub use runtime::{UiChannels, UiError, ask_alongside, run_ui};
+pub use runtime::{UiChannels, UiError, run_ui};
 pub use search::{HistorySearch, SearchOutcome};
 pub use selection::{CellPos, SelectMode, Selection};
 #[cfg(any(test, feature = "test-support"))]
@@ -146,30 +144,18 @@ pub enum TurnFailure {
     /// cancelled).
     #[error("interrupted")]
     Interrupted,
-    /// What the runtime did with an input is not known (a receipt without
-    /// an outcome, a completion channel that closed, an input reported
-    /// terminal at admission without an outcome). Never resubmit it.
-    #[error("outcome unknown: {0}")]
-    Unknown(String),
-    /// The turn waits for an external tool result rkat-tui does not provide.
-    #[error("pending: the turn waits for an external result for `{tool}`")]
-    Pending {
-        /// The tool whose result the turn waits for.
-        tool: String,
-    },
 }
 
 impl TurnFailure {
     /// How much this end weighs against the turn's other runs' ends
     /// ([`merge_turn_end`]): a failure outranks an interruption, which
-    /// outranks an unknown or pending end, which outranks a completion (0).
+    /// outranks a completion (0).
     #[must_use]
     pub fn rank(end: &Result<TurnSummary, Self>) -> u8 {
         match end {
             Ok(_) => 0,
-            Err(Self::Unknown(_) | Self::Pending { .. }) => 1,
-            Err(Self::Interrupted) => 2,
-            Err(Self::Failed(_)) => 3,
+            Err(Self::Interrupted) => 1,
+            Err(Self::Failed(_)) => 2,
         }
     }
 }
@@ -272,9 +258,6 @@ pub enum StatusUpdate {
     ContextWindow(Option<u64>),
     /// The helpers (mob members) running now.
     Helpers(Vec<crate::mobs::HelperStatus>),
-    /// An estimated context window (the model is not in the catalog; the
-    /// window is a family or provider default). The gauge shows `~`.
-    ApproxContextWindow(u64),
     /// Replace the session's cost totals (new or resumed session).
     CostTotals(SessionCostSnapshot),
     /// Attach mode: the daemon connection's state, shown first in the
@@ -351,9 +334,6 @@ pub enum Msg {
     /// The runtime wrote a steered message into the conversation (at a model
     /// boundary of the running turn, or as a follow-up turn).
     SteerDelivered(PendingId),
-    /// The runtime discarded a delivered message's application (its step was
-    /// stopped) and holds it again for redelivery.
-    SteerRequeued(PendingId),
     /// The runner's answer to [`Effect::RecallQueued`]: the steered
     /// messages the runtime abandoned before they joined the run (oldest
     /// first; back to the editor), and the cancels that failed. Admitted
@@ -410,13 +390,6 @@ pub enum Msg {
     Status(StatusUpdate),
     /// Open the resume picker with `(ref, label)` items.
     ShowResumePicker(Vec<(String, String)>),
-    /// Open the rewind menu (answer to [`Effect::RequestRewindMenu`]): the
-    /// session's user messages, newest first.
-    ShowRewindMenu(Vec<RewindPoint>),
-    /// The runner forked the session before the chosen message and the TUI
-    /// runs on the fork now (answer to [`Effect::Rewind`]; a refusal is a
-    /// notice).
-    Rewound(Rewound),
     /// Open the model picker (answer to [`Effect::RequestModelPicker`]): one
     /// group per endpoint, the current endpoint and model first; a group's
     /// warning says why its list is missing.
@@ -436,9 +409,6 @@ pub enum Msg {
     /// `CompactionStarted`/`Completed` events confirm the compaction itself;
     /// `RequestedCompactionSkipped` says why nothing was compacted.
     CompactRequested(Result<(), CompactFailure>),
-    /// Some of helper `label`'s usage could not be observed (its events
-    /// could not be followed): the cost readout becomes a lower bound.
-    HelperUnmeasured(String),
     /// The terminal gained (`true`) or lost (`false`) the focus.
     Focus(bool),
     /// The integrator resolved `/memory`'s file (and created a missing
@@ -597,13 +567,9 @@ pub enum Effect {
     ResumeSession(String),
     /// Load session list; answer with [`Msg::ShowResumePicker`].
     RequestResumePicker,
-    /// `/rewind` (Esc Esc on an empty idle input): list the session's user
-    /// messages; answer with [`Msg::ShowRewindMenu`].
+    /// `/rewind` (Esc Esc on an empty idle input): the client says why the
+    /// daemon cannot rewind a conversation (an engine ask).
     RequestRewindMenu,
-    /// Fork the idle session just before this user message and switch to
-    /// the fork (the previous session stays as it was); answered with
-    /// [`Msg::Rewound`] or a notice.
-    Rewind(RewindPoint),
     /// Answer an escalation.
     RespondEscalation(EscalationId, EscalationAnswer),
     /// Persist an approval rule.
@@ -848,10 +814,6 @@ impl StatusInfo {
             StatusUpdate::ContextWindow(window) => {
                 self.context_window = window;
                 self.window_approx = false;
-            }
-            StatusUpdate::ApproxContextWindow(window) => {
-                self.context_window = Some(window);
-                self.window_approx = true;
             }
             StatusUpdate::Helpers(helpers) => self.helpers = helpers.len(),
             StatusUpdate::CostTotals(cost) => self.cost = cost,
@@ -1441,7 +1403,6 @@ impl App {
             }
             Msg::SteerAck { id, result } => self.steer_ack(id, result, now, &mut fx),
             Msg::SteerDelivered(id) => self.pending.show_delivered(&mut self.transcript, id),
-            Msg::SteerRequeued(id) => self.pending.show_waiting_again(&mut self.transcript, id),
             Msg::Recalled { recalled, errors } => self.recalled(&recalled, &errors),
             Msg::QuitDecided(decision) => self.quit_decided(decision, &mut fx),
             Msg::Hangup => self.leave(None, &mut fx),
@@ -1516,8 +1477,6 @@ impl App {
                     Some(_) => {}
                 }
             }
-            Msg::ShowRewindMenu(points) => self.show_rewind_menu(points),
-            Msg::Rewound(rewound) => self.rewound(rewound),
             Msg::ShowModelPicker(groups) => {
                 if matches!(self.modal, None | Some(Modal::Keys)) && self.parked.is_none() {
                     self.modal = Some(Modal::Model(ModelPicker::new(groups)));
@@ -1557,11 +1516,6 @@ impl App {
             }
             Msg::EditorClosed(closed) => self.editor_closed(closed, &mut fx),
             Msg::ShellFinished { id, outcome } => self.shell_finished(id, outcome, now, &mut fx),
-            Msg::HelperUnmeasured(label) => {
-                self.transcript.helper_unmeasured(&label);
-                self.status.cost.mark_unmeasured(&label);
-                fx.push(Effect::CostSnapshot(self.status.cost.clone()));
-            }
             Msg::Checklist(list) => {
                 self.checklist = list;
                 self.checklist_note = None;

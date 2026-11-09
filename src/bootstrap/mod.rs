@@ -1,41 +1,27 @@
-//! Realm, config, factory and session-service construction.
-//!
-//! The TUI hosts its sessions on Meerkat's runtime-backed path, the one the
-//! product surfaces (CLI, REST, RPC) use: a [`PersistentSessionService`] over
-//! the realm's stores, with a [`MeerkatMachine`] owning input admission
-//! (Queue/Steer), interruption, terminal publication and resume. Both halves
-//! come from [`build_runtime_backed_service_with_default_reconfigure_host`],
-//! which also installs the session-LLM reconfigure host (the model hot swap
-//! of a later phase relies on it).
+//! What the daemon builds before it composes its engine host: the realm,
+//! the config, the agent factory, the approval engine and the client's
+//! view of the workspace.
 //!
 //! 1. [`read_layers`] resolves the [`RuntimeScope`] and reads the layered
 //!    `tui.toml` once ([`Layers`]; for `--isolated` this mints a fresh
 //!    realm id, so call it once); [`prepare`] adds the realm [`Config`].
-//! 2. [`bootstrap_with`] opens the realm persistence and composes the service.
-//!
-//! [`bootstrap`] runs both back to back.
-//!
-//! [`bootstrap_with`] also builds the approval engine ([`approval::build`]):
-//! every session the TUI opens installs its gate as the build's
-//! `ToolDispatchAdmission` (see [`crate::session`]).
-//!
-//! It also lowers `--confinement` into the shell's OS confinement
-//! ([`confinement::plan`], installed with `AgentFactory::with_shell_confinement`),
-//! discovers the LLM endpoints ([`crate::endpoints`]), picks the start-up
-//! model ([`plan_model`]) and loads the price table.
+//! 2. [`assemble`] picks the start-up model ([`plan_model`]) on the
+//!    discovered endpoints ([`crate::endpoints`]), lowers `--confinement`
+//!    into the shell's OS confinement ([`confinement::plan`], installed
+//!    with `AgentFactory::with_shell_confinement`), builds the approval
+//!    engine ([`approval::build`]), opens the realm persistence, takes the
+//!    realm lease and builds the factory; the daemon composes its
+//!    JSON-RPC runtime and mob host over the result (`crate::daemon`),
+//!    and every member and helper it seats carries the gate as its
+//!    `ToolDispatchAdmission`.
 //!
 //! The factory reads the realm's own `config.toml` through its owner
-//! ([`Runtime::realm_config`], see [`realm_config`]) on every build. The
-//! configured endpoints are projected into that document as realm
-//! connections ([`crate::endpoints::project_endpoints`]), and models only an
-//! endpoint knows get a `[models.<id>]` profile there
-//! ([`Runtime::ensure_profile`]), so a session's auth binding and model
-//! resolve for `rkat`, REST and RPC on the same realm too.
-//!
-//! With the `mob` feature it hosts helpers ([`crate::mobs`]): the factory's
-//! mob tools are on, the builder's default mob-tools slot carries the mob
-//! host's tool factory, and every helper spawn passes the TUI's customizer
-//! (approval gate, model binding, file tools).
+//! ([`realm_config`]) on every build. The configured endpoints are
+//! projected into that document as realm connections
+//! ([`crate::endpoints::project_endpoints`]), and models only an endpoint
+//! knows get a `[models.<id>]` profile there
+//! ([`crate::endpoints::ensure_model_profile`]), so a session's auth binding
+//! and model resolve for `rkat`, REST and RPC on the same realm too.
 //!
 //! Context ([`instructions`], [`memory_probe`], [`mcp`]): a user-global
 //! `SYSTEM.md` becomes the config's `system_prompt_file` when the realm sets
@@ -56,16 +42,12 @@ pub mod realm_config;
 pub mod scope;
 pub mod trust;
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
-use meerkat::surface::build_runtime_backed_service_with_default_reconfigure_host;
-use meerkat::{AgentFactory, FactoryAgentBuilder, LlmClient, PersistentSessionService};
+use meerkat::{AgentFactory, LlmClient};
 use meerkat_core::connection::RealmId;
 use meerkat_core::{AuthBindingRef, Config, ConfigStore, McpServerConfig, Provider};
-use meerkat_runtime::MeerkatMachine;
 use meerkat_store::{
     RealmBackend, RealmLeaseGuard, realm_lease_dir, realm_paths_in, start_realm_lease_in,
 };
@@ -77,12 +59,8 @@ use crate::endpoints::{
     StartupRequest, ensure_model_profile, needs_lookup, plan_startup, project_endpoints,
 };
 use crate::error::TuiError;
-use crate::mobs::Helpers;
-use crate::models::{ModelCache, ModelEntry, ModelLister, live_lister};
-use crate::pricing::PricingSetup;
+use crate::models::{ModelCache, ModelLister, live_lister};
 use crate::thinking::ThinkingTable;
-use crate::tools::FileToolDispatcher;
-use meerkat_core::AgentToolDispatcher;
 use meerkat_core::lifecycle::run_primitive::AnthropicThinkingConfig;
 
 pub use approval::{ApprovalOverrides, ApprovalParts};
@@ -92,18 +70,6 @@ pub use instructions::InstructionSources;
 pub use persona::{CODING_PERSONA, HELPER_PERSONA};
 pub use realm_config::RealmConfigStore;
 pub use scope::{RuntimeScope, load_config, resolve_scope};
-
-/// Live sessions one TUI process may hold (the primary session plus a few
-/// retiring ones while `/new` and `/resume` switch).
-const MAX_SESSIONS: usize = 8;
-
-/// File in the realm directory where the session-LLM reconfigure host keeps
-/// its state (the same name the REST surface uses).
-/// The surface name this host's realm lease records.
-pub const LEASE_SURFACE: &str = "rkat-tui";
-
-/// The session service the TUI drives.
-pub type TuiService = PersistentSessionService<FactoryAgentBuilder>;
 
 /// The model a session runs on, and where it comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -138,138 +104,6 @@ impl ModelChoice {
     }
 }
 
-/// Everything a running TUI needs from the engine.
-pub struct Runtime {
-    /// Project, conventions roots and realm.
-    pub scope: RuntimeScope,
-    /// The realm document the factory reads on every build (see
-    /// [`realm_config`]); endpoints and profiles are written into it.
-    pub realm_config: Arc<RealmConfigStore>,
-    /// The effective config as of the last profile change: the model
-    /// registry the context gauge and the compaction policy read windows
-    /// from.
-    pub effective: Arc<parking_lot::RwLock<Config>>,
-    /// Bumped whenever [`Runtime::ensure_profile`] adds a profile. An agent
-    /// captures its model registry when it is built, so a session built at
-    /// an older generation is rebuilt before it can switch to a new model.
-    pub profile_generation: Arc<AtomicU64>,
-    /// Model of new sessions.
-    pub choice: ModelChoice,
-    /// The `[thinking]` settings every session's provider params follow.
-    pub thinking: ThinkingTable,
-    /// The LLM endpoints of this process.
-    pub endpoints: EndpointRegistry,
-    /// Model lists fetched during start-up, if any.
-    pub models: Option<ModelCache>,
-    /// Fetches the endpoints' model lists.
-    pub lister: ModelLister,
-    /// The price table and where to refresh it.
-    pub pricing: PricingSetup,
-    /// The shell's OS confinement.
-    pub confinement: ConfinementPlan,
-    /// Session lifecycle substrate.
-    pub service: Arc<TuiService>,
-    /// Runtime control plane: input admission, interrupt, registrations.
-    pub machine: Arc<MeerkatMachine>,
-    /// Backend pinned in the realm manifest.
-    pub backend: RealmBackend,
-    /// This process's realm lease, held from the moment persistence is
-    /// opened until [`Runtime::release_realm_lease`] (or the drop) on exit:
-    /// what tells `rkat realm prune` and realm inspection that the realm is
-    /// live, as every other long-running host does.
-    pub realm_lease: Option<RealmLeaseGuard>,
-    /// The approval engine and the channels the runner serves.
-    pub approval: ApprovalParts,
-    /// The helper (mob member) host; `None` without the `mob` feature.
-    pub helpers: Option<Arc<Helpers>>,
-    /// Where the instruction files of every session build come from.
-    pub instructions: InstructionSources,
-    /// The declarative MCP servers every session build carries (reloaded
-    /// by `/trust`).
-    pub mcp_servers: Vec<McpServerConfig>,
-    /// The workspace files that make the host run something, and their
-    /// trust (see [`project_trust`]).
-    pub project_inputs: project_trust::ProjectInputs,
-    /// The engine's task store (see [`tasks_db`]), which the Ctrl+T
-    /// checklist reads.
-    pub tasks_db: PathBuf,
-    /// The `tui.toml` `[ui]` settings.
-    pub ui: crate::config::UiSettings,
-    /// The context-compaction policy of the `tui.toml` `[auto]` settings.
-    pub compaction: crate::ui::compaction::CompactionPolicy,
-    /// How deep helpers may nest (`[helpers] max_depth`; 0 refuses every
-    /// helper).
-    pub helper_max_depth: u8,
-    /// How long a `!` command may run (`[shell] user_timeout_secs`).
-    pub user_shell_timeout: std::time::Duration,
-    /// Start-up notices (warnings) for the transcript.
-    pub notices: Vec<String>,
-}
-
-impl std::fmt::Debug for Runtime {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Runtime")
-            .field("scope", &self.scope)
-            .field("choice", &self.choice)
-            .field("endpoints", &self.endpoints.names())
-            .field("confinement", &self.confinement.mode)
-            .field("backend", &self.backend)
-            .finish_non_exhaustive()
-    }
-}
-
-impl Runtime {
-    /// The choice for `reference` on this process's endpoints.
-    ///
-    /// # Errors
-    ///
-    /// [`TuiError::Endpoint`] when the endpoint is unknown.
-    pub fn choice_for(&self, reference: &EndpointRef) -> Result<ModelChoice, TuiError> {
-        Ok(choice_for(&self.endpoints, reference)?.with_thinking(&self.thinking))
-    }
-
-    /// Make sure the factory knows a capability profile for `model` on
-    /// `provider`: a `[models.<id>]` entry in the realm document when only
-    /// the endpoint knows it, refreshed from `listed` (see
-    /// [`ensure_model_profile`]).
-    ///
-    /// # Errors
-    ///
-    /// [`TuiError::Endpoint`] when the profile cannot be written (or the
-    /// id is already profiled for another dialect).
-    pub async fn ensure_profile(
-        &self,
-        provider: Provider,
-        model: &str,
-        listed: Option<&ModelEntry>,
-    ) -> Result<(), TuiError> {
-        if ensure_model_profile(self.realm_config.runtime(), provider, model, listed).await? {
-            let effective = self
-                .realm_config
-                .get()
-                .await
-                .map_err(EndpointError::ConfigRead)?;
-            *self.effective.write() = effective;
-            self.profile_generation.fetch_add(1, Ordering::SeqCst);
-        }
-        Ok(())
-    }
-
-    /// Release the realm lease: stop its heartbeat and remove its record.
-    /// Idempotent.
-    pub async fn release_realm_lease(&mut self) {
-        if let Some(lease) = self.realm_lease.take() {
-            lease.shutdown().await;
-        }
-    }
-
-    /// The current [`Runtime::profile_generation`].
-    #[must_use]
-    pub fn profiles(&self) -> u64 {
-        self.profile_generation.load(Ordering::SeqCst)
-    }
-}
-
 /// The choice for `reference` on `endpoints`.
 fn choice_for(
     endpoints: &EndpointRegistry,
@@ -290,7 +124,7 @@ fn choice_for(
     })
 }
 
-/// Engine-level overrides for [`bootstrap_with`].
+/// Engine-level overrides for [`assemble`].
 #[derive(Default, Clone)]
 pub struct BootstrapOptions {
     /// Serve every session with this client instead of resolving provider
@@ -388,138 +222,7 @@ pub async fn prepare(args: &Args) -> Result<(Layers, Config), TuiError> {
     Ok((layers, config))
 }
 
-/// [`prepare`] followed by [`bootstrap_with`].
-///
-/// # Errors
-///
-/// See [`prepare`] and [`bootstrap_with`].
-#[cfg(any(test, feature = "test-support"))]
-pub async fn bootstrap(args: &Args, options: BootstrapOptions) -> Result<Runtime, TuiError> {
-    let (layers, config) = prepare(args).await?;
-    bootstrap_with(layers, config, args, options).await
-}
-
-/// Open the realm persistence and compose the runtime-backed service.
-///
-/// # Errors
-///
-/// [`TuiError::Endpoint`] when no start-up model can be chosen,
-/// [`TuiError::Confinement`] when `--confinement` cannot be enforced,
-/// [`TuiError::Persistence`] when the realm cannot be opened,
-/// [`TuiError::Overlay`] / [`TuiError::Approval`] when the approval rules
-/// cannot be loaded, and [`TuiError::Composition`] when the runtime
-/// refuses the composition.
-pub async fn bootstrap_with(
-    layers: Layers,
-    config: Config,
-    args: &Args,
-    options: BootstrapOptions,
-) -> Result<Runtime, TuiError> {
-    let wait_for_mcp = args.wait_for_mcp;
-    let Assembled {
-        scope,
-        realm_config,
-        effective,
-        choice,
-        thinking,
-        endpoints,
-        models,
-        lister,
-        pricing,
-        confinement,
-        persistence,
-        backend,
-        realm_lease,
-        factory,
-        approval,
-        mcp_servers,
-        project_inputs,
-        memory: _,
-        tasks_db,
-        ui,
-        compaction,
-        helper_max_depth: helper_depth,
-        user_shell_timeout,
-        daemon_principal: _,
-        notices,
-        llm_override,
-    } = assemble(layers, config, args, options, LEASE_SURFACE).await?;
-    let mut builder = FactoryAgentBuilder::new_with_config_store(
-        factory,
-        effective.clone(),
-        Arc::clone(&realm_config) as Arc<dyn ConfigStore>,
-    );
-    builder.default_llm_client.clone_from(&llm_override);
-    builder.wait_for_mcp = wait_for_mcp;
-    let mob_tools_slot = Arc::clone(&builder.default_mob_tools);
-    let workgraph = meerkat::WorkGraphService::with_scope(
-        persistence.workgraph_store(),
-        scope.realm_id.clone(),
-        meerkat::WorkNamespace::default(),
-    );
-    let (service, machine) = build_runtime_backed_service_with_default_reconfigure_host(
-        builder,
-        MAX_SESSIONS,
-        persistence,
-        realm_config.state_path().to_path_buf(),
-    )?;
-    // Every gate judges a call by where the session's tool of that name
-    // comes from (its live tool definitions), never by the name alone.
-    approval
-        .engine
-        .set_tool_origins(Arc::new(crate::approval::ServiceToolOrigins::new(&service)));
-    let effective = Arc::new(parking_lot::RwLock::new(effective));
-    let helpers = start_helpers(
-        &service,
-        &machine,
-        &scope,
-        &approval.engine,
-        llm_override,
-        &mob_tools_slot,
-        workgraph,
-        confinement.shell_env.clone(),
-        helper_depth,
-    )?;
-
-    let scope_workspace = scope.context_root.clone();
-    let scope_global = scope.global.clone();
-    Ok(Runtime {
-        scope,
-        realm_config,
-        effective,
-        profile_generation: Arc::new(AtomicU64::new(0)),
-        choice,
-        thinking,
-        endpoints,
-        models,
-        lister,
-        pricing,
-        confinement,
-        service,
-        machine,
-        backend,
-        realm_lease: Some(realm_lease),
-        approval,
-        helpers,
-        instructions: InstructionSources {
-            workspace: scope_workspace,
-            global: scope_global,
-            home: dirs_home(),
-        },
-        mcp_servers,
-        project_inputs,
-        tasks_db,
-        ui,
-        compaction,
-        helper_max_depth: helper_depth,
-        user_shell_timeout,
-        notices,
-    })
-}
-
-/// What every host of a workspace realm builds the same way, before it
-/// composes its session substrate: the in-process TUI
-/// ([`bootstrap_with`]: a [`TuiService`] and helpers) and the mob daemon
+/// What the daemon builds before it composes its engine host
 /// (`crate::daemon`: the JSON-RPC `SessionRuntime` and its mob state).
 /// The persistence is still unopened by any service; the realm lease is
 /// held.
@@ -536,12 +239,6 @@ pub struct Assembled {
     pub thinking: ThinkingTable,
     /// The LLM endpoints of this process.
     pub endpoints: EndpointRegistry,
-    /// Model lists fetched during start-up, if any.
-    pub models: Option<ModelCache>,
-    /// Fetches the endpoints' model lists.
-    pub lister: ModelLister,
-    /// The price table and where to refresh it.
-    pub pricing: PricingSetup,
     /// The shell's OS confinement.
     pub confinement: ConfinementPlan,
     /// The realm's stores, for the session substrate to take.
@@ -562,14 +259,10 @@ pub struct Assembled {
     pub memory: bool,
     /// The engine's task store.
     pub tasks_db: PathBuf,
-    /// The `tui.toml` `[ui]` settings.
-    pub ui: crate::config::UiSettings,
     /// The context-compaction policy of the `tui.toml` `[auto]` settings.
     pub compaction: crate::ui::compaction::CompactionPolicy,
     /// How deep helpers may nest.
     pub helper_max_depth: u8,
-    /// How long a `!` command may run.
-    pub user_shell_timeout: std::time::Duration,
     /// `[daemon] principal` of the user's `tui.toml` layers.
     pub daemon_principal: Option<String>,
     /// Start-up notices (warnings).
@@ -587,31 +280,18 @@ impl Assembled {
     }
 }
 
-/// Whether the TUI runs attached to the workspace's daemon: `--attach` or
-/// `--no-attach` when given, else `attach = true`/`false` in a user layer
-/// of `tui.toml` (`layers`; a project file's `attach` is ignored with a
-/// notice at bootstrap, like its other trusted-only keys), else attached
-/// (`--attach=auto`: attach to the running daemon, else start one).
-#[must_use]
-pub fn attach_mode(args: &Args, layers: &Layers) -> Option<crate::cli::AttachTarget> {
-    if args.no_attach || args.attach.is_some() {
-        return args.attach_mode();
-    }
-    layers
-        .layered
-        .attach
-        .unwrap_or(true)
-        .then_some(crate::cli::AttachTarget::Auto)
-}
-
 /// Resolve endpoints, model, confinement, trust, approval engine and MCP
 /// set, open the realm persistence, take the realm lease under
-/// `lease_surface` and build the factory: everything [`bootstrap_with`]
-/// and the mob daemon share. `records` is where escalations are recorded.
+/// `lease_surface` and build the factory: everything the daemon composes
+/// its engine host over.
 ///
 /// # Errors
 ///
-/// See [`bootstrap_with`].
+/// [`TuiError::Endpoint`] when no start-up model can be chosen,
+/// [`TuiError::Confinement`] when `--confinement` cannot be enforced,
+/// [`TuiError::PersistenceOpen`] / [`TuiError::RealmLease`] when the realm
+/// cannot be opened, and [`TuiError::Overlay`] / [`TuiError::Approval`]
+/// when the approval rules cannot be loaded.
 pub async fn assemble(
     layers: Layers,
     config: Config,
@@ -721,17 +401,10 @@ pub async fn assemble(
         &confinement.shell,
         Arc::new(project_inputs.clone()),
     );
-    let pricing = PricingSetup::load(
-        std::mem::take(&mut layered.pricing),
-        scope.global.as_ref().map(GlobalDirs::pricing_cache),
-        !args.no_pricing_fetch,
-    );
-    let ui = layered.ui;
     let compaction = layered.settings.compaction_policy(None);
     approval_notices.extend(endpoint_notices.iter().map(ToString::to_string));
     approval_notices.extend(thinking_notices);
     let helper_depth = layered.helpers.max_depth;
-    let user_shell_timeout = std::time::Duration::from_secs(layered.shell.user_timeout_secs);
     let daemon_principal = layered.daemon_principal.clone();
     let approval = approval::build(
         &scope,
@@ -764,9 +437,6 @@ pub async fn assemble(
         choice,
         thinking,
         endpoints,
-        models,
-        lister,
-        pricing,
         confinement,
         persistence,
         backend: manifest.backend,
@@ -777,10 +447,8 @@ pub async fn assemble(
         project_inputs,
         memory,
         tasks_db,
-        ui,
         compaction,
         helper_max_depth: helper_depth,
-        user_shell_timeout,
         daemon_principal,
         notices,
         llm_override: options.llm_override,
@@ -833,55 +501,17 @@ fn memory_probe(
     }
 }
 
-/// The slot every session build takes its mob tools from.
-type MobToolsSlot = Arc<std::sync::RwLock<Option<Arc<dyn meerkat_core::service::MobToolsFactory>>>>;
-
-/// Host helpers on the composed service and offer their tools to every
-/// session build (see [`crate::mobs`]).
-#[allow(clippy::too_many_arguments)]
-fn start_helpers(
-    service: &Arc<TuiService>,
-    machine: &Arc<MeerkatMachine>,
-    scope: &RuntimeScope,
-    engine: &Arc<crate::approval::ApprovalEngine>,
-    llm_override: Option<Arc<dyn LlmClient>>,
-    slot: &MobToolsSlot,
-    workgraph: meerkat::WorkGraphService,
-    shell_env: Option<HashMap<String, String>>,
-    max_depth: u8,
-) -> Result<Option<Arc<Helpers>>, TuiError> {
-    let root = scope.project_root.clone();
-    let tools: crate::mobs::customizer::HelperTools = Arc::new(move || {
-        Arc::new(FileToolDispatcher::new(root.clone(), None)) as Arc<dyn AgentToolDispatcher>
-    });
-    let (helpers, factory) = Helpers::start(crate::mobs::HelperHostParts {
-        service: Arc::clone(service),
-        machine: Arc::clone(machine),
-        realm_root: scope.realm_root(),
-        engine: Arc::clone(engine),
-        tools,
-        llm_override,
-        workgraph,
-        shell_env,
-        max_depth,
-    })?;
-    *slot
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(factory);
-    Ok(Some(helpers))
-}
-
 /// The agent factory every session is built with.
 ///
 /// `project_root` and `context_root` are the workspace, so the factory's
 /// native `AGENTS.md`, skills and hooks discovery see the project. Builtin
 /// tools and the shell are on: every call passes the approval gate each
-/// session installs, and the shell runs under the OS confinement the caller
+/// member carries, and the shell runs under the OS confinement the caller
 /// installs ([`confinement::plan`]). Mob tools are on (helpers, see
 /// [`crate::mobs`]); semantic memory when `toggles.memory`
 /// (the index lives under `store_path`, see [`memory_dir`]). The file
-/// and note tools come in per session as external tools (see
-/// [`crate::session`]). The factory's `runtime_root` is the realm, so every
+/// and note tools come in per member as external tools (see
+/// `crate::daemon::engine`). The factory's `runtime_root` is the realm, so every
 /// shell call runs in durable process custody (`<realm>/process_custody`),
 /// which the runtime-backed composition settles on every attachment.
 /// `with_token_store` attaches the user's provider token store, so OAuth and
@@ -997,7 +627,7 @@ pub async fn plan_model(
 mod tests {
     use super::*;
     use crate::endpoints::{Endpoint, SecretString, WireDialect};
-    use crate::models::{EndpointListing, ModelSource};
+    use crate::models::{EndpointListing, ModelEntry, ModelSource};
     use clap::Parser;
 
     fn args(extra: &[&str]) -> Args {

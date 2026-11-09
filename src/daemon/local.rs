@@ -378,10 +378,14 @@ impl Local {
         }
     }
 
-    /// `/new` or `/resume`: switch the orchestrator's conversation, then
-    /// tell the new one about plan mode when it is on, and read its tools.
+    /// `/new` or `/resume`: switch the orchestrator's conversation, forget
+    /// the gate's state of the one left (its classifier transcript, allow
+    /// cache and helpers; a later `/resume` seeds the transcript again),
+    /// then tell the new one about plan mode when it is on, and read its
+    /// tools.
     async fn switch(&self, target: Target) -> Result<Switched, Refusal> {
         let resumed = matches!(target, Target::Resume(_));
+        let previous = self.conversations.current();
         let session = self.conversations.switch(target).await.map_err(|err| {
             let code = match err {
                 super::conversations::SwitchError::Running => SWITCH_BUSY,
@@ -389,6 +393,9 @@ impl Local {
             };
             Refusal::new(code, err.to_string())
         })?;
+        if let Some(previous) = previous.filter(|previous| *previous != session) {
+            self.engine.forget_session(&previous);
+        }
         if resumed {
             self.conversations.seed(&self.engine, &session).await;
         }

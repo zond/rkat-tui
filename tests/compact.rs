@@ -105,9 +105,7 @@ fn window(rig: &Attached) -> u64 {
         .iter()
         .rev()
         .find_map(|msg| match msg {
-            Msg::Status(
-                StatusUpdate::ContextWindow(Some(w)) | StatusUpdate::ApproxContextWindow(w),
-            ) => Some(*w),
+            Msg::Status(StatusUpdate::ContextWindow(Some(w))) => Some(*w),
             _ => None,
         })
         .expect("a context window")

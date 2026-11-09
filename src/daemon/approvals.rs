@@ -507,9 +507,7 @@ pub async fn follow_helper_runs<H, R, F>(
 {
     let reading = Arc::new(parking_lot::Mutex::new(std::collections::HashSet::new()));
     while let Some(update) = updates.recv().await {
-        let crate::mobs::HelperUpdate::Event(scoped) = update else {
-            continue;
-        };
+        let crate::mobs::HelperUpdate::Event(scoped) = update;
         let (AgentEvent::RunCompleted { session_id, .. }
         | AgentEvent::RunFailed { session_id, .. }) = &scoped.event
         else {

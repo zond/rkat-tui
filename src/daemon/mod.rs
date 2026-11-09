@@ -117,7 +117,7 @@ impl DaemonCli {
             (tui.prompt.is_some(), "a prompt argument"),
             (tui.resume.is_some(), "--resume"),
             (tui.continue_last, "--continue"),
-            (tui.attach_mode().is_some(), "--attach"),
+            (tui.attach.is_some(), "--attach"),
             (tui.attach_token_file.is_some(), "--attach-token-file"),
         ];
         match refused.into_iter().find(|(given, _)| *given) {
@@ -1060,7 +1060,6 @@ mod tests {
             );
         }
         let plan = bootstrap::ConfinementPlan {
-            mode: crate::cli::ConfinementArg::Workspace,
             shell: meerkat_tools::builtin::shell::ShellConfinement::Required { requirement },
             notices: Vec::new(),
             shell_env: None,
@@ -1075,7 +1074,6 @@ mod tests {
         ));
         // An unconfined shell is the trusted host: nothing to keep from it.
         let off = bootstrap::ConfinementPlan {
-            mode: crate::cli::ConfinementArg::Off,
             shell: meerkat_tools::builtin::shell::ShellConfinement::TrustedHost,
             notices: Vec::new(),
             shell_env: None,

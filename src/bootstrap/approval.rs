@@ -54,9 +54,6 @@ pub struct ApprovalParts {
     pub events: Option<mpsc::UnboundedReceiver<ApprovalEvent>>,
     /// Observations from loading the rules, shown once.
     pub notices: Vec<String>,
-    /// The host trust record of this workspace and realm (`/rules trust`,
-    /// and the project inputs' `/trust`).
-    pub trust: Arc<parking_lot::Mutex<HostTrustRecord>>,
 }
 
 impl std::fmt::Debug for ApprovalParts {
@@ -176,14 +173,13 @@ pub(crate) async fn build(
         posix_shell: shell_is_posix(),
         events: events_tx,
         rules_path: Some(realm_rules),
-        rules_trust: Some(Arc::clone(&trust)),
+        rules_trust: Some(trust),
     });
     Ok(ApprovalParts {
         engine,
         escalations: Some(escalations),
         events: Some(events_rx),
         notices,
-        trust,
     })
 }
 
