@@ -3113,3 +3113,16 @@ picks, the client waits at both); `--list` scans both directories;
 (the fallback is chosen when the first place is granted, the refusal
 kept with one place), `client::launch::tests::the_decision_follows_the_endpoint_file`
 (`probe_any`, `argv_for`), `daemon::an_endpoint_file_the_confined_shell_could_read_is_refused`.
+
+A second review finding on that fix: `daemon_ended` read "no file names
+the daemon" from `Endpoint::read(..).is_ok_and(..)`, which is also false
+for a file that cannot be read or parsed, so a malformed endpoint file
+made a live daemon count as stopped. Now only a file that is gone
+(`NotFound`) or names another token is evidence; an unreadable or
+malformed one is unknown, and the daemon counts as ended only when the
+captured pid is gone or the captured address refuses connections
+(`accepts`, a blocking loopback connect so the paused-clock test cannot
+time it out). The test has four cases: the file still names the daemon,
+the file removed, a malformed file with the daemon's address still
+accepting (never "stopped"), and a malformed file with the address
+closed.

@@ -2337,16 +2337,18 @@ fn current<'a>(endpoint: Option<&'a str>, model: Option<&'a (String, String)>) -
     }
 }
 
-/// Whether the daemon `endpoint` names ended within `wait`: no endpoint
-/// file at `files` names it any more (removed at shutdown, or replaced by
-/// another daemon's), or its process is gone.
+/// Whether the daemon `endpoint` names ended within `wait`. Evidence that
+/// it did: no endpoint file at `files` names it any more (each is gone,
+/// or names another daemon), its process is gone, or its address no
+/// longer accepts. A file that cannot be read or parsed is no evidence
+/// either way: it names nobody, and only the pid or the address can say.
 async fn daemon_ended(files: &[PathBuf], endpoint: &Endpoint, wait: Duration) -> bool {
     let deadline = Instant::now() + wait;
     loop {
-        let named = files
-            .iter()
-            .any(|file| Endpoint::read(file).is_ok_and(|now| now.token == endpoint.token));
-        if !named || crate::daemon::list::pid_gone(endpoint.pid) {
+        if no_file_names(files, &endpoint.token)
+            || crate::daemon::list::pid_gone(endpoint.pid)
+            || !accepts(endpoint.address)
+        {
             return true;
         }
         if Instant::now() >= deadline {
@@ -2354,6 +2356,22 @@ async fn daemon_ended(files: &[PathBuf], endpoint: &Endpoint, wait: Duration) ->
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+/// Whether every file of `files` is gone or names a daemon with another
+/// token (an unreadable or malformed file counts as possibly naming it).
+fn no_file_names(files: &[PathBuf], token: &str) -> bool {
+    files.iter().all(|file| match std::fs::metadata(file) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
+        Err(_) => false,
+        Ok(_) => Endpoint::read(file).is_ok_and(|now| now.token != token),
+    })
+}
+
+/// Whether something accepts at the loopback `address` now (a connect
+/// there is refused at once when nothing listens).
+fn accepts(address: std::net::SocketAddr) -> bool {
+    std::net::TcpStream::connect_timeout(&address, Duration::from_secs(1)).is_ok()
 }
 
 /// How an attached `/quit` leaves, from the daemon's status (`None`: it
@@ -2916,21 +2934,33 @@ mod tests {
     async fn a_shutdown_without_an_answer_is_reported_stopped_only_once_the_daemon_ended() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("mob.endpoint");
-        for ended in [false, true] {
+        // The captured daemon's address still accepts and its pid (1) is
+        // alive, unless a case says otherwise.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let closed_address = closed.local_addr().unwrap();
+        drop(closed);
+        // (case, reported stopped)
+        for (case, ended) in [
+            ("named", false),
+            ("removed", true),
+            ("malformed", false),
+            ("malformed, address closed", true),
+        ] {
             let (mut runner, mut ui_rx) = runner(dir.path());
-            let link = link_held("s", SessionId::new(), false).await;
-            // The endpoint file names this daemon, whose process (this
-            // one) is alive.
-            Endpoint {
-                pid: std::process::id(),
-                ..link.endpoint.clone()
+            let mut link = link_held("s", SessionId::new(), false).await;
+            link.endpoint.address = if case.ends_with("address closed") {
+                closed_address
+            } else {
+                listener.local_addr().unwrap()
+            };
+            link.endpoint.write(&file).unwrap();
+            match case {
+                "removed" => std::fs::remove_file(&file).unwrap(),
+                c if c.starts_with("malformed") => std::fs::write(&file, "{not json").unwrap(),
+                _ => {}
             }
-            .write(&file)
-            .unwrap();
             runner.link = Some(link);
-            if ended {
-                std::fs::remove_file(&file).unwrap();
-            }
             runner.depart(Departure::Terminate).await;
             let mut notices = Vec::new();
             while let Ok(msg) = ui_rx.try_recv() {
@@ -2939,9 +2969,13 @@ mod tests {
                 }
             }
             let said = notices.join("\n");
-            assert_eq!(said.contains("stopped the daemon"), ended, "{said}");
-            assert_eq!(!said.contains("may still be running"), ended, "{said}");
-            assert_eq!(runner.stopping, ended);
+            assert_eq!(said.contains("stopped the daemon"), ended, "{case}: {said}");
+            assert_eq!(
+                !said.contains("may still be running"),
+                ended,
+                "{case}: {said}"
+            );
+            assert_eq!(runner.stopping, ended, "{case}");
         }
     }
 
