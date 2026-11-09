@@ -173,7 +173,23 @@ pub enum ClientError {
 /// be read.
 #[cfg(any(test, feature = "test-support"))]
 pub async fn configure(args: &Args, target: AttachTarget) -> Result<AttachConfig, TuiError> {
-    let (args, layers, reached) = retarget(args.clone(), &target, None).await?;
+    configure_at(args, target, &crate::daemon::list::files(None)).await
+}
+
+/// [`configure`], with `local_files` as this machine's endpoint files (the
+/// ones that establish that a daemon reached by address is local; tests
+/// place theirs outside the state directory).
+///
+/// # Errors
+///
+/// See [`configure`].
+#[cfg(any(test, feature = "test-support"))]
+pub async fn configure_at(
+    args: &Args,
+    target: AttachTarget,
+    local_files: &[std::path::PathBuf],
+) -> Result<AttachConfig, TuiError> {
+    let (args, layers, reached) = retarget(args.clone(), &target, None, local_files).await?;
     let mut config = configure_with(layers, &args, target.mode()).await?;
     if let Some(reached) = reached {
         reached.apply(&mut config);
@@ -190,6 +206,7 @@ async fn retarget(
     args: Args,
     target: &AttachTarget,
     layers: Option<crate::bootstrap::Layers>,
+    local_files: &[std::path::PathBuf],
 ) -> Result<(Args, crate::bootstrap::Layers, Option<address::Reached>), TuiError> {
     let read = |args: &Args, layers: Option<crate::bootstrap::Layers>| match layers {
         Some(layers) => Ok(layers),
@@ -206,7 +223,8 @@ async fn retarget(
             Ok((args, layers, None))
         }
         AttachTarget::Address(at) => {
-            let reached = address::reach(at, args.attach_token_file.as_deref()).await?;
+            let reached =
+                address::reach(at, args.attach_token_file.as_deref(), local_files).await?;
             // A workspace on this machine: run on it, as a directory
             // attach does; else on the client's own (its history and cost
             // record), with the file features refused.
@@ -406,7 +424,13 @@ pub async fn run(
             return Err(TuiError::NoDaemonAt { workspace });
         }
     }
-    let (args, layers, reached) = retarget(args, &target, Some(layers)).await?;
+    let (args, layers, reached) = retarget(
+        args,
+        &target,
+        Some(layers),
+        &crate::daemon::list::files(None),
+    )
+    .await?;
     let mut config = configure_with(layers, &args, target.mode()).await?;
     if let Some(reached) = reached {
         reached.apply(&mut config);

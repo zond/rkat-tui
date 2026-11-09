@@ -1034,9 +1034,11 @@ endpoint file (`$XDG_STATE_HOME/rkat-tui/<key>/mob.endpoint`, see "Finding
 the daemon"; `<key>` is the one `--list` shows the file under). It is
 refused when its group or other users can read or write it (anything
 but `chmod 600` or stricter): the token is the whole access control. Before the TUI opens rkat-tui attaches as a probe and reads the
-daemon's status, which names its workspace and host. When that host is
-this machine and the workspace exists here, the TUI runs on that
-workspace as `--attach=DIRECTORY` does. Otherwise the features that read
+daemon's status, which names its workspace and host. When an endpoint
+file on this machine names that daemon (the token you gave, for that
+workspace) and the workspace exists here, the TUI runs on that workspace
+as `--attach=DIRECTORY` does; the same host name and path alone are not
+enough, since two machines can share both. Otherwise the features that read
 or write local files are refused with the reason: `!` commands, `@`
 mentions (sent as typed), `/remember`, `/memory` and `/export` to a path
 (`/export` alone writes into this machine's own workspace state). Prompts,

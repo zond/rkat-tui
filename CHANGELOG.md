@@ -9,8 +9,11 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 - `--attach=HOST:PORT --attach-token-file <path>` attaches to a daemon
   reached through a tunnel (the daemon still binds loopback only; the
   manual has the `ssh -L` recipe). The token file is refused when its
-  group or others can read or write it (any of mode `0o077`). `rkat/status` now names the daemon's host; when the
-  daemon's workspace is not on this machine, `!`, `@` mentions,
+  group or others can read or write it (any of mode `0o077`).
+  `rkat/status` now names the daemon's host. Unless an endpoint file on
+  this machine names the daemon (by its token, for its workspace; the
+  same host name and path are not enough), its workspace counts as not
+  on this machine: `!`, `@` mentions,
   `/remember`, `/memory` and `/export` to a path say why they are off,
   and everything else works. A `/quit` whose tunnel drops before the
   daemon confirms the shutdown says the daemon may still be running.

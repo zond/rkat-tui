@@ -615,10 +615,12 @@ async fn attach_by_address_with_a_token_file() {
     );
     let target = args.attach.clone().unwrap();
     assert_eq!(target, AttachTarget::Address(endpoint.address.to_string()));
-    let mut config = rkat_tui::client::configure(&args, target.clone())
+    // This machine's endpoint file names the daemon: local, run on the
+    // daemon's workspace.
+    let local_files = [daemon.endpoint_file.clone()];
+    let mut config = rkat_tui::client::configure_at(&args, target.clone(), &local_files)
         .await
         .unwrap();
-    // Same host, workspace here: local, run on the daemon's workspace.
     assert_eq!(config.remote, None);
     assert_eq!(
         config.scope.context_root,
@@ -636,10 +638,18 @@ async fn attach_by_address_with_a_token_file() {
     assert_eq!(client.turn_finished().await.result.unwrap().text, "local");
     client.quit().await;
 
-    // The daemon on another host: its workspace is not here.
-    let mut config = rkat_tui::client::configure(&args, target).await.unwrap();
-    config.remote = Some("the daemon runs on devbox".into());
-    config.endpoint_files.clear();
+    // The same host name and an existing path, but no endpoint file here
+    // names it (a twin machine): remote, the file features refused.
+    let mut config = rkat_tui::client::configure_at(&args, target, &[])
+        .await
+        .unwrap();
+    let why = config.remote.clone().unwrap();
+    assert!(why.contains("no endpoint file on this machine"), "{why}");
+    assert!(config.endpoint_files.is_empty());
+    assert_eq!(
+        config.scope.context_root,
+        std::fs::canonicalize(&elsewhere.root).unwrap()
+    );
     config.lister = no_lists();
     let mut client = Client {
         harness: spawn_attach_runner(config),
@@ -654,12 +664,12 @@ async fn attach_by_address_with_a_token_file() {
         .wait_for(|msg| matches!(msg, Msg::ShellFinished { .. }))
         .await;
     assert!(
-        matches!(&refused, Msg::ShellFinished { outcome: rkat_tui::ui::ShellOutcome::Failed(why), .. } if why.contains("runs on devbox")),
+        matches!(&refused, Msg::ShellFinished { outcome: rkat_tui::ui::ShellOutcome::Failed(why), .. } if why.contains("no endpoint file on this machine")),
         "{refused:?}"
     );
     client.send(Effect::Remember("a note".into()));
     client
-        .wait_for(|m| matches!(m, Msg::Notice { text, .. } if text.starts_with("/remember") && text.contains("devbox")))
+        .wait_for(|m| matches!(m, Msg::Notice { text, .. } if text.starts_with("/remember") && text.contains("no endpoint file on this machine")))
         .await;
     client.send(Effect::Export {
         path: Some("out.txt".into()),

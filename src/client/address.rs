@@ -4,8 +4,10 @@
 //! host`) and copies its token (`--attach-token-file`: the token alone, or
 //! the daemon's endpoint file). Before the TUI opens the client attaches as
 //! a probe and reads `rkat/status`: the daemon's workspace, pid and host.
-//! When that workspace is a directory on this machine (the same host name,
-//! the directory exists) the client runs on it as `--attach=DIRECTORY`
+//! When that workspace is provably on this machine (an endpoint file here
+//! names the daemon by the token presented, for that workspace, and the
+//! directory exists; a matching host name and path are not enough, two
+//! machines can share both) the client runs on it as `--attach=DIRECTORY`
 //! does; otherwise the features that edit or read local files (`!`, `@`
 //! mentions, `/remember`, `/memory`, `/export` to a path) are refused with
 //! the reason ([`Reached::remote`]), and everything that goes over the
@@ -13,7 +15,7 @@
 //! pickers) works.
 
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use super::ClientError;
@@ -101,37 +103,66 @@ pub fn local_host() -> Option<String> {
     }
 }
 
-/// Why the daemon of `status` does not serve a local directory, or `None`
-/// when it does: the same host (`local_host`) and its workspace exists
-/// here. A daemon that does not say its host counts as remote.
+/// Why the daemon of `status`, reached with `token`, does not serve a
+/// local directory, or `None` when it does. Local is established only by
+/// this machine's own record: one of `local_files` (the endpoint files
+/// here, [`crate::daemon::list::files`]) names the daemon by `token` for
+/// the workspace `status` reports, and that workspace is a directory. A
+/// matching host name and an existing path are not evidence: two machines
+/// can share both, and treating the other's workspace as this one's would
+/// run `!` and write files in the wrong tree. `local_host` only words the
+/// reason.
 #[must_use]
-pub fn remote_reason(status: &Status, local_host: Option<&str>) -> Option<String> {
-    match (status.host.as_deref(), local_host) {
-        (Some(theirs), Some(ours)) if theirs == ours => {
-            if status.workspace.is_dir() {
-                None
-            } else {
-                Some(format!(
-                    "the daemon's workspace {} is not a directory here",
-                    status.workspace.display()
-                ))
-            }
-        }
-        (Some(theirs), _) => Some(format!(
+pub fn remote_reason(
+    status: &Status,
+    local_host: Option<&str>,
+    token: &str,
+    local_files: &[PathBuf],
+) -> Option<String> {
+    let canonical =
+        |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let workspace = canonical(&status.workspace);
+    let recorded = local_files.iter().any(|file| {
+        Endpoint::read(file).is_ok_and(|endpoint| {
+            endpoint.token == token
+                && endpoint
+                    .workspace
+                    .as_deref()
+                    .is_some_and(|theirs| canonical(theirs) == workspace)
+        })
+    });
+    if recorded && status.workspace.is_dir() {
+        return None;
+    }
+    Some(match (status.host.as_deref(), local_host) {
+        (Some(theirs), Some(ours)) if theirs != ours => format!(
             "the daemon runs on {theirs}, its workspace {} is not on this machine",
             status.workspace.display()
-        )),
-        (None, _) => Some("the daemon does not say which host it runs on".to_string()),
-    }
+        ),
+        (None, _) => "the daemon does not say which host it runs on".to_string(),
+        _ if !status.workspace.is_dir() => format!(
+            "the daemon's workspace {} is not a directory here",
+            status.workspace.display()
+        ),
+        _ => format!(
+            "no endpoint file on this machine names this daemon, so its workspace {} may be another machine's (the same host name and path prove nothing)",
+            status.workspace.display()
+        ),
+    })
 }
 
 /// Resolve `address`, read the token, attach as a probe and read the
-/// daemon's status.
+/// daemon's status; its workspace is local only when one of
+/// `local_files` names it ([`remote_reason`]).
 ///
 /// # Errors
 ///
 /// [`TuiError::AttachAddress`] naming what failed.
-pub async fn reach(address: &str, token_file: Option<&Path>) -> Result<Reached, TuiError> {
+pub async fn reach(
+    address: &str,
+    token_file: Option<&Path>,
+    local_files: &[PathBuf],
+) -> Result<Reached, TuiError> {
     let fail = |reason: String| TuiError::AttachAddress {
         address: address.to_string(),
         reason,
@@ -153,7 +184,7 @@ pub async fn reach(address: &str, token_file: Option<&Path>) -> Result<Reached, 
     let status = status_of(&probe)
         .await
         .map_err(|err| fail(format!("no daemon answered with that token: {err}")))?;
-    let remote = remote_reason(&status, local_host().as_deref());
+    let remote = remote_reason(&status, local_host().as_deref(), &probe.token, local_files);
     Ok(Reached {
         endpoint: Endpoint {
             pid: status.pid,
@@ -210,22 +241,51 @@ mod tests {
         }
     }
 
+    /// The finding this guards: the same host name and an existing
+    /// directory counted as local, but two machines can share both; only
+    /// an endpoint file here naming the daemon's token for that workspace
+    /// does.
     #[test]
-    fn a_daemon_is_local_only_on_this_host_with_its_workspace_here() {
+    fn a_daemon_is_local_only_when_an_endpoint_file_here_names_it() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(
-            remote_reason(&status(Some("me"), dir.path()), Some("me")),
-            None
-        );
-        let elsewhere = remote_reason(&status(Some("devbox"), dir.path()), Some("me")).unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let file = state.path().join("mob.endpoint");
+        let mut recorded = Endpoint {
+            address: "127.0.0.1:1".parse().unwrap(),
+            token: "tok".into(),
+            pid: 1,
+            workspace: Some(dir.path().to_path_buf()),
+            started_at: None,
+        };
+        let files = vec![file.clone()];
+        let here = status(Some("me"), dir.path());
+        // Identical host name, identical existing path, no record: remote.
+        let twin = remote_reason(&here, Some("me"), "tok", &[]).unwrap();
+        assert!(twin.contains("no endpoint file on this machine"), "{twin}");
+        assert!(remote_reason(&here, Some("me"), "tok", &files).is_some());
+        // Recorded with that token and workspace: local.
+        recorded.write(&file).unwrap();
+        assert_eq!(remote_reason(&here, Some("me"), "tok", &files), None);
+        // Another token (another daemon of this path here): remote.
+        assert!(remote_reason(&here, Some("me"), "other", &files).is_some());
+        // Recorded for another workspace: remote.
+        recorded.workspace = Some(PathBuf::from("/elsewhere"));
+        recorded.write(&file).unwrap();
+        assert!(remote_reason(&here, Some("me"), "tok", &files).is_some());
+        // The reasons name what is known.
+        let elsewhere =
+            remote_reason(&status(Some("devbox"), dir.path()), Some("me"), "tok", &[]).unwrap();
         assert!(elsewhere.contains("runs on devbox"), "{elsewhere}");
         let missing = remote_reason(
             &status(Some("me"), Path::new("/nonexistent/ws")),
             Some("me"),
+            "tok",
+            &[],
         )
         .unwrap();
         assert!(missing.contains("not a directory here"), "{missing}");
-        assert!(remote_reason(&status(None, dir.path()), Some("me")).is_some());
+        let silent = remote_reason(&status(None, dir.path()), Some("me"), "tok", &[]).unwrap();
+        assert!(silent.contains("does not say"), "{silent}");
     }
 
     #[cfg(unix)]

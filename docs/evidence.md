@@ -3290,8 +3290,19 @@ now checks `0644`, `0640`, `0620`, `0604`, `0602`; the file may hold the token a
 the endpoint file), resolves `HOST:PORT`, attaches as a probe and reads
 `rkat/status`. `Status` gained `host` (`nix::unistd::gethostname`, the
 `hostname` feature of `nix`; absent from older daemons). The workspace is
-local when the host names match and the directory exists here
-(`address::remote_reason`); then the client runs on it as a directory
+local only when an endpoint file on this machine (`daemon::list::files`)
+names the daemon by the token presented, for the workspace its status
+reports, and the directory exists (`address::remote_reason`). The first
+version took a matching host name plus an existing directory as local; a
+review pointed out two machines can share both, and the tunnel attachment
+would then run `!`, expand `@` mentions from the client's copy and write
+`/remember` notes into the wrong tree. The host name now only words the
+reason. Tests: `client::address::tests::a_daemon_is_local_only_when_an_endpoint_file_here_names_it`
+(identical host and path without a record is remote; another token or
+workspace in the record is remote) and `attach::attach_by_address_with_a_token_file`,
+which no longer sets `remote` by hand: it reaches the daemon through
+`client::configure_at` with and without the daemon's endpoint file as
+this machine's record. Then the client runs on it as a directory
 attach does. Otherwise it keeps its own scope (history, cost record,
 `/export`'s default place) and `AttachConfig::remote` holds the reason:
 the attach runner refuses `!` (as a failed shell run), `/remember`,
