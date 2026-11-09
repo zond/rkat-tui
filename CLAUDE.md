@@ -103,8 +103,9 @@ needed landed upstream, the changelog names them). Moving the pin: change
 the revision in every dependency line, `cargo check --all-targets
 --all-features`, adapt to API drift by reading upstream's replacement in the
 fetched checkout under `~/.cargo/git/checkouts/`, run the gate, and record
-the move in the changelog. The goal is to depend on a crates.io release
-next.
+the move in the changelog. The pin is the 0.9.11 release integration
+(`bffcd8f98a`); the goal is to depend on the crates.io release next, once
+0.9.11 is published.
 
 Upstream policy: keep upstream work minimal. A gap with no application-side
 workaround gets a small, contained PR to `lukacf/meerkat` written as a bug

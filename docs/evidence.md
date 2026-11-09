@@ -2256,3 +2256,42 @@ to note: a host that refuses the procfs mount now launches the command
 without `/proc` instead of refusing the launch, so a Rust toolchain fails
 there on `/proc/self/exe` rather than at the capability probe
 (`docs/testing.md`).
+
+## The pin moves to the 0.9.11 integration (2026-11-09)
+
+Every `meerkat-*` dependency now names `lukacf/meerkat` at `bffcd8f98a`, the
+merge of the 0.9.11 release PR (#2124); the crates.io publish is pending, so
+the pin stays a git revision. The integration carries the fixes for the
+test-only reports: #2112 (fork children inherit the source's dispatch
+admission), #2113 (compaction completion after a recovery, `session/compact`
+and `mob/compact_member`), #2114 (the `mob/stream_open` resume cursor, the
+event epoch, request ids on parameter refusals), #2115
+(`subscribe_openings`), #2116 (session events to the turn's connection),
+#2117 (`mob/fork_member`) and #2102 (`delegate` follows the current
+identity). This move adopts none of them; that is a follow-up
+(`docs/mob-split.md`, "Upstream dispositions").
+
+API drift was one item. `ConfigStore` gained `admission_fence` and the
+required `set_held` / `patch_held` (and `patch_held_with_warnings`, which
+defaults to `patch_held` without warnings), and the engine's `ConfigRuntime`
+now writes the document through those, under an `AdmissionGuard` over the
+document's admission fence and the generation sidecar's, instead of through
+`set` / `patch`. Both realm config stores (`RealmDocument` and
+`RealmConfigStore` in `src/bootstrap/realm_config.rs`) forward the fence to
+the `FileConfigStore` and implement the held writes: the document's held
+writes are bracketed by the trust record as its plain writes are
+(`ProjectInputs::wrote_realm_config`), and `RealmConfigStore`'s held patches
+return the effective config, as its plain patches do. Without the bracket a
+runtime write would leave a trusted document untrusted after rkat-tui's own
+endpoint or profile write; `bootstrap::project_trust`
+`writes_through_the_config_runtime_keep_trust_but_never_launder` pins that
+path (it now goes through `patch_held`), and
+`bootstrap::realm_config::reads_follow_the_document_and_writes_reach_it`
+pins that a runtime write still lands in the document and publishes a
+generation.
+
+Nothing else drifted: the daemon (`src/daemon/`), the attach client, the
+mob customizer, the decision types and `meerkat-contracts` wire types
+compile unchanged (`MobStreamOpenParams.cursor` is optional and the client
+sends none; the extra `epoch` on `mob/stream_event` is ignored by the
+client's reader), and the attach and daemon tests pass as before.

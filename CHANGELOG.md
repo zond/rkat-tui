@@ -285,6 +285,22 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Changed
 
+- The engine pin moved to upstream `lukacf/meerkat` `main` `bffcd8f98a`, the
+  merge of the 0.9.11 release integration (lukacf/meerkat#2124; the
+  crates.io publish is pending, so the pin stays a git revision). It carries
+  the fixes for the seven test-only reports: fork children inherit the
+  source's dispatch admission (#2112), the compaction completion is
+  delivered after a recovery and compact-now arrives as `session/compact`
+  and `mob/compact_member` (#2113), `mob/stream_open` takes an
+  `{epoch, seq}` resume cursor and parameter refusals carry the request id
+  (#2114), decision openings are pushed in process (`subscribe_openings`,
+  #2115), session events go to the connection that started the turn
+  (#2116), `mob/fork_member` is an operator method (#2117), and `delegate`
+  follows the member's current identity (#2102). This move only follows the
+  API; adopting the new methods is a follow-up. The one drift: the engine's
+  `ConfigRuntime` now writes through `ConfigStore::set_held` /
+  `patch_held` under the document's admission fence, so the realm config
+  store forwards the fence and records project trust on those writes too.
 - The engine pin moved to upstream `lukacf/meerkat` `main` `74a4f843b7`.
   All three fixes the harness carried on the fork are upstream now, in the
   maintainers' versions: the sandbox fixes (lukacf/meerkat#2100: a pid

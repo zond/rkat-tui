@@ -17,6 +17,10 @@
 //! [`ConfigStore`] writes of [`RealmConfigStore`] itself are for the owner
 //! that already holds that lock: the engine's `ConfigRuntime` over this
 //! store (the LLM reconfigure host, same sidecar), never a direct caller.
+//! A `ConfigRuntime` writes through the held variants (`set_held`,
+//! `patch_held`, `patch_held_with_warnings`) under the guard of the
+//! document's admission fence, which both stores name by forwarding
+//! [`ConfigStore::admission_fence`] to the file store.
 //!
 //! When the realm lives inside the workspace its document is a project input
 //! ([`super::project_trust`]): every read is guarded
@@ -34,7 +38,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use meerkat_core::config::{ConfigError, ConfigWarning};
-use meerkat_core::{Config, ConfigDelta, ConfigRuntime, ConfigStore, FileConfigStore};
+use meerkat_core::{
+    AdmissionFence, AdmissionGuard, Config, ConfigDelta, ConfigRuntime, ConfigStore,
+    FileConfigStore,
+};
 
 use super::dirs::GlobalDirs;
 use super::project_trust::ProjectInputs;
@@ -96,6 +103,31 @@ impl ConfigStore for RealmDocument {
         delta: ConfigDelta,
     ) -> Result<(Config, Vec<ConfigWarning>), ConfigError> {
         self.write(self.file.patch_with_warnings(delta)).await
+    }
+
+    fn admission_fence(&self) -> Option<AdmissionFence> {
+        self.file.admission_fence()
+    }
+
+    async fn set_held(&self, guard: &AdmissionGuard, config: Config) -> Result<(), ConfigError> {
+        self.write(self.file.set_held(guard, config)).await
+    }
+
+    async fn patch_held(
+        &self,
+        guard: &AdmissionGuard,
+        delta: ConfigDelta,
+    ) -> Result<Config, ConfigError> {
+        self.write(self.file.patch_held(guard, delta)).await
+    }
+
+    async fn patch_held_with_warnings(
+        &self,
+        guard: &AdmissionGuard,
+        delta: ConfigDelta,
+    ) -> Result<(Config, Vec<ConfigWarning>), ConfigError> {
+        self.write(self.file.patch_held_with_warnings(guard, delta))
+            .await
     }
 }
 
@@ -230,6 +262,35 @@ impl ConfigStore for RealmConfigStore {
         delta: ConfigDelta,
     ) -> Result<(Config, Vec<ConfigWarning>), ConfigError> {
         let (config, warnings) = self.document.patch_with_warnings(delta).await?;
+        Ok((self.effective(config).await?, warnings))
+    }
+
+    fn admission_fence(&self) -> Option<AdmissionFence> {
+        self.document.admission_fence()
+    }
+
+    async fn set_held(&self, guard: &AdmissionGuard, config: Config) -> Result<(), ConfigError> {
+        self.document.set_held(guard, config).await
+    }
+
+    async fn patch_held(
+        &self,
+        guard: &AdmissionGuard,
+        delta: ConfigDelta,
+    ) -> Result<Config, ConfigError> {
+        let patched = self.document.patch_held(guard, delta).await?;
+        self.effective(patched).await
+    }
+
+    async fn patch_held_with_warnings(
+        &self,
+        guard: &AdmissionGuard,
+        delta: ConfigDelta,
+    ) -> Result<(Config, Vec<ConfigWarning>), ConfigError> {
+        let (config, warnings) = self
+            .document
+            .patch_held_with_warnings(guard, delta)
+            .await?;
         Ok((self.effective(config).await?, warnings))
     }
 }

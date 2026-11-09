@@ -31,31 +31,33 @@ required-features = ["mob"]
 # store, auto-compaction), skills, MCP, comms and semantic memory
 # (`meerkat-memory` directly for the start-up index probe).
 #
-# Pinned to upstream lukacf/meerkat main 74a4f843b7, which carries every
-# fix the application needs: the sandbox's pid namespace, best-effort
-# read-only procfs and Unix socketpairs (#2100), the thinking binding for
-# uncatalogued model ids (#2104) and host trust over hook source bytes
-# (`HookSourceTrust`, #2105). Switch to crates.io at the next release.
-meerkat = { git = "https://github.com/lukacf/meerkat.git", rev = "74a4f843b78c965ac9c90e6510729b4a9bf26886", features = ["anthropic", "openai", "gemini", "session-store", "jsonl-store", "session-compaction", "memory-store-session", "skills", "comms"] }
-meerkat-core = { git = "https://github.com/lukacf/meerkat.git", rev = "74a4f843b78c965ac9c90e6510729b4a9bf26886" }
-meerkat-runtime = { git = "https://github.com/lukacf/meerkat.git", rev = "74a4f843b78c965ac9c90e6510729b4a9bf26886", features = ["sqlite-store"] }
-meerkat-store = { git = "https://github.com/lukacf/meerkat.git", rev = "74a4f843b78c965ac9c90e6510729b4a9bf26886" }
-meerkat-sqlite = { git = "https://github.com/lukacf/meerkat.git", rev = "74a4f843b78c965ac9c90e6510729b4a9bf26886" }
+# Pinned to upstream lukacf/meerkat main bffcd8f98a (the 0.9.11 release
+# integration, #2124), which carries every fix the application needs: the
+# sandbox's pid namespace, best-effort read-only procfs and Unix socketpairs
+# (#2100), the thinking binding for uncatalogued model ids (#2104), host
+# trust over hook source bytes (`HookSourceTrust`, #2105) and the fixes for
+# the test-only reports (#2102, #2112-#2117). Switch to crates.io once 0.9.11
+# is published.
+meerkat = { git = "https://github.com/lukacf/meerkat.git", rev = "bffcd8f98a068b686cc4d48703679dc300aee155", features = ["anthropic", "openai", "gemini", "session-store", "jsonl-store", "session-compaction", "memory-store-session", "skills", "comms"] }
+meerkat-core = { git = "https://github.com/lukacf/meerkat.git", rev = "bffcd8f98a068b686cc4d48703679dc300aee155" }
+meerkat-runtime = { git = "https://github.com/lukacf/meerkat.git", rev = "bffcd8f98a068b686cc4d48703679dc300aee155", features = ["sqlite-store"] }
+meerkat-store = { git = "https://github.com/lukacf/meerkat.git", rev = "bffcd8f98a068b686cc4d48703679dc300aee155" }
+meerkat-sqlite = { git = "https://github.com/lukacf/meerkat.git", rev = "bffcd8f98a068b686cc4d48703679dc300aee155" }
 # `sqlite`: the session task store the Ctrl+T checklist reads.
-meerkat-tools = { git = "https://github.com/lukacf/meerkat.git", rev = "74a4f843b78c965ac9c90e6510729b4a9bf26886", features = ["sqlite"] }
-meerkat-models = { git = "https://github.com/lukacf/meerkat.git", rev = "74a4f843b78c965ac9c90e6510729b4a9bf26886" }
-meerkat-llm-core = { git = "https://github.com/lukacf/meerkat.git", rev = "74a4f843b78c965ac9c90e6510729b4a9bf26886" }
-meerkat-memory = { git = "https://github.com/lukacf/meerkat.git", rev = "74a4f843b78c965ac9c90e6510729b4a9bf26886" }
-meerkat-sandbox = { git = "https://github.com/lukacf/meerkat.git", rev = "74a4f843b78c965ac9c90e6510729b4a9bf26886" }
-meerkat-mob = { git = "https://github.com/lukacf/meerkat.git", rev = "74a4f843b78c965ac9c90e6510729b4a9bf26886", optional = true }
-meerkat-mob-mcp = { git = "https://github.com/lukacf/meerkat.git", rev = "74a4f843b78c965ac9c90e6510729b4a9bf26886", optional = true }
+meerkat-tools = { git = "https://github.com/lukacf/meerkat.git", rev = "bffcd8f98a068b686cc4d48703679dc300aee155", features = ["sqlite"] }
+meerkat-models = { git = "https://github.com/lukacf/meerkat.git", rev = "bffcd8f98a068b686cc4d48703679dc300aee155" }
+meerkat-llm-core = { git = "https://github.com/lukacf/meerkat.git", rev = "bffcd8f98a068b686cc4d48703679dc300aee155" }
+meerkat-memory = { git = "https://github.com/lukacf/meerkat.git", rev = "bffcd8f98a068b686cc4d48703679dc300aee155" }
+meerkat-sandbox = { git = "https://github.com/lukacf/meerkat.git", rev = "bffcd8f98a068b686cc4d48703679dc300aee155" }
+meerkat-mob = { git = "https://github.com/lukacf/meerkat.git", rev = "bffcd8f98a068b686cc4d48703679dc300aee155", optional = true }
+meerkat-mob-mcp = { git = "https://github.com/lukacf/meerkat.git", rev = "bffcd8f98a068b686cc4d48703679dc300aee155", optional = true }
 # The `rkat-tui-mob` daemon serves Meerkat's own JSON-RPC method router
 # (`MethodRouter`, `RpcServer`, `SessionRuntime`) over loopback TCP. Default
 # features off: no realtime voice and no governed-realm host.
-meerkat-rpc = { git = "https://github.com/lukacf/meerkat.git", rev = "74a4f843b78c965ac9c90e6510729b4a9bf26886", default-features = false, features = ["mob", "mcp", "comms"], optional = true }
+meerkat-rpc = { git = "https://github.com/lukacf/meerkat.git", rev = "bffcd8f98a068b686cc4d48703679dc300aee155", default-features = false, features = ["mob", "mcp", "comms"], optional = true }
 # The attach client (`rkat-tui --attach`) reads the daemon's replies with the
 # engine's own wire types (`events/list_since`, `events/snapshot`).
-meerkat-contracts = { git = "https://github.com/lukacf/meerkat.git", rev = "74a4f843b78c965ac9c90e6510729b4a9bf26886", optional = true }
+meerkat-contracts = { git = "https://github.com/lukacf/meerkat.git", rev = "bffcd8f98a068b686cc4d48703679dc300aee155", optional = true }
 
 # Async + serialization
 tokio = { version = "1.43", features = ["full"] }
