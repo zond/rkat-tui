@@ -692,3 +692,69 @@ async fn attach_mode_runs_on_the_layers_read_at_start() {
         "a second read mints another isolated realm"
     );
 }
+
+/// ↑/↓ recall and Ctrl+R search in attach mode: the attach runner's UI
+/// loads the same history files as the in-process one (the realm's and the
+/// user's), a line submitted in one is appended to them, and the next start
+/// of either recalls it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn attach_mode_recalls_and_searches_the_shared_input_history() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rkat_tui::workbench::app::load_histories;
+
+    let ws = Workspace::new();
+    let args = args_for(&ws.root);
+    let llm = ScriptedLlmClient::new(vec![]);
+    let mut runtime = rkat_tui::bootstrap::bootstrap(&args, Running::bootstrap(&llm))
+        .await
+        .unwrap();
+    let (in_process, in_process_global) = load_histories(&runtime.scope);
+    runtime.release_realm_lease().await;
+    let config = rkat_tui::client::configure(&args, AttachMode::Existing)
+        .await
+        .unwrap();
+    let (mut history, mut global) = load_histories(&config.scope);
+    assert_eq!(history.path(), in_process.path());
+    assert_eq!(
+        global.as_ref().map(|g| g.path().to_path_buf()),
+        in_process_global.map(|g| g.path().to_path_buf())
+    );
+    // What the UI loop does with a submitted line: append it to each.
+    let submit = |line: &str,
+                  history: &mut rkat_tui::ui::History,
+                  global: &mut Option<rkat_tui::ui::History>| {
+        history.append(line).unwrap();
+        if let Some(global) = global {
+            global.append(line).unwrap();
+        }
+    };
+    submit("fix the parser", &mut history, &mut global);
+    submit("run the tests", &mut history, &mut global);
+
+    // The next attach-mode start.
+    let (history, global) = load_histories(&config.scope);
+    let mut app = build_app(
+        &rkat_tui::client::app_setup(&config),
+        StatusInfo::default(),
+        history.entries(),
+        global.as_ref().map(|g| g.entries()).unwrap_or_default(),
+    );
+    let key = |code| Msg::Key(KeyEvent::new(code, KeyModifiers::NONE));
+    app.update(key(KeyCode::Up));
+    assert_eq!(app.input.text(), "run the tests");
+    app.update(key(KeyCode::Up));
+    assert_eq!(app.input.text(), "fix the parser");
+    app.update(key(KeyCode::Down));
+    assert_eq!(app.input.text(), "run the tests");
+    app.update(key(KeyCode::Down));
+    assert_eq!(app.input.text(), "");
+    app.update(Msg::Key(KeyEvent::new(
+        KeyCode::Char('r'),
+        KeyModifiers::CONTROL,
+    )));
+    for c in "pars".chars() {
+        app.update(key(KeyCode::Char(c)));
+    }
+    assert!(app.update(key(KeyCode::Enter)).is_empty());
+    assert_eq!(app.input.text(), "fix the parser");
+}

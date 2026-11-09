@@ -49,6 +49,20 @@ pub fn build_app(
         .with_global_history(global_history.to_vec())
 }
 
+/// The input histories of `scope`, the same files for both runners: the
+/// realm's (`<realm>/tui_history`) and the user's global one, when there is
+/// a user config root. The UI recalls (↑/↓, Ctrl+R) from them and appends
+/// every submitted line to each.
+#[must_use]
+pub fn load_histories(scope: &RuntimeScope) -> (History, Option<History>) {
+    let history = History::load(scope.realm_root().join("tui_history"));
+    let global_history = scope
+        .global
+        .as_ref()
+        .map(|global| History::load(global.history_file()));
+    (history, global_history)
+}
+
 /// The UI ready for the terminal, with the histories it saves to.
 pub(crate) struct Opened {
     app: App,
@@ -67,11 +81,7 @@ pub(crate) fn open(
     effect_tx: &mpsc::UnboundedSender<Effect>,
 ) -> Opened {
     let realm_root = scope.realm_root();
-    let history = History::load(realm_root.join("tui_history"));
-    let global_history = scope
-        .global
-        .as_ref()
-        .map(|global| History::load(global.history_file()));
+    let (history, global_history) = load_histories(scope);
     let mut app = build_app(
         setup,
         status,

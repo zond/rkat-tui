@@ -2893,3 +2893,12 @@ the daemon's next start apply only the file's deny rules), so the client
 asks `rkat/checklist_view` and the daemon writes through
 `ApprovalEngine::persist_checklist_view`, as it persists the mode. Test:
 `attach::the_task_tools_fill_the_checklist_over_the_daemon`.
+
+### Input history in attach mode (verified, no gap)
+
+↑/↓ recall and Ctrl+R search come from the UI's histories, which both
+runners load through one function, `workbench::app::load_histories` (the
+realm's `tui_history` and the user's global history file), and the UI loop
+appends every submitted line to each; the attach config's scope names the
+same files as the in-process runtime's. Nothing was missing; the test that
+pins it is `attach::attach_mode_recalls_and_searches_the_shared_input_history`.
