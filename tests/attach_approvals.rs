@@ -1371,3 +1371,29 @@ async fn a_fork_off_child_runs_behind_the_gate() {
     client.quit().await;
     daemon.stop().await;
 }
+
+/// A parameter refusal answers the request that caused it (upstream
+/// #2114): the client's call fails at once with the engine's message
+/// instead of waiting for an answer that never names it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_parameter_refusal_answers_its_request() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let daemon = Running::start(&ws.root, &llm, &Setup::default()).await;
+    let raw = daemon.connect().await;
+    for (method, params) in [
+        ("mob/stop_member_run", json!({"mob_id": "tui", "bogus": 1})),
+        (
+            "mob/stream_open",
+            json!({"mob_id": "tui", "cursor": {"epoch": "x", "seq": 1}}),
+        ),
+        ("decision/get", json!({"decision_id": "not-a-decision"})),
+    ] {
+        let refused = tokio::time::timeout(Duration::from_secs(5), raw.call(method, params))
+            .await
+            .unwrap_or_else(|_| panic!("{method}: no answer named the request"));
+        assert!(refused.is_err(), "{method}: {refused:?}");
+    }
+    drop(raw);
+    daemon.stop().await;
+}
