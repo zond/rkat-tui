@@ -1255,7 +1255,7 @@ impl AttachRunner {
         match effect {
             Effect::StartTurn(text) => self.start_turn(&text).await,
             Effect::Steer { id, text } => self.steer(id, &text).await,
-            Effect::Interrupt | Effect::InterruptAndSend(_) => self.interrupt(),
+            Effect::Interrupt => self.interrupt(),
             Effect::RecallQueued => self.send(Msg::Recalled {
                 recalled: Vec::new(),
                 errors: vec![format!("taking back a sent message is {NOT_AVAILABLE}")],

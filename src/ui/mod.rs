@@ -525,14 +525,14 @@ pub enum Effect {
     /// Cancel the running `!` command (answered with
     /// [`ShellOutcome::Cancelled`] unless it already finished).
     CancelShell,
-    /// Interrupt the running turn.
+    /// Interrupt the running turn. Ctrl-X Ctrl-S and Ctrl+Enter with a
+    /// draft send it too: the UI keeps the draft and starts it as the next
+    /// turn itself once [`Msg::TurnFinished`] arrives.
     Interrupt,
     /// Pull back every steered message the runtime still holds queued (not
     /// yet joined to the run) without touching the run; answered with
     /// [`Msg::Recalled`].
     RecallQueued,
-    /// Interrupt the running turn and send this prompt next (Ctrl-X Ctrl-S).
-    InterruptAndSend(String),
     /// Steer a message into the running turn (a durable `Steer` input);
     /// answered with [`Msg::SteerAck`], then [`Msg::SteerDelivered`] or the
     /// turn's [`TurnOutcome::undelivered`].
@@ -2308,9 +2308,9 @@ impl App {
             self.submitted.push(text.clone());
             self.send_next = Some(match self.send_next.take() {
                 Some(prev) => format!("{prev}\n\n{text}"),
-                None => text.clone(),
+                None => text,
             });
-            fx.push(Effect::InterruptAndSend(text));
+            fx.push(Effect::Interrupt);
         }
     }
 
@@ -4901,10 +4901,7 @@ mod tests {
         app.update(ack(1, Ok(())));
         type_str(&mut app, "urgent");
         app.update_at(ctrl('x'), t0);
-        assert_eq!(
-            app.update_at(ctrl('s'), t0),
-            vec![Effect::InterruptAndSend("urgent".into())]
-        );
+        assert_eq!(app.update_at(ctrl('s'), t0), vec![Effect::Interrupt]);
         assert_eq!(app.send_next.as_deref(), Some("urgent"));
         // The queued message stays in place until the turn ends.
         assert_eq!(app.status.queued, 1);
@@ -5553,19 +5550,13 @@ mod tests {
         );
         // Running: interrupt and send the input next.
         type_str(&mut app, "next");
-        assert_eq!(
-            app.update(ctrl_enter()),
-            vec![Effect::InterruptAndSend("next".into())]
-        );
+        assert_eq!(app.update(ctrl_enter()), vec![Effect::Interrupt]);
         assert_eq!(app.send_next.as_deref(), Some("next"));
         // Running with an empty input: a plain interrupt.
         assert_eq!(app.update(ctrl_enter()), vec![Effect::Interrupt]);
         // A trailing backslash does not turn Ctrl+Enter into a newline.
         type_str(&mut app, "x\\");
-        assert_eq!(
-            app.update(ctrl_enter()),
-            vec![Effect::InterruptAndSend("x\\".into())]
-        );
+        assert_eq!(app.update(ctrl_enter()), vec![Effect::Interrupt]);
     }
 
     #[test]
@@ -6307,10 +6298,7 @@ mod tests {
         // Running with input: interrupt and send.
         type_str(&mut app, "next");
         app.update_at(ctrl('x'), t0);
-        assert_eq!(
-            app.update_at(ctrl('s'), t0),
-            vec![Effect::InterruptAndSend("next".into())]
-        );
+        assert_eq!(app.update_at(ctrl('s'), t0), vec![Effect::Interrupt]);
         assert!(app.input.is_empty());
         assert_eq!(
             app.take_submitted(),

@@ -697,9 +697,7 @@ impl Runner {
             }
             Effect::CancelShell => self.bench.cancel_shell(),
             Effect::Steer { id, text } => self.steer(id, text).await,
-            // The UI keeps the text of `InterruptAndSend` and starts the next
-            // turn itself once `TurnFinished` arrives.
-            Effect::Interrupt | Effect::InterruptAndSend(_) => self.interrupt(),
+            Effect::Interrupt => self.interrupt(),
             Effect::RecallQueued => self.recall_queued().await,
             Effect::Quit => {}
             Effect::SaveUnsent(held) => self.bench.hold_unsent(held),
