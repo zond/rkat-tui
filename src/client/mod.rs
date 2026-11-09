@@ -12,8 +12,8 @@
 //! - [`catchup`]: the stream cursor `{epoch, seq}` the client reattaches
 //!   with, the once-only rule, and the per-workspace cursor file.
 //! - [`approvals`]: the approval dialogs: the daemon's pushed decisions
-//!   (`decision/notice`, `decision/decide`), or an earlier daemon's records
-//!   (`approval/list`, `approval/decide`).
+//!   (`decision/notice`, `decision/decide`); a daemon without them is
+//!   refused at attach ([`ClientError::DaemonTooOld`]).
 //! - [`runner`]: the loop between the UI and the daemon. It serves the same
 //!   [`Effect`]/[`Msg`] contract as the in-process runner, so the UI is the
 //!   same: approval dialogs, permission modes and `/rules` act on the
@@ -108,6 +108,16 @@ pub enum ClientError {
         /// The serde error.
         #[source]
         source: serde_json::Error,
+    },
+    /// The daemon predates pushed decisions: its `initialize` does not list
+    /// `decision/notice` and `decision/decide`, so its approval requests
+    /// would never show here.
+    #[error(
+        "the workspace's rkat-tui-mob (pid {pid}) is too old for this client: it pushes no approval decisions; restart it (send SIGTERM to pid {pid}, then attach again and the current daemon starts)"
+    )]
+    DaemonTooOld {
+        /// The daemon's process id.
+        pid: u32,
     },
     /// The orchestrator has no session.
     #[error("the daemon's orchestrator has no session")]

@@ -27,7 +27,7 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use super::ClientError;
-use super::approvals::{Approvals, decide_params, decision_params};
+use super::approvals::{Approvals, decision_params};
 use super::catchup::{Cursor, CursorFile, Mark};
 use super::helpers::{self, Action as FollowerAction, Followers, HelperId};
 use super::launch::{self, Decision};
@@ -75,11 +75,6 @@ const ORPHANS_MAX: usize = 2_000;
 
 /// The notice shown on every attach.
 pub const EXPERIMENTAL_NOTICE: &str = "attach mode is experimental: the agent runs in this workspace's rkat-tui-mob daemon, behind the same approval gate (its approval requests show here, and in every other attached client; the first answer counts). /quit detaches and leaves the daemon running; /daemon stop shuts it down.";
-
-/// How often the pending approvals are listed while a turn runs or a
-/// dialog is open, on a daemon that pushes no decisions (an earlier
-/// version).
-pub const APPROVAL_POLL: Duration = Duration::from_millis(250);
 
 /// How long a turn whose runs all ended waits for a follow-up run.
 pub const RUN_GRACE: Duration = Duration::from_millis(300);
@@ -179,10 +174,6 @@ struct Link {
     stream: String,
     session: SessionId,
     endpoint: Endpoint,
-    /// The daemon pushes its approval requests as decisions
-    /// (`decision/notice` in its `initialize`); else they are polled with
-    /// `approval/list`.
-    decisions: bool,
 }
 
 /// A link and what the catch-up read on it.
@@ -211,15 +202,6 @@ enum Report {
     TurnStart(ClientError),
     /// A stop or a cancel failed.
     Interrupt(String),
-    /// The pending approval records, and those shown before that ended.
-    Approvals {
-        session: SessionId,
-        pending: Vec<meerkat_core::ApprovalRecord>,
-        ended: Vec<meerkat_core::ApprovalRecord>,
-    },
-    /// An `approval/decide` was not delivered (the record may still be
-    /// pending; its dialog may show again).
-    Undecided(meerkat_core::ApprovalId),
     /// The daemon's permission mode.
     Mode(ModeStatus),
     /// The mobs the daemon hosts (a discovery round).
@@ -346,10 +328,6 @@ pub struct AttachRunner {
     daemon_id_seen: Option<String>,
     /// The approval dialogs shown.
     approvals: Approvals,
-    /// When the pending approvals are listed next.
-    approvals_at: Option<Instant>,
-    /// A listing is running.
-    listing_approvals: bool,
     /// The running `!` command.
     shell_task: Option<(ShellRunId, JoinHandle<()>)>,
     /// The orchestrator's helpers.
@@ -409,8 +387,6 @@ impl AttachRunner {
             stopping: false,
             daemon_id_seen: None,
             approvals: Approvals::default(),
-            approvals_at: None,
-            listing_approvals: false,
             shell_task: None,
             followers: Followers::default(),
             orphans: std::collections::HashMap::new(),
@@ -451,7 +427,6 @@ impl AttachRunner {
                 }
                 Some(report) = self.reports_rx.recv() => self.on_report(report),
                 () = sleep_until(self.turn.deadline()) => self.on_deadline(),
-                () = sleep_until(self.approvals_at) => self.list_approvals(),
                 () = sleep_until(self.discover_at) => self.discover(),
                 () = sleep_until(self.session_check_at) => self.check_session(),
             }
@@ -652,61 +627,9 @@ impl AttachRunner {
             self.send(Msg::Status(StatusUpdate::Tokens { input, output }));
         }
         let now = Instant::now();
-        if !self.pushes_decisions() {
-            self.approvals_at = Some(now);
-        }
         self.discover_at = Some(now);
         self.session_check_at = Some(now + SESSION_POLL);
         self.refresh_mode();
-    }
-
-    /// Whether the attached daemon pushes its approval requests.
-    fn pushes_decisions(&self) -> bool {
-        self.link.as_ref().is_some_and(|link| link.decisions)
-    }
-
-    /// List the pending approvals in the background (see [`APPROVAL_POLL`]).
-    fn list_approvals(&mut self) {
-        self.approvals_at = None;
-        let Some(link) = &self.link else {
-            return;
-        };
-        if self.listing_approvals || link.decisions {
-            return;
-        }
-        self.listing_approvals = true;
-        let connection = Arc::clone(&link.connection);
-        let session = link.session.clone();
-        let shown = self.approvals.shown();
-        let reports = self.reports_tx.clone();
-        tokio::spawn(async move {
-            let listed = tokio::time::timeout(CALL_TIMEOUT, async {
-                let pending = remote::pending_approvals(&connection).await?;
-                let mut ended = Vec::new();
-                for id in shown {
-                    if !pending.iter().any(|record| record.approval_id == id)
-                        && let Ok(record) = remote::approval(&connection, &id).await
-                    {
-                        ended.push(record);
-                    }
-                }
-                Ok::<_, ClientError>((pending, ended))
-            })
-            .await;
-            let (pending, ended) = match listed {
-                Ok(Ok(listed)) => listed,
-                Ok(Err(err)) => {
-                    tracing::debug!(error = %err, "cannot list the pending approvals");
-                    (Vec::new(), Vec::new())
-                }
-                Err(_) => (Vec::new(), Vec::new()),
-            };
-            let _ = reports.send(Report::Approvals {
-                session,
-                pending,
-                ended,
-            });
-        });
     }
 
     /// Read the daemon's permission mode into the status bar.
@@ -1035,10 +958,6 @@ impl AttachRunner {
                     self.turn.current_run = Some(run.clone());
                 }
             }
-            AgentEvent::ToolCallRequested { .. } if !self.pushes_decisions() => {
-                // The gate may raise an approval for it.
-                self.approvals_at = Some(Instant::now());
-            }
             AgentEvent::ToolExecutionCompleted { name, .. }
                 if helpers::HELPER_TOOLS.contains(&name.as_str()) =>
             {
@@ -1141,31 +1060,6 @@ impl AttachRunner {
             Report::Interrupt(err) => {
                 self.notice(NoticeLevel::Error, format!("interrupt incomplete: {err}"));
             }
-            Report::Approvals {
-                session,
-                pending,
-                ended,
-            } => {
-                self.listing_approvals = false;
-                let Some(link) = &self.link else {
-                    return;
-                };
-                if link.session != session {
-                    return;
-                }
-                for change in self.approvals.update(&session, &pending, &ended) {
-                    for msg in change.messages() {
-                        self.send(msg);
-                    }
-                }
-                if (self.turn.active || !self.approvals.is_empty())
-                    && self.approvals_at.is_none()
-                    && !link.decisions
-                {
-                    self.approvals_at = Some(Instant::now() + APPROVAL_POLL);
-                }
-            }
-            Report::Undecided(record) => self.approvals.undecided(&record),
             Report::Mode(status) => self.push_mode(status),
             Report::Mobs(mobs) => {
                 self.discovering = false;
@@ -1334,58 +1228,10 @@ impl AttachRunner {
         }
     }
 
-    /// The UI answered an approval dialog: decide its record. A record
-    /// another client (or the timeout) settled first refuses the decision,
-    /// which is then dropped; "deny and stop" also interrupts the turn.
+    /// The UI answered an approval dialog: decide its decision.
     fn respond_escalation(&mut self, id: EscalationId, answer: &EscalationAnswer) {
         if let Some((decision, digest)) = self.approvals.answer_decision(id) {
             self.decide(id, &decision, &digest, answer);
-            return;
-        }
-        let Some(record) = self.approvals.answer(id) else {
-            return;
-        };
-        self.send(Msg::EscalationResolved(id));
-        let Some(connection) = self.connection() else {
-            self.notice(
-                NoticeLevel::Warn,
-                "not attached: the answer was not sent (the request is still pending in the daemon)",
-            );
-            return;
-        };
-        let params = decide_params(&record, answer);
-        let ui_tx = self.ui_tx.clone();
-        let reports = self.reports_tx.clone();
-        tokio::spawn(async move {
-            match tokio::time::timeout(CALL_TIMEOUT, remote::decide(&connection, params)).await {
-                Ok(Ok(())) => {}
-                Ok(Err(ClientError::Rpc { message, .. })) => {
-                    // Decided elsewhere first, or expired: a no-op.
-                    tracing::debug!(%message, "approval already settled");
-                    let _ = ui_tx.send(Msg::Notice {
-                        level: NoticeLevel::Info,
-                        text: "that approval request was already settled; your answer was not used"
-                            .to_string(),
-                    });
-                }
-                Ok(Err(err)) => {
-                    let _ = reports.send(Report::Undecided(record));
-                    let _ = ui_tx.send(Msg::Notice {
-                        level: NoticeLevel::Warn,
-                        text: format!("the answer was not sent: {err}"),
-                    });
-                }
-                Err(_) => {
-                    let _ = reports.send(Report::Undecided(record));
-                    let _ = ui_tx.send(Msg::Notice {
-                        level: NoticeLevel::Warn,
-                        text: "the daemon did not take the answer in time".to_string(),
-                    });
-                }
-            }
-        });
-        if matches!(answer, EscalationAnswer::Stop) {
-            self.interrupt();
         }
     }
 
@@ -2056,11 +1902,7 @@ impl AttachRunner {
         if let Some(warning) = warning {
             self.notice(NoticeLevel::Warn, warning);
         }
-        let now = Instant::now();
-        if !self.pushes_decisions() {
-            self.approvals_at = Some(now);
-        }
-        self.discover_at = Some(now);
+        self.discover_at = Some(Instant::now());
     }
 
     /// `/resume <reference>`: resolve it against the conversations, then
@@ -2730,14 +2572,9 @@ async fn establish(endpoint: Endpoint, saved: Option<&Cursor>) -> Result<Establi
     let (connection, mut notifications) = Connection::attach(&endpoint, ATTACH_TIMEOUT).await?;
     tokio::time::timeout(CALL_TIMEOUT, async {
         let capabilities = connection.call("initialize", serde_json::json!({})).await?;
-        let decisions = capabilities
-            .get("methods")
-            .and_then(serde_json::Value::as_array)
-            .is_some_and(|methods| {
-                methods
-                    .iter()
-                    .any(|method| method.as_str() == Some(crate::daemon::decisions::NOTICE))
-            });
+        if !pushes_decisions(&capabilities) {
+            return Err(ClientError::DaemonTooOld { pid: endpoint.pid });
+        }
         let session = remote::session_id(&connection).await?;
         let id = session.to_string();
         let resume = saved
@@ -2781,7 +2618,6 @@ async fn establish(endpoint: Endpoint, saved: Option<&Cursor>) -> Result<Establi
                 stream,
                 session,
                 endpoint,
-                decisions,
             },
             mark,
             reset,
@@ -2793,6 +2629,18 @@ async fn establish(endpoint: Endpoint, saved: Option<&Cursor>) -> Result<Establi
     })
     .await
     .map_err(|_| ClientError::Timeout("reading the orchestrator's state"))?
+}
+
+/// Whether a daemon's `initialize` answer lists the decision methods
+/// (`decision/notice`, `decision/decide`): its approval requests reach this
+/// client only as pushed decisions.
+fn pushes_decisions(capabilities: &serde_json::Value) -> bool {
+    let methods = capabilities
+        .get("methods")
+        .and_then(serde_json::Value::as_array);
+    crate::daemon::serve::DECISION_METHODS.iter().all(|name| {
+        methods.is_some_and(|methods| methods.iter().any(|method| method.as_str() == Some(name)))
+    })
 }
 
 /// Events only a running run publishes (its start aside).
@@ -2850,6 +2698,22 @@ mod tests {
         assert_eq!(switch.endpoint, "anthropic");
         assert!(model_switch("my-alias", &endpoints, None, None).is_err());
         assert!(model_switch("litellm:x", &endpoints, None, None).is_err());
+    }
+
+    #[test]
+    fn a_daemon_without_the_decision_methods_is_too_old() {
+        let current =
+            serde_json::json!({"methods": ["mob/send", "decision/notice", "decision/decide"]});
+        assert!(pushes_decisions(&current));
+        for old in [
+            serde_json::json!({"methods": ["mob/send", "approval/list", "approval/decide"]}),
+            serde_json::json!({"methods": ["decision/notice"]}),
+            serde_json::json!({}),
+        ] {
+            assert!(!pushes_decisions(&old), "{old}");
+        }
+        let err = ClientError::DaemonTooOld { pid: 42 }.to_string();
+        assert!(err.contains("too old") && err.contains("restart"), "{err}");
     }
 
     #[test]

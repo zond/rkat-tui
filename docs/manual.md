@@ -1098,8 +1098,8 @@ is ignored with a notice); the default is your login name. Interrupting the
 turn, or a request nobody answers in time, withdraws it and closes the
 dialogs. Requests a daemon left open when it stopped are withdrawn when it
 starts again (their calls never ran); a turn the restarted daemon resumes
-asks again. A TUI attached to a daemon of an earlier version falls back to
-listing that daemon's approval records.
+asks again. A daemon of an earlier version, which pushes no decisions, is
+refused at attach with "too old": restart it (stop it, then attach again).
 
 **Modes and rules.** Shift+Tab, `/mode` and `/auto resume` switch the
 daemon's mode: one mode for the daemon, shown in every attached TUI's
