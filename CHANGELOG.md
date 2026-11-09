@@ -394,6 +394,10 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Fixed
 
+- Attach mode: after a `/quit` the daemon never confirmed, a connect to
+  its address that timed out or failed with a local error no longer
+  counts as proof it stopped; only a refused connect, its process gone or
+  its endpoint file gone does.
 - Attached, the editor title and the help say that Ctrl-D, Ctrl-C twice and
   `/quit` detach (the daemon's turn goes on) instead of quitting, and Up on
   an empty input says why a message already sent to the daemon cannot be

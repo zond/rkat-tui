@@ -3088,6 +3088,20 @@ daemon: never "stopped"; next to it the case where the daemon ended),
 and `attach_lifecycle::quit_stops_the_daemon_this_client_started` for the
 normal shutdown.
 
+### Only a refused connect proves a stopped daemon
+
+Maintainer review of 28a10c2: `daemon_ended` took any failed connect to
+the daemon's address (`connect_timeout(..).is_ok()` false) as proof that
+it ended, so a connect that timed out on a loaded host, or failed with a
+local socket error, reported "stopped" while the endpoint file still
+named the daemon and its pid was alive. The probe is now classified
+(`client::runner::classify`, `Probe`): `ConnectionRefused` (and a reset,
+which a loopback connect to a closed port can report) is evidence of a
+stop; a timeout or any other error is `Unknown` and counts only when the
+pid is gone or no endpoint file names the daemon's token any more. Test:
+`client::runner::tests::only_a_refused_connect_counts_as_a_stopped_daemon`
+(classifies constructed `io::Error`s, so it does not depend on host load).
+
 ### The endpoint file falls back to the runtime directory
 
 When the agent shell's confinement would grant the state directory (a

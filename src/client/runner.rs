@@ -2339,15 +2339,17 @@ fn current<'a>(endpoint: Option<&'a str>, model: Option<&'a (String, String)>) -
 
 /// Whether the daemon `endpoint` names ended within `wait`. Evidence that
 /// it did: no endpoint file at `files` names it any more (each is gone,
-/// or names another daemon), its process is gone, or its address no
-/// longer accepts. A file that cannot be read or parsed is no evidence
-/// either way: it names nobody, and only the pid or the address can say.
+/// or names another daemon), its process is gone, or a connect to its
+/// address is refused outright ([`Probe::Refused`]). A file that cannot
+/// be read or parsed is no evidence either way, and neither is a connect
+/// that timed out or failed otherwise ([`Probe::Unknown`]: a loaded host
+/// or a local socket error says nothing about the daemon).
 async fn daemon_ended(files: &[PathBuf], endpoint: &Endpoint, wait: Duration) -> bool {
     let deadline = Instant::now() + wait;
     loop {
         if no_file_names(files, &endpoint.token)
             || crate::daemon::list::pid_gone(endpoint.pid)
-            || !accepts(endpoint.address)
+            || probe_address(endpoint.address) == Probe::Refused
         {
             return true;
         }
@@ -2368,10 +2370,37 @@ fn no_file_names(files: &[PathBuf], token: &str) -> bool {
     })
 }
 
-/// Whether something accepts at the loopback `address` now (a connect
-/// there is refused at once when nothing listens).
-fn accepts(address: std::net::SocketAddr) -> bool {
-    std::net::TcpStream::connect_timeout(&address, Duration::from_secs(1)).is_ok()
+/// What a connect to a daemon's address says about it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Probe {
+    /// Something accepted.
+    Accepts,
+    /// Refused outright (nothing listens): evidence the daemon stopped.
+    Refused,
+    /// Timed out or failed otherwise: no evidence either way.
+    Unknown,
+}
+
+/// Probe the loopback `address` now (a connect there is refused at once
+/// when nothing listens).
+fn probe_address(address: std::net::SocketAddr) -> Probe {
+    match std::net::TcpStream::connect_timeout(&address, Duration::from_secs(1)) {
+        Ok(_) => Probe::Accepts,
+        Err(err) => classify(&err),
+    }
+}
+
+/// A failed connect: a refusal (or a reset, which a loopback connect to a
+/// port nobody listens on can report) is evidence of a stop; anything
+/// else (a timeout, a local socket error) is not.
+#[must_use]
+pub fn classify(err: &std::io::Error) -> Probe {
+    match err.kind() {
+        std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::ConnectionReset => {
+            Probe::Refused
+        }
+        _ => Probe::Unknown,
+    }
 }
 
 /// How an attached `/quit` leaves, from the daemon's status (`None`: it
@@ -3072,6 +3101,30 @@ mod tests {
         orphans.clear();
         assert_eq!((orphans.held, orphans.warned), (0, false));
         assert!(orphans.take("b").is_empty());
+    }
+
+    /// Only a refusal proves a stop: a connect that timed out or failed
+    /// otherwise leaves the question to the pid and the endpoint file.
+    #[test]
+    fn only_a_refused_connect_counts_as_a_stopped_daemon() {
+        use std::io::{Error, ErrorKind};
+        assert_eq!(
+            classify(&Error::from(ErrorKind::ConnectionRefused)),
+            Probe::Refused
+        );
+        assert_eq!(
+            classify(&Error::from(ErrorKind::ConnectionReset)),
+            Probe::Refused
+        );
+        for kind in [
+            ErrorKind::TimedOut,
+            ErrorKind::WouldBlock,
+            ErrorKind::PermissionDenied,
+            ErrorKind::AddrNotAvailable,
+            ErrorKind::Other,
+        ] {
+            assert_eq!(classify(&Error::from(kind)), Probe::Unknown, "{kind:?}");
+        }
     }
 
     #[test]
