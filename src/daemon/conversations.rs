@@ -416,6 +416,20 @@ impl Conversations {
             .map(|page| page.messages)
     }
 
+    /// The configured endpoint `session`'s durable auth binding names
+    /// (`None`: a built-in endpoint, or unreadable).
+    pub async fn endpoint_of(&self, session: &SessionId) -> Option<String> {
+        let view = self
+            .state
+            .session_service()
+            .load_persisted_session_metadata(session)
+            .await
+            .ok()??;
+        let binding = view.session_metadata?.auth_binding?;
+        (binding.realm.as_str() == crate::endpoints::ENDPOINT_REALM)
+            .then(|| binding.binding.as_str().to_string())
+    }
+
     /// A conversation's total token usage, as the engine keeps it with the
     /// session (`SessionService::read`'s billing; the wire's
     /// `events/snapshot` and `session/read` carry no usage).
@@ -443,10 +457,29 @@ impl Conversations {
     ///
     /// [`SwitchError`].
     pub async fn switch(&self, target: Target) -> Result<SessionId, SwitchError> {
+        self.seat(target, false).await
+    }
+
+    /// Seat the orchestrator again on the session it runs as, so its agent
+    /// is built anew from the realm config (a model profile written since
+    /// is in a rebuilt agent's model registry only: the engine captures
+    /// the registry at build). Refused while a turn runs.
+    ///
+    /// # Errors
+    ///
+    /// [`SwitchError`]; [`SwitchError::NoSession`] without a session.
+    pub async fn reseat(&self) -> Result<SessionId, SwitchError> {
+        let current = self.current().ok_or(SwitchError::NoSession)?;
+        self.seat(Target::Resume(current), true).await
+    }
+
+    /// [`Self::switch`]; `again`: the current session is a valid target
+    /// ([`Self::reseat`]).
+    async fn seat(&self, target: Target, again: bool) -> Result<SessionId, SwitchError> {
         let _one = self.switching.lock().await;
         let previous = self.current();
         if let Target::Resume(session) = &target {
-            if previous.as_ref() == Some(session) {
+            if previous.as_ref() == Some(session) && !again {
                 return Err(SwitchError::Current);
             }
             if !self.log.lock().has(session) {
@@ -471,6 +504,15 @@ impl Conversations {
             .mob_retire(&mob, identity.clone())
             .await
             .map_err(|err| SwitchError::mob("retiring the orchestrator", err))?;
+        // Seated again on the same session: its retired actor must be gone
+        // first, or the new one shares runtime state the old one's exit
+        // drops (an auth lease rotation then finds its store gone).
+        if again && let Some(previous) = &previous {
+            self.state
+                .session_service()
+                .await_removed_actor_exit(previous)
+                .await;
+        }
         let spawned = self.spawn(&mob, &target).await;
         if let Err(err) = spawned {
             tracing::warn!(error = %err, "the switch failed; seating the previous conversation again");

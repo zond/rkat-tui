@@ -491,6 +491,7 @@ impl Daemon {
             decisions: Arc::clone(&composed.decisions),
             tasks_db: composed.tasks_db.clone(),
             machine: composed.runtime.runtime_adapter(),
+            realm_config: Arc::clone(&composed.realm_config),
             startup_notices: composed.startup_notices.clone(),
             lifecycle: lifecycle::Lifecycle::new(
                 workspace.clone(),

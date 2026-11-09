@@ -3439,3 +3439,42 @@ and listed here.
   `build_state().additional_instructions` before and after was the
   in-process mechanism (a session loaded through the service), which the
   wire does not expose; the prompt assertions that show its effect stay.
+- `tests/models.rs`: the four tests run over the daemon harness; a resume
+  (`--resume last` in-process) is the daemon's restart on the
+  orchestrator's conversation, and the session's stored identity is read
+  from the realm's store (`rig::stored_session`). The migration found
+  three gaps, fixed here:
+  1. `/model` to a model only an endpoint lists (`proxy:my-alias`) was
+     refused by the daemon ("no capability profile is registered"): the
+     in-process switch wrote the model's profile into the realm config
+     first. `rkat/set_model` now takes what the client's list says of the
+     model (`SetModelParams::listed`: window and output limit) and writes
+     the profile (`endpoints::ensure_model_profile`). The engine captures
+     the agent's model registry at build ("absent from the agent's
+     effective model registry" otherwise), so when the profile is new the
+     daemon seats the orchestrator again on its session
+     (`Conversations::reseat`, after `await_removed_actor_exit` of the
+     retired actor) before the switch, and answers `reseated`; the client
+     then reopens the conversation's stream (`Again::Reseated`, keeping
+     the running turn and dialogs) and holds prompts typed meanwhile
+     (prompts are held during every conversation switch now, not only at
+     start-up). The status bar's context window falls back to the
+     client's model lists when its realm config predates the profile.
+  2. After a daemon restart the status bar named the provider
+     (`anthropic`) instead of the configured endpoint the session's
+     binding names (`proxy`), which the in-process resume derived from
+     the binding. New local method `rkat/endpoint` (the binding's
+     endpoint from the session's durable metadata); the client asks it on
+     attach and after every adoption.
+  3. The attach `/model` refusal lacked the in-process "model not
+     changed:" prefix.
+  Two engine observations, worked around in the test and recorded here:
+  opening a second realm persistence in the daemon's process
+  (`stored_session` while it runs) takes over the engine's process-wide
+  auth lease state, and the daemon's next binding rotation fails with
+  "runtime store is no longer available" once that bundle is dropped, so
+  the test reads the store between daemon runs; and a `/model` switch
+  right after a daemon restart, before the restored orchestrator's first
+  run, was refused with "Runtime not ready: destroyed" (the same window
+  as `/compact now`'s, see the manual's limits), so the test runs a turn
+  first.

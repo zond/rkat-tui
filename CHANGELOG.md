@@ -445,6 +445,12 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Fixed
 
+- `/model` to a model only a configured endpoint lists works with the
+  daemon: the daemon registers the model's profile from the endpoint's
+  list (rebuilding the agent on its conversation when the profile is
+  new), and the status bar names the configured endpoint after a daemon
+  restart. A prompt typed while a conversation switch runs is sent once
+  the switch ended, to the conversation it ended on.
 - The daemon agent's member-scoped mob queries (`list_members`,
   `member_status`) run without review, like the other mob queries; its
   member-scoped mob actions (`spawn_member`, `retire_member`,

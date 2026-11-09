@@ -42,6 +42,10 @@ pub const RESUME: &str = "rkat/resume";
 pub const TRANSCRIPT: &str = "rkat/transcript";
 /// [`SessionParams`] → [`Usage`]: a conversation's total token usage.
 pub const USAGE: &str = "rkat/usage";
+/// [`SessionParams`] → [`SessionEndpoint`]: the configured endpoint a
+/// conversation's auth binding names (the status bar shows it, as the
+/// in-process runner derived it from the session's binding).
+pub const ENDPOINT: &str = "rkat/endpoint";
 /// [`TrustParams`] → [`crate::approval::desk::RuleOutcome`]: the project
 /// trust record (`/trust`, `/rules trust`).
 pub const TRUST: &str = "rkat/trust";
@@ -313,6 +317,15 @@ pub struct Transcript {
     pub messages: Vec<Message>,
 }
 
+/// [`ENDPOINT`]'s result.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionEndpoint {
+    /// The configured endpoint (`None`: a built-in one, named by the
+    /// provider).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+}
+
 /// [`USAGE`]'s result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
@@ -349,6 +362,22 @@ pub struct SetModelParams {
     /// clears the session's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_binding: Option<meerkat_core::AuthBindingRef>,
+    /// What the endpoint's model list says of the model (a model only an
+    /// endpoint knows gets a profile in the realm config from it, as the
+    /// in-process switch registered one); `None`: not listed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listed: Option<ListedModel>,
+}
+
+/// A model as the client's endpoint lists report it ([`SetModelParams`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListedModel {
+    /// Its context window in tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+    /// Its output limit in tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
 }
 
 /// [`SET_MODEL`]'s result: the session's identity after the switch.
@@ -360,6 +389,11 @@ pub struct ModelSet {
     pub model: String,
     /// Its provider now.
     pub provider: String,
+    /// The orchestrator was seated again on the session first (its agent
+    /// rebuilt for a model it had no profile for): the conversation's
+    /// stream is a new one, which the client opens again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reseated: bool,
 }
 
 /// What [`TRUST`] acts on.

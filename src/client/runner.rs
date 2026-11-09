@@ -216,7 +216,8 @@ struct Established {
     /// The conversation rendered from its start, when the stream could not
     /// resume from the saved cursor.
     reset: Option<Vec<Block>>,
-    identity: Option<(String, String)>,
+    /// Model, provider and the configured endpoint its binding names.
+    identity: Option<(String, String, Option<String>)>,
     /// The session's total usage `(input, output)`, read after the replay.
     usage: Option<(u64, u64)>,
     /// The live notifications that arrived before the usage answer: their
@@ -278,7 +279,7 @@ enum Report {
         warning: Option<String>,
     },
     /// The conversation read again from its start ([`AttachRunner::rerender`]).
-    Rerendered(Result<Adopted, String>),
+    Rerendered(Result<Adopted, String>, Again),
     /// The resume picker's rows.
     Picker(Result<Vec<(String, String)>, String>),
     /// The tasks of `session` (`rkat/tasks`), or why they were not read.
@@ -298,6 +299,18 @@ enum Report {
     },
 }
 
+/// Why the current conversation is read again from its start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Again {
+    /// The stream lost events the daemon no longer keeps.
+    LostEvents,
+    /// The daemon ended the conversation's stream: it seated the agent
+    /// again (a model switch to a model it had no profile for).
+    Reseated,
+    /// Back from a view-only session.
+    Back,
+}
+
 /// What a client shows of the conversation it switched to.
 struct Adopted {
     session: SessionId,
@@ -306,7 +319,8 @@ struct Adopted {
     blocks: Vec<Block>,
     /// The last durable sequence of the session (shown as the transcript).
     last_seq: u64,
-    identity: Option<(String, String)>,
+    /// Model, provider and the configured endpoint its binding names.
+    identity: Option<(String, String, Option<String>)>,
     /// The session's total usage `(input, output)`.
     usage: Option<(u64, u64)>,
     /// The context of its last model call (the gauge).
@@ -479,9 +493,9 @@ pub struct AttachRunner {
     /// left the daemon).
     farewells: Farewells,
     /// Prompts sent before the first attach finished (the command line's
-    /// prompt is sent as the UI opens): held until the first link is up
-    /// and no start-up switch runs, or the first connect failed; `None`
-    /// once released.
+    /// prompt is sent as the UI opens) or while a conversation switch
+    /// runs: held until the link is up and no switch runs, or the first
+    /// connect failed; `None` once released.
     held: Option<Vec<Effect>>,
     /// The first connect failed (held prompts then fail as not attached).
     first_failed: bool,
@@ -570,10 +584,10 @@ impl AttachRunner {
             tokio::select! {
                 effect = self.effect_rx.recv() => match effect {
                     None | Some(Effect::Quit) => break,
-                    Some(effect @ Effect::StartTurn(_)) if self.held.is_some() => {
-                        if let Some(held) = &mut self.held {
-                            held.push(effect);
-                        }
+                    // Held while a switch runs too: the prompt goes to the
+                    // conversation the switch ends on, over its stream.
+                    Some(effect @ Effect::StartTurn(_)) if self.held.is_some() || self.switching => {
+                        self.held.get_or_insert_with(Vec::new).push(effect);
                     }
                     Some(effect) => self.handle_effect(effect).await,
                 },
@@ -782,9 +796,13 @@ impl AttachRunner {
                 format!("reattached to the daemon at {address}"),
             );
         }
-        if let Some((model, provider)) = identity {
+        if let Some((model, provider, endpoint)) = identity {
             self.followers.set_default_model(&model);
-            self.set_model_status(&provider, &model);
+            self.show_model(
+                endpoint.as_deref().unwrap_or(&provider),
+                WireDialect::parse(&provider),
+                &model,
+            );
         }
         if fresh {
             self.load_cost(&link.session);
@@ -974,6 +992,13 @@ impl AttachRunner {
             return;
         }
         if let Some(stream) = remote::stream_end(note) {
+            // The conversation's own stream: the daemon seated the agent
+            // again on it (a model switch rebuilt its agent).
+            if stream == link.stream && !self.switching {
+                let session = link.session.clone();
+                self.rerender(session, Again::Reseated);
+                return;
+            }
             self.followers.ended(stream);
             return;
         }
@@ -1107,10 +1132,6 @@ impl AttachRunner {
         });
     }
 
-    fn set_model_status(&mut self, provider: &str, model: &str) {
-        self.show_model(provider, WireDialect::parse(provider), model);
-    }
-
     /// The status bar names `model` on `endpoint` (of `dialect`).
     fn show_model(&mut self, endpoint: &str, dialect: Option<WireDialect>, model: &str) {
         self.model = Some((endpoint.to_string(), model.to_string()));
@@ -1119,10 +1140,23 @@ impl AttachRunner {
             provider: endpoint.to_string(),
             model: model.to_string(),
         }));
-        let window = self.config.config.as_ref().and_then(|config| {
-            let provider = dialect?.into();
-            crate::endpoints::registry_context_window(config, provider, model)
-        });
+        // The realm config this client read at start, else the endpoint's
+        // list (a model only an endpoint knows, whose profile the daemon
+        // wrote since).
+        let window = self
+            .config
+            .config
+            .as_ref()
+            .and_then(|config| {
+                let provider = dialect?.into();
+                crate::endpoints::registry_context_window(config, provider, model)
+            })
+            .or_else(|| {
+                self.bench
+                    .models()
+                    .and_then(|models| models.entry(endpoint, model))
+                    .and_then(|entry| entry.context_window)
+            });
         self.send(Msg::Status(StatusUpdate::ContextWindow(window)));
     }
 
@@ -1147,7 +1181,7 @@ impl AttachRunner {
                 && !self.switching
             {
                 let session = link.session.clone();
-                self.rerender(session);
+                self.rerender(session, Again::LostEvents);
             }
             return;
         }
@@ -1299,7 +1333,7 @@ impl AttachRunner {
         if epoch != self.link_epoch {
             match report {
                 Report::Switched { .. }
-                | Report::Rerendered(_)
+                | Report::Rerendered(..)
                 | Report::MobOpened { .. }
                 | Report::Viewed { .. } => {
                     tracing::debug!("dropped a report of a connection lost since");
@@ -1327,6 +1361,10 @@ impl AttachRunner {
                     {
                         let dialect = WireDialect::parse(&set.provider);
                         self.show_model(&switch.endpoint, dialect, &set.model);
+                        // The agent was seated again: its stream is new.
+                        if set.reseated {
+                            self.rerender(set.session_id.clone(), Again::Reseated);
+                        }
                     }
                     self.notice(
                         NoticeLevel::Info,
@@ -1408,7 +1446,7 @@ impl AttachRunner {
             } => {
                 self.switching = false;
                 match result {
-                    Ok(adopted) => self.adopted(adopted, own, warning, false),
+                    Ok(adopted) => self.adopted(adopted, own, warning, None),
                     Err(why) if own.is_some() => self.notice(
                         NoticeLevel::Error,
                         format!("could not switch conversations: {why}"),
@@ -1418,13 +1456,13 @@ impl AttachRunner {
                     }
                 }
             }
-            Report::Rerendered(result) => {
+            Report::Rerendered(result, again) => {
                 self.switching = false;
                 match result {
-                    Ok(adopted) => self.adopted(adopted, None, None, true),
+                    Ok(adopted) => self.adopted(adopted, None, None, Some(again)),
                     Err(why) => self.notice(
                         NoticeLevel::Warn,
-                        format!("the stream lost events and the conversation could not be read again: {why}"),
+                        format!("the conversation could not be read again: {why}"),
                     ),
                 }
             }
@@ -1983,7 +2021,7 @@ impl AttachRunner {
             Ok(switch) => self.switch_model(switch),
             Err(err) => {
                 if !self.bench.defer_until_listed(reference) {
-                    self.notice(NoticeLevel::Warn, err.to_string());
+                    self.notice(NoticeLevel::Warn, format!("model not changed: {err}"));
                 }
             }
         }
@@ -2013,6 +2051,7 @@ impl AttachRunner {
                 model: switch.model.clone(),
                 provider: switch.provider.clone(),
                 auth_binding: switch.auth_binding.clone(),
+                listed: switch.listed,
             };
             let result = bounded(
                 SWITCH_TIMEOUT,
@@ -2098,9 +2137,9 @@ impl AttachRunner {
         });
     }
 
-    /// Show the conversation `session` from its start again (the stream
-    /// lost events): the stream reopened live, the committed transcript.
-    fn rerender(&mut self, session: SessionId) {
+    /// Show the conversation `session` from its start again (`again`
+    /// says why): the stream reopened live, the committed transcript.
+    fn rerender(&mut self, session: SessionId, again: Again) {
         let Some(link) = &self.link else {
             return;
         };
@@ -2110,7 +2149,7 @@ impl AttachRunner {
         let reports = self.reporter();
         tokio::spawn(async move {
             let result = adopt(&connection, &stream, session).await;
-            reports.send(Report::Rerendered(result));
+            reports.send(Report::Rerendered(result, again));
         });
     }
 
@@ -2121,7 +2160,7 @@ impl AttachRunner {
         adopted: Adopted,
         own: Option<bool>,
         warning: Option<String>,
-        rerender: bool,
+        again: Option<Again>,
     ) {
         let Adopted {
             session,
@@ -2138,13 +2177,16 @@ impl AttachRunner {
         self.viewing = None;
         link.session = session.clone();
         link.stream = stream;
-        // The old conversation's turn and dialogs are over.
-        if self.turn.active {
-            self.turn.record(Err(TurnFailure::Interrupted));
-            self.finish_turn();
-        }
-        for id in self.approvals.clear() {
-            self.send(Msg::EscalationResolved(id));
+        // The old conversation's turn and dialogs are over (the same
+        // conversation, seated again or shown again, keeps them).
+        if !matches!(again, Some(Again::Reseated | Again::Back)) {
+            if self.turn.active {
+                self.turn.record(Err(TurnFailure::Interrupted));
+                self.finish_turn();
+            }
+            for id in self.approvals.clear() {
+                self.send(Msg::EscalationResolved(id));
+            }
         }
         let id = session.to_string();
         self.mark = Some(Mark::rendered(&id, last_seq));
@@ -2163,9 +2205,13 @@ impl AttachRunner {
         }));
         self.load_cost(&session);
         self.refresh_tasks();
-        if let Some((model, provider)) = identity {
+        if let Some((model, provider, endpoint)) = identity {
             self.followers.set_default_model(&model);
-            self.set_model_status(&provider, &model);
+            self.show_model(
+                endpoint.as_deref().unwrap_or(&provider),
+                WireDialect::parse(&provider),
+                &model,
+            );
             // A fresh conversation starts on the daemon's start-up model:
             // this client's last `/model` carries over, as in-process.
             if own == Some(true)
@@ -2177,9 +2223,13 @@ impl AttachRunner {
         }
         let short = id.get(..8).unwrap_or(&id).to_string();
         let text = match own {
-            _ if rerender => format!(
+            _ if again == Some(Again::LostEvents) => format!(
                 "the stream lost events the daemon no longer keeps; conversation {short} is shown from its start"
             ),
+            _ if again == Some(Again::Reseated) => format!(
+                "the daemon rebuilt the agent on conversation {short} (a model it had no profile for); it is shown from its start"
+            ),
+            _ if again == Some(Again::Back) => format!("conversation {short} is shown again"),
             Some(true) => {
                 format!("a new conversation ({short}); the previous one stays in /resume")
             }
@@ -2224,6 +2274,7 @@ impl AttachRunner {
                 Ok(target) if target == current && viewing => {
                     reports.send(Report::Rerendered(
                         adopt(&connection, &stream, target).await,
+                        Again::Back,
                     ));
                     return;
                 }
@@ -2718,11 +2769,18 @@ pub fn model_switch(
                 name: target.endpoint.clone(),
                 known: endpoints.names(),
             })?;
+    let listed = models
+        .and_then(|models| models.entry(&endpoint.name, &target.model))
+        .map(|entry| crate::daemon::protocol::ListedModel {
+            context_window: entry.context_window,
+            max_output_tokens: entry.max_output_tokens,
+        });
     Ok(ModelSwitch {
         model: target.model,
         provider: Some(endpoint.dialect.as_str().to_string()),
         auth_binding: endpoint.binding(),
         endpoint: endpoint.name.clone(),
+        listed,
     })
 }
 
@@ -2832,13 +2890,17 @@ async fn adopt(
         let snapshot = remote::snapshot(connection, &session).await?;
         let messages = remote::transcript(connection, &session).await?;
         let usage = remote::usage(connection, &session).await.ok();
+        let endpoint = remote::session_endpoint(connection, &session)
+            .await
+            .ok()
+            .flatten();
         let context = last_context_before(connection, &session, snapshot.latest).await;
         Ok::<_, ClientError>(Adopted {
             blocks: crate::runner::blocks_from_messages(&messages),
             session,
             stream,
             last_seq: snapshot.latest,
-            identity: Some((snapshot.model, snapshot.provider)),
+            identity: Some((snapshot.model, snapshot.provider, endpoint)),
             usage,
             context,
         })
@@ -2960,7 +3022,16 @@ async fn establish(
                 )
             }
         };
-        let identity = remote::identity(&connection, &session).await.ok();
+        let identity = match remote::identity(&connection, &session).await {
+            Ok((model, provider)) => {
+                let endpoint = remote::session_endpoint(&connection, &session)
+                    .await
+                    .ok()
+                    .flatten();
+                Some((model, provider, endpoint))
+            }
+            Err(_) => None,
+        };
         let usage = remote::usage(&connection, &session).await.ok();
         // Every notification read before the usage answer: a turn that
         // ended before the usage read is in the totals; its live end must

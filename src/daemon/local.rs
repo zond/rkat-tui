@@ -31,6 +31,9 @@
 //! - [`TRANSCRIPT`] `{"session_id"}` → `{"messages": [Message]}`: a
 //!   conversation's committed messages (the client renders a resumed
 //!   conversation from them, as the in-process `/resume` does);
+//! - [`ENDPOINT`] `{"session_id"}` → `{"endpoint"?}`: the configured
+//!   endpoint a conversation's durable auth binding names (absent: a
+//!   built-in one), which the status bar shows;
 //! - [`USAGE`] `{"session_id"}` → `{"input_tokens", "output_tokens"}`: a
 //!   conversation's total usage as the engine keeps it with the session (the
 //!   client seeds its token counter from it on attach and after a switch,
@@ -107,7 +110,8 @@ use super::protocol::{
     CHECKLIST_VIEW, ChecklistViewParams, ModelSet, SET_MODEL, SetModelParams, TASKS, Tasks,
 };
 use super::protocol::{
-    CONVERSATIONS, GET_MODE, NEW, RESUME, RULES, Refusal, SET_MODE, TRANSCRIPT, TRUST, USAGE,
+    CONVERSATIONS, ENDPOINT, GET_MODE, NEW, RESUME, RULES, Refusal, SET_MODE, SessionEndpoint,
+    TRANSCRIPT, TRUST, USAGE,
 };
 use super::protocol::{DETACH, SHUTDOWN, STATUS, Status};
 use super::protocol::{NOTICES, Notices, StartupNotice};
@@ -140,6 +144,8 @@ pub struct Local {
     tasks_db: std::path::PathBuf,
     /// The runtime the orchestrator's session lives in (`rkat/set_model`).
     machine: Arc<meerkat_runtime::MeerkatMachine>,
+    /// The realm config (a switched-to model's profile is written there).
+    realm_config: Arc<crate::bootstrap::RealmConfigStore>,
     /// What the start-up had to say (`rkat/notices`).
     startup_notices: Vec<StartupNotice>,
     /// The clients, the detach record and the shutdown request
@@ -171,6 +177,8 @@ pub struct LocalParts {
     pub tasks_db: std::path::PathBuf,
     /// The runtime the members' sessions live in.
     pub machine: Arc<meerkat_runtime::MeerkatMachine>,
+    /// The realm config store.
+    pub realm_config: Arc<crate::bootstrap::RealmConfigStore>,
     /// What the start-up had to say.
     pub startup_notices: Vec<StartupNotice>,
     /// The daemon's lifecycle state.
@@ -201,6 +209,7 @@ impl Local {
             decisions,
             tasks_db,
             machine,
+            realm_config,
             startup_notices,
             lifecycle,
         } = parts;
@@ -219,6 +228,7 @@ impl Local {
             decisions,
             tasks_db,
             machine,
+            realm_config,
             startup_notices,
             lifecycle,
         }
@@ -305,6 +315,12 @@ impl Local {
                     .await
                     .map_err(|err| Refusal::new(SWITCH_FAILED, err.to_string()))?;
                 answer(Transcript { messages })
+            }
+            ENDPOINT => {
+                let SessionParams { session_id } = protocol::params(params)?;
+                answer(SessionEndpoint {
+                    endpoint: self.conversations.endpoint_of(&session_id).await,
+                })
             }
             USAGE => {
                 let SessionParams { session_id } = protocol::params(params)?;
@@ -433,7 +449,42 @@ impl Local {
             model,
             provider,
             auth_binding,
+            listed,
         } = params;
+        // A model only an endpoint knows needs its profile in the realm
+        // config before the runtime accepts it, as the in-process switch
+        // registered one.
+        let mut reseated = false;
+        if let Some(dialect) = provider.as_deref().and_then(WireDialect::parse) {
+            let listed = listed.map(|listed| crate::models::ModelEntry {
+                id: model.clone(),
+                display_name: None,
+                source: crate::models::ModelSource::Provider,
+                context_window: listed.context_window,
+                max_output_tokens: listed.max_output_tokens,
+            });
+            let written = crate::endpoints::ensure_model_profile(
+                self.realm_config.runtime(),
+                dialect.into(),
+                &model,
+                listed.as_ref(),
+            )
+            .await
+            .map_err(|err| Refusal::new(SWITCH_FAILED, err.to_string()))?;
+            // The live agent's model registry predates the profile: seat
+            // the orchestrator again on its session, as the in-process
+            // switch rebuilt its agent.
+            if written {
+                reseated = true;
+                self.conversations.reseat().await.map_err(|err| {
+                    let code = match err {
+                        super::conversations::SwitchError::Running => SWITCH_BUSY,
+                        _ => SWITCH_FAILED,
+                    };
+                    Refusal::new(code, err.to_string())
+                })?;
+            }
+        }
         let provider_params = provider.as_deref().and_then(|provider| {
             let dialect = WireDialect::parse(provider)?;
             // A configured endpoint is named by its auth binding.
@@ -490,6 +541,7 @@ impl Local {
             session_id: session,
             model: report.new_identity.model,
             provider: report.new_identity.provider.as_str().to_string(),
+            reseated,
         })
     }
 

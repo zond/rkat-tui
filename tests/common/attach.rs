@@ -173,11 +173,21 @@ impl Client {
         args: &rkat_tui::Args,
         start_token: Option<&str>,
     ) -> Self {
+        Self::attach_listing(root, args, start_token, no_lists()).await
+    }
+
+    /// [`Self::attach_args`] with the model lister the picker uses.
+    pub async fn attach_listing(
+        root: &Path,
+        args: &rkat_tui::Args,
+        start_token: Option<&str>,
+        lister: rkat_tui::models::ModelLister,
+    ) -> Self {
         let mut config = rkat_tui::client::configure(args, AttachTarget::Existing)
             .await
             .unwrap();
         config.start_token = start_token.map(str::to_string);
-        config.lister = no_lists();
+        config.lister = lister;
         config.endpoint_files = vec![endpoint_file_for(root)];
         let mut client = Self {
             harness: spawn_attach_runner(config),
@@ -373,7 +383,8 @@ impl Attached {
     pub async fn start_with(root: &Path, llm: &Arc<ScriptedLlmClient>, setup: Setup) -> Self {
         let args = setup.command_line(root);
         let daemon = Running::start_with(&args, setup.options(root, llm)).await;
-        let client = Client::attach_args(root, &args, None).await;
+        let lister = setup.lister.clone().unwrap_or_else(no_lists);
+        let client = Client::attach_listing(root, &args, None, lister).await;
         Self { daemon, client }
     }
 
@@ -440,4 +451,20 @@ impl Running {
             .unwrap();
         serde_json::from_value(answer["messages"].clone()).unwrap()
     }
+}
+
+/// The session `id` as the realm of the workspace at `root` stores it (read
+/// from the store directly, beside or after the daemon).
+pub async fn stored_session(root: &Path, id: &meerkat_core::SessionId) -> meerkat_core::Session {
+    let scope = rkat_tui::bootstrap::resolve_scope(&args_for(root)).unwrap();
+    let (_manifest, persistence) =
+        meerkat::open_realm_persistence_in(&scope.state_root, &scope.realm_id, None, None)
+            .await
+            .unwrap();
+    persistence
+        .session_store()
+        .load(id)
+        .await
+        .unwrap()
+        .expect("the session is stored")
 }

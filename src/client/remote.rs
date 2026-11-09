@@ -78,6 +78,27 @@ pub async fn identity(
         .map(|snapshot| (snapshot.model, snapshot.provider))
 }
 
+/// The configured endpoint `session`'s auth binding names (`rkat/endpoint`;
+/// `None`: a built-in endpoint).
+///
+/// # Errors
+///
+/// The call's error (an older daemon has no such method).
+pub async fn session_endpoint(
+    connection: &Connection,
+    session: &SessionId,
+) -> Result<Option<String>, ClientError> {
+    let answer: crate::daemon::protocol::SessionEndpoint = local(
+        connection,
+        protocol::ENDPOINT,
+        &SessionParams {
+            session_id: session.clone(),
+        },
+    )
+    .await?;
+    Ok(answer.endpoint)
+}
+
 /// What `events/snapshot` says of a session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
@@ -240,6 +261,8 @@ pub struct ModelSwitch {
     pub auth_binding: Option<meerkat_core::AuthBindingRef>,
     /// The endpoint's name (the status bar shows it).
     pub endpoint: String,
+    /// What the endpoint's list says of the model (`None`: not listed).
+    pub listed: Option<crate::daemon::protocol::ListedModel>,
 }
 
 /// Stop the orchestrator's run `run_id`.

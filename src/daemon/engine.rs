@@ -69,6 +69,8 @@ pub struct RootPlan {
 pub struct Composed {
     pub runtime: Arc<SessionRuntime>,
     pub config_store: Arc<dyn ConfigStore>,
+    /// The same store, typed (the endpoints' documents are written there).
+    pub realm_config: Arc<crate::bootstrap::RealmConfigStore>,
     pub state: Arc<MobMcpState>,
     pub root: RootPlan,
     pub lease: RealmLeaseGuard,
@@ -368,6 +370,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     Ok(Composed {
         runtime,
         config_store,
+        realm_config,
         state,
         root: RootPlan {
             model: choice.model,
