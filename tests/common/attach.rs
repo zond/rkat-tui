@@ -135,6 +135,16 @@ impl Running {
         connection
     }
 
+    /// Wait for the daemon to end by itself (`rkat/shutdown`).
+    pub async fn ended(self) {
+        within(self.task).await.unwrap().expect("clean shutdown");
+    }
+
+    /// Whether the daemon still serves (it has not ended).
+    pub fn serving(&self) -> bool {
+        !self.task.is_finished()
+    }
+
     pub async fn stop(self) {
         let _ = self.stop.send(());
         within(self.task).await.unwrap().expect("clean shutdown");

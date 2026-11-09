@@ -250,6 +250,16 @@ impl Conversations {
         self.registry.root_session(&Self::key())
     }
 
+    /// Whether the orchestrator's run is open now (`None`: its state could
+    /// not be read).
+    pub async fn running(&self) -> Option<bool> {
+        self.state
+            .mob_member_status(&MobId::from(MOB_ID), &AgentIdentity::from(ORCHESTRATOR))
+            .await
+            .ok()
+            .map(|status| run_open(&status))
+    }
+
     /// The conversations, last used first, with their size and first
     /// message: each conversation's history is read [`TITLE_PAGE`]
     /// messages at a time until its first user message (at most

@@ -21,6 +21,7 @@ use std::time::Duration;
 use super::ClientError;
 use crate::cli::{Args, AttachMode};
 use crate::daemon::endpoint::Endpoint;
+use crate::daemon::lifecycle::START_TOKEN_ENV;
 
 /// The daemon's binary name.
 pub const DAEMON_BINARY: &str = "rkat-tui-mob";
@@ -217,8 +218,10 @@ pub fn daemon_log(realm_root: &Path) -> PathBuf {
 
 /// Start `program` with `argv` in the background (its own process group,
 /// stdin closed, stdout and stderr appended to `log`) and reap it on a
-/// thread when it exits. Returns its pid and a receiver that yields its
-/// exit status if it exits.
+/// thread when it exits. `start_token` goes to the daemon in
+/// [`START_TOKEN_ENV`] (the client presenting it at attach is the owner;
+/// `None`: the daemon has no owner). Returns its pid and a receiver that
+/// yields its exit status if it exits.
 ///
 /// # Errors
 ///
@@ -228,6 +231,7 @@ pub fn spawn_daemon(
     program: &Path,
     argv: &[OsString],
     log: &Path,
+    start_token: Option<&str>,
 ) -> Result<(u32, tokio::sync::oneshot::Receiver<String>), ClientError> {
     let spawn_error = |source| ClientError::Spawn {
         program: program.to_path_buf(),
@@ -267,6 +271,10 @@ pub fn spawn_daemon(
             }
             command
         }
+    };
+    match start_token {
+        Some(token) => command.env(START_TOKEN_ENV, token),
+        None => command.env_remove(START_TOKEN_ENV),
     };
     command
         .args(argv)
@@ -513,7 +521,8 @@ mod tests {
     async fn a_started_daemon_leaves_the_terminals_session_when_setsid_exists() {
         let dir = tempfile::tempdir().unwrap();
         let log = daemon_log(dir.path());
-        let (pid, mut exited) = spawn_daemon(Path::new("/bin/sleep"), &["5".into()], &log).unwrap();
+        let (pid, mut exited) =
+            spawn_daemon(Path::new("/bin/sleep"), &["5".into()], &log, None).unwrap();
         // Once `setsid` has run (it execs the program in place).
         for _ in 0..200 {
             let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
@@ -556,11 +565,34 @@ mod tests {
         );
     }
 
+    /// The start token reaches the daemon in its environment, and a
+    /// restart (no token) does not inherit one from this process.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_start_token_is_handed_over_in_the_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = daemon_log(dir.path());
+        let script = format!("echo \"token=${{{START_TOKEN_ENV}:-none}}\"");
+        for (token, expected) in [(Some("abc"), "token=abc"), (None, "token=none")] {
+            let _ = std::fs::remove_file(&log);
+            let (_, exited) = spawn_daemon(
+                Path::new("/bin/sh"),
+                &["-c".into(), script.clone().into()],
+                &log,
+                token,
+            )
+            .unwrap();
+            exited.await.unwrap();
+            let out = std::fs::read_to_string(&log).unwrap();
+            assert_eq!(out.trim(), expected);
+        }
+    }
+
     #[tokio::test]
     async fn a_daemon_that_exits_is_reported_with_its_log() {
         let dir = tempfile::tempdir().unwrap();
         let log = daemon_log(dir.path());
-        let (_, mut exited) = spawn_daemon(Path::new("/bin/false"), &[], &log).unwrap();
+        let (_, mut exited) = spawn_daemon(Path::new("/bin/false"), &[], &log, None).unwrap();
         let waited = wait_for_endpoint(
             &dir.path().join("mob.endpoint"),
             Duration::from_secs(10),
@@ -574,7 +606,7 @@ mod tests {
         );
         assert!(log.exists());
         assert!(matches!(
-            spawn_daemon(Path::new("/nonexistent/rkat-tui-mob"), &[], &log),
+            spawn_daemon(Path::new("/nonexistent/rkat-tui-mob"), &[], &log, None),
             Err(ClientError::Spawn { .. })
         ));
     }

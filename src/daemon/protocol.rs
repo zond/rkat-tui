@@ -65,6 +65,16 @@ pub const NOTICES: &str = "rkat/notices";
 /// The notification of a change the orchestrator's file tools made:
 /// [`FileDiffNote`].
 pub const FILE_DIFF: &str = "rkat/file_diff";
+/// `{}` → [`Status`]: the daemon's lifecycle state as the caller sees it
+/// (`/quit` decides from it, `--list` prints it).
+pub const STATUS: &str = "rkat/status";
+/// `{}` → `{}`: the caller leaves and wants the agent kept running
+/// (`/detach`); the daemon records that it has been detached from.
+pub const DETACH: &str = "rkat/detach";
+/// `{}` → `{}`: stop the daemon (`/quit` when this client started it and
+/// nobody detached since, or the choice "terminate"): it removes its
+/// endpoint file and shuts down as on SIGTERM.
+pub const SHUTDOWN: &str = "rkat/shutdown";
 /// The engine's decision notice, pushed by the daemon.
 pub const DECISION_NOTICE: &str = meerkat_contracts::DECISION_NOTICE_NOTIFICATION;
 /// The engine's decide method, decided by the daemon ([`DecideParams`]).
@@ -189,10 +199,30 @@ pub fn response_line(response: &RpcResponse) -> String {
 }
 
 /// [`ATTACH`]'s parameters.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachParams {
     /// The endpoint file's token.
     pub token: String,
+    /// The start token the client that launched the daemon handed it
+    /// (`RKAT_TUI_START_TOKEN`): the daemon counts the connection that
+    /// presents it as its owner ([`Status::owner`]). A client presents its
+    /// own on every attach; a daemon it did not start ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_token: Option<String>,
+    /// A connection that only reads the status (`--list`): not counted as
+    /// an attached client, and its end is no detach.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub probe: bool,
+}
+
+impl std::fmt::Debug for AttachParams {
+    /// Never the tokens.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AttachParams")
+            .field("start_token", &self.start_token.as_ref().map(|_| "…"))
+            .field("probe", &self.probe)
+            .finish_non_exhaustive()
+    }
 }
 
 /// [`ATTACH`]'s result.
@@ -200,6 +230,31 @@ pub struct AttachParams {
 pub struct Attached {
     /// Always `true`.
     pub attached: bool,
+}
+
+/// [`STATUS`]'s result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Status {
+    /// The canonical workspace path the daemon serves.
+    pub workspace: std::path::PathBuf,
+    /// The daemon's process id.
+    pub pid: u32,
+    /// When it started, RFC 3339 in UTC.
+    pub started_at: String,
+    /// The attached clients, the caller included (probes are not counted).
+    pub clients: usize,
+    /// Whether any client has detached from this daemon since it started
+    /// (`/detach`, or its owner's connection ending without
+    /// [`SHUTDOWN`]); never reset.
+    pub detached: bool,
+    /// Whether the caller is the client that started the daemon.
+    pub owner: bool,
+    /// The orchestrator's current conversation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<SessionId>,
+    /// Whether the orchestrator's turn is running (`false` when its state
+    /// cannot be read).
+    pub running: bool,
 }
 
 /// [`SET_MODE`]'s parameters.

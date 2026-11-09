@@ -56,6 +56,15 @@
 //!   choice saved as the realm's `[ui] checklist`, through the engine that
 //!   owns the realm file and its trust record.
 //!
+//! - [`STATUS`] `{}` → [`Status`]: the workspace, pid, start time, the
+//!   attached clients, whether anyone detached, whether the caller started
+//!   the daemon, the current conversation and whether its turn runs
+//!   ([`super::lifecycle`]; `/quit` decides from it, `--list` prints it);
+//! - [`DETACH`] `{}` → `{}`: `/detach`, recorded so that a later `/quit`
+//!   asks before stopping the daemon;
+//! - [`SHUTDOWN`] `{}` → `{}`: stop the daemon (its endpoint file goes
+//!   first, as on SIGTERM).
+//!
 //! A future engine extension (an application-defined method namespace, or
 //! the governed realm's own review policy) could replace them.
 //!
@@ -89,6 +98,7 @@ use crate::endpoints::{ENDPOINT_REALM, WireDialect};
 use crate::mobs::HelperRegistry;
 use crate::thinking::{self, ThinkingTable};
 
+use super::lifecycle::{Caller, Lifecycle};
 use super::protocol::{
     self, ConversationList, METHOD_NOT_FOUND, ModeSet, SWITCH_BUSY, SWITCH_FAILED, SessionParams,
     SetModeParams, Switched, Transcript, TrustOp, TrustParams, Usage, engine,
@@ -99,6 +109,7 @@ use super::protocol::{
 use super::protocol::{
     CONVERSATIONS, GET_MODE, NEW, RESUME, RULES, Refusal, SET_MODE, TRANSCRIPT, TRUST, USAGE,
 };
+use super::protocol::{DETACH, SHUTDOWN, STATUS, Status};
 use super::protocol::{NOTICES, Notices, StartupNotice};
 
 /// The idempotency source of the daemon's system-context notes.
@@ -131,6 +142,9 @@ pub struct Local {
     machine: Arc<meerkat_runtime::MeerkatMachine>,
     /// What the start-up had to say (`rkat/notices`).
     startup_notices: Vec<StartupNotice>,
+    /// The clients, the detach record and the shutdown request
+    /// (`rkat/status`, `rkat/detach`, `rkat/shutdown`).
+    lifecycle: Arc<Lifecycle>,
 }
 
 /// What [`Local`] is made of.
@@ -159,6 +173,8 @@ pub struct LocalParts {
     pub machine: Arc<meerkat_runtime::MeerkatMachine>,
     /// What the start-up had to say.
     pub startup_notices: Vec<StartupNotice>,
+    /// The daemon's lifecycle state.
+    pub lifecycle: Arc<Lifecycle>,
 }
 
 impl std::fmt::Debug for Local {
@@ -186,6 +202,7 @@ impl Local {
             tasks_db,
             machine,
             startup_notices,
+            lifecycle,
         } = parts;
         let in_plan = engine.mode() == PermissionMode::Plan;
         Self {
@@ -203,6 +220,27 @@ impl Local {
             tasks_db,
             machine,
             startup_notices,
+            lifecycle,
+        }
+    }
+
+    /// The daemon's lifecycle state.
+    #[must_use]
+    pub fn lifecycle(&self) -> &Arc<Lifecycle> {
+        &self.lifecycle
+    }
+
+    /// `rkat/status` for `caller`.
+    async fn status(&self, caller: Caller) -> Status {
+        Status {
+            workspace: self.lifecycle.workspace().to_path_buf(),
+            pid: std::process::id(),
+            started_at: self.lifecycle.started_at().to_string(),
+            clients: self.lifecycle.clients(),
+            detached: self.lifecycle.detached(),
+            owner: caller.owner,
+            session_id: self.session(),
+            running: self.conversations.running().await.unwrap_or(false),
         }
     }
 
@@ -212,14 +250,29 @@ impl Local {
         &self.decisions
     }
 
-    /// Answer the local method `method`.
+    /// Answer the local method `method` for `caller`.
     ///
     /// # Errors
     ///
     /// [`protocol::METHOD_NOT_FOUND`] for an unknown `rkat/*` method,
     /// [`protocol::INVALID_PARAMS`] for bad parameters.
-    pub async fn call(&self, method: &str, params: Value) -> Result<Value, Refusal> {
+    pub async fn call(
+        &self,
+        caller: Caller,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, Refusal> {
         match method {
+            STATUS => answer(self.status(caller).await),
+            DETACH => {
+                self.lifecycle.detach();
+                answer(json!({}))
+            }
+            SHUTDOWN => {
+                tracing::info!(owner = caller.owner, "rkat/shutdown: shutting down");
+                self.lifecycle.shutdown();
+                answer(json!({}))
+            }
             GET_MODE => answer(ModeStatus::of(&self.engine)),
             SET_MODE => {
                 let SetModeParams { mode } = protocol::params(params)?;

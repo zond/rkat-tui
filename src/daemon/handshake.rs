@@ -62,7 +62,9 @@ pub enum HandshakeError {
 
 /// Read and check the attach line from `reader` against `token`, answer it
 /// on `writer`. On success the caller hands `reader` (which may already
-/// buffer the client's next requests) and `writer` to the engine.
+/// buffer the client's next requests) and `writer` to the engine; the
+/// attach's parameters say what else the client presented (its start
+/// token, whether it is a probe).
 ///
 /// # Errors
 ///
@@ -72,7 +74,7 @@ pub async fn accept<R, W>(
     writer: &mut W,
     token: &str,
     timeout: Duration,
-) -> Result<(), HandshakeError>
+) -> Result<AttachParams, HandshakeError>
 where
     R: AsyncBufRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -91,12 +93,12 @@ where
         Ok(Ok(_)) => check(&line, token),
     };
     match checked {
-        Ok(id) => {
+        Ok((id, params)) => {
             let reply = protocol::result_line(Some(id), Attached { attached: true });
             tokio::time::timeout(timeout, write_line(writer, &reply))
                 .await
                 .map_err(|_| HandshakeError::Timeout(timeout))??;
-            Ok(())
+            Ok(params)
         }
         Err((id, err)) => {
             if !matches!(err, HandshakeError::Closed | HandshakeError::Io(_)) {
@@ -118,9 +120,12 @@ where
     }
 }
 
-/// The request id of a valid attach `line` for `token`, or the id to
-/// answer with and the refusal.
-fn check(line: &str, token: &str) -> Result<RpcId, (Option<RpcId>, HandshakeError)> {
+/// The request id and parameters of a valid attach `line` for `token`, or
+/// the id to answer with and the refusal.
+fn check(
+    line: &str,
+    token: &str,
+) -> Result<(RpcId, AttachParams), (Option<RpcId>, HandshakeError)> {
     let request: Value = serde_json::from_str(line.trim_end())
         .map_err(|err| (None, HandshakeError::NotAttach(err.to_string())))?;
     let id = protocol::request_id(request.get("id").unwrap_or(&Value::Null));
@@ -136,13 +141,13 @@ fn check(line: &str, token: &str) -> Result<RpcId, (Option<RpcId>, HandshakeErro
         .cloned()
         .and_then(|params| serde_json::from_value::<AttachParams>(params).ok());
     match given {
-        Some(given) if same(given.token.as_bytes(), token.as_bytes()) => Ok(id),
+        Some(given) if same(given.token.as_bytes(), token.as_bytes()) => Ok((id, given)),
         _ => Err((Some(id), HandshakeError::Unauthorized)),
     }
 }
 
 /// Compare without stopping at the first differing byte.
-fn same(a: &[u8], b: &[u8]) -> bool {
+pub(crate) fn same(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
@@ -158,7 +163,10 @@ mod tests {
     use serde_json::json;
     use tokio::io::BufReader;
 
-    async fn run(input: &[u8], timeout: Duration) -> (Result<(), HandshakeError>, Value, String) {
+    async fn run(
+        input: &[u8],
+        timeout: Duration,
+    ) -> (Result<AttachParams, HandshakeError>, Value, String) {
         let mut reader = BufReader::new(input);
         let mut out = Vec::new();
         let result = accept(&mut reader, &mut out, "secret", timeout).await;
@@ -176,12 +184,33 @@ mod tests {
     async fn the_right_token_attaches_and_keeps_the_next_requests() {
         let input = b"{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"rkat/attach\",\"params\":{\"token\":\"secret\"}}\n{\"next\":1}\n";
         let (result, reply, rest) = run(input, TIMEOUT).await;
-        result.unwrap();
+        assert_eq!(
+            result.unwrap(),
+            AttachParams {
+                token: "secret".into(),
+                ..AttachParams::default()
+            }
+        );
         assert_eq!(
             reply,
             json!({"jsonrpc":"2.0","id":7,"result":{"attached":true}})
         );
         assert_eq!(rest, "{\"next\":1}\n", "pipelined requests stay buffered");
+    }
+
+    #[tokio::test]
+    async fn the_attach_carries_the_start_token_and_the_probe_flag() {
+        let input = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"rkat/attach\",\"params\":{\"token\":\"secret\",\"start_token\":\"s\",\"probe\":true}}\n";
+        let (result, _, _) = run(input, TIMEOUT).await;
+        let params = result.unwrap();
+        assert_eq!(params.start_token.as_deref(), Some("s"));
+        assert!(params.probe);
+        // Debug never shows a token.
+        let shown = format!("{params:?}");
+        assert!(
+            !shown.contains("secret") && !shown.contains("\"s\""),
+            "{shown}"
+        );
     }
 
     #[tokio::test]

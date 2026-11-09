@@ -222,7 +222,13 @@ pub async fn configure_with(
             .map(crate::bootstrap::GlobalDirs::pricing_cache),
         !args.no_pricing_fetch,
     );
+    // Drawn only when this client may start the daemon.
+    let start_token = match spawn {
+        Some(_) => Some(crate::daemon::endpoint::new_token()?),
+        None => None,
+    };
     Ok(AttachConfig {
+        start_token,
         endpoint_file: crate::daemon::endpoint_file(&scope.context_root)?,
         cursor: catchup::CursorFile::of_workspace(&scope.context_root),
         config: Some(config),

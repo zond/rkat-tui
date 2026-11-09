@@ -134,6 +134,10 @@ pub struct AttachConfig {
     pub config: Option<meerkat_core::Config>,
     /// How to start a missing daemon (`None`: `--attach=existing`).
     pub spawn: Option<SpawnPlan>,
+    /// The start token handed to a daemon this client starts, presented
+    /// on every attach: the daemon counts the client that started it as
+    /// its owner (`/quit` then stops a daemon nobody detached from).
+    pub start_token: Option<String>,
     /// The user's `!` shell (this process's own, as in-process), or why
     /// there is none.
     pub user_shell: Result<Arc<UserShell>, String>,
@@ -561,11 +565,13 @@ impl AttachRunner {
             .map(|mark| mark.cursor(self.daemon_id_seen.as_deref()))
             .or_else(|| self.config.cursor.load());
         let ui_tx = self.ui_tx.clone();
+        let start_token = self.config.start_token.clone();
         let task = if std::mem::take(&mut self.first_connect) {
             let spawn = self.config.spawn.clone();
             tokio::spawn(async move {
-                let endpoint = first_endpoint(&file, spawn.as_ref(), &ui_tx).await?;
-                establish(endpoint, saved.as_ref()).await
+                let endpoint =
+                    first_endpoint(&file, spawn.as_ref(), start_token.as_deref(), &ui_tx).await?;
+                establish(endpoint, saved.as_ref(), start_token.as_deref()).await
             })
         } else {
             let spawn = self.config.spawn.clone();
@@ -575,7 +581,8 @@ impl AttachRunner {
                 loop {
                     match launch::probe(&file).await {
                         launch::Liveness::Live(endpoint) => {
-                            match establish(endpoint, saved.as_ref()).await {
+                            match establish(endpoint, saved.as_ref(), start_token.as_deref()).await
+                            {
                                 Ok(established) => return Ok(established),
                                 Err(err) => tracing::debug!(error = %err, "reconnect failed"),
                             }
@@ -590,7 +597,12 @@ impl AttachRunner {
                             if let Some(plan) = &spawn {
                                 restarted = Some(Instant::now());
                                 match restart(&file, plan, &ui_tx).await {
-                                    Ok(endpoint) => match establish(endpoint, saved.as_ref()).await
+                                    Ok(endpoint) => match establish(
+                                        endpoint,
+                                        saved.as_ref(),
+                                        start_token.as_deref(),
+                                    )
+                                    .await
                                     {
                                         Ok(established) => return Ok(established),
                                         Err(err) => {
@@ -2364,6 +2376,7 @@ async fn adopt(
 async fn first_endpoint(
     file: &std::path::Path,
     spawn: Option<&SpawnPlan>,
+    start_token: Option<&str>,
     ui_tx: &mpsc::UnboundedSender<Msg>,
 ) -> Result<Endpoint, ClientError> {
     let mode = if spawn.is_some() {
@@ -2380,6 +2393,7 @@ async fn first_endpoint(
                 &plan.program,
                 &launch::with_endpoint_file(&plan.argv, file),
                 &plan.log,
+                start_token,
             )?;
             let _ = ui_tx.send(Msg::Notice {
                 level: NoticeLevel::Info,
@@ -2404,10 +2418,13 @@ async fn restart(
     ui_tx: &mpsc::UnboundedSender<Msg>,
 ) -> Result<Endpoint, ClientError> {
     let _ = ui_tx.send(Msg::Status(StatusUpdate::Attach(Some(STARTING.into()))));
+    // No start token: a daemon that died lost what it knew about its
+    // clients, so the restarted one has no owner and `/quit` asks.
     let (pid, mut exited) = launch::spawn_daemon(
         &plan.program,
         &launch::with_endpoint_file(&plan.argv, file),
         &plan.log,
+        None,
     )?;
     let _ = ui_tx.send(Msg::Notice {
         level: NoticeLevel::Warn,
@@ -2423,8 +2440,13 @@ async fn restart(
 /// from the saved cursor when it names this daemon's stream of the session
 /// (the events since come on the stream), else live after rendering the
 /// conversation from its start.
-async fn establish(endpoint: Endpoint, saved: Option<&Cursor>) -> Result<Established, ClientError> {
-    let (connection, mut notifications) = Connection::attach(&endpoint, ATTACH_TIMEOUT).await?;
+async fn establish(
+    endpoint: Endpoint,
+    saved: Option<&Cursor>,
+    start_token: Option<&str>,
+) -> Result<Established, ClientError> {
+    let (connection, mut notifications) =
+        Connection::attach_as(&endpoint, ATTACH_TIMEOUT, start_token, false).await?;
     tokio::time::timeout(CALL_TIMEOUT, async {
         let capabilities = connection
             .call(protocol::engine::INITIALIZE, serde_json::json!({}))
@@ -2564,6 +2586,7 @@ mod tests {
             cursor: CursorFile::of_workspace(&scope.context_root),
             config: None,
             spawn: None,
+            start_token: None,
             user_shell: Err("none".into()),
             endpoints: EndpointRegistry::from_endpoints(Vec::new()),
             lister: crate::models::live_lister(),
@@ -2597,10 +2620,18 @@ mod tests {
         });
         let (read, write) = tokio::io::split(client);
         let address: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
-        let (connection, notifications) =
-            Connection::attach_io(read, write, "t", address, ATTACH_TIMEOUT)
-                .await
-                .unwrap();
+        let (connection, notifications) = Connection::attach_io(
+            read,
+            write,
+            protocol::AttachParams {
+                token: "t".into(),
+                ..protocol::AttachParams::default()
+            },
+            address,
+            ATTACH_TIMEOUT,
+        )
+        .await
+        .unwrap();
         Link {
             connection: Arc::new(connection),
             notifications,

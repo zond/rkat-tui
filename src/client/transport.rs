@@ -25,6 +25,7 @@ use tokio::task::JoinHandle;
 use super::ClientError;
 use crate::daemon::endpoint::Endpoint;
 use crate::daemon::handshake::ATTACH_METHOD;
+use crate::daemon::protocol::AttachParams;
 
 /// How long connecting and the attach handshake may take.
 pub const ATTACH_TIMEOUT: Duration = Duration::from_secs(5);
@@ -96,9 +97,26 @@ impl Connection {
     /// when connecting or the handshake takes longer than `timeout`,
     /// [`ClientError::Refused`] when the daemon refuses the token, and
     /// [`ClientError::Protocol`] for an answer that is not the handshake's.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn attach(
         endpoint: &Endpoint,
         timeout: Duration,
+    ) -> Result<(Self, mpsc::UnboundedReceiver<Notification>), ClientError> {
+        Self::attach_as(endpoint, timeout, None, false).await
+    }
+
+    /// [`Connection::attach`], presenting this client's start token (the
+    /// daemon counts the client that started it as its owner) or as a
+    /// probe that only reads the status (not counted as a client).
+    ///
+    /// # Errors
+    ///
+    /// As [`Connection::attach`].
+    pub async fn attach_as(
+        endpoint: &Endpoint,
+        timeout: Duration,
+        start_token: Option<&str>,
+        probe: bool,
     ) -> Result<(Self, mpsc::UnboundedReceiver<Notification>), ClientError> {
         let stream =
             tokio::time::timeout(timeout, tokio::net::TcpStream::connect(endpoint.address))
@@ -110,7 +128,12 @@ impl Connection {
                 })?;
         let _ = stream.set_nodelay(true);
         let (read, write) = stream.into_split();
-        Self::attach_io(read, write, &endpoint.token, endpoint.address, timeout).await
+        let params = AttachParams {
+            token: endpoint.token.clone(),
+            start_token: start_token.map(str::to_string),
+            probe,
+        };
+        Self::attach_io(read, write, params, endpoint.address, timeout).await
     }
 
     /// Attach over an already open byte stream (`address` is what
@@ -122,7 +145,7 @@ impl Connection {
     pub async fn attach_io<R, W>(
         read: R,
         mut write: W,
-        token: &str,
+        params: AttachParams,
         address: SocketAddr,
         timeout: Duration,
     ) -> Result<(Self, mpsc::UnboundedReceiver<Notification>), ClientError>
@@ -135,7 +158,7 @@ impl Connection {
             "jsonrpc": "2.0",
             "id": ATTACH_ID,
             "method": ATTACH_METHOD,
-            "params": {"token": token},
+            "params": params,
         });
         let handshake = async {
             write_line(&mut write, &request).await?;
@@ -391,6 +414,13 @@ mod tests {
         }
     }
 
+    fn token(token: &str) -> AttachParams {
+        AttachParams {
+            token: token.to_string(),
+            ..AttachParams::default()
+        }
+    }
+
     fn pair() -> (
         Server,
         impl std::future::Future<
@@ -400,7 +430,13 @@ mod tests {
         let (client, server) = tokio::io::duplex(64 * 1024);
         let (sr, sw) = tokio::io::split(server);
         let (cr, cw) = tokio::io::split(client);
-        let attach = Connection::attach_io(cr, cw, "secret", ADDR.parse().unwrap(), ATTACH_TIMEOUT);
+        let attach = Connection::attach_io(
+            cr,
+            cw,
+            token("secret"),
+            ADDR.parse().unwrap(),
+            ATTACH_TIMEOUT,
+        );
         (
             Server {
                 reader: BufReader::new(sr),
@@ -515,7 +551,13 @@ mod tests {
             writer: sw,
         };
         let (cr, cw) = tokio::io::split(client);
-        let attach = Connection::attach_io(cr, cw, "wrong", ADDR.parse().unwrap(), ATTACH_TIMEOUT);
+        let attach = Connection::attach_io(
+            cr,
+            cw,
+            token("wrong"),
+            ADDR.parse().unwrap(),
+            ATTACH_TIMEOUT,
+        );
         let (attached, ()) = tokio::join!(attach, server.accept("secret"));
         assert!(
             matches!(
@@ -545,8 +587,14 @@ mod tests {
     async fn a_silent_server_times_the_handshake_out() {
         let (client, _server) = tokio::io::duplex(4096);
         let (cr, cw) = tokio::io::split(client);
-        let attached =
-            Connection::attach_io(cr, cw, "t", ADDR.parse().unwrap(), Duration::from_secs(1)).await;
+        let attached = Connection::attach_io(
+            cr,
+            cw,
+            token("t"),
+            ADDR.parse().unwrap(),
+            Duration::from_secs(1),
+        )
+        .await;
         assert!(
             matches!(attached, Err(ClientError::Timeout(_))),
             "{attached:?}"

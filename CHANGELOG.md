@@ -6,6 +6,14 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Added
 
+- The daemon knows its lifecycle: how many clients are attached, whether
+  anyone detached from it, and which client started it (a start token the
+  launching client hands it). `rkat/status` reports them with the
+  workspace, pid, start time, current conversation and whether a turn
+  runs; `rkat/detach` records a detach and `rkat/shutdown` stops the
+  daemon. The client that started the daemon losing its connection
+  without stopping it (a hangup, a crash) counts as a detach; the daemon
+  keeps running.
 - The daemon's endpoint file names the workspace it serves (its canonical
   path) and when it started (`started_at`, RFC 3339); a file an older
   daemon wrote still reads.

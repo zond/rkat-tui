@@ -2983,3 +2983,34 @@ register it). The quit texts said "quit" where attach mode detaches: the
 editor title follows the status bar's attach state. Tests:
 `render_snapshot::a_first_idle_ctrl_d_asks_for_a_second_in_the_editor_title`,
 `attach::what_the_daemon_cannot_do_yet_says_so`.
+
+### The daemon's lifecycle state and its owner (`rkat/status`)
+
+P2 of the always-daemon plan needs the daemon to know who may stop it.
+`daemon::lifecycle::Lifecycle` counts the attached connections (a
+`Seat` per connection, released when it ends), keeps a `detached` flag
+that is never reset, and holds the start token. The owner is decided by
+a token, not by a connection id: the client that launches the daemon
+draws a token (`endpoint::new_token`), hands it over in
+`RKAT_TUI_START_TOKEN` (the environment, not the command line, which
+`/proc/<pid>/cmdline` shows to every local user; the agent's confined
+shell gets a curated environment without it) and presents it in every
+`rkat/attach` (`AttachParams::start_token`). A daemon started by hand
+has none, and a daemon a client restarts after it died is started
+without one: it lost what it knew about its clients, so it has no owner
+and `/quit` asks. The token grants nothing on its own: attaching still
+needs the endpoint token; holding both only means "stop without asking".
+`AttachParams`' `Debug` prints neither token. A `probe` attach (for
+`--list`) is not counted as a client, so listing never turns a `/quit`
+that would stop the daemon into a detach. `rkat/status` counts the
+caller among `clients`. `rkat/shutdown` resolves the same shutdown path
+as SIGTERM (`Lifecycle::shutdown_requested` is selected with the signal
+in `Daemon::serve_until`), so the endpoint file goes first; once a
+shutdown began, connections ending are no detach. Hangup is detach: the
+owner's `Seat` dropping without a shutdown sets `detached`, any other
+connection's does not. Tests: `attach_lifecycle::status_reports_the_daemon_its_clients_and_the_owner`,
+`attach_lifecycle::a_dropped_owner_connection_is_a_detach_and_the_daemon_keeps_running`,
+`attach_lifecycle::detach_is_recorded_and_never_reset`,
+`attach_lifecycle::shutdown_stops_the_daemon_and_removes_its_endpoint_file`,
+`daemon::lifecycle::tests::*`,
+`client::launch::tests::the_start_token_is_handed_over_in_the_environment`.

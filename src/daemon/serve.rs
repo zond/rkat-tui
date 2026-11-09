@@ -37,6 +37,7 @@ use super::DaemonError;
 use super::decisions::ClientGuard;
 use super::endpoint::{self, Endpoint};
 use super::handshake;
+use super::lifecycle::Caller;
 use super::local::Local;
 use super::protocol::{self, Refusal};
 use meerkat_rpc::protocol::RpcId;
@@ -196,16 +197,26 @@ async fn connection(
 ) {
     let (read, mut write) = stream.into_split();
     let mut reader = BufReader::new(read);
-    if let Err(err) = handshake::accept(&mut reader, &mut write, &token, handshake::TIMEOUT).await {
-        tracing::warn!(%peer, error = %err, "refused a connection");
-        return;
-    }
-    tracing::info!(%peer, "client attached");
+    let params = match handshake::accept(&mut reader, &mut write, &token, handshake::TIMEOUT).await
+    {
+        Ok(params) => params,
+        Err(err) => {
+            tracing::warn!(%peer, error = %err, "refused a connection");
+            return;
+        }
+    };
+    // Counted until this connection ends; the owner's end without
+    // `rkat/shutdown` is a detach.
+    let seat = local.lifecycle().seat(&params);
+    let caller = seat.caller();
+    tracing::info!(%peer, owner = caller.owner, probe = params.probe, "client attached");
     let (engine_side, proxy_side) = tokio::io::duplex(PIPE);
     let (server_read, server_write) = tokio::io::split(engine_side);
     // Aborted with this task (a shutdown aborts the connections), so the
     // client sees its socket close.
-    let _proxied = AbortOnDrop(tokio::spawn(proxy(reader, write, proxy_side, local)));
+    let _proxied = AbortOnDrop(tokio::spawn(proxy(
+        reader, write, proxy_side, local, caller,
+    )));
     let mut server = match RpcServer::new(
         BufReader::new(server_read),
         server_write,
@@ -225,6 +236,7 @@ async fn connection(
         Ok(()) => tracing::info!(%peer, "client detached"),
         Err(err) => tracing::warn!(%peer, error = %err, "client disconnected"),
     }
+    drop(seat);
 }
 
 /// Aborts its task when dropped.
@@ -240,8 +252,8 @@ impl Drop for AbortOnDrop {
 /// ([`Local`]; tests substitute their own).
 #[async_trait::async_trait]
 pub trait LocalMethods: Send + Sync {
-    /// Answer the local method `method`.
-    async fn call(&self, method: &str, params: Value) -> Result<Value, Refusal>;
+    /// Answer the local method `method` for `caller`.
+    async fn call(&self, caller: Caller, method: &str, params: Value) -> Result<Value, Refusal>;
     /// Learn from an engine request on its way; returns it as forwarded.
     fn observe(&self, request: Value) -> Value;
     /// A client attached: the daemon's consent surface offers it decisions
@@ -253,8 +265,8 @@ pub trait LocalMethods: Send + Sync {
 
 #[async_trait::async_trait]
 impl LocalMethods for Local {
-    async fn call(&self, method: &str, params: Value) -> Result<Value, Refusal> {
-        Local::call(self, method, params).await
+    async fn call(&self, caller: Caller, method: &str, params: Value) -> Result<Value, Refusal> {
+        Local::call(self, caller, method, params).await
     }
 
     fn observe(&self, request: Value) -> Value {
@@ -279,9 +291,15 @@ impl LocalMethods for Local {
 /// consent surface offers this client. Ends when the client closes (the
 /// engine then sees its end of input) or the engine's side closes; a local
 /// call still running then finishes (a conversation switch is not cut in
-/// half), and its answer is dropped.
-pub async fn proxy<R, W, E, L>(client_read: R, mut client_write: W, engine: E, local: Arc<L>)
-where
+/// half), and its answer is dropped. `caller` is what the client proved
+/// at attach (the lifecycle methods answer for it).
+pub async fn proxy<R, W, E, L>(
+    client_read: R,
+    mut client_write: W,
+    engine: E,
+    local: Arc<L>,
+    caller: Caller,
+) where
     R: AsyncBufRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
     E: tokio::io::AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -349,7 +367,7 @@ where
                 // not keep the writer waiting for its answer.
                 let out_tx = out_tx.downgrade();
                 tokio::spawn(async move {
-                    let line = answer(&*local, id, &method, params).await;
+                    let line = answer(&*local, caller, id, &method, params).await;
                     if let Some(out_tx) = out_tx.upgrade() {
                         let _ = out_tx.send(Outgoing::line(line));
                     }
@@ -469,14 +487,15 @@ pub fn route<L: LocalMethods + ?Sized>(line: &str, local: &L) -> Routed {
     }
 }
 
-/// The answer line (newline included) of the local call `method`.
+/// The answer line (newline included) of `caller`'s local call `method`.
 pub async fn answer<L: LocalMethods + ?Sized>(
     local: &L,
+    caller: Caller,
     id: Option<RpcId>,
     method: &str,
     params: Value,
 ) -> String {
-    match local.call(method, params).await {
+    match local.call(caller, method, params).await {
         Ok(result) => protocol::result_line(id, result),
         Err(refusal) => protocol::error_line(id, refusal.code, &refusal.message),
     }
@@ -495,7 +514,12 @@ mod tests {
 
     #[async_trait::async_trait]
     impl LocalMethods for Slow {
-        async fn call(&self, method: &str, _params: Value) -> Result<Value, Refusal> {
+        async fn call(
+            &self,
+            _caller: Caller,
+            method: &str,
+            _params: Value,
+        ) -> Result<Value, Refusal> {
             if method == "rkat/slow" {
                 self.gate.notified().await;
             }
@@ -545,6 +569,7 @@ mod tests {
             client_write,
             engine_side,
             Arc::clone(&local),
+            Caller::default(),
         ));
         let (client_in, mut client_out) = tokio::io::split(client);
         let mut client_in = BufReader::new(client_in);

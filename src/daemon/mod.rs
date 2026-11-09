@@ -34,6 +34,7 @@ pub mod decisions;
 pub mod endpoint;
 pub mod engine;
 pub mod handshake;
+pub mod lifecycle;
 pub mod local;
 pub mod orchestrator;
 pub mod policy;
@@ -243,6 +244,10 @@ pub struct DaemonOptions {
     /// Where to write the endpoint file (default:
     /// [`endpoint::default_file`] of the workspace).
     pub endpoint_file: Option<PathBuf>,
+    /// The start token the launching client handed the daemon (in
+    /// [`lifecycle::START_TOKEN_ENV`]): the connection presenting it is
+    /// the owner.
+    pub start_token: Option<String>,
     pub(crate) bootstrap: BootstrapOptions,
     pub(crate) policy: engine::PolicyOptions,
 }
@@ -252,6 +257,7 @@ impl Default for DaemonOptions {
         Self {
             listen: std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
             endpoint_file: None,
+            start_token: None,
             bootstrap: BootstrapOptions::default(),
             policy: engine::PolicyOptions::default(),
         }
@@ -264,6 +270,14 @@ impl DaemonOptions {
     #[cfg(any(test, feature = "test-support"))]
     pub fn with_endpoint_file(mut self, file: PathBuf) -> Self {
         self.endpoint_file = Some(file);
+        self
+    }
+
+    /// Started by a client that presents `token`.
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_start_token(mut self, token: &str) -> Self {
+        self.start_token = Some(token.to_string());
         self
     }
 
@@ -428,6 +442,11 @@ impl Daemon {
             tasks_db: composed.tasks_db.clone(),
             machine: composed.runtime.runtime_adapter(),
             startup_notices: composed.startup_notices.clone(),
+            lifecycle: lifecycle::Lifecycle::new(
+                workspace.clone(),
+                started_at.clone(),
+                options.start_token,
+            ),
         }));
         // The decisions an earlier daemon left open held dispatches that
         // ended with it.
@@ -522,9 +541,10 @@ impl Daemon {
         &self.scope
     }
 
-    /// Serve clients until `shutdown` resolves, then stop accepting, let
-    /// the connections drain (bounded), shut the runtime down, drop the
-    /// realm lease and remove the endpoint file.
+    /// Serve clients until `shutdown` resolves or a client asks for it
+    /// (`rkat/shutdown`), then stop accepting, let the connections drain
+    /// (bounded), shut the runtime down, drop the realm lease and remove
+    /// the endpoint file.
     ///
     /// # Errors
     ///
@@ -534,6 +554,15 @@ impl Daemon {
         mut self,
         shutdown: impl std::future::Future<Output = ()> + Send,
     ) -> Result<(), DaemonError> {
+        let lifecycle = Arc::clone(self.local.lifecycle());
+        let shutdown = async move {
+            tokio::select! {
+                () = shutdown => {}
+                () = lifecycle.shutdown_requested() => {}
+            }
+            // Connections ending from now on are no detach.
+            lifecycle.terminating();
+        };
         let served = serve::serve(
             &mut self.listener,
             &self.runtime,
@@ -612,6 +641,7 @@ pub async fn run(cli: DaemonCli) -> Result<(), DaemonError> {
         DaemonOptions {
             listen: cli.listen,
             endpoint_file: cli.endpoint_file.clone(),
+            start_token: std::env::var(lifecycle::START_TOKEN_ENV).ok(),
             ..DaemonOptions::default()
         },
     )
