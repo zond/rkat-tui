@@ -3429,3 +3429,13 @@ and listed here.
   list: the two queries are now `READ_ONLY_BUILTINS` (tier 1), the rest
   `REVIEWED_BUILTINS` (the classifier, as they already fell to as
   unlisted tools).
+- `tests/instructions.rs`: the three tests run over the daemon harness.
+  `a_resumed_session_keeps_its_instructions_and_the_persona_once`
+  resumed by `--resume last` in-process; the daemon's resume of the same
+  kind is its restart on the orchestrator's conversation, so the test
+  restarts the daemon and asserts the same conversation, the persona
+  once, the first file's rules and not the edited ones, then the edited
+  rules in a `/new` conversation. Its comparison of the persisted
+  `build_state().additional_instructions` before and after was the
+  in-process mechanism (a session loaded through the service), which the
+  wire does not expose; the prompt assertions that show its effect stay.

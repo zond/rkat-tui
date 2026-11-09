@@ -1,22 +1,25 @@
-//! Instruction files and `/remember`, end to end through the real
-//! runtime-backed service with a scripted LLM: the user-global `SYSTEM.md`
+//! Instruction files and `/remember`, end to end through the
+//! `rkat-tui-mob` daemon with a scripted LLM and an attached client: the user-global `SYSTEM.md`
 //! replaces the base prompt, the workspace `AGENTS.md` loads natively, and
 //! the persona, the user-global `AGENTS.md`, ancestor `AGENTS.md` files
 //! (git root found through a `.git` file) and `AGENTS.local.md` (capped)
 //! follow in that order; `/remember` appends to the workspace `AGENTS.md`,
 //! reaches the live session at once and the next session through the file.
-//! A resumed session keeps the instructions it was created with: the
-//! persona once, edited files only from the next new session.
+//! A conversation the daemon restores after a restart keeps the
+//! instructions it was created with: the persona once, edited files only
+//! from the next new conversation.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;
+#[path = "common/attach.rs"]
+mod rig;
 
 use std::path::Path;
 
-use common::{Rig, ScriptedLlmClient, Step, Workspace};
+use common::{ScriptedLlmClient, Step, Workspace};
 use meerkat_core::prompt::AGENTS_MD_MAX_BYTES;
-use rkat_tui::runner::Start;
+use rig::Attached;
 use rkat_tui::ui::{Effect, Msg, NoticeLevel, StatusUpdate};
 
 fn write(path: &Path, content: &str) {
@@ -47,7 +50,7 @@ async fn instruction_files_reach_the_prompt_in_order() {
     write(&global.join("AGENTS.md"), "GLOBAL-RULES apply.\n");
 
     let llm = ScriptedLlmClient::new(vec![Step::Text("ok")]);
-    let mut rig = Rig::start(&ws.root, &llm, Start::New).await;
+    let mut rig = Attached::start(&ws.root, &llm).await;
     rig.send(Effect::StartTurn("hi".into()));
     rig.turn_finished().await;
 
@@ -78,7 +81,7 @@ async fn instruction_files_reach_the_prompt_in_order() {
 async fn remember_reaches_this_session_and_the_next() {
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![Step::Text("one"), Step::Text("two")]);
-    let mut rig = Rig::start(&ws.root, &llm, Start::New).await;
+    let mut rig = Attached::start(&ws.root, &llm).await;
 
     rig.send(Effect::Remember("  prefer tabs\n over spaces ".into()));
     let msg = rig
@@ -109,8 +112,8 @@ async fn remember_reaches_this_session_and_the_next() {
     );
 
     // A new session loads it with the workspace AGENTS.md.
+    let first = rig.current_session().await.to_string();
     rig.send(Effect::NewSession);
-    let first = rig.first_session.to_string();
     rig.wait_for(|msg| matches!(msg, Msg::Status(StatusUpdate::Session(id)) if *id != first))
         .await;
     rig.send(Effect::StartTurn("again".into()));
@@ -121,39 +124,29 @@ async fn remember_reaches_this_session_and_the_next() {
     rig.quit().await;
 }
 
+/// The daemon restores its orchestrator on the conversation it had: the
+/// instructions it was created with stay (the edited file is not pushed
+/// into it, the persona appears once); a new conversation reads the file.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_resumed_session_keeps_its_instructions_and_the_persona_once() {
     let ws = Workspace::new();
     write(&ws.root.join("AGENTS.local.md"), "FIRST-RULES apply.\n");
     let llm = ScriptedLlmClient::new(vec![Step::Text("one")]);
-    let mut rig = Rig::start(&ws.root, &llm, Start::New).await;
-    let id = rig.first_session.clone();
+    let mut rig = Attached::start(&ws.root, &llm).await;
+    let id = rig.current_session().await;
     rig.send(Effect::StartTurn("hi".into()));
     rig.turn_finished().await;
-    let created = rig
-        .session(&id)
-        .await
-        .build_state()
-        .and_then(|state| state.additional_instructions)
-        .expect("persisted instructions");
+    let system = llm.recorded()[0].system();
+    assert!(system.contains("FIRST-RULES"), "{system}");
     rig.quit().await;
 
-    // The file changes; the session is resumed.
+    // The file changes; the daemon restarts on the same conversation.
     write(&ws.root.join("AGENTS.local.md"), "SECOND-RULES apply.\n");
     let llm = ScriptedLlmClient::new(vec![Step::Text("two"), Step::Text("three")]);
-    let mut rig = Rig::start(&ws.root, &llm, Start::Resume("last".into())).await;
+    let mut rig = Attached::start(&ws.root, &llm).await;
+    assert_eq!(rig.current_session().await, id);
     rig.send(Effect::StartTurn("again".into()));
     rig.turn_finished().await;
-    let resumed = rig
-        .session(&id)
-        .await
-        .build_state()
-        .and_then(|state| state.additional_instructions)
-        .expect("persisted instructions");
-    assert_eq!(
-        resumed, created,
-        "the resumed build re-pushed other instructions"
-    );
     let system = llm.recorded()[0].system();
     assert_eq!(
         system.matches("interactive coding agent").count(),
@@ -163,7 +156,7 @@ async fn a_resumed_session_keeps_its_instructions_and_the_persona_once() {
     assert!(system.contains("FIRST-RULES"), "{system}");
     assert!(!system.contains("SECOND-RULES"), "{system}");
 
-    // A new session reads the edited file.
+    // A new conversation reads the edited file.
     rig.send(Effect::NewSession);
     let first = id.to_string();
     rig.wait_for(|msg| matches!(msg, Msg::Status(StatusUpdate::Session(s)) if *s != first))
