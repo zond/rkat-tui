@@ -3329,3 +3329,24 @@ running"; the file gone: stopped). Tests:
 loopback port reached by address: local case, then the refusals with
 `remote` set), `attach::attach_by_address_refuses_a_readable_or_missing_token_file`,
 `client::address::tests::*` (locality, token file modes and forms).
+
+### The endpoint key includes the realm (P4)
+
+The endpoint file's key was the SHA-256 of the canonical workspace path
+alone, so a daemon started with `--isolated` or `--realm-backend memory`
+took the workspace's ordinary endpoint file and a later plain
+`rkat-tui` in that workspace attached to the throwaway realm.
+`daemon::endpoint::RealmKey` names the realm a scope resolved to: the
+workspace's own (`<workspace>/.rkat/tui`, no memory backend) keeps the
+old key, any other realm adds a NUL and `realm:<canonical root>` to the
+hash, a memory realm `memory:<root>`. The endpoint file records the realm
+(`realm`, absent for the workspace's own) and `--list` shows it after the
+workspace. `--isolated` mints a fresh realm id at every resolution, so a
+client that starts its daemon passes `--realm <id> --state-root <root>`
+of the realm it minted instead of `--isolated` again
+(`client::launch::pin_realm`); otherwise it would wait at one key while
+the daemon wrote another. `--attach=DIRECTORY` looks for the directory's
+own realm. Tests: `daemon::endpoint::tests::the_key_tells_the_workspace_realm_from_isolated_and_memory_ones`,
+`daemon::endpoint::tests::an_isolated_client_pins_its_realm_for_the_daemon`,
+`daemon::list::tests::a_line_never_holds_the_token_and_keeps_its_column_order`
+(the realm suffix).

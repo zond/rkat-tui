@@ -361,6 +361,7 @@ async fn list_shows_a_live_daemon_and_removes_a_stale_file() {
         pid,
         workspace: Some(ws.root.clone()),
         started_at: None,
+        realm: None,
     }
     .write(&file)
     .unwrap();

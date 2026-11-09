@@ -259,11 +259,12 @@ pub fn directory_args(args: &Args, dir: &std::path::Path) -> Result<Args, TuiErr
         source,
     })?;
     let resolved = crate::bootstrap::scope::workspace_at(&dir);
-    let reported = crate::daemon::endpoint::candidates(&resolved)
-        .iter()
-        .find_map(|file| crate::daemon::endpoint::Endpoint::read(file).ok())
-        .and_then(|endpoint| endpoint.workspace)
-        .filter(|workspace| workspace.is_dir());
+    let reported =
+        crate::daemon::endpoint::candidates(&resolved, &crate::daemon::endpoint::RealmKey::Default)
+            .iter()
+            .find_map(|file| crate::daemon::endpoint::Endpoint::read(file).ok())
+            .and_then(|endpoint| endpoint.workspace)
+            .filter(|workspace| workspace.is_dir());
     let mut args = args.clone();
     args.context_root = Some(reported.unwrap_or(resolved));
     Ok(args)
@@ -306,7 +307,7 @@ pub async fn configure_with(
     let spawn = match mode {
         AttachMode::Auto => Some(SpawnPlan {
             program: launch::daemon_program(),
-            argv: launch::daemon_argv(args, &scope.context_root),
+            argv: launch::daemon_argv(&launch::pin_realm(args, &scope), &scope.context_root),
             log: launch::daemon_log(&scope.realm_root()),
         }),
         AttachMode::Existing => None,
@@ -330,9 +331,10 @@ pub async fn configure_with(
         start: StartAt::from_args(args),
         start_token,
         endpoint_files: {
-            let files = crate::daemon::endpoint::candidates(&scope.context_root);
+            let realm = crate::daemon::endpoint::RealmKey::of(&scope);
+            let files = crate::daemon::endpoint::candidates(&scope.context_root, &realm);
             if files.is_empty() {
-                vec![crate::daemon::endpoint_file(&scope.context_root)?]
+                vec![crate::daemon::endpoint_file(&scope.context_root, &realm)?]
             } else {
                 files
             }
@@ -417,9 +419,12 @@ pub async fn run(
         // Before anything is written there: a directory no daemon serves
         // is refused here, not after the UI opened.
         let workspace = directory_args(&args, dir)?.context_root.unwrap_or_default();
-        if !crate::daemon::endpoint::candidates(&workspace)
-            .iter()
-            .any(|file| file.is_file())
+        if !crate::daemon::endpoint::candidates(
+            &workspace,
+            &crate::daemon::endpoint::RealmKey::Default,
+        )
+        .iter()
+        .any(|file| file.is_file())
         {
             return Err(TuiError::NoDaemonAt { workspace });
         }

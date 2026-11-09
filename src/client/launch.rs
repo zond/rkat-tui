@@ -204,6 +204,22 @@ pub fn daemon_argv(args: &Args, workspace: &Path) -> Vec<OsString> {
     argv
 }
 
+/// `args` with an `--isolated` realm pinned to the one `scope` minted:
+/// `--realm <id> --state-root <root>` in its place, so the daemon this
+/// client starts opens the realm the client derived its endpoint key from
+/// (a second `--isolated` would mint another). Other arguments are
+/// returned as they are.
+#[must_use]
+pub fn pin_realm(args: &Args, scope: &crate::bootstrap::RuntimeScope) -> Args {
+    let mut args = args.clone();
+    if args.isolated {
+        args.isolated = false;
+        args.realm = Some(scope.realm_id.clone());
+        args.state_root = Some(scope.state_root.clone());
+    }
+    args
+}
+
 /// The command-line name clap gives `value` (a `ValueEnum`), so the
 /// forwarded spelling is the one the daemon's parser reads.
 fn value_name<T: clap::ValueEnum>(value: T) -> Option<OsString> {
@@ -389,6 +405,7 @@ mod tests {
             pid: 1,
             workspace: None,
             started_at: None,
+            realm: None,
         }
     }
 

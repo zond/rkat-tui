@@ -200,7 +200,10 @@ pub async fn run(args: Args) -> Result<(), TuiError> {
 /// the daemon first).
 async fn in_process(args: Args, mut layers: bootstrap::Layers) -> Result<(), TuiError> {
     use std::io::IsTerminal as _;
-    let files = daemon::endpoint::candidates(&layers.scope.context_root);
+    let files = daemon::endpoint::candidates(
+        &layers.scope.context_root,
+        &daemon::endpoint::RealmKey::of(&layers.scope),
+    );
     let Some(daemon) = client::alongside::find(&files).await else {
         return runner::run(args, layers).await;
     };

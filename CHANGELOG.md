@@ -6,6 +6,12 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Added
 
+- The daemon's endpoint key includes its realm when that is not the
+  workspace's own, so an `--isolated` or `--realm-backend memory` daemon
+  no longer takes the workspace's endpoint file (a plain start in that
+  workspace attached to the throwaway realm). An `--isolated` client
+  starts its daemon on the realm it minted. `--list` names such a realm
+  after the workspace.
 - `--attach=HOST:PORT --attach-token-file <path>` attaches to a daemon
   reached through a tunnel (the daemon still binds loopback only; the
   manual has the `ssh -L` recipe). The token file is refused when its

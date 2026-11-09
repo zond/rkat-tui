@@ -3072,6 +3072,7 @@ mod tests {
                 pid: 1,
                 workspace: None,
                 started_at: None,
+                realm: None,
             },
         }
     }
@@ -3303,6 +3304,7 @@ mod tests {
             pid: 42,
             workspace: None,
             started_at: None,
+            realm: None,
         });
         assert_eq!(stop_target(&live, Some(at)), Ok(42));
         assert!(stop_target(&live, Some("127.0.0.1:4001".parse().unwrap())).is_err());

@@ -1054,6 +1054,8 @@ endpoint file exists, tab-separated in a fixed order: the workspace, the
 address, `pid N`, `up <uptime>`, then the attached clients, the current
 conversation and `running` or `idle`. A file nothing answers at is
 `stale`, and is removed when its process is gone (`stale (file removed)`).
+A daemon of another realm than the workspace's own shows it after the
+workspace: `(realm <root>)` or `(realm memory)`.
 Listing attaches to each daemon with its token as a probe, which is not
 counted as a client; the token is never printed. `rkat-tui-mob --list
 --endpoint-file <path>` lists only that file.
@@ -1063,7 +1065,13 @@ address, a per-daemon token, its pid, the workspace and when it started) to
 `$XDG_STATE_HOME/rkat-tui/<key>/mob.endpoint`, or
 `~/.local/state/rkat-tui/<key>/mob.endpoint` when `XDG_STATE_HOME` is not
 set; `<key>` is the first 32 hex digits of the SHA-256 of the workspace's
-canonical path. The directory is created with mode 0700, the file with
+canonical path, and for a daemon of another realm than the workspace's
+own (`--realm`, `--state-root`, `--isolated`, `--realm-backend memory`)
+of that path and the realm's identity (its root directory, or a memory
+marker). So an `--isolated` or in-memory daemon never takes the
+workspace's ordinary endpoint file, and a plain `rkat-tui` in that
+workspace never attaches to a throwaway realm; `--list` names the realm
+after the workspace when it is not the workspace's own. The directory is created with mode 0700, the file with
 0600, and the file is removed when the daemon shuts down. The TUI reads
 it, connects, and presents the token with `rkat/attach` before anything
 else; then it speaks Meerkat's own JSON-RPC methods. A file whose address

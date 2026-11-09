@@ -180,6 +180,7 @@ pub async fn reach(
         pid: 0,
         workspace: None,
         started_at: None,
+        realm: None,
     };
     let status = status_of(&probe)
         .await
@@ -190,6 +191,7 @@ pub async fn reach(
             pid: status.pid,
             workspace: Some(status.workspace.clone()),
             started_at: Some(status.started_at.clone()),
+            realm: None,
             ..probe
         },
         status,
@@ -256,6 +258,7 @@ mod tests {
             pid: 1,
             workspace: Some(dir.path().to_path_buf()),
             started_at: None,
+            realm: None,
         };
         let files = vec![file.clone()];
         let here = status(Some("me"), dir.path());
@@ -314,6 +317,7 @@ mod tests {
             pid: 1,
             workspace: None,
             started_at: None,
+            realm: None,
         };
         std::fs::remove_file(&file).unwrap();
         endpoint.write(&file).unwrap();

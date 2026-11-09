@@ -387,7 +387,9 @@ async fn the_orchestrator_shell_runs_confined() {
     }
     // The temp dir is granted to the shell here, so the endpoint file
     // goes to its default place in the user's state directory.
-    let default = rkat_tui::daemon::endpoint_file(&ws.root).unwrap();
+    let default =
+        rkat_tui::daemon::endpoint_file(&ws.root, &rkat_tui::daemon::endpoint::RealmKey::Default)
+            .unwrap();
     let llm = ScriptedLlmClient::new(vec![
         Step::Tool {
             id: "sh",

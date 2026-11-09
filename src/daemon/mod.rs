@@ -301,14 +301,17 @@ impl DaemonOptions {
     }
 }
 
-/// The endpoint file of the workspace at `context_root`, in the user's
-/// state directory ([`endpoint::default_file`]).
+/// The endpoint file of the `realm` of the workspace at `context_root`,
+/// in the user's state directory ([`endpoint::default_file`]).
 ///
 /// # Errors
 ///
 /// [`DaemonError::Io`] when there is no state directory.
-pub fn endpoint_file(context_root: &Path) -> Result<PathBuf, DaemonError> {
-    endpoint::default_file(context_root)
+pub fn endpoint_file(
+    context_root: &Path,
+    realm: &endpoint::RealmKey,
+) -> Result<PathBuf, DaemonError> {
+    endpoint::default_file(context_root, realm)
         .map_err(|err| DaemonError::io("find the endpoint file of", context_root, err))
 }
 
@@ -433,12 +436,13 @@ impl Daemon {
         let started_at = endpoint::timestamp(std::time::SystemTime::now());
         let workspace = std::fs::canonicalize(&layers.scope.context_root)
             .unwrap_or_else(|_| layers.scope.context_root.clone());
+        let realm = endpoint::RealmKey::of(&layers.scope);
         let files = match options.endpoint_file {
             Some(file) => vec![file],
             None => {
-                let mut files = endpoint::candidates(&layers.scope.context_root);
+                let mut files = endpoint::candidates(&layers.scope.context_root, &realm);
                 if files.is_empty() {
-                    files.push(endpoint_file(&layers.scope.context_root)?);
+                    files.push(endpoint_file(&layers.scope.context_root, &realm)?);
                 }
                 files
             }
@@ -506,8 +510,14 @@ impl Daemon {
         if let Some(warning) = local.announce_plan_mode().await {
             tracing::warn!(%warning, "plan mode");
         }
-        let listener =
-            serve::Listener::bind(options.listen, &file, &workspace, &started_at).await?;
+        let listener = serve::Listener::bind(
+            options.listen,
+            &file,
+            &workspace,
+            &started_at,
+            realm.describe(),
+        )
+        .await?;
         tracing::info!(
             address = %listener.address(),
             endpoint = %file.display(),
@@ -808,13 +818,14 @@ mod tests {
     #[test]
     fn the_endpoint_file_lives_in_the_user_state_dir_keyed_by_workspace() {
         let state = Path::new("/state");
-        let file = endpoint::file_in(state, Path::new("/w"));
-        let key = endpoint::workspace_key(Path::new("/w"));
+        let own = endpoint::RealmKey::Default;
+        let file = endpoint::file_in(state, Path::new("/w"), &own);
+        let key = endpoint::workspace_key(Path::new("/w"), &own);
         assert_eq!(key.len(), endpoint::KEY_DIGITS);
         assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
         assert_eq!(file, state.join("rkat-tui").join(&key).join(ENDPOINT_NAME));
-        assert_ne!(key, endpoint::workspace_key(Path::new("/v")));
-        let default = endpoint_file(Path::new("/w")).unwrap();
+        assert_ne!(key, endpoint::workspace_key(Path::new("/v"), &own));
+        let default = endpoint_file(Path::new("/w"), &own).unwrap();
         assert!(!default.starts_with("/w"), "{}", default.display());
         assert!(default.ends_with(Path::new("rkat-tui").join(&key).join(ENDPOINT_NAME)));
     }
@@ -836,7 +847,7 @@ mod tests {
         let meerkat_core::confinement::FilesystemAccess::Paths(granted) = &spec.read else {
             panic!("a workspace plan grants named paths");
         };
-        let default = endpoint_file(&workspace).unwrap();
+        let default = endpoint_file(&workspace, &endpoint::RealmKey::Default).unwrap();
         let dir = default.parent().unwrap();
         // The state directory may not exist yet: resolve its deepest
         // existing ancestor, as the grants are canonical.

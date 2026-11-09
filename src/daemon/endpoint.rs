@@ -11,7 +11,8 @@
 //!
 //! (on one line). `workspace` is the canonical workspace path the daemon
 //! serves and `started_at` when it started (RFC 3339, UTC); a file written
-//! by an older daemon has neither and still reads. Written (atomically, by
+//! by an older daemon has neither and still reads. A daemon of another
+//! realm than the workspace's own adds `"realm"` (its root, or `memory`). Written (atomically, by
 //! rename) once the listener is bound, removed on shutdown. A file left by a daemon that died is stale: the next daemon
 //! replaces it when nothing accepts at its address.
 //!
@@ -20,7 +21,8 @@
 //! rules; nothing on a loopback TCP connection says which program sent it.
 //! So the file lives in the user's state directory (`$XDG_STATE_HOME`, else
 //! `~/.local/state`), under a key derived from the canonical workspace path
-//! (the first 32 hex digits of its SHA-256), never inside the workspace:
+//! and, for any realm but the workspace's own, the realm's identity
+//! ([`workspace_key`], [`RealmKey`]), never inside the workspace:
 //! the agent's confined shell is granted the workspace (`.rkat` included),
 //! the temp dir, the Cargo home and the user cache dir, none of which holds
 //! it. When the shell's confinement plan would grant that directory after
@@ -75,25 +77,99 @@ pub fn search_dirs() -> Vec<PathBuf> {
         .collect()
 }
 
-/// The places of `workspace`'s endpoint file, in the order the daemon
-/// tries them and clients look ([`search_dirs`]).
+/// Which realm of a workspace a daemon serves, as far as the endpoint key
+/// and `--list` care: the workspace's own realm (`<workspace>/.rkat/tui`),
+/// another realm by its root (`--realm`, `--state-root`, `--isolated`), or
+/// an in-memory one (`--realm-backend memory`), which holds nothing a
+/// later start could reach.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RealmKey {
+    /// The workspace's own realm: the key is the workspace's alone.
+    Default,
+    /// Another realm, by its root directory.
+    Root(PathBuf),
+    /// An in-memory realm (its nominal root, for the display).
+    Memory(PathBuf),
+}
+
+impl RealmKey {
+    /// The realm `scope` resolved to.
+    #[must_use]
+    pub fn of(scope: &crate::bootstrap::RuntimeScope) -> Self {
+        let root = scope.realm_root();
+        if scope.backend_hint == Some(meerkat_store::RealmBackend::Memory) {
+            return Self::Memory(root);
+        }
+        let default = meerkat_store::realm_paths_in(
+            &scope
+                .context_root
+                .join(crate::bootstrap::scope::WORKSPACE_STATE_DIR),
+            crate::bootstrap::scope::WORKSPACE_REALM_ID,
+        )
+        .root;
+        if root == default {
+            Self::Default
+        } else {
+            Self::Root(root)
+        }
+    }
+
+    /// What `--list` shows for it: `None` for the workspace's own realm.
+    #[must_use]
+    pub fn describe(&self) -> Option<String> {
+        match self {
+            Self::Default => None,
+            Self::Root(root) => Some(root.display().to_string()),
+            Self::Memory(_) => Some("memory".to_string()),
+        }
+    }
+
+    /// The bytes it adds to the key (`None`: the workspace's alone).
+    fn salt(&self) -> Option<Vec<u8>> {
+        match self {
+            Self::Default => None,
+            Self::Root(root) => {
+                let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.clone());
+                let mut salt = b"realm:".to_vec();
+                salt.extend_from_slice(canonical.as_os_str().as_encoded_bytes());
+                Some(salt)
+            }
+            Self::Memory(root) => {
+                let mut salt = b"memory:".to_vec();
+                salt.extend_from_slice(root.as_os_str().as_encoded_bytes());
+                Some(salt)
+            }
+        }
+    }
+}
+
+/// The places of the endpoint file of `workspace`'s `realm`, in the order
+/// the daemon tries them and clients look ([`search_dirs`]).
 #[must_use]
-pub fn candidates(workspace: &Path) -> Vec<PathBuf> {
-    let key = workspace_key(workspace);
+pub fn candidates(workspace: &Path, realm: &RealmKey) -> Vec<PathBuf> {
+    let key = workspace_key(workspace, realm);
     search_dirs()
         .into_iter()
         .map(|dir| dir.join(&key).join(super::ENDPOINT_NAME))
         .collect()
 }
 
-/// The key of `workspace`: the first [`KEY_DIGITS`] hex digits of the
-/// SHA-256 of its canonical path (the path as given when it cannot be
-/// resolved).
+/// The key of `workspace`'s `realm`: the first [`KEY_DIGITS`] hex digits
+/// of the SHA-256 of the workspace's canonical path (the path as given
+/// when it cannot be resolved), followed for any realm but the
+/// workspace's own by a NUL and the realm's identity, so an `--isolated`
+/// or memory-realm daemon never shares the ordinary daemon's file.
 #[must_use]
-pub fn workspace_key(workspace: &Path) -> String {
+pub fn workspace_key(workspace: &Path, realm: &RealmKey) -> String {
     use sha2::Digest as _;
     let canonical = std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
-    let digest = sha2::Sha256::digest(canonical.as_os_str().as_encoded_bytes());
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(canonical.as_os_str().as_encoded_bytes());
+    if let Some(salt) = realm.salt() {
+        hasher.update([0u8]);
+        hasher.update(salt);
+    }
+    let digest = hasher.finalize();
     let mut hex = String::with_capacity(KEY_DIGITS);
     for byte in digest.iter().take(KEY_DIGITS / 2) {
         use std::fmt::Write as _;
@@ -102,24 +178,26 @@ pub fn workspace_key(workspace: &Path) -> String {
     hex
 }
 
-/// The endpoint file of `workspace` under the state directory `state_home`.
+/// The endpoint file of `workspace`'s `realm` under the state directory
+/// `state_home`.
 #[must_use]
-pub fn file_in(state_home: &Path, workspace: &Path) -> PathBuf {
+pub fn file_in(state_home: &Path, workspace: &Path, realm: &RealmKey) -> PathBuf {
     state_home
         .join(STATE_DIR)
-        .join(workspace_key(workspace))
+        .join(workspace_key(workspace, realm))
         .join(super::ENDPOINT_NAME)
 }
 
-/// The endpoint file of `workspace` in this user's state directory.
+/// The endpoint file of `workspace`'s `realm` in this user's state
+/// directory.
 ///
 /// # Errors
 ///
 /// [`std::io::ErrorKind::NotFound`] when there is no state directory (no
 /// `$XDG_STATE_HOME` and no home directory).
-pub fn default_file(workspace: &Path) -> Result<PathBuf, std::io::Error> {
+pub fn default_file(workspace: &Path, realm: &RealmKey) -> Result<PathBuf, std::io::Error> {
     state_home()
-        .map(|state| file_in(&state, workspace))
+        .map(|state| file_in(&state, workspace, realm))
         .ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -196,6 +274,10 @@ pub struct Endpoint {
     /// When the daemon started, RFC 3339 in UTC (`None`: an older file).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at: Option<String>,
+    /// The realm it serves when that is not the workspace's own
+    /// ([`RealmKey::describe`]: its root, or `memory`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub realm: Option<String>,
 }
 
 impl Endpoint {
@@ -336,6 +418,7 @@ mod tests {
             pid: 7,
             workspace: Some(PathBuf::from("/w")),
             started_at: Some(timestamp(std::time::UNIX_EPOCH)),
+            realm: None,
         };
         assert_eq!(endpoint.token.len(), TOKEN_BYTES * 2);
         assert!(endpoint.token.chars().all(|c| c.is_ascii_hexdigit()));
@@ -378,6 +461,96 @@ mod tests {
         assert_eq!(old.workspace, None);
     }
 
+    fn scope(extra: &[&str]) -> crate::bootstrap::RuntimeScope {
+        use clap::Parser as _;
+        let mut argv = vec!["rkat-tui"];
+        argv.extend_from_slice(extra);
+        crate::bootstrap::resolve_scope(&crate::cli::Args::try_parse_from(argv).unwrap()).unwrap()
+    }
+
+    /// The finding this guards: the key was the workspace's alone, so an
+    /// `--isolated` or memory-realm daemon took the workspace's endpoint
+    /// file and a plain start attached to the throwaway realm.
+    #[test]
+    fn the_key_tells_the_workspace_realm_from_isolated_and_memory_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let ws = dir.path().to_str().unwrap();
+        let own = scope(&["-w", ws]);
+        assert_eq!(RealmKey::of(&own), RealmKey::Default);
+        assert_eq!(RealmKey::Default.describe(), None);
+        let workspace = &own.context_root;
+        let plain = workspace_key(workspace, &RealmKey::Default);
+        let isolated = scope(&[
+            "-w",
+            ws,
+            "--isolated",
+            "--state-root",
+            state.path().to_str().unwrap(),
+        ]);
+        let isolated_key = RealmKey::of(&isolated);
+        assert_eq!(isolated_key, RealmKey::Root(isolated.realm_root()));
+        assert_eq!(
+            isolated_key.describe(),
+            Some(isolated.realm_root().display().to_string())
+        );
+        let memory = scope(&["-w", ws, "--realm-backend", "memory"]);
+        let memory_key = RealmKey::of(&memory);
+        assert!(matches!(memory_key, RealmKey::Memory(_)), "{memory_key:?}");
+        assert_eq!(memory_key.describe().as_deref(), Some("memory"));
+        let keys = [
+            plain.clone(),
+            workspace_key(workspace, &isolated_key),
+            workspace_key(workspace, &memory_key),
+        ];
+        assert_ne!(keys[0], keys[1]);
+        assert_ne!(keys[0], keys[2]);
+        assert_ne!(keys[1], keys[2]);
+        for key in &keys {
+            assert_eq!(key.len(), KEY_DIGITS);
+        }
+        // A second isolated start mints another realm, hence another key.
+        let again = scope(&[
+            "-w",
+            ws,
+            "--isolated",
+            "--state-root",
+            state.path().to_str().unwrap(),
+        ]);
+        assert_ne!(workspace_key(workspace, &RealmKey::of(&again)), keys[1]);
+        // The workspace's own realm keeps the key it always had.
+        assert_eq!(plain, workspace_key(workspace, &RealmKey::Default));
+    }
+
+    /// A client started with `--isolated` hands its daemon the realm it
+    /// minted, not `--isolated` again (which would mint another and leave
+    /// the client waiting at the wrong endpoint file).
+    #[test]
+    fn an_isolated_client_pins_its_realm_for_the_daemon() {
+        use clap::Parser as _;
+        let dir = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let argv = [
+            "rkat-tui",
+            "-w",
+            dir.path().to_str().unwrap(),
+            "--isolated",
+            "--state-root",
+            state.path().to_str().unwrap(),
+        ];
+        let args = crate::cli::Args::try_parse_from(argv).unwrap();
+        let minted = crate::bootstrap::resolve_scope(&args).unwrap();
+        let pinned = crate::client::launch::pin_realm(&args, &minted);
+        assert!(!pinned.isolated);
+        let daemon = crate::bootstrap::resolve_scope(&pinned).unwrap();
+        assert_eq!(daemon.realm_root(), minted.realm_root());
+        assert_eq!(RealmKey::of(&daemon), RealmKey::of(&minted));
+        // Anything else goes as it is.
+        let plain = crate::cli::Args::try_parse_from(&argv[..3]).unwrap();
+        let pinned = crate::client::launch::pin_realm(&plain, &minted);
+        assert_eq!(format!("{pinned:?}"), format!("{plain:?}"));
+    }
+
     #[tokio::test]
     async fn a_stale_file_is_replaced_and_a_live_one_refuses() {
         let dir = tempfile::tempdir().unwrap();
@@ -390,6 +563,7 @@ mod tests {
             pid: 1,
             workspace: None,
             started_at: None,
+            realm: None,
         };
         live.write(&path).unwrap();
         assert!(matches!(
