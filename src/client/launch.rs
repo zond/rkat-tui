@@ -63,6 +63,33 @@ pub async fn probe(file: &Path) -> Liveness {
     }
 }
 
+/// Probe the places of `files` in order: the first live endpoint, else the
+/// first stale one, else absent.
+pub async fn probe_any(files: &[PathBuf]) -> Liveness {
+    let mut found = Liveness::Absent;
+    for file in files {
+        match probe(file).await {
+            Liveness::Live(endpoint) => return Liveness::Live(endpoint),
+            Liveness::Stale(endpoint) if found == Liveness::Absent => {
+                found = Liveness::Stale(endpoint);
+            }
+            Liveness::Stale(_) | Liveness::Absent => {}
+        }
+    }
+    found
+}
+
+/// The daemon's arguments for waiting at `files`: with one place, the
+/// daemon is told to write there (`--endpoint-file`); with the default
+/// places it picks one itself, in the order the client probes them.
+#[must_use]
+pub fn argv_for(argv: &[OsString], files: &[PathBuf]) -> Vec<OsString> {
+    match files {
+        [file] => with_endpoint_file(argv, file),
+        _ => argv.to_vec(),
+    }
+}
+
 /// What to do about the endpoint file's state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
@@ -315,21 +342,21 @@ pub fn setsid_program() -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
-/// Wait (up to `timeout`) for a live endpoint at `file`; fail early when
-/// the started daemon exits (`exited`).
+/// Wait (up to `timeout`) for a live endpoint at one of `files`; fail early
+/// when the started daemon exits (`exited`).
 ///
 /// # Errors
 ///
 /// [`ClientError::DaemonExited`] or [`ClientError::NeverCameUp`].
 pub async fn wait_for_endpoint(
-    file: &Path,
+    files: &[PathBuf],
     timeout: Duration,
     exited: &mut tokio::sync::oneshot::Receiver<String>,
     log: &Path,
 ) -> Result<Endpoint, ClientError> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        if let Liveness::Live(endpoint) = probe(file).await {
+        if let Liveness::Live(endpoint) = probe_any(files).await {
             return Ok(endpoint);
         }
         if let Ok(status) = exited.try_recv() {
@@ -395,9 +422,26 @@ mod tests {
             Decision::Start
         );
         assert_eq!(
-            decide(Liveness::Stale(live), AttachMode::Existing),
+            decide(Liveness::Stale(live.clone()), AttachMode::Existing),
             Decision::Refuse
         );
+        // The places in order: a live one anywhere wins, else the first
+        // stale one.
+        let other = dir.path().join("fallback.endpoint");
+        let both = [file.clone(), other.clone()];
+        assert_eq!(probe_any(&both).await, Liveness::Stale(live.clone()));
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!(probe_any(&both).await, Liveness::Absent);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let fallback_live = endpoint(listener.local_addr().unwrap());
+        fallback_live.write(&other).unwrap();
+        live.write(&file).unwrap();
+        assert_eq!(probe_any(&both).await, Liveness::Live(fallback_live));
+        // One place: the daemon is told; the default places: it picks.
+        assert!(
+            argv_for(&[], std::slice::from_ref(&file)).contains(&OsString::from("--endpoint-file"))
+        );
+        assert!(argv_for(&[], &both).is_empty());
     }
 
     #[test]
@@ -595,7 +639,7 @@ mod tests {
         let log = daemon_log(dir.path());
         let (_, mut exited) = spawn_daemon(Path::new("/bin/false"), &[], &log, None).unwrap();
         let waited = wait_for_endpoint(
-            &dir.path().join("mob.endpoint"),
+            &[dir.path().join("mob.endpoint")],
             Duration::from_secs(10),
             &mut exited,
             &log,

@@ -336,6 +336,41 @@ pub fn check_endpoint_private(
     }
 }
 
+/// The first of `files` the agent's confined shell cannot read (see
+/// [`check_endpoint_private`]): the state directory's, else the runtime
+/// directory's fallback.
+///
+/// # Errors
+///
+/// The first file's refusal ([`DaemonError::EndpointExposed`] with today's
+/// message) when none is safe.
+pub fn choose_endpoint_file(
+    plan: &bootstrap::ConfinementPlan,
+    files: &[PathBuf],
+) -> Result<PathBuf, DaemonError> {
+    let mut first_refusal = None;
+    for file in files {
+        match check_endpoint_private(plan, file) {
+            Ok(()) => {
+                if first_refusal.is_some() {
+                    tracing::info!(file = %file.display(), "the state directory is granted to the agent's shell; the endpoint file goes to the runtime directory");
+                }
+                return Ok(file.clone());
+            }
+            Err(err) => {
+                first_refusal.get_or_insert(err);
+            }
+        }
+    }
+    Err(first_refusal.unwrap_or_else(|| {
+        DaemonError::io(
+            "find the endpoint file",
+            Path::new(""),
+            std::io::Error::new(std::io::ErrorKind::NotFound, "no place for it"),
+        )
+    }))
+}
+
 /// A started daemon: the runtime and its mob host are composed, the
 /// orchestrator is seated and the socket is bound; [`Daemon::serve_until`]
 /// serves it.
@@ -397,15 +432,24 @@ impl Daemon {
         let started_at = endpoint::timestamp(std::time::SystemTime::now());
         let workspace = std::fs::canonicalize(&layers.scope.context_root)
             .unwrap_or_else(|_| layers.scope.context_root.clone());
-        let file = match options.endpoint_file {
-            Some(file) => file,
-            None => endpoint_file(&layers.scope.context_root)?,
+        let files = match options.endpoint_file {
+            Some(file) => vec![file],
+            None => {
+                let mut files = endpoint::candidates(&layers.scope.context_root);
+                if files.is_empty() {
+                    files.push(endpoint_file(&layers.scope.context_root)?);
+                }
+                files
+            }
         };
-        // Refuse before taking the realm: a live daemon keeps its endpoint.
-        endpoint::check_stale(&file).await?;
+        // Refuse before taking the realm: a live daemon keeps its endpoint
+        // (at either place).
+        for file in &files {
+            endpoint::check_stale(file).await?;
+        }
         let parts =
             bootstrap::assemble(layers, config, args, options.bootstrap, LEASE_SURFACE).await?;
-        check_endpoint_private(&parts.confinement, &file)?;
+        let file = choose_endpoint_file(&parts.confinement, &files)?;
         let composed = engine::compose(parts, options.policy)?;
         let orchestrator = orchestrator::ensure(&composed.state, &composed.root).await?;
         // The orchestrator is idle now: its tool catalog can be read.
@@ -832,5 +876,26 @@ mod tests {
             shell_env: None,
         };
         check_endpoint_private(&off, &old).unwrap();
+        // A refused place falls back to the next; with none safe, the
+        // first refusal is the error.
+        let outside = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let fallback = outside.path().join("rt").join(ENDPOINT_NAME);
+        let exposed_plan = plan;
+        let granted_fallback = endpoint::exposing_grant(
+            &exposed_plan,
+            &std::fs::canonicalize(outside.path()).unwrap(),
+        );
+        if granted_fallback.is_none() {
+            assert_eq!(
+                choose_endpoint_file(&exposed_plan, &[old.clone(), fallback.clone()]).unwrap(),
+                fallback
+            );
+        } else {
+            eprintln!("SKIPPED: the current directory is granted to the shell here");
+        }
+        assert!(matches!(
+            choose_endpoint_file(&exposed_plan, std::slice::from_ref(&old)),
+            Err(DaemonError::EndpointExposed { file, .. }) if file == old
+        ));
     }
 }

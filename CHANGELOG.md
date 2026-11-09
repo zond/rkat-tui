@@ -6,6 +6,11 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Added
 
+- When the agent's confined shell would be granted the state directory
+  (a workspace that contains `~/.local/state`), the daemon writes its
+  endpoint file to `$XDG_RUNTIME_DIR/rkat-tui/<key>/` instead of refusing
+  to start; clients and `--list` look in both places. It still refuses,
+  with the same message, when neither is safe.
 - `rkat-tui --list` (and `rkat-tui-mob --list`) prints every daemon that
   has an endpoint file, one per line: workspace, address, pid, uptime,
   attached clients, current conversation, running or idle; `stale` for a

@@ -169,7 +169,7 @@ impl Client {
             .unwrap();
         config.start_token = start_token.map(str::to_string);
         config.lister = no_lists();
-        config.endpoint_file = endpoint_file_for(root);
+        config.endpoint_files = vec![endpoint_file_for(root)];
         let mut client = Self {
             harness: spawn_attach_runner(config),
             seen: Vec::new(),

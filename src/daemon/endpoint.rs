@@ -23,8 +23,12 @@
 //! (the first 32 hex digits of its SHA-256), never inside the workspace:
 //! the agent's confined shell is granted the workspace (`.rkat` included),
 //! the temp dir, the Cargo home and the user cache dir, none of which holds
-//! it. The daemon refuses to start when the shell's confinement plan would
-//! grant the file's directory after all ([`exposing_grant`]).
+//! it. When the shell's confinement plan would grant that directory after
+//! all ([`exposing_grant`]), the daemon falls back to
+//! `$XDG_RUNTIME_DIR/rkat-tui/<key>/mob.endpoint` (same modes), and refuses
+//! to start when that is granted too, or unset ([`candidates`]; clients
+//! look in the same order). The temp dir is granted to the shell and is
+//! never used.
 
 use std::path::{Path, PathBuf};
 
@@ -49,13 +53,36 @@ pub fn state_home() -> Option<PathBuf> {
         .or_else(|| dirs::home_dir().map(|home| home.join(".local").join("state")))
 }
 
+/// The user's runtime directory: `$XDG_RUNTIME_DIR` when it is an
+/// absolute path (the fallback place of the endpoint file).
+#[must_use]
+pub fn runtime_home() -> Option<PathBuf> {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+}
+
 /// The directories holding the per-workspace endpoint directories, in the
-/// order the daemon and clients try them: `<state>/rkat-tui`.
+/// order the daemon and clients try them: `<state>/rkat-tui`, then
+/// `$XDG_RUNTIME_DIR/rkat-tui` (used when the agent's confined shell would
+/// be granted the first; never the temp dir, which the shell is granted).
 #[must_use]
 pub fn search_dirs() -> Vec<PathBuf> {
-    state_home()
-        .map(|state| state.join(STATE_DIR))
+    [state_home(), runtime_home()]
         .into_iter()
+        .flatten()
+        .map(|base| base.join(STATE_DIR))
+        .collect()
+}
+
+/// The places of `workspace`'s endpoint file, in the order the daemon
+/// tries them and clients look ([`search_dirs`]).
+#[must_use]
+pub fn candidates(workspace: &Path) -> Vec<PathBuf> {
+    let key = workspace_key(workspace);
+    search_dirs()
+        .into_iter()
+        .map(|dir| dir.join(&key).join(super::ENDPOINT_NAME))
         .collect()
 }
 

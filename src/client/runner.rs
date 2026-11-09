@@ -135,8 +135,10 @@ pub struct SpawnPlan {
 pub struct AttachConfig {
     /// The workspace and realm.
     pub scope: RuntimeScope,
-    /// The daemon's endpoint file.
-    pub endpoint_file: PathBuf,
+    /// The places of the daemon's endpoint file, in the order the daemon
+    /// tries them (the state directory's, then the runtime directory's
+    /// fallback); never empty.
+    pub endpoint_files: Vec<PathBuf>,
     /// The workspace's attach cursor.
     pub cursor: CursorFile,
     /// The realm config (context windows); `None`: unknown windows.
@@ -167,7 +169,7 @@ impl std::fmt::Debug for AttachConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AttachConfig")
             .field("workspace", &self.scope.context_root)
-            .field("endpoint_file", &self.endpoint_file)
+            .field("endpoint_files", &self.endpoint_files)
             .field("spawn", &self.spawn)
             .field("endpoints", &self.endpoints.names())
             .finish_non_exhaustive()
@@ -587,7 +589,7 @@ impl AttachRunner {
     /// Start connecting in the background: the first time with
     /// start-on-demand, afterwards as a reconnect with backoff.
     fn connect(&mut self) {
-        let file = self.config.endpoint_file.clone();
+        let files = self.config.endpoint_files.clone();
         let saved = self
             .mark
             .as_ref()
@@ -599,7 +601,7 @@ impl AttachRunner {
             let spawn = self.config.spawn.clone();
             tokio::spawn(async move {
                 let endpoint =
-                    first_endpoint(&file, spawn.as_ref(), start_token.as_deref(), &ui_tx).await?;
+                    first_endpoint(&files, spawn.as_ref(), start_token.as_deref(), &ui_tx).await?;
                 establish(endpoint, saved.as_ref(), start_token.as_deref()).await
             })
         } else {
@@ -608,7 +610,7 @@ impl AttachRunner {
                 let mut wait = BACKOFF_FIRST;
                 let mut restarted: Option<Instant> = None;
                 loop {
-                    match launch::probe(&file).await {
+                    match launch::probe_any(&files).await {
                         launch::Liveness::Live(endpoint) => {
                             match establish(endpoint, saved.as_ref(), start_token.as_deref()).await
                             {
@@ -625,7 +627,7 @@ impl AttachRunner {
                         {
                             if let Some(plan) = &spawn {
                                 restarted = Some(Instant::now());
-                                match restart(&file, plan, &ui_tx).await {
+                                match restart(&files, plan, &ui_tx).await {
                                     Ok(endpoint) => match establish(
                                         endpoint,
                                         saved.as_ref(),
@@ -2143,10 +2145,13 @@ impl AttachRunner {
             "workspace: {}",
             self.config.scope.context_root.display()
         ));
-        lines.push(format!(
-            "endpoint file: {}",
-            self.config.endpoint_file.display()
-        ));
+        let files: Vec<String> = self
+            .config
+            .endpoint_files
+            .iter()
+            .map(|file| file.display().to_string())
+            .collect();
+        lines.push(format!("endpoint file: {}", files.join(", then ")));
         lines.push(
             "approval gate: in the daemon (requests show here; /rules and Shift+Tab act on the daemon)"
                 .to_string(),
@@ -2170,7 +2175,7 @@ impl AttachRunner {
     /// file's pid, when its address is the attached one).
     async fn sigterm_attached(&mut self) -> Result<u32, String> {
         let connected = self.link.as_ref().map(|link| link.endpoint.address);
-        let liveness = launch::probe(&self.config.endpoint_file).await;
+        let liveness = launch::probe_any(&self.config.endpoint_files).await;
         let pid = stop_target(&liveness, connected)?;
         terminate(pid).map_err(|err| format!("cannot stop the daemon: {err}"))?;
         self.stopping = true;
@@ -2264,7 +2269,7 @@ impl AttachRunner {
                 tracing::info!(error = %err, "rkat/shutdown brought no answer; checking whether the daemon ended");
                 let ended = match &endpoint {
                     Some(endpoint) => {
-                        daemon_ended(&self.config.endpoint_file, endpoint, STOP_VERIFY).await
+                        daemon_ended(&self.config.endpoint_files, endpoint, STOP_VERIFY).await
                     }
                     None => false,
                 };
@@ -2332,13 +2337,15 @@ fn current<'a>(endpoint: Option<&'a str>, model: Option<&'a (String, String)>) -
     }
 }
 
-/// Whether the daemon `endpoint` names ended within `wait`: its endpoint
-/// file at `file` no longer names it (removed at shutdown, or replaced by
+/// Whether the daemon `endpoint` names ended within `wait`: no endpoint
+/// file at `files` names it any more (removed at shutdown, or replaced by
 /// another daemon's), or its process is gone.
-async fn daemon_ended(file: &std::path::Path, endpoint: &Endpoint, wait: Duration) -> bool {
+async fn daemon_ended(files: &[PathBuf], endpoint: &Endpoint, wait: Duration) -> bool {
     let deadline = Instant::now() + wait;
     loop {
-        let named = Endpoint::read(file).is_ok_and(|now| now.token == endpoint.token);
+        let named = files
+            .iter()
+            .any(|file| Endpoint::read(file).is_ok_and(|now| now.token == endpoint.token));
         if !named || crate::daemon::list::pid_gone(endpoint.pid) {
             return true;
         }
@@ -2572,7 +2579,7 @@ async fn adopt(
 /// The endpoint the first connect attaches to: a live one, or (auto mode)
 /// the one a started daemon writes.
 async fn first_endpoint(
-    file: &std::path::Path,
+    files: &[PathBuf],
     spawn: Option<&SpawnPlan>,
     start_token: Option<&str>,
     ui_tx: &mpsc::UnboundedSender<Msg>,
@@ -2582,14 +2589,14 @@ async fn first_endpoint(
     } else {
         AttachMode::Existing
     };
-    let decision = launch::decide(launch::probe(file).await, mode);
+    let decision = launch::decide(launch::probe_any(files).await, mode);
     match (decision, spawn) {
         (Decision::Attach(endpoint), _) => Ok(endpoint),
         (Decision::Start, Some(plan)) => {
             let _ = ui_tx.send(Msg::Status(StatusUpdate::Attach(Some(STARTING.into()))));
             let (pid, mut exited) = launch::spawn_daemon(
                 &plan.program,
-                &launch::with_endpoint_file(&plan.argv, file),
+                &launch::argv_for(&plan.argv, files),
                 &plan.log,
                 start_token,
             )?;
@@ -2600,10 +2607,10 @@ async fn first_endpoint(
                     plan.log.display()
                 ),
             });
-            launch::wait_for_endpoint(file, launch::START_TIMEOUT, &mut exited, &plan.log).await
+            launch::wait_for_endpoint(files, launch::START_TIMEOUT, &mut exited, &plan.log).await
         }
         (Decision::Start | Decision::Refuse, _) => Err(ClientError::NoDaemon {
-            file: file.to_path_buf(),
+            file: files.first().cloned().unwrap_or_default(),
         }),
     }
 }
@@ -2611,7 +2618,7 @@ async fn first_endpoint(
 /// Start the daemon again after it died (its endpoint file is stale) and
 /// wait for its endpoint.
 async fn restart(
-    file: &std::path::Path,
+    files: &[PathBuf],
     plan: &SpawnPlan,
     ui_tx: &mpsc::UnboundedSender<Msg>,
 ) -> Result<Endpoint, ClientError> {
@@ -2620,7 +2627,7 @@ async fn restart(
     // clients, so the restarted one has no owner and `/quit` asks.
     let (pid, mut exited) = launch::spawn_daemon(
         &plan.program,
-        &launch::with_endpoint_file(&plan.argv, file),
+        &launch::argv_for(&plan.argv, files),
         &plan.log,
         None,
     )?;
@@ -2631,7 +2638,7 @@ async fn restart(
             plan.log.display()
         ),
     });
-    launch::wait_for_endpoint(file, launch::START_TIMEOUT, &mut exited, &plan.log).await
+    launch::wait_for_endpoint(files, launch::START_TIMEOUT, &mut exited, &plan.log).await
 }
 
 /// Attach, find the orchestrator's session and open its stream: resumed
@@ -2780,7 +2787,7 @@ mod tests {
         .unwrap();
         let scope = crate::bootstrap::resolve_scope(&args).unwrap();
         let config = AttachConfig {
-            endpoint_file: dir.join("mob.endpoint"),
+            endpoint_files: vec![dir.join("mob.endpoint")],
             cursor: CursorFile::of_workspace(&scope.context_root),
             config: None,
             spawn: None,

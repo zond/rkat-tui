@@ -3087,3 +3087,29 @@ does not, the farewell says the daemon may still be running and names
 daemon: never "stopped"; next to it the case where the daemon ended),
 and `attach_lifecycle::quit_stops_the_daemon_this_client_started` for the
 normal shutdown.
+
+### The endpoint file falls back to the runtime directory
+
+When the agent shell's confinement would grant the state directory (a
+workspace that contains `~/.local/state`, such as the home directory, or
+an `XDG_STATE_HOME` inside a granted path), the daemon used to refuse to
+start. It now tries the places of `endpoint::candidates` in order,
+`<state>/rkat-tui/<key>/mob.endpoint` then
+`$XDG_RUNTIME_DIR/rkat-tui/<key>/mob.endpoint` (0700/0600 as before), and
+takes the first the plan does not grant (`daemon::choose_endpoint_file`);
+when neither is safe, or the runtime directory is unset, the first
+refusal stands with today's message. The temp dir was ruled out: it is
+granted to the shell. The runtime directory is per user, mode 0700, on
+tmpfs and cleared at logout, which suits a file that only lives as long
+as the daemon. An explicit `--endpoint-file` is the only place tried.
+Every daemon start checks both places for a live daemon first. Clients
+resolve the same list (`AttachConfig::endpoint_files`) in the same
+order: `launch::probe_any` takes the first live endpoint, else the first
+stale one; a client starting the daemon no longer passes
+`--endpoint-file` when it looks in the default places (the daemon
+picks, the client waits at both); `--list` scans both directories;
+`/quit`'s check that a daemon ended looks at both. Tests:
+`daemon::tests::the_confined_shell_is_granted_nothing_that_holds_the_endpoint_file`
+(the fallback is chosen when the first place is granted, the refusal
+kept with one place), `client::launch::tests::the_decision_follows_the_endpoint_file`
+(`probe_any`, `argv_for`), `daemon::an_endpoint_file_the_confined_shell_could_read_is_refused`.

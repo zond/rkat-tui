@@ -621,11 +621,11 @@ async fn a_reconnect_restarts_a_daemon_that_died() {
         .await
         .unwrap();
     config.lister = no_lists();
-    config.endpoint_file = endpoint_file_for(&ws.root);
+    config.endpoint_files = vec![endpoint_file_for(&ws.root)];
     if let Some(plan) = &mut config.spawn {
         plan.program = std::path::PathBuf::from(env!("CARGO_BIN_EXE_rkat-tui-mob"));
     }
-    let endpoint_file = config.endpoint_file.clone();
+    let endpoint_file = config.endpoint_files[0].clone();
     let mut client = Client {
         harness: spawn_attach_runner(config),
         seen: Vec::new(),
@@ -696,7 +696,7 @@ async fn attach_mode_prices_the_cost_readout_and_names_an_unconfined_shell() {
         .await
         .unwrap();
     config.lister = no_lists();
-    config.endpoint_file = endpoint_file_for(&ws.root);
+    config.endpoint_files = vec![endpoint_file_for(&ws.root)];
     let app = build_app(
         &rkat_tui::client::app_setup(&config),
         StatusInfo::default(),

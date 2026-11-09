@@ -229,7 +229,14 @@ pub async fn configure_with(
     };
     Ok(AttachConfig {
         start_token,
-        endpoint_file: crate::daemon::endpoint_file(&scope.context_root)?,
+        endpoint_files: {
+            let files = crate::daemon::endpoint::candidates(&scope.context_root);
+            if files.is_empty() {
+                vec![crate::daemon::endpoint_file(&scope.context_root)?]
+            } else {
+                files
+            }
+        },
         cursor: catchup::CursorFile::of_workspace(&scope.context_root),
         config: Some(config),
         spawn,
