@@ -340,6 +340,12 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Fixed
 
+- Attach mode: a conversation switch read on a connection that was lost
+  before the client reattached is no longer installed; it named the dead
+  connection's stream, and the client then silently dropped every event of
+  the agent. A `/resume` the client refused itself (already in that
+  conversation, no such conversation) is the only notice that ends a
+  switch.
 - An approval the human gives is never turned into a denial afterwards.
   The in-process TUI recorded every escalation in the realm's approval store
   and denied the call when that write failed, even after the human allowed

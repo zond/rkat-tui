@@ -2593,3 +2593,34 @@ Tests: `approval::desk::tests::{a_decided_decision_carries_every_answer,
 answers_round_trip_through_the_wire, allow_and_add_rule_without_a_subject_allows_once}`,
 the render snapshots of the dialog (`render_snapshot::escalation_*`), and
 the attach and in-process approval suites unchanged in meaning.
+
+## The attach client and daemon after the senior review (2026-11-09)
+
+### Reports carry the link they were started on
+
+`client::runner::Report` carried no link generation. A background switch
+(`/new`, `/resume`, another client's switch, the re-render after a
+truncated stream) reads the new conversation on the connection it started
+on and reports the reopened stream id. When that report was queued before
+the connection dropped and handled after the reattach, `adopted` installed
+the dead connection's stream id on the new link, and `on_notification`
+then dropped every orchestrator event as another stream's. The window is
+narrow (the loss and the whole reattach must be handled before the queued
+report) but nothing closed it.
+
+Every report now travels with the link epoch of the runner when its task
+started (`Reporter`; `link_epoch` counts the links made in `connected`).
+A report of an earlier epoch is dropped when it names something of that
+connection (`Switched`, `Rerendered`, `MobOpened`; `SessionNow` and
+`SessionUnread` only clear their in-flight flag); the reattach read all of
+it again. What does not depend on the connection (a turn's failure, the
+model lists, the picker rows, helper backfills of durable events) is
+applied as before. `Report::Notice` cleared `switching` for any notice;
+it is `Report::SwitchRefused` now, the one report besides a switch's end
+that ends a switch (a stale one only shows its notice: a switch started
+on the new link goes on).
+
+Tests: `client::runner::tests::{a_switch_read_on_a_lost_connection_is_not_installed_after_the_reattach,
+only_a_refused_switch_ends_the_switch}` (unit tests on a runner with an
+in-memory link: the race is not reproducible against a real daemon, whose
+lost connection fails every call in flight).

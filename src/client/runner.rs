@@ -193,6 +193,19 @@ struct Established {
     context: Option<u64>,
 }
 
+/// A background task's channel back to the runner: every report carries
+/// the link epoch it was started on ([`AttachRunner::reporter`]).
+struct Reporter {
+    tx: mpsc::UnboundedSender<(u64, Report)>,
+    epoch: u64,
+}
+
+impl Reporter {
+    fn send(&self, report: Report) {
+        let _ = self.tx.send((self.epoch, report));
+    }
+}
+
 /// What a background task reports.
 enum Report {
     /// A `mob/turn_start` (the model switch) failed.
@@ -230,8 +243,10 @@ enum Report {
     Rerendered(Result<Adopted, String>),
     /// The resume picker's rows.
     Picker(Result<Vec<(String, String)>, String>),
-    /// A notice to show.
-    Notice(NoticeLevel, String),
+    /// A conversation switch of this client's did not start (the
+    /// conversations could not be listed, the reference resolved to none
+    /// or to the current one): why. Ends the switch.
+    SwitchRefused(NoticeLevel, String),
     /// The endpoints' model lists.
     ModelLists(FetchResults),
 }
@@ -303,8 +318,12 @@ pub struct AttachRunner {
     connecting: Option<JoinHandle<Result<Established, ClientError>>>,
     /// The daemon may still be started (only the first connect does).
     first_connect: bool,
-    reports_tx: mpsc::UnboundedSender<Report>,
-    reports_rx: mpsc::UnboundedReceiver<Report>,
+    reports_tx: mpsc::UnboundedSender<(u64, Report)>,
+    reports_rx: mpsc::UnboundedReceiver<(u64, Report)>,
+    /// Counts the links made: a report started on an earlier link (a
+    /// connection lost since) names a stream or a session of that
+    /// connection and is not applied ([`AttachRunner::on_report`]).
+    link_epoch: u64,
     mark: Option<Mark>,
     turn: Turn,
     /// `/model`: the model the next prompt switches to.
@@ -369,6 +388,7 @@ impl AttachRunner {
             first_connect: true,
             reports_tx,
             reports_rx,
+            link_epoch: 0,
             mark: None,
             turn: Turn::default(),
             pending_model: None,
@@ -414,7 +434,7 @@ impl AttachRunner {
                     self.connecting = None;
                     self.connected(joined);
                 }
-                Some(report) = self.reports_rx.recv() => self.on_report(report),
+                Some((epoch, report)) = self.reports_rx.recv() => self.on_report(epoch, report),
                 () = sleep_until(self.turn.deadline()) => self.on_deadline(),
                 () = sleep_until(self.discover_at) => self.discover(),
                 () = sleep_until(self.session_check_at) => self.check_session(),
@@ -431,6 +451,14 @@ impl AttachRunner {
 
     fn send(&self, msg: Msg) {
         let _ = self.ui_tx.send(msg);
+    }
+
+    /// The channel a background task started now reports on.
+    fn reporter(&self) -> Reporter {
+        Reporter {
+            tx: self.reports_tx.clone(),
+            epoch: self.link_epoch,
+        }
     }
 
     fn notice(&self, level: NoticeLevel, text: impl Into<String>) {
@@ -581,6 +609,7 @@ impl AttachRunner {
         }
         self.orphans.clear();
         self.link = Some(link);
+        self.link_epoch += 1;
         if let Some(blocks) = reset {
             self.send(Msg::ResetTranscript(blocks));
         }
@@ -614,7 +643,7 @@ impl AttachRunner {
         let Some(connection) = self.connection() else {
             return;
         };
-        let reports = self.reports_tx.clone();
+        let reports = self.reporter();
         tokio::spawn(async move {
             let read = tokio::time::timeout(
                 CALL_TIMEOUT,
@@ -628,7 +657,7 @@ impl AttachRunner {
             if let Ok(Ok(value)) = read
                 && let Ok(status) = serde_json::from_value::<ModeStatus>(value)
             {
-                let _ = reports.send(Report::Mode(status));
+                reports.send(Report::Mode(status));
             }
         });
     }
@@ -730,7 +759,7 @@ impl AttachRunner {
                     let Some(connection) = self.connection() else {
                         continue;
                     };
-                    let reports = self.reports_tx.clone();
+                    let reports = self.reporter();
                     tokio::spawn(async move {
                         let events = tokio::time::timeout(
                             CALL_TIMEOUT,
@@ -741,14 +770,14 @@ impl AttachRunner {
                         .and_then(Result::ok)
                         .map(|(events, _)| events)
                         .unwrap_or_default();
-                        let _ = reports.send(Report::Backfilled { helper, events });
+                        reports.send(Report::Backfilled { helper, events });
                     });
                 }
                 FollowerAction::Snapshot { helper, session } => {
                     let Some(connection) = self.connection() else {
                         continue;
                     };
-                    let reports = self.reports_tx.clone();
+                    let reports = self.reporter();
                     tokio::spawn(async move {
                         if let Ok(Ok((model, _))) = tokio::time::timeout(
                             CALL_TIMEOUT,
@@ -756,7 +785,7 @@ impl AttachRunner {
                         )
                         .await
                         {
-                            let _ = reports.send(Report::HelperModel { helper, model });
+                            reports.send(Report::HelperModel { helper, model });
                         }
                     });
                 }
@@ -784,14 +813,14 @@ impl AttachRunner {
             return;
         }
         self.discovering = true;
-        let reports = self.reports_tx.clone();
+        let reports = self.reporter();
         tokio::spawn(async move {
             let mobs = tokio::time::timeout(CALL_TIMEOUT, remote::mobs(&connection))
                 .await
                 .ok()
                 .and_then(Result::ok)
                 .unwrap_or_default();
-            let _ = reports.send(Report::Mobs(mobs));
+            reports.send(Report::Mobs(mobs));
         });
     }
 
@@ -800,7 +829,7 @@ impl AttachRunner {
         let Some(connection) = self.connection() else {
             return;
         };
-        let reports = self.reports_tx.clone();
+        let reports = self.reporter();
         tokio::spawn(async move {
             let opened = tokio::time::timeout(CALL_TIMEOUT, async {
                 let stream = remote::open_mob_stream(&connection, &mob).await?;
@@ -817,7 +846,7 @@ impl AttachRunner {
                 Ok(Err(err)) => Err(err.to_string()),
                 Err(_) => Err("timed out".to_string()),
             };
-            let _ = reports.send(Report::MobOpened { mob, opened });
+            reports.send(Report::MobOpened { mob, opened });
         });
     }
 
@@ -833,14 +862,14 @@ impl AttachRunner {
             return;
         }
         self.checking_session = true;
-        let reports = self.reports_tx.clone();
+        let reports = self.reporter();
         tokio::spawn(async move {
             match tokio::time::timeout(CALL_TIMEOUT, remote::session_id(&connection)).await {
                 Ok(Ok(session)) => {
-                    let _ = reports.send(Report::SessionNow(session));
+                    reports.send(Report::SessionNow(session));
                 }
                 _ => {
-                    let _ = reports.send(Report::SessionUnread);
+                    reports.send(Report::SessionUnread);
                 }
             }
         });
@@ -1022,7 +1051,30 @@ impl AttachRunner {
         self.refresh_mode();
     }
 
-    fn on_report(&mut self, report: Report) {
+    /// A background task's `report`, started on the link `epoch`. What a
+    /// task started on an earlier link learned about that connection (a
+    /// switched-to stream, a mob stream, the session it read) is dropped:
+    /// installed, a dead connection's stream id would silently mute the
+    /// orchestrator; the reattach read everything again.
+    fn on_report(&mut self, epoch: u64, report: Report) {
+        if epoch != self.link_epoch {
+            match report {
+                Report::Switched { .. } | Report::Rerendered(_) | Report::MobOpened { .. } => {
+                    tracing::debug!("dropped a report of a connection lost since");
+                    return;
+                }
+                // The loss ended that switch; one started since is not.
+                Report::SwitchRefused(level, text) => {
+                    self.notice(level, text);
+                    return;
+                }
+                Report::SessionNow(_) | Report::SessionUnread => {
+                    self.checking_session = false;
+                    return;
+                }
+                _ => {}
+            }
+        }
         match report {
             Report::TurnStart(err) => {
                 self.notice(
@@ -1131,7 +1183,7 @@ impl AttachRunner {
                 NoticeLevel::Error,
                 format!("could not list the conversations: {why}"),
             ),
-            Report::Notice(level, text) => {
+            Report::SwitchRefused(level, text) => {
                 self.switching = false;
                 self.notice(level, text);
             }
@@ -1472,10 +1524,10 @@ impl AttachRunner {
             text.to_string()
         };
         if let Some(switch) = self.pending_model.take() {
-            let reports = self.reports_tx.clone();
+            let reports = self.reporter();
             tokio::spawn(async move {
                 if let Err(err) = remote::turn_with_model(&connection, &text, &switch).await {
-                    let _ = reports.send(Report::TurnStart(err));
+                    reports.send(Report::TurnStart(err));
                 }
             });
             return;
@@ -1538,7 +1590,7 @@ impl AttachRunner {
             self.finish_turn();
             return;
         };
-        let reports = self.reports_tx.clone();
+        let reports = self.reporter();
         let stop = match (&self.turn.interrupted_at, &self.turn.current_run) {
             (None, Some(run)) if self.turn.open_runs.contains(run) => Some(run.to_string()),
             (None, _) => None,
@@ -1571,7 +1623,7 @@ impl AttachRunner {
                 Ok(Err(err)) => err.to_string(),
                 Err(_) => "the daemon did not answer in time".to_string(),
             };
-            let _ = reports.send(Report::Interrupt(failure));
+            reports.send(Report::Interrupt(failure));
         });
     }
 
@@ -1625,9 +1677,9 @@ impl AttachRunner {
             .cloned()
             .collect();
         let lister = Arc::clone(&self.config.lister);
-        let reports = self.reports_tx.clone();
+        let reports = self.reporter();
         tokio::spawn(async move {
-            let _ = reports.send(Report::ModelLists(lister(endpoints).await));
+            reports.send(Report::ModelLists(lister(endpoints).await));
         });
         if announce {
             self.notice(NoticeLevel::Info, "fetching the model lists…");
@@ -1708,7 +1760,7 @@ impl AttachRunner {
         self.switching = true;
         let connection = Arc::clone(&link.connection);
         let stream = link.stream.clone();
-        let reports = self.reports_tx.clone();
+        let reports = self.reporter();
         let fresh = target.is_none();
         tokio::spawn(async move {
             let switched =
@@ -1717,7 +1769,7 @@ impl AttachRunner {
             let (session, warning) = match switched {
                 Ok(Ok(switched)) => switched,
                 Ok(Err(err)) => {
-                    let _ = reports.send(Report::Switched {
+                    reports.send(Report::Switched {
                         result: Err(err.to_string()),
                         own: Some(fresh),
                         warning: None,
@@ -1725,7 +1777,7 @@ impl AttachRunner {
                     return;
                 }
                 Err(_) => {
-                    let _ = reports.send(Report::Switched {
+                    reports.send(Report::Switched {
                         result: Err("the daemon did not answer in time".to_string()),
                         own: Some(fresh),
                         warning: None,
@@ -1734,7 +1786,7 @@ impl AttachRunner {
                 }
             };
             let result = adopt(&connection, &stream, session).await;
-            let _ = reports.send(Report::Switched {
+            reports.send(Report::Switched {
                 result,
                 own: Some(fresh),
                 warning,
@@ -1774,10 +1826,10 @@ impl AttachRunner {
         self.switching = true;
         let connection = Arc::clone(&link.connection);
         let stream = link.stream.clone();
-        let reports = self.reports_tx.clone();
+        let reports = self.reporter();
         tokio::spawn(async move {
             let result = adopt(&connection, &stream, session).await;
-            let _ = reports.send(Report::Switched {
+            reports.send(Report::Switched {
                 result,
                 own,
                 warning,
@@ -1794,10 +1846,10 @@ impl AttachRunner {
         self.switching = true;
         let connection = Arc::clone(&link.connection);
         let stream = link.stream.clone();
-        let reports = self.reports_tx.clone();
+        let reports = self.reporter();
         tokio::spawn(async move {
             let result = adopt(&connection, &stream, session).await;
-            let _ = reports.send(Report::Rerendered(result));
+            reports.send(Report::Rerendered(result));
         });
     }
 
@@ -1897,12 +1949,12 @@ impl AttachRunner {
         let connection = Arc::clone(&link.connection);
         let stream = link.stream.clone();
         let current = link.session.clone();
-        let reports = self.reports_tx.clone();
+        let reports = self.reporter();
         tokio::spawn(async move {
             let listed = match remote::conversations(&connection).await {
                 Ok(listed) => listed,
                 Err(err) => {
-                    let _ = reports.send(Report::Notice(
+                    reports.send(Report::SwitchRefused(
                         NoticeLevel::Error,
                         format!("could not list the conversations: {err}"),
                     ));
@@ -1911,7 +1963,7 @@ impl AttachRunner {
             };
             let target = match sessions::resolve(&reference, &listed) {
                 Ok(target) if target == current => {
-                    let _ = reports.send(Report::Notice(
+                    reports.send(Report::SwitchRefused(
                         NoticeLevel::Info,
                         "already in this conversation".to_string(),
                     ));
@@ -1919,7 +1971,7 @@ impl AttachRunner {
                 }
                 Ok(target) => target,
                 Err(why) => {
-                    let _ = reports.send(Report::Notice(NoticeLevel::Warn, why));
+                    reports.send(Report::SwitchRefused(NoticeLevel::Warn, why));
                     return;
                 }
             };
@@ -1929,7 +1981,7 @@ impl AttachRunner {
             let (session, warning) = match switched {
                 Ok(Ok(switched)) => switched,
                 Ok(Err(err)) => {
-                    let _ = reports.send(Report::Switched {
+                    reports.send(Report::Switched {
                         result: Err(err.to_string()),
                         own: Some(false),
                         warning: None,
@@ -1937,7 +1989,7 @@ impl AttachRunner {
                     return;
                 }
                 Err(_) => {
-                    let _ = reports.send(Report::Switched {
+                    reports.send(Report::Switched {
                         result: Err("the daemon did not answer in time".to_string()),
                         own: Some(false),
                         warning: None,
@@ -1946,7 +1998,7 @@ impl AttachRunner {
                 }
             };
             let result = adopt(&connection, &stream, session).await;
-            let _ = reports.send(Report::Switched {
+            reports.send(Report::Switched {
                 result,
                 own: Some(false),
                 warning,
@@ -1960,13 +2012,13 @@ impl AttachRunner {
             self.notice(NoticeLevel::Warn, "not attached to the daemon");
             return;
         };
-        let reports = self.reports_tx.clone();
+        let reports = self.reporter();
         tokio::spawn(async move {
             let listed = tokio::time::timeout(CALL_TIMEOUT, remote::conversations(&connection))
                 .await
                 .map_err(|_| "the daemon did not answer in time".to_string())
                 .and_then(|listed| listed.map_err(|err| err.to_string()));
-            let _ = reports.send(Report::Picker(
+            reports.send(Report::Picker(
                 listed.map(|listed| sessions::picker_items(&listed)),
             ));
         });
@@ -2564,9 +2616,156 @@ async fn sleep_until(deadline: Option<Instant>) {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
+
+    /// A runner on a workspace in `dir`, never connected.
+    fn runner(dir: &std::path::Path) -> (AttachRunner, mpsc::UnboundedReceiver<Msg>) {
+        let root = dir.to_str().unwrap();
+        let cfg = format!("{root}/.cfg");
+        let args = <crate::cli::Args as clap::Parser>::try_parse_from([
+            "rkat-tui",
+            "-w",
+            root,
+            "--user-config-root",
+            root,
+            "--config-dir",
+            &cfg,
+        ])
+        .unwrap();
+        let scope = crate::bootstrap::resolve_scope(&args).unwrap();
+        let config = AttachConfig {
+            endpoint_file: dir.join("mob.endpoint"),
+            cursor: CursorFile::of_workspace(&scope.context_root),
+            config: None,
+            spawn: None,
+            user_shell: Err("none".into()),
+            endpoints: EndpointRegistry::from_endpoints(Vec::new()),
+            lister: crate::models::live_lister(),
+            ui: crate::approval::rules::UiSettings::default(),
+            compaction: crate::ui::CompactionPolicy::default(),
+            scope,
+        };
+        let (ui_tx, ui_rx) = mpsc::unbounded_channel();
+        let (_effects, effect_rx) = mpsc::unbounded_channel();
+        (AttachRunner::new(config, ui_tx, effect_rx), ui_rx)
+    }
+
+    /// A link over an in-memory pipe whose daemon side only answers the
+    /// attach line.
+    async fn link(stream: &str, session: SessionId) -> Link {
+        let (client, server) = tokio::io::duplex(1 << 16);
+        let (server_read, mut server_write) = tokio::io::split(server);
+        tokio::spawn(async move {
+            let mut lines = tokio::io::BufReader::new(server_read);
+            let mut line = String::new();
+            lines.read_line(&mut line).await.unwrap();
+            let attach: serde_json::Value = serde_json::from_str(&line).unwrap();
+            let answer = serde_json::json!({"jsonrpc": "2.0", "id": attach["id"], "result": {"attached": true}});
+            server_write
+                .write_all(format!("{answer}\n").as_bytes())
+                .await
+                .unwrap();
+            // Held open: the link stays up.
+            std::future::pending::<()>().await;
+        });
+        let (read, write) = tokio::io::split(client);
+        let address: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
+        let (connection, notifications) =
+            Connection::attach_io(read, write, "t", address, ATTACH_TIMEOUT)
+                .await
+                .unwrap();
+        Link {
+            connection: Arc::new(connection),
+            notifications,
+            stream: stream.to_string(),
+            session,
+            endpoint: Endpoint {
+                address,
+                token: "t".into(),
+                pid: 1,
+            },
+        }
+    }
+
+    fn switched(session: &SessionId, stream: &str) -> Report {
+        Report::Switched {
+            result: Ok(Adopted {
+                session: session.clone(),
+                stream: stream.to_string(),
+                blocks: Vec::new(),
+                last_seq: 3,
+                identity: None,
+                usage: None,
+                context: None,
+            }),
+            own: None,
+            warning: None,
+        }
+    }
+
+    /// The finding this guards: a switch read on a connection lost before
+    /// the reattach installed that connection's stream id, and every
+    /// orchestrator event after was dropped as another stream's.
+    #[tokio::test]
+    async fn a_switch_read_on_a_lost_connection_is_not_installed_after_the_reattach() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut runner, mut ui_rx) = runner(dir.path());
+        let live = SessionId::new();
+        runner.link = Some(link("live", live.clone()).await);
+        runner.link_epoch = 2;
+        let other = SessionId::new();
+        runner.switching = true;
+        runner.on_report(1, switched(&other, "dead"));
+        let link_now = runner.link.as_ref().unwrap();
+        assert_eq!(link_now.stream, "live");
+        assert_eq!(link_now.session, live);
+        assert!(runner.switching, "a switch started since still runs");
+        while let Ok(msg) = ui_rx.try_recv() {
+            assert!(!matches!(msg, Msg::ResetTranscript(_)), "{msg:?}");
+        }
+        // The same report of the current link is shown.
+        runner.on_report(2, switched(&other, "next"));
+        let link_now = runner.link.as_ref().unwrap();
+        assert_eq!(link_now.stream, "next");
+        assert_eq!(link_now.session, other);
+        assert!(!runner.switching);
+        let mut reset = false;
+        while let Ok(msg) = ui_rx.try_recv() {
+            reset |= matches!(msg, Msg::ResetTranscript(_));
+        }
+        assert!(reset);
+    }
+
+    /// A refused `/resume` ends the switch; nothing else that reports a
+    /// notice does.
+    #[tokio::test]
+    async fn only_a_refused_switch_ends_the_switch() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut runner, mut ui_rx) = runner(dir.path());
+        runner.link = Some(link("live", SessionId::new()).await);
+        runner.switching = true;
+        runner.on_report(0, Report::Interrupt("x".into()));
+        assert!(runner.switching);
+        // One of a lost connection says why, and leaves a later switch be.
+        runner.link_epoch = 1;
+        runner.on_report(
+            0,
+            Report::SwitchRefused(NoticeLevel::Info, "already in this conversation".into()),
+        );
+        assert!(runner.switching);
+        runner.on_report(
+            1,
+            Report::SwitchRefused(NoticeLevel::Info, "already in this conversation".into()),
+        );
+        assert!(!runner.switching);
+        let notices = std::iter::from_fn(|| ui_rx.try_recv().ok())
+            .filter(|msg| matches!(msg, Msg::Notice { text, .. } if text == "already in this conversation"))
+            .count();
+        assert_eq!(notices, 2);
+    }
 
     #[test]
     fn model_references_resolve_on_this_processs_endpoints() {
