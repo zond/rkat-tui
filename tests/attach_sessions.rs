@@ -115,9 +115,10 @@ async fn rewind_says_why_it_is_not_offered() {
         .wait_for(|m| matches!(m, Msg::Notice { text, .. } if text == REWIND_UNAVAILABLE))
         .await;
     // The reason holds: the engine refuses a transcript fork of the
-    // member's session.
-    let connection = daemon.connect().await;
-    let refused = connection
+    // member's session (asked past the proxy, which serves no
+    // `session/fork_at` to clients at all).
+    let refused = daemon
+        .engine_side
         .call(
             "session/fork_at",
             json!({"session_id": daemon.session.to_string(), "message_index": 0}),
@@ -125,9 +126,7 @@ async fn rewind_says_why_it_is_not_offered() {
         .await
         .unwrap_err();
     assert!(
-        refused
-            .to_string()
-            .contains("mob-owned session transcripts cannot be edited"),
+        refused.contains("mob-owned session transcripts cannot be edited"),
         "{refused}"
     );
     client.quit().await;
@@ -381,8 +380,8 @@ async fn resume_and_continue_choose_the_conversation_at_attach() {
 
 /// The probe of P3 item 3: a session created outside the mob (as the
 /// in-process TUI created them before P4; here the engine's own
-/// `session/create` over the daemon's wire, which makes a plain session in
-/// the realm) cannot become the daemon's conversation. It is listed view
+/// `session/create` past the daemon's proxy, which refuses it to clients,
+/// making a plain session in the realm) cannot become the daemon's conversation. It is listed view
 /// only (P4 item 2): `--resume <it>` attaches, shows its transcript and
 /// says why the agent stays on its conversation; the next prompt goes
 /// there, `/export` saves what is shown, and `/resume <current>` shows the
@@ -396,8 +395,7 @@ async fn a_session_outside_the_mob_cannot_be_seated_on_the_member() {
     let llm = ScriptedLlmClient::new(vec![Step::Text("in-process"), Step::Text("daemon")]);
     let daemon = Running::start(&ws.root, &llm).await;
     let created = daemon
-        .connect()
-        .await
+        .engine_side
         .call(
             "session/create",
             json!({"prompt": "hello in process", "model": common::MODEL}),

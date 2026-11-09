@@ -1260,3 +1260,64 @@ async fn a_parameter_refusal_answers_its_request() {
     drop(raw);
     daemon.stop().await;
 }
+
+/// An authenticated client cannot make a session outside the daemon's mob:
+/// such a session would run without the application gate (a probe saw a
+/// `session/create` session's shell call run with the classifier never
+/// asked). The proxy serves only `protocol::engine::SERVED` and refuses
+/// the rest with `NOT_SERVED`; nothing the refused calls asked for runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn engine_methods_that_make_sessions_outside_the_mob_are_refused() {
+    use rkat_tui::daemon::protocol::{NOT_SERVED, engine};
+    let ws = Workspace::new();
+    let marker = ws.root.join("ran.txt");
+    let command: &'static str = Box::leak(format!("touch {}", marker.display()).into_boxed_str());
+    let shell = Step::Tool {
+        id: "s1",
+        name: "shell",
+        args: json!({ "command": command }),
+    };
+    let llm = ScriptedLlmClient::new(vec![shell.clone(), shell, Step::Text("done")]);
+    let daemon = start(&ws.root, &llm, &Setup::default()).await;
+    let raw = daemon.connect().await;
+    let session = daemon.session.to_string();
+    for (method, params) in [
+        (
+            "session/create",
+            json!({"prompt": "run it", "model": common::MODEL}),
+        ),
+        (
+            "turn/start",
+            json!({"session_id": session, "prompt": "run it"}),
+        ),
+        (
+            "session/fork_at",
+            json!({"session_id": session, "message_index": 0}),
+        ),
+        ("mob/create", json!({"definition": {"id": "stray"}})),
+        (
+            "mob/spawn",
+            json!({"mob_id": "tui", "profile": "main", "member_id": "stray"}),
+        ),
+    ] {
+        assert!(!engine::serves(method), "{method}");
+        let refused = raw.call(method, params).await.unwrap_err();
+        let text = refused.to_string();
+        assert!(
+            text.contains(&NOT_SERVED.to_string()) && text.contains("does not serve"),
+            "{method}: {text}"
+        );
+    }
+    // Nothing ran: no model call, no command.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(llm.recorded().is_empty(), "{:?}", llm.recorded().len());
+    assert!(!marker.exists());
+    // What the client uses still works on the same connection.
+    let members = raw
+        .call(engine::MEMBERS, json!({"mob_id": "tui"}))
+        .await
+        .unwrap();
+    assert!(members["members"].as_array().is_some(), "{members}");
+    drop(raw);
+    daemon.stop().await;
+}

@@ -3668,3 +3668,29 @@ file that vanished. The custody lock files
 `tool_process_custody/.incarnations/*.lock`) stay open in the process after
 the stop; they are locks, never removed by a close, so they do not race a
 copy.
+
+### The daemon's proxy serves an allow-list of engine methods
+
+The maintainer's review of ba3d1fc: the application gate is attached in
+`daemon::engine::compose` to the mob's root member and, through the
+spawn customizer, to every member and helper the mob state seats; a
+session the `SessionRuntime` builds any other way gets no
+`ToolDispatchAdmission`. `daemon::serve::proxy` forwarded every engine
+method to an authenticated connection, so a client holding the endpoint
+token could `session/create` a plain session whose `shell` call ran with
+the classifier never asked (the probe). The fix keeps the invariant at
+the one door: `protocol::engine::SERVED` lists the engine methods the
+client calls (the `mob/*` member and stream methods, `events/*`,
+`session/compact`, `initialize`) plus two read-only inspections
+(`decision/get`, `approval/list`); `serve::route` answers anything else
+with `protocol::NOT_SERVED` (`-32012`, rkat-tui's own code so a client can
+tell the proxy's refusal from the engine's `METHOD_NOT_FOUND`) and drops a
+notification. `decision/decide` and `rkat/*` stay the daemon's own.
+Pinned by `attach_approvals::engine_methods_that_make_sessions_outside_the_mob_are_refused`
+(`session/create`, `turn/start`, `session/fork_at`, `mob/create`,
+`mob/spawn` refused over the raw wire, no model call made, no command
+run, `mob/members` still answered); the attach tests cover the
+conversations, `/new`, `/resume`, helpers and `fork_off`. Tests that need
+the engine past the proxy (a plain session for the view-only listing, the
+engine's own `session/fork_at` refusal) use the test-support
+`Daemon::engine_side`, which holds the runtime weakly.

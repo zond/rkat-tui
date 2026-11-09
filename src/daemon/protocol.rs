@@ -121,6 +121,44 @@ pub mod engine {
     pub const EVENTS_SNAPSHOT: &str = "events/snapshot";
     /// The capability handshake.
     pub const INITIALIZE: &str = "initialize";
+    /// Read one durable decision (inspection; the decide goes through the
+    /// daemon, [`super::DECISION_DECIDE`]).
+    pub const DECISION_GET: &str = "decision/get";
+    /// List the realm's approval records (inspection).
+    pub const APPROVAL_LIST: &str = "approval/list";
+
+    /// Every engine method the daemon forwards to a client's connection:
+    /// the ones above, which the client calls, and nothing else. A
+    /// session-creating or session-editing method (`session/create`,
+    /// `session/fork_at`, `turn/start`, `mob/create`, `mob/spawn`, …)
+    /// would build a session outside the daemon's mob, which no
+    /// application gate admits, so the proxy refuses it with
+    /// [`super::NOT_SERVED`].
+    pub const SERVED: &[&str] = &[
+        MEMBER_SEND,
+        TURN_START,
+        STOP_MEMBER_RUN,
+        FORCE_CANCEL,
+        STREAM_OPEN,
+        STREAM_CLOSE,
+        APPEND_SYSTEM_CONTEXT,
+        LIST,
+        MEMBERS,
+        MEMBER_STATUS,
+        COMPACT_MEMBER,
+        SESSION_COMPACT,
+        EVENTS_LIST_SINCE,
+        EVENTS_SNAPSHOT,
+        INITIALIZE,
+        DECISION_GET,
+        APPROVAL_LIST,
+    ];
+
+    /// Whether the daemon forwards `method` to the engine.
+    #[must_use]
+    pub fn serves(method: &str) -> bool {
+        SERVED.contains(&method)
+    }
 }
 
 /// The attach token is missing or wrong, or no attach arrived in time.
@@ -130,6 +168,11 @@ pub const SWITCH_FAILED: i32 = -32010;
 /// A conversation switch refused because the orchestrator's turn is
 /// running.
 pub const SWITCH_BUSY: i32 = -32011;
+/// An engine method the daemon does not forward to clients (not in
+/// [`engine::SERVED`]): a code of rkat-tui's own, not the engine's
+/// `METHOD_NOT_FOUND`, so a client can tell the proxy's refusal from the
+/// engine's.
+pub const NOT_SERVED: i32 = -32012;
 
 /// A local method's refusal: a JSON-RPC error code and message.
 #[derive(Debug, Clone, PartialEq, Eq)]

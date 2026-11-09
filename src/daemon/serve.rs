@@ -415,6 +415,18 @@ pub async fn proxy<R, W, E, L>(
                     }
                 });
             }
+            Routed::Refused { id, method } => {
+                if id.is_some() {
+                    tracing::warn!(%method, "refused an engine method the daemon does not serve");
+                    let _ = out_tx.send(Outgoing::line(protocol::error_line(
+                        id,
+                        protocol::NOT_SERVED,
+                        &format!(
+                            "rkat-tui-mob does not serve {method}: clients reach the agent through the daemon's mob only, so every session runs behind the approval gate"
+                        ),
+                    )));
+                }
+            }
             Routed::Forward(forward) => {
                 if let Some(id) = initialize_id(&forward) {
                     initializing.lock().insert(id);
@@ -491,6 +503,15 @@ pub enum Routed {
     },
     /// The line for the engine (newline included).
     Forward(String),
+    /// An engine method the daemon does not serve
+    /// ([`protocol::engine::SERVED`]): answered with
+    /// [`protocol::NOT_SERVED`] (a request) or dropped (a notification).
+    Refused {
+        /// The request id (`None`: a notification, which gets no answer).
+        id: Option<RpcId>,
+        /// The method.
+        method: String,
+    },
 }
 
 /// Pick out a local method call, else hand `line` on (observed).
@@ -510,6 +531,10 @@ pub fn route<L: LocalMethods + ?Sized>(line: &str, local: &L) -> Routed {
             id: id(),
             method: method.to_string(),
             params: request.get("params").cloned().unwrap_or(Value::Null),
+        },
+        Some(method) if !protocol::engine::serves(method) => Routed::Refused {
+            id: request.get("id").and_then(protocol::request_id),
+            method: method.to_string(),
         },
         Some(_) => {
             let observed = local.observe(request);

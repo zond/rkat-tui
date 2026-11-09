@@ -585,6 +585,17 @@ impl Daemon {
         &self.origins
     }
 
+    /// The engine's own method router, past the proxy (tests: what a
+    /// plain session in the realm looks like, which no client can create).
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn engine_side(&self) -> testing::EngineSide {
+        testing::EngineSide {
+            runtime: Arc::downgrade(&self.runtime),
+            config_store: Arc::downgrade(&self.config_store),
+        }
+    }
+
     /// The mob host every member lives in.
     #[must_use]
     #[cfg(any(test, feature = "test-support"))]
@@ -698,6 +709,61 @@ impl Daemon {
         settle_stores(&realm_root, STORE_SETTLE).await;
         served?;
         shutdown.map_err(DaemonError::from)
+    }
+}
+
+/// Test seams of the daemon.
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing {
+    use std::sync::{Arc, Weak};
+
+    use meerkat_core::ConfigStore;
+    use meerkat_rpc::session_runtime::SessionRuntime;
+    use serde_json::Value;
+
+    /// The engine's method router of a serving daemon, without the proxy's
+    /// method allow-list ([`super::protocol::engine::SERVED`]). Holds the
+    /// runtime weakly: it never keeps a stopped daemon's stores alive.
+    #[derive(Clone)]
+    pub struct EngineSide {
+        pub(super) runtime: Weak<SessionRuntime>,
+        pub(super) config_store: Weak<dyn ConfigStore>,
+    }
+
+    impl EngineSide {
+        /// Call `method` on the engine directly; its result, or its error
+        /// as text.
+        ///
+        /// # Errors
+        ///
+        /// The engine's error, or why the call could not be made (the
+        /// daemon stopped).
+        pub async fn call(&self, method: &str, params: Value) -> Result<Value, String> {
+            let (Some(runtime), Some(config_store)) =
+                (self.runtime.upgrade(), self.config_store.upgrade())
+            else {
+                return Err("the daemon stopped".to_string());
+            };
+            let router = meerkat_rpc::router::MethodRouter::new(
+                Arc::clone(&runtime),
+                config_store,
+                meerkat_rpc::router::NotificationSink::noop(),
+            )
+            .map_err(|err| err.to_string())?;
+            let request = serde_json::from_value(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "method": method, "params": params,
+            }))
+            .map_err(|err| err.to_string())?;
+            let response = router
+                .dispatch(request)
+                .await
+                .ok_or_else(|| "no answer".to_string())?;
+            let response = serde_json::to_value(&response).map_err(|err| err.to_string())?;
+            match response.get("error") {
+                Some(error) => Err(error.to_string()),
+                None => Ok(response.get("result").cloned().unwrap_or(Value::Null)),
+            }
+        }
     }
 }
 

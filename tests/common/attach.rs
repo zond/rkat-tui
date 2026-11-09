@@ -61,6 +61,8 @@ pub struct Running {
     state: std::sync::Weak<meerkat_mob_mcp::MobMcpState>,
     registry: std::sync::Weak<rkat_tui::mobs::HelperRegistry>,
     engine: std::sync::Weak<rkat_tui::approval::ApprovalEngine>,
+    /// The engine's router past the proxy's allow-list.
+    pub engine_side: rkat_tui::daemon::testing::EngineSide,
 }
 
 impl Running {
@@ -114,6 +116,7 @@ impl Running {
         let state = Arc::downgrade(daemon.mob_state());
         let registry = Arc::downgrade(daemon.helper_registry());
         let engine = Arc::downgrade(daemon.approval_engine());
+        let engine_side = daemon.engine_side();
         let (stop, stopped) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(daemon.serve_until(async move {
             let _ = stopped.await;
@@ -128,6 +131,7 @@ impl Running {
             state,
             registry,
             engine,
+            engine_side,
         }
     }
 

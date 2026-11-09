@@ -4,6 +4,15 @@
 
 Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository as the `rkat-tui` package. The entries below are the harness's history in that PR; `docs/evidence.md` holds the detailed record and `docs/ux-parity.md` the Claude Code parity audit.
 
+### Security
+
+- The daemon forwards only the engine methods its client uses
+  (`protocol::engine::SERVED`) and refuses the rest with error
+  `-32012` (`NOT_SERVED`). Before, an authenticated connection could
+  call the engine's `session/create` (or `turn/start`, `mob/create`, …)
+  and run a session outside the daemon's mob, whose tool calls never
+  reached the approval gate.
+
 ### Added
 
 - `/resume` (and `--resume <id>`) lists the realm's sessions created
