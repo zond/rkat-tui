@@ -3384,3 +3384,24 @@ sessions created outside the mob. Tests:
 notice, `/export`, the next prompt runs on the conversation, `/resume
 <current>` shows it again; the engine's refusal stays pinned),
 `client::sessions::tests::earlier_sessions_are_marked_and_named_by_id_only`.
+
+### P4: the in-process tests and where they went
+
+The in-process runner is deleted in P4; its headless tests (`Rig` in
+`tests/common/mod.rs`) move onto the daemon rig (`tests/common/attach.rs`:
+`Running`, `Client`), one file per commit, keeping every behaviour
+assertion. A test of a mechanism that exists only in-process is deleted
+and listed here.
+
+- `tests/fork.rs`, deleted with `src/fork/` (the TUI's `fork` tool, which
+  rendered the conversation into a `delegate`-style helper's prompt
+  because the engine refuses `fork_off` to a non-member caller). In the
+  daemon the agent is a mob member and forks with the engine's
+  `fork_off`, pinned by `attach_approvals::a_fork_off_child_runs_behind_the_gate`.
+  `a_fork_starts_with_the_parents_conversation_and_returns_its_answer`,
+  `a_forks_calls_pass_the_parents_gate`, `an_interrupt_leaves_no_running_fork`
+  and `fork_off_stays_denied_and_a_fork_cannot_fork` tested the tool
+  itself; `the_engine_refuses_a_durable_fork_of_a_running_session` probed
+  why the tool existed. `ToolFamily::Fork` and the `fork` entry of
+  `DELEGATION_TOOLS` went with it (`policy::tests::fork_is_tiered_like_delegate_only_from_the_tuis_own_surface`
+  deleted).

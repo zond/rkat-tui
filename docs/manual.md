@@ -462,30 +462,11 @@ levels: a helper at the limit gets no `delegate`, `mob_create`,
 `mob_spawn_member` or `council` tool (left out of its tool list and denied
 by its tool access policy), and a deeper spawn is refused.
 
-`fork` (in-process; in attach mode the agent has the engine's `fork_off`
-instead, see "Attach mode") hands a side quest to a child that starts with
-the session's own
-conversation as context: the TUI renders the committed conversation (user
-and assistant text, tool calls and results, `/remember` context; long
-values clipped, the oldest entries dropped past 48 KiB) into the child's
-prompt, followed by the task and the expected output. Every entry starts
-with its role (`[user]`, `[tool result]`, ...) and every further line of its
-content is indented with `  | `, so a tool result cannot forge a user line.
-The child has the builtins and the shell exactly when the session has them
-(its persisted tooling overrides). The child is a helper
-in every other respect (the same gate, persona, file tools, nesting under
-`[fork-N · model]`, status bar, `/usage` and interrupt), cannot ask the user,
-and returns its final answer (at most 16 KiB) as the tool result. Only the
-session's own agent has `fork`; helpers and fork children do not, so forks
-do not nest.
-
-In-process, the engine's own `fork_off` is denied to every session and
-helper through the tool access policy: it refuses a caller that is not a
-durable mob member, and the in-process session is not one. In attach mode
-the daemon's agent is a mob member and has `fork_off`, behind the same gate
-(see "Attach mode"). A durable fork of the session's
-transcript (exact context instead of rendered text) is refused while the
-session's own turn runs, which is when a tool call asks for it.
+The agent forks itself with the engine's `fork_off`: the child starts
+from the conversation so far, works on the task it is given, runs behind
+the same gate as every helper and shows as one (see "Attach mode"). The
+TUI's own `fork` tool, which rendered the conversation into a helper's
+prompt for the in-process runner, is gone with that runner.
 
 ## Rules
 
@@ -1185,9 +1166,8 @@ progress and result, the running count, its usage under `/cost`. Every
 attached TUI shows them. The agent can also fork itself with the engine's
 `fork_off`: the child starts from the conversation so far, works on the
 task it is given and runs behind the same gate (its calls ask you, naming
-it), shows as a helper and stops with Esc. The TUI's own `fork` tool is not
-offered in attach mode (it is built on the in-process session service);
-helpers at the `[helpers] max_depth` limit cannot fork.
+it), shows as a helper and stops with Esc. Helpers at the
+`[helpers] max_depth` limit cannot fork.
 
 **Conversations.** `/new` starts a fresh conversation for the daemon's
 agent, `/resume` lists this workspace's conversations (newest first, with
@@ -1259,8 +1239,7 @@ saves the session shown. `last` and `~N` name daemon conversations only.
 - `/rewind` is not offered: the engine refuses a transcript fork of a mob
   member's session, and its member forks seat the copy under a new
   identity; a same-identity rewind is with the engine's maintainers as a
-  design note. The TUI's own `fork` tool is not available either (the
-  agent has `fork_off`).
+  design note.
 - Up on an empty input does not take back a message already sent to the
   daemon: the engine's `mob/member_send` answers no input id to cancel it
   by (the same engine ask as the steer attribution below). The agent gets

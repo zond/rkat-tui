@@ -346,6 +346,11 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
   binding control (lukacf/meerkat#2095). Non-Anthropic endpoints and types
   a catalogued model refuses are ignored with a start-up notice.
 
+### Removed
+
+- The TUI's own `fork` tool (in-process only): the agent forks with the
+  engine's `fork_off` in the daemon, behind the same gate.
+
 ### Changed
 
 - Attach mode: `-c` and `--resume` are no longer refused. `-c` (and

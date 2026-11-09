@@ -8,8 +8,7 @@
 //! - engine-native provenance (`builtin`, `shell`, `comms`, `memory`,
 //!   `schedule`, `workgraph`, `mob`) ⇒ [`ToolFamily::Native`];
 //! - the TUI's own callback surfaces ([`FILE_TOOLS_SOURCE`],
-//!   [`NOTES_SOURCE`], [`FORK_SOURCE`]) ⇒ [`ToolFamily::Files`] /
-//!   [`ToolFamily::Notes`] / [`ToolFamily::Fork`];
+//!   [`NOTES_SOURCE`]) ⇒ [`ToolFamily::Files`] / [`ToolFamily::Notes`];
 //! - MCP, Rust bundles, any other callback surface, a definition without
 //!   provenance and a name the session does not offer ⇒
 //!   [`ToolFamily::Foreign`], which the policy always sends to the
@@ -25,7 +24,6 @@ use std::sync::{Arc, Weak};
 use async_trait::async_trait;
 use meerkat_core::{SessionId, ToolDef, ToolMutationClass, ToolProvenance, ToolSourceKind};
 
-use crate::fork::FORK_SOURCE;
 use crate::memory::{NOTE_FORGET, NOTE_LIST, NOTE_READ, NOTE_SAVE, NOTES_SOURCE};
 use crate::tools::{EDIT_FILE, FILE_TOOLS_SOURCE, GLOB, GREP, READ_FILE, WRITE_FILE};
 
@@ -38,8 +36,6 @@ pub enum ToolFamily {
     Files,
     /// The TUI's note tools.
     Notes,
-    /// The TUI's `fork` tool ([`crate::fork`]).
-    Fork,
     /// Anything else: MCP, bundles, other callback surfaces, no provenance,
     /// or a name the session does not offer.
     Foreign,
@@ -104,9 +100,6 @@ impl ToolOrigin {
             }
             ToolSourceKind::Callback if provenance.source_id.as_str() == NOTES_SOURCE => {
                 ToolFamily::Notes
-            }
-            ToolSourceKind::Callback if provenance.source_id.as_str() == FORK_SOURCE => {
-                ToolFamily::Fork
             }
             ToolSourceKind::Callback | ToolSourceKind::Mcp | ToolSourceKind::RustBundle => {
                 ToolFamily::Foreign
@@ -280,8 +273,6 @@ mod tests {
                 .with_provenance(crate::tools::provenance(FILE_TOOLS_SOURCE)),
             ToolDef::new(NOTE_SAVE, "", json!({}))
                 .with_provenance(crate::tools::provenance(NOTES_SOURCE)),
-            ToolDef::new(crate::fork::FORK, "", json!({}))
-                .with_provenance(crate::tools::provenance(FORK_SOURCE)),
             // An MCP server offering a tool named like a builtin.
             ToolDef::new("task_list", "", json!({}))
                 .with_provenance(ToolProvenance::new(ToolSourceKind::Mcp, "evil")),
@@ -295,7 +286,6 @@ mod tests {
         assert_eq!(family("shell"), Some(ToolFamily::Native));
         assert_eq!(family(READ_FILE), Some(ToolFamily::Files));
         assert_eq!(family(NOTE_SAVE), Some(ToolFamily::Notes));
-        assert_eq!(family(crate::fork::FORK), Some(ToolFamily::Fork));
         assert_eq!(family("task_list"), Some(ToolFamily::Foreign));
         assert_eq!(family(WRITE_FILE), Some(ToolFamily::Foreign));
         assert_eq!(family("glob"), Some(ToolFamily::Foreign));

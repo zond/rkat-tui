@@ -112,8 +112,7 @@ pub const TUI_OWNED_BUILTINS: [&str; 2] = ["brain_swap", "apply_patch"];
 /// in-process main session is not a mob member (delegate helpers are not
 /// durable), so the tool could only fail. (The `rkat-tui-mob` daemon, whose
 /// members are durable, offers `fork_off` behind the gate; a fork child
-/// inherits the source's dispatch admission.) The in-process fork is the
-/// TUI's own `fork` tool.
+/// inherits the source's dispatch admission.)
 pub const DENIED_SPAWN_TOOLS: [&str; 1] = ["fork_off"];
 
 /// The model, provider and auth binding a session runs on, as its

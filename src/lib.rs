@@ -71,10 +71,6 @@ pub mod error;
 #[cfg(not(feature = "test-support"))]
 pub(crate) mod error;
 #[cfg(feature = "test-support")]
-pub mod fork;
-#[cfg(not(feature = "test-support"))]
-pub(crate) mod fork;
-#[cfg(feature = "test-support")]
 pub mod http;
 #[cfg(not(feature = "test-support"))]
 pub(crate) mod http;

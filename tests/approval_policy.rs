@@ -104,8 +104,6 @@ fn origin(name: &str) -> ToolOrigin {
         ToolOrigin::tui(FILE_TOOLS_SOURCE, name)
     } else if NOTE_TOOL_NAMES.contains(&name) {
         ToolOrigin::tui(NOTES_SOURCE, name)
-    } else if name == rkat_tui::fork::FORK {
-        ToolOrigin::tui(rkat_tui::fork::FORK_SOURCE, name)
     } else if READ_ONLY_BUILTINS.contains(&name)
         || REVIEWED_BUILTINS.contains(&name)
         || TUI_OWNED_BUILTINS.contains(&name)

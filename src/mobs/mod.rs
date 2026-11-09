@@ -172,8 +172,9 @@ impl Helpers {
         ))
     }
 
-    /// The mob host (tests and diagnostics).
+    /// The mob host (tests).
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn state(&self) -> &Arc<MobMcpState> {
         &self.state
     }
@@ -253,8 +254,9 @@ pub(crate) fn install_mob_hooks(state: &Arc<MobMcpState>, registry: &Arc<HelperR
 }
 
 impl Helpers {
-    /// The bookkeeping shared with the customizer and the followers.
+    /// The bookkeeping shared with the customizer and the followers (tests).
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn registry(&self) -> &Arc<HelperRegistry> {
         &self.registry
     }
