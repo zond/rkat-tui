@@ -3420,3 +3420,12 @@ and listed here.
   the definition it was created with, so a policy changed later reaches
   the orchestrator only once its mob is created again; the engine has no
   route to update a profile of a live mob.
+- `tests/semantic_recall.rs`: both tests run over the daemon harness,
+  assertions kept. `every_offered_builtin_is_classified_and_memory_search_is_tier_one`
+  now checks the tools the daemon's orchestrator is offered, and found
+  the member-scoped mob tools a daemon member gets (`list_members`,
+  `member_status`, `spawn_member`, `spawn_many_members`, `retire_member`,
+  `wire_members`, `unwire_members`, `force_cancel_member`) in neither
+  list: the two queries are now `READ_ONLY_BUILTINS` (tier 1), the rest
+  `REVIEWED_BUILTINS` (the classifier, as they already fell to as
+  unlisted tools).

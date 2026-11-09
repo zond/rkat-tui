@@ -445,6 +445,10 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Fixed
 
+- The daemon agent's member-scoped mob queries (`list_members`,
+  `member_status`) run without review, like the other mob queries; its
+  member-scoped mob actions (`spawn_member`, `retire_member`,
+  `wire_members`, …) are listed as reviewed tools.
 - The daemon's agent follows the `[auto]` compaction policy
   (`auto.compact = "auto"` compacts at `compact_auto_percent`, `warn`
   never compacts by size), as the in-process runner did. The policy is

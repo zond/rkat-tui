@@ -154,6 +154,10 @@ pub const READ_ONLY_BUILTINS: &[&str] = &[
     "mob_profile_get",
     "mob_profile_list",
     "mob_profile_list_sources",
+    // The member-scoped mob queries a daemon member is offered (its own
+    // mob's roster and a member's state).
+    "list_members",
+    "member_status",
 ];
 
 /// Upstream builtins that act (or read outside the project) and so pass the
@@ -180,6 +184,14 @@ pub const REVIEWED_BUILTINS: &[&str] = &[
     // member concluding its kickoff objective.
     "council",
     "conclude_objective",
+    // The member-scoped mob tools a daemon member is offered that act on
+    // its mob: seating, retiring, wiring and cancelling members.
+    "spawn_member",
+    "spawn_many_members",
+    "retire_member",
+    "wire_members",
+    "unwire_members",
+    "force_cancel_member",
 ];
 
 /// Tools that hand work to a helper (a mob member, see [`crate::mobs`]).

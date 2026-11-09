@@ -1,15 +1,19 @@
-//! Native semantic memory, end to end through the real runtime-backed
-//! service with a scripted LLM: sessions are offered `memory_search` (and
-//! every builtin they are offered is classified by the approval policy);
+//! Native semantic memory, end to end through the `rkat-tui-mob` daemon
+//! with a scripted LLM and an attached client: the agent is offered
+//! `memory_search` (and every builtin it is offered is classified by the
+//! approval policy);
 //! a fact native auto-compaction discarded from the context is found again
 //! through `memory_search`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;
+#[path = "common/attach.rs"]
+mod rig;
 
-use common::{Rig, RigOptions, ScriptedLlmClient, Step, Workspace};
+use common::{ScriptedLlmClient, Step, Workspace};
 use meerkat_core::{AgentEvent, Message};
+use rig::{Attached, Setup};
 use rkat_tui::approval::catalog::ToolOrigin;
 use rkat_tui::approval::policy::{
     Action, DELEGATION_TOOLS, PolicyContext, READ_ONLY_BUILTINS, REVIEWED_BUILTINS, Tier,
@@ -18,7 +22,6 @@ use rkat_tui::approval::policy::{
 use rkat_tui::approval::rules::RuleSet;
 use rkat_tui::memory::NOTE_TOOL_NAMES;
 use rkat_tui::paths::ProjectRoot;
-use rkat_tui::runner::Start;
 use rkat_tui::ui::Effect;
 use serde_json::json;
 
@@ -44,31 +47,22 @@ fn tool_results(messages: &[Message]) -> String {
         .join("\n")
 }
 
-async fn auto_rig(ws: &Workspace, llm: &std::sync::Arc<ScriptedLlmClient>) -> Rig {
-    let args = [
+async fn auto_rig(ws: &Workspace, llm: &std::sync::Arc<ScriptedLlmClient>) -> Attached {
+    let setup = Setup::args(&[
         "--auto-compact",
         "--set",
         "auto.compact_warn_percent=5",
         "--set",
         "auto.compact_auto_percent=5",
-    ];
-    Rig::start_opts(
-        &ws.root,
-        llm,
-        Start::New,
-        RigOptions {
-            args: args.iter().map(ToString::to_string).collect(),
-            ..RigOptions::default()
-        },
-    )
-    .await
+    ]);
+    Attached::start_with(&ws.root, llm, setup).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_offered_builtin_is_classified_and_memory_search_is_tier_one() {
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![Step::Text("ok")]);
-    let mut rig = Rig::start(&ws.root, &llm, Start::New).await;
+    let mut rig = Attached::start(&ws.root, &llm).await;
     rig.send(Effect::StartTurn("hi".into()));
     rig.turn_finished().await;
     let tools = llm.recorded()[0].tools.clone();
@@ -135,8 +129,7 @@ async fn a_compacted_fact_is_found_with_memory_search() {
     rig.send(Effect::StartTurn("compact".into()));
     rig.turn_finished().await.result.expect("turn succeeds");
     assert!(
-        rig.events
-            .lock()
+        rig.events()
             .iter()
             .any(|e| matches!(e, AgentEvent::CompactionStarted { .. }))
     );
