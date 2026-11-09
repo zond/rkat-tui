@@ -136,7 +136,11 @@ mod tests {
 
     #[test]
     fn the_menu_moves_chooses_and_cancels() {
-        let mut menu = RewindMenu::new(vec![point(5, "third"), point(3, "second"), point(1, "first")]);
+        let mut menu = RewindMenu::new(vec![
+            point(5, "third"),
+            point(3, "second"),
+            point(1, "first"),
+        ]);
         assert_eq!(menu.selected, 0);
         assert_eq!(menu.key(KeyCode::Up), RewindKey::Stay);
         assert_eq!(menu.selected, 0);
@@ -146,10 +150,16 @@ mod tests {
         assert_eq!(menu.selected, 2, "stops at the oldest");
         assert_eq!(menu.key(KeyCode::Char('k')), RewindKey::Stay);
         assert_eq!(menu.key(KeyCode::Char('x')), RewindKey::Stay);
-        assert_eq!(menu.key(KeyCode::Enter), RewindKey::Choose(point(3, "second")));
+        assert_eq!(
+            menu.key(KeyCode::Enter),
+            RewindKey::Choose(point(3, "second"))
+        );
         assert_eq!(menu.key(KeyCode::Esc), RewindKey::Cancel);
         assert_eq!(menu.key(KeyCode::Char('q')), RewindKey::Cancel);
-        assert_eq!(RewindMenu::new(Vec::new()).key(KeyCode::Enter), RewindKey::Cancel);
+        assert_eq!(
+            RewindMenu::new(Vec::new()).key(KeyCode::Enter),
+            RewindKey::Cancel
+        );
     }
 
     #[test]
@@ -167,7 +177,9 @@ mod tests {
             "see @a.txt"
         );
         assert_eq!(
-            typed_text("ls @src/\n\n<directory path=\"src/\">\nmain.rs\n</directory>\n\n<file path=\"b\">"),
+            typed_text(
+                "ls @src/\n\n<directory path=\"src/\">\nmain.rs\n</directory>\n\n<file path=\"b\">"
+            ),
             "ls @src/"
         );
     }

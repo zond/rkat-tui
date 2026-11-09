@@ -253,11 +253,11 @@ pub fn suggests_move_aside(err: &meerkat::PersistenceError) -> bool {
     // each level is matched as a store error or a persistence error.
     let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
     while let Some(error) = current {
-        let store = error.downcast_ref::<StoreError>().or_else(|| {
-            match error.downcast_ref::<meerkat::PersistenceError>() {
-                Some(meerkat::PersistenceError::Store(store)) => Some(store),
-                _ => None,
-            }
+        let store = error.downcast_ref::<StoreError>().or_else(|| match error
+            .downcast_ref::<meerkat::PersistenceError>(
+        ) {
+            Some(meerkat::PersistenceError::Store(store)) => Some(store),
+            _ => None,
         });
         if store.is_some_and(incompatible) {
             return true;
@@ -303,7 +303,11 @@ mod tests {
     use super::TuiError;
     use std::path::PathBuf;
 
-    fn open_error(realm_root: &str, state_root: &str, source: meerkat::PersistenceError) -> TuiError {
+    fn open_error(
+        realm_root: &str,
+        state_root: &str,
+        source: meerkat::PersistenceError,
+    ) -> TuiError {
         TuiError::PersistenceOpen {
             realm_root: PathBuf::from(realm_root),
             state_root: PathBuf::from(state_root),
@@ -348,9 +352,9 @@ mod tests {
             meerkat::PersistenceError::Store(meerkat_store::StoreError::RealmManifestLockTimeout {
                 realm_id: "tui".to_string(),
             }),
-            meerkat::PersistenceError::Store(meerkat_store::StoreError::Io(
-                std::io::Error::from(std::io::ErrorKind::PermissionDenied),
-            )),
+            meerkat::PersistenceError::Store(meerkat_store::StoreError::Io(std::io::Error::from(
+                std::io::ErrorKind::PermissionDenied,
+            ))),
         ] {
             let text = open_error("/work/.rkat/tui", "/work/.rkat", source).to_string();
             assert!(

@@ -47,7 +47,6 @@ impl RemoteAnswer {
             Self::Deny | Self::Stop => ApprovalDecision::Deny,
         }
     }
-
 }
 
 /// The literal allow rule "allow + add rule" adds for `tool` and its first
@@ -340,7 +339,10 @@ mod tests {
             pattern: None,
         };
         let wire = serde_json::to_value(&add).unwrap();
-        assert_eq!(wire, json!({"op": "add", "deny": true, "tool": "write_file"}));
+        assert_eq!(
+            wire,
+            json!({"op": "add", "deny": true, "tool": "write_file"})
+        );
         assert_eq!(serde_json::from_value::<RuleCommand>(wire).unwrap(), add);
         assert_eq!(
             serde_json::from_value::<RuleCommand>(json!({"op": "remove", "n": 3})).unwrap(),

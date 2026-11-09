@@ -25,9 +25,9 @@ use ratatui::crossterm::terminal::{
 };
 use tokio::sync::mpsc;
 
+use super::editor::{edit_draft, editor_from_env, run_editor};
 use super::render::draw;
 use super::selection::{copy_notice, osc52};
-use super::editor::{edit_draft, editor_from_env, run_editor};
 use super::{App, EditorClosed, EditorTarget, Effect, History, Msg, QueuedCopy};
 
 /// Render tick interval (~30 fps).
@@ -101,7 +101,12 @@ fn enter_tui_mode(mouse: bool) -> io::Result<()> {
     let mut out = io::stdout();
     // Focus reports let the bell ring only while the terminal is
     // unfocused; a terminal without them never reports a loss.
-    execute!(out, EnterAlternateScreen, EnableBracketedPaste, EnableFocusChange)?;
+    execute!(
+        out,
+        EnterAlternateScreen,
+        EnableBracketedPaste,
+        EnableFocusChange
+    )?;
     if matches!(supports_keyboard_enhancement(), Ok(true)) {
         // Disambiguation only: it tells Esc from Alt sequences and
         // Shift/Ctrl+Enter from Enter. Event types are not requested:
@@ -178,12 +183,13 @@ async fn run_external_editor(
             result: run_editor(&command, &path),
             path,
         },
-        EditorTarget::Draft(text) => {
-            EditorClosed::Draft(edit_draft(&text, &scratch, |path| run_editor(&command, path)))
-        }
+        EditorTarget::Draft(text) => EditorClosed::Draft(edit_draft(&text, &scratch, |path| {
+            run_editor(&command, path)
+        })),
     });
     let joined = outside_tui(terminal, events, mouse, job).await?;
-    Ok(joined.unwrap_or_else(|err| editor_failed(fallback, format!("the editor task failed: {err}"))))
+    Ok(joined
+        .unwrap_or_else(|err| editor_failed(fallback, format!("the editor task failed: {err}"))))
 }
 
 /// `target`'s editor run failed before it could say more: `why`.
@@ -456,10 +462,7 @@ mod tests {
     async fn turn_finished_waits_for_buffered_agent_events() {
         let (agent_tx, agent_rx) = mpsc::channel(16);
         let (ui_tx, ui_rx) = mpsc::unbounded_channel();
-        let mut channels = UiChannels {
-            agent_rx,
-            ui_rx,
-        };
+        let mut channels = UiChannels { agent_rx, ui_rx };
         let mut app = App::new(StatusInfo::default());
         for c in "hi".chars() {
             app.update(Msg::Key(KeyEvent::new(

@@ -56,9 +56,9 @@ use meerkat_core::{AuthBindingRef, SessionId};
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
-pub use registry::{HelperStatus, HelperTag, HelperUpdate};
 #[cfg(feature = "mob")]
 pub use registry::{HelperKey, HelperRegistry};
+pub use registry::{HelperStatus, HelperTag, HelperUpdate};
 
 #[cfg(feature = "mob")]
 use meerkat_mob_mcp::MobMcpState;
@@ -298,7 +298,6 @@ impl Helpers {
 }
 
 impl Helpers {
-
     /// The helper updates for the UI (taken once, by the runner).
     pub fn take_updates(&self) -> Option<mpsc::UnboundedReceiver<HelperUpdate>> {
         self.updates.lock().take()

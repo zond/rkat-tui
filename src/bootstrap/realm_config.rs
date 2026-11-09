@@ -210,7 +210,10 @@ impl RealmConfigStore {
         if let Some(inputs) = &self.document.inputs {
             let refused = inputs.guard(&mut config).await;
             if !refused.is_empty() {
-                tracing::debug!(?refused, "untrusted project inputs left out of the build config");
+                tracing::debug!(
+                    ?refused,
+                    "untrusted project inputs left out of the build config"
+                );
             }
         }
         config.apply_env_overrides()?;
@@ -287,10 +290,7 @@ impl ConfigStore for RealmConfigStore {
         guard: &AdmissionGuard,
         delta: ConfigDelta,
     ) -> Result<(Config, Vec<ConfigWarning>), ConfigError> {
-        let (config, warnings) = self
-            .document
-            .patch_held_with_warnings(guard, delta)
-            .await?;
+        let (config, warnings) = self.document.patch_held_with_warnings(guard, delta).await?;
         Ok((self.effective(config).await?, warnings))
     }
 }
@@ -336,7 +336,10 @@ mod tests {
                 .runtime()
                 .patch(ConfigDelta(serde_json::json!({ "models": {} })), Some(0))
                 .await,
-            Err(meerkat_core::ConfigRuntimeError::GenerationConflict { expected: 0, current: 1 })
+            Err(meerkat_core::ConfigRuntimeError::GenerationConflict {
+                expected: 0,
+                current: 1
+            })
         ));
     }
 }

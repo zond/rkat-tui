@@ -128,12 +128,18 @@ mod tests {
             _ => None,
         };
         let anthropic = resolve_builtin(&config, Provider::Anthropic, None, &env).unwrap();
-        assert_eq!(anthropic.api_key.as_ref().map(SecretString::expose), Some("sk-ant"));
+        assert_eq!(
+            anthropic.api_key.as_ref().map(SecretString::expose),
+            Some("sk-ant")
+        );
         assert!(anthropic.base_url.is_none());
         // A blank variable is no key; Gemini falls back to GOOGLE_API_KEY.
         assert!(resolve_builtin(&config, Provider::OpenAI, None, &env).is_none());
         let gemini = resolve_builtin(&config, Provider::Gemini, None, &env).unwrap();
-        assert_eq!(gemini.api_key.as_ref().map(SecretString::expose), Some("g-key"));
+        assert_eq!(
+            gemini.api_key.as_ref().map(SecretString::expose),
+            Some("g-key")
+        );
         assert!(resolve_builtin(&config, Provider::Anthropic, None, &|_| None).is_none());
     }
 }

@@ -27,10 +27,7 @@ pub struct EditorCommand {
 /// # Errors
 ///
 /// The chosen variable holds only whitespace: it names no program.
-pub fn editor_command(
-    visual: Option<&str>,
-    editor: Option<&str>,
-) -> Result<EditorCommand, String> {
+pub fn editor_command(visual: Option<&str>, editor: Option<&str>) -> Result<EditorCommand, String> {
     let chosen = [("$VISUAL", visual), ("$EDITOR", editor)]
         .into_iter()
         .find_map(|(name, value)| value.filter(|v| !v.is_empty()).map(|v| (name, v)));

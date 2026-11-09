@@ -312,16 +312,26 @@ mod tests {
             natives.get("shell").map(ToolOrigin::family),
             Some(ToolFamily::Native)
         );
-        let mut joined = ToolCatalog::default()
-            .with(WRITE_FILE, ToolOrigin::tui(FILE_TOOLS_SOURCE, WRITE_FILE));
+        let mut joined =
+            ToolCatalog::default().with(WRITE_FILE, ToolOrigin::tui(FILE_TOOLS_SOURCE, WRITE_FILE));
         joined.add_missing_natives(&catalog);
         // Only the natives come in; what the catalog already names stays.
         assert_eq!(joined.len(), 2);
-        assert_eq!(joined.get(WRITE_FILE).map(ToolOrigin::family), Some(ToolFamily::Files));
-        assert_eq!(joined.get("shell").map(ToolOrigin::family), Some(ToolFamily::Native));
-        let mut shadowed = ToolCatalog::default().with("shell", ToolOrigin::tui(FILE_TOOLS_SOURCE, "shell"));
+        assert_eq!(
+            joined.get(WRITE_FILE).map(ToolOrigin::family),
+            Some(ToolFamily::Files)
+        );
+        assert_eq!(
+            joined.get("shell").map(ToolOrigin::family),
+            Some(ToolFamily::Native)
+        );
+        let mut shadowed =
+            ToolCatalog::default().with("shell", ToolOrigin::tui(FILE_TOOLS_SOURCE, "shell"));
         shadowed.add_missing_natives(&catalog);
-        assert_eq!(shadowed.get("shell").map(ToolOrigin::family), Some(ToolFamily::Files));
+        assert_eq!(
+            shadowed.get("shell").map(ToolOrigin::family),
+            Some(ToolFamily::Files)
+        );
         assert_eq!(
             catalog.get(NOTE_SAVE).map(|o| o.mutation),
             Some(ToolMutationClass::Mutating)

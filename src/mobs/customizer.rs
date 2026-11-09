@@ -14,8 +14,8 @@ use std::sync::Arc;
 
 use meerkat_core::{AgentToolDispatcher, AuthBindingRef, SessionId, ToolDispatchAdmission};
 use meerkat_mob::{
-    MobError, ResumedMemberView, SpawnCustomizationContext, SpawnMemberCustomizer,
-    SpawnMemberSpec, SpawnSource,
+    MobError, ResumedMemberView, SpawnCustomizationContext, SpawnMemberCustomizer, SpawnMemberSpec,
+    SpawnSource,
 };
 use tokio::sync::mpsc;
 
@@ -49,7 +49,9 @@ pub type RootInstructions = Arc<dyn Fn() -> Vec<String> + Send + Sync>;
 /// The `[thinking]` a rebuilt root member's identity is configured with
 /// (its model may have been switched since the spawn).
 pub type RootThinking = Arc<
-    dyn Fn(&meerkat_core::SessionLlmIdentity) -> Option<meerkat_core::lifecycle::run_primitive::AnthropicThinkingConfig>
+    dyn Fn(
+            &meerkat_core::SessionLlmIdentity,
+        ) -> Option<meerkat_core::lifecycle::run_primitive::AnthropicThinkingConfig>
         + Send
         + Sync,
 >;
@@ -469,7 +471,13 @@ impl SpawnMemberCustomizer for HelperCustomizer {
         let key = HelperKey::new(ctx.mob_id.clone(), spec.identity.clone());
         if let Some(root) = self.root_for(&key) {
             let fresh = !matches!(ctx.spawn_source, SpawnSource::Resume);
-            shape_root(spec, root, self.shell_env.as_ref(), fresh, self.gated_fork_off);
+            shape_root(
+                spec,
+                root,
+                self.shell_env.as_ref(),
+                fresh,
+                self.gated_fork_off,
+            );
             self.bind_policy(spec);
             return Ok(());
         }
@@ -511,7 +519,13 @@ impl SpawnMemberCustomizer for HelperCustomizer {
             );
             self.registry
                 .register_root(key, &durable.session_id, &model, binding.as_ref());
-            shape_root(spec, root, self.shell_env.as_ref(), false, self.gated_fork_off);
+            shape_root(
+                spec,
+                root,
+                self.shell_env.as_ref(),
+                false,
+                self.gated_fork_off,
+            );
             if let (Some(thinking), Some(identity)) = (&root.thinking, &durable.llm_identity)
                 && let crate::thinking::Reapplied::Replace(params) = crate::thinking::reapplied(
                     identity.provider_params.as_ref(),
@@ -544,7 +558,10 @@ mod tests {
             let mut spec = SpawnMemberSpec::new("delegate", "worker");
             spec.tool_access_policy = policy;
             deny_ungated_tools(&mut spec, &[]);
-            assert_eq!(spec.tool_access_policy, Some(crate::session::tool_access_policy()));
+            assert_eq!(
+                spec.tool_access_policy,
+                Some(crate::session::tool_access_policy())
+            );
         }
     }
 
@@ -559,7 +576,10 @@ mod tests {
         let Some(ToolAccessPolicy::DenyList(names)) = &spec.tool_access_policy else {
             panic!("{:?}", spec.tool_access_policy);
         };
-        assert!(names.contains("web_fetch") && denies_fork_off(names), "{names:?}");
+        assert!(
+            names.contains("web_fetch") && denies_fork_off(names),
+            "{names:?}"
+        );
     }
 
     #[test]
@@ -573,7 +593,10 @@ mod tests {
         let Some(ToolAccessPolicy::AllowList(names)) = &spec.tool_access_policy else {
             panic!("{:?}", spec.tool_access_policy);
         };
-        assert!(names.contains("read_file") && !names.contains("fork_off"), "{names:?}");
+        assert!(
+            names.contains("read_file") && !names.contains("fork_off"),
+            "{names:?}"
+        );
     }
 
     #[test]
@@ -667,7 +690,10 @@ mod tests {
     fn a_spawn_beyond_the_depth_limit_is_refused() {
         let err = Depth::admit("inner", 2, 1, true).unwrap_err().to_string();
         assert!(err.contains("helper refused"), "{err}");
-        assert!(err.contains("`inner`") && err.contains("helpers.max_depth"), "{err}");
+        assert!(
+            err.contains("`inner`") && err.contains("helpers.max_depth"),
+            "{err}"
+        );
         // At 0 even the session's own helpers are refused.
         assert!(Depth::admit("scout", 1, 0, true).is_err());
         // A restored member from before the limit was lowered keeps running
@@ -705,7 +731,10 @@ mod tests {
             spec.additional_instructions,
             Some(vec!["persona".to_string(), "agents".to_string()])
         );
-        assert_eq!(spec.tool_access_policy, Some(crate::session::tool_access_policy()));
+        assert_eq!(
+            spec.tool_access_policy,
+            Some(crate::session::tool_access_policy())
+        );
         // A rebuild gets its tools back, not a second set of instructions.
         let mut resumed = SpawnMemberSpec::host_root("main", "main");
         shape_root(&mut resumed, &root, Some(&curated), false, false);
@@ -718,7 +747,10 @@ mod tests {
         else {
             panic!("{:?}", gated.tool_access_policy);
         };
-        assert!(!names.contains("fork_off") && names.contains("apply_patch"), "{names:?}");
+        assert!(
+            !names.contains("fork_off") && names.contains("apply_patch"),
+            "{names:?}"
+        );
         // At the depth limit a member forks no further.
         let mut last = SpawnMemberSpec::new("delegate", "worker");
         deny_tools(&mut last, &NESTING_TOOLS, true);

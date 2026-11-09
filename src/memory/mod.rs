@@ -15,10 +15,9 @@
 pub mod store;
 pub mod tools;
 
-pub use store::{NoteStore, Scope, prompt_index, slug};
 #[cfg(any(test, feature = "test-support"))]
 pub use store::{INDEX_FILE, UNTRUSTED_INDEX_LABEL};
+pub use store::{NoteStore, Scope, prompt_index, slug};
 #[cfg(any(test, feature = "test-support"))]
 pub use tools::NOTE_TOOL_NAMES;
 pub use tools::{NOTE_FORGET, NOTE_LIST, NOTE_READ, NOTE_SAVE, NOTES_SOURCE, NoteToolDispatcher};
-

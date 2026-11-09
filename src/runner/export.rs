@@ -20,7 +20,9 @@ pub(crate) fn export_path(
     match typed.map(str::trim).filter(|t| !t.is_empty()) {
         Some(typed) => {
             let typed = match typed.strip_prefix("~/") {
-                Some(rest) => dirs::home_dir().map_or_else(|| PathBuf::from(typed), |h| h.join(rest)),
+                Some(rest) => {
+                    dirs::home_dir().map_or_else(|| PathBuf::from(typed), |h| h.join(rest))
+                }
                 None => PathBuf::from(typed),
             };
             if typed.is_absolute() {
@@ -52,7 +54,12 @@ impl Runner {
         } else {
             Some(workspace.clone())
         };
-        match write_atomic(&path, text.as_bytes(), FileMode::Private, trusted.as_deref()) {
+        match write_atomic(
+            &path,
+            text.as_bytes(),
+            FileMode::Private,
+            trusted.as_deref(),
+        ) {
             Ok(()) => self.notice(
                 NoticeLevel::Info,
                 format!("exported the transcript to {}", path.display()),

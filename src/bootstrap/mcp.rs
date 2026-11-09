@@ -178,7 +178,11 @@ mod tests {
             "[[servers]]\nname = \"proj\"\ncommand = \"proj-server\"\n",
         )
         .unwrap();
-        let flagged = inputs(&scope, HostTrustRecord::in_memory(&scope.context_root), true);
+        let flagged = inputs(
+            &scope,
+            HostTrustRecord::in_memory(&scope.context_root),
+            true,
+        );
         let loaded = load(&scope, &Config::default(), &flagged).await.unwrap();
         assert!(loaded.refused.is_empty());
         if cfg!(feature = "mcp") {
@@ -195,7 +199,11 @@ mod tests {
 
         // Untrusted: the project's servers are refused and listed; the
         // user's still start.
-        let untrusted = inputs(&scope, HostTrustRecord::in_memory(&scope.context_root), false);
+        let untrusted = inputs(
+            &scope,
+            HostTrustRecord::in_memory(&scope.context_root),
+            false,
+        );
         assert!(!untrusted.mcp_trusted());
         let loaded = load(&scope, &Config::default(), &untrusted).await.unwrap();
         assert_eq!(loaded.refused, [Refused::mcp_server(&project, "proj")]);
@@ -228,9 +236,16 @@ mod tests {
         .unwrap();
         let config = super::super::load_config(&scope).await.unwrap();
         assert_eq!(config.tools.mcp_servers.len(), 1);
-        let inputs = inputs(&scope, HostTrustRecord::in_memory(&scope.context_root), false);
+        let inputs = inputs(
+            &scope,
+            HostTrustRecord::in_memory(&scope.context_root),
+            false,
+        );
         let loaded = load(&scope, &config, &inputs).await.unwrap();
-        assert_eq!(loaded.refused, [Refused::mcp_server(&realm_config, "realm")]);
+        assert_eq!(
+            loaded.refused,
+            [Refused::mcp_server(&realm_config, "realm")]
+        );
         assert!(!names(&loaded).contains(&"realm".to_string()));
 
         inputs.trust_all().unwrap();
@@ -248,6 +263,9 @@ mod tests {
         .unwrap();
         let config = super::super::load_config(&scope).await.unwrap();
         let loaded = load(&scope, &config, &inputs).await.unwrap();
-        assert_eq!(loaded.refused, [Refused::mcp_server(&realm_config, "realm")]);
+        assert_eq!(
+            loaded.refused,
+            [Refused::mcp_server(&realm_config, "realm")]
+        );
     }
 }

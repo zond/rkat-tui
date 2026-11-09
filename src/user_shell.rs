@@ -140,10 +140,8 @@ enum Launch {
     /// Under the compiled requirement (or the backend's refusal of it),
     /// with exactly `env`.
     Confined {
-        compiled: Result<
-            Arc<meerkat_sandbox::CompiledConfinement>,
-            meerkat_sandbox::ConfinementRefusal,
-        >,
+        compiled:
+            Result<Arc<meerkat_sandbox::CompiledConfinement>, meerkat_sandbox::ConfinementRefusal>,
         env: HashMap<String, String>,
     },
 }
@@ -234,10 +232,8 @@ impl UserShell {
     }
 
     fn environment(&self, env: Option<&HashMap<String, String>>) -> BTreeMap<OsString, OsString> {
-        let mut out = BTreeMap::from([(
-            OsString::from("PWD"),
-            self.workspace.as_os_str().to_owned(),
-        )]);
+        let mut out =
+            BTreeMap::from([(OsString::from("PWD"), self.workspace.as_os_str().to_owned())]);
         out.extend(
             env.into_iter()
                 .flatten()
@@ -414,7 +410,8 @@ impl Captured {
         if chunk.len() > room {
             self.truncated = true;
         }
-        self.bytes.extend_from_slice(&chunk[..chunk.len().min(room)]);
+        self.bytes
+            .extend_from_slice(&chunk[..chunk.len().min(room)]);
     }
 
     fn text(&self) -> String {
@@ -503,7 +500,10 @@ mod tests {
             .run("echo out; echo err >&2; exit 3")
             .await
             .unwrap();
-        assert!(run.output.contains("out\n") && run.output.contains("err\n"), "{run:?}");
+        assert!(
+            run.output.contains("out\n") && run.output.contains("err\n"),
+            "{run:?}"
+        );
         assert_eq!(run.exit, ShellExit::Code(3));
     }
 
@@ -527,7 +527,11 @@ mod tests {
             .run("head -c 200000 /dev/zero | tr '\\0' x")
             .await
             .unwrap();
-        assert!(run.output.ends_with(TRUNCATION_MARKER), "{}", run.output.len());
+        assert!(
+            run.output.ends_with(TRUNCATION_MARKER),
+            "{}",
+            run.output.len()
+        );
         assert_eq!(run.exit, ShellExit::Code(0));
     }
 }

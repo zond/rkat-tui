@@ -33,7 +33,9 @@ use super::context::RebuildReason;
 use crate::bootstrap::Runtime;
 use crate::endpoints::registry_context_window;
 use crate::endpoints::{EndpointRef, ModelRefError, needs_lookup, parse_model_ref};
-use crate::models::{FetchResults, ListModelsError, ModelCache, ModelGroup, fetch_warning, with_current};
+use crate::models::{
+    FetchResults, ListModelsError, ModelCache, ModelGroup, fetch_warning, with_current,
+};
 use crate::ui::{Msg, NoticeLevel, StatusUpdate};
 
 /// The context window assumed when neither the endpoint nor the engine's
@@ -188,7 +190,9 @@ impl Runner {
             reference,
             self.runtime.endpoints.as_slice(),
             &index,
-            self.current_endpoint.as_ref().map(crate::endpoints::EndpointName::as_str),
+            self.current_endpoint
+                .as_ref()
+                .map(crate::endpoints::EndpointName::as_str),
         )
     }
 

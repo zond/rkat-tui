@@ -441,7 +441,10 @@ mod tests {
             Some("context 76% full (76k/100k tokens); run /compact to free space")
         );
         let text = g.after_turn(86_000, W).expect("a warning");
-        assert!(text.contains("engine compacts at its own threshold"), "{text}");
+        assert!(
+            text.contains("engine compacts at its own threshold"),
+            "{text}"
+        );
         assert!(!text.contains("auto-compaction is off"), "{text}");
     }
 

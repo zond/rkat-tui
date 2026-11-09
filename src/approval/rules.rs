@@ -24,8 +24,8 @@ use crate::approval::mode::PermissionMode;
 use crate::approval::trust::{TrustStatus, Untrusted};
 use crate::bootstrap::confinement::ConfinementSection;
 use crate::thinking::ThinkingSetting;
-use crate::ui::compaction::{CompactMode, CompactionPolicy};
 use crate::ui::checklist::ChecklistView;
+use crate::ui::compaction::{CompactMode, CompactionPolicy};
 use crate::ui::transcript::HelperView;
 use globset::{Glob, GlobBuilder, GlobMatcher};
 use serde::{Deserialize, Serialize};
@@ -526,9 +526,15 @@ impl RuleSet {
     }
 
     fn with_ids(&self, kind: RuleKind) -> impl ExactSizeIterator<Item = (RuleId, &Rule)> {
-        self.list(kind)
-            .iter()
-            .map(move |(serial, rule)| (RuleId { kind, serial: *serial }, rule))
+        self.list(kind).iter().map(move |(serial, rule)| {
+            (
+                RuleId {
+                    kind,
+                    serial: *serial,
+                },
+                rule,
+            )
+        })
     }
 
     fn first_match(&self, kind: RuleKind, tool: &str, subjects: &[String]) -> Option<RuleId> {
@@ -584,10 +590,9 @@ impl RuleSet {
 
     /// Drop allow rules too broad for auto mode; returns the dropped rules.
     pub fn sanitize_for_auto(&mut self) -> Vec<Rule> {
-        let (keep, dropped): (Vec<(u64, Rule)>, Vec<(u64, Rule)>) =
-            std::mem::take(&mut self.allow)
-                .into_iter()
-                .partition(|(_, r)| r.broad_reason().is_none());
+        let (keep, dropped): (Vec<(u64, Rule)>, Vec<(u64, Rule)>) = std::mem::take(&mut self.allow)
+            .into_iter()
+            .partition(|(_, r)| r.broad_reason().is_none());
         self.allow = keep;
         dropped.into_iter().map(|(_, r)| r).collect()
     }
@@ -1441,7 +1446,11 @@ pub fn load_layered_with(
         }
         // A later layer's setting replaces an earlier one's (`"default"`
         // undoes it).
-        thinking.extend(file.thinking.iter().map(|(key, setting)| (key.clone(), *setting)));
+        thinking.extend(
+            file.thinking
+                .iter()
+                .map(|(key, setting)| (key.clone(), *setting)),
+        );
         for (name, section) in &file.endpoints {
             endpoints
                 .entry(name.clone())
@@ -1718,7 +1727,11 @@ pub fn summarize(path: &Path, file: &RulesFile) -> String {
     for entry in &file.deny {
         let _ = write!(out, "\n  deny {}", describe(entry));
     }
-    if file.auto.as_ref().is_some_and(|a| *a != AutoSection::default()) {
+    if file
+        .auto
+        .as_ref()
+        .is_some_and(|a| *a != AutoSection::default())
+    {
         out.push_str("\n  [auto] settings");
     }
     for name in file.endpoints.keys() {
@@ -2565,31 +2578,60 @@ mod tests {
                 .mode
         };
         assert_eq!(mode("", "", None), PermissionMode::Auto);
-        assert_eq!(mode("[auto]\nmode = \"plan\"\n", "", None), PermissionMode::Plan);
         assert_eq!(
-            mode("[auto]\nenabled = true\nmode = \"accept-edits\"\n", "", None),
+            mode("[auto]\nmode = \"plan\"\n", "", None),
+            PermissionMode::Plan
+        );
+        assert_eq!(
+            mode(
+                "[auto]\nenabled = true\nmode = \"accept-edits\"\n",
+                "",
+                None
+            ),
             PermissionMode::AcceptEdits,
             "mode wins over enabled"
         );
-        assert_eq!(mode("[auto]\nenabled = false\n", "", None), PermissionMode::Manual);
         assert_eq!(
-            mode("", "[auto]\nmode = \"accept-edits\"\nenabled = true\n", None),
+            mode("[auto]\nenabled = false\n", "", None),
+            PermissionMode::Manual
+        );
+        assert_eq!(
+            mode(
+                "",
+                "[auto]\nmode = \"accept-edits\"\nenabled = true\n",
+                None
+            ),
             PermissionMode::Auto,
             "a project picks no mode"
         );
-        assert_eq!(mode("", "[auto]\nenabled = false\n", None), PermissionMode::Manual);
         assert_eq!(
-            mode("[auto]\nmode = \"plan\"\n", "[auto]\nenabled = false\n", None),
+            mode("", "[auto]\nenabled = false\n", None),
+            PermissionMode::Manual
+        );
+        assert_eq!(
+            mode(
+                "[auto]\nmode = \"plan\"\n",
+                "[auto]\nenabled = false\n",
+                None
+            ),
             PermissionMode::Plan,
             "only auto mode moves to manual"
         );
         assert_eq!(
-            mode("[auto]\nmode = \"plan\"\n", "", Some("[auto]\nenabled = false\n")),
+            mode(
+                "[auto]\nmode = \"plan\"\n",
+                "",
+                Some("[auto]\nenabled = false\n")
+            ),
             PermissionMode::Manual,
             "--no-auto beats the realm"
         );
         assert_eq!(
-            mode("", "[auto]\nenabled = false\n", Some("[auto]\nmode = \"auto\"\n")),
+            mode(
+                "",
+                "[auto]\nenabled = false\n",
+                Some("[auto]\nmode = \"auto\"\n")
+            ),
             PermissionMode::Auto,
             "the command line beats the project"
         );
@@ -2769,10 +2811,12 @@ mod tests {
         )
         .unwrap();
         assert!(layered.thinking.is_empty());
-        assert!(layered.notices.iter().any(|n| matches!(
-            n,
-            Notice::UntrustedRealmDenyOnly { thinking: 1, .. }
-        )));
+        assert!(
+            layered
+                .notices
+                .iter()
+                .any(|n| matches!(n, Notice::UntrustedRealmDenyOnly { thinking: 1, .. }))
+        );
     }
 
     #[test]
@@ -2844,10 +2888,12 @@ mod tests {
         )
         .unwrap();
         assert!(layered.endpoints.is_empty());
-        assert!(layered.notices.iter().any(|n| matches!(
-            n,
-            Notice::UntrustedRealmDenyOnly { endpoints: 1, .. }
-        )));
+        assert!(
+            layered
+                .notices
+                .iter()
+                .any(|n| matches!(n, Notice::UntrustedRealmDenyOnly { endpoints: 1, .. }))
+        );
     }
 
     #[test]
@@ -2882,10 +2928,12 @@ mod tests {
                 extra_write: vec![PathBuf::from("/g/write"), PathBuf::from("/c/write")],
             }
         );
-        assert!(layered.notices.iter().any(|n| matches!(
-            n,
-            Notice::ProjectConfinementIgnored { count: 2, .. }
-        )));
+        assert!(
+            layered
+                .notices
+                .iter()
+                .any(|n| matches!(n, Notice::ProjectConfinementIgnored { count: 2, .. }))
+        );
         let texts: Vec<String> = layered.notices.iter().map(ToString::to_string).collect();
         assert!(
             texts
@@ -2903,13 +2951,19 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(layered.confinement.extra_read, vec![PathBuf::from("/g/read")]);
+        assert_eq!(
+            layered.confinement.extra_read,
+            vec![PathBuf::from("/g/read")]
+        );
         let notice = layered
             .notices
             .iter()
             .find(|n| matches!(n, Notice::UntrustedRealmDenyOnly { confinement: 1, .. }))
             .unwrap();
-        assert!(notice.to_string().contains("1 [confinement] grant(s)"), "{notice}");
+        assert!(
+            notice.to_string().contains("1 [confinement] grant(s)"),
+            "{notice}"
+        );
 
         // Unknown keys in the table are a parse error.
         write(&realm, "[confinement]\nextra = [\"/x\"]\n");

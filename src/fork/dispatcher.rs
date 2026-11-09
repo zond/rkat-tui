@@ -9,11 +9,11 @@ use meerkat_core::{
     AgentToolDispatcher, SessionId, ToolCallView, ToolDef, ToolDispatchContext, ToolError,
     ToolMutationClass, ToolResult,
 };
+use meerkat_mob::runtime::OwnerBridgeSessionLifecycleAuthority;
 use meerkat_mob::{
     AgentIdentity, BoundedResultSpec, DelegationExecutionRequest, DelegationExecutionService,
     DelegationMemberOptions, MobError, MobHandle, MobId,
 };
-use meerkat_mob::runtime::OwnerBridgeSessionLifecycleAuthority;
 use meerkat_mob_mcp::ChildToolPolicyRefused;
 use serde::Deserialize;
 
@@ -278,9 +278,9 @@ impl ForkError {
     fn from_implicit_mob(err: MobError, model: &str) -> Self {
         match &err {
             MobError::DefinitionError(diagnostics)
-                if diagnostics
-                    .iter()
-                    .any(|diagnostic| diagnostic.code == meerkat_mob::DiagnosticCode::UnknownModel) =>
+                if diagnostics.iter().any(|diagnostic| {
+                    diagnostic.code == meerkat_mob::DiagnosticCode::UnknownModel
+                }) =>
             {
                 Self::UncataloguedModel(model.to_string())
             }
@@ -341,7 +341,11 @@ fn working_profile(
     let binding = definition
         .profiles
         .get(&meerkat_mob::ProfileName::from(DELEGATE_PROFILE))
-        .ok_or_else(|| profile_error(format!("the implicit mob has no `{DELEGATE_PROFILE}` profile")))?;
+        .ok_or_else(|| {
+            profile_error(format!(
+                "the implicit mob has no `{DELEGATE_PROFILE}` profile"
+            ))
+        })?;
     let meerkat_mob::ProfileBinding::Inline(profile) = binding else {
         return Err(profile_error(format!(
             "the implicit mob's `{DELEGATE_PROFILE}` profile is not inline"
@@ -371,11 +375,17 @@ mod tests {
         };
         assert!(is_implicit_mob_of(authority(&caller, true), &caller));
         // A squatter: another owner's mob, or the caller's explicit one.
-        assert!(!is_implicit_mob_of(authority(&SessionId::new(), true), &caller));
+        assert!(!is_implicit_mob_of(
+            authority(&SessionId::new(), true),
+            &caller
+        ));
         assert!(!is_implicit_mob_of(authority(&caller, false), &caller));
         assert!(!is_implicit_mob_of(None, &caller));
         let err = ForkError::NotCallersMob(MobId::from("implicit-x"));
-        assert!(err.to_string().contains("no longer this session's own"), "{err}");
+        assert!(
+            err.to_string().contains("no longer this session's own"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -390,9 +400,14 @@ mod tests {
             MobError::DefinitionError(vec![diagnostic(meerkat_mob::DiagnosticCode::UnknownModel)]),
             "realm-gateway-model",
         );
-        assert!(matches!(&err, ForkError::UncataloguedModel(model) if model == "realm-gateway-model"));
+        assert!(
+            matches!(&err, ForkError::UncataloguedModel(model) if model == "realm-gateway-model")
+        );
         let text = err.to_string();
-        assert!(text.contains("outside the catalog") && text.contains("engine export"), "{text}");
+        assert!(
+            text.contains("outside the catalog") && text.contains("engine export"),
+            "{text}"
+        );
         assert!(!text.contains("neither catalogued"), "{text}");
         // Any other definition refusal stays the engine's own.
         let other = ForkError::from_implicit_mob(
@@ -407,12 +422,18 @@ mod tests {
         let mut tooling = meerkat_core::SessionTooling::default();
         assert_eq!(
             ParentTooling::resolve(&tooling),
-            ParentTooling { builtins: true, shell: true }
+            ParentTooling {
+                builtins: true,
+                shell: true
+            }
         );
         tooling.shell = ToolCategoryOverride::Disable;
         assert_eq!(
             ParentTooling::resolve(&tooling),
-            ParentTooling { builtins: true, shell: false }
+            ParentTooling {
+                builtins: true,
+                shell: false
+            }
         );
     }
 }

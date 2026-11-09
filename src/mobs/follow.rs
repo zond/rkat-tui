@@ -100,8 +100,7 @@ async fn follow(state: Weak<MobMcpState>, registry: Arc<HelperRegistry>, helper:
 /// quitting) proves nothing; a destroyed one is dropped by the host's
 /// destroy hook.
 async fn has_retired(handle: &MobHandle, identity: &AgentIdentity) -> bool {
-    handle.status_observation_snapshot() == MobState::Running
-        && !is_member(handle, identity).await
+    handle.status_observation_snapshot() == MobState::Running && !is_member(handle, identity).await
 }
 
 /// Whether `identity` is still a member of `handle`'s mob (retiring counts

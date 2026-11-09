@@ -1058,7 +1058,9 @@ impl ApprovalEngine {
         .await;
         let decision = match asked {
             Err(_) => {
-                pending.settle_without_human("nobody answered in time").await;
+                pending
+                    .settle_without_human("nobody answered in time")
+                    .await;
                 return deny_at(tier, DenyReason::EscalationTimedOut);
             }
             Ok(Asked::Settled(verdict)) => {
@@ -1862,7 +1864,12 @@ mod tests {
                 .map(|o| o.family()),
             Some(super::super::catalog::ToolFamily::Foreign)
         );
-        assert!(rig.engine.tool_origin(&rig.session, "shell").await.is_none());
+        assert!(
+            rig.engine
+                .tool_origin(&rig.session, "shell")
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -1901,9 +1908,14 @@ mod tests {
         assert_eq!(rig.classifier.calls(), 2);
         // An allowed write may change what the command does.
         assert!(
-            call(&rig, "w1", "write_file", &json!({"path": "src/a.rs", "content": ""}))
-                .await
-                .is_allowed()
+            call(
+                &rig,
+                "w1",
+                "write_file",
+                &json!({"path": "src/a.rs", "content": ""})
+            )
+            .await
+            .is_allowed()
         );
         assert!(decide(&rig, "c4", &args).await.is_allowed());
         assert_eq!(rig.classifier.calls(), 3);
@@ -2161,12 +2173,13 @@ mod tests {
         else {
             panic!("expected a ledger denial, got {verdict:?}");
         };
-        assert!(rig.escalations.try_recv().is_err(), "the human was not asked");
         assert!(
-            drain(&mut rig.events)
-                .iter()
-                .any(|e| matches!(e, ApprovalEvent::Notice(text) if text.contains("could not be recorded")))
+            rig.escalations.try_recv().is_err(),
+            "the human was not asked"
         );
+        assert!(drain(&mut rig.events).iter().any(
+            |e| matches!(e, ApprovalEvent::Notice(text) if text.contains("could not be recorded"))
+        ));
     }
 
     #[tokio::test]
@@ -2250,7 +2263,10 @@ mod tests {
 
         let task = spawn_call(&rig, "w2", "write_file", env_write());
         let request = rig.escalations.recv().await.unwrap();
-        request.respond.send(HumanDecision::Deny { comment: None }).unwrap();
+        request
+            .respond
+            .send(HumanDecision::Deny { comment: None })
+            .unwrap();
         assert_eq!(
             task.await.unwrap(),
             Verdict::Deny {
@@ -2281,11 +2297,22 @@ mod tests {
                 by: Decider::Policy
             }
         );
-        assert!(rig.escalations.try_recv().is_err(), "no dialog after the rule");
+        assert!(
+            rig.escalations.try_recv().is_err(),
+            "no dialog after the rule"
+        );
         // The rule is that file's only.
-        let task = spawn_call(&rig, "w5", "write_file", json!({"path": ".env", "content": ""}));
+        let task = spawn_call(
+            &rig,
+            "w5",
+            "write_file",
+            json!({"path": ".env", "content": ""}),
+        );
         let request = rig.escalations.recv().await.unwrap();
-        request.respond.send(HumanDecision::Deny { comment: None }).unwrap();
+        request
+            .respond
+            .send(HumanDecision::Deny { comment: None })
+            .unwrap();
         assert!(!task.await.unwrap().is_allowed());
 
         assert_eq!(rig.classifier.calls(), 0);
@@ -2325,7 +2352,10 @@ mod tests {
     #[tokio::test]
     async fn manual_mode_asks_for_tier_three_and_auto_resumes() {
         let mut rig = rig(vec![], DEFAULT_ESCALATION_TIMEOUT);
-        assert_eq!(rig.engine.set_mode(PermissionMode::Manual), PermissionMode::Auto);
+        assert_eq!(
+            rig.engine.set_mode(PermissionMode::Manual),
+            PermissionMode::Auto
+        );
         let task = spawn_decide(&rig, "c1", push());
         let request = rig.escalations.recv().await.unwrap();
         assert!(request.prompt.classifier_hint.is_none());
@@ -2352,7 +2382,10 @@ mod tests {
         assert_eq!(rig.classifier.calls(), 0);
         // A mode question leaves the denial counters alone.
         assert_eq!(rig.engine.auto_state().0, DenialCounters::default());
-        assert_eq!(rig.engine.set_mode(PermissionMode::Auto), PermissionMode::Manual);
+        assert_eq!(
+            rig.engine.set_mode(PermissionMode::Auto),
+            PermissionMode::Manual
+        );
         assert!(decide(&rig, "c2", &push()).await.is_allowed());
         assert_eq!(rig.classifier.calls(), 1);
         let events = drain(&mut rig.events);
@@ -2410,7 +2443,11 @@ mod tests {
         assert_eq!(rig.classifier.calls(), 0);
 
         rig.engine.set_mode(PermissionMode::Auto);
-        assert!(call(&rig, "w4", "write_file", &src_write()).await.is_allowed());
+        assert!(
+            call(&rig, "w4", "write_file", &src_write())
+                .await
+                .is_allowed()
+        );
         assert!(rig.escalations.try_recv().is_err());
         assert_eq!(rig.classifier.calls(), 0);
     }
@@ -2452,8 +2489,16 @@ mod tests {
         );
         request.respond.send(HumanDecision::AllowOnce).unwrap();
         assert!(task.await.unwrap().is_allowed());
-        assert!(call(&rig, "r1", "read_file", &json!({"path": "src/lib.rs"})).await.is_allowed());
-        assert!(decide(&rig, "c2", &json!({"command": "ls"})).await.is_allowed());
+        assert!(
+            call(&rig, "r1", "read_file", &json!({"path": "src/lib.rs"}))
+                .await
+                .is_allowed()
+        );
+        assert!(
+            decide(&rig, "c2", &json!({"command": "ls"}))
+                .await
+                .is_allowed()
+        );
         assert_eq!(rig.classifier.calls(), 0);
     }
 
@@ -2465,8 +2510,13 @@ mod tests {
         let mut rig = rig(vec![], DEFAULT_ESCALATION_TIMEOUT);
         rig.engine
             .add_rule(
-                Rule::new(RuleKind::Allow, "shell", Some("cargo nextest run*"), RuleOrigin::Realm)
-                    .unwrap(),
+                Rule::new(
+                    RuleKind::Allow,
+                    "shell",
+                    Some("cargo nextest run*"),
+                    RuleOrigin::Realm,
+                )
+                .unwrap(),
             )
             .unwrap();
         rig.engine.set_mode(PermissionMode::Plan);
@@ -2483,19 +2533,38 @@ mod tests {
             plan(Tier::AskUser)
         );
         let note = json!({"scope": "workspace", "name": "n", "content": "x"});
-        assert_eq!(call(&rig, "n1", "note_save", &note).await, plan(Tier::InProjectEdit));
+        assert_eq!(
+            call(&rig, "n1", "note_save", &note).await,
+            plan(Tier::InProjectEdit)
+        );
         assert_eq!(decide(&rig, "c1", &push()).await, plan(Tier::Classifier));
         // An allow rule does not make a command read-only.
         assert_eq!(
             decide(&rig, "c2", &json!({"command": "cargo nextest run"})).await,
             plan(Tier::AlwaysAllow)
         );
-        assert!(decide(&rig, "c3", &json!({"command": "ls src"})).await.is_allowed());
-        assert!(call(&rig, "r1", "read_file", &json!({"path": "src/lib.rs"})).await.is_allowed());
-        assert!(call(&rig, "g1", "grep", &json!({"pattern": "fn"})).await.is_allowed());
+        assert!(
+            decide(&rig, "c3", &json!({"command": "ls src"}))
+                .await
+                .is_allowed()
+        );
+        assert!(
+            call(&rig, "r1", "read_file", &json!({"path": "src/lib.rs"}))
+                .await
+                .is_allowed()
+        );
+        assert!(
+            call(&rig, "g1", "grep", &json!({"pattern": "fn"}))
+                .await
+                .is_allowed()
+        );
         assert!(rig.escalations.try_recv().is_err(), "nobody is asked");
         assert_eq!(rig.classifier.calls(), 0);
-        assert!(DenyReason::PlanMode.to_string().starts_with("plan mode is on"));
+        assert!(
+            DenyReason::PlanMode
+                .to_string()
+                .starts_with("plan mode is on")
+        );
         assert!(rig.engine.agent_written(&rig.session).is_empty());
     }
 
@@ -2568,7 +2637,11 @@ mod tests {
     fn the_mode_persists_in_the_realm_rules_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tui.toml");
-        std::fs::write(&path, "[auto]\nenabled = true\n[[deny]]\ntool = \"shell\"\narg = \"rm *\"\n").unwrap();
+        std::fs::write(
+            &path,
+            "[auto]\nenabled = true\n[[deny]]\ntool = \"shell\"\narg = \"rm *\"\n",
+        )
+        .unwrap();
         let root = ProjectRoot::new(dir.path()).unwrap();
         let (tx, _events) = mpsc::unbounded_channel();
         let engine = ApprovalEngine::new(ApprovalConfig {
@@ -2673,7 +2746,11 @@ mod tests {
         }
         drop(rig);
         // This process resumes `mine`.
-        let fresh = rig_with(vec![], DEFAULT_ESCALATION_TIMEOUT, Some(EscalationLedger::new(issuer())));
+        let fresh = rig_with(
+            vec![],
+            DEFAULT_ESCALATION_TIMEOUT,
+            Some(EscalationLedger::new(issuer())),
+        );
         fresh.engine.seed_transcript(&mine);
         let records = fresh.engine.ledger().unwrap().records().unwrap();
         let status_of = |session: &SessionId| {

@@ -314,9 +314,15 @@ mod tests {
         );
         for undo in [
             k(KeyCode::Char('_'), KeyModifiers::CONTROL),
-            k(KeyCode::Char('_'), KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+            k(
+                KeyCode::Char('_'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            ),
             k(KeyCode::Char('7'), KeyModifiers::CONTROL),
-            k(KeyCode::Char('-'), KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+            k(
+                KeyCode::Char('-'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            ),
         ] {
             assert_eq!(map_key(&undo, false), Action::Edit(EditAction::Undo));
         }

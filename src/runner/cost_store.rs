@@ -221,12 +221,17 @@ mod tests {
             .map(|e| e.file_name().to_string_lossy().to_string())
             .collect();
         assert!(
-            aside.iter().any(|name| name.starts_with("abc.toml.corrupt-")),
+            aside
+                .iter()
+                .any(|name| name.starts_with("abc.toml.corrupt-")),
             "{aside:?}"
         );
         // The next save starts a fresh record; the corrupt one stays.
         save_cost(tmp.path(), "abc", &sample()).unwrap();
-        assert_eq!(std::fs::read_dir(path.parent().unwrap()).unwrap().count(), 2);
+        assert_eq!(
+            std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
+            2
+        );
     }
 
     #[test]

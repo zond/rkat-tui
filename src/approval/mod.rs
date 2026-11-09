@@ -314,7 +314,10 @@ mod tests {
         };
         assert_eq!(classifier.decider(), Decider::Classifier);
         assert_eq!(classifier.rule_label().as_deref(), Some("D1"));
-        assert_eq!(DenyReason::Human { comment: None }.decider(), Decider::Human);
+        assert_eq!(
+            DenyReason::Human { comment: None }.decider(),
+            Decider::Human
+        );
         assert_eq!(DenyReason::EscalationTimedOut.decider(), Decider::Human);
         assert_eq!(DenyReason::PlanMode.decider(), Decider::Policy);
         assert_eq!(DenyReason::Stopped.rule_label(), None);

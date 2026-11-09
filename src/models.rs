@@ -1005,7 +1005,8 @@ mod tests {
             let mut buf = [0u8; 4096];
             let _ = socket.read(&mut buf).await.unwrap();
             // No Content-Length: only the chunked read can stop it.
-            let head = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n";
+            let head =
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n";
             let _ = socket.write_all(head.as_bytes()).await;
             let filler = vec![b' '; 64 * 1024];
             for _ in 0..(MAX_LIST_BYTES / filler.len() + 2) {

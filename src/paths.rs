@@ -691,7 +691,9 @@ mod tests {
         let wt = base.join("wt");
         std::fs::create_dir_all(&wt).unwrap();
         std::fs::write(wt.join(".git"), format!("gitdir: {}\n", wt_git.display())).unwrap();
-        let root = ProjectRoot::new(&wt).unwrap().with_sealed_roots(git_dirs(&wt));
+        let root = ProjectRoot::new(&wt)
+            .unwrap()
+            .with_sealed_roots(git_dirs(&wt));
         for p in [
             main_git.join("hooks/pre-commit"),
             main_git.join("config"),
@@ -710,7 +712,12 @@ mod tests {
         for p in [realm.join("config.toml"), config.join("rules.toml")] {
             assert!(root.resolve(p.to_str().unwrap()).unwrap().sealed, "{p:?}");
         }
-        assert!(!root.resolve(base.join("state/other").to_str().unwrap()).unwrap().sealed);
+        assert!(
+            !root
+                .resolve(base.join("state/other").to_str().unwrap())
+                .unwrap()
+                .sealed
+        );
     }
 
     #[test]

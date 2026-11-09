@@ -14,9 +14,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use meerkat_core::{
-    Config, ConfigRuntime, FileConfigStore, RealmConfig, RealmSelection,
-};
+use meerkat_core::{Config, ConfigRuntime, FileConfigStore, RealmConfig, RealmSelection};
 use meerkat_store::{RealmBackend, RealmOrigin, realm_paths_in};
 
 use super::dirs::GlobalDirs;
@@ -240,7 +238,10 @@ fn canonical_prefix(path: &Path) -> PathBuf {
                 .rev()
                 .fold(canonical, |dir, part| dir.join(part));
         }
-        match (existing.file_name().map(ToOwned::to_owned), existing.parent()) {
+        match (
+            existing.file_name().map(ToOwned::to_owned),
+            existing.parent(),
+        ) {
             (Some(name), Some(parent)) => {
                 rest.push(name);
                 existing = parent.to_path_buf();
@@ -521,7 +522,10 @@ mod tests {
         let err = resolve_scope(&args(&["-w", ws, "--user-config-root", ws])).unwrap_err();
         let realm = home.join(".rkat").join("tui");
         let shown = err.to_string();
-        assert!(matches!(err, TuiError::ConfigDirCollision { .. }), "{shown}");
+        assert!(
+            matches!(err, TuiError::ConfigDirCollision { .. }),
+            "{shown}"
+        );
         assert_eq!(err.exit_code(), 2);
         assert!(shown.contains("are the same directory"), "{shown}");
         assert!(shown.contains(realm.to_str().unwrap()), "{shown}");
@@ -531,14 +535,22 @@ mod tests {
 
         // The config dir inside the realm dir.
         let inner = realm.join("cfg");
-        let err = resolve_scope(&args(&["-w", ws, "--config-dir", inner.to_str().unwrap()]))
-            .unwrap_err();
-        assert!(err.to_string().contains("config dir is inside the realm dir"), "{err}");
+        let err =
+            resolve_scope(&args(&["-w", ws, "--config-dir", inner.to_str().unwrap()])).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("config dir is inside the realm dir"),
+            "{err}"
+        );
         // The realm dir inside the config dir.
         let outer = home.join(".rkat");
-        let err = resolve_scope(&args(&["-w", ws, "--config-dir", outer.to_str().unwrap()]))
-            .unwrap_err();
-        assert!(err.to_string().contains("realm dir is inside the config dir"), "{err}");
+        let err =
+            resolve_scope(&args(&["-w", ws, "--config-dir", outer.to_str().unwrap()])).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("realm dir is inside the config dir"),
+            "{err}"
+        );
         // Through a symbolic link to the realm dir as well.
         #[cfg(unix)]
         {
@@ -558,7 +570,13 @@ mod tests {
         assert_eq!(scope.global.map(|g| g.config), Some(other));
         let sibling = home.join(".rkat").join("tui2");
         assert!(
-            resolve_scope(&args(&["-w", ws, "--config-dir", sibling.to_str().unwrap()])).is_ok()
+            resolve_scope(&args(&[
+                "-w",
+                ws,
+                "--config-dir",
+                sibling.to_str().unwrap()
+            ]))
+            .is_ok()
         );
     }
 

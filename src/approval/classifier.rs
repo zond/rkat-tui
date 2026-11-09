@@ -671,7 +671,10 @@ impl Stage2Run {
                 let plural = |n: usize, one: &str, many: &str| {
                     format!("{n} {}", if n == 1 { one } else { many })
                 };
-                let mut out = format!("[classifier checked {}", plural(stats.files, "file", "files"));
+                let mut out = format!(
+                    "[classifier checked {}",
+                    plural(stats.files, "file", "files")
+                );
                 if stats.searches > 0 {
                     out.push_str(", ");
                     out.push_str(&plural(stats.searches, "search", "searches"));

@@ -86,10 +86,7 @@ impl EscalationDialog {
         if self.comment.is_some() {
             matches!(code, KeyCode::Char(_) | KeyCode::Backspace)
         } else {
-            matches!(
-                code,
-                KeyCode::Up | KeyCode::Down | KeyCode::Char('j' | 'k')
-            )
+            matches!(code, KeyCode::Up | KeyCode::Down | KeyCode::Char('j' | 'k'))
         }
     }
 
@@ -210,9 +207,9 @@ impl PlanDialog {
                 None
             }
             KeyCode::Enter => PLAN_CHOICES.get(self.cursor).map(|(choice, _)| *choice),
-            KeyCode::Char(c @ '1'..='3') => {
-                PLAN_CHOICES.get(usize::from(c as u8 - b'1')).map(|(choice, _)| *choice)
-            }
+            KeyCode::Char(c @ '1'..='3') => PLAN_CHOICES
+                .get(usize::from(c as u8 - b'1'))
+                .map(|(choice, _)| *choice),
             KeyCode::Esc => Some(PlanChoice::KeepPlanning),
             _ => None,
         }
@@ -596,7 +593,10 @@ fn plan_lines(dialog: PlanDialog, width: usize) -> Vec<Line<'static>> {
         ));
     }
     lines.push(Line::default());
-    lines.push(Line::styled("Enter select · 1-3 pick · Esc keep planning", dim));
+    lines.push(Line::styled(
+        "Enter select · 1-3 pick · Esc keep planning",
+        dim,
+    ));
     lines
 }
 

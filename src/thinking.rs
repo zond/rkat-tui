@@ -256,11 +256,10 @@ pub fn reapplied(
     persisted: Option<&ProviderParamsOverride>,
     thinking: Option<&AnthropicThinkingConfig>,
 ) -> Reapplied {
-    let current = persisted
-        .and_then(|params| match &params.provider_tag {
-            Some(ProviderTag::Anthropic(tag)) => tag.thinking.as_ref(),
-            _ => None,
-        });
+    let current = persisted.and_then(|params| match &params.provider_tag {
+        Some(ProviderTag::Anthropic(tag)) => tag.thinking.as_ref(),
+        _ => None,
+    });
     if current == thinking {
         return Reapplied::Keep;
     }
@@ -325,7 +324,9 @@ mod tests {
         assert_eq!(entries["proxy:alias"], ThinkingSetting::Adaptive);
         assert_eq!(
             entries["claude-sonnet-4-5"],
-            ThinkingSetting::Enabled { budget_tokens: 8000 }
+            ThinkingSetting::Enabled {
+                budget_tokens: 8000
+            }
         );
         assert_eq!(entries["claude-opus-4-7"], ThinkingSetting::Default);
         assert_eq!(
@@ -333,8 +334,13 @@ mod tests {
             Some(AnthropicThinkingConfig::Adaptive)
         );
         assert_eq!(
-            ThinkingSetting::Enabled { budget_tokens: 8000 }.config(),
-            Some(AnthropicThinkingConfig::Enabled { budget_tokens: 8000 })
+            ThinkingSetting::Enabled {
+                budget_tokens: 8000
+            }
+            .config(),
+            Some(AnthropicThinkingConfig::Enabled {
+                budget_tokens: 8000
+            })
         );
         assert_eq!(ThinkingSetting::Default.config(), None);
     }
@@ -345,7 +351,12 @@ mod tests {
             thinking: BTreeMap::from([
                 ("a".to_string(), ThinkingSetting::Adaptive),
                 ("b".to_string(), ThinkingSetting::Default),
-                ("c".to_string(), ThinkingSetting::Enabled { budget_tokens: 2048 }),
+                (
+                    "c".to_string(),
+                    ThinkingSetting::Enabled {
+                        budget_tokens: 2048,
+                    },
+                ),
             ]),
         };
         let text = toml::to_string(&doc).unwrap();
@@ -367,7 +378,11 @@ mod tests {
                 "{text}: {err}"
             );
         }
-        assert!(parse("[thinking]\nx = \"off\"").unwrap_err().contains("`off`"));
+        assert!(
+            parse("[thinking]\nx = \"off\"")
+                .unwrap_err()
+                .contains("`off`")
+        );
     }
 
     #[test]
@@ -378,7 +393,9 @@ mod tests {
                 ("proxy:alias".to_string(), ThinkingSetting::Adaptive),
                 (
                     "alias".to_string(),
-                    ThinkingSetting::Enabled { budget_tokens: 4096 },
+                    ThinkingSetting::Enabled {
+                        budget_tokens: 4096,
+                    },
                 ),
                 ("other".to_string(), ThinkingSetting::Default),
             ]),
@@ -391,14 +408,24 @@ mod tests {
         );
         assert_eq!(
             table.resolve(Some("anthropic"), Provider::Anthropic, "alias"),
-            Some(AnthropicThinkingConfig::Enabled { budget_tokens: 4096 })
+            Some(AnthropicThinkingConfig::Enabled {
+                budget_tokens: 4096
+            })
         );
         assert_eq!(
             table.resolve(None, Provider::Anthropic, "alias"),
-            Some(AnthropicThinkingConfig::Enabled { budget_tokens: 4096 })
+            Some(AnthropicThinkingConfig::Enabled {
+                budget_tokens: 4096
+            })
         );
-        assert_eq!(table.resolve(Some("proxy"), Provider::Anthropic, "other"), None);
-        assert_eq!(table.resolve(Some("proxy"), Provider::Anthropic, "unset"), None);
+        assert_eq!(
+            table.resolve(Some("proxy"), Provider::Anthropic, "other"),
+            None
+        );
+        assert_eq!(
+            table.resolve(Some("proxy"), Provider::Anthropic, "unset"),
+            None
+        );
     }
 
     #[test]
@@ -426,9 +453,15 @@ mod tests {
             notices[1].contains("litellm:claude-x") && notices[1].contains("openai dialect"),
             "{notices:?}"
         );
-        assert_eq!(table.resolve(Some("litellm"), Provider::Anthropic, "claude-x"), None);
+        assert_eq!(
+            table.resolve(Some("litellm"), Provider::Anthropic, "claude-x"),
+            None
+        );
         // A bare id applies only where the client speaks Anthropic.
-        assert_eq!(table.resolve(Some("litellm"), Provider::OpenAI, "served"), None);
+        assert_eq!(
+            table.resolve(Some("litellm"), Provider::OpenAI, "served"),
+            None
+        );
         assert_eq!(
             table.resolve(Some("proxy"), Provider::Anthropic, "served"),
             Some(AnthropicThinkingConfig::Adaptive)
@@ -443,7 +476,9 @@ mod tests {
                 // Adaptive only.
                 (
                     "claude-opus-4-7".to_string(),
-                    ThinkingSetting::Enabled { budget_tokens: 4096 },
+                    ThinkingSetting::Enabled {
+                        budget_tokens: 4096,
+                    },
                 ),
                 // Enabled only, through a reference.
                 (
@@ -469,7 +504,10 @@ mod tests {
             notices[1].contains("claude-sonnet-4-5") && notices[1].contains("'adaptive'"),
             "{notices:?}"
         );
-        assert_eq!(table.resolve(None, Provider::Anthropic, "claude-opus-4-7"), None);
+        assert_eq!(
+            table.resolve(None, Provider::Anthropic, "claude-opus-4-7"),
+            None
+        );
         assert_eq!(
             table.resolve(None, Provider::Anthropic, "claude-sonnet-4-6"),
             Some(AnthropicThinkingConfig::Adaptive)
@@ -524,7 +562,9 @@ mod tests {
         if let Some(ProviderTag::Anthropic(tag)) = &mut rich.provider_tag {
             tag.top_k = Some(5);
         }
-        let budget = AnthropicThinkingConfig::Enabled { budget_tokens: 2048 };
+        let budget = AnthropicThinkingConfig::Enabled {
+            budget_tokens: 2048,
+        };
         let Reapplied::Replace(Some(next)) = reapplied(Some(&rich), Some(&budget)) else {
             panic!("a change");
         };

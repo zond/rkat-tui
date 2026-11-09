@@ -60,9 +60,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use meerkat::surface::build_runtime_backed_service_with_default_reconfigure_host;
-use meerkat::{
-    AgentFactory, FactoryAgentBuilder, LlmClient, PersistentSessionService,
-};
+use meerkat::{AgentFactory, FactoryAgentBuilder, LlmClient, PersistentSessionService};
 use meerkat_core::connection::RealmId;
 use meerkat_core::{AuthBindingRef, Config, ConfigStore, McpServerConfig, Provider};
 use meerkat_runtime::MeerkatMachine;
@@ -81,11 +79,11 @@ use crate::mobs::Helpers;
 use crate::models::{ModelCache, ModelEntry, ModelLister, live_lister};
 use crate::pricing::PricingSetup;
 use crate::thinking::ThinkingTable;
-use meerkat_core::lifecycle::run_primitive::AnthropicThinkingConfig;
 #[cfg(feature = "mob")]
 use crate::tools::FileToolDispatcher;
 #[cfg(feature = "mob")]
 use meerkat_core::AgentToolDispatcher;
+use meerkat_core::lifecycle::run_primitive::AnthropicThinkingConfig;
 
 pub use approval::{ApprovalOverrides, ApprovalParts};
 pub use confinement::{ConfinementPlan, HostPaths};
@@ -275,15 +273,12 @@ fn choice_for(
     endpoints: &EndpointRegistry,
     reference: &EndpointRef,
 ) -> Result<ModelChoice, TuiError> {
-    let endpoint =
-        endpoints
-            .get(&reference.endpoint)
-            .ok_or_else(|| {
-                EndpointError::from(ModelRefError::UnknownEndpoint {
-                    name: reference.endpoint.clone(),
-                    known: endpoints.names(),
-                })
-            })?;
+    let endpoint = endpoints.get(&reference.endpoint).ok_or_else(|| {
+        EndpointError::from(ModelRefError::UnknownEndpoint {
+            name: reference.endpoint.clone(),
+            known: endpoints.names(),
+        })
+    })?;
     Ok(ModelChoice {
         endpoint: EndpointName::new(endpoint.name.clone()),
         model: reference.model.clone(),
@@ -315,7 +310,10 @@ pub struct BootstrapOptions {
 /// `--confinement-write`, then the `[confinement]` grants of the user's own
 /// `tui.toml` layers (which yield to the flags, see
 /// [`confinement::grants_with`]).
-fn extra_grants(args: &Args, layered: &crate::approval::rules::Layered) -> confinement::ExtraGrants {
+fn extra_grants(
+    args: &Args,
+    layered: &crate::approval::rules::Layered,
+) -> confinement::ExtraGrants {
     let mut extra = confinement::ExtraGrants::from_args(args);
     extra.extend_from(&layered.confinement);
     extra
@@ -611,10 +609,8 @@ pub async fn assemble(
         endpoints.add_keyless_builtins();
     }
     let lister = options.lister.clone().unwrap_or_else(live_lister);
-    let (thinking, thinking_notices) = ThinkingTable::validate(
-        std::mem::take(&mut layered.thinking),
-        endpoints.as_slice(),
-    );
+    let (thinking, thinking_notices) =
+        ThinkingTable::validate(std::mem::take(&mut layered.thinking), endpoints.as_slice());
     let (choice, models) = plan_model(args, &config, &endpoints, &lister).await?;
     let choice = choice.with_thinking(&thinking);
 
@@ -964,31 +960,30 @@ pub async fn plan_model(
         cache = Some(fetch().await);
     }
     let index = cache.as_ref().map(ModelCache::index).unwrap_or_default();
-    let reference = match plan_startup(request, endpoints.as_slice(), &index)
-        .map_err(EndpointError::from)?
-    {
-        StartupPlan::Resolved(reference) => reference,
-        StartupPlan::FirstListed(name) => {
-            if cache.is_none() {
-                cache = Some(fetch().await);
+    let reference =
+        match plan_startup(request, endpoints.as_slice(), &index).map_err(EndpointError::from)? {
+            StartupPlan::Resolved(reference) => reference,
+            StartupPlan::FirstListed(name) => {
+                if cache.is_none() {
+                    cache = Some(fetch().await);
+                }
+                let first = cache
+                    .as_ref()
+                    .and_then(|cache| cache.first(&name))
+                    .ok_or_else(|| {
+                        let why = cache
+                            .as_ref()
+                            .and_then(|cache| cache.get(&name))
+                            .and_then(|list| list.as_ref().err().map(ToString::to_string))
+                            .unwrap_or_else(|| "it lists no models".to_string());
+                        TuiError::from(EndpointError::NothingListed {
+                            endpoint: name.clone(),
+                            why,
+                        })
+                    })?;
+                EndpointRef::new(name, first.id.clone())
             }
-            let first = cache
-                .as_ref()
-                .and_then(|cache| cache.first(&name))
-                .ok_or_else(|| {
-                    let why = cache
-                        .as_ref()
-                        .and_then(|cache| cache.get(&name))
-                        .and_then(|list| list.as_ref().err().map(ToString::to_string))
-                        .unwrap_or_else(|| "it lists no models".to_string());
-                    TuiError::from(EndpointError::NothingListed {
-                        endpoint: name.clone(),
-                        why,
-                    })
-                })?;
-            EndpointRef::new(name, first.id.clone())
-        }
-    };
+        };
     Ok((choice_for(endpoints, &reference)?, cache))
 }
 
@@ -996,7 +991,7 @@ pub async fn plan_model(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::endpoints::{WireDialect, Endpoint, SecretString};
+    use crate::endpoints::{Endpoint, SecretString, WireDialect};
     use crate::models::{EndpointListing, ModelSource};
     use clap::Parser;
 
@@ -1126,7 +1121,10 @@ mod tests {
             ),
         )
         .unwrap();
-        let set = format!("confinement.extra_read=[{:?}]", overlay_dir.to_str().unwrap());
+        let set = format!(
+            "confinement.extra_read=[{:?}]",
+            overlay_dir.to_str().unwrap()
+        );
         let args = args(&[
             "-w",
             ws.to_str().unwrap(),
@@ -1141,13 +1139,22 @@ mod tests {
         let (layered, _) = approval::load_layers(&scope, &args).unwrap();
         let extra = extra_grants(&args, &layered);
         assert_eq!(extra.read, vec![flag_dir.clone()]);
-        assert_eq!(extra.file.extra_read, vec![global_dir.clone(), overlay_dir.clone()]);
+        assert_eq!(
+            extra.file.extra_read,
+            vec![global_dir.clone(), overlay_dir.clone()]
+        );
         assert_eq!(extra.file.extra_write, vec![flag_dir.clone()]);
         // The flag wins over the file's write grant of the same directory.
         let (write, read, _) =
             confinement::grants_with(&ws, &HostPaths::default(), &extra).unwrap();
-        assert!(read.contains(&flag_dir) && !write.contains(&flag_dir), "{write:?}");
-        assert!(read.contains(&global_dir) && read.contains(&overlay_dir), "{read:?}");
+        assert!(
+            read.contains(&flag_dir) && !write.contains(&flag_dir),
+            "{write:?}"
+        );
+        assert!(
+            read.contains(&global_dir) && read.contains(&overlay_dir),
+            "{read:?}"
+        );
         let requirement = confinement::lower_with(
             args.effective_confinement(),
             scope.project_root.as_path(),

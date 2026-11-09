@@ -284,8 +284,14 @@ pub static COMMANDS: &[CommandSpec] = &[
         usage: "[list | add allow|deny <tool> [pattern] | rm <n> | trust]",
         summary: "list or edit the approval rules",
         help: &[
-            ("/permissions [list]", "list approval rules (/rules is an alias)"),
-            ("/permissions add allow|deny <tool> [pattern]", "add an approval rule"),
+            (
+                "/permissions [list]",
+                "list approval rules (/rules is an alias)",
+            ),
+            (
+                "/permissions add allow|deny <tool> [pattern]",
+                "add an approval rule",
+            ),
             ("/permissions rm <n>", "remove rule n (rm or remove)"),
             (
                 "/permissions trust",
@@ -322,7 +328,10 @@ pub static COMMANDS: &[CommandSpec] = &[
         usage: "[default | accept-edits | plan | auto]",
         summary: "show or set the permission mode",
         help: &[
-            ("/mode", "show the permission mode (Shift+Tab cycles manual → accept\nedits → plan → auto)"),
+            (
+                "/mode",
+                "show the permission mode (Shift+Tab cycles manual → accept\nedits → plan → auto)",
+            ),
             (
                 "/mode default|accept-edits|plan|auto",
                 "set it: default (manual) asks for every edit and command,\naccept-edits allows in-project edits, plan is read-only and\nends in a plan to approve, auto has the classifier review",
@@ -336,7 +345,10 @@ pub static COMMANDS: &[CommandSpec] = &[
         usage: "[on | off | resume]",
         summary: "show the mode; switch auto mode on, off, or resume it",
         help: &[
-            ("/auto", "show the permission mode and auto mode's denial counters"),
+            (
+                "/auto",
+                "show the permission mode and auto mode's denial counters",
+            ),
             (
                 "/auto on|off|resume",
                 "auto mode (= /mode auto), manual mode (= /mode default), or\nresume auto mode after a denial pause",
@@ -350,7 +362,10 @@ pub static COMMANDS: &[CommandSpec] = &[
         usage: "[[endpoint:]id | refresh]",
         summary: "pick or switch the model",
         help: &[
-            ("/model", "pick a model from every endpoint's list (type to filter)"),
+            (
+                "/model",
+                "pick a model from every endpoint's list (type to filter)",
+            ),
             (
                 "/model [endpoint:]<id>",
                 "switch to a model (idle only); a bare id is looked up",
@@ -535,7 +550,9 @@ pub fn spec(word: &str) -> Option<&'static CommandSpec> {
 
 /// The commands with a spelling that starts with `prefix` (case-insensitive),
 /// in `/help` order, each with that spelling.
-pub fn completions(prefix: &str) -> impl Iterator<Item = (&'static CommandSpec, &'static str)> + '_ {
+pub fn completions(
+    prefix: &str,
+) -> impl Iterator<Item = (&'static CommandSpec, &'static str)> + '_ {
     COMMANDS
         .iter()
         .filter_map(move |spec| spec.completion_for(prefix).map(|name| (spec, name)))
@@ -838,15 +855,46 @@ mod tests {
                 assert!(std::ptr::eq(super::spec(name).unwrap(), spec));
             }
             // Every spec is in /help: its own rows, or (/mcp) another's.
-            assert!(help_text().contains(&format!("/{}", spec.name)), "{}", spec.name);
+            assert!(
+                help_text().contains(&format!("/{}", spec.name)),
+                "{}",
+                spec.name
+            );
             assert!(!spec.summary.is_empty());
         }
         // The names the parser has always understood all have a spec.
         for name in [
-            "quit", "exit", "q", "clear", "new", "help", "?", "memory", "init", "export",
-            "status", "context", "usage", "cost", "stats", "copy", "compact", "resume", "model",
-            "auto", "permissions", "rules", "trust", "mcp", "helpers", "tasks", "remember",
-            "mode", "rewind", "checkpoint", "undo",
+            "quit",
+            "exit",
+            "q",
+            "clear",
+            "new",
+            "help",
+            "?",
+            "memory",
+            "init",
+            "export",
+            "status",
+            "context",
+            "usage",
+            "cost",
+            "stats",
+            "copy",
+            "compact",
+            "resume",
+            "model",
+            "auto",
+            "permissions",
+            "rules",
+            "trust",
+            "mcp",
+            "helpers",
+            "tasks",
+            "remember",
+            "mode",
+            "rewind",
+            "checkpoint",
+            "undo",
         ] {
             assert!(super::spec(name).is_some(), "/{name} has no spec");
         }
@@ -855,7 +903,9 @@ mod tests {
         let commands = help_text().split_once("Keys:").unwrap().0;
         let mut at = 0;
         for (left, _) in COMMANDS.iter().flat_map(|spec| spec.help) {
-            let found = commands[at..].find(left).unwrap_or_else(|| panic!("{left}"));
+            let found = commands[at..]
+                .find(left)
+                .unwrap_or_else(|| panic!("{left}"));
             at += found + left.len();
         }
     }
@@ -897,7 +947,10 @@ mod tests {
         assert_eq!(ok("/rewind"), Command::Rewind);
         assert_eq!(ok("/checkpoint"), Command::Rewind);
         assert_eq!(ok("/undo"), Command::Rewind);
-        assert_eq!(parse("/rewind 2"), Some(Err(CommandError::Usage("/rewind"))));
+        assert_eq!(
+            parse("/rewind 2"),
+            Some(Err(CommandError::Usage("/rewind")))
+        );
         assert_eq!(
             ok("/model gpt-5.4"),
             Command::Model(ModelCommand::Set("gpt-5.4".into()))
@@ -931,14 +984,26 @@ mod tests {
             Some(Err(CommandError::Usage("/memory [user | system]")))
         );
         assert_eq!(parse("/init x"), Some(Err(CommandError::Usage("/init"))));
-        assert_eq!(ok("/export notes/chat.txt"), Command::Export(Some("notes/chat.txt".into())));
-        assert_eq!(parse("/status x"), Some(Err(CommandError::Usage("/status"))));
+        assert_eq!(
+            ok("/export notes/chat.txt"),
+            Command::Export(Some("notes/chat.txt".into()))
+        );
+        assert_eq!(
+            parse("/status x"),
+            Some(Err(CommandError::Usage("/status")))
+        );
         assert_eq!(ok("/context"), Command::Context);
         assert_eq!(ok("/context all"), Command::Context);
-        assert_eq!(parse("/context x"), Some(Err(CommandError::Usage("/context"))));
+        assert_eq!(
+            parse("/context x"),
+            Some(Err(CommandError::Usage("/context")))
+        );
         assert_eq!(ok("/compact"), Command::Compact(CompactCommand::Now));
         assert_eq!(ok("/compact now"), Command::Compact(CompactCommand::Now));
-        assert_eq!(ok("/compact status"), Command::Compact(CompactCommand::Status));
+        assert_eq!(
+            ok("/compact status"),
+            Command::Compact(CompactCommand::Status)
+        );
         assert_eq!(
             ok("/compact keep the  test plan"),
             Command::Compact(CompactCommand::Focused("keep the test plan".into()))
@@ -979,7 +1044,10 @@ mod tests {
         assert_eq!(parse_shell("  !pwd"), Some("pwd"));
         assert_eq!(parse_shell("!"), Some(""));
         assert_eq!(parse_shell("! "), Some(""));
-        assert_eq!(parse_shell("!for f in *; do\n  echo $f\ndone"), Some("for f in *; do\n  echo $f\ndone"));
+        assert_eq!(
+            parse_shell("!for f in *; do\n  echo $f\ndone"),
+            Some("for f in *; do\n  echo $f\ndone")
+        );
         assert_eq!(parse_shell("!!"), None);
         assert_eq!(parse_shell("!! wow"), None);
         assert_eq!(parse_shell("\\!ls"), None);
@@ -994,8 +1062,14 @@ mod tests {
     fn mode_commands() {
         use crate::approval::mode::PermissionMode;
         assert_eq!(ok("/mode"), Command::Mode(None));
-        assert_eq!(ok("/mode default"), Command::Mode(Some(PermissionMode::Manual)));
-        assert_eq!(ok("/mode manual"), Command::Mode(Some(PermissionMode::Manual)));
+        assert_eq!(
+            ok("/mode default"),
+            Command::Mode(Some(PermissionMode::Manual))
+        );
+        assert_eq!(
+            ok("/mode manual"),
+            Command::Mode(Some(PermissionMode::Manual))
+        );
         assert_eq!(
             ok("/mode accept-edits"),
             Command::Mode(Some(PermissionMode::AcceptEdits))
@@ -1143,7 +1217,10 @@ mod tests {
         let keys = keys_help();
         assert!(keys.starts_with("Keys:\n  ? (empty input)"), "{keys}");
         assert!(keys.contains("Approval prompt:"));
-        assert!(keys.trim_end().ends_with("stops every open prompt)"), "{keys}");
+        assert!(
+            keys.trim_end().ends_with("stops every open prompt)"),
+            "{keys}"
+        );
         assert!(!keys.contains("/permissions"));
         assert!(!keys.contains("Start a prompt"));
     }
@@ -1189,9 +1266,7 @@ mod tests {
         assert_eq!(ok("/helpers"), Command::Helpers(HelpersCommand::List));
         assert_eq!(
             ok("/helpers expand scout"),
-            Command::Helpers(HelpersCommand::Expand(HelperTarget::Label(
-                "scout".into()
-            )))
+            Command::Helpers(HelpersCommand::Expand(HelperTarget::Label("scout".into())))
         );
         assert_eq!(
             ok("/helpers fold all"),

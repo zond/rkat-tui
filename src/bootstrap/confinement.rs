@@ -192,7 +192,9 @@ pub enum ExtraGrantProblem {
     #[error("not a directory (only directories can be granted)")]
     NotADirectory,
     /// The root, the backend's baseline, or `/proc`, `/sys`, `/dev`.
-    #[error("overlaps the sandbox's own system directories (/, /bin, /lib, /usr/bin, /usr/lib, /proc, /sys, /dev, …)")]
+    #[error(
+        "overlaps the sandbox's own system directories (/, /bin, /lib, /usr/bin, /usr/lib, /proc, /sys, /dev, …)"
+    )]
     Reserved,
     /// Overlaps the workspace (or the writable directory holding it).
     #[error("overlaps the workspace grant {}", .0.display())]
@@ -248,8 +250,7 @@ impl HostUsernsStatus {
             Self::MaxNamespacesZero
         } else if read("sys/kernel/unprivileged_userns_clone").as_deref() == Some("0") {
             Self::UnprivilegedCloneDisabled
-        } else if read("sys/kernel/apparmor_restrict_unprivileged_userns").as_deref() == Some("1")
-        {
+        } else if read("sys/kernel/apparmor_restrict_unprivileged_userns").as_deref() == Some("1") {
             Self::AppArmorRestricted
         } else {
             Self::NoKnownBlocker
@@ -553,7 +554,12 @@ pub fn grants_with(
         .write
         .iter()
         .map(|path| ("--confinement-write", path, true, true))
-        .chain(extra.read.iter().map(|path| ("--confinement-read", path, false, true)))
+        .chain(
+            extra
+                .read
+                .iter()
+                .map(|path| ("--confinement-read", path, false, true)),
+        )
         .chain(
             extra
                 .file
@@ -596,7 +602,11 @@ pub fn grants_with(
         }
         let covering = write
             .iter()
-            .chain(if writable { None } else { Some(&read) }.into_iter().flatten())
+            .chain(
+                if writable { None } else { Some(&read) }
+                    .into_iter()
+                    .flatten(),
+            )
             .find(|dir| path.starts_with(dir));
         if let Some(dir) = covering {
             return Err(refuse(ExtraGrantProblem::AlreadyGranted(dir.clone())));
@@ -669,16 +679,22 @@ fn canonical(path: &Path, dir: bool) -> Option<PathBuf> {
 /// the whole confinement fail.
 fn file_grantable(path: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
-    let reserved =
-        |path: &Path| ["/proc", "/sys", "/dev"].iter().any(|root| path.starts_with(root));
+    let reserved = |path: &Path| {
+        ["/proc", "/sys", "/dev"]
+            .iter()
+            .any(|root| path.starts_with(root))
+    };
     let Some(parent) = path.parent() else {
         return false;
     };
     if !path.is_absolute()
         || reserved(path)
-        || !path
-            .components()
-            .all(|c| matches!(c, std::path::Component::RootDir | std::path::Component::Normal(_)))
+        || !path.components().all(|c| {
+            matches!(
+                c,
+                std::path::Component::RootDir | std::path::Component::Normal(_)
+            )
+        })
         || std::fs::canonicalize(parent).ok().as_deref() != Some(parent)
     {
         return false;
@@ -732,13 +748,15 @@ fn trusted_final_link(
         return false;
     }
     let user = nix::unistd::geteuid().as_raw();
-    let trusted_owner = |metadata: &std::fs::Metadata| metadata.uid() == 0 || metadata.uid() == user;
+    let trusted_owner =
+        |metadata: &std::fs::Metadata| metadata.uid() == 0 || metadata.uid() == user;
     trusted_owner(link)
         && parent.ancestors().all(|ancestor| {
             std::fs::symlink_metadata(ancestor).is_ok_and(|metadata| {
                 metadata.is_dir()
                     && trusted_owner(&metadata)
-                    && (metadata.mode() & GROUP_OR_OTHER_WRITE == 0 || metadata.mode() & STICKY != 0)
+                    && (metadata.mode() & GROUP_OR_OTHER_WRITE == 0
+                        || metadata.mode() & STICKY != 0)
             })
         })
 }
@@ -965,7 +983,10 @@ pub fn describe_policy(policy: &LaunchConfinement) -> String {
 
 /// `floor` narrowed by `mode`: as is for `workspace`, with IP network
 /// access denied for `strict`.
-fn narrowed(floor: &LaunchConfinement, mode: ConfinementArg) -> Result<LaunchConfinement, ConfinementError> {
+fn narrowed(
+    floor: &LaunchConfinement,
+    mode: ConfinementArg,
+) -> Result<LaunchConfinement, ConfinementError> {
     if mode != ConfinementArg::Strict {
         return Ok(floor.clone());
     }
@@ -1195,7 +1216,14 @@ mod tests {
                 Err(other) => panic!("unexpected error: {other}"),
             }
         }
-        let off = plan(ConfinementArg::Off, &f.ws, &Config::default(), &f.host, &none()).unwrap();
+        let off = plan(
+            ConfinementArg::Off,
+            &f.ws,
+            &Config::default(),
+            &f.host,
+            &none(),
+        )
+        .unwrap();
         assert_eq!(off.shell, ShellConfinement::TrustedHost);
         assert_eq!(off.notices, vec![describe(ConfinementArg::Off).to_string()]);
         assert_eq!(off.shell_env, None);
@@ -1228,10 +1256,7 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::ffi::OsStringExt;
-            host.push((
-                OsString::from("TERM"),
-                OsString::from_vec(vec![0xff, 0xfe]),
-            ));
+            host.push((OsString::from("TERM"), OsString::from_vec(vec![0xff, 0xfe])));
         }
         let env = confined_environment(host);
         for name in [
@@ -1450,7 +1475,11 @@ mod tests {
         let trusted = realm_with(LaunchConfinement::TrustedHost);
         let off = plan(ConfinementArg::Off, &f.ws, &trusted, &f.host, &none()).unwrap();
         assert_eq!(off.shell, ShellConfinement::TrustedHost);
-        assert!(off.notices.iter().any(|n| n.contains("does not confine the shell")));
+        assert!(
+            off.notices
+                .iter()
+                .any(|n| n.contains("does not confine the shell"))
+        );
         assert_eq!(off.shell_env, None);
     }
 
@@ -1462,11 +1491,18 @@ mod tests {
             &HostPaths::default(),
         )
         .unwrap_err();
-        assert!(matches!(err, ConfinementError::RelativeWorkspace(_)), "{err}");
+        assert!(
+            matches!(err, ConfinementError::RelativeWorkspace(_)),
+            "{err}"
+        );
     }
 
     /// A fake procfs holding the three user-namespace switches.
-    fn fake_proc(max: Option<&str>, clone: Option<&str>, apparmor: Option<&str>) -> tempfile::TempDir {
+    fn fake_proc(
+        max: Option<&str>,
+        clone: Option<&str>,
+        apparmor: Option<&str>,
+    ) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         for (path, value) in [
             ("sys/user/max_user_namespaces", max),
@@ -1485,11 +1521,36 @@ mod tests {
     #[test]
     fn userns_status_is_read_from_the_proc_switches() {
         for (max, clone, apparmor, expected) in [
-            (Some("348787"), Some("1"), Some("1"), HostUsernsStatus::AppArmorRestricted),
-            (Some("348787"), None, Some("1"), HostUsernsStatus::AppArmorRestricted),
-            (Some("348787"), Some("0"), Some("1"), HostUsernsStatus::UnprivilegedCloneDisabled),
-            (Some("0"), Some("0"), Some("1"), HostUsernsStatus::MaxNamespacesZero),
-            (Some("348787"), Some("1"), Some("0"), HostUsernsStatus::NoKnownBlocker),
+            (
+                Some("348787"),
+                Some("1"),
+                Some("1"),
+                HostUsernsStatus::AppArmorRestricted,
+            ),
+            (
+                Some("348787"),
+                None,
+                Some("1"),
+                HostUsernsStatus::AppArmorRestricted,
+            ),
+            (
+                Some("348787"),
+                Some("0"),
+                Some("1"),
+                HostUsernsStatus::UnprivilegedCloneDisabled,
+            ),
+            (
+                Some("0"),
+                Some("0"),
+                Some("1"),
+                HostUsernsStatus::MaxNamespacesZero,
+            ),
+            (
+                Some("348787"),
+                Some("1"),
+                Some("0"),
+                HostUsernsStatus::NoKnownBlocker,
+            ),
             (None, None, None, HostUsernsStatus::NoKnownBlocker),
         ] {
             let proc_root = fake_proc(max, clone, apparmor);
@@ -1505,8 +1566,12 @@ mod tests {
     fn the_refusal_explains_the_blocker_the_fix_and_the_way_out() {
         let refusal = ConfinementRefusal::BackendUnavailable;
         let exe = Path::new("/opt/bin/rkat-tui");
-        let apparmor =
-            unenforceable_help(HostUsernsStatus::AppArmorRestricted, &refusal, None, Some(exe));
+        let apparmor = unenforceable_help(
+            HostUsernsStatus::AppArmorRestricted,
+            &refusal,
+            None,
+            Some(exe),
+        );
         for needle in [
             "apparmor_restrict_unprivileged_userns is 1",
             "sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0",
@@ -1517,13 +1582,26 @@ mod tests {
             "larger kernel attack surface",
             "rkat-tui --no-confinement (or --confinement=off)",
         ] {
-            assert!(apparmor.contains(needle), "missing {needle:?} in:\n{apparmor}");
+            assert!(
+                apparmor.contains(needle),
+                "missing {needle:?} in:\n{apparmor}"
+            );
         }
-        let clone =
-            unenforceable_help(HostUsernsStatus::UnprivilegedCloneDisabled, &refusal, None, None);
-        assert!(clone.contains("sudo sysctl -w kernel.unprivileged_userns_clone=1"), "{clone}");
+        let clone = unenforceable_help(
+            HostUsernsStatus::UnprivilegedCloneDisabled,
+            &refusal,
+            None,
+            None,
+        );
+        assert!(
+            clone.contains("sudo sysctl -w kernel.unprivileged_userns_clone=1"),
+            "{clone}"
+        );
         let max = unenforceable_help(HostUsernsStatus::MaxNamespacesZero, &refusal, None, None);
-        assert!(max.contains("sudo sysctl -w user.max_user_namespaces="), "{max}");
+        assert!(
+            max.contains("sudo sysctl -w user.max_user_namespaces="),
+            "{max}"
+        );
         let unknown = unenforceable_help(HostUsernsStatus::NoKnownBlocker, &refusal, None, None);
         assert!(unknown.contains(&refusal.to_string()), "{unknown}");
         // Under a realm floor the way out is the realm config, not a flag.
@@ -1573,17 +1651,35 @@ mod tests {
         std::os::unix::fs::symlink(&data, &link).unwrap();
         let file = f.file.clone();
         for (extra, expected) in [
-            (vec![PathBuf::from("relative")], ExtraGrantProblem::NotAbsolute),
+            (
+                vec![PathBuf::from("relative")],
+                ExtraGrantProblem::NotAbsolute,
+            ),
             (vec![root.join("missing")], ExtraGrantProblem::Missing),
             (vec![link], ExtraGrantProblem::NotCanonical(data.clone())),
             (vec![file], ExtraGrantProblem::NotADirectory),
             (vec![PathBuf::from("/usr/lib")], ExtraGrantProblem::Reserved),
             (vec![PathBuf::from("/")], ExtraGrantProblem::Reserved),
-            (vec![f.ws.join("..").join("ws")], ExtraGrantProblem::NotCanonical(f.ws.clone())),
-            (vec![root.clone()], ExtraGrantProblem::OverlapsWorkspace(f.ws.clone())),
-            (vec![data.clone(), data.clone()], ExtraGrantProblem::OverlapsGrant(data)),
-            (vec![f.cache.clone()], ExtraGrantProblem::AlreadyGranted(f.cache.clone())),
-            (vec![f.tools.clone()], ExtraGrantProblem::AlreadyGranted(f.tools.clone())),
+            (
+                vec![f.ws.join("..").join("ws")],
+                ExtraGrantProblem::NotCanonical(f.ws.clone()),
+            ),
+            (
+                vec![root.clone()],
+                ExtraGrantProblem::OverlapsWorkspace(f.ws.clone()),
+            ),
+            (
+                vec![data.clone(), data.clone()],
+                ExtraGrantProblem::OverlapsGrant(data),
+            ),
+            (
+                vec![f.cache.clone()],
+                ExtraGrantProblem::AlreadyGranted(f.cache.clone()),
+            ),
+            (
+                vec![f.tools.clone()],
+                ExtraGrantProblem::AlreadyGranted(f.tools.clone()),
+            ),
         ] {
             let err = grants_with(
                 &f.ws,
@@ -1634,8 +1730,19 @@ mod tests {
             "{err}"
         );
         // Under `off` they only earn a notice.
-        let off = plan(ConfinementArg::Off, &f.ws, &Config::default(), &f.host, &extra).unwrap();
-        assert!(off.notices.iter().any(|n| n.contains("no effect")), "{:?}", off.notices);
+        let off = plan(
+            ConfinementArg::Off,
+            &f.ws,
+            &Config::default(),
+            &f.host,
+            &extra,
+        )
+        .unwrap();
+        assert!(
+            off.notices.iter().any(|n| n.contains("no effect")),
+            "{:?}",
+            off.notices
+        );
     }
 
     #[test]
@@ -1690,7 +1797,10 @@ mod tests {
             ..ExtraGrants::default()
         };
         let (write, read, _) = grants_with(&f.ws, &f.host, &extra).unwrap();
-        assert!(read.contains(&inner) && !write.contains(&data), "{write:?} {read:?}");
+        assert!(
+            read.contains(&inner) && !write.contains(&data),
+            "{write:?} {read:?}"
+        );
         // A grant repeated across layers is granted once, with the most
         // access any layer gives.
         let extra = ExtraGrants {

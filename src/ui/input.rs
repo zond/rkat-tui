@@ -1128,10 +1128,7 @@ mod tests {
     fn stash_puts_the_prompt_aside_and_brings_it_back() {
         let mut e = typed("one\ntwo");
         e.left();
-        assert_eq!(
-            e.toggle_stash(),
-            StashOutcome::Stashed { displaced: None }
-        );
+        assert_eq!(e.toggle_stash(), StashOutcome::Stashed { displaced: None });
         assert!(e.is_empty() && e.has_stash());
         e.insert_str("other");
         assert_eq!(e.take(), "other");

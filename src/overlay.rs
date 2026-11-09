@@ -577,7 +577,10 @@ mod tests {
         // Arrays append across `--set`s.
         assert_eq!(
             section.extra_read,
-            vec![std::path::PathBuf::from("/a"), std::path::PathBuf::from("/b")]
+            vec![
+                std::path::PathBuf::from("/a"),
+                std::path::PathBuf::from("/b")
+            ]
         );
         assert_eq!(section.extra_write, vec![std::path::PathBuf::from("/c")]);
         // A bare path is a string, not the array the key takes.

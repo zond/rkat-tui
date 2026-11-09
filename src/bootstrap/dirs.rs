@@ -53,7 +53,9 @@ pub struct GlobalDirs {
 /// `<root>/.rkat/tui`.
 #[must_use]
 pub fn default_config_dir(root: &Path) -> PathBuf {
-    DEFAULT_CONFIG_DIR.iter().fold(root.to_path_buf(), |dir, part| dir.join(part))
+    DEFAULT_CONFIG_DIR
+        .iter()
+        .fold(root.to_path_buf(), |dir, part| dir.join(part))
 }
 
 impl GlobalDirs {
@@ -266,7 +268,13 @@ mod tests {
     #[test]
     fn flag_wins_over_everything() {
         assert_eq!(
-            resolved(Some("/f"), Some("/r"), Some("/x"), Some("/h"), &["/h/.rkat/tui"]),
+            resolved(
+                Some("/f"),
+                Some("/r"),
+                Some("/x"),
+                Some("/h"),
+                &["/h/.rkat/tui"]
+            ),
             Some(PathBuf::from("/f"))
         );
     }
@@ -301,7 +309,13 @@ mod tests {
     #[test]
     fn an_existing_legacy_dir_is_used_when_the_default_is_missing() {
         assert_eq!(
-            resolved(None, None, Some("/x"), Some("/h"), &["/x/rkat-tui", "/h/.config/rkat-tui"]),
+            resolved(
+                None,
+                None,
+                Some("/x"),
+                Some("/h"),
+                &["/x/rkat-tui", "/h/.config/rkat-tui"]
+            ),
             Some(PathBuf::from("/x/rkat-tui"))
         );
         assert_eq!(
@@ -340,7 +354,10 @@ mod tests {
         };
         let notice = legacy_config_notice(&legacy, None, Some(p("/h"))).unwrap();
         assert!(notice.contains("/h/.rkat/tui"), "{notice}");
-        assert!(notice.contains("--config-dir /h/.config/rkat-tui"), "{notice}");
+        assert!(
+            notice.contains("--config-dir /h/.config/rkat-tui"),
+            "{notice}"
+        );
         assert!(!notice.contains('\n'));
         // No notice for the default or under `--config-dir`.
         let default = GlobalDirs {
@@ -369,7 +386,10 @@ mod tests {
         };
         let (pa, pb) = (path(a.path()), path(b.path()));
         assert!(pa.starts_with(a.path()) && pb.starts_with(b.path()));
-        assert_eq!(pa.strip_prefix(a.path()).unwrap(), pb.strip_prefix(b.path()).unwrap());
+        assert_eq!(
+            pa.strip_prefix(a.path()).unwrap(),
+            pb.strip_prefix(b.path()).unwrap()
+        );
     }
 
     #[test]
@@ -388,9 +408,10 @@ mod tests {
 
     #[test]
     fn the_price_cache_lives_in_the_cache_dir() {
-        let cache = |flag: Option<&str>, root: Option<&str>, xdg: Option<&str>, platform: Option<&str>| {
-            cache_dir_with(flag.map(p), root.map(p), xdg.map(p), platform.map(p))
-        };
+        let cache =
+            |flag: Option<&str>, root: Option<&str>, xdg: Option<&str>, platform: Option<&str>| {
+                cache_dir_with(flag.map(p), root.map(p), xdg.map(p), platform.map(p))
+            };
         assert_eq!(
             cache(Some("/f"), Some("/r"), Some("/x"), Some("/p")),
             Some(PathBuf::from("/f/cache"))

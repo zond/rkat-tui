@@ -101,34 +101,39 @@ impl Runner {
         reason: RebuildReason,
         trigger: CompactionTrigger,
     ) -> Result<(), RebuildError> {
-        tracing::debug!(?reason, ?trigger, "rebuilding the session (upstream workaround)");
+        tracing::debug!(
+            ?reason,
+            ?trigger,
+            "rebuilding the session (upstream workaround)"
+        );
         let id = self.session.id().clone();
         let previous = self.session.compaction();
         self.session.retire().await.map_err(RebuildError::Retire)?;
-        let result = match SessionHandle::resume(
-            &self.runtime,
-            &id,
-            self.template.options(None, trigger),
-        )
-        .await
-        {
-            Ok(session) => {
-                self.session = session;
-                Ok(())
-            }
-            Err(first) => {
-                tracing::warn!(error = %first, "session rebuild failed; resuming as it was");
-                match SessionHandle::resume(&self.runtime, &id, self.template.options(None, previous))
-                    .await
-                {
-                    Ok(session) => {
-                        self.session = session;
-                        Err(RebuildError::KeptPrevious(first))
-                    }
-                    Err(retry) => return Err(RebuildError::Detached { first, retry }),
+        let result =
+            match SessionHandle::resume(&self.runtime, &id, self.template.options(None, trigger))
+                .await
+            {
+                Ok(session) => {
+                    self.session = session;
+                    Ok(())
                 }
-            }
-        };
+                Err(first) => {
+                    tracing::warn!(error = %first, "session rebuild failed; resuming as it was");
+                    match SessionHandle::resume(
+                        &self.runtime,
+                        &id,
+                        self.template.options(None, previous),
+                    )
+                    .await
+                    {
+                        Ok(session) => {
+                            self.session = session;
+                            Err(RebuildError::KeptPrevious(first))
+                        }
+                        Err(retry) => return Err(RebuildError::Detached { first, retry }),
+                    }
+                }
+            };
         self.follow_events().await;
         self.refresh_identity().await;
         result
@@ -258,7 +263,10 @@ impl Runner {
         };
         let now = std::fs::read(path).ok();
         if now == before {
-            self.notice(NoticeLevel::Info, format!("{} is unchanged", path.display()));
+            self.notice(
+                NoticeLevel::Info,
+                format!("{} is unchanged", path.display()),
+            );
             return;
         }
         let next = format!(
@@ -396,7 +404,11 @@ pub(super) fn context_breakdown(
             Some(bytes) => format!(
                 "{bytes} bytes ({}){}",
                 approx_tokens(bytes),
-                if file.truncated { ", cut to the cap" } else { "" }
+                if file.truncated {
+                    ", cut to the cap"
+                } else {
+                    ""
+                }
             ),
             None => "absent".to_string(),
         };
@@ -564,12 +576,21 @@ mod tests {
             text.contains("messages: 1 (user 1, assistant 0, tool results 0, notices 0)"),
             "{text}"
         );
-        assert!(text.contains("workspace AGENTS.md: /w/AGENTS.md — 800 bytes (~200 tokens)"), "{text}");
-        assert!(text.contains("AGENTS.local.md: /w/AGENTS.local.md — absent"), "{text}");
+        assert!(
+            text.contains("workspace AGENTS.md: /w/AGENTS.md — 800 bytes (~200 tokens)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("AGENTS.local.md: /w/AGENTS.local.md — absent"),
+            "{text}"
+        );
         assert!(text.contains("tools: 9 registered by rkat-tui"), "{text}");
         assert!(text.contains("unknown here"), "{text}");
         let text = context_breakdown("h", Err("gone".into()), &[], 0);
-        assert!(text.contains("system prompt and messages: unknown (gone)"), "{text}");
+        assert!(
+            text.contains("system prompt and messages: unknown (gone)"),
+            "{text}"
+        );
     }
 
     #[test]

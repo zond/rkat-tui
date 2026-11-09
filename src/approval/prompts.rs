@@ -190,8 +190,7 @@ Answer with exactly one word: ALLOW or BLOCK. If you are unsure, answer BLOCK.";
 /// files they point to, so the reason asks for confirmation instead of
 /// claiming the user never asked or that the agent invented the request.
 #[cfg(any(test, feature = "test-support"))]
-pub const NOT_COVERED_REASON: &str =
-    "Not covered by what the user asked for in this session; ask the user to confirm before doing it.";
+pub const NOT_COVERED_REASON: &str = "Not covered by what the user asked for in this session; ask the user to confirm before doing it.";
 
 /// Stage-2 instruction.
 pub const STAGE2_INSTRUCTIONS: &str = "\
@@ -700,7 +699,8 @@ mod tests {
         assert!(flat.contains("do not claim the user never asked for it"));
         assert!(flat.contains("agent-authored"));
         assert!(
-            NOT_COVERED_REASON.contains("ask the user to confirm") && NOT_COVERED_REASON.len() <= 100
+            NOT_COVERED_REASON.contains("ask the user to confirm")
+                && NOT_COVERED_REASON.len() <= 100
         );
     }
 }

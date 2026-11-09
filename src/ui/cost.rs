@@ -86,9 +86,7 @@ impl UsageTotals {
 pub type ModelTotals = IndexMap<String, UsageTotals>;
 
 /// How much the totals of a [`SessionCost`] can be trusted.
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CostConfidence {
     /// Every model call was counted under the model that produced it.
@@ -227,15 +225,20 @@ impl SessionCost {
     /// missing tokens are attributed to `model`.
     pub fn reconcile(&mut self, model: &str, usage: &Usage) {
         let authoritative = UsageTotals::from_usage(usage);
-        let recorded = self.per_model.values().fold(UsageTotals::default(), |mut sum, t| {
-            sum.add(t);
-            sum
-        });
+        let recorded = self
+            .per_model
+            .values()
+            .fold(UsageTotals::default(), |mut sum, t| {
+                sum.add(t);
+                sum
+            });
         let missing = UsageTotals {
             input: authoritative.input.saturating_sub(recorded.input),
             output: authoritative.output.saturating_sub(recorded.output),
             cache_read: authoritative.cache_read.saturating_sub(recorded.cache_read),
-            cache_write: authoritative.cache_write.saturating_sub(recorded.cache_write),
+            cache_write: authoritative
+                .cache_write
+                .saturating_sub(recorded.cache_write),
         };
         if missing.is_zero() {
             return;

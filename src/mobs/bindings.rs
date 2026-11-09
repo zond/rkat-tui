@@ -462,7 +462,10 @@ mod tests {
                 .unwrap();
         }
         let reopened = HelperBindings::open(dir.path()).unwrap();
-        assert_eq!(reopened.mob_owner(&MobId::from("team")), Some(owner.clone()));
+        assert_eq!(
+            reopened.mob_owner(&MobId::from("team")),
+            Some(owner.clone())
+        );
         let binding = reopened.member(&key).unwrap();
         assert_eq!(binding.tag, tag(&owner, "scout"));
         assert_eq!(binding.session, Some(helper_session.clone()));

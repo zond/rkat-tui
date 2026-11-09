@@ -38,26 +38,35 @@ use ratatui::crossterm::event::{
 use ratatui::layout::Rect;
 use ratatui::text::Line;
 
-pub use commands::{AutoCommand, Command, CompactCommand, HelperTarget, HelpersCommand, MemoryTarget, ModelCommand, RuleEffect, RulesCommand};
-pub use compaction::{CompactFailure, CompactionGauge, CompactionPolicy, CompactionTrigger};
-pub use cost::{SessionCost, SessionCostSnapshot};
-pub use delivery::{Pending, PendingQueue, PendingState};
 pub use checklist::{Checklist, ChecklistView};
 #[cfg(any(test, feature = "test-support"))]
 pub use checklist::{ChecklistItem, ItemState};
+pub use commands::{
+    AutoCommand, Command, CompactCommand, HelperTarget, HelpersCommand, MemoryTarget, ModelCommand,
+    RuleEffect, RulesCommand,
+};
 #[cfg(any(test, feature = "test-support"))]
 pub use compaction::CompactMode;
+pub use compaction::{CompactFailure, CompactionGauge, CompactionPolicy, CompactionTrigger};
 #[cfg(any(test, feature = "test-support"))]
 pub use cost::{CostConfidence, CostReadout, UsageTotals};
+pub use cost::{SessionCost, SessionCostSnapshot};
+pub use delivery::{Pending, PendingQueue, PendingState};
 pub use history::History;
 pub use input::{InputEditor, StashOutcome};
 pub use keymap::{Action, EditAction};
-pub use modal::{EscalationAnswer, EscalationDialog, EscalationId, EscalationPrompt, Modal, ModelPicker, PlanChoice, PlanDialog, ResumePicker};
+pub use modal::{
+    EscalationAnswer, EscalationDialog, EscalationId, EscalationPrompt, Modal, ModelPicker,
+    PlanChoice, PlanDialog, ResumePicker,
+};
 pub use rewind::{RewindKey, RewindMenu, RewindPoint, Rewound};
 pub use runtime::{UiChannels, UiError, run_ui};
 pub use search::{HistorySearch, SearchOutcome};
 pub use selection::{CellPos, SelectMode, Selection};
-pub use transcript::{Block, BlockId, DiffView, HelperView, NoticeLevel, QueuedLabel, ShellState, ToolState, Transcript};
+pub use transcript::{
+    Block, BlockId, DiffView, HelperView, NoticeLevel, QueuedLabel, ShellState, ToolState,
+    Transcript,
+};
 
 /// The transcript placeholder of a held item: the message, or `$ <cmd>`
 /// for a `!` command.
@@ -1231,7 +1240,9 @@ impl App {
         };
         let ids: Vec<BlockId> = match &target {
             HelperTarget::All => self.transcript.helper_headers().map(|(id, _)| id).collect(),
-            HelperTarget::Label(label) => self.transcript.helper_header(label).into_iter().collect(),
+            HelperTarget::Label(label) => {
+                self.transcript.helper_header(label).into_iter().collect()
+            }
         };
         if ids.is_empty() {
             let text = match target {
@@ -1261,7 +1272,9 @@ impl App {
             let status = fold.status_text();
             // No spinner glyph in a static listing.
             let status = if fold.state.is_running() {
-                status.split_once(' ').map_or(status.as_str(), |(_, rest)| rest)
+                status
+                    .split_once(' ')
+                    .map_or(status.as_str(), |(_, rest)| rest)
             } else {
                 status.as_str()
             };
@@ -1335,7 +1348,11 @@ impl App {
                 "context: {used} of {window} tokens ({}%){}; window{}",
                 used.saturating_mul(100) / window,
                 est(s.context_approx),
-                if s.window_approx { " estimated" } else { " from the model profile" },
+                if s.window_approx {
+                    " estimated"
+                } else {
+                    " from the model profile"
+                },
             ),
             (Some(used), None) => format!(
                 "context: {used} tokens{}; window unknown",
@@ -1367,9 +1384,7 @@ impl App {
     /// holds, one the runtime holds while the turn runs (recalled through
     /// the runner), or a recall already on its way.
     pub fn can_take_back(&self) -> bool {
-        self.has_recallable()
-            || self.recalling
-            || (self.running && self.has_admitted_recallable())
+        self.has_recallable() || self.recalling || (self.running && self.has_admitted_recallable())
     }
 
     /// Escalations waiting behind the open modal.
@@ -1924,7 +1939,10 @@ impl App {
             }
             Msg::CompactRequested(result) => self.compact_requested(result),
             Msg::EditFile { target, path } => {
-                fx.push(Effect::ExternalEditor(EditorTarget::Memory { target, path }));
+                fx.push(Effect::ExternalEditor(EditorTarget::Memory {
+                    target,
+                    path,
+                }));
             }
             Msg::EditorClosed(closed) => self.editor_closed(closed, &mut fx),
             Msg::ShellFinished { id, outcome } => self.shell_finished(id, outcome, now, &mut fx),
@@ -1978,10 +1996,12 @@ impl App {
             InputMode::Normal => complete::word_at(self.input.lines(), self.input.cursor()),
             InputMode::Search(_) => None,
         };
-        let word = word.filter(|word| {
-            word.kind != complete::CompletionKind::Path || self.workspace.is_some()
-        });
-        if word.as_ref().is_none_or(|word| word.kind != complete::CompletionKind::Path) {
+        let word = word
+            .filter(|word| word.kind != complete::CompletionKind::Path || self.workspace.is_some());
+        if word
+            .as_ref()
+            .is_none_or(|word| word.kind != complete::CompletionKind::Path)
+        {
             self.path_index = None;
         }
         let Some(word) = word else {
@@ -2059,7 +2079,8 @@ impl App {
         } else {
             format!("{} ", item.insert)
         };
-        self.input.replace_in_line(word.row, word.start, word.end, &text);
+        self.input
+            .replace_in_line(word.row, word.start, word.end, &text);
         if spaced {
             // Step over the space that is there.
             self.input.right();
@@ -2211,7 +2232,9 @@ impl App {
     /// Ctrl-G, Ctrl-X Ctrl-E: open the draft in the user's editor (idle or
     /// running: it only edits the input).
     fn edit_draft_externally(&mut self, fx: &mut Vec<Effect>) {
-        fx.push(Effect::ExternalEditor(EditorTarget::Draft(self.input.text())));
+        fx.push(Effect::ExternalEditor(EditorTarget::Draft(
+            self.input.text(),
+        )));
     }
 
     fn interrupt_and_send(&mut self, now: Instant, fx: &mut Vec<Effect>) {
@@ -2305,7 +2328,8 @@ impl App {
                 _ => {}
             },
             Some(Modal::Rewind(menu)) => {
-                if repeat && matches!(key.code, KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q')) {
+                if repeat && matches!(key.code, KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q'))
+                {
                     return;
                 }
                 if ctrl_c {
@@ -2577,7 +2601,13 @@ impl App {
     }
 
     /// Send a `!` command whose block is `block` to the runner.
-    fn launch_shell(&mut self, command: String, block: BlockId, now: Instant, fx: &mut Vec<Effect>) {
+    fn launch_shell(
+        &mut self,
+        command: String,
+        block: BlockId,
+        now: Instant,
+        fx: &mut Vec<Effect>,
+    ) {
         self.last_shell_id += 1;
         let id = ShellRunId(self.last_shell_id);
         self.shell_run = Some(RunningShell {
@@ -2623,7 +2653,13 @@ impl App {
     /// [`Msg::ShellFinished`]: show the result, then run the next held
     /// command, or (with none left and no turn running) send the messages
     /// held behind them.
-    fn shell_finished(&mut self, id: ShellRunId, outcome: ShellOutcome, now: Instant, fx: &mut Vec<Effect>) {
+    fn shell_finished(
+        &mut self,
+        id: ShellRunId,
+        outcome: ShellOutcome,
+        now: Instant,
+        fx: &mut Vec<Effect>,
+    ) {
         let Some(run) = self.shell_run.take_if(|run| run.id == id) else {
             return;
         };
@@ -2949,8 +2985,10 @@ impl App {
     /// notice). A turn started meanwhile, or another dialog, wins.
     fn show_rewind_menu(&mut self, points: Vec<RewindPoint>) {
         if points.is_empty() {
-            self.transcript
-                .push_notice(NoticeLevel::Info, "nothing to rewind to: this session has no messages of yours yet");
+            self.transcript.push_notice(
+                NoticeLevel::Info,
+                "nothing to rewind to: this session has no messages of yours yet",
+            );
             self.scroll.bottom();
         } else if !self.running && matches!(self.modal, None | Some(Modal::Keys)) {
             self.modal = Some(Modal::Rewind(RewindMenu::new(points)));
@@ -3419,11 +3457,14 @@ impl App {
                     );
                 } else if self.status.context_used.is_some() {
                     if matches!(cmd, CompactCommand::Focused(_)) {
-                        self.transcript.push_notice(NoticeLevel::Warn, COMPACT_FOCUS_UNSUPPORTED);
+                        self.transcript
+                            .push_notice(NoticeLevel::Warn, COMPACT_FOCUS_UNSUPPORTED);
                     }
                     self.compacting = true;
-                    self.transcript
-                        .push_notice(NoticeLevel::Info, "asking the engine to compact at the next model call…");
+                    self.transcript.push_notice(
+                        NoticeLevel::Info,
+                        "asking the engine to compact at the next model call…",
+                    );
                     self.scroll.bottom();
                     fx.push(Effect::CompactNow);
                 } else {
@@ -3987,7 +4028,10 @@ mod tests {
         assert_eq!(app.input.text(), "first ");
         app.update(ctrl('_'));
         assert_eq!(app.input.text(), "first words");
-        app.update(Msg::Key(KeyEvent::new(KeyCode::Char('7'), KeyModifiers::CONTROL)));
+        app.update(Msg::Key(KeyEvent::new(
+            KeyCode::Char('7'),
+            KeyModifiers::CONTROL,
+        )));
         assert_eq!(app.input.text(), "first");
         // Ctrl-C clears the input; undo brings it back.
         app.update(ctrl('c'));
@@ -4031,7 +4075,9 @@ mod tests {
             Some((NoticeLevel::Warn, "there are only 2 answers to copy".into()))
         );
         submit(&mut app, "/copy 0");
-        assert!(matches!(last_notice(&app), Some((NoticeLevel::Warn, t)) if t.starts_with("usage: /copy")));
+        assert!(
+            matches!(last_notice(&app), Some((NoticeLevel::Warn, t)) if t.starts_with("usage: /copy"))
+        );
 
         // A mouse selection is copied on release; Ctrl-Y no longer copies and,
         // like any other key, clears the selection.
@@ -4052,14 +4098,20 @@ mod tests {
         app.update(ctrl('w'));
         assert_eq!(app.input.text(), "keep this ");
         app.update(ctrl('a'));
-        app.update(Msg::Key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT)));
+        app.update(Msg::Key(KeyEvent::new(
+            KeyCode::Char('d'),
+            KeyModifiers::ALT,
+        )));
         assert_eq!(app.input.text(), " this ");
         app.update(ctrl('k'));
         assert_eq!(app.input.text(), "");
         // Alt-D then Ctrl-K was one run of kills: one entry.
         app.update(ctrl('y'));
         assert_eq!(app.input.text(), "keep this ");
-        app.update(Msg::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::ALT)));
+        app.update(Msg::Key(KeyEvent::new(
+            KeyCode::Char('y'),
+            KeyModifiers::ALT,
+        )));
         assert_eq!(app.input.text(), "text");
         app.update(Msg::Key(KeyEvent::new(
             KeyCode::Backspace,
@@ -4191,7 +4243,10 @@ mod tests {
         assert!(app.update(shell_done(1, "again")).is_empty());
         // A bare ! runs nothing.
         assert!(submit(&mut app, "!").is_empty());
-        assert!(matches!(app.transcript.blocks().last(), Some(Block::Notice { .. })));
+        assert!(matches!(
+            app.transcript.blocks().last(),
+            Some(Block::Notice { .. })
+        ));
         let mut app = App::new(StatusInfo::default());
         assert_eq!(
             submit(&mut app, "\\!important"),
@@ -4241,14 +4296,19 @@ mod tests {
             vec![run_shell(1, "echo a")]
         );
         assert!(!app.is_running());
-        assert!(matches!(app.transcript.block(BlockId(1)), Some(Block::Shell { command, .. }) if command == "echo a"));
+        assert!(
+            matches!(app.transcript.block(BlockId(1)), Some(Block::Shell { command, .. }) if command == "echo a")
+        );
         assert_eq!(
             app.transcript.block(BlockId(2)),
             Some(&queued_block(2, "two", QueuedLabel::Deferred))
         );
         // A message typed meanwhile waits too.
         assert!(submit(&mut app, "four").is_empty());
-        assert_eq!(app.update(shell_done(1, "a\n")), vec![run_shell(2, "echo b")]);
+        assert_eq!(
+            app.update(shell_done(1, "a\n")),
+            vec![run_shell(2, "echo b")]
+        );
         // Then the messages go, as one turn.
         assert_eq!(
             app.update(shell_done(2, "b\n")),
@@ -4456,7 +4516,10 @@ mod tests {
         );
         assert_eq!(
             last_notice(&app),
-            Some((NoticeLevel::Info, "2 messages returned to the editor".into()))
+            Some((
+                NoticeLevel::Info,
+                "2 messages returned to the editor".into()
+            ))
         );
         assert_eq!(app.status.queued, 0);
         assert!(!app.can_take_back());
@@ -4543,7 +4606,10 @@ mod tests {
     fn rewind_asks_for_the_menu_only_when_idle_with_nothing_queued() {
         let mut app = App::new(StatusInfo::default());
         assert_eq!(submit(&mut app, "/rewind"), vec![Effect::RequestRewindMenu]);
-        assert_eq!(submit(&mut app, "/checkpoint"), vec![Effect::RequestRewindMenu]);
+        assert_eq!(
+            submit(&mut app, "/checkpoint"),
+            vec![Effect::RequestRewindMenu]
+        );
         // While a turn runs: a notice, and Esc interrupts as always.
         let mut app = running_app();
         assert!(submit(&mut app, "/rewind").is_empty());
@@ -4556,7 +4622,10 @@ mod tests {
         assert!(!app.pending.is_empty());
         assert!(submit(&mut app, "/rewind").is_empty());
         // Esc Esc on an empty input interrupts, never rewinds, meanwhile.
-        assert!(!app.update(key(KeyCode::Esc)).contains(&Effect::RequestRewindMenu));
+        assert!(
+            !app.update(key(KeyCode::Esc))
+                .contains(&Effect::RequestRewindMenu)
+        );
     }
 
     #[test]
@@ -4610,7 +4679,9 @@ mod tests {
         app.update(Msg::Rewound(Rewound {
             from_end: 2,
             text: "two".into(),
-            blocks: vec![Block::User { text: "fallback".into() }],
+            blocks: vec![Block::User {
+                text: "fallback".into(),
+            }],
             notice: "rewound".into(),
         }));
         let users: Vec<&str> = app
@@ -4623,8 +4694,14 @@ mod tests {
             })
             .collect();
         assert_eq!(users, vec!["one"]);
-        assert!(app.transcript.blocks().contains(&Block::Assistant { md: "first".into() }));
-        assert!(!app.transcript.blocks().contains(&Block::Assistant { md: "second".into() }));
+        assert!(
+            app.transcript
+                .blocks()
+                .contains(&Block::Assistant { md: "first".into() })
+        );
+        assert!(!app.transcript.blocks().contains(&Block::Assistant {
+            md: "second".into()
+        }));
         assert!(matches!(
             app.transcript.blocks().last(),
             Some(Block::Notice { text, .. }) if text == "rewound"
@@ -4635,12 +4712,16 @@ mod tests {
         app.update(Msg::Rewound(Rewound {
             from_end: 5,
             text: "zero".into(),
-            blocks: vec![Block::User { text: "fallback".into() }],
+            blocks: vec![Block::User {
+                text: "fallback".into(),
+            }],
             notice: "again".into(),
         }));
         assert_eq!(
             app.transcript.blocks().first(),
-            Some(&Block::User { text: "fallback".into() })
+            Some(&Block::User {
+                text: "fallback".into()
+            })
         );
         assert_eq!(app.input.text(), "zero");
     }
@@ -4726,7 +4807,10 @@ mod tests {
     fn interrupted_turn_without_queued_messages_starts_nothing() {
         let mut app = running_app();
         assert_eq!(app.update(key(KeyCode::Esc)), vec![Effect::Interrupt]);
-        assert!(app.update(finished(Err(TurnFailure::Interrupted), &[])).is_empty());
+        assert!(
+            app.update(finished(Err(TurnFailure::Interrupted), &[]))
+                .is_empty()
+        );
         assert!(!app.is_running());
     }
 
@@ -4753,7 +4837,10 @@ mod tests {
         let mut app = running_app();
         submit(&mut app, "two");
         app.update(ack(1, Ok(())));
-        assert!(app.update(finished(Err(TurnFailure::Failed("boom".into())), &[1])).is_empty());
+        assert!(
+            app.update(finished(Err(TurnFailure::Failed("boom".into())), &[1]))
+                .is_empty()
+        );
         assert_eq!(app.input.text(), "two");
         assert!(matches!(
             last_notice(&app),
@@ -5128,14 +5215,29 @@ mod tests {
     fn the_at_menu_completes_paths_and_stays_open_for_directories() {
         let (_dir, mut app) = mention_app();
         type_str(&mut app, "look at @");
-        assert_eq!(menu_rows(&app), ["@README.md", "@src/", "@src/main.rs", "@src/ui/", "@src/ui/render.rs"]);
+        assert_eq!(
+            menu_rows(&app),
+            [
+                "@README.md",
+                "@src/",
+                "@src/main.rs",
+                "@src/ui/",
+                "@src/ui/render.rs"
+            ]
+        );
         type_str(&mut app, "s");
-        assert_eq!(menu_rows(&app), ["@src/", "@src/main.rs", "@src/ui/", "@src/ui/render.rs"]);
+        assert_eq!(
+            menu_rows(&app),
+            ["@src/", "@src/main.rs", "@src/ui/", "@src/ui/render.rs"]
+        );
         // A directory completes without a space and the menu lists its
         // contents.
         app.update(key(KeyCode::Tab));
         assert_eq!(app.input.text(), "look at @src/");
-        assert_eq!(menu_rows(&app), ["@src/main.rs", "@src/ui/", "@src/ui/render.rs"]);
+        assert_eq!(
+            menu_rows(&app),
+            ["@src/main.rs", "@src/ui/", "@src/ui/render.rs"]
+        );
         // Enter completes the highlighted file and a space; the menu closes.
         app.update(key(KeyCode::Enter));
         assert_eq!(app.input.text(), "look at @src/main.rs ");
@@ -5164,7 +5266,10 @@ mod tests {
     #[test]
     fn a_prompt_with_mentions_notes_what_it_attaches_and_what_is_sealed() {
         let (_dir, mut app) = mention_app();
-        let fx = submit(&mut app, "fix @src/main.rs and @src/ui, ignore @.rkat/config.toml and @bob");
+        let fx = submit(
+            &mut app,
+            "fix @src/main.rs and @src/ui, ignore @.rkat/config.toml and @bob",
+        );
         // The session gets the text as typed; the runner expands it.
         assert_eq!(
             fx,
@@ -5172,7 +5277,15 @@ mod tests {
                 "fix @src/main.rs and @src/ui, ignore @.rkat/config.toml and @bob".into()
             )]
         );
-        let tail: Vec<Block> = app.transcript.blocks().iter().rev().take(3).rev().cloned().collect();
+        let tail: Vec<Block> = app
+            .transcript
+            .blocks()
+            .iter()
+            .rev()
+            .take(3)
+            .rev()
+            .cloned()
+            .collect();
         assert_eq!(
             tail,
             [
@@ -5192,7 +5305,10 @@ mod tests {
         // One file: singular. No mention: no line.
         let before = app.transcript.len();
         submit(&mut app, "and @README.md");
-        assert_eq!(last_notice(&app), Some((NoticeLevel::Info, "+ 1 file (README.md)".into())));
+        assert_eq!(
+            last_notice(&app),
+            Some((NoticeLevel::Info, "+ 1 file (README.md)".into()))
+        );
         submit(&mut app, "thanks a@b");
         assert_eq!(app.transcript.len(), before + 3);
     }
@@ -5475,7 +5591,8 @@ mod tests {
             run(&mut app, "/mode accept-edits"),
             vec![Effect::SetMode(PermissionMode::AcceptEdits)]
         );
-        app.status.set_mode(PermissionMode::AcceptEdits, false, (0, 3, 0, 20));
+        app.status
+            .set_mode(PermissionMode::AcceptEdits, false, (0, 3, 0, 20));
         assert!(run(&mut app, "/mode").is_empty());
         assert!(
             last_notice(&app).is_some_and(|(_, t)| t.starts_with("permission mode: accept edits")),
@@ -5987,7 +6104,8 @@ mod tests {
 
     #[test]
     fn ctrl_p_and_ctrl_n_are_up_and_down() {
-        let mut app = App::new(StatusInfo::default()).with_history(vec!["one".into(), "two".into()]);
+        let mut app =
+            App::new(StatusInfo::default()).with_history(vec!["one".into(), "two".into()]);
         type_str(&mut app, "a");
         app.update(ctrl('j'));
         type_str(&mut app, "b");
@@ -6031,8 +6149,8 @@ mod tests {
 
     #[test]
     fn down_moves_a_visual_row_within_a_wrapped_line_then_recalls_newer_history() {
-        let mut app = App::new(StatusInfo::default())
-            .with_history(vec!["abcdefghijklmnopqrstuvwxy".into()]);
+        let mut app =
+            App::new(StatusInfo::default()).with_history(vec!["abcdefghijklmnopqrstuvwxy".into()]);
         app.input.set_wrap_width(10);
         type_str(&mut app, "dra");
         app.update(key(KeyCode::Up));
@@ -6177,7 +6295,10 @@ mod tests {
         let back_tab = || Msg::Key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
         let mut app = App::new(StatusInfo::default());
         // Before the runner reports a mode the engine is in its default, auto.
-        assert_eq!(app.update(back_tab()), vec![Effect::SetMode(PermissionMode::Manual)]);
+        assert_eq!(
+            app.update(back_tab()),
+            vec![Effect::SetMode(PermissionMode::Manual)]
+        );
         // The runner answers with the new mode; each press moves one on.
         for (now, next) in [
             (PermissionMode::Manual, PermissionMode::AcceptEdits),
@@ -6186,16 +6307,28 @@ mod tests {
             (PermissionMode::Auto, PermissionMode::Manual),
         ] {
             app.status.set_mode(now, false, (0, 3, 0, 20));
-            assert_eq!(app.update(back_tab()), vec![Effect::SetMode(next)], "{now:?}");
+            assert_eq!(
+                app.update(back_tab()),
+                vec![Effect::SetMode(next)],
+                "{now:?}"
+            );
         }
         // A paused auto mode is auto mode.
-        app.status.set_mode(PermissionMode::Auto, true, (3, 3, 3, 20));
-        assert_eq!(app.update(back_tab()), vec![Effect::SetMode(PermissionMode::Manual)]);
+        app.status
+            .set_mode(PermissionMode::Auto, true, (3, 3, 3, 20));
+        assert_eq!(
+            app.update(back_tab()),
+            vec![Effect::SetMode(PermissionMode::Manual)]
+        );
         // It works while a turn runs too.
         submit(&mut app, "work");
         assert!(app.is_running());
-        app.status.set_mode(PermissionMode::Plan, false, (0, 3, 0, 20));
-        assert_eq!(app.update(back_tab()), vec![Effect::SetMode(PermissionMode::Auto)]);
+        app.status
+            .set_mode(PermissionMode::Plan, false, (0, 3, 0, 20));
+        assert_eq!(
+            app.update(back_tab()),
+            vec![Effect::SetMode(PermissionMode::Auto)]
+        );
     }
 
     fn answered(text: &str) -> Msg {
@@ -6212,7 +6345,8 @@ mod tests {
     #[test]
     fn plan_ready_dialog() {
         let mut app = App::new(StatusInfo::default());
-        app.status.set_mode(PermissionMode::Plan, false, (0, 3, 0, 20));
+        app.status
+            .set_mode(PermissionMode::Plan, false, (0, 3, 0, 20));
         submit(&mut app, "plan the refactor");
         app.update(answered("1. Split the module\n2. Move the tests"));
         assert_eq!(app.modal, Some(Modal::PlanReady(PlanDialog::default())));
@@ -6261,7 +6395,8 @@ mod tests {
         submit(&mut app, "x");
         app.update(answered("  "));
         assert_eq!(app.modal, None);
-        app.status.set_mode(PermissionMode::AcceptEdits, false, (0, 3, 0, 20));
+        app.status
+            .set_mode(PermissionMode::AcceptEdits, false, (0, 3, 0, 20));
         submit(&mut app, "y");
         app.update(answered("done"));
         assert_eq!(app.modal, None);
@@ -6309,18 +6444,25 @@ mod tests {
         let mut app = App::new(StatusInfo::default());
         type_str(&mut app, "old");
         assert!(
-            app.update(Msg::EditorClosed(EditorClosed::Draft(Ok("new\ntext".into()))))
-                .is_empty()
+            app.update(Msg::EditorClosed(EditorClosed::Draft(Ok(
+                "new\ntext".into()
+            ))))
+            .is_empty()
         );
         assert_eq!(app.input.text(), "new\ntext");
         // Ctrl-_ brings the old draft back.
         app.update(ctrl('_'));
         assert_eq!(app.input.text(), "old");
-        app.update(Msg::EditorClosed(EditorClosed::Draft(Err("vi exited with 1".into()))));
+        app.update(Msg::EditorClosed(EditorClosed::Draft(Err(
+            "vi exited with 1".into(),
+        ))));
         assert_eq!(app.input.text(), "old");
         assert_eq!(
             last_notice(&app),
-            Some((NoticeLevel::Warn, "the input is unchanged: vi exited with 1".into()))
+            Some((
+                NoticeLevel::Warn,
+                "the input is unchanged: vi exited with 1".into()
+            ))
         );
     }
 
@@ -6662,12 +6804,20 @@ mod tests {
         let [Effect::ContextReport(header)] = fx.as_slice() else {
             panic!("{fx:?}");
         };
-        assert!(header.starts_with("context: unknown until the first model call"), "{header}");
-        assert!(header.contains("\ncompaction: auto-compaction is off"), "{header}");
+        assert!(
+            header.starts_with("context: unknown until the first model call"),
+            "{header}"
+        );
+        assert!(
+            header.contains("\ncompaction: auto-compaction is off"),
+            "{header}"
+        );
         app.status.context_used = Some(42_000);
         let header = app.context_header();
         assert!(
-            header.starts_with("context: 42000 of 100000 tokens (42%); window from the model profile"),
+            header.starts_with(
+                "context: 42000 of 100000 tokens (42%); window from the model profile"
+            ),
             "{header}"
         );
         app.status.context_approx = true;
@@ -6699,9 +6849,11 @@ mod tests {
         app.status.context_used = Some(40_000);
         assert_eq!(submit(&mut app, "/compact"), vec![Effect::CompactNow]);
         assert!(app.compacting);
-        assert!(!app.transcript.blocks().iter().any(
-            |b| matches!(b, Block::Notice { text, .. } if text == COMPACT_FOCUS_UNSUPPORTED)
-        ));
+        assert!(
+            !app.transcript.blocks().iter().any(
+                |b| matches!(b, Block::Notice { text, .. } if text == COMPACT_FOCUS_UNSUPPORTED)
+            )
+        );
         app.update(Msg::CompactRequested(Ok(())));
         assert_eq!(
             submit(&mut app, "/compact keep the test plan"),
@@ -6778,10 +6930,7 @@ mod tests {
         let mut app = App::new(StatusInfo::default());
         let fx = app.update(Msg::HelperUnmeasured("scout".into()));
         assert!(matches!(fx.as_slice(), [Effect::CostSnapshot(_)]), "{fx:?}");
-        assert_eq!(
-            app.status.cost.confidence,
-            cost::CostConfidence::Unmeasured
-        );
+        assert_eq!(app.status.cost.confidence, cost::CostConfidence::Unmeasured);
     }
 
     #[test]
@@ -7174,8 +7323,14 @@ mod tests {
         assert_eq!(app.helper_panel(), vec![fork, scout, inner]);
         let rows = screen(&mut app, 12);
         // Under the input (its border, one line), above the status bar.
-        assert_eq!(rows[8], "  [fork-1 · m] ⠋ running · 1 tool call · glob \"*\"");
-        assert_eq!(rows[9], "  [scout · m] ⠋ running · 1 tool call · glob \"*\"");
+        assert_eq!(
+            rows[8],
+            "  [fork-1 · m] ⠋ running · 1 tool call · glob \"*\""
+        );
+        assert_eq!(
+            rows[9],
+            "  [scout · m] ⠋ running · 1 tool call · glob \"*\""
+        );
         assert_eq!(rows[10], "    [inner] ⠋ running · 1 tool call · grep");
     }
 
@@ -7371,7 +7526,10 @@ mod tests {
         let reasoning = app.transcript.helper_view_blocks(fork)[1];
         assert!(matches!(
             app.transcript.block(reasoning),
-            Some(Block::Reasoning { collapsed: false, .. })
+            Some(Block::Reasoning {
+                collapsed: false,
+                ..
+            })
         ));
         // Folded inline: nothing of it is on the transcript.
         assert!(app.transcript.is_hidden(reasoning));
@@ -7402,7 +7560,10 @@ mod tests {
             Some(Block::Notice { text, .. }) => text.clone(),
             other => panic!("no listing: {other:?}"),
         };
-        assert!(listing.contains("▸ [scout · m] running · 1 tool call"), "{listing}");
+        assert!(
+            listing.contains("▸ [scout · m] running · 1 tool call"),
+            "{listing}"
+        );
         assert!(listing.contains("[fork-1 · m]"), "{listing}");
         type_str(&mut app, "/helpers expand scout");
         app.update(key(KeyCode::Enter));

@@ -5,8 +5,8 @@ use std::path::PathBuf;
 
 use super::Runner;
 use crate::approval::mode::PermissionMode;
-use crate::approval::trust::TrustStatus;
 use crate::approval::rules::RULES_FILE_NAME;
+use crate::approval::trust::TrustStatus;
 use crate::ui::NoticeLevel;
 
 /// Everything `/status` reports.
@@ -99,7 +99,11 @@ impl Runner {
             );
         let report = StatusReport {
             version: env!("CARGO_PKG_VERSION"),
-            model: format!("{} ({})", self.identity.model, self.identity.provider.as_str()),
+            model: format!(
+                "{} ({})",
+                self.identity.model,
+                self.identity.provider.as_str()
+            ),
             endpoint: self.current_endpoint.as_ref().map(ToString::to_string),
             session: self.session.id().to_string(),
             workspace: scope.context_root.clone(),
@@ -158,7 +162,10 @@ mod tests {
         let text = report().to_string();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[0], "rkat-tui 0.9.10");
-        assert_eq!(lines[1], "model: claude-sonnet-4-6 (anthropic) on endpoint anthropic");
+        assert_eq!(
+            lines[1],
+            "model: claude-sonnet-4-6 (anthropic) on endpoint anthropic"
+        );
         assert_eq!(lines[2], "session: 0193-abcd");
         assert_eq!(lines[3], "workspace: /w");
         assert_eq!(lines[4], "realm: /w/.rkat/tui (id tui)");

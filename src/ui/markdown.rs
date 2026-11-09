@@ -828,11 +828,20 @@ mod tests {
     #[test]
     fn sanitizes_bidi_overrides_and_isolates() {
         for c in ('\u{202A}'..='\u{202E}').chain('\u{2066}'..='\u{2069}') {
-            assert_eq!(sanitize(&format!("a{c}b")), "a\u{fffd}b", "{:04X}", u32::from(c));
+            assert_eq!(
+                sanitize(&format!("a{c}b")),
+                "a\u{fffd}b",
+                "{:04X}",
+                u32::from(c)
+            );
         }
         // Other format characters (a zero-width joiner) are left alone.
         assert_eq!(sanitize("a\u{200D}b"), "a\u{200D}b");
-        assert!(wrap_text("x\u{202E}gnp.exe", 40).concat().contains('\u{fffd}'));
+        assert!(
+            wrap_text("x\u{202E}gnp.exe", 40)
+                .concat()
+                .contains('\u{fffd}')
+        );
     }
 
     #[test]

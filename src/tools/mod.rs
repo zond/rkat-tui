@@ -26,7 +26,7 @@ mod write;
 pub use diff::FileDiff;
 pub(crate) use glob::mention_walker;
 
-pub use read_only::{ReadOnlyProjectTools};
+pub use read_only::ReadOnlyProjectTools;
 
 use crate::paths::{PathError, ProjectRoot, ResolvedPath};
 use async_trait::async_trait;

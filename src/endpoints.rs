@@ -1088,7 +1088,9 @@ pub async fn ensure_model_profile(
             return Ok(None);
         };
         let value = serde_json::to_value(&entry).map_err(EndpointError::Encode)?;
-        Ok(Some(ConfigDelta(serde_json::json!({ "models": { model: value } }))))
+        Ok(Some(ConfigDelta(
+            serde_json::json!({ "models": { model: value } }),
+        )))
     })
     .await
 }
@@ -1236,7 +1238,9 @@ pub fn endpoint_of(
         Some(_) => return None,
         None => WireDialect::from_provider(provider)?.as_str(),
     };
-    endpoints.get(name).map(|e| EndpointName::new(e.name.clone()))
+    endpoints
+        .get(name)
+        .map(|e| EndpointName::new(e.name.clone()))
 }
 
 #[cfg(test)]
@@ -1280,7 +1284,12 @@ mod tests {
             Some(WireDialect::Gemini)
         );
         // Prefixes that used to decide no longer do.
-        for unknown in ["claude-not-catalogued", "gpt-not-catalogued", "o9", "gemini-x"] {
+        for unknown in [
+            "claude-not-catalogued",
+            "gpt-not-catalogued",
+            "o9",
+            "gemini-x",
+        ] {
             assert_eq!(WireDialect::of_catalog_model(unknown), None, "{unknown}");
         }
     }
@@ -1322,8 +1331,16 @@ mod tests {
             ("llama3:8b", &single, Ok(r("litellm", "llama3:8b"))),
             (ANTHROPIC_MODEL, &single, Ok(r("litellm", ANTHROPIC_MODEL))),
             // bare, unlisted, outside the catalog: no prefix guess
-            ("gpt-not-catalogued", &builtins, Err("cannot tell which endpoint")),
-            ("claude-not-catalogued", &builtins, Err("cannot tell which endpoint")),
+            (
+                "gpt-not-catalogued",
+                &builtins,
+                Err("cannot tell which endpoint"),
+            ),
+            (
+                "claude-not-catalogued",
+                &builtins,
+                Err("cannot tell which endpoint"),
+            ),
             // ambiguous
             (OPENAI_MODEL, &two_openai, Err("cannot tell which endpoint")),
             ("mystery", &builtins, Err("cannot tell which endpoint")),
@@ -1371,21 +1388,33 @@ mod tests {
             // unique: listed by one endpoint, whatever the catalog says
             ("only-on-litellm", None, Ok(r("litellm", "only-on-litellm"))),
             // several: the current endpoint first
-            (OPENAI_MODEL, Some("litellm"), Ok(r("litellm", OPENAI_MODEL))),
+            (
+                OPENAI_MODEL,
+                Some("litellm"),
+                Ok(r("litellm", OPENAI_MODEL)),
+            ),
             (
                 ANTHROPIC_MODEL,
                 Some("proxy"),
                 Ok(r("proxy", ANTHROPIC_MODEL)),
             ),
             // then the builtin of the catalogued id's dialect
-            (OPENAI_MODEL, Some("anthropic"), Ok(r("openai", OPENAI_MODEL))),
+            (
+                OPENAI_MODEL,
+                Some("anthropic"),
+                Ok(r("openai", OPENAI_MODEL)),
+            ),
             (ANTHROPIC_MODEL, None, Ok(r("anthropic", ANTHROPIC_MODEL))),
             // then the highest priority
             ("shared", None, Ok(r("proxy", "shared"))),
             // unlisted catalogued id → its provider's built-in endpoint
             ("gpt-5.4", None, Ok(r("openai", "gpt-5.4"))),
             // unlisted, outside the catalog, several endpoints → error
-            ("gpt-not-catalogued", None, Err("cannot tell which endpoint")),
+            (
+                "gpt-not-catalogued",
+                None,
+                Err("cannot tell which endpoint"),
+            ),
             ("mystery", None, Err("cannot tell which endpoint")),
             // explicit override
             ("litellm:gpt-6", None, Ok(r("litellm", "gpt-6"))),
@@ -1460,7 +1489,10 @@ mod tests {
             ),
             (
                 "baddialect",
-                layered(section(Some("cohere"), Some("LITELLM_KEY"), None), RuleOrigin::Realm),
+                layered(
+                    section(Some("cohere"), Some("LITELLM_KEY"), None),
+                    RuleOrigin::Realm,
+                ),
             ),
             (
                 "nodialect",
@@ -1479,7 +1511,10 @@ mod tests {
             ),
             (
                 "openai",
-                layered(section(Some("openai"), Some("LITELLM_KEY"), None), RuleOrigin::Realm),
+                layered(
+                    section(Some("openai"), Some("LITELLM_KEY"), None),
+                    RuleOrigin::Realm,
+                ),
             ),
             (
                 "projenv",
@@ -1490,7 +1525,10 @@ mod tests {
             ),
             (
                 "bad.name",
-                layered(section(Some("openai"), Some("LITELLM_KEY"), None), RuleOrigin::Realm),
+                layered(
+                    section(Some("openai"), Some("LITELLM_KEY"), None),
+                    RuleOrigin::Realm,
+                ),
             ),
         ]
         .into_iter()
@@ -1672,7 +1710,10 @@ mod tests {
         );
         // A removed endpoint is no endpoint.
         let gone = ep("gone", WireDialect::OpenAi, false).binding();
-        assert_eq!(endpoint_of(Provider::OpenAI, gone.as_ref(), &registry), None);
+        assert_eq!(
+            endpoint_of(Provider::OpenAI, gone.as_ref(), &registry),
+            None
+        );
     }
 
     fn configured(name: &str, dialect: WireDialect, key_env: Option<&str>) -> Endpoint {
@@ -1704,9 +1745,10 @@ mod tests {
             true,
         )
         .unwrap();
-        config
-            .realm
-            .insert(ENDPOINT_REALM.to_string(), endpoint_section(&endpoints).unwrap());
+        config.realm.insert(
+            ENDPOINT_REALM.to_string(),
+            endpoint_section(&endpoints).unwrap(),
+        );
         assert!(
             endpoints[0].binding().is_none(),
             "built-ins resolve by default"
@@ -1745,7 +1787,12 @@ mod tests {
         assert_eq!(before.auth_binding, after.auth_binding);
         assert_eq!(before.backend.base_url, after.backend.base_url);
         // Only built-ins: nothing to project.
-        assert!(endpoint_section(&endpoints[..1]).unwrap().binding.is_empty());
+        assert!(
+            endpoint_section(&endpoints[..1])
+                .unwrap()
+                .binding
+                .is_empty()
+        );
     }
 
     /// The config runtime of the document at `path`, its sidecar beside it.
@@ -1799,10 +1846,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("config.toml");
         let runtime = config_runtime(&path);
-        let held =
-            meerkat_core::config_runtime::ConfigWriterLock::acquire(&path.with_file_name("config_state.lock"))
-                .await
-                .unwrap();
+        let held = meerkat_core::config_runtime::ConfigWriterLock::acquire(
+            &path.with_file_name("config_state.lock"),
+        )
+        .await
+        .unwrap();
         let write = ensure_model_profile(&runtime, Provider::OpenAI, "llama3:8b", None);
         tokio::pin!(write);
         assert!(
@@ -1814,7 +1862,11 @@ mod tests {
         assert!(!path.exists());
         drop(held);
         assert!(write.await.unwrap());
-        assert!(std::fs::read_to_string(&path).unwrap().contains("llama3:8b"));
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("llama3:8b")
+        );
     }
 
     #[tokio::test]
@@ -1852,7 +1904,11 @@ mod tests {
             Err(EndpointError::InlineApiKey { name }) if name == "gateway"
         ));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
-        let gateway = vec![configured("gateway", WireDialect::Anthropic, Some("GATEWAY_KEY"))];
+        let gateway = vec![configured(
+            "gateway",
+            WireDialect::Anthropic,
+            Some("GATEWAY_KEY"),
+        )];
         assert!(project_endpoints(&store, &gateway).await.unwrap());
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("GATEWAY_KEY"), "{text}");

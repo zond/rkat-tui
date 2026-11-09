@@ -13,7 +13,6 @@ use crate::bootstrap::Runtime;
 use crate::cli::Args;
 use crate::endpoints::EndpointName;
 use crate::error::TuiError;
-use meerkat_core::service::SessionSummary;
 use crate::session::{
     SessionHandle, SessionIdentity, SessionOptions, list_sessions, resolve_session_ref,
 };
@@ -22,6 +21,7 @@ use crate::ui::{
     Block, Effect, Msg, NoticeLevel, RewindPoint, Rewound, SessionCost, StatusUpdate, ToolState,
     TurnFailure,
 };
+use meerkat_core::service::SessionSummary;
 
 /// The session the TUI starts with.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -161,9 +161,11 @@ impl FailedPrompt {
 /// The session's last conversational message is the user's `text`: nothing
 /// answered it.
 fn ends_with_user_text(session: &Session, text: &str) -> bool {
-    let last = session.messages().iter().rev().find(|message| {
-        !matches!(message, Message::System(_) | Message::SystemNotice(_))
-    });
+    let last = session
+        .messages()
+        .iter()
+        .rev()
+        .find(|message| !matches!(message, Message::System(_) | Message::SystemNotice(_)));
     matches!(
         last,
         Some(Message::User(user))
@@ -375,7 +377,12 @@ impl Runner {
             // activation rows the prefix holds.
             inherited_instructions: Some(ForkInstructionPolicy::ReactivateInherited),
         };
-        let fork = match self.runtime.service.fork_session_at(&previous, request).await {
+        let fork = match self
+            .runtime
+            .service
+            .fork_session_at(&previous, request)
+            .await
+        {
             Ok(fork) => fork,
             Err(err) => {
                 self.notice(NoticeLevel::Error, format!("could not rewind: {err}"));
@@ -454,7 +461,12 @@ impl Runner {
     /// (its waiters and interrupt tasks aborted, its approval state
     /// dropped) and reseed the UI (its transcript from `transcript`, or
     /// cleared when `reset` is set; see [`session_messages`]).
-    async fn switch_to(&mut self, session: SessionHandle, transcript: Option<Session>, reset: bool) {
+    async fn switch_to(
+        &mut self,
+        session: SessionHandle,
+        transcript: Option<Session>,
+        reset: bool,
+    ) {
         let previous = std::mem::replace(&mut self.session, session);
         self.tasks.abort_all();
         self.follow_events().await;

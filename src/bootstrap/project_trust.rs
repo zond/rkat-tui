@@ -165,7 +165,10 @@ impl ProjectInputs {
         if self.by_flag || !self.files().any(|f| f == file) {
             return true;
         }
-        matches!(self.status(file), TrustStatus::Missing | TrustStatus::Trusted)
+        matches!(
+            self.status(file),
+            TrustStatus::Missing | TrustStatus::Trusted
+        )
     }
 
     /// Whether the project `.rkat/mcp.toml` may start servers.
@@ -207,7 +210,10 @@ impl ProjectInputs {
     /// a file that was not trusted never makes it trusted.
     pub fn before_realm_config_write(&self) -> RealmConfigWrite {
         RealmConfigWrite(self.realm_config.as_deref().is_some_and(|file| {
-            matches!(self.status(file), TrustStatus::Missing | TrustStatus::Trusted)
+            matches!(
+                self.status(file),
+                TrustStatus::Missing | TrustStatus::Trusted
+            )
         }))
     }
 
@@ -402,9 +408,9 @@ mod tests {
     }
 
     fn record(scope: &RuntimeScope) -> SharedTrustRecord {
-        Arc::new(parking_lot::Mutex::new(super::super::approval::trust_record(
-            scope,
-        )))
+        Arc::new(parking_lot::Mutex::new(
+            super::super::approval::trust_record(scope),
+        ))
     }
 
     const HOOK: &str = "[[hooks.entries]]\nid = \"fmt\"\npoint = \"turn_boundary\"\n\n[hooks.entries.runtime]\ntype = \"command\"\ncommand = \"touch\"\nargs = [\"/tmp/pwned\"]\n";
@@ -460,8 +466,14 @@ mod tests {
             ]
         );
         let notice = inputs.notice(&refused).unwrap();
-        assert!(notice.contains(&realm_config.display().to_string()), "{notice}");
-        assert!(notice.contains("may have come with the repository"), "{notice}");
+        assert!(
+            notice.contains(&realm_config.display().to_string()),
+            "{notice}"
+        );
+        assert!(
+            notice.contains("may have come with the repository"),
+            "{notice}"
+        );
         assert!(notice.contains("/trust") && notice.contains("--trust-project"));
 
         // `/trust`: admitted, for later processes too.
@@ -578,7 +590,11 @@ mod tests {
         );
         // The user's file is the user's own, whatever it holds.
         assert_eq!(
-            decide(&inputs, &fx.home.join(".rkat/config.toml"), planted.as_bytes()),
+            decide(
+                &inputs,
+                &fx.home.join(".rkat/config.toml"),
+                planted.as_bytes()
+            ),
             HookSourceDecision::Trusted
         );
     }
@@ -623,8 +639,11 @@ mod tests {
         assert_eq!(inputs.status(&realm_config), TrustStatus::Trusted);
         // Planted behind rkat-tui's back: a later rkat-tui write keeps it
         // untrusted.
-        std::fs::write(&realm_config, "[[tools.mcp_servers]]\nname = \"x\"\ncommand = \"y\"\n")
-            .unwrap();
+        std::fs::write(
+            &realm_config,
+            "[[tools.mcp_servers]]\nname = \"x\"\ncommand = \"y\"\n",
+        )
+        .unwrap();
         let before = inputs.before_realm_config_write();
         std::fs::write(
             &realm_config,

@@ -360,7 +360,6 @@ impl Runner {
         };
         self.notice(level, outcome.text);
     }
-
 }
 
 /// The permission mode, whether auto mode is paused after classifier
@@ -429,9 +428,12 @@ mod tests {
     #[test]
     fn rule_numbers_are_stable_across_removal() {
         let mut rules = RuleSet::default();
-        let ls = rules.push(Rule::new(RuleKind::Allow, "shell", Some("ls*"), RuleOrigin::Realm).unwrap());
-        let rm = rules.push(Rule::new(RuleKind::Deny, "shell", Some("rm*"), RuleOrigin::Realm).unwrap());
-        let cat = rules.push(Rule::new(RuleKind::Allow, "shell", Some("cat*"), RuleOrigin::Realm).unwrap());
+        let ls = rules
+            .push(Rule::new(RuleKind::Allow, "shell", Some("ls*"), RuleOrigin::Realm).unwrap());
+        let rm =
+            rules.push(Rule::new(RuleKind::Deny, "shell", Some("rm*"), RuleOrigin::Realm).unwrap());
+        let cat = rules
+            .push(Rule::new(RuleKind::Allow, "shell", Some("cat*"), RuleOrigin::Realm).unwrap());
         assert_eq!(nth_rule_id(&rules, 0), None);
         assert_eq!(nth_rule_id(&rules, 1), Some(ls));
         assert_eq!(nth_rule_id(&rules, 2), Some(rm));
@@ -443,7 +445,8 @@ mod tests {
         assert_eq!(nth_rule_id(&rules, 3), Some(cat));
         assert_eq!(rules.get(rm).map(|r| r.kind), Some(RuleKind::Deny));
         // A new rule never reuses a removed number.
-        let new = rules.push(Rule::new(RuleKind::Allow, "shell", Some("wc*"), RuleOrigin::Realm).unwrap());
+        let new = rules
+            .push(Rule::new(RuleKind::Allow, "shell", Some("wc*"), RuleOrigin::Realm).unwrap());
         assert_eq!(new.serial, 4);
         let listed: Vec<u64> = numbered_rules(&rules).map(|(n, _)| n).collect();
         assert_eq!(listed, [3, 4, 2]);

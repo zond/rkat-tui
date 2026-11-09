@@ -145,7 +145,9 @@ impl EscalationBroker {
         {
             return HumanDecision::Deny { comment: None };
         }
-        answer.await.unwrap_or(HumanDecision::Deny { comment: None })
+        answer
+            .await
+            .unwrap_or(HumanDecision::Deny { comment: None })
     }
 
     /// Acquire the serial lock and ask the human.
@@ -202,12 +204,21 @@ mod tests {
         first.respond.send(HumanDecision::AllowOnce).unwrap();
         let second = rx.recv().await.unwrap();
         assert_ne!(second.prompt.tool, first_tool);
-        second.respond.send(HumanDecision::Deny { comment: None }).unwrap();
+        second
+            .respond
+            .send(HumanDecision::Deny { comment: None })
+            .unwrap();
 
         let (ra, rb) = (a.await.unwrap(), b.await.unwrap());
         let mut answers = [ra, rb];
         answers.sort_by_key(|d| matches!(d, HumanDecision::Deny { .. }));
-        assert_eq!(answers, [HumanDecision::AllowOnce, HumanDecision::Deny { comment: None }]);
+        assert_eq!(
+            answers,
+            [
+                HumanDecision::AllowOnce,
+                HumanDecision::Deny { comment: None }
+            ]
+        );
     }
 
     #[tokio::test]
@@ -223,6 +234,9 @@ mod tests {
     async fn dropped_receiver_denies() {
         let (broker, rx) = EscalationBroker::new(1);
         drop(rx);
-        assert_eq!(broker.ask(prompt("x")).await, HumanDecision::Deny { comment: None });
+        assert_eq!(
+            broker.ask(prompt("x")).await,
+            HumanDecision::Deny { comment: None }
+        );
     }
 }

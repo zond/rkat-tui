@@ -71,21 +71,22 @@ use meerkat_core::{
     AgentToolDispatcher, AuthBindingRef, ContentInput, HandlingMode, InputId, Provider, Session,
     SessionId, SystemPromptOverride, ToolCategoryOverride, ToolNameSet,
 };
-use meerkat_runtime::completion::CompletionHandle;
-use meerkat_runtime::run_stop::RunStopReceipt;
 use meerkat_runtime::RuntimeDriverError;
+use meerkat_runtime::completion::CompletionHandle;
 use meerkat_runtime::input_state::InputLifecycleState;
+use meerkat_runtime::run_stop::RunStopReceipt;
 use meerkat_runtime::{
-    AcceptOutcome, CanonicalKeyTextError, InputAbandonReason, InputTerminalOutcome, IdempotencyKey, Input, MeerkatMachine, PromptInput,
-    RejectReason, SessionLlmReconfigureRequest, SessionServiceRuntimeExt,
+    AcceptOutcome, CanonicalKeyTextError, IdempotencyKey, Input, InputAbandonReason,
+    InputTerminalOutcome, MeerkatMachine, PromptInput, RejectReason, SessionLlmReconfigureRequest,
+    SessionServiceRuntimeExt,
 };
 
 use crate::approval::{ApprovalEngine, InputKey, admission};
 use crate::bootstrap::{CODING_PERSONA, ModelChoice, Runtime, TuiService};
 use crate::endpoints::{EndpointName, endpoint_of};
-use crate::thinking;
 use crate::error::TuiError;
 use crate::mobs::Helpers;
+use crate::thinking;
 
 pub use crate::ui::compaction::CompactionTrigger;
 pub use resolve::{list_sessions, resolve_session_ref};

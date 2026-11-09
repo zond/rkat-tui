@@ -116,7 +116,10 @@ mod tests {
                 PermissionMode::Manual,
             ]
         );
-        assert_eq!(PermissionMode::ALL.map(PermissionMode::next)[3], PermissionMode::Manual);
+        assert_eq!(
+            PermissionMode::ALL.map(PermissionMode::next)[3],
+            PermissionMode::Manual
+        );
     }
 
     #[test]
@@ -131,8 +134,14 @@ mod tests {
             assert_eq!(text.trim(), format!("mode = \"{}\"", mode.name()));
             assert_eq!(toml::from_str::<T>(&text).unwrap().mode, mode);
         }
-        assert_eq!(PermissionMode::parse("manual"), Some(PermissionMode::Manual));
-        assert_eq!(PermissionMode::parse("acceptEdits"), Some(PermissionMode::AcceptEdits));
+        assert_eq!(
+            PermissionMode::parse("manual"),
+            Some(PermissionMode::Manual)
+        );
+        assert_eq!(
+            PermissionMode::parse("acceptEdits"),
+            Some(PermissionMode::AcceptEdits)
+        );
         assert_eq!(PermissionMode::parse("PLAN"), Some(PermissionMode::Plan));
         assert_eq!(PermissionMode::parse("yolo"), None);
         assert_eq!(PermissionMode::default(), PermissionMode::Auto);

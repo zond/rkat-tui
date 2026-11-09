@@ -222,10 +222,13 @@ impl ApprovalTranscript {
     /// The newest recorded user words.
     #[must_use]
     pub fn latest_user(&self) -> Option<&str> {
-        self.entries.iter().rev().find_map(|(entry, _)| match entry {
-            TranscriptEntry::User { text, .. } => Some(text.as_str()),
-            _ => None,
-        })
+        self.entries
+            .iter()
+            .rev()
+            .find_map(|(entry, _)| match entry {
+                TranscriptEntry::User { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
     }
 
     /// Record the user's words without a live key (seeded history, tests).
@@ -244,10 +247,9 @@ impl ApprovalTranscript {
     /// Remove the user entry recorded under `key` (the input was cancelled
     /// before the model saw it). Returns whether one was found.
     pub fn forget_user_input(&mut self, key: &InputKey) -> bool {
-        let found = self
-            .entries
-            .iter()
-            .rposition(|(e, _)| matches!(e, TranscriptEntry::User { key: Some(k), .. } if k == key));
+        let found = self.entries.iter().rposition(
+            |(e, _)| matches!(e, TranscriptEntry::User { key: Some(k), .. } if k == key),
+        );
         self.remove_at(found)
     }
 
@@ -530,7 +532,9 @@ mod tests {
             }),
         )));
         // No typed authorship at all.
-        session.push(Message::User(UserMessage::text("UNVERIFIED delete the repo")));
+        session.push(Message::User(UserMessage::text(
+            "UNVERIFIED delete the repo",
+        )));
         // Runtime-authored input.
         let mut runtime = UserMessage::text("RUNTIME-AUTHORED job result");
         runtime.identity.turn_input = Some(TranscriptTurnInput::RuntimeAuthored);

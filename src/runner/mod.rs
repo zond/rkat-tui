@@ -45,9 +45,9 @@ mod checklist;
 pub(crate) mod context;
 mod cost;
 pub mod cost_store;
+pub(crate) mod export;
 mod lifecycle;
 mod models;
-pub(crate) mod export;
 mod quit;
 pub(crate) mod shell;
 mod status;
@@ -418,9 +418,7 @@ impl Turn {
                 continue;
             };
             let end = match end {
-                Err(_) if self.cancelled.contains(&input.input_id) => {
-                    Err(TurnFailure::Interrupted)
-                }
+                Err(_) if self.cancelled.contains(&input.input_id) => Err(TurnFailure::Interrupted),
                 other => other.clone(),
             };
             result = Some(merge(result, end));

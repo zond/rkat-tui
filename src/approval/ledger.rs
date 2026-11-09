@@ -22,7 +22,6 @@
 //! "Allow always" rules do not live here: they go to the realm rules file
 //! (`tui.toml`), as before.
 
-
 use std::time::{Duration, SystemTime};
 
 use meerkat_core::{
@@ -454,7 +453,12 @@ mod tests {
             .decide(&id, ApprovalDecision::Approve, Decider::Human, "client")
             .unwrap();
         let record = ledger
-            .settle(&id, ApprovalDecision::Approve, Decider::Human, "allowed once")
+            .settle(
+                &id,
+                ApprovalDecision::Approve,
+                Decider::Human,
+                "allowed once",
+            )
             .unwrap();
         assert_eq!(record.status, ApprovalStatus::Approved);
         // A contradicting settle is still an error.

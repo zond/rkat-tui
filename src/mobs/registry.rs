@@ -17,10 +17,10 @@
 use meerkat_core::{AgentEvent, ScopedAgentEvent, SessionId, StreamScopeFrame};
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "mob")]
-pub use owned::{HelperKey, HelperRegistry, Owner};
 #[cfg(all(feature = "mob", any(test, feature = "test-support")))]
 pub use owned::OwnerError;
+#[cfg(feature = "mob")]
+pub use owned::{HelperKey, HelperRegistry, Owner};
 
 /// What a helper is and whom it works for.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -535,7 +535,10 @@ mod tests {
         // `delegate` from its session: the implicit mob its session created.
         let implicit = MobId::from(format!("implicit-{session}"));
         registry.record_mob(&implicit, &session).unwrap();
-        assert_eq!(registry.owner_for_spawn(&implicit, None).unwrap().session, session);
+        assert_eq!(
+            registry.owner_for_spawn(&implicit, None).unwrap().session,
+            session
+        );
     }
 
     #[cfg(feature = "mob")]
@@ -554,7 +557,11 @@ mod tests {
             registry.owner_for_spawn(&implicit_a, None),
             Err(OwnerError::UnknownMob(implicit_a.clone()))
         );
-        assert!(registry.owner_for_spawn(&MobId::from("team"), None).is_err());
+        assert!(
+            registry
+                .owner_for_spawn(&MobId::from("team"), None)
+                .is_err()
+        );
         // A session's own mob.
         registry.record_mob(&implicit_a, &a).unwrap();
         let owner = registry.owner_for_spawn(&implicit_a, None).unwrap();

@@ -236,7 +236,10 @@ impl HelperFold {
         use std::fmt::Write as _;
         let mut out = String::new();
         if self.state.is_running() {
-            let glyph = SPINNER.get(self.spin % SPINNER.len()).copied().unwrap_or('⠋');
+            let glyph = SPINNER
+                .get(self.spin % SPINNER.len())
+                .copied()
+                .unwrap_or('⠋');
             out.push(glyph);
             out.push(' ');
         }
@@ -754,7 +757,11 @@ impl Transcript {
                         let _ = writeln!(out, "{note}");
                     }
                     if let Some(diff) = diff {
-                        let _ = writeln!(out, "edited {} (+{} -{})", diff.path, diff.added, diff.removed);
+                        let _ = writeln!(
+                            out,
+                            "edited {} (+{} -{})",
+                            diff.path, diff.added, diff.removed
+                        );
                     }
                     if !collapsed {
                         if let Some(preview) = result_preview {
@@ -1465,9 +1472,7 @@ impl Transcript {
             .scope_path
             .iter()
             .filter_map(|frame| match frame {
-                StreamScopeFrame::MobMember { agent_identity, .. } => {
-                    Some(agent_identity.as_str())
-                }
+                StreamScopeFrame::MobMember { agent_identity, .. } => Some(agent_identity.as_str()),
                 _ => None,
             })
             .collect();
@@ -1814,7 +1819,10 @@ fn helper_args_preview(args: &Value) -> String {
         None if args.as_object().is_some_and(serde_json::Map::is_empty) || args.is_null() => {
             String::new()
         }
-        None => truncate_chars(&serde_json::to_string(args).unwrap_or_default(), MAX_HELPER_PREVIEW),
+        None => truncate_chars(
+            &serde_json::to_string(args).unwrap_or_default(),
+            MAX_HELPER_PREVIEW,
+        ),
     }
 }
 
@@ -1822,7 +1830,13 @@ fn helper_args_preview(args: &Value) -> String {
 fn tool_has_output(block: &Block) -> bool {
     matches!(block, Block::Tool { result_preview, diff, .. }
         if result_preview.is_some() || diff.is_some())
-        || matches!(block, Block::Shell { output: Some(_), .. })
+        || matches!(
+            block,
+            Block::Shell {
+                output: Some(_),
+                ..
+            }
+        )
 }
 
 /// A `!` command's state as the export and the header say it.
@@ -2028,7 +2042,9 @@ mod tests {
     #[test]
     fn export_text_has_a_header_per_block_and_folds_collapsed_output() {
         let mut t = Transcript::new();
-        t.push(Block::User { text: "fix it".into() });
+        t.push(Block::User {
+            text: "fix it".into(),
+        });
         t.push(Block::Reasoning {
             text: "secret thoughts".into(),
             collapsed: true,
@@ -2048,7 +2064,9 @@ mod tests {
         };
         t.push(tool(true));
         t.push(tool(false));
-        t.push(Block::Assistant { md: "done\n".into() });
+        t.push(Block::Assistant {
+            md: "done\n".into(),
+        });
         t.push(Block::Approval {
             tool: "shell".into(),
             tier: "classifier".into(),
@@ -2374,9 +2392,7 @@ mod tests {
         let second: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(second, "  allowed by classifier: in-project cleanup");
         let dim = |style: ratatui::style::Style| {
-            style
-                .add_modifier
-                .contains(ratatui::style::Modifier::DIM)
+            style.add_modifier.contains(ratatui::style::Modifier::DIM)
         };
         assert!(dim(lines[1].style) || lines[1].spans.iter().all(|s| dim(s.style)));
         // A note that arrives before its call waits for the block.
@@ -2403,7 +2419,12 @@ mod tests {
     fn a_helper_calls_note_hides_with_its_fold() {
         let mut t = Transcript::new();
         t.push(Block::User { text: "go".into() });
-        t.apply_scoped_event(&helper_call(&["scout"], "h1", "shell", json!({"command": "make"})));
+        t.apply_scoped_event(&helper_call(
+            &["scout"],
+            "h1",
+            "shell",
+            json!({"command": "make"}),
+        ));
         let tool = BlockId(2);
         // The engine names the call by the id the helper's model issued.
         t.attach_note("h1", "allowed by classifier: builds the project".into());
@@ -2425,7 +2446,12 @@ mod tests {
         let mut t = Transcript::new();
         t.note_helper_model("scout", "claude-opus-5-5");
         t.push(Block::User { text: "go".into() });
-        t.apply_scoped_event(&helper_call(&["scout"], "a", "read_file", json!({"path": "a.rs"})));
+        t.apply_scoped_event(&helper_call(
+            &["scout"],
+            "a",
+            "read_file",
+            json!({"path": "a.rs"}),
+        ));
         t.apply_scoped_event(&helper_call(
             &["scout"],
             "b",
@@ -2526,7 +2552,9 @@ mod tests {
             .filter_map(|id| t.block(id).cloned())
             .collect();
         assert_eq!(view.len(), 5, "{view:?}");
-        assert!(matches!(&view[0], Block::Reasoning { text, collapsed: true } if text == "Look around."));
+        assert!(
+            matches!(&view[0], Block::Reasoning { text, collapsed: true } if text == "Look around.")
+        );
         assert!(matches!(&view[1], Block::Assistant { md } if md == "First finding.\nMore."));
         assert!(matches!(&view[2], Block::Tool { name, .. } if name == "[scout] glob"));
         assert!(matches!(&view[3], Block::Reasoning { text, .. } if text == "Done looking."));
@@ -2541,22 +2569,38 @@ mod tests {
         assert!(!t.is_hidden(BlockId(main)));
         // Folded, the helper's prose and reasoning are hidden; the preview
         // is the first line of its latest text.
-        assert!(t
-            .helper_view_blocks(header)
-            .iter()
-            .all(|id| t.is_hidden(*id)));
-        assert_eq!(fold_of(&t, "scout").last, HelperLast::Text("Second.".into()));
+        assert!(
+            t.helper_view_blocks(header)
+                .iter()
+                .all(|id| t.is_hidden(*id))
+        );
+        assert_eq!(
+            fold_of(&t, "scout").last,
+            HelperLast::Text("Second.".into())
+        );
         // Ctrl-O on the transcript skips the hidden helper reasoning; in
         // the view it toggles the helper's latest.
         assert!(!t.toggle_last_reasoning());
         assert!(t.toggle_last_reasoning_in(Some(header)));
         let latest = t.helper_view_blocks(header)[3];
-        assert!(matches!(t.block(latest), Some(Block::Reasoning { collapsed: false, .. })));
+        assert!(matches!(
+            t.block(latest),
+            Some(Block::Reasoning {
+                collapsed: false,
+                ..
+            })
+        ));
         // The view lays out every block, folded or not.
         let lines = t.helper_view_lines(header, 80);
         let text: Vec<String> = lines.iter().map(ToString::to_string).collect();
-        assert!(text.iter().any(|l| l.contains("✻ thinking (12 chars")), "{text:?}");
-        assert!(text.iter().any(|l| l.contains("First finding.")), "{text:?}");
+        assert!(
+            text.iter().any(|l| l.contains("✻ thinking (12 chars")),
+            "{text:?}"
+        );
+        assert!(
+            text.iter().any(|l| l.contains("First finding.")),
+            "{text:?}"
+        );
     }
 
     #[test]
@@ -2578,7 +2622,12 @@ mod tests {
     #[test]
     fn expanding_a_helper_reveals_its_blocks() {
         let mut t = Transcript::new();
-        t.apply_scoped_event(&helper_call(&["scout"], "a", "glob", json!({"pattern": "*"})));
+        t.apply_scoped_event(&helper_call(
+            &["scout"],
+            "a",
+            "glob",
+            json!({"pattern": "*"}),
+        ));
         t.apply_scoped_event(&helper_event(&["scout"], test_tool_result("a", "one")));
         let header = t.helper_header("scout").unwrap();
         assert_eq!(t.ensure_layout(80), 2);
@@ -2615,7 +2664,10 @@ mod tests {
         assert!(!t.is_hidden(inner));
         assert!(t.is_hidden(BlockId(3)));
         assert_eq!(t.ensure_layout(80), 6);
-        assert_eq!(t.visible_helper_headers().collect::<Vec<_>>(), vec![outer, inner]);
+        assert_eq!(
+            t.visible_helper_headers().collect::<Vec<_>>(),
+            vec![outer, inner]
+        );
         t.toggle_helper(inner);
         assert_eq!(t.ensure_layout(80), 8);
         // Folding the parent hides everything below it again.
@@ -2701,7 +2753,10 @@ mod tests {
         assert_eq!(fold_of(&t, "other").state, HelperState::Done);
         t.helper_unmeasured("lost");
         assert_eq!(fold_of(&t, "lost").state, HelperState::Unmeasured);
-        assert_eq!(fold_of(&t, "lost").status_text(), "unmeasured · 0 tool calls");
+        assert_eq!(
+            fold_of(&t, "lost").status_text(),
+            "unmeasured · 0 tool calls"
+        );
     }
 
     #[test]
@@ -2840,7 +2895,9 @@ mod tests {
             args: test_args(json!({"path": "a.rs"})),
         });
         t.push_notice(NoticeLevel::Info, "a note");
-        t.push(Block::User { text: "three".into() });
+        t.push(Block::User {
+            text: "three".into(),
+        });
         t.apply_agent_event(&text("third answer"));
         let before = t.len();
         // A text that does not line up, or a block that is not there,
@@ -2860,7 +2917,11 @@ mod tests {
                 },
             ]
         );
-        assert_eq!(t.tool_block("t1"), None, "the dropped call leaves the index");
+        assert_eq!(
+            t.tool_block("t1"),
+            None,
+            "the dropped call leaves the index"
+        );
         // New output after the cut streams into a new block.
         t.apply_agent_event(&text("again"));
         assert_eq!(

@@ -8,13 +8,13 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block as BorderBlock, Borders, Clear, Paragraph};
 
+use super::checklist::{Checklist, ItemState};
 use super::markdown::{display_width, render_markdown, sanitize, truncate_to_width, wrap_text};
 use super::modal::draw_modal;
 use super::transcript::{
     Block, BlockId, DiffView, HelperFold, HelperState, NoticeLevel, ShellState, ToolState,
     args_preview, result_line_count,
 };
-use super::checklist::{Checklist, ItemState};
 use super::{App, HistorySearch, StatusInfo};
 use crate::approval::mode::PermissionMode;
 
@@ -44,8 +44,11 @@ pub fn draw_at(frame: &mut Frame<'_>, app: &mut App, now: Instant) {
     let area = frame.area();
     // The input block has only a top border, so its inner width is the
     // area's; the prompt prefix takes two columns of each visual row.
-    app.input
-        .set_wrap_width(usize::from(area.width).saturating_sub(INPUT_PREFIX_W).max(1));
+    app.input.set_wrap_width(
+        usize::from(area.width)
+            .saturating_sub(INPUT_PREFIX_W)
+            .max(1),
+    );
     let input_rows = if app.search().is_some() {
         1
     } else {
@@ -224,7 +227,9 @@ fn draw_menu(frame: &mut Frame<'_>, app: &App, transcript: Rect, input: Rect) {
         return;
     };
     let (first, shown) = menu.window();
-    let height = u16::try_from(shown).unwrap_or(u16::MAX).min(transcript.height);
+    let height = u16::try_from(shown)
+        .unwrap_or(u16::MAX)
+        .min(transcript.height);
     if height == 0 {
         return;
     }
@@ -298,7 +303,9 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect, now: Instant) {
     } else if app.panel_selection().is_some() {
         " Enter opens the helper (empty input; with text Enter sends) · Esc deselects ".into()
     } else if app.input.is_empty() && app.can_take_back() {
-        format!(" ↑ takes back queued · Ctrl+Enter send now{helpers} · Esc interrupts (queued go next) ")
+        format!(
+            " ↑ takes back queued · Ctrl+Enter send now{helpers} · Esc interrupts (queued go next) "
+        )
     } else if app.is_running() {
         format!(" Enter queues · Ctrl+Enter interrupts and sends{helpers} · Esc/Ctrl-C interrupts ")
     } else if app.input.is_empty() && app.input.has_stash() {
@@ -533,10 +540,9 @@ fn mode_segment(status: &StatusInfo) -> Option<Span<'static>> {
                 .remove_modifier(Modifier::REVERSED),
         ),
         PermissionMode::Auto => Span::raw(format!("auto (deny {c}/{cm}, {t}/{tm})")),
-        PermissionMode::Plan => Span::styled(
-            mode.label(),
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
+        PermissionMode::Plan => {
+            Span::styled(mode.label(), Style::default().add_modifier(Modifier::BOLD))
+        }
         PermissionMode::Manual | PermissionMode::AcceptEdits => Span::raw(mode.label()),
     })
 }
@@ -798,7 +804,10 @@ fn shell_lines(
     let (mut status, color) = match state {
         ShellState::Running { .. } => (" · running…".to_string(), Color::Yellow),
         ShellState::Done { exit, duration_ms } => (
-            format!(" · {} {exit} ({duration_ms}ms)", if exit.success() { "✓" } else { "✗" }),
+            format!(
+                " · {} {exit} ({duration_ms}ms)",
+                if exit.success() { "✓" } else { "✗" }
+            ),
             if exit.success() {
                 Color::Green
             } else {
@@ -818,7 +827,9 @@ fn shell_lines(
     out.push(Line::from(vec![
         Span::styled(
             truncate_to_width(&sanitize(&header), header_w),
-            Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             truncate_to_width(&sanitize(&status), w),
@@ -964,7 +975,9 @@ mod tests {
         let now = Instant::now();
         let mut s = StatusInfo::default();
         s.set_model("anthropic", "claude-sonnet-4-6");
-        s.apply(crate::ui::StatusUpdate::Attach(Some("attached 127.0.0.1:4000".into())));
+        s.apply(crate::ui::StatusUpdate::Attach(Some(
+            "attached 127.0.0.1:4000".into(),
+        )));
         let line = status_line(&s, now);
         assert!(
             line.starts_with(" attached 127.0.0.1:4000 │ anthropic/claude-sonnet-4-6"),
@@ -1085,7 +1098,10 @@ mod tests {
             collapsed: false,
         };
         let lines: Vec<String> = block_lines(&block, 60).iter().map(line_text).collect();
-        assert_eq!(lines, ["$ ls · ✗ exit 2 (7ms) ▾", "  -a", "  │ x", "  │ y", ""]);
+        assert_eq!(
+            lines,
+            ["$ ls · ✗ exit 2 (7ms) ▾", "  -a", "  │ x", "  │ y", ""]
+        );
         if let Block::Shell { collapsed, .. } = &mut block {
             *collapsed = true;
         }
@@ -1114,7 +1130,10 @@ mod tests {
     fn status_bar_modes_and_classifying() {
         let now = Instant::now();
         let mut s = StatusInfo::default();
-        assert!(!status_line(&s, now).contains("auto"), "no mode before the runner reports one");
+        assert!(
+            !status_line(&s, now).contains("auto"),
+            "no mode before the runner reports one"
+        );
         s.set_mode(PermissionMode::Auto, true, (3, 3, 5, 20));
         s.set_classifying(true);
         let bar = status_bar(&s, now);

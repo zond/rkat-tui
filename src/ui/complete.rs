@@ -220,12 +220,18 @@ mod tests {
     fn a_path_word_starts_with_at_and_ends_at_the_cursor() {
         let word = word_at(&line("read @src/ma please"), (0, 12)).unwrap();
         assert_eq!(word.kind, CompletionKind::Path);
-        assert_eq!((word.start, word.end, word.text.as_str()), (5, 12, "src/ma"));
+        assert_eq!(
+            (word.start, word.end, word.text.as_str()),
+            (5, 12, "src/ma")
+        );
         assert_eq!(word_at(&line("@"), (0, 1)).unwrap().text, "");
         // In a later line, and after a command's first word.
         let lines = vec!["one".to_string(), "two @x".to_string()];
         assert_eq!(word_at(&lines, (1, 6)).unwrap().text, "x");
-        assert_eq!(word_at(&line("/model @x"), (0, 9)).unwrap().kind, CompletionKind::Path);
+        assert_eq!(
+            word_at(&line("/model @x"), (0, 9)).unwrap().kind,
+            CompletionKind::Path
+        );
         // Not inside a word, not after a non-blank, not for a@b.
         assert!(word_at(&line("@src/ma"), (0, 4)).is_none());
         assert!(word_at(&line("mail a@b"), (0, 8)).is_none());
@@ -248,7 +254,11 @@ mod tests {
         assert_eq!(rows, [("@src/main.rs", false), ("@src/ui/", true)]);
         assert!(!menu.is_complete());
         let typed = word_at(&line("@src/main.rs"), (0, 12)).unwrap();
-        assert!(Menu::open(typed.clone(), candidates(&typed, &index)).unwrap().is_complete());
+        assert!(
+            Menu::open(typed.clone(), candidates(&typed, &index))
+                .unwrap()
+                .is_complete()
+        );
         menu.step(true);
         assert!(!menu.is_complete());
     }
@@ -259,7 +269,10 @@ mod tests {
         let items = candidates(&word, &[]);
         assert_eq!(items.len(), 2, "/mode and /model");
         assert_eq!(items[0].insert, "/mode");
-        assert_eq!(items[0].label, "/mode [default | accept-edits | plan | auto]");
+        assert_eq!(
+            items[0].label,
+            "/mode [default | accept-edits | plan | auto]"
+        );
         assert_eq!(items[0].detail, "show or set the permission mode");
         assert_eq!(items[1].insert, "/model");
         assert_eq!(items[1].label, "/model [[endpoint:]id | refresh]");
@@ -286,6 +299,10 @@ mod tests {
         assert_eq!(menu.window(), (1, MAX_ROWS));
         assert!(!menu.is_complete());
         let exact = word_at(&line("/help"), (0, 5)).unwrap();
-        assert!(Menu::open(exact.clone(), candidates(&exact, &[])).unwrap().is_complete());
+        assert!(
+            Menu::open(exact.clone(), candidates(&exact, &[]))
+                .unwrap()
+                .is_complete()
+        );
     }
 }

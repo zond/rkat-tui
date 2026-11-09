@@ -30,10 +30,10 @@
 //! keep Tier 2 off them and put file-tool writes to them to the user, and on Linux the backend has no deny lists), and
 //! everything the model does through the network in `workspace` mode.
 
+use super::catalog::{ToolFamily, ToolOrigin};
 use super::patch_targets::{ParseError, affected_paths};
 use super::rules::{RuleId, RuleSet};
 use super::shell;
-use super::catalog::{ToolFamily, ToolOrigin};
 use crate::memory::{NOTE_FORGET, NOTE_LIST, NOTE_READ, NOTE_SAVE, Scope, slug};
 use crate::paths::ProjectRoot;
 use crate::tools::{EDIT_FILE, GLOB, GREP, READ_FILE, WRITE_FILE};
@@ -337,18 +337,20 @@ impl<'a> Action<'a> {
                     path: a.path,
                     pattern: if name == GLOB { a.pattern } else { None },
                 }),
-            (ToolFamily::Files, WRITE_FILE | EDIT_FILE) => typed::<PathArgs>(args)
-                .map_or(ActionKind::Other, |a| ActionKind::FileWrite {
+            (ToolFamily::Files, WRITE_FILE | EDIT_FILE) => {
+                typed::<PathArgs>(args).map_or(ActionKind::Other, |a| ActionKind::FileWrite {
                     paths: vec![a.path],
-                }),
+                })
+            }
             (ToolFamily::Notes, NOTE_LIST | NOTE_READ) if !declared_mutating => {
                 ActionKind::NoteRead
             }
-            (ToolFamily::Notes, NOTE_SAVE | NOTE_FORGET) => typed::<NoteArgs>(args)
-                .map_or(ActionKind::Other, |a| ActionKind::NoteWrite {
+            (ToolFamily::Notes, NOTE_SAVE | NOTE_FORGET) => {
+                typed::<NoteArgs>(args).map_or(ActionKind::Other, |a| ActionKind::NoteWrite {
                     scope: a.scope,
                     name: a.name,
-                }),
+                })
+            }
             _ => ActionKind::Other,
         }
     }
@@ -692,7 +694,7 @@ mod tests {
     /// production gate reads origins from the session's live tool
     /// definitions).
     fn origin(name: &str) -> Option<ToolOrigin> {
-        use crate::memory::{NOTES_SOURCE, NOTE_TOOL_NAMES};
+        use crate::memory::{NOTE_TOOL_NAMES, NOTES_SOURCE};
         use crate::tools::{FILE_TOOL_NAMES, FILE_TOOLS_SOURCE};
         use meerkat_core::ToolSourceKind;
         if FILE_TOOL_NAMES.contains(&name) {
@@ -769,14 +771,19 @@ mod tests {
     fn a_later_sealed_patch_target_seals_the_patch() {
         let (_dir, root) = project();
         let mut rules = RuleSet::default();
-        rules.push(Rule::new(RuleKind::Allow, "apply_patch", Some("*"), RuleOrigin::Realm).unwrap());
+        rules
+            .push(Rule::new(RuleKind::Allow, "apply_patch", Some("*"), RuleOrigin::Realm).unwrap());
         for patch in [
             "*** Begin Patch\n*** Add File: build.rs\n+x\n*** Update File: .git/config\n@@\n-a\n+b\n*** End Patch",
             "*** Begin Patch\n*** Add File: /tmp/x\n+x\n*** Update File: .rkat/config.toml\n@@\n-a\n+b\n*** End Patch",
         ] {
             let args = json!({ "patch": patch });
             for set in [&RuleSet::default(), &rules] {
-                assert_eq!(tier(&root, set, false, "apply_patch", &args), Tier::Sealed, "{patch}");
+                assert_eq!(
+                    tier(&root, set, false, "apply_patch", &args),
+                    Tier::Sealed,
+                    "{patch}"
+                );
             }
         }
     }
@@ -795,11 +802,7 @@ mod tests {
         };
         let env = json!({"path": ".env.local", "content": "K=v"});
         let raw_env = raw(&env);
-        let decision = classify_tier(
-            &parse("write_file", &raw_env),
-            &RuleSet::default(),
-            &ctx,
-        );
+        let decision = classify_tier(&parse("write_file", &raw_env), &RuleSet::default(), &ctx);
         assert_eq!(decision.tier, Tier::AskUser);
         assert_eq!(
             decision.detail,
@@ -807,32 +810,60 @@ mod tests {
         );
 
         let mut allow = RuleSet::default();
-        allow.push(Rule::literal(RuleKind::Allow, "write_file", ".env.local", RuleOrigin::Realm).unwrap());
-        assert_eq!(tier(&root, &allow, false, "write_file", &env), Tier::AlwaysAllow);
+        allow.push(
+            Rule::literal(
+                RuleKind::Allow,
+                "write_file",
+                ".env.local",
+                RuleOrigin::Realm,
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            tier(&root, &allow, false, "write_file", &env),
+            Tier::AlwaysAllow
+        );
         // The literal rule is that file's only: another protected path still asks.
         assert_eq!(
-            tier(&root, &allow, false, "write_file", &json!({"path": ".env", "content": ""})),
+            tier(
+                &root,
+                &allow,
+                false,
+                "write_file",
+                &json!({"path": ".env", "content": ""})
+            ),
             Tier::AskUser
         );
         let mut deny = RuleSet::default();
-        deny.push(Rule::new(RuleKind::Deny, "write_file", Some(".env*"), RuleOrigin::Realm).unwrap());
-        assert_eq!(tier(&root, &deny, false, "write_file", &env), Tier::UserDeny);
+        deny.push(
+            Rule::new(
+                RuleKind::Deny,
+                "write_file",
+                Some(".env*"),
+                RuleOrigin::Realm,
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            tier(&root, &deny, false, "write_file", &env),
+            Tier::UserDeny
+        );
 
         // A seal wins over a protected target and an allow rule.
         let mut allow_all = RuleSet::default();
-        allow_all.push(Rule::new(RuleKind::Allow, "apply_patch", Some("*"), RuleOrigin::Realm).unwrap());
+        allow_all
+            .push(Rule::new(RuleKind::Allow, "apply_patch", Some("*"), RuleOrigin::Realm).unwrap());
         let sealed = json!({"patch": "*** Begin Patch\n*** Add File: .env\n+x\n*** Update File: .rkat/config.toml\n@@\n-a\n+b\n*** End Patch"});
         for set in [&RuleSet::default(), &allow_all] {
-            assert_eq!(tier(&root, set, false, "apply_patch", &sealed), Tier::Sealed);
+            assert_eq!(
+                tier(&root, set, false, "apply_patch", &sealed),
+                Tier::Sealed
+            );
         }
 
         let mixed = json!({"patch": "*** Begin Patch\n*** Add File: src/a.rs\n+x\n*** Add File: build.rs\n+x\n*** Add File: /tmp/out.txt\n+x\n*** Add File: AGENTS.md\n+x\n*** End Patch"});
         let raw_mixed = raw(&mixed);
-        let decision = classify_tier(
-            &parse("apply_patch", &raw_mixed),
-            &RuleSet::default(),
-            &ctx,
-        );
+        let decision = classify_tier(&parse("apply_patch", &raw_mixed), &RuleSet::default(), &ctx);
         assert_eq!(decision.tier, Tier::AskUser);
         assert_eq!(
             decision.detail,
@@ -865,10 +896,7 @@ mod tests {
     fn delegation_and_mob_queries_need_no_review_but_mob_changes_do() {
         let (_dir, root) = project();
         let task = json!({"member_id": "scout", "task": "rm -rf /", "result_label": "r", "max_text_bytes": 10});
-        assert_eq!(
-            parse("delegate", &raw(&task)).kind,
-            ActionKind::Delegation
-        );
+        assert_eq!(parse("delegate", &raw(&task)).kind, ActionKind::Delegation);
         assert_eq!(
             tier(&root, &RuleSet::default(), false, "delegate", &task),
             Tier::AlwaysAllow
@@ -920,7 +948,10 @@ mod tests {
         );
         let callback = ToolOrigin::tui("someone-else", FORK);
         assert_ne!(callback.family(), ToolFamily::Fork);
-        assert_eq!(ToolOrigin::tui(FORK_SOURCE, FORK).family(), ToolFamily::Fork);
+        assert_eq!(
+            ToolOrigin::tui(FORK_SOURCE, FORK).family(),
+            ToolFamily::Fork
+        );
     }
 
     #[test]
@@ -940,11 +971,7 @@ mod tests {
             json!({"command": 1}),
             json!("ls"),
         ] {
-            assert_eq!(
-                parse("shell", &raw(&bad)).kind,
-                ActionKind::Other,
-                "{bad}"
-            );
+            assert_eq!(parse("shell", &raw(&bad)).kind, ActionKind::Other, "{bad}");
         }
     }
 
@@ -1080,12 +1107,7 @@ mod tests {
                 true,
                 Tier::Sealed,
             ),
-            (
-                "write_file",
-                json!({"path": ".env"}),
-                true,
-                Tier::AskUser,
-            ),
+            ("write_file", json!({"path": ".env"}), true, Tier::AskUser),
             (
                 "write_file",
                 json!({"path": ".env.local"}),
@@ -1383,11 +1405,7 @@ mod tests {
             "user-level notes persist into every project's system prompt"
         );
         let ws = json!({"scope": "workspace", "name": "x", "content": "y"});
-        let decision = classify_tier(
-            &parse("note_save", &raw(&ws)),
-            &RuleSet::default(),
-            &ctx,
-        );
+        let decision = classify_tier(&parse("note_save", &raw(&ws)), &RuleSet::default(), &ctx);
         assert_eq!(decision.detail, "workspace note");
 
         let mut rules = RuleSet::default();
@@ -1414,10 +1432,7 @@ mod tests {
             )
             .unwrap(),
         );
-        assert_eq!(
-            tier(&root, &rules, true, "note_save", &ws),
-            Tier::UserDeny
-        );
+        assert_eq!(tier(&root, &rules, true, "note_save", &ws), Tier::UserDeny);
     }
 
     #[test]
@@ -1432,14 +1447,20 @@ mod tests {
         let decide = |name: &str, args: &Value, origin: Option<ToolOrigin>| {
             let args = raw(args);
             let action = Action::parse(name, &args, origin.as_ref());
-            (action.kind.clone(), classify_tier(&action, &rules, &ctx).tier)
+            (
+                action.kind.clone(),
+                classify_tier(&action, &rules, &ctx).tier,
+            )
         };
         // An MCP server's tools named like a builtin, a file tool and a note tool.
         for (name, args) in [
             ("task_list", json!({})),
             ("read_file", json!({"path": "src/main.rs"})),
             ("write_file", json!({"path": "src/x.rs", "content": ""})),
-            ("note_save", json!({"scope": "workspace", "name": "x", "content": ""})),
+            (
+                "note_save",
+                json!({"scope": "workspace", "name": "x", "content": ""}),
+            ),
             ("shell", json!({"command": "ls"})),
         ] {
             assert_eq!(

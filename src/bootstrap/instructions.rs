@@ -520,8 +520,14 @@ mod tests {
     fn a_system_md_with_only_its_header_counts_as_empty() {
         let t = tree();
         write(&t.global.system_md(), &format!("{SYSTEM_MD_HEADER}\n\n"));
-        assert_eq!(apply_system_md(&mut Config::default(), Some(&t.global)), None);
-        write(&t.global.system_md(), &format!("{SYSTEM_MD_HEADER}\nYou are X.\n"));
+        assert_eq!(
+            apply_system_md(&mut Config::default(), Some(&t.global)),
+            None
+        );
+        write(
+            &t.global.system_md(),
+            &format!("{SYSTEM_MD_HEADER}\nYou are X.\n"),
+        );
         assert!(apply_system_md(&mut Config::default(), Some(&t.global)).is_some());
         assert!(system_md_is_empty(""));
         assert!(system_md_is_empty(&format!("  {SYSTEM_MD_HEADER}  \n")));
@@ -538,7 +544,10 @@ mod tests {
         assert_eq!(edited_context(path, "  \n"), None);
         let long = "x".repeat(AGENTS_MD_MAX_BYTES + 10);
         let text = edited_context(path, &long).unwrap();
-        assert!(text.ends_with(&format!("[truncated at {} KiB]", AGENTS_MD_MAX_BYTES / 1024)));
+        assert!(text.ends_with(&format!(
+            "[truncated at {} KiB]",
+            AGENTS_MD_MAX_BYTES / 1024
+        )));
     }
 
     #[test]

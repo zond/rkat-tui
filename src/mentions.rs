@@ -275,7 +275,11 @@ fn file_block(mention: &Mention, budget: &mut usize) -> String {
     let path = &mention.path;
     let cap = MAX_FILE_BYTES.min(*budget);
     if cap == 0 {
-        return note("file", path, "not attached: the 256 KiB attachment budget is used up");
+        return note(
+            "file",
+            path,
+            "not attached: the 256 KiB attachment budget is used up",
+        );
     }
     let mut bytes = Vec::new();
     let read = std::fs::File::open(&mention.abs)
@@ -292,7 +296,8 @@ fn file_block(mention: &Mention, budget: &mut usize) -> String {
         Ok(text) => text,
         // A cut through the last character is not binary.
         Err(err) if truncated && err.error_len().is_none() => {
-            std::str::from_utf8(bytes.get(..err.valid_up_to()).unwrap_or_default()).unwrap_or_default()
+            std::str::from_utf8(bytes.get(..err.valid_up_to()).unwrap_or_default())
+                .unwrap_or_default()
         }
         Err(_) => return note("file", path, "not attached: not UTF-8 text"),
     };
@@ -397,10 +402,19 @@ mod tests {
     fn matching_is_path_prefix_then_name_substring() {
         let (_dir, root) = workspace();
         let index = workspace_paths(&root);
-        assert_eq!(paths(&match_paths(&index, "src/", 8)), ["src/main.rs", "src/ui/", "src/ui/render.rs"]);
-        assert_eq!(paths(&match_paths(&index, "SRC/U", 8)), ["src/ui/", "src/ui/render.rs"]);
+        assert_eq!(
+            paths(&match_paths(&index, "src/", 8)),
+            ["src/main.rs", "src/ui/", "src/ui/render.rs"]
+        );
+        assert_eq!(
+            paths(&match_paths(&index, "SRC/U", 8)),
+            ["src/ui/", "src/ui/render.rs"]
+        );
         // Prefix first, then names containing it.
-        assert_eq!(paths(&match_paths(&index, "re", 8)), ["README.md", ".gitignore", "src/ui/render.rs"]);
+        assert_eq!(
+            paths(&match_paths(&index, "re", 8)),
+            ["README.md", ".gitignore", "src/ui/render.rs"]
+        );
         assert_eq!(paths(&match_paths(&index, "main", 8)), ["src/main.rs"]);
         assert_eq!(match_paths(&index, "", 3).len(), 3);
         assert!(match_paths(&index, "zz", 8).is_empty());
@@ -413,7 +427,8 @@ mod tests {
             "see @src/main.rs, @src/ and @README.md. not a@README.md, @nobody, @.rkat/config.toml @src/main.rs",
             &root,
         );
-        let kinds: Vec<(&str, MentionKind)> = found.iter().map(|m| (m.path.as_str(), m.kind)).collect();
+        let kinds: Vec<(&str, MentionKind)> =
+            found.iter().map(|m| (m.path.as_str(), m.kind)).collect();
         assert_eq!(
             kinds,
             [
@@ -432,7 +447,10 @@ mod tests {
         let (_dir, root) = workspace();
         let prompt = "fix @src/main.rs using @src/ui, not @logo.png @.rkat/config.toml @big.txt";
         let expanded = expand_mentions(prompt, &root);
-        assert_eq!(expanded.attached, ["src/main.rs", "src/ui/", "logo.png", "big.txt"]);
+        assert_eq!(
+            expanded.attached,
+            ["src/main.rs", "src/ui/", "logo.png", "big.txt"]
+        );
         assert_eq!(expanded.sealed, [".rkat/config.toml"]);
         let (head, blocks) = expanded.text.split_at(prompt.len());
         assert_eq!(head, prompt);
@@ -462,7 +480,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut prompt = String::from("read");
         for i in 0..5 {
-            std::fs::write(dir.path().join(format!("f{i}.txt")), "x".repeat(MAX_FILE_BYTES + 10)).unwrap();
+            std::fs::write(
+                dir.path().join(format!("f{i}.txt")),
+                "x".repeat(MAX_FILE_BYTES + 10),
+            )
+            .unwrap();
             prompt.push_str(&format!(" @f{i}.txt"));
         }
         let root = ProjectRoot::new(dir.path()).unwrap();
@@ -484,7 +506,10 @@ mod tests {
         }
         let root = ProjectRoot::new(dir.path()).unwrap();
         let expanded = expand_mentions("@many", &root);
-        assert_eq!(expanded.text.matches('\n').count(), 2 + 1 + MAX_DIR_ENTRIES + 1);
+        assert_eq!(
+            expanded.text.matches('\n').count(),
+            2 + 1 + MAX_DIR_ENTRIES + 1
+        );
         assert!(expanded.text.contains("0199\n[… and 5 more]\n</directory>"));
     }
 
@@ -513,6 +538,9 @@ mod tests {
         let index = workspace_paths(&synthetic);
         let started = std::time::Instant::now();
         let hits = match_paths(&index, "f05", 8).len();
-        println!("synthetic: {n} paths in {built:?}; a match ({hits} hits) in {:?}", started.elapsed());
+        println!(
+            "synthetic: {n} paths in {built:?}; a match ({hits} hits) in {:?}",
+            started.elapsed()
+        );
     }
 }
