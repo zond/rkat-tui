@@ -120,8 +120,11 @@ pub async fn run(args: Args, layers: bootstrap::Layers) -> Result<(), TuiError> 
         open_start(&runtime, template.options(None, trigger), &start).await?;
 
     let mut status = StatusInfo::default();
-    status.set_model(runtime.choice.endpoint.as_str(), &runtime.choice.model);
-    status.set_session(&session.id().to_string());
+    status.apply(StatusUpdate::Model {
+        provider: runtime.choice.endpoint.as_str().to_string(),
+        model: runtime.choice.model.clone(),
+    });
+    status.apply(StatusUpdate::Session(session.id().to_string()));
     let (agent_tx, agent_rx) = mpsc::channel(AGENT_EVENT_CAPACITY);
     let (ui_tx, ui_rx) = mpsc::unbounded_channel::<Msg>();
     let (effect_tx, effect_rx) = mpsc::unbounded_channel::<Effect>();

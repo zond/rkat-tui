@@ -945,6 +945,7 @@ fn tool_body(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::ui::StatusUpdate;
 
     #[test]
     fn token_formatting() {
@@ -957,10 +958,20 @@ mod tests {
     fn status_line_segments() {
         let now = Instant::now();
         let mut s = StatusInfo::default();
-        s.set_model("anthropic", "claude-sonnet-4-6");
-        s.set_session("abc12345-ffff");
-        s.set_tokens(1500, 20);
-        s.set_mode(PermissionMode::Auto, false, (1, 3, 4, 20));
+        s.apply(StatusUpdate::Model {
+            provider: "anthropic".into(),
+            model: "claude-sonnet-4-6".into(),
+        });
+        s.apply(StatusUpdate::Session("abc12345-ffff".into()));
+        s.apply(StatusUpdate::Tokens {
+            input: 1500,
+            output: 20,
+        });
+        s.apply(StatusUpdate::Mode {
+            mode: PermissionMode::Auto,
+            paused: false,
+            denials: (1, 3, 4, 20),
+        });
         s.running_since = Some(now);
         s.queued = 2;
         let line = status_line(&s, now);
@@ -974,7 +985,10 @@ mod tests {
     fn the_attach_state_leads_the_status_line() {
         let now = Instant::now();
         let mut s = StatusInfo::default();
-        s.set_model("anthropic", "claude-sonnet-4-6");
+        s.apply(StatusUpdate::Model {
+            provider: "anthropic".into(),
+            model: "claude-sonnet-4-6".into(),
+        });
         s.apply(crate::ui::StatusUpdate::Attach(Some(
             "attached 127.0.0.1:4000".into(),
         )));
@@ -1134,23 +1148,35 @@ mod tests {
             !status_line(&s, now).contains("auto"),
             "no mode before the runner reports one"
         );
-        s.set_mode(PermissionMode::Auto, true, (3, 3, 5, 20));
-        s.set_classifying(true);
+        s.apply(StatusUpdate::Mode {
+            mode: PermissionMode::Auto,
+            paused: true,
+            denials: (3, 3, 5, 20),
+        });
+        s.apply(StatusUpdate::Classifying(true));
         let bar = status_bar(&s, now);
         assert_eq!(seg_style(&bar, "auto: PAUSED").bg, Some(Color::Yellow));
         assert!(status_line(&s, now).ends_with("auto: PAUSED (deny 3/3, 5/20) │ ⠋ classifying…"));
-        s.set_classifying(false);
+        s.apply(StatusUpdate::Classifying(false));
         for (mode, shown) in [
             (PermissionMode::Manual, "│ manual"),
             (PermissionMode::AcceptEdits, "│ accept edits"),
             (PermissionMode::Plan, "│ plan"),
             (PermissionMode::Auto, "│ auto (deny 0/3, 0/20)"),
         ] {
-            s.set_mode(mode, false, (0, 3, 0, 20));
+            s.apply(StatusUpdate::Mode {
+                mode,
+                paused: false,
+                denials: (0, 3, 0, 20),
+            });
             let line = status_line(&s, now);
             assert!(line.ends_with(shown), "{mode:?}: {line}");
         }
-        s.set_mode(PermissionMode::Plan, false, (0, 3, 0, 20));
+        s.apply(StatusUpdate::Mode {
+            mode: PermissionMode::Plan,
+            paused: false,
+            denials: (0, 3, 0, 20),
+        });
         assert!(
             seg_style(&status_bar(&s, now), "plan")
                 .add_modifier
@@ -1173,7 +1199,10 @@ mod tests {
     fn context_gauge_text_and_thresholds() {
         let now = Instant::now();
         let mut s = StatusInfo::default();
-        s.set_tokens(1500, 20);
+        s.apply(StatusUpdate::Tokens {
+            input: 1500,
+            output: 20,
+        });
         assert_eq!(status_line(&s, now), " ↑1.5k ↓20");
         s.context_used = Some(84_000);
         assert_eq!(status_line(&s, now), " ↑1.5k ↓20 │ ctx 84k");
@@ -1208,7 +1237,10 @@ mod tests {
         use std::sync::Arc;
         let now = Instant::now();
         let mut s = StatusInfo::default();
-        s.set_tokens(1500, 20);
+        s.apply(StatusUpdate::Tokens {
+            input: 1500,
+            output: 20,
+        });
         s.context_used = Some(84_000);
         let usage = |input| meerkat_core::Usage {
             input_tokens: input,

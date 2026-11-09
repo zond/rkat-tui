@@ -10,7 +10,7 @@ use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier};
 use rkat_tui::approval::escalation::RecordedPrompt;
 use rkat_tui::ui::render::draw_at;
-use rkat_tui::ui::{App, Block, DiffView, EscalationId, Msg, StatusInfo, ToolState};
+use rkat_tui::ui::{App, Block, DiffView, EscalationId, Msg, StatusInfo, StatusUpdate, ToolState};
 use serde_json::json;
 
 const W: u16 = 60;
@@ -35,9 +35,15 @@ fn agent(ev: AgentEvent) -> Msg {
 
 fn sample_app() -> App {
     let mut status = StatusInfo::default();
-    status.set_model("anthropic", "claude-sonnet-4-6");
-    status.set_session("abc123ef-0000");
-    status.set_tokens(1200, 345);
+    status.apply(StatusUpdate::Model {
+        provider: "anthropic".into(),
+        model: "claude-sonnet-4-6".into(),
+    });
+    status.apply(StatusUpdate::Session("abc123ef-0000".into()));
+    status.apply(StatusUpdate::Tokens {
+        input: 1200,
+        output: 345,
+    });
     let mut app = App::new(status);
     app.transcript.push(Block::User {
         text: "list files".into(),
@@ -508,7 +514,6 @@ fn queued_block_status_count_and_hints() {
 
 #[test]
 fn status_bar_shows_context_gauge_with_threshold_colours() {
-    use rkat_tui::ui::StatusUpdate;
     let mut app = sample_app();
     let now = Instant::now();
     app.update(Msg::Status(StatusUpdate::ContextWindow(Some(200_000))));
@@ -594,7 +599,10 @@ fn model_picker_snapshot() {
         max_output_tokens: None,
     };
     let mut status = StatusInfo::default();
-    status.set_model("anthropic", "claude-sonnet-4-6");
+    status.apply(StatusUpdate::Model {
+        provider: "anthropic".into(),
+        model: "claude-sonnet-4-6".into(),
+    });
     let mut app = App::new(status);
     app.update(Msg::ShowModelPicker(vec![
         ModelGroup {

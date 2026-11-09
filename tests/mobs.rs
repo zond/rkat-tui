@@ -230,10 +230,10 @@ async fn a_delegated_helper_runs_behind_the_sessions_gate() {
             );
         }
     }
-    let helper = &app.status.cost.helpers["scout"][common::MODEL];
+    let helper = &app.status.cost().helpers["scout"][common::MODEL];
     assert_eq!((helper.input, helper.output), (20, 10), "two helper calls");
-    assert_eq!(app.status.cost.per_model[common::MODEL].input, 20);
-    let breakdown = app.status.cost.breakdown(&app.status.prices);
+    assert_eq!(app.status.cost().per_model[common::MODEL].input, 20);
+    let breakdown = app.status.cost().breakdown(app.status.prices());
     assert!(
         breakdown.contains("scout (claude-sonnet-4-6): in 20"),
         "{breakdown}"

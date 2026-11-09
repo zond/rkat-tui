@@ -56,7 +56,7 @@ use tokio::sync::mpsc;
 
 use crate::cli::{Args, AttachMode};
 use crate::error::TuiError;
-use crate::ui::{Effect, Msg, StatusInfo, UiChannels};
+use crate::ui::{Effect, Msg, StatusInfo, StatusUpdate, UiChannels};
 use crate::workbench::{AppSetup, app};
 
 pub use runner::{AttachConfig, AttachRunner, SpawnPlan};
@@ -297,10 +297,8 @@ pub async fn run(
     let (_agent_tx, agent_rx) = mpsc::channel(1);
     let (ui_tx, ui_rx) = mpsc::unbounded_channel::<Msg>();
     let (effect_tx, effect_rx) = mpsc::unbounded_channel::<Effect>();
-    let status = StatusInfo {
-        attach: Some(runner::CONNECTING.to_string()),
-        ..StatusInfo::default()
-    };
+    let mut status = StatusInfo::default();
+    status.apply(StatusUpdate::Attach(Some(runner::CONNECTING.to_string())));
     let opened = app::open(
         &app_setup(&config),
         status,

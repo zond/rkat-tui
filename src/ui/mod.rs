@@ -655,48 +655,48 @@ pub enum Effect {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct StatusInfo {
     /// Provider name.
-    pub provider: String,
+    provider: String,
     /// Model id.
-    pub model: String,
+    model: String,
     /// Short session id.
-    pub session_short: String,
+    session_short: String,
     /// Cumulative input tokens.
-    pub input_tokens: u64,
+    input_tokens: u64,
     /// Cumulative output tokens.
-    pub output_tokens: u64,
+    output_tokens: u64,
     /// The permission mode (`None`, before the runner reports it, hides
     /// the segment).
-    pub mode: Option<PermissionMode>,
+    mode: Option<PermissionMode>,
     /// Whether auto mode is paused after too many classifier blocks.
-    pub auto_paused: bool,
+    auto_paused: bool,
     /// `(consecutive, consecutive_limit, total, total_limit)` denials.
-    pub denials: (u32, u32, u32, u32),
+    denials: (u32, u32, u32, u32),
     /// When the running turn started.
-    pub running_since: Option<Instant>,
+    running_since: Option<Instant>,
     /// Number of messages typed mid-turn that have not been delivered yet.
-    pub queued: usize,
+    queued: usize,
     /// Number of helpers running now.
-    pub helpers: usize,
+    helpers: usize,
     /// Whether the helper panel lists any helper (the status bar names the
     /// key that selects them).
-    pub helper_panel: bool,
+    helper_panel: bool,
     /// Whether the classifier is running.
-    pub classifying: bool,
+    classifying: bool,
     /// Tokens in the last model call, `None` when unknown.
-    pub context_used: Option<u64>,
+    context_used: Option<u64>,
     /// Model context window in tokens, `None` when unknown.
-    pub context_window: Option<u64>,
+    context_window: Option<u64>,
     /// Whether `context_used` is an estimate.
-    pub context_approx: bool,
+    context_approx: bool,
     /// Whether `context_window` is an estimate (model not in the catalog).
-    pub window_approx: bool,
+    window_approx: bool,
     /// Token totals per model, for the cost readout.
-    pub cost: SessionCost,
+    cost: SessionCost,
     /// Prices for the cost readout.
-    pub prices: Arc<crate::pricing::PriceTable>,
+    prices: Arc<crate::pricing::PriceTable>,
     /// Attach mode: the daemon connection's state (`attached <addr>`,
     /// `reconnecting`, `daemon starting`); `None` in-process.
-    pub attach: Option<String>,
+    attach: Option<String>,
 }
 
 /// The prompt the "Plan ready" dialog's proceed choices send.
@@ -710,34 +710,31 @@ const UNKNOWN_HELPER_MODEL: &str = "unknown";
 const SESSION_SHORT_LEN: usize = 8;
 
 impl StatusInfo {
-    /// Set provider and model.
-    pub fn set_model(&mut self, provider: impl Into<String>, model: impl Into<String>) {
-        self.provider = provider.into();
-        self.model = model.into();
-    }
-
-    /// Set the session id (shortened to its first 8 characters).
-    pub fn set_session(&mut self, session_id: &str) {
-        self.session_short = session_id.chars().take(SESSION_SHORT_LEN).collect();
-    }
-
-    /// Set absolute token counters.
-    pub fn set_tokens(&mut self, input: u64, output: u64) {
-        self.input_tokens = input;
-        self.output_tokens = output;
-    }
-
-    /// Add to the token counters.
-    pub fn add_tokens(&mut self, input: u64, output: u64) {
+    /// Add to the token counters (a model call's usage).
+    fn add_tokens(&mut self, input: u64, output: u64) {
         self.input_tokens = self.input_tokens.saturating_add(input);
         self.output_tokens = self.output_tokens.saturating_add(output);
     }
 
-    /// Set the permission mode, auto mode's pause and the denial counters.
-    pub fn set_mode(&mut self, mode: PermissionMode, paused: bool, denials: (u32, u32, u32, u32)) {
-        self.mode = Some(mode);
-        self.auto_paused = paused;
-        self.denials = denials;
+    /// Token totals per model, for the cost readout.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn cost(&self) -> &SessionCost {
+        &self.cost
+    }
+
+    /// Prices for the cost readout.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn prices(&self) -> &crate::pricing::PriceTable {
+        &self.prices
+    }
+
+    /// Number of messages typed mid-turn that have not been delivered yet.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn queued(&self) -> usize {
+        self.queued
     }
 
     /// The mode as `/auto` and `/mode` describe it.
@@ -754,23 +751,30 @@ impl StatusInfo {
         }
     }
 
-    /// Set the classifier-running flag.
-    pub fn set_classifying(&mut self, classifying: bool) {
-        self.classifying = classifying;
-    }
-
-    /// Apply an integrator update.
+    /// Apply an integrator update: the only way in from outside the UI.
     pub fn apply(&mut self, update: StatusUpdate) {
         match update {
-            StatusUpdate::Model { provider, model } => self.set_model(provider, model),
-            StatusUpdate::Session(id) => self.set_session(&id),
-            StatusUpdate::Tokens { input, output } => self.set_tokens(input, output),
+            StatusUpdate::Model { provider, model } => {
+                self.provider = provider;
+                self.model = model;
+            }
+            StatusUpdate::Session(id) => {
+                self.session_short = id.chars().take(SESSION_SHORT_LEN).collect();
+            }
+            StatusUpdate::Tokens { input, output } => {
+                self.input_tokens = input;
+                self.output_tokens = output;
+            }
             StatusUpdate::Mode {
                 mode,
                 paused,
                 denials,
-            } => self.set_mode(mode, paused, denials),
-            StatusUpdate::Classifying(c) => self.set_classifying(c),
+            } => {
+                self.mode = Some(mode);
+                self.auto_paused = paused;
+                self.denials = denials;
+            }
+            StatusUpdate::Classifying(c) => self.classifying = c,
             StatusUpdate::Context { used, approx } => {
                 self.context_used = used;
                 self.context_approx = approx;
@@ -5624,8 +5628,11 @@ mod tests {
             run(&mut app, "/mode accept-edits"),
             vec![Effect::SetMode(PermissionMode::AcceptEdits)]
         );
-        app.status
-            .set_mode(PermissionMode::AcceptEdits, false, (0, 3, 0, 20));
+        app.status.apply(StatusUpdate::Mode {
+            mode: PermissionMode::AcceptEdits,
+            paused: false,
+            denials: (0, 3, 0, 20),
+        });
         assert!(run(&mut app, "/mode").is_empty());
         assert!(
             last_notice(&app).is_some_and(|(_, t)| t.starts_with("permission mode: accept edits")),
@@ -5847,7 +5854,10 @@ mod tests {
 
     fn app_on_sonnet() -> App {
         let mut status = StatusInfo::default();
-        status.set_model("anthropic", "claude-sonnet-4-6");
+        status.apply(StatusUpdate::Model {
+            provider: "anthropic".into(),
+            model: "claude-sonnet-4-6".into(),
+        });
         App::new(status)
     }
 
@@ -6354,7 +6364,11 @@ mod tests {
             (PermissionMode::Plan, PermissionMode::Auto),
             (PermissionMode::Auto, PermissionMode::Manual),
         ] {
-            app.status.set_mode(now, false, (0, 3, 0, 20));
+            app.status.apply(StatusUpdate::Mode {
+                mode: now,
+                paused: false,
+                denials: (0, 3, 0, 20),
+            });
             assert_eq!(
                 app.update(back_tab()),
                 vec![Effect::SetMode(next)],
@@ -6362,8 +6376,11 @@ mod tests {
             );
         }
         // A paused auto mode is auto mode.
-        app.status
-            .set_mode(PermissionMode::Auto, true, (3, 3, 3, 20));
+        app.status.apply(StatusUpdate::Mode {
+            mode: PermissionMode::Auto,
+            paused: true,
+            denials: (3, 3, 3, 20),
+        });
         assert_eq!(
             app.update(back_tab()),
             vec![Effect::SetMode(PermissionMode::Manual)]
@@ -6371,8 +6388,11 @@ mod tests {
         // It works while a turn runs too.
         submit(&mut app, "work");
         assert!(app.is_running());
-        app.status
-            .set_mode(PermissionMode::Plan, false, (0, 3, 0, 20));
+        app.status.apply(StatusUpdate::Mode {
+            mode: PermissionMode::Plan,
+            paused: false,
+            denials: (0, 3, 0, 20),
+        });
         assert_eq!(
             app.update(back_tab()),
             vec![Effect::SetMode(PermissionMode::Auto)]
@@ -6393,8 +6413,11 @@ mod tests {
     #[test]
     fn plan_ready_dialog() {
         let mut app = App::new(StatusInfo::default());
-        app.status
-            .set_mode(PermissionMode::Plan, false, (0, 3, 0, 20));
+        app.status.apply(StatusUpdate::Mode {
+            mode: PermissionMode::Plan,
+            paused: false,
+            denials: (0, 3, 0, 20),
+        });
         submit(&mut app, "plan the refactor");
         app.update(answered("1. Split the module\n2. Move the tests"));
         assert_eq!(app.modal, Some(Modal::PlanReady(PlanDialog::default())));
@@ -6443,8 +6466,11 @@ mod tests {
         submit(&mut app, "x");
         app.update(answered("  "));
         assert_eq!(app.modal, None);
-        app.status
-            .set_mode(PermissionMode::AcceptEdits, false, (0, 3, 0, 20));
+        app.status.apply(StatusUpdate::Mode {
+            mode: PermissionMode::AcceptEdits,
+            paused: false,
+            denials: (0, 3, 0, 20),
+        });
         submit(&mut app, "y");
         app.update(answered("done"));
         assert_eq!(app.modal, None);
@@ -7202,7 +7228,10 @@ mod tests {
     #[test]
     fn session_cost_arithmetic_from_turns_and_the_classifier() {
         let mut app = App::new(StatusInfo::default());
-        app.status.set_model("anthropic", "main");
+        app.status.apply(StatusUpdate::Model {
+            provider: "anthropic".into(),
+            model: "main".into(),
+        });
         app.update(Msg::Status(StatusUpdate::Prices(priced(&[
             ("main", 3.0, 15.0),
             ("judge", 1.0, 5.0),
@@ -7241,7 +7270,10 @@ mod tests {
         assert!(submit(&mut app, "/cost").is_empty());
         let (_, text) = last_notice(&app).unwrap();
         assert!(text.contains("no tokens used"), "{text}");
-        app.status.set_model("anthropic", "a");
+        app.status.apply(StatusUpdate::Model {
+            provider: "anthropic".into(),
+            model: "a".into(),
+        });
         app.update(Msg::Status(StatusUpdate::Prices(priced(&[(
             "a", 3.0, 15.0,
         )]))));
@@ -7260,7 +7292,10 @@ mod tests {
         app.update(Msg::Status(StatusUpdate::Prices(priced(&[(
             "a", 1.0, 1.0,
         )]))));
-        app.status.set_model("anthropic", "a");
+        app.status.apply(StatusUpdate::Model {
+            provider: "anthropic".into(),
+            model: "a".into(),
+        });
         app.update(completed_by("a", 5_000_000, 0));
         assert!(footer(&app).contains("$5.00"), "{}", footer(&app));
         // Resuming a session with recorded totals.

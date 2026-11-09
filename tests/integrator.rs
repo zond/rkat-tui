@@ -1000,7 +1000,7 @@ async fn esc_interrupts_and_the_queued_message_runs_next() {
     );
     assert!(user_texts(llm.requests().last().unwrap()).contains(&"and this".to_string()));
     assert!(app.input.is_empty());
-    assert_eq!(app.status.queued, 0);
+    assert_eq!(app.status.queued(), 0);
     rig.quit().await;
 }
 

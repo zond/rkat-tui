@@ -141,10 +141,11 @@ async fn a_delegated_helper_is_followed_with_its_result_and_cost() {
         rows.iter().any(|row| row.contains("parent done")),
         "{rows:#?}"
     );
-    let helper = &app.status.cost.helpers["scout"][MODEL];
+    let helper = &app.status.cost().helpers["scout"][MODEL];
     assert_eq!(helper.input, 10, "one helper call");
     assert_eq!(
-        app.status.cost.per_model[MODEL].input, 30,
+        app.status.cost().per_model[MODEL].input,
+        30,
         "two calls of the orchestrator and one of the helper"
     );
     client.quit().await;

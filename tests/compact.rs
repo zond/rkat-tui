@@ -204,7 +204,10 @@ async fn warn_mode_warns_and_compacts_only_on_compact() {
 
     // A bare `/compact` typed into the UI compacts (as `/compact now` did).
     let mut app = rkat_tui::ui::App::new(rkat_tui::ui::StatusInfo::default());
-    app.status.context_used = Some(BIG);
+    app.status.apply(StatusUpdate::Context {
+        used: Some(BIG),
+        approx: false,
+    });
     for c in "/compact".chars() {
         app.update(Msg::Key(KeyEvent::from(KeyCode::Char(c))));
     }
