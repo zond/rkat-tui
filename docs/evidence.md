@@ -3601,3 +3601,16 @@ and listed here.
   transcript, allow cache) stays in memory until the daemon exits, which
   is harmless for correctness (a `/resume` seeds the transcript again) and
   is left as a known gap.
+- `tests/confinement.rs`: all eight tests run over the daemon harness with
+  their assertions (the confined shell is the daemon's; the `!` command
+  runs in the attached client, under the confinement plan the client
+  builds from the same layers). Two rig seams: `Setup::host_paths` now
+  reaches the client's `!` shell as well (`Client::attach_setup`; the
+  client otherwise confines `!` with this host's detected paths, which
+  grant the temp dir the tests' outside directory lives in), and
+  `Setup::endpoint_file` moves the endpoint file out of the temp dir for
+  the two tests that run with the host's real paths: their shell is
+  granted the temp dir, and the daemon refuses an endpoint file its shell
+  could read (`DaemonError::EndpointExposed`), as it should. A start-up
+  refusal is `DaemonError::Bootstrap` around the same typed
+  `TuiError::Confinement` (`Attached::try_start_with`).

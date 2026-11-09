@@ -92,10 +92,17 @@ impl Running {
 
     /// Start with these arguments and options.
     pub async fn start_with(args: &rkat_tui::Args, options: DaemonOptions) -> Self {
-        let daemon = within(Daemon::start(args, options))
+        Self::try_start_with(args, options)
             .await
-            .expect("daemon starts");
-        Self::serve(daemon)
+            .expect("daemon starts")
+    }
+
+    /// [`Self::start_with`], returning a start-up failure.
+    pub async fn try_start_with(
+        args: &rkat_tui::Args,
+        options: DaemonOptions,
+    ) -> Result<Self, DaemonError> {
+        within(Daemon::start(args, options)).await.map(Self::serve)
     }
 
     /// Serve a started daemon in the background.
@@ -210,12 +217,32 @@ impl Client {
         start_token: Option<&str>,
         lister: rkat_tui::models::ModelLister,
     ) -> Self {
+        Self::attach_setup(args, start_token, lister, &endpoint_file_for(root), None).await
+    }
+
+    /// Attach through `endpoint_file`; with `host_paths`, the `!` shell is
+    /// confined with those instead of this host's (the daemon's shell gets
+    /// [`Setup::host_paths`] too).
+    pub async fn attach_setup(
+        args: &rkat_tui::Args,
+        start_token: Option<&str>,
+        lister: rkat_tui::models::ModelLister,
+        endpoint_file: &Path,
+        host_paths: Option<&HostPaths>,
+    ) -> Self {
         let mut config = rkat_tui::client::configure(args, AttachTarget::Existing)
             .await
             .unwrap();
         config.start_token = start_token.map(str::to_string);
         config.lister = lister;
-        config.endpoint_files = vec![endpoint_file_for(root)];
+        config.endpoint_files = vec![endpoint_file.to_path_buf()];
+        if let Some(host_paths) = host_paths {
+            let (layers, realm_config) = rkat_tui::bootstrap::prepare(args).await.unwrap();
+            config.user_shell =
+                rkat_tui::bootstrap::user_shell(&layers, &realm_config, args, host_paths)
+                    .map(Arc::new)
+                    .map_err(|err| format!("the ! shell is unavailable: {err}"));
+        }
         let mut client = Self {
             harness: spawn_attach_runner(config),
             seen: Vec::new(),
@@ -352,6 +379,10 @@ pub struct Setup {
     pub escalation_timeout: Option<Duration>,
     pub lister: Option<rkat_tui::models::ModelLister>,
     pub host_paths: Option<HostPaths>,
+    /// Where the endpoint file goes (default [`endpoint_file_for`] the
+    /// workspace; a test whose shell is granted the temp dir puts it
+    /// elsewhere, or the daemon refuses it as exposed).
+    pub endpoint_file: Option<PathBuf>,
 }
 
 impl Setup {
@@ -385,7 +416,14 @@ impl Setup {
                     escalation_timeout: self.escalation_timeout,
                 },
             })
-            .with_endpoint_file(endpoint_file_for(root))
+            .with_endpoint_file(self.endpoint_file(root))
+    }
+
+    /// The endpoint file of a daemon on `root`.
+    pub fn endpoint_file(&self, root: &Path) -> PathBuf {
+        self.endpoint_file
+            .clone()
+            .unwrap_or_else(|| endpoint_file_for(root))
     }
 
     /// The command line for `root`.
@@ -411,15 +449,33 @@ impl Attached {
 
     /// A daemon on `root` with `llm` and `setup`, and a client.
     pub async fn start_with(root: &Path, llm: &Arc<ScriptedLlmClient>, setup: Setup) -> Self {
+        Self::try_start_with(root, llm, setup)
+            .await
+            .expect("daemon starts")
+    }
+
+    /// [`Self::start_with`], returning the daemon's start-up failure.
+    pub async fn try_start_with(
+        root: &Path,
+        llm: &Arc<ScriptedLlmClient>,
+        setup: Setup,
+    ) -> Result<Self, DaemonError> {
         let args = setup.command_line(root);
-        let daemon = Running::start_with(&args, setup.options(root, llm)).await;
+        let daemon = Running::try_start_with(&args, setup.options(root, llm)).await?;
         let lister = setup.lister.clone().unwrap_or_else(no_lists);
         let mut client_args = setup.args.clone();
         client_args.extend(setup.client_args.iter().cloned());
         let client_args: Vec<&str> = client_args.iter().map(String::as_str).collect();
         let client_args = crate::common::args_with(root, &client_args);
-        let client = Client::attach_listing(root, &client_args, None, lister).await;
-        Self { daemon, client }
+        let client = Client::attach_setup(
+            &client_args,
+            None,
+            lister,
+            &setup.endpoint_file(root),
+            setup.host_paths.as_ref(),
+        )
+        .await;
+        Ok(Self { daemon, client })
     }
 
     /// The session the orchestrator runs as now.

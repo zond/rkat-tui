@@ -1,8 +1,9 @@
-//! The shell under `--confinement`, end to end through the real
-//! runtime-backed service with a scripted LLM: the workspace mode lets a
+//! The shell under `--confinement`, end to end through the daemon with a
+//! scripted LLM: the workspace mode lets a
 //! command write the workspace but not outside it and keeps the network;
 //! the strict mode denies IP network access. An interrupted shell call runs
-//! in durable process custody and leaves no process behind.
+//! in durable process custody and leaves no process behind. A `!` command
+//! runs in the attached client under the same confinement.
 //!
 //! The confined cases need the platform backend (Linux: unprivileged user
 //! namespaces; macOS: Seatbelt). Each case first probes the backend directly
@@ -15,50 +16,46 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;
+#[path = "common/attach.rs"]
+mod rig;
 
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
-use common::{Rig, RigOptions, ScriptedLlmClient, Step, Workspace, within};
+use common::{ScriptedLlmClient, Step, Workspace, within};
 use meerkat_core::{AgentEvent, Message};
+use rig::{Attached, Setup};
 use rkat_tui::TuiError;
-use rkat_tui::approval::classifier::{
-    ActionClassifier, ClassifierError, ClassifierInput, ClassifierVerdict,
-};
-use rkat_tui::bootstrap::ApprovalOverrides;
 use rkat_tui::bootstrap::confinement::{HostPaths, lower};
 use rkat_tui::cli::ConfinementArg;
-use rkat_tui::runner::Start;
+use rkat_tui::daemon::DaemonError;
 use rkat_tui::ui::Effect;
 use serde_json::json;
 
-/// Allows every reviewed call: these tests are about the sandbox under the
-/// approval gate, not the gate.
-struct AllowAll;
-
-#[async_trait]
-impl ActionClassifier for AllowAll {
-    async fn classify(
-        &self,
-        _input: ClassifierInput<'_>,
-    ) -> Result<ClassifierVerdict, ClassifierError> {
-        Ok(ClassifierVerdict::allow("ok"))
+/// A daemon (its classifier allows every reviewed call: these tests are
+/// about the sandbox under the approval gate, not the gate) under `args`,
+/// its shell and the client's `!` shell granted nothing outside the
+/// workspace.
+fn allow_shell(args: &[&str]) -> Setup {
+    Setup {
+        host_paths: Some(HostPaths::default()),
+        ..Setup::args(args)
     }
 }
 
-/// Options that run the shell without review under `args`.
-fn allow_shell(args: Vec<String>) -> RigOptions {
-    RigOptions {
-        args,
-        approval: ApprovalOverrides {
-            classifier: Some(Arc::new(AllowAll)),
-            ..ApprovalOverrides::default()
-        },
-        ..RigOptions::default()
-    }
+/// [`allow_shell`] with this host's real paths, the endpoint file outside
+/// the temp dir (the shell is granted the temp dir, and the daemon refuses
+/// an endpoint file its shell could read). Keep the directory alive.
+fn allow_shell_detected(args: &[&str]) -> (Setup, tempfile::TempDir) {
+    let state = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let setup = Setup {
+        host_paths: Some(HostPaths::detect()),
+        endpoint_file: Some(state.path().join("mob.endpoint")),
+        ..Setup::args(args)
+    };
+    (setup, state)
 }
 
 fn leak(text: String) -> &'static str {
@@ -119,9 +116,14 @@ async fn sandbox_unavailable(_workspace: &Path, _mode: ConfinementArg) -> Option
     Some("this platform has no sandbox backend".to_string())
 }
 
-/// Start a rig whose shell is allowed without review, under `mode`; `None`
-/// (after printing a `SKIPPED:` line) when this host cannot run the mode.
-async fn confined_rig(ws: &Workspace, llm: &Arc<ScriptedLlmClient>, mode: &str) -> Option<Rig> {
+/// Start a daemon whose shell is allowed without review, under `mode`,
+/// and attach; `None` (after printing a `SKIPPED:` line) when this host
+/// cannot run the mode.
+async fn confined_rig(
+    ws: &Workspace,
+    llm: &Arc<ScriptedLlmClient>,
+    mode: &str,
+) -> Option<Attached> {
     let arg = match mode {
         "strict" => ConfinementArg::Strict,
         _ => ConfinementArg::Workspace,
@@ -130,13 +132,13 @@ async fn confined_rig(ws: &Workspace, llm: &Arc<ScriptedLlmClient>, mode: &str) 
         println!("SKIPPED: --confinement={mode} is unavailable on this host: {reason}");
         return None;
     }
-    let options = allow_shell(vec![format!("--confinement={mode}")]);
-    match Rig::try_start_opts(&ws.root, llm, Start::New, options).await {
+    let flag = format!("--confinement={mode}");
+    match Attached::try_start_with(&ws.root, llm, allow_shell(&[&flag])).await {
         Ok(rig) => Some(rig),
-        Err(err @ TuiError::Confinement(_)) => {
-            panic!("the probe launched confined, but bootstrap refused the mode: {err}")
+        Err(DaemonError::Bootstrap(err)) if matches!(*err, TuiError::Confinement(_)) => {
+            panic!("the probe launched confined, but the daemon refused the mode: {err}")
         }
-        Err(other) => panic!("bootstrap: {other}"),
+        Err(other) => panic!("daemon start: {other}"),
     }
 }
 
@@ -259,13 +261,11 @@ async fn workspace_mode_resolves_localhost_and_dns_names() {
         },
         Step::Text("done"),
     ]);
-    let options = RigOptions {
-        host_paths: Some(host),
-        ..allow_shell(vec!["--confinement=workspace".to_string()])
-    };
-    let mut rig = Rig::try_start_opts(&ws.root, &llm, Start::New, options)
+    let (setup, _state) = allow_shell_detected(&["--confinement=workspace"]);
+    assert_eq!(setup.host_paths.as_ref(), Some(&host));
+    let mut rig = Attached::try_start_with(&ws.root, &llm, setup)
         .await
-        .unwrap_or_else(|err| panic!("bootstrap: {err}"));
+        .unwrap_or_else(|err| panic!("daemon start: {err}"));
     rig.send(Effect::StartTurn("resolve".into()));
     rig.turn_finished().await;
     let output = tool_text(&llm.requests()[1], "sh");
@@ -350,13 +350,10 @@ async fn workspace_mode_runs_the_rust_toolchain() {
     ]);
     // The host's real paths: the toolchain lives in the rustup and cargo
     // homes, which the rig's hermetic default leaves out.
-    let options = RigOptions {
-        host_paths: Some(HostPaths::detect()),
-        ..allow_shell(vec!["--confinement=workspace".to_string()])
-    };
-    let mut rig = Rig::try_start_opts(&ws.root, &llm, Start::New, options)
+    let (setup, _state) = allow_shell_detected(&["--confinement=workspace"]);
+    let mut rig = Attached::try_start_with(&ws.root, &llm, setup)
         .await
-        .unwrap_or_else(|err| panic!("bootstrap: {err}"));
+        .unwrap_or_else(|err| panic!("daemon start: {err}"));
     rig.send(Effect::StartTurn("build it".into()));
     rig.turn_finished().await;
     let output = tool_text(&llm.requests()[1], "sh");
@@ -388,9 +385,8 @@ async fn an_interrupted_shell_call_leaves_custody_records_and_no_process() {
         name: "shell",
         args: json!({ "command": command, "timeout_secs": 120 }),
     }]);
-    let options = allow_shell(Vec::new());
-    let mut rig = Rig::start_opts(&ws.root, &llm, Start::New, options).await;
-    let session = rig.first_session.clone();
+    let mut rig = Attached::start_with(&ws.root, &llm, allow_shell(&[])).await;
+    let session = rig.current_session().await;
     rig.send(Effect::StartTurn("sleep".into()));
     let pid = within(async {
         loop {
@@ -423,7 +419,7 @@ async fn an_interrupted_shell_call_leaves_custody_records_and_no_process() {
         .iter()
         .any(|path| path.to_string_lossy().contains(&session.to_string()));
     assert!(has_session_scope, "no custody records for {session}");
-    assert!(rig.events.lock().iter().any(|event| matches!(
+    assert!(rig.events().iter().any(|event| matches!(
         event,
         AgentEvent::ToolExecutionStarted { id, .. } if id == "sleep"
     )));
@@ -459,13 +455,17 @@ async fn no_confinement_below_a_realm_policy_is_a_typed_startup_error() {
     .unwrap();
     let llm = ScriptedLlmClient::new(Vec::new());
     // `--confinement=off`, the same as `--no-confinement`.
-    let options = allow_shell(vec!["--confinement=off".to_string()]);
-    let Err(err) = Rig::try_start_opts(&ws.root, &llm, Start::New, options).await else {
+    let Err(err) =
+        Attached::try_start_with(&ws.root, &llm, allow_shell(&["--confinement=off"])).await
+    else {
         panic!("--no-confinement started below the realm's policy");
+    };
+    let DaemonError::Bootstrap(err) = err else {
+        panic!("not a bootstrap error: {err}");
     };
     assert!(
         matches!(
-            &err,
+            &*err,
             TuiError::Confinement(rkat_tui::ConfinementError::BelowRealmFloor { policy, .. })
                 if policy.contains("workspace preset")
         ),
