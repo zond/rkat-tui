@@ -331,6 +331,55 @@ async fn bounded<T>(
         .map_err(CallFailure::Failed)
 }
 
+/// Events of streams opened but not registered yet, by stream id, at most
+/// [`ORPHANS_MAX`] of them; past that they are dropped, and that is logged
+/// once per connection.
+#[derive(Debug)]
+struct Orphans<T> {
+    by_stream: std::collections::HashMap<String, Vec<T>>,
+    held: usize,
+    warned: bool,
+}
+
+impl<T> Default for Orphans<T> {
+    fn default() -> Self {
+        Self {
+            by_stream: std::collections::HashMap::new(),
+            held: 0,
+            warned: false,
+        }
+    }
+}
+
+impl<T> Orphans<T> {
+    /// Hold `event` of `stream` until the stream is registered.
+    fn hold(&mut self, stream: String, event: T) {
+        if self.held >= ORPHANS_MAX {
+            if !std::mem::replace(&mut self.warned, true) {
+                tracing::warn!(
+                    held = self.held,
+                    "too many events of streams not registered yet; dropping more"
+                );
+            }
+            return;
+        }
+        self.held += 1;
+        self.by_stream.entry(stream).or_default().push(event);
+    }
+
+    /// The events held for `stream`, oldest first.
+    fn take(&mut self, stream: &str) -> Vec<T> {
+        let events = self.by_stream.remove(stream).unwrap_or_default();
+        self.held -= events.len();
+        events
+    }
+
+    /// Forget everything (the connection's streams are gone).
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
 /// The attach-mode runner.
 pub struct AttachRunner {
     config: AttachConfig,
@@ -365,7 +414,7 @@ pub struct AttachRunner {
     /// The orchestrator's helpers.
     followers: Followers,
     /// Events of streams opened but not registered yet, by stream id.
-    orphans: std::collections::HashMap<String, Vec<meerkat_mob::AttributedEvent>>,
+    orphans: Orphans<meerkat_mob::AttributedEvent>,
     /// When the mobs are listed next, and until when the listing repeats.
     discover_at: Option<Instant>,
     discover_until: Option<Instant>,
@@ -429,7 +478,7 @@ impl AttachRunner {
             approvals: Approvals::default(),
             shell_task: None,
             followers: Followers::default(),
-            orphans: std::collections::HashMap::new(),
+            orphans: Orphans::default(),
             discover_at: None,
             discover_until: None,
             discovering: false,
@@ -803,9 +852,9 @@ impl AttachRunner {
         if self.followers.owns(&stream) {
             let actions = self.followers.event(&stream, attributed);
             self.follow(actions);
-        } else if self.orphans.values().map(Vec::len).sum::<usize>() < ORPHANS_MAX {
+        } else {
             // A stream whose open has not answered yet.
-            self.orphans.entry(stream).or_default().push(attributed);
+            self.orphans.hold(stream, attributed);
         }
     }
 
@@ -1160,7 +1209,7 @@ impl AttachRunner {
                     }
                     self.followers.opened(stream.clone(), &mob);
                     let mut actions = Vec::new();
-                    for event in self.orphans.remove(&stream).unwrap_or_default() {
+                    for event in self.orphans.take(&stream) {
                         actions.extend(self.followers.event(&stream, event));
                     }
                     for (label, session) in members {
@@ -2802,6 +2851,25 @@ mod tests {
         assert!(stop_target(&live, Some("127.0.0.1:4001".parse().unwrap())).is_err());
         assert!(stop_target(&live, None).is_err());
         assert!(stop_target(&launch::Liveness::Absent, Some(at)).is_err());
+    }
+
+    #[test]
+    fn orphans_are_counted_bounded_and_released() {
+        let mut orphans = Orphans::default();
+        for n in 0..ORPHANS_MAX + 5 {
+            orphans.hold(if n % 2 == 0 { "a" } else { "b" }.to_string(), n);
+        }
+        assert_eq!(orphans.held, ORPHANS_MAX);
+        assert!(orphans.warned, "warned once");
+        let a = orphans.take("a");
+        assert_eq!(a.len(), ORPHANS_MAX / 2);
+        assert_eq!(a.first(), Some(&0));
+        assert_eq!(orphans.held, ORPHANS_MAX / 2);
+        orphans.hold("c".into(), 1);
+        assert_eq!(orphans.take("c"), vec![1]);
+        orphans.clear();
+        assert_eq!((orphans.held, orphans.warned), (0, false));
+        assert!(orphans.take("b").is_empty());
     }
 
     #[test]

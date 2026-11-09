@@ -2710,3 +2710,12 @@ failure, attach the later. `ui::TurnFailure::rank` and
 first (the first failure is the one shown, as `TurnFailure::Failed`'s doc
 always said) and a completion the last (the follow-up run's text is the
 answer). Test: `ui::tests::a_turn_end_keeps_the_first_failure_and_the_last_completion`.
+
+### The orphan cap counts instead of summing
+
+Events of a mob stream whose open had not answered yet were held up to
+`ORPHANS_MAX` (2,000), but the check summed every held list on every
+event, and events past the cap were dropped without a word. `Orphans`
+keeps a running count, releases a stream's events in order when it
+registers, and logs once per connection when it starts dropping. Test:
+`client::runner::tests::orphans_are_counted_bounded_and_released`.
