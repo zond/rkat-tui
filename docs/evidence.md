@@ -2754,3 +2754,13 @@ steer); only the "delivered" mark can name the wrong message for a moment.
 Recorded as an ask (`docs/mob-split.md`, ask 6) and as a limit in
 `docs/manual.md`; no application-side workaround reads the engine's input
 ids today.
+
+### `Decisions::hold_request` has a typed error
+
+`hold_request` returned `Result<_, String>`, flattening a serialization
+error, the decision clock's and the decision contract's refusals into
+text. It returns `daemon::decisions::HoldError` (`Render`, `Clock`,
+`Contract`) now, like the typed errors of the approval engine; the desk
+still logs it and denies the call (fail closed). `Principal::new`,
+`Decisions::new` and the requester key still answer `String` (start-up
+configuration errors shown once); they are left for a later pass.

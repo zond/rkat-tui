@@ -67,8 +67,8 @@ use meerkat_rpc::protocol::RpcRequest;
 use meerkat_rpc::router::MethodRouter;
 use meerkat_runtime::decision::wire::{wire_canonical_part, wire_decision_phase};
 use meerkat_runtime::decision::{
-    DecisionClock, DecisionError, DecisionOpening, DecisionOpenings, DecisionWithdrawer,
-    DurableDecisionService, SystemDecisionClock,
+    DecisionClock, DecisionClockError, DecisionError, DecisionOpening, DecisionOpenings,
+    DecisionWithdrawer, DurableDecisionService, SystemDecisionClock,
 };
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -213,6 +213,20 @@ fn requester() -> Result<DecisionPrincipalKey, String> {
     let gate = PrincipalRef::in_domain(PrincipalKind::ServiceAccount, GATE, domain)
         .map_err(|err| err.to_string())?;
     DecisionPrincipalKey::of(&gate).map_err(|err| err.to_string())
+}
+
+/// Why an escalation cannot be held as a decision ([`Decisions::hold_request`]).
+#[derive(Debug, thiserror::Error)]
+pub enum HoldError {
+    /// The dialog's rendering could not be written.
+    #[error("the dialog cannot be rendered: {0}")]
+    Render(#[from] serde_json::Error),
+    /// The host's clock gave no representable time.
+    #[error(transparent)]
+    Clock(#[from] DecisionClockError),
+    /// The decision contract refuses a value (kind, subject, body, …).
+    #[error("the decision contract refuses it: {0}")]
+    Contract(#[from] DecisionContractError),
 }
 
 /// How a held decision was decided by a client.
@@ -548,42 +562,36 @@ impl Decisions {
     ///
     /// # Errors
     ///
-    /// Why it cannot be held (a value the decision contract refuses).
+    /// [`HoldError`]: why it cannot be held.
     pub fn hold_request(
         &self,
         prompt: &EscalationPrompt,
         timeout: Duration,
-    ) -> Result<DecisionHoldRequest, String> {
+    ) -> Result<DecisionHoldRequest, HoldError> {
         let shown = DialogRendering {
             session_id: prompt.session_id.clone(),
             prompt: prompt.shown.clone(),
         };
-        let rendering = serde_json::to_string(&shown).map_err(|err| err.to_string())?;
+        let rendering = serde_json::to_string(&shown)?;
         let subject = format!(
             "escalation:{}:{}:{}",
             prompt.session_id,
             std::process::id(),
             prompt.id
         );
-        let now = SystemDecisionClock
-            .now_ms()
-            .map_err(|err| err.to_string())?;
+        let now = SystemDecisionClock.now_ms()?;
         let window = u64::try_from((timeout + DEADLINE_SLACK).as_millis()).unwrap_or(u64::MAX);
-        let contract = |err: DecisionContractError| err.to_string();
         Ok(DecisionHoldRequest::new(
-            DecisionKind::new(KIND).map_err(contract)?,
-            DecisionSubjectKey::new(subject.clone()).map_err(contract)?,
-            DecisionOperationId::new(subject).map_err(contract)?,
+            DecisionKind::new(KIND)?,
+            DecisionSubjectKey::new(subject.clone())?,
+            DecisionOperationId::new(subject)?,
             Sha256Digest::of(rendering.as_bytes()),
-            DecisionRequestBody::from_value(
-                &serde_json::to_value(&shown).map_err(|e| e.to_string())?,
-            )
-            .map_err(contract)?,
+            DecisionRequestBody::from_value(&serde_json::to_value(&shown)?)?,
             self.requester.clone(),
             self.principal.approver_id.clone(),
             now.saturating_add(window),
-            DecisionRendering::new(rendering).map_err(contract)?,
-            DecisionRenderer::new(RENDERER).map_err(contract)?,
+            DecisionRendering::new(rendering)?,
+            DecisionRenderer::new(RENDERER)?,
         ))
     }
 
