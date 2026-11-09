@@ -13,7 +13,7 @@ use std::sync::Arc;
 use common::{ScriptedLlmClient, Step, Workspace, args_for, endpoint_file_for, no_lists, within};
 use meerkat_core::AgentEvent;
 use rig::{Client, Running};
-use rkat_tui::cli::AttachMode;
+use rkat_tui::cli::{AttachMode, AttachTarget};
 use rkat_tui::client::catchup::CursorFile;
 use rkat_tui::client::runner::RECALL_UNAVAILABLE;
 use rkat_tui::client::sessions::REWIND_UNAVAILABLE;
@@ -30,7 +30,7 @@ async fn a_prompt_sent_before_the_attach_finished_is_held_until_it_did() {
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![Step::Text("answered")]);
     let daemon = Running::start(&ws.root, &llm).await;
-    let mut config = rkat_tui::client::configure(&args_for(&ws.root), AttachMode::Existing)
+    let mut config = rkat_tui::client::configure(&args_for(&ws.root), AttachTarget::Existing)
         .await
         .unwrap();
     config.lister = no_lists();
@@ -526,6 +526,60 @@ async fn a_bang_command_runs_in_this_process_and_joins_the_agents_context() {
     daemon.stop().await;
 }
 
+/// `--attach=DIRECTORY` from another workspace: the client attaches to
+/// that workspace's daemon, and what it resolves locally (the `!` shell's
+/// directory, `@` mentions) resolves against the daemon's workspace, not
+/// the directory the client was started in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn attach_to_a_directory_resolves_locally_against_its_workspace() {
+    let served = Workspace::new();
+    let elsewhere = Workspace::new();
+    std::fs::write(served.root.join("only-here.txt"), "alpha-content\n").unwrap();
+    let llm = ScriptedLlmClient::new(vec![Step::Text("read it")]);
+    let daemon = Running::start(&served.root, &llm).await;
+    // Started in the other workspace, pointed at a subdirectory of the
+    // served one: the workspace above it is found.
+    let sub = served.root.join("src");
+    std::fs::create_dir_all(&sub).unwrap();
+    let args = common::args_with(&elsewhere.root, &[]);
+    let mut config = rkat_tui::client::configure(&args, AttachTarget::Directory(sub))
+        .await
+        .unwrap();
+    let canonical = std::fs::canonicalize(&served.root).unwrap();
+    assert_eq!(config.scope.context_root, canonical);
+    config.lister = no_lists();
+    config.endpoint_files = vec![endpoint_file_for(&served.root)];
+    let mut client = Client {
+        harness: spawn_attach_runner(config),
+        seen: Vec::new(),
+    };
+    client.attached().await;
+    client.send(Effect::RunShell {
+        id: rkat_tui::ui::ShellRunId(1),
+        command: "pwd".into(),
+    });
+    let finished = client
+        .wait_for(|msg| matches!(msg, Msg::ShellFinished { .. }))
+        .await;
+    let Msg::ShellFinished {
+        outcome: rkat_tui::ui::ShellOutcome::Ran { run, .. },
+        ..
+    } = finished
+    else {
+        panic!("{finished:?}");
+    };
+    assert_eq!(run.output.trim(), canonical.display().to_string());
+    client.send(Effect::StartTurn("look at @only-here.txt".into()));
+    client.turn_finished().await.result.unwrap();
+    let request = format!("{:?}", llm.requests()[0]);
+    assert!(
+        request.contains("alpha-content"),
+        "the mention was expanded there"
+    );
+    client.quit().await;
+    daemon.stop().await;
+}
+
 #[test]
 fn attach_mode_is_the_default_and_a_users_tui_toml_can_turn_it_off() {
     use rkat_tui::bootstrap::{attach_mode as of_layers, read_layers};
@@ -533,7 +587,7 @@ fn attach_mode_is_the_default_and_a_users_tui_toml_can_turn_it_off() {
     let ws = Workspace::new();
     let args = args_for(&ws.root);
     // Neither flag nor tui.toml: attach, starting the daemon when none runs.
-    assert_eq!(attach_mode(&args), Some(AttachMode::Auto));
+    assert_eq!(attach_mode(&args), Some(AttachTarget::Auto));
     // A user layer (the --config-dir tui.toml) turns it off, and on.
     let user = ws.root.join(".cfg");
     std::fs::create_dir_all(&user).unwrap();
@@ -541,10 +595,10 @@ fn attach_mode_is_the_default_and_a_users_tui_toml_can_turn_it_off() {
     assert_eq!(attach_mode(&args), None);
     assert_eq!(
         attach_mode(&common::args_with(&ws.root, &["--attach"])),
-        Some(AttachMode::Auto)
+        Some(AttachTarget::Auto)
     );
     std::fs::write(user.join("tui.toml"), "attach = true\n").unwrap();
-    assert_eq!(attach_mode(&args), Some(AttachMode::Auto));
+    assert_eq!(attach_mode(&args), Some(AttachTarget::Auto));
     // The flags win.
     assert_eq!(
         attach_mode(&common::args_with(&ws.root, &["--no-attach"])),
@@ -552,13 +606,13 @@ fn attach_mode_is_the_default_and_a_users_tui_toml_can_turn_it_off() {
     );
     assert_eq!(
         attach_mode(&common::args_with(&ws.root, &["--attach=existing"])),
-        Some(AttachMode::Existing)
+        Some(AttachTarget::Existing)
     );
     // A project file cannot choose it.
     std::fs::remove_file(user.join("tui.toml")).unwrap();
     std::fs::create_dir_all(ws.root.join(".rkat")).unwrap();
     std::fs::write(ws.root.join(".rkat/tui.toml"), "attach = false\n").unwrap();
-    assert_eq!(attach_mode(&args), Some(AttachMode::Auto));
+    assert_eq!(attach_mode(&args), Some(AttachTarget::Auto));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -654,7 +708,7 @@ async fn a_reconnect_restarts_a_daemon_that_died() {
     let llm = ScriptedLlmClient::new(vec![]);
     let daemon = Running::start(&ws.root, &llm).await;
     let args = args_for(&ws.root);
-    let mut config = rkat_tui::client::configure(&args, AttachMode::Auto)
+    let mut config = rkat_tui::client::configure(&args, AttachTarget::Auto)
         .await
         .unwrap();
     config.lister = no_lists();
@@ -707,7 +761,7 @@ async fn attach_mode_prices_the_cost_readout_and_names_an_unconfined_shell() {
             "pricing.priced-model.output=15",
         ],
     );
-    let mut config = rkat_tui::client::configure(&args, AttachMode::Existing)
+    let mut config = rkat_tui::client::configure(&args, AttachTarget::Existing)
         .await
         .unwrap();
     config.lister = no_lists();
@@ -763,7 +817,7 @@ async fn both_runners_build_the_same_app_for_the_same_config() {
         .unwrap();
     let in_process = rkat_tui::runner::app_setup(&runtime);
     runtime.release_realm_lease().await;
-    let config = rkat_tui::client::configure(&args, AttachMode::Existing)
+    let config = rkat_tui::client::configure(&args, AttachTarget::Existing)
         .await
         .unwrap();
     let attach = rkat_tui::client::app_setup(&config);
@@ -853,7 +907,7 @@ async fn attach_mode_recalls_and_searches_the_shared_input_history() {
         .unwrap();
     let (in_process, in_process_global) = load_histories(&runtime.scope);
     runtime.release_realm_lease().await;
-    let config = rkat_tui::client::configure(&args, AttachMode::Existing)
+    let config = rkat_tui::client::configure(&args, AttachTarget::Existing)
         .await
         .unwrap();
     let (mut history, mut global) = load_histories(&config.scope);

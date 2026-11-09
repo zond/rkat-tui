@@ -56,7 +56,7 @@ use std::time::Duration;
 
 use tokio::sync::mpsc;
 
-use crate::cli::{Args, AttachMode};
+use crate::cli::{Args, AttachMode, AttachTarget};
 use crate::error::TuiError;
 use crate::ui::{Effect, Msg, StatusInfo, StatusUpdate, UiChannels};
 use crate::workbench::{AppSetup, app};
@@ -163,15 +163,47 @@ pub enum ClientError {
     },
 }
 
-/// [`configure_with`] on the layers `args` name, read now.
+/// [`configure_with`] for `target` on the layers of the workspace it
+/// names, read now.
 ///
 /// # Errors
 ///
 /// [`TuiError`] when the workspace, its layers or the realm config cannot
 /// be read.
 #[cfg(any(test, feature = "test-support"))]
-pub async fn configure(args: &Args, mode: AttachMode) -> Result<AttachConfig, TuiError> {
-    configure_with(crate::bootstrap::read_layers(args)?, args, mode).await
+pub async fn configure(args: &Args, target: AttachTarget) -> Result<AttachConfig, TuiError> {
+    let args = match &target {
+        AttachTarget::Directory(dir) => directory_args(args, dir)?,
+        _ => args.clone(),
+    };
+    configure_with(crate::bootstrap::read_layers(&args)?, &args, target.mode()).await
+}
+
+/// `args` attached to the workspace of `dir` (`--attach=DIRECTORY`): the
+/// workspace the daemon there reports in its endpoint file, else the one
+/// `dir` resolves to as the client resolves its own (the nearest
+/// ancestor holding a workspace, else `dir`). Everything local then
+/// resolves against it: the `!` shell's directory, `@` mentions,
+/// `/export`, `/remember`, `/memory` and the input histories. It replaces
+/// `-w`.
+///
+/// # Errors
+///
+/// [`TuiError::ProjectRoot`] when `dir` cannot be resolved.
+pub fn directory_args(args: &Args, dir: &std::path::Path) -> Result<Args, TuiError> {
+    let dir = std::fs::canonicalize(dir).map_err(|source| TuiError::ProjectRoot {
+        path: dir.to_path_buf(),
+        source,
+    })?;
+    let resolved = crate::bootstrap::scope::workspace_at(&dir);
+    let reported = crate::daemon::endpoint::candidates(&resolved)
+        .iter()
+        .find_map(|file| crate::daemon::endpoint::Endpoint::read(file).ok())
+        .and_then(|endpoint| endpoint.workspace)
+        .filter(|workspace| workspace.is_dir());
+    let mut args = args.clone();
+    args.context_root = Some(reported.unwrap_or(resolved));
+    Ok(args)
 }
 
 /// Resolve what attach mode needs from `args` and the `tui.toml` `layers`
@@ -310,13 +342,36 @@ pub fn app_setup(config: &AttachConfig) -> AppSetup {
 /// that cannot be reached is reported in the UI.
 pub async fn run(
     args: Args,
-    mode: AttachMode,
+    target: AttachTarget,
     layers: crate::bootstrap::Layers,
 ) -> Result<(), TuiError> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         return Err(TuiError::NotATerminal);
     }
-    let config = configure_with(layers, &args, mode).await?;
+    let (args, layers) = match &target {
+        AttachTarget::Auto | AttachTarget::Existing => (args, layers),
+        AttachTarget::Directory(dir) => {
+            let args = directory_args(&args, dir)?;
+            let workspace = args.context_root.clone().unwrap_or_default();
+            // Before anything is written there: a directory no daemon
+            // serves is refused here, not after the UI opened.
+            if !crate::daemon::endpoint::candidates(&workspace)
+                .iter()
+                .any(|file| file.is_file())
+            {
+                return Err(TuiError::NoDaemonAt { workspace });
+            }
+            let layers = crate::bootstrap::read_layers(&args)?;
+            (args, layers)
+        }
+        AttachTarget::Address(address) => {
+            return Err(TuiError::AttachAddress {
+                address: address.clone(),
+                reason: "not supported yet".to_string(),
+            });
+        }
+    };
+    let config = configure_with(layers, &args, target.mode()).await?;
     app::init_logging(&config.scope.realm_root())?;
     // Attach mode sends every event on the integrator channel (in order with
     // the turn messages); the agent channel stays idle.

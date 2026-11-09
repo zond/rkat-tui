@@ -278,6 +278,16 @@ fn canonical_or_self(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// The workspace `--attach=DIRECTORY` names: the nearest ancestor of
+/// `dir` (inclusive, canonical) that already holds a workspace, as the
+/// default workspace is found from the current directory, else `dir`
+/// itself.
+#[must_use]
+pub fn workspace_at(dir: &Path) -> PathBuf {
+    let home = dirs::home_dir().map(|home| canonical_or_self(&home));
+    find_workspace_above(dir, home.as_deref()).unwrap_or_else(|| canonical_or_self(dir))
+}
+
 /// The nearest ancestor of `start` (inclusive) that already holds a
 /// workspace-local state directory, if any.
 ///

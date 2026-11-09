@@ -6,6 +6,11 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Added
 
+- `--attach=DIRECTORY` attaches to the running daemon of another
+  workspace; `!`, `@` mentions, `/export`, `/remember`, `/memory` and the
+  input history then use that workspace. The `--attach` value is `auto`,
+  `existing`, a directory (containing `/`, or starting with `.` or `~`)
+  or `HOST:PORT`; the `=` stays required.
 - `--no-attach` while the workspace's daemon runs says so before the first
   prompt (which daemon, and that running alongside means no memory search
   and two agents in one tree); at a terminal it asks whether to attach,

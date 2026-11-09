@@ -173,6 +173,24 @@ pub enum TuiError {
     /// placed, or it cannot start).
     #[error(transparent)]
     Daemon(Box<crate::daemon::DaemonError>),
+    /// `--attach=DIRECTORY`: no daemon has an endpoint file for that
+    /// workspace.
+    #[error(
+        "no rkat-tui-mob runs for {} (it has no endpoint file); start one there (rkat-tui in that directory)",
+        workspace.display()
+    )]
+    NoDaemonAt {
+        /// The workspace the directory resolved to.
+        workspace: std::path::PathBuf,
+    },
+    /// `--attach=HOST:PORT` cannot be used as given.
+    #[error("--attach={address}: {reason}")]
+    AttachAddress {
+        /// The address given.
+        address: String,
+        /// Why not.
+        reason: String,
+    },
     /// `--no-attach -c`/`--resume` named the conversation the workspace's
     /// daemon runs.
     #[error(
@@ -209,6 +227,8 @@ impl TuiError {
             | Self::Confinement(_)
             | Self::ConfigDirCollision { .. }
             | Self::RunningInDaemon { .. }
+            | Self::NoDaemonAt { .. }
+            | Self::AttachAddress { .. }
             | Self::NotATerminal => 2,
             Self::Io { .. }
             | Self::Persistence(_)

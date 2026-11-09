@@ -975,6 +975,7 @@ the in-process runner is removed.
 |---|---|
 | (none), `--attach`, `--attach=auto` | Attach to the workspace's daemon; start it when none answers |
 | `--attach=existing` | Attach only to a running daemon; refuse otherwise |
+| `--attach=DIRECTORY` | Attach to the running daemon of the workspace at or above `DIRECTORY` (never starts one; replaces `-w`) |
 | `--no-attach` | Host the agent in this process (overrides `--attach`) |
 | `--list` | List every daemon that has an endpoint file, then exit (also `rkat-tui-mob --list`) |
 
@@ -994,6 +995,15 @@ the realm's) makes `--no-attach` the default (`attach = true` is the
 default spelled out); `--no-attach` and `--attach=…` still win. A
 project's `.rkat/tui.toml` cannot choose it (it is ignored with a notice,
 like its other trusted-only keys).
+
+**Attaching to another workspace.** `--attach=DIRECTORY` (a value with a
+`/`, or starting with `.` or `~`) finds that workspace as rkat-tui finds
+its own (the nearest ancestor that already holds `.rkat/tui/`, else the
+directory), reads its endpoint file and attaches; with no daemon there it
+refuses before the TUI opens. Everything this TUI does locally then
+happens in the daemon's workspace, not the directory you started in: `!`
+commands run there, `@` mentions resolve there, `/export`, `/remember` and
+`/memory` write there, and the input history is that workspace's.
 
 The value needs `=`: `rkat-tui --attach "fix the test"` attaches and sends
 the prompt.

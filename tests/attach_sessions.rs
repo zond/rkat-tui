@@ -340,7 +340,7 @@ async fn resume_and_continue_choose_the_conversation_at_attach() {
     // transcript; the held prompt lands in it.
     let prefix = &first[..first.len() - 4];
     let args = common::args_with(&ws.root, &["--resume", prefix]);
-    let mut config = rkat_tui::client::configure(&args, rkat_tui::cli::AttachMode::Existing)
+    let mut config = rkat_tui::client::configure(&args, rkat_tui::cli::AttachTarget::Existing)
         .await
         .unwrap();
     config.lister = common::no_lists();

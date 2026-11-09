@@ -188,10 +188,10 @@ pub async fn run(args: Args) -> Result<(), TuiError> {
     // The workspace and its `tui.toml` layers are read once, here, and
     // handed to the host that runs.
     let layers = bootstrap::read_layers(&args)?;
-    let Some(mode) = bootstrap::attach_mode(&args, &layers) else {
+    let Some(target) = bootstrap::attach_mode(&args, &layers) else {
         return in_process(args, layers).await;
     };
-    client::run(args, mode, layers).await
+    client::run(args, target, layers).await
 }
 
 /// `--no-attach`: the in-process runner, after saying what a daemon that
@@ -215,7 +215,7 @@ async fn in_process(args: Args, mut layers: bootstrap::Layers) -> Result<(), Tui
     let daemon = match choice {
         None => return Ok(()),
         Some(ui::AlongsideChoice::Attach) => {
-            return client::run(args, cli::AttachMode::Existing, layers).await;
+            return client::run(args, cli::AttachTarget::Existing, layers).await;
         }
         Some(ui::AlongsideChoice::Alongside) => {
             layers.notices.push(daemon.notice(now));

@@ -593,7 +593,7 @@ impl Assembled {
 /// notice at bootstrap, like its other trusted-only keys), else attached
 /// (`--attach=auto`: attach to the running daemon, else start one).
 #[must_use]
-pub fn attach_mode(args: &Args, layers: &Layers) -> Option<crate::cli::AttachMode> {
+pub fn attach_mode(args: &Args, layers: &Layers) -> Option<crate::cli::AttachTarget> {
     if args.no_attach || args.attach.is_some() {
         return args.attach_mode();
     }
@@ -601,7 +601,7 @@ pub fn attach_mode(args: &Args, layers: &Layers) -> Option<crate::cli::AttachMod
         .layered
         .attach
         .unwrap_or(true)
-        .then_some(crate::cli::AttachMode::Auto)
+        .then_some(crate::cli::AttachTarget::Auto)
 }
 
 /// Resolve endpoints, model, confinement, trust, approval engine and MCP

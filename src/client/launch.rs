@@ -223,6 +223,7 @@ pub const NOT_FORWARDED: &[&str] = &[
     "continue_last",
     "no_mouse",
     "attach",
+    "attach_token_file",
     "no_attach",
     "context_root",
     "list",

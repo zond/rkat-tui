@@ -3226,3 +3226,32 @@ engine's error. Tests:
 `attach_lifecycle::no_attach_beside_a_live_daemon_says_so_and_explains_its_conversation`
 (find, describe, notice, the real engine refusal turned plain, stop),
 `ui::modal::tests::the_alongside_dialog_offers_attach_alongside_and_stop`.
+
+### `--attach` values and `--attach=DIRECTORY`
+
+`--attach` takes `cli::AttachTarget` (`cli::parse_attach`): `auto`,
+`existing`, a directory when the value holds a `/` or starts with `.` or
+`~` (`~` expanded to the home directory), else `HOST:PORT` (a non-empty
+host and a port 1–65535, split at the last `:` so `[::1]:4100` works);
+anything else is a usage error that names the grammar. The `=` stays
+required (`require_equals`), so `rkat-tui --attach ../x` is a prompt.
+`AttachMode` (start the daemon or not) is what the target implies
+(`AttachTarget::mode`: only `auto` starts one). `--attach-token-file` is
+not forwarded to a started daemon and the daemon refuses it
+(`DaemonCli::check`); `launch::NOT_FORWARDED` lists it so
+`every_engine_flag_reaches_the_daemon` keeps covering every other flag.
+
+A directory is resolved as the client resolves its own workspace
+(`bootstrap::scope::workspace_at`: the nearest ancestor holding
+`.rkat/tui/`, else the directory, canonical); the workspace the daemon
+wrote into its endpoint file wins when one is there
+(`client::directory_args`). The client then runs on that workspace as if
+started there (`-w` replaced): its scope is the daemon's workspace, so
+the `!` shell's directory, `@` expansion, `/export`, `/remember`,
+`/memory` and the histories need no special case. A directory with no
+endpoint file is refused before the TUI opens (`TuiError::NoDaemonAt`)
+and before its state directory would be created. Tests:
+`cli::tests::attach_values_follow_the_grammar_and_no_attach_is_in_process`,
+`attach::attach_to_a_directory_resolves_locally_against_its_workspace`
+(two workspaces; `pwd` from `!` and an `@` mention resolve in the
+daemon's).

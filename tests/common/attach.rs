@@ -20,7 +20,7 @@ use rkat_tui::approval::classifier::{
 use rkat_tui::approval::escalation::RecordedPrompt;
 use rkat_tui::approval::mode::PermissionMode;
 use rkat_tui::bootstrap::{ApprovalOverrides, BootstrapOptions, HostPaths};
-use rkat_tui::cli::AttachMode;
+use rkat_tui::cli::AttachTarget;
 use rkat_tui::client::testing::{AttachHarness, spawn_attach_runner};
 use rkat_tui::client::transport::{Connection, Notification};
 use rkat_tui::daemon::approvals::DaemonToolOrigins;
@@ -173,7 +173,7 @@ impl Client {
         args: &rkat_tui::Args,
         start_token: Option<&str>,
     ) -> Self {
-        let mut config = rkat_tui::client::configure(args, AttachMode::Existing)
+        let mut config = rkat_tui::client::configure(args, AttachTarget::Existing)
             .await
             .unwrap();
         config.start_token = start_token.map(str::to_string);

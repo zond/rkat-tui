@@ -176,24 +176,33 @@ pub struct Args {
     #[arg(long)]
     pub no_pricing_fetch: bool,
 
-    /// How to reach the workspace's `rkat-tui-mob` daemon, which runs the
-    /// agent (the default, as `auto`: attach to the running daemon, else
-    /// start one). `--attach=existing` only attaches to a running one. The
-    /// `=` is required: a word after a bare `--attach` is the prompt.
+    /// Which `rkat-tui-mob` daemon runs the agent (the default, as `auto`:
+    /// the workspace's, attaching to the running one, else starting one).
+    /// `existing` only attaches to a running one; a DIRECTORY (containing
+    /// `/` or starting with `.` or `~`) attaches to that workspace's
+    /// running daemon; HOST:PORT attaches to a daemon reached through a
+    /// tunnel, with `--attach-token-file`. The `=` is required: a word
+    /// after a bare `--attach` is the prompt.
     /// `/detach` leaves the daemon running; `/quit` stops a daemon this
     /// rkat-tui started (else it detaches or asks); `/daemon stop` shuts it
     /// down. `attach = false` in your tui.toml makes `--no-attach` the
     /// default.
     #[arg(
         long,
-        value_enum,
-        value_name = "MODE",
+        value_parser = parse_attach,
+        value_name = "auto|existing|DIRECTORY|HOST:PORT",
         num_args = 0..=1,
         require_equals = true,
         default_missing_value = "auto",
         overrides_with = "no_attach"
     )]
-    pub attach: Option<AttachMode>,
+    pub attach: Option<AttachTarget>,
+
+    /// The token of the daemon `--attach=HOST:PORT` reaches: a file holding
+    /// the token, or a copy of the daemon's endpoint file. It must not be
+    /// readable by others (0600 expected).
+    #[arg(long, value_name = "PATH")]
+    pub attach_token_file: Option<PathBuf>,
 
     /// Host the agent in this process instead of the daemon (the escape
     /// hatch until the in-process runner is removed; overrides `--attach`).
@@ -219,8 +228,12 @@ impl Args {
     /// last) and when neither flag is given (then `tui.toml` and the
     /// default decide, [`crate::bootstrap::attach_mode`]).
     #[must_use]
-    pub fn attach_mode(&self) -> Option<AttachMode> {
-        if self.no_attach { None } else { self.attach }
+    pub fn attach_mode(&self) -> Option<AttachTarget> {
+        if self.no_attach {
+            None
+        } else {
+            self.attach.clone()
+        }
     }
 
     /// The selected process confinement: `--no-confinement` wins over
@@ -235,7 +248,65 @@ impl Args {
     }
 }
 
-/// `--attach`: whether a missing daemon is started.
+/// `--attach=<value>`: which daemon, and whether a missing one is started.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AttachTarget {
+    /// The workspace's daemon, started when none answers (`auto`).
+    Auto,
+    /// The workspace's running daemon only (`existing`).
+    Existing,
+    /// The running daemon of the workspace at (or above) this directory.
+    Directory(PathBuf),
+    /// A daemon reached at `HOST:PORT` (through a tunnel).
+    Address(String),
+}
+
+impl AttachTarget {
+    /// Whether a missing daemon is started (only the workspace's own, in
+    /// `auto`).
+    #[must_use]
+    pub fn mode(&self) -> AttachMode {
+        match self {
+            Self::Auto => AttachMode::Auto,
+            Self::Existing | Self::Directory(_) | Self::Address(_) => AttachMode::Existing,
+        }
+    }
+}
+
+/// Parse an `--attach` value: `auto`, `existing`, a directory (containing
+/// `/` or starting with `.` or `~`; `~` is the home directory) or
+/// `HOST:PORT`.
+///
+/// # Errors
+///
+/// What the value should have been.
+pub fn parse_attach(value: &str) -> Result<AttachTarget, String> {
+    match value {
+        "auto" => return Ok(AttachTarget::Auto),
+        "existing" => return Ok(AttachTarget::Existing),
+        _ => {}
+    }
+    if value.contains('/') || value.starts_with('.') || value.starts_with('~') {
+        let path = match value.strip_prefix('~') {
+            Some(rest) if rest.is_empty() || rest.starts_with('/') => {
+                let home = dirs::home_dir().ok_or("no home directory to expand `~`")?;
+                home.join(rest.trim_start_matches('/'))
+            }
+            _ => PathBuf::from(value),
+        };
+        return Ok(AttachTarget::Directory(path));
+    }
+    match value.rsplit_once(':') {
+        Some((host, port)) if !host.is_empty() && port.parse::<u16>().is_ok_and(|p| p > 0) => {
+            Ok(AttachTarget::Address(value.to_string()))
+        }
+        _ => Err(format!(
+            "`{value}`: expected auto, existing, a directory (containing / or starting with . or ~) or HOST:PORT"
+        )),
+    }
+}
+
+/// Whether a missing daemon is started.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum AttachMode {
     /// Attach to the workspace's daemon, starting it when none answers.
@@ -392,25 +463,84 @@ mod tests {
     }
 
     #[test]
-    fn attach_defaults_to_auto_and_no_attach_is_in_process() {
+    fn attach_values_follow_the_grammar_and_no_attach_is_in_process() {
         let mode = |argv: &[&str]| Args::try_parse_from(argv).unwrap().attach_mode();
         assert_eq!(mode(&["rkat-tui"]), None);
-        assert_eq!(mode(&["rkat-tui", "--attach"]), Some(AttachMode::Auto));
-        assert_eq!(mode(&["rkat-tui", "--attach=auto"]), Some(AttachMode::Auto));
+        assert_eq!(mode(&["rkat-tui", "--attach"]), Some(AttachTarget::Auto));
+        assert_eq!(
+            mode(&["rkat-tui", "--attach=auto"]),
+            Some(AttachTarget::Auto)
+        );
         assert_eq!(
             mode(&["rkat-tui", "--attach=existing"]),
-            Some(AttachMode::Existing)
+            Some(AttachTarget::Existing)
         );
         assert_eq!(mode(&["rkat-tui", "--no-attach"]), None);
         assert_eq!(mode(&["rkat-tui", "--attach", "--no-attach"]), None);
         assert_eq!(
             mode(&["rkat-tui", "--no-attach", "--attach"]),
-            Some(AttachMode::Auto)
+            Some(AttachTarget::Auto)
         );
         // A prompt after a bare --attach is still the prompt.
         let args = Args::try_parse_from(["rkat-tui", "--attach", "fix it"]).unwrap();
         assert_eq!(args.prompt.as_deref(), Some("fix it"));
-        assert!(Args::try_parse_from(["rkat-tui", "--attach=bogus"]).is_err());
+        let args = Args::try_parse_from(["rkat-tui", "--attach", "../other"]).unwrap();
+        assert_eq!(args.prompt.as_deref(), Some("../other"));
+        assert_eq!(args.attach, Some(AttachTarget::Auto));
+        // Directories: a slash, a leading dot or tilde.
+        for (value, path) in [
+            ("../other", PathBuf::from("../other")),
+            ("./x", PathBuf::from("./x")),
+            (".", PathBuf::from(".")),
+            ("/srv/project", PathBuf::from("/srv/project")),
+            ("work/project", PathBuf::from("work/project")),
+            ("host:1/x", PathBuf::from("host:1/x")),
+        ] {
+            assert_eq!(
+                mode(&["rkat-tui", &format!("--attach={value}")]),
+                Some(AttachTarget::Directory(path)),
+                "{value}"
+            );
+        }
+        if let Some(home) = dirs::home_dir() {
+            assert_eq!(
+                mode(&["rkat-tui", "--attach=~/p"]),
+                Some(AttachTarget::Directory(home.join("p")))
+            );
+            assert_eq!(
+                mode(&["rkat-tui", "--attach=~"]),
+                Some(AttachTarget::Directory(home))
+            );
+        }
+        // HOST:PORT.
+        for value in [
+            "localhost:4100",
+            "127.0.0.1:4100",
+            "[::1]:4100",
+            "devbox:22",
+        ] {
+            assert_eq!(
+                mode(&["rkat-tui", &format!("--attach={value}")]),
+                Some(AttachTarget::Address(value.into())),
+                "{value}"
+            );
+        }
+        for bogus in ["bogus", "host:", "host:0", "host:99999", ":4100"] {
+            assert!(
+                Args::try_parse_from(["rkat-tui", &format!("--attach={bogus}")]).is_err(),
+                "{bogus}"
+            );
+        }
+        // The `existing` and directory forms never start a daemon.
+        assert_eq!(AttachTarget::Auto.mode(), AttachMode::Auto);
+        assert_eq!(
+            AttachTarget::Directory(PathBuf::from("/x")).mode(),
+            AttachMode::Existing
+        );
+        assert_eq!(
+            AttachTarget::Address("h:1".into()).mode(),
+            AttachMode::Existing
+        );
     }
 
     #[test]
