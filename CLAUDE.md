@@ -67,6 +67,7 @@ shell (`src/user_shell.rs`) and attach mode's start-on-demand of the
 | `src/main.rs`, `src/cli.rs` | Entry point and `clap` arguments |
 | `src/bootstrap/` | Realm, config, factory and session-service construction; confinement plan (`confinement.rs`), project trust (`project_trust.rs`), instructions, MCP |
 | `src/session/` | The session handle over the engine's service: turns, interrupt, tool access policy, resume (`resolve.rs` turns a session reference into an id) |
+| `src/workbench/` | What both runners share above the agent: the `!` shell, `/remember` and `/memory`, `/export`, cost, the model lists and picker, unsent messages, `build_app` and the terminal session; `AgentContext` is its one-method view of the agent |
 | `src/runner/` | The application loop between the UI and the session: effects, lifecycle (new, resume, rewind, compact), approval dialogs, shell, cost, quit |
 | `src/approval/` | The approval engine: policy tiers (`policy.rs`), rules, classifier, the dispatch admission the session installs (`admission.rs`), permission modes (`mode.rs`), escalation, trust record |
 | `src/ui/` | Elm-style UI: `App::update(Msg) -> Vec<Effect>`, rendering, input editor, command table (`commands.rs`), completion, modals, checklist |

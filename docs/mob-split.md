@@ -21,6 +21,71 @@ same-identity `/rewind` (lukacf/meerkat#2126); P5, the governed realm
 daemon's mob was created; which client's steer a boundary delivered when
 several clients steer the same turn (ask 6).
 
+## Direction (decided 2026-11-09): every session runs in the daemon
+
+`rkat-tui` becomes only a client of `rkat-tui-mob`; the in-process runner
+is deleted at the end of this work. The reasons: one runner instead of
+two (the copied attach runner had already drifted), detach at any moment
+without a hand-off, one process owning the per-workspace singletons (the
+realm config, the memory notes, the semantic index with its exclusive
+lock) so several clients and several agents per workspace need no special
+cases, and an agent that is always reachable over Meerkat's own JSON-RPC.
+The cost is parity work first, a daemon spawn and handshake at start, an
+exact lifecycle rule, and moving the in-process tests onto the daemon rig.
+This follows the review batches that touch the UI and the config layer
+(they are the client's) and precedes the docs pass, which then describes
+the end state.
+
+### Rules (what the user asked for, made precise)
+
+- **Storage.** Everything a user cares about stays under `<workspace>/.rkat/`: sessions, the conversations list, memory notes, the semantic index, rules. Moving the directory carries it. The only out-of-workspace state is the daemon's endpoint file (address, token, pid, workspace path, start time), which is runtime state, is deleted on shutdown, and must stay out of the workspace because the confined shell reads the workspace and reaches loopback.
+- **One daemon per workspace, several agents possible.** Several clients attach to the same daemon. "Several rkat-tui in one directory" is several mob members in that daemon, not several daemons: the realm config, notes and the memory index (exclusive lock) are per workspace and belong to one process. Multiple agents per daemon is the last phase and optional.
+- **Start.** Default: attach if a daemon is running for this workspace, else start one and attach. `-c` with a running daemon attaches to its current conversation; `--resume <ref>` attaches and asks the daemon to switch (`rkat/resume`). `--attach=DIRECTORY` attaches to that workspace's daemon. `--attach=HOST:PORT` attaches to a daemon reached through a tunnel, with the token from `--attach-token-file` (the daemon keeps binding loopback only; the manual documents `ssh -L`). The `=` stays required because a bare `--attach` followed by a word is a prompt. `--no-attach` is kept for one release as the in-process escape hatch and then deleted with the in-process runner.
+- **`/detach`** means "keep going without me": the client exits, the daemon records that it has been detached from, the turn goes on.
+- **`/quit`** means "I am done": it stops the daemon when this client started it and nobody has detached from it since. If a detach ever happened, or the daemon does not know (it restarted), the client asks: detach or terminate. If other clients are attached, `/quit` detaches without asking. A terminal hangup, a dropped connection or a client crash is a detach: the daemon exits only on an explicit terminate (`rkat/shutdown` from `/quit`, or `/daemon stop`). Terminating while a turn runs interrupts it; the prompt says so.
+- **`--list`** prints every daemon whose endpoint file exists: workspace, address, pid, uptime, live or stale, and for live ones the current conversation, running or idle, and the attached-client count (asked over the wire with the token). Never the token. Stale files (no answer, pid gone) are reported and removed.
+- **Starting alongside.** If a daemon is live and the user forces `--no-attach` (while it exists), the TUI says so before the first prompt and offers attach, run alongside (no memory search, two agents in one tree), or stop the daemon first. `--no-attach -c` on the daemon's own conversation gets a plain message, not the engine's served-elsewhere error.
+
+### Phases
+
+#### P1 Parity (attach mode does everything in-process does)
+- The agent's fork: the TUI's `fork` tool is built on the in-process session service; in the daemon the agent has the engine's `fork_off`, already gated and followed. Decide per feature: `src/fork/` is deleted with the in-process runner, and the manual stops promising the TUI fork tool. Check nothing in-process-only remains in the agent's tool set (compare `session::tool_set` with the daemon's policy).
+- Ctrl+T task checklist: a `rkat/tasks` local method reads the session task store (`tasks.db`) in the daemon; the client renders it as today.
+- History ↑ recall: client-local history file; make it work in attach mode.
+- Anything else the manual's attach section lists as a limit, except multi-client steer attribution (engine gap, ask 6, stays documented).
+- Quit-confirm and other texts that assume in-process.
+
+#### P2 Lifecycle
+- Endpoint file gains `workspace`, `started_at`; the daemon tracks `detached: bool` and `clients: usize` and reports them in `rkat/status`.
+- `/detach` (new command; `/quit` stops meaning detach), `rkat/detach` so the daemon records it.
+- `/quit` semantics as above, including the owner notion (the client that started the daemon holds a start token or the daemon records the owner connection id), the other-clients rule, hangup = detach.
+- `rkat-tui --list` (and `rkat-tui-mob --list` sharing the code).
+- Endpoint-file fallback when confinement would expose the state dir: `$XDG_RUNTIME_DIR/rkat-tui/<key>/`, else refuse with today's message. The temp dir is granted to the sandbox, so never there.
+- Tests: `tests/attach_lifecycle.rs` with a scripted daemon: quit-stops, detach-keeps, quit-after-detach-asks, other-client-detaches, drop-without-message-keeps, `--list` rows and stale cleanup.
+
+#### P3 Default flip
+- `AttachMode::IfRunningElseStart` becomes the default; `--no-attach` escape hatch with the alongside notice.
+- `-c`/`--resume` under attach (replace the Batch C refusal with the switch).
+- `--attach=DIRECTORY`; `--attach=HOST:PORT` with `--attach-token-file`; the client resolves `!`, `@` mentions, `/export`, `/remember` against the daemon's reported workspace (refuse the file-editing ones when the workspace is not local).
+- Manual: the attach section becomes the main text; `ssh -L` recipe.
+
+#### P4 Delete the in-process runner
+- Remove `src/runner/` (keep what the workbench absorbed), `src/fork/`, the in-process paths in `src/bootstrap/`, `--no-attach`, `AttachMode::None`; `src/session/` stays only as far as the daemon uses it.
+- Migrate `tests/integrator.rs`, `tests/fork.rs`, `tests/compact.rs`, `tests/mobs.rs`, … onto the daemon rig (`tests/common/attach.rs`), keeping each behaviour assertion; delete `tests/common/mod.rs`'s `Rig`. Record in `docs/evidence.md` which in-process test became which attach test.
+- CLAUDE.md layout table, README, manual, mob-split (now the architecture doc), changelog.
+
+#### P5 Several agents per workspace (optional, after P4)
+- A member per agent in the daemon's mob (`main`, `main-2`, … or named), `--agent NAME` / `/agents`, a member column in the conversations list, a per-member attach cursor. Approvals, rules and memory stay per workspace.
+
+### Interaction with the review batches
+- Batch D (running): the workbench is what the one runner uses; it was told not to build two-runner abstractions.
+- Batch E: dropping the `mob`/`mcp` features is even more right (the daemon is always needed); the config move is unchanged.
+- Batch F: unchanged (the UI is the client).
+- Batch G: the test-doubles dedupe between the two rigs is moot (one rig survives P4); the docs work is done after P4 so it describes the end state. The adoption test for the #2102 fix moves onto the daemon rig.
+
+### Upstream follow-up: ask 6 (steer correlation), 2026-11-09 13:46 UTC
+The Core maintainer rated it P2 and started an additive fix: an optional `admission { session_id, input_id }` on `MobMemberSendResult` for an unkeyed send a runtime-backed member admitted (absent before admission, for non-runtime or peer-only members, keyed sends and older servers). When it ships in a release, the client keys its steer acknowledgement on `input_id` matched against `boundary_append_applied.input_id` instead of first-in-first-out, falling back to FIFO when `admission` is absent (older daemon). Belongs in P2 or as soon as the release exists; drop ask 6 from the limits then.
+
 ## Decision
 
 Decision (2026-11-08): rkat-tui becomes two binaries. A daemon embeds the
