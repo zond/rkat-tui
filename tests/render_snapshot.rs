@@ -440,7 +440,7 @@ fn history_search_prompt_line() {
 #[test]
 fn queued_block_status_count_and_hints() {
     use ratatui::crossterm::event::{KeyCode, KeyEvent};
-    use rkat_tui::delivery::{PendingId, SteerFailure};
+    use rkat_tui::ui::delivery::{PendingId, SteerFailure};
     let mut app = sample_app();
     let now = Instant::now();
     for c in "go".chars() {

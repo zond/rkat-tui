@@ -1,12 +1,22 @@
-//! UI-side bookkeeping for messages typed while a turn is running.
+//! Messages typed while a turn is running: the contract the UI and the
+//! runners share, and the UI's queue of them.
 //!
-//! Each such message becomes a [`Pending`] item with a [`Block::Queued`]
-//! placeholder in the transcript. The item moves through [`PendingState`] as
-//! the runner admits it to the session's runtime ([`super::Msg::SteerAck`])
-//! and the runtime writes it into the conversation
-//! ([`super::Msg::SteerDelivered`], where the placeholder becomes a user
-//! block in place). The state machine itself lives in [`super::App`]; this
-//! module only owns the queue.
+//! Such a message is *steered* into the running turn: the runner admits it
+//! to the session's runtime as a durable `Steer` input. The runtime writes
+//! it into the conversation as an ordinary user message at the running
+//! turn's next model boundary, or runs it as one follow-up turn when no
+//! boundary opens in time; either way it is written exactly once
+//! (`docs/reference/session-contracts.mdx`, "Durable steer"). [`PendingId`]
+//! and [`SteerFailure`] are what the runners depend on.
+//!
+//! On the UI side each such message becomes a [`Pending`] item with a
+//! [`Block::Queued`] placeholder in the transcript. The item moves through
+//! [`PendingState`] as the runner admits it to the session's runtime
+//! ([`super::Msg::SteerAck`]) and the runtime writes it into the
+//! conversation ([`super::Msg::SteerDelivered`], where the placeholder
+//! becomes a user block in place). [`PendingQueue`]'s transitions keep the
+//! item and its placeholder in step; [`super::App`] decides when each
+//! happens (it also owns the editor and the effects).
 //!
 //! Messages the UI still holds ([`PendingState::Deferred`]) are recalled into
 //! the editor by the UI alone. Admitted messages come back through the runner
@@ -17,9 +27,38 @@
 //!
 //! [`Block::Queued`]: super::transcript::Block::Queued
 
-use crate::delivery::PendingId;
+use std::fmt;
 
-use super::transcript::{BlockId, QueuedLabel};
+use super::commands;
+use super::transcript::{Block, BlockId, QueuedLabel, Transcript};
+
+/// Identifier of one queued message, allocated by the UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct PendingId(pub u64);
+
+impl fmt::Display for PendingId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "pending#{}", self.0)
+    }
+}
+
+/// Why a steered message was not admitted to the runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SteerFailure {
+    /// No turn is running; the message should be sent as a normal turn.
+    NotRunning,
+    /// The runtime refused the input; the text never reached the session.
+    Rejected(String),
+}
+
+impl fmt::Display for SteerFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotRunning => f.write_str("no turn is running"),
+            Self::Rejected(reason) => write!(f, "the runtime refused it: {reason}"),
+        }
+    }
+}
 
 /// Where a pending message is in its delivery lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,7 +106,7 @@ pub struct Pending {
     pub text: String,
     /// Lifecycle state.
     pub state: PendingState,
-    /// The [`Block::Queued`](super::transcript::Block::Queued) placeholder.
+    /// The [`Block::Queued`] placeholder.
     pub block: BlockId,
 }
 
@@ -110,6 +149,7 @@ impl PendingQueue {
     }
 
     /// Append an item.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn push(&mut self, item: Pending) {
         self.items.push(item);
     }
@@ -205,9 +245,125 @@ impl PendingQueue {
         }
     }
 
-    /// Mutable iteration, oldest first.
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Pending> {
-        self.items.iter_mut()
+    /// Hold `text` (a message, or a `!` command as typed) in `state` with
+    /// its placeholder appended to the transcript.
+    pub fn add(
+        &mut self,
+        transcript: &mut Transcript,
+        text: String,
+        state: PendingState,
+    ) -> PendingId {
+        let id = self.alloc_id();
+        let mut item = Pending {
+            id,
+            text,
+            state,
+            block: BlockId(0),
+        };
+        item.block = transcript.push(placeholder(&item));
+        self.items.push(item);
+        id
+    }
+
+    /// Move item `id` to `state`, relabelling its placeholder.
+    pub fn set_state(&mut self, transcript: &mut Transcript, id: PendingId, state: PendingState) {
+        let Some(item) = self.get_mut(id) else {
+            return;
+        };
+        item.state = state;
+        if let Some(Block::Queued { label, .. }) = transcript.block_mut(item.block) {
+            *label = state.label();
+        }
+    }
+
+    /// Show item `id` as delivered: its placeholder becomes a user block in
+    /// place. The text is kept until the turn ends, in case the runtime
+    /// discards the application again.
+    pub fn show_delivered(&mut self, transcript: &mut Transcript, id: PendingId) {
+        if let Some(item) = self.settle(id) {
+            let (block, text) = (item.block, item.text.clone());
+            transcript.replace_block(block, Block::User { text });
+        }
+    }
+
+    /// The runtime discarded the application of delivered item `id`: show
+    /// it as admitted and waiting again.
+    pub fn show_waiting_again(&mut self, transcript: &mut Transcript, id: PendingId) {
+        if let Some(item) = self.take_settled(id) {
+            self.put_back(transcript, item, PendingState::Admitted);
+        }
+    }
+
+    /// Hold a taken item again (the turn ended without it): deferred, its
+    /// placeholder back in place.
+    pub fn hold_again(&mut self, transcript: &mut Transcript, item: Pending) {
+        self.put_back(transcript, item, PendingState::Deferred);
+    }
+
+    /// Send item `id` as a turn of its own now: it leaves the queue and
+    /// its placeholder becomes a user block. Returns its text.
+    pub fn send_now(&mut self, transcript: &mut Transcript, id: PendingId) -> Option<String> {
+        let item = self.remove(id)?;
+        transcript.replace_block(
+            item.block,
+            Block::User {
+                text: item.text.clone(),
+            },
+        );
+        Some(item.text)
+    }
+
+    /// The transcript was replaced: append a fresh placeholder for every
+    /// item still in flight and forget the settled ones.
+    pub fn restore_placeholders(&mut self, transcript: &mut Transcript) {
+        self.settled.clear();
+        for item in &mut self.items {
+            item.block = transcript.push(placeholder(item));
+        }
+    }
+
+    /// After a turn: every item the turn did not deliver, oldest first.
+    /// Undelivered steers (queued or already shown as delivered), items the
+    /// UI held, and (defensively) admitted items the runtime never reported
+    /// on. Items still waiting for their admission ack stay: the ack
+    /// decides. The settled items are forgotten.
+    pub fn take_unsent(&mut self, undelivered: &[PendingId]) -> Vec<Pending> {
+        let mut unsent: Vec<Pending> = undelivered
+            .iter()
+            .filter_map(|id| self.take_settled(*id))
+            .collect();
+        unsent.extend(self.take_where(|p| {
+            undelivered.contains(&p.id)
+                || matches!(p.state, PendingState::Deferred | PendingState::Admitted)
+        }));
+        self.clear_settled();
+        unsent.sort_by_key(|p| p.id);
+        unsent
+    }
+
+    /// Put `item` back in `state` with its placeholder relabelled.
+    fn put_back(&mut self, transcript: &mut Transcript, item: Pending, state: PendingState) {
+        let item = Pending { state, ..item };
+        transcript.replace_block(item.block, placeholder(&item));
+        self.items.push(item);
+    }
+}
+
+/// The transcript placeholder of a held item: the message, or `$ <cmd>`
+/// for a `!` command.
+#[must_use]
+pub fn placeholder(item: &Pending) -> Block {
+    let text = match item.state {
+        PendingState::Shell => format!(
+            "$ {}",
+            commands::parse_shell(&item.text).unwrap_or(&item.text)
+        ),
+        _ => item.text.clone(),
+    };
+    Block::Queued {
+        id: item.id,
+        text,
+        label: item.state.label(),
     }
 }
 
@@ -215,6 +371,56 @@ impl PendingQueue {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    /// A message's life on the queue keeps its placeholder in step: queued,
+    /// admitted, shown as delivered (a user block), discarded back to
+    /// waiting, then handed back as unsent when the turn ends.
+    #[test]
+    fn transitions_keep_the_placeholder_in_step() {
+        let mut transcript = Transcript::new();
+        let mut q = PendingQueue::new();
+        let id = q.add(&mut transcript, "hi".into(), PendingState::Queued);
+        let block = q.get(id).unwrap().block;
+        let label = |t: &Transcript| match t.block(block) {
+            Some(Block::Queued { label, .. }) => Some(*label),
+            _ => None,
+        };
+        assert_eq!(label(&transcript), Some(QueuedLabel::Queued));
+        q.set_state(&mut transcript, id, PendingState::Admitted);
+        assert_eq!(label(&transcript), Some(QueuedLabel::Delivering));
+        q.show_delivered(&mut transcript, id);
+        assert!(q.is_empty());
+        assert_eq!(
+            transcript.block(block),
+            Some(&Block::User { text: "hi".into() })
+        );
+        q.show_waiting_again(&mut transcript, id);
+        assert_eq!(label(&transcript), Some(QueuedLabel::Delivering));
+        let unsent = q.take_unsent(&[]);
+        assert_eq!(unsent.iter().map(|p| p.id).collect::<Vec<_>>(), [id]);
+        q.hold_again(&mut transcript, unsent.into_iter().next().unwrap());
+        assert_eq!(label(&transcript), Some(QueuedLabel::Deferred));
+        assert_eq!(q.send_now(&mut transcript, id).as_deref(), Some("hi"));
+        assert_eq!(
+            transcript.block(block),
+            Some(&Block::User { text: "hi".into() })
+        );
+        let shell = q.add(&mut transcript, "!ls -a".into(), PendingState::Shell);
+        assert!(matches!(
+            transcript.block(q.get(shell).unwrap().block),
+            Some(Block::Queued { text, .. }) if text == "$ ls -a"
+        ));
+    }
+
+    #[test]
+    fn failures_display() {
+        assert_eq!(SteerFailure::NotRunning.to_string(), "no turn is running");
+        assert_eq!(
+            SteerFailure::Rejected("closed".into()).to_string(),
+            "the runtime refused it: closed"
+        );
+        assert_eq!(PendingId(3).to_string(), "pending#3");
+    }
 
     fn item(q: &mut PendingQueue, text: &str, block: usize) -> PendingId {
         let id = q.alloc_id();

@@ -75,13 +75,13 @@ use tokio::task::JoinSet;
 use crate::approval::ApprovalEngine;
 use crate::bootstrap::{self, BootstrapOptions, InstructionSources, ModelChoice, Runtime};
 use crate::cli::Args;
-use crate::delivery::{PendingId, SteerFailure};
 use crate::endpoints::EndpointName;
 use crate::error::TuiError;
 use crate::memory::{NoteStore, NoteToolDispatcher, Scope, prompt_index};
 use crate::mobs::HelperUpdate;
 use crate::session::{Admission, Completion, SessionHandle, SessionIdentity, SessionOptions};
 use crate::tools::{FileDiff, FileToolDispatcher};
+use crate::ui::delivery::{PendingId, SteerFailure};
 use crate::ui::{
     CompactionPolicy, CompactionTrigger, Effect, Msg, NoticeLevel, StatusInfo, StatusUpdate,
     TurnFailure, TurnOutcome, TurnSummary, UiChannels,

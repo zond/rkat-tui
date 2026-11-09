@@ -18,9 +18,9 @@ use rkat_tui::approval::classifier::{
     ActionClassifier, ClassifierError, ClassifierInput, ClassifierVerdict,
 };
 use rkat_tui::bootstrap::ApprovalOverrides;
-use rkat_tui::delivery::PendingId;
 use rkat_tui::runner::Start;
 use rkat_tui::session::resolve_session_ref;
+use rkat_tui::ui::delivery::PendingId;
 use rkat_tui::ui::{Block, Effect, EscalationAnswer, Msg, StatusUpdate, TurnFailure};
 use serde_json::json;
 use tokio::sync::Notify;
@@ -434,7 +434,7 @@ async fn a_steer_without_a_running_turn_is_refused() {
             msg,
             Msg::SteerAck {
                 id: PendingId(7),
-                result: Err(rkat_tui::delivery::SteerFailure::NotRunning)
+                result: Err(rkat_tui::ui::delivery::SteerFailure::NotRunning)
             }
         ),
         "{msg:?}"

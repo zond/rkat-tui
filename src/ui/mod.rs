@@ -25,7 +25,6 @@ pub mod transcript;
 
 use crate::approval::escalation::RecordedPrompt;
 use crate::approval::mode::PermissionMode;
-use crate::delivery::{PendingId, SteerFailure};
 use crate::models::ModelGroup;
 use crate::paths::ProjectRoot;
 use std::collections::VecDeque;
@@ -52,7 +51,7 @@ pub use compaction::{CompactFailure, CompactionGauge, CompactionPolicy, Compacti
 #[cfg(any(test, feature = "test-support"))]
 pub use cost::{CostConfidence, CostReadout, UsageTotals};
 pub use cost::{SessionCost, SessionCostSnapshot};
-pub use delivery::{Pending, PendingQueue, PendingState};
+pub use delivery::{Pending, PendingId, PendingQueue, PendingState, SteerFailure};
 pub use history::History;
 pub use input::{InputEditor, StashOutcome};
 pub use keymap::{Action, EditAction};
@@ -64,27 +63,11 @@ pub use rewind::{RewindMenu, RewindPoint, Rewound};
 pub use runtime::{UiChannels, UiError, run_ui};
 pub use search::{HistorySearch, SearchOutcome};
 pub use selection::{CellPos, SelectMode, Selection};
+#[cfg(any(test, feature = "test-support"))]
+pub use transcript::QueuedLabel;
 pub use transcript::{
-    Block, BlockId, DiffView, HelperView, NoticeLevel, QueuedLabel, ShellState, ToolState,
-    Transcript,
+    Block, BlockId, DiffView, HelperView, NoticeLevel, ShellState, ToolState, Transcript,
 };
-
-/// The transcript placeholder of a held item: the message, or `$ <cmd>`
-/// for a `!` command.
-fn placeholder(item: &Pending) -> Block {
-    let text = match item.state {
-        PendingState::Shell => format!(
-            "$ {}",
-            commands::parse_shell(&item.text).unwrap_or(&item.text)
-        ),
-        _ => item.text.clone(),
-    };
-    Block::Queued {
-        id: item.id,
-        text,
-        label: item.state.label(),
-    }
-}
 
 /// Window in which a second Ctrl-C on an idle, empty prompt quits.
 pub const DOUBLE_CTRL_C_WINDOW: Duration = Duration::from_millis(1500);
@@ -1972,8 +1955,8 @@ impl App {
                 }
             }
             Msg::SteerAck { id, result } => self.steer_ack(id, result, now, &mut fx),
-            Msg::SteerDelivered(id) => self.settle(id),
-            Msg::SteerRequeued(id) => self.requeue(id),
+            Msg::SteerDelivered(id) => self.pending.show_delivered(&mut self.transcript, id),
+            Msg::SteerRequeued(id) => self.pending.show_waiting_again(&mut self.transcript, id),
             Msg::Recalled { recalled, errors } => self.recalled(&recalled, &errors),
             Msg::Diff {
                 tool_use_id,
@@ -2064,11 +2047,8 @@ impl App {
                 self.helper_view = None;
                 self.transcript.reset(blocks);
                 self.last_seq = 0;
-                self.pending.clear_settled();
                 // Keep placeholders for messages still in flight.
-                for item in self.pending.iter_mut() {
-                    item.block = self.transcript.push(placeholder(item));
-                }
+                self.pending.restore_placeholders(&mut self.transcript);
                 if let Some(run) = &mut self.shell_run {
                     run.block = self.transcript.push(Block::Shell {
                         command: run.command.clone(),
@@ -2683,15 +2663,8 @@ impl App {
             return;
         }
         if self.running || self.shell_busy() {
-            let id = self.pending.alloc_id();
-            let item = Pending {
-                id,
-                text: raw,
-                state: PendingState::Shell,
-                block: BlockId(0),
-            };
-            let block = self.transcript.push(placeholder(&item));
-            self.pending.push(Pending { block, ..item });
+            self.pending
+                .add(&mut self.transcript, raw, PendingState::Shell);
         } else {
             let block = self.transcript.push(Block::Shell {
                 command: command.clone(),
@@ -2807,56 +2780,22 @@ impl App {
         }
     }
 
-    /// Hold an unsent message (its placeholder kept) until the `!`
-    /// commands before it ran.
-    fn hold_again(&mut self, item: Pending) {
-        self.transcript.replace_block(
-            item.block,
-            Block::Queued {
-                id: item.id,
-                text: item.text.clone(),
-                label: QueuedLabel::Deferred,
-            },
-        );
-        self.pending.push(Pending {
-            state: PendingState::Deferred,
-            ..item
-        });
-    }
-
     /// Hold a message until the running `!` commands end.
     fn hold(&mut self, text: String) {
-        let id = self.pending.alloc_id();
-        let item = Pending {
-            id,
-            text,
-            state: PendingState::Deferred,
-            block: BlockId(0),
-        };
-        let block = self.transcript.push(placeholder(&item));
-        self.pending.push(Pending { block, ..item });
+        self.pending
+            .add(&mut self.transcript, text, PendingState::Deferred);
         self.scroll.bottom();
     }
 
     /// Enter while a turn runs: queue the message and steer it into the turn.
     fn enqueue(&mut self, text: String, fx: &mut Vec<Effect>) {
-        let id = self.pending.alloc_id();
-        let block = self.transcript.push(Block::Queued {
-            id,
-            text: text.clone(),
-            label: QueuedLabel::Queued,
-        });
-        self.pending.push(Pending {
-            id,
-            text: text.clone(),
-            state: PendingState::Queued,
-            block,
-        });
+        let id = self
+            .pending
+            .add(&mut self.transcript, text.clone(), PendingState::Queued);
         self.scroll.bottom();
         fx.push(Effect::Steer { id, text });
     }
 
-    /// `/compact now` answered: report the request (or why it failed).
     /// The external editor closed: an edited instruction file goes to the
     /// integrator to reload, an edited draft replaces the input (Ctrl-_
     /// brings the old one back); a failure keeps everything and notices.
@@ -2891,6 +2830,7 @@ impl App {
         }
     }
 
+    /// `/compact now` answered: report the request (or why it failed).
     fn compact_requested(&mut self, result: Result<(), CompactFailure>) {
         self.compacting = false;
         match result {
@@ -2903,45 +2843,6 @@ impl App {
                     .push_notice(NoticeLevel::Error, format!("/compact failed: {err}"));
             }
         }
-    }
-
-    fn set_pending_state(&mut self, id: PendingId, state: PendingState) {
-        let Some(item) = self.pending.get_mut(id) else {
-            return;
-        };
-        item.state = state;
-        let block = item.block;
-        if let Some(Block::Queued { label, .. }) = self.transcript.block_mut(block) {
-            *label = state.label();
-        }
-    }
-
-    /// Show a pending message as delivered: its placeholder becomes a user
-    /// block in place. The text is kept until the turn ends, in case the
-    /// runtime discards the application again.
-    fn settle(&mut self, id: PendingId) {
-        if let Some(item) = self.pending.settle(id) {
-            let (block, text) = (item.block, item.text.clone());
-            self.transcript.replace_block(block, Block::User { text });
-        }
-    }
-
-    /// The runtime discarded a delivered message's application: show it as
-    /// waiting again.
-    fn requeue(&mut self, id: PendingId) {
-        let Some(item) = self.pending.take_settled(id) else {
-            return;
-        };
-        let state = PendingState::Admitted;
-        self.transcript.replace_block(
-            item.block,
-            Block::Queued {
-                id,
-                text: item.text.clone(),
-                label: state.label(),
-            },
-        );
-        self.pending.push(Pending { state, ..item });
     }
 
     /// Remove transcript blocks (highest index first, so the remaining ids
@@ -3007,17 +2908,18 @@ impl App {
             return;
         };
         match result {
-            Ok(()) => self.set_pending_state(id, PendingState::Admitted),
+            Ok(()) => {
+                self.pending
+                    .set_state(&mut self.transcript, id, PendingState::Admitted);
+            }
             // The turn ended before the message reached the runtime: hold it
             // for the turn's end (the runner's `TurnFinished` follows).
             Err(SteerFailure::NotRunning) if self.running || self.shell_busy() => {
-                self.set_pending_state(id, PendingState::Deferred);
+                self.pending
+                    .set_state(&mut self.transcript, id, PendingState::Deferred);
             }
             Err(SteerFailure::NotRunning) => {
-                if let Some(item) = self.pending.remove(id) {
-                    self.transcript
-                        .replace_block(item.block, Block::User { text: item.text });
-                }
+                self.pending.send_now(&mut self.transcript, id);
                 self.begin_turn(text, false, now, fx);
             }
             Err(cause @ SteerFailure::Rejected(_)) => {
@@ -3258,13 +3160,13 @@ impl App {
             }
         }
         self.streamed_text = false;
-        let unsent = self.collect_unsent(&undelivered);
+        let unsent = self.pending.take_unsent(&undelivered);
         // `!` commands typed during the turn run first; what would start the
         // next turn waits for them (a failed turn's messages still go back
         // to the editor).
         if self.shell_busy() && (self.send_next.is_some() || succeeded || interrupted) {
             for item in unsent {
-                self.hold_again(item);
+                self.pending.hold_again(&mut self.transcript, item);
             }
         } else {
             self.next_after_turn(unsent, interrupted, succeeded, now, fx);
@@ -3285,25 +3187,6 @@ impl App {
         if let Some(text) = self.gauge.after_turn(used, self.status.context_window) {
             self.transcript.push_notice(NoticeLevel::Warn, text);
         }
-    }
-
-    /// After a turn: every message the turn did not deliver, oldest first.
-    /// Undelivered steers (queued or already shown as delivered), messages
-    /// the UI held, and (defensively) admitted messages the runtime never
-    /// reported on. Messages still waiting for their admission ack stay: the
-    /// ack decides.
-    fn collect_unsent(&mut self, undelivered: &[PendingId]) -> Vec<Pending> {
-        let mut unsent: Vec<Pending> = undelivered
-            .iter()
-            .filter_map(|id| self.pending.take_settled(*id))
-            .collect();
-        unsent.extend(self.pending.take_where(|p| {
-            undelivered.contains(&p.id)
-                || matches!(p.state, PendingState::Deferred | PendingState::Admitted)
-        }));
-        self.pending.clear_settled();
-        unsent.sort_by_key(|p| p.id);
-        unsent
     }
 
     /// Decide what to send after a turn, in priority order: the Ctrl-X Ctrl-S

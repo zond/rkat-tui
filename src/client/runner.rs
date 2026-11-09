@@ -44,9 +44,9 @@ use crate::bootstrap::RuntimeScope;
 use crate::cli::AttachMode;
 use crate::daemon::endpoint::Endpoint;
 use crate::daemon::protocol::{self, ModeSet, SetModeParams, TrustOp, TrustParams};
-use crate::delivery::{PendingId, SteerFailure};
 use crate::endpoints::{EndpointRegistry, ModelRefError, WireDialect, parse_model_ref};
 use crate::models::{FetchResults, ModelCache};
+use crate::ui::delivery::{PendingId, SteerFailure};
 use crate::ui::{
     Block, CompactFailure, Effect, EscalationAnswer, EscalationId, Msg, NoticeLevel, RuleEffect,
     StatusUpdate, TurnFailure, TurnOutcome, TurnSummary,

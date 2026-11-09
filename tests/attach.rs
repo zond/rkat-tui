@@ -303,7 +303,7 @@ fn attach_true_in_a_users_tui_toml_selects_attach_mode() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_clients_steer_in_turn_and_both_see_the_whole_conversation() {
-    use rkat_tui::delivery::PendingId;
+    use rkat_tui::ui::delivery::PendingId;
     let ws = Workspace::new();
     let gate = Arc::new(tokio::sync::Notify::new());
     let llm = ScriptedLlmClient::new(vec![
@@ -556,7 +556,7 @@ async fn unsent_messages_are_saved_at_quit_and_announced_at_the_next_attach() {
     let daemon = Running::start(&ws.root, &llm).await;
     let client = Client::attach(&ws.root).await;
     client.send(Effect::SaveUnsent(vec![(
-        Some(rkat_tui::delivery::PendingId(1)),
+        Some(rkat_tui::ui::delivery::PendingId(1)),
         "for later".into(),
     )]));
     let saved = client.quit().await.expect("saved");

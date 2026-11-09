@@ -4,7 +4,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use crate::delivery::PendingId;
+use crate::ui::delivery::PendingId;
 
 /// File in the realm directory that collects unsent messages.
 pub const UNSENT_FILE: &str = "tui_unsent.txt";

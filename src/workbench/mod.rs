@@ -37,11 +37,11 @@ use tokio::sync::mpsc;
 use tokio::task::{JoinError, JoinHandle};
 
 use crate::bootstrap::RuntimeScope;
-use crate::delivery::PendingId;
 use crate::endpoints::EndpointRegistry;
 use crate::models::{FetchResults, ModelCache, ModelLister};
 use crate::pricing::{PriceTable, PricingSetup};
 use crate::session::SessionHandle;
+use crate::ui::delivery::PendingId;
 use crate::ui::{Msg, NoticeLevel};
 use crate::user_shell::UserShell;
 

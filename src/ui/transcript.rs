@@ -16,7 +16,7 @@ use ratatui::text::Line;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::delivery::PendingId;
+use super::delivery::PendingId;
 
 use super::markdown::truncate_chars;
 use super::render::{SPINNER, SPINNER_FRAME_MS, block_lines};

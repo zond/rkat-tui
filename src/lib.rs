@@ -19,7 +19,6 @@
 //! - `error` — the surface's error type and exit codes
 //! - `paths` — project-root path resolution and protected-path policy
 //! - `http` — bounded HTTP body reads
-//! - `delivery` — the contract for messages steered into a running turn
 //! - `config` — `tui.toml`: its schema, layering and the realm file's writes
 //! - `overlay` — the `--set`/`--allow`/… command-line layer over `tui.toml`
 //! - `pricing` — token prices for the cost readout
@@ -63,10 +62,6 @@ pub(crate) mod cli;
 pub mod config;
 #[cfg(not(feature = "test-support"))]
 pub(crate) mod config;
-#[cfg(feature = "test-support")]
-pub mod delivery;
-#[cfg(not(feature = "test-support"))]
-pub(crate) mod delivery;
 #[cfg(feature = "test-support")]
 pub mod endpoints;
 #[cfg(not(feature = "test-support"))]
