@@ -2518,3 +2518,29 @@ allow-and-add-rule both allow, the latter even when the realm rules file
 cannot be written), `an_abandoned_escalation_is_withdrawn`,
 `an_unanswered_escalation_times_out_as_a_denial`; the ledger's own tests
 went with it.
+
+### A native `apply_patch` is sealed at the gate; the patch grammar mirror is gone
+
+**Removed (2026-11-09):** `src/approval/patch_targets.rs`, a copy of the
+private grammar of upstream's `apply_patch` (`parse_patch` and friends) that
+told the policy which files a patch would touch, and its drift pins
+(`tests/drift_pins.rs` `apply_patch_*`; the `shell` argument pin stays).
+The tool it modelled is withheld from every agent: `session::TUI_OWNED_BUILTINS`
+puts `apply_patch` and `brain_swap` in every session's tool access policy,
+and `mobs::customizer` adds the same deny list to every helper and the
+daemon's members, so no call of it reached the gate in practice
+(`integrator::the_builtins_the_tui_owns_are_denied_by_the_tool_policy`).
+
+The gate now treats a native call of any `TUI_OWNED_BUILTINS` name as
+`Tier::Sealed` (`ActionKind::Withheld`), before allow rules and the
+classifier, so if the tool policy ever let one through it would fail closed
+instead of being reviewed. `brain_swap` moved from `REVIEWED_BUILTINS` with
+it: it is withheld for the same reason. The multi-target cases (a sealed
+target after a protected or outside one) existed only for patches, since
+`write_file` and `edit_file` name one path. `Tier::Sealed` displays as
+"sealed" (was "sealed path").
+
+Tests: `approval::policy::tests::upstream_builtins_are_all_classified` (every
+upstream builtin is in exactly one of the read-only, reviewed and withheld
+lists; the withheld ones are sealed even under an allow rule), `tier_table`
+(rows `apply_patch`, `brain_swap`), `approval_policy::a_native_apply_patch_is_sealed`.

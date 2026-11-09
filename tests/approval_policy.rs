@@ -31,6 +31,7 @@ use rkat_tui::approval::policy::{
 use rkat_tui::approval::rules::{Rule, RuleKind, RuleOrigin, RuleSet};
 use rkat_tui::memory::{NOTE_TOOL_NAMES, NOTES_SOURCE};
 use rkat_tui::paths::ProjectRoot;
+use rkat_tui::session::TUI_OWNED_BUILTINS;
 use rkat_tui::tools::{FILE_TOOL_NAMES, FILE_TOOLS_SOURCE};
 use serde_json::{Value, json};
 
@@ -107,6 +108,7 @@ fn origin(name: &str) -> ToolOrigin {
         ToolOrigin::tui(rkat_tui::fork::FORK_SOURCE, name)
     } else if READ_ONLY_BUILTINS.contains(&name)
         || REVIEWED_BUILTINS.contains(&name)
+        || TUI_OWNED_BUILTINS.contains(&name)
         || DELEGATION_TOOLS.contains(&name)
         || name.starts_with("mob_")
     {
@@ -156,13 +158,6 @@ fn in_project_edit_is_tier_two() {
         ),
         Tier::InProjectEdit
     );
-    assert_eq!(
-        h.tier(
-            "apply_patch",
-            json!({"patch": "*** Begin Patch\n*** Add File: a.txt\n+x\n*** Update File: src/main.rs\n@@\n-fn main() {}\n+fn main() { }\n*** End Patch"}),
-        ),
-        Tier::InProjectEdit
-    );
 }
 
 /// A protected path inside the project is the user's call, never the
@@ -207,14 +202,6 @@ fn protected_path_edit_asks_the_user() {
         denied.tier("write_file", json!({"path": ".env.local", "content": "x"})),
         Tier::UserDeny
     );
-    // One protected target among ordinary ones puts the patch to the user.
-    assert_eq!(
-        h.tier(
-            "apply_patch",
-            json!({"patch": "*** Begin Patch\n*** Add File: src/a.rs\n+x\n*** Add File: build.rs\n+x\n*** End Patch"}),
-        ),
-        Tier::AskUser
-    );
 }
 
 /// The gate's own state and the VCS internals are sealed: a file tool
@@ -254,14 +241,6 @@ fn sealed_paths_are_denied_before_rules_and_classifier() {
             );
         }
     }
-    // A sealed target seals the whole patch.
-    assert_eq!(
-        plain.tier(
-            "apply_patch",
-            json!({"patch": "*** Begin Patch\n*** Add File: a.txt\n+x\n*** Update File: .rkat/config.toml\n@@\n-a\n+b\n*** End Patch"}),
-        ),
-        Tier::Sealed
-    );
     // Reads of sealed paths are not affected.
     assert_eq!(
         plain.tier("read_file", json!({"path": ".git/config"})),
@@ -269,30 +248,33 @@ fn sealed_paths_are_denied_before_rules_and_classifier() {
     );
 }
 
-/// The seal check sees every patch target before any other verdict: an
-/// earlier protected (`build.rs`) or outside (`/tmp/x`) target does not hand
-/// a later sealed one to the classifier or to an `apply_patch *` allow rule.
+/// The native `apply_patch` is withheld from every agent by the tool
+/// policy (`session::TUI_OWNED_BUILTINS`); a call that reaches the gate
+/// anyway is sealed, whatever it patches and whatever an allow rule says.
 #[test]
-fn a_sealed_patch_target_after_a_protected_or_outside_one_is_sealed() {
+fn a_native_apply_patch_is_sealed() {
+    let plain = harness(Options::default());
     let allowed = harness(Options {
         rules: allow_rule("apply_patch", "*"),
         ..Options::default()
     });
     for patch in [
-        "*** Begin Patch\n*** Add File: build.rs\n+x\n*** Update File: .git/config\n@@\n-a\n+b\n*** End Patch",
-        "*** Begin Patch\n*** Add File: /tmp/x\n+x\n*** Update File: .rkat/config.toml\n@@\n-a\n+b\n*** End Patch",
+        "*** Begin Patch\n*** Add File: src/a.rs\n+x\n*** End Patch",
+        "garbage",
     ] {
-        assert_eq!(
-            allowed.tier("apply_patch", json!({ "patch": patch })),
-            Tier::Sealed,
-            "{patch}"
-        );
+        for h in [&plain, &allowed] {
+            assert_eq!(
+                h.tier("apply_patch", json!({ "patch": patch })),
+                Tier::Sealed,
+                "{patch}"
+            );
+        }
     }
 }
 
 /// State outside the workspace is sealed through the root's sealed roots:
 /// an enclosing repository's git dir, a worktree's git and common dirs, a
-/// realm and the user config dir; for `write_file` and as a patch target,
+/// realm and the user config dir, for `write_file`,
 /// while reading them is not sealed.
 #[test]
 fn sealed_roots_outside_the_workspace_are_sealed() {
@@ -335,12 +317,6 @@ fn sealed_roots_outside_the_workspace_are_sealed() {
         let path = target.to_str().unwrap();
         assert_eq!(
             h.tier("write_file", json!({"path": path, "content": "x"})),
-            Tier::Sealed,
-            "{path}"
-        );
-        let patch = format!("*** Begin Patch\n*** Add File: {path}\n+x\n*** End Patch");
-        assert_eq!(
-            h.tier("apply_patch", json!({ "patch": patch })),
             Tier::Sealed,
             "{path}"
         );
@@ -448,16 +424,6 @@ fn allow_rule_makes_user_note_save_tier_one() {
             json!({"scope": "user", "name": "style", "content": "x"}),
         ),
         Tier::AlwaysAllow
-    );
-}
-
-#[test]
-fn indented_patch_header_is_a_sealed_target() {
-    let h = harness(Options::default());
-    let patch = "*** Begin Patch\n*** Add File: src/ok.rs\n+x\n  *** Add File: .git/config\n+[core]\n*** End Patch";
-    assert_eq!(
-        h.tier("apply_patch", json!({ "patch": patch })),
-        Tier::Sealed
     );
 }
 

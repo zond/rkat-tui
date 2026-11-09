@@ -136,7 +136,8 @@ A tool counts as a builtin, file or note tool only when its definition's
 provenance says so: an MCP tool or one of unknown origin with the same name
 goes to the classifier. The engine's `apply_patch` and `brain_swap` builtins
 are denied to every TUI session by its tool access policy (the TUI owns
-file writes, with diffs, and model switching).
+file writes, with diffs, and model switching), and the gate seals a call to
+either that reaches it anyway.
 
 **What deny rules cover.** A deny rule matches the tool name and, with an
 `arg` glob or a `literal`, the call's canonical subject: the shell command

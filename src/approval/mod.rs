@@ -37,7 +37,6 @@ pub mod desk;
 pub mod engine;
 pub mod escalation;
 pub mod mode;
-pub mod patch_targets;
 pub mod policy;
 pub mod prompts;
 pub mod rules;
@@ -121,8 +120,9 @@ pub enum DenyReason {
         /// The rule as written (`shell git push*`).
         rule: String,
     },
-    /// A file tool targeted a sealed path: the gate's own `.rkat/` state or
-    /// `.git/`. Neither the classifier nor an allow rule can open it.
+    /// A file tool targeted a sealed path (the gate's own `.rkat/` state or
+    /// `.git/`), or the call is to a builtin every session's tool policy
+    /// withholds. Neither the classifier nor an allow rule can open it.
     Sealed {
         /// Which path, and why it is sealed.
         detail: String,

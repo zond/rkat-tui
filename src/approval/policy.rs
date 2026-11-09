@@ -31,11 +31,11 @@
 //! everything the model does through the network in `workspace` mode.
 
 use super::catalog::{ToolFamily, ToolOrigin};
-use super::patch_targets::{ParseError, affected_paths};
 use super::rules::{RuleId, RuleSet};
 use super::shell;
 use crate::memory::{NOTE_FORGET, NOTE_LIST, NOTE_READ, NOTE_SAVE, Scope, slug};
 use crate::paths::ProjectRoot;
+use crate::session::TUI_OWNED_BUILTINS;
 use crate::tools::{EDIT_FILE, GLOB, GREP, READ_FILE, WRITE_FILE};
 use meerkat_core::ToolMutationClass;
 use serde::{Deserialize, Serialize};
@@ -52,8 +52,9 @@ pub enum Tier {
     /// Tier 0: a file tool targets a sealed path (the gate's own `.rkat/`
     /// state, the realm and user config directories, or a git directory
     /// governing the project, inside it or not; see
-    /// [`crate::paths::ResolvedPath::sealed`]); denied before any rule or
-    /// classifier.
+    /// [`crate::paths::ResolvedPath::sealed`]), or the call is to a builtin
+    /// every session's tool policy withholds ([`TUI_OWNED_BUILTINS`]);
+    /// denied before any rule or classifier.
     Sealed,
     /// Tier 1: read-only builtin, in-project read, allowlisted shell, or narrow allow rule.
     AlwaysAllow,
@@ -72,7 +73,7 @@ impl fmt::Display for Tier {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::UserDeny => "user deny rule",
-            Self::Sealed => "sealed path",
+            Self::Sealed => "sealed",
             Self::AlwaysAllow => "always allow",
             Self::InProjectEdit => "in-project edit",
             Self::AskUser => "ask the user",
@@ -122,8 +123,9 @@ impl VerdictSummary {
 
 /// Builtins that only read state or manage the agent's own bookkeeping.
 ///
-/// Every upstream builtin the TUI's sessions can be offered is either here
-/// or in [`REVIEWED_BUILTINS`]; `upstream_builtins_are_all_classified`
+/// Every upstream builtin is here, in [`REVIEWED_BUILTINS`] or in
+/// [`TUI_OWNED_BUILTINS`] (withheld, so sealed at the gate);
+/// `upstream_builtins_are_all_classified`
 /// pins the upstream families, and the `builtin_tiers` integration test
 /// every tool a real session offers the model.
 pub const READ_ONLY_BUILTINS: &[&str] = &[
@@ -156,8 +158,8 @@ pub const READ_ONLY_BUILTINS: &[&str] = &[
 
 /// Upstream builtins that act (or read outside the project) and so pass the
 /// classifier unless a user rule decides them: the shell and its job
-/// controls, file blobs, skill functions, web search, model switch, image
-/// generation, comms sends, councils and objective conclusions. The
+/// controls, file blobs, skill functions, web search, image generation,
+/// comms sends, councils and objective conclusions. The
 /// mutating `mob_*` tools need review too (any `mob_*` not in
 /// [`READ_ONLY_BUILTINS`]).
 #[cfg(any(test, feature = "test-support"))]
@@ -165,12 +167,10 @@ pub const REVIEWED_BUILTINS: &[&str] = &[
     "shell",
     "shell_job_cancel",
     "monitor_start",
-    "apply_patch",
     "blob_save_file",
     "blob_load_file",
     "skill_invoke_function",
     "web_search",
-    "brain_swap",
     "generate_image",
     "send_message",
     "reply_to_peer",
@@ -218,13 +218,16 @@ pub enum ActionKind {
         /// `glob`'s pattern, which can itself name a directory.
         pattern: Option<String>,
     },
-    /// `write_file` / `edit_file` / `apply_patch`.
+    /// `write_file` / `edit_file`.
     FileWrite {
         /// Every path the call may create, modify, delete or move to.
         paths: Vec<String>,
     },
     /// A builtin from [`READ_ONLY_BUILTINS`].
     ReadOnlyBuiltin,
+    /// A builtin from [`TUI_OWNED_BUILTINS`]: every session's tool access
+    /// policy withholds it, so a call that reaches the gate anyway is sealed.
+    Withheld,
     /// A tool from [`DELEGATION_TOOLS`].
     Delegation,
     /// `note_list` / `note_read`.
@@ -266,12 +269,6 @@ struct SearchArgs {
     path: Option<String>,
     #[serde(default)]
     pattern: Option<String>,
-}
-
-/// Typed arguments of `apply_patch`.
-#[derive(Deserialize)]
-struct PatchArgs {
-    patch: String,
 }
 
 /// Typed arguments of `note_save` / `note_forget`.
@@ -318,12 +315,7 @@ impl<'a> Action<'a> {
                     background: input.background,
                 })
             }
-            (ToolFamily::Native, "apply_patch") => {
-                match typed::<PatchArgs>(args).map(|a| patch_targets(&a.patch)) {
-                    Some(Ok(paths)) if !paths.is_empty() => ActionKind::FileWrite { paths },
-                    _ => ActionKind::Other,
-                }
-            }
+            (ToolFamily::Native, n) if TUI_OWNED_BUILTINS.contains(&n) => ActionKind::Withheld,
             (ToolFamily::Native, n) if READ_ONLY_BUILTINS.contains(&n) && !declared_mutating => {
                 ActionKind::ReadOnlyBuiltin
             }
@@ -375,6 +367,7 @@ impl<'a> Action<'a> {
                 vec![format!("{scope}/{name}")]
             }
             ActionKind::ReadOnlyBuiltin
+            | ActionKind::Withheld
             | ActionKind::Delegation
             | ActionKind::NoteRead
             | ActionKind::Other => vec![pretty_args(self.args)],
@@ -389,19 +382,6 @@ pub fn pretty_args(args: &RawValue) -> String {
         .ok()
         .and_then(|v| serde_json::to_string_pretty(&v).ok())
         .unwrap_or_else(|| args.get().to_string())
-}
-
-/// Target paths named by an `apply_patch` body, from the tool's own parser.
-///
-/// # Errors
-///
-/// Returns the parser's error when the patch is malformed (the action then
-/// needs classifier review).
-pub fn patch_targets(patch: &str) -> Result<Vec<String>, ParseError> {
-    Ok(affected_paths(patch)?
-        .into_iter()
-        .map(|p| p.to_string_lossy().into_owned())
-        .collect())
 }
 
 /// Arguments of upstream's `shell` builtin.
@@ -509,6 +489,14 @@ fn builtin_tier(action: &Action<'_>, ctx: &PolicyContext<'_>) -> Result<TierDeci
         ActionKind::ReadOnlyBuiltin => {
             Ok(TierDecision::new(Tier::AlwaysAllow, "read-only builtin"))
         }
+        ActionKind::Withheld => Ok(TierDecision::new(
+            Tier::Sealed,
+            format!(
+                "`{}` is withheld from every agent: the TUI owns model switching and file \
+                 writes (use write_file or edit_file)",
+                action.name
+            ),
+        )),
         ActionKind::Delegation => Ok(TierDecision::new(
             Tier::AlwaysAllow,
             "delegation (the helper's own calls pass this gate)",
@@ -729,69 +717,9 @@ mod tests {
         classify_tier(&parse(name, &raw(args)), rules, &ctx).tier
     }
 
-    #[test]
-    fn parse_patch_targets() {
-        let patch = "*** Begin Patch\n*** Add File: a.txt\n+x\n*** Update File: src/b.rs\n*** Move to: src/c.rs\n@@\n-x\n+y\n*** Delete File: old.rs\n*** End Patch\n";
-        assert_eq!(
-            patch_targets(patch).unwrap(),
-            ["a.txt", "src/b.rs", "src/c.rs", "old.rs"]
-        );
-        assert!(
-            patch_targets("*** Begin Patch\n*** End Patch")
-                .unwrap()
-                .is_empty()
-        );
-        assert!(patch_targets("garbage").is_err());
-    }
-
-    #[test]
-    fn indented_patch_header_is_a_target() {
-        let (_dir, root) = project();
-        let args = json!({
-            "patch": "*** Begin Patch\n*** Add File: src/ok.rs\n+x\n  *** Add File: .git/config\n+[core]\n*** End Patch"
-        });
-        let raw_args = raw(&args);
-        let action = parse("apply_patch", &raw_args);
-        assert_eq!(
-            action.kind,
-            ActionKind::FileWrite {
-                paths: vec!["src/ok.rs".into(), ".git/config".into()]
-            }
-        );
-        assert_eq!(
-            tier(&root, &RuleSet::default(), false, "apply_patch", &args),
-            Tier::Sealed
-        );
-    }
-
-    /// A sealed target later in a patch seals it, whatever comes before it
-    /// (a protected `build.rs`, an outside `/tmp` path) and under an allow
-    /// rule for the tool.
-    #[test]
-    fn a_later_sealed_patch_target_seals_the_patch() {
-        let (_dir, root) = project();
-        let mut rules = RuleSet::default();
-        rules
-            .push(Rule::new(RuleKind::Allow, "apply_patch", Some("*"), RuleOrigin::Realm).unwrap());
-        for patch in [
-            "*** Begin Patch\n*** Add File: build.rs\n+x\n*** Update File: .git/config\n@@\n-a\n+b\n*** End Patch",
-            "*** Begin Patch\n*** Add File: /tmp/x\n+x\n*** Update File: .rkat/config.toml\n@@\n-a\n+b\n*** End Patch",
-        ] {
-            let args = json!({ "patch": patch });
-            for set in [&RuleSet::default(), &rules] {
-                assert_eq!(
-                    tier(&root, set, false, "apply_patch", &args),
-                    Tier::Sealed,
-                    "{patch}"
-                );
-            }
-        }
-    }
-
-    /// A protected write asks the user: a seal still wins, a user allow rule
-    /// for the path allows it, a deny rule denies it, and a protected target
-    /// among ordinary ones (or an outside one) puts the whole patch to the
-    /// user. The reason names each protected path and what it is.
+    /// A protected write asks the user: a user allow rule for the path
+    /// allows it and a deny rule denies it. The reason names the protected
+    /// path and what it is.
     #[test]
     fn protected_writes_ask_the_user_unless_a_rule_or_seal_decides() {
         let (_dir, root) = project();
@@ -847,28 +775,6 @@ mod tests {
         assert_eq!(
             tier(&root, &deny, false, "write_file", &env),
             Tier::UserDeny
-        );
-
-        // A seal wins over a protected target and an allow rule.
-        let mut allow_all = RuleSet::default();
-        allow_all
-            .push(Rule::new(RuleKind::Allow, "apply_patch", Some("*"), RuleOrigin::Realm).unwrap());
-        let sealed = json!({"patch": "*** Begin Patch\n*** Add File: .env\n+x\n*** Update File: .rkat/config.toml\n@@\n-a\n+b\n*** End Patch"});
-        for set in [&RuleSet::default(), &allow_all] {
-            assert_eq!(
-                tier(&root, set, false, "apply_patch", &sealed),
-                Tier::Sealed
-            );
-        }
-
-        let mixed = json!({"patch": "*** Begin Patch\n*** Add File: src/a.rs\n+x\n*** Add File: build.rs\n+x\n*** Add File: /tmp/out.txt\n+x\n*** Add File: AGENTS.md\n+x\n*** End Patch"});
-        let raw_mixed = raw(&mixed);
-        let decision = classify_tier(&parse("apply_patch", &raw_mixed), &RuleSet::default(), &ctx);
-        assert_eq!(decision.tier, Tier::AskUser);
-        assert_eq!(
-            decision.detail,
-            "protected paths: `build.rs` (build script), `AGENTS.md` (agent instructions); \
-             the policy always asks for these"
         );
     }
 
@@ -991,11 +897,15 @@ mod tests {
             meerkat_tools::builtin::image_generation::TOOL_NAMES,
         ];
         for name in upstream.into_iter().flatten() {
-            let read_only = READ_ONLY_BUILTINS.contains(name);
-            let reviewed = REVIEWED_BUILTINS.contains(name);
+            let lists = [
+                READ_ONLY_BUILTINS.contains(name),
+                REVIEWED_BUILTINS.contains(name),
+                TUI_OWNED_BUILTINS.contains(name),
+            ];
             assert!(
-                read_only != reviewed,
-                "upstream builtin `{name}` must be in exactly one of READ_ONLY_BUILTINS and REVIEWED_BUILTINS"
+                lists.into_iter().filter(|listed| *listed).count() == 1,
+                "upstream builtin `{name}` must be in exactly one of READ_ONLY_BUILTINS, \
+                 REVIEWED_BUILTINS and TUI_OWNED_BUILTINS"
             );
         }
         let (_dir, root) = project();
@@ -1014,6 +924,18 @@ mod tests {
             let args = json!({});
             let tier = classify_tier(&parse(name, &raw(&args)), &rules, &ctx).tier;
             assert_eq!(tier, Tier::Classifier, "{name}");
+        }
+        // A withheld builtin is sealed, whatever an allow rule says.
+        let mut allow_all = RuleSet::default();
+        for name in TUI_OWNED_BUILTINS {
+            allow_all.push(Rule::new(RuleKind::Allow, name, Some("*"), RuleOrigin::Realm).unwrap());
+        }
+        for name in TUI_OWNED_BUILTINS {
+            let args = json!({});
+            for set in [&rules, &allow_all] {
+                let tier = classify_tier(&parse(name, &raw(&args)), set, &ctx).tier;
+                assert_eq!(tier, Tier::Sealed, "{name}");
+            }
         }
     }
 
@@ -1139,12 +1061,6 @@ mod tests {
                 Tier::AskUser,
             ),
             (
-                "apply_patch",
-                json!({"patch": "*** Begin Patch\n*** Add File: src/x.rs\n+a\n*** Update File: .cargo/config.toml\n@@\n-a\n+b\n*** End Patch"}),
-                true,
-                Tier::AskUser,
-            ),
-            (
                 "write_file",
                 json!({"path": outside}),
                 true,
@@ -1154,20 +1070,9 @@ mod tests {
                 "apply_patch",
                 json!({"patch": "*** Begin Patch\n*** Add File: src/x.rs\n+a\n*** End Patch"}),
                 true,
-                Tier::InProjectEdit,
+                Tier::Sealed,
             ),
-            (
-                "apply_patch",
-                json!({"patch": "*** Begin Patch\n*** Update File: src/main.rs\n*** Move to: ../out.rs\n*** End Patch"}),
-                true,
-                Tier::Classifier,
-            ),
-            (
-                "apply_patch",
-                json!({"patch": "garbage"}),
-                true,
-                Tier::Classifier,
-            ),
+            ("brain_swap", json!({"model": "x"}), true, Tier::Sealed),
             (
                 "shell",
                 json!({"command": "ls -la"}),
