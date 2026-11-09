@@ -2295,3 +2295,128 @@ mob customizer, the decision types and `meerkat-contracts` wire types
 compile unchanged (`MobStreamOpenParams.cursor` is optional and the client
 sends none; the extra `epoch` on `mob/stream_event` is ignored by the
 client's reader), and the attach and daemon tests pass as before.
+
+## P3b and the 0.9.11 adoption (2026-11-09)
+
+The engine capabilities of the 0.9.11 integration (pin `bffcd8f98a`), taken
+into attach mode. Paths below are in the fetched checkout.
+
+**Consent as durable decisions (P3b).** Engine surface used:
+`SessionRuntime::decision_service()` (session_runtime.rs:6187, the
+persistence's one owner; a persistent realm opens a SQLite
+`approval-decisions` store lazily, an ephemeral one is unavailable and the
+daemon refuses to start), `DurableDecisionService::{hold, present, withdraw,
+get, list, subscribe_openings}` (meerkat-runtime decision/service.rs:915,
+997, 1023, 1188), `DecisionOpening::{Opened, Missed}` (:264),
+`AttestedDecision`/`AuthenticatedDecisionEvent` (meerkat-core
+approval/decision/evidence.rs), `MethodRouter::dispatch_with_decision_event`
+(router.rs:2785), the wire types in meerkat-contracts wire/decision.rs, and
+the stdio operator (handlers/decision/operator.rs, behind
+`local-authorization`, not compiled here) as the pattern for presenting and
+deciding. Facts that shaped the code:
+
+- A hold names a requester, an approver id, a deadline and a rendering; the
+  decision id derives from kind + subject key. A human decision is refused
+  `decided_before_presentation` unless a complete presentation to the
+  approver was recorded first, so the daemon reads the clock, writes the
+  notice, waits for it to be flushed to the client's socket (`Outgoing`
+  carries a `written` acknowledgement through the proxy's writer) and only
+  then records the presentation. A notice that did not reach the socket
+  records nothing.
+- `decision/decide` has no plain route; `handle_decide_event` parses the
+  request with `deny_unknown_fields` and checks it against the event. The
+  proxy therefore parses the client's request itself (closed:
+  `decision_id`, `approve`, `presented_digest`, `reason`, and the dialog's
+  `answer`), refuses an `actor`/`approver` field, and dispatches the
+  engine's four fields with the event. The approver is the daemon's
+  `Principal` (a qualified human `person:<name>` in trust domain
+  `rkat-tui.local`, device trusted, one authentication scope per
+  connection); eligibility is "presented on this connection and the
+  connection is open" (`ConnectionEligibility`), checked again at commit.
+- The engine's decision vocabulary is approve or reject with a reason; the
+  dialog's "allow + add rule" and "deny and stop" travel as the `answer`
+  extension, held by the daemon until the waiting dispatch hears it
+  (`Decisions::settled`); the reason is the comment that reaches the model.
+- The SQLite store answers `Unavailable` while another call writes; every
+  owner call retries up to 5 times with a growing 20 ms backoff (as the
+  operator does), and the decide retries on `ApprovalStoreUnavailable`.
+- Found by `two_clients_see_the_same_request_and_the_first_answer_wins`: a
+  client whose presentation lost the race to another client's decide
+  (`not_open`) was never told the decision ended, and its dialog stayed
+  open. The daemon keeps "shown" (notice written) apart from "presented"
+  (recorded): the first drives the dedup and `rkat/decision_ended`, the
+  second eligibility.
+- A restarted daemon: the old decision is withdrawn at start
+  (`withdraw_leftovers`; the dispatch it held ended with the process), and
+  the restored orchestrator's resumed turn may ask again for the same call
+  under a new decision (observed). The brief asked that the restarted
+  daemon still show the old decision; it does not, because an answer to it
+  would run nothing.
+- Lag (`Missed`) cannot be forced through the public API (the broadcast
+  capacity is 256 and crate-private); the hub's `on_opening` is tested
+  directly with `DecisionOpening::Missed`.
+- `initialize` on a TCP connection reports `decision_notices_enabled:
+  false`; the proxy adds `decision/notice` and `decision/decide` to the
+  answer of each `initialize` it forwards, which the client feature-detects.
+
+Tests: `tests/attach_approvals.rs`
+`a_reviewed_call_is_pushed_as_a_decision_and_the_first_answer_wins` (a raw
+connection gets the notice without asking, the catalog lists both methods,
+a named `actor`/`approver` is refused, the client's answer wins, the raw
+connection hears `rkat/decision_ended` and gets `not_open` for its late
+decide, the evidence names the approver id),
+`a_client_attaching_after_the_request_opened_is_shown_it`,
+`a_restarted_daemon_withdraws_the_request_its_predecessor_left_open`, and
+the P3 approval tests unchanged (approve, deny with comment, allow + rule,
+timeout, two clients, helpers, plan/auto); unit tests in `daemon::decisions`
+(offered once per client, catch-up, `Missed`, leftovers, closed decide),
+`daemon::approvals` (desk over an in-memory decision store),
+`approval::remote::tests::a_decided_decision_carries_every_answer`,
+`client::approvals::tests::a_pushed_decision_opens_one_dialog_and_another_clients_answer_closes_it`,
+`approval::rules::tests::rules_file_round_trip` (`[daemon]`).
+
+**`fork_off` in attach mode.** #2112: `SpawnMemberSpec.dispatch_admission_lineage`
+(meerkat-mob runtime/handle.rs:7550) makes a fork seat ask the host's
+customizer for the child (spawn source `persisted_fork_resume`), whose
+spawner is the orchestrator, so the customizer binds it as a helper of the
+orchestrator's session with the helper gate. The test was written first:
+`a_fork_off_child_runs_behind_the_gate` (the child's write raises the dialog
+naming the child; the denial's comment reaches it) times out while
+`fork_off` is denied, and passes with `HelperCustomizer::with_gated_fork_off`
+(daemon only; still denied at the depth limit). In manual mode the
+`fork_off` call itself does not ask. The client counts `fork_off` among the
+tools that seat helpers.
+
+**Stream cursor.** `MobStreamOpenParams.cursor` (contracts wire/mob.rs:3768),
+`member_stream_cursor` and the earliest-replay fallback for a rejected
+cursor (router.rs:1246), the `epoch` on member `mob/stream_event`
+(router.rs:355), the replay window (1024 envelopes / 4 MiB,
+`SessionEventReplayLimits`) with a `StreamTruncated` marker when the cursor
+predates it. A stale epoch replays from the new space's earliest event,
+which after a restart is not the conversation's start, and nothing tells
+an idle client its epoch is stale; so the cursor records which daemon
+numbered it (a digest of the attach token: the pid is the same for an
+in-process restart in tests) and is resumed only against that daemon.
+Otherwise, and on `StreamTruncated`, the conversation is rendered from its
+start (transcript, the last sequence and gauge from `events/list_since`).
+Tests: `tests/attach.rs`
+`a_client_that_left_mid_turn_sees_the_turn_once_on_reattach` (the saved
+cursor has an epoch and a daemon; the turn shows once),
+`the_client_reconnects_to_a_restarted_daemon` (the conversation is rendered
+from its start, the new cursor names the new daemon),
+`client::catchup::tests::*`.
+
+**`/compact now`.** `mob/compact_member` (router.rs:3580, handlers/mob.rs:3685)
+records a request the member's next compaction check consumes; the client
+sends it (fallback `session/compact`, handlers/session.rs:1477). Test:
+`tests/attach_sessions.rs` `compact_now_compacts_at_the_next_turn` (the next
+prompt's first call is the summary; the client sees `compaction_completed`).
+The in-process `/compact now` keeps its rebuild workaround: the facade has
+`MeerkatMachine::request_compaction` (meerkat/tests/compact_now.rs) but the
+TUI's session service was not probed for it in this change.
+
+**`mob/fork_member` and `/rewind`.** `mob/fork_member` (router.rs:3436)
+gives the copy a new identity; nothing in the one-identity conversation
+model needed it, so it is not used. The `/rewind` notice names it and
+#2126. **Request ids.** `answering(request_id)` (router.rs:1754); the client
+had no id-less workaround; `a_parameter_refusal_answers_its_request` pins it.

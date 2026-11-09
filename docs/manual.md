@@ -730,8 +730,8 @@ For a model whose window is unknown the thresholds are 120k (warn) and 150k
 (auto) tokens. `compact_auto_percent` below `compact_warn_percent` is raised
 to it, with a notice.
 
-`/compact status` shows the policy and threshold. Meerkat has no on-demand
-compaction call, so **`/compact`** (or `/compact now`; idle only, after at
+`/compact status` shows the policy and threshold. In-process,
+**`/compact`** (or `/compact now`; idle only, after at
 least one turn) *rebuilds the session so its next model call compacts*: the session is
 rebuilt with a one-turn threshold of one token, and when the next turn ends
 it is rebuilt on the policy's threshold again. The rebuild is all the TUI
@@ -1026,11 +1026,15 @@ running turn go on. When the connection drops (the daemon restarted, say),
 the TUI re-reads the endpoint file and reconnects with backoff. A daemon
 that died and left a stale endpoint file is started again (auto mode, at
 most every 30 s); one that shut down cleanly (no endpoint file) is waited
-for. On every attach the TUI replays what it has not shown
-yet from the member's durable events and then follows the live stream; a
-turn that is still running shows as running (Esc interrupts it). What was
-shown is remembered per workspace in `.rkat/tui/attach.cursor`, so a later
-`rkat-tui --attach` shows only what happened since.
+for. On a reattach to the same daemon the TUI resumes the agent's event
+stream right after the last event it showed (the stream's `{epoch, seq}`
+cursor), so it shows only what happened since, once; a turn that is still
+running shows as running (Esc interrupts it). Attaching for the first time,
+or to a daemon that restarted since (its events are numbered anew), the TUI
+shows the conversation from its start, as `/resume` does, and follows the
+live stream from there. Where the stream stopped is remembered per
+workspace in `.rkat/tui/attach.cursor` (with the stream's epoch and a digest
+of the daemon's token, never the token).
 
 **Stopping the daemon.** `/daemon stop` sends SIGTERM to the pid in the
 endpoint file, after checking that the file still names the daemon this TUI
@@ -1045,7 +1049,8 @@ switch rides your next message, carries the endpoint's auth binding and
 `[thinking]` setting, and the session keeps the model), the context gauge,
 token counts, `/status`, `/export`, `/cost` (helpers included, kept per
 conversation), `/copy`, `/context` (the gauge only), `/compact` (the
-policy), `/remember` and `/memory` (the files are edited here; the agent
+policy) and `/compact now` (the agent's next model call compacts first; the
+✓ compacted notice and the gauge confirm it), `/remember` and `/memory` (the files are edited here; the agent
 reads the new content from its next model call), approvals, the permission
 modes, `/rules`, `/trust`, `/rules trust` and `!` commands. The token
 counter shows the conversation's totals on attach and after `/new` or
@@ -1055,10 +1060,12 @@ counter shows the conversation's totals on attach and after `/new` or
 team members with `spawn_member`); the helpers run in the daemon behind the
 same gate and show here as in-process: a `[helper · model]` header, its
 progress and result, the running count, its usage under `/cost`. Every
-attached TUI shows them. The TUI's own `fork` tool is not offered in attach
-mode: it is built on the in-process session service, the engine's
-`fork_off` stays denied (its children are not gated yet), and the engine's
-`fork_helper` is a host method, not a tool the agent can call.
+attached TUI shows them. The agent can also fork itself with the engine's
+`fork_off`: the child starts from the conversation so far, works on the
+task it is given and runs behind the same gate (its calls ask you, naming
+it), shows as a helper and stops with Esc. The TUI's own `fork` tool is not
+offered in attach mode (it is built on the in-process session service);
+helpers at the `[helpers] max_depth` limit cannot fork.
 
 **Conversations.** `/new` starts a fresh conversation for the daemon's
 agent, `/resume` lists this workspace's conversations (newest first, with
@@ -1078,9 +1085,21 @@ approval gate as the in-process TUI: tiers, your rules, the classifier
 When a call needs you, every attached TUI shows the same dialog (a helper's
 call names the helper); answer it in any of them. The first answer counts;
 the other TUIs close their dialog and say it was answered from another
-client. A request nobody answers in time is denied, as in-process. The
-requests are records in the realm's approval store, so any client of the
-daemon's `approval/list` and `approval/decide` can answer them too.
+client. A request nobody answers in time is denied, as in-process.
+
+Each request is a durable decision of the engine: the daemon pushes it to
+every attached TUI as it opens (`decision/notice`, and to a TUI that
+attaches later while it is open), and a TUI answers it with
+`decision/decide`. Who answered is never what the client says: the daemon
+records every answer as made by one person, the daemon's principal, which
+you set with `principal = "<name>"` under `[daemon]` in your own
+`tui.toml` (the user-global one or the realm's; a project file's `[daemon]`
+is ignored with a notice); the default is your login name. Interrupting the
+turn, or a request nobody answers in time, withdraws it and closes the
+dialogs. Requests a daemon left open when it stopped are withdrawn when it
+starts again (their calls never ran); a turn the restarted daemon resumes
+asks again. A TUI attached to a daemon of an earlier version falls back to
+listing that daemon's approval records.
 
 **Modes and rules.** Shift+Tab, `/mode` and `/auto resume` switch the
 daemon's mode: one mode for the daemon, shown in every attached TUI's
@@ -1096,10 +1115,12 @@ is, and their output goes to the agent's context.
 **Limits for now:**
 
 - `/rewind` is not offered: the engine refuses a transcript fork of a mob
-  member's session, and a member fork copies the whole history (or its last
-  messages) as text, never the conversation up to a chosen message.
-  `/compact now` waits for the engine's compact-now; the `fork` tool is
-  not available either.
+  member's session, and its member forks seat the copy under a new
+  identity; a same-identity rewind is with the engine's maintainers as a
+  design note. The TUI's own `fork` tool is not available either (the
+  agent has `fork_off`).
+- `/compact now` asks a live agent: right after a daemon start, before the
+  agent's first run, the engine can refuse it (send a message first).
 - `/trust` records the project files in the daemon's trust record: their
   hooks run from the agent's next conversation (`/new`, `/resume`) or a
   daemon restart. The agent's MCP servers are the ones its daemon mob was

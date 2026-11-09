@@ -6,6 +6,19 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Added
 
+- Attach mode adopts the 0.9.11 engine (experimental, P3b and follow-ups):
+  approval requests are the engine's durable decisions, pushed to every
+  attached TUI as they open (no more polling; a TUI attaching later is shown
+  the open ones) and answered with `decision/decide` as the daemon's one
+  principal (`[daemon] principal` in your own `tui.toml`, default your login
+  name; a client cannot name who decided); requests a stopped daemon left
+  open are withdrawn at its next start. The agent may `fork_off` itself: the
+  child runs behind the same gate and shows as a helper. `/compact now`
+  works in attach mode (`mob/compact_member`). A reattach resumes the
+  agent's event stream from its `{epoch, seq}` cursor; a first attach, or
+  one after a daemon restart, shows the conversation from its start.
+  `/rewind` in attach mode still says why it is not offered, now naming the
+  design note with the engine's maintainers.
 - Attach mode polish (experimental, P4b): the token counter and context
   gauge show the conversation's own usage on attach, on reconnect and after
   `/new` or `/resume` (new daemon method `rkat/usage`), instead of 0;

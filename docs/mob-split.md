@@ -1,6 +1,6 @@
 # rkat-tui as a client of a running mob
 
-## Status (2026-11-08, P1–P4, P4b)
+## Status (2026-11-09, P1–P4, P4b, P3b and the 0.9.11 adoption)
 
 P1 is in: `rkat-tui-mob` (experimental, `src/bin/rkat-tui-mob.rs`,
 `src/daemon/`) bootstraps the workspace realm exactly as the TUI does,
@@ -53,9 +53,8 @@ Known limits of P1:
   connection that sent it closes. A client that may detach sends
   `mob/member_send` (answered at once; the run is the member's). P2's
   client uses it for prompts.
-- `mob/stream_open` has no cursor; a reattaching client catches up with
-  `events/list_since` on the member's session (works, see
-  `docs/evidence.md`).
+- (Lifted by the 0.9.11 adoption: the client resumes the stream from its
+  `{epoch, seq}` cursor.)
 - No start-on-demand, no daemonising (`--foreground` only), and running
   the daemon and the in-process TUI on the same workspace at once is not
   supported (they share the realm's mob store).
@@ -254,15 +253,53 @@ P4b is in: the polish P4 left.
   `spawn_member` helper is judged by its own catalog from its second run;
   a `delegate` helper retires after its one run, so the fallback stays.
 
-What remains: P5 (governed realm, asks 3); `/rewind`, `/compact now` and
-the TUI's `fork` in attach mode; MCP servers added or trusted after the
-daemon's mob was created. Engine asks
-outstanding (no PRs yet): 1 stream cursor, 2 approval notice, 5 a
+P3b and the 0.9.11 adoption are in (2026-11-09, `docs/evidence.md`
+"P3b and the 0.9.11 adoption"):
+
+- Consent is the engine's durable decisions (`daemon::decisions`): the desk
+  holds one per escalation (kind `rkat-tui.tool-call`, the dialog as its
+  JSON rendering, the gate as requester, the daemon's principal as
+  approver, the escalation timeout as deadline). The daemon subscribes to
+  the owner's openings at start, before any client lists; each opening is
+  offered to every attached client authorized for it (one principal: every
+  client; the check is explicit) as a `decision/notice`, the presentation
+  recorded once the notice is on the client's socket; a late client gets
+  the open decisions on connect, a `Missed` reading re-offers them, each
+  client is offered a decision once. A client's `decision/decide` is
+  intercepted by the proxy, parsed closed (a named actor or approver is
+  refused; the dialog's answer is the one extension, stripped), wrapped as
+  an `AuthenticatedDecisionEvent` whose approver is the fixed principal
+  bound to the token by host configuration (`[daemon] principal`, default
+  the login name), and dispatched with
+  `MethodRouter::dispatch_with_decision_event`; eligibility is "presented on
+  this connection, connection open". The outcome maps into the gate as the
+  ledger's did (allow once, allow + rule, deny with the comment, stop);
+  timeouts and interrupts withdraw the decision and `rkat/decision_ended`
+  closes the other dialogs. Decisions a stopped daemon left open are
+  withdrawn at start. The daemon adds `decision/notice` and
+  `decision/decide` to its `initialize` catalog; the client polls
+  `approval/list` only for a daemon without them. The escalation's approval
+  record stays as the ledger.
+- `fork_off` is allowed to the daemon's members (not at the depth limit):
+  its child is seated under the source's admission, asks the customizer,
+  and is a gated, followed helper of the orchestrator's session.
+- Reattach resumes `mob/stream_open` with the saved `{epoch, seq}` cursor;
+  a cursor of another daemon or without an epoch, or a truncated stream,
+  renders the conversation from its start. The periodic replay re-read is
+  gone.
+- `/compact now` sends `mob/compact_member` (fallback `session/compact`).
+- `/rewind` stays refused; its notice names `mob/fork_member` and the
+  design note (#2126). Request ids on refusals needed no client change.
+
+What remains: same-identity `/rewind` (#2126); P5, the governed realm
+(#2122: mob methods on a governed connection, a governed connection on a
+shared runtime, consent scoped beyond one pipe); the crates.io pin once
+0.9.11 is published; MCP servers added or trusted after the daemon's mob
+was created; the in-process `/compact now` still rebuilds (the facade's
+`request_compaction` was not adopted there). Engine asks still open: 5 a
 notification sink that survives `RpcServer::new` per connection (map risk
-(c)), 6 fork-seat admission (fork children ungated; our reproducer PR is
-pending), 7 a member fork at a message boundary (or `session/fork_at` for a
-member's session), 8 compact-now for a member, 9 `delegate` naming the
-helper's session in its result (the client finds helpers by listing mobs).
+(c); `serve_tcp_connection` now exists upstream and is not adopted yet), 9
+`delegate` naming the helper's session in its result.
 
 Decision (2026-11-08): rkat-tui becomes two binaries. A daemon embeds the
 Meerkat engine, holds the realm, runs one durable mob member as the
