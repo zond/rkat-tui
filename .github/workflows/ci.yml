@@ -24,3 +24,7 @@ jobs:
       # crate-private here, so an unused item is reported as dead code.
       - run: cargo clippy --lib --bins -- -D warnings
       - run: cargo nextest run --all-features
+      # Broken intra-doc links. The rustdoc is for maintainers, so private
+      # items are documented and links to them are fine (rustdoc allows
+      # that lint in this mode by default; -D warnings would re-deny it).
+      - run: RUSTDOCFLAGS="-D warnings -A rustdoc::private_intra_doc_links" cargo doc --no-deps --all-features --document-private-items

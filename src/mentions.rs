@@ -5,7 +5,7 @@
 //! a file or directory inside the workspace. The transcript shows the prompt
 //! as typed; the session receives [`expand_mentions`]'s text, the prompt
 //! followed by one `<file>` block per mentioned file and one `<directory>`
-//! listing per mentioned directory. Sealed paths ([`ResolvedPath::sealed`]:
+//! listing per mentioned directory. Sealed paths ([`ResolvedPath::sealed`](crate::paths::ResolvedPath::sealed):
 //! `.git`, `.rkat`, the realm and the user config directory) are never read.
 
 use std::collections::HashSet;

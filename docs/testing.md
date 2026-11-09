@@ -13,12 +13,21 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo clippy --lib --bins -- -D warnings
 cargo nextest run --all-features
+RUSTDOCFLAGS="-D warnings -A rustdoc::private_intra_doc_links" cargo doc --no-deps --all-features --document-private-items
 ```
 
 A failure anywhere means the change is not done. Never commit on red, and
 never "fix" a red step by loosening a lint or deleting a test. `cargo fmt
---all` (without `--check`) fixes formatting; the other two are fixed by
+--all` (without `--check`) fixes formatting; the others are fixed by
 changing code.
+
+The last step catches broken intra-doc links. The rustdoc is written for
+maintainers and links private items freely, so it documents them
+(`--document-private-items`); rustdoc allows `private_intra_doc_links` in
+that mode by default, and `-D warnings` would deny it again, hence the
+`-A`. A module whose own docs link its submodules must not also carry an
+outer `///` doc at its declaration: rustdoc then resolves the module's
+links from the parent (see `daemon` and `client` in `src/lib.rs`).
 
 Warm, the whole gate takes a few minutes. The first build after a toolchain
 or dependency change takes well over ten. Plain `cargo` is correct here: this
@@ -116,7 +125,7 @@ inside the harness means the binary predates the sandbox fixes of
 
 ## Before committing
 
-1. The full gate is green (all three commands, exit code 0).
+1. The full gate is green (every command, exit code 0).
 2. `git status` shows only the files the change needs; no stray `target/`,
    scratch or snapshot files.
 3. `CHANGELOG.md` has a line under `## [Unreleased]` for a user-visible change (this repository keeps one).

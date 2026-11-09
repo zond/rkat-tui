@@ -60,7 +60,7 @@ pub fn provenance(source: &str) -> meerkat_core::ToolProvenance {
         meerkat_core::ToolSourceId::new(source),
     )
 }
-/// Tool name for [`write`].
+/// Tool name for [`write`](mod@write).
 pub const WRITE_FILE: &str = "write_file";
 /// Tool name for [`edit`].
 pub const EDIT_FILE: &str = "edit_file";

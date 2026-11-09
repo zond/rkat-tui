@@ -325,7 +325,7 @@ fn deny_ungated_tools(spec: &mut SpawnMemberSpec, also: &[&str]) {
     deny_tools(spec, also, false);
 }
 
-/// [`deny_ungated_tools`], keeping `fork_off` when `gated_fork_off` and
+/// `deny_ungated_tools` (a test helper), keeping `fork_off` when `gated_fork_off` and
 /// nothing else is denied (`also` is empty: a member at the depth limit
 /// may not fork either, as a fork child is a helper one level deeper).
 fn deny_tools(spec: &mut SpawnMemberSpec, also: &[&str], gated_fork_off: bool) {

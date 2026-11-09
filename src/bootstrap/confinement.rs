@@ -41,8 +41,8 @@
 //! target's directory; the stub resolver's `127.0.0.53` is reachable
 //! wherever the IP network is (`workspace`, not `strict`).
 //!
-//! **Extra grants.** `--confinement-read <dir>` and `--confinement-write
-//! <dir>` ([`ExtraGrants`]) add directories. Each must be absolute,
+//! **Extra grants.** `--confinement-read <dir>` and
+//! `--confinement-write <dir>` ([`ExtraGrants`]) add directories. Each must be absolute,
 //! canonical (no symbolic link on the way), an existing directory, off the
 //! baseline and `/proc`, `/sys`, `/dev`, and disjoint from the workspace and
 //! the other extra grants; one inside a detected grant that already gives

@@ -29,6 +29,7 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo clippy --lib --bins -- -D warnings
 cargo nextest run --all-features
+RUSTDOCFLAGS="-D warnings -A rustdoc::private_intra_doc_links" cargo doc --no-deps --all-features --document-private-items
 ```
 
 Every step must exit 0 before a commit. Never commit on red, never loosen a
