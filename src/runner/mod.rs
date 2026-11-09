@@ -48,7 +48,7 @@ pub mod cost_store;
 pub(crate) mod export;
 mod lifecycle;
 mod models;
-mod quit;
+pub(crate) mod quit;
 pub(crate) mod shell;
 mod status;
 #[doc(hidden)]

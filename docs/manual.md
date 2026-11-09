@@ -1112,6 +1112,13 @@ application tool policy: the daemon refuses to rebuild the agent without it.
 **`!` commands** run in this TUI's process, confined as the agent's shell
 is, and their output goes to the agent's context.
 
+**Quitting** detaches: the agent's turn goes on in the daemon, and so do
+the messages you typed mid-turn that the daemon took. Messages this TUI
+still held (queued, not yet sent) are saved to `<realm>/tui_unsent.txt`,
+as in-process, and the next start says so. `--resume` and `-c` are refused
+with `--attach` (the daemon's agent goes on with its current
+conversation): attach, then switch with `/resume`.
+
 **Limits for now:**
 
 - `/rewind` is not offered: the engine refuses a transcript fork of a mob

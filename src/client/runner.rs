@@ -138,6 +138,9 @@ pub struct AttachConfig {
     pub ui: crate::approval::rules::UiSettings,
     /// The context-compaction policy of the `tui.toml` layers.
     pub compaction: crate::ui::CompactionPolicy,
+    /// The cost readout's prices (the `[pricing]` overrides and the cached
+    /// community list; refreshed in the background as in-process).
+    pub pricing: crate::pricing::PricingSetup,
 }
 
 impl std::fmt::Debug for AttachConfig {
@@ -249,6 +252,8 @@ enum Report {
     SwitchRefused(NoticeLevel, String),
     /// The endpoints' model lists.
     ModelLists(FetchResults),
+    /// The community price list, refreshed.
+    Community(Result<crate::pricing::CommunityPrices, crate::pricing::PricingError>),
 }
 
 /// What a client shows of the conversation it switched to.
@@ -368,6 +373,14 @@ pub struct AttachRunner {
     pending_set: Option<String>,
     /// The file `/memory` opened and its bytes before.
     memory_before: Option<(PathBuf, Option<Vec<u8>>)>,
+    /// The cost readout's prices.
+    prices: Arc<crate::pricing::PriceTable>,
+    /// The messages the UI still held when the user quit
+    /// ([`Effect::SaveUnsent`]).
+    held_unsent: Vec<(Option<PendingId>, String)>,
+    /// The steers the daemon admitted: the agent has them, or gets them
+    /// after this client leaves, so quitting saves none of them.
+    admitted: Vec<PendingId>,
 }
 
 impl AttachRunner {
@@ -379,6 +392,7 @@ impl AttachRunner {
         effect_rx: mpsc::UnboundedReceiver<Effect>,
     ) -> Self {
         let (reports_tx, reports_rx) = mpsc::unbounded_channel();
+        let prices = Arc::new(config.pricing.table.clone());
         Self {
             config,
             ui_tx,
@@ -412,12 +426,22 @@ impl AttachRunner {
             picker_waiting: false,
             pending_set: None,
             memory_before: None,
+            prices,
+            held_unsent: Vec::new(),
+            admitted: Vec::new(),
         }
     }
 
     /// Serve effects until the UI quits, then detach (the daemon and any
-    /// running turn go on).
-    pub async fn run(mut self) {
+    /// running turn go on). Returns where the messages the daemon never
+    /// got were saved, when there were any.
+    pub async fn run(mut self) -> Option<crate::runner::SavedUnsent> {
+        let realm_root = self.config.scope.realm_root();
+        if let Some(text) = crate::runner::quit::unsent_notice(&realm_root) {
+            self.notice(NoticeLevel::Warn, text);
+        }
+        self.push_prices();
+        self.refresh_prices();
         self.status(CONNECTING);
         self.connect();
         loop {
@@ -447,6 +471,34 @@ impl AttachRunner {
         if let Some(task) = self.connecting.take() {
             task.abort();
         }
+        crate::runner::quit::save_unsent(
+            &realm_root,
+            std::mem::take(&mut self.held_unsent),
+            &self.admitted,
+        )
+    }
+
+    /// Send the price table to the UI.
+    fn push_prices(&self) {
+        self.send(Msg::Status(StatusUpdate::Prices(Arc::clone(&self.prices))));
+    }
+
+    /// Refresh the community price list in the background when it is due.
+    fn refresh_prices(&self) {
+        let Some(url) = self.config.pricing.refresh_url().map(str::to_string) else {
+            return;
+        };
+        let cache = self.config.pricing.cache_path.clone();
+        let reports = self.reporter();
+        tokio::spawn(async move {
+            let fetched = crate::pricing::refresh_community(
+                &url,
+                cache.as_deref(),
+                crate::pricing::FETCH_TIMEOUT,
+            )
+            .await;
+            reports.send(Report::Community(fetched));
+        });
     }
 
     fn send(&self, msg: Msg) {
@@ -1188,6 +1240,13 @@ impl AttachRunner {
                 self.notice(level, text);
             }
             Report::ModelLists(results) => self.model_lists(results),
+            Report::Community(Ok(community)) => {
+                Arc::make_mut(&mut self.prices).set_community(community);
+                self.push_prices();
+            }
+            Report::Community(Err(err)) => {
+                tracing::warn!(error = %err, "could not fetch the community price list");
+            }
         }
     }
 
@@ -1248,8 +1307,8 @@ impl AttachRunner {
             Effect::ListRules => self.rule_command(&RuleCommand::List).await,
             Effect::TrustRealmRules => self.trust_command("rules", "/rules trust").await,
             Effect::TrustProject => self.trust_command("project", "/trust").await,
+            Effect::SaveUnsent(held) => self.held_unsent.extend(held),
             Effect::Quit
-            | Effect::SaveUnsent(_)
             | Effect::SetChecklistView(_)
             | Effect::Redraw
             | Effect::Suspend
@@ -1567,6 +1626,7 @@ impl AttachRunner {
         let result = match sent {
             Ok(Ok(())) => {
                 self.turn.steers.push_back(id);
+                self.admitted.push(id);
                 Ok(())
             }
             Ok(Err(err)) => Err(SteerFailure::Rejected(err.to_string())),
@@ -1701,8 +1761,12 @@ impl AttachRunner {
 
     fn model_lists(&mut self, results: FetchResults) {
         self.fetching_models = false;
-        let (cache, _prices) = ModelCache::from_results(results);
+        let (cache, prices) = ModelCache::from_results(results);
         self.models = Some(cache);
+        if !prices.is_empty() || !self.prices.is_empty() {
+            Arc::make_mut(&mut self.prices).set_endpoint_prices(prices);
+            self.push_prices();
+        }
         if std::mem::take(&mut self.picker_waiting) {
             self.send(Msg::ShowModelPicker(self.picker_groups()));
         }
@@ -2646,6 +2710,7 @@ mod tests {
             lister: crate::models::live_lister(),
             ui: crate::approval::rules::UiSettings::default(),
             compaction: crate::ui::CompactionPolicy::default(),
+            pricing: crate::pricing::PricingSetup::default(),
             scope,
         };
         let (ui_tx, ui_rx) = mpsc::unbounded_channel();

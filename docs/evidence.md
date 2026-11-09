@@ -2624,3 +2624,26 @@ Tests: `client::runner::tests::{a_switch_read_on_a_lost_connection_is_not_instal
 only_a_refused_switch_ends_the_switch}` (unit tests on a runner with an
 in-memory link: the race is not reproducible against a real daemon, whose
 lost connection fails every call in flight).
+
+### Attach-mode drift: prices, the `!` hint, unsent messages, `--resume`
+
+The attach runner was built from a copy of the in-process runner and the
+copy had drifted: it discarded the endpoints' prices and never sent a price
+table (`/cost` showed `$?`), its `App` never heard `with_shell_confined`
+(the `!` hint said "sandbox" under `--no-confinement`), it ignored
+`Effect::SaveUnsent` and never showed `quit::unsent_notice`, and it
+silently ignored `--resume`/`-c`. Now `AttachConfig` carries the
+`PricingSetup` the in-process bootstrap builds (the runner pushes the
+table at start, refreshes the community list in the background and adds
+the endpoint prices when the model lists arrive); `client::build_app`
+builds the attach `App` with the `!` shell's confinement; the attach
+runner keeps the held messages and saves those the daemon did not admit
+(`quit::save_unsent`, shared with the in-process shutdown; an admitted
+steer is the daemon's and is not saved) and shows the unsent notice at
+start; `client::check_args` refuses `--resume`/`-c` with
+`TuiError::AttachResume` before anything else runs. The shared `build_app`
+and workbench of both runners is the next step (review batch D).
+
+Tests: `attach::{resume_and_continue_are_refused_in_attach_mode,
+attach_mode_prices_the_cost_readout_and_names_an_unconfined_shell,
+unsent_messages_are_saved_at_quit_and_announced_at_the_next_attach}`.

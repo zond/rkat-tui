@@ -73,20 +73,34 @@ impl Runner {
             tracing::warn!(error = %err, "session service shutdown failed");
         }
         self.runtime.release_realm_lease().await;
-        let unsent = unsent_texts(std::mem::take(&mut self.held_unsent), &self.delivered);
-        if unsent.is_empty() {
-            return None;
-        }
-        let path = self.runtime.scope.realm_root().join(UNSENT_FILE);
-        match append_unsent(&path, &unsent) {
-            Ok(()) => Some(SavedUnsent {
-                count: unsent.len(),
-                path,
-            }),
-            Err(err) => {
-                tracing::warn!(error = %err, path = %path.display(), "could not save unsent messages");
-                None
-            }
+        save_unsent(
+            &self.runtime.scope.realm_root(),
+            std::mem::take(&mut self.held_unsent),
+            &self.delivered,
+        )
+    }
+}
+
+/// Append the `held` messages the agent did not get (`delivered` names
+/// those it did) to the realm's [`UNSENT_FILE`]; where, when there were any.
+pub(crate) fn save_unsent(
+    realm_root: &Path,
+    held: Vec<(Option<PendingId>, String)>,
+    delivered: &[PendingId],
+) -> Option<SavedUnsent> {
+    let unsent = unsent_texts(held, delivered);
+    if unsent.is_empty() {
+        return None;
+    }
+    let path = realm_root.join(UNSENT_FILE);
+    match append_unsent(&path, &unsent) {
+        Ok(()) => Some(SavedUnsent {
+            count: unsent.len(),
+            path,
+        }),
+        Err(err) => {
+            tracing::warn!(error = %err, path = %path.display(), "could not save unsent messages");
+            None
         }
     }
 }

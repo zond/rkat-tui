@@ -171,7 +171,7 @@ pub async fn configure(args: &Args, mode: AttachMode) -> Result<AttachConfig, Tu
     // The layers the in-process TUI reads for its display and endpoints:
     // the picker lists this process's endpoints, and a switch to a
     // configured one carries its auth binding.
-    let (layered, _) = crate::bootstrap::approval::load_layers(&scope, args)?;
+    let (mut layered, _) = crate::bootstrap::approval::load_layers(&scope, args)?;
     let realm = meerkat_core::connection::RealmId::parse(scope.realm_id.clone()).ok();
     let (mut endpoints, _) =
         crate::endpoints::EndpointRegistry::discover(&config, realm.as_ref(), &layered.endpoints)?;
@@ -194,6 +194,14 @@ pub async fn configure(args: &Args, mode: AttachMode) -> Result<AttachConfig, Tu
     )
     .map(std::sync::Arc::new)
     .map_err(|err| format!("the ! shell is unavailable: {err}"));
+    let pricing = crate::pricing::PricingSetup::load(
+        std::mem::take(&mut layered.pricing),
+        scope
+            .global
+            .as_ref()
+            .map(crate::bootstrap::GlobalDirs::pricing_cache),
+        !args.no_pricing_fetch,
+    );
     Ok(AttachConfig {
         endpoint_file: crate::daemon::endpoint_file(&scope.context_root)?,
         cursor: catchup::CursorFile::of_workspace(&scope.context_root),
@@ -204,8 +212,52 @@ pub async fn configure(args: &Args, mode: AttachMode) -> Result<AttachConfig, Tu
         lister: crate::models::live_lister(),
         ui: layered.ui,
         compaction: layered.settings.compaction_policy(None),
+        pricing,
         scope,
     })
+}
+
+/// Refuse what attach mode cannot honour: the daemon's orchestrator runs
+/// the conversation it runs (switch with `/resume` once attached).
+///
+/// # Errors
+///
+/// [`TuiError::AttachResume`] for `--resume` or `-c`/`--continue`.
+pub fn check_args(args: &Args) -> Result<(), TuiError> {
+    let flag = if args.resume.is_some() {
+        Some("--resume")
+    } else if args.continue_last {
+        Some("--continue")
+    } else {
+        None
+    };
+    match flag {
+        Some(flag) => Err(TuiError::AttachResume { flag }),
+        None => Ok(()),
+    }
+}
+
+/// The UI of attach mode on `config`, with these input histories.
+#[must_use]
+pub fn build_app(config: &AttachConfig, history: &[String], global_history: &[String]) -> App {
+    let status = StatusInfo {
+        attach: Some(runner::CONNECTING.to_string()),
+        ..StatusInfo::default()
+    };
+    // Without a `!` shell nothing runs; the title says the sandbox then.
+    let confined = match &config.user_shell {
+        Ok(shell) => shell.confined(),
+        Err(_) => true,
+    };
+    App::new(status)
+        .with_compaction_policy(config.compaction)
+        .with_helper_view(config.ui.helpers)
+        .with_checklist_view(config.ui.checklist)
+        .with_bell(config.ui.bell)
+        .with_shell_confined(confined)
+        .with_workspace(config.scope.project_root.clone())
+        .with_history(history.to_vec())
+        .with_global_history(global_history.to_vec())
 }
 
 /// Run the TUI attached to the workspace's daemon until the user quits
@@ -217,35 +269,27 @@ pub async fn configure(args: &Args, mode: AttachMode) -> Result<AttachConfig, Tu
 /// workspace cannot be resolved or the terminal cannot be driven. A daemon
 /// that cannot be reached is reported in the UI.
 pub async fn run(args: Args, mode: AttachMode) -> Result<(), TuiError> {
+    check_args(&args)?;
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         return Err(TuiError::NotATerminal);
     }
     let config = configure(&args, mode).await?;
     let realm_root = config.scope.realm_root();
     crate::runner::init_logging(&realm_root)?;
-    let status = StatusInfo {
-        attach: Some(runner::CONNECTING.to_string()),
-        ..StatusInfo::default()
-    };
     let history = History::load(realm_root.join("tui_history"));
     let global_history = config
         .scope
         .global
         .as_ref()
         .map(|global| History::load(global.history_file()));
-    let mut app = App::new(status)
-        .with_compaction_policy(config.compaction)
-        .with_helper_view(config.ui.helpers)
-        .with_checklist_view(config.ui.checklist)
-        .with_bell(config.ui.bell)
-        .with_workspace(config.scope.project_root.clone())
-        .with_history(history.entries().to_vec())
-        .with_global_history(
-            global_history
-                .as_ref()
-                .map(|h| h.entries().to_vec())
-                .unwrap_or_default(),
-        );
+    let mut app = build_app(
+        &config,
+        history.entries(),
+        global_history
+            .as_ref()
+            .map(History::entries)
+            .unwrap_or_default(),
+    );
     let histories: Vec<History> = std::iter::once(history).chain(global_history).collect();
     // Attach mode sends every event on the integrator channel (in order with
     // the turn messages); the agent channel stays idle.
@@ -271,7 +315,12 @@ pub async fn run(args: Args, mode: AttachMode) -> Result<(), TuiError> {
     )
     .await;
     match tokio::time::timeout(Duration::from_secs(5), runner_task).await {
-        Ok(Ok(())) => {}
+        Ok(Ok(Some(saved))) => eprintln!(
+            "rkat-tui: {} unsent message(s) saved in {}",
+            saved.count,
+            saved.path.display()
+        ),
+        Ok(Ok(None)) => {}
         Ok(Err(err)) => tracing::warn!(error = %err, "attach runner failed"),
         Err(_) => tracing::warn!("attach runner did not shut down in time"),
     }
@@ -293,8 +342,9 @@ pub mod testing {
         pub effects: mpsc::UnboundedSender<Effect>,
         /// Everything the runner tells the UI (events included).
         pub ui_rx: mpsc::UnboundedReceiver<Msg>,
-        /// The runner; resolves after [`Effect::Quit`].
-        pub task: JoinHandle<()>,
+        /// The runner; resolves after [`Effect::Quit`], with where the
+        /// messages the daemon never got were saved.
+        pub task: JoinHandle<Option<crate::runner::SavedUnsent>>,
     }
 
     /// Spawn an attach runner on `config`.

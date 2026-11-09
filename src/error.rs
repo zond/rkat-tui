@@ -177,6 +177,15 @@ pub enum TuiError {
     /// `--attach` in a build without the `mob` feature.
     #[error("this rkat-tui was built without attach mode (the `mob` feature)")]
     AttachUnsupported,
+    /// `--resume` or `--continue` with attach mode: the daemon's
+    /// orchestrator runs its own current conversation.
+    #[error(
+        "{flag} does not apply in attach mode: the daemon's agent goes on with its current conversation; attach, then switch with /resume (or pass --no-attach to resume it in this process)"
+    )]
+    AttachResume {
+        /// The flag given.
+        flag: &'static str,
+    },
 }
 
 impl TuiError {
@@ -204,6 +213,7 @@ impl TuiError {
             | Self::Confinement(_)
             | Self::ConfigDirCollision { .. }
             | Self::AttachUnsupported
+            | Self::AttachResume { .. }
             | Self::NotATerminal => 2,
             Self::Io { .. }
             | Self::Persistence(_)

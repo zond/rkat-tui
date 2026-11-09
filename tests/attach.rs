@@ -430,3 +430,88 @@ async fn a_reconnect_restarts_a_daemon_that_died() {
     .await;
     client.quit().await;
 }
+
+/// The finding this guards: `--resume` and `-c` were silently ignored in
+/// attach mode.
+#[tokio::test]
+async fn resume_and_continue_are_refused_in_attach_mode() {
+    let ws = Workspace::new();
+    for (argv, flag) in [
+        (&["--attach=existing", "--resume", "last"][..], "--resume"),
+        (&["--attach=existing", "--resume"][..], "--resume"),
+        (&["--attach=existing", "-c"][..], "--continue"),
+    ] {
+        let err = rkat_tui::run(common::args_with(&ws.root, argv))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, rkat_tui::TuiError::AttachResume { flag: given } if given == flag),
+            "{argv:?}: {err}"
+        );
+        assert!(err.to_string().contains("/resume"), "{err}");
+    }
+    assert!(rkat_tui::client::check_args(&args_for(&ws.root)).is_ok());
+}
+
+/// The findings this guards: attach mode never pushed prices (`/cost`
+/// showed `$?`) and its `!` hint said "sandbox" under `--no-confinement`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn attach_mode_prices_the_cost_readout_and_names_an_unconfined_shell() {
+    let ws = Workspace::new();
+    // The rig runs unconfined (`--no-confinement`).
+    let args = common::args_with(
+        &ws.root,
+        &[
+            "--set",
+            "pricing.priced-model.input=3",
+            "--set",
+            "pricing.priced-model.output=15",
+        ],
+    );
+    let mut config = rkat_tui::client::configure(&args, AttachMode::Existing)
+        .await
+        .unwrap();
+    config.lister = no_lists();
+    config.endpoint_file = endpoint_file_for(&ws.root);
+    let app = rkat_tui::client::build_app(&config, &[], &[]);
+    assert!(app.shell_mode_hint().contains("unconfined"));
+    let mut harness = spawn_attach_runner(config);
+    let priced = within(async {
+        loop {
+            if let Some(Msg::Status(StatusUpdate::Prices(table))) = harness.ui_rx.recv().await {
+                return table;
+            }
+        }
+    })
+    .await;
+    assert!(priced.lookup("priced-model").is_some());
+    harness.effects.send(Effect::Quit).unwrap();
+    within(harness.task).await.unwrap();
+}
+
+/// The finding this guards: attach mode dropped the messages the UI still
+/// held at quit and never said that earlier ones were saved.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unsent_messages_are_saved_at_quit_and_announced_at_the_next_attach() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let client = Client::attach(&ws.root).await;
+    client.send(Effect::SaveUnsent(vec![(
+        Some(rkat_tui::delivery::PendingId(1)),
+        "for later".into(),
+    )]));
+    let saved = client.quit().await.expect("saved");
+    assert_eq!(saved.count, 1);
+    assert!(
+        std::fs::read_to_string(&saved.path)
+            .unwrap()
+            .contains("for later")
+    );
+    let mut again = Client::attach(&ws.root).await;
+    again
+        .saw(|msg| matches!(msg, Msg::Notice { text, .. } if text.starts_with("1 unsent message")))
+        .await;
+    assert!(again.quit().await.is_none());
+    daemon.stop().await;
+}

@@ -340,6 +340,12 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Fixed
 
+- Attach mode caught up with the in-process TUI: `/cost` is priced (the
+  `[pricing]` overrides, the community list and the endpoints' prices; it
+  showed `$?`), the `!` hint says "unconfined" under `--no-confinement`,
+  messages still held at quit are saved to `tui_unsent.txt` and announced
+  at the next start, and `--resume`/`-c` with `--attach` are refused with an
+  error instead of being ignored.
 - Attach mode: a conversation switch read on a connection that was lost
   before the client reattached is no longer installed; it named the dead
   connection's stream, and the client then silently dropped every event of
