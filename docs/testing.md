@@ -43,8 +43,8 @@ invocation misses the test targets and the `mob` and `test-support` code.
 
 The second clippy lane builds the library and the binaries with the
 default features, without `test-support`. Under `test-support` every
-internal module is public (`internal_modules!` in `src/lib.rs`, and the
-`daemon` and `client` modules), so an item nothing calls is never reported
+internal module is public (the paired `pub mod` / `pub(crate) mod`
+declarations in `src/lib.rs`), so an item nothing calls is never reported
 there; in this lane the modules are crate-private and an unused item or
 re-export is dead code, which `-D warnings` refuses. An item only tests use
 (a test seam such as `Daemon::start`, a getter a test asserts on, a
