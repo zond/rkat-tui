@@ -15,8 +15,14 @@ names, is in `docs/evidence.md`:
 | P4b attach-mode polish | 2026-11-08 | "P4b: attach-mode polish" |
 | P3b and the 0.9.11 adoption | 2026-11-09 | "P3b and the 0.9.11 adoption" |
 | Always-daemon P2 lifecycle (`/detach`, `/quit`, hangup, `--list`, endpoint fallback) | 2026-11-09 | "The daemon's lifecycle state and its owner (`rkat/status`)", "`/quit`, `/detach` and hangup in attach mode", "A shutdown without an answer is not reported as done", "`--list` (`daemon::list`)", "The endpoint file falls back to the runtime directory" |
+| Always-daemon P1 parity (2026-11-09) | 2026-11-09 | "The task checklist in attach mode (`rkat/tasks`)", "Input history in attach mode (verified, no gap)", "`/model` in attach mode switches in place (`rkat/set_model`)", "`/context` in attach mode", "File diffs in attach mode (`rkat/file_diff`)", "The daemon's start-up notices reach the clients (`rkat/notices`)", "P1 parity: what stays an engine limit, and the texts" |
+| Always-daemon P3 default flip (attach by default, `-c`/`--resume`, `--attach=DIRECTORY`, `--attach=HOST:PORT`, `--no-attach` alongside) | 2026-11-09 | "The default flip (P3): attach, else start", "The command line's prompt waits for the first attach", "`-c` and `--resume` under attach; in-process sessions stay in-process", "`--no-attach` beside a live daemon", "`--attach` values and `--attach=DIRECTORY`", "`--attach=HOST:PORT` with a token file" |
 
-Attach mode is experimental; `--no-attach` is the default. Open:
+Attaching to the workspace's daemon is the default since P3 of the
+always-daemon plan; `--no-attach` is the in-process escape hatch until P4.
+Sessions created in-process cannot be resumed in the daemon (the engine
+refuses to seat the member on them, see the P3 evidence); P4 decides
+their migration. Open:
 same-identity `/rewind` (lukacf/meerkat#2126); P5, the governed realm
 (#2122); MCP servers added or trusted after the
 daemon's mob was created; which client's steer a boundary delivered when
@@ -49,7 +55,7 @@ the end state.
 
 ### Phases
 
-#### P1 Parity (attach mode does everything in-process does)
+#### P1 Parity (attach mode does everything in-process does; done 2026-11-09)
 - The agent's fork: the TUI's `fork` tool is built on the in-process session service; in the daemon the agent has the engine's `fork_off`, already gated and followed. Decide per feature: `src/fork/` is deleted with the in-process runner, and the manual stops promising the TUI fork tool. Check nothing in-process-only remains in the agent's tool set (compare `session::tool_set` with the daemon's policy).
 - Ctrl+T task checklist: a `rkat/tasks` local method reads the session task store (`tasks.db`) in the daemon; the client renders it as today.
 - History ↑ recall: client-local history file; make it work in attach mode.
@@ -64,8 +70,8 @@ the end state.
 - Endpoint-file fallback when confinement would expose the state dir: `$XDG_RUNTIME_DIR/rkat-tui/<key>/`, else refuse with today's message. The temp dir is granted to the sandbox, so never there.
 - Tests: `tests/attach_lifecycle.rs` with a scripted daemon: quit-stops, detach-keeps, quit-after-detach-asks, other-client-detaches, drop-without-message-keeps, `--list` rows and stale cleanup.
 
-#### P3 Default flip
-- `AttachMode::IfRunningElseStart` becomes the default; `--no-attach` escape hatch with the alongside notice.
+#### P3 Default flip (done 2026-11-09)
+- `AttachMode::IfRunningElseStart` (the existing `Auto`) becomes the default; `--no-attach` escape hatch with the alongside notice.
 - `-c`/`--resume` under attach (replace the Batch C refusal with the switch).
 - `--attach=DIRECTORY`; `--attach=HOST:PORT` with `--attach-token-file`; the client resolves `!`, `@` mentions, `/export`, `/remember` against the daemon's reported workspace (refuse the file-editing ones when the workspace is not local).
 - Manual: the attach section becomes the main text; `ssh -L` recipe.
@@ -194,7 +200,7 @@ methods on the wire, and `daemon::protocol` types each one for both ends:
 | Method | Params | Result |
 |---|---|---|
 | `rkat/attach` | `{"token", "start_token"?, "probe"?}` | `{"attached": true}` (first line only; the start token marks the client that launched the daemon, a probe is not counted as a client) |
-| `rkat/status` | `{}` | `{"workspace", "pid", "started_at", "clients", "detached", "owner", "session_id"?, "running"}` |
+| `rkat/status` | `{}` | `{"workspace", "host"?, "pid", "started_at", "clients", "detached", "owner", "session_id"?, "running"}` |
 | `rkat/detach` | `{}` | `{}` (recorded: a later `/quit` asks) |
 | `rkat/shutdown` | `{}` | `{}` (the daemon removes its endpoint file and shuts down) |
 | `rkat/get_mode` | `{}` | `{"mode", "paused", "denials"}` |

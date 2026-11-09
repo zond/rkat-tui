@@ -15,10 +15,11 @@ Product direction: a focused coding application with Claude Code's keys and
 feel, hosted on Meerkat's runtime-backed session path. Everything the engine
 owns (session lifecycle, persistence, tool dispatch, mobs, confinement) is
 used through its public API; the application owns the UI, the approval
-policy, the classifier, prompts, tool selection and consent presentation. There are two binaries: `rkat-tui`, the interactive TUI hosting the
-agent in-process, and `rkat-tui-mob` (experimental), a daemon that hosts
-it as a mob member and serves the engine's JSON-RPC over loopback TCP
-(`docs/mob-split.md`).
+policy, the classifier, prompts, tool selection and consent presentation. There are two binaries: `rkat-tui-mob`, the per-workspace daemon that hosts
+the agent as a mob member and serves the engine's JSON-RPC over loopback
+TCP, and `rkat-tui`, the interactive TUI, which is its client by default
+(`docs/mob-split.md`). The in-process runner (`--no-attach`, `src/runner/`)
+is the escape hatch until P4 of the always-daemon plan removes it.
 
 ## Build and test
 

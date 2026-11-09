@@ -21,9 +21,13 @@ helpers, rules, endpoints, memory and the keys work. The
 
 ## Overview
 
-An interactive terminal coding harness built on the Meerkat agent engine. It
-hosts its sessions in-process on Meerkat's runtime-backed session path (the
-one `rkat`, REST and RPC use) and gates every tool call through an
+An interactive terminal coding harness built on the Meerkat agent engine.
+The agent runs in a per-workspace daemon, `rkat-tui-mob`, as a durable mob
+member on Meerkat's runtime-backed session path (the one `rkat`, REST and
+RPC use); `rkat-tui` is its client, starting it when none runs, and
+`/detach` leaves it working (see [The workspace daemon](#the-workspace-daemon-attach-mode)).
+`--no-attach` hosts the agent in the TUI's own process instead, the
+escape hatch until that path is removed. Every tool call goes through an
 **auto-mode** approval model: routine actions run without interruption,
 risky ones are judged by a reasoning-blind classifier, and you are asked only
 after repeated blocks. Shift+Tab switches to Claude Code's other permission
@@ -32,7 +36,9 @@ default.
 
 ```bash
 cargo run -- "fix the failing test"
-rkat-tui -c                       # continue the latest session of this workspace
+rkat-tui -c                       # attach to the conversation the workspace's daemon runs
+rkat-tui --attach=../other        # attach to another workspace's running daemon
+rkat-tui --no-attach              # host the agent in this process instead
 rkat-tui --resume ~2
 rkat-tui --model gpt-5.5 --classifier-model gpt-5.5
 rkat-tui --no-auto                # start in manual mode: you answer what the classifier would review
@@ -51,6 +57,9 @@ the workspace's latest session, `--resume <ref>` or `/resume [ref]` any other
 (`last`, `~N` for the N-th most recent, an id or id prefix; `/resume` or
 `--resume` alone opens a picker; the session service's listing, so an
 archived session is not offered), `/clear` (`/new`) starts a fresh one.
+Attached to the workspace's daemon (the default) a session is one of the
+daemon's conversations: `-c` attaches to the one it runs, and
+`--resume <ref>` switches it (see [The workspace daemon](#the-workspace-daemon-attach-mode)).
 While it runs, `rkat-tui` holds a lease on the realm (surface `rkat-tui`,
 one per process; released on quit), so `rkat realm prune` and realm
 inspection treat the realm as live.
@@ -1258,8 +1267,12 @@ it, `rkat-tui --no-attach --resume <ref>`.
   in the order the agent takes steers, not by which message the agent
   took: the engine does not tell a TUI which input its message became, so
   one TUI's message can show delivered when the other's was.
-- The in-process TUI and the daemon cannot share one workspace at the same
-  time.
+- `--no-attach` next to a running daemon works, at a cost: no memory
+  search (the daemon holds the memory index) and two agents in one tree;
+  the start says so and offers to attach or stop the daemon instead.
+- A session started in-process (`--no-attach`) cannot be resumed in the
+  daemon: the engine seats the daemon's agent only on sessions it ran.
+  Resume it with `rkat-tui --no-attach --resume <ref>`.
 
 ## Testing
 

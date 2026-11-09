@@ -1,9 +1,11 @@
 # rkat-tui
 
 An interactive terminal coding harness built on the
-[Meerkat](https://github.com/lukacf/meerkat) agent engine. It hosts its
-sessions in-process on Meerkat's runtime-backed session path (the one `rkat`,
-REST and RPC use) and gates every tool call through an **auto-mode** approval
+[Meerkat](https://github.com/lukacf/meerkat) agent engine. The agent runs in a
+per-workspace daemon (`rkat-tui-mob`, a durable mob member on Meerkat's
+runtime-backed session path) that `rkat-tui` attaches to, starting it when
+none runs; `/detach` leaves the agent working and a later `rkat-tui`
+reattaches. Every tool call goes through an **auto-mode** approval
 model: routine actions run without interruption, risky ones are judged by a
 reasoning-blind classifier, and you are asked only after repeated blocks. The
 shell runs inside an OS sandbox by default, and the keys, the commands and the
@@ -42,7 +44,7 @@ rkat-tui --model llama3:8b        # bare ids are looked up in every endpoint's m
 rkat-tui --allow 'shell=cargo nextest run*' --set auto.compact=auto
 ```
 
-### The mob daemon (experimental)
+### The workspace daemon
 
 `rkat-tui-mob` hosts the agent as a long-lived Meerkat mob member instead of
 inside the terminal UI, and serves Meerkat's own JSON-RPC methods for the
@@ -56,9 +58,11 @@ connection must first send `rkat/attach` with that token. It takes the same engi
 rkat-tui-mob --foreground -w . --model claude-sonnet-4-6
 ```
 
-`rkat-tui --attach` runs the TUI against it (starting it when none
-answers, or by default with `attach = true` in your `tui.toml`); `/quit`
-detaches and `/daemon stop` shuts it down. The agent works behind the same
+`rkat-tui` runs the TUI against it, starting it when none answers;
+`/detach` leaves it running, `/quit` stops a daemon this TUI started (else
+it detaches or asks) and `/daemon stop` shuts it down. `--attach=DIRECTORY`
+attaches to another workspace's daemon, `--attach=HOST:PORT` to one through
+a tunnel, and `--no-attach` hosts the agent in-process instead. The agent works behind the same
 approval gate, with its helpers, `/new`, `/resume` and the model picker; see
 [Attach mode](docs/manual.md#the-workspace-daemon-attach-mode) and
 [`docs/mob-split.md`](docs/mob-split.md).
@@ -105,7 +109,9 @@ approval gate, with its helpers, `/new`, `/resume` and the model picker; see
 ## Status
 
 Early, and moving fast. The engine is the crates.io release of Meerkat
-0.9.11; attach mode and the `rkat-tui-mob` daemon are experimental.
+0.9.11. The agent runs in the `rkat-tui-mob` daemon by default; the
+in-process runner (`--no-attach`) is kept for one release as the escape
+hatch.
 
 ## License
 
