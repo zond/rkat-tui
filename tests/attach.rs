@@ -21,7 +21,7 @@ use rkat_tui::client::runner::NOT_AVAILABLE;
 use rkat_tui::client::sessions::REWIND_UNAVAILABLE;
 use rkat_tui::client::testing::{AttachHarness, spawn_attach_runner};
 use rkat_tui::daemon::{Daemon, DaemonError, DaemonOptions};
-use rkat_tui::ui::{CompactFailure, Effect, Msg, StatusUpdate, TurnFailure, TurnOutcome};
+use rkat_tui::ui::{Effect, Msg, StatusUpdate, TurnFailure, TurnOutcome};
 
 /// A daemon serving in the background.
 struct Running {
@@ -345,10 +345,6 @@ async fn what_the_daemon_cannot_do_yet_says_so() {
     client.send(Effect::RequestRewindMenu);
     client
         .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text == REWIND_UNAVAILABLE))
-        .await;
-    client.send(Effect::CompactNow);
-    client
-        .wait_for(|msg| matches!(msg, Msg::CompactRebuilt(Err(CompactFailure::Rebuild(why))) if why.contains("compact-now")))
         .await;
     client.send(Effect::StatusReport);
     client

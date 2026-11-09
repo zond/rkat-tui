@@ -469,7 +469,7 @@ pub const COMPACT_FOCUS_UNSUPPORTED: &str =
     "focus instructions are not supported by the engine yet; compacting without them";
 
 /// Notice shown once `/compact` rebuilt the session.
-pub const COMPACT_REBUILT: &str = "the context will be compacted at the start of your next message (Meerkat has no on-demand compaction; the ✓ compacted notice confirms it)";
+pub const COMPACT_REBUILT: &str = "the context will be compacted at the start of your next message (the ✓ compacted notice confirms it)";
 
 /// Side effect requested by [`App::update`], executed by the integrator.
 #[derive(Debug, Clone, PartialEq, Eq)]

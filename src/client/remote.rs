@@ -543,3 +543,30 @@ pub async fn usage(
     let totals: Totals = decode("rkat/usage", answer)?;
     Ok((totals.input_tokens, totals.output_tokens))
 }
+
+/// `/compact now` for the orchestrator: `mob/compact_member` (its next
+/// compaction check compacts). Returns the engine's refusal as text.
+///
+/// # Errors
+///
+/// The call's error, as text.
+pub async fn compact_member(connection: &Connection) -> Result<(), String> {
+    connection
+        .call("mob/compact_member", member())
+        .await
+        .map(drop)
+        .map_err(|err| err.to_string())
+}
+
+/// `/compact now` through the orchestrator's session (`session/compact`).
+///
+/// # Errors
+///
+/// The call's error, as text.
+pub async fn compact_session(connection: &Connection, session: &SessionId) -> Result<(), String> {
+    connection
+        .call("session/compact", json!({"session_id": session}))
+        .await
+        .map(drop)
+        .map_err(|err| err.to_string())
+}

@@ -248,6 +248,9 @@ pub enum CompactFailure {
     /// The session could not be rebuilt with the one-turn threshold.
     #[error("could not rebuild the session: {0}")]
     Rebuild(String),
+    /// The daemon's engine refused the compaction request (attach mode).
+    #[error("the daemon did not take the request: {0}")]
+    Request(String),
 }
 
 /// Tracks the context gauge across turns and applies a [`CompactionPolicy`].

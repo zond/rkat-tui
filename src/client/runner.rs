@@ -59,9 +59,6 @@ pub const RECONNECTING: &str = "reconnecting";
 /// What attach mode answers for what the daemon cannot do yet.
 pub const NOT_AVAILABLE: &str = "not available in attach mode yet";
 
-/// Why `/compact now` is refused in attach mode.
-pub const COMPACT_NOW_UNAVAILABLE: &str = "not available in attach mode: the engine has no compact-now for a mob member yet (the in-process TUI rebuilds its own session for it); the daemon compacts at the policy's threshold (/compact shows it)";
-
 /// How often the orchestrator's current session is read (another client's
 /// `/new` or `/resume` moves it).
 pub const SESSION_POLL: Duration = Duration::from_secs(1);
@@ -1313,9 +1310,7 @@ impl AttachRunner {
             Effect::RunShell { id, command } => self.run_shell(id, command),
             Effect::CancelShell => self.cancel_shell(),
             Effect::SetModel(reference) => self.set_model(&reference),
-            Effect::CompactNow => self.send(Msg::CompactRebuilt(Err(CompactFailure::Rebuild(
-                COMPACT_NOW_UNAVAILABLE.to_string(),
-            )))),
+            Effect::CompactNow => self.compact_now(),
             Effect::StatusReport => self.status_report(),
             Effect::ContextReport(header) => self.notice(
                 NoticeLevel::Info,
@@ -1472,6 +1467,37 @@ impl AttachRunner {
         if matches!(answer, EscalationAnswer::Stop) {
             self.interrupt();
         }
+    }
+
+    /// `/compact now`: ask the orchestrator's next compaction check to
+    /// compact (`mob/compact_member`, no rebuild); its next model request
+    /// compacts, and the gauge follows the `compaction_completed` event.
+    /// A member the engine refuses (dormant after a daemon restart, before
+    /// its first run) is asked again through its session
+    /// (`session/compact`), which refuses the same way when it is not live.
+    fn compact_now(&self) {
+        let Some(link) = &self.link else {
+            self.send(Msg::CompactRebuilt(Err(CompactFailure::Request(
+                "not attached to the daemon".to_string(),
+            ))));
+            return;
+        };
+        let connection = Arc::clone(&link.connection);
+        let session = link.session.clone();
+        let ui_tx = self.ui_tx.clone();
+        tokio::spawn(async move {
+            let asked = tokio::time::timeout(CALL_TIMEOUT, async {
+                match remote::compact_member(&connection).await {
+                    Ok(()) => Ok(()),
+                    Err(member) => remote::compact_session(&connection, &session)
+                        .await
+                        .map_err(|session| format!("{member}; {session}")),
+                }
+            })
+            .await
+            .unwrap_or_else(|_| Err("the daemon did not answer in time".to_string()));
+            let _ = ui_tx.send(Msg::CompactRebuilt(asked.map_err(CompactFailure::Request)));
+        });
     }
 
     /// Shift+Tab, `/mode`, `/auto resume`: switch the daemon's mode.

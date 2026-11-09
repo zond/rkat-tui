@@ -257,3 +257,40 @@ async fn the_token_counter_and_gauge_follow_the_conversation() {
     client.quit().await;
     daemon.stop().await;
 }
+
+/// `/compact now` in attach mode asks the orchestrator's next compaction
+/// check to compact (`mob/compact_member`): the next prompt's first model
+/// call is the summary, and the client sees `compaction_completed`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn compact_now_compacts_at_the_next_turn() {
+    let ws = Workspace::new();
+    let mut script = vec![Step::Text("ok"); 4];
+    script.push(Step::Text("SUMMARY of the earlier turns"));
+    script.push(Step::Text("after"));
+    let llm = ScriptedLlmClient::new(script);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let mut client = Client::attach(&ws.root).await;
+    for i in 0..4 {
+        client.send(Effect::StartTurn(format!("turn {i}")));
+        client.turn_finished().await.result.unwrap();
+    }
+    client.send(Effect::CompactNow);
+    let asked = client
+        .wait_for(|m| matches!(m, Msg::CompactRebuilt(_)))
+        .await;
+    assert!(matches!(asked, Msg::CompactRebuilt(Ok(()))), "{asked:?}");
+    client.send(Effect::StartTurn("next".into()));
+    assert_eq!(client.turn_finished().await.result.unwrap().text, "after");
+    client
+        .saw(|m| {
+            matches!(
+                m,
+                Msg::Agent(envelope)
+                    if matches!(envelope.payload, meerkat_core::AgentEvent::CompactionCompleted { .. })
+            )
+        })
+        .await;
+    assert_eq!(llm.recorded().len(), 6, "the summary call came first");
+    client.quit().await;
+    daemon.stop().await;
+}
