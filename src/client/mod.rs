@@ -131,20 +131,6 @@ pub enum ClientError {
         /// The endpoint file.
         file: PathBuf,
     },
-    /// A daemon of an earlier version serves the workspace from the legacy
-    /// endpoint file inside it: this client does not start a second one.
-    #[error(
-        "an rkat-tui-mob of an earlier version (pid {pid}) serves this workspace at {address} from {}, where the agent's shell can read its token; type /daemon stop to stop it (or send SIGTERM to pid {pid}) and this client starts the current daemon and attaches",
-        file.display()
-    )]
-    LegacyDaemon {
-        /// Its address.
-        address: SocketAddr,
-        /// Its process id.
-        pid: u32,
-        /// The legacy endpoint file.
-        file: PathBuf,
-    },
     /// The daemon could not be started.
     #[error("cannot start {}: {source}", program.display())]
     Spawn {

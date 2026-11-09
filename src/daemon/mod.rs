@@ -154,9 +154,7 @@ pub enum DaemonError {
     /// The orchestrator has no session after its spawn or restore.
     #[error("the orchestrator `{0}` has no session")]
     NoSession(String),
-    /// A daemon already answers at the address its endpoint file names
-    /// (the current one, or the legacy one an earlier version wrote into
-    /// the workspace).
+    /// A daemon already answers at the address its endpoint file names.
     #[error(
         "a daemon already serves this workspace at {address} (pid {pid}, endpoint file {}); `/daemon stop` from a client attached to it, or SIGTERM to pid {pid}, ends it",
         file.display()
@@ -382,9 +380,6 @@ impl Daemon {
         };
         // Refuse before taking the realm: a live daemon keeps its endpoint.
         endpoint::check_stale(&file).await?;
-        // A daemon of an earlier version wrote its endpoint into the
-        // workspace: refuse while it answers, remove its file when not.
-        endpoint::refuse_legacy(&scope.context_root).await?;
         let parts =
             bootstrap::assemble(scope, config, args, options.bootstrap, LEASE_SURFACE).await?;
         check_endpoint_private(&parts.confinement, &file)?;

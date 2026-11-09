@@ -100,10 +100,6 @@ const RESTART_EVERY: Duration = Duration::from_secs(30);
 const BACKOFF_FIRST: Duration = Duration::from_millis(100);
 const BACKOFF_MAX: Duration = Duration::from_secs(2);
 
-/// How long a stopped daemon of an earlier version may take to exit
-/// before this client starts the current one.
-const LEGACY_EXIT: Duration = Duration::from_secs(30);
-
 /// The reason recorded with an interrupt.
 const INTERRUPT_REASON: &str = "rkat-tui: interrupted by the user";
 
@@ -306,12 +302,6 @@ pub struct AttachRunner {
     connecting: Option<JoinHandle<Result<Established, ClientError>>>,
     /// The daemon may still be started (only the first connect does).
     first_connect: bool,
-    /// A daemon of an earlier version serves the workspace from the legacy
-    /// endpoint file (the first connect refused): `/daemon stop` stops it.
-    legacy: Option<Endpoint>,
-    /// The pid of a stopped legacy daemon the next first connect waits
-    /// for to exit.
-    legacy_exiting: Option<u32>,
     reports_tx: mpsc::UnboundedSender<Report>,
     reports_rx: mpsc::UnboundedReceiver<Report>,
     mark: Option<Mark>,
@@ -376,8 +366,6 @@ impl AttachRunner {
             link: None,
             connecting: None,
             first_connect: true,
-            legacy: None,
-            legacy_exiting: None,
             reports_tx,
             reports_rx,
             mark: None,
@@ -467,13 +455,8 @@ impl AttachRunner {
         let ui_tx = self.ui_tx.clone();
         let task = if std::mem::take(&mut self.first_connect) {
             let spawn = self.config.spawn.clone();
-            let workspace = self.config.scope.context_root.clone();
-            let exiting = self.legacy_exiting.take();
             tokio::spawn(async move {
-                if let Some(pid) = exiting {
-                    wait_for_exit(pid, LEGACY_EXIT).await;
-                }
-                let endpoint = first_endpoint(&file, &workspace, spawn.as_ref(), &ui_tx).await?;
+                let endpoint = first_endpoint(&file, spawn.as_ref(), &ui_tx).await?;
                 establish(endpoint, saved.as_ref()).await
             })
         } else {
@@ -534,13 +517,6 @@ impl AttachRunner {
         let established = match joined {
             Ok(Ok(established)) => established,
             Ok(Err(err)) => {
-                if let ClientError::LegacyDaemon { address, pid, .. } = &err {
-                    self.legacy = Some(Endpoint {
-                        address: *address,
-                        token: String::new(),
-                        pid: *pid,
-                    });
-                }
                 self.send(Msg::Status(StatusUpdate::Attach(Some("detached".into()))));
                 self.notice(
                     NoticeLevel::Error,
@@ -2217,13 +2193,6 @@ impl AttachRunner {
     /// `/daemon stop`: SIGTERM to the pid the endpoint file names, once the
     /// file still names the daemon this client is attached to.
     async fn daemon_stop(&mut self) {
-        if self.link.is_none()
-            && self.connecting.is_none()
-            && let Some(old) = self.legacy.take()
-        {
-            self.stop_legacy(&old).await;
-            return;
-        }
         let connected = self.link.as_ref().map(|link| link.endpoint.address);
         let liveness = launch::probe(&self.config.endpoint_file).await;
         match stop_target(&liveness, connected) {
@@ -2242,80 +2211,6 @@ impl AttachRunner {
             Err(why) => self.notice(NoticeLevel::Warn, why),
         }
     }
-}
-
-impl AttachRunner {
-    /// `/daemon stop` while a daemon of an earlier version holds the
-    /// workspace: SIGTERM to it once its legacy endpoint file still names
-    /// it, then the first connect again (it waits for the pid to exit and
-    /// starts the current daemon).
-    async fn stop_legacy(&mut self, old: &Endpoint) {
-        let workspace = self.config.scope.context_root.clone();
-        match crate::daemon::endpoint::check_legacy(&workspace).await {
-            crate::daemon::endpoint::Legacy::Live(endpoint) if endpoint.pid == old.pid => {
-                match terminate(endpoint.pid) {
-                    Ok(()) => {
-                        self.notice(
-                            NoticeLevel::Info,
-                            format!(
-                                "asked the earlier daemon (pid {}) to shut down; attaching to the current one once it has",
-                                endpoint.pid
-                            ),
-                        );
-                        self.legacy_exiting = Some(endpoint.pid);
-                    }
-                    Err(err) => {
-                        self.legacy = Some(endpoint);
-                        self.notice(
-                            NoticeLevel::Error,
-                            format!("cannot stop the earlier daemon: {err}"),
-                        );
-                        return;
-                    }
-                }
-            }
-            crate::daemon::endpoint::Legacy::Live(endpoint) => {
-                self.notice(
-                    NoticeLevel::Warn,
-                    format!(
-                        "the legacy endpoint file names another daemon now (pid {}); not stopping it",
-                        endpoint.pid
-                    ),
-                );
-                self.legacy = Some(endpoint);
-                return;
-            }
-            crate::daemon::endpoint::Legacy::Clear => {
-                self.notice(NoticeLevel::Info, "the earlier daemon is gone; attaching");
-            }
-        }
-        self.first_connect = true;
-        self.status(CONNECTING);
-        self.connect();
-    }
-}
-
-/// Wait (up to `timeout`) for the process `pid` to exit.
-async fn wait_for_exit(pid: u32, timeout: Duration) {
-    let deadline = Instant::now() + timeout;
-    while process_alive(pid) && Instant::now() < deadline {
-        tokio::time::sleep(launch::POLL).await;
-    }
-}
-
-#[cfg(unix)]
-fn process_alive(pid: u32) -> bool {
-    i32::try_from(pid).is_ok_and(|pid| {
-        !matches!(
-            nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None),
-            Err(nix::errno::Errno::ESRCH)
-        )
-    })
-}
-
-#[cfg(not(unix))]
-fn process_alive(_pid: u32) -> bool {
-    false
 }
 
 /// The pid `/daemon stop` signals: the endpoint file's, when its address
@@ -2494,7 +2389,6 @@ async fn adopt(
 /// the one a started daemon writes.
 async fn first_endpoint(
     file: &std::path::Path,
-    workspace: &std::path::Path,
     spawn: Option<&SpawnPlan>,
     ui_tx: &mpsc::UnboundedSender<Msg>,
 ) -> Result<Endpoint, ClientError> {
@@ -2504,19 +2398,6 @@ async fn first_endpoint(
         AttachMode::Existing
     };
     let decision = launch::decide(launch::probe(file).await, mode);
-    // A daemon of an earlier version that still answers at the legacy
-    // endpoint file holds the realm: never start a second one next to it.
-    // A stale legacy file (a token the agent's shell can read) is removed.
-    if let crate::daemon::endpoint::Legacy::Live(old) =
-        crate::daemon::endpoint::check_legacy(workspace).await
-        && !matches!(decision, Decision::Attach(_))
-    {
-        return Err(ClientError::LegacyDaemon {
-            address: old.address,
-            pid: old.pid,
-            file: crate::daemon::endpoint::legacy_file(workspace),
-        });
-    }
     match (decision, spawn) {
         (Decision::Attach(endpoint), _) => Ok(endpoint),
         (Decision::Start, Some(plan)) => {
