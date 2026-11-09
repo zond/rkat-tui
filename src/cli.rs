@@ -176,12 +176,14 @@ pub struct Args {
     #[arg(long)]
     pub no_pricing_fetch: bool,
 
-    /// Experimental: run against the workspace's `rkat-tui-mob` daemon
-    /// instead of hosting the agent in this process. `auto` (the default
-    /// when the flag is given without a value) starts the daemon when none
-    /// answers; `--attach=existing` only attaches to a running one. `/detach`
-    /// leaves the daemon running; `/quit` stops a daemon this rkat-tui started
-    /// (else it detaches or asks); `/daemon stop` shuts it down.
+    /// How to reach the workspace's `rkat-tui-mob` daemon, which runs the
+    /// agent (the default, as `auto`: attach to the running daemon, else
+    /// start one). `--attach=existing` only attaches to a running one. The
+    /// `=` is required: a word after a bare `--attach` is the prompt.
+    /// `/detach` leaves the daemon running; `/quit` stops a daemon this
+    /// rkat-tui started (else it detaches or asks); `/daemon stop` shuts it
+    /// down. `attach = false` in your tui.toml makes `--no-attach` the
+    /// default.
     #[arg(
         long,
         value_enum,
@@ -193,7 +195,8 @@ pub struct Args {
     )]
     pub attach: Option<AttachMode>,
 
-    /// Host the agent in this process (the default; overrides `--attach`).
+    /// Host the agent in this process instead of the daemon (the escape
+    /// hatch until the in-process runner is removed; overrides `--attach`).
     #[arg(long, overrides_with = "attach")]
     pub no_attach: bool,
 
@@ -212,8 +215,9 @@ impl Args {
         !self.no_mouse
     }
 
-    /// The attach mode, `None` in-process (`--no-attach` given last, or
-    /// no `--attach`).
+    /// The attach mode the flags choose: `None` for `--no-attach` (given
+    /// last) and when neither flag is given (then `tui.toml` and the
+    /// default decide, [`crate::bootstrap::attach_mode`]).
     #[must_use]
     pub fn attach_mode(&self) -> Option<AttachMode> {
         if self.no_attach { None } else { self.attach }

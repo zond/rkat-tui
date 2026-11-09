@@ -27,7 +27,11 @@ async fn a_prompt_is_answered_and_rendered() {
     let llm = ScriptedLlmClient::new(vec![Step::Text("hello from the daemon")]);
     let daemon = Running::start(&ws.root, &llm).await;
     let mut client = Client::attach(&ws.root).await;
-    assert!(client.notices().contains("behind the same approval gate"));
+    assert!(
+        client
+            .notices()
+            .contains(rkat_tui::client::runner::ATTACH_NOTICE)
+    );
     client.send(Effect::StartTurn("say hello".into()));
     let outcome = client.turn_finished().await;
     let summary = outcome.result.expect("completed");
@@ -460,7 +464,7 @@ async fn what_the_daemon_cannot_do_yet_says_so() {
         .await;
     client.send(Effect::StatusReport);
     client
-        .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text.contains("attach mode") && text.contains("orchestrator `main`")))
+        .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text.contains("attached to the workspace daemon") && text.contains("orchestrator `main`")))
         .await;
     client.quit().await;
     daemon.stop().await;
@@ -497,15 +501,22 @@ async fn a_bang_command_runs_in_this_process_and_joins_the_agents_context() {
 }
 
 #[test]
-fn attach_true_in_a_users_tui_toml_selects_attach_mode() {
+fn attach_mode_is_the_default_and_a_users_tui_toml_can_turn_it_off() {
     use rkat_tui::bootstrap::{attach_mode as of_layers, read_layers};
     let attach_mode = |args: &rkat_tui::Args| of_layers(args, &read_layers(args).unwrap());
     let ws = Workspace::new();
     let args = args_for(&ws.root);
-    assert_eq!(attach_mode(&args), None);
-    // A user layer (the --config-dir tui.toml) turns it on.
+    // Neither flag nor tui.toml: attach, starting the daemon when none runs.
+    assert_eq!(attach_mode(&args), Some(AttachMode::Auto));
+    // A user layer (the --config-dir tui.toml) turns it off, and on.
     let user = ws.root.join(".cfg");
     std::fs::create_dir_all(&user).unwrap();
+    std::fs::write(user.join("tui.toml"), "attach = false\n").unwrap();
+    assert_eq!(attach_mode(&args), None);
+    assert_eq!(
+        attach_mode(&common::args_with(&ws.root, &["--attach"])),
+        Some(AttachMode::Auto)
+    );
     std::fs::write(user.join("tui.toml"), "attach = true\n").unwrap();
     assert_eq!(attach_mode(&args), Some(AttachMode::Auto));
     // The flags win.
@@ -520,8 +531,8 @@ fn attach_true_in_a_users_tui_toml_selects_attach_mode() {
     // A project file cannot choose it.
     std::fs::remove_file(user.join("tui.toml")).unwrap();
     std::fs::create_dir_all(ws.root.join(".rkat")).unwrap();
-    std::fs::write(ws.root.join(".rkat/tui.toml"), "attach = true\n").unwrap();
-    assert_eq!(attach_mode(&args), None);
+    std::fs::write(ws.root.join(".rkat/tui.toml"), "attach = false\n").unwrap();
+    assert_eq!(attach_mode(&args), Some(AttachMode::Auto));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

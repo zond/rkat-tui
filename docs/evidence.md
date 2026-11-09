@@ -2009,7 +2009,7 @@ helper and total cost), `esc_during_a_helper_stops_the_orchestrator_and_the_help
 `new_starts_fresh_and_resume_brings_the_old_conversation_back` (a second
 client follows the switch), `rewind_says_why_it_is_not_offered` (the
 engine's refusal pinned); `tests/attach.rs`:
-`attach_true_in_a_users_tui_toml_selects_attach_mode`,
+`attach_mode_is_the_default_and_a_users_tui_toml_can_turn_it_off`,
 `two_clients_steer_in_turn_and_both_see_the_whole_conversation`,
 `a_reconnect_restarts_a_daemon_that_died` (the real `rkat-tui-mob`),
 `what_the_daemon_cannot_do_yet_says_so` (now `/rules trust`, `/rewind`,
@@ -2796,7 +2796,7 @@ once; `attach_mode(args, &layers)` is pure, and `runner::run`,
 `client::run`/`configure_with`, `bootstrap_with`, `assemble`,
 `user_shell` and `Daemon::start_with` take the `Layers`. Test:
 `attach::attach_mode_runs_on_the_layers_read_at_start` (and
-`attach::attach_true_in_a_users_tui_toml_selects_attach_mode`).
+`attach::attach_mode_is_the_default_and_a_users_tui_toml_can_turn_it_off`).
 
 ### The workbench: what both runners do the same way
 
@@ -3140,3 +3140,19 @@ time it out). The test has four cases: the file still names the daemon,
 the file removed, a malformed file with the daemon's address still
 accepting (never "stopped"), and a malformed file with the address
 closed.
+
+### The default flip (P3): attach, else start
+
+`rkat-tui` with neither `--attach` nor `--no-attach` and no `attach` key
+in a user `tui.toml` now attaches (`bootstrap::attach_mode` returns
+`Some(AttachMode::Auto)`); `attach = false` in a user layer, or
+`--no-attach`, runs in-process, and the flags win over the file
+(`Layered::attach` became an `Option<bool>` so an explicit `false` is
+told apart from unset). The plan named the default mode
+`IfRunningElseStart`; the code already had that mode under the name
+`Auto` (`launch::decide`: a live endpoint attaches, an absent or stale
+one starts the daemon), and a second variant with the same decision
+would only have been a synonym, so the default is `Auto` and the docs
+say so. The attach notice is informational now (`ATTACH_NOTICE`, one
+sentence on what the daemon is) instead of the experimental warning.
+Test: `attach::attach_mode_is_the_default_and_a_users_tui_toml_can_turn_it_off`.

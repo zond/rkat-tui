@@ -354,9 +354,10 @@ pub struct LayeredEndpoint {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RulesFile {
-    /// Run the TUI attached to the workspace's `rkat-tui-mob` daemon, as
-    /// `--attach` (user layers only; `--attach`/`--no-attach` win). First:
-    /// a plain key is written before the tables.
+    /// Whether the TUI runs attached to the workspace's `rkat-tui-mob`
+    /// daemon (the default when unset); `false` hosts the agent in-process
+    /// as `--no-attach` (user layers only; `--attach`/`--no-attach` win).
+    /// First: a plain key is written before the tables.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attach: Option<bool>,
     /// Auto-mode settings.

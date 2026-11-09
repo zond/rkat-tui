@@ -1,6 +1,7 @@
-//! Attach mode (experimental, P2 of `docs/mob-split.md`): `rkat-tui
-//! --attach` runs the TUI against the workspace's `rkat-tui-mob` daemon
-//! instead of hosting the engine in this process.
+//! Attach mode, the default (P3 of the always-daemon plan in
+//! `docs/mob-split.md`): `rkat-tui` runs the TUI against the workspace's
+//! `rkat-tui-mob` daemon instead of hosting the engine in this process
+//! (`--no-attach` is the in-process escape hatch until P4).
 //!
 //! - [`transport`]: the connection (attach handshake with the endpoint
 //!   file's token, then a JSON-RPC multiplexer over newline-delimited JSON).

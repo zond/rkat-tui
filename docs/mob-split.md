@@ -327,7 +327,7 @@ reaches the orchestrator with `mob/append_system_context`.
 
 ## Known limits
 
-`docs/manual.md`, "Attach mode (experimental)", is the one list of what
+`docs/manual.md`, "The workspace daemon (attach mode)", is the one list of what
 attach mode does not do yet.
 
 ## Open engine asks

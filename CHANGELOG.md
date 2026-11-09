@@ -314,6 +314,12 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Changed
 
+- `rkat-tui` now runs the agent in the workspace's `rkat-tui-mob` daemon
+  by default: it attaches to the running daemon, or starts one and
+  attaches. `--no-attach` hosts the agent in-process (the escape hatch);
+  `attach = false` in your own `tui.toml` makes that the default. The
+  first attach says what the daemon is instead of calling attach mode
+  experimental.
 - `--provider` is an alias of `--endpoint` (it was a separate flag that
   conflicted with it), and the hidden no-op `--mouse` is gone.
 - The `mob` and `mcp` cargo features are gone: helpers, MCP servers, the

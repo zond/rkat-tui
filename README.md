@@ -60,7 +60,7 @@ rkat-tui-mob --foreground -w . --model claude-sonnet-4-6
 answers, or by default with `attach = true` in your `tui.toml`); `/quit`
 detaches and `/daemon stop` shuts it down. The agent works behind the same
 approval gate, with its helpers, `/new`, `/resume` and the model picker; see
-[Attach mode](docs/manual.md#attach-mode-experimental) and
+[Attach mode](docs/manual.md#the-workspace-daemon-attach-mode) and
 [`docs/mob-split.md`](docs/mob-split.md).
 
 ## Highlights

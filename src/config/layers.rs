@@ -280,8 +280,9 @@ pub struct Layered {
     pub shell: ShellSettings,
     /// Merged `[ui]` settings.
     pub ui: UiSettings,
-    /// `attach = true` in a user layer.
-    pub attach: bool,
+    /// `attach = true`/`false` in a user layer (`None`: not set, the
+    /// default attaches).
+    pub attach: Option<bool>,
     /// `[daemon] principal` of the user layers (the last one set).
     pub daemon_principal: Option<String>,
     /// Non-fatal observations to show once.
@@ -351,7 +352,7 @@ pub fn load_layered_with(
     let mut helpers = HelperSettings::default();
     let mut shell = ShellSettings::default();
     let mut ui = UiSettings::default();
-    let mut attach = false;
+    let mut attach = None;
     let mut daemon_principal = None;
 
     let mut user_layers: Vec<(Option<PathBuf>, RuleOrigin, RulesFile)> = Vec::new();
@@ -447,7 +448,7 @@ pub fn load_layered_with(
             ui.apply(section);
         }
         if let Some(on) = file.attach {
-            attach = on;
+            attach = Some(on);
         }
         if let Some(principal) = file.daemon.as_ref().and_then(|d| d.principal.clone()) {
             daemon_principal = Some(principal);

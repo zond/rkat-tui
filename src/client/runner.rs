@@ -81,8 +81,8 @@ pub const DISCOVER_FOR: Duration = Duration::from_secs(10);
 /// [`AttachRunner`]'s `orphans`).
 const ORPHANS_MAX: usize = 2_000;
 
-/// The notice shown on every attach.
-pub const EXPERIMENTAL_NOTICE: &str = "attach mode is experimental: the agent runs in this workspace's rkat-tui-mob daemon, behind the same approval gate (its approval requests show here, and in every other attached client; the first answer counts). /detach leaves the agent running; /quit stops the daemon when this rkat-tui started it and nobody detached since (with other clients attached it detaches, otherwise it asks); /daemon stop shuts it down.";
+/// The notice shown on the first attach: what the daemon is.
+pub const ATTACH_NOTICE: &str = "the agent runs in this workspace's rkat-tui-mob daemon, which keeps working when you /detach and stops on /quit when this rkat-tui started it (its approval requests show in every attached client; the first answer counts).";
 
 /// How long a turn whose runs all ended waits for a follow-up run.
 pub const RUN_GRACE: Duration = Duration::from_millis(300);
@@ -709,7 +709,7 @@ impl AttachRunner {
         }
         self.send(Msg::Status(StatusUpdate::Session(session)));
         if fresh {
-            self.notice(NoticeLevel::Warn, EXPERIMENTAL_NOTICE);
+            self.notice(NoticeLevel::Info, ATTACH_NOTICE);
         } else {
             self.notice(
                 NoticeLevel::Info,
@@ -2122,7 +2122,7 @@ impl AttachRunner {
 
     fn status_report(&self) {
         let mut lines = vec![format!(
-            "rkat-tui {} (attach mode, experimental)",
+            "rkat-tui {} (attached to the workspace daemon)",
             env!("CARGO_PKG_VERSION")
         )];
         match &self.link {

@@ -588,9 +588,10 @@ impl Assembled {
 }
 
 /// Whether the TUI runs attached to the workspace's daemon: `--attach` or
-/// `--no-attach` when given, else `attach = true` in a user layer of
-/// `tui.toml` (`layers`; a project file's `attach` is ignored with a
-/// notice at bootstrap, like its other trusted-only keys).
+/// `--no-attach` when given, else `attach = true`/`false` in a user layer
+/// of `tui.toml` (`layers`; a project file's `attach` is ignored with a
+/// notice at bootstrap, like its other trusted-only keys), else attached
+/// (`--attach=auto`: attach to the running daemon, else start one).
 #[must_use]
 pub fn attach_mode(args: &Args, layers: &Layers) -> Option<crate::cli::AttachMode> {
     if args.no_attach || args.attach.is_some() {
@@ -599,6 +600,7 @@ pub fn attach_mode(args: &Args, layers: &Layers) -> Option<crate::cli::AttachMod
     layers
         .layered
         .attach
+        .unwrap_or(true)
         .then_some(crate::cli::AttachMode::Auto)
 }
 

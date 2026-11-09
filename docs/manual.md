@@ -16,7 +16,7 @@ helpers, rules, endpoints, memory and the keys work. The
 - [Instructions and memory](#instructions-and-memory) ([Context and compaction](#context-and-compaction))
 - [Keys and commands](#keys-and-commands) ([Task checklist](#task-checklist))
 - [Where things live](#where-things-live)
-- [Attach mode (experimental)](#attach-mode-experimental)
+- [The workspace daemon (attach mode)](#the-workspace-daemon-attach-mode)
 - [Testing](#testing)
 
 ## Overview
@@ -961,26 +961,28 @@ naming both, so pass `--config-dir <other dir>` there. The price-list cache live
 in the user cache directory (`<config-dir>/cache` when `--config-dir` is
 given).
 
-## Attach mode (experimental)
+## The workspace daemon (attach mode)
 
-`rkat-tui --attach` runs the same TUI against the workspace's
-`rkat-tui-mob` daemon instead of hosting the agent in this process. The
-agent then lives in the daemon (a durable mob member: mob `tui`, member
-`main`), keeps working when you detach, and any number of TUIs can attach
-to it. The default, `--no-attach`, is the in-process TUI described in the
-rest of this manual.
+`rkat-tui` runs the agent in the workspace's `rkat-tui-mob` daemon and is
+its client: with no daemon running for the workspace it starts one, with
+one running it attaches to it. The agent lives in the daemon (a durable
+mob member: mob `tui`, member `main`), keeps working when you `/detach`,
+and any number of TUIs can attach to it. `--no-attach` hosts the agent in
+this process instead; it is the exception, kept as an escape hatch until
+the in-process runner is removed.
 
 | Flag | Meaning |
 |---|---|
-| `--attach`, `--attach=auto` | Attach to the workspace's daemon; start it when none answers |
+| (none), `--attach`, `--attach=auto` | Attach to the workspace's daemon; start it when none answers |
 | `--attach=existing` | Attach only to a running daemon; refuse otherwise |
-| `--no-attach` | Host the agent in this process (the default; overrides `--attach`) |
+| `--no-attach` | Host the agent in this process (overrides `--attach`) |
 | `--list` | List every daemon that has an endpoint file, then exit (also `rkat-tui-mob --list`) |
 
-`attach = true` at the top of your own `tui.toml` (the user-global one, or
-the realm's) makes attach mode (auto) the default; `--no-attach` and
-`--attach=…` still win. A project's `.rkat/tui.toml` cannot choose it (it is
-ignored with a notice, like its other trusted-only keys).
+`attach = false` at the top of your own `tui.toml` (the user-global one, or
+the realm's) makes `--no-attach` the default (`attach = true` is the
+default spelled out); `--no-attach` and `--attach=…` still win. A
+project's `.rkat/tui.toml` cannot choose it (it is ignored with a notice,
+like its other trusted-only keys).
 
 The value needs `=`: `rkat-tui --attach "fix the test"` attaches and sends
 the prompt.

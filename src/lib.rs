@@ -136,7 +136,7 @@ pub mod workbench;
 #[cfg(not(feature = "test-support"))]
 pub(crate) mod workbench;
 
-// `rkat-tui-mob`: the workspace's mob daemon (experimental). Internal
+// `rkat-tui-mob`: the workspace's mob daemon. Internal
 // like the modules above; its binary enters through `run_daemon`. (Plain
 // comments: an outer doc here would make rustdoc resolve the module's own
 // intra-doc links from the crate root.)
@@ -145,7 +145,7 @@ pub mod daemon;
 #[cfg(not(feature = "test-support"))]
 pub(crate) mod daemon;
 
-// Attach mode (experimental): the TUI as a client of the workspace's
+// Attach mode (the default): the TUI as a client of the workspace's
 // `rkat-tui-mob` daemon. Internal like the modules above.
 #[cfg(feature = "test-support")]
 pub mod client;
