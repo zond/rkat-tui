@@ -276,9 +276,9 @@ async fn compact_now_compacts_at_the_next_turn() {
     }
     client.send(Effect::CompactNow);
     let asked = client
-        .wait_for(|m| matches!(m, Msg::CompactRebuilt(_)))
+        .wait_for(|m| matches!(m, Msg::CompactRequested(_)))
         .await;
-    assert!(matches!(asked, Msg::CompactRebuilt(Ok(()))), "{asked:?}");
+    assert!(matches!(asked, Msg::CompactRequested(Ok(()))), "{asked:?}");
     client.send(Effect::StartTurn("next".into()));
     assert_eq!(client.turn_finished().await.result.unwrap().text, "after");
     client

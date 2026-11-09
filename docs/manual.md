@@ -648,8 +648,8 @@ The system prompt of a new session is built from, in order:
    model-written context rather than instructions.
 
 Instruction files and notes are re-read for every new session (`/clear`,
-`/new`). A resumed session (`-c`, `/resume`, and the rebuilds `/compact`
-and model switches make) keeps the instructions it was created with: Meerkat
+`/new`). A resumed session (`-c`, `/resume`, and the rebuilds model
+switches make) keeps the instructions it was created with: Meerkat
 does not reassemble a resumed session's system prompt, so the TUI passes the
 session's persisted instructions back unchanged (the persona appears once).
 Edited instruction files apply from the next new session; `/remember`
@@ -730,17 +730,16 @@ For a model whose window is unknown the thresholds are 120k (warn) and 150k
 (auto) tokens. `compact_auto_percent` below `compact_warn_percent` is raised
 to it, with a notice.
 
-`/compact status` shows the policy and threshold. In-process,
-**`/compact`** (or `/compact now`; idle only, after at
-least one turn) *rebuilds the session so its next model call compacts*: the session is
-rebuilt with a one-turn threshold of one token, and when the next turn ends
-it is rebuilt on the policy's threshold again. The rebuild is all the TUI
-can report; the compaction notices confirm the compaction itself. A long
-tool loop in that turn may compact again after Meerkat's cadence (3 model
-calls by default). A prompt typed during the rebuild is admitted as an
-ordinary queued input once it is done. The `✓ compacted` notice appears
-when the session next runs (Meerkat publishes it once the semantic index
-took the discarded messages).
+`/compact status` shows the policy and threshold. **`/compact`** (or
+`/compact now`; idle only, after at least one turn) *asks Meerkat to compact
+at the session's next model call*, in-process and in attach mode alike; the
+session is not rebuilt and its threshold does not change. The request is
+all the TUI can report; the compaction notices confirm the compaction
+itself, and when the check finds nothing to fold the transcript says
+"nothing was compacted" with the reason. A prompt typed while the request
+is on its way is admitted as an ordinary queued input once it is answered.
+The `✓ compacted` notice appears when the session next runs (Meerkat
+publishes it once the semantic index took the discarded messages).
 
 `/context` prints the gauge (tokens used of the window, the percentage,
 and whether either is an estimate), the policy `/compact status` prints, and

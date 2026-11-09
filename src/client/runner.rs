@@ -1274,7 +1274,7 @@ impl AttachRunner {
     /// (`session/compact`), which refuses the same way when it is not live.
     fn compact_now(&self) {
         let Some(link) = &self.link else {
-            self.send(Msg::CompactRebuilt(Err(CompactFailure::Request(
+            self.send(Msg::CompactRequested(Err(CompactFailure::Request(
                 "not attached to the daemon".to_string(),
             ))));
             return;
@@ -1293,7 +1293,9 @@ impl AttachRunner {
             })
             .await
             .unwrap_or_else(|_| Err("the daemon did not answer in time".to_string()));
-            let _ = ui_tx.send(Msg::CompactRebuilt(asked.map_err(CompactFailure::Request)));
+            let _ = ui_tx.send(Msg::CompactRequested(
+                asked.map_err(CompactFailure::Request),
+            ));
         });
     }
 

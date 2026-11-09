@@ -253,11 +253,7 @@ impl Runner {
                 // The agent's mob tools name the model `delegate` helpers run
                 // on as of its build: rebuild it, with the new model's
                 // trigger, so they follow the switch.
-                let trigger = if self.compact_now_pending {
-                    self.session.compaction()
-                } else {
-                    self.session_trigger()
-                };
+                let trigger = self.session_trigger();
                 let detached = match self
                     .rebuild_session_workaround(RebuildReason::ModelSwitch, trigger)
                     .await

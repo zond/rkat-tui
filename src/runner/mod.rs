@@ -593,8 +593,6 @@ pub(crate) struct Runner {
     price_fetch: Option<cost::PriceFetch>,
     /// Helper events and the running set.
     helper_updates: Option<mpsc::UnboundedReceiver<HelperUpdate>>,
-    /// The session runs on `/compact now`'s one-turn trigger.
-    compact_now_pending: bool,
     /// `/memory`: the file being edited and its bytes before (`None`:
     /// missing), to tell an edit from an unchanged close.
     memory_before: Option<(PathBuf, Option<Vec<u8>>)>,
@@ -676,7 +674,6 @@ impl Runner {
             prices,
             price_fetch,
             helper_updates,
-            compact_now_pending: false,
             memory_before: None,
             failed_prompt: None,
             user_shell,
@@ -1228,8 +1225,6 @@ impl Runner {
             result,
             undelivered,
         }));
-        // Effects the UI sends on the outcome wait for this rebuild.
-        self.end_compact_now().await;
     }
 }
 

@@ -8,17 +8,17 @@
 //!
 //! Compaction is native (see [`crate::ui::compaction`]): every session build
 //! carries the policy's trigger for the model's context window
-//! ([`Runner::session_trigger`]). Upstream reads the trigger when the agent
-//! is built and exposes no call to change it on a live session or to
-//! compact on demand, so every change goes through one workaround,
-//! [`Runner::rebuild_session_workaround`]: retire the idle session and
-//! resume it with the new trigger. It runs only on what the user does: a
-//! model switch or a resume that moves the trigger ([`Runner::ensure_trigger`]),
-//! `/compact now` (a one-turn trigger, then back to the policy's after that
-//! turn), a model switch that needed a new profile, and every model switch
-//! (the mob tools capture the model helpers run on). A background list
-//! fetch never rebuilds. The upstream asks (an on-demand compaction call, a
-//! live trigger update) are recorded in `.rct/rkat-tui/evidence.md`.
+//! ([`Runner::session_trigger`]). `/compact now` asks the engine to compact
+//! at the next compaction check (`MeerkatMachine::request_compaction`), with
+//! no rebuild. Upstream reads the trigger when the agent is built and
+//! exposes no call to change it on a live session, so a trigger change goes
+//! through one workaround, [`Runner::rebuild_session_workaround`]: retire the
+//! idle session and resume it with the new trigger. It runs only on what the
+//! user does: a model switch or a resume that moves the trigger
+//! ([`Runner::ensure_trigger`]), a model switch that needed a new profile,
+//! and every model switch (the mob tools capture the model helpers run on).
+//! A background list fetch never rebuilds. The upstream ask (a live trigger
+//! update) is recorded in `docs/evidence.md`.
 
 use sha2::{Digest, Sha256};
 
@@ -35,7 +35,7 @@ use crate::bootstrap::instructions::{
 };
 use crate::error::TuiError;
 use crate::session::SessionHandle;
-use crate::ui::{COMPACT_NOW, CompactFailure, CompactionTrigger, MemoryTarget, Msg, NoticeLevel};
+use crate::ui::{CompactFailure, CompactionTrigger, MemoryTarget, Msg, NoticeLevel};
 
 /// Why the session is rebuilt (see [`Runner::rebuild_session_workaround`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,9 +43,6 @@ pub(super) enum RebuildReason {
     /// The compaction trigger moved (model switch, resume onto another
     /// model). Upstream ask: a live trigger update.
     CompactionTrigger,
-    /// `/compact now`, or returning from it. Upstream ask: an on-demand
-    /// compaction call.
-    CompactNow,
     /// The agent's model registry predates a profile the switch needs.
     /// Upstream ask: profiles read at reconfigure time.
     ModelProfile,
@@ -142,14 +139,10 @@ impl Runner {
 
     /// Rebuild the idle session when its agent runs on another trigger than
     /// [`Runner::session_trigger`] (after a model switch or a resume onto
-    /// another model). A running turn or a pending `/compact now` keeps the
-    /// session as it is.
+    /// another model). A running turn keeps the session as it is.
     pub(super) async fn ensure_trigger(&mut self) {
         let wanted = self.session_trigger();
-        if self.compact_now_pending
-            || self.turn.is_active()
-            || self.session.compaction() == wanted
-        {
+        if self.turn.is_active() || self.session.compaction() == wanted {
             return;
         }
         if let Err(err) = self
@@ -168,46 +161,18 @@ impl Runner {
         }
     }
 
-    /// [`crate::ui::Effect::CompactNow`]: rebuild the idle session with a
-    /// one-turn trigger so its next model call compacts; answered with
-    /// [`Msg::CompactRebuilt`].
+    /// [`crate::ui::Effect::CompactNow`]: ask the engine to compact at the
+    /// session's next compaction check (`MeerkatMachine::request_compaction`;
+    /// no rebuild); answered with [`Msg::CompactRequested`].
     pub(super) async fn compact_now(&mut self) {
-        let result = if self.turn.is_active() {
-            Err(CompactFailure::Busy)
-        } else {
-            match self
-                .rebuild_session_workaround(RebuildReason::CompactNow, COMPACT_NOW)
-                .await
-            {
-                Ok(()) => {
-                    self.compact_now_pending = true;
-                    Ok(())
-                }
-                Err(err) => Err(CompactFailure::Rebuild(err.to_string())),
+        let result = match self.session.request_compaction().await {
+            Ok(receipt) => {
+                tracing::debug!(?receipt, "compaction requested");
+                Ok(())
             }
+            Err(err) => Err(CompactFailure::Request(err.to_string())),
         };
-        self.send(Msg::CompactRebuilt(result));
-    }
-
-    /// After a turn: return a session rebuilt for `/compact now` to the
-    /// policy's trigger.
-    pub(super) async fn end_compact_now(&mut self) {
-        if !self.compact_now_pending {
-            return;
-        }
-        self.compact_now_pending = false;
-        let trigger = self.session_trigger();
-        if let Err(err) = self
-            .rebuild_session_workaround(RebuildReason::CompactNow, trigger)
-            .await
-        {
-            self.notice(
-                NoticeLevel::Warn,
-                format!(
-                    "could not restore the compaction trigger after /compact: {err}; /resume the session to restore it"
-                ),
-            );
-        }
+        self.send(Msg::CompactRequested(result));
     }
 
     /// [`crate::ui::Effect::ContextReport`]: the UI's `header` plus what the

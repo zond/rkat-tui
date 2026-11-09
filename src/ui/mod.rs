@@ -39,7 +39,7 @@ use ratatui::layout::Rect;
 use ratatui::text::Line;
 
 pub use commands::{AutoCommand, Command, CompactCommand, HelperTarget, HelpersCommand, MemoryTarget, ModelCommand, RuleEffect, RulesCommand};
-pub use compaction::{COMPACT_NOW, CompactFailure, CompactionGauge, CompactionPolicy, CompactionTrigger};
+pub use compaction::{CompactFailure, CompactionGauge, CompactionPolicy, CompactionTrigger};
 pub use cost::{SessionCost, SessionCostSnapshot};
 pub use delivery::{Pending, PendingQueue, PendingState};
 pub use checklist::{Checklist, ChecklistView};
@@ -401,11 +401,11 @@ pub enum Msg {
         /// The run's prompt (`None`: a continuation without one).
         prompt: Option<String>,
     },
-    /// `/compact now`: the integrator rebuilt the session with a one-turn
-    /// compaction trigger, so its next model call compacts (or why it could
-    /// not). The `CompactionStarted`/`Completed` events confirm the
-    /// compaction itself.
-    CompactRebuilt(Result<(), CompactFailure>),
+    /// `/compact now`: the engine took the request, so the session's next
+    /// compaction check compacts (or why it did not). The
+    /// `CompactionStarted`/`Completed` events confirm the compaction itself;
+    /// `RequestedCompactionSkipped` says why nothing was compacted.
+    CompactRequested(Result<(), CompactFailure>),
     /// Some of helper `label`'s usage could not be observed (its events
     /// could not be followed): the cost readout becomes a lower bound.
     HelperUnmeasured(String),
@@ -464,7 +464,7 @@ pub const COMPACT_FOCUS_UNSUPPORTED: &str =
     "focus instructions are not supported by the engine yet; compacting without them";
 
 /// Notice shown once `/compact` rebuilt the session.
-pub const COMPACT_REBUILT: &str = "the context will be compacted at the start of your next message (the ✓ compacted notice confirms it)";
+pub const COMPACT_REQUESTED: &str = "the context will be compacted at the start of your next message (the ✓ compacted notice confirms it)";
 
 /// Side effect requested by [`App::update`], executed by the integrator.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -558,9 +558,8 @@ pub enum Effect {
     },
     /// Append a line to the workspace AGENTS.md and push it live.
     Remember(String),
-    /// `/compact now` (idle only): rebuild the session so its next turn
-    /// compacts before the first model call; answered with
-    /// [`Msg::CompactRebuilt`].
+    /// `/compact now` (idle only): ask the engine to compact at the
+    /// session's next model call; answered with [`Msg::CompactRequested`].
     CompactNow,
     /// The session's cost totals after a model call; the integrator
     /// persists them next to the session.
@@ -876,10 +875,10 @@ pub struct App {
     pub mode: InputMode,
     /// When Ctrl-X was pressed, while a chord is pending.
     pub chord: Option<Instant>,
-    /// Whether `/compact now` is rebuilding the session ([`Effect::CompactNow`]
-    /// sent, no [`Msg::CompactRebuilt`] yet). A prompt sent meanwhile is
-    /// admitted as an ordinary `Queue` input once the rebuild is done (the
-    /// runner serves effects in order); session switches wait.
+    /// Whether `/compact now` is asking for a compaction ([`Effect::CompactNow`]
+    /// sent, no [`Msg::CompactRequested`] yet). A prompt sent meanwhile is
+    /// admitted as an ordinary `Queue` input once the request is answered
+    /// (the runner serves effects in order); session switches wait.
     pub compacting: bool,
     /// When a Ctrl-D / `/quit` was refused because work is in flight; a
     /// second one within [`QUIT_CONFIRM_WINDOW`] quits anyway.
@@ -1923,7 +1922,7 @@ impl App {
                 self.run_first_block = self.transcript.len();
                 self.scroll.bottom();
             }
-            Msg::CompactRebuilt(result) => self.compact_rebuilt(result),
+            Msg::CompactRequested(result) => self.compact_requested(result),
             Msg::EditFile { target, path } => {
                 fx.push(Effect::ExternalEditor(EditorTarget::Memory { target, path }));
             }
@@ -2717,7 +2716,7 @@ impl App {
         fx.push(Effect::Steer { id, text });
     }
 
-    /// `/compact now` answered: report the rebuild (or why it failed).
+    /// `/compact now` answered: report the request (or why it failed).
     /// The external editor closed: an edited instruction file goes to the
     /// integrator to reload, an edited draft replaces the input (Ctrl-_
     /// brings the old one back); a failure keeps everything and notices.
@@ -2752,12 +2751,12 @@ impl App {
         }
     }
 
-    fn compact_rebuilt(&mut self, result: Result<(), CompactFailure>) {
+    fn compact_requested(&mut self, result: Result<(), CompactFailure>) {
         self.compacting = false;
         match result {
             Ok(()) => {
                 self.transcript
-                    .push_notice(NoticeLevel::Info, COMPACT_REBUILT);
+                    .push_notice(NoticeLevel::Info, COMPACT_REQUESTED);
             }
             Err(err) => {
                 self.transcript
@@ -3424,7 +3423,7 @@ impl App {
                     }
                     self.compacting = true;
                     self.transcript
-                        .push_notice(NoticeLevel::Info, "rebuilding the session so the next model call compacts…");
+                        .push_notice(NoticeLevel::Info, "asking the engine to compact at the next model call…");
                     self.scroll.bottom();
                     fx.push(Effect::CompactNow);
                 } else {
@@ -6703,7 +6702,7 @@ mod tests {
         assert!(!app.transcript.blocks().iter().any(
             |b| matches!(b, Block::Notice { text, .. } if text == COMPACT_FOCUS_UNSUPPORTED)
         ));
-        app.update(Msg::CompactRebuilt(Ok(())));
+        app.update(Msg::CompactRequested(Ok(())));
         assert_eq!(
             submit(&mut app, "/compact keep the test plan"),
             vec![Effect::CompactNow]
@@ -6715,7 +6714,7 @@ mod tests {
     }
 
     #[test]
-    fn prompts_during_the_rebuild_are_queued_inputs_not_held_text() {
+    fn prompts_during_the_request_are_queued_inputs_not_held_text() {
         let mut app = App::new(StatusInfo::default());
         app.status.context_used = Some(40_000);
         assert_eq!(submit(&mut app, "/compact now"), vec![Effect::CompactNow]);
@@ -6724,18 +6723,18 @@ mod tests {
             last_notice(&app),
             Some((
                 NoticeLevel::Info,
-                "rebuilding the session so the next model call compacts…".into()
+                "asking the engine to compact at the next model call…".into()
             ))
         );
         // The prompt goes to the runner at once: it admits it as a `Queue`
-        // input after the rebuild (effects are served in order).
+        // input after the request (effects are served in order).
         assert_eq!(
             submit(&mut app, "one"),
             vec![Effect::StartTurn("one".into())]
         );
         assert!(app.is_running());
         assert_eq!(app.status.queued, 0);
-        // Lifecycle commands wait for the rebuild; /remember does not.
+        // Lifecycle commands wait for the request; /remember does not.
         for cmd in ["/clear", "/resume last", "/compact now"] {
             assert!(submit(&mut app, cmd).is_empty(), "{cmd}");
             assert_eq!(
@@ -6745,21 +6744,21 @@ mod tests {
             );
         }
         assert_eq!(submit(&mut app, "#x"), vec![Effect::Remember("x".into())]);
-        assert!(app.update(Msg::CompactRebuilt(Ok(()))).is_empty());
+        assert!(app.update(Msg::CompactRequested(Ok(()))).is_empty());
         assert!(!app.compacting);
         assert!(app.transcript.blocks().iter().any(
-            |b| matches!(b, Block::Notice { level: NoticeLevel::Info, text } if text == COMPACT_REBUILT)
+            |b| matches!(b, Block::Notice { level: NoticeLevel::Info, text } if text == COMPACT_REQUESTED)
         ));
         // The wording never claims the compaction itself happened.
-        assert!(!COMPACT_REBUILT.contains("armed"));
+        assert!(!COMPACT_REQUESTED.contains("armed"));
     }
 
     #[test]
-    fn a_failed_rebuild_is_reported() {
+    fn a_refused_request_is_reported() {
         let mut app = App::new(StatusInfo::default());
         app.status.context_used = Some(1);
         submit(&mut app, "/compact now");
-        let fx = app.update(Msg::CompactRebuilt(Err(CompactFailure::Rebuild(
+        let fx = app.update(Msg::CompactRequested(Err(CompactFailure::Request(
             "boom".into(),
         ))));
         assert!(fx.is_empty());
@@ -6769,7 +6768,7 @@ mod tests {
             last_notice(&app),
             Some((
                 NoticeLevel::Error,
-                "/compact failed: could not rebuild the session: boom".into()
+                "/compact failed: the engine did not take the request: boom".into()
             ))
         );
     }

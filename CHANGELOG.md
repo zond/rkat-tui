@@ -6,6 +6,12 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Added
 
+- `/compact now` in-process asks the engine to compact at the session's next
+  model call (`MeerkatMachine::request_compaction`) instead of rebuilding the
+  session twice around a one-token threshold; a long tool loop no longer
+  compacts again in that turn. When the check finds nothing to fold, the
+  transcript says so with the reason (`RequestedCompactionSkipped`), in both
+  modes.
 - Attach mode adopts the 0.9.11 engine (experimental, P3b and follow-ups):
   approval requests are the engine's durable decisions, pushed to every
   attached TUI as they open (no more polling; a TUI attaching later is shown

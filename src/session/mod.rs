@@ -374,6 +374,19 @@ impl SessionHandle {
         self.compaction
     }
 
+    /// Ask the session's next compaction check to compact (`/compact now`):
+    /// no rebuild, idle or mid-turn. The next model request compacts, or
+    /// publishes `RequestedCompactionSkipped` when there is nothing to fold.
+    ///
+    /// # Errors
+    ///
+    /// The engine's refusal (a session that is not live in this process).
+    pub async fn request_compaction(
+        &self,
+    ) -> Result<meerkat_runtime::CompactionRequestReceipt, RuntimeDriverError> {
+        self.machine.request_compaction(&self.id).await
+    }
+
     /// Session id.
     #[must_use]
     pub fn id(&self) -> &SessionId {

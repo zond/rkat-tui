@@ -22,8 +22,9 @@
 //!   process's endpoints), `/remember` and `/memory` (the files are local;
 //!   the new content reaches the orchestrator with
 //!   `mob/append_system_context`); `/trust` and `/rules trust` act on the
-//!   daemon's trust record (`rkat/trust`). What the daemon cannot do
-//!   (`/rewind`, `/compact now`) says why.
+//!   daemon's trust record (`rkat/trust`); `/compact now` asks the daemon's
+//!   engine (`mob/compact_member`). What the daemon cannot do (`/rewind`)
+//!   says why.
 //! - [`helpers`]: the follower view of the orchestrator's helpers, from the
 //!   mobs' own event streams.
 //! - [`sessions`]: `/new`, `/resume` (the daemon's `rkat/new`,

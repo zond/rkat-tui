@@ -456,7 +456,6 @@ impl Runner {
     /// cleared when `reset` is set; see [`session_messages`]).
     async fn switch_to(&mut self, session: SessionHandle, transcript: Option<Session>, reset: bool) {
         let previous = std::mem::replace(&mut self.session, session);
-        self.compact_now_pending = false;
         self.tasks.abort_all();
         self.follow_events().await;
         if let Err(err) = previous.close().await {

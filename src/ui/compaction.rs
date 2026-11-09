@@ -24,18 +24,12 @@
 //! `[models.<id>]` entry the endpoint listings keep current), never a
 //! number the TUI keeps on the side.
 //!
-//! `/compact` reports the policy; `/compact now` rebuilds the session so the
-//! next model call compacts: the idle session is rebuilt with a one-turn
-//! trigger of one token ([`COMPACT_NOW`]), and after that turn it is rebuilt
-//! on the policy's trigger again. Upstream exposes no on-demand compaction
-//! call, so a rebuild is the workaround (`rebuild_session_workaround` in the
-//! runner; the upstream ask is recorded in `.rct/rkat-tui/evidence.md`).
-//! Nothing here can confirm that the next call compacts: the
-//! `CompactionStarted`/`Completed` events are the confirmation. A rebuilt
-//! agent does not keep the provider's last input count, so the one-turn
-//! trigger cannot be a fraction of the current context: a long tool loop
-//! in that turn can compact again after upstream's cadence
-//! (`min_turns_between_compactions` model calls, 3 by default).
+//! `/compact` reports the policy; `/compact now` asks the engine to compact
+//! at the session's next compaction check, before its next model request,
+//! without a rebuild (in-process `MeerkatMachine::request_compaction`, in
+//! attach mode `mob/compact_member`). The `CompactionStarted`/`Completed`
+//! events confirm the compaction; a check with nothing to fold publishes
+//! `RequestedCompactionSkipped` instead, which the transcript shows.
 //!
 //! Upstream publishes `CompactionCompleted` when the runtime finalizes the
 //! compaction's semantic-memory projection, which happens when the session
@@ -223,11 +217,6 @@ impl CompactionTrigger {
     }
 }
 
-/// The one-turn trigger `/compact now` rebuilds the session with: any
-/// history crosses it, so the next model call compacts (upstream never
-/// compacts on a session's very first model call).
-pub const COMPACT_NOW: CompactionTrigger = CompactionTrigger::At(NonZeroU64::MIN);
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Zone {
     Below,
@@ -235,21 +224,16 @@ enum Zone {
     Auto,
 }
 
-/// Why `/compact now` could not rebuild the session, as reported in
-/// [`super::Msg::CompactRebuilt`].
+/// Why `/compact now` could not ask for a compaction, as reported in
+/// [`super::Msg::CompactRequested`].
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CompactFailure {
     /// No turn has reported its context yet: nothing to compact.
     #[error("nothing to compact yet")]
     NothingYet,
-    /// A turn is running (the session can only be rebuilt between turns).
-    #[error("a turn is running; interrupt it first (Ctrl-C)")]
-    Busy,
-    /// The session could not be rebuilt with the one-turn threshold.
-    #[error("could not rebuild the session: {0}")]
-    Rebuild(String),
-    /// The daemon's engine refused the compaction request (attach mode).
-    #[error("the daemon did not take the request: {0}")]
+    /// The engine refused the compaction request (in attach mode, the
+    /// daemon's engine).
+    #[error("the engine did not take the request: {0}")]
     Request(String),
 }
 
@@ -389,7 +373,6 @@ mod tests {
         assert_eq!(at(auto().trigger(None)), FALLBACK_AUTO_TOKENS);
         assert_eq!(at(auto().trigger(Some(0))), FALLBACK_AUTO_TOKENS);
         assert_eq!(at(auto().trigger(Some(1))), 1);
-        assert_eq!(at(COMPACT_NOW), 1);
     }
 
     #[test]
@@ -397,7 +380,7 @@ mod tests {
         for trigger in [
             CompactionTrigger::Inherit,
             CompactionTrigger::Disable,
-            COMPACT_NOW,
+            CompactionTrigger::At(NonZeroU64::MIN),
             CompactionTrigger::At(NonZeroU64::MIN.saturating_add(41)),
         ] {
             assert_eq!(

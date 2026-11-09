@@ -1417,6 +1417,9 @@ impl Transcript {
             AgentEvent::CompactionFailed { reason } => {
                 self.push_notice(NoticeLevel::Warn, format!("✗ compaction failed: {reason}"));
             }
+            AgentEvent::RequestedCompactionSkipped { reason, .. } => {
+                self.push_notice(NoticeLevel::Info, compaction_skipped(*reason));
+            }
             AgentEvent::RunFailed { error_report, .. } => {
                 self.push_notice(
                     NoticeLevel::Error,
@@ -1964,6 +1967,17 @@ fn upstream_notice(event: &AgentEvent) -> Option<(NoticeLevel, String)> {
         _ => return None,
     };
     Some(notice)
+}
+
+/// Why a requested compaction (`/compact now`) compacted nothing.
+fn compaction_skipped(reason: meerkat_core::RequestedCompactionSkipReason) -> String {
+    use meerkat_core::RequestedCompactionSkipReason as Why;
+    let why = match reason {
+        Why::FirstModelRequest => "the conversation has no model call to compact yet",
+        Why::NothingToFold => "nothing older than the turn in flight to fold",
+        _ => "the engine found nothing to fold",
+    };
+    format!("/compact: nothing was compacted ({why})")
 }
 
 /// Event builders shared by the UI unit tests.
@@ -2853,5 +2867,19 @@ mod tests {
             t.blocks().last(),
             Some(&Block::Assistant { md: "again".into() })
         );
+    }
+
+    #[test]
+    fn a_requested_compaction_with_nothing_to_fold_says_so() {
+        let mut t = Transcript::new();
+        t.apply_agent_event(&AgentEvent::RequestedCompactionSkipped {
+            run_id: meerkat_core::lifecycle::RunId::new(),
+            reason: meerkat_core::RequestedCompactionSkipReason::NothingToFold,
+        });
+        assert!(t.blocks().iter().any(|b| matches!(
+            b,
+            Block::Notice { level: NoticeLevel::Info, text }
+                if text.starts_with("/compact: nothing was compacted")
+        )));
     }
 }

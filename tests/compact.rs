@@ -10,8 +10,10 @@
 //!   runtime finalized the memory projection) reports a smaller history,
 //!   the number the gauge shows;
 //! - `warn`: the native trigger is off, nothing compacts, and the gauge
-//!   warns; `/compact` arms the next turn, which compacts, and the
-//!   session is back on the policy afterwards.
+//!   warns; `/compact` asks the engine to compact at the next model call
+//!   (`request_compaction`, no rebuild), the next turn compacts, and the
+//!   one after it does not: the request was consumed and the policy never
+//!   changed.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -180,7 +182,8 @@ async fn warn_mode_warns_and_compacts_only_on_compact() {
     let mut script = history();
     // A turn past the threshold that does not compact.
     script.push(Step::Text("still whole"));
-    // `/compact now`: the next turn's first call is the summary.
+    // `/compact now` (a compaction request): the next turn's first call is
+    // the summary.
     script.push(Step::Text("SUMMARY of the earlier turns"));
     script.push(Step::TextUsage("compacted", BIG));
     // Back on the policy: no compaction despite the size.
@@ -211,9 +214,9 @@ async fn warn_mode_warns_and_compacts_only_on_compact() {
         rig.send(effect);
     }
     let msg = rig
-        .wait_for(|msg| matches!(msg, Msg::CompactRebuilt(_)))
+        .wait_for(|msg| matches!(msg, Msg::CompactRequested(_)))
         .await;
-    assert!(matches!(msg, Msg::CompactRebuilt(Ok(()))), "{msg:?}");
+    assert!(matches!(msg, Msg::CompactRequested(Ok(()))), "{msg:?}");
     rig.send(Effect::StartTurn("compact first".into()));
     assert_eq!(
         rig.turn_finished()
@@ -240,9 +243,9 @@ async fn warn_mode_warns_and_compacts_only_on_compact() {
             .text,
         "whole again"
     );
-    assert_eq!(started(&rig), 1, "disarmed after the turn");
+    assert_eq!(started(&rig), 1, "the request was consumed");
     assert_eq!(llm.recorded().len(), SHORT_TURNS + 5);
-    // The summary survived the rebuild back to the policy's threshold.
+    // The summary stays in the history.
     let last = llm.recorded().last().unwrap().clone();
     assert!(
         last.user().contains("SUMMARY of the earlier turns"),
