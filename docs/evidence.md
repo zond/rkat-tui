@@ -3255,3 +3255,24 @@ and before its state directory would be created. Tests:
 `attach::attach_to_a_directory_resolves_locally_against_its_workspace`
 (two workspaces; `pwd` from `!` and an `@` mention resolve in the
 daemon's).
+
+### The attach is answered after the client is counted
+
+CI failure on fbb1ec3: `attach_lifecycle::status_reports_the_daemon_its_clients_and_the_owner`
+saw 2 clients right after the third attach had completed. Maintainer
+review found the order: `handshake::accept` wrote and flushed
+`{attached: true}`, and only then did `serve::connection` take the
+lifecycle seat, so a client could finish its attach while other
+connections still read the old count. The handshake is split
+(`handshake::read_attach` checks the line and answers refusals,
+`handshake::acknowledge` writes the answer) and `serve::admit` takes the
+seat (clients, owner, probe) between the two; when the answer cannot be
+written the seat is withdrawn (`Seat::withdraw`: uncounted, and no
+detach, since that client never learned it attached), and otherwise it
+lives until the connection ends as before. Tests, deterministic (no
+polling): `daemon::serve::tests::the_client_is_counted_before_its_attach_is_acknowledged`
+(the writer records the count at the moment the answer is written),
+`daemon::serve::tests::a_failed_acknowledgement_gives_the_seat_up_without_a_detach`,
+`attach_lifecycle::an_answered_attach_is_counted_for_every_other_connection_at_once`
+(seven attaches, each followed at once by another connection's
+`rkat/status`).

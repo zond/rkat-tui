@@ -418,6 +418,10 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Fixed
 
+- The daemon counts a client before it answers its attach, so a client
+  that has attached is never missing from another client's status
+  (`/quit`'s decision, `--list`); an attach whose answer cannot be
+  written is not counted and is no detach.
 - Attach mode: a prompt on the command line (`rkat-tui "fix it"`) is
   held until the TUI has attached instead of failing as "not attached".
 - Attach mode: after a `/quit` the daemon never confirmed, a connect to

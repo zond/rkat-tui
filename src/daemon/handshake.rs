@@ -60,21 +60,70 @@ pub enum HandshakeError {
     Io(#[from] std::io::Error),
 }
 
-/// Read and check the attach line from `reader` against `token`, answer it
-/// on `writer`. On success the caller hands `reader` (which may already
-/// buffer the client's next requests) and `writer` to the engine; the
-/// attach's parameters say what else the client presented (its start
-/// token, whether it is a probe).
+/// A valid attach line, not acknowledged yet ([`acknowledge`]).
+#[derive(Debug)]
+pub struct Pending {
+    id: RpcId,
+    /// What the client presented besides the token (its start token,
+    /// whether it is a probe).
+    pub params: AttachParams,
+}
+
+/// [`read_attach`], then [`acknowledge`] at once.
 ///
 /// # Errors
 ///
-/// [`HandshakeError`] after the refusal was written (best effort).
+/// As [`read_attach`] and [`acknowledge`].
+#[cfg(test)]
 pub async fn accept<R, W>(
     reader: &mut R,
     writer: &mut W,
     token: &str,
     timeout: Duration,
 ) -> Result<AttachParams, HandshakeError>
+where
+    R: AsyncBufRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let pending = read_attach(reader, writer, token, timeout).await?;
+    acknowledge(writer, &pending, timeout).await?;
+    Ok(pending.params)
+}
+
+/// Answer `pending` with `{attached: true}` on `writer`. The daemon
+/// registers the connection first ([`super::serve`]): a client that read
+/// this answer is counted for every other connection.
+///
+/// # Errors
+///
+/// [`HandshakeError::Io`] or [`HandshakeError::Timeout`] when the answer
+/// cannot be written.
+pub async fn acknowledge<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    pending: &Pending,
+    timeout: Duration,
+) -> Result<(), HandshakeError> {
+    let reply = protocol::result_line(Some(pending.id.clone()), Attached { attached: true });
+    tokio::time::timeout(timeout, write_line(writer, &reply))
+        .await
+        .map_err(|_| HandshakeError::Timeout(timeout))??;
+    Ok(())
+}
+
+/// Read and check the attach line from `reader` against `token`; a
+/// refusal is answered on `writer`, a valid line is not answered yet
+/// ([`acknowledge`]). On success the caller hands `reader` (which may
+/// already buffer the client's next requests) and `writer` to the engine.
+///
+/// # Errors
+///
+/// [`HandshakeError`] after the refusal was written (best effort).
+pub async fn read_attach<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    token: &str,
+    timeout: Duration,
+) -> Result<Pending, HandshakeError>
 where
     R: AsyncBufRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -93,13 +142,7 @@ where
         Ok(Ok(_)) => check(&line, token),
     };
     match checked {
-        Ok((id, params)) => {
-            let reply = protocol::result_line(Some(id), Attached { attached: true });
-            tokio::time::timeout(timeout, write_line(writer, &reply))
-                .await
-                .map_err(|_| HandshakeError::Timeout(timeout))??;
-            Ok(params)
-        }
+        Ok((id, params)) => Ok(Pending { id, params }),
         Err((id, err)) => {
             if !matches!(err, HandshakeError::Closed | HandshakeError::Io(_)) {
                 let code = match err {

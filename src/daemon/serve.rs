@@ -197,19 +197,15 @@ async fn connection(
 ) {
     let (read, mut write) = stream.into_split();
     let mut reader = BufReader::new(read);
-    let params = match handshake::accept(&mut reader, &mut write, &token, handshake::TIMEOUT).await
-    {
-        Ok(params) => params,
+    let seat = match admit(&mut reader, &mut write, &token, local.lifecycle()).await {
+        Ok(seat) => seat,
         Err(err) => {
             tracing::warn!(%peer, error = %err, "refused a connection");
             return;
         }
     };
-    // Counted until this connection ends; the owner's end without
-    // `rkat/shutdown` is a detach.
-    let seat = local.lifecycle().seat(&params);
     let caller = seat.caller();
-    tracing::info!(%peer, owner = caller.owner, probe = params.probe, "client attached");
+    tracing::info!(%peer, owner = caller.owner, counted = seat.counted(), "client attached");
     let (engine_side, proxy_side) = tokio::io::duplex(PIPE);
     let (server_read, server_write) = tokio::io::split(engine_side);
     // Aborted with this task (a shutdown aborts the connections), so the
@@ -237,6 +233,39 @@ async fn connection(
         Err(err) => tracing::warn!(%peer, error = %err, "client disconnected"),
     }
     drop(seat);
+}
+
+/// The handshake of one connection: read and check the attach line, take
+/// the connection's seat in `lifecycle` (counted until the connection
+/// ends; the owner's end without `rkat/shutdown` is a detach), and only
+/// then acknowledge it, so a client that read `{attached: true}` is
+/// already counted for every other connection's `rkat/status`. A seat
+/// whose acknowledgement cannot be written is given up without counting
+/// as a detach: that client never attached.
+///
+/// # Errors
+///
+/// [`handshake::HandshakeError`] (a refusal, or the acknowledgement
+/// failed).
+pub async fn admit<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    token: &str,
+    lifecycle: &Arc<super::lifecycle::Lifecycle>,
+) -> Result<super::lifecycle::Seat, handshake::HandshakeError>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let pending = handshake::read_attach(reader, writer, token, handshake::TIMEOUT).await?;
+    let seat = lifecycle.seat(&pending.params);
+    match handshake::acknowledge(writer, &pending, handshake::TIMEOUT).await {
+        Ok(()) => Ok(seat),
+        Err(err) => {
+            seat.withdraw();
+            Err(err)
+        }
+    }
 }
 
 /// Aborts its task when dropped.
@@ -505,6 +534,96 @@ pub async fn answer<L: LocalMethods + ?Sized>(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    /// A writer that fails every write after recording the client count
+    /// the lifecycle had when the acknowledgement was written.
+    struct Recording {
+        lifecycle: Arc<super::super::lifecycle::Lifecycle>,
+        seen: Option<usize>,
+        fail: bool,
+    }
+
+    impl tokio::io::AsyncWrite for Recording {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            self.seen = Some(self.lifecycle.clients());
+            if self.fail {
+                std::task::Poll::Ready(Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe)))
+            } else {
+                std::task::Poll::Ready(Ok(buf.len()))
+            }
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    const ATTACH_LINE: &[u8] = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"rkat/attach\",\"params\":{\"token\":\"t\",\"start_token\":\"start\"}}\n";
+
+    /// The CI failure this guards: the acknowledgement was written before
+    /// the connection's seat was taken, so a client that had attached could
+    /// be missing from another connection's `rkat/status`. The seat is
+    /// taken first: at the moment the acknowledgement is written the
+    /// client is counted.
+    #[tokio::test]
+    async fn the_client_is_counted_before_its_attach_is_acknowledged() {
+        let lifecycle = super::super::lifecycle::Lifecycle::new(
+            "/w".into(),
+            "now".into(),
+            Some("start".into()),
+        );
+        let mut reader = tokio::io::BufReader::new(ATTACH_LINE);
+        let mut writer = Recording {
+            lifecycle: Arc::clone(&lifecycle),
+            seen: None,
+            fail: false,
+        };
+        let seat = admit(&mut reader, &mut writer, "t", &lifecycle)
+            .await
+            .unwrap();
+        assert_eq!(writer.seen, Some(1), "counted when the answer was written");
+        assert!(seat.caller().owner);
+        drop(seat);
+        assert_eq!(lifecycle.clients(), 0);
+    }
+
+    /// An acknowledgement that cannot be written gives the seat up: the
+    /// count drops back, and the owner that never learned it attached did
+    /// not detach.
+    #[tokio::test]
+    async fn a_failed_acknowledgement_gives_the_seat_up_without_a_detach() {
+        let lifecycle = super::super::lifecycle::Lifecycle::new(
+            "/w".into(),
+            "now".into(),
+            Some("start".into()),
+        );
+        let mut reader = tokio::io::BufReader::new(ATTACH_LINE);
+        let mut writer = Recording {
+            lifecycle: Arc::clone(&lifecycle),
+            seen: None,
+            fail: true,
+        };
+        let refused = admit(&mut reader, &mut writer, "t", &lifecycle).await;
+        assert!(refused.is_err());
+        assert_eq!(writer.seen, Some(1), "the seat was taken before the write");
+        assert_eq!(lifecycle.clients(), 0, "and given up after it failed");
+        assert!(
+            !lifecycle.detached(),
+            "a client that never attached did not detach"
+        );
+    }
 
     /// `rkat/slow` waits for its gate; everything else passes unchanged.
     struct Slow {

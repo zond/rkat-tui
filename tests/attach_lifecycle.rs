@@ -427,3 +427,23 @@ async fn no_attach_beside_a_live_daemon_says_so_and_explains_its_conversation() 
     daemon.ended().await;
     assert!(alongside::find(&files).await.is_none());
 }
+
+/// The CI failure this guards (`status_reports_the_daemon_its_clients_and_the_owner`
+/// saw 2 clients after the third attach completed): once a connection's
+/// attach is answered, every other connection's `rkat/status` counts it
+/// at once, with no waiting.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_answered_attach_is_counted_for_every_other_connection_at_once() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let daemon = owned_daemon(&ws, &llm).await;
+    let watcher = attach(&daemon, None, false).await;
+    let mut held = Vec::new();
+    for n in 2..=8 {
+        held.push(attach(&daemon, None, false).await);
+        assert_eq!(status(&watcher).await.clients, n);
+    }
+    drop(held);
+    drop(watcher);
+    daemon.stop().await;
+}

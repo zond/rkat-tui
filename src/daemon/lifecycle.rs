@@ -96,6 +96,7 @@ impl Lifecycle {
             lifecycle: Arc::clone(self),
             caller: Caller { owner },
             counted,
+            withdrawn: false,
         }
     }
 
@@ -147,6 +148,8 @@ pub struct Seat {
     lifecycle: Arc<Lifecycle>,
     caller: Caller,
     counted: bool,
+    /// Given up before the acknowledgement reached the client.
+    withdrawn: bool,
 }
 
 impl Seat {
@@ -155,12 +158,27 @@ impl Seat {
     pub fn caller(&self) -> Caller {
         self.caller
     }
+
+    /// Whether the seat counts as an attached client (not a probe).
+    #[must_use]
+    pub fn counted(&self) -> bool {
+        self.counted
+    }
+
+    /// Give the seat up before the client learned it attached (its
+    /// acknowledgement could not be written): uncounted, and no detach.
+    pub fn withdraw(mut self) {
+        self.withdrawn = true;
+    }
 }
 
 impl Drop for Seat {
     fn drop(&mut self) {
         if self.counted {
             self.lifecycle.clients.fetch_sub(1, Ordering::SeqCst);
+        }
+        if self.withdrawn {
+            return;
         }
         if self.caller.owner && !self.lifecycle.terminating.load(Ordering::SeqCst) {
             tracing::info!(
