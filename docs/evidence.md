@@ -2719,3 +2719,20 @@ event, and events past the cap were dropped without a word. `Orphans`
 keeps a running count, releases a stream's events in order when it
 registers, and logs once per connection when it starts dropping. Test:
 `client::runner::tests::orphans_are_counted_bounded_and_released`.
+
+### A render from the start reads the snapshot's cursor, not the whole log
+
+`adopt` (a switch, a re-render) and `establish` (an attach that cannot
+resume its cursor) replayed the session's whole event log from sequence 0
+(`events/list_since`, 500 a page) only to learn the last sequence and the
+last `TurnCompleted`'s usage. `EventsSnapshotResult.cursor` (meerkat-contracts
+0.9.11; the engine pairs it with the snapshot, `event_snapshot` in
+`meerkat-rpc`'s session runtime) is that sequence, and the call was already
+made for the model and provider: `remote::snapshot` returns all three. The
+gauge's seed comes from `last_context_before`, the doubling-window search the
+resumed attach already used (256 events back, doubling, 4,096 at most), so a
+conversation whose last model call lies further back than that starts with
+an unknown gauge until its next turn (it was read from the full log before).
+`EventsListSinceResult.latest_cursor` exists too and is not needed here.
+Tests: the attach suites (`attach_sessions::the_token_counter_and_gauge_follow_the_conversation`,
+`attach::the_client_reconnects_to_a_restarted_daemon`) unchanged.

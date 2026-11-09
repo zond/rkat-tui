@@ -73,16 +73,48 @@ pub async fn identity(
     connection: &Connection,
     session: &SessionId,
 ) -> Result<(String, String), ClientError> {
+    snapshot(connection, session)
+        .await
+        .map(|snapshot| (snapshot.model, snapshot.provider))
+}
+
+/// What `events/snapshot` says of a session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Snapshot {
+    /// The model it runs on.
+    pub model: String,
+    /// Its provider.
+    pub provider: String,
+    /// The sequence of its last durable event (0: none), paired with the
+    /// snapshot.
+    pub latest: u64,
+}
+
+/// The session's snapshot (`events/snapshot`): its model and provider and
+/// its latest durable sequence.
+///
+/// # Errors
+///
+/// The call's error, or [`ClientError::Decode`].
+pub async fn snapshot(
+    connection: &Connection,
+    session: &SessionId,
+) -> Result<Snapshot, ClientError> {
     let snapshot = connection
         .call(
             engine::EVENTS_SNAPSHOT,
             json!({"scope": EventReplayScope::Session { session_id: session.clone() }}),
         )
         .await?;
-    let snapshot: EventsSnapshotResult = decode(engine::EVENTS_SNAPSHOT, snapshot)?;
+    let snapshot: EventsSnapshotResult = decode("events/snapshot", snapshot)?;
+    let latest = snapshot.cursor.sequence;
     #[allow(unreachable_patterns)]
     match snapshot.snapshot {
-        EventsSnapshotBody::Session { session } => Ok((session.model, session.provider)),
+        EventsSnapshotBody::Session { session } => Ok(Snapshot {
+            model: session.model,
+            provider: session.provider,
+            latest,
+        }),
         _ => Err(ClientError::NoSession),
     }
 }

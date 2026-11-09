@@ -2458,18 +2458,18 @@ async fn adopt(
 ) -> Result<Adopted, String> {
     tokio::time::timeout(SWITCH_TIMEOUT, async {
         let stream = remote::reopen_stream(connection, old_stream).await?;
-        let (events, last_seq) = replay_to_end(connection, &session, 0).await?;
+        let snapshot = remote::snapshot(connection, &session).await?;
         let messages = remote::transcript(connection, &session).await?;
-        let identity = remote::identity(connection, &session).await.ok();
         let usage = remote::usage(connection, &session).await.ok();
+        let context = last_context_before(connection, &session, snapshot.latest).await;
         Ok::<_, ClientError>(Adopted {
             blocks: crate::runner::blocks_from_messages(&messages),
             session,
             stream,
-            last_seq,
-            identity,
+            last_seq: snapshot.latest,
+            identity: Some((snapshot.model, snapshot.provider)),
             usage,
-            context: last_context(&events),
+            context,
         })
     })
     .await
@@ -2565,15 +2565,17 @@ async fn establish(endpoint: Endpoint, saved: Option<&Cursor>) -> Result<Establi
             }
             None => {
                 // Live first, so nothing falls between the stream and the
-                // render; the mark drops what both deliver.
+                // render; the mark drops what both deliver. The snapshot's
+                // cursor is where the render ends.
                 let stream = remote::open_stream(&connection, None).await?;
-                let (events, last_seq) = replay_to_end(&connection, &session, 0).await?;
+                let latest = remote::snapshot(&connection, &session).await?.latest;
                 let messages = remote::transcript(&connection, &session).await?;
+                let context = last_context_before(&connection, &session, latest).await;
                 (
                     stream,
-                    Mark::rendered(&id, last_seq),
+                    Mark::rendered(&id, latest),
                     Some(crate::runner::blocks_from_messages(&messages)),
-                    last_context(&events),
+                    context,
                 )
             }
         };
