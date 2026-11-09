@@ -25,8 +25,9 @@ use crate::bootstrap::HELPER_PERSONA;
 
 /// The mob tools that start a member or a council: denied to a helper at
 /// the configured depth limit (`[helpers] max_depth`), so helpers nest no
-/// deeper. `fork_off` is denied to every helper anyway
-/// ([`crate::session::UNGATED_SPAWN_TOOLS`]).
+/// deeper. `fork_off` is denied to every helper of the in-process TUI
+/// ([`crate::session::UNGATED_SPAWN_TOOLS`]); the daemon's members keep it
+/// ([`HelperCustomizer::with_gated_fork_off`]) except at the depth limit.
 pub const NESTING_TOOLS: [&str; 4] = ["delegate", "mob_create", "mob_spawn_member", "council"];
 
 /// Builds the external tools of one helper (the TUI's file tools).
@@ -104,6 +105,10 @@ pub struct HelperCustomizer {
     /// The application tool policy every member this customizer shapes is
     /// built with (`None`: the spawn's own).
     application_tool_policy: Option<meerkat_core::ApplicationToolPolicyBinding>,
+    /// Members keep `fork_off`: the host's engine seats a fork child under
+    /// its source's dispatch admission (it asks this customizer for the
+    /// child), so the child runs behind the gate.
+    gated_fork_off: bool,
 }
 
 impl std::fmt::Debug for HelperCustomizer {
@@ -134,7 +139,17 @@ impl HelperCustomizer {
             max_depth,
             root: None,
             application_tool_policy: None,
+            gated_fork_off: false,
         }
+    }
+
+    /// Let the members keep `fork_off` (see the field). Only for a host
+    /// whose fork children reach this customizer: the mob daemon's, where
+    /// `a_fork_off_child_runs_behind_the_gate` pins it.
+    #[must_use]
+    pub fn with_gated_fork_off(mut self) -> Self {
+        self.gated_fork_off = true;
+        self
     }
 
     /// Build every member it shapes (the root and its helpers) with the
@@ -176,6 +191,7 @@ fn shape_root(
     root: &RootMember,
     shell_env: Option<&HashMap<String, String>>,
     fresh: bool,
+    gated_fork_off: bool,
 ) {
     if spec.auth_binding.is_none() {
         spec.auth_binding.clone_from(&root.auth_binding);
@@ -192,7 +208,7 @@ fn shape_root(
             .get_or_insert_with(Vec::new)
             .extend((root.instructions)());
     }
-    deny_ungated_tools(spec, &[]);
+    deny_tools(spec, &[], gated_fork_off);
 }
 
 /// The model `spec` asks for, when it names one (an explicit override or an
@@ -302,7 +318,15 @@ fn shape(
 /// [`NESTING_TOOLS`]); with any, `ReadOnly` becomes a read-only constraint
 /// beside the deny constraint, so the names are denied whatever read-only
 /// admits.
+#[cfg(test)]
 fn deny_ungated_tools(spec: &mut SpawnMemberSpec, also: &[&str]) {
+    deny_tools(spec, also, false);
+}
+
+/// [`deny_ungated_tools`], keeping `fork_off` when `gated_fork_off` and
+/// nothing else is denied (`also` is empty: a member at the depth limit
+/// may not fork either, as a fork child is a helper one level deeper).
+fn deny_tools(spec: &mut SpawnMemberSpec, also: &[&str], gated_fork_off: bool) {
     use meerkat_core::ops::{ToolAccessConstraint, ToolAccessPolicy};
     let ToolAccessPolicy::DenyList(mut denied) = crate::session::tool_access_policy() else {
         // The TUI policy is a deny list; anything else is a programming
@@ -312,6 +336,11 @@ fn deny_ungated_tools(spec: &mut SpawnMemberSpec, also: &[&str]) {
     };
     for name in also {
         denied.insert((*name).to_string());
+    }
+    if gated_fork_off && also.is_empty() {
+        for name in crate::session::UNGATED_SPAWN_TOOLS {
+            denied.remove(name);
+        }
     }
     spec.tool_access_policy = Some(match spec.tool_access_policy.take() {
         None | Some(ToolAccessPolicy::Inherit) => ToolAccessPolicy::DenyList(denied),
@@ -410,7 +439,7 @@ impl HelperCustomizer {
             &self.tools,
             self.shell_env.as_ref(),
         );
-        deny_ungated_tools(spec, depth.nesting_denied());
+        deny_tools(spec, depth.nesting_denied(), self.gated_fork_off);
         if depth != Depth::MayNest {
             drop_mob_tools(spec);
         }
@@ -440,7 +469,7 @@ impl SpawnMemberCustomizer for HelperCustomizer {
         let key = HelperKey::new(ctx.mob_id.clone(), spec.identity.clone());
         if let Some(root) = self.root_for(&key) {
             let fresh = !matches!(ctx.spawn_source, SpawnSource::Resume);
-            shape_root(spec, root, self.shell_env.as_ref(), fresh);
+            shape_root(spec, root, self.shell_env.as_ref(), fresh, self.gated_fork_off);
             self.bind_policy(spec);
             return Ok(());
         }
@@ -482,7 +511,7 @@ impl SpawnMemberCustomizer for HelperCustomizer {
             );
             self.registry
                 .register_root(key, &durable.session_id, &model, binding.as_ref());
-            shape_root(spec, root, self.shell_env.as_ref(), false);
+            shape_root(spec, root, self.shell_env.as_ref(), false, self.gated_fork_off);
             if let (Some(thinking), Some(identity)) = (&root.thinking, &durable.llm_identity)
                 && let Some(params) = crate::thinking::reapplied(
                     identity.provider_params.as_ref(),
@@ -668,7 +697,7 @@ mod tests {
         let curated = HashMap::from([("PATH".to_string(), "/bin".to_string())]);
         let root = root();
         let mut spec = SpawnMemberSpec::host_root("main", "main");
-        shape_root(&mut spec, &root, Some(&curated), true);
+        shape_root(&mut spec, &root, Some(&curated), true, false);
         assert!(spec.external_tools.is_some());
         assert!(spec.tool_dispatch_admission.is_none(), "no gate was given");
         assert_eq!(spec.shell_env.as_ref(), Some(&curated));
@@ -679,9 +708,25 @@ mod tests {
         assert_eq!(spec.tool_access_policy, Some(crate::session::tool_access_policy()));
         // A rebuild gets its tools back, not a second set of instructions.
         let mut resumed = SpawnMemberSpec::host_root("main", "main");
-        shape_root(&mut resumed, &root, Some(&curated), false);
+        shape_root(&mut resumed, &root, Some(&curated), false, false);
         assert!(resumed.external_tools.is_some());
         assert_eq!(resumed.additional_instructions, None);
+        // The daemon's root keeps `fork_off` (its children are gated).
+        let mut gated = SpawnMemberSpec::host_root("main", "main");
+        shape_root(&mut gated, &root, Some(&curated), true, true);
+        let Some(meerkat_core::ops::ToolAccessPolicy::DenyList(names)) = &gated.tool_access_policy
+        else {
+            panic!("{:?}", gated.tool_access_policy);
+        };
+        assert!(!names.contains("fork_off") && names.contains("apply_patch"), "{names:?}");
+        // At the depth limit a member forks no further.
+        let mut last = SpawnMemberSpec::new("delegate", "worker");
+        deny_tools(&mut last, &NESTING_TOOLS, true);
+        let Some(meerkat_core::ops::ToolAccessPolicy::DenyList(names)) = &last.tool_access_policy
+        else {
+            panic!("{:?}", last.tool_access_policy);
+        };
+        assert!(denies_fork_off(names), "{names:?}");
     }
 
     #[test]

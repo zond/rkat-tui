@@ -44,13 +44,14 @@ pub const IMPLICIT_PREFIX: &str = "implicit-";
 
 /// The tools that create helpers (and maybe their mobs): while one runs,
 /// the runner looks for new mobs to follow.
-pub const HELPER_TOOLS: [&str; 6] = [
+pub const HELPER_TOOLS: [&str; 7] = [
     "delegate",
     "spawn_member",
     "spawn_many_members",
     "mob_create",
     "mob_spawn_member",
     "council",
+    "fork_off",
 ];
 
 /// Whether `event` starts a tool that may seat a helper.

@@ -237,7 +237,8 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         spawning,
         helper_max_depth,
     )
-    .with_root(root);
+    .with_root(root)
+    .with_gated_fork_off();
     let registry_for_policy = if policy.without_registry {
         None
     } else {

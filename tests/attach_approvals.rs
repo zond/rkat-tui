@@ -1301,3 +1301,73 @@ async fn a_restarted_daemon_withdraws_the_request_its_predecessor_left_open() {
     drop(raw);
     daemon.stop().await;
 }
+
+/// The engine's `fork_off` seats its child under the source's dispatch
+/// admission (lukacf/meerkat#2112): an orchestrator's fork child is a
+/// helper of the orchestrator's session behind the same gate, so its
+/// write asks the human (naming the child) and a denial reaches it. Before
+/// the daemon's members kept `fork_off`, the call was refused and no child
+/// ran.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fork_off_child_runs_behind_the_gate() {
+    const TASK: &str = "FORK-CHILD-TASK write forked.txt";
+    let ws = Workspace::new();
+    let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
+        let child = messages
+            .iter()
+            .any(|m| matches!(m, Message::User(_)) && format!("{m:?}").contains("FORK-CHILD-TASK"));
+        let answered = matches!(messages.last(), Some(Message::ToolResults { .. }));
+        match (child, answered) {
+            (true, false) => Step::Tool {
+                id: "fw1",
+                name: "write_file",
+                args: json!({"path": "forked.txt", "content": "FROM-FORK"}),
+            },
+            (true, true) => Step::Text("child done"),
+            (false, false) => Step::Tool {
+                id: "fo1",
+                name: "fork_off",
+                args: json!({"member_id": "forky", "task": TASK}),
+            },
+            (false, true) => Step::Text("parent done"),
+        }
+    }));
+    let llm = ScriptedLlmClient::new(vec![step.clone(), step.clone(), step.clone(), step]);
+    let daemon = Running::start(&ws.root, &llm, &Setup::default()).await;
+    let mut client = Client::attach(&ws.root).await;
+    client.set_mode(PermissionMode::Manual).await;
+    client.send(Effect::StartTurn("fork a child".into()));
+    // `fork_off` itself runs in manual mode (the child is the helper the
+    // gate asks about); the child's write asks, naming the child.
+    let (prompt, id) = client.escalation().await;
+    assert_eq!(prompt.tool, "write_file", "{prompt:?}");
+    assert_eq!(prompt.agent.as_deref(), Some("forky"), "{prompt:?}");
+    client.send(Effect::RespondEscalation(
+        id,
+        EscalationAnswer::Deny {
+            comment: Some("not from a fork".into()),
+        },
+    ));
+    let denied = within(async {
+        loop {
+            let seen = llm.requests().iter().find_map(|messages| {
+                messages.iter().find_map(|m| match m {
+                    Message::ToolResults { results, .. } => results
+                        .iter()
+                        .find(|r| r.tool_use_id == "fw1")
+                        .map(ToolResult::text_content),
+                    _ => None,
+                })
+            });
+            if let Some(text) = seen {
+                return text;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert!(denied.contains("not from a fork"), "{denied}");
+    assert!(!ws.root.join("forked.txt").exists());
+    client.quit().await;
+    daemon.stop().await;
+}
