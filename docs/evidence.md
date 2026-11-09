@@ -3304,7 +3304,16 @@ machine's, and `daemon_ended` ignores the pid for a remote daemon and
 takes no endpoint files as no evidence (it had counted an empty list as
 "every file gone"). Through a tunnel the local port may accept while the
 daemon is gone, so an unconfirmed shutdown there is reported as possibly
-still running. Tests:
+still running. A review found the converse too: a refused connect to the
+local port was still taken as the daemon's end, but when the `ssh -L`
+forward exits during an unanswered `rkat/shutdown` the port refuses while
+the remote daemon runs on. `daemon_ended` now takes `direct`
+(`AttachConfig::address` unset) and only then counts the pid or a refused
+connect; by address only the endpoint files count (none for a remote
+daemon), so the shutdown stays unconfirmed unless the daemon acknowledged
+it. Test: `client::runner::tests::a_dropped_tunnel_leaves_an_unanswered_shutdown_unconfirmed`
+(remote and local-by-address, port refused, pid alive: "may still be
+running"; the file gone: stopped). Tests:
 `attach::attach_by_address_with_a_token_file` (a test daemon on a
 loopback port reached by address: local case, then the refusals with
 `remote` set), `attach::attach_by_address_refuses_a_readable_or_missing_token_file`,

@@ -2420,7 +2420,7 @@ impl AttachRunner {
                         daemon_ended(
                             &self.config.endpoint_files,
                             endpoint,
-                            self.config.remote.is_none(),
+                            self.config.address.is_none(),
                             STOP_VERIFY,
                         )
                         .await
@@ -2497,20 +2497,24 @@ fn current<'a>(endpoint: Option<&'a str>, model: Option<&'a (String, String)>) -
 /// address is refused outright ([`Probe::Refused`]). A file that cannot
 /// be read or parsed is no evidence either way, and neither is a connect
 /// that timed out or failed otherwise ([`Probe::Unknown`]: a loaded host
-/// or a local socket error says nothing about the daemon). `local`: the
-/// pid is this machine's (a daemon reached by address on another host has
-/// no pid here to check). No files is no evidence.
+/// or a local socket error says nothing about the daemon). `direct`: the
+/// daemon was reached at its own endpoint, not by address
+/// (`--attach=HOST:PORT`). Through a tunnel neither its pid (perhaps
+/// another machine's) nor the local port (the forward may have exited
+/// while the daemon runs on) says anything about the daemon, so only the
+/// endpoint files count there. No files is no evidence.
 pub(crate) async fn daemon_ended(
     files: &[PathBuf],
     endpoint: &Endpoint,
-    local: bool,
+    direct: bool,
     wait: Duration,
 ) -> bool {
     let deadline = Instant::now() + wait;
     loop {
         if no_file_names(files, &endpoint.token)
-            || (local && crate::daemon::list::pid_gone(endpoint.pid))
-            || probe_address(endpoint.address) == Probe::Refused
+            || (direct
+                && (crate::daemon::list::pid_gone(endpoint.pid)
+                    || probe_address(endpoint.address) == Probe::Refused))
         {
             return true;
         }
@@ -3171,6 +3175,63 @@ mod tests {
             );
             assert_eq!(runner.stopping, ended, "{case}");
         }
+    }
+
+    /// The finding this guards: through a tunnel a refused connect to the
+    /// local port was taken as the daemon's end, so an `ssh -L` forward
+    /// that exited during an unanswered shutdown was reported as a stopped
+    /// daemon while the remote daemon ran on.
+    #[tokio::test(start_paused = true)]
+    async fn a_dropped_tunnel_leaves_an_unanswered_shutdown_unconfirmed() {
+        let dir = tempfile::tempdir().unwrap();
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let closed_address = closed.local_addr().unwrap();
+        drop(closed);
+        // Remote (no endpoint files) and local by address (its file still
+        // names it): the forward's port refuses, the pid (1) is alive.
+        for remote in [true, false] {
+            let (mut runner, mut ui_rx) = runner(dir.path());
+            let mut link = link_held("s", SessionId::new(), false).await;
+            link.endpoint.address = closed_address;
+            link.endpoint.pid = 1;
+            if remote {
+                runner.config.endpoint_files.clear();
+                runner.config.remote = Some("the daemon runs on devbox".into());
+            } else {
+                link.endpoint
+                    .write(&dir.path().join("mob.endpoint"))
+                    .unwrap();
+            }
+            runner.config.address = Some(link.endpoint.clone());
+            runner.link = Some(link);
+            runner.depart(Departure::Terminate).await;
+            let said = std::iter::from_fn(|| ui_rx.try_recv().ok())
+                .filter_map(|msg| match msg {
+                    Msg::Notice { text, .. } => Some(text),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(said.contains("may still be running"), "{remote}: {said}");
+            assert!(!said.contains("stopped the daemon"), "{remote}: {said}");
+            assert!(!runner.stopping, "{remote}");
+        }
+        // Its endpoint file gone is the daemon's own evidence, by address too.
+        let (mut runner, mut ui_rx) = runner(dir.path());
+        let mut link = link_held("s", SessionId::new(), false).await;
+        link.endpoint.address = closed_address;
+        std::fs::remove_file(dir.path().join("mob.endpoint")).unwrap();
+        runner.config.address = Some(link.endpoint.clone());
+        runner.link = Some(link);
+        runner.depart(Departure::Terminate).await;
+        let said = std::iter::from_fn(|| ui_rx.try_recv().ok())
+            .filter_map(|msg| match msg {
+                Msg::Notice { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(said.contains("stopped the daemon"), "{said}");
     }
 
     /// A refused `/resume` ends the switch; nothing else that reports a
