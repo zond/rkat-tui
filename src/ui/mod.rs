@@ -936,23 +936,23 @@ pub struct App {
     /// Open modal, if any.
     pub modal: Option<Modal>,
     /// Messages typed while a turn was running, not yet delivered.
-    pub pending: PendingQueue,
+    pending: PendingQueue,
     /// Prompt to send once the interrupted turn ends (Ctrl-X Ctrl-S).
-    pub send_next: Option<String>,
+    send_next: Option<String>,
     /// Sequence number of the last primary-stream event processed.
-    pub last_seq: u64,
+    last_seq: u64,
     /// Normal editing or history search.
-    pub mode: InputMode,
+    mode: InputMode,
     /// When Ctrl-X was pressed, while a chord is pending.
-    pub chord: Option<Instant>,
+    chord: Option<Instant>,
     /// Whether `/compact now` is asking for a compaction ([`Effect::CompactNow`]
     /// sent, no [`Msg::CompactRequested`] yet). A prompt sent meanwhile is
     /// admitted as an ordinary `Queue` input once the request is answered
     /// (the runner serves effects in order); session switches wait.
-    pub compacting: bool,
+    compacting: bool,
     /// When a Ctrl-D / `/quit` was refused because work is in flight; a
     /// second one within [`QUIT_CONFIRM_WINDOW`] quits anyway.
-    pub quit_confirm: Option<Instant>,
+    quit_confirm: Option<Instant>,
     /// Context-gauge policy: warn about a filling context (warn mode).
     gauge: CompactionGauge,
     /// The history estimate of a compaction that started and has not
