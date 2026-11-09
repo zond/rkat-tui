@@ -6,6 +6,10 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Added
 
+- An in-process `/model` switch no longer retires and resumes the session so
+  that helpers follow it: the engine's `delegate` reads the session's
+  current model (#2102). The session is still rebuilt when the switch moves
+  the compaction threshold or needs a new model profile.
 - The `rkat-tui-mob` daemon no longer writes each escalation to the realm's
   approval store (`approvals.json`) as well as holding it as a durable
   decision: the decision is its one record. Records an earlier daemon left

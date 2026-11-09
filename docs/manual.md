@@ -649,8 +649,8 @@ The system prompt of a new session is built from, in order:
    model-written context rather than instructions.
 
 Instruction files and notes are re-read for every new session (`/clear`,
-`/new`). A resumed session (`-c`, `/resume`, and the rebuilds model
-switches make) keeps the instructions it was created with: Meerkat
+`/new`). A resumed session (`-c`, `/resume`, and the rebuilds a model switch
+makes when it moves the compaction threshold) keeps the instructions it was created with: Meerkat
 does not reassemble a resumed session's system prompt, so the TUI passes the
 session's persisted instructions back unchanged (the persona appears once).
 Edited instruction files apply from the next new session; `/remember`

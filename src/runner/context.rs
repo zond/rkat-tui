@@ -15,9 +15,10 @@
 //! through one workaround, [`Runner::rebuild_session_workaround`]: retire the
 //! idle session and resume it with the new trigger. It runs only on what the
 //! user does: a model switch or a resume that moves the trigger
-//! ([`Runner::ensure_trigger`]), a model switch that needed a new profile,
-//! and every model switch (the mob tools capture the model helpers run on).
-//! A background list fetch never rebuilds. The upstream ask (a live trigger
+//! ([`Runner::ensure_trigger`]) and a model switch that needed a new
+//! profile. A plain model switch does not rebuild: the engine's `delegate`
+//! reads the session's current model on every call (#2102). A background
+//! list fetch never rebuilds. The upstream ask (a live trigger
 //! update) is recorded in `docs/evidence.md`.
 
 use sha2::{Digest, Sha256};
@@ -46,10 +47,6 @@ pub(super) enum RebuildReason {
     /// The agent's model registry predates a profile the switch needs.
     /// Upstream ask: profiles read at reconfigure time.
     ModelProfile,
-    /// A model switch: the agent's mob tools captured the model `delegate`
-    /// helpers run on at build. Upstream ask: the mob tools read the
-    /// session's current model.
-    ModelSwitch,
 }
 
 /// How [`Runner::rebuild_session_workaround`] failed.

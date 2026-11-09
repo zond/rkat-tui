@@ -238,7 +238,9 @@ timestamp, and output excerpts.
      factory resolved and `delegate` creates the implicit mob on it (`ensure_implicit_mob_on_route`); the customizer
      and `EndpointModels` are gone. `fork` still calls `ensure_implicit_mob_for_model` (the route-aware variant is
      `pub(crate)`), so on an uncatalogued model it fails with `ForkError::UncataloguedModel` unless `delegate` created
-     the mob first. Found with it: the agent's mob tools capture the
+     the mob first. **Resolved (2026-11-09, by #2102 in the 0.9.11 pin; the rebuild is removed, test
+     `mobs::a_helper_delegated_after_a_model_switch_runs_on_the_new_model` passes without it):** found with it: the
+     agent's mob tools capture the
      model at build (`AgentMobToolSurface.model`), so after a hot `/model` switch `delegate` helpers ran on the old
      model. The TUI now rebuilds the session after every switch
      (`RebuildReason::ModelSwitch`); `mobs::a_helper_delegated_after_a_model_switch_runs_on_the_new_model`. Ask: the
