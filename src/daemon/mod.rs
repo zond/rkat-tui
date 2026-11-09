@@ -411,19 +411,17 @@ impl Daemon {
             Arc::clone(&composed.origins),
             Arc::clone(&conversations),
         );
-        let local = Arc::new(
-            local::Local::new(
-                Arc::clone(&composed.engine),
-                Arc::clone(&composed.state),
-                conversations,
-                Arc::clone(&composed.root.registry),
-                Arc::clone(&composed.origins),
-                Arc::clone(&composed.desk),
-                composed.thinking.clone(),
-            )
-            .with_project_inputs(composed.project_inputs.clone())
-            .with_decisions(Arc::clone(&composed.decisions)),
-        );
+        let local = Arc::new(local::Local::new(local::LocalParts {
+            engine: Arc::clone(&composed.engine),
+            state: Arc::clone(&composed.state),
+            conversations,
+            registry: Arc::clone(&composed.root.registry),
+            origins: Arc::clone(&composed.origins),
+            desk: Arc::clone(&composed.desk),
+            thinking: composed.thinking.clone(),
+            project: composed.project_inputs.clone(),
+            decisions: Arc::clone(&composed.decisions),
+        }));
         // The decisions an earlier daemon left open held dispatches that
         // ended with it.
         let leftovers = composed.decisions.withdraw_leftovers().await;

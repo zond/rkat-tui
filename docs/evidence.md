@@ -2647,3 +2647,17 @@ and workbench of both runners is the next step (review batch D).
 Tests: `attach::{resume_and_continue_are_refused_in_attach_mode,
 attach_mode_prices_the_cost_readout_and_names_an_unconfined_shell,
 unsent_messages_are_saved_at_quit_and_announced_at_the_next_attach}`.
+
+### The daemon's local surface has its project and decisions
+
+`daemon::local::Local` held the project inputs and the consent surface as
+`Option`s set by builder methods, and `serve::LocalMethods` had default
+`connect`/`decide` methods for a daemon without decisions, with `None`
+branches in the proxy (`client_id.unwrap_or(0)`, an `initialize` answered
+without the decision methods). The one caller always set both, and a daemon
+without pushed decisions is refused by every client since P3b. Now
+`Local::new(LocalParts { .., project, decisions })` takes both, the trait
+methods are required, and the proxy always registers the client and always
+adds the decision methods to `initialize`. The proxy's unit test
+(`serve::tests::a_slow_local_call_holds_back_no_other_line`) serves an
+in-memory decision owner.

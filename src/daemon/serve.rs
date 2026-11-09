@@ -64,7 +64,7 @@ impl Outgoing {
     }
 }
 
-/// The methods a daemon with decisions adds to the engine's `initialize`
+/// The methods the daemon adds to the engine's `initialize`
 /// catalog: it pushes `decision/notice` to every attached client and
 /// decides `decision/decide` itself (plain TCP serves neither).
 pub const DECISION_METHODS: [&str; 2] = [super::decisions::NOTICE, super::decisions::DECIDE];
@@ -235,17 +235,10 @@ pub trait LocalMethods: Send + Sync {
     /// Learn from an engine request on its way; returns it as forwarded.
     fn observe(&self, request: Value) -> Value;
     /// A client attached: the daemon's consent surface offers it decisions
-    /// through `out` until the guard is dropped. `None`: no decisions.
-    fn connect(&self, _out: mpsc::UnboundedSender<Outgoing>) -> Option<ClientGuard> {
-        None
-    }
+    /// through `out` until the guard is dropped.
+    fn connect(&self, out: mpsc::UnboundedSender<Outgoing>) -> ClientGuard;
     /// The client `client`'s `decision/decide`: its answer line.
-    async fn decide(&self, _client: u64, id: Value, _params: Value) -> String {
-        format!(
-            "{}\n",
-            json!({"jsonrpc": "2.0", "id": id, "error": {"code": local::METHOD_NOT_FOUND, "message": "this daemon decides no decisions"}})
-        )
-    }
+    async fn decide(&self, client: u64, id: Value, params: Value) -> String;
 }
 
 #[async_trait::async_trait]
@@ -258,18 +251,12 @@ impl LocalMethods for Local {
         Local::observe(self, request)
     }
 
-    fn connect(&self, out: mpsc::UnboundedSender<Outgoing>) -> Option<ClientGuard> {
-        self.decisions().map(|decisions| decisions.connect(out))
+    fn connect(&self, out: mpsc::UnboundedSender<Outgoing>) -> ClientGuard {
+        self.decisions().connect(out)
     }
 
     async fn decide(&self, client: u64, id: Value, params: Value) -> String {
-        match self.decisions() {
-            Some(decisions) => decisions.decide(client, id, params).await,
-            None => format!(
-                "{}\n",
-                json!({"jsonrpc": "2.0", "id": id, "error": {"code": local::METHOD_NOT_FOUND, "message": "this daemon decides no decisions"}})
-            ),
-        }
+        self.decisions().decide(client, id, params).await
     }
 }
 
@@ -278,7 +265,7 @@ impl LocalMethods for Local {
 /// `decision/decide` is decided by the daemon's consent surface (likewise),
 /// and anything else goes (observed) to the engine; the engine's lines go
 /// back to the client, with the decision methods added to an `initialize`
-/// answer when the daemon has decisions, and so do the decision notices the
+/// answer, and so do the decision notices the
 /// consent surface offers this client. Ends when the client closes (the
 /// engine then sees its end of input) or the engine's side closes; a local
 /// call still running then finishes (a conversation switch is not cut in
@@ -311,7 +298,7 @@ where
     // The client's registration with the consent surface: dropped (and the
     // client's decide eligibility with it) when the client leaves.
     let decisions = local.connect(out_tx.clone());
-    let client_id = decisions.as_ref().map(ClientGuard::id);
+    let client_id = decisions.id();
     // `initialize` requests whose answers get the decision methods.
     let initializing: Arc<parking_lot::Mutex<HashSet<String>>> = Arc::default();
     let mut from_engine = AbortOnDrop(tokio::spawn({
@@ -361,18 +348,15 @@ where
             Routed::Decide { id, params } => {
                 let local = Arc::clone(&local);
                 let out_tx = out_tx.downgrade();
-                let client = client_id.unwrap_or(0);
                 tokio::spawn(async move {
-                    let line = local.decide(client, id, params).await;
+                    let line = local.decide(client_id, id, params).await;
                     if let Some(out_tx) = out_tx.upgrade() {
                         let _ = out_tx.send(Outgoing::line(line));
                     }
                 });
             }
             Routed::Forward(forward) => {
-                if decisions.is_some()
-                    && let Some(id) = initialize_id(&forward)
-                {
+                if let Some(id) = initialize_id(&forward) {
                     initializing.lock().insert(id);
                 }
                 if engine_write.write_all(forward.as_bytes()).await.is_err() {
@@ -500,6 +484,7 @@ mod tests {
     /// `rkat/slow` waits for its gate; everything else passes unchanged.
     struct Slow {
         gate: tokio::sync::Notify,
+        decisions: Arc<super::super::decisions::Decisions>,
     }
 
     #[async_trait::async_trait]
@@ -513,6 +498,14 @@ mod tests {
 
         fn observe(&self, request: Value) -> Value {
             request
+        }
+
+        fn connect(&self, out: mpsc::UnboundedSender<Outgoing>) -> ClientGuard {
+            self.decisions.connect(out)
+        }
+
+        async fn decide(&self, client: u64, id: Value, params: Value) -> String {
+            self.decisions.decide(client, id, params).await
         }
     }
 
@@ -533,8 +526,13 @@ mod tests {
         let (client, client_side) = tokio::io::duplex(1 << 16);
         let (engine, engine_side) = tokio::io::duplex(1 << 16);
         let (client_read, client_write) = tokio::io::split(client_side);
+        let service = meerkat_runtime::decision::DurableDecisionService::new(Arc::new(
+            meerkat_core::approval::decision::InMemoryDecisionStore::new(),
+        ));
+        let principal = super::super::decisions::Principal::new("alice").unwrap();
         let local = Arc::new(Slow {
             gate: tokio::sync::Notify::new(),
+            decisions: super::super::decisions::Decisions::new(service, principal, None).unwrap(),
         });
         let proxied = tokio::spawn(proxy(
             BufReader::new(client_read),

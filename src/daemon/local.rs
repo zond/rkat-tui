@@ -127,11 +127,32 @@ pub struct Local {
     /// their check and their note.
     plan_noted: tokio::sync::Mutex<bool>,
     inputs: AtomicU64,
-    /// The workspace's project inputs and their trust (`None`: `rkat/trust`
-    /// has nothing to act on).
-    project: Option<ProjectInputs>,
-    /// The consent surface (`None`: the daemon offers no decisions).
-    decisions: Option<Arc<super::decisions::Decisions>>,
+    /// The workspace's project inputs and their trust (`rkat/trust`).
+    project: ProjectInputs,
+    /// The consent surface: the decisions offered to the clients.
+    decisions: Arc<super::decisions::Decisions>,
+}
+
+/// What [`Local`] is made of.
+pub struct LocalParts {
+    /// The daemon's approval engine.
+    pub engine: Arc<ApprovalEngine>,
+    /// The mob host.
+    pub state: Arc<MobMcpState>,
+    /// The orchestrator's conversations.
+    pub conversations: Arc<Conversations>,
+    /// The helpers the orchestrator started.
+    pub registry: Arc<HelperRegistry>,
+    /// The members' tool catalogs the gate reads.
+    pub origins: Arc<DaemonToolOrigins>,
+    /// The daemon's approval desk.
+    pub desk: Arc<Desk>,
+    /// The `[thinking]` settings a model switch carries.
+    pub thinking: ThinkingTable,
+    /// The workspace's project inputs and their trust.
+    pub project: ProjectInputs,
+    /// The consent surface.
+    pub decisions: Arc<super::decisions::Decisions>,
 }
 
 impl std::fmt::Debug for Local {
@@ -146,17 +167,20 @@ impl std::fmt::Debug for Local {
 pub type Refusal = (i64, String);
 
 impl Local {
-    /// The local surface for the orchestrator and its `conversations`.
+    /// The local surface over `parts`.
     #[must_use]
-    pub fn new(
-        engine: Arc<ApprovalEngine>,
-        state: Arc<MobMcpState>,
-        conversations: Arc<Conversations>,
-        registry: Arc<HelperRegistry>,
-        origins: Arc<DaemonToolOrigins>,
-        desk: Arc<Desk>,
-        thinking: ThinkingTable,
-    ) -> Self {
+    pub fn new(parts: LocalParts) -> Self {
+        let LocalParts {
+            engine,
+            state,
+            conversations,
+            registry,
+            origins,
+            desk,
+            thinking,
+            project,
+            decisions,
+        } = parts;
         let in_plan = engine.mode() == PermissionMode::Plan;
         Self {
             engine,
@@ -168,30 +192,15 @@ impl Local {
             thinking,
             plan_noted: tokio::sync::Mutex::new(in_plan),
             inputs: AtomicU64::new(0),
-            project: None,
-            decisions: None,
+            project,
+            decisions,
         }
     }
 
-    /// Offer the attached clients the decisions of `decisions` and decide
-    /// their `decision/decide` through it.
+    /// The consent surface.
     #[must_use]
-    pub fn with_decisions(mut self, decisions: Arc<super::decisions::Decisions>) -> Self {
-        self.decisions = Some(decisions);
-        self
-    }
-
-    /// The consent surface, when the daemon has one.
-    #[must_use]
-    pub fn decisions(&self) -> Option<&Arc<super::decisions::Decisions>> {
-        self.decisions.as_ref()
-    }
-
-    /// Answer `rkat/trust` over `project`'s inputs.
-    #[must_use]
-    pub fn with_project_inputs(mut self, project: ProjectInputs) -> Self {
-        self.project = Some(project);
-        self
+    pub fn decisions(&self) -> &Arc<super::decisions::Decisions> {
+        &self.decisions
     }
 
     /// Answer the local method `method`.
@@ -309,13 +318,7 @@ impl Local {
     /// are part of its mob's definition, made when the mob was first
     /// created; trusting `.rkat/mcp.toml` here does not add them to it.
     fn trust_project(&self) -> RuleOutcome {
-        let Some(project) = &self.project else {
-            return RuleOutcome {
-                ok: false,
-                text: "the daemon has no project trust record".to_string(),
-            };
-        };
-        match project.trust_all() {
+        match self.project.trust_all() {
             Ok(recorded) if recorded.is_empty() => RuleOutcome {
                 ok: true,
                 text: "the project has no .rkat/mcp.toml, .rkat/config.toml or workspace realm config.toml to trust".to_string(),
