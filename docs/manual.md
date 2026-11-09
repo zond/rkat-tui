@@ -467,12 +467,11 @@ and returns its final answer (at most 16 KiB) as the tool result. Only the
 session's own agent has `fork`; helpers and fork children do not, so forks
 do not nest.
 
-The engine's own `fork_off` stays denied to every session and helper
-through the tool access policy: a fork child seats through the engine's
-persisted-fork path, which never consults the TUI's spawn customizer, so it
-would run without the approval gate (and without the persona, the follower
-and the curated environment), and `fork_off` refuses a caller that is not a
-mob member, which the session is not. A durable fork of the session's
+In-process, the engine's own `fork_off` is denied to every session and
+helper through the tool access policy: it refuses a caller that is not a
+durable mob member, and the in-process session is not one. In attach mode
+the daemon's agent is a mob member and has `fork_off`, behind the same gate
+(see "Attach mode"). A durable fork of the session's
 transcript (exact context instead of rendered text) is refused while the
 session's own turn runs, which is when a tool call asks for it.
 

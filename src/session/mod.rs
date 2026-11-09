@@ -106,12 +106,13 @@ const INTERRUPT_PASSES: u32 = 3;
 /// diff-reporting file tools, gated by the approval policy).
 pub const TUI_OWNED_BUILTINS: [&str; 2] = ["brain_swap", "apply_patch"];
 
-/// Mob tools every TUI session and helper is denied because their child
-/// would run outside the approval gate: a `fork_off` child seats through
-/// the engine's persisted-fork path, which never consults the TUI's spawn
-/// customizer, so it would get no gate, no persona, no follower and no
-/// curated environment. Denied until the engine lets a host shape fork
-/// seats.
+/// Mob tools every in-process TUI session and helper is denied: the engine
+/// refuses `fork_off` to a caller that is not a durable mob member, and the
+/// in-process main session is not a mob member (delegate helpers are not
+/// durable), so the tool could only fail. (The name predates #2112, since
+/// which a fork child inherits the source's dispatch admission; the
+/// `rkat-tui-mob` daemon, whose members are durable, offers `fork_off`
+/// behind the gate.) The in-process fork is the TUI's own `fork` tool.
 pub const UNGATED_SPAWN_TOOLS: [&str; 1] = ["fork_off"];
 
 /// The model, provider and auth binding a session runs on, as its

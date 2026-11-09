@@ -1,11 +1,11 @@
 //! The `fork` tool: hand a side quest to a child that starts with the
 //! calling agent's own conversation as context.
 //!
-//! The engine's `fork_off` is denied to every TUI session and helper (see
-//! [`crate::session::UNGATED_SPAWN_TOOLS`]): its child seats through the
-//! engine's persisted-fork path, which never consults the TUI's spawn
-//! customizer, and it refuses a caller that is not a mob member. A durable
-//! fork of the caller's own session is no way around it either: called from
+//! The engine's `fork_off` is denied to every in-process TUI session and
+//! helper (see [`crate::session::UNGATED_SPAWN_TOOLS`]): it refuses a
+//! caller that is not a durable mob member, and the in-process main session
+//! is not one (attach mode's daemon offers `fork_off` to its members). A
+//! durable fork of the caller's own session is no way around it either: called from
 //! inside the caller's running turn, the engine's `Quiescent` fork refuses
 //! the session as busy, and its `CallerTurn` fork needs a mob member
 //! binding for the child.

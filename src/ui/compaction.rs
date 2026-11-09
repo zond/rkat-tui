@@ -188,7 +188,7 @@ pub enum CompactionTrigger {
     /// No compaction by size. Upstream has no typed "off", so this lowers to
     /// the largest threshold ([`NonZeroU64::MAX`], never reached); upstream
     /// still compacts to recover a request the provider refused as too
-    /// large. Recorded as an upstream ask in `.rct/rkat-tui/evidence.md`.
+    /// large. Recorded as an upstream ask in `docs/evidence.md`.
     Disable,
     /// Compact before the first model call whose context reaches this many
     /// tokens.

@@ -10,100 +10,58 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
   that helpers follow it: the engine's `delegate` reads the session's
   current model (#2102). The session is still rebuilt when the switch moves
   the compaction threshold or needs a new model profile.
-- The `rkat-tui-mob` daemon no longer writes each escalation to the realm's
-  approval store (`approvals.json`) as well as holding it as a durable
-  decision: the decision is its one record. Records an earlier daemon left
-  pending there are ignored, with a start-up log line; they expire.
 - `/compact now` in-process asks the engine to compact at the session's next
   model call (`MeerkatMachine::request_compaction`) instead of rebuilding the
   session twice around a one-token threshold; a long tool loop no longer
   compacts again in that turn. When the check finds nothing to fold, the
   transcript says so with the reason (`RequestedCompactionSkipped`), in both
   modes.
-- Attach mode adopts the 0.9.11 engine (experimental, P3b and follow-ups):
-  approval requests are the engine's durable decisions, pushed to every
-  attached TUI as they open (no more polling; a TUI attaching later is shown
-  the open ones) and answered with `decision/decide` as the daemon's one
-  principal (`[daemon] principal` in your own `tui.toml`, default your login
-  name; a client cannot name who decided); requests a stopped daemon left
-  open are withdrawn at its next start. The agent may `fork_off` itself: the
-  child runs behind the same gate and shows as a helper. `/compact now`
-  works in attach mode (`mob/compact_member`). A reattach resumes the
-  agent's event stream from its `{epoch, seq}` cursor; a first attach, or
-  one after a daemon restart, shows the conversation from its start.
-  `/rewind` in attach mode still says why it is not offered, now naming the
-  design note with the engine's maintainers.
-- Attach mode polish (experimental, P4b): the token counter and context
-  gauge show the conversation's own usage on attach, on reconnect and after
-  `/new` or `/resume` (new daemon method `rkat/usage`), instead of 0;
-  `/trust` and `/rules trust` work in attach mode, on the daemon's trust
-  record (new daemon method `rkat/trust`; trusted project hooks run from
-  the agent's next conversation or a daemon restart); the daemon reads a
-  helper's own tool catalog after its first run, so a seated helper's later
-  calls are judged by its own tools.
-- Attach mode reaches the in-process TUI on what the daemon can own
-  (experimental, P4): the daemon's agent delegates with the engine's
-  `delegate` (and `spawn_member`), and every attached TUI shows the helpers
-  as in-process (`[helper · model]`, progress, result, running count,
-  `/cost`), from the mobs' own event streams; Esc stops the helpers with
-  the run. `/new` and `/resume` switch the agent's conversation (the
-  member is seated again on a fresh or an earlier session; every attached
-  TUI follows; the list is in `.rkat/tui/conversations.json`); `/rewind`
-  says why it is not offered. The model picker and `/model` use this TUI's
-  endpoints, configured ones included (the switch carries the endpoint's
-  auth binding). `/compact` shows the policy, `/remember` and `/memory`
-  work, cost is kept per conversation. `attach = true` in your own
-  `tui.toml` makes attach mode the default; a reconnect restarts a daemon
-  that died; a started daemon is detached with `setsid` when it is on
-  `PATH`. New daemon methods `rkat/conversations`, `rkat/new`,
-  `rkat/resume`, `rkat/transcript`.
-- Approvals in attach mode (experimental): the `rkat-tui-mob` daemon's
-  agent and its helpers run behind the TUI's approval gate (tiers, rules,
-  classifier, permission modes, escalation timeout). A call that needs you
-  is a record in the realm's approval store; every attached TUI shows the
-  dialog (listed with `approval/list`) and the first `approval/decide`
-  wins, comments, "allow + add rule" and "deny and stop" included.
-  Shift+Tab, `/mode`, `/auto resume` and `/rules` act on the daemon through
-  its own `rkat/get_mode`, `rkat/set_mode` and `rkat/rules` methods. The
-  deny rules are installed as the members' application tool policy
-  (`ToolConsequencePolicyRegistry`), which the engine records with each
-  member. `[thinking]` now applies to the daemon's agent (spawn, rebuild
-  and `/model`), and `!` commands work in attach mode (run by the TUI,
-  output to the agent's context).
-- `rkat-tui --attach` (experimental): the TUI as a client of the
-  workspace's `rkat-tui-mob` daemon. It reads the daemon's endpoint file,
-  attaches with its token and drives the orchestrator member with Meerkat's
-  own methods: prompts and steers through `mob/member_send`, live output
-  from `mob/stream_open`, Esc through `mob/stop_member_run` (a second Esc
-  `mob/force_cancel`), `/model <provider>:<id>` riding the next prompt's
-  `mob/turn_start`. `--attach` (= `--attach=auto`) starts the daemon in the
-  background when none answers (output in
-  `<realm>/logs/rkat-tui-mob.stderr.log`), `--attach=existing` does not,
-  `--no-attach` (the default) keeps the in-process TUI. `/quit` detaches and
-  leaves the daemon and a running turn going; a dropped connection is
-  re-made with backoff; every attach catches up from the member's durable
-  events (`events/list_since`) and shows each event once (the cursor is kept
-  in `.rkat/tui/attach.cursor`). A status-bar segment shows the connection;
-  `/daemon stop` shuts the daemon down. The daemon's agent runs without the
-  approval gate for now, which the TUI says on attach; `/new`, `/resume`,
-  `/rewind`, `/compact`, approvals, `!`, helpers and `fork` answer "not
-  available in attach mode yet".
 - `rkat-tui-mob` (experimental): a second binary, the workspace's mob
   daemon. It bootstraps the workspace realm exactly as `rkat-tui` does
   (config layers, endpoints, confinement, project trust, instructions, MCP)
   and takes the same engine flags, but hosts the agent as a durable,
   turn-driven mob member (mob `tui`, member `main`) with the TUI's file,
-  note and shell tools, and serves Meerkat's own JSON-RPC methods
-  (`mob/member_send`, `mob/turn_start`, `mob/stream_open`, `mob/members`,
-  `events/list_since`, …) to any number of clients over loopback TCP
-  (`--listen`, default an ephemeral port on 127.0.0.1). Clients find it, and
-  the token every connection must present first with `rkat/attach`, in
+  note and shell tools, behind the TUI's approval gate (tiers, rules,
+  classifier, permission modes, escalation timeout; the deny rules are the
+  members' application tool policy, which the engine records with each
+  member; `[thinking]` applies), and serves Meerkat's own JSON-RPC methods
+  to any number of clients over loopback TCP (`--listen`, default an
+  ephemeral port on 127.0.0.1). Clients find it, and the token every
+  connection must present first with `rkat/attach`, in
   `$XDG_STATE_HOME/rkat-tui/<workspace key>/mob.endpoint` (else under
-  `~/.local/state`; mode 0600). Clients may disconnect
-  and reattach while a turn sent with `mob/member_send` runs; a restart
-  restores the member and its session. The member's own calls pass no
-  approval gate yet, and the TUI does not attach to it yet
-  (`docs/mob-split.md`).
+  `~/.local/state`; mode 0600), outside everything the agent's shell is
+  granted. A call that needs a human is one of the engine's durable
+  decisions, pushed to every attached client as it opens
+  (`decision/notice`) and answered with `decision/decide` as the daemon's
+  one principal (`[daemon] principal` in your own `tui.toml`, default your
+  login name); decisions a stopped daemon left open are withdrawn at its
+  next start, and the decision is the only record (nothing is written to
+  `approvals.json`). Its own methods: `rkat/get_mode`, `rkat/set_mode`,
+  `rkat/rules`, `rkat/trust`, `rkat/conversations`, `rkat/new`,
+  `rkat/resume`, `rkat/transcript`, `rkat/usage`.
+- `rkat-tui --attach` (experimental): the TUI as a client of the
+  workspace's `rkat-tui-mob` daemon, with the in-process TUI's keys and
+  dialogs. `--attach` (= `--attach=auto`) starts the daemon in the
+  background when none answers (output in
+  `<realm>/logs/rkat-tui-mob.stderr.log`; detached with `setsid` when it is
+  on `PATH`), `--attach=existing` does not, `--no-attach` (the default)
+  keeps the in-process TUI, and `attach = true` in your own `tui.toml`
+  makes attach mode the default. Prompts, steers, Esc, `/model` and the
+  model picker (this TUI's endpoints), approvals (every attached TUI shows
+  the dialog, the first answer counts), Shift+Tab, `/mode` and `/rules` on
+  the daemon's gate, `/trust`, `/remember`, `/memory`, `/compact now`
+  (`mob/compact_member`), `/new` and `/resume` (every attached TUI follows),
+  helpers (`delegate`, `spawn_member`, and `fork_off`, behind the same gate)
+  with the in-process follower view and `/cost`, `!` commands (run by the
+  TUI), and the token counter and gauge all work. `/quit` detaches and
+  leaves the daemon and a running turn going; a dropped connection is
+  re-made with backoff (restarting a daemon that died); a reattach resumes
+  the agent's event stream from its `{epoch, seq}` cursor (kept in
+  `.rkat/tui/attach.cursor`), and a first attach, or one after a daemon
+  restart, shows the conversation from its start. `/daemon stop` shuts the
+  daemon down. `/rewind` says why it is not offered (same-identity rewind
+  waits on the engine). A daemon too old to push decisions is refused at
+  attach with a "restart it" error.
 - `/rewind` (aliases `/checkpoint`, `/undo`), and Esc Esc on an empty idle
   input, open a menu of the session's messages (newest first, one numbered
   line each; ↑/↓, Enter, Esc). Choosing one forks the session just before

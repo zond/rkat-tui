@@ -1,6 +1,6 @@
 project: "rkat-tui terminal coding harness"
 last_updated: "2026-11-05"
-source_doc: ".rct/rkat-tui/source-of-truth.md"
+source_doc: "docs/source-of-truth.md"
 
 types:
   - id: TYPE-001

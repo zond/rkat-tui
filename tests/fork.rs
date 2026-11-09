@@ -3,7 +3,8 @@
 //! conversation and the task, and its answer is the tool's result; its
 //! calls pass the parent's approval gate, counted for the parent and named
 //! as the fork's; an interrupt leaves no running fork; `fork_off` stays
-//! denied and the child cannot fork again.
+//! denied in-process (the main session is not a mob member) and the child
+//! cannot fork again.
 //!
 //! Also the probe that decided how `fork` is built: the engine refuses a
 //! durable fork of the session from inside its own running turn.
@@ -246,7 +247,7 @@ async fn fork_off_stays_denied_and_a_fork_cannot_fork() {
     rig.quit().await;
 }
 
-/// The probe behind the design (`.rct/rkat-tui/evidence.md`, "Fork"): a
+/// The probe behind the design (`docs/evidence.md`, "Fork"): a
 /// durable fork of the session cut from inside its running turn, as a
 /// `fork` tool call would ask for it, is refused as busy, at the committed
 /// prefix too. (The engine's `CallerTurn` admission, which forks a running
