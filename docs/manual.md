@@ -1244,9 +1244,11 @@ saves the session shown. `last` and `~N` name daemon conversations only.
   daemon: the engine's `mob/member_send` answers no input id to cancel it
   by (the same engine ask as the steer attribution below). The agent gets
   it at its next step; Esc stops the turn.
-- `/compact now` and `/model` ask a live agent: right after a daemon
-  start, before the agent's first run, the engine can refuse them (send a
-  message first).
+- `/compact now` and `/model` act on a running agent: right after a
+  daemon start the agent's session is cold, and the engine does not wake a
+  cold session for a compaction or an in-place model change (by design),
+  so it refuses them until the agent has run. The supported path is to
+  send a message first.
 - `/trust` records the project files in the daemon's trust record: their
   hooks run from the agent's next conversation (`/new`, `/resume`) or a
   daemon restart. The agent's MCP servers are the ones its daemon mob was

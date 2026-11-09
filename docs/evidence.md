@@ -3487,16 +3487,22 @@ and listed here.
      attach and after every adoption.
   3. The attach `/model` refusal lacked the in-process "model not
      changed:" prefix.
-  Two engine observations, worked around in the test and recorded here:
-  opening a second realm persistence in the daemon's process
-  (`stored_session` while it runs) takes over the engine's process-wide
-  auth lease state, and the daemon's next binding rotation fails with
-  "runtime store is no longer available" once that bundle is dropped, so
-  the test reads the store between daemon runs; and a `/model` switch
-  right after a daemon restart, before the restored orchestrator's first
-  run, was refused with "Runtime not ready: destroyed" (the same window
-  as `/compact now`'s, see the manual's limits), so the test runs a turn
-  first.
+  Two engine facts, triaged by the engine maintainers on 2026-11-09:
+  1. Opening the realm persistence a second time in the daemon's process
+     (`stored_session` while it runs) is an engine defect: the same
+     database path rebinds the shared authority bundle to one weak
+     reference, so dropping the newer handle strands the earlier
+     machine's auth operations (the daemon's next binding rotation fails
+     with "runtime store is no longer available"). A fix is in progress
+     upstream. Until it ships, the rule is one store handle per realm per
+     process: the daemon opens its realm once, and tests read the store
+     only between daemon runs.
+  2. A compaction or an in-place model change on a cold session (right
+     after a daemon restart, before the restored orchestrator's first run)
+     does not wake it, by design; the engine's "Runtime not ready:
+     destroyed" refusal is to become a typed not-registered refusal
+     upstream. The supported path is to run a turn first, which the test
+     does and the manual's limits say; rkat-tui adds no implicit wake.
 - `tests/approval_service.rs`: the eight tests run over the daemon
   harness with the shared `rig::ScriptedClassifier` (one double for every
   file: replays verdicts, records `(tool, args, transcript)`, fails or
