@@ -53,6 +53,10 @@ fn definition(plan: &RootPlan) -> MobDefinition {
             // The `[thinking]` of the start-up model; a rebuild re-applies
             // the setting of the session's model (the customizer).
             profile.provider_params = crate::thinking::params_for(plan.thinking.as_ref());
+            // The `[auto]` compaction policy (the mob keeps the definition
+            // it was created with: a policy changed later reaches the
+            // orchestrator once its mob is created again).
+            profile.auto_compact_threshold = plan.compact_threshold;
             definition.profiles.insert(
                 ProfileName::from(ORCHESTRATOR),
                 ProfileBinding::Inline(profile),

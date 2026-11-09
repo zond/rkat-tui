@@ -299,3 +299,145 @@ impl Client {
         within(self.harness.task).await.unwrap()
     }
 }
+
+/// What a daemon test starts with besides its scripted LLM: extra
+/// command-line arguments (given to the daemon and the client alike), the
+/// classifier (default [`AllowAll`]), the escalation timeout, the model
+/// lister (default none) and the host paths a confined shell may use
+/// (default none).
+#[derive(Clone, Default)]
+pub struct Setup {
+    pub args: Vec<String>,
+    pub classifier: Option<Arc<dyn ActionClassifier>>,
+    pub escalation_timeout: Option<Duration>,
+    pub lister: Option<rkat_tui::models::ModelLister>,
+    pub host_paths: Option<HostPaths>,
+}
+
+impl Setup {
+    /// These extra arguments, everything else by default.
+    pub fn args(args: &[&str]) -> Self {
+        Self {
+            args: args.iter().map(ToString::to_string).collect(),
+            ..Self::default()
+        }
+    }
+
+    /// With this classifier.
+    pub fn classifier(mut self, classifier: Arc<dyn ActionClassifier>) -> Self {
+        self.classifier = Some(classifier);
+        self
+    }
+
+    /// The daemon's options for `root` with `llm`.
+    pub fn options(&self, root: &Path, llm: &Arc<ScriptedLlmClient>) -> DaemonOptions {
+        DaemonOptions::default()
+            .with_bootstrap(BootstrapOptions {
+                llm_override: Some(Arc::clone(llm) as Arc<dyn LlmClient>),
+                lister: Some(self.lister.clone().unwrap_or_else(no_lists)),
+                host_paths: Some(self.host_paths.clone().unwrap_or_default()),
+                approval: ApprovalOverrides {
+                    classifier: Some(
+                        self.classifier
+                            .clone()
+                            .unwrap_or_else(|| Arc::new(AllowAll) as Arc<dyn ActionClassifier>),
+                    ),
+                    escalation_timeout: self.escalation_timeout,
+                },
+            })
+            .with_endpoint_file(endpoint_file_for(root))
+    }
+
+    /// The command line for `root`.
+    pub fn command_line(&self, root: &Path) -> rkat_tui::Args {
+        let extra: Vec<&str> = self.args.iter().map(String::as_str).collect();
+        crate::common::args_with(root, &extra)
+    }
+}
+
+/// The headless harness: a daemon on a workspace with a scripted LLM and
+/// one client attached to it, driven through the UI's `Effect`/`Msg`
+/// channels. Dereferences to the [`Client`].
+pub struct Attached {
+    pub daemon: Running,
+    pub client: Client,
+}
+
+impl Attached {
+    /// A daemon on `root` with `llm` and the default [`Setup`], and a client.
+    pub async fn start(root: &Path, llm: &Arc<ScriptedLlmClient>) -> Self {
+        Self::start_with(root, llm, Setup::default()).await
+    }
+
+    /// A daemon on `root` with `llm` and `setup`, and a client.
+    pub async fn start_with(root: &Path, llm: &Arc<ScriptedLlmClient>, setup: Setup) -> Self {
+        let args = setup.command_line(root);
+        let daemon = Running::start_with(&args, setup.options(root, llm)).await;
+        let client = Client::attach_args(root, &args, None).await;
+        Self { daemon, client }
+    }
+
+    /// The session the orchestrator runs as now.
+    pub async fn current_session(&self) -> meerkat_core::SessionId {
+        self.daemon.current_session().await
+    }
+
+    /// The committed messages of the current conversation.
+    pub async fn messages(&self) -> Vec<meerkat_core::Message> {
+        let session = self.current_session().await;
+        self.daemon.transcript(&session).await
+    }
+
+    /// The client quits, then the daemon stops.
+    pub async fn quit(self) -> Option<rkat_tui::workbench::SavedUnsent> {
+        let unsent = self.client.quit().await;
+        self.daemon.stop().await;
+        unsent
+    }
+}
+
+impl std::ops::Deref for Attached {
+    type Target = Client;
+    fn deref(&self) -> &Client {
+        &self.client
+    }
+}
+
+impl std::ops::DerefMut for Attached {
+    fn deref_mut(&mut self) -> &mut Client {
+        &mut self.client
+    }
+}
+
+impl Running {
+    /// The session the orchestrator runs as now (`mob/member_status`).
+    pub async fn current_session(&self) -> meerkat_core::SessionId {
+        let status = self
+            .connect()
+            .await
+            .call(
+                "mob/member_status",
+                serde_json::json!({"mob_id": "tui", "agent_identity": "main"}),
+            )
+            .await
+            .unwrap();
+        serde_json::from_value(status["current_session_id"].clone()).unwrap()
+    }
+
+    /// The committed messages of `session` (`rkat/transcript`).
+    pub async fn transcript(
+        &self,
+        session: &meerkat_core::SessionId,
+    ) -> Vec<meerkat_core::Message> {
+        let answer = self
+            .connect()
+            .await
+            .call(
+                "rkat/transcript",
+                serde_json::json!({"session_id": session.to_string()}),
+            )
+            .await
+            .unwrap();
+        serde_json::from_value(answer["messages"].clone()).unwrap()
+    }
+}

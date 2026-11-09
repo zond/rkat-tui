@@ -3405,3 +3405,18 @@ and listed here.
   why the tool existed. `ToolFamily::Fork` and the `fork` entry of
   `DELEGATION_TOOLS` went with it (`policy::tests::fork_is_tiered_like_delegate_only_from_the_tuis_own_surface`
   deleted).
+- `tests/compact.rs`: both tests (`auto_mode_compacts_natively_at_the_threshold`,
+  `warn_mode_warns_and_compacts_only_on_compact`) run over the daemon
+  harness (`tests/common/attach.rs`: `Setup`, `Attached`, which the later
+  files use too) with every assertion kept; the policy is read from the
+  same `tui.toml` layers the daemon reads. The migration found a parity
+  gap: the daemon never gave its orchestrator the `[auto]` compaction
+  policy (the in-process runner set the build's
+  `auto_compact_threshold_override`), so `auto.compact = "auto"` did not
+  compact by size in the daemon. The orchestrator's profile now carries
+  `auto_compact_threshold` (`RootPlan::compact_threshold`, the policy's
+  trigger for the start-up model's window: none in native mode, the
+  tokens in auto mode, the largest threshold in warn mode). The mob keeps
+  the definition it was created with, so a policy changed later reaches
+  the orchestrator only once its mob is created again; the engine has no
+  route to update a profile of a live mob.

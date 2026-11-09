@@ -445,6 +445,10 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Fixed
 
+- The daemon's agent follows the `[auto]` compaction policy
+  (`auto.compact = "auto"` compacts at `compact_auto_percent`, `warn`
+  never compacts by size), as the in-process runner did. The policy is
+  taken when the workspace's daemon mob is first created.
 - The daemon counts a client before it answers its attach, so a client
   that has attached is never missing from another client's status
   (`/quit`'s decision, `--list`); an attach whose answer cannot be

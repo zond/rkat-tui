@@ -58,6 +58,11 @@ pub struct RootPlan {
     /// The `[thinking]` of the start-up model (the profile's provider
     /// params on a fresh spawn).
     pub thinking: Option<meerkat_core::lifecycle::run_primitive::AnthropicThinkingConfig>,
+    /// The orchestrator profile's auto-compaction threshold, from the
+    /// `[auto]` compaction policy (`CompactionTrigger::threshold_override`:
+    /// none in native mode, the policy's tokens in auto mode, the largest
+    /// threshold in warn mode).
+    pub compact_threshold: Option<std::num::NonZeroU64>,
 }
 
 /// The composed host.
@@ -135,8 +140,18 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         daemon_principal,
         tasks_db,
         notices,
+        compaction,
         ..
     } = parts;
+    // The `[auto]` compaction policy as the orchestrator's threshold, for
+    // the start-up model's window (unknown: the policy's fallback).
+    let compact_threshold = compaction
+        .trigger(crate::endpoints::registry_context_window(
+            &effective,
+            choice.provider,
+            &choice.model,
+        ))
+        .threshold_override();
     // What the in-process runner shows at start, for the clients
     // (`rkat/notices`): the confinement's observations, then the rules'
     // and the bootstrap's warnings.
@@ -362,6 +377,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
             memory,
             registry,
             thinking: choice.thinking,
+            compact_threshold,
         },
         lease: realm_lease,
         scope,

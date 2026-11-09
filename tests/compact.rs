@@ -1,5 +1,6 @@
 //! The compaction policy on Meerkat's native auto-compaction, end to end
-//! through the real runtime-backed service with a scripted LLM.
+//! through the `rkat-tui-mob` daemon with a scripted LLM, driven by an
+//! attached client.
 //!
 //! Six short turns build history; the sixth reports 60k input tokens. With
 //! `compact_auto_percent = 5` of the model's window (1M tokens) the threshold is
@@ -18,12 +19,14 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;
+#[path = "common/attach.rs"]
+mod rig;
 
-use common::{Rig, RigOptions, ScriptedLlmClient, Step, Workspace, within};
+use common::{ScriptedLlmClient, Step, Workspace, within};
 use meerkat_core::AgentEvent;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
-use rkat_tui::runner::Start;
-use rkat_tui::ui::compaction::CompactionGauge;
+use rig::{Attached, Setup};
+use rkat_tui::ui::compaction::{CompactionGauge, CompactionPolicy};
 use rkat_tui::ui::{CompactMode, Effect, Msg, StatusUpdate};
 
 /// Input tokens the sixth turn reports.
@@ -38,28 +41,27 @@ fn history() -> Vec<Step> {
     steps
 }
 
-async fn rig(llm: &std::sync::Arc<ScriptedLlmClient>, ws: &Workspace, mode: &str) -> Rig {
-    let args = [
+/// The daemon on `ws` in compaction `mode` (both thresholds at 5%), a
+/// client attached, and the policy both run with.
+async fn rig(
+    llm: &std::sync::Arc<ScriptedLlmClient>,
+    ws: &Workspace,
+    mode: &str,
+) -> (Attached, CompactionPolicy) {
+    let setup = Setup::args(&[
         "--set",
         &format!("auto.compact={mode}"),
         "--set",
         "auto.compact_warn_percent=5",
         "--set",
         "auto.compact_auto_percent=5",
-    ];
-    Rig::start_opts(
-        &ws.root,
-        llm,
-        Start::New,
-        RigOptions {
-            args: args.iter().map(ToString::to_string).collect(),
-            ..RigOptions::default()
-        },
-    )
-    .await
+    ]);
+    let layers = rkat_tui::bootstrap::read_layers(&setup.command_line(&ws.root)).unwrap();
+    let policy = layers.layered.settings.compaction_policy(None);
+    (Attached::start_with(&ws.root, llm, setup).await, policy)
 }
 
-async fn turns(rig: &mut Rig, n: usize, prefix: &str) {
+async fn turns(rig: &mut Attached, n: usize, prefix: &str) {
     for i in 0..n {
         rig.send(Effect::StartTurn(format!("{prefix} {i}")));
         rig.turn_finished().await.result.expect("turn succeeds");
@@ -68,29 +70,23 @@ async fn turns(rig: &mut Rig, n: usize, prefix: &str) {
 
 /// Wait (bounded by [`within`]) until the session published a completed
 /// compaction.
-async fn completed(rig: &Rig) {
-    within(async {
-        while !compactions(rig)
-            .iter()
-            .any(|e| matches!(e, AgentEvent::CompactionCompleted { .. }))
-        {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-    })
+async fn completed(rig: &mut Attached) {
+    within(rig.saw(|msg| {
+        matches!(msg, Msg::Agent(env) if matches!(env.payload, AgentEvent::CompactionCompleted { .. }))
+    }))
     .await;
 }
 
-fn started(rig: &Rig) -> usize {
+fn started(rig: &Attached) -> usize {
     compactions(rig)
         .iter()
         .filter(|e| matches!(e, AgentEvent::CompactionStarted { .. }))
         .count()
 }
 
-fn compactions(rig: &Rig) -> Vec<AgentEvent> {
-    rig.events
-        .lock()
-        .iter()
+fn compactions(rig: &Attached) -> Vec<AgentEvent> {
+    rig.events()
+        .into_iter()
         .filter(|e| {
             matches!(
                 e,
@@ -103,8 +99,8 @@ fn compactions(rig: &Rig) -> Vec<AgentEvent> {
         .collect()
 }
 
-/// The context window the runner reported for the session's model.
-fn window(rig: &Rig) -> u64 {
+/// The context window the client reported for the session's model.
+fn window(rig: &Attached) -> u64 {
     rig.seen
         .iter()
         .rev()
@@ -125,8 +121,7 @@ async fn auto_mode_compacts_natively_at_the_threshold() {
     script.push(Step::Text("after"));
     script.push(Step::Text("later"));
     let llm = ScriptedLlmClient::new(script);
-    let mut rig = rig(&llm, &ws, "auto").await;
-    let policy = rig.approval.settings().compaction_policy(None);
+    let (mut rig, policy) = rig(&llm, &ws, "auto").await;
     assert_eq!(policy.mode, CompactMode::Auto);
     turns(&mut rig, SHORT_TURNS + 1, "turn").await;
     assert_eq!(started(&rig), 0, "nothing crossed yet");
@@ -155,7 +150,7 @@ async fn auto_mode_compacts_natively_at_the_threshold() {
     // The completion is published when the session runs again.
     rig.send(Effect::StartTurn("again".into()));
     rig.turn_finished().await.result.expect("turn succeeds");
-    completed(&rig).await;
+    completed(&mut rig).await;
     let left = compactions(&rig)
         .iter()
         .find_map(|e| match e {
@@ -189,8 +184,7 @@ async fn warn_mode_warns_and_compacts_only_on_compact() {
     // Back on the policy: no compaction despite the size.
     script.push(Step::Text("whole again"));
     let llm = ScriptedLlmClient::new(script);
-    let mut rig = rig(&llm, &ws, "warn").await;
-    let policy = rig.approval.settings().compaction_policy(None);
+    let (mut rig, policy) = rig(&llm, &ws, "warn").await;
     assert_eq!(policy.mode, CompactMode::Warn);
     turns(&mut rig, SHORT_TURNS + 2, "turn").await;
     assert_eq!(started(&rig), 0, "warn mode never compacts by size");
