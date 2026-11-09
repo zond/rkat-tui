@@ -55,6 +55,12 @@ pub struct Running {
     /// Whether the orchestrator was created (not restored) at start.
     pub created: bool,
     pub origins: Arc<DaemonToolOrigins>,
+    /// The daemon's mob host, helper bookkeeping and approval engine,
+    /// held weakly so the test never keeps them past the daemon's stop
+    /// (see [`Self::state`]).
+    state: std::sync::Weak<meerkat_mob_mcp::MobMcpState>,
+    registry: std::sync::Weak<rkat_tui::mobs::HelperRegistry>,
+    engine: std::sync::Weak<rkat_tui::approval::ApprovalEngine>,
 }
 
 impl Running {
@@ -98,6 +104,9 @@ impl Running {
         let session = daemon.orchestrator().session_id.clone();
         let created = daemon.orchestrator().created;
         let origins = Arc::clone(daemon.tool_origins());
+        let state = Arc::downgrade(daemon.mob_state());
+        let registry = Arc::downgrade(daemon.helper_registry());
+        let engine = Arc::downgrade(daemon.approval_engine());
         let (stop, stopped) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(daemon.serve_until(async move {
             let _ = stopped.await;
@@ -109,7 +118,25 @@ impl Running {
             session,
             created,
             origins,
+            state,
+            registry,
+            engine,
         }
+    }
+
+    /// The daemon's mob host (while it serves).
+    pub fn state(&self) -> Arc<meerkat_mob_mcp::MobMcpState> {
+        self.state.upgrade().expect("the daemon serves")
+    }
+
+    /// The daemon's helper bookkeeping (while it serves).
+    pub fn registry(&self) -> Arc<rkat_tui::mobs::HelperRegistry> {
+        self.registry.upgrade().expect("the daemon serves")
+    }
+
+    /// The daemon's approval engine (while it serves).
+    pub fn engine(&self) -> Arc<rkat_tui::approval::ApprovalEngine> {
+        self.engine.upgrade().expect("the daemon serves")
     }
 
     /// The daemon's endpoint.

@@ -391,6 +391,10 @@ pub struct Daemon {
     desk: Arc<approvals::Desk>,
     #[cfg(any(test, feature = "test-support"))]
     origins: Arc<approvals::DaemonToolOrigins>,
+    #[cfg(any(test, feature = "test-support"))]
+    registry: Arc<crate::mobs::HelperRegistry>,
+    #[cfg(any(test, feature = "test-support"))]
+    engine: Arc<crate::approval::ApprovalEngine>,
     local: Arc<local::Local>,
     /// The desk and the event watcher, aborted at shutdown.
     tasks: Vec<tokio::task::JoinHandle<()>>,
@@ -547,6 +551,10 @@ impl Daemon {
             desk: composed.desk,
             #[cfg(any(test, feature = "test-support"))]
             origins: Arc::clone(&composed.origins),
+            #[cfg(any(test, feature = "test-support"))]
+            registry: Arc::clone(&composed.root.registry),
+            #[cfg(any(test, feature = "test-support"))]
+            engine: Arc::clone(&composed.engine),
             local,
             tasks: vec![
                 composed.desk_task,
@@ -572,6 +580,27 @@ impl Daemon {
     #[cfg(any(test, feature = "test-support"))]
     pub fn tool_origins(&self) -> &Arc<approvals::DaemonToolOrigins> {
         &self.origins
+    }
+
+    /// The mob host every member lives in.
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn mob_state(&self) -> &Arc<MobMcpState> {
+        &self.state
+    }
+
+    /// The helpers' bookkeeping (owners, running set, durable bindings).
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn helper_registry(&self) -> &Arc<crate::mobs::HelperRegistry> {
+        &self.registry
+    }
+
+    /// The approval engine every member's gate shares.
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn approval_engine(&self) -> &Arc<crate::approval::ApprovalEngine> {
+        &self.engine
     }
 
     /// The bound address clients connect to.

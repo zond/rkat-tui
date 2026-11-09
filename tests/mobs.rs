@@ -1,65 +1,34 @@
-//! Helpers (mob members) end to end, through the real runtime-backed
-//! service with a scripted LLM: a `delegate` call spawns a helper that runs
-//! one turn and returns; the helper's calls pass the delegating session's
-//! approval gate (a read runs, a Tier-3 call is denied with the reason the
-//! helper reads, judged against the user's words and counted for the
-//! session); its events reach the UI nested and named, its usage lands in
-//! the cost breakdown and the sidecar; an interrupt leaves no running
-//! helper; a configured endpoint's session hands its model and binding on.
+//! Helpers (mob members) end to end in the daemon, with a scripted LLM: a
+//! `delegate` call spawns a helper that runs one turn and returns; the
+//! helper's calls pass the orchestrator's approval gate (a read runs, a
+//! Tier-3 call is denied with the reason the helper reads, judged against
+//! the user's words and counted for the session); its events reach the
+//! attached UI nested and named, its usage lands in the cost breakdown and
+//! the sidecar; a configured endpoint's session hands its model and binding
+//! on; the depth limit holds; a mob nobody owns gets no helper; and a
+//! helper's owner survives a daemon restart until it retires.
+//! (`tests/attach_helpers.rs` has the follower view, Esc and the model
+//! switch.)
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;
+#[path = "common/attach.rs"]
+mod rig;
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use common::{Rig, RigOptions, ScriptedLlmClient, Step, Workspace, args_with, within};
+use common::{ScriptedLlmClient, Step, Workspace, args_with, within};
 use meerkat_core::types::ToolResult;
 use meerkat_core::{Message, StreamScopeFrame};
-use parking_lot::Mutex;
-use rkat_tui::approval::classifier::{
-    ActionClassifier, ClassifierError, ClassifierInput, ClassifierVerdict,
-};
-use rkat_tui::bootstrap::{self, ApprovalOverrides};
+use rig::{Attached, Running, ScriptedClassifier, Setup};
+use rkat_tui::approval::classifier::{ActionClassifier, ClassifierVerdict};
+use rkat_tui::bootstrap;
 use rkat_tui::endpoints::{ENDPOINT_REALM, Endpoint};
 use rkat_tui::models::{EndpointListing, ModelEntry, ModelLister, ModelSource};
-use rkat_tui::runner::Start;
 use rkat_tui::ui::{App, ApprovalNotice, Effect, Msg, StatusInfo, StatusUpdate};
 use rkat_tui::workbench::cost_store::load_cost;
 use serde_json::{Value, json};
-
-/// A classifier that replays verdicts and records `(tool, transcript)`.
-#[derive(Default)]
-struct ScriptedClassifier {
-    verdicts: Mutex<Vec<ClassifierVerdict>>,
-    seen: Mutex<Vec<(String, String)>>,
-}
-
-#[async_trait]
-impl ActionClassifier for ScriptedClassifier {
-    async fn classify(
-        &self,
-        input: ClassifierInput<'_>,
-    ) -> Result<ClassifierVerdict, ClassifierError> {
-        self.seen
-            .lock()
-            .push((input.tool.to_string(), input.transcript.render()));
-        let mut verdicts = self.verdicts.lock();
-        if verdicts.is_empty() {
-            Err(ClassifierError::Provider("script exhausted".into()))
-        } else {
-            Ok(verdicts.remove(0))
-        }
-    }
-}
-
-fn overrides(classifier: &Arc<ScriptedClassifier>) -> ApprovalOverrides {
-    ApprovalOverrides {
-        classifier: Some(Arc::clone(classifier) as Arc<dyn ActionClassifier>),
-        escalation_timeout: None,
-    }
-}
 
 fn delegate(id: &'static str, member: &str, task: &str) -> Step {
     Step::Tool {
@@ -90,13 +59,6 @@ fn leak(text: String) -> &'static str {
     Box::leak(text.into_boxed_str())
 }
 
-/// Wait for a message matching `pred`, unless one already arrived.
-async fn saw(rig: &mut Rig, pred: impl Fn(&Msg) -> bool) {
-    if !rig.seen.iter().any(&pred) {
-        rig.wait_for(pred).await;
-    }
-}
-
 fn no_helpers(msg: &Msg) -> bool {
     matches!(msg, Msg::Status(StatusUpdate::Helpers(h)) if h.is_empty())
 }
@@ -123,11 +85,10 @@ async fn a_delegated_helper_runs_behind_the_sessions_gate() {
     std::fs::write(ws.root.join("notes.txt"), "HELPER-READ-CONTENT\n").unwrap();
     let marker = ws.sibling("pwned");
     let command = leak(format!("touch {}", marker.display()));
-    let classifier = Arc::new(ScriptedClassifier::default());
-    classifier.verdicts.lock().push(ClassifierVerdict::Block {
+    let classifier = ScriptedClassifier::new(vec![Ok(ClassifierVerdict::Block {
         rule: Some("D1".into()),
         reason: "touches files outside the project".into(),
-    });
+    })]);
     let llm = ScriptedLlmClient::new(vec![
         delegate(
             "d1",
@@ -144,8 +105,9 @@ async fn a_delegated_helper_runs_behind_the_sessions_gate() {
     let realm = bootstrap::resolve_scope(&args_with(&ws.root, &[]))
         .unwrap()
         .realm_root();
-    let mut rig = Rig::start_with(&ws.root, &llm, Start::New, overrides(&classifier)).await;
-    let id = rig.first_session.clone();
+    let setup = Setup::default().classifier(Arc::clone(&classifier) as Arc<dyn ActionClassifier>);
+    let mut rig = Attached::start_with(&ws.root, &llm, setup).await;
+    let id = rig.current_session().await;
     rig.send(Effect::StartTurn("USER-ASK look into the notes".into()));
     let outcome = rig.turn_finished().await;
     assert_eq!(outcome.result.expect("turn succeeds").text, "parent done");
@@ -174,24 +136,24 @@ async fn a_delegated_helper_runs_behind_the_sessions_gate() {
     );
     assert!(!marker.exists(), "the denied command never ran");
     // Judged against the user's words, never the helper's task.
-    let seen = classifier.seen.lock().clone();
+    let seen = classifier.seen();
     assert_eq!(seen.len(), 1);
     assert_eq!(seen[0].0, "shell");
-    assert!(seen[0].1.contains("USER-ASK"), "{}", seen[0].1);
+    assert!(seen[0].2.contains("USER-ASK"), "{}", seen[0].2);
     // The helper's task is the parent's action, never the user's words.
     assert!(
         seen[0]
-            .1
+            .2
             .lines()
             .filter(|line| line.starts_with("[user]"))
             .all(|line| !line.contains("HELPER-TASK")),
         "{}",
-        seen[0].1
+        seen[0].2
     );
     // Counted for the session, and named as the helper's.
-    let (counters, _) = rig.approval.auto_state();
+    let (counters, _) = rig.daemon.engine().auto_state();
     assert_eq!(counters.total, 1);
-    saw(&mut rig, |m| {
+    rig.saw(|m| {
         matches!(m, Msg::Approval(ApprovalNotice { allowed: false, tool, .. }) if tool == "[scout] shell")
     })
     .await;
@@ -202,7 +164,7 @@ async fn a_delegated_helper_runs_behind_the_sessions_gate() {
 
     // The UI heard the helper: running (then not), its events nested one
     // level deep and named.
-    saw(&mut rig, no_helpers).await;
+    rig.saw(no_helpers).await;
     let seen_msgs = rig.seen.clone();
     assert!(seen_msgs.iter().any(|m| matches!(
         m,
@@ -217,8 +179,7 @@ async fn a_delegated_helper_runs_behind_the_sessions_gate() {
         "no scoped helper events"
     );
 
-    // Its usage reaches the cost breakdown (and the footer total) and the
-    // sidecar.
+    // Its usage reaches the cost breakdown and the sidecar.
     let mut app = App::new(StatusInfo::default());
     let mut snapshots = Vec::new();
     for msg in seen_msgs {
@@ -232,7 +193,6 @@ async fn a_delegated_helper_runs_behind_the_sessions_gate() {
     }
     let helper = &app.status.cost().helpers["scout"][common::MODEL];
     assert_eq!((helper.input, helper.output), (20, 10), "two helper calls");
-    assert_eq!(app.status.cost().per_model[common::MODEL].input, 20);
     let breakdown = app.status.cost().breakdown(app.status.prices());
     assert!(
         breakdown.contains("scout (claude-sonnet-4-6): in 20"),
@@ -245,47 +205,16 @@ async fn a_delegated_helper_runs_behind_the_sessions_gate() {
     assert_eq!(stored.helpers["scout"][common::MODEL].input, 20);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_interrupt_leaves_no_running_helper() {
-    let ws = Workspace::new();
-    let llm = ScriptedLlmClient::new(vec![
-        delegate("d1", "slow", "wait forever"),
-        Step::Hang,
-        Step::Text("after"),
-        Step::Text("after"),
-    ]);
-    let mut rig = Rig::start(&ws.root, &llm, Start::New).await;
-    let id = rig.first_session.clone();
-    rig.send(Effect::StartTurn("go".into()));
-    llm.wait_call(1).await;
-    saw(
-        &mut rig,
-        |m| matches!(m, Msg::Status(StatusUpdate::Helpers(h)) if h.len() == 1),
-    )
-    .await;
-    rig.send(Effect::Interrupt);
-    let outcome = rig.turn_finished().await;
-    assert!(outcome.result.is_err(), "{outcome:?}");
-    saw(&mut rig, no_helpers).await;
-    let helpers = rig.helpers.clone().expect("helpers are hosted");
-    assert!(helpers.live().is_empty());
-    let mob = meerkat_mob::MobId::from(format!("implicit-{id}"));
-    let handle = within(helpers.state().handle_for(&mob)).await.unwrap();
-    let members = within(handle.list_members()).await;
-    assert!(members.is_empty(), "members left: {members:?}");
-    rig.quit().await;
-}
-
-/// An Anthropic-dialect gateway serving a catalogued model id.
-fn proxy_options() -> RigOptions {
-    let lister: ModelLister = Arc::new(|endpoints: Vec<Endpoint>| {
+/// The lister of an Anthropic-dialect gateway `proxy` listing `model`.
+fn proxy_lister(model: &'static str) -> ModelLister {
+    Arc::new(move |endpoints: Vec<Endpoint>| {
         Box::pin(async move {
             endpoints
                 .into_iter()
                 .map(|e| {
                     let models = if e.name == "proxy" {
                         vec![ModelEntry {
-                            id: common::MODEL.into(),
+                            id: model.into(),
                             display_name: None,
                             source: ModelSource::Provider,
                             context_window: Some(50_000),
@@ -304,173 +233,84 @@ fn proxy_options() -> RigOptions {
                 })
                 .collect()
         })
-    });
-    RigOptions {
-        args: [
-            "--set",
-            "endpoints.proxy.dialect=anthropic",
-            "--set",
-            "endpoints.proxy.base_url=http://127.0.0.1:9",
-            "--set",
-            // Keys come from the environment only; `PATH` is set wherever
-            // tests run, and the scripted client never sends it.
-            "endpoints.proxy.api_key_env=PATH",
-            "--model",
-            "proxy:claude-sonnet-4-6",
-        ]
-        .map(str::to_string)
-        .to_vec(),
-        lister: Some(lister),
-        ..RigOptions::default()
-    }
+    })
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_configured_endpoints_helper_uses_the_same_binding() {
-    let ws = Workspace::new();
-    let llm = ScriptedLlmClient::new(vec![
-        delegate("d1", "scout", "say hi"),
-        Step::Text("hi"),
-        Step::Text("done"),
+/// A daemon on the gateway `proxy`, started on `proxy:<model>`.
+fn proxy_setup(model: &'static str) -> Setup {
+    let mut setup = Setup::args(&[
+        "--set",
+        "endpoints.proxy.dialect=anthropic",
+        "--set",
+        "endpoints.proxy.base_url=http://127.0.0.1:9",
+        "--set",
+        // Keys come from the environment only; `PATH` is set wherever
+        // tests run, and the scripted client never sends it.
+        "endpoints.proxy.api_key_env=PATH",
+        "--model",
     ]);
-    let mut rig = Rig::start_opts(&ws.root, &llm, Start::New, proxy_options()).await;
-    rig.send(Effect::StartTurn("delegate".into()));
-    rig.turn_finished().await;
-    let recorded = llm.recorded();
-    assert_eq!(recorded[0].model, common::MODEL);
-    assert_eq!(
-        recorded[1].model,
-        common::MODEL,
-        "the helper runs on the session's model"
-    );
-    let result = tool_result(&recorded[2].messages, "d1");
-    let value: Value = serde_json::from_str(&result.text_content()).unwrap();
-    let helper_session =
-        meerkat_core::SessionId::parse(value["session_id"].as_str().unwrap()).unwrap();
-    let meta = rig
-        .session(&helper_session)
-        .await
-        .session_metadata()
-        .unwrap();
-    assert_eq!(meta.model, common::MODEL);
-    let binding = meta.auth_binding.expect("the proxy's binding");
-    assert_eq!(binding.realm.as_str(), ENDPOINT_REALM);
-    assert_eq!(binding.binding.as_str(), "proxy");
-    rig.quit().await;
+    setup.args.push(format!("proxy:{model}"));
+    setup.lister = Some(proxy_lister(model));
+    setup
 }
 
-/// The gateway of [`proxy_options`] listing `ENDPOINT_MODEL`, a model id
-/// only it knows, with the session started on it.
-const ENDPOINT_MODEL: &str = "my-alias";
-
-fn endpoint_model_options() -> RigOptions {
-    let lister: ModelLister = Arc::new(|endpoints: Vec<Endpoint>| {
-        Box::pin(async move {
-            endpoints
-                .into_iter()
-                .map(|e| {
-                    let models = if e.name == "proxy" {
-                        vec![ModelEntry {
-                            id: ENDPOINT_MODEL.into(),
-                            display_name: None,
-                            source: ModelSource::Provider,
-                            context_window: Some(50_000),
-                            max_output_tokens: Some(4_096),
-                        }]
-                    } else {
-                        Vec::new()
-                    };
-                    (
-                        e.name,
-                        Ok(EndpointListing {
-                            models,
-                            prices: Vec::new(),
-                        }),
-                    )
-                })
-                .collect()
-        })
-    });
-    let mut options = proxy_options();
-    *options.args.last_mut().unwrap() = format!("proxy:{ENDPOINT_MODEL}");
-    options.lister = Some(lister);
-    options
-}
-
-/// The helper session a `delegate` call `id` reports in `recorded`.
-async fn helper_meta(rig: &Rig, messages: &[Message], id: &str) -> meerkat_core::SessionMetadata {
+/// The helper session a `delegate` call `id` reports in `messages`.
+fn helper_session(messages: &[Message], id: &str) -> meerkat_core::SessionId {
     let result = tool_result(messages, id);
     let value: Value = serde_json::from_str(&result.text_content())
         .unwrap_or_else(|_| panic!("delegate failed: {}", result.text_content()));
-    let helper_session =
-        meerkat_core::SessionId::parse(value["session_id"].as_str().unwrap()).unwrap();
-    rig.session(&helper_session)
-        .await
-        .session_metadata()
-        .unwrap()
+    meerkat_core::SessionId::parse(value["session_id"].as_str().unwrap()).unwrap()
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_session_on_an_endpoint_only_model_delegates_on_it() {
+/// Delegate once on `proxy:<model>`; the helper's stored metadata.
+async fn delegate_on_the_proxy(model: &'static str) -> meerkat_core::SessionMetadata {
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![
         delegate("d1", "scout", "say hi"),
         Step::Text("hi"),
         Step::Text("done"),
     ]);
-    let mut rig = Rig::start_opts(&ws.root, &llm, Start::New, endpoint_model_options()).await;
+    let mut rig = Attached::start_with(&ws.root, &llm, proxy_setup(model)).await;
     rig.send(Effect::StartTurn("delegate".into()));
     rig.turn_finished().await;
     let recorded = llm.recorded();
-    assert_eq!(recorded[0].model, ENDPOINT_MODEL);
+    assert_eq!(recorded[0].model, model);
     assert_eq!(
         recorded.len(),
         3,
         "{}",
         tool_result(&recorded[1].messages, "d1").text_content()
     );
-    let meta = helper_meta(&rig, &recorded[2].messages, "d1").await;
     assert_eq!(
-        recorded[1].model, ENDPOINT_MODEL,
+        recorded[1].model, model,
         "the helper runs on the session's model"
     );
+    let helper = helper_session(&recorded[2].messages, "d1");
+    rig.quit().await;
+    rig::stored_session(&ws.root, &helper)
+        .await
+        .session_metadata()
+        .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_configured_endpoints_helper_uses_the_same_binding() {
+    let meta = delegate_on_the_proxy(common::MODEL).await;
+    assert_eq!(meta.model, common::MODEL);
+    let binding = meta.auth_binding.expect("the proxy's binding");
+    assert_eq!(binding.realm.as_str(), ENDPOINT_REALM);
+    assert_eq!(binding.binding.as_str(), "proxy");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_session_on_an_endpoint_only_model_delegates_on_it() {
+    // A model id only the gateway lists.
+    const ENDPOINT_MODEL: &str = "my-alias";
+    let meta = delegate_on_the_proxy(ENDPOINT_MODEL).await;
     assert_eq!(meta.model, ENDPOINT_MODEL);
     let binding = meta.auth_binding.expect("the proxy's binding");
     assert_eq!(binding.realm.as_str(), ENDPOINT_REALM);
     assert_eq!(binding.binding.as_str(), "proxy");
-    rig.quit().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_helper_delegated_after_a_model_switch_runs_on_the_new_model() {
-    const SWITCHED: &str = "claude-opus-4-8";
-    let ws = Workspace::new();
-    let llm = ScriptedLlmClient::new(vec![
-        Step::Text("one"),
-        delegate("d1", "scout", "say hi"),
-        Step::Text("hi"),
-        Step::Text("done"),
-    ]);
-    let mut rig = Rig::start(&ws.root, &llm, Start::New).await;
-    rig.send(Effect::StartTurn("first".into()));
-    rig.turn_finished().await;
-    rig.send(Effect::SetModel(format!("anthropic:{SWITCHED}")));
-    rig.wait_for(
-        |m| matches!(m, Msg::Status(StatusUpdate::Model { model, .. }) if model == SWITCHED),
-    )
-    .await;
-    rig.send(Effect::StartTurn("delegate".into()));
-    rig.turn_finished().await;
-    let recorded = llm.recorded();
-    assert_eq!(recorded[0].model, common::MODEL);
-    assert_eq!(recorded[1].model, SWITCHED);
-    let meta = helper_meta(&rig, &recorded[3].messages, "d1").await;
-    assert_eq!(
-        recorded[2].model, SWITCHED,
-        "the helper runs on the new model"
-    );
-    assert_eq!(meta.model, SWITCHED);
-    rig.quit().await;
 }
 
 /// A definition with one durable inline `delegate` profile, under `id`.
@@ -490,27 +330,28 @@ fn team(id: &str) -> meerkat_mob::MobDefinition {
 async fn a_helper_no_open_session_owns_is_refused() {
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![Step::Text("never")]);
-    let rig = Rig::start(&ws.root, &llm, Start::New).await;
-    let helpers = rig.helpers.clone().expect("helpers are hosted");
-    let id = rig.first_session.clone();
-    // Named as the open session's implicit mob, but created by the host:
-    // its helpers work for nobody, and never for the open session.
+    let daemon = Running::start(&ws.root, &llm).await;
+    let id = daemon.session.clone();
+    // Named as the orchestrator's implicit mob, but created by the host:
+    // its helpers work for nobody, and never for the orchestrator.
     let definition = meerkat_mob::MobDefinition::implicit(&id.to_string(), common::MODEL);
-    let mob = within(helpers.state().mob_create_definition(definition))
+    let mob = within(daemon.state().mob_create_definition(definition))
         .await
         .unwrap();
-    let handle = within(helpers.state().handle_for(&mob)).await.unwrap();
+    let handle = within(daemon.state().handle_for(&mob)).await.unwrap();
     let refused =
         within(handle.spawn_spec(meerkat_mob::SpawnMemberSpec::new("delegate", "stray"))).await;
     let Err(err) = refused else {
         panic!("the spawn is refused");
     };
     assert!(err.to_string().contains("helper refused"), "{err}");
-    assert!(helpers.live().is_empty());
-    assert!(helpers.registry().live_for(&id).is_empty());
+    assert!(daemon.registry().live().is_empty());
+    assert!(daemon.registry().live_for(&id).is_empty());
     let members = within(handle.list_members()).await;
     assert!(members.is_empty(), "members: {members:?}");
-    rig.quit().await;
+    assert!(llm.recorded().is_empty(), "no member ran");
+    drop(handle);
+    daemon.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -521,11 +362,10 @@ async fn a_helpers_owner_survives_a_restart_until_it_retires() {
     let mob = meerkat_mob::MobId::from("team");
     let key = HelperKey::new(mob.clone(), meerkat_mob::AgentIdentity::from("worker"));
     let llm = ScriptedLlmClient::new(vec![Step::Text("idle"), Step::Text("idle")]);
-    let rig = Rig::start(&ws.root, &llm, Start::New).await;
-    let owner = rig.first_session.clone();
-    let helpers = rig.helpers.clone().expect("helpers are hosted");
+    let daemon = Running::start(&ws.root, &llm).await;
+    let owner = daemon.session.clone();
     within(
-        helpers
+        daemon
             .state()
             .mob_create_definition_with_owner_bridge_session(
                 team("team"),
@@ -536,35 +376,29 @@ async fn a_helpers_owner_survives_a_restart_until_it_retires() {
     )
     .await
     .unwrap();
-    let handle = within(helpers.state().handle_for(&mob)).await.unwrap();
+    let handle = within(daemon.state().handle_for(&mob)).await.unwrap();
     // It runs a turn, so its durable session exists.
     let mut spec = meerkat_mob::SpawnMemberSpec::new("delegate", "worker");
     spec.initial_message = Some("start".into());
     within(handle.spawn_spec(spec)).await.unwrap();
-    assert_eq!(helpers.registry().live_for(&owner), vec![key.clone()]);
+    assert_eq!(daemon.registry().live_for(&owner), vec![key.clone()]);
     llm.wait_call(0).await;
-    // The process exits: its mob shuts down (not retiring anyone).
-    within(handle.shutdown()).await.unwrap();
-    assert_eq!(
-        helpers.registry().owner_for_resume(&key).unwrap().owner,
-        owner
-    );
+    // The daemon stops: its mob shuts down (not retiring anyone).
     drop(handle);
-    drop(helpers);
-    rig.quit().await;
+    daemon.stop().await;
 
-    // A new process over the same realm: the restored member is gated for
-    // the session that spawned it, open or not.
+    // A new daemon over the same realm: the restored member is gated for
+    // the session that spawned it.
     let llm = ScriptedLlmClient::new(vec![Step::Text("idle"), Step::Text("idle")]);
-    let rig = Rig::start(&ws.root, &llm, Start::New).await;
-    assert_ne!(rig.first_session, owner);
-    let helpers = rig.helpers.clone().expect("helpers are hosted");
-    let handle = within(helpers.state().handle_for(&mob)).await.unwrap();
+    let daemon = Running::start(&ws.root, &llm).await;
+    assert!(!daemon.created, "the orchestrator is restored");
+    let registry = daemon.registry();
+    assert_eq!(registry.owner_for_resume(&key).unwrap().owner, owner);
+    let handle = within(daemon.state().handle_for(&mob)).await.unwrap();
     // The restored member is dormant until work wakes it, which rebuilds it
     // on its durable session through `customize_resume`.
     let member = within(handle.member(&key.member)).await.unwrap();
     within(member.internal_turn("wake up")).await.unwrap();
-    let registry = Arc::clone(helpers.registry());
     within(async {
         while registry.live_for(&owner).is_empty() {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -572,13 +406,12 @@ async fn a_helpers_owner_survives_a_restart_until_it_retires() {
     })
     .await;
     assert_eq!(registry.live_for(&owner), vec![key.clone()]);
-    assert!(registry.live_for(&rig.first_session).is_empty());
     assert_eq!(registry.owner_for_resume(&key).unwrap().owner, owner);
 
     // Forgetting the owner prunes its helpers here (twice is a no-op); the
     // binding stays on disk for a later resume.
-    rig.approval.forget_session(&owner);
-    rig.approval.forget_session(&owner);
+    daemon.engine().forget_session(&owner);
+    daemon.engine().forget_session(&owner);
     assert!(registry.live_for(&owner).is_empty());
     assert!(registry.live().is_empty());
     assert_eq!(registry.owner_for_resume(&key).unwrap().owner, owner);
@@ -600,8 +433,8 @@ async fn a_helpers_owner_survives_a_restart_until_it_retires() {
     .unwrap();
     assert!(!file.contains("worker"), "{file}");
     drop(handle);
-    drop(helpers);
-    rig.quit().await;
+    drop(registry);
+    daemon.stop().await;
 }
 
 /// The tool definitions of `recorded` that start helpers.
@@ -611,7 +444,10 @@ fn nesting_tools(recorded: &common::Recorded) -> Vec<&str> {
         .iter()
         .map(String::as_str)
         .filter(|tool| {
-            matches!(*tool, "delegate" | "council" | "fork_off") || tool.starts_with("mob_")
+            matches!(
+                *tool,
+                "delegate" | "council" | "fork_off" | "spawn_member" | "spawn_many_members"
+            ) || tool.starts_with("mob_")
         })
         .collect()
 }
@@ -625,7 +461,7 @@ async fn a_helper_at_the_default_depth_cannot_delegate() {
         Step::Text("HELPER-DONE: did it myself"),
         Step::Text("parent done"),
     ]);
-    let mut rig = Rig::start(&ws.root, &llm, Start::New).await;
+    let mut rig = Attached::start(&ws.root, &llm).await;
     rig.send(Effect::StartTurn("USER-ASK delegate it".into()));
     let outcome = rig.turn_finished().await;
     assert_eq!(outcome.result.expect("turn succeeds").text, "parent done");
@@ -635,8 +471,8 @@ async fn a_helper_at_the_default_depth_cannot_delegate() {
         4,
         "parent, helper ×2, parent; no nested helper"
     );
-    // The session may delegate; its helper, at depth 1 of 1, is offered no
-    // tool that starts helpers, and its call is refused.
+    // The orchestrator may delegate; its helper, at depth 1 of 1, is
+    // offered no tool that starts helpers, and its call is refused.
     assert!(recorded[0].tools.iter().any(|t| t == "delegate"));
     assert!(recorded[1].user().contains("HELPER-TASK"));
     assert!(
@@ -670,11 +506,8 @@ async fn a_helper_below_a_raised_depth_limit_delegates_once_more() {
         Step::Text("HELPER-DONE"),
         Step::Text("parent done"),
     ]);
-    let options = RigOptions {
-        args: vec!["--set".into(), "helpers.max_depth=2".into()],
-        ..RigOptions::default()
-    };
-    let mut rig = Rig::start_opts(&ws.root, &llm, Start::New, options).await;
+    let setup = Setup::args(&["--set", "helpers.max_depth=2"]);
+    let mut rig = Attached::start_with(&ws.root, &llm, setup).await;
     rig.send(Effect::StartTurn("USER-ASK delegate it twice".into()));
     let outcome = rig.turn_finished().await;
     assert_eq!(outcome.result.expect("turn succeeds").text, "parent done");

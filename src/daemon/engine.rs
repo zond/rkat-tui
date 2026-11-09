@@ -202,6 +202,15 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     // when a helper's run ended, so its tool catalog can be read.
     let (registry, updates) = HelperRegistry::persistent(&realm_root);
     let registry = Arc::new(registry);
+    // A forgotten session's helper bookkeeping goes with it.
+    let forget = Arc::downgrade(&registry);
+    approval
+        .engine
+        .add_forget_hook(Arc::new(move |session: &meerkat_core::SessionId| {
+            if let Some(registry) = forget.upgrade() {
+                registry.forget_session(session);
+            }
+        }));
     let (diff_tx, diff_rx) = tokio::sync::mpsc::unbounded_channel();
     let root_tools = orchestrator_tools(&scope, diff_tx)?;
     let tools_for_root = Arc::clone(&root_tools.0);

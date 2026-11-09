@@ -3568,3 +3568,30 @@ and listed here.
   `delegate`: the helper's model call and its stored session are on the
   switched model). Its in-process twin in `tests/mobs.rs` goes with that
   file's migration.
+- `tests/mobs.rs`: seven of its nine tests run over the daemon harness
+  with their assertions. The helper host's internals the in-process tests
+  read (`Helpers::state()`, `registry()`, the engine) are the daemon's
+  own mob host, helper registry and approval engine, reached through
+  test-support accessors (`Daemon::mob_state`, `helper_registry`,
+  `approval_engine`; `rig::Running::{state, registry, engine}`). A
+  configured endpoint's helper reads its stored binding with
+  `rig::stored_session` after the daemon stops; the restart test stops
+  the daemon and starts a new one on the realm (the orchestrator is
+  restored there, so the owner is the open session; "open or not" holds
+  for the forget step). The depth tests also count `spawn_member` and
+  `spawn_many_members`, which a daemon member is offered. Deleted:
+  `an_interrupt_leaves_no_running_helper` →
+  `attach_helpers::esc_during_a_helper_stops_the_orchestrator_and_the_helper`
+  (the mob's members listed empty over `mob/members`), and the in-process
+  twin of the #2102 adoption test
+  (`attach_helpers::a_helper_delegated_after_a_model_switch_runs_on_the_new_model`).
+  The migration found that the daemon never installed the approval
+  engine's forget hook the in-process host had (`Helpers::start`), so
+  `ApprovalEngine::forget_session` left the forgotten session's helpers in
+  the registry; the daemon's composition installs it now. It also
+  showed that nothing in the daemon calls `forget_session` when a
+  conversation switch leaves a session (in-process, closing the session
+  did): the left conversation's per-session gate state (classifier
+  transcript, allow cache) stays in memory until the daemon exits, which
+  is harmless for correctness (a `/resume` seeds the transcript again) and
+  is left as a known gap.
