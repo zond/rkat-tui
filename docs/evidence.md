@@ -3049,6 +3049,25 @@ restored and the daemon keeps running. Tests:
 `ui::tests::dispatch::unsent_messages_are_saved_whichever_way_an_attached_quit_leaves`,
 `client::tests::a_hangup_reaches_the_ui`.
 
+### Bug class: a negative observation taken as positive evidence
+
+Every maintainer finding on the attach lifecycle on 2026-11-09 was the
+same mistake: something not observed (an answer that did not come, a
+file that could not be read, a connect that did not succeed, a name that
+matched) was read as proof of a verdict. The instances and their fixes:
+
+- a dropped connection during `rkat/shutdown` reported as "stopped" (7fe22c8);
+- an unreadable or malformed endpoint file taken as "daemon gone" (28a10c2);
+- a connect timeout treated as a refusal (fc6d35f);
+- a client acknowledged before it was counted (3faa351);
+- a refused local port through a tunnel taken as a stopped daemon (8094359);
+- a matching host name plus an existing path taken as "local" (b2252c2);
+- a token file's group permission bits not checked (126240b).
+
+The rule for future changes: a "stopped", "gone", "local" or "delivered"
+verdict needs positive evidence; an outcome that cannot be observed stays
+unknown and is reported as such; and the negative case gets its own test.
+
 ### `--list` (`daemon::list`)
 
 `rkat-tui --list` and `rkat-tui-mob --list` share `daemon::list`: every
