@@ -422,23 +422,6 @@ impl ApprovalEngine {
             .is_some_and(|state| state.transcript.forget_user_input(key))
     }
 
-    /// Transitional: record `prompt` without an input key. Use
-    /// [`Self::record_user_input`] after admission instead.
-    pub fn record_prompt(&self, session_id: &SessionId, prompt: &str) {
-        let mut state = self.session(session_id);
-        state.transcript.push_user(prompt);
-        state.allow_cache.clear();
-    }
-
-    /// Transitional: forget the most recent user entry equal to `prompt`.
-    /// Use [`Self::forget_user_input`] instead.
-    pub fn forget_prompt(&self, session_id: &SessionId, prompt: &str) -> bool {
-        self.sessions
-            .lock()
-            .get_mut(session_id)
-            .is_some_and(|state| state.transcript.forget_user(prompt))
-    }
-
     /// A run of `session_id` started. It clears a Stop only when it carries
     /// a run id the engine has not seen start before; a replayed or late
     /// start of a known run, or a start without an id, leaves the Stop.
@@ -458,13 +441,6 @@ impl ApprovalEngine {
         if clears {
             state.stop = StopState::Running;
         }
-    }
-
-    /// Transitional: a run started without its id known. Use
-    /// [`Self::run_started`] with the event's run id: this one never clears
-    /// a Stop.
-    pub fn on_run_started(&self, session_id: &SessionId) {
-        self.run_started(session_id, None);
     }
 
     /// The human stopped `session_id`'s current run (an interrupt or a Stop
@@ -2215,7 +2191,6 @@ mod tests {
         // an id, does not clear the stop.
         rig.engine.run_started(&rig.session, Some(&run1));
         rig.engine.run_started(&rig.session, None);
-        rig.engine.on_run_started(&rig.session);
         assert_eq!(decide(&rig, "c1b", &push()).await, stopped);
 
         // A new run clears it.

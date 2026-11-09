@@ -250,16 +250,6 @@ impl ApprovalTranscript {
         self.remove_at(found)
     }
 
-    /// Remove the most recent user entry whose text equals `text`. Returns
-    /// whether one was found.
-    pub fn forget_user(&mut self, text: &str) -> bool {
-        let found = self
-            .entries
-            .iter()
-            .rposition(|(e, _)| matches!(e, TranscriptEntry::User { text: t, .. } if t == text));
-        self.remove_at(found)
-    }
-
     fn remove_at(&mut self, index: Option<usize>) -> bool {
         match index.and_then(|i| self.entries.remove(i)) {
             Some((_, len)) => {

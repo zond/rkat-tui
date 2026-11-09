@@ -3,9 +3,12 @@
 //! read the endpoint file, attach with its token, then speak the engine's
 //! own JSON-RPC methods.
 
+#![cfg(feature = "mob")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;
+#[path = "common/attach.rs"]
+mod rig;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -15,10 +18,8 @@ use common::{
     within,
 };
 use meerkat::LlmClient;
-use rkat_tui::approval::classifier::{
-    ActionClassifier, ClassifierError, ClassifierInput, ClassifierVerdict,
-};
-use rkat_tui::bootstrap::{ApprovalOverrides, BootstrapOptions, HostPaths};
+use rig::Running;
+use rkat_tui::bootstrap::{BootstrapOptions, HostPaths};
 use rkat_tui::daemon::endpoint::Endpoint;
 use rkat_tui::daemon::{Daemon, DaemonError, DaemonOptions, MOB_ID, ORCHESTRATOR};
 use serde_json::{Value, json};
@@ -26,85 +27,9 @@ use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 
-/// Allows every reviewed call: these tests drive the engine's methods,
-/// not the approval gate (`tests/attach_approvals.rs` does).
-struct AllowAll;
-
-#[async_trait::async_trait]
-impl ActionClassifier for AllowAll {
-    async fn classify(
-        &self,
-        _input: ClassifierInput<'_>,
-    ) -> Result<ClassifierVerdict, ClassifierError> {
-        Ok(ClassifierVerdict::Allow {
-            reason: "test".into(),
-        })
-    }
-}
-
-/// A daemon serving in the background.
-struct Running {
-    stop: tokio::sync::oneshot::Sender<()>,
-    task: tokio::task::JoinHandle<Result<(), DaemonError>>,
-    endpoint_file: std::path::PathBuf,
-    session: String,
-    created: bool,
-}
-
-impl Running {
-    async fn start(root: &Path, llm: &Arc<ScriptedLlmClient>) -> Self {
-        Self::start_args(&args_for(root), llm, None, Some(endpoint_file_for(root))).await
-    }
-
-    /// `endpoint_file` `None`: the default place, in the user's state
-    /// directory.
-    async fn start_args(
-        args: &rkat_tui::Args,
-        llm: &Arc<ScriptedLlmClient>,
-        host_paths: Option<HostPaths>,
-        endpoint_file: Option<std::path::PathBuf>,
-    ) -> Self {
-        let mut options = DaemonOptions::default().with_bootstrap(BootstrapOptions {
-            llm_override: Some(Arc::clone(llm) as Arc<dyn LlmClient>),
-            lister: Some(no_lists()),
-            host_paths: Some(host_paths.unwrap_or_default()),
-            approval: ApprovalOverrides {
-                classifier: Some(Arc::new(AllowAll) as Arc<dyn ActionClassifier>),
-                escalation_timeout: None,
-            },
-        });
-        options.endpoint_file = endpoint_file;
-        let daemon = within(Daemon::start(args, options))
-            .await
-            .expect("daemon starts");
-        let endpoint_file = daemon.endpoint_file().to_path_buf();
-        let session = daemon.orchestrator().session_id.to_string();
-        let created = daemon.orchestrator().created;
-        let (stop, stopped) = tokio::sync::oneshot::channel();
-        let task = tokio::spawn(daemon.serve_until(async move {
-            let _ = stopped.await;
-        }));
-        Self {
-            stop,
-            task,
-            endpoint_file,
-            session,
-            created,
-        }
-    }
-
-    fn endpoint(&self) -> Endpoint {
-        Endpoint::read(&self.endpoint_file).unwrap()
-    }
-
-    async fn connect(&self) -> Client {
-        Client::attach(&self.endpoint()).await
-    }
-
-    async fn stop(self) {
-        let _ = self.stop.send(());
-        within(self.task).await.unwrap().expect("clean shutdown");
-    }
+/// A raw JSON-RPC client on `daemon`.
+async fn connect(daemon: &Running) -> Client {
+    Client::attach(&daemon.endpoint()).await
 }
 
 /// A JSON-RPC client over one connection.
@@ -261,7 +186,7 @@ async fn a_client_attaches_and_finds_the_orchestrator() {
             .mode();
         assert_eq!(mode & 0o777, 0o600);
     }
-    let mut client = daemon.connect().await;
+    let mut client = connect(&daemon).await;
     let members = client.ok("mob/members", json!({"mob_id": MOB_ID})).await;
     assert!(members_include_orchestrator(&members), "{members}");
     let status = client.ok("mob/member_status", member()).await;
@@ -305,7 +230,7 @@ async fn a_connection_without_the_token_never_reaches_the_router() {
         assert_eq!(read, 0, "{request}: answered after the refusal: {rest}");
     }
     // The daemon still serves a client that holds the token.
-    let mut client = daemon.connect().await;
+    let mut client = connect(&daemon).await;
     let members = client.ok("mob/members", json!({"mob_id": MOB_ID})).await;
     assert!(members_include_orchestrator(&members), "{members}");
     daemon.stop().await;
@@ -316,8 +241,8 @@ async fn a_turn_streams_to_every_attached_client() {
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![Step::Text("hello from the orchestrator")]);
     let daemon = Running::start(&ws.root, &llm).await;
-    let mut first = daemon.connect().await;
-    let mut second = daemon.connect().await;
+    let mut first = connect(&daemon).await;
+    let mut second = connect(&daemon).await;
     let first_stream = first.open_stream().await;
     let second_stream = second.open_stream().await;
     first.ok("mob/turn_start", turn("say hello")).await;
@@ -339,7 +264,7 @@ async fn a_client_leaving_mid_turn_leaves_the_turn_running() {
         Box::new(Step::Text("finished without you")),
     )]);
     let daemon = Running::start(&ws.root, &llm).await;
-    let mut client = daemon.connect().await;
+    let mut client = connect(&daemon).await;
     let _ = client.open_stream().await;
     // `mob/turn_start` is request-scoped: it answers when the turn ends,
     // and its connection closing cancels the run. `mob/member_send` hands
@@ -357,7 +282,7 @@ async fn a_client_leaving_mid_turn_leaves_the_turn_running() {
     gate.notify_one();
     // A new client catches up from the member's durable session events
     // (`mob/stream_open` has no cursor): the turn ran to its end.
-    let mut client = daemon.connect().await;
+    let mut client = connect(&daemon).await;
     let status = client.ok("mob/member_status", member()).await;
     assert_eq!(
         status["current_session_id"],
@@ -399,7 +324,7 @@ async fn the_orchestrator_has_the_tui_file_tools() {
         Step::Text("read it"),
     ]);
     let daemon = Running::start(&ws.root, &llm).await;
-    let mut client = daemon.connect().await;
+    let mut client = connect(&daemon).await;
     let stream = client.open_stream().await;
     client.ok("mob/turn_start", turn("read notes.txt")).await;
     client.run_completed(&stream).await;
@@ -470,10 +395,17 @@ async fn the_orchestrator_shell_runs_confined() {
         Step::Text("ran it"),
     ]);
     let args = args_with(&ws.root, &["--confinement=workspace"]);
-    let daemon = Running::start_args(&args, &llm, Some(HostPaths::detect()), None).await;
+    let daemon = Running::start_with(
+        &args,
+        DaemonOptions::default().with_bootstrap(BootstrapOptions {
+            host_paths: Some(HostPaths::detect()),
+            ..Running::bootstrap(&llm)
+        }),
+    )
+    .await;
     assert_eq!(daemon.endpoint_file, default);
     let token = daemon.endpoint().token;
-    let mut client = daemon.connect().await;
+    let mut client = connect(&daemon).await;
     let stream = client.open_stream().await;
     client.ok("mob/turn_start", turn("echo")).await;
     client.run_completed(&stream).await;
@@ -543,7 +475,7 @@ async fn a_restarted_daemon_restores_the_orchestrator_with_its_tools() {
     let llm = ScriptedLlmClient::new(vec![Step::Text("first life")]);
     let daemon = Running::start(&ws.root, &llm).await;
     let first_session = daemon.session.clone();
-    let mut client = daemon.connect().await;
+    let mut client = connect(&daemon).await;
     let stream = client.open_stream().await;
     client.ok("mob/turn_start", turn("one")).await;
     client.run_completed(&stream).await;
@@ -564,7 +496,7 @@ async fn a_restarted_daemon_restores_the_orchestrator_with_its_tools() {
         "the orchestrator is restored, not spawned again"
     );
     assert_eq!(daemon.session, first_session);
-    let mut client = daemon.connect().await;
+    let mut client = connect(&daemon).await;
     let members = client.ok("mob/members", json!({"mob_id": MOB_ID})).await;
     assert!(members_include_orchestrator(&members), "{members}");
     let stream = client.open_stream().await;

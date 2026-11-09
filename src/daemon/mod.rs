@@ -330,7 +330,6 @@ pub struct Daemon {
     lease: Option<RealmLeaseGuard>,
     listener: serve::Listener,
     scope: RuntimeScope,
-    engine: Arc<crate::approval::ApprovalEngine>,
     desk: Arc<approvals::Desk>,
     origins: Arc<approvals::DaemonToolOrigins>,
     local: Arc<local::Local>,
@@ -449,7 +448,6 @@ impl Daemon {
             lease: Some(composed.lease),
             listener,
             scope: composed.scope,
-            engine: composed.engine,
             desk: composed.desk,
             origins: Arc::clone(&composed.origins),
             local,
@@ -461,12 +459,6 @@ impl Daemon {
                 watcher,
             ],
         })
-    }
-
-    /// The approval engine every member's gate shares.
-    #[must_use]
-    pub fn approval_engine(&self) -> &Arc<crate::approval::ApprovalEngine> {
-        &self.engine
     }
 
     /// Where escalations wait for their decision.
@@ -503,12 +495,6 @@ impl Daemon {
     #[must_use]
     pub fn runtime(&self) -> &Arc<SessionRuntime> {
         &self.runtime
-    }
-
-    /// The mob host.
-    #[must_use]
-    pub fn mob_state(&self) -> &Arc<MobMcpState> {
-        &self.state
     }
 
     /// The realm and workspace the daemon serves.

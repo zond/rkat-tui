@@ -220,18 +220,6 @@ impl SessionCost {
         self.confidence = self.confidence.and(CostConfidence::Unmeasured);
     }
 
-    /// All input and output tokens counted, cache tokens included (as the
-    /// session's `total_usage` counts them).
-    #[must_use]
-    pub fn token_sum(&self) -> u64 {
-        self.per_model.values().fold(0_u64, |sum, t| {
-            sum.saturating_add(t.input)
-                .saturating_add(t.output)
-                .saturating_add(t.cache_read)
-                .saturating_add(t.cache_write)
-        })
-    }
-
     /// Reconcile the recorded totals with the session's authoritative
     /// cumulative `usage`: usage the record does not account for (calls
     /// another surface made, a compaction published after the TUI stopped

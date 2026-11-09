@@ -747,13 +747,6 @@ impl EndpointRegistry {
         self.endpoints.is_empty()
     }
 
-    /// The endpoint used when nothing else selects one: the first built-in
-    /// (anthropic, openai, gemini), else the first configured endpoint.
-    #[must_use]
-    pub fn default_endpoint(&self) -> Option<&Endpoint> {
-        self.endpoints.first()
-    }
-
     /// Endpoint names, in [`Self::iter`] order.
     #[must_use]
     pub fn names(&self) -> Vec<String> {

@@ -6,36 +6,31 @@
 //! runs in-process with a scripted LLM and a scripted classifier; the
 //! clients are attach runners driven through the UI's channels.
 
+#![cfg(feature = "mob")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;
+#[path = "common/attach.rs"]
+mod rig;
 
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use common::{
-    ScriptedLlmClient, Step, TIMEOUT, Workspace, args_for, endpoint_file_for, no_lists, within,
-};
+use common::{ScriptedLlmClient, Step, Workspace, args_for, endpoint_file_for, no_lists, within};
 use meerkat::LlmClient;
 use meerkat_core::Message;
 use meerkat_core::types::ToolResult;
 use parking_lot::Mutex;
+use rig::{Client, Running};
 use rkat_tui::approval::classifier::{
     ActionClassifier, ClassifierError, ClassifierInput, ClassifierVerdict,
 };
 use rkat_tui::approval::mode::PermissionMode;
 use rkat_tui::bootstrap::{ApprovalOverrides, BootstrapOptions, HostPaths};
-use rkat_tui::cli::AttachMode;
-use rkat_tui::client::testing::{AttachHarness, spawn_attach_runner};
-use rkat_tui::client::transport::Connection;
-use rkat_tui::daemon::endpoint::Endpoint;
 use rkat_tui::daemon::{Daemon, DaemonError, DaemonOptions};
-use rkat_tui::ui::{
-    Effect, EscalationAnswer, EscalationId, EscalationPrompt, Msg, RuleEffect, StatusUpdate,
-    TurnOutcome,
-};
+use rkat_tui::ui::{Effect, EscalationAnswer, Msg, RuleEffect, StatusUpdate};
 use serde_json::{Value, json};
 
 /// A classifier that replays verdicts (allow when the script is empty).
@@ -96,177 +91,40 @@ impl Setup {
     }
 }
 
-/// A daemon serving in the background.
-struct Running {
-    stop: tokio::sync::oneshot::Sender<()>,
-    task: tokio::task::JoinHandle<Result<(), DaemonError>>,
-    endpoint_file: std::path::PathBuf,
-    origins: Arc<rkat_tui::daemon::approvals::DaemonToolOrigins>,
-}
-
-impl Running {
-    async fn start(root: &Path, llm: &Arc<ScriptedLlmClient>, setup: &Setup) -> Self {
-        let daemon = within(Self::try_start(root, llm, setup))
-            .await
-            .expect("daemon starts");
-        Self::serve(daemon)
-    }
-
-    async fn try_start(
-        root: &Path,
-        llm: &Arc<ScriptedLlmClient>,
-        setup: &Setup,
-    ) -> Result<Daemon, DaemonError> {
-        let args = if setup.user_root_outside {
-            args_with_user_root(root)
-        } else {
-            args_for(root)
-        };
-        Daemon::start(
-            &args,
-            setup
-                .options(llm)
-                .with_endpoint_file(endpoint_file_for(root)),
-        )
+/// Start a daemon with `setup` and serve it in the background.
+async fn start(root: &Path, llm: &Arc<ScriptedLlmClient>, setup: &Setup) -> Running {
+    let daemon = within(try_start(root, llm, setup))
         .await
-    }
-
-    fn serve(daemon: Daemon) -> Self {
-        let endpoint_file = daemon.endpoint_file().to_path_buf();
-        let origins = Arc::clone(daemon.tool_origins());
-        let (stop, stopped) = tokio::sync::oneshot::channel();
-        let task = tokio::spawn(daemon.serve_until(async move {
-            let _ = stopped.await;
-        }));
-        Self {
-            stop,
-            task,
-            endpoint_file,
-            origins,
-        }
-    }
-
-    /// A raw connection to the daemon.
-    async fn connect(&self) -> Connection {
-        let endpoint = Endpoint::read(&self.endpoint_file).unwrap();
-        let (connection, _notes) = Connection::attach(&endpoint, Duration::from_secs(5))
-            .await
-            .unwrap();
-        connection
-    }
-
-    /// A raw connection to the daemon and its notifications.
-    async fn connect_with_notes(
-        &self,
-    ) -> (
-        Connection,
-        tokio::sync::mpsc::UnboundedReceiver<rkat_tui::client::transport::Notification>,
-    ) {
-        let endpoint = Endpoint::read(&self.endpoint_file).unwrap();
-        Connection::attach(&endpoint, Duration::from_secs(5))
-            .await
-            .unwrap()
-    }
-
-    async fn stop(self) {
-        let _ = self.stop.send(());
-        within(self.task).await.unwrap().expect("clean shutdown");
-    }
+        .expect("daemon starts");
+    Running::serve(daemon)
 }
 
-/// An attach runner and everything it said.
-struct Client {
-    harness: AttachHarness,
-    seen: Vec<Msg>,
+async fn try_start(
+    root: &Path,
+    llm: &Arc<ScriptedLlmClient>,
+    setup: &Setup,
+) -> Result<Daemon, DaemonError> {
+    let args = if setup.user_root_outside {
+        args_with_user_root(root)
+    } else {
+        args_for(root)
+    };
+    Daemon::start(
+        &args,
+        setup
+            .options(llm)
+            .with_endpoint_file(endpoint_file_for(root)),
+    )
+    .await
 }
 
-impl Client {
-    async fn attach(root: &Path) -> Self {
-        let mut config = rkat_tui::client::configure(&args_for(root), AttachMode::Existing)
-            .await
-            .unwrap();
-        config.endpoint_file = endpoint_file_for(root);
-        let mut client = Self {
-            harness: spawn_attach_runner(config),
-            seen: Vec::new(),
-        };
-        client
-            .wait_for(|msg| {
-                matches!(msg, Msg::Status(StatusUpdate::Attach(Some(state))) if state.starts_with("attached"))
-            })
-            .await;
-        // The daemon's mode reaches the status bar on attach.
-        client
-            .wait_for(|msg| matches!(msg, Msg::Status(StatusUpdate::Mode { .. })))
-            .await;
-        client
-    }
-
-    fn send(&self, effect: Effect) {
-        self.harness.effects.send(effect).unwrap();
-    }
-
-    async fn wait_for(&mut self, pred: impl Fn(&Msg) -> bool) -> Msg {
-        let seen = &mut self.seen;
-        let rx = &mut self.harness.ui_rx;
-        let found = tokio::time::timeout(TIMEOUT, async {
-            loop {
-                let msg = rx.recv().await.expect("runner gone");
-                seen.push(msg.clone());
-                if pred(&msg) {
-                    return msg;
-                }
-            }
-        })
+/// Attach a client and wait for the daemon's mode in its status bar.
+async fn attach(root: &Path) -> Client {
+    let mut client = Client::attach(root).await;
+    client
+        .saw(|msg| matches!(msg, Msg::Status(StatusUpdate::Mode { .. })))
         .await;
-        match found {
-            Ok(msg) => msg,
-            Err(_) => {
-                let tail = &self.seen[self.seen.len().saturating_sub(20)..];
-                panic!("timed out; the last messages: {tail:#?}")
-            }
-        }
-    }
-
-    async fn turn_finished(&mut self) -> TurnOutcome {
-        match self
-            .wait_for(|msg| matches!(msg, Msg::TurnFinished(_)))
-            .await
-        {
-            Msg::TurnFinished(outcome) => outcome,
-            _ => unreachable!(),
-        }
-    }
-
-    async fn escalation(&mut self) -> (EscalationPrompt, EscalationId) {
-        match self
-            .wait_for(|msg| matches!(msg, Msg::Escalation(..)))
-            .await
-        {
-            Msg::Escalation(prompt, id) => (prompt, id),
-            _ => unreachable!(),
-        }
-    }
-
-    fn escalations(&self) -> usize {
-        self.seen
-            .iter()
-            .filter(|msg| matches!(msg, Msg::Escalation(..)))
-            .count()
-    }
-
-    async fn set_mode(&mut self, mode: PermissionMode) {
-        self.send(Effect::SetMode(mode));
-        self.wait_for(|msg| {
-            matches!(msg, Msg::Status(StatusUpdate::Mode { mode: shown, .. }) if *shown == mode)
-        })
-        .await;
-    }
-
-    async fn quit(self) {
-        self.send(Effect::Quit);
-        within(self.harness.task).await.unwrap();
-    }
+    client
 }
 
 fn tool_result(messages: &[Message], id: &str) -> ToolResult {
@@ -330,8 +188,8 @@ async fn a_tier_one_call_runs_without_a_prompt() {
         Step::Text("read it"),
     ]);
     let setup = Setup::default();
-    let daemon = Running::start(&ws.root, &llm, &setup).await;
-    let mut client = Client::attach(&ws.root).await;
+    let daemon = start(&ws.root, &llm, &setup).await;
+    let mut client = attach(&ws.root).await;
     client.send(Effect::StartTurn("read notes.txt".into()));
     assert_eq!(client.turn_finished().await.result.unwrap().text, "read it");
     assert!(result_text(&llm, 1, "r1").contains("TIER-ONE-CONTENT"));
@@ -351,8 +209,8 @@ async fn a_reviewed_call_shows_the_dialog_and_runs_after_approve() {
         write("w1", "a.txt", "APPROVED"),
         Step::Text("written"),
     ]);
-    let daemon = Running::start(&ws.root, &llm, &Setup::default()).await;
-    let mut client = Client::attach(&ws.root).await;
+    let daemon = start(&ws.root, &llm, &Setup::default()).await;
+    let mut client = attach(&ws.root).await;
     client.set_mode(PermissionMode::Manual).await;
     client.send(Effect::StartTurn("write a.txt".into()));
     let (prompt, id) = client.escalation().await;
@@ -387,8 +245,8 @@ async fn a_reviewed_call_shows_the_dialog_and_runs_after_approve() {
 async fn deny_with_a_comment_refuses_and_the_comment_reaches_the_model() {
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![write("w1", "a.txt", "NO"), Step::Text("ok")]);
-    let daemon = Running::start(&ws.root, &llm, &Setup::default()).await;
-    let mut client = Client::attach(&ws.root).await;
+    let daemon = start(&ws.root, &llm, &Setup::default()).await;
+    let mut client = attach(&ws.root).await;
     client.set_mode(PermissionMode::Manual).await;
     client.send(Effect::StartTurn("write a.txt".into()));
     let (_, id) = client.escalation().await;
@@ -426,8 +284,8 @@ async fn allow_and_add_rule_skips_the_dialog_the_second_time() {
         shell("s2"),
         Step::Text("second"),
     ]);
-    let daemon = Running::start(&ws.root, &llm, &Setup::default()).await;
-    let mut client = Client::attach(&ws.root).await;
+    let daemon = start(&ws.root, &llm, &Setup::default()).await;
+    let mut client = attach(&ws.root).await;
     client.set_mode(PermissionMode::Manual).await;
     client.send(Effect::StartTurn("touch the marker".into()));
     let (prompt, id) = client.escalation().await;
@@ -468,8 +326,8 @@ async fn an_unanswered_request_times_out_denied_and_the_ui_recovers() {
         escalation_timeout: Some(Duration::from_secs(1)),
         ..Setup::default()
     };
-    let daemon = Running::start(&ws.root, &llm, &setup).await;
-    let mut client = Client::attach(&ws.root).await;
+    let daemon = start(&ws.root, &llm, &setup).await;
+    let mut client = attach(&ws.root).await;
     client.set_mode(PermissionMode::Manual).await;
     client.send(Effect::StartTurn("write a.txt".into()));
     let (_, id) = client.escalation().await;
@@ -496,9 +354,9 @@ async fn an_unanswered_request_times_out_denied_and_the_ui_recovers() {
 async fn two_clients_see_the_same_request_and_the_first_answer_wins() {
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![write("w1", "a.txt", "FIRST"), Step::Text("done")]);
-    let daemon = Running::start(&ws.root, &llm, &Setup::default()).await;
-    let mut first = Client::attach(&ws.root).await;
-    let mut second = Client::attach(&ws.root).await;
+    let daemon = start(&ws.root, &llm, &Setup::default()).await;
+    let mut first = attach(&ws.root).await;
+    let mut second = attach(&ws.root).await;
     first.set_mode(PermissionMode::Manual).await;
     first.send(Effect::StartTurn("write a.txt".into()));
     let (prompt_a, id_a) = first.escalation().await;
@@ -543,8 +401,8 @@ async fn auto_mode_needs_no_dialog_and_plan_mode_refuses_writes() {
         Step::Text("planned"),
     ]);
     let setup = Setup::default();
-    let daemon = Running::start(&ws.root, &llm, &setup).await;
-    let mut client = Client::attach(&ws.root).await;
+    let daemon = start(&ws.root, &llm, &setup).await;
+    let mut client = attach(&ws.root).await;
     client.set_mode(PermissionMode::Auto).await;
     client.send(Effect::StartTurn("touch the marker".into()));
     assert_eq!(
@@ -577,8 +435,8 @@ async fn auto_mode_needs_no_dialog_and_plan_mode_refuses_writes() {
 async fn a_deny_rule_added_in_attach_mode_refuses_the_next_call() {
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![write("w1", "a.txt", "NO"), Step::Text("refused")]);
-    let daemon = Running::start(&ws.root, &llm, &Setup::default()).await;
-    let mut client = Client::attach(&ws.root).await;
+    let daemon = start(&ws.root, &llm, &Setup::default()).await;
+    let mut client = attach(&ws.root).await;
     client.send(Effect::AddRule {
         effect: RuleEffect::Deny,
         tool: "write_file".into(),
@@ -643,8 +501,8 @@ async fn a_helpers_reviewed_call_raises_an_approval_too() {
         }
     }));
     let llm = ScriptedLlmClient::new(vec![step.clone(), step.clone(), step.clone(), step]);
-    let daemon = Running::start(&ws.root, &llm, &Setup::default()).await;
-    let mut client = Client::attach(&ws.root).await;
+    let daemon = start(&ws.root, &llm, &Setup::default()).await;
+    let mut client = attach(&ws.root).await;
     client.set_mode(PermissionMode::Manual).await;
     client.send(Effect::StartTurn("have a helper write helper.txt".into()));
     // Manual mode asks for the spawn as well; then the helper's write asks,
@@ -682,8 +540,8 @@ async fn a_restarted_daemon_keeps_the_application_policy_binding() {
         Step::Text("refused after restart"),
     ]);
     let setup = Setup::default();
-    let daemon = Running::start(&ws.root, &llm, &setup).await;
-    let mut client = Client::attach(&ws.root).await;
+    let daemon = start(&ws.root, &llm, &setup).await;
+    let mut client = attach(&ws.root).await;
     client.send(Effect::StartTurn("hello".into()));
     client.turn_finished().await.result.unwrap();
     client.send(Effect::AddRule {
@@ -703,13 +561,13 @@ async fn a_restarted_daemon_keeps_the_application_policy_binding() {
         without_registry: true,
         ..setup.clone()
     };
-    let refused = within(Running::try_start(&ws.root, &llm, &bare)).await;
+    let refused = within(try_start(&ws.root, &llm, &bare)).await;
     let refusal = match refused {
         Err(err) => Some(err.to_string()),
         Ok(daemon) => {
             // Started: the rebuild is lazy; the next turn shows the refusal.
             let running = Running::serve(daemon);
-            let mut client = Client::attach(&ws.root).await;
+            let mut client = attach(&ws.root).await;
             client.send(Effect::StartTurn("try".into()));
             let outcome = client.turn_finished().await;
             client.quit().await;
@@ -728,8 +586,8 @@ async fn a_restarted_daemon_keeps_the_application_policy_binding() {
 
     // With the registry the member rebuilds bound, and the deny rule (the
     // realm's) is enforced.
-    let daemon = Running::start(&ws.root, &llm, &setup).await;
-    let mut client = Client::attach(&ws.root).await;
+    let daemon = start(&ws.root, &llm, &setup).await;
+    let mut client = attach(&ws.root).await;
     client.send(Effect::StartTurn("write a.txt".into()));
     assert_eq!(
         client.turn_finished().await.result.unwrap().text,
@@ -744,7 +602,7 @@ async fn a_restarted_daemon_keeps_the_application_policy_binding() {
 async fn the_local_methods_answer_before_the_engine() {
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![]);
-    let daemon = Running::start(&ws.root, &llm, &Setup::default()).await;
+    let daemon = start(&ws.root, &llm, &Setup::default()).await;
     let connection = daemon.connect().await;
     let status = connection.call("rkat/get_mode", json!({})).await.unwrap();
     assert_eq!(status["mode"], "auto", "{status}");
@@ -835,7 +693,7 @@ async fn a_helpers_shell_is_judged_as_the_native_shell() {
         Step::Text("parent done"),
     ]);
     let setup = Setup::default();
-    let daemon = Running::start(&ws.root, &llm, &setup).await;
+    let daemon = start(&ws.root, &llm, &setup).await;
     let connection = daemon.connect().await;
     let added = connection
         .call(
@@ -880,7 +738,7 @@ async fn plan_mode_survives_a_restart_and_leaving_it_is_announced() {
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![Step::Text("in plan"), Step::Text("out of plan")]);
     let setup = Setup::default();
-    let daemon = Running::start(&ws.root, &llm, &setup).await;
+    let daemon = start(&ws.root, &llm, &setup).await;
     let connection = daemon.connect().await;
     let set = connection
         .call("rkat/set_mode", json!({"mode": "plan"}))
@@ -890,7 +748,7 @@ async fn plan_mode_survives_a_restart_and_leaving_it_is_announced() {
     drop(connection);
     daemon.stop().await;
 
-    let daemon = Running::start(&ws.root, &llm, &setup).await;
+    let daemon = start(&ws.root, &llm, &setup).await;
     let connection = daemon.connect().await;
     let mode = connection.call("rkat/get_mode", json!({})).await.unwrap();
     assert_eq!(mode["mode"], "plan", "{mode}");
@@ -956,7 +814,7 @@ args = ["-c", "printf entered > \"$1\"; cat >/dev/null; printf '{{}}'", "hook-pr
         user_root_outside: true,
         ..Setup::default()
     };
-    let daemon = Running::start(&ws.root, &llm, &setup).await;
+    let daemon = start(&ws.root, &llm, &setup).await;
     let connection = daemon.connect().await;
     // `rkat/trust` names its op; there is no list form (as in-process).
     for params in [json!({}), json!({"op": "list"})] {
@@ -966,7 +824,7 @@ args = ["-c", "printf entered > \"$1\"; cat >/dev/null; printf '{{}}'", "hook-pr
             "{params}: {refused:?}"
         );
     }
-    let mut client = Client::attach(&ws.root).await;
+    let mut client = attach(&ws.root).await;
     client.send(Effect::StartTurn("read notes.txt".into()));
     client.turn_finished().await.result.unwrap();
     assert!(!marker.exists(), "an untrusted project hook does not run");
@@ -995,9 +853,9 @@ args = ["-c", "printf entered > \"$1\"; cat >/dev/null; printf '{{}}'", "hook-pr
     drop(connection);
     daemon.stop().await;
 
-    let daemon = Running::start(&ws.root, &llm, &setup).await;
+    let daemon = start(&ws.root, &llm, &setup).await;
     let connection = daemon.connect().await;
-    let mut client = Client::attach(&ws.root).await;
+    let mut client = attach(&ws.root).await;
     client.send(Effect::StartTurn("read notes.txt again".into()));
     client.turn_finished().await.result.unwrap();
     assert!(marker.exists(), "the trusted hook ran on the rebuilt agent");
@@ -1047,7 +905,7 @@ async fn a_seated_helpers_catalog_is_read_after_its_first_run() {
         }
     }));
     let llm = ScriptedLlmClient::new(vec![step.clone(), step.clone(), step]);
-    let daemon = Running::start(&ws.root, &llm, &Setup::default()).await;
+    let daemon = start(&ws.root, &llm, &Setup::default()).await;
     let connection = daemon.connect().await;
     connection
         .call(
@@ -1094,7 +952,7 @@ async fn a_seated_helpers_catalog_is_read_after_its_first_run() {
 async fn overlapping_mode_changes_leave_the_plan_note_matching_the_mode() {
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![Step::Text("ok")]);
-    let daemon = Running::start(&ws.root, &llm, &Setup::default()).await;
+    let daemon = start(&ws.root, &llm, &Setup::default()).await;
     let a = daemon.connect().await;
     let b = daemon.connect().await;
     let calls = (0..12).map(|i| {
@@ -1150,8 +1008,8 @@ async fn next_note(
 async fn a_reviewed_call_is_pushed_as_a_decision_and_the_first_answer_wins() {
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![write("w1", "a.txt", "PUSHED"), Step::Text("done")]);
-    let daemon = Running::start(&ws.root, &llm, &Setup::default()).await;
-    let mut client = Client::attach(&ws.root).await;
+    let daemon = start(&ws.root, &llm, &Setup::default()).await;
+    let mut client = attach(&ws.root).await;
     let (raw, mut notes) = daemon.connect_with_notes().await;
     let caps = raw.call("initialize", json!({})).await.unwrap();
     let methods: Vec<&str> = caps["methods"]
@@ -1224,12 +1082,12 @@ async fn a_reviewed_call_is_pushed_as_a_decision_and_the_first_answer_wins() {
 async fn a_client_attaching_after_the_request_opened_is_shown_it() {
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![write("w1", "a.txt", "LATE"), Step::Text("done")]);
-    let daemon = Running::start(&ws.root, &llm, &Setup::default()).await;
-    let mut first = Client::attach(&ws.root).await;
+    let daemon = start(&ws.root, &llm, &Setup::default()).await;
+    let mut first = attach(&ws.root).await;
     first.set_mode(PermissionMode::Manual).await;
     first.send(Effect::StartTurn("write a.txt".into()));
     let (prompt_a, id_a) = first.escalation().await;
-    let mut late = Client::attach(&ws.root).await;
+    let mut late = attach(&ws.root).await;
     // Offered as the client attached (it may have arrived during attach).
     let shown = late.seen.iter().find_map(|msg| match msg {
         Msg::Escalation(prompt, id) => Some((prompt.clone(), *id)),
@@ -1269,8 +1127,8 @@ async fn a_restarted_daemon_withdraws_the_request_its_predecessor_left_open() {
         Step::Text("done"),
     ]);
     let setup = Setup::default();
-    let daemon = Running::start(&ws.root, &llm, &setup).await;
-    let mut client = Client::attach(&ws.root).await;
+    let daemon = start(&ws.root, &llm, &setup).await;
+    let mut client = attach(&ws.root).await;
     let (raw, mut notes) = daemon.connect_with_notes().await;
     client.set_mode(PermissionMode::Manual).await;
     client.send(Effect::StartTurn("write a.txt".into()));
@@ -1280,7 +1138,7 @@ async fn a_restarted_daemon_withdraws_the_request_its_predecessor_left_open() {
     drop(raw);
     client.quit().await;
     daemon.stop().await;
-    let daemon = Running::start(&ws.root, &llm, &setup).await;
+    let daemon = start(&ws.root, &llm, &setup).await;
     let (raw, mut notes) = daemon.connect_with_notes().await;
     let got = raw
         .call("decision/get", json!({"decision_id": decision}))
@@ -1333,8 +1191,8 @@ async fn a_fork_off_child_runs_behind_the_gate() {
         }
     }));
     let llm = ScriptedLlmClient::new(vec![step.clone(), step.clone(), step.clone(), step]);
-    let daemon = Running::start(&ws.root, &llm, &Setup::default()).await;
-    let mut client = Client::attach(&ws.root).await;
+    let daemon = start(&ws.root, &llm, &Setup::default()).await;
+    let mut client = attach(&ws.root).await;
     client.set_mode(PermissionMode::Manual).await;
     client.send(Effect::StartTurn("fork a child".into()));
     // `fork_off` itself runs in manual mode (the child is the helper the
@@ -1379,7 +1237,7 @@ async fn a_fork_off_child_runs_behind_the_gate() {
 async fn a_parameter_refusal_answers_its_request() {
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![]);
-    let daemon = Running::start(&ws.root, &llm, &Setup::default()).await;
+    let daemon = start(&ws.root, &llm, &Setup::default()).await;
     let raw = daemon.connect().await;
     for (method, params) in [
         ("mob/stop_member_run", json!({"mob_id": "tui", "bogus": 1})),

@@ -2,158 +2,24 @@
 //! `rkat-tui-mob` daemon started in-process with a scripted LLM, driven
 //! through the same `Effect`/`Msg` channels the UI uses.
 
+#![cfg(feature = "mob")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;
+#[path = "common/attach.rs"]
+mod rig;
 
-use std::path::Path;
 use std::sync::Arc;
 
-use common::{
-    ScriptedLlmClient, Step, TIMEOUT, Workspace, args_for, endpoint_file_for, no_lists, within,
-};
-use meerkat::LlmClient;
+use common::{ScriptedLlmClient, Step, Workspace, args_for, endpoint_file_for, no_lists, within};
 use meerkat_core::AgentEvent;
-use rkat_tui::bootstrap::{BootstrapOptions, HostPaths};
+use rig::{Client, Running};
 use rkat_tui::cli::AttachMode;
 use rkat_tui::client::catchup::CursorFile;
 use rkat_tui::client::runner::NOT_AVAILABLE;
 use rkat_tui::client::sessions::REWIND_UNAVAILABLE;
-use rkat_tui::client::testing::{AttachHarness, spawn_attach_runner};
-use rkat_tui::daemon::{Daemon, DaemonError, DaemonOptions};
-use rkat_tui::ui::{Effect, Msg, StatusUpdate, TurnFailure, TurnOutcome};
-
-/// A daemon serving in the background.
-struct Running {
-    stop: tokio::sync::oneshot::Sender<()>,
-    task: tokio::task::JoinHandle<Result<(), DaemonError>>,
-}
-
-impl Running {
-    async fn start(root: &Path, llm: &Arc<ScriptedLlmClient>) -> Self {
-        let options = DaemonOptions::default()
-            .with_bootstrap(BootstrapOptions {
-                llm_override: Some(Arc::clone(llm) as Arc<dyn LlmClient>),
-                lister: Some(no_lists()),
-                host_paths: Some(HostPaths::default()),
-                ..BootstrapOptions::default()
-            })
-            .with_endpoint_file(endpoint_file_for(root));
-        let daemon = within(Daemon::start(&args_for(root), options))
-            .await
-            .expect("daemon starts");
-        let (stop, stopped) = tokio::sync::oneshot::channel();
-        let task = tokio::spawn(daemon.serve_until(async move {
-            let _ = stopped.await;
-        }));
-        Self { stop, task }
-    }
-
-    async fn stop(self) {
-        let _ = self.stop.send(());
-        within(self.task).await.unwrap().expect("clean shutdown");
-    }
-}
-
-/// An attach runner and everything it said.
-struct Client {
-    harness: AttachHarness,
-    seen: Vec<Msg>,
-}
-
-impl Client {
-    async fn attach(root: &Path) -> Self {
-        let mut config = rkat_tui::client::configure(&args_for(root), AttachMode::Existing)
-            .await
-            .unwrap();
-        config.lister = no_lists();
-        config.endpoint_file = endpoint_file_for(root);
-        let mut client = Self {
-            harness: spawn_attach_runner(config),
-            seen: Vec::new(),
-        };
-        client.attached().await;
-        client
-    }
-
-    fn send(&self, effect: Effect) {
-        self.harness.effects.send(effect).unwrap();
-    }
-
-    async fn wait_for(&mut self, pred: impl Fn(&Msg) -> bool) -> Msg {
-        let seen = &mut self.seen;
-        let rx = &mut self.harness.ui_rx;
-        let found = tokio::time::timeout(TIMEOUT, async {
-            loop {
-                let msg = rx.recv().await.expect("runner gone");
-                seen.push(msg.clone());
-                if pred(&msg) {
-                    return msg;
-                }
-            }
-        })
-        .await;
-        match found {
-            Ok(msg) => msg,
-            Err(_) => {
-                let tail = &self.seen[self.seen.len().saturating_sub(15)..];
-                panic!("timed out; the last messages: {tail:#?}")
-            }
-        }
-    }
-
-    async fn attached(&mut self) {
-        self.wait_for(|msg| {
-            matches!(msg, Msg::Status(StatusUpdate::Attach(Some(state))) if state.starts_with("attached"))
-        })
-        .await;
-    }
-
-    async fn turn_finished(&mut self) -> TurnOutcome {
-        match self
-            .wait_for(|msg| matches!(msg, Msg::TurnFinished(_)))
-            .await
-        {
-            Msg::TurnFinished(outcome) => outcome,
-            _ => unreachable!(),
-        }
-    }
-
-    /// The agent events seen so far.
-    fn events(&self) -> Vec<&AgentEvent> {
-        self.seen
-            .iter()
-            .filter_map(|msg| match msg {
-                Msg::Agent(env) => Some(&env.payload),
-                _ => None,
-            })
-            .collect()
-    }
-
-    /// How many `text_complete` events with `text` were seen.
-    fn texts(&self, text: &str) -> usize {
-        self.events()
-            .iter()
-            .filter(|event| matches!(event, AgentEvent::TextComplete { content, .. } if content == text))
-            .count()
-    }
-
-    fn notices(&self) -> String {
-        self.seen
-            .iter()
-            .filter_map(|msg| match msg {
-                Msg::Notice { text, .. } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    async fn quit(self) {
-        self.send(Effect::Quit);
-        within(self.harness.task).await.unwrap();
-    }
-}
+use rkat_tui::client::testing::spawn_attach_runner;
+use rkat_tui::ui::{Effect, Msg, StatusUpdate, TurnFailure};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_prompt_is_answered_and_rendered() {

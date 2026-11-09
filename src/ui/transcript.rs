@@ -1244,22 +1244,6 @@ impl Transcript {
         total
     }
 
-    /// The first laid-out line of block `id`, as of the last
-    /// [`Self::ensure_layout`].
-    pub fn first_line_of(&self, id: BlockId) -> Option<usize> {
-        if id.0 >= self.layout.len() {
-            return None;
-        }
-        Some(
-            self.layout
-                .iter()
-                .take(id.0)
-                .flatten()
-                .map(|c| c.lines.len())
-                .sum(),
-        )
-    }
-
     /// Lines `[start, start + len)` of the laid-out transcript. Call [`Self::ensure_layout`] first.
     pub fn visible_lines(&self, start: usize, len: usize) -> Vec<Line<'static>> {
         self.layout

@@ -24,15 +24,3 @@ pub use tools::{
     NOTE_FORGET, NOTE_LIST, NOTE_READ, NOTE_SAVE, NOTE_TOOL_NAMES, NOTES_SOURCE, NoteToolDispatcher,
 };
 
-/// Transitional alias; remove once callers use the `NOTE_*` names.
-pub const MEMORY_SAVE: &str = NOTE_SAVE;
-/// Transitional alias; remove once callers use the `NOTE_*` names.
-pub const MEMORY_READ: &str = NOTE_READ;
-/// Transitional alias; remove once callers use the `NOTE_*` names.
-pub const MEMORY_FORGET: &str = NOTE_FORGET;
-/// Transitional alias; remove once callers use the `NOTE_*` names.
-pub const MEMORY_LIST: &str = NOTE_LIST;
-/// Transitional alias; remove once callers use the `NOTE_*` names.
-pub const MEMORY_TOOL_NAMES: &[&str] = NOTE_TOOL_NAMES;
-/// Transitional alias; remove once callers use the `NoteToolDispatcher` name.
-pub type MemoryToolDispatcher = NoteToolDispatcher;
