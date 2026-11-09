@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use meerkat_core::Provider;
+use meerkat_core::provider_matrix::{AnthropicBackendKind, GoogleBackendKind, OpenAiBackendKind};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
@@ -21,14 +22,8 @@ use crate::endpoints::{Endpoint, ModelIndex, SecretString, WireDialect};
 use crate::http::{CappedReadError, read_capped};
 use crate::pricing::ModelPrice;
 
-/// Default Anthropic API base (mirrors `meerkat-client`).
-const ANTHROPIC_DEFAULT_BASE: &str = "https://api.anthropic.com";
 /// Anthropic API version header value (mirrors `meerkat-client`).
 const ANTHROPIC_VERSION: &str = "2023-06-01";
-/// Default OpenAI API base (mirrors `meerkat-client`).
-const OPENAI_DEFAULT_BASE: &str = "https://api.openai.com";
-/// Default Gemini API base (mirrors `meerkat-client`).
-const GEMINI_DEFAULT_BASE: &str = "https://generativelanguage.googleapis.com";
 /// Upper bound on followed pages, so a misbehaving endpoint cannot loop forever.
 const MAX_PAGES: usize = 20;
 /// Largest model-list page accepted (a few hundred models is ~100 KiB).
@@ -139,10 +134,29 @@ pub async fn list_models(
     let client = builder.build()?;
     match creds.provider {
         Provider::Anthropic => {
-            list_anthropic(&client, &base(ANTHROPIC_DEFAULT_BASE), &creds.api_key).await
+            list_anthropic(
+                &client,
+                &base(AnthropicBackendKind::AnthropicApi.default_base_url()),
+                &creds.api_key,
+            )
+            .await
         }
-        Provider::OpenAI => list_openai(&client, &base(OPENAI_DEFAULT_BASE), &creds.api_key).await,
-        Provider::Gemini => list_gemini(&client, &base(GEMINI_DEFAULT_BASE), &creds.api_key).await,
+        Provider::OpenAI => {
+            list_openai(
+                &client,
+                &base(OpenAiBackendKind::OpenAiApi.default_base_url()),
+                &creds.api_key,
+            )
+            .await
+        }
+        Provider::Gemini => {
+            list_gemini(
+                &client,
+                &base(GoogleBackendKind::GoogleGenAi.default_base_url()),
+                &creds.api_key,
+            )
+            .await
+        }
         other @ (Provider::SelfHosted | Provider::Other) => {
             Err(ListModelsError::Unsupported(other))
         }
