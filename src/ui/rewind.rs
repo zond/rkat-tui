@@ -9,7 +9,9 @@
 //! helper selection, puts the message's text back in the editor and says
 //! where the full conversation went.
 
-use ratatui::crossterm::event::KeyCode;
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+
+use super::modal::{ListCursor, ModalKey};
 
 use super::transcript::Block;
 
@@ -45,18 +47,7 @@ pub struct RewindMenu {
     /// The points, newest first.
     pub points: Vec<RewindPoint>,
     /// The highlighted point.
-    pub selected: usize,
-}
-
-/// What a key did in the [`RewindMenu`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RewindKey {
-    /// Nothing to act on yet (a move, or an unbound key).
-    Stay,
-    /// Rewind to this point.
-    Choose(RewindPoint),
-    /// Close the menu without rewinding.
-    Cancel,
+    pub cursor: ListCursor,
 }
 
 impl RewindMenu {
@@ -65,30 +56,38 @@ impl RewindMenu {
     pub fn new(points: Vec<RewindPoint>) -> Self {
         Self {
             points,
-            selected: 0,
+            cursor: ListCursor::default(),
         }
     }
 
-    /// ↑/↓ (or k/j) move, Enter chooses, Esc (or q) cancels.
-    pub fn key(&mut self, code: KeyCode) -> RewindKey {
-        match code {
+    /// ↑/↓ (or k/j) move, Enter rewinds to the highlighted point, Esc,
+    /// `q` or Ctrl-C close. A held key only moves.
+    pub fn key(&mut self, key: &KeyEvent) -> ModalKey<RewindPoint> {
+        let held = key.kind == KeyEventKind::Repeat;
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            return if held {
+                ModalKey::Stay
+            } else {
+                ModalKey::Close
+            };
+        }
+        match key.code {
+            KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q') if held => ModalKey::Stay,
             KeyCode::Up | KeyCode::Char('k') => {
-                self.selected = self.selected.saturating_sub(1);
-                RewindKey::Stay
+                self.cursor.up();
+                ModalKey::Stay
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                if self.selected + 1 < self.points.len() {
-                    self.selected += 1;
-                }
-                RewindKey::Stay
+                self.cursor.down(self.points.len());
+                ModalKey::Stay
             }
             KeyCode::Enter => self
                 .points
-                .get(self.selected)
+                .get(self.cursor.index())
                 .cloned()
-                .map_or(RewindKey::Cancel, RewindKey::Choose),
-            KeyCode::Esc | KeyCode::Char('q') => RewindKey::Cancel,
-            _ => RewindKey::Stay,
+                .map_or(ModalKey::Close, ModalKey::Choose),
+            KeyCode::Esc | KeyCode::Char('q') => ModalKey::Close,
+            _ => ModalKey::Stay,
         }
     }
 }
@@ -134,6 +133,10 @@ mod tests {
         }
     }
 
+    fn press(code: KeyCode) -> KeyEvent {
+        KeyEvent::from(code)
+    }
+
     #[test]
     fn the_menu_moves_chooses_and_cancels() {
         let mut menu = RewindMenu::new(vec![
@@ -141,24 +144,32 @@ mod tests {
             point(3, "second"),
             point(1, "first"),
         ]);
-        assert_eq!(menu.selected, 0);
-        assert_eq!(menu.key(KeyCode::Up), RewindKey::Stay);
-        assert_eq!(menu.selected, 0);
-        assert_eq!(menu.key(KeyCode::Down), RewindKey::Stay);
-        assert_eq!(menu.key(KeyCode::Char('j')), RewindKey::Stay);
-        assert_eq!(menu.key(KeyCode::Down), RewindKey::Stay);
-        assert_eq!(menu.selected, 2, "stops at the oldest");
-        assert_eq!(menu.key(KeyCode::Char('k')), RewindKey::Stay);
-        assert_eq!(menu.key(KeyCode::Char('x')), RewindKey::Stay);
+        assert_eq!(menu.cursor.index(), 0);
+        assert_eq!(menu.key(&press(KeyCode::Up)), ModalKey::Stay);
+        assert_eq!(menu.cursor.index(), 0);
+        assert_eq!(menu.key(&press(KeyCode::Down)), ModalKey::Stay);
+        assert_eq!(menu.key(&press(KeyCode::Char('j'))), ModalKey::Stay);
+        assert_eq!(menu.key(&press(KeyCode::Down)), ModalKey::Stay);
+        assert_eq!(menu.cursor.index(), 2, "stops at the oldest");
+        assert_eq!(menu.key(&press(KeyCode::Char('k'))), ModalKey::Stay);
+        assert_eq!(menu.key(&press(KeyCode::Char('x'))), ModalKey::Stay);
+        // A held Enter does not choose; a pressed one does.
+        let mut held = press(KeyCode::Enter);
+        held.kind = KeyEventKind::Repeat;
+        assert_eq!(menu.key(&held), ModalKey::Stay);
         assert_eq!(
-            menu.key(KeyCode::Enter),
-            RewindKey::Choose(point(3, "second"))
+            menu.key(&press(KeyCode::Enter)),
+            ModalKey::Choose(point(3, "second"))
         );
-        assert_eq!(menu.key(KeyCode::Esc), RewindKey::Cancel);
-        assert_eq!(menu.key(KeyCode::Char('q')), RewindKey::Cancel);
+        assert_eq!(menu.key(&press(KeyCode::Esc)), ModalKey::Close);
+        assert_eq!(menu.key(&press(KeyCode::Char('q'))), ModalKey::Close);
         assert_eq!(
-            RewindMenu::new(Vec::new()).key(KeyCode::Enter),
-            RewindKey::Cancel
+            menu.key(&KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            ModalKey::Close
+        );
+        assert_eq!(
+            RewindMenu::new(Vec::new()).key(&press(KeyCode::Enter)),
+            ModalKey::Close
         );
     }
 

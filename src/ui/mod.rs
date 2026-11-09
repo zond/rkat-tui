@@ -57,10 +57,10 @@ pub use history::History;
 pub use input::{InputEditor, StashOutcome};
 pub use keymap::{Action, EditAction};
 pub use modal::{
-    EscalationAnswer, EscalationDialog, EscalationId, Modal, ModelPicker, PlanChoice, PlanDialog,
-    ResumePicker,
+    EscalationAnswer, EscalationDialog, EscalationId, Modal, ModalKey, ModelPicker, PlanChoice,
+    PlanDialog, ResumePicker,
 };
-pub use rewind::{RewindKey, RewindMenu, RewindPoint, Rewound};
+pub use rewind::{RewindMenu, RewindPoint, Rewound};
 pub use runtime::{UiChannels, UiError, run_ui};
 pub use search::{HistorySearch, SearchOutcome};
 pub use selection::{CellPos, SelectMode, Selection};
@@ -2037,7 +2037,7 @@ impl App {
                 self.status.apply(update);
             }
             Msg::ShowResumePicker(items) => {
-                let picker = Modal::Resume(ResumePicker { items, selected: 0 });
+                let picker = Modal::Resume(ResumePicker::new(items));
                 match self.modal {
                     None | Some(Modal::Keys) => self.modal = Some(picker),
                     // Shown once the escalations are answered; replaces a
@@ -2448,119 +2448,56 @@ impl App {
     }
 
     fn modal_key(&mut self, key: &KeyEvent, now: Instant, fx: &mut Vec<Effect>) {
-        let ctrl_c =
-            key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c');
-        // A held key must not answer, select or close: repeats only move,
-        // edit the filter and type.
-        let repeat = key.kind == KeyEventKind::Repeat;
         match &mut self.modal {
             Some(Modal::Escalation { id, dialog, .. }) => {
                 let id = *id;
-                if repeat && !dialog.accepts_repeat(key.code) {
-                    return;
-                }
-                if ctrl_c {
-                    self.stop_all_escalations(fx);
-                    return;
-                }
-                if key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-                {
-                    return;
-                }
-                let Some(answer) = dialog.key(key.code) else {
-                    return;
-                };
-                fx.push(Effect::RespondEscalation(id, answer));
-                self.advance_escalation();
-            }
-            Some(Modal::Resume(picker)) => match key.code {
-                KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q') if repeat => {}
-                _ if ctrl_c && repeat => {}
-                _ if ctrl_c => self.modal = None,
-                KeyCode::Up | KeyCode::Char('k') => picker.up(),
-                KeyCode::Down | KeyCode::Char('j') => picker.down(),
-                KeyCode::Enter => {
-                    let selected = picker.selected_ref().map(str::to_string);
-                    self.modal = None;
-                    if let Some(r) = selected {
-                        fx.push(Effect::ResumeSession(r));
-                    }
-                }
-                KeyCode::Esc | KeyCode::Char('q') => self.modal = None,
-                _ => {}
-            },
-            Some(Modal::Rewind(menu)) => {
-                if repeat && matches!(key.code, KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q'))
-                {
-                    return;
-                }
-                if ctrl_c {
-                    if !repeat {
-                        self.modal = None;
-                    }
-                    return;
-                }
-                match menu.key(key.code) {
-                    RewindKey::Stay => {}
-                    RewindKey::Cancel => self.modal = None,
-                    RewindKey::Choose(point) => {
-                        self.modal = None;
-                        fx.push(Effect::Rewind(point));
+                match dialog.key(key) {
+                    ModalKey::Stay => {}
+                    ModalKey::Close => self.stop_all_escalations(fx),
+                    ModalKey::Choose(answer) => {
+                        fx.push(Effect::RespondEscalation(id, answer));
+                        self.advance_escalation();
                     }
                 }
             }
-            Some(Modal::Model(picker)) => match key.code {
-                KeyCode::Enter | KeyCode::Esc if repeat => {}
-                _ if ctrl_c && repeat => {}
-                _ if ctrl_c => self.modal = None,
-                KeyCode::Esc => self.modal = None,
-                KeyCode::Up => picker.up(),
-                KeyCode::Down => picker.down(),
-                KeyCode::Backspace => picker.pop_filter(),
-                KeyCode::Enter => {
-                    if let Some(model) = picker.selected_ref() {
-                        self.modal = None;
-                        let current = format!("{}:{}", self.status.provider, self.status.model);
-                        if model != current {
-                            self.switch_model(model, fx);
-                        }
+            Some(Modal::Resume(picker)) => match picker.key(key) {
+                ModalKey::Stay => {}
+                ModalKey::Close => self.modal = None,
+                ModalKey::Choose(reference) => {
+                    self.modal = None;
+                    fx.push(Effect::ResumeSession(reference));
+                }
+            },
+            Some(Modal::Rewind(menu)) => match menu.key(key) {
+                ModalKey::Stay => {}
+                ModalKey::Close => self.modal = None,
+                ModalKey::Choose(point) => {
+                    self.modal = None;
+                    fx.push(Effect::Rewind(point));
+                }
+            },
+            Some(Modal::Model(picker)) => match picker.key(key) {
+                ModalKey::Stay => {}
+                ModalKey::Close => self.modal = None,
+                ModalKey::Choose(model) => {
+                    self.modal = None;
+                    let current = format!("{}:{}", self.status.provider, self.status.model);
+                    if model != current {
+                        self.switch_model(model, fx);
                     }
                 }
-                KeyCode::Char(c)
-                    if !key
-                        .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-                {
-                    picker.push_filter(c);
-                }
-                _ => {}
             },
-            Some(Modal::PlanReady(dialog)) => {
-                if ctrl_c && !repeat {
-                    self.modal = None;
-                    return;
-                }
-                let moves = matches!(
-                    key.code,
-                    KeyCode::Up | KeyCode::Down | KeyCode::Char('j' | 'k')
-                );
-                if (repeat && !moves)
-                    || key
-                        .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-                {
-                    return;
-                }
-                if let Some(choice) = dialog.key(key.code) {
+            Some(Modal::PlanReady(dialog)) => match dialog.key(key) {
+                ModalKey::Stay => {}
+                ModalKey::Close => self.modal = None,
+                ModalKey::Choose(choice) => {
                     self.modal = None;
                     self.plan_chosen(choice, now, fx);
                 }
-            }
+            },
             // Any key closes the panel and is not typed; a held `?` does
             // not close what it just opened.
-            Some(Modal::Keys) if !repeat => self.modal = None,
+            Some(Modal::Keys) if key.kind != KeyEventKind::Repeat => self.modal = None,
             Some(Modal::Keys) | None => {}
         }
     }
@@ -6217,7 +6154,7 @@ mod tests {
         app.update(key(KeyCode::Enter));
         assert!(matches!(
             app.modal,
-            Some(Modal::Resume(ResumePicker { selected: 1, .. }))
+            Some(Modal::Resume(ResumePicker { cursor, .. })) if cursor.index() == 1
         ));
         assert_eq!(
             app.update(key(KeyCode::Enter)),
