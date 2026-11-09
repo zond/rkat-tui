@@ -293,3 +293,148 @@ async fn compact_now_compacts_at_the_next_turn() {
     client.quit().await;
     daemon.stop().await;
 }
+
+/// `--resume <ref>` attaches and switches the daemon to that conversation
+/// (a prompt on the command line goes to it, not to the one it left);
+/// `-c` attaches to the current one without a word; `--resume <ref>` of
+/// the current one says it is current already.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn resume_and_continue_choose_the_conversation_at_attach() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Text("one"),
+        Step::Text("two"),
+        Step::Text("three"),
+    ]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let first = daemon.session.to_string();
+    let mut client = Client::attach(&ws.root).await;
+    client.send(Effect::StartTurn("first".into()));
+    client.turn_finished().await.result.unwrap();
+    client.send(Effect::NewSession);
+    client.wait_for(|m| reset(m).is_some()).await;
+    client.send(Effect::StartTurn("second".into()));
+    client.turn_finished().await.result.unwrap();
+    client.quit().await;
+
+    // -c: the current (second) conversation, no switch.
+    let continued =
+        Client::attach_args(&ws.root, &common::args_with(&ws.root, &["-c"]), None).await;
+    let shown: Vec<&String> = continued
+        .seen
+        .iter()
+        .filter_map(|m| match m {
+            Msg::Status(rkat_tui::ui::StatusUpdate::Session(id)) => Some(id),
+            _ => None,
+        })
+        .collect();
+    assert!(shown.len() == 1 && *shown[0] != first, "{shown:?}");
+    assert!(
+        !continued.notices().contains("conversation"),
+        "{}",
+        continued.notices()
+    );
+    continued.quit().await;
+
+    // --resume <prefix of the first>: switched at attach, with its
+    // transcript; the held prompt lands in it.
+    let prefix = &first[..first.len() - 4];
+    let args = common::args_with(&ws.root, &["--resume", prefix]);
+    let mut config = rkat_tui::client::configure(&args, rkat_tui::cli::AttachMode::Existing)
+        .await
+        .unwrap();
+    config.lister = common::no_lists();
+    config.endpoint_files = vec![common::endpoint_file_for(&ws.root)];
+    let mut resumed = Client {
+        harness: rkat_tui::client::testing::spawn_attach_runner(config),
+        seen: Vec::new(),
+    };
+    resumed.send(Effect::StartTurn("third".into()));
+    let restored = resumed
+        .wait_for(|m| reset(m).is_some_and(|blocks| !blocks.is_empty()))
+        .await;
+    assert!(
+        reset(&restored)
+            .unwrap()
+            .iter()
+            .any(|b| matches!(b, Block::User { text } if text == "first")),
+        "{restored:?}"
+    );
+    resumed
+        .saw(|m| matches!(m, Msg::Notice { text, .. } if text.starts_with("resumed conversation")))
+        .await;
+    assert_eq!(resumed.turn_finished().await.result.unwrap().text, "three");
+    assert_eq!(user_texts(&llm.recorded()[2].messages), ["first", "third"]);
+    resumed.quit().await;
+
+    // --resume <the current one>: attached, and told it is current.
+    let args = common::args_with(&ws.root, &["--resume", &first]);
+    let mut again = Client::attach_args(&ws.root, &args, None).await;
+    again
+        .wait_for(
+            |m| matches!(m, Msg::Notice { text, .. } if text == "already in this conversation"),
+        )
+        .await;
+    again.quit().await;
+    daemon.stop().await;
+}
+
+/// The probe of P3 item 3: a session the in-process TUI created cannot
+/// become the daemon's conversation. `--resume <it>` attaches and says so
+/// plainly (with the in-process way to resume it); and the reason holds:
+/// even with the session put into the daemon's conversation log, the
+/// engine refuses to seat the member on it and the member stays on the
+/// conversation it had.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_in_process_session_cannot_be_seated_on_the_member() {
+    use rkat_tui::daemon::conversations::Log;
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![Step::Text("in-process"), Step::Text("daemon")]);
+    let mut rig = common::Rig::start(&ws.root, &llm, rkat_tui::runner::Start::New).await;
+    let in_process_id = rig.first_session.clone();
+    let in_process = in_process_id.to_string();
+    rig.send(Effect::StartTurn("hello in process".into()));
+    rig.turn_finished().await.result.unwrap();
+    rig.quit().await;
+
+    let daemon = Running::start(&ws.root, &llm).await;
+    let args = common::args_with(&ws.root, &["--resume", &in_process]);
+    let mut client = Client::attach_args(&ws.root, &args, None).await;
+    let expected = rkat_tui::client::sessions::not_a_daemon_conversation(&in_process);
+    client
+        .wait_for(|m| matches!(m, Msg::Notice { text, .. } if text.contains(&expected)))
+        .await;
+    client.quit().await;
+    daemon.stop().await;
+
+    // The engine's refusal, past the daemon's own log check.
+    let path = Log::path(&ws.root);
+    let mut log = Log::load(&path);
+    log.touch(&in_process_id);
+    log.save(&path).unwrap();
+    let daemon = Running::start(&ws.root, &llm).await;
+    let connection = daemon.connect().await;
+    let refused = connection
+        .call("rkat/resume", json!({"session_id": in_process}))
+        .await
+        .unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains("missing durable comms_name for resumed mob member"),
+        "{refused}"
+    );
+    let status = connection
+        .call(
+            "mob/member_status",
+            json!({"mob_id": "tui", "agent_identity": "main"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        status["current_session_id"],
+        json!(daemon.session.to_string())
+    );
+    drop(connection);
+    daemon.stop().await;
+}

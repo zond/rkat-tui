@@ -145,6 +145,8 @@ pub struct AttachConfig {
     pub config: Option<meerkat_core::Config>,
     /// How to start a missing daemon (`None`: `--attach=existing`).
     pub spawn: Option<SpawnPlan>,
+    /// Which conversation the first attach shows (`-c`, `--resume`).
+    pub start: super::StartAt,
     /// The start token handed to a daemon this client starts, presented
     /// on every attach: the daemon counts the client that started it as
     /// its owner (`/quit` then stops a daemon nobody detached from).
@@ -793,6 +795,13 @@ impl AttachRunner {
         self.refresh_tasks();
         if new_daemon {
             self.startup_notices();
+        }
+        if fresh {
+            match std::mem::replace(&mut self.config.start, super::StartAt::Current) {
+                super::StartAt::Current => {}
+                super::StartAt::Pick => self.show_resume_picker(),
+                super::StartAt::Resume(reference) => self.resume_session(reference),
+            }
         }
     }
 
@@ -2868,6 +2877,7 @@ mod tests {
             cursor: CursorFile::of_workspace(&scope.context_root),
             config: None,
             spawn: None,
+            start: super::super::StartAt::Current,
             start_token: None,
             user_shell: Err("none".into()),
             endpoints: EndpointRegistry::from_endpoints(Vec::new()),

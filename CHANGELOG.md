@@ -314,6 +314,12 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Changed
 
+- Attach mode: `-c` and `--resume` are no longer refused. `-c` (and
+  `--resume last`) attaches to the daemon's current conversation;
+  `--resume <ref>` attaches and switches the daemon to that conversation;
+  `--resume` alone opens the picker once attached. A session started
+  in-process cannot be resumed in the daemon; the message says so and
+  names `--no-attach --resume <ref>`.
 - `rkat-tui` now runs the agent in the workspace's `rkat-tui-mob` daemon
   by default: it attaches to the running daemon, or starts one and
   attaches. `--no-attach` hosts the agent in-process (the escape hatch);

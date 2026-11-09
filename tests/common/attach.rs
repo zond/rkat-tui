@@ -164,7 +164,16 @@ impl Client {
 
     /// Attach presenting `start_token` (the client that started the daemon).
     pub async fn attach_with(root: &Path, start_token: Option<&str>) -> Self {
-        let mut config = rkat_tui::client::configure(&args_for(root), AttachMode::Existing)
+        Self::attach_args(root, &args_for(root), start_token).await
+    }
+
+    /// Attach with these arguments (`-c`, `--resume`, …).
+    pub async fn attach_args(
+        root: &Path,
+        args: &rkat_tui::Args,
+        start_token: Option<&str>,
+    ) -> Self {
+        let mut config = rkat_tui::client::configure(args, AttachMode::Existing)
             .await
             .unwrap();
         config.start_token = start_token.map(str::to_string);

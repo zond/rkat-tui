@@ -1167,9 +1167,19 @@ is, and their output goes to the agent's context.
 **Quitting** detaches: the agent's turn goes on in the daemon, and so do
 the messages you typed mid-turn that the daemon took. Messages this TUI
 still held (queued, not yet sent) are saved to `<realm>/tui_unsent.txt`,
-as in-process, and the next start says so. `--resume` and `-c` are refused
-with `--attach` (the daemon's agent goes on with its current
-conversation): attach, then switch with `/resume`.
+as in-process, and the next start says so.
+
+**`-c` and `--resume` at start.** `-c` (and `--resume last`) attaches to
+the daemon's current conversation: with a daemon, the most recent
+conversation is the one it runs, so attaching is all it does.
+`--resume <ref>` attaches and switches the daemon to that conversation
+(`rkat/resume`, as `/resume <ref>`; a prompt on the command line goes to
+it), and says so when it is the current one already; `--resume` alone
+opens the picker once attached. A session started in-process
+(`--no-attach`) is not one of the daemon's conversations and cannot
+become one: the engine seats the daemon's agent only on sessions it ran
+as a mob member. `--resume <it>` says so and names the way to go on with
+it, `rkat-tui --no-attach --resume <ref>`.
 
 **Limits for now:**
 

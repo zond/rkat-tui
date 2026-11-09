@@ -3169,3 +3169,38 @@ start-up switch (item 3's `--resume <ref>`) runs, or the first connect
 failed (then they fail as before, with the connect error shown). Test:
 `attach::a_prompt_sent_before_the_attach_finished_is_held_until_it_did`
 (fails without the hold).
+
+### `-c` and `--resume` under attach; in-process sessions stay in-process
+
+Batch C refused `-c` and `--resume` in attach mode
+(`TuiError::AttachResume`). Now the first attach acts on them
+(`client::StartAt`, applied in `AttachRunner::connected` on the first
+link): `-c`, `--resume last`/`~`/`~0` and no flag attach to the daemon's
+current conversation (with a daemon, the most recent conversation is the
+one it runs; in-session `/resume last` keeps meaning the one before it);
+`--resume` alone shows the picker; `--resume <ref>` runs the same switch
+as `/resume <ref>` (`sessions::resolve` against `rkat/conversations`,
+then `rkat/resume`), and the command line's prompt is held until the
+switch ended (the hold of the entry above), so it lands in the resumed
+conversation.
+
+Probe: can the daemon seat its member on a session the in-process TUI
+created? An in-process runner (`Rig`) ran one turn and quit; the session
+was written into the daemon's `conversations.json` so that the daemon's
+own check (`SwitchError::Unknown`) let it through; a daemon started on
+the workspace was asked `rkat/resume` for it. The engine refused:
+`seating the orchestrator: internal error: missing durable comms_name
+for resumed mob member` (`MemberLaunchMode::Resume` needs the member
+binding a mob spawn records with the session; a plain runtime-backed
+session has none), and the daemon seated the member back on its previous
+conversation. Decision: no adoption now. A one-time adoption would have
+to copy the transcript into a fresh member session, which the engine
+offers no route for (mob-owned transcripts cannot be edited, see the
+`/rewind` entry), so such sessions keep the in-process path until P4
+decides their migration; `--resume <ref>` and `/resume <ref>` that match
+no daemon conversation say so and name `rkat-tui --no-attach --resume
+<ref>` (`sessions::not_a_daemon_conversation`). Tests:
+`attach_sessions::resume_and_continue_choose_the_conversation_at_attach`,
+`attach_sessions::an_in_process_session_cannot_be_seated_on_the_member`
+(pins the engine's refusal and the member staying where it was),
+`client::tests::the_start_flags_choose_the_first_conversation`.

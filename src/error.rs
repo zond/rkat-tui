@@ -173,15 +173,6 @@ pub enum TuiError {
     /// placed, or it cannot start).
     #[error(transparent)]
     Daemon(Box<crate::daemon::DaemonError>),
-    /// `--resume` or `--continue` with attach mode: the daemon's
-    /// orchestrator runs its own current conversation.
-    #[error(
-        "{flag} does not apply in attach mode: the daemon's agent goes on with its current conversation; attach, then switch with /resume (or pass --no-attach to resume it in this process)"
-    )]
-    AttachResume {
-        /// The flag given.
-        flag: &'static str,
-    },
 }
 
 impl TuiError {
@@ -208,7 +199,6 @@ impl TuiError {
             | Self::Approval(_)
             | Self::Confinement(_)
             | Self::ConfigDirCollision { .. }
-            | Self::AttachResume { .. }
             | Self::NotATerminal => 2,
             Self::Io { .. }
             | Self::Persistence(_)

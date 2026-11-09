@@ -15,6 +15,18 @@ use crate::daemon::conversations::Listed;
 /// Why `/rewind` is not offered in attach mode.
 pub const REWIND_UNAVAILABLE: &str = "/rewind is not available in attach mode yet: the engine refuses session/fork_at for a mob member's session, and its member forks (mob/fork_member, mob/fork_helper) seat the copy under a new identity rather than rewinding the conversation in place; a same-identity rewind is with the engine's maintainers as a design note (lukacf/meerkat#2126). /new starts over; the in-process TUI (--no-attach) rewinds";
 
+/// Why a session the daemon never ran cannot be resumed in it, and where
+/// it can be: a session the in-process TUI (`--no-attach`) created is no
+/// mob member's, and the engine refuses to seat the daemon's member on it
+/// (`missing durable comms_name for resumed mob member`, pinned by
+/// `attach_sessions::an_in_process_session_cannot_be_seated_on_the_member`).
+#[must_use]
+pub fn not_a_daemon_conversation(reference: &str) -> String {
+    format!(
+        "a session started in-process (--no-attach) cannot be resumed in the daemon: the engine seats the daemon's agent only on sessions it ran; resume it with rkat-tui --no-attach --resume {reference}"
+    )
+}
+
 /// How long ago `at` (Unix seconds) was, roughly.
 fn age(at: u64) -> String {
     let now = std::time::SystemTime::now()
@@ -100,7 +112,8 @@ pub fn resolve(reference: &str, listed: &[Listed]) -> Result<SessionId, String> 
     match (matches.next(), matches.next()) {
         (Some(only), None) => Ok(only.session_id.clone()),
         (None, _) => Err(format!(
-            "no conversation of this workspace matches `{reference}`"
+            "no conversation of this workspace's daemon matches `{reference}`; {}",
+            not_a_daemon_conversation(reference)
         )),
         (Some(_), Some(_)) => Err(format!(
             "prefix is ambiguous ({} conversations match); use more characters",

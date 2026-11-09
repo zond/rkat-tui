@@ -692,28 +692,6 @@ async fn a_reconnect_restarts_a_daemon_that_died() {
     client.quit().await;
 }
 
-/// The finding this guards: `--resume` and `-c` were silently ignored in
-/// attach mode.
-#[tokio::test]
-async fn resume_and_continue_are_refused_in_attach_mode() {
-    let ws = Workspace::new();
-    for (argv, flag) in [
-        (&["--attach=existing", "--resume", "last"][..], "--resume"),
-        (&["--attach=existing", "--resume"][..], "--resume"),
-        (&["--attach=existing", "-c"][..], "--continue"),
-    ] {
-        let err = rkat_tui::run(common::args_with(&ws.root, argv))
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(err, rkat_tui::TuiError::AttachResume { flag: given } if given == flag),
-            "{argv:?}: {err}"
-        );
-        assert!(err.to_string().contains("/resume"), "{err}");
-    }
-    assert!(rkat_tui::client::check_args(&args_for(&ws.root)).is_ok());
-}
-
 /// The findings this guards: attach mode never pushed prices (`/cost`
 /// showed `$?`) and its `!` hint said "sandbox" under `--no-confinement`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

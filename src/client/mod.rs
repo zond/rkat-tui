@@ -229,6 +229,7 @@ pub async fn configure_with(
         None => None,
     };
     Ok(AttachConfig {
+        start: StartAt::from_args(args),
         start_token,
         endpoint_files: {
             let files = crate::daemon::endpoint::candidates(&scope.context_root);
@@ -251,23 +252,33 @@ pub async fn configure_with(
     })
 }
 
-/// Refuse what attach mode cannot honour: the daemon's orchestrator runs
-/// the conversation it runs (switch with `/resume` once attached).
-///
-/// # Errors
-///
-/// [`TuiError::AttachResume`] for `--resume` or `-c`/`--continue`.
-pub fn check_args(args: &Args) -> Result<(), TuiError> {
-    let flag = if args.resume.is_some() {
-        Some("--resume")
-    } else if args.continue_last {
-        Some("--continue")
-    } else {
-        None
-    };
-    match flag {
-        Some(flag) => Err(TuiError::AttachResume { flag }),
-        None => Ok(()),
+/// Which conversation the first attach shows: `-c` and no flag the
+/// daemon's current one, `--resume` alone the picker, `--resume <ref>` a
+/// switch to `ref` (`rkat/resume`, as `/resume <ref>`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartAt {
+    /// The daemon's current conversation (`-c`, `--resume last`, none).
+    Current,
+    /// The resume picker over the daemon's conversations (`--resume`).
+    Pick,
+    /// Switch to this reference once attached (`--resume <ref>`).
+    Resume(String),
+}
+
+impl StartAt {
+    /// What `args` ask for. `-c` and `--resume last` (`~`, `~0`) name the
+    /// most recent conversation, which with a daemon is the one it runs:
+    /// attaching is all they do.
+    #[must_use]
+    pub fn from_args(args: &Args) -> Self {
+        match &args.resume {
+            None => Self::Current,
+            Some(None) => Self::Pick,
+            Some(Some(reference)) => match reference.trim() {
+                "last" | "~" | "~0" => Self::Current,
+                _ => Self::Resume(reference.clone()),
+            },
+        }
     }
 }
 
@@ -301,7 +312,6 @@ pub async fn run(
     mode: AttachMode,
     layers: crate::bootstrap::Layers,
 ) -> Result<(), TuiError> {
-    check_args(&args)?;
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         return Err(TuiError::NotATerminal);
     }
@@ -413,6 +423,28 @@ pub mod testing {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use clap::Parser as _;
+
+    /// `-c` and `--resume last` attach to the daemon's current
+    /// conversation; `--resume` alone opens the picker; a reference
+    /// switches.
+    #[test]
+    fn the_start_flags_choose_the_first_conversation() {
+        let start = |argv: &[&str]| StartAt::from_args(&Args::try_parse_from(argv).unwrap());
+        assert_eq!(start(&["rkat-tui"]), StartAt::Current);
+        assert_eq!(start(&["rkat-tui", "-c"]), StartAt::Current);
+        assert_eq!(start(&["rkat-tui", "--resume", "last"]), StartAt::Current);
+        assert_eq!(start(&["rkat-tui", "--resume", "~"]), StartAt::Current);
+        assert_eq!(start(&["rkat-tui", "--resume"]), StartAt::Pick);
+        assert_eq!(
+            start(&["rkat-tui", "--resume", "01ab"]),
+            StartAt::Resume("01ab".into())
+        );
+        assert_eq!(
+            start(&["rkat-tui", "--resume", "~2"]),
+            StartAt::Resume("~2".into())
+        );
+    }
 
     /// A hangup reaches the UI as [`Msg::Hangup`] (which leaves as a
     /// detach, `ui::tests`); the process is not killed by it.
