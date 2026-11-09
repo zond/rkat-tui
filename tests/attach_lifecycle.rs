@@ -310,3 +310,61 @@ fn the_quit_decision_follows_the_rules() {
     // The daemon could not say (the status failed, or it lost the owner).
     assert!(matches!(quit_decision(None), QuitDecision::Ask { .. }));
 }
+
+// `--list`.
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn list_shows_a_live_daemon_and_removes_a_stale_file() {
+    use rkat_tui::daemon::endpoint::Endpoint;
+    use rkat_tui::daemon::list::{self, Found};
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let daemon = owned_daemon(&ws, &llm).await;
+    let client = attach(&daemon, None, false).await;
+    let rows = list::list(Some(&daemon.endpoint_file)).await;
+    assert_eq!(rows.len(), 1);
+    let Found::Live(Some(status)) = &rows[0].found else {
+        panic!("not live: {:?}", rows[0].found);
+    };
+    // The probe is not counted.
+    assert_eq!(status.clients, 1);
+    assert_eq!(status.session_id.as_ref(), Some(&daemon.session));
+    let line = list::line(&rows[0], chrono::Utc::now());
+    let endpoint = daemon.endpoint();
+    assert!(
+        line.starts_with(&format!(
+            "{}\t{}\tpid {}\tup ",
+            std::fs::canonicalize(&ws.root).unwrap().display(),
+            endpoint.address,
+            endpoint.pid
+        )),
+        "{line}"
+    );
+    assert!(line.contains("\t1 client\t"), "{line}");
+    assert!(line.ends_with("\tidle"), "{line}");
+    assert!(!line.contains(&endpoint.token));
+    drop(client);
+    daemon.stop().await;
+
+    // A file nothing answers at, of a process that is gone: stale, removed.
+    let gone = std::process::Command::new("true").spawn().unwrap();
+    let pid = gone.id();
+    let _ = { gone }.wait();
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = closed.local_addr().unwrap();
+    drop(closed);
+    let file = ws.sibling("stale").join("mob.endpoint");
+    Endpoint {
+        address,
+        token: "t".into(),
+        pid,
+        workspace: Some(ws.root.clone()),
+        started_at: None,
+    }
+    .write(&file)
+    .unwrap();
+    let rows = list::list(Some(&file)).await;
+    assert_eq!(rows[0].found, Found::Stale { removed: true });
+    assert!(!file.exists());
+    assert!(list::line(&rows[0], chrono::Utc::now()).ends_with("\tstale (file removed)"));
+}

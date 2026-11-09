@@ -6,6 +6,11 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Added
 
+- `rkat-tui --list` (and `rkat-tui-mob --list`) prints every daemon that
+  has an endpoint file, one per line: workspace, address, pid, uptime,
+  attached clients, current conversation, running or idle; `stale` for a
+  file nothing answers at, which is removed when its process is gone. The
+  token is never printed.
 - Attach mode: `/detach` leaves and keeps the agent running. `/quit` (and
   Ctrl-D) now stops the daemon when this rkat-tui started it and nobody
   detached since; with other clients attached it detaches and says so;

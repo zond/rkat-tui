@@ -181,6 +181,10 @@ pub use ui::UiError;
 /// Returns a [`TuiError`] when there is no terminal, bootstrap fails, the
 /// session cannot be opened, or the terminal cannot be driven.
 pub async fn run(args: Args) -> Result<(), TuiError> {
+    if args.list {
+        daemon::list::print(None).await;
+        return Ok(());
+    }
     // The workspace and its `tui.toml` layers are read once, here, and
     // handed to the host that runs.
     let layers = bootstrap::read_layers(&args)?;

@@ -196,6 +196,13 @@ pub struct Args {
     /// Host the agent in this process (the default; overrides `--attach`).
     #[arg(long, overrides_with = "attach")]
     pub no_attach: bool,
+
+    /// List every `rkat-tui-mob` daemon that has an endpoint file
+    /// (workspace, address, pid, uptime, clients, conversation, running or
+    /// idle; `stale` for one that does not answer, whose file is removed
+    /// when its pid is gone), then exit.
+    #[arg(long)]
+    pub list: bool,
 }
 
 impl Args {

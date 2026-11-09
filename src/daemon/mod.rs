@@ -35,6 +35,7 @@ pub mod endpoint;
 pub mod engine;
 pub mod handshake;
 pub mod lifecycle;
+pub mod list;
 pub mod local;
 pub mod orchestrator;
 pub mod policy;
@@ -631,6 +632,10 @@ async fn stop_mobs(state: &Arc<MobMcpState>) {
 ///
 /// [`DaemonError`] when it cannot start or does not shut down cleanly.
 pub async fn run(cli: DaemonCli) -> Result<(), DaemonError> {
+    if cli.tui.list {
+        list::print(cli.endpoint_file.as_deref()).await;
+        return Ok(());
+    }
     cli.check()?;
     let (layers, config) = bootstrap::prepare(&cli.tui).await?;
     init_logging(&layers.scope.realm_root());

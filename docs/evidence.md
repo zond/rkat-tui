@@ -3048,3 +3048,22 @@ restored and the daemon keeps running. Tests:
 `ui::tests::dispatch::the_quit_dialog_detaches_by_default_terminates_on_request_and_esc_stays`,
 `ui::tests::dispatch::unsent_messages_are_saved_whichever_way_an_attached_quit_leaves`,
 `client::tests::a_hangup_reaches_the_ui`.
+
+### `--list` (`daemon::list`)
+
+`rkat-tui --list` and `rkat-tui-mob --list` share `daemon::list`: every
+`mob.endpoint` one level under the search directories
+(`endpoint::search_dirs`), or the one `--endpoint-file` names
+(`rkat-tui-mob` only), is probed by attaching as a probe (not counted as
+a client, so listing never changes what a `/quit` decides) and reading
+`rkat/status`. A file whose address does not accept is stale; it is
+removed only when its pid is gone (`kill(pid, 0)` reports `ESRCH`), so a
+daemon that is alive but slow keeps its file. A daemon that accepts but
+answers no status (an older one) is listed as live without the status
+columns. Lines are tab-separated in a fixed order (workspace, address,
+pid, uptime, clients, conversation, running or idle), with no header, so
+they cut and sort; the token is never printed. `--list` is handled
+before the daemon's UI-flag check and is not forwarded to a started
+daemon (`launch::NOT_FORWARDED`). Tests:
+`attach_lifecycle::list_shows_a_live_daemon_and_removes_a_stale_file`,
+`daemon::list::tests::*`.

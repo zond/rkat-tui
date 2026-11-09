@@ -198,6 +198,7 @@ pub const NOT_FORWARDED: &[&str] = &[
     "attach",
     "no_attach",
     "context_root",
+    "list",
 ];
 
 /// `argv` with `--endpoint-file <file>`: the daemon writes its endpoint

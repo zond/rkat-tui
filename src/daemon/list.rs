@@ -1,0 +1,284 @@
+//! `--list` (`rkat-tui --list`, `rkat-tui-mob --list`): every daemon whose
+//! endpoint file exists, one line each.
+//!
+//! The files are found where the daemon writes them
+//! ([`super::endpoint::search_dirs`]: `<state>/rkat-tui/*/mob.endpoint`,
+//! then the runtime-dir fallback), or the one `--endpoint-file` names. Each
+//! is probed: connect, `rkat/attach` with its token as a probe (not
+//! counted as a client), then `rkat/status`. A file nothing answers at is
+//! `stale`; it is removed when its pid is gone. The token is never
+//! printed.
+//!
+//! A line is tab-separated, in a fixed order: workspace, address, `pid N`,
+//! `up <uptime>`, then for a live daemon `<n> client(s)`, the current
+//! conversation and `running` or `idle`, for a stale one `stale` and
+//! whether its file was removed.
+
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use super::endpoint::{self, Endpoint};
+use super::protocol::{self, Status};
+
+/// How long one daemon may take to answer.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// What a probe found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Found {
+    /// It answered; its status, when it could say.
+    Live(Option<Status>),
+    /// Nothing answered; whether the file was removed (its pid is gone).
+    Stale {
+        /// The file was removed.
+        removed: bool,
+    },
+}
+
+/// One listed daemon.
+#[derive(Debug, Clone)]
+pub struct Listed {
+    /// What it says.
+    pub endpoint: Endpoint,
+    /// What the probe found.
+    pub found: Found,
+}
+
+/// The endpoint files to list: `explicit` alone, or every one under the
+/// search directories, sorted.
+#[must_use]
+pub fn files(explicit: Option<&Path>) -> Vec<PathBuf> {
+    if let Some(file) = explicit {
+        return vec![file.to_path_buf()];
+    }
+    files_in(&endpoint::search_dirs())
+}
+
+/// The endpoint files one level under each of `dirs`, sorted.
+#[must_use]
+pub fn files_in(dirs: &[PathBuf]) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = dirs
+        .iter()
+        .filter_map(|dir| std::fs::read_dir(dir).ok())
+        .flat_map(|entries| entries.filter_map(Result::ok))
+        .map(|entry| entry.path().join(super::ENDPOINT_NAME))
+        .filter(|file| file.is_file())
+        .collect();
+    files.sort();
+    files
+}
+
+/// Probe the daemon `endpoint` names.
+pub async fn probe(endpoint: &Endpoint) -> Option<Option<Status>> {
+    let attached = tokio::time::timeout(
+        PROBE_TIMEOUT,
+        crate::client::transport::Connection::attach_as(endpoint, PROBE_TIMEOUT, None, true),
+    )
+    .await;
+    let Ok(Ok((connection, _notes))) = attached else {
+        // Something may accept but refuse (another program on the port):
+        // only a refused connect is stale.
+        return endpoint::answers(endpoint).await.then_some(None);
+    };
+    let status = tokio::time::timeout(
+        PROBE_TIMEOUT,
+        crate::client::remote::local::<_, Status>(
+            &connection,
+            protocol::STATUS,
+            &serde_json::json!({}),
+        ),
+    )
+    .await;
+    Some(status.ok().and_then(Result::ok))
+}
+
+/// Whether process `pid` is gone.
+fn pid_gone(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        let Ok(pid) = i32::try_from(pid) else {
+            return false;
+        };
+        matches!(
+            nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None),
+            Err(nix::errno::Errno::ESRCH)
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
+/// Probe every file of [`files`]; a stale one whose pid is gone is removed.
+pub async fn list(explicit: Option<&Path>) -> Vec<Listed> {
+    let mut listed = Vec::new();
+    for file in files(explicit) {
+        let Ok(endpoint) = Endpoint::read(&file) else {
+            continue;
+        };
+        let found = match probe(&endpoint).await {
+            Some(status) => Found::Live(status),
+            None => {
+                let removed = pid_gone(endpoint.pid) && std::fs::remove_file(&file).is_ok();
+                Found::Stale { removed }
+            }
+        };
+        listed.push(Listed { endpoint, found });
+    }
+    listed
+}
+
+/// `seconds` as `1d2h`, `3h4m`, `5m6s` or `7s`.
+#[must_use]
+pub fn uptime(seconds: u64) -> String {
+    let (d, h, m, s) = (
+        seconds / 86_400,
+        seconds / 3_600 % 24,
+        seconds / 60 % 60,
+        seconds % 60,
+    );
+    match (d, h, m) {
+        (0, 0, 0) => format!("{s}s"),
+        (0, 0, _) => format!("{m}m{s}s"),
+        (0, _, _) => format!("{h}h{m}m"),
+        _ => format!("{d}d{h}h"),
+    }
+}
+
+/// One line for `listed`, its uptime counted to `now`.
+#[must_use]
+pub fn line(listed: &Listed, now: chrono::DateTime<chrono::Utc>) -> String {
+    let endpoint = &listed.endpoint;
+    let status = match &listed.found {
+        Found::Live(status) => status.as_ref(),
+        Found::Stale { .. } => None,
+    };
+    let workspace = status
+        .map(|status| status.workspace.clone())
+        .or_else(|| endpoint.workspace.clone())
+        .map_or_else(|| "?".to_string(), |w| w.display().to_string());
+    let up = endpoint
+        .started()
+        .and_then(|started| u64::try_from((now - started).num_seconds()).ok())
+        .map_or_else(|| "?".to_string(), uptime);
+    let mut fields = vec![
+        workspace,
+        endpoint.address.to_string(),
+        format!("pid {}", endpoint.pid),
+        format!("up {up}"),
+    ];
+    match (&listed.found, status) {
+        (Found::Live(_), Some(status)) => {
+            fields.push(format!(
+                "{} client{}",
+                status.clients,
+                if status.clients == 1 { "" } else { "s" }
+            ));
+            fields.push(
+                status
+                    .session_id
+                    .as_ref()
+                    .map_or_else(|| "no conversation".to_string(), ToString::to_string),
+            );
+            fields.push(if status.running { "running" } else { "idle" }.to_string());
+        }
+        (Found::Live(_), None) => fields.push("live (no status: an older daemon)".to_string()),
+        (Found::Stale { removed }, _) => fields.push(
+            if *removed {
+                "stale (file removed)"
+            } else {
+                "stale"
+            }
+            .to_string(),
+        ),
+    }
+    fields.join("\t")
+}
+
+/// Print every daemon, one per line (to stderr when there is none).
+pub async fn print(explicit: Option<&Path>) {
+    let listed = list(explicit).await;
+    if listed.is_empty() {
+        eprintln!("no rkat-tui-mob daemon has an endpoint file");
+        return;
+    }
+    let now = chrono::Utc::now();
+    for listed in &listed {
+        println!("{}", line(listed, now));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_files_are_one_level_under_the_search_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("rkat-tui");
+        for key in ["b", "a"] {
+            std::fs::create_dir_all(base.join(key)).unwrap();
+            std::fs::write(base.join(key).join(crate::daemon::ENDPOINT_NAME), "{}").unwrap();
+        }
+        std::fs::create_dir_all(base.join("empty")).unwrap();
+        assert_eq!(
+            files_in(&[base.clone(), dir.path().join("missing")]),
+            vec![
+                base.join("a").join(crate::daemon::ENDPOINT_NAME),
+                base.join("b").join(crate::daemon::ENDPOINT_NAME)
+            ]
+        );
+    }
+
+    #[test]
+    fn uptimes_are_short() {
+        assert_eq!(uptime(7), "7s");
+        assert_eq!(uptime(306), "5m6s");
+        assert_eq!(uptime(3 * 3600 + 4 * 60 + 5), "3h4m");
+        assert_eq!(uptime(86_400 + 2 * 3600), "1d2h");
+    }
+
+    #[test]
+    fn a_line_never_holds_the_token_and_keeps_its_column_order() {
+        let endpoint = Endpoint {
+            address: "127.0.0.1:4000".parse().unwrap(),
+            token: "secret-token".into(),
+            pid: 9,
+            workspace: Some("/w".into()),
+            started_at: Some("2026-11-09T10:00:00Z".into()),
+        };
+        let now = chrono::DateTime::parse_from_rfc3339("2026-11-09T11:30:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let stale = Listed {
+            endpoint: endpoint.clone(),
+            found: Found::Stale { removed: true },
+        };
+        assert_eq!(
+            line(&stale, now),
+            "/w\t127.0.0.1:4000\tpid 9\tup 1h30m\tstale (file removed)"
+        );
+        let live = Listed {
+            endpoint,
+            found: Found::Live(Some(Status {
+                workspace: "/w".into(),
+                pid: 9,
+                started_at: String::new(),
+                clients: 2,
+                detached: false,
+                owner: false,
+                session_id: None,
+                running: true,
+            })),
+        };
+        let shown = line(&live, now);
+        assert_eq!(
+            shown,
+            "/w\t127.0.0.1:4000\tpid 9\tup 1h30m\t2 clients\tno conversation\trunning"
+        );
+        assert!(!shown.contains("secret"));
+    }
+}

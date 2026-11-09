@@ -49,6 +49,16 @@ pub fn state_home() -> Option<PathBuf> {
         .or_else(|| dirs::home_dir().map(|home| home.join(".local").join("state")))
 }
 
+/// The directories holding the per-workspace endpoint directories, in the
+/// order the daemon and clients try them: `<state>/rkat-tui`.
+#[must_use]
+pub fn search_dirs() -> Vec<PathBuf> {
+    state_home()
+        .map(|state| state.join(STATE_DIR))
+        .into_iter()
+        .collect()
+}
+
 /// The key of `workspace`: the first [`KEY_DIGITS`] hex digits of the
 /// SHA-256 of its canonical path (the path as given when it cannot be
 /// resolved).
@@ -164,7 +174,6 @@ pub struct Endpoint {
 impl Endpoint {
     /// When the daemon started, as a time (`None`: unknown or unreadable).
     #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
     pub fn started(&self) -> Option<chrono::DateTime<chrono::Utc>> {
         let text = self.started_at.as_deref()?;
         chrono::DateTime::parse_from_rfc3339(text)
