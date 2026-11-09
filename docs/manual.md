@@ -1050,7 +1050,7 @@ daemon switches the session in place as in-process, with the endpoint's
 auth binding and `[thinking]` setting; not while a turn runs; the session
 keeps the model), the context gauge,
 token counts, `/status`, `/export`, `/cost` (helpers included, kept per
-conversation), `/copy`, `/context` (the gauge only), `/compact` (the
+conversation), `/copy`, `/context` (the conversation read from the daemon), `/compact` (the
 policy) and `/compact now` (the agent's next model call compacts first; the
 ✓ compacted notice and the gauge confirm it), `/remember` and `/memory` (the files are edited here; the agent
 reads the new content from its next model call), the Ctrl-T task checklist, approvals, the permission

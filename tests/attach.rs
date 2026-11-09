@@ -350,6 +350,35 @@ async fn the_task_tools_fill_the_checklist_over_the_daemon() {
     daemon.stop().await;
 }
 
+/// `/context` in attach mode: the conversation's messages read from the
+/// daemon, the instruction files on disk, as in-process.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn context_reports_the_daemons_conversation() {
+    let ws = Workspace::new();
+    std::fs::write(ws.root.join("AGENTS.md"), "be brief\n").unwrap();
+    let llm = ScriptedLlmClient::new(vec![Step::Text("hi")]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let mut client = Client::attach(&ws.root).await;
+    client.send(Effect::StartTurn("hello".into()));
+    client.turn_finished().await.result.unwrap();
+    client.send(Effect::ContextReport("context: the gauge".into()));
+    let msg = client
+        .wait_for(
+            |msg| matches!(msg, Msg::Notice { text, .. } if text.starts_with("context: the gauge")),
+        )
+        .await;
+    let Msg::Notice { text, .. } = msg else {
+        unreachable!()
+    };
+    assert!(text.contains("system prompt: "), "{text}");
+    assert!(text.contains("messages: 2 (user 1, assistant 1"), "{text}");
+    assert!(text.contains("workspace AGENTS.md: "), "{text}");
+    assert!(text.contains("9 bytes"), "{text}");
+    assert!(text.contains("in the daemon"), "{text}");
+    client.quit().await;
+    daemon.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn what_the_daemon_cannot_do_yet_says_so() {
     let ws = Workspace::new();

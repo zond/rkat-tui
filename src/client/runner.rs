@@ -53,8 +53,8 @@ use crate::ui::{
 };
 use crate::user_shell::UserShell;
 use crate::workbench::models::Current;
-use crate::workbench::tasks;
 use crate::workbench::{AgentContext, SavedUnsent, Workbench, WorkbenchParts};
+use crate::workbench::{context, tasks};
 
 /// The status-bar segment while the first connection is made.
 pub const CONNECTING: &str = "connecting";
@@ -1280,6 +1280,41 @@ impl AttachRunner {
         }
     }
 
+    /// `/context`: the UI's `header` plus what the context holds, as
+    /// in-process ([`crate::workbench::context`]): the conversation's
+    /// messages from the daemon (`rkat/transcript`), the instruction files
+    /// the daemon's session builds read (this workspace's, found here).
+    fn context_report(&self, header: String) {
+        let link = self
+            .link
+            .as_ref()
+            .map(|link| (Arc::clone(&link.connection), link.session.clone()));
+        let scope = self.config.scope.clone();
+        let ui_tx = self.ui_tx.clone();
+        tokio::spawn(async move {
+            let messages = match link {
+                Some((connection, session)) => {
+                    bounded(CALL_TIMEOUT, remote::transcript(&connection, &session))
+                        .await
+                        .map_err(|err| err.to_string())
+                }
+                None => Err("not attached to the daemon".to_string()),
+            };
+            let sources = crate::bootstrap::InstructionSources::of(&scope);
+            let files = context::instruction_files(&scope, &sources);
+            let text = context::context_breakdown(
+                &header,
+                messages.as_deref().map_err(Clone::clone),
+                &files,
+                "rkat-tui's file and note tools, in the daemon",
+            );
+            let _ = ui_tx.send(Msg::Notice {
+                level: NoticeLevel::Info,
+                text,
+            });
+        });
+    }
+
     /// Read the conversation's tasks from the daemon (`rkat/tasks`) for the
     /// Ctrl+T checklist, as the in-process runner reads its session's.
     fn refresh_tasks(&self) {
@@ -1356,10 +1391,7 @@ impl AttachRunner {
             Effect::SetModel(reference) => self.set_model(&reference),
             Effect::CompactNow => self.compact_now(),
             Effect::StatusReport => self.status_report(),
-            Effect::ContextReport(header) => self.notice(
-                NoticeLevel::Info,
-                format!("{header}\n(what the context holds is {NOT_AVAILABLE})"),
-            ),
+            Effect::ContextReport(header) => self.context_report(header),
             Effect::Export { path, text } => {
                 let session = self
                     .link

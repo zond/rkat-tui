@@ -2925,3 +2925,15 @@ way. The limit is gone from the manual. Tests:
 `attach::model_switches_in_place_and_stays`,
 `attach::a_model_switch_waits_for_the_turn`,
 `daemon::set_model_switches_in_place_and_waits_for_the_run`.
+
+### `/context` in attach mode
+
+The attach runner answered `/context` with the gauge and "not available in
+attach mode yet". The breakdown (`context_breakdown`, the instruction file
+list) moved from `runner::context` to `workbench::context`; the attach
+runner reads the messages with the existing `rkat/transcript` and finds the
+instruction files with `InstructionSources::of(scope)`, which the daemon's
+builds and the in-process runtime now also use, so both name the same
+files. What neither knows is the engine's own tool count; the attach line
+names rkat-tui's tools without a count (the daemon's orchestrator has no
+`fork`). Test: `attach::context_reports_the_daemons_conversation`.

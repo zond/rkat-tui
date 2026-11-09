@@ -583,11 +583,7 @@ impl Assembled {
     /// Where the instruction files of every session build come from.
     #[must_use]
     pub fn instructions(&self) -> InstructionSources {
-        InstructionSources {
-            workspace: self.scope.context_root.clone(),
-            global: self.scope.global.clone(),
-            home: dirs_home(),
-        }
+        InstructionSources::of(&self.scope)
     }
 }
 

@@ -6,6 +6,7 @@
 //! - [`memory`]: `/remember` and `/memory` (the instruction files are local;
 //!   the new content reaches the agent as system context).
 //! - [`export`]: `/export`, the transcript as plain text.
+//! - [`context`]: `/context`'s breakdown of what the context holds.
 //! - [`cost`] and [`cost_store`]: the price table (overrides, endpoint
 //!   prices, the community list refreshed in the background) and the
 //!   per-session cost record.
@@ -23,6 +24,7 @@
 //! event stream in attach mode).
 
 pub mod app;
+pub mod context;
 pub mod cost;
 pub mod cost_store;
 pub mod export;

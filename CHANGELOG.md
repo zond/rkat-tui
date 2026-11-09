@@ -6,6 +6,9 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Added
 
+- `/context` in attach mode reports what the context holds, as
+  in-process: the conversation's system prompt and message counts read
+  from the daemon (`rkat/transcript`) and the instruction files on disk.
 - `/model` in attach mode switches the agent's session in place through the
   daemon (`rkat/set_model`, the engine's LLM reconfigure, as in-process)
   instead of riding the next prompt as a `mob/turn_start`: the next prompt

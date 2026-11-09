@@ -107,6 +107,18 @@ pub struct InstructionSources {
 }
 
 impl InstructionSources {
+    /// Where the sessions of `scope` look: its workspace, its user-global
+    /// directory and the canonical home directory (the daemon's builds and
+    /// an attach client's `/context` read the same places).
+    #[must_use]
+    pub fn of(scope: &super::RuntimeScope) -> Self {
+        Self {
+            workspace: scope.context_root.clone(),
+            global: scope.global.clone(),
+            home: super::dirs_home(),
+        }
+    }
+
     /// Discover instruction sections (see the module docs for the order and
     /// caps). The workspace's own `AGENTS.md` is loaded natively and is not
     /// part of the result.
