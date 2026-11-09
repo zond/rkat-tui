@@ -18,7 +18,9 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
   the daemon)", detach by default, and says when terminating interrupts a
   running turn. Unsent messages are saved either way. A closed terminal
   (SIGHUP) restores the terminal and leaves as a detach. After the UI
-  closes, rkat-tui says whether the daemon is still running.
+  closes, rkat-tui says whether the daemon is still running; a shutdown
+  the daemon never confirmed is reported as stopped only once its
+  endpoint file is gone, else as possibly still running.
 - The daemon knows its lifecycle: how many clients are attached, whether
   anyone detached from it, and which client started it (a start token the
   launching client hands it). `rkat/status` reports them with the

@@ -93,7 +93,7 @@ pub async fn probe(endpoint: &Endpoint) -> Option<Option<Status>> {
 }
 
 /// Whether process `pid` is gone.
-fn pid_gone(pid: u32) -> bool {
+pub(crate) fn pid_gone(pid: u32) -> bool {
     #[cfg(unix)]
     {
         let Ok(pid) = i32::try_from(pid) else {

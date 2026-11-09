@@ -3067,3 +3067,23 @@ before the daemon's UI-flag check and is not forwarded to a started
 daemon (`launch::NOT_FORWARDED`). Tests:
 `attach_lifecycle::list_shows_a_live_daemon_and_removes_a_stale_file`,
 `daemon::list::tests::*`.
+
+### A shutdown without an answer is not reported as done
+
+Review finding on the `/quit` commit: `depart` took a `Disconnected`
+from `rkat/shutdown` as success, but `Connection::call` also returns it
+when the request was never written or the connection dropped before the
+daemon read it, so a daemon still running was reported stopped (and the
+SIGTERM fallback skipped). Now only an answer counts as stopped; no
+answer (disconnected, timed out, not attached) is unknown until
+`daemon_ended` sees the endpoint file no longer name this daemon (its
+token) or its pid gone, polled for up to 5 s (`STOP_VERIFY`; the daemon
+removes the file after draining its connections for up to 2 s). If it
+does not, the farewell says the daemon may still be running and names
+`--list`, `/daemon stop` and the pid. A refusal (a daemon without
+`rkat/shutdown`) still falls back to SIGTERM. Test:
+`client::runner::tests::a_shutdown_without_an_answer_is_reported_stopped_only_once_the_daemon_ended`
+(the connection drops right after the attach, the file names a live
+daemon: never "stopped"; next to it the case where the daemon ended),
+and `attach_lifecycle::quit_stops_the_daemon_this_client_started` for the
+normal shutdown.

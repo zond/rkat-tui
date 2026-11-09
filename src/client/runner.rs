@@ -105,6 +105,10 @@ const SWITCH_TIMEOUT: Duration = Duration::from_mins(1);
 /// leave (`rkat/detach`, `rkat/shutdown`).
 const LEAVE_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// How long a shutdown that brought no answer is checked for
+/// ([`daemon_ended`]).
+const STOP_VERIFY: Duration = Duration::from_secs(5);
+
 /// How often a reconnect may start a daemon that died.
 const RESTART_EVERY: Duration = Duration::from_secs(30);
 
@@ -2222,7 +2226,8 @@ impl AttachRunner {
             }
             return;
         };
-        let pid = self.link.as_ref().map_or(0, |link| link.endpoint.pid);
+        let endpoint = self.link.as_ref().map(|link| link.endpoint.clone());
+        let pid = endpoint.as_ref().map_or(0, |endpoint| endpoint.pid);
         let method = match departure {
             Departure::Detach => protocol::DETACH,
             Departure::Terminate => protocol::SHUTDOWN,
@@ -2241,12 +2246,42 @@ impl AttachRunner {
                 NoticeLevel::Warn,
                 format!("detached; the daemon (pid {pid}) was not told ({err}) and keeps running"),
             ),
-            // The daemon may close the connection before its answer.
-            (Departure::Terminate, Ok(_) | Err(CallFailure::Failed(ClientError::Disconnected))) => {
+            (Departure::Terminate, Ok(_)) => {
                 self.stopping = true;
                 self.farewell(NoticeLevel::Info, format!("stopped the daemon (pid {pid})"));
             }
-            // A daemon without `rkat/shutdown`: SIGTERM, as `/daemon stop`.
+            // No answer (the connection dropped, before or after the
+            // daemon read the request, or the call timed out): whether it
+            // stops is unknown until its endpoint file says so.
+            (
+                Departure::Terminate,
+                Err(
+                    err @ (CallFailure::NotAttached
+                    | CallFailure::TimedOut
+                    | CallFailure::Failed(ClientError::Disconnected)),
+                ),
+            ) => {
+                tracing::info!(error = %err, "rkat/shutdown brought no answer; checking whether the daemon ended");
+                let ended = match &endpoint {
+                    Some(endpoint) => {
+                        daemon_ended(&self.config.endpoint_file, endpoint, STOP_VERIFY).await
+                    }
+                    None => false,
+                };
+                if ended {
+                    self.stopping = true;
+                    self.farewell(NoticeLevel::Info, format!("stopped the daemon (pid {pid})"));
+                } else {
+                    self.farewell(
+                        NoticeLevel::Warn,
+                        format!(
+                            "the daemon (pid {pid}) may still be running: the connection dropped before it confirmed the shutdown; rkat-tui --list shows it, /daemon stop from an attached rkat-tui or `kill {pid}` stops it"
+                        ),
+                    );
+                }
+            }
+            // A daemon that refused `rkat/shutdown` (one without it):
+            // SIGTERM, as `/daemon stop`.
             (Departure::Terminate, Err(err)) => {
                 tracing::info!(error = %err, "rkat/shutdown failed; sending SIGTERM");
                 match self.sigterm_attached().await {
@@ -2294,6 +2329,23 @@ fn current<'a>(endpoint: Option<&'a str>, model: Option<&'a (String, String)>) -
     Current {
         endpoint: endpoint.unwrap_or(""),
         model: model.map_or("", |(_, model)| model.as_str()),
+    }
+}
+
+/// Whether the daemon `endpoint` names ended within `wait`: its endpoint
+/// file at `file` no longer names it (removed at shutdown, or replaced by
+/// another daemon's), or its process is gone.
+async fn daemon_ended(file: &std::path::Path, endpoint: &Endpoint, wait: Duration) -> bool {
+    let deadline = Instant::now() + wait;
+    loop {
+        let named = Endpoint::read(file).is_ok_and(|now| now.token == endpoint.token);
+        if !named || crate::daemon::list::pid_gone(endpoint.pid) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 
@@ -2749,6 +2801,12 @@ mod tests {
     /// A link over an in-memory pipe whose daemon side only answers the
     /// attach line.
     async fn link(stream: &str, session: SessionId) -> Link {
+        link_held(stream, session, true).await
+    }
+
+    /// [`link`]; the daemon side drops the connection right after the
+    /// attach unless `held`.
+    async fn link_held(stream: &str, session: SessionId, held: bool) -> Link {
         let (client, server) = tokio::io::duplex(1 << 16);
         let (server_read, mut server_write) = tokio::io::split(server);
         tokio::spawn(async move {
@@ -2762,7 +2820,9 @@ mod tests {
                 .await
                 .unwrap();
             // Held open: the link stays up.
-            std::future::pending::<()>().await;
+            if held {
+                std::future::pending::<()>().await;
+            }
         });
         let (read, write) = tokio::io::split(client);
         let address: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
@@ -2840,6 +2900,42 @@ mod tests {
             reset |= matches!(msg, Msg::ResetTranscript(_));
         }
         assert!(reset);
+    }
+
+    /// The finding this guards: a shutdown whose connection dropped before
+    /// the daemon answered was reported as "stopped the daemon" although
+    /// the daemon never handled it and kept running.
+    #[tokio::test(start_paused = true)]
+    async fn a_shutdown_without_an_answer_is_reported_stopped_only_once_the_daemon_ended() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("mob.endpoint");
+        for ended in [false, true] {
+            let (mut runner, mut ui_rx) = runner(dir.path());
+            let link = link_held("s", SessionId::new(), false).await;
+            // The endpoint file names this daemon, whose process (this
+            // one) is alive.
+            Endpoint {
+                pid: std::process::id(),
+                ..link.endpoint.clone()
+            }
+            .write(&file)
+            .unwrap();
+            runner.link = Some(link);
+            if ended {
+                std::fs::remove_file(&file).unwrap();
+            }
+            runner.depart(Departure::Terminate).await;
+            let mut notices = Vec::new();
+            while let Ok(msg) = ui_rx.try_recv() {
+                if let Msg::Notice { text, .. } = msg {
+                    notices.push(text);
+                }
+            }
+            let said = notices.join("\n");
+            assert_eq!(said.contains("stopped the daemon"), ended, "{said}");
+            assert_eq!(!said.contains("may still be running"), ended, "{said}");
+            assert_eq!(runner.stopping, ended);
+        }
     }
 
     /// A refused `/resume` ends the switch; nothing else that reports a
