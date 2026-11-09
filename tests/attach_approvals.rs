@@ -155,6 +155,19 @@ impl Running {
         connection
     }
 
+    /// A raw connection to the daemon and its notifications.
+    async fn connect_with_notes(
+        &self,
+    ) -> (
+        Connection,
+        tokio::sync::mpsc::UnboundedReceiver<rkat_tui::client::transport::Notification>,
+    ) {
+        let endpoint = Endpoint::read(&self.endpoint_file).unwrap();
+        Connection::attach(&endpoint, Duration::from_secs(5))
+            .await
+            .unwrap()
+    }
+
     async fn stop(self) {
         let _ = self.stop.send(());
         within(self.task).await.unwrap().expect("clean shutdown");
@@ -1110,5 +1123,181 @@ async fn overlapping_mode_changes_leave_the_plan_note_matching_the_mode() {
         assert!(on.is_none() || off > on, "{mode}: {request}");
     }
     drop((a, b));
+    daemon.stop().await;
+}
+
+/// The next notification `method` on a raw connection.
+async fn next_note(
+    notes: &mut tokio::sync::mpsc::UnboundedReceiver<rkat_tui::client::transport::Notification>,
+    method: &str,
+) -> Value {
+    within(async {
+        loop {
+            let note = notes.recv().await.expect("connection open");
+            if note.method == method {
+                return note.params;
+            }
+        }
+    })
+    .await
+}
+
+/// P3b: a reviewed call is held as a durable decision the daemon pushes to
+/// every attached connection (no polling); its `initialize` says so; a
+/// decide naming who decided is refused; the first answer wins and a later
+/// one gets the engine's own refusal; the clients shown it hear it ended.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reviewed_call_is_pushed_as_a_decision_and_the_first_answer_wins() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![write("w1", "a.txt", "PUSHED"), Step::Text("done")]);
+    let daemon = Running::start(&ws.root, &llm, &Setup::default()).await;
+    let mut client = Client::attach(&ws.root).await;
+    let (raw, mut notes) = daemon.connect_with_notes().await;
+    let caps = raw.call("initialize", json!({})).await.unwrap();
+    let methods: Vec<&str> = caps["methods"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(methods.contains(&"decision/notice"), "{methods:?}");
+    assert!(methods.contains(&"decision/decide"), "{methods:?}");
+    client.set_mode(PermissionMode::Manual).await;
+    client.send(Effect::StartTurn("write a.txt".into()));
+    let notice = next_note(&mut notes, "decision/notice").await;
+    assert_eq!(notice["kind"], "rkat-tui.tool-call");
+    assert_eq!(notice["phase"], "open");
+    let decision = notice["decision_id"].as_str().unwrap().to_string();
+    let digest = notice["presentation"]["subject_digest"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let rendering = notice["presentation"]["rendering"].as_str().unwrap();
+    assert!(rendering.contains("write_file"), "{rendering}");
+    // The client was pushed the same request.
+    let (_, id) = client.escalation().await;
+    // Naming who decided is refused before the engine sees it.
+    for field in ["actor", "approver"] {
+        let mut params = json!({
+            "decision_id": decision,
+            "approve": true,
+            "presented_digest": digest,
+        });
+        params[field] = json!("mallory");
+        let refused = raw.call("decision/decide", params).await.unwrap_err();
+        assert!(refused.to_string().contains(field), "{field}: {refused}");
+    }
+    client.send(Effect::RespondEscalation(id, EscalationAnswer::AllowOnce));
+    let ended = next_note(&mut notes, "rkat/decision_ended").await;
+    assert_eq!(ended["decision_id"], decision.as_str());
+    assert_eq!(ended["phase"], "approved");
+    let late = raw
+        .call(
+            "decision/decide",
+            json!({"decision_id": decision, "approve": false, "presented_digest": digest}),
+        )
+        .await
+        .unwrap_err();
+    assert!(late.to_string().contains("not_open"), "{late}");
+    assert_eq!(client.turn_finished().await.result.unwrap().text, "done");
+    assert_eq!(
+        std::fs::read_to_string(ws.root.join("a.txt")).unwrap(),
+        "PUSHED"
+    );
+    let got = raw
+        .call("decision/get", json!({"decision_id": decision}))
+        .await
+        .unwrap();
+    assert_eq!(got["decision"]["phase"], "approved");
+    assert_eq!(
+        got["decision"]["outcome"]["evidence"]["approver_id"],
+        got["decision"]["approver_id"]
+    );
+    drop(raw);
+    client.quit().await;
+    daemon.stop().await;
+}
+
+/// A client that attaches after the request opened is shown it (the
+/// daemon's catch-up), and its answer counts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_attaching_after_the_request_opened_is_shown_it() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![write("w1", "a.txt", "LATE"), Step::Text("done")]);
+    let daemon = Running::start(&ws.root, &llm, &Setup::default()).await;
+    let mut first = Client::attach(&ws.root).await;
+    first.set_mode(PermissionMode::Manual).await;
+    first.send(Effect::StartTurn("write a.txt".into()));
+    let (prompt_a, id_a) = first.escalation().await;
+    let mut late = Client::attach(&ws.root).await;
+    // Offered as the client attached (it may have arrived during attach).
+    let shown = late.seen.iter().find_map(|msg| match msg {
+        Msg::Escalation(prompt, id) => Some((prompt.clone(), *id)),
+        _ => None,
+    });
+    let (prompt_b, id_b) = match shown {
+        Some(shown) => shown,
+        None => late.escalation().await,
+    };
+    assert_eq!(prompt_a, prompt_b);
+    late.send(Effect::RespondEscalation(id_b, EscalationAnswer::AllowOnce));
+    first
+        .wait_for(|msg| matches!(msg, Msg::EscalationResolved(closed) if *closed == id_a))
+        .await;
+    first
+        .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text.contains("another client")))
+        .await;
+    assert_eq!(first.turn_finished().await.result.unwrap().text, "done");
+    assert_eq!(
+        std::fs::read_to_string(ws.root.join("a.txt")).unwrap(),
+        "LATE"
+    );
+    first.quit().await;
+    late.quit().await;
+    daemon.stop().await;
+}
+
+/// A decision a stopped daemon left open held a dispatch that ended with
+/// it: the restarted daemon withdraws it, so no client is shown a request
+/// whose answer would run nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restarted_daemon_withdraws_the_request_its_predecessor_left_open() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![
+        write("w1", "a.txt", "NEVER"),
+        Step::Text("done"),
+        Step::Text("done"),
+    ]);
+    let setup = Setup::default();
+    let daemon = Running::start(&ws.root, &llm, &setup).await;
+    let mut client = Client::attach(&ws.root).await;
+    let (raw, mut notes) = daemon.connect_with_notes().await;
+    client.set_mode(PermissionMode::Manual).await;
+    client.send(Effect::StartTurn("write a.txt".into()));
+    let notice = next_note(&mut notes, "decision/notice").await;
+    let decision = notice["decision_id"].as_str().unwrap().to_string();
+    client.escalation().await;
+    drop(raw);
+    client.quit().await;
+    daemon.stop().await;
+    let daemon = Running::start(&ws.root, &llm, &setup).await;
+    let (raw, mut notes) = daemon.connect_with_notes().await;
+    let got = raw
+        .call("decision/get", json!({"decision_id": decision}))
+        .await
+        .unwrap();
+    assert_eq!(got["decision"]["phase"], "withdrawn", "{got}");
+    // The old request is never offered again; the restored run may ask
+    // again for its call, under a decision of its own.
+    if let Ok(notice) = tokio::time::timeout(
+        Duration::from_secs(1),
+        next_note(&mut notes, "decision/notice"),
+    )
+    .await
+    {
+        assert_ne!(notice["decision_id"], decision.as_str(), "{notice}");
+    }
+    assert!(!ws.root.join("a.txt").exists());
+    drop(raw);
     daemon.stop().await;
 }

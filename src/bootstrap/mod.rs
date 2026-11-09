@@ -417,6 +417,7 @@ pub async fn bootstrap_with(
         ui,
         helper_max_depth: helper_depth,
         user_shell_timeout,
+        daemon_principal: _,
         notices,
         llm_override,
     } = assemble(scope, config, args, options, LEASE_SURFACE).await?;
@@ -547,6 +548,8 @@ pub struct Assembled {
     pub helper_max_depth: u8,
     /// How long a `!` command may run.
     pub user_shell_timeout: std::time::Duration,
+    /// `[daemon] principal` of the user's `tui.toml` layers.
+    pub daemon_principal: Option<String>,
     /// Start-up notices (warnings).
     pub notices: Vec<String>,
     /// The client every session uses instead of resolving credentials
@@ -708,6 +711,7 @@ pub async fn assemble(
     approval_notices.extend(thinking_notices);
     let helper_depth = layered.helpers.max_depth;
     let user_shell_timeout = std::time::Duration::from_secs(layered.shell.user_timeout_secs);
+    let daemon_principal = layered.daemon_principal.clone();
     let approval = approval::build(
         &scope,
         layered,
@@ -757,6 +761,7 @@ pub async fn assemble(
         ui,
         helper_max_depth: helper_depth,
         user_shell_timeout,
+        daemon_principal,
         notices,
         llm_override: options.llm_override,
     })

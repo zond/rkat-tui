@@ -13,7 +13,9 @@
 //! customizer); and the approval engine the bootstrap built gates every
 //! member ([`super::approvals`]), its escalations answered through the
 //! runtime's approval service, its deny rules installed as the members'
-//! application tool policy ([`super::policy`]).
+//! application tool policy ([`super::policy`]); and its escalations are
+//! held as the runtime's durable decisions, which every attached client is
+//! offered and decides through the daemon ([`super::decisions`]).
 
 use std::sync::Arc;
 
@@ -26,6 +28,7 @@ use meerkat_store::RealmLeaseGuard;
 use tokio::sync::mpsc;
 
 use super::approvals::{DaemonToolOrigins, Desk, RootGate};
+use super::decisions::{Decisions, Principal};
 use super::{DaemonError, MOB_ID, ORCHESTRATOR};
 use crate::approval::ApprovalEngine;
 use crate::bootstrap::{Assembled, CODING_PERSONA, RuntimeScope};
@@ -70,6 +73,10 @@ pub struct Composed {
     pub desk: Arc<Desk>,
     /// The desk's task.
     pub desk_task: tokio::task::JoinHandle<()>,
+    /// The consent surface every client is offered decisions through.
+    pub decisions: Arc<Decisions>,
+    /// The task that offers the decisions that open.
+    pub decisions_task: tokio::task::JoinHandle<()>,
     /// The helper follower's task.
     pub follower_task: tokio::task::JoinHandle<()>,
     /// The task reading helpers' tool catalogs after their runs.
@@ -118,6 +125,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         memory,
         helper_max_depth,
         llm_override,
+        daemon_principal,
         ..
     } = parts;
     // Nobody renders the engine's decision events in the daemon (the
@@ -167,7 +175,14 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
             "the approval engine has no escalation channel".to_string(),
         ));
     };
-    let (desk, desk_task) = Desk::spawn(runtime.approval_service(), escalations);
+    let principal = Principal::from_config(daemon_principal.as_deref())
+        .map_err(|err| DaemonError::Approval(format!("[daemon] principal: {err}")))?;
+    let decision_service = runtime.decision_service();
+    if !decision_service.is_available() {
+        return Err(DaemonError::Approval(
+            "the realm keeps no durable decisions (an ephemeral persistence); approval requests could not reach a client".to_string(),
+        ));
+    }
     let key = HelperKey::new(MOB_ID.into(), ORCHESTRATOR.into());
     let root_thinking: crate::mobs::customizer::RootThinking = Arc::new({
         let thinking = thinking.clone();
@@ -290,6 +305,23 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     runtime.set_mob_tools(Arc::new(meerkat_mob_mcp::AgentMobToolSurfaceFactory::new(
         Arc::clone(&state),
     )));
+    // The host's own router: the one entry a client's `decision/decide`
+    // reaches the decision owner through (`dispatch_with_decision_event`,
+    // which plain dispatch has no route for). Built after the mob state, so
+    // it reuses it, as every connection's router does.
+    let router = meerkat_rpc::router::MethodRouter::new(
+        Arc::clone(&runtime),
+        Arc::clone(&config_store),
+        NotificationSink::noop(),
+    )?;
+    let decisions = Decisions::new(decision_service, principal, Some(Arc::new(router)))
+        .map_err(DaemonError::Approval)?;
+    let decisions_task = decisions.follow();
+    let (desk, desk_task) = Desk::spawn(
+        Arc::clone(&decisions),
+        engine.escalation_timeout(),
+        escalations,
+    );
 
     Ok(Composed {
         runtime,
@@ -309,6 +341,8 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         engine,
         desk,
         desk_task,
+        decisions,
+        decisions_task,
         follower_task: follower,
         helper_catalogs_task: helper_catalogs,
         origins,

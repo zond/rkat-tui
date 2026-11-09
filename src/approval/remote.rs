@@ -168,6 +168,38 @@ pub fn human_decision(record: &ApprovalRecord, prompt: &RecordedPrompt) -> Optio
     }
 }
 
+/// The human's answer a decided durable decision carries for the
+/// escalation that showed `prompt`: approved or rejected, the dialog's
+/// `answer` when the client named it, and the decider's `reason` (the
+/// dialog's comment). An approval without an answer allows once; a
+/// rejection without one denies with the reason.
+#[must_use]
+pub fn answered(
+    approve: bool,
+    answer: Option<RemoteAnswer>,
+    reason: Option<&str>,
+    prompt: &RecordedPrompt,
+) -> HumanDecision {
+    let comment = reason
+        .filter(|comment| !comment.trim().is_empty())
+        .map(str::to_string);
+    if approve {
+        if answer == Some(RemoteAnswer::AllowAndAddRule) {
+            match allow_rule(&prompt.tool, prompt.subjects.first().map(String::as_str)) {
+                Ok(rule) => return HumanDecision::AllowAndAddRule(Box::new(rule)),
+                Err(err) => {
+                    tracing::warn!(error = %err, "allow rule not added; allowing once");
+                }
+            }
+        }
+        HumanDecision::AllowOnce
+    } else if answer == Some(RemoteAnswer::Stop) {
+        HumanDecision::Stop
+    } else {
+        HumanDecision::Deny { comment }
+    }
+}
+
 /// The permission mode, whether auto mode is paused after classifier
 /// blocks, and the denial counters with their limits, as the status bar
 /// shows them (and `rkat/get_mode` answers).
@@ -464,6 +496,39 @@ mod tests {
             panic!("allow and add rule");
         };
         assert_eq!(describe_rule(&rule), "allow shell git push");
+    }
+
+    #[test]
+    fn a_decided_decision_carries_every_answer() {
+        let shown = prompt();
+        assert_eq!(answered(true, None, None, &shown), HumanDecision::AllowOnce);
+        assert_eq!(
+            answered(true, Some(RemoteAnswer::AllowOnce), Some("fine"), &shown),
+            HumanDecision::AllowOnce
+        );
+        let Some(HumanDecision::AllowAndAddRule(rule)) = Some(answered(
+            true,
+            Some(RemoteAnswer::AllowAndAddRule),
+            None,
+            &shown,
+        )) else {
+            panic!("allow and add rule");
+        };
+        assert_eq!(describe_rule(&rule), "allow shell git push");
+        assert_eq!(
+            answered(false, Some(RemoteAnswer::Deny), Some("use git mv"), &shown),
+            HumanDecision::Deny {
+                comment: Some("use git mv".into())
+            }
+        );
+        assert_eq!(
+            answered(false, None, Some("  "), &shown),
+            HumanDecision::Deny { comment: None }
+        );
+        assert_eq!(
+            answered(false, Some(RemoteAnswer::Stop), None, &shown),
+            HumanDecision::Stop
+        );
     }
 
     #[test]

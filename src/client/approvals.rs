@@ -1,15 +1,24 @@
 //! The approval dialogs of attach mode.
 //!
-//! The daemon's gate records every escalation in the realm's approval
-//! store; this client lists the pending ones for the orchestrator's session
-//! (`approval/list`, on every `tool_call_requested` and while a turn runs
-//! or a dialog is open: the engine has no push notification for a plain
-//! approval yet), shows each as the in-process dialog
-//! ([`Msg::Escalation`]), and answers with `approval/decide`
-//! ([`decide_params`]). Another client may decide first: the record leaves
-//! the pending list and the dialog closes on the next list
-//! ([`Msg::EscalationResolved`]); a late decision of this client is
-//! refused by the engine and dropped.
+//! A daemon with decisions (its `initialize` lists `decision/notice`, P3b)
+//! holds every escalation as a durable decision and pushes it to every
+//! attached client: this client shows each `decision/notice` for the
+//! orchestrator's session as the in-process dialog ([`Msg::Escalation`];
+//! the notice's rendering is the dialog, [`DialogRendering`]), answers with
+//! `decision/decide` ([`decision_params`]: the answer, the digest of what
+//! was shown, the comment as the reason, and the dialog's answer for the
+//! daemon), and closes a dialog another client answered, or that ended
+//! unanswered, on the daemon's `rkat/decision_ended`
+//! ([`Msg::EscalationResolved`]). A late decision of this client is refused
+//! by the engine (`not_open`) and dropped.
+//!
+//! A daemon of an earlier version records every escalation in the realm's
+//! approval store only: this client then lists the pending ones for the
+//! orchestrator's session (`approval/list`, on every `tool_call_requested`
+//! and while a turn runs or a dialog is open), shows each as the dialog and
+//! answers with `approval/decide` ([`decide_params`]); a record another
+//! client decided leaves the pending list and its dialog closes on the next
+//! list.
 
 use std::collections::{HashMap, HashSet};
 
@@ -19,6 +28,7 @@ use serde_json::{Value, json};
 use crate::approval::escalation::RecordedPrompt;
 use crate::approval::ledger::HUMAN;
 use crate::approval::remote::{RemoteAnswer, is_gate_record, recorded_prompt};
+use crate::daemon::decisions::{DialogRendering, KIND};
 use crate::ui::{EscalationAnswer, EscalationId, EscalationPrompt, Msg};
 
 /// What a list of the pending records changes in the UI.
@@ -59,6 +69,10 @@ pub struct Approvals {
     /// yet: a list read before it still has them pending, and they must
     /// not show again. Kept until a list no longer has them pending.
     deciding: HashSet<ApprovalId>,
+    /// The decisions whose dialogs are open: their local id and the digest
+    /// of the rendering shown.
+    decisions: HashMap<String, (u64, String)>,
+    decision_by_local: HashMap<u64, String>,
     next: u64,
 }
 
@@ -66,7 +80,58 @@ impl Approvals {
     /// Whether a dialog is open.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.shown.is_empty()
+        self.shown.is_empty() && self.decisions.is_empty()
+    }
+
+    /// A `decision/notice` (its params) the daemon pushed: the dialog to
+    /// show, when it is a gate decision of `session` not shown yet.
+    pub fn notice(&mut self, session: &SessionId, params: &Value) -> Option<Change> {
+        let notice: meerkat_contracts::WireDecisionNotice =
+            serde_json::from_value(params.clone()).ok()?;
+        if notice.kind != KIND
+            || notice.phase != meerkat_contracts::WireDecisionPhase::Open
+            || self.decisions.contains_key(&notice.decision_id)
+        {
+            return None;
+        }
+        let presentation = notice.presentation?;
+        let dialog = DialogRendering::parse(&presentation.rendering)?;
+        if &dialog.session_id != session {
+            return None;
+        }
+        self.next += 1;
+        let local = self.next;
+        self.decisions.insert(
+            notice.decision_id.clone(),
+            (local, presentation.subject_digest),
+        );
+        self.decision_by_local.insert(local, notice.decision_id);
+        Some(Change::Show(ui_prompt(&dialog.prompt), EscalationId(local)))
+    }
+
+    /// The daemon's `rkat/decision_ended` (its params): close the dialog
+    /// this client did not answer, saying how it ended.
+    pub fn decision_ended(&mut self, params: &Value) -> Option<Change> {
+        let decision = params.get("decision_id").and_then(Value::as_str)?;
+        let (local, _) = self.decisions.remove(decision)?;
+        self.decision_by_local.remove(&local);
+        let phase = params.get("phase").and_then(Value::as_str).unwrap_or("");
+        let text = match phase {
+            "approved" | "executed" => "an approval request was allowed from another client",
+            "rejected" => "an approval request was denied from another client",
+            _ => {
+                "an approval request ended unanswered (it timed out, the turn was interrupted, or its call was abandoned); the action was denied"
+            }
+        };
+        Some(Change::Resolve(EscalationId(local), Some(text.to_string())))
+    }
+
+    /// The UI answered dialog `id` of a decision: the decision and the
+    /// digest of what was shown (the dialog is closed from now on).
+    pub fn answer_decision(&mut self, id: EscalationId) -> Option<(String, String)> {
+        let decision = self.decision_by_local.remove(&id.0)?;
+        let (_, digest) = self.decisions.remove(&decision)?;
+        Some((decision, digest))
     }
 
     /// The records whose dialogs are open.
@@ -145,9 +210,15 @@ impl Approvals {
     pub fn clear(&mut self) -> Vec<EscalationId> {
         self.shown.clear();
         self.deciding.clear();
+        self.decisions.clear();
         self.by_local
             .drain()
             .map(|(local, _)| EscalationId(local))
+            .chain(
+                self.decision_by_local
+                    .drain()
+                    .map(|(local, _)| EscalationId(local)),
+            )
             .collect()
     }
 }
@@ -203,15 +274,38 @@ pub fn ui_prompt(prompt: &RecordedPrompt) -> EscalationPrompt {
     }
 }
 
-/// The `approval/decide` parameters for the UI's `answer` to record `id`.
+/// The `decision/decide` parameters for the UI's `answer` to `decision`,
+/// whose rendering (digest `digest`) the dialog showed: the comment of a
+/// denial is the decision's reason; the dialog's answer travels beside it
+/// for the daemon, which strips it before the engine sees the request.
 #[must_use]
-pub fn decide_params(id: &ApprovalId, answer: &EscalationAnswer) -> Value {
-    let (remote, comment) = match answer {
+pub fn decision_params(decision: &str, digest: &str, answer: &EscalationAnswer) -> Value {
+    let (remote, comment) = remote_answer(answer);
+    let mut params = json!({
+        "decision_id": decision,
+        "approve": remote.decision() == meerkat_core::ApprovalDecision::Approve,
+        "presented_digest": digest,
+        "answer": remote,
+    });
+    if let Some(comment) = comment {
+        params["reason"] = json!(comment);
+    }
+    params
+}
+
+fn remote_answer(answer: &EscalationAnswer) -> (RemoteAnswer, Option<&str>) {
+    match answer {
         EscalationAnswer::AllowOnce => (RemoteAnswer::AllowOnce, None),
         EscalationAnswer::AllowAndAddRule => (RemoteAnswer::AllowAndAddRule, None),
         EscalationAnswer::Deny { comment } => (RemoteAnswer::Deny, comment.as_deref()),
         EscalationAnswer::Stop => (RemoteAnswer::Stop, None),
-    };
+    }
+}
+
+/// The `approval/decide` parameters for the UI's `answer` to record `id`.
+#[must_use]
+pub fn decide_params(id: &ApprovalId, answer: &EscalationAnswer) -> Value {
+    let (remote, comment) = remote_answer(answer);
     let mut params = json!({
         "approval_id": id,
         "decision": remote.decision(),
@@ -357,6 +451,86 @@ mod tests {
             &approvals.update(&session, pending, &[])[..],
             [Change::Show(..)]
         ));
+    }
+
+    fn notice(decision: &str, session: &SessionId) -> Value {
+        let rendering = serde_json::to_string(&DialogRendering {
+            session_id: session.clone(),
+            prompt: RecordedPrompt {
+                tool: "write_file".into(),
+                subjects: vec!["a.txt".into()],
+                ..RecordedPrompt::default()
+            },
+        })
+        .unwrap();
+        json!({
+            "notice_id": "n1",
+            "decision_id": decision,
+            "kind": KIND,
+            "event": "presented",
+            "phase": "open",
+            "approver_id": "person:alice",
+            "requester": "principal:x",
+            "presentation": {
+                "rendering": rendering,
+                "renderer": "rkat-tui.dialog-v1",
+                "subject_digest": "sha256:abc",
+                "parts": [],
+            },
+        })
+    }
+
+    #[test]
+    fn a_pushed_decision_opens_one_dialog_and_another_clients_answer_closes_it() {
+        let session = SessionId::new();
+        let mut approvals = Approvals::default();
+        // Another conversation's request is not shown here.
+        assert!(
+            approvals
+                .notice(&SessionId::new(), &notice("d1", &session))
+                .is_none()
+        );
+        let Some(Change::Show(prompt, id)) = approvals.notice(&session, &notice("d1", &session))
+        else {
+            unreachable!("a dialog");
+        };
+        assert_eq!(prompt.rule.as_deref(), Some("write_file a.txt"));
+        assert!(
+            approvals
+                .notice(&session, &notice("d1", &session))
+                .is_none(),
+            "once"
+        );
+        let closed = approvals.decision_ended(&json!({"decision_id": "d1", "phase": "rejected"}));
+        assert!(
+            matches!(&closed, Some(Change::Resolve(closed, Some(text))) if *closed == id && text.contains("denied from another client")),
+            "{closed:?}"
+        );
+        assert!(approvals.is_empty());
+        // Answered here: the decision and the digest shown, closed for good.
+        let Some(Change::Show(_, id)) = approvals.notice(&session, &notice("d2", &session)) else {
+            unreachable!("a dialog");
+        };
+        assert_eq!(
+            approvals.answer_decision(id),
+            Some(("d2".to_string(), "sha256:abc".to_string()))
+        );
+        assert!(
+            approvals
+                .decision_ended(&json!({"decision_id": "d2", "phase": "approved"}))
+                .is_none()
+        );
+        let params = decision_params(
+            "d2",
+            "sha256:abc",
+            &EscalationAnswer::Deny {
+                comment: Some("no".into()),
+            },
+        );
+        assert_eq!(
+            params,
+            json!({"decision_id": "d2", "approve": false, "presented_digest": "sha256:abc", "answer": "deny", "reason": "no"})
+        );
     }
 
     #[test]

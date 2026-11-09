@@ -982,6 +982,21 @@ pub struct RulesFile {
     /// Transcript display settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui: Option<UiSection>,
+    /// The `rkat-tui-mob` daemon's settings (user layers only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daemon: Option<DaemonSection>,
+}
+
+/// `[daemon]` section of a rules file: how the `rkat-tui-mob` daemon of
+/// the workspace presents itself. User layers only.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DaemonSection {
+    /// The person every attached client decides approval requests as: the
+    /// daemon binds the attach token to this principal (one per daemon).
+    /// Default: the login name (`$USER`, else `$LOGNAME`, else `owner`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub principal: Option<String>,
 }
 
 impl RulesFile {
@@ -1113,6 +1128,12 @@ pub enum Notice {
         /// The rules file.
         path: PathBuf,
     },
+    /// A project rules file's `[daemon]` section (only the user's own
+    /// files configure the daemon).
+    DaemonIgnored {
+        /// The rules file.
+        path: PathBuf,
+    },
     /// A `[pricing."<model>"]` entry has a negative or non-finite price.
     PricingInvalid {
         /// Model id.
@@ -1198,6 +1219,11 @@ impl fmt::Display for Notice {
                 "ignored `attach` in {}: only your own tui.toml files choose attach mode",
                 path.display()
             ),
+            Self::DaemonIgnored { path } => write!(
+                f,
+                "ignored [daemon] in {}: only your own tui.toml files configure the daemon",
+                path.display()
+            ),
             Self::PricingInvalid { model, field } => write!(
                 f,
                 "ignored [pricing.\"{model}\"]: `{field}` must be a non-negative number"
@@ -1278,6 +1304,8 @@ pub struct Layered {
     pub ui: UiSettings,
     /// `attach = true` in a user layer.
     pub attach: bool,
+    /// `[daemon] principal` of the user layers (the last one set).
+    pub daemon_principal: Option<String>,
     /// Non-fatal observations to show once.
     pub notices: Vec<Notice>,
 }
@@ -1344,6 +1372,7 @@ pub fn load_layered_with(
     let mut shell = ShellSettings::default();
     let mut ui = UiSettings::default();
     let mut attach = false;
+    let mut daemon_principal = None;
 
     let mut user_layers: Vec<(Option<PathBuf>, RuleOrigin, RulesFile)> = Vec::new();
     if let Some(global) = global_rules_file {
@@ -1436,6 +1465,9 @@ pub fn load_layered_with(
         if let Some(on) = file.attach {
             attach = on;
         }
+        if let Some(principal) = file.daemon.as_ref().and_then(|d| d.principal.clone()) {
+            daemon_principal = Some(principal);
+        }
     }
 
     let project_path = project_rkat_dir.join(RULES_FILE_NAME);
@@ -1476,6 +1508,11 @@ pub fn load_layered_with(
     }
     if project.attach.is_some() {
         notices.push(Notice::AttachIgnored {
+            path: project_path.clone(),
+        });
+    }
+    if project.daemon.is_some() {
+        notices.push(Notice::DaemonIgnored {
             path: project_path.clone(),
         });
     }
@@ -1580,6 +1617,7 @@ pub fn load_layered_with(
         shell,
         ui,
         attach,
+        daemon_principal,
         notices,
     })
 }
@@ -1854,6 +1892,9 @@ mod tests {
     #[test]
     fn rules_file_round_trip() {
         let file = RulesFile {
+            daemon: Some(DaemonSection {
+                principal: Some("alice".into()),
+            }),
             attach: Some(true),
             auto: Some(AutoSection {
                 enabled: Some(true),

@@ -325,6 +325,13 @@ impl ApprovalEngine {
         (auto.counters, auto.state)
     }
 
+    /// How long the human has to answer an escalation (its queue wait
+    /// included).
+    #[must_use]
+    pub fn escalation_timeout(&self) -> Duration {
+        self.escalation_timeout
+    }
+
     /// The escalation ledger, when one is kept.
     #[must_use]
     pub fn ledger(&self) -> Option<&EscalationLedger> {

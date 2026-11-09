@@ -27,7 +27,7 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use super::ClientError;
-use super::approvals::{Approvals, decide_params};
+use super::approvals::{Approvals, decide_params, decision_params};
 use super::catchup::{Cursor, CursorFile, Mark};
 use super::helpers::{self, Action as FollowerAction, Followers, HelperId};
 use super::launch::{self, Decision};
@@ -80,7 +80,8 @@ const ORPHANS_MAX: usize = 2_000;
 pub const EXPERIMENTAL_NOTICE: &str = "attach mode is experimental: the agent runs in this workspace's rkat-tui-mob daemon, behind the same approval gate (its approval requests show here, and in every other attached client; the first answer counts). /quit detaches and leaves the daemon running; /daemon stop shuts it down.";
 
 /// How often the pending approvals are listed while a turn runs or a
-/// dialog is open (the engine has no push notification for them yet).
+/// dialog is open, on a daemon that pushes no decisions (an earlier
+/// version).
 pub const APPROVAL_POLL: Duration = Duration::from_millis(250);
 
 /// How long a turn whose runs all ended waits for a follow-up run.
@@ -187,6 +188,10 @@ struct Link {
     stream: String,
     session: SessionId,
     endpoint: Endpoint,
+    /// The daemon pushes its approval requests as decisions
+    /// (`decision/notice` in its `initialize`); else they are polled with
+    /// `approval/list`.
+    decisions: bool,
 }
 
 /// A link and what the catch-up read on it.
@@ -653,10 +658,17 @@ impl AttachRunner {
         }
         let now = Instant::now();
         self.catch_up_at = Some(now + CATCH_UP_EVERY);
-        self.approvals_at = Some(now);
+        if !self.pushes_decisions() {
+            self.approvals_at = Some(now);
+        }
         self.discover_at = Some(now);
         self.session_check_at = Some(now + SESSION_POLL);
         self.refresh_mode();
+    }
+
+    /// Whether the attached daemon pushes its approval requests.
+    fn pushes_decisions(&self) -> bool {
+        self.link.as_ref().is_some_and(|link| link.decisions)
     }
 
     /// List the pending approvals in the background (see [`APPROVAL_POLL`]).
@@ -665,7 +677,7 @@ impl AttachRunner {
         let Some(link) = &self.link else {
             return;
         };
-        if self.listing_approvals {
+        if self.listing_approvals || link.decisions {
             return;
         }
         self.listing_approvals = true;
@@ -800,6 +812,23 @@ impl AttachRunner {
         let Some(link) = &self.link else {
             return;
         };
+        if note.method == crate::daemon::decisions::NOTICE {
+            let session = link.session.clone();
+            if let Some(change) = self.approvals.notice(&session, &note.params) {
+                for msg in change.messages() {
+                    self.send(msg);
+                }
+            }
+            return;
+        }
+        if note.method == crate::daemon::decisions::ENDED {
+            if let Some(change) = self.approvals.decision_ended(&note.params) {
+                for msg in change.messages() {
+                    self.send(msg);
+                }
+            }
+            return;
+        }
         if let Some(envelope) = remote::stream_event(note, &link.stream) {
             self.on_event(envelope);
             return;
@@ -1027,7 +1056,7 @@ impl AttachRunner {
                     self.turn.current_run = Some(run.clone());
                 }
             }
-            AgentEvent::ToolCallRequested { .. } => {
+            AgentEvent::ToolCallRequested { .. } if !self.pushes_decisions() => {
                 // The gate may raise an approval for it.
                 self.approvals_at = Some(Instant::now());
             }
@@ -1168,7 +1197,10 @@ impl AttachRunner {
                         self.send(msg);
                     }
                 }
-                if (self.turn.active || !self.approvals.is_empty()) && self.approvals_at.is_none() {
+                if (self.turn.active || !self.approvals.is_empty())
+                    && self.approvals_at.is_none()
+                    && !link.decisions
+                {
                     self.approvals_at = Some(Instant::now() + APPROVAL_POLL);
                 }
             }
@@ -1337,6 +1369,10 @@ impl AttachRunner {
     /// another client (or the timeout) settled first refuses the decision,
     /// which is then dropped; "deny and stop" also interrupts the turn.
     fn respond_escalation(&mut self, id: EscalationId, answer: &EscalationAnswer) {
+        if let Some((decision, digest)) = self.approvals.answer_decision(id) {
+            self.decide(id, &decision, &digest, answer);
+            return;
+        }
         let Some(record) = self.approvals.answer(id) else {
             return;
         };
@@ -1378,6 +1414,60 @@ impl AttachRunner {
                     });
                 }
             }
+        });
+        if matches!(answer, EscalationAnswer::Stop) {
+            self.interrupt();
+        }
+    }
+
+    /// The UI answered the dialog `id` of `decision`: decide it. A decision
+    /// another client (or the daemon, when the engine gave up on it)
+    /// settled first is refused by the engine (`not_open`) and the answer
+    /// is dropped; "deny and stop" also interrupts the turn.
+    fn decide(
+        &mut self,
+        id: EscalationId,
+        decision: &str,
+        digest: &str,
+        answer: &EscalationAnswer,
+    ) {
+        self.send(Msg::EscalationResolved(id));
+        let Some(connection) = self.connection() else {
+            self.notice(
+                NoticeLevel::Warn,
+                "not attached: the answer was not sent (the request shows again after the reattach while it is open)",
+            );
+            return;
+        };
+        let params = decision_params(decision, digest, answer);
+        let ui_tx = self.ui_tx.clone();
+        tokio::spawn(async move {
+            let decided = tokio::time::timeout(
+                CALL_TIMEOUT,
+                connection.call(crate::daemon::decisions::DECIDE, params),
+            )
+            .await;
+            let text = match decided {
+                Ok(Ok(_)) => return,
+                Ok(Err(ClientError::Rpc { message, .. })) => {
+                    tracing::debug!(%message, "decision already settled");
+                    (
+                        NoticeLevel::Info,
+                        format!(
+                            "that approval request was already settled; your answer was not used ({message})"
+                        ),
+                    )
+                }
+                Ok(Err(err)) => (NoticeLevel::Warn, format!("the answer was not sent: {err}")),
+                Err(_) => (
+                    NoticeLevel::Warn,
+                    "the daemon did not take the answer in time".to_string(),
+                ),
+            };
+            let _ = ui_tx.send(Msg::Notice {
+                level: text.0,
+                text: text.1,
+            });
         });
         if matches!(answer, EscalationAnswer::Stop) {
             self.interrupt();
@@ -1949,7 +2039,9 @@ impl AttachRunner {
             self.notice(NoticeLevel::Warn, warning);
         }
         let now = Instant::now();
-        self.approvals_at = Some(now);
+        if !self.pushes_decisions() {
+            self.approvals_at = Some(now);
+        }
         self.discover_at = Some(now);
     }
 
@@ -2617,7 +2709,15 @@ async fn restart(
 async fn establish(endpoint: Endpoint, saved: Option<&Cursor>) -> Result<Established, ClientError> {
     let (connection, mut notifications) = Connection::attach(&endpoint, ATTACH_TIMEOUT).await?;
     tokio::time::timeout(CALL_TIMEOUT, async {
-        connection.call("initialize", serde_json::json!({})).await?;
+        let capabilities = connection.call("initialize", serde_json::json!({})).await?;
+        let decisions = capabilities
+            .get("methods")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|methods| {
+                methods
+                    .iter()
+                    .any(|method| method.as_str() == Some(crate::daemon::decisions::NOTICE))
+            });
         let session = remote::session_id(&connection).await?;
         let mark = Mark::resume(&session.to_string(), saved);
         // The live stream first, so nothing falls between it and the replay.
@@ -2653,6 +2753,7 @@ async fn establish(endpoint: Endpoint, saved: Option<&Cursor>) -> Result<Establi
                 stream,
                 session,
                 endpoint,
+                decisions,
             },
             mark,
             replay,

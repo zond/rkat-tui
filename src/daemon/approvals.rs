@@ -8,14 +8,13 @@
 //!   in-process [`ApprovalGate`], resolved per call to the orchestrator's
 //!   session (unknown until its first spawn: the helper registry knows it).
 //! - [`Desk`]: where an escalation goes. In-process the broker hands it to
-//!   the runner and the UI answers on a channel; here it waits for the
-//!   escalation's record in the realm's approval store to be decided over
-//!   the engine's `approval/decide` (the record is the one the ledger
-//!   already writes for every escalation) and hands the engine the
-//!   [`crate::approval::escalation::HumanDecision`] it carries
-//!   ([`crate::approval::remote::human_decision`]). The engine keeps its
-//!   own timeout and serialisation; a record decided by a client is
-//!   confirmed, not decided twice ([`crate::approval::ledger::EscalationLedger::settle`]).
+//!   the runner and the UI answers on a channel; here it holds a durable
+//!   decision ([`super::decisions`]), which every attached client is shown
+//!   as it opens and decides with `decision/decide`, and hands the engine
+//!   the [`crate::approval::escalation::HumanDecision`] the decision
+//!   carries ([`crate::approval::remote::answered`]). The engine keeps its
+//!   own timeout, serialisation and ledger (the approval record of the
+//!   escalation, settled with the human's answer).
 //! - [`DaemonToolOrigins`]: where a session's tools come from. The engine's
 //!   published tool definitions are not reachable through the RPC
 //!   runtime's public API (only the command-based read, which answers
@@ -41,10 +40,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use meerkat_core::approval::decision::DecisionPhase;
 use meerkat_core::types::ToolCallView;
 use meerkat_core::{
-    AgentEvent, AgentToolDispatcher, ApprovalService, ApprovalStatus, LiveBridgeEffectKind,
-    LiveBridgeEffectOutcome, SessionId, ToolDispatchAdmission, ToolDispatchContext, ToolError,
+    AgentEvent, AgentToolDispatcher, LiveBridgeEffectKind, LiveBridgeEffectOutcome, SessionId,
+    ToolDispatchAdmission, ToolDispatchContext, ToolError,
 };
 use meerkat_mob::{AgentIdentity, MobId, MobSessionService};
 use meerkat_mob_mcp::MobMcpState;
@@ -54,13 +54,11 @@ use tokio::sync::{mpsc, oneshot};
 use crate::approval::admission::denial_error;
 use crate::approval::catalog::{ToolCatalog, ToolOrigin, ToolOrigins};
 use crate::approval::escalation::{EscalationRequest, HumanDecision};
-use crate::approval::remote::human_decision;
+use crate::approval::remote::answered;
 use crate::approval::{ApprovalEngine, ApprovalGate, DenyReason};
 use crate::mobs::{HelperKey, HelperRegistry};
 
-/// How often a waiting escalation's record is read (on the blocking pool:
-/// the store's calls block).
-pub const DECISION_POLL: Duration = Duration::from_millis(100);
+use super::decisions::{Decisions, Settled};
 
 /// How long one read of a session's tool definitions may take.
 const CATALOG_READ: Duration = Duration::from_secs(30);
@@ -141,9 +139,23 @@ struct Waiting {
     stop: Option<oneshot::Sender<()>>,
 }
 
-/// Serves the engine's escalations through the realm's approval store.
+/// How a held decision ended for the desk.
+enum Ending {
+    /// A client decided it.
+    Decided(Settled),
+    /// The human interrupted the session's turn.
+    Stopped,
+    /// The engine gave up on the escalation (its timeout, an abandoned
+    /// call).
+    Abandoned,
+}
+
+/// Serves the engine's escalations as durable decisions
+/// ([`super::decisions`]).
 pub struct Desk {
-    service: ApprovalService,
+    decisions: Arc<Decisions>,
+    /// The engine's escalation timeout (each decision's deadline).
+    timeout: Duration,
     waiting: Mutex<HashMap<u64, Waiting>>,
 }
 
@@ -156,16 +168,19 @@ impl std::fmt::Debug for Desk {
 }
 
 impl Desk {
-    /// A desk over `service` (the runtime's, which `approval/*` serves)
-    /// answering the escalations `requests` delivers, until the engine
-    /// drops its broker. Returns the desk and its task.
+    /// A desk holding a decision through `decisions` for each escalation
+    /// `requests` delivers (open for `timeout`, the engine's escalation
+    /// timeout), until the engine drops its broker. Returns the desk and
+    /// its task.
     #[must_use]
     pub fn spawn(
-        service: ApprovalService,
+        decisions: Arc<Decisions>,
+        timeout: Duration,
         mut requests: mpsc::Receiver<EscalationRequest>,
     ) -> (Arc<Self>, tokio::task::JoinHandle<()>) {
         let desk = Arc::new(Self {
-            service,
+            decisions,
+            timeout,
             waiting: Mutex::new(HashMap::new()),
         });
         let task = tokio::spawn({
@@ -198,17 +213,32 @@ impl Desk {
         self.waiting.lock().len()
     }
 
-    /// Wait for `request`'s record to be decided (or the engine to give up
-    /// on it: its timeout, an abandoned call) and answer it.
+    /// Hold `request`'s decision and wait for a client to decide it (or
+    /// the engine to give up on it: its timeout, an abandoned call; or the
+    /// human to interrupt), then answer it and tell the clients shown it
+    /// that it ended.
     async fn wait(self: Arc<Self>, request: EscalationRequest) {
         let EscalationRequest {
             prompt,
             mut respond,
         } = request;
-        let Some(record) = prompt.record.clone() else {
-            // No record nobody can decide: fail closed.
-            let _ = respond.send(HumanDecision::Deny { comment: None });
-            return;
+        let hold = match self.decisions.hold_request(&prompt, self.timeout) {
+            Ok(hold) => hold,
+            Err(err) => {
+                // Nothing a client could decide: fail closed.
+                tracing::warn!(error = %err, "an escalation could not be held as a decision; denied");
+                let _ = respond.send(HumanDecision::Deny { comment: None });
+                return;
+            }
+        };
+        let (settled_tx, mut settled_rx) = oneshot::channel();
+        let id = match self.decisions.hold(hold, settled_tx).await {
+            Ok(id) => id,
+            Err(err) => {
+                tracing::warn!(error = %err, "an escalation's decision was not held; denied");
+                let _ = respond.send(HumanDecision::Deny { comment: None });
+                return;
+            }
         };
         let (stop_tx, mut stop_rx) = oneshot::channel();
         self.waiting.lock().insert(
@@ -218,44 +248,49 @@ impl Desk {
                 stop: Some(stop_tx),
             },
         );
-        let shown = prompt.recorded();
-        let mut tick = tokio::time::interval(DECISION_POLL);
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let decision = loop {
+        let mut stoppable = true;
+        let ending = loop {
             tokio::select! {
-                () = respond.closed() => break None,
-                stopped = &mut stop_rx => {
+                () = respond.closed() => break Ending::Abandoned,
+                stopped = &mut stop_rx, if stoppable => {
                     if stopped.is_ok() {
-                        break Some(HumanDecision::Stop);
+                        break Ending::Stopped;
                     }
+                    stoppable = false;
                 }
-                _ = tick.tick() => {}
-            }
-            // The store's calls block (a file or SQLite store): off the
-            // executor, as the ledger runs them.
-            let service = self.service.clone();
-            let id = record.clone();
-            let read = match tokio::task::spawn_blocking(move || service.get(&id)).await {
-                Ok(read) => read,
-                Err(err) => {
-                    tracing::debug!(error = %err, "the escalation record read did not finish");
-                    continue;
-                }
-            };
-            match read {
-                Ok(current) if current.status != ApprovalStatus::Pending => {
-                    break human_decision(&current, &shown);
-                }
-                Ok(_) => {}
-                Err(meerkat_core::ApprovalError::NotFound { .. }) => {
-                    break Some(HumanDecision::Deny { comment: None });
-                }
-                Err(err) => tracing::debug!(error = %err, "cannot read an escalation record"),
+                settled = &mut settled_rx => match settled {
+                    Ok(settled) => break Ending::Decided(settled),
+                    // The waiter was dropped without a decision: withdrawn.
+                    Err(_) => break Ending::Abandoned,
+                },
             }
         };
         self.waiting.lock().remove(&prompt.id);
-        if let Some(decision) = decision {
-            let _ = respond.send(decision);
+        let shown = prompt.recorded();
+        match ending {
+            Ending::Decided(settled) => {
+                let phase = if settled.approve {
+                    DecisionPhase::Approved
+                } else {
+                    DecisionPhase::Rejected
+                };
+                self.decisions.ended(&id, Some(phase)).await;
+                let _ = respond.send(answered(
+                    settled.approve,
+                    settled.answer,
+                    settled.reason.as_deref(),
+                    &shown,
+                ));
+            }
+            Ending::Stopped => {
+                let phase = self.decisions.withdraw(&id).await;
+                self.decisions.ended(&id, phase).await;
+                let _ = respond.send(HumanDecision::Stop);
+            }
+            Ending::Abandoned => {
+                let phase = self.decisions.withdraw(&id).await;
+                self.decisions.ended(&id, phase).await;
+            }
         }
     }
 }
@@ -490,11 +525,6 @@ mod tests {
     use super::*;
     use crate::approval::escalation::EscalationPrompt;
     use crate::approval::remote::RemoteAnswer;
-    use meerkat_core::{
-        ApprovalActionKind, ApprovalDecision, ApprovalOwnerRef, ApprovalPrincipalId,
-        ApprovalProposedAction, ApprovalRequest, ApprovalResourceId, ApprovalResourceKind,
-        ApprovalResourceRef, ApprovalRisk, SurfaceMetadata,
-    };
 
     fn run_completed(session: &SessionId) -> crate::mobs::HelperUpdate {
         let usage = serde_json::to_value(meerkat_core::CumulativeUsage::default()).unwrap();
@@ -559,40 +589,23 @@ mod tests {
         task.await.unwrap();
     }
 
-    fn record(service: &ApprovalService, session: &SessionId) -> meerkat_core::ApprovalId {
-        service
-            .request(ApprovalRequest {
-                requester: ApprovalPrincipalId::new(crate::approval::ledger::REQUESTER).unwrap(),
-                owner: ApprovalOwnerRef::Session {
-                    session_id: session.clone(),
-                },
-                resource: ApprovalResourceRef {
-                    kind: ApprovalResourceKind::ToolCall,
-                    id: ApprovalResourceId::new("call"),
-                },
-                proposed_action: ApprovalProposedAction {
-                    kind: ApprovalActionKind::ToolCall,
-                    summary: "Run x".into(),
-                    body: None,
-                },
-                risk: ApprovalRisk::Medium,
-                request_body: None,
-                allowed_decisions: [ApprovalDecision::Approve, ApprovalDecision::Deny]
-                    .into_iter()
-                    .collect(),
-                expires_at: None,
-                metadata: SurfaceMetadata::default(),
-                request_provenance: None,
-            })
-            .unwrap()
-            .approval_id
+    fn desk() -> (Arc<Desk>, Arc<Decisions>, mpsc::Sender<EscalationRequest>) {
+        use meerkat_core::approval::decision::InMemoryDecisionStore;
+        let service = meerkat_runtime::decision::DurableDecisionService::new(Arc::new(
+            InMemoryDecisionStore::new(),
+        ));
+        let decisions = Decisions::new(
+            service,
+            super::super::decisions::Principal::new("alice").unwrap(),
+            None,
+        )
+        .unwrap();
+        let (tx, rx) = mpsc::channel(4);
+        let (desk, _task) = Desk::spawn(Arc::clone(&decisions), Duration::from_mins(1), rx);
+        (desk, decisions, tx)
     }
 
-    fn prompt(
-        id: u64,
-        session: &SessionId,
-        record: Option<meerkat_core::ApprovalId>,
-    ) -> EscalationPrompt {
+    fn prompt(id: u64, session: &SessionId) -> EscalationPrompt {
         EscalationPrompt {
             id,
             session_id: session.clone(),
@@ -602,7 +615,7 @@ mod tests {
             subjects: vec!["ls".into()],
             classifier_hint: None,
             policy_reason: None,
-            record,
+            record: None,
         }
     }
 
@@ -617,80 +630,108 @@ mod tests {
         answer
     }
 
-    #[tokio::test]
-    async fn the_desk_hands_the_engine_what_the_record_was_decided() {
-        let service = ApprovalService::new();
-        let (tx, rx) = mpsc::channel(4);
-        let (desk, _task) = Desk::spawn(service.clone(), rx);
-        let session = SessionId::new();
-        let id = record(&service, &session);
-        let answer = ask(&tx, prompt(1, &session, Some(id.clone()))).await;
-        service
-            .decide(
-                &id,
-                ApprovalDecision::Deny,
-                ApprovalPrincipalId::new("someone").unwrap(),
-                Some("not that".into()),
-                Some(RemoteAnswer::Deny.provenance(Some("not that"))),
+    /// The open decisions of the desk's hub.
+    fn open(decisions: &Decisions) -> Vec<meerkat_core::approval::decision::StoredDecision> {
+        decisions
+            .service()
+            .list(
+                &meerkat_core::approval::decision::DecisionListFilter::default()
+                    .with_phase(DecisionPhase::Open),
+                None,
+                100,
             )
-            .unwrap();
+            .unwrap()
+            .decisions
+    }
+
+    async fn until(mut done: impl FnMut() -> bool) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !done() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("in time");
+    }
+
+    #[tokio::test]
+    async fn the_desk_hands_the_engine_what_the_decision_was_decided() {
+        let (desk, decisions, tx) = desk();
+        let session = SessionId::new();
+        let answer = ask(&tx, prompt(1, &session)).await;
+        until(|| open(&decisions).len() == 1).await;
+        let id = open(&decisions)[0].decision_id.clone();
+        decisions.settled(
+            &id,
+            Settled {
+                approve: false,
+                answer: Some(RemoteAnswer::Deny),
+                reason: Some("not that".into()),
+            },
+        );
         assert_eq!(
             answer.await.unwrap(),
             HumanDecision::Deny {
                 comment: Some("not that".into())
             }
         );
-        // No record: denied at once (fail closed).
-        let answer = ask(&tx, prompt(2, &session, None)).await;
-        assert_eq!(answer.await.unwrap(), HumanDecision::Deny { comment: None });
-        assert_eq!(desk.waiting(), 0);
+        let first = id;
+        let answer = ask(&tx, prompt(2, &session)).await;
+        // The first stays open in the store: only the hub heard it settled.
+        until(|| open(&decisions).len() == 2).await;
+        let id = open(&decisions)
+            .into_iter()
+            .map(|row| row.decision_id)
+            .find(|id| *id != first)
+            .unwrap();
+        decisions.settled(
+            &id,
+            Settled {
+                approve: true,
+                answer: Some(RemoteAnswer::AllowAndAddRule),
+                reason: None,
+            },
+        );
+        assert!(matches!(
+            answer.await.unwrap(),
+            HumanDecision::AllowAndAddRule(_)
+        ));
+        until(|| desk.waiting() == 0).await;
     }
 
     #[tokio::test]
     async fn an_interrupt_stops_the_sessions_waiting_escalations_only() {
-        let service = ApprovalService::new();
-        let (tx, rx) = mpsc::channel(4);
-        let (desk, _task) = Desk::spawn(service.clone(), rx);
+        let (desk, decisions, tx) = desk();
         let (mine, other) = (SessionId::new(), SessionId::new());
-        let stopped = ask(&tx, prompt(1, &mine, Some(record(&service, &mine)))).await;
-        let kept_id = record(&service, &other);
-        let kept = ask(&tx, prompt(2, &other, Some(kept_id.clone()))).await;
-        while desk.waiting() < 2 {
-            tokio::task::yield_now().await;
-        }
+        let stopped = ask(&tx, prompt(1, &mine)).await;
+        let kept = ask(&tx, prompt(2, &other)).await;
+        until(|| desk.waiting() == 2).await;
         desk.stop(&mine);
         assert_eq!(stopped.await.unwrap(), HumanDecision::Stop);
         assert_eq!(desk.waiting(), 1);
-        service
-            .decide(
-                &kept_id,
-                ApprovalDecision::Approve,
-                ApprovalPrincipalId::new("someone").unwrap(),
-                None,
-                None,
-            )
-            .unwrap();
+        // The stopped one is withdrawn; the other stays open.
+        until(|| open(&decisions).len() == 1).await;
+        let id = open(&decisions)[0].decision_id.clone();
+        decisions.settled(
+            &id,
+            Settled {
+                approve: true,
+                answer: None,
+                reason: None,
+            },
+        );
         assert_eq!(kept.await.unwrap(), HumanDecision::AllowOnce);
     }
 
     #[tokio::test]
-    async fn an_escalation_the_engine_gave_up_on_stops_waiting() {
-        let service = ApprovalService::new();
-        let (tx, rx) = mpsc::channel(4);
-        let (desk, _task) = Desk::spawn(service.clone(), rx);
+    async fn an_escalation_the_engine_gave_up_on_is_withdrawn() {
+        let (desk, decisions, tx) = desk();
         let session = SessionId::new();
-        let answer = ask(&tx, prompt(1, &session, Some(record(&service, &session)))).await;
-        while desk.waiting() < 1 {
-            tokio::task::yield_now().await;
-        }
+        let answer = ask(&tx, prompt(1, &session)).await;
+        until(|| desk.waiting() == 1).await;
         // The engine's timeout dropped the responder.
         drop(answer);
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while desk.waiting() > 0 {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("the desk stopped waiting");
+        until(|| desk.waiting() == 0).await;
+        until(|| open(&decisions).is_empty()).await;
     }
 }

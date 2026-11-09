@@ -19,19 +19,18 @@
 //! token is the whole access control, so it lives where the agent's
 //! confined shell cannot read it.
 //!
-//! Approvals (P3): every member's tool calls pass the TUI's approval engine
-//! ([`approvals`]); a call that needs the human becomes a record in the
-//! realm's approval store that a client decides with `approval/decide`;
-//! the permission mode and the rules are reached through the daemon's own
-//! `rkat/*` methods ([`local`]); the deny rules are the members' durable
-//! application tool policy ([`policy`]).
-//!
-//! Known limits: `mob/stream_open` has no resume cursor (catch up with
-//! `events/list_since`); no push notification for a pending approval (the
-//! client polls `approval/list`).
+//! Approvals (P3, P3b): every member's tool calls pass the TUI's approval
+//! engine ([`approvals`]); a call that needs the human is held as a durable
+//! decision, which the daemon pushes to every attached client
+//! (`decision/notice`) and decides from a client's `decision/decide` as its
+//! one configured principal ([`decisions`]); the permission mode and the
+//! rules are reached through the daemon's own `rkat/*` methods ([`local`]);
+//! the deny rules are the members' durable application tool policy
+//! ([`policy`]).
 
 pub mod approvals;
 pub mod conversations;
+pub mod decisions;
 pub mod endpoint;
 pub mod engine;
 pub mod handshake;
@@ -423,8 +422,18 @@ impl Daemon {
                 Arc::clone(&composed.desk),
                 composed.thinking.clone(),
             )
-            .with_project_inputs(composed.project_inputs.clone()),
+            .with_project_inputs(composed.project_inputs.clone())
+            .with_decisions(Arc::clone(&composed.decisions)),
         );
+        // The decisions an earlier daemon left open held dispatches that
+        // ended with it.
+        let leftovers = composed.decisions.withdraw_leftovers().await;
+        if leftovers > 0 {
+            tracing::info!(
+                leftovers,
+                "withdrew the approval requests an earlier daemon left open (their tool calls did not run)"
+            );
+        }
         if let Some(warning) = local.announce_plan_mode().await {
             tracing::warn!(%warning, "plan mode");
         }
@@ -451,6 +460,7 @@ impl Daemon {
             local,
             tasks: vec![
                 composed.desk_task,
+                composed.decisions_task,
                 composed.follower_task,
                 composed.helper_catalogs_task,
                 watcher,

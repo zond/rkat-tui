@@ -132,6 +132,8 @@ pub struct Local {
     /// The workspace's project inputs and their trust (`None`: `rkat/trust`
     /// has nothing to act on).
     project: Option<ProjectInputs>,
+    /// The consent surface (`None`: the daemon offers no decisions).
+    decisions: Option<Arc<super::decisions::Decisions>>,
 }
 
 impl std::fmt::Debug for Local {
@@ -169,7 +171,22 @@ impl Local {
             plan_noted: tokio::sync::Mutex::new(in_plan),
             inputs: AtomicU64::new(0),
             project: None,
+            decisions: None,
         }
+    }
+
+    /// Offer the attached clients the decisions of `decisions` and decide
+    /// their `decision/decide` through it.
+    #[must_use]
+    pub fn with_decisions(mut self, decisions: Arc<super::decisions::Decisions>) -> Self {
+        self.decisions = Some(decisions);
+        self
+    }
+
+    /// The consent surface, when the daemon has one.
+    #[must_use]
+    pub fn decisions(&self) -> Option<&Arc<super::decisions::Decisions>> {
+        self.decisions.as_ref()
     }
 
     /// Answer `rkat/trust` over `project`'s inputs.

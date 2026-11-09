@@ -31,7 +31,10 @@ use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
+use std::collections::HashSet;
+
 use super::DaemonError;
+use super::decisions::ClientGuard;
 use super::endpoint::{self, Endpoint};
 use super::handshake;
 use super::local::{self, Local};
@@ -41,6 +44,30 @@ const PIPE: usize = 1 << 20;
 
 /// How long connections get to end on their own at shutdown.
 pub const DRAIN: Duration = Duration::from_secs(2);
+
+/// One line for a client, and who to tell once it is written to the
+/// client's socket (a decision notice is recorded as presented only then).
+#[derive(Debug)]
+pub struct Outgoing {
+    /// The line, newline included.
+    pub line: String,
+    /// Told when the line is written and flushed.
+    pub written: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+impl Outgoing {
+    fn line(line: String) -> Self {
+        Self {
+            line,
+            written: None,
+        }
+    }
+}
+
+/// The methods a daemon with decisions adds to the engine's `initialize`
+/// catalog: it pushes `decision/notice` to every attached client and
+/// decides `decision/decide` itself (plain TCP serves neither).
+pub const DECISION_METHODS: [&str; 2] = [super::decisions::NOTICE, super::decisions::DECIDE];
 
 /// The bound listener and the endpoint file announcing it.
 #[derive(Debug)]
@@ -207,6 +234,18 @@ pub trait LocalMethods: Send + Sync {
     async fn call(&self, method: &str, params: Value) -> Result<Value, local::Refusal>;
     /// Learn from an engine request on its way; returns it as forwarded.
     fn observe(&self, request: Value) -> Value;
+    /// A client attached: the daemon's consent surface offers it decisions
+    /// through `out` until the guard is dropped. `None`: no decisions.
+    fn connect(&self, _out: mpsc::UnboundedSender<Outgoing>) -> Option<ClientGuard> {
+        None
+    }
+    /// The client `client`'s `decision/decide`: its answer line.
+    async fn decide(&self, _client: u64, id: Value, _params: Value) -> String {
+        format!(
+            "{}\n",
+            json!({"jsonrpc": "2.0", "id": id, "error": {"code": local::METHOD_NOT_FOUND, "message": "this daemon decides no decisions"}})
+        )
+    }
 }
 
 #[async_trait::async_trait]
@@ -218,15 +257,32 @@ impl LocalMethods for Local {
     fn observe(&self, request: Value) -> Value {
         Local::observe(self, request)
     }
+
+    fn connect(&self, out: mpsc::UnboundedSender<Outgoing>) -> Option<ClientGuard> {
+        self.decisions().map(|decisions| decisions.connect(out))
+    }
+
+    async fn decide(&self, client: u64, id: Value, params: Value) -> String {
+        match self.decisions() {
+            Some(decisions) => decisions.decide(client, id, params).await,
+            None => format!(
+                "{}\n",
+                json!({"jsonrpc": "2.0", "id": id, "error": {"code": local::METHOD_NOT_FOUND, "message": "this daemon decides no decisions"}})
+            ),
+        }
+    }
 }
 
 /// Carry one client's lines: from the client, a local method is answered
-/// here (in a task of its own, the answer going out when it is ready) and
-/// anything else goes (observed) to the engine; the engine's lines go back
-/// to the client. Ends when the client closes (the engine then sees its end
-/// of input) or the engine's side closes; a local call still running then
-/// finishes (a conversation switch is not cut in half), and its answer is
-/// dropped.
+/// here (in a task of its own, the answer going out when it is ready), a
+/// `decision/decide` is decided by the daemon's consent surface (likewise),
+/// and anything else goes (observed) to the engine; the engine's lines go
+/// back to the client, with the decision methods added to an `initialize`
+/// answer when the daemon has decisions, and so do the decision notices the
+/// consent surface offers this client. Ends when the client closes (the
+/// engine then sees its end of input) or the engine's side closes; a local
+/// call still running then finishes (a conversation switch is not cut in
+/// half), and its answer is dropped.
 pub async fn proxy<R, W, E, L>(client_read: R, mut client_write: W, engine: E, local: Arc<L>)
 where
     R: AsyncBufRead + Unpin + Send + 'static,
@@ -235,19 +291,32 @@ where
     L: LocalMethods + ?Sized + 'static,
 {
     let (engine_read, mut engine_write) = tokio::io::split(engine);
-    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
+    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Outgoing>();
     let mut writer = AbortOnDrop(tokio::spawn(async move {
-        while let Some(line) = out_rx.recv().await {
-            if client_write.write_all(line.as_bytes()).await.is_err()
+        while let Some(outgoing) = out_rx.recv().await {
+            if client_write
+                .write_all(outgoing.line.as_bytes())
+                .await
+                .is_err()
                 || client_write.flush().await.is_err()
             {
                 break;
             }
+            if let Some(written) = outgoing.written {
+                let _ = written.send(());
+            }
         }
         let _ = client_write.shutdown().await;
     }));
+    // The client's registration with the consent surface: dropped (and the
+    // client's decide eligibility with it) when the client leaves.
+    let decisions = local.connect(out_tx.clone());
+    let client_id = decisions.as_ref().map(ClientGuard::id);
+    // `initialize` requests whose answers get the decision methods.
+    let initializing: Arc<parking_lot::Mutex<HashSet<String>>> = Arc::default();
     let mut from_engine = AbortOnDrop(tokio::spawn({
         let out_tx = out_tx.clone();
+        let initializing = Arc::clone(&initializing);
         async move {
             let mut lines = BufReader::new(engine_read);
             let mut line = String::new();
@@ -256,7 +325,11 @@ where
                 match lines.read_line(&mut line).await {
                     Ok(0) | Err(_) => break,
                     Ok(_) => {
-                        if out_tx.send(std::mem::take(&mut line)).is_err() {
+                        let mut forward = std::mem::take(&mut line);
+                        if !initializing.lock().is_empty() {
+                            forward = with_decision_methods(forward, &initializing);
+                        }
+                        if out_tx.send(Outgoing::line(forward)).is_err() {
                             break;
                         }
                     }
@@ -281,26 +354,88 @@ where
                 tokio::spawn(async move {
                     let line = answer(&*local, id, &method, params).await;
                     if let Some(out_tx) = out_tx.upgrade() {
-                        let _ = out_tx.send(line);
+                        let _ = out_tx.send(Outgoing::line(line));
+                    }
+                });
+            }
+            Routed::Decide { id, params } => {
+                let local = Arc::clone(&local);
+                let out_tx = out_tx.downgrade();
+                let client = client_id.unwrap_or(0);
+                tokio::spawn(async move {
+                    let line = local.decide(client, id, params).await;
+                    if let Some(out_tx) = out_tx.upgrade() {
+                        let _ = out_tx.send(Outgoing::line(line));
                     }
                 });
             }
             Routed::Forward(forward) => {
+                if decisions.is_some()
+                    && let Some(id) = initialize_id(&forward)
+                {
+                    initializing.lock().insert(id);
+                }
                 if engine_write.write_all(forward.as_bytes()).await.is_err() {
                     break;
                 }
             }
         }
     }
+    drop(decisions);
     let _ = engine_write.shutdown().await;
     drop(out_tx);
     let _ = (&mut from_engine.0).await;
     let _ = (&mut writer.0).await;
 }
 
+/// The id (as JSON text) of an `initialize` request `line`.
+fn initialize_id(line: &str) -> Option<String> {
+    if !line.contains("\"initialize\"") {
+        return None;
+    }
+    let request: Value = serde_json::from_str(line.trim_end()).ok()?;
+    (request.get("method").and_then(Value::as_str) == Some("initialize"))
+        .then(|| request.get("id").map(Value::to_string))
+        .flatten()
+}
+
+/// `line` from the engine, with [`DECISION_METHODS`] added to its method
+/// catalog when it answers one of the `initialize` requests in `waiting`
+/// (which then forgets it).
+fn with_decision_methods(line: String, waiting: &parking_lot::Mutex<HashSet<String>>) -> String {
+    let Ok(mut answer) = serde_json::from_str::<Value>(line.trim_end()) else {
+        return line;
+    };
+    let Some(id) = answer.get("id").map(Value::to_string) else {
+        return line;
+    };
+    if !waiting.lock().remove(&id) {
+        return line;
+    }
+    let Some(methods) = answer
+        .pointer_mut("/result/methods")
+        .and_then(Value::as_array_mut)
+    else {
+        return line;
+    };
+    for method in DECISION_METHODS {
+        if !methods.iter().any(|known| known.as_str() == Some(method)) {
+            methods.push(json!(method));
+        }
+    }
+    format!("{answer}\n")
+}
+
 /// Where one client line goes.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Routed {
+    /// A `decision/decide`, for the daemon's consent surface.
+    Decide {
+        /// The request id.
+        id: Value,
+        /// Its params (`Null` when absent).
+        params: Value,
+    },
     /// A local method call, to answer with [`answer`].
     Local {
         /// The request id.
@@ -322,6 +457,10 @@ pub fn route<L: LocalMethods + ?Sized>(line: &str, local: &L) -> Routed {
     };
     let method = request.get("method").and_then(Value::as_str);
     match method {
+        Some(super::decisions::DECIDE) => Routed::Decide {
+            id: request.get("id").cloned().unwrap_or(Value::Null),
+            params: request.get("params").cloned().unwrap_or(Value::Null),
+        },
         Some(method) if method.starts_with(local::PREFIX) => Routed::Local {
             id: request.get("id").cloned().unwrap_or(Value::Null),
             method: method.to_string(),
