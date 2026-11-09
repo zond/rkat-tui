@@ -47,8 +47,8 @@ use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Tier {
-    /// Tier 0: a user deny rule matched.
-    UserDeny,
+    /// Tier 0: this user deny rule matched.
+    UserDeny(RuleId),
     /// Tier 0: a file tool targets a sealed path (the gate's own `.rkat/`
     /// state, the realm and user config directories, or a git directory
     /// governing the project, inside it or not; see
@@ -72,7 +72,7 @@ pub enum Tier {
 impl fmt::Display for Tier {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::UserDeny => "user deny rule",
+            Self::UserDeny(_) => "user deny rule",
             Self::Sealed => "sealed",
             Self::AlwaysAllow => "always allow",
             Self::InProjectEdit => "in-project edit",
@@ -424,8 +424,9 @@ pub struct TierDecision {
     pub tier: Tier,
     /// Human-readable explanation.
     pub detail: String,
-    /// The user rule that decided, if any.
-    pub rule: Option<RuleId>,
+    /// The user allow rule that made the call [`Tier::AlwaysAllow`], if one
+    /// did (a deny rule is named by [`Tier::UserDeny`] itself).
+    pub allow_rule: Option<RuleId>,
 }
 
 impl TierDecision {
@@ -433,7 +434,7 @@ impl TierDecision {
         Self {
             tier,
             detail: detail.into(),
-            rule: None,
+            allow_rule: None,
         }
     }
 }
@@ -457,11 +458,7 @@ pub fn classify_tier_with(
     ctx: &PolicyContext<'_>,
 ) -> TierDecision {
     if let Some(id) = rules.matches_deny(action.name, subjects) {
-        return TierDecision {
-            tier: Tier::UserDeny,
-            detail: format!("matches user rule {id}"),
-            rule: Some(id),
-        };
+        return TierDecision::new(Tier::UserDeny(id), format!("matches user rule {id}"));
     }
 
     // A protected write asks the user unless an allow rule says otherwise
@@ -476,7 +473,7 @@ pub fn classify_tier_with(
         return TierDecision {
             tier: Tier::AlwaysAllow,
             detail: format!("matches user rule {id}"),
-            rule: Some(id),
+            allow_rule: Some(id),
         };
     }
     fallback
@@ -772,10 +769,10 @@ mod tests {
             )
             .unwrap(),
         );
-        assert_eq!(
+        assert!(matches!(
             tier(&root, &deny, false, "write_file", &env),
-            Tier::UserDeny
-        );
+            Tier::UserDeny(_)
+        ));
     }
 
     #[test]
@@ -1222,7 +1219,7 @@ mod tests {
             )
             .unwrap(),
         );
-        assert_eq!(
+        assert!(matches!(
             tier(
                 &root,
                 &rules,
@@ -1230,9 +1227,9 @@ mod tests {
                 "read_file",
                 &json!({"path": "src/main.rs"})
             ),
-            Tier::UserDeny
-        );
-        assert_eq!(
+            Tier::UserDeny(_)
+        ));
+        assert!(matches!(
             tier(
                 &root,
                 &rules,
@@ -1240,8 +1237,8 @@ mod tests {
                 "shell",
                 &json!({"command": "git push --force"})
             ),
-            Tier::UserDeny
-        );
+            Tier::UserDeny(_)
+        ));
         assert_eq!(
             tier(
                 &root,
@@ -1264,7 +1261,7 @@ mod tests {
         let args = json!({"command": "make lint"});
         let decision = classify_tier(&parse("shell", &raw(&args)), &rules, &ctx);
         assert_eq!(
-            decision.rule.map(|r| r.to_string()).as_deref(),
+            decision.allow_rule.map(|r| r.to_string()).as_deref(),
             Some("allow#3")
         );
     }
@@ -1337,7 +1334,10 @@ mod tests {
             )
             .unwrap(),
         );
-        assert_eq!(tier(&root, &rules, true, "note_save", &ws), Tier::UserDeny);
+        assert!(matches!(
+            tier(&root, &rules, true, "note_save", &ws),
+            Tier::UserDeny(_)
+        ));
     }
 
     #[test]

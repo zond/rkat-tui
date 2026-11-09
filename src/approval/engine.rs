@@ -723,34 +723,17 @@ impl ApprovalEngine {
         classify_tier_with(&facts.action, &facts.subjects, &self.rules.read(), &ctx)
     }
 
-    /// Verdict for tiers 0–2; `None` for [`Tier::AskUser`] and Tier 3.
-    fn static_verdict(&self, decision: TierDecision) -> Option<Verdict> {
-        match decision.tier {
-            Tier::UserDeny => {
-                let id = decision.rule?;
-                let rule = self
-                    .rules
-                    .read()
-                    .get(id)
-                    .map(describe_rule)
-                    .unwrap_or_default();
-                Some(Verdict::Deny {
-                    tier: Tier::UserDeny,
-                    reason: DenyReason::UserRule { id, rule },
-                })
-            }
-            Tier::Sealed => Some(Verdict::Deny {
-                tier: Tier::Sealed,
-                reason: DenyReason::Sealed {
-                    detail: decision.detail,
-                },
-            }),
-            Tier::AlwaysAllow | Tier::InProjectEdit => Some(Verdict::Allow {
-                tier: decision.tier,
-                by: Decider::Policy,
-                why: decision.detail,
-            }),
-            Tier::AskUser | Tier::Classifier => None,
+    /// The deny verdict of user deny rule `id`.
+    fn user_deny(&self, id: RuleId) -> Verdict {
+        let rule = self
+            .rules
+            .read()
+            .get(id)
+            .map(describe_rule)
+            .unwrap_or_default();
+        Verdict::Deny {
+            tier: Tier::UserDeny(id),
+            reason: DenyReason::UserRule { id, rule },
         }
     }
 
@@ -766,7 +749,7 @@ impl ApprovalEngine {
     fn route(&self, facts: &Facts<'_>, decision: TierDecision, mode: PermissionMode) -> Route {
         let tier = decision.tier;
         if mode == PermissionMode::Plan
-            && !matches!(tier, Tier::UserDeny | Tier::Sealed)
+            && !matches!(tier, Tier::UserDeny(_) | Tier::Sealed)
             && plan_forbids(&facts.action, &decision)
         {
             return Route::Settled(deny_at(tier, DenyReason::PlanMode));
@@ -788,14 +771,16 @@ impl ApprovalEngine {
                     decision.detail
                 ),
             }),
-            _ => match self.static_verdict(decision) {
-                Some(verdict) => Route::Settled(verdict),
-                None if mode == PermissionMode::Auto => Route::Review,
-                None => Route::Ask(Asking::Mode {
-                    tier: Tier::Classifier,
-                    reason: format!("{mode} mode asks for this action"),
-                }),
-            },
+            (Tier::UserDeny(id), _) => Route::Settled(self.user_deny(id)),
+            (Tier::Sealed, _) => Route::Settled(deny_at(
+                tier,
+                DenyReason::Sealed {
+                    detail: decision.detail,
+                },
+            )),
+            (Tier::AlwaysAllow | Tier::InProjectEdit, _) => {
+                Route::Settled(allow_at(tier, Decider::Policy, decision.detail))
+            }
         }
     }
 
@@ -1306,7 +1291,7 @@ fn plan_forbids(action: &Action<'_>, decision: &TierDecision) -> bool {
     match action.kind {
         ActionKind::FileWrite { .. } | ActionKind::NoteWrite { .. } => true,
         ActionKind::Shell { .. } => {
-            !(decision.tier == Tier::AlwaysAllow && decision.rule.is_none())
+            !(decision.tier == Tier::AlwaysAllow && decision.allow_rule.is_none())
         }
         _ => decision.tier != Tier::AlwaysAllow,
     }

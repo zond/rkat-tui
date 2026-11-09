@@ -198,10 +198,10 @@ fn protected_path_edit_asks_the_user() {
         rules: deny_rule("write_file", ".env*"),
         ..Options::default()
     });
-    assert_eq!(
+    assert!(matches!(
         denied.tier("write_file", json!({"path": ".env.local", "content": "x"})),
-        Tier::UserDeny
-    );
+        Tier::UserDeny(_)
+    ));
 }
 
 /// The gate's own state and the VCS internals are sealed: a file tool
@@ -335,8 +335,8 @@ fn deny_rule_wins() {
         ..Options::default()
     });
     let decision = h.decide("shell", &json!({"command": "git push --force"}));
-    assert_eq!(decision.tier, Tier::UserDeny);
-    assert!(decision.rule.is_some());
+    assert!(matches!(decision.tier, Tier::UserDeny(_)));
+    assert!(decision.allow_rule.is_none());
 }
 
 #[test]
@@ -468,9 +468,11 @@ fn shell_deny_rule_matches_hidden_segments() {
         "\\git push",
         "ls; git push -f",
     ] {
-        assert_eq!(
-            h.tier("shell", json!({ "command": cmd })),
-            Tier::UserDeny,
+        assert!(
+            matches!(
+                h.tier("shell", json!({ "command": cmd })),
+                Tier::UserDeny(_)
+            ),
             "{cmd}"
         );
     }
@@ -515,10 +517,10 @@ fn mcp_tools_reach_the_classifier_unless_a_rule_decides() {
         h.tier("search_repositories", json!({"query": "meerkat"})),
         Tier::AlwaysAllow
     );
-    assert_eq!(
+    assert!(matches!(
         h.tier("create_issue", json!({"title": "x"})),
-        Tier::UserDeny
-    );
+        Tier::UserDeny(_)
+    ));
     assert_eq!(h.tier("fetch", json!({"url": "x"})), Tier::Classifier);
 }
 
