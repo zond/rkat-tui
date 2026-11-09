@@ -35,6 +35,9 @@ the mob split are numbered in `docs/mob-split.md`, "Open engine asks"):
 - An atomic "stop this run and abandon these queued inputs": "Typing during
   a slow tool".
 - Instruction-guided compaction (`/compact <instructions>`): "Batch 1 A2".
+- `mob/member_send` answering the input id it admitted, so a client can
+  attribute a steer's delivery: "The attach client and daemon after the
+  senior review", and `docs/mob-split.md` ask 6.
 - Same-identity `/rewind` of a mob member (#2126) and the governed realm
   (#2122): "P4: helpers, conversations and detach in attach mode", "P3b and
   the 0.9.11 adoption", and `docs/mob-split.md`.
@@ -2736,3 +2739,18 @@ an unknown gauge until its next turn (it was read from the full log before).
 `EventsListSinceResult.latest_cursor` exists too and is not needed here.
 Tests: the attach suites (`attach_sessions::the_token_counter_and_gauge_follow_the_conversation`,
 `attach::the_client_reconnects_to_a_restarted_daemon`) unchanged.
+
+### Steer delivery is attributed first in, first out (an engine ask)
+
+The attach runner keeps the steers the daemon admitted in order and marks
+the oldest delivered at each `BoundaryAppendApplied` (and the rest at a
+follow-up run or the turn's end). With one client that is exact. With two
+clients steering one turn, A's boundary can mark B's message delivered.
+The boundary event names its input (`BoundaryAppendApplied.input_id`), but
+`mob/member_send` answers no runtime input id (`MobMemberSendResult` carries
+the member and, for a keyed send, a delivery id), so the client has nothing
+to match it with. Nothing is lost (the agent gets every
+steer); only the "delivered" mark can name the wrong message for a moment.
+Recorded as an ask (`docs/mob-split.md`, ask 6) and as a limit in
+`docs/manual.md`; no application-side workaround reads the engine's input
+ids today.

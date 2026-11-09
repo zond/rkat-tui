@@ -1139,6 +1139,10 @@ conversation): attach, then switch with `/resume`.
   after that (a `delegate` helper has only the one run).
 - A model switch's turn is tied to the connection that sent it: detaching
   during that one turn cancels it. Ordinary prompts are not.
+- When two TUIs steer the same turn, each marks its own messages delivered
+  in the order the agent takes steers, not by which message the agent
+  took: the engine does not tell a TUI which input its message became, so
+  one TUI's message can show delivered when the other's was.
 - The in-process TUI and the daemon cannot share one workspace at the same
   time.
 

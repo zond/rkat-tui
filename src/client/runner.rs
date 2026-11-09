@@ -1069,6 +1069,10 @@ impl AttachRunner {
                 self.discover_at = Some(Instant::now());
             }
             AgentEvent::BoundaryAppendApplied { .. } => {
+                // First in, first out: `mob/member_send` answered no input
+                // id to match this event's with, so with two clients
+                // steering one turn this can mark the other's steer (an
+                // ask, docs/mob-split.md ask 6).
                 if let Some(id) = self.turn.steers.pop_front() {
                     self.send(Msg::SteerDelivered(id));
                 }

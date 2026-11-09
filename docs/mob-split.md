@@ -18,7 +18,8 @@ names, is in `docs/evidence.md`:
 Attach mode is experimental; `--no-attach` is the default. Open:
 same-identity `/rewind` (lukacf/meerkat#2126); P5, the governed realm
 (#2122); MCP servers added or trusted after the
-daemon's mob was created.
+daemon's mob was created; which client's steer a boundary delivered when
+several clients steer the same turn (ask 6).
 
 ## Decision
 
@@ -122,7 +123,7 @@ The engine's wire has nothing for an application's permission mode, rule
 list, conversation list or trust record, so the daemon answers these
 itself before a line reaches the router (`daemon::serve` proxy,
 `daemon::local`, `daemon::decisions`); they are the only non-engine
-methods on the wire:
+methods on the wire, and `daemon::protocol` types each one for both ends:
 
 | Method | Params | Result |
 |---|---|---|
@@ -267,6 +268,11 @@ attach mode does not do yet.
 4. `delegate` naming the helper's session in its result.
 5. Optional: a flag letting a trusted connection's `mob/spawn` request
    `host_root`; the daemon spawns the orchestrator in Rust meanwhile.
+6. `mob/member_send` answering the runtime input id it admitted (a keyed
+   send answers a delivery id, `WireContinuationReceipt`, not the input
+   id), so a client can match it to `boundary_append_applied`'s
+   `input_id` and tell its own steer's delivery from another client's: the
+   attach runner marks its steers delivered first in, first out.
 
 ## History
 
