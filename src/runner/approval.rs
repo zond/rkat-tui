@@ -6,7 +6,7 @@
 //! The engine asks the human through the escalation broker; the runner
 //! shows each request as [`Msg::Escalation`] (the UI queues them behind its
 //! modal) and answers with the [`HumanDecision`] the UI's
-//! [`Effect::RespondEscalation`] maps to. An escalation the engine withdraws
+//! [`Effect::RespondEscalation`] maps to ([`answered`]). An escalation the engine withdraws
 //! (timeout, abandoned call) closes its dialog with
 //! [`Msg::EscalationResolved`]. Interrupting a turn stops its session in the
 //! engine and answers its open escalations with Stop.
@@ -21,24 +21,23 @@ use tokio::sync::{mpsc, oneshot};
 
 use super::Runner;
 use crate::approval::desk::{
-    ModeStatus, RuleCommand, allow_rule, describe_rule, mode_notice, run_rule_command,
+    ModeStatus, RuleCommand, answered, describe_rule, mode_notice, run_rule_command,
 };
-use crate::approval::escalation::{EscalationRequest, HumanDecision};
+use crate::approval::escalation::{EscalationRequest, HumanDecision, RecordedPrompt};
 use crate::approval::mode::PermissionMode;
 use crate::approval::policy::{Decider, Tier, VerdictSummary};
 use crate::approval::{ApprovalEngine, ApprovalEvent};
 use crate::ui::{
-    ApprovalNotice, Effect, EscalationAnswer, EscalationId, EscalationPrompt, Msg, NoticeLevel,
-    RuleEffect, StatusUpdate,
+    ApprovalNotice, Effect, EscalationAnswer, EscalationId, Msg, NoticeLevel, RuleEffect,
+    StatusUpdate,
 };
 
 /// An escalation the UI has not answered yet.
 struct PendingEscalation {
     session_id: SessionId,
     respond: oneshot::Sender<HumanDecision>,
-    tool: String,
-    /// Canonical rule subject "allow always" turns into a literal rule.
-    subject: Option<String>,
+    /// What the dialog shows ("allow always" mints its rule from it).
+    shown: RecordedPrompt,
 }
 
 /// The approval engine's channels and the open escalations.
@@ -182,27 +181,18 @@ impl Runner {
     /// Show an escalation to the human.
     pub(super) fn on_escalation(&mut self, request: EscalationRequest) {
         let EscalationRequest { prompt, respond } = request;
-        let subject = prompt.subjects.into_iter().next();
-        let shown = EscalationPrompt {
-            agent: prompt.agent,
-            tool: prompt.tool.clone(),
-            args_preview: prompt.args_preview,
-            hint: prompt.classifier_hint,
-            reason: prompt.policy_reason,
-            rule: subject
-                .as_ref()
-                .map(|subject| format!("{} {subject}", prompt.tool)),
-        };
+        self.send(Msg::Escalation(
+            prompt.shown.clone(),
+            EscalationId(prompt.id),
+        ));
         self.approval.pending.insert(
             prompt.id,
             PendingEscalation {
                 session_id: prompt.session_id,
                 respond,
-                tool: prompt.tool,
-                subject,
+                shown: prompt.shown,
             },
         );
-        self.send(Msg::Escalation(shown, EscalationId(prompt.id)));
     }
 
     /// `/rules trust`: show what the realm rules file holds and trust it.
@@ -217,22 +207,10 @@ impl Runner {
         let Some(pending) = self.approval.pending.remove(&id.0) else {
             return;
         };
-        let decision = match answer {
-            EscalationAnswer::AllowOnce => HumanDecision::AllowOnce,
-            EscalationAnswer::Deny { comment } => HumanDecision::Deny { comment },
-            EscalationAnswer::Stop => HumanDecision::Stop,
-            EscalationAnswer::AllowAndAddRule => {
-                // A literal rule over the canonical subject: matches exactly
-                // this command / path, no glob semantics to escape.
-                match allow_rule(&pending.tool, pending.subject.as_deref()) {
-                    Ok(rule) => HumanDecision::AllowAndAddRule(Box::new(rule)),
-                    Err(err) => {
-                        self.notice(NoticeLevel::Warn, format!("rule not added: {err}"));
-                        HumanDecision::AllowOnce
-                    }
-                }
-            }
-        };
+        let (decision, no_rule) = answered(answer, &pending.shown);
+        if let Some(err) = no_rule {
+            self.notice(NoticeLevel::Warn, format!("rule not added: {err}"));
+        }
         let stop = matches!(decision, HumanDecision::Stop);
         let _ = pending.respond.send(decision);
         self.send(Msg::EscalationResolved(id));

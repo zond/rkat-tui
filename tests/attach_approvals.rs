@@ -215,10 +215,10 @@ async fn a_reviewed_call_shows_the_dialog_and_runs_after_approve() {
     client.send(Effect::StartTurn("write a.txt".into()));
     let (prompt, id) = client.escalation().await;
     assert_eq!(prompt.tool, "write_file");
-    assert_eq!(prompt.rule.as_deref(), Some("write_file a.txt"));
+    assert_eq!(prompt.rule().as_deref(), Some("write_file a.txt"));
     assert!(
         prompt
-            .reason
+            .policy_reason
             .as_deref()
             .unwrap_or("")
             .contains("manual mode"),
@@ -298,7 +298,7 @@ async fn allow_and_add_rule_skips_the_dialog_the_second_time() {
     client.send(Effect::StartTurn("touch the marker".into()));
     let (prompt, id) = client.escalation().await;
     assert_eq!(
-        prompt.rule.as_deref(),
+        prompt.rule().as_deref(),
         Some(format!("shell {command}").as_str())
     );
     client.send(Effect::RespondEscalation(

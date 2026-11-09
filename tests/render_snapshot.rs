@@ -8,10 +8,9 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier};
+use rkat_tui::approval::escalation::RecordedPrompt;
 use rkat_tui::ui::render::draw_at;
-use rkat_tui::ui::{
-    App, Block, DiffView, EscalationId, EscalationPrompt, Msg, StatusInfo, ToolState,
-};
+use rkat_tui::ui::{App, Block, DiffView, EscalationId, Msg, StatusInfo, ToolState};
 use serde_json::json;
 
 const W: u16 = 60;
@@ -187,13 +186,12 @@ fn a_long_input_line_wraps_and_the_transcript_shrinks() {
 fn escalation_modal_is_drawn_over_the_transcript() {
     let mut app = sample_app();
     app.update(Msg::Escalation(
-        EscalationPrompt {
+        RecordedPrompt {
             agent: Some("researcher".into()),
             tool: "shell".into(),
             args_preview: "rm -rf build".into(),
-            hint: None,
-            reason: None,
-            rule: Some("shell rm -rf build".into()),
+            subjects: vec!["rm -rf build".into()],
+            ..RecordedPrompt::default()
         },
         EscalationId(1),
     ));
@@ -240,13 +238,12 @@ fn escalation_deny_comment_field_snapshot() {
     use ratatui::crossterm::event::{KeyCode, KeyEvent};
     let mut app = sample_app();
     app.update(Msg::Escalation(
-        EscalationPrompt {
+        RecordedPrompt {
             agent: None,
             tool: "write_file".into(),
             args_preview: ".env.local".into(),
-            hint: None,
-            reason: None,
-            rule: Some("write_file .env.local".into()),
+            subjects: vec![".env.local".into()],
+            ..RecordedPrompt::default()
         },
         EscalationId(1),
     ));

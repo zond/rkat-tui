@@ -53,7 +53,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::approval::admission::denial_error;
 use crate::approval::catalog::{ToolCatalog, ToolOrigins};
-use crate::approval::desk::answered;
+use crate::approval::desk::{EscalationAnswer, answered};
 use crate::approval::escalation::{EscalationRequest, HumanDecision};
 use crate::approval::{ApprovalEngine, ApprovalGate, DenyReason};
 use crate::mobs::{HelperKey, HelperRegistry};
@@ -267,7 +267,6 @@ impl Desk {
             }
         };
         self.waiting.lock().remove(&prompt.id);
-        let shown = prompt.recorded();
         match ending {
             Ending::Decided(settled) => {
                 let phase = if settled.approve {
@@ -276,12 +275,16 @@ impl Desk {
                     DecisionPhase::Rejected
                 };
                 self.decisions.ended(&id, Some(phase)).await;
-                let _ = respond.send(answered(
+                let answer = EscalationAnswer::from_decision(
                     settled.approve,
                     settled.answer,
                     settled.reason.as_deref(),
-                    &shown,
-                ));
+                );
+                let (decision, no_rule) = answered(answer, &prompt.shown);
+                if let Some(err) = no_rule {
+                    tracing::warn!(error = %err, "allow rule not added; allowing once");
+                }
+                let _ = respond.send(decision);
             }
             Ending::Stopped => {
                 let phase = self.decisions.withdraw(&id).await;
@@ -530,7 +533,7 @@ pub async fn follow_helper_runs<H, R, F>(
 mod tests {
     use super::*;
     use crate::approval::desk::RemoteAnswer;
-    use crate::approval::escalation::EscalationPrompt;
+    use crate::approval::escalation::{EscalationPrompt, RecordedPrompt};
 
     fn run_completed(session: &SessionId) -> crate::mobs::HelperUpdate {
         let usage = serde_json::to_value(meerkat_core::CumulativeUsage::default()).unwrap();
@@ -615,12 +618,12 @@ mod tests {
         EscalationPrompt {
             id,
             session_id: session.clone(),
-            agent: None,
-            tool: "shell".into(),
-            args_preview: "ls".into(),
-            subjects: vec!["ls".into()],
-            classifier_hint: None,
-            policy_reason: None,
+            shown: RecordedPrompt {
+                tool: "shell".into(),
+                args_preview: "ls".into(),
+                subjects: vec!["ls".into()],
+                ..RecordedPrompt::default()
+            },
         }
     }
 

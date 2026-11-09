@@ -2565,3 +2565,31 @@ Tests: `approval::engine::tests::leaving_auto_mode_ends_a_pause`,
 mode switch), `approval::counters::tests::*`,
 `approval::rules::tests::layered_loading` (the project's
 `enabled = false` still starts in manual mode).
+
+### One prompt shape and one answer shape for escalations
+
+There were three shapes for one prompt (`approval::escalation::EscalationPrompt`,
+`RecordedPrompt`, `ui::modal::EscalationPrompt`, plus the daemon's
+`DialogRendering` wrapping the second) and three for one answer
+(`HumanDecision`, `ui::EscalationAnswer`, `desk::RemoteAnswer`), and the
+"allow and add a rule → `allow_rule` → fall back to allow once" step was
+written twice (the in-process runner and the daemon's desk).
+
+Now `EscalationPrompt { id, session_id, shown: RecordedPrompt }`, the UI
+renders `RecordedPrompt` itself (its rule text is `RecordedPrompt::rule`),
+and `DialogRendering` is that `shown` plus the session, as before on the
+wire. The human's answer is `desk::EscalationAnswer` (re-exported by `ui`);
+`RemoteAnswer` is only its wire tag (`EscalationAnswer::remote`, and
+`EscalationAnswer::from_decision` back from a decided decision).
+`desk::answered(answer, &shown)` is the one place an answer becomes the
+engine's `HumanDecision`, used by both hosts; it returns why no rule was
+added, which the in-process runner shows and the daemon logs.
+`HumanDecision` stays: it carries the minted `Rule` the engine adds. The
+review's literal shape (`EscalationAnswer` as a struct of `RemoteAnswer` and
+a comment) was not taken: it would let a comment ride on an allow, which the
+enum cannot express.
+
+Tests: `approval::desk::tests::{a_decided_decision_carries_every_answer,
+answers_round_trip_through_the_wire, allow_and_add_rule_without_a_subject_allows_once}`,
+the render snapshots of the dialog (`render_snapshot::escalation_*`), and
+the attach and in-process approval suites unchanged in meaning.

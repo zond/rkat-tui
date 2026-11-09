@@ -17,16 +17,15 @@ use std::collections::HashMap;
 use meerkat_core::SessionId;
 use serde_json::{Value, json};
 
-use crate::approval::desk::RemoteAnswer;
 use crate::approval::escalation::RecordedPrompt;
 use crate::daemon::decisions::{DialogRendering, KIND};
-use crate::ui::{EscalationAnswer, EscalationId, EscalationPrompt, Msg};
+use crate::ui::{EscalationAnswer, EscalationId, Msg};
 
 /// What a pushed decision changes in the UI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Change {
     /// Show a new dialog.
-    Show(EscalationPrompt, EscalationId),
+    Show(RecordedPrompt, EscalationId),
     /// Close a dialog; with a notice when it ended without this client.
     Resolve(EscalationId, Option<String>),
 }
@@ -92,7 +91,7 @@ impl Approvals {
             (local, presentation.subject_digest),
         );
         self.decision_by_local.insert(local, notice.decision_id);
-        Some(Change::Show(ui_prompt(&dialog.prompt), EscalationId(local)))
+        Some(Change::Show(dialog.prompt, EscalationId(local)))
     }
 
     /// The daemon's `rkat/decision_ended` (its params): close the dialog
@@ -131,29 +130,13 @@ impl Approvals {
     }
 }
 
-/// The dialog of a recorded prompt, as the in-process runner shows it.
-#[must_use]
-pub fn ui_prompt(prompt: &RecordedPrompt) -> EscalationPrompt {
-    EscalationPrompt {
-        agent: prompt.agent.clone(),
-        tool: prompt.tool.clone(),
-        args_preview: prompt.args_preview.clone(),
-        hint: prompt.classifier_hint.clone(),
-        reason: prompt.policy_reason.clone(),
-        rule: prompt
-            .subjects
-            .first()
-            .map(|subject| format!("{} {subject}", prompt.tool)),
-    }
-}
-
 /// The `decision/decide` parameters for the UI's `answer` to `decision`,
 /// whose rendering (digest `digest`) the dialog showed: the comment of a
 /// denial is the decision's reason; the dialog's answer travels beside it
 /// for the daemon, which strips it before the engine sees the request.
 #[must_use]
 pub fn decision_params(decision: &str, digest: &str, answer: &EscalationAnswer) -> Value {
-    let (remote, comment) = remote_answer(answer);
+    let (remote, comment) = answer.remote();
     let mut params = json!({
         "decision_id": decision,
         "approve": remote.decision() == meerkat_core::ApprovalDecision::Approve,
@@ -164,15 +147,6 @@ pub fn decision_params(decision: &str, digest: &str, answer: &EscalationAnswer) 
         params["reason"] = json!(comment);
     }
     params
-}
-
-fn remote_answer(answer: &EscalationAnswer) -> (RemoteAnswer, Option<&str>) {
-    match answer {
-        EscalationAnswer::AllowOnce => (RemoteAnswer::AllowOnce, None),
-        EscalationAnswer::AllowAndAddRule => (RemoteAnswer::AllowAndAddRule, None),
-        EscalationAnswer::Deny { comment } => (RemoteAnswer::Deny, comment.as_deref()),
-        EscalationAnswer::Stop => (RemoteAnswer::Stop, None),
-    }
 }
 
 #[cfg(test)]
@@ -220,7 +194,7 @@ mod tests {
         else {
             unreachable!("a dialog");
         };
-        assert_eq!(prompt.rule.as_deref(), Some("write_file a.txt"));
+        assert_eq!(prompt.rule().as_deref(), Some("write_file a.txt"));
         assert!(
             approvals
                 .notice(&session, &notice("d1", &session))

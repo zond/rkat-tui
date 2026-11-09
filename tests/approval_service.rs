@@ -232,7 +232,12 @@ async fn an_escalation_is_answered_through_the_runner() {
         unreachable!()
     };
     assert_eq!(prompt.tool, "write_file");
-    assert!(prompt.hint.as_deref().is_some_and(|h| h.contains("down")));
+    assert!(
+        prompt
+            .classifier_hint
+            .as_deref()
+            .is_some_and(|h| h.contains("down"))
+    );
     rig.send(Effect::RespondEscalation(id, EscalationAnswer::AllowOnce));
     rig.wait_for(|msg| matches!(msg, Msg::EscalationResolved(resolved) if *resolved == id))
         .await;
@@ -423,9 +428,9 @@ async fn a_protected_write_asks_the_user_and_allow_always_stops_the_prompts() {
         unreachable!()
     };
     assert_eq!(prompt.tool, "write_file");
-    assert_eq!(prompt.hint, None, "no classifier opinion");
+    assert_eq!(prompt.classifier_hint, None, "no classifier opinion");
     assert_eq!(
-        prompt.reason.as_deref(),
+        prompt.policy_reason.as_deref(),
         Some("protected path: `.env.local` (secrets); the policy always asks for these")
     );
     rig.send(Effect::RespondEscalation(

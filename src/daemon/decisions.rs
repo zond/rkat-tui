@@ -24,7 +24,7 @@
 //!   it is: the proxy hands it to [`Decisions::decide`], which parses it as a
 //!   closed request (a field the engine's request does not have, such as an
 //!   `actor` or an `approver`, is refused; the one extension is the dialog's
-//!   [`RemoteAnswer`], stripped before dispatch), builds an
+//!   [`RemoteAnswer`] tag, stripped before dispatch), builds an
 //!   `AuthenticatedDecisionEvent` whose approver is the daemon's fixed
 //!   principal (bound to the attach token by the host's configuration,
 //!   `[daemon] principal` in the user's `tui.toml`, never anything the
@@ -560,7 +560,7 @@ impl Decisions {
     ) -> Result<DecisionHoldRequest, String> {
         let shown = DialogRendering {
             session_id: prompt.session_id.clone(),
-            prompt: prompt.recorded(),
+            prompt: prompt.shown.clone(),
         };
         let rendering = serde_json::to_string(&shown).map_err(|err| err.to_string())?;
         let subject = format!(
@@ -916,12 +916,13 @@ mod tests {
         EscalationPrompt {
             id,
             session_id: SessionId::new(),
-            agent: None,
-            tool: "shell".into(),
-            args_preview: "ls".into(),
-            subjects: vec!["ls".into()],
-            classifier_hint: None,
-            policy_reason: Some("manual mode asks".into()),
+            shown: RecordedPrompt {
+                tool: "shell".into(),
+                args_preview: "ls".into(),
+                subjects: vec!["ls".into()],
+                policy_reason: Some("manual mode asks".into()),
+                ..RecordedPrompt::default()
+            },
         }
     }
 
@@ -981,7 +982,7 @@ mod tests {
             .unwrap();
         let dialog = DialogRendering::parse(rendering).unwrap();
         assert_eq!(dialog.session_id, shown.session_id);
-        assert_eq!(dialog.prompt, shown.recorded());
+        assert_eq!(dialog.prompt, shown.shown);
         // A client attaching later is offered the open decision (the
         // catch-up); a Missed reading offers it again only to clients that
         // were not shown it.

@@ -1,8 +1,10 @@
 //! Modal dialogs: the escalation (approval) prompt, the resume picker, the
 //! model picker, the shortcut panel and plan mode's "Plan ready" dialog.
 //!
-//! Modals are driven by plain data so the UI stays decoupled from the approval
-//! engine and session modules.
+//! Modals are driven by plain data so the UI stays decoupled from the
+//! session modules. The escalation dialog shows the approval engine's
+//! [`RecordedPrompt`] and answers with its [`EscalationAnswer`], the same
+//! shapes the daemon's decisions carry to a client.
 
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
@@ -14,6 +16,8 @@ use ratatui::widgets::{Block as BorderBlock, Borders, Clear, Paragraph};
 use super::markdown::{truncate_to_width, wrap_text};
 use super::render::fmt_ctx_tokens;
 use super::rewind::RewindMenu;
+pub use crate::approval::desk::EscalationAnswer;
+use crate::approval::escalation::RecordedPrompt;
 use crate::endpoints::describe_endpoint;
 use crate::models::{ModelEntry, ModelGroup, ModelSource};
 
@@ -23,41 +27,6 @@ const MAX_ARGS_LINES: usize = 10;
 /// Identifier of a pending escalation, assigned by the approval engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EscalationId(pub u64);
-
-/// The user's answer to an escalation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EscalationAnswer {
-    /// Allow this call only.
-    AllowOnce,
-    /// Allow and persist a narrow allow rule.
-    AllowAndAddRule,
-    /// Deny this call.
-    Deny {
-        /// What to tell the agent to do instead (the tool error carries it).
-        comment: Option<String>,
-    },
-    /// Deny and stop the turn.
-    Stop,
-}
-
-/// What the escalation dialog shows.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EscalationPrompt {
-    /// The helper making the call (`None`: the session's own agent).
-    pub agent: Option<String>,
-    /// Tool name.
-    pub tool: String,
-    /// Human-readable preview of the arguments.
-    pub args_preview: String,
-    /// Classifier explanation, if any.
-    pub hint: Option<String>,
-    /// Why the policy asks without the classifier (a protected path), if so.
-    pub reason: Option<String>,
-    /// The allow rule "Yes, allow and add a rule" would add (`shell ls -la`),
-    /// `None` when the action has no rule subject (the choice then allows
-    /// once).
-    pub rule: Option<String>,
-}
 
 /// How many numbered choices the escalation dialog lists.
 const ESCALATION_CHOICES: usize = 3;
@@ -340,7 +309,7 @@ pub enum Modal {
         /// Escalation id to answer.
         id: EscalationId,
         /// What to show.
-        prompt: EscalationPrompt,
+        prompt: RecordedPrompt,
         /// How many more escalations are queued behind this one.
         queued_behind: usize,
         /// The highlighted choice.
@@ -469,7 +438,7 @@ fn keys_lines(width: usize, max_lines: usize) -> Vec<Line<'static>> {
 }
 
 fn escalation_lines(
-    prompt: &EscalationPrompt,
+    prompt: &RecordedPrompt,
     dialog: &EscalationDialog,
     width: usize,
 ) -> Vec<Line<'static>> {
@@ -499,7 +468,7 @@ fn escalation_lines(
     if extra > 0 {
         lines.push(Line::styled(format!("… ({extra} more lines)"), dim));
     }
-    if let Some(reason) = &prompt.reason {
+    if let Some(reason) = &prompt.policy_reason {
         lines.push(Line::default());
         lines.extend(
             wrap_text(&format!("Policy: {reason}"), width)
@@ -507,7 +476,7 @@ fn escalation_lines(
                 .map(|l| Line::styled(l, Style::default().fg(Color::Yellow))),
         );
     }
-    if let Some(hint) = &prompt.hint {
+    if let Some(hint) = &prompt.classifier_hint {
         lines.push(Line::default());
         lines.extend(
             wrap_text(&format!("Classifier: {hint}"), width)
@@ -516,7 +485,7 @@ fn escalation_lines(
         );
     }
     lines.push(Line::default());
-    let rule = match &prompt.rule {
+    let rule = match prompt.rule() {
         Some(rule) => format!("Yes, allow and add a rule ({rule})"),
         None => "Yes, allow (no rule fits this action)".to_string(),
     };

@@ -52,7 +52,7 @@ use tokio::sync::mpsc;
 use super::catalog::{ToolOrigin, ToolOrigins};
 use super::classifier::{ActionClassifier, ClassifierInput, ClassifierVerdict, Environment};
 use super::counters::{AutoMode, DenialCounters, PauseCause};
-use super::escalation::{EscalationBroker, EscalationPrompt, HumanDecision};
+use super::escalation::{EscalationBroker, EscalationPrompt, HumanDecision, RecordedPrompt};
 use super::mode::PermissionMode;
 use super::policy::{
     Action, ActionKind, Decider, PolicyContext, Tier, TierDecision, classify_tier_with,
@@ -977,12 +977,14 @@ impl ApprovalEngine {
             let prompt = EscalationPrompt {
                 id,
                 session_id: session_id.clone(),
-                agent: agent.map(str::to_string),
-                tool: facts.action.name.to_string(),
-                args_preview: args_preview(&facts.action),
-                subjects: facts.subjects.clone(),
-                classifier_hint,
-                policy_reason,
+                shown: RecordedPrompt {
+                    tool: facts.action.name.to_string(),
+                    agent: agent.map(str::to_string),
+                    args_preview: args_preview(&facts.action),
+                    subjects: facts.subjects.clone(),
+                    classifier_hint,
+                    policy_reason,
+                },
             };
             let answer = broker.ask_locked(&guard, prompt).await;
             // A Stop applies before the serial lock is released, so an
@@ -1783,8 +1785,8 @@ mod tests {
         // Paused: the fourth call goes to the human, with the classifier's opinion.
         let task = spawn_decide(&rig, "c4", push());
         let request = rig.escalations.recv().await.unwrap();
-        assert_eq!(request.prompt.tool, "shell");
-        assert!(request.prompt.classifier_hint.unwrap().contains("D4"));
+        assert_eq!(request.prompt.shown.tool, "shell");
+        assert!(request.prompt.shown.classifier_hint.unwrap().contains("D4"));
         request.respond.send(HumanDecision::AllowOnce).unwrap();
         let verdict = task.await.unwrap();
         assert_eq!(
@@ -1809,7 +1811,7 @@ mod tests {
         let rule = Rule::literal(
             RuleKind::Allow,
             "shell",
-            request.prompt.subjects[0].clone(),
+            request.prompt.shown.subjects[0].clone(),
             RuleOrigin::Realm,
         )
         .unwrap();
@@ -1982,7 +1984,7 @@ mod tests {
         let rule = Rule::literal(
             RuleKind::Allow,
             "shell",
-            request.prompt.subjects[0].clone(),
+            request.prompt.shown.subjects[0].clone(),
             RuleOrigin::Realm,
         )
         .unwrap();
@@ -2067,13 +2069,13 @@ mod tests {
 
         let task = spawn_call(&rig, "w1", "write_file", env_write());
         let request = rig.escalations.recv().await.unwrap();
-        assert_eq!(request.prompt.tool, "write_file");
-        assert_eq!(request.prompt.classifier_hint, None);
+        assert_eq!(request.prompt.shown.tool, "write_file");
+        assert_eq!(request.prompt.shown.classifier_hint, None);
         assert_eq!(
-            request.prompt.policy_reason.as_deref(),
+            request.prompt.shown.policy_reason.as_deref(),
             Some("protected path: `.env.local` (secrets); the policy always asks for these")
         );
-        assert_eq!(request.prompt.subjects, [".env.local"]);
+        assert_eq!(request.prompt.shown.subjects, [".env.local"]);
         request.respond.send(HumanDecision::AllowOnce).unwrap();
         assert_eq!(
             task.await.unwrap().summary(),
@@ -2102,7 +2104,7 @@ mod tests {
         let rule = Rule::literal(
             RuleKind::Allow,
             "write_file",
-            request.prompt.subjects[0].clone(),
+            request.prompt.shown.subjects[0].clone(),
             RuleOrigin::Realm,
         )
         .unwrap();
@@ -2199,15 +2201,16 @@ mod tests {
         );
         let task = spawn_decide(&rig, "c1", push());
         let request = rig.escalations.recv().await.unwrap();
-        assert!(request.prompt.classifier_hint.is_none());
+        assert!(request.prompt.shown.classifier_hint.is_none());
         assert!(
             request
                 .prompt
+                .shown
                 .policy_reason
                 .as_deref()
                 .is_some_and(|r| r.starts_with("manual mode asks")),
             "{:?}",
-            request.prompt.policy_reason
+            request.prompt.shown.policy_reason
         );
         request
             .respond
@@ -2253,11 +2256,12 @@ mod tests {
         assert!(
             request
                 .prompt
+                .shown
                 .policy_reason
                 .as_deref()
                 .is_some_and(|r| r.contains("manual mode asks for every edit")),
             "{:?}",
-            request.prompt.policy_reason
+            request.prompt.shown.policy_reason
         );
         request.respond.send(HumanDecision::AllowOnce).unwrap();
         assert_eq!(
@@ -2308,11 +2312,12 @@ mod tests {
         assert!(
             request
                 .prompt
+                .shown
                 .policy_reason
                 .as_deref()
                 .is_some_and(|r| r.contains("protected path")),
             "{:?}",
-            request.prompt.policy_reason
+            request.prompt.shown.policy_reason
         );
         request
             .respond
@@ -2322,15 +2327,16 @@ mod tests {
 
         let task = spawn_decide(&rig, "c1", push());
         let request = rig.escalations.recv().await.unwrap();
-        assert_eq!(request.prompt.tool, "shell");
+        assert_eq!(request.prompt.shown.tool, "shell");
         assert!(
             request
                 .prompt
+                .shown
                 .policy_reason
                 .as_deref()
                 .is_some_and(|r| r.starts_with("accept edits mode asks")),
             "{:?}",
-            request.prompt.policy_reason
+            request.prompt.shown.policy_reason
         );
         request.respond.send(HumanDecision::AllowOnce).unwrap();
         assert!(task.await.unwrap().is_allowed());

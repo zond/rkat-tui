@@ -17,6 +17,7 @@ use meerkat_core::AgentEvent;
 use rkat_tui::approval::classifier::{
     ActionClassifier, ClassifierError, ClassifierInput, ClassifierVerdict,
 };
+use rkat_tui::approval::escalation::RecordedPrompt;
 use rkat_tui::approval::mode::PermissionMode;
 use rkat_tui::bootstrap::{ApprovalOverrides, BootstrapOptions, HostPaths};
 use rkat_tui::cli::AttachMode;
@@ -25,7 +26,7 @@ use rkat_tui::client::transport::{Connection, Notification};
 use rkat_tui::daemon::approvals::DaemonToolOrigins;
 use rkat_tui::daemon::endpoint::Endpoint;
 use rkat_tui::daemon::{Daemon, DaemonError, DaemonOptions};
-use rkat_tui::ui::{Effect, EscalationId, EscalationPrompt, Msg, StatusUpdate, TurnOutcome};
+use rkat_tui::ui::{Effect, EscalationId, Msg, StatusUpdate, TurnOutcome};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::common::{ScriptedLlmClient, TIMEOUT, args_for, endpoint_file_for, no_lists, within};
@@ -230,7 +231,7 @@ impl Client {
             .count()
     }
 
-    pub async fn escalation(&mut self) -> (EscalationPrompt, EscalationId) {
+    pub async fn escalation(&mut self) -> (RecordedPrompt, EscalationId) {
         match self
             .wait_for(|msg| matches!(msg, Msg::Escalation(..)))
             .await

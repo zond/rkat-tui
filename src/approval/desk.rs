@@ -8,12 +8,13 @@
 //! escalation as a durable decision (`crate::daemon::decisions`) and pushes
 //! it to every attached client, and the client answers with
 //! `decision/decide`. The engine's decision vocabulary is approve or
-//! reject, so what the in-process dialog distinguishes beyond that (allow +
-//! add a rule, deny and stop) travels as the dialog's [`RemoteAnswer`]
-//! beside the decision, and the user's comment as its reason; [`answered`]
-//! turns them back into the [`HumanDecision`] the engine waits for. A
-//! decision without an answer (any other client of the engine's methods)
-//! is allow once or deny.
+//! reject, so what the dialog distinguishes beyond that (allow + add a
+//! rule, deny and stop) travels as the [`RemoteAnswer`] tag beside the
+//! decision, and the user's comment as its reason
+//! ([`EscalationAnswer::remote`], [`EscalationAnswer::from_decision`]). A
+//! decision without a tag (any other client of the engine's methods) is
+//! allow once or deny. Both hosts turn the human's [`EscalationAnswer`]
+//! into the [`HumanDecision`] the engine waits for with [`answered`].
 
 use meerkat_core::ApprovalDecision;
 use serde::{Deserialize, Serialize};
@@ -24,7 +25,66 @@ use super::escalation::{HumanDecision, RecordedPrompt};
 use super::mode::PermissionMode;
 use super::rules::{Rule, RuleId, RuleKind, RuleOrigin, RuleSet};
 
-/// The human's answer as a client sends it with `decision/decide`.
+/// The human's answer to an escalation dialog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EscalationAnswer {
+    /// Allow this call only.
+    AllowOnce,
+    /// Allow and persist the literal allow rule of the call's first
+    /// subject ([`RecordedPrompt::rule`]).
+    AllowAndAddRule,
+    /// Deny this call.
+    Deny {
+        /// What to tell the agent to do instead (the tool error carries it).
+        comment: Option<String>,
+    },
+    /// Deny and stop the turn.
+    Stop,
+}
+
+impl EscalationAnswer {
+    /// The answer on the wire: its tag, and the comment a denial carries
+    /// as the decision's reason.
+    #[must_use]
+    pub fn remote(&self) -> (RemoteAnswer, Option<&str>) {
+        match self {
+            Self::AllowOnce => (RemoteAnswer::AllowOnce, None),
+            Self::AllowAndAddRule => (RemoteAnswer::AllowAndAddRule, None),
+            Self::Deny { comment } => (RemoteAnswer::Deny, comment.as_deref()),
+            Self::Stop => (RemoteAnswer::Stop, None),
+        }
+    }
+
+    /// The answer a decided durable decision carries: approved or
+    /// rejected, the dialog's `answer` tag when the client named it, and
+    /// the decider's `reason` (the dialog's comment). An approval without
+    /// a tag allows once; a rejection without one denies with the reason.
+    #[must_use]
+    pub fn from_decision(
+        approve: bool,
+        answer: Option<RemoteAnswer>,
+        reason: Option<&str>,
+    ) -> Self {
+        if approve {
+            if answer == Some(RemoteAnswer::AllowAndAddRule) {
+                Self::AllowAndAddRule
+            } else {
+                Self::AllowOnce
+            }
+        } else if answer == Some(RemoteAnswer::Stop) {
+            Self::Stop
+        } else {
+            Self::Deny {
+                comment: reason
+                    .filter(|comment| !comment.trim().is_empty())
+                    .map(str::to_string),
+            }
+        }
+    }
+}
+
+/// The tag of an [`EscalationAnswer`] as a client sends it with
+/// `decision/decide`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RemoteAnswer {
@@ -63,35 +123,27 @@ pub fn allow_rule(tool: &str, subject: Option<&str>) -> Result<Rule, String> {
     }
 }
 
-/// The human's answer a decided durable decision carries for the
-/// escalation that showed `prompt`: approved or rejected, the dialog's
-/// `answer` when the client named it, and the decider's `reason` (the
-/// dialog's comment). An approval without an answer allows once; a
-/// rejection without one denies with the reason.
+/// What the engine is told for the human's `answer` to the dialog that
+/// showed `prompt`. "Allow and add a rule" falls back to allow once when
+/// the action has no rule subject; the second value then says why no rule
+/// was added.
 #[must_use]
 pub fn answered(
-    approve: bool,
-    answer: Option<RemoteAnswer>,
-    reason: Option<&str>,
+    answer: EscalationAnswer,
     prompt: &RecordedPrompt,
-) -> HumanDecision {
-    let comment = reason
-        .filter(|comment| !comment.trim().is_empty())
-        .map(str::to_string);
-    if approve {
-        if answer == Some(RemoteAnswer::AllowAndAddRule) {
+) -> (HumanDecision, Option<String>) {
+    match answer {
+        EscalationAnswer::AllowOnce => (HumanDecision::AllowOnce, None),
+        EscalationAnswer::AllowAndAddRule => {
+            // A literal rule over the canonical subject: matches exactly
+            // this command or path, no glob semantics to escape.
             match allow_rule(&prompt.tool, prompt.subjects.first().map(String::as_str)) {
-                Ok(rule) => return HumanDecision::AllowAndAddRule(Box::new(rule)),
-                Err(err) => {
-                    tracing::warn!(error = %err, "allow rule not added; allowing once");
-                }
+                Ok(rule) => (HumanDecision::AllowAndAddRule(Box::new(rule)), None),
+                Err(err) => (HumanDecision::AllowOnce, Some(err)),
             }
         }
-        HumanDecision::AllowOnce
-    } else if answer == Some(RemoteAnswer::Stop) {
-        HumanDecision::Stop
-    } else {
-        HumanDecision::Deny { comment }
+        EscalationAnswer::Deny { comment } => (HumanDecision::Deny { comment }, None),
+        EscalationAnswer::Stop => (HumanDecision::Stop, None),
     }
 }
 
@@ -297,34 +349,73 @@ mod tests {
     #[test]
     fn a_decided_decision_carries_every_answer() {
         let shown = prompt();
-        assert_eq!(answered(true, None, None, &shown), HumanDecision::AllowOnce);
+        let decided = |approve, answer, reason| {
+            answered(
+                EscalationAnswer::from_decision(approve, answer, reason),
+                &shown,
+            )
+            .0
+        };
+        assert_eq!(decided(true, None, None), HumanDecision::AllowOnce);
         assert_eq!(
-            answered(true, Some(RemoteAnswer::AllowOnce), Some("fine"), &shown),
+            decided(true, Some(RemoteAnswer::AllowOnce), Some("fine")),
             HumanDecision::AllowOnce
         );
-        let Some(HumanDecision::AllowAndAddRule(rule)) = Some(answered(
-            true,
-            Some(RemoteAnswer::AllowAndAddRule),
-            None,
-            &shown,
-        )) else {
+        let HumanDecision::AllowAndAddRule(rule) =
+            decided(true, Some(RemoteAnswer::AllowAndAddRule), None)
+        else {
             panic!("allow and add rule");
         };
         assert_eq!(describe_rule(&rule), "allow shell git push");
         assert_eq!(
-            answered(false, Some(RemoteAnswer::Deny), Some("use git mv"), &shown),
+            decided(false, Some(RemoteAnswer::Deny), Some("use git mv")),
             HumanDecision::Deny {
                 comment: Some("use git mv".into())
             }
         );
         assert_eq!(
-            answered(false, None, Some("  "), &shown),
+            decided(false, None, Some("  ")),
             HumanDecision::Deny { comment: None }
         );
         assert_eq!(
-            answered(false, Some(RemoteAnswer::Stop), None, &shown),
+            decided(false, Some(RemoteAnswer::Stop), None),
             HumanDecision::Stop
         );
+    }
+
+    /// Every answer survives the wire: its tag and comment decide back to
+    /// the same answer.
+    #[test]
+    fn answers_round_trip_through_the_wire() {
+        for answer in [
+            EscalationAnswer::AllowOnce,
+            EscalationAnswer::AllowAndAddRule,
+            EscalationAnswer::Deny { comment: None },
+            EscalationAnswer::Deny {
+                comment: Some("no".into()),
+            },
+            EscalationAnswer::Stop,
+        ] {
+            let (tag, comment) = answer.remote();
+            let approve = tag.decision() == ApprovalDecision::Approve;
+            assert_eq!(
+                EscalationAnswer::from_decision(approve, Some(tag), comment),
+                answer
+            );
+        }
+    }
+
+    /// "Allow and add a rule" without a rule subject allows once and says
+    /// why no rule was added.
+    #[test]
+    fn allow_and_add_rule_without_a_subject_allows_once() {
+        let shown = RecordedPrompt {
+            tool: "mcp__x__y".into(),
+            ..RecordedPrompt::default()
+        };
+        let (decision, why) = answered(EscalationAnswer::AllowAndAddRule, &shown);
+        assert_eq!(decision, HumanDecision::AllowOnce);
+        assert!(why.is_some_and(|why| why.contains("no rule subject")));
     }
 
     #[test]

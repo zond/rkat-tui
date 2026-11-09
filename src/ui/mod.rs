@@ -23,6 +23,7 @@ pub mod search;
 pub mod selection;
 pub mod transcript;
 
+use crate::approval::escalation::RecordedPrompt;
 use crate::approval::mode::PermissionMode;
 use crate::delivery::{PendingId, SteerFailure};
 use crate::models::ModelGroup;
@@ -56,8 +57,8 @@ pub use history::History;
 pub use input::{InputEditor, StashOutcome};
 pub use keymap::{Action, EditAction};
 pub use modal::{
-    EscalationAnswer, EscalationDialog, EscalationId, EscalationPrompt, Modal, ModelPicker,
-    PlanChoice, PlanDialog, ResumePicker,
+    EscalationAnswer, EscalationDialog, EscalationId, Modal, ModelPicker, PlanChoice, PlanDialog,
+    ResumePicker,
 };
 pub use rewind::{RewindKey, RewindMenu, RewindPoint, Rewound};
 pub use runtime::{UiChannels, UiError, run_ui};
@@ -356,7 +357,7 @@ pub enum Msg {
         removed: usize,
     },
     /// The approval engine needs a human decision.
-    Escalation(EscalationPrompt, EscalationId),
+    Escalation(RecordedPrompt, EscalationId),
     /// An escalation was resolved elsewhere (timeout, dropped); close it.
     EscalationResolved(EscalationId),
     /// An approval decision to log in the transcript.
@@ -904,7 +905,7 @@ pub struct App {
     global_history: Vec<String>,
     /// Search corpus (newest first, deduplicated), built when a search starts.
     search_corpus: Vec<String>,
-    pending_escalations: VecDeque<(EscalationId, EscalationPrompt)>,
+    pending_escalations: VecDeque<(EscalationId, RecordedPrompt)>,
     /// A picker ([`Modal::Model`] or [`Modal::Resume`]) an escalation
     /// displaced; restored once no escalation remains.
     parked: Option<Modal>,
@@ -3507,7 +3508,7 @@ impl App {
         }
     }
 
-    fn escalation(&mut self, prompt: EscalationPrompt, id: EscalationId) {
+    fn escalation(&mut self, prompt: RecordedPrompt, id: EscalationId) {
         match &mut self.modal {
             Some(Modal::Escalation { queued_behind, .. }) => {
                 self.pending_escalations.push_back((id, prompt));
@@ -4936,13 +4937,11 @@ mod tests {
     #[test]
     fn ctrl_c_with_modal_stops_every_pending_escalation() {
         let mut app = App::new(StatusInfo::default());
-        let prompt = |t: &str| EscalationPrompt {
+        let prompt = |t: &str| RecordedPrompt {
             agent: None,
             tool: t.into(),
             args_preview: "{}".into(),
-            hint: None,
-            reason: None,
-            rule: None,
+            ..RecordedPrompt::default()
         };
         app.update(Msg::Escalation(prompt("a"), EscalationId(1)));
         app.update(Msg::Escalation(prompt("b"), EscalationId(2)));
@@ -4969,13 +4968,12 @@ mod tests {
     #[test]
     fn escalation_keys_answer_and_advance() {
         let mut app = App::new(StatusInfo::default());
-        let p = EscalationPrompt {
+        let p = RecordedPrompt {
             agent: None,
             tool: "shell".into(),
             args_preview: "rm x".into(),
-            hint: Some("deletes".into()),
-            reason: None,
-            rule: None,
+            classifier_hint: Some("deletes".into()),
+            ..RecordedPrompt::default()
         };
         app.update(Msg::Escalation(p.clone(), EscalationId(7)));
         app.update(Msg::Escalation(p.clone(), EscalationId(8)));
@@ -5884,14 +5882,12 @@ mod tests {
         assert!(app.modal.is_none());
     }
 
-    fn shell_prompt() -> EscalationPrompt {
-        EscalationPrompt {
+    fn shell_prompt() -> RecordedPrompt {
+        RecordedPrompt {
             agent: None,
             tool: "shell".into(),
             args_preview: "{}".into(),
-            hint: None,
-            reason: None,
-            rule: None,
+            ..RecordedPrompt::default()
         }
     }
 

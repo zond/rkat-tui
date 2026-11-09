@@ -727,7 +727,7 @@ async fn a_protected_write_is_put_to_the_user_and_runs_when_allowed() {
     assert_eq!(prompt.tool, "write_file");
     assert!(
         prompt
-            .reason
+            .policy_reason
             .as_deref()
             .is_some_and(|r| r.contains("protected path: `.env.test` (secrets)")),
         "{prompt:?}"

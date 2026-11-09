@@ -25,7 +25,8 @@ pub enum HumanDecision {
     Stop,
 }
 
-/// What the UI shows in the escalation dialog.
+/// An escalation put to the human: which call it is, and what the dialog
+/// shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EscalationPrompt {
     /// Engine-assigned id; a withdrawn escalation
@@ -33,42 +34,12 @@ pub struct EscalationPrompt {
     pub id: u64,
     /// Session the call belongs to.
     pub session_id: SessionId,
-    /// The helper making the call (`None`: the session's own agent).
-    pub agent: Option<String>,
-    /// Tool name.
-    pub tool: String,
-    /// Short rendering of the arguments.
-    pub args_preview: String,
-    /// Canonical rule subjects of the action (see
-    /// [`super::policy::Action::subjects`]); "allow + add rule" mints a literal
-    /// rule from the first one.
-    pub subjects: Vec<String>,
-    /// The classifier's opinion, if it produced one.
-    pub classifier_hint: Option<String>,
-    /// Why the policy itself asks, without the classifier (a protected
-    /// path: [`super::policy::Tier::AskUser`]).
-    pub policy_reason: Option<String>,
+    /// What the dialog shows.
+    pub shown: RecordedPrompt,
 }
 
-impl EscalationPrompt {
-    /// What the escalation's approval record carries as its request body:
-    /// everything a remote client needs to show the same dialog.
-    #[must_use]
-    pub fn recorded(&self) -> RecordedPrompt {
-        RecordedPrompt {
-            tool: self.tool.clone(),
-            agent: self.agent.clone(),
-            args_preview: self.args_preview.clone(),
-            subjects: self.subjects.clone(),
-            classifier_hint: self.classifier_hint.clone(),
-            policy_reason: self.policy_reason.clone(),
-        }
-    }
-}
-
-/// The dialog's content as an approval record's `request_body` (the
-/// requester is the TUI's gate): a client of the daemon reads it back to
-/// render the dialog the in-process UI shows.
+/// What the escalation dialog shows, in-process and in a client of the
+/// daemon (a durable decision's rendering carries it).
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct RecordedPrompt {
     /// Tool name.
@@ -79,15 +50,30 @@ pub struct RecordedPrompt {
     /// Short rendering of the arguments.
     #[serde(default)]
     pub args_preview: String,
-    /// Canonical rule subjects; "allow + add rule" uses the first.
+    /// Canonical rule subjects of the action (see
+    /// [`super::policy::Action::subjects`]); "allow + add rule" mints a
+    /// literal rule from the first one.
     #[serde(default)]
     pub subjects: Vec<String>,
-    /// The classifier's opinion, if any.
+    /// The classifier's opinion, if it produced one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub classifier_hint: Option<String>,
-    /// Why the policy itself asks, if it does.
+    /// Why the policy or the permission mode asks without the classifier
+    /// (a protected path: [`super::policy::Tier::AskUser`]), if it does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy_reason: Option<String>,
+}
+
+impl RecordedPrompt {
+    /// The allow rule "Yes, allow and add a rule" would add, as the dialog
+    /// names it (`shell ls -la`); `None` when the action has no rule
+    /// subject (the choice then allows once).
+    #[must_use]
+    pub fn rule(&self) -> Option<String> {
+        self.subjects
+            .first()
+            .map(|subject| format!("{} {subject}", self.tool))
+    }
 }
 
 /// An escalation delivered to the UI: the prompt and the responder.
@@ -165,12 +151,12 @@ mod tests {
         EscalationPrompt {
             id: 0,
             session_id: SessionId::new(),
-            agent: None,
-            tool: tool.into(),
-            args_preview: "{}".into(),
-            subjects: vec!["{}".into()],
-            classifier_hint: None,
-            policy_reason: None,
+            shown: RecordedPrompt {
+                tool: tool.into(),
+                args_preview: "{}".into(),
+                subjects: vec!["{}".into()],
+                ..RecordedPrompt::default()
+            },
         }
     }
 
@@ -195,10 +181,10 @@ mod tests {
                 .is_err(),
             "second escalation delivered before the first was answered"
         );
-        let first_tool = first.prompt.tool.clone();
+        let first_tool = first.prompt.shown.tool.clone();
         first.respond.send(HumanDecision::AllowOnce).unwrap();
         let second = rx.recv().await.unwrap();
-        assert_ne!(second.prompt.tool, first_tool);
+        assert_ne!(second.prompt.shown.tool, first_tool);
         second
             .respond
             .send(HumanDecision::Deny { comment: None })
