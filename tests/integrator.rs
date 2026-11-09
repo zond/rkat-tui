@@ -983,11 +983,18 @@ async fn the_task_tools_fill_the_checklist_and_resume_restores_it() {
         ("read the parser", ItemState::Done),
         ("write the fix", ItemState::InProgress),
     ];
+    // The two updates ran as parallel tool calls, so their order among
+    // themselves is not fixed: the pending item first, the others as a set.
     let items = |list: &rkat_tui::ui::Checklist| -> Vec<(String, ItemState)> {
-        list.items()
+        let mut items: Vec<(String, ItemState)> = list
+            .items()
             .iter()
             .map(|i| (i.text.clone(), i.state))
-            .collect()
+            .collect();
+        if items.len() > 1 {
+            items[1..].sort_by(|a, b| a.0.cmp(&b.0));
+        }
+        items
     };
     let want: Vec<(String, ItemState)> = want.iter().map(|(t, s)| (t.to_string(), *s)).collect();
     assert_eq!(items(app.checklist_panel().expect("shown")), want);

@@ -191,3 +191,59 @@ async fn esc_during_a_helper_stops_the_orchestrator_and_the_helper() {
     client.quit().await;
     daemon.stop().await;
 }
+
+/// The adoption test of the lukacf/meerkat#2102 fix on the daemon: after a
+/// `/model` switch the orchestrator's `delegate` seats its helper on the
+/// switched model (the helper inherits the session's identity as it is
+/// now, not the one the orchestrator was spawned with).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_helper_delegated_after_a_model_switch_runs_on_the_new_model() {
+    const SWITCHED: &str = "claude-opus-4-8";
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Text("one"),
+        delegate("d1", "scout", "say hi"),
+        Step::Text("hi"),
+        Step::Text("done"),
+    ]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let mut client = Client::attach(&ws.root).await;
+    client.send(Effect::StartTurn("first".into()));
+    client.turn_finished().await.result.unwrap();
+    client.send(Effect::SetModel(format!("anthropic:{SWITCHED}")));
+    client
+        .wait_for(
+            |m| matches!(m, Msg::Status(StatusUpdate::Model { model, .. }) if model == SWITCHED),
+        )
+        .await;
+    client.send(Effect::StartTurn("delegate".into()));
+    assert_eq!(client.turn_finished().await.result.unwrap().text, "done");
+    let recorded = llm.recorded();
+    assert_eq!(recorded[0].model, MODEL);
+    assert_eq!(recorded[1].model, SWITCHED);
+    assert_eq!(
+        recorded[2].model, SWITCHED,
+        "the helper runs on the new model"
+    );
+    // The helper's own session records it.
+    let result = recorded[3]
+        .messages
+        .iter()
+        .find_map(|m| match m {
+            meerkat_core::Message::ToolResults { results, .. } => {
+                results.iter().find(|r| r.tool_use_id == "d1").cloned()
+            }
+            _ => None,
+        })
+        .expect("the delegate result");
+    let value: serde_json::Value = serde_json::from_str(&result.text_content())
+        .unwrap_or_else(|_| panic!("delegate failed: {}", result.text_content()));
+    let helper = meerkat_core::SessionId::parse(value["session_id"].as_str().unwrap()).unwrap();
+    client.quit().await;
+    daemon.stop().await;
+    let meta = rig::stored_session(&ws.root, &helper)
+        .await
+        .session_metadata()
+        .unwrap();
+    assert_eq!(meta.model, SWITCHED);
+}

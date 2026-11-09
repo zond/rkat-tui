@@ -3543,3 +3543,9 @@ and listed here.
     the interrupted run (a follow-up run consumed the next scripted
     answer); that is the manual's documented limit ("the agent gets it at
     its next step") and stays until ask 6 ships.
+- The adoption test of the lukacf/meerkat#2102 fix moved onto the daemon:
+  `attach_helpers::a_helper_delegated_after_a_model_switch_runs_on_the_new_model`
+  (a `/model` switch through `rkat/set_model`, then the orchestrator's
+  `delegate`: the helper's model call and its stored session are on the
+  switched model). Its in-process twin in `tests/mobs.rs` goes with that
+  file's migration.
