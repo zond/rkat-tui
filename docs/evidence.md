@@ -3630,10 +3630,15 @@ and listed here.
   is what made an in-process session view only. No library seam was
   needed; every assertion (listed view only and titled, the transcript
   shown, the notice, `/export`, the agent staying on its conversation, the
-  engine's "missing durable comms_name" refusal) is kept. Not checked
-  here: whether a session a client creates that way runs behind the
-  approval gate (the daemon's own conversations do; the wire needs the
-  endpoint token).
+  engine's "missing durable comms_name" refusal) is kept. A probe found
+  that a session a client creates that way does not run behind the
+  approval gate: its scripted `shell` call ran with the classifier never
+  asked. The daemon proxies every engine method to an authenticated
+  connection (the endpoint token, which the confined shell cannot read),
+  and rkat-tui's client never calls `session/create`, so only a token
+  holder can do this; it is still a gap in depth, left open (refusing the
+  engine's session-creating methods in the proxy, or gating every session
+  the factory builds, are the candidate fixes).
 
 ### The daemon's stop waits for the realm's databases to close
 
