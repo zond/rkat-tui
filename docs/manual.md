@@ -453,7 +453,9 @@ levels: a helper at the limit gets no `delegate`, `mob_create`,
 `mob_spawn_member` or `council` tool (left out of its tool list and denied
 by its tool access policy), and a deeper spawn is refused.
 
-`fork` hands a side quest to a child that starts with the session's own
+`fork` (in-process; in attach mode the agent has the engine's `fork_off`
+instead, see "Attach mode") hands a side quest to a child that starts with
+the session's own
 conversation as context: the TUI renders the committed conversation (user
 and assistant text, tool calls and results, `/remember` context; long
 values clipped, the oldest entries dropped past 48 KiB) into the child's
@@ -1135,6 +1137,10 @@ conversation): attach, then switch with `/resume`.
   identity; a same-identity rewind is with the engine's maintainers as a
   design note. The TUI's own `fork` tool is not available either (the
   agent has `fork_off`).
+- Up on an empty input does not take back a message already sent to the
+  daemon: the engine's `mob/member_send` answers no input id to cancel it
+  by (the same engine ask as the steer attribution below). The agent gets
+  it at its next step; Esc stops the turn.
 - `/compact now` asks a live agent: right after a daemon start, before the
   agent's first run, the engine can refuse it (send a message first).
 - `/trust` records the project files in the daemon's trust record: their

@@ -15,7 +15,7 @@ use meerkat_core::AgentEvent;
 use rig::{Client, Running};
 use rkat_tui::cli::AttachMode;
 use rkat_tui::client::catchup::CursorFile;
-use rkat_tui::client::runner::NOT_AVAILABLE;
+use rkat_tui::client::runner::RECALL_UNAVAILABLE;
 use rkat_tui::client::sessions::REWIND_UNAVAILABLE;
 use rkat_tui::client::testing::spawn_attach_runner;
 use rkat_tui::ui::{Effect, Msg, StatusInfo, StatusUpdate, TurnFailure};
@@ -452,7 +452,7 @@ async fn what_the_daemon_cannot_do_yet_says_so() {
     let mut client = Client::attach(&ws.root).await;
     client.send(Effect::RecallQueued);
     client
-        .wait_for(|msg| matches!(msg, Msg::Recalled { errors, .. } if errors.iter().any(|e| e.contains(NOT_AVAILABLE))))
+        .wait_for(|msg| matches!(msg, Msg::Recalled { errors, .. } if errors.iter().any(|e| e == RECALL_UNAVAILABLE)))
         .await;
     client.send(Effect::RequestRewindMenu);
     client

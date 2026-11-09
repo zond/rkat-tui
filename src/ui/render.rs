@@ -280,12 +280,18 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect, now: Instant) {
     } else {
         " · Ctrl+↑/↓ pick a helper"
     };
+    // Attached, quitting detaches: the daemon's agent goes on.
+    let quit = if app.status.attach.is_some() {
+        "detach"
+    } else {
+        "quit"
+    };
     let title: String = if app.quit_armed(now) {
-        " press Ctrl-C again to quit ".into()
+        format!(" press Ctrl-C again to {quit} ")
     } else if app.quit_confirm_armed(now) && app.quit_is_busy() {
-        " press Ctrl-D (or /quit) again to quit anyway ".into()
+        format!(" press Ctrl-D (or /quit) again to {quit} anyway ")
     } else if app.quit_confirm_armed(now) {
-        " Ctrl-D again to quit ".into()
+        format!(" Ctrl-D again to {quit} ")
     } else if app.esc_clear_armed(now) && app.input.is_empty() {
         " Esc again to rewind (pick a message to continue from) ".into()
     } else if app.esc_clear_armed(now) {

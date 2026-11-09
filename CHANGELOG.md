@@ -362,6 +362,11 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Fixed
 
+- Attached, the editor title and the help say that Ctrl-D, Ctrl-C twice and
+  `/quit` detach (the daemon's turn goes on) instead of quitting, and Up on
+  an empty input says why a message already sent to the daemon cannot be
+  taken back (the engine answers no input id to cancel it by). The manual
+  and README name `fork_off` where attach mode has no `fork`.
 - Attach mode never showed the daemon's start-up notices (its shell's
   confinement, rule-loading warnings, ignored project settings, semantic
   memory off): the daemon now keeps them (`rkat/notices`) and a TUI shows

@@ -83,7 +83,7 @@ approval gate, with its helpers, `/new`, `/resume` and the model picker; see
   `strict` also denies the network.
 - **Helpers and `fork`.** The agent can `delegate` subtasks to helper agents
   (Meerkat mob members) or `fork` a side quest with the conversation as
-  context; their calls pass the same gate, and a panel shows what they do.
+  context (attached to the daemon, the engine's `fork_off`); their calls pass the same gate, and a panel shows what they do.
 - **Any endpoint.** `anthropic`, `openai` (also LiteLLM and other
   OpenAI-compatible proxies) and `gemini` dialects, `/model` to hot-swap
   between them, and a context gauge and cost estimate in the status bar.

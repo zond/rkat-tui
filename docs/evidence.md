@@ -2964,3 +2964,22 @@ keeps them in order (`Composed::startup_notices`) and answers
 it has not shown yet (the first attach, or one that restarted: the daemon
 id the cursor keeps). Test:
 `attach::the_daemons_start_up_notices_show_on_attach`.
+
+### P1 parity: what stays an engine limit, and the texts
+
+Every `Effect` the attach runner receives now does what the in-process one
+does, except two, both engine limits: `/rewind` (the engine refuses
+`session/fork_at` for a mob member's session; lukacf/meerkat#2126) and
+taking back a sent message (Up on an empty input: `mob/member_send`
+answers no input id to cancel by, the same gap as ask 6's steer
+attribution). The attach runner names the latter with `RECALL_UNAVAILABLE`
+instead of the generic "not available yet"; the manual lists both. The
+agent's tool set was compared with the in-process session's: the daemon's
+orchestrator has the same file and note tools and the same denied builtins
+(`brain_swap`, `apply_patch`, through `mobs::customizer::shape_root`), and
+`fork_off` behind the gate instead of the TUI's `fork`; no system prompt
+text names `fork` (the tool describes itself, and the daemon does not
+register it). The quit texts said "quit" where attach mode detaches: the
+editor title follows the status bar's attach state. Tests:
+`render_snapshot::a_first_idle_ctrl_d_asks_for_a_second_in_the_editor_title`,
+`attach::what_the_daemon_cannot_do_yet_says_so`.

@@ -63,8 +63,8 @@ pub const STARTING: &str = "daemon starting";
 /// The status-bar segment while a dropped connection is re-made.
 pub const RECONNECTING: &str = "reconnecting";
 
-/// What attach mode answers for what the daemon cannot do yet.
-pub const NOT_AVAILABLE: &str = "not available in attach mode yet";
+/// Why Up on an empty input takes nothing back in attach mode.
+pub const RECALL_UNAVAILABLE: &str = "a message sent to the daemon cannot be taken back in attach mode: the engine's mob/member_send answers no input id to cancel it by (an engine ask, docs/mob-split.md ask 6); the agent gets it at its next step, or interrupt (Esc) to stop the turn";
 
 /// How often the orchestrator's current session is read (another client's
 /// `/new` or `/resume` moves it).
@@ -1440,7 +1440,7 @@ impl AttachRunner {
             Effect::Interrupt => self.interrupt(),
             Effect::RecallQueued => self.send(Msg::Recalled {
                 recalled: Vec::new(),
-                errors: vec![format!("taking back a sent message is {NOT_AVAILABLE}")],
+                errors: vec![RECALL_UNAVAILABLE.to_string()],
             }),
             Effect::RunShell { id, command } => {
                 self.bench.run_shell(id, command, self.linked());

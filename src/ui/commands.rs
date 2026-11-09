@@ -259,7 +259,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         summary: "leave rkat-tui",
         help: &[(
             "/quit, /exit, /q",
-            "leave rkat-tui (asks again while a turn runs or messages are queued)\nand release its lease on the realm",
+            "leave rkat-tui (asks again while a turn runs or messages are queued)\nand release its lease on the realm; attached (--attach), detach: the\ndaemon's agent and its turn go on (/daemon stop shuts it down)",
         )],
         parse: |_| Some(Command::Quit),
     },
@@ -659,7 +659,8 @@ Keys:
   Up (empty input)               take queued messages back into the editor
   Ctrl-D                         quit on an empty input: press again within 3 s (while a turn
                                  runs or messages are queued the turn is then interrupted and
-                                 undelivered messages are saved); with text, delete forward
+                                 undelivered messages are saved; attached, it detaches and the
+                                 turn goes on in the daemon); with text, delete forward
   Ctrl-O                         show or hide detail: the last reasoning block and the
                                  output of the last tool call (a click toggles one tool)
   Ctrl-T                         show or hide the task checklist under the input (the agent's

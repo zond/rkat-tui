@@ -916,6 +916,20 @@ fn a_first_idle_ctrl_d_asks_for_a_second_in_the_editor_title() {
         lines[9]
     );
     assert!(!lines[9].contains("anyway"), "title: {:?}", lines[9]);
+    // Attached, quitting detaches, and the title says so.
+    let mut status = StatusInfo::default();
+    status.apply(StatusUpdate::Attach(Some("attached 127.0.0.1:1".into())));
+    let mut app = App::new(status);
+    app.update(Msg::Key(KeyEvent::new(
+        KeyCode::Char('d'),
+        KeyModifiers::CONTROL,
+    )));
+    let lines = rows(&render_buffer(&mut app, W, H));
+    assert!(
+        lines[9].contains("Ctrl-D again to detach"),
+        "title: {:?}",
+        lines[9]
+    );
 }
 
 #[test]
