@@ -21,3 +21,8 @@ pub use store::{NoteStore, Scope, prompt_index, slug};
 #[cfg(any(test, feature = "test-support"))]
 pub use tools::NOTE_TOOL_NAMES;
 pub use tools::{NOTE_FORGET, NOTE_LIST, NOTE_READ, NOTE_SAVE, NOTES_SOURCE, NoteToolDispatcher};
+
+/// Directory of the workspace's memory notes.
+pub(crate) fn workspace_notes_dir(workspace: &std::path::Path) -> std::path::PathBuf {
+    workspace.join(".rkat").join("tui").join("notes")
+}

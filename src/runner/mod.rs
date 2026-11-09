@@ -228,11 +228,6 @@ pub(crate) fn init_logging(realm_root: &Path) -> Result<(), TuiError> {
     Ok(())
 }
 
-/// Directory of the workspace's memory notes.
-pub(crate) fn workspace_notes_dir(workspace: &Path) -> PathBuf {
-    workspace.join(".rkat").join("tui").join("notes")
-}
-
 /// What every session build shares: the external tools (file and note
 /// tools, and `fork` when helpers are hosted), where the instruction files
 /// and the notes index come from, and the compaction policy.
@@ -262,7 +257,7 @@ impl Template {
                 .as_ref()
                 .map(|global| NoteStore::open(global.notes_dir(), Scope::User)),
             NoteStore::open(
-                workspace_notes_dir(&runtime.scope.context_root),
+                crate::memory::workspace_notes_dir(&runtime.scope.context_root),
                 Scope::Workspace,
             ),
         ));

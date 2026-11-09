@@ -367,13 +367,13 @@ impl Local {
 
     async fn append_plan_note(&self, plan: bool) -> Option<String> {
         let note = if plan {
-            crate::runner::approval::PLAN_ON_NOTE
+            crate::approval::mode::PLAN_ON_NOTE
         } else {
-            crate::runner::approval::PLAN_OFF_NOTE
+            crate::approval::mode::PLAN_OFF_NOTE
         };
         let mut request = AppendSystemContextRequest::from_text(note.to_string());
         request.source = Some(SYSTEM_CONTEXT_SOURCE.to_string());
-        request.idempotency_key = Some(crate::runner::approval::plan_note_key(plan));
+        request.idempotency_key = Some(crate::approval::mode::plan_note_key(plan));
         match self
             .state
             .mob_append_system_context(

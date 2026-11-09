@@ -13,8 +13,6 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use meerkat_core::SessionId;
 use tokio::sync::{mpsc, oneshot};
@@ -24,7 +22,7 @@ use crate::approval::desk::{
     ModeStatus, RuleCommand, answered, describe_rule, mode_notice, run_rule_command,
 };
 use crate::approval::escalation::{EscalationRequest, HumanDecision, RecordedPrompt};
-use crate::approval::mode::PermissionMode;
+use crate::approval::mode::{PLAN_OFF_NOTE, PLAN_ON_NOTE, PermissionMode, plan_note_key};
 use crate::approval::policy::{Decider, Tier, VerdictSummary};
 use crate::approval::{ApprovalEngine, ApprovalEvent};
 use crate::ui::{
@@ -61,40 +59,6 @@ impl ApprovalDesk {
             pending: HashMap::new(),
         }
     }
-}
-
-/// The system context plan mode adds when it starts.
-pub(crate) const PLAN_ON_NOTE: &str = "\
-# Plan mode is on
-
-The user switched to plan mode: research and plan, do not change anything. \
-Use read-only tools only; file writes, edits and commands that are not \
-read-only are refused while plan mode is on. When you know enough, present a \
-concise, numbered plan of the changes you would make and stop: the user \
-approves it before anything is changed.";
-
-/// The system context added when plan mode ends.
-pub(crate) const PLAN_OFF_NOTE: &str = "\
-# Plan mode is off
-
-The user left plan mode: the approval policy of the current permission mode \
-applies again, and you may make changes.";
-
-/// A per-process counter for plan-mode notes' idempotency keys.
-static PLAN_NOTES: AtomicU64 = AtomicU64::new(0);
-
-/// An idempotency key no other plan-mode note shares (a session keeps the
-/// notes of earlier transitions and of earlier processes).
-pub(crate) fn plan_note_key(on: bool) -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
-    format!(
-        "rkat-tui:plan-mode:{}:{}-{nanos}-{}",
-        if on { "on" } else { "off" },
-        std::process::id(),
-        PLAN_NOTES.fetch_add(1, Ordering::Relaxed)
-    )
 }
 
 impl Runner {

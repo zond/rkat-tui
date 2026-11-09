@@ -365,7 +365,7 @@ fn orchestrator_tools(
             .as_ref()
             .map(|global| NoteStore::open(global.notes_dir(), Scope::User)),
         NoteStore::open(
-            crate::runner::workspace_notes_dir(&scope.context_root),
+            crate::memory::workspace_notes_dir(&scope.context_root),
             Scope::Workspace,
         ),
     ));
