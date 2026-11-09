@@ -1,7 +1,6 @@
-//! Attach mode, the default (P3 of the always-daemon plan in
-//! `docs/mob-split.md`): `rkat-tui` runs the TUI against the workspace's
-//! `rkat-tui-mob` daemon instead of hosting the engine in this process
-//! (`--no-attach` is the in-process escape hatch until P4).
+//! The client: `rkat-tui` runs the TUI against the workspace's
+//! `rkat-tui-mob` daemon, which hosts the agent (the always-daemon plan in
+//! `docs/mob-split.md`; the in-process runner was removed in P4).
 //!
 //! - [`transport`]: the connection (attach handshake with the endpoint
 //!   file's token, then a JSON-RPC multiplexer over newline-delimited JSON).
@@ -15,14 +14,13 @@
 //! - [`approvals`]: the approval dialogs: the daemon's pushed decisions
 //!   (`decision/notice`, `decision/decide`); a daemon without them is
 //!   refused at attach ([`ClientError::DaemonTooOld`]).
-//! - [`runner`]: the loop between the UI and the daemon. It serves the same
-//!   [`Effect`]/[`Msg`] contract as the in-process runner, so the UI is the
-//!   same: approval dialogs, permission modes and `/rules` act on the
+//! - [`runner`]: the loop between the UI and the daemon over the UI's
+//!   [`Effect`]/[`Msg`] contract: approval dialogs, permission modes and `/rules` act on the
 //!   daemon's gate (`rkat/*` methods, see [`crate::daemon::local`]); the
 //!   user's `!` shell, the model picker (this process's endpoints),
 //!   `/remember`, `/memory`, `/export` and the cost readout run here, in
-//!   the [`crate::workbench`] the in-process runner uses too (the new
-//!   context reaches the orchestrator with `mob/append_system_context`);
+//!   the [`crate::workbench`] (the new context reaches the orchestrator
+//!   with `mob/append_system_context`);
 //!   `/trust` and `/rules trust` act on the
 //!   daemon's trust record (`rkat/trust`); `/compact now` asks the daemon's
 //!   engine (`mob/compact_member`). What the daemon cannot do (`/rewind`)

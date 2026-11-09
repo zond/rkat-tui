@@ -269,10 +269,10 @@ pub static COMMANDS: &[CommandSpec] = &[
         name: "detach",
         aliases: &[],
         usage: "",
-        summary: "attach mode: leave and keep the agent running",
+        summary: "leave and keep the agent running",
         help: &[(
             "/detach",
-            "attach mode (rkat-tui --attach): leave; the daemon's agent and its\nturn go on, and a later /quit asks before stopping the daemon\n(rkat-tui reattaches)",
+            "leave; the daemon's agent and its turn go on, and a later /quit\nasks before stopping the daemon (rkat-tui reattaches)",
         )],
         parse: |rest| arg_free(rest, Command::Detach),
     },
@@ -302,10 +302,10 @@ pub static COMMANDS: &[CommandSpec] = &[
         name: "rewind",
         aliases: &["checkpoint", "undo"],
         usage: "",
-        summary: "continue from before one of your messages (idle only)",
+        summary: "continue from before one of your messages (not available yet)",
         help: &[(
             "/rewind, /checkpoint, /undo",
-            "pick one of your messages (newest first) and continue from just\nbefore it: a new session gets the history up to there and the\nmessage goes back in the input; the full conversation stays\nin the previous session (/resume). Esc Esc on an empty input\nopens it too. Files are not restored (idle only)",
+            "continue from before one of your messages: not available yet,\nthe daemon cannot rewind a conversation (an engine ask); says\nwhy. Esc Esc on an empty input asks too. /new starts over",
         )],
         parse: |rest| arg_free(rest, Command::Rewind),
     },
@@ -461,10 +461,10 @@ pub static COMMANDS: &[CommandSpec] = &[
         name: "daemon",
         aliases: &[],
         usage: "stop",
-        summary: "attach mode: shut the workspace's daemon down",
+        summary: "shut the workspace's daemon down",
         help: &[(
             "/daemon stop",
-            "attach mode (rkat-tui --attach): shut the workspace's\nrkat-tui-mob down from any client (its sessions stay)",
+            "shut the workspace's rkat-tui-mob down from any client\n(its sessions stay)",
         )],
         parse: |rest| match words(rest).as_slice() {
             ["stop"] => Some(Command::DaemonStop),
@@ -668,7 +668,7 @@ Keys:
   Ctrl-C                         interrupt the turn (as Esc) · clear the input · press twice to quit
   Esc                            interrupt the turn; queued messages are sent next
   Esc Esc (idle, with text)      clear the input and save it to the prompt history (↑ recalls it)
-  Esc Esc (idle, empty input)    rewind: pick one of your messages to continue from (as /rewind)
+  Esc Esc (idle, empty input)    /rewind (not available yet: says why)
   Up (empty input)               take queued messages back into the editor
   Ctrl-D                         quit on an empty input: press again within 3 s (while a turn
                                  runs or messages are queued the turn is then interrupted and

@@ -1,4 +1,4 @@
-//! The orchestrator's helpers in attach mode: the in-process follower view
+//! The orchestrator's helpers in the client: the follower view
 //! (`[helper · model]` headers, their progress and result, the running
 //! count, per-helper cost) from the mobs' own event streams.
 //!
@@ -9,7 +9,7 @@
 //! {mob_id}` (no `agent_identity`) carries every member's events, each
 //! attributed to its member ([`AttributedEvent`]); [`Followers`] turns them
 //! into the [`Msg::Scoped`] events and [`StatusUpdate::Helpers`] updates
-//! the in-process runner sends, so the UI is the same.
+//! the UI renders.
 //!
 //! What the streams do not give, and how it is filled in:
 //!

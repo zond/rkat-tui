@@ -69,7 +69,7 @@ pub const STARTING: &str = "daemon starting";
 pub const RECONNECTING: &str = "reconnecting";
 
 /// Why Up on an empty input takes nothing back in attach mode.
-pub const RECALL_UNAVAILABLE: &str = "a message sent to the daemon cannot be taken back in attach mode: the engine's mob/member_send answers no input id to cancel it by (an engine ask, docs/mob-split.md ask 6); the agent gets it at its next step, or interrupt (Esc) to stop the turn";
+pub const RECALL_UNAVAILABLE: &str = "a message sent to the daemon cannot be taken back: the engine's mob/member_send answers no input id to cancel it by (an engine ask, docs/mob-split.md ask 6); the agent gets it at its next step, or interrupt (Esc) to stop the turn";
 
 /// How often the orchestrator's current session is read (another client's
 /// `/new` or `/resume` moves it).

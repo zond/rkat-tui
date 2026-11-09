@@ -12,8 +12,8 @@ use meerkat_core::SessionId;
 
 use crate::daemon::conversations::Listed;
 
-/// Why `/rewind` is not offered in attach mode.
-pub const REWIND_UNAVAILABLE: &str = "/rewind is not available in attach mode yet: the engine refuses session/fork_at for a mob member's session, and its member forks (mob/fork_member, mob/fork_helper) seat the copy under a new identity rather than rewinding the conversation in place; a same-identity rewind is with the engine's maintainers as a design note (lukacf/meerkat#2126). /new starts over; the in-process TUI (--no-attach) rewinds";
+/// Why `/rewind` is not offered.
+pub const REWIND_UNAVAILABLE: &str = "/rewind is not available yet: the agent runs in the workspace's daemon, and the engine refuses session/fork_at for a mob member's session, while its member forks (mob/fork_member, mob/fork_helper) seat the copy under a new identity rather than rewinding the conversation in place; a same-identity rewind is with the engine's maintainers as a design note (lukacf/meerkat#2126). /new starts over";
 
 /// What the resume picker adds to a session created before the daemon.
 pub const VIEW_ONLY: &str = "view only, created before the daemon";

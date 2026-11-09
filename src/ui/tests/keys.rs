@@ -136,7 +136,7 @@ fn esc_esc_clears_the_draft_into_history() {
     app.update_at(key(KeyCode::Esc), late);
     assert_eq!(app.input.text(), "a draft");
     assert!(app.take_submitted().is_empty());
-    // An empty input: Esc Esc asks for the rewind menu (and saves
+    // An empty input: Esc Esc asks for /rewind (and saves
     // nothing to history).
     let mut app = App::new(StatusInfo::default());
     assert!(app.update_at(key(KeyCode::Esc), t0).is_empty());

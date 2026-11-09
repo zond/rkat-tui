@@ -35,7 +35,7 @@ impl App {
     }
 
     /// Whether a second Esc at `now` would clear the input, or open the
-    /// rewind menu on an empty one (used for the input hint).
+    /// `/rewind` on an empty one (used for the input hint).
     pub fn esc_clear_armed(&self, now: Instant) -> bool {
         self.last_esc
             .is_some_and(|t| now.saturating_duration_since(t) < DOUBLE_ESC_WINDOW)
@@ -470,8 +470,8 @@ impl App {
     ///
     /// Idle, Esc twice within [`DOUBLE_ESC_WINDOW`] on an input with text
     /// clears it and saves it to the prompt history (`esc_armed`: the
-    /// previous key was such an Esc); on an empty input it opens the rewind
-    /// menu (as `/rewind`). One Esc only arms it.
+    /// previous key was such an Esc); on an empty input it asks for
+    /// `/rewind`. One Esc only arms it.
     pub(super) fn escape(&mut self, esc_armed: bool, now: Instant, fx: &mut Vec<Effect>) {
         if self.running {
             self.interrupt(fx);
@@ -572,14 +572,15 @@ impl App {
     }
 
     /// `/detach`: attached, leave and keep the agent running (the daemon
-    /// records the detach); in-process there is nothing to detach from.
+    /// records the detach); not attached (yet), there is nothing to detach
+    /// from.
     pub(super) fn request_detach(&mut self, fx: &mut Vec<Effect>) {
         if self.status.attach.is_some() {
             self.leave(Some(Departure::Detach), fx);
         } else {
             self.transcript.push_notice(
                 NoticeLevel::Info,
-                "nothing to detach from: this rkat-tui runs the agent itself (/quit leaves)",
+                "nothing to detach from: not attached to a daemon (/quit leaves)",
             );
             self.scroll.bottom();
         }

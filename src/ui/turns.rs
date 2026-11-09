@@ -256,8 +256,9 @@ impl App {
         }
     }
 
-    /// `/rewind` or Esc Esc on an empty input: ask for the menu when the
-    /// session is idle with nothing queued, else say what is in the way.
+    /// `/rewind` or Esc Esc on an empty input: ask the runner (which says
+    /// why the daemon cannot rewind) when the session is idle with nothing
+    /// queued, else say what is in the way.
     pub(super) fn request_rewind(&mut self, fx: &mut Vec<Effect>) {
         if self.idle_or_notice() {
             fx.push(Effect::RequestRewindMenu);

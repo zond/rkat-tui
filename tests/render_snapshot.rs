@@ -1160,8 +1160,7 @@ fn rewind_hint_snapshot() {
     app.update_at(Msg::Key(KeyEvent::from(KeyCode::Esc)), now);
     let armed = render(&mut app, now);
     assert!(
-        armed[H as usize - 3]
-            .starts_with(" Esc again to rewind (pick a message to continue from) "),
+        armed[H as usize - 3].starts_with(" Esc again for /rewind "),
         "{armed:?}"
     );
 }
