@@ -35,7 +35,7 @@
 //! ([`ApprovalEngine::run_started`]). A late or replayed `RunStarted` of the
 //! stopped run, or one without a run id, does not clear it.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -65,6 +65,10 @@ use crate::paths::ProjectRoot;
 
 /// How long the human has to answer an escalation by default.
 pub const DEFAULT_ESCALATION_TIMEOUT: Duration = Duration::from_mins(10);
+/// How many run ids a session remembers to recognise a replayed start. A
+/// replay arrives within a few runs of the original; the stopped run itself
+/// never clears its own Stop, remembered or not.
+const RUNS_REMEMBERED: usize = 64;
 /// Longest argument preview shown in escalation dialogs.
 const ARGS_PREVIEW_BYTES: usize = 2048;
 /// Per-file cap for build configuration attached to build commands.
@@ -177,8 +181,9 @@ struct SessionState {
     transcript: ApprovalTranscript,
     allow_cache: HashSet<CacheKey>,
     stop: StopState,
-    /// Every run id seen starting, so a replayed start is recognised.
-    runs_seen: HashSet<RunId>,
+    /// The last [`RUNS_REMEMBERED`] run ids seen starting, oldest first,
+    /// so a replayed start is recognised.
+    runs_seen: VecDeque<RunId>,
     current_run: Option<RunId>,
     /// Project files (display paths) whose writes were allowed for this
     /// session, in first-write order: shown to the classifier as
@@ -192,7 +197,7 @@ impl Default for SessionState {
             transcript: ApprovalTranscript::default(),
             allow_cache: HashSet::new(),
             stop: StopState::Running,
-            runs_seen: HashSet::new(),
+            runs_seen: VecDeque::new(),
             current_run: None,
             agent_written: Vec::new(),
         }
@@ -419,9 +424,13 @@ impl ApprovalEngine {
         let Some(run_id) = run_id else {
             return;
         };
-        if !state.runs_seen.insert(run_id.clone()) {
+        if state.runs_seen.contains(run_id) {
             return;
         }
+        if state.runs_seen.len() == RUNS_REMEMBERED {
+            state.runs_seen.pop_front();
+        }
+        state.runs_seen.push_back(run_id.clone());
         state.current_run = Some(run_id.clone());
         let clears = match &state.stop {
             StopState::Running => false,
@@ -2049,6 +2058,34 @@ mod tests {
         assert!(!task.await.unwrap().is_allowed());
         // A Stop answer stops the session again.
         assert_eq!(decide(&rig, "c3", &push()).await, stopped);
+    }
+
+    /// A session remembers a bounded number of runs: the oldest is
+    /// forgotten, a recent one's replay is still recognised.
+    #[tokio::test]
+    async fn the_runs_a_session_remembers_are_bounded() {
+        let rig = rig(vec![], DEFAULT_ESCALATION_TIMEOUT);
+        let runs: Vec<RunId> = (0..=RUNS_REMEMBERED).map(|_| RunId::new()).collect();
+        for run in &runs {
+            rig.engine.run_started(&rig.session, Some(run));
+        }
+        let seen = |run: &RunId| {
+            rig.engine
+                .sessions
+                .lock()
+                .get(&rig.session)
+                .is_some_and(|state| state.runs_seen.contains(run))
+        };
+        assert_eq!(
+            rig.engine.sessions.lock()[&rig.session].runs_seen.len(),
+            RUNS_REMEMBERED
+        );
+        assert!(!seen(&runs[0]));
+        assert!(seen(&runs[1]));
+        // A replay of a remembered run does not clear a Stop.
+        rig.engine.stop(&rig.session);
+        rig.engine.run_started(&rig.session, Some(&runs[1]));
+        assert!(rig.engine.stopped(&rig.session));
     }
 
     fn spawn_call(
