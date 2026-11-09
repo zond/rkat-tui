@@ -8,8 +8,8 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 - `--attach=HOST:PORT --attach-token-file <path>` attaches to a daemon
   reached through a tunnel (the daemon still binds loopback only; the
-  manual has the `ssh -L` recipe). The token file is refused when others
-  can read it. `rkat/status` now names the daemon's host; when the
+  manual has the `ssh -L` recipe). The token file is refused when its
+  group or others can read or write it (any of mode `0o077`). `rkat/status` now names the daemon's host; when the
   daemon's workspace is not on this machine, `!`, `@` mentions,
   `/remember`, `/memory` and `/export` to a path say why they are off,
   and everything else works.

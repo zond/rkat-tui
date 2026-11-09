@@ -50,7 +50,8 @@ impl Reached {
     }
 }
 
-/// The token in `path`: refused when others may read the file; the file
+/// The token in `path`: refused when its group or others may read or
+/// write the file (any of mode `0o077`); the file
 /// holds the token alone, or is a copy of the daemon's endpoint file.
 ///
 /// # Errors
@@ -62,9 +63,11 @@ pub fn read_token_file(path: &Path) -> Result<String, String> {
     {
         use std::os::unix::fs::PermissionsExt as _;
         let mode = meta.permissions().mode();
-        if mode & 0o007 != 0 {
+        // Group bits count too: a group member who can read the token
+        // can attach, and one who can write the file can replace it.
+        if mode & 0o077 != 0 {
             return Err(format!(
-                "{} is accessible to other users (mode {:o}); the token is the whole access control: chmod 600 it",
+                "{} is accessible to other users or its group (mode {:o}); the token is the whole access control: chmod 600 it",
                 path.display(),
                 mode & 0o777
             ));
@@ -234,9 +237,16 @@ mod tests {
         std::fs::write(&file, "abc123\n").unwrap();
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
         assert_eq!(read_token_file(&file).unwrap(), "abc123");
-        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
-        let refused = read_token_file(&file).unwrap_err();
-        assert!(refused.contains("chmod 600"), "{refused}");
+        // The finding this guards: only the other bits were checked, so a
+        // group-readable (0640) or group-writable (0620) token passed.
+        for mode in [0o644, 0o640, 0o620, 0o604, 0o602] {
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(mode)).unwrap();
+            let refused = read_token_file(&file).unwrap_err();
+            assert!(refused.contains("chmod 600"), "{mode:o}: {refused}");
+        }
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o400)).unwrap();
+        assert_eq!(read_token_file(&file).unwrap(), "abc123");
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
         // A copy of the endpoint file works too.
         let endpoint = Endpoint {
             address: "127.0.0.1:1".parse().unwrap(),

@@ -3282,8 +3282,11 @@ polling): `daemon::serve::tests::the_client_is_counted_before_its_attach_is_ackn
 The daemon keeps binding loopback (the token is the only access control
 and a non-loopback bind would expose it to the network); reaching one on
 another machine is the user's tunnel (`ssh -L`). `client::address::reach`
-reads `--attach-token-file` (refused when any "other" permission bit is
-set, `mode & 0o007`; the file may hold the token alone or be a copy of
+reads `--attach-token-file` (refused when any group or other permission
+bit is set, `mode & 0o077`: a review found the first version masked only
+`0o007`, so a `0640` or `0620` token passed although a group member could
+read or replace it; `the_token_file_is_refused_when_others_can_read_it`
+now checks `0644`, `0640`, `0620`, `0604`, `0602`; the file may hold the token alone or be a copy of
 the endpoint file), resolves `HOST:PORT`, attaches as a probe and reads
 `rkat/status`. `Status` gained `host` (`nix::unistd::gethostname`, the
 `hostname` feature of `nix`; absent from older daemons). The workspace is

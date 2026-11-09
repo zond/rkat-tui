@@ -1032,8 +1032,8 @@ rkat-tui --attach=127.0.0.1:4100 --attach-token-file ~/.rkat/devbox.token
 The token file holds the token alone or is a copy of the daemon's
 endpoint file (`$XDG_STATE_HOME/rkat-tui/<key>/mob.endpoint`, see "Finding
 the daemon"; `<key>` is the one `--list` shows the file under). It is
-refused when other users can read it: the token is the whole access
-control. Before the TUI opens rkat-tui attaches as a probe and reads the
+refused when its group or other users can read or write it (anything
+but `chmod 600` or stricter): the token is the whole access control. Before the TUI opens rkat-tui attaches as a probe and reads the
 daemon's status, which names its workspace and host. When that host is
 this machine and the workspace exists here, the TUI runs on that
 workspace as `--attach=DIRECTORY` does. Otherwise the features that read
