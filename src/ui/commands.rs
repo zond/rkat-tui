@@ -163,23 +163,19 @@ pub enum Command {
 pub enum CommandError {
     /// The command name is not known.
     Unknown(String),
-    /// The command is known but its arguments are wrong.
-    Usage(&'static str),
+    /// The command is known but its arguments are wrong; the message is
+    /// the command's own [`CommandSpec::usage`].
+    Usage(&'static CommandSpec),
 }
 
 impl fmt::Display for CommandError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Unknown(name) => write!(f, "unknown command /{name} (try /help)"),
-            Self::Usage(usage) => write!(f, "usage: {usage}"),
+            Self::Usage(spec) => write!(f, "usage: {}", spec.usage_line()),
         }
     }
 }
-
-const RULES_USAGE: &str = "/permissions [list | add allow|deny <tool> [pattern] | rm <n> | trust]";
-const AUTO_USAGE: &str = "/auto [on | off | resume]";
-const MODE_USAGE: &str = "/mode [default | accept-edits | plan | auto]";
-const HELPERS_USAGE: &str = "/helpers [expand <label>|all | fold <label>|all]";
 
 /// The prompt `/init` sends as an ordinary user turn.
 pub const INIT_PROMPT: &str = "Please inspect this project and write an AGENTS.md file in the workspace root (update the existing one if there is one, keeping what is still true) for future agents working here. Cover: the build, test, lint and run commands (including how to run a single test); the layout of the code (the main directories and what lives where); and the conventions a newcomer would not guess (style, naming, error handling, testing, commit habits). Be concrete and specific to this repository, skip generic advice, and keep the file under 200 lines.";
@@ -201,11 +197,33 @@ pub struct CommandSpec {
     /// separates continuation lines. Empty: the command is described in
     /// another one's rows (`/mcp trust` under `/trust`).
     pub help: &'static [(&'static str, &'static str)],
-    /// Parse the text after the name (trimmed).
-    parse: fn(&str) -> Result<Command, CommandError>,
+    /// Parse the text after the name (trimmed); `None` when the arguments
+    /// are wrong (the parser then reports [`Self::usage`]).
+    parse: fn(&str) -> Option<Command>,
 }
 
+/// Commands are equal by name (the parser is a function pointer, which
+/// does not compare reliably).
+impl PartialEq for CommandSpec {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
+impl Eq for CommandSpec {}
+
 impl CommandSpec {
+    /// The command as its usage message shows it: `/name` and the
+    /// arguments, if any.
+    #[must_use]
+    pub fn usage_line(&self) -> String {
+        if self.usage.is_empty() {
+            format!("/{}", self.name)
+        } else {
+            format!("/{} {}", self.name, self.usage)
+        }
+    }
+
     /// Whether `/word` runs this command.
     #[must_use]
     pub fn is_named(&self, word: &str) -> bool {
@@ -232,7 +250,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         usage: "",
         summary: "show the commands and keys",
         help: &[("/help, /?", "show this help")],
-        parse: |_| Ok(Command::Help),
+        parse: |_| Some(Command::Help),
     },
     CommandSpec {
         name: "quit",
@@ -243,7 +261,7 @@ pub static COMMANDS: &[CommandSpec] = &[
             "/quit, /exit, /q",
             "leave rkat-tui (asks again while a turn runs or messages are queued)\nand release its lease on the realm",
         )],
-        parse: |_| Ok(Command::Quit),
+        parse: |_| Some(Command::Quit),
     },
     CommandSpec {
         name: "clear",
@@ -254,12 +272,12 @@ pub static COMMANDS: &[CommandSpec] = &[
             "/clear, /new",
             "clear the transcript and start a new session (idle only)",
         )],
-        parse: |_| Ok(Command::Clear),
+        parse: |_| Some(Command::Clear),
     },
     CommandSpec {
         name: "resume",
         aliases: &[],
-        usage: "[ref]",
+        usage: "[last | ~N | id-prefix]",
         summary: "resume a session (no ref: pick one)",
         help: &[(
             "/resume [ref]",
@@ -276,7 +294,7 @@ pub static COMMANDS: &[CommandSpec] = &[
             "/rewind, /checkpoint, /undo",
             "pick one of your messages (newest first) and continue from just\nbefore it: a new session gets the history up to there and the\nmessage goes back in the input; the full conversation stays\nin the previous session (/resume). Esc Esc on an empty input\nopens it too. Files are not restored (idle only)",
         )],
-        parse: |rest| arg_free(rest, Command::Rewind, "/rewind"),
+        parse: |rest| arg_free(rest, Command::Rewind),
     },
     CommandSpec {
         name: "permissions",
@@ -309,7 +327,7 @@ pub static COMMANDS: &[CommandSpec] = &[
             "/trust",
             "trust the project's .rkat/mcp.toml, .rkat/config.toml and\nworkspace realm config.toml as they are now (their MCP\nservers and hooks run from the next session; /mcp trust\nis an alias; rkat-tui --trust-project trusts them for one\nrun without recording)",
         )],
-        parse: |rest| arg_free(rest, Command::TrustProject, "/trust"),
+        parse: |rest| arg_free(rest, Command::TrustProject),
     },
     CommandSpec {
         name: "mcp",
@@ -318,8 +336,8 @@ pub static COMMANDS: &[CommandSpec] = &[
         summary: "the same as /trust",
         help: &[],
         parse: |rest| match words(rest).as_slice() {
-            ["trust"] => Ok(Command::TrustProject),
-            _ => Err(CommandError::Usage("/trust (or /mcp trust)")),
+            ["trust"] => Some(Command::TrustProject),
+            _ => None,
         },
     },
     CommandSpec {
@@ -386,13 +404,7 @@ pub static COMMANDS: &[CommandSpec] = &[
             "/remember <text>, #<text>",
             "add a line to the workspace AGENTS.md and to this session\n(\\# sends a literal #)",
         )],
-        parse: |rest| {
-            if rest.is_empty() {
-                Err(CommandError::Usage("/remember <text>"))
-            } else {
-                Ok(Command::Remember(rest.to_string()))
-            }
-        },
+        parse: |rest| (!rest.is_empty()).then(|| Command::Remember(rest.to_string())),
     },
     CommandSpec {
         name: "compact",
@@ -414,7 +426,7 @@ pub static COMMANDS: &[CommandSpec] = &[
             ),
         ],
         parse: |rest| {
-            Ok(Command::Compact(match words(rest).as_slice() {
+            Some(Command::Compact(match words(rest).as_slice() {
                 [] | ["now"] => CompactCommand::Now,
                 ["status"] => CompactCommand::Status,
                 words => CompactCommand::Focused(words.join(" ")),
@@ -430,7 +442,7 @@ pub static COMMANDS: &[CommandSpec] = &[
             "/status",
             "version, model, session, workspace, realm, confinement, auto\nmode, trust of tui.toml and of each file /trust covers,\nhelper depth limit",
         )],
-        parse: |rest| arg_free(rest, Command::Status, "/status"),
+        parse: |rest| arg_free(rest, Command::Status),
     },
     CommandSpec {
         name: "daemon",
@@ -442,8 +454,8 @@ pub static COMMANDS: &[CommandSpec] = &[
             "attach mode (rkat-tui --attach): shut the workspace's\nrkat-tui-mob down (its sessions stay; /quit only detaches)",
         )],
         parse: |rest| match words(rest).as_slice() {
-            ["stop"] => Ok(Command::DaemonStop),
-            _ => Err(CommandError::Usage("/daemon stop")),
+            ["stop"] => Some(Command::DaemonStop),
+            _ => None,
         },
     },
     CommandSpec {
@@ -456,10 +468,10 @@ pub static COMMANDS: &[CommandSpec] = &[
             "edit the workspace AGENTS.md, the user AGENTS.md or SYSTEM.md\nin $VISUAL / $EDITOR / vi; an edited AGENTS.md reaches this\nsession (also while a turn runs), SYSTEM.md the next one",
         )],
         parse: |rest| match words(rest).as_slice() {
-            [] => Ok(Command::Memory(MemoryTarget::Workspace)),
-            ["user"] => Ok(Command::Memory(MemoryTarget::User)),
-            ["system"] => Ok(Command::Memory(MemoryTarget::System)),
-            _ => Err(CommandError::Usage("/memory [user | system]")),
+            [] => Some(Command::Memory(MemoryTarget::Workspace)),
+            ["user"] => Some(Command::Memory(MemoryTarget::User)),
+            ["system"] => Some(Command::Memory(MemoryTarget::System)),
+            _ => None,
         },
     },
     CommandSpec {
@@ -471,7 +483,7 @@ pub static COMMANDS: &[CommandSpec] = &[
             "/init",
             "ask the agent to write or update AGENTS.md for this project (idle only)",
         )],
-        parse: |rest| arg_free(rest, Command::Init, "/init"),
+        parse: |rest| arg_free(rest, Command::Init),
     },
     CommandSpec {
         name: "export",
@@ -483,8 +495,8 @@ pub static COMMANDS: &[CommandSpec] = &[
             "write the transcript as plain text (default:\n.rkat/tui/export-<session>-<time>.txt in the workspace)",
         )],
         parse: |rest| match words(rest).as_slice() {
-            [] => Ok(Command::Export(None)),
-            words => Ok(Command::Export(Some(words.join(" ")))),
+            [] => Some(Command::Export(None)),
+            words => Some(Command::Export(Some(words.join(" ")))),
         },
     },
     CommandSpec {
@@ -497,8 +509,8 @@ pub static COMMANDS: &[CommandSpec] = &[
             "context usage, the compaction policy and what the context holds",
         )],
         parse: |rest| match words(rest).as_slice() {
-            [] | ["all"] => Ok(Command::Context),
-            _ => Err(CommandError::Usage("/context")),
+            [] | ["all"] => Some(Command::Context),
+            _ => None,
         },
     },
     CommandSpec {
@@ -521,7 +533,7 @@ pub static COMMANDS: &[CommandSpec] = &[
             "/usage, /cost, /stats",
             "token usage and cost per model (footer: $0.42, ~ estimate, $? unpriced)",
         )],
-        parse: |rest| arg_free(rest, Command::Cost, "/usage"),
+        parse: |rest| arg_free(rest, Command::Cost),
     },
     CommandSpec {
         name: "helpers",
@@ -559,77 +571,72 @@ pub fn completions(
 }
 
 /// `command` when `rest` is empty, else a usage error.
-fn arg_free(rest: &str, command: Command, usage: &'static str) -> Result<Command, CommandError> {
-    if rest.is_empty() {
-        Ok(command)
-    } else {
-        Err(CommandError::Usage(usage))
-    }
+fn arg_free(rest: &str, command: Command) -> Option<Command> {
+    rest.is_empty().then_some(command)
 }
 
 fn words(rest: &str) -> Vec<&str> {
     rest.split_whitespace().collect()
 }
 
-fn parse_resume(rest: &str) -> Result<Command, CommandError> {
+fn parse_resume(rest: &str) -> Option<Command> {
     match words(rest).as_slice() {
-        [] => Ok(Command::Resume(None)),
-        [r] => Ok(Command::Resume(Some((*r).to_string()))),
-        _ => Err(CommandError::Usage("/resume [last | ~N | id-prefix]")),
+        [] => Some(Command::Resume(None)),
+        [r] => Some(Command::Resume(Some((*r).to_string()))),
+        _ => None,
     }
 }
 
-fn parse_auto(rest: &str) -> Result<Command, CommandError> {
+fn parse_auto(rest: &str) -> Option<Command> {
     match words(rest).as_slice() {
-        [] => Ok(Command::Auto(AutoCommand::Status)),
-        ["on"] => Ok(Command::Auto(AutoCommand::On)),
-        ["off"] => Ok(Command::Auto(AutoCommand::Off)),
-        ["resume"] => Ok(Command::Auto(AutoCommand::Resume)),
-        _ => Err(CommandError::Usage(AUTO_USAGE)),
+        [] => Some(Command::Auto(AutoCommand::Status)),
+        ["on"] => Some(Command::Auto(AutoCommand::On)),
+        ["off"] => Some(Command::Auto(AutoCommand::Off)),
+        ["resume"] => Some(Command::Auto(AutoCommand::Resume)),
+        _ => None,
     }
 }
 
-fn parse_mode(rest: &str) -> Result<Command, CommandError> {
+fn parse_mode(rest: &str) -> Option<Command> {
     match words(rest).as_slice() {
-        [] => Ok(Command::Mode(None)),
-        [name] => PermissionMode::parse(name)
-            .map(|mode| Command::Mode(Some(mode)))
-            .ok_or(CommandError::Usage(MODE_USAGE)),
-        _ => Err(CommandError::Usage(MODE_USAGE)),
+        [] => Some(Command::Mode(None)),
+        [name] => PermissionMode::parse(name).map(|mode| Command::Mode(Some(mode))),
+        _ => None,
     }
 }
 
-fn parse_model(rest: &str) -> Result<Command, CommandError> {
+fn parse_model(rest: &str) -> Option<Command> {
     match words(rest).as_slice() {
-        [] => Ok(Command::Model(ModelCommand::Pick)),
-        ["refresh"] => Ok(Command::Model(ModelCommand::Refresh)),
-        [m] => Ok(Command::Model(ModelCommand::Set((*m).to_string()))),
-        _ => Err(CommandError::Usage("/model [[endpoint:]id | refresh]")),
+        [] => Some(Command::Model(ModelCommand::Pick)),
+        ["refresh"] => Some(Command::Model(ModelCommand::Refresh)),
+        [m] => Some(Command::Model(ModelCommand::Set((*m).to_string()))),
+        _ => None,
     }
 }
 
-fn parse_copy(rest: &str) -> Result<Command, CommandError> {
-    const USAGE: &str = "/copy [N] (N ≥ 1, 1 = the latest answer)";
+/// `/copy [N]`, N ≥ 1 (1 = the latest answer).
+fn parse_copy(rest: &str) -> Option<Command> {
     match words(rest).as_slice() {
-        [] => Ok(Command::Copy(1)),
-        [n] => match n.parse::<usize>() {
-            Ok(n) if n >= 1 => Ok(Command::Copy(n)),
-            _ => Err(CommandError::Usage(USAGE)),
-        },
-        _ => Err(CommandError::Usage(USAGE)),
+        [] => Some(Command::Copy(1)),
+        [n] => n
+            .parse::<usize>()
+            .ok()
+            .filter(|n| *n >= 1)
+            .map(Command::Copy),
+        _ => None,
     }
 }
 
-fn parse_helpers(rest: &str) -> Result<Command, CommandError> {
+fn parse_helpers(rest: &str) -> Option<Command> {
     let target = |t: &str| match t {
         "all" => HelperTarget::All,
         label => HelperTarget::Label(label.to_string()),
     };
     match words(rest).as_slice() {
-        [] | ["list"] => Ok(Command::Helpers(HelpersCommand::List)),
-        ["expand", t] => Ok(Command::Helpers(HelpersCommand::Expand(target(t)))),
-        ["fold", t] => Ok(Command::Helpers(HelpersCommand::Fold(target(t)))),
-        _ => Err(CommandError::Usage(HELPERS_USAGE)),
+        [] | ["list"] => Some(Command::Helpers(HelpersCommand::List)),
+        ["expand", t] => Some(Command::Helpers(HelpersCommand::Expand(target(t)))),
+        ["fold", t] => Some(Command::Helpers(HelpersCommand::Fold(target(t)))),
+        _ => None,
     }
 }
 
@@ -794,33 +801,30 @@ pub fn parse(input: &str) -> Option<Result<Command, CommandError>> {
     // The rest verbatim (inner whitespace included, for `/remember`).
     let rest = body.get(name.len()..).unwrap_or_default().trim();
     Some(match spec(name) {
-        Some(spec) => (spec.parse)(rest),
+        Some(spec) => (spec.parse)(rest).ok_or(CommandError::Usage(spec)),
         None => Err(CommandError::Unknown(name.to_string())),
     })
 }
 
-fn parse_rules(args: &[&str]) -> Result<RulesCommand, CommandError> {
+fn parse_rules(args: &[&str]) -> Option<RulesCommand> {
     match args {
-        [] | ["list"] => Ok(RulesCommand::List),
+        [] | ["list"] => Some(RulesCommand::List),
         ["add", effect, tool, pattern @ ..] => {
             let effect = match *effect {
                 "allow" => RuleEffect::Allow,
                 "deny" => RuleEffect::Deny,
-                _ => return Err(CommandError::Usage(RULES_USAGE)),
+                _ => return None,
             };
             let pattern = (!pattern.is_empty()).then(|| pattern.join(" "));
-            Ok(RulesCommand::Add {
+            Some(RulesCommand::Add {
                 effect,
                 tool: (*tool).to_string(),
                 pattern,
             })
         }
-        ["trust"] => Ok(RulesCommand::Trust),
-        ["rm" | "remove", n] => n
-            .parse::<usize>()
-            .map(RulesCommand::Remove)
-            .map_err(|_| CommandError::Usage(RULES_USAGE)),
-        _ => Err(CommandError::Usage(RULES_USAGE)),
+        ["trust"] => Some(RulesCommand::Trust),
+        ["rm" | "remove", n] => n.parse::<usize>().ok().map(RulesCommand::Remove),
+        _ => None,
     }
 }
 
@@ -831,6 +835,31 @@ mod tests {
 
     fn ok(s: &str) -> Command {
         parse(s).unwrap().unwrap()
+    }
+
+    /// The usage line `line`'s parse error names.
+    fn usage_of(line: &str) -> String {
+        match parse(line) {
+            Some(Err(CommandError::Usage(spec))) => spec.usage_line(),
+            other => panic!("{line}: {other:?}"),
+        }
+    }
+
+    /// Every usage error names its own command, so the usage text exists
+    /// once (on its spec) and cannot disagree with the menu or `/help`.
+    #[test]
+    fn usage_errors_quote_the_spec() {
+        assert_eq!(usage_of("/resume a b"), "/resume [last | ~N | id-prefix]");
+        assert_eq!(
+            spec("resume").map(|s| s.usage),
+            Some("[last | ~N | id-prefix]")
+        );
+        assert_eq!(usage_of("/mcp"), "/mcp trust");
+        assert_eq!(usage_of("/copy 0"), "/copy [N]");
+        assert_eq!(
+            parse("/rewind 2").map(|r| r.map_err(|e| e.to_string())),
+            Some(Err("usage: /rewind".to_string()))
+        );
     }
 
     #[test]
@@ -947,10 +976,7 @@ mod tests {
         assert_eq!(ok("/rewind"), Command::Rewind);
         assert_eq!(ok("/checkpoint"), Command::Rewind);
         assert_eq!(ok("/undo"), Command::Rewind);
-        assert_eq!(
-            parse("/rewind 2"),
-            Some(Err(CommandError::Usage("/rewind")))
-        );
+        assert_eq!(usage_of("/rewind 2"), "/rewind");
         assert_eq!(
             ok("/model gpt-5.4"),
             Command::Model(ModelCommand::Set("gpt-5.4".into()))
@@ -969,35 +995,23 @@ mod tests {
             ok("/remember use  cargo nextest"),
             Command::Remember("use  cargo nextest".into())
         );
-        assert_eq!(
-            parse("/remember"),
-            Some(Err(CommandError::Usage("/remember <text>")))
-        );
+        assert_eq!(usage_of("/remember"), "/remember <text>");
         assert_eq!(ok("/status"), Command::Status);
         assert_eq!(ok("/export"), Command::Export(None));
         assert_eq!(ok("/init"), Command::Init);
         assert_eq!(ok("/memory"), Command::Memory(MemoryTarget::Workspace));
         assert_eq!(ok("/memory user"), Command::Memory(MemoryTarget::User));
         assert_eq!(ok("/memory system"), Command::Memory(MemoryTarget::System));
-        assert_eq!(
-            parse("/memory workspace"),
-            Some(Err(CommandError::Usage("/memory [user | system]")))
-        );
-        assert_eq!(parse("/init x"), Some(Err(CommandError::Usage("/init"))));
+        assert_eq!(usage_of("/memory workspace"), "/memory [user | system]");
+        assert_eq!(usage_of("/init x"), "/init");
         assert_eq!(
             ok("/export notes/chat.txt"),
             Command::Export(Some("notes/chat.txt".into()))
         );
-        assert_eq!(
-            parse("/status x"),
-            Some(Err(CommandError::Usage("/status")))
-        );
+        assert_eq!(usage_of("/status x"), "/status");
         assert_eq!(ok("/context"), Command::Context);
         assert_eq!(ok("/context all"), Command::Context);
-        assert_eq!(
-            parse("/context x"),
-            Some(Err(CommandError::Usage("/context")))
-        );
+        assert_eq!(usage_of("/context x"), "/context");
         assert_eq!(ok("/compact"), Command::Compact(CompactCommand::Now));
         assert_eq!(ok("/compact now"), Command::Compact(CompactCommand::Now));
         assert_eq!(
@@ -1010,11 +1024,7 @@ mod tests {
         );
         for name in ["/usage", "/cost", "/stats"] {
             assert_eq!(ok(name), Command::Cost, "{name}");
-            assert_eq!(
-                parse(&format!("{name} now")),
-                Some(Err(CommandError::Usage("/usage"))),
-                "{name}"
-            );
+            assert_eq!(usage_of(&format!("{name} now")), "/usage", "{name}");
         }
         assert_eq!(
             ok("/compact later"),
@@ -1082,10 +1092,8 @@ mod tests {
         assert_eq!(ok("/mode auto"), Command::Mode(Some(PermissionMode::Auto)));
         for bad in ["/mode yolo", "/mode plan auto"] {
             assert_eq!(
-                parse(bad),
-                Some(Err(CommandError::Usage(
-                    "/mode [default | accept-edits | plan | auto]"
-                ))),
+                usage_of(bad),
+                "/mode [default | accept-edits | plan | auto]",
                 "{bad}"
             );
         }
@@ -1244,10 +1252,9 @@ mod tests {
             );
         }
         assert_eq!(
-            parse("/permissions rm x"),
-            Some(Err(CommandError::Usage(RULES_USAGE)))
+            usage_of("/permissions rm x"),
+            "/permissions [list | add allow|deny <tool> [pattern] | rm <n> | trust]"
         );
-        assert!(RULES_USAGE.starts_with("/permissions"));
     }
 
     #[test]
@@ -1273,8 +1280,8 @@ mod tests {
             Command::Helpers(HelpersCommand::Fold(HelperTarget::All))
         );
         assert_eq!(
-            parse("/helpers expand"),
-            Some(Err(CommandError::Usage(HELPERS_USAGE)))
+            usage_of("/helpers expand"),
+            "/helpers [expand|fold <label>|all]"
         );
     }
 

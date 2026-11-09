@@ -350,6 +350,9 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Fixed
 
+- A slash command with wrong arguments answers with the usage its
+  completion row shows: `/resume`'s two usage texts disagreed
+  (`[ref]` and `[last | ~N | id-prefix]`); both are now the latter.
 - `/rewind`, `/clear`, `/resume`, `/model`, `/init` and `/compact` share
   one idle check and one notice for what is in the way: `/model` and
   `/init` are now refused while a `!` command runs, and `/clear` and
