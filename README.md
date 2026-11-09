@@ -97,10 +97,10 @@ approval gate, with its helpers, `/new`, `/resume` and the model picker; see
 
 ## Status
 
-Early, and moving fast. The engine comes from a pinned revision of upstream
-Meerkat `main` (`lukacf/meerkat`), the 0.9.11 release integration
-([lukacf/meerkat#2124](https://github.com/lukacf/meerkat/pull/2124)), which
-also carries the fixes for the reports from the attach-mode work
+Early, and moving fast. The engine is Meerkat 0.9.11 from crates.io
+(`lukacf/meerkat`, the release of
+[lukacf/meerkat#2124](https://github.com/lukacf/meerkat/pull/2124)), which
+carries the fixes for the reports from the attach-mode work
 (#2102, #2112–#2117). It carries the three fixes the in-process harness
 needed:
 [lukacf/meerkat#2100](https://github.com/lukacf/meerkat/pull/2100) (the
@@ -108,8 +108,7 @@ sandbox fixes the confined shell needs),
 [lukacf/meerkat#2104](https://github.com/lukacf/meerkat/pull/2104) (thinking
 on Anthropic model ids the catalog does not list) and
 [lukacf/meerkat#2105](https://github.com/lukacf/meerkat/pull/2105) (project
-hook trust judged over the bytes the engine reads). The pin moves to the
-crates.io 0.9.11 release once it is published.
+hook trust judged over the bytes the engine reads).
 
 ## License
 

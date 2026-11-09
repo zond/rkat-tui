@@ -17,8 +17,7 @@ names, is in `docs/evidence.md`:
 
 Attach mode is experimental; `--no-attach` is the default. Open:
 same-identity `/rewind` (lukacf/meerkat#2126); P5, the governed realm
-(#2122); the crates.io pin once 0.9.11 is published (the pin is upstream
-`main` `bffcd8f98a`, #2124); MCP servers added or trusted after the
+(#2122); MCP servers added or trusted after the
 daemon's mob was created.
 
 ## Decision
@@ -274,7 +273,8 @@ attach mode does not do yet.
 
 The phase records are the evidence sections in the status table, plus "The
 pin moves to upstream `main`" (2026-11-08) and "The pin moves to the 0.9.11
-integration" (2026-11-09). Two asks of the first list are done: the stream
+integration" (2026-11-09); the engine is now the crates.io 0.9.11 release
+("The engine moves to crates.io 0.9.11", 2026-11-09). Two asks of the first list are done: the stream
 cursor (#2114) and pushed consent, delivered through durable decisions
 rather than plain approval records (#2115).
 
@@ -290,6 +290,6 @@ Upstream PRs:
 - #2115: `DurableDecisionService::subscribe_openings` for pushed decisions.
 - #2116: session events routed to the turn's connection.
 - #2117: `mob/fork_member` as an operator method (rewind deferred).
-- #2124: the 0.9.11 release integration, `bffcd8f98a`, the current pin.
+- #2124: the 0.9.11 release integration, `bffcd8f98a`, released on crates.io as 0.9.11.
 - #2126: the same-identity rewind design note (open).
 - #2122: the map of the governed-realm gaps (open).

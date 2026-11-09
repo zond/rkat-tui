@@ -270,6 +270,9 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Changed
 
+- The engine is now the crates.io Meerkat 0.9.11 release: every `meerkat-*`
+  dependency names `version = "0.9.11"` and no git pin is left. The release
+  (tag `v0.9.11`) contains the previous pin `bffcd8f98a`.
 - The engine pin moved to upstream `lukacf/meerkat` `main` `bffcd8f98a`, the
   merge of the 0.9.11 release integration (lukacf/meerkat#2124; the
   crates.io publish is pending, so the pin stays a git revision). It carries

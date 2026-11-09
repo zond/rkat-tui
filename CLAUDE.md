@@ -7,9 +7,9 @@ Guidance for agents working in this repository.
 `rkat-tui` is an interactive terminal coding harness (a ratatui app) built on
 the Meerkat agent engine. It is a standalone crate, not part of the Meerkat
 monorepo: plain `cargo` is correct here, and none of the monorepo's wrappers,
-lanes or environment variables apply. The engine is pulled in as git
-dependencies on upstream `lukacf/meerkat`, pinned to one revision in
-`Cargo.toml`; see "Engine dependency" below.
+lanes or environment variables apply. The engine is pulled in as the
+crates.io release of Meerkat (`lukacf/meerkat`), one version for every
+`meerkat-*` crate in `Cargo.toml`; see "Engine dependency" below.
 
 Product direction: a focused coding application with Claude Code's keys and
 feel, hosted on Meerkat's runtime-backed session path. Everything the engine
@@ -103,15 +103,15 @@ The README is the front page; the full user manual is `docs/manual.md`.
 
 ## Engine dependency
 
-`Cargo.toml` pins every `meerkat-*` crate to one git revision of upstream
-`lukacf/meerkat` `main`; there is no fork pin (the fixes the application
-needed landed upstream, the changelog names them). Moving the pin: change
-the revision in every dependency line, `cargo check --all-targets
---all-features`, adapt to API drift by reading upstream's replacement in the
-fetched checkout under `~/.cargo/git/checkouts/`, run the gate, and record
-the move in the changelog. The pin is the 0.9.11 release integration
-(`bffcd8f98a`); the goal is to depend on the crates.io release next, once
-0.9.11 is published.
+`Cargo.toml` depends on every `meerkat-*` crate at one crates.io release,
+currently 0.9.11; there are no git sources. Moving the version is the pin
+move: change the version in every dependency line, `cargo update -p
+meerkat`, `cargo check --all-targets --all-features`, adapt to API drift by
+reading upstream's replacement in the fetched sources under
+`~/.cargo/registry/src/`, run the gate, and record the move in the
+changelog. A git revision comes back only for a fix the application needs
+that is not released yet and has an open upstream PR; then every
+`meerkat-*` line names that one revision until a release carries the fix.
 
 Upstream policy: keep upstream work minimal. A gap with no application-side
 workaround gets a small, contained PR to `lukacf/meerkat` written as a bug

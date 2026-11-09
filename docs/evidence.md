@@ -2476,3 +2476,10 @@ gives the copy a new identity; nothing in the one-identity conversation
 model needed it, so it is not used. The `/rewind` notice names it and
 #2126. **Request ids.** `answering(request_id)` (router.rs:1754); the client
 had no id-less workaround; `a_parameter_refusal_answers_its_request` pins it.
+
+## The engine moves to crates.io 0.9.11 (2026-11-09)
+
+Every `meerkat-*` dependency now names `version = "0.9.11"` from crates.io;
+the lock has no git source left. The tag `v0.9.11` (`97699863ea`) contains
+the previous pin `bffcd8f98a`; there was no API drift (`cargo check
+--all-targets --all-features` compiled unchanged).
