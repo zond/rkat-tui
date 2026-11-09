@@ -39,6 +39,7 @@
 //! turns end on completion handles the daemon's stream does not carry. What
 //! the two share is the workbench and [`crate::workbench::app::build_app`].
 
+pub mod alongside;
 pub mod approvals;
 pub mod catchup;
 pub mod helpers;

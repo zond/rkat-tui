@@ -978,6 +978,17 @@ the in-process runner is removed.
 | `--no-attach` | Host the agent in this process (overrides `--attach`) |
 | `--list` | List every daemon that has an endpoint file, then exit (also `rkat-tui-mob --list`) |
 
+**`--no-attach` beside a running daemon.** When the workspace's daemon
+answers, `--no-attach` first says which daemon it is (workspace, pid,
+uptime, running or idle) and that running alongside it means no memory
+search (the daemon holds the memory index) and two agents editing one
+tree. At a terminal it asks: attach to the daemon, run alongside, or stop
+the daemon and then run in this process (Esc starts nothing). With a
+prompt on the command line it does not ask: the same is a notice in the
+transcript, and it runs alongside. `--no-attach -c` (or `--resume`) on the
+conversation the daemon runs says so plainly: attach to it, or stop the
+daemon first.
+
 `attach = false` at the top of your own `tui.toml` (the user-global one, or
 the realm's) makes `--no-attach` the default (`attach = true` is the
 default spelled out); `--no-attach` and `--attach=…` still win. A

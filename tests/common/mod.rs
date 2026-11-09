@@ -442,7 +442,7 @@ impl Rig {
             first_session,
             unsent_path,
             task,
-        } = within(spawn_runner(runtime, &start)).await.expect("runner");
+        } = within(spawn_runner(runtime, &start)).await?;
         let events = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&events);
         // The UI would render these; nobody may let the runner block.

@@ -188,8 +188,52 @@ pub async fn run(args: Args) -> Result<(), TuiError> {
     // The workspace and its `tui.toml` layers are read once, here, and
     // handed to the host that runs.
     let layers = bootstrap::read_layers(&args)?;
-    match bootstrap::attach_mode(&args, &layers) {
-        None => runner::run(args, layers).await,
-        Some(mode) => client::run(args, mode, layers).await,
+    let Some(mode) = bootstrap::attach_mode(&args, &layers) else {
+        return in_process(args, layers).await;
+    };
+    client::run(args, mode, layers).await
+}
+
+/// `--no-attach`: the in-process runner, after saying what a daemon that
+/// serves the workspace means for it (and, at a terminal without a prompt
+/// on the command line, asking whether to attach, run alongside or stop
+/// the daemon first).
+async fn in_process(args: Args, mut layers: bootstrap::Layers) -> Result<(), TuiError> {
+    use std::io::IsTerminal as _;
+    let files = daemon::endpoint::candidates(&layers.scope.context_root);
+    let Some(daemon) = client::alongside::find(&files).await else {
+        return runner::run(args, layers).await;
+    };
+    let now = chrono::Utc::now();
+    let asks =
+        args.prompt.is_none() && std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    let choice = if asks {
+        ui::ask_alongside(ui::AlongsideDialog::new(daemon.describe(now))).await?
+    } else {
+        Some(ui::AlongsideChoice::Alongside)
+    };
+    let daemon = match choice {
+        None => return Ok(()),
+        Some(ui::AlongsideChoice::Attach) => {
+            return client::run(args, cli::AttachMode::Existing, layers).await;
+        }
+        Some(ui::AlongsideChoice::Alongside) => {
+            layers.notices.push(daemon.notice(now));
+            Some(daemon)
+        }
+        Some(ui::AlongsideChoice::StopDaemon) => {
+            daemon.stop(&files).await.map_err(|why| {
+                TuiError::io("stop the workspace daemon", std::io::Error::other(why))
+            })?;
+            None
+        }
+    };
+    let ran = runner::run(args, layers).await;
+    match (&ran, &daemon) {
+        (Err(err), Some(daemon)) => match client::alongside::explain(err, daemon) {
+            Some(plain) => Err(plain),
+            None => ran,
+        },
+        _ => ran,
     }
 }

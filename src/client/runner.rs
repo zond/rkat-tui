@@ -2383,7 +2383,7 @@ fn current<'a>(endpoint: Option<&'a str>, model: Option<&'a (String, String)>) -
 /// be read or parsed is no evidence either way, and neither is a connect
 /// that timed out or failed otherwise ([`Probe::Unknown`]: a loaded host
 /// or a local socket error says nothing about the daemon).
-async fn daemon_ended(files: &[PathBuf], endpoint: &Endpoint, wait: Duration) -> bool {
+pub(crate) async fn daemon_ended(files: &[PathBuf], endpoint: &Endpoint, wait: Duration) -> bool {
     let deadline = Instant::now() + wait;
     loop {
         if no_file_names(files, &endpoint.token)

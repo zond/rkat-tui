@@ -3204,3 +3204,25 @@ no daemon conversation say so and name `rkat-tui --no-attach --resume
 `attach_sessions::an_in_process_session_cannot_be_seated_on_the_member`
 (pins the engine's refusal and the member staying where it was),
 `client::tests::the_start_flags_choose_the_first_conversation`.
+
+### `--no-attach` beside a live daemon
+
+`lib.rs` routes an in-process start through `in_process`: it probes the
+workspace's endpoint places (`client::alongside::find`, the `--list`
+probe: a probe attach, then `rkat/status`), and when a daemon answers it
+asks before the TUI opens (`ui::ask_alongside`, a dialog drawn with the
+modal box on its own terminal session, so nothing is added to the
+in-process runner that P4 deletes) or, with a prompt on the command line
+or no terminal, adds a one-line notice to the layers' start-up notices.
+"Stop the daemon" sends `rkat/shutdown` and waits for `daemon_ended`.
+`--no-attach -c` on the daemon's conversation: the engine refuses with
+`TuiError::Materialize(RuntimeBindings(Hosting(_,
+SessionError::ServedElsewhere { id })))` (the hosting refusal is a
+field, not a `source`, so `alongside::served_elsewhere` matches the
+variants instead of walking sources); when `id` is the daemon's current
+session `alongside::explain` replaces it with
+`TuiError::RunningInDaemon`. A session the daemon does not run keeps the
+engine's error. Tests:
+`attach_lifecycle::no_attach_beside_a_live_daemon_says_so_and_explains_its_conversation`
+(find, describe, notice, the real engine refusal turned plain, stop),
+`ui::modal::tests::the_alongside_dialog_offers_attach_alongside_and_stop`.

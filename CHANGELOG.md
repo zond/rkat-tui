@@ -6,6 +6,13 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Added
 
+- `--no-attach` while the workspace's daemon runs says so before the first
+  prompt (which daemon, and that running alongside means no memory search
+  and two agents in one tree); at a terminal it asks whether to attach,
+  run alongside, or stop the daemon first, and with a prompt on the
+  command line it shows a notice and runs alongside. `--no-attach -c` on
+  the daemon's current conversation says it runs in the daemon instead of
+  the engine's "served by another runtime owner".
 - When the agent's confined shell would be granted the state directory
   (a workspace that contains `~/.local/state`), the daemon writes its
   endpoint file to `$XDG_RUNTIME_DIR/rkat-tui/<key>/` instead of refusing

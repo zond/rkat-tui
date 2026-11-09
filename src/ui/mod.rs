@@ -60,11 +60,11 @@ pub use history::History;
 pub use input::{InputEditor, StashOutcome};
 pub use keymap::{Action, EditAction};
 pub use modal::{
-    EscalationAnswer, EscalationDialog, EscalationId, Modal, ModalKey, ModelPicker, PlanChoice,
-    PlanDialog, QuitChoice, QuitDialog, ResumePicker,
+    AlongsideChoice, AlongsideDialog, EscalationAnswer, EscalationDialog, EscalationId, Modal,
+    ModalKey, ModelPicker, PlanChoice, PlanDialog, QuitChoice, QuitDialog, ResumePicker,
 };
 pub use rewind::{RewindMenu, RewindPoint, Rewound};
-pub use runtime::{UiChannels, UiError, run_ui};
+pub use runtime::{UiChannels, UiError, ask_alongside, run_ui};
 pub use search::{HistorySearch, SearchOutcome};
 pub use selection::{CellPos, SelectMode, Selection};
 #[cfg(any(test, feature = "test-support"))]
