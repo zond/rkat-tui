@@ -3350,3 +3350,37 @@ own realm. Tests: `daemon::endpoint::tests::the_key_tells_the_workspace_realm_fr
 `daemon::endpoint::tests::an_isolated_client_pins_its_realm_for_the_daemon`,
 `daemon::list::tests::a_line_never_holds_the_token_and_keeps_its_column_order`
 (the realm suffix).
+
+### Sessions created before the daemon are view only (P4)
+
+P3's probe stands (`missing durable comms_name for resumed mob member`;
+mob-owned transcripts cannot be edited, so no copy into a fresh member
+session either): a session the in-process TUI created cannot become a
+daemon conversation. With the in-process runner going away, such
+sessions are shown instead of resumed. `Conversations::list` appends
+`Conversations::earlier`: the realm's sessions (`SessionService::list`,
+which leaves archived ones out) not in `conversations.json` whose durable
+metadata (`MobSessionService::load_persisted_session_metadata`) has no
+`comms_name`, i.e. no mob member's (helpers, the orchestrator and any
+member of an older in-process mob have one; a session whose metadata
+cannot be read is left out), most recently updated first, as
+`Listed { view_only: true }`. The client's picker marks them
+(`sessions::VIEW_ONLY`); `last`/`~N` skip them; resolving to one reads
+its transcript (`rkat/transcript`, which reads any session of the realm)
+into `Report::Viewed`, which resets the transcript, shows
+`sessions::view_only_notice` and remembers it (`AttachRunner::viewing`).
+`/export` names the file after the viewed session; `/resume <current>`
+while viewing re-renders the conversation (`adopt`), and every adoption
+clears the view. The notice names the current conversation by its full
+id: session ids are UUIDv7, so two created minutes apart share their
+first eight digits and a short prefix is ambiguous.
+
+Engine ask (recorded as ask 7 in `docs/mob-split.md`): a way to seat a
+mob member on an existing non-member session, or to write the durable
+`comms_name` and member binding when seating one, so a consumer can adopt
+sessions created outside the mob. Tests:
+`attach_sessions::an_in_process_session_cannot_be_seated_on_the_member`
+(listed view only with its title, `--resume <it>` shows it with the
+notice, `/export`, the next prompt runs on the conversation, `/resume
+<current>` shows it again; the engine's refusal stays pinned),
+`client::sessions::tests::earlier_sessions_are_marked_and_named_by_id_only`.

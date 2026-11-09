@@ -15,15 +15,25 @@ use crate::daemon::conversations::Listed;
 /// Why `/rewind` is not offered in attach mode.
 pub const REWIND_UNAVAILABLE: &str = "/rewind is not available in attach mode yet: the engine refuses session/fork_at for a mob member's session, and its member forks (mob/fork_member, mob/fork_helper) seat the copy under a new identity rather than rewinding the conversation in place; a same-identity rewind is with the engine's maintainers as a design note (lukacf/meerkat#2126). /new starts over; the in-process TUI (--no-attach) rewinds";
 
-/// Why a session the daemon never ran cannot be resumed in it, and where
-/// it can be: a session the in-process TUI (`--no-attach`) created is no
-/// mob member's, and the engine refuses to seat the daemon's member on it
-/// (`missing durable comms_name for resumed mob member`, pinned by
+/// What the resume picker adds to a session created before the daemon.
+pub const VIEW_ONLY: &str = "view only, created before the daemon";
+
+/// The notice shown with a session created before the daemon (`viewed`):
+/// its transcript is shown, the agent stays on `current`. Such a session
+/// is no mob member's, and the engine refuses to seat the daemon's member
+/// on it (`missing durable comms_name for resumed mob member`, pinned by
 /// `attach_sessions::an_in_process_session_cannot_be_seated_on_the_member`).
 #[must_use]
-pub fn not_a_daemon_conversation(reference: &str) -> String {
+pub fn view_only_notice(viewed: &SessionId, current: &SessionId) -> String {
+    let short = |id: &SessionId| {
+        let id = id.to_string();
+        id.get(..8).unwrap_or(&id).to_string()
+    };
     format!(
-        "a session started in-process (--no-attach) cannot be resumed in the daemon: the engine seats the daemon's agent only on sessions it ran; resume it with rkat-tui --no-attach --resume {reference}"
+        "showing session {} (view only): it was created before the daemon, and the engine seats the daemon's agent only on sessions it ran, so it cannot be continued; the agent stays on conversation {}, which /resume {} shows again. /export saves what is shown",
+        short(viewed),
+        short(current),
+        current
     )
 }
 
@@ -62,6 +72,9 @@ pub fn picker_items(listed: &[Listed]) -> Vec<(String, String)> {
             if row.current {
                 label.push_str(" (current)");
             }
+            if row.view_only {
+                label.push_str(&format!(" ({VIEW_ONLY})"));
+            }
             (id, label)
         })
         .collect()
@@ -72,7 +85,8 @@ pub fn picker_items(listed: &[Listed]) -> Vec<(String, String)> {
 /// sessions: `last` (`~`, `~0`), `~N`, a full id, or a unique id prefix.
 /// `last` and `~N` count the conversations other than the current one (the
 /// current one is the most recently used, so `last` would always name it):
-/// `last` is the one before it.
+/// `last` is the one before it. Sessions created before the daemon
+/// (view only) are named by id or prefix only.
 ///
 /// # Errors
 ///
@@ -93,7 +107,10 @@ pub fn resolve(reference: &str, listed: &[Listed]) -> Result<SessionId, String> 
         },
     };
     if let Some(offset) = offset {
-        let others: Vec<&Listed> = listed.iter().filter(|row| !row.current).collect();
+        let others: Vec<&Listed> = listed
+            .iter()
+            .filter(|row| !row.current && !row.view_only)
+            .collect();
         return match others.get(offset) {
             Some(row) => Ok(row.session_id.clone()),
             None if others.is_empty() => {
@@ -112,8 +129,7 @@ pub fn resolve(reference: &str, listed: &[Listed]) -> Result<SessionId, String> 
     match (matches.next(), matches.next()) {
         (Some(only), None) => Ok(only.session_id.clone()),
         (None, _) => Err(format!(
-            "no conversation of this workspace's daemon matches `{reference}`; {}",
-            not_a_daemon_conversation(reference)
+            "no conversation or earlier session of this workspace matches `{reference}`"
         )),
         (Some(_), Some(_)) => Err(format!(
             "prefix is ambiguous ({} conversations match); use more characters",
@@ -134,7 +150,39 @@ mod tests {
             messages: Some(4),
             title: Some("fix the bug".into()),
             current,
+            view_only: false,
         }
+    }
+
+    /// Sessions created before the daemon are offered by id, marked, and
+    /// never named by `last` or `~N`.
+    #[test]
+    fn earlier_sessions_are_marked_and_named_by_id_only() {
+        let mut earlier = row(false);
+        earlier.view_only = true;
+        let listed = vec![row(true), earlier.clone()];
+        assert!(
+            resolve("last", &listed)
+                .unwrap_err()
+                .contains("no other conversations")
+        );
+        let full = earlier.session_id.to_string();
+        assert_eq!(resolve(&full, &listed).unwrap(), earlier.session_id);
+        let items = picker_items(&listed);
+        assert!(
+            items[1].1.ends_with(&format!("({VIEW_ONLY})")),
+            "{}",
+            items[1].1
+        );
+        let notice = view_only_notice(&earlier.session_id, &listed[0].session_id);
+        assert!(
+            notice.contains("view only")
+                && notice.contains(&format!(
+                    "/resume {}",
+                    &listed[0].session_id.to_string()[..8]
+                )),
+            "{notice}"
+        );
     }
 
     #[test]

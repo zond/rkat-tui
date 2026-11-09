@@ -6,6 +6,11 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Added
 
+- `/resume` (and `--resume <id>`) lists the realm's sessions created
+  in-process before the daemon, marked "view only, created before the
+  daemon": choosing one shows its transcript (`/export` saves it) and the
+  agent stays on its conversation, with a notice saying why. The engine
+  seats the daemon's agent only on sessions it ran.
 - The daemon's endpoint key includes its realm when that is not the
   workspace's own, so an `--isolated` or `--realm-backend memory` daemon
   no longer takes the workspace's endpoint file (a plain start in that

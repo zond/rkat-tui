@@ -380,8 +380,11 @@ async fn resume_and_continue_choose_the_conversation_at_attach() {
 }
 
 /// The probe of P3 item 3: a session the in-process TUI created cannot
-/// become the daemon's conversation. `--resume <it>` attaches and says so
-/// plainly (with the in-process way to resume it); and the reason holds:
+/// become the daemon's conversation. It is listed view only (P4 item 2):
+/// `--resume <it>` attaches, shows its transcript and says why the agent
+/// stays on its conversation; the next prompt goes there, `/export` saves
+/// what is shown, and `/resume <current>` shows the conversation again.
+/// The reason holds:
 /// even with the session put into the daemon's conversation log, the
 /// engine refuses to seat the member on it and the member stays on the
 /// conversation it had.
@@ -398,11 +401,73 @@ async fn an_in_process_session_cannot_be_seated_on_the_member() {
     rig.quit().await;
 
     let daemon = Running::start(&ws.root, &llm).await;
+    // Listed, marked, after the daemon's own conversations.
+    let connection = daemon.connect().await;
+    let listed = connection
+        .call("rkat/conversations", json!({}))
+        .await
+        .unwrap();
+    let rows = listed["conversations"].as_array().unwrap();
+    assert_eq!(rows.len(), 2, "{listed}");
+    assert_eq!(rows[0]["session_id"], json!(daemon.session.to_string()));
+    assert_eq!(rows[1]["session_id"], json!(in_process));
+    assert_eq!(rows[1]["view_only"], json!(true));
+    assert_eq!(rows[1]["title"], json!("hello in process"));
+    drop(connection);
     let args = common::args_with(&ws.root, &["--resume", &in_process]);
     let mut client = Client::attach_args(&ws.root, &args, None).await;
-    let expected = rkat_tui::client::sessions::not_a_daemon_conversation(&in_process);
+    let shown = client
+        .wait_for(|m| {
+            matches!(m, Msg::ResetTranscript(blocks) if format!("{blocks:?}").contains("hello in process"))
+        })
+        .await;
+    assert!(format!("{shown:?}").contains("in-process"), "{shown:?}");
+    let expected = rkat_tui::client::sessions::view_only_notice(&in_process_id, &daemon.session);
     client
-        .wait_for(|m| matches!(m, Msg::Notice { text, .. } if text.contains(&expected)))
+        .wait_for(|m| matches!(m, Msg::Notice { text, .. } if *text == expected))
+        .await;
+    // /export saves what is shown, named after the viewed session.
+    client.send(Effect::Export {
+        path: None,
+        text: "the viewed transcript".into(),
+    });
+    let exported = client
+        .wait_for(|m| matches!(m, Msg::Notice { text, .. } if text.starts_with("exported the transcript to")))
+        .await;
+    let Msg::Notice { text, .. } = exported else {
+        unreachable!()
+    };
+    let file = text
+        .trim_start_matches("exported the transcript to ")
+        .trim();
+    assert!(file.contains(&format!("export-{in_process}-")), "{file}");
+    assert_eq!(
+        std::fs::read_to_string(file).unwrap(),
+        "the viewed transcript"
+    );
+    // The agent stayed on its conversation: the prompt runs there.
+    client.send(Effect::StartTurn("hello daemon".into()));
+    assert_eq!(client.turn_finished().await.result.unwrap().text, "daemon");
+    let status = daemon
+        .connect()
+        .await
+        .call(
+            "mob/member_status",
+            json!({"mob_id": "tui", "agent_identity": "main"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        status["current_session_id"],
+        json!(daemon.session.to_string())
+    );
+    // /resume <current> shows the conversation again.
+    let current = daemon.session.to_string();
+    client.send(Effect::ResumeSession(current));
+    client
+        .wait_for(|m| {
+            matches!(m, Msg::ResetTranscript(blocks) if format!("{blocks:?}").contains("hello daemon"))
+        })
         .await;
     client.quit().await;
     daemon.stop().await;

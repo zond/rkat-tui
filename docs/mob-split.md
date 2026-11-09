@@ -355,6 +355,12 @@ attach mode does not do yet.
    id), so a client can match it to `boundary_append_applied`'s
    `input_id` and tell its own steer's delivery from another client's: the
    attach runner marks its steers delivered first in, first out.
+7. Adopting a session created outside the mob: a way to seat a mob member
+   on an existing non-member session, or to write the durable
+   `comms_name` (and member binding) when seating one, so a consumer can
+   bring sessions its own in-process path created into its mob. Without
+   it those sessions are view only in the daemon
+   (`docs/evidence.md`, "Sessions created before the daemon are view only").
 
 ## History
 

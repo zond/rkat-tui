@@ -1245,11 +1245,14 @@ conversation is the one it runs, so attaching is all it does.
 `--resume <ref>` attaches and switches the daemon to that conversation
 (`rkat/resume`, as `/resume <ref>`; a prompt on the command line goes to
 it), and says so when it is the current one already; `--resume` alone
-opens the picker once attached. A session started in-process
-(`--no-attach`) is not one of the daemon's conversations and cannot
-become one: the engine seats the daemon's agent only on sessions it ran
-as a mob member. `--resume <it>` says so and names the way to go on with
-it, `rkat-tui --no-attach --resume <ref>`.
+opens the picker once attached. A session started in-process (before
+the daemon) is not one of the daemon's conversations and cannot become
+one: the engine seats the daemon's agent only on sessions it ran as a mob
+member. `/resume` lists such sessions after the conversations, marked
+"view only, created before the daemon"; choosing one (or `--resume <its
+id>`) shows its transcript, and a notice says the agent stays on its
+conversation and how to show that again (`/resume <its id>`). `/export`
+saves the session shown. `last` and `~N` name daemon conversations only.
 
 **Limits for now:**
 
@@ -1280,9 +1283,9 @@ it, `rkat-tui --no-attach --resume <ref>`.
 - `--no-attach` next to a running daemon works, at a cost: no memory
   search (the daemon holds the memory index) and two agents in one tree;
   the start says so and offers to attach or stop the daemon instead.
-- A session started in-process (`--no-attach`) cannot be resumed in the
-  daemon: the engine seats the daemon's agent only on sessions it ran.
-  Resume it with `rkat-tui --no-attach --resume <ref>`.
+- A session started in-process before the daemon cannot be continued in
+  it: the engine seats the daemon's agent only on sessions it ran.
+  `/resume` shows it view only.
 
 ## Testing
 
