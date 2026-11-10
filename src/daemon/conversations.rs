@@ -428,7 +428,7 @@ impl Conversations {
         use futures::StreamExt as _;
         let entries = self.log.lock().newest_first();
         let service = self.state.session_service();
-        let conversations = futures::stream::iter(entries)
+        futures::stream::iter(entries)
             .map(|entry| {
                 let service = Arc::clone(&service);
                 let holder = live
@@ -469,8 +469,7 @@ impl Conversations {
             })
             .buffered(LIST_READS)
             .collect::<Vec<_>>()
-            .await;
-        conversations
+            .await
     }
 
     /// What the realm holds, for a re-home that would replace it: each
