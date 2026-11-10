@@ -281,6 +281,10 @@ pub struct Layered {
     pub endpoints: BTreeMap<String, LayeredEndpoint>,
     /// Merged `[pricing."<model>"]` overrides (invalid entries dropped).
     pub pricing: BTreeMap<String, PricingSection>,
+    /// `[pricing] fetch`: whether the community price list may be fetched
+    /// (the last user layer that sets it; a project file may only turn it
+    /// off). `--no-pricing-fetch` turns it off whatever this says.
+    pub pricing_fetch: bool,
     /// Merged `[thinking]` settings of the user layers (not yet validated,
     /// see [`crate::thinking::ThinkingTable::validate`]).
     pub thinking: BTreeMap<String, ThinkingSetting>,
@@ -359,6 +363,7 @@ pub fn load_layered_with(
     let mut notices = Vec::new();
     let mut endpoints: BTreeMap<String, LayeredEndpoint> = BTreeMap::new();
     let mut pricing: BTreeMap<String, PricingSection> = BTreeMap::new();
+    let mut pricing_fetch = true;
     let mut thinking: BTreeMap<String, ThinkingSetting> = BTreeMap::new();
     let mut confinement = ConfinementSection::default();
     let mut helpers = HelperSettings::default();
@@ -430,6 +435,9 @@ pub fn load_layered_with(
                 .or_default()
                 .merge_from(section);
         }
+        if let Some(fetch) = file.pricing.fetch {
+            pricing_fetch = fetch;
+        }
         // A later layer's setting replaces an earlier one's (`"default"`
         // undoes it).
         thinking.extend(
@@ -490,7 +498,11 @@ pub fn load_layered_with(
             RuleOrigin::Project,
         )?);
     }
-    if !project.pricing.is_empty() {
+    // Not fetching only keeps a request from being made.
+    if project.pricing.fetch == Some(false) {
+        pricing_fetch = false;
+    }
+    if !project.pricing.models.is_empty() {
         notices.push(Notice::PricingIgnored {
             path: project_path.clone(),
             count: project.pricing.len(),
@@ -618,6 +630,7 @@ pub fn load_layered_with(
         mode,
         endpoints,
         pricing,
+        pricing_fetch,
         thinking,
         confinement,
         helpers,

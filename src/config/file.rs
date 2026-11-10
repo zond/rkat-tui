@@ -291,6 +291,51 @@ impl EndpointSection {
     }
 }
 
+/// The `[pricing]` table: `fetch = false` (the community price list is
+/// not fetched, as `--no-pricing-fetch`) beside the `"<model id>"` override
+/// tables. It reads as the map of overrides ([`std::ops::Deref`]); a model
+/// named `fetch` cannot be overridden.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PricingTable {
+    /// Whether the community price list may be fetched (`None`: unset).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fetch: Option<bool>,
+    /// The overrides by model id.
+    #[serde(flatten)]
+    pub models: BTreeMap<String, PricingSection>,
+}
+
+impl PricingTable {
+    /// Whether nothing is set.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.fetch.is_none() && self.models.is_empty()
+    }
+}
+
+impl std::ops::Deref for PricingTable {
+    type Target = BTreeMap<String, PricingSection>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.models
+    }
+}
+
+impl std::ops::DerefMut for PricingTable {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.models
+    }
+}
+
+impl<'a> IntoIterator for &'a PricingTable {
+    type Item = (&'a String, &'a PricingSection);
+    type IntoIter = std::collections::btree_map::Iter<'a, String, PricingSection>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.models.iter()
+    }
+}
+
 /// One `[pricing."<model id>"]` table: USD per million tokens for the cost
 /// readout (see [`crate::pricing`]). Unset fields inherit from lower layers,
 /// then from the fetched price lists.
@@ -372,9 +417,10 @@ pub struct RulesFile {
     /// Extra LLM endpoints by name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub endpoints: BTreeMap<String, EndpointSection>,
-    /// Price overrides by model id (USD per million tokens).
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub pricing: BTreeMap<String, PricingSection>,
+    /// `[pricing]`: `fetch` and the price overrides by model id (USD per
+    /// million tokens).
+    #[serde(default, skip_serializing_if = "PricingTable::is_empty")]
+    pub pricing: PricingTable,
     /// Anthropic thinking by model reference or id (user layers only).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub thinking: BTreeMap<String, ThinkingSetting>,

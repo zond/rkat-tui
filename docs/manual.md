@@ -572,6 +572,7 @@ are never written to a file.
 | `ui.checklist` (`"hidden"`/`"shown"`: the task checklist under the input; Ctrl-T writes it) | `--set ui.checklist=shown` | `"hidden"` |
 | `shell.user_timeout_secs` (how long a `!` command may run; a project file may only lower it) | `--set shell.user_timeout_secs=N` | `120` |
 | `pricing."<model id>".input`, `.output`, `.cached_input`, `.cache_write` (USD per 1M tokens) | `--set 'pricing."<id>".input=15'` | fetched prices |
+| `pricing.fetch` (fetch the community price list; a project file may only set `false`) | `--no-pricing-fetch` (= `false`) | `true` |
 | `thinking."<endpoint:id or id>"` (`"adaptive"`, `{ enabled = <budget tokens> }` or `"default"`; Anthropic-dialect endpoints only, see "Thinking") | `--set 'thinking."proxy:my-alias"=adaptive'` | the engine's default |
 
 Other flags: `--model`/`-m <[endpoint:]id>`, `--endpoint <name>`
@@ -647,7 +648,11 @@ red from 90%, `~` for an estimate), and the session's cost, `$0.42`: each
 model call's tokens are priced per model from `[pricing]` overrides, a
 LiteLLM endpoint's `/model/info`, or LiteLLM's community price list (cached
 for 7 days in the user cache directory, `$XDG_CACHE_HOME/rkat-tui` or the
-platform's; `--no-pricing-fetch` skips the download). Helpers' usage and
+platform's; `--no-pricing-fetch`, or `fetch = false` under `[pricing]` in
+your `tui.toml`, skips the download). That list is the one request
+rkat-tui makes to a host other than your LLM endpoints:
+`https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json`,
+at most once a week. Helpers' usage and
 compactions (their estimated input plus the summary) count too. `/usage`
 prints the breakdown. The readout is an estimate, not a bill, and says how
 far it can be trusted: exact; `~` **approximate** when part of it is

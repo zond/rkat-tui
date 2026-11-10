@@ -4777,3 +4777,24 @@ Test: `a_bindings_file_changed_underneath_is_not_read` (mobs::bindings: an
 owner planted in the file is not read by a live lookup or after a restart,
 the next write replaces it, and a file without a recorded digest is
 refused).
+
+### E3: the price-list fetch has a config key
+
+Verified: the only request rkat-tui makes to a host that is not a
+configured LLM endpoint is the LiteLLM community price list
+(`pricing::COMMUNITY_PRICES_URL`, raw.githubusercontent.com, cached for 7 days),
+and only `--no-pricing-fetch` turned it off: a user had to pass the flag
+on every start.
+
+`[pricing]` is now a `config::PricingTable`: `fetch` beside the
+`"<model id>"` override tables (flattened; it reads as the map of
+overrides, so a model literally named `fetch` cannot be overridden). The
+last user layer that sets `fetch` decides; a project file may set it to
+`false` only (not fetching only keeps a request from being made), and its
+price overrides stay ignored with the notice as before. The client fetches
+when neither the flag nor the layers turn it off. The manual names the
+URL.
+
+Tests: `pricing_fetch_is_a_user_setting_the_project_can_only_turn_off`
+(config) and the overlay test (`--set pricing.fetch=false` beside a
+`pricing."m".input`).

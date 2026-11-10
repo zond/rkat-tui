@@ -444,6 +444,15 @@ mod tests {
         assert_eq!(opus.input, Some(15.0));
         assert_eq!(opus.cached_input, Some(1.5));
         assert_eq!(f.pricing["gpt-5.4"].output, Some(10.5));
+        // E3: the fetch switch sits beside the overrides.
+        let f = file(&[
+            "--set",
+            "pricing.fetch=false",
+            "--set",
+            r#"pricing."m".input=1"#,
+        ]);
+        assert_eq!(f.pricing.fetch, Some(false));
+        assert_eq!(f.pricing["m"].input, Some(1.0));
         for (argv, needle) in [
             (["--set", r#"pricing."x.input=1"#], "expected <dotted.key>"),
             (["--set", r#"pricing."".input=1"#], "invalid key segment"),

@@ -9,6 +9,9 @@ design.
 
 ### Security
 
+- `[pricing] fetch = false` in `tui.toml` turns the community price-list
+  download off, as `--no-pricing-fetch` does; the manual names the one
+  host rkat-tui contacts besides your LLM endpoints.
 - The helper bindings file (`tui_helpers.json`, whom each helper works
   for) is read only when it is what the daemon last wrote: its digest is
   kept in the host trust record outside the workspace, so an owner the

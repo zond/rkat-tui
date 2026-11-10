@@ -56,15 +56,18 @@ fn rules_file_round_trip() {
                 priority: Some(2),
             },
         )]),
-        pricing: BTreeMap::from([(
-            "gpt-5.4".to_string(),
-            PricingSection {
-                input: Some(1.25),
-                output: Some(10.0),
-                cached_input: None,
-                cache_write: None,
-            },
-        )]),
+        pricing: PricingTable {
+            fetch: None,
+            models: BTreeMap::from([(
+                "gpt-5.4".to_string(),
+                PricingSection {
+                    input: Some(1.25),
+                    output: Some(10.0),
+                    cached_input: None,
+                    cache_write: None,
+                },
+            )]),
+        },
         thinking: BTreeMap::from([
             ("litellm:claude-x".to_string(), ThinkingSetting::Adaptive),
             (
@@ -450,6 +453,39 @@ fn a_project_file_cannot_pick_the_classifier_model() {
         layered.settings.classifier_model.as_deref(),
         Some("realm-model")
     );
+}
+
+/// E3 of the security review: `[pricing] fetch = false` keeps the
+/// community price list from being fetched; a project file may turn the
+/// fetch off, never back on.
+#[test]
+fn pricing_fetch_is_a_user_setting_the_project_can_only_turn_off() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (realm, project) = (tmp.path().join("realm"), tmp.path().join("p"));
+    write(&realm, "");
+    write(&project, "");
+    let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+    assert!(layered.pricing_fetch, "fetched by default");
+    write(
+        &realm,
+        "[pricing]\nfetch = false\n[pricing.\"m\"]\ninput = 1.0\n",
+    );
+    write(&project, "[pricing]\nfetch = true\n");
+    let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+    assert!(!layered.pricing_fetch, "the project cannot turn it back on");
+    assert_eq!(layered.pricing["m"].input, Some(1.0));
+    assert!(
+        !layered
+            .notices
+            .iter()
+            .any(|n| matches!(n, Notice::PricingIgnored { .. })),
+        "{:?}",
+        layered.notices
+    );
+    write(&realm, "");
+    write(&project, "[pricing]\nfetch = false\n");
+    let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+    assert!(!layered.pricing_fetch, "the project may turn it off");
 }
 
 #[test]

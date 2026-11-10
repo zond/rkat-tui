@@ -368,7 +368,7 @@ pub async fn configure_with(
             .global
             .as_ref()
             .map(crate::bootstrap::GlobalDirs::pricing_cache),
-        !args.no_pricing_fetch,
+        !args.no_pricing_fetch && layered.pricing_fetch,
     );
     // Drawn only when this client may start the daemon.
     let start_token = match spawn {
