@@ -101,9 +101,6 @@ pub enum BindError {
     /// The named agent is not live.
     #[error("no agent `{0}` works in this workspace (rkat-tui --list shows the agents)")]
     NoSuchAgent(String),
-    /// A conversation reference matched nothing, or more than one.
-    #[error("{0}")]
-    Reference(String),
     /// Seating the agent failed.
     #[error("cannot seat the agent: {0}")]
     Seat(#[from] SwitchError),
@@ -391,37 +388,7 @@ impl Agents {
                 },
                 None => self.seat(Target::Fresh, None).await?,
             },
-            AgentChoice::Recent => match self.recent_used() {
-                Some(name) => Bound {
-                    name,
-                    seated: false,
-                },
-                // No agent works but the spare: the conversation used last
-                // (not the spare's own), seated again under its agent.
-                None => {
-                    let spare = self.spare();
-                    let last = self
-                        .conversations
-                        .entries()
-                        .into_iter()
-                        .find(|entry| Some(&entry.agent) != spare.as_ref());
-                    match (last, spare) {
-                        (Some(entry), _) if !self.is_live(&entry.agent) => {
-                            let target = Target::Resume(entry.session_id.clone());
-                            self.seat(target, Some(entry.agent)).await?
-                        }
-                        (Some(entry), _) => Bound {
-                            name: entry.agent,
-                            seated: false,
-                        },
-                        (None, Some(name)) => Bound {
-                            name,
-                            seated: false,
-                        },
-                        (None, None) => self.seat(Target::Fresh, None).await?,
-                    }
-                }
-            },
+            AgentChoice::Recent => self.bind_recent().await?,
             AgentChoice::Agent { name } => {
                 if !self.is_live(name) {
                     return Err(BindError::NoSuchAgent(name.clone()));
@@ -431,22 +398,23 @@ impl Agents {
                     seated: false,
                 }
             }
-            AgentChoice::Conversation { reference } => {
-                let session = self.resolve(reference).await?;
-                let owner = self.conversations.agent_of(&session).ok_or_else(|| {
-                    BindError::Reference(format!(
-                        "conversation {session} is no agent's (view only)"
-                    ))
-                })?;
-                if self.is_live(&owner) {
-                    Bound {
-                        name: owner,
-                        seated: false,
-                    }
-                } else {
+            AgentChoice::Conversation { reference } => match self.resolve(reference).await {
+                // No agent's conversation (a session created before the
+                // daemon, which the client shows view only) or no match
+                // (the client's `/resume` says why): the most recent agent.
+                None => self.bind_recent().await?,
+                Some((session, None)) => {
+                    tracing::debug!(%session, "a view-only conversation: binding the most recent agent");
+                    self.bind_recent().await?
+                }
+                Some((_, Some(owner))) if self.is_live(&owner) => Bound {
+                    name: owner,
+                    seated: false,
+                },
+                Some((session, Some(owner))) => {
                     self.seat(Target::Resume(session), Some(owner)).await?
                 }
-            }
+            },
         };
         let active = self.tick();
         // An agent left detached stays marked until it retires: `/quit`
@@ -470,6 +438,40 @@ impl Agents {
         ))
     }
 
+    /// The agent a `recent` bind takes: the most recently active one; with
+    /// none but the spare, the conversation used last (not the spare's
+    /// own), seated again under its agent; else the spare, or a new one.
+    /// Called under the seating lock.
+    async fn bind_recent(self: &Arc<Self>) -> Result<Bound, BindError> {
+        if let Some(name) = self.recent_used() {
+            return Ok(Bound {
+                name,
+                seated: false,
+            });
+        }
+        let spare = self.spare();
+        let last = self
+            .conversations
+            .entries()
+            .into_iter()
+            .find(|entry| Some(&entry.agent) != spare.as_ref());
+        Ok(match (last, spare) {
+            (Some(entry), _) if !self.is_live(&entry.agent) => {
+                let target = Target::Resume(entry.session_id.clone());
+                self.seat(target, Some(entry.agent)).await?
+            }
+            (Some(entry), _) => Bound {
+                name: entry.agent,
+                seated: false,
+            },
+            (None, Some(name)) => Bound {
+                name,
+                seated: false,
+            },
+            (None, None) => self.seat(Target::Fresh, None).await?,
+        })
+    }
+
     /// The spare agent, when one waits for its first client.
     fn spare(&self) -> Option<String> {
         self.table
@@ -490,11 +492,21 @@ impl Agents {
     }
 
     /// The conversation `reference` names (a session id or a unique
-    /// prefix, as `/resume` takes it).
-    async fn resolve(&self, reference: &str) -> Result<SessionId, BindError> {
+    /// prefix, as `/resume` takes it) and the agent it belongs to (`None`:
+    /// a view-only session); `None` when nothing (or more than one)
+    /// matches.
+    async fn resolve(&self, reference: &str) -> Option<(SessionId, Option<String>)> {
         let listed = self.conversations.list(None, &self.live()).await;
-        let listed: Vec<_> = listed.into_iter().filter(|row| !row.view_only).collect();
-        crate::client::sessions::resolve(reference, &listed, None).map_err(BindError::Reference)
+        match crate::client::sessions::resolve(reference, &listed, None) {
+            Ok(session) => {
+                let owner = self.conversations.agent_of(&session);
+                Some((session, owner))
+            }
+            Err(why) => {
+                tracing::debug!(%reference, %why, "an attach named no conversation");
+                None
+            }
+        }
     }
 
     /// Seat an agent on `target`: `name` (an agent that quit, seated again

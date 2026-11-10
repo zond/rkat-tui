@@ -260,8 +260,12 @@ impl Client {
         Self::attach_config(args, start_token, lister, endpoint_file, host_paths, None).await
     }
 
-    /// [`Self::attach_setup`], asking for the agent `agent` names (`None`:
-    /// as the command line says).
+    /// [`Self::attach_setup`], asking for the agent `agent` names. `None`:
+    /// as the command line says, except that a command line with neither
+    /// `-c` nor `--resume` joins the most recent agent (as `-c` does) rather
+    /// than starting a new one: the rig's clients share the daemon's agent
+    /// unless a test asks otherwise (`Some(AgentChoice::New)`, or
+    /// `Some(rkat_tui::client::agent_choice(&args))` for the real default).
     pub async fn attach_config(
         args: &rkat_tui::Args,
         start_token: Option<&str>,
@@ -274,8 +278,12 @@ impl Client {
             .await
             .unwrap();
         config.start_token = start_token.map(str::to_string);
-        if let Some(agent) = agent {
-            config.agent = agent;
+        match agent {
+            Some(agent) => config.agent = agent,
+            None if args.resume.is_none() && !args.continue_last => {
+                config.agent = rkat_tui::daemon::protocol::AgentChoice::Recent;
+            }
+            None => {}
         }
         config.lister = lister;
         config.endpoint_files = vec![endpoint_file.to_path_buf()];

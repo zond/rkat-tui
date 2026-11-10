@@ -817,7 +817,7 @@ impl AttachRunner {
         {
             self.mark = Some(mark);
         }
-        self.send(Msg::Status(StatusUpdate::Session(session)));
+        self.send(Msg::Status(StatusUpdate::Session(session.clone())));
         if switched_agent {
             self.notice(
                 NoticeLevel::Info,
@@ -891,13 +891,46 @@ impl AttachRunner {
         if new_daemon {
             self.startup_notices();
         }
-        if fresh {
+        if fresh && !switched_agent {
+            self.other_agents();
             match std::mem::replace(&mut self.config.start, super::StartAt::Current) {
                 super::StartAt::Current => {}
                 super::StartAt::Pick => self.show_resume_picker(),
+                // The daemon bound this client to the agent that owns the
+                // conversation (seated again on it when it had quit): a
+                // switch is needed only when that agent moved on since.
+                super::StartAt::Resume(reference) if session.starts_with(reference.trim()) => {}
                 super::StartAt::Resume(reference) => self.resume_session(reference),
             }
         }
+    }
+
+    /// The start-up notice naming the other agents working here
+    /// (`rkat/status`), when there are any.
+    fn other_agents(&self) {
+        let Some(connection) = self.connection() else {
+            return;
+        };
+        let ui_tx = self.ui_tx.clone();
+        tokio::spawn(async move {
+            let read = bounded(
+                CALL_TIMEOUT,
+                remote::local::<_, protocol::Status>(
+                    &connection,
+                    protocol::STATUS,
+                    &serde_json::json!({}),
+                ),
+            )
+            .await;
+            if let Ok(status) = read
+                && let Some(text) = others_notice(&status.agents, connection.agent())
+            {
+                let _ = ui_tx.send(Msg::Notice {
+                    level: NoticeLevel::Info,
+                    text,
+                });
+            }
+        });
     }
 
     /// Show the daemon's start-up notices (`rkat/notices`).
@@ -2823,6 +2856,31 @@ pub(crate) async fn append_system_context(
     .await
 }
 
+/// The start-up notice naming the agents other than `mine` working here,
+/// with their state ("main-abc is running, main-def is idle; `-c` joins
+/// the most recent"); `None` when there are none.
+#[must_use]
+pub fn others_notice(agents: &[protocol::AgentRow], mine: &str) -> Option<String> {
+    let others: Vec<String> = agents
+        .iter()
+        .filter(|row| row.name != mine)
+        .map(|row| {
+            format!(
+                "{} is {}",
+                row.name,
+                if row.running { "running" } else { "idle" }
+            )
+        })
+        .collect();
+    if others.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "other agents work in this workspace: {}; you are agent {mine}, wired to them (rkat-tui -c joins the most recent one, /agents <name> switches)",
+        others.join(", ")
+    ))
+}
+
 /// `/agents`' lines: one per agent (name, state, conversation, clients),
 /// `mine` marked.
 #[must_use]
@@ -3331,14 +3389,22 @@ async fn establish(
         Some(attach.agent.clone()),
     )
     .await?;
+    // An agent seated for this client (a new one, or one seated again on
+    // its conversation) has a new event stream: its conversation is
+    // rendered from the start, whatever an earlier client saved.
     let from_file = match saved {
+        _ if connection.seated() => None,
         Some(_) => None,
         None => attach
             .cursor
             .as_ref()
             .and_then(|cursor| cursor.for_agent(connection.agent()).load()),
     };
-    let saved = saved.or(from_file.as_ref());
+    let saved = if connection.seated() {
+        None
+    } else {
+        saved.or(from_file.as_ref())
+    };
     tokio::time::timeout(CALL_TIMEOUT, async {
         let capabilities = connection
             .call(protocol::engine::INITIALIZE, serde_json::json!({}))
@@ -3469,6 +3535,34 @@ mod tests {
 
     /// `/status`'s daemon side: the realm, confinement, mode, trust and
     /// helper lines, in their order.
+    #[test]
+    fn the_start_up_notice_names_the_other_agents() {
+        let row = |name: &str, running| protocol::AgentRow {
+            name: name.into(),
+            session_id: None,
+            running,
+            clients: 0,
+            detached: false,
+        };
+        assert_eq!(others_notice(&[row("main-mine", false)], "main-mine"), None);
+        let text = others_notice(
+            &[
+                row("main-abcd", true),
+                row("main-mine", false),
+                row("main-efgh", false),
+            ],
+            "main-mine",
+        )
+        .unwrap();
+        assert!(
+            text.starts_with(
+                "other agents work in this workspace: main-abcd is running, main-efgh is idle;"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("-c joins the most recent"), "{text}");
+    }
+
     #[test]
     fn agents_are_listed_with_state_conversation_and_clients() {
         let session = SessionId::new();

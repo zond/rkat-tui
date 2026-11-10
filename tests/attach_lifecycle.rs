@@ -131,9 +131,11 @@ async fn a_dropped_owner_connection_is_a_detach_and_the_daemon_keeps_running() {
     let owner = attach(&daemon, Some(START), false).await;
     assert!(status(&owner).await.owner);
     drop(owner);
-    let watcher = attach(&daemon, None, false).await;
+    // A probe watches: a client binding the agent before the owner's end
+    // reached the daemon would keep the agent attended (no detach).
+    let watcher = attach(&daemon, None, true).await;
     let seen = status_until(&watcher, |s| s.detached).await;
-    assert_eq!(seen.clients, 1);
+    assert_eq!(seen.clients, 0);
     assert!(daemon.serving());
     assert!(daemon.endpoint_file.exists());
     // The owner comes back: still the owner, and the detach stays.

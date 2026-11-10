@@ -120,6 +120,11 @@ design.
   and no agent was left detached, else ask), and "terminate" retires
   every agent before the daemon stops. `/detach` (and a hangup) leaves
   the agent running; the detached flag is the agent's.
+- `rkat-tui` beside a live daemon starts a new agent of its own (the
+  first `rkat-tui` in a workspace still takes the daemon's first one) and
+  names the agents already working there; `-c` joins the most recently
+  active agent, and `--resume <ref>` the agent that owns that
+  conversation, seated again on it when that agent quit.
 - The agent always runs in the workspace's daemon, never in the
   `rkat-tui` process: closing the terminal no longer ends its turn, and
   any number of TUIs can attach to it. An `attach` key in a `tui.toml` is

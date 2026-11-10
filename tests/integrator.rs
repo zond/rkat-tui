@@ -248,14 +248,19 @@ async fn continue_and_resume_by_id_across_lifetimes() {
     );
     rig.quit().await;
 
-    // `--resume <id prefix>` of the current conversation: attached to it.
+    // `--resume <id prefix>` of the current conversation: attached to the
+    // agent running it, with no switch.
     let prefix = first.to_string()[..30].to_string();
     let llm = ScriptedLlmClient::new(vec![]);
     let mut rig = Attached::start_with(&ws.root, &llm, client_args(&["--resume", &prefix])).await;
-    rig.wait_for(
-        |m| matches!(m, Msg::Notice { text, .. } if text == "already in this conversation"),
-    )
-    .await;
+    let shown = first.to_string();
+    rig.saw(|m| matches!(m, Msg::Status(rkat_tui::ui::StatusUpdate::Session(id)) if *id == shown))
+        .await;
+    assert!(
+        !rig.notices().contains("resumed conversation"),
+        "{}",
+        rig.notices()
+    );
     assert_eq!(rig.current_session().await, first);
     rig.quit().await;
 }

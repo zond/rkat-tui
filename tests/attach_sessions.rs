@@ -384,14 +384,19 @@ async fn resume_and_continue_choose_the_conversation_at_attach() {
     assert_eq!(user_texts(&llm.recorded()[2].messages), ["first", "third"]);
     resumed.quit().await;
 
-    // --resume <the current one>: attached, and told it is current.
+    // --resume <the current one>: attached to the agent running it, with
+    // no switch.
     let args = common::args_with(&ws.root, &["--resume", &first]);
     let mut again = Client::attach_args(&ws.root, &args, None).await;
     again
-        .wait_for(
-            |m| matches!(m, Msg::Notice { text, .. } if text == "already in this conversation"),
-        )
+        .saw(|m| matches!(m, Msg::Status(rkat_tui::ui::StatusUpdate::Session(id)) if *id == first))
         .await;
+    assert_eq!(again.agent().await, daemon.agent);
+    assert!(
+        !again.notices().contains("resumed conversation"),
+        "{}",
+        again.notices()
+    );
     again.quit().await;
     daemon.stop().await;
 }
@@ -524,5 +529,114 @@ async fn a_session_outside_the_mob_cannot_be_seated_on_the_member() {
         json!(daemon.session.to_string())
     );
     drop(connection);
+    daemon.stop().await;
+}
+
+/// The client a command line with neither `-c` nor `--resume` makes.
+async fn attach_as_typed(root: &std::path::Path, extra: &[&str]) -> Client {
+    let args = common::args_with(root, extra);
+    let choice = rkat_tui::client::agent_choice(&args);
+    Client::attach_config(
+        &args,
+        None,
+        common::no_lists(),
+        &common::endpoint_file_for(root),
+        None,
+        Some(choice),
+    )
+    .await
+}
+
+/// The start semantics (P5): the first `rkat-tui` takes the daemon's
+/// first agent; a second one in the same workspace starts a new agent and
+/// names the others working there; `-c` joins the most recently active
+/// one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_second_rkat_tui_starts_a_new_agent_and_c_joins_the_most_recent() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![Step::Text("from b"), Step::Text("from a")]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let mut a = attach_as_typed(&ws.root, &[]).await;
+    let a_name = a.agent().await;
+    assert_eq!(
+        a_name, daemon.agent,
+        "the first one takes the start's agent"
+    );
+    assert!(
+        !a.notices().contains("other agents work"),
+        "{}",
+        a.notices()
+    );
+    let mut b = attach_as_typed(&ws.root, &[]).await;
+    let b_name = b.agent().await;
+    assert_ne!(b_name, a_name, "a second rkat-tui is a new agent");
+    b.wait_for(|m| {
+        matches!(m, Msg::Notice { text, .. }
+            if text.contains(&format!("other agents work in this workspace: {a_name} is idle")))
+    })
+    .await;
+    b.send(Effect::StartTurn("b's work".into()));
+    assert_eq!(b.turn_finished().await.result.unwrap().text, "from b");
+    a.send(Effect::StartTurn("a's work".into()));
+    assert_eq!(a.turn_finished().await.result.unwrap().text, "from a");
+    // A ran last: `-c` joins it.
+    let mut c = attach_as_typed(&ws.root, &["-c"]).await;
+    assert_eq!(c.agent().await, a_name);
+    for client in [a, b, c] {
+        client.quit().await;
+    }
+    daemon.stop().await;
+}
+
+/// `--resume <ref>` attaches to the agent owning the conversation; when
+/// that agent quit, it is seated again on the conversation (under its
+/// name) and the conversation goes on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn resume_of_a_quit_agents_conversation_seats_it_again() {
+    use rkat_tui::ui::Departure;
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![Step::Text("one"), Step::Text("two")]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let keeper = daemon.connect().await;
+    let mut quitter = attach_as_typed(&ws.root, &[]).await;
+    let mut other = attach_as_typed(&ws.root, &[]).await;
+    let name = quitter.agent().await;
+    assert_ne!(other.agent().await, name);
+    quitter.send(Effect::StartTurn("remember the first".into()));
+    assert_eq!(quitter.turn_finished().await.result.unwrap().text, "one");
+    let session = daemon.session_of(&name).await;
+    quitter.send(Effect::Leave(Departure::Retire));
+    quitter
+        .wait_for(|m| matches!(m, Msg::Notice { text, .. } if text.contains("retired")))
+        .await;
+    quitter.quit().await;
+    let status = daemon.status().await;
+    assert!(
+        status.agents.iter().all(|row| row.name != name),
+        "{status:?}"
+    );
+    let reference = session.to_string();
+    let mut back = attach_as_typed(&ws.root, &["--resume", &reference]).await;
+    assert_eq!(back.agent().await, name, "seated again under its name");
+    back.saw(|m| {
+        reset(m).is_some_and(|blocks| {
+            blocks
+                .iter()
+                .any(|b| matches!(b, Block::User { text } if text == "remember the first"))
+        })
+    })
+    .await;
+    back.send(Effect::StartTurn("and go on".into()));
+    assert_eq!(back.turn_finished().await.result.unwrap().text, "two");
+    assert_eq!(daemon.session_of(&name).await, session);
+    assert!(
+        user_texts(&llm.requests()[1])
+            .iter()
+            .any(|text| text.contains("remember the first")),
+        "the conversation went on"
+    );
+    drop(keeper);
+    back.quit().await;
+    other.quit().await;
     daemon.stop().await;
 }

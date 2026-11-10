@@ -4048,3 +4048,31 @@ restores them, detached.
 Tests: `attach_lifecycle::quitting_one_of_two_agents_retires_it_and_the_last_quit_stops_the_daemon`,
 `quit_with_another_client_on_the_agent_leaves_it_to_that_client`,
 `the_quit_decision_follows_the_rules`, `detach_is_recorded_and_never_reset`.
+
+### Start semantics (`client::agent_choice`)
+
+With neither `-c` nor `--resume`, `rkat-tui` asks for a new agent
+(`AgentChoice::New`): in a workspace whose daemon it starts, that is the
+agent the daemon seated at start, so the first start is unchanged; beside
+a live daemon whose agents are taken it is a new agent, and the start-up
+notice names the others ("other agents work in this workspace: main-abc
+is running, main-def is idle; …", `client::runner::others_notice`). `-c`,
+`--resume last` and `--resume` alone (the picker) join the most recently
+active agent (`recent`); `--resume <ref>` the agent that owns the
+conversation (`AgentChoice::Conversation`), which the daemon seats again
+on it under its name when it quit; a client then switches only when that
+agent moved on to another conversation since. A reference to a session
+created before the daemon, or one that matches nothing, binds the most
+recent agent, and the client's `/resume` shows the session view only or
+says why nothing matched. An agent seated for the client renders its
+conversation from the start whatever cursor an earlier client saved: a
+re-seated member's stream is a new one (found by
+`resume_of_a_quit_agents_conversation_seats_it_again`, which saw an empty
+transcript before). The rig's clients join the most recent agent unless a
+test asks otherwise (`rig::Client::attach_config`), so the tests written
+for one agent keep their meaning. Tests:
+`attach_sessions::a_second_rkat_tui_starts_a_new_agent_and_c_joins_the_most_recent`,
+`resume_of_a_quit_agents_conversation_seats_it_again`,
+`resume_and_continue_choose_the_conversation_at_attach`,
+`client::tests::the_start_flags_choose_the_agent`,
+`client::runner::tests::the_start_up_notice_names_the_other_agents`.

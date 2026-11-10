@@ -323,7 +323,7 @@ pub async fn configure_with(
         address: None,
         remote: None,
         start: StartAt::from_args(args),
-        agent: crate::daemon::protocol::AgentChoice::Recent,
+        agent: agent_choice(args),
         start_token,
         endpoint_files: {
             let realm = crate::daemon::endpoint::RealmKey::of(&scope);
@@ -374,6 +374,29 @@ impl StartAt {
                 _ => Self::Resume(reference.clone()),
             },
         }
+    }
+}
+
+/// Which agent `args` ask for (P5): with neither `-c` nor `--resume`, a
+/// new agent (the daemon's first one when this client started it); `-c`,
+/// `--resume last` and `--resume` alone (the picker) the most recently
+/// active one; `--resume <ref>` the agent that owns that conversation,
+/// seated again on it when that agent quit.
+#[must_use]
+pub fn agent_choice(args: &Args) -> crate::daemon::protocol::AgentChoice {
+    use crate::daemon::protocol::AgentChoice;
+    if args.continue_last {
+        return AgentChoice::Recent;
+    }
+    match &args.resume {
+        None => AgentChoice::New,
+        Some(None) => AgentChoice::Recent,
+        Some(Some(reference)) => match reference.trim() {
+            "last" | "~" | "~0" => AgentChoice::Recent,
+            reference => AgentChoice::Conversation {
+                reference: reference.to_string(),
+            },
+        },
     }
 }
 
@@ -561,6 +584,29 @@ mod tests {
         assert_eq!(
             start(&["rkat-tui", "--resume", "~2"]),
             StartAt::Resume("~2".into())
+        );
+    }
+
+    /// With a live daemon, no flag starts a new agent, `-c` (and `--resume
+    /// last`, and the picker) joins the most recent one, `--resume <ref>`
+    /// the agent that owns that conversation.
+    #[test]
+    fn the_start_flags_choose_the_agent() {
+        use crate::daemon::protocol::AgentChoice;
+        let agent = |argv: &[&str]| agent_choice(&Args::try_parse_from(argv).unwrap());
+        assert_eq!(agent(&["rkat-tui"]), AgentChoice::New);
+        assert_eq!(agent(&["rkat-tui", "a prompt"]), AgentChoice::New);
+        assert_eq!(agent(&["rkat-tui", "-c"]), AgentChoice::Recent);
+        assert_eq!(
+            agent(&["rkat-tui", "--resume", "last"]),
+            AgentChoice::Recent
+        );
+        assert_eq!(agent(&["rkat-tui", "--resume"]), AgentChoice::Recent);
+        assert_eq!(
+            agent(&["rkat-tui", "--resume", "01ab"]),
+            AgentChoice::Conversation {
+                reference: "01ab".into()
+            }
         );
     }
 
