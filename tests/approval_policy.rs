@@ -213,6 +213,8 @@ fn sealed_paths_are_denied_before_rules_and_classifier() {
         ".rkat/config.toml",
         ".rkat/tui/tui.toml",
         ".rkat/mcp.toml",
+        ".rkat/tui.toml",
+        ".rkat/hooks/pre-turn.sh",
         ".git/config",
         ".git/hooks/pre-commit",
         "vendor/.git/HEAD",

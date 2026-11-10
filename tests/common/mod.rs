@@ -390,3 +390,18 @@ pub fn task_id(messages: &[Message], subject: &str) -> String {
         })
         .unwrap_or_else(|| panic!("no task_create result for {subject}"))
 }
+
+/// The switch that makes a sandbox test's skip a failure (CI sets it: a
+/// runner that cannot confine must fail, not pass by skipping).
+pub const REQUIRE_SANDBOX: &str = "RKAT_TUI_REQUIRE_SANDBOX";
+
+/// A sandbox test cannot run here because `reason`: say `SKIPPED:` and
+/// return (the caller then returns), or fail when [`REQUIRE_SANDBOX`] is
+/// `1`.
+pub fn sandbox_skipped(reason: &str) {
+    assert!(
+        std::env::var(REQUIRE_SANDBOX).as_deref() != Ok("1"),
+        "{REQUIRE_SANDBOX}=1 and the sandbox cannot run here: {reason}"
+    );
+    println!("SKIPPED: {reason}");
+}

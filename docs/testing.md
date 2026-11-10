@@ -82,7 +82,7 @@ removed.
 | Headless harness | `tests/integrator.rs`, `tests/compact.rs`, `tests/mobs.rs`, `tests/attach*.rs`, … | The one rig: the real `rkat-tui-mob` daemon started in the test process with only the LLM scripted, and attach clients driven through the UI's `Effect`/`Msg` channels. `tests/common/attach.rs` has `Setup`, `Attached`, `Running`, `Client`, `AllowAll`, the shared `ScriptedClassifier` and `stored_session`; `tests/common/mod.rs` has the scripted LLM (`ScriptedLlmClient`, `Step`), `Workspace` and the command lines (`args_for`, `args_with`). No keys, no network |
 | Daemon wire | `tests/daemon.rs` | The raw JSON-RPC wire below the attach client (handshake, the proxy's method allow-list, endpoint files) |
 | Rendering | `tests/render_snapshot.rs` | Draws the UI into a ratatui `TestBackend` and asserts on rows; there are no snapshot files to update |
-| Confinement | `tests/confinement.rs` | Probes the host sandbox; prints `SKIPPED: <reason>` and passes where the backend is unavailable (nested namespaces, Ubuntu's user-namespace restriction) |
+| Confinement | `tests/confinement.rs` (and the confined rows of `tests/daemon.rs`) | Probes the host sandbox; prints `SKIPPED: <reason>` and passes where the backend is unavailable (nested namespaces, Ubuntu's user-namespace restriction), unless `RKAT_TUI_REQUIRE_SANDBOX=1`, which turns the skip into a failure |
 | Live | `tests/e2e_classifier.rs`, `--lib e2e_list_models` | `#[ignore]`; need provider keys. Not part of the gate |
 
 The live lanes skip a provider whose key is not in the environment:
@@ -123,6 +123,22 @@ own. The rig puts it beside the workspace, never in it
 (`common::config_dir_for`; a realm the confined shell could reach refuses
 the start), and the tests whose shell is granted the temp dir put it under
 Cargo's target dir with their endpoint file (`allow_shell_detected`).
+
+## The sandbox rows in CI
+
+CI runs the confinement rows for real: its test job lifts the runner's
+AppArmor restriction of unprivileged user namespaces
+(`kernel.apparmor_restrict_unprivileged_userns=0`), gives the home an
+`.ssh` directory to hide, and sets `RKAT_TUI_REQUIRE_SANDBOX=1`, so a row
+that would print `SKIPPED:` (no backend, no `rustc`, no Cargo registry, no
+`~/.ssh`) fails instead (`common::sandbox_skipped`). A row that really
+ran takes seconds; one that skipped takes a fraction of one. Locally,
+without the variable, the rows keep skipping where the host cannot
+confine; set it to prove that they ran:
+
+```bash
+RKAT_TUI_REQUIRE_SANDBOX=1 cargo nextest run --all-features --test confinement --test daemon
+```
 
 ## Known flaky tests
 

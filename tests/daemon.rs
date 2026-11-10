@@ -594,7 +594,9 @@ async fn sandbox_unavailable(_workspace: &Path) -> Option<String> {
 async fn the_orchestrator_shell_runs_confined() {
     let ws = Workspace::new();
     if let Some(reason) = sandbox_unavailable(&ws.root).await {
-        println!("SKIPPED: --confinement=workspace is unavailable on this host: {reason}");
+        common::sandbox_skipped(&format!(
+            "--confinement=workspace is unavailable on this host: {reason}"
+        ));
         return;
     }
     // The temp dir is granted to the shell here, so the endpoint file goes
@@ -668,7 +670,9 @@ async fn the_orchestrator_shell_runs_confined() {
 async fn an_endpoint_file_the_confined_shell_could_read_is_refused() {
     let ws = Workspace::new();
     if let Some(reason) = sandbox_unavailable(&ws.root).await {
-        println!("SKIPPED: --confinement=workspace is unavailable on this host: {reason}");
+        common::sandbox_skipped(&format!(
+            "--confinement=workspace is unavailable on this host: {reason}"
+        ));
         return;
     }
     let llm = ScriptedLlmClient::new(vec![]);

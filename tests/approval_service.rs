@@ -162,6 +162,40 @@ async fn a_classifier_allow_runs_the_call() {
     rig.quit().await;
 }
 
+/// rkat-tui's own file tools cannot write the project's `.rkat/` inputs
+/// (`mcp.toml`, `tui.toml`, `config.toml` with its hooks, a hook script):
+/// tier 0 refuses each call before any rule or the classifier, which
+/// allows everything here, and nothing lands on disk (the engine's
+/// in-process file tools could, lukacf/meerkat#2170; the agent gets ours).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_file_tools_cannot_write_the_projects_rkat_inputs() {
+    let ws = Workspace::new();
+    let targets = [
+        ".rkat/mcp.toml",
+        ".rkat/tui.toml",
+        ".rkat/config.toml",
+        ".rkat/hooks/pre-turn.sh",
+    ];
+    let classifier = ScriptedClassifier::allowing(Vec::new());
+    let calls: Vec<(&'static str, &'static str, serde_json::Value)> = targets
+        .iter()
+        .zip(["w0", "w1", "w2", "w3"])
+        .map(|(path, id)| (id, "write_file", json!({"path": path, "content": "x\n"})))
+        .collect();
+    let llm = ScriptedLlmClient::new(vec![Step::Tools(calls), Step::Text("tried")]);
+    let mut rig = Attached::start_with(&ws.root, &llm, setup(&classifier)).await;
+    rig.send(Effect::StartTurn("configure yourself".into()));
+    assert_eq!(rig.turn_finished().await.result.unwrap().text, "tried");
+    let request = &llm.requests()[1];
+    for (path, id) in targets.iter().zip(["w0", "w1", "w2", "w3"]) {
+        let result = tool_result(request, id);
+        assert!(result.is_error, "{path}: {}", result.text_content());
+        assert!(!ws.root.join(path).exists(), "{path} was written");
+    }
+    assert!(classifier.seen().is_empty(), "sealed before the classifier");
+    rig.quit().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_escalation_is_answered_through_the_runner() {
     let ws = Workspace::new();

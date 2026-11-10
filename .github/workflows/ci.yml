@@ -64,6 +64,17 @@ jobs:
       # The tests must not write into the user's state directory (where
       # the daemon's endpoint files live): point it at an empty one and
       # fail the job if anything is left in it.
+      # The sandbox rows (tests/confinement.rs, tests/daemon.rs) need
+      # unprivileged user namespaces, which the runner's AppArmor
+      # restricts: lift that for this job, and make a skip a failure, so a
+      # runner that cannot confine fails instead of passing by skipping.
+      # The ~/.ssh row needs a directory to hide.
+      - name: Let the sandbox run
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo sysctl -w kernel.unprivileged_userns_clone=1 || true
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          echo "RKAT_TUI_REQUIRE_SANDBOX=1" >> "$GITHUB_ENV"
       - name: An empty state directory
         run: |
           mkdir -p "$RUNNER_TEMP/state"

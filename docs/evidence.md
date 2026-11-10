@@ -5367,3 +5367,30 @@ Unit: `realm_home`'s
 `rehome_asks_the_runner_and_a_reroot_moves_the_ui`. Removed with the
 behaviour they pinned: `a_rehome_is_refused_while_a_daemon_holds_the_realm`
 and `a_rehome_moves_the_path_and_sets_the_new_realm_aside`.
+
+## CI runs the sandbox rows (maintainer, zond/rkat-tui#1, 2026-11-10)
+
+The hosted log of 8c494bd showed every row behind `sandbox_unavailable`
+(`tests/confinement.rs`, the confined rows of `tests/daemon.rs`)
+finishing in 0.03–0.16 s: the `SKIPPED:` early return, because the
+runner's AppArmor restricts unprivileged user namespaces. So CI proved
+"the realm is outside every grant" by path comparison only.
+
+The test job now lifts the restriction
+(`sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`), gives the
+home an `.ssh` to hide, and sets `RKAT_TUI_REQUIRE_SANDBOX=1`:
+`common::sandbox_skipped`, which every skip of those rows goes through,
+then fails the test instead of printing `SKIPPED:`. Locally, without the
+variable, the rows skip as before; with it, this machine runs all 28
+rows of `confinement` and `daemon` (10 s).
+
+The maintainer also found that the engine's in-process file tools could
+write the project's `.rkat/` inputs (lukacf/meerkat#2170). The agent
+gets rkat-tui's own file tools behind the gate, whose tier 0 seals
+`.rkat/` (`approval::policy`):
+`approval_service::the_file_tools_cannot_write_the_projects_rkat_inputs`
+has the agent write `.rkat/mcp.toml`, `.rkat/tui.toml`,
+`.rkat/config.toml` and `.rkat/hooks/pre-turn.sh` with a classifier that
+allows everything: every call is refused, the classifier is never asked,
+and no file exists afterwards. `sealed_paths_are_denied_before_rules_and_classifier`
+lists the project `tui.toml` and a hook script too.

@@ -137,7 +137,9 @@ async fn confined_rig(
         _ => ConfinementArg::Workspace,
     };
     if let Some(reason) = sandbox_unavailable(&ws.root, arg).await {
-        println!("SKIPPED: --confinement={mode} is unavailable on this host: {reason}");
+        common::sandbox_skipped(&format!(
+            "--confinement={mode} is unavailable on this host: {reason}"
+        ));
         return None;
     }
     let flag = format!("--confinement={mode}");
@@ -247,7 +249,9 @@ const SENTINEL_VAR: &str = "RKAT_TUI_TEST_SECRET";
 async fn workspace_mode_resolves_localhost() {
     let ws = Workspace::new();
     if let Some(reason) = sandbox_unavailable(&ws.root, ConfinementArg::Workspace).await {
-        println!("SKIPPED: --confinement=workspace is unavailable on this host: {reason}");
+        common::sandbox_skipped(&format!(
+            "--confinement=workspace is unavailable on this host: {reason}"
+        ));
         return;
     }
     let host = HostPaths::detect();
@@ -324,12 +328,14 @@ async fn workspace_mode_runs_the_rust_toolchain() {
         .output()
         .is_err()
     {
-        eprintln!("SKIPPED: no rustc on PATH");
+        common::sandbox_skipped("no rustc on PATH");
         return;
     }
     let ws = Workspace::new();
     if let Some(reason) = sandbox_unavailable(&ws.root, ConfinementArg::Workspace).await {
-        println!("SKIPPED: --confinement=workspace is unavailable on this host: {reason}");
+        common::sandbox_skipped(&format!(
+            "--confinement=workspace is unavailable on this host: {reason}"
+        ));
         return;
     }
     let command = "echo pid=$$; printf 'fn main() { println!(\"linked-ok\"); }\n' > m.rs && rustc m.rs -o m && ./m; echo END";
@@ -561,7 +567,9 @@ async fn a_bang_command_runs_under_the_shells_confinement() {
 async fn cargo_builds_under_the_narrowed_cargo_home_grant() {
     let ws = Workspace::new();
     if let Some(reason) = sandbox_unavailable(&ws.root, ConfinementArg::Workspace).await {
-        println!("SKIPPED: --confinement=workspace is unavailable on this host: {reason}");
+        common::sandbox_skipped(&format!(
+            "--confinement=workspace is unavailable on this host: {reason}"
+        ));
         return;
     }
     let Some(home) = std::env::var_os("CARGO_HOME")
@@ -569,7 +577,7 @@ async fn cargo_builds_under_the_narrowed_cargo_home_grant() {
         .or_else(|| dirs::home_dir().map(|home| home.join(".cargo")))
         .filter(|home| home.join("registry").is_dir())
     else {
-        println!("SKIPPED: no Cargo home with a registry on this host");
+        common::sandbox_skipped("no Cargo home with a registry on this host");
         return;
     };
     let krate = ws.root.join("probe");
@@ -627,7 +635,9 @@ async fn cargo_builds_under_the_narrowed_cargo_home_grant() {
 async fn the_confined_shell_cannot_read_or_write_the_audit_log() {
     let ws = Workspace::new();
     if let Some(reason) = sandbox_unavailable(&ws.root, ConfinementArg::Workspace).await {
-        println!("SKIPPED: --confinement=workspace is unavailable on this host: {reason}");
+        common::sandbox_skipped(&format!(
+            "--confinement=workspace is unavailable on this host: {reason}"
+        ));
         return;
     }
     let (setup, _state) = allow_shell_detected(&["--confinement=workspace"]);
@@ -676,14 +686,16 @@ async fn the_confined_shell_cannot_read_or_write_the_audit_log() {
 async fn the_confined_shell_does_not_see_the_users_ssh_directory() {
     let ws = Workspace::new();
     if let Some(reason) = sandbox_unavailable(&ws.root, ConfinementArg::Workspace).await {
-        println!("SKIPPED: --confinement=workspace is unavailable on this host: {reason}");
+        common::sandbox_skipped(&format!(
+            "--confinement=workspace is unavailable on this host: {reason}"
+        ));
         return;
     }
     let Some(ssh) = dirs::home_dir()
         .map(|home| home.join(".ssh"))
         .filter(|ssh| ssh.is_dir())
     else {
-        println!("SKIPPED: this host's home has no .ssh directory");
+        common::sandbox_skipped("this host's home has no .ssh directory");
         return;
     };
     let command = leak(format!(
@@ -721,7 +733,9 @@ async fn the_confined_shell_cannot_read_the_cargo_credentials() {
     use rkat_tui::bootstrap::confinement::CargoHome;
     let ws = Workspace::new();
     if let Some(reason) = sandbox_unavailable(&ws.root, ConfinementArg::Workspace).await {
-        println!("SKIPPED: --confinement=workspace is unavailable on this host: {reason}");
+        common::sandbox_skipped(&format!(
+            "--confinement=workspace is unavailable on this host: {reason}"
+        ));
         return;
     }
     let home = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
@@ -786,7 +800,9 @@ async fn the_confined_shell_cannot_read_the_cargo_credentials() {
 async fn the_realm_is_out_of_reach_and_git_stays_writable_until_engine_ask_8() {
     let ws = Workspace::new();
     if let Some(reason) = sandbox_unavailable(&ws.root, ConfinementArg::Workspace).await {
-        println!("SKIPPED: --confinement=workspace is unavailable on this host: {reason}");
+        common::sandbox_skipped(&format!(
+            "--confinement=workspace is unavailable on this host: {reason}"
+        ));
         return;
     }
     std::fs::create_dir_all(ws.root.join(".git/hooks")).unwrap();
@@ -832,7 +848,9 @@ async fn the_realm_is_out_of_reach_and_git_stays_writable_until_engine_ask_8() {
 async fn a_shell_that_could_reach_the_realm_refuses_the_start() {
     let ws = Workspace::new();
     if let Some(reason) = sandbox_unavailable(&ws.root, ConfinementArg::Workspace).await {
-        println!("SKIPPED: --confinement=workspace is unavailable on this host: {reason}");
+        common::sandbox_skipped(&format!(
+            "--confinement=workspace is unavailable on this host: {reason}"
+        ));
         return;
     }
     let ancestor = ws.root.parent().unwrap().to_path_buf();

@@ -37,7 +37,10 @@ design.
   has no network, and it can neither read nor write the workspace's
   state directory. It can still write `.git/` inside the workspace (the
   engine cannot bind it read only yet); a test pins that gap too, so it
-  is noticed when the engine closes it.
+  is noticed when the engine closes it. CI runs these tests for real (the runner's
+  user-namespace restriction lifted, and a skip there is a failure), and
+  a test pins that the agent's file tools cannot write the project's
+  `.rkat/` inputs (`mcp.toml`, `tui.toml`, `config.toml`, hook scripts).
 - CI checks the dependencies with `cargo deny` (`deny.toml`): RustSec
   advisories, the licence allow-list and crates.io as the only source.
   Two advisories without a fix this release can take are ignored with a
