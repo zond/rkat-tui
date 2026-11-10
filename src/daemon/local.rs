@@ -516,11 +516,10 @@ impl Local {
     }
 
     /// `rkat/set_model`: switch the orchestrator's session to another model
-    /// in place, as the in-process `/model` does (`SessionHandle::
-    /// switch_model`): the engine's LLM reconfigure on the live session,
+    /// in place: the engine's LLM reconfigure on the live session,
     /// with the endpoint's auth binding and the `[thinking]` setting the
-    /// new model is configured with. Refused while a turn runs (as
-    /// in-process); the session keeps the model, and the next prompt is an
+    /// new model is configured with. Refused while a turn runs;
+    /// the session keeps the model, and the next prompt is an
     /// ordinary `mob/member_send`, tied to no connection.
     async fn set_model(&self, params: SetModelParams) -> Result<ModelSet, Refusal> {
         use meerkat_runtime::SessionServiceRuntimeExt as _;

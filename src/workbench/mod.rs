@@ -11,8 +11,8 @@
 //!   prices, the community list refreshed in the background) and the
 //!   per-session cost record.
 //! - [`models`]: the endpoints' model lists and the `/model` picker.
-//! - [`tasks`]: the Ctrl+T checklist's source, the engine's task store
-//!   (read here in process, by the daemon for `rkat/tasks` in attach mode).
+//! - [`tasks`]: the Ctrl+T checklist's source, the engine's task store,
+//!   read by the daemon for `rkat/tasks`.
 //! - [`unsent`]: the messages the agent never got, saved on quit and
 //!   announced at the next start.
 //! - [`app`]: the UI the client starts ([`app::build_app`]) and the log file.

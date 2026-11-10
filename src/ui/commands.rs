@@ -261,7 +261,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         summary: "leave rkat-tui",
         help: &[(
             "/quit, /exit, /q",
-            "leave rkat-tui (asks again while a turn runs or messages are queued)\nand release its lease on the realm; attached (--attach): stops the\ndaemon when this rkat-tui started it and nobody detached since,\nleaves it running when other clients are attached, else asks:\ndetach or terminate",
+            "leave rkat-tui (asks again while a turn runs or messages are queued):\nstops the daemon when this rkat-tui started it and nobody detached\nsince, leaves it running when other clients are attached, else asks:\ndetach or terminate (/detach always leaves it running)",
         )],
         parse: |_| Some(Command::Quit),
     },

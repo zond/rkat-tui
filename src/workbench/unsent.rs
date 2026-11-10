@@ -1,5 +1,5 @@
 //! The messages the agent never got: saved on quit to
-//! `<realm>/tui_unsent.txt`, announced at the next start (either runner).
+//! `<realm>/tui_unsent.txt`, announced at the next start.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
