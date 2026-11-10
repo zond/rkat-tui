@@ -1,6 +1,6 @@
 # rkat-tui as a client of a running mob
 
-## Status (2026-11-09)
+## Status (2026-11-10)
 
 Built and on `main`; the record of each phase, with its probes and test
 names, is in `docs/evidence.md`:
@@ -17,12 +17,13 @@ names, is in `docs/evidence.md`:
 | Always-daemon P2 lifecycle (`/detach`, `/quit`, hangup, `--list`, endpoint fallback) | 2026-11-09 | "The daemon's lifecycle state and its owner (`rkat/status`)", "`/quit`, `/detach` and hangup in attach mode", "A shutdown without an answer is not reported as done", "`--list` (`daemon::list`)", "The endpoint file falls back to the runtime directory" |
 | Always-daemon P1 parity (2026-11-09) | 2026-11-09 | "The task checklist in attach mode (`rkat/tasks`)", "Input history in attach mode (verified, no gap)", "`/model` in attach mode switches in place (`rkat/set_model`)", "`/context` in attach mode", "File diffs in attach mode (`rkat/file_diff`)", "The daemon's start-up notices reach the clients (`rkat/notices`)", "P1 parity: what stays an engine limit, and the texts" |
 | Always-daemon P3 default flip (attach by default, `-c`/`--resume`, `--attach=DIRECTORY`, `--attach=HOST:PORT`, `--no-attach` alongside) | 2026-11-09 | "The default flip (P3): attach, else start", "The command line's prompt waits for the first attach", "`-c` and `--resume` under attach; in-process sessions stay in-process", "`--no-attach` beside a live daemon", "`--attach` values and `--attach=DIRECTORY`", "`--attach=HOST:PORT` with a token file" |
+| Always-daemon P4 (the in-process runner deleted; every test on the daemon rig; `/status` parity; the proxy's method allow-list) | 2026-11-10 | "The endpoint key includes the realm (P4)", "Sessions created before the daemon are view only (P4)", "P4: the in-process tests and where they went", "P4: the in-process runner is deleted", "`/status` reads the daemon's side (`rkat/report`)", "The daemon's proxy serves an allow-list of engine methods", "The daemon's stop waits for the realm's databases to close" |
 
-Attaching to the workspace's daemon is the default since P3 of the
-always-daemon plan; `--no-attach` is the in-process escape hatch until P4.
-Sessions created in-process cannot be resumed in the daemon (the engine
-refuses to seat the member on them, see the P3 evidence); P4 decides
-their migration. Open:
+Since P4 of the always-daemon plan every session runs in the daemon and
+`rkat-tui` is only its client: the in-process runner and `--no-attach`
+are gone, and with them the limit that an in-process TUI and the daemon
+could not share a workspace. Sessions the in-process runner created stay
+view only (the engine refuses to seat the member on them, ask 7). Open:
 same-identity `/rewind` (lukacf/meerkat#2126); P5, the governed realm
 (#2122); MCP servers added or trusted after the
 daemon's mob was created; which client's steer a boundary delivered when
@@ -76,7 +77,7 @@ the end state.
 - `--attach=DIRECTORY`; `--attach=HOST:PORT` with `--attach-token-file`; the client resolves `!`, `@` mentions, `/export`, `/remember` against the daemon's reported workspace (refuse the file-editing ones when the workspace is not local).
 - Manual: the attach section becomes the main text; `ssh -L` recipe.
 
-#### P4 Delete the in-process runner
+#### P4 Delete the in-process runner (done 2026-11-10)
 - Remove `src/runner/` (keep what the workbench absorbed), `src/fork/`, the in-process paths in `src/bootstrap/`, `--no-attach`, `AttachMode::None`; `src/session/` stays only as far as the daemon uses it.
 - Migrate `tests/integrator.rs`, `tests/fork.rs`, `tests/compact.rs`, `tests/mobs.rs`, … onto the daemon rig (`tests/common/attach.rs`), keeping each behaviour assertion; delete `tests/common/mod.rs`'s `Rig`. Record in `docs/evidence.md` which in-process test became which attach test.
 - CLAUDE.md layout table, README, manual, mob-split (now the architecture doc), changelog.
@@ -288,12 +289,12 @@ the depth limit): the child is seated under the source's admission (#2112),
 asks the customizer, and is a gated, followed helper of the orchestrator's
 session. The client lists the mobs (`mob/list`) and opens a mob-wide
 `mob/stream_open {mob_id}` on each (`tui` and every `implicit-<session>`),
-mapping events to the in-process `Msg::Scoped`; a helper first seen is
+mapping events to the UI's `Msg::Scoped`; a helper first seen is
 backfilled from `events/list_since`, its model from `events/snapshot`. The
 client never calls `mob/fork_helper` or `mob/spawn_helper` itself.
-In-process, `fork_off` stays unavailable because the main in-process session
-is not a mob member; the TUI's own `fork` tool is the in-process fork and is
-not offered in attach mode.
+(Before P4 the in-process runner had its own `fork` tool, because its main
+session was not a mob member and the engine refuses `fork_off` to one; it
+went with that runner.)
 
 **Conversations.** One member identity (`tui/main`), many sessions. `/new`
 retires the member (the engine archives its session) and spawns it fresh;
@@ -322,14 +323,14 @@ When the engine serves mob methods on a governed connection with a
 host-installed consent surface, the same classifier moves behind
 `OperationReviewer` and the TUI answers `approval/consent_decide`.
 
-**The `!` shell.** It runs in the client, confined as in-process (same flags
-and `tui.toml` layers); its output, like `/remember` and `/memory` edits,
+**The `!` shell.** It runs in the client, under the confinement plan the
+client builds from the same flags and `tui.toml` layers as the daemon's
+shell; its output, like `/remember` and `/memory` edits,
 reaches the orchestrator with `mob/append_system_context`.
 
-**Compaction.** `/compact now` works in both modes: attach mode sends
-`mob/compact_member` (fallback `session/compact`); in-process it calls
-`MeerkatMachine::request_compaction` without a rebuild. The in-process
-`/model` no longer rebuilds the session for helpers either (#2102).
+**Compaction.** `/compact now` sends `mob/compact_member` (fallback
+`session/compact`); a cold session is not woken for it (run a turn
+first, see the manual's limits).
 
 ## Known limits
 
@@ -358,7 +359,8 @@ attach mode does not do yet.
 7. Adopting a session created outside the mob: a way to seat a mob member
    on an existing non-member session, or to write the durable
    `comms_name` (and member binding) when seating one, so a consumer can
-   bring sessions its own in-process path created into its mob. Without
+   bring sessions created outside the mob (rkat-tui's former in-process
+   runner made them) into its mob. Without
    it those sessions are view only in the daemon
    (`docs/evidence.md`, "Sessions created before the daemon are view only").
 

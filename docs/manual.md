@@ -26,8 +26,7 @@ The agent runs in a per-workspace daemon, `rkat-tui-mob`, as a durable mob
 member on Meerkat's runtime-backed session path (the one `rkat`, REST and
 RPC use); `rkat-tui` is its client, starting it when none runs, and
 `/detach` leaves it working (see [The workspace daemon](#the-workspace-daemon-attach-mode)).
-`--no-attach` hosts the agent in the TUI's own process instead, the
-escape hatch until that path is removed. Every tool call goes through an
+Every tool call goes through an
 **auto-mode** approval model: routine actions run without interruption,
 risky ones are judged by a reasoning-blind classifier, and you are asked only
 after repeated blocks. Shift+Tab switches to Claude Code's other permission
@@ -38,7 +37,6 @@ default.
 cargo run -- "fix the failing test"
 rkat-tui -c                       # attach to the conversation the workspace's daemon runs
 rkat-tui --attach=../other        # attach to another workspace's running daemon
-rkat-tui --no-attach              # host the agent in this process instead
 rkat-tui --resume ~2
 rkat-tui --model gpt-5.5 --classifier-model gpt-5.5
 rkat-tui --no-auto                # start in manual mode: you answer what the classifier would review
@@ -50,16 +48,14 @@ rkat-tui --no-confinement         # run the shell unsandboxed (see "Confinement"
 
 ## Sessions
 
-Every session lives in a `PersistentSessionService` over the realm's stores,
-with a `MeerkatMachine` owning input admission, interruption and resume. The
-transcript, the model and the cost totals survive restarts: `-c` continues
-the workspace's latest session, `--resume <ref>` or `/resume [ref]` any other
-(`last`, `~N` for the N-th most recent, an id or id prefix; `/resume` or
-`--resume` alone opens a picker; the session service's listing, so an
-archived session is not offered), `/clear` (`/new`) starts a fresh one.
-Attached to the workspace's daemon (the default) a session is one of the
-daemon's conversations: `-c` attaches to the one it runs, and
-`--resume <ref>` switches it (see [The workspace daemon](#the-workspace-daemon-attach-mode)).
+Every session is one of the workspace daemon's conversations: the
+session its agent (a mob member) runs on, over the realm's stores, with
+the engine's runtime owning input admission, interruption and resume. The
+transcript, the model and the cost totals survive restarts: `-c` attaches
+to the conversation the daemon runs, `--resume <ref>` or `/resume [ref]`
+switches it to another (`last`, `~N` for the N-th most recent, an id or
+id prefix; `/resume` or `--resume` alone opens a picker), `/clear`
+(`/new`) starts a fresh one (see [The workspace daemon](#the-workspace-daemon-attach-mode)).
 While it runs, `rkat-tui` holds a lease on the realm (surface `rkat-tui`,
 one per process; released on quit), so `rkat realm prune` and realm
 inspection treat the realm as live.
@@ -76,47 +72,24 @@ the editor.
 
 *Esc while a turn runs* interrupts it, as in Claude Code, and Ctrl-C does
 the same (the first Esc or Ctrl-C after a mouse selection only clears it):
-steers still waiting for a boundary are abandoned first, then the current run
-is stopped (steers that joined it are abandoned, not re-run, and a call in
-flight is cancelled and answered as *outcome unknown*), outstanding inputs
-are cancelled and running helpers are cancelled. Every steered message the
-interrupt abandoned then starts the next turn at once, oldest first, shown in
-place as your messages; your draft stays in the editor.
+the daemon stops the agent's run and its running helpers. A message sent to
+the daemon meanwhile is the runtime's: the agent gets it at its next step
+(see the limits under [The workspace daemon](#the-workspace-daemon-attach-mode)).
 
-*↑ on an empty editor* takes queued messages back without stopping the run:
-the messages the UI still holds and every steer the runtime still holds
-queued (not yet joined to the run) are abandoned and come back to the editor,
-oldest first; the turn runs on (a tool in flight finishes and its result
-reaches the model). A steer that already joined the run cannot be pulled
-back: the transcript then says your messages already reached the agent, and
-↑ recalls prompt history again. Typing alone never interrupts:
-a message sent while a tool runs waits for that tool's result and joins the
-turn after it.
+*↑ on an empty editor* takes back the messages the UI still holds (not yet
+sent); a message already sent to the daemon cannot be taken back, and the
+transcript says so. Typing alone never interrupts: a message sent while a
+tool runs waits for that tool's result and joins the turn after it.
 
-**How a turn ends.** A turn ends when the runtime reports every input it
-admitted terminal, and the UI says how in typed terms: completed, failed
-(the first failure wins), interrupted (only when the runtime reports the
-inputs cancelled), *pending* (the turn waits for an external tool result
-rkat-tui does not provide) or *outcome unknown* (the runtime cannot say what
-happened to an input; never resubmit it blindly). A steered message counts
-as delivered only when the runtime reports it written at a boundary or its
-input consumed.
+**How a turn ends.** A turn ends when the daemon's event stream reports the
+agent's runs ended, and the UI says how: completed, failed (the first
+failure wins) or interrupted. A steered message counts as delivered only
+when the stream shows it written at a boundary or the turn ends.
 
 **Rewind.** `/rewind` (also `/checkpoint`, `/undo`), or Esc twice on an
-empty idle editor, opens a menu of your messages in this session, newest
-first, one numbered line each (↑/↓ choose, Enter rewinds, Esc closes).
-Choosing one continues the conversation from just before that message: the
-engine forks the session there (its typed transcript fork,
-`SessionServiceTranscriptEditExt::fork_session_at`) and rkat-tui switches
-to the fork. The
-transcript is cut before the message, helpers that came after leave the
-panel, and the message's text is back in the editor to edit and send again.
-The previous session is left exactly as it was, with the whole
-conversation; the notice names it, and `/resume <id>` (or the picker) goes
-back to it. Rewind runs only when idle with nothing queued. It restores the
-conversation, not files: edits the agent made after that message stay on
-disk. The fork is a new session, so its task checklist starts empty (the
-engine keeps tasks per session) and its cost starts at zero.
+empty idle editor, is not available yet: the daemon cannot rewind a
+conversation (the engine refuses a transcript fork of a mob member's
+session, lukacf/meerkat#2126), and it says so. `/new` starts over.
 
 Ctrl-D on an empty editor quits on a second press within 3 s (the editor
 title asks for it); `/quit` quits at once when idle. While a turn runs or
@@ -205,10 +178,8 @@ the rule it adds; an action with no rule subject shows
 for the call's first subject to the realm `tui.toml`: for a file write the
 project-relative path (`write_file` `.env.local`), which matches that file
 only, and only when every target of the call matches it. `/auto resume` resumes; `/auto` shows the
-mode and counters. In-process, every escalation is recorded through the
-realm's own approval issuer (`approvals.json`); when that record cannot be
-written the action is denied. In attach mode the daemon's durable decision
-is the record instead.
+mode and counters. Every escalation is recorded as the daemon's durable
+decision; when it cannot be recorded the action is denied.
 
 ### Permission modes
 
@@ -725,7 +696,7 @@ to it, with a notice.
 
 `/compact status` shows the policy and threshold. **`/compact`** (or
 `/compact now`; idle only, after at least one turn) *asks Meerkat to compact
-at the session's next model call*, in-process and in attach mode alike; the
+at the session's next model call*; the
 session is not rebuilt and its threshold does not change. The request is
 all the TUI can report; the compaction notices confirm the compaction
 itself, and when the check finds nothing to fold the transcript says
@@ -844,8 +815,8 @@ Ctrl-S); Shift+Enter, Alt+Enter or Ctrl-J insert a newline, and so does a
 `\` typed right before Enter at the end of a line (the backslash is
 dropped); Esc or Ctrl-C interrupts a running turn and the queued
 messages are sent next (Ctrl-C twice quits when idle); when idle, Esc twice on a draft clears it
-and saves it to the prompt history (↑ brings it back), and on an empty editor opens the
-[rewind](#sessions) menu; ↑ on an empty editor takes queued
+and saves it to the prompt history (↑ brings it back), and on an empty editor asks for
+[`/rewind`](#sessions) (not available yet); ↑ on an empty editor takes held
 messages back, else recalls prompt history (Ctrl-P/Ctrl-N are ↑/↓); Ctrl-R searches history (workspace,
 then global); Ctrl-X Ctrl-S interrupts and sends the input; Ctrl-O shows or
 hides detail (the last reasoning block and the last tool output together);
@@ -957,9 +928,14 @@ given).
 its client: with no daemon running for the workspace it starts one, with
 one running it attaches to it. The agent lives in the daemon (a durable
 mob member: mob `tui`, member `main`), keeps working when you `/detach`,
-and any number of TUIs can attach to it. `--no-attach` hosts the agent in
-this process instead; it is the exception, kept as an escape hatch until
-the in-process runner is removed.
+and any number of TUIs can attach to it.
+
+**How it used to work.** Until P4 of the always-daemon plan (November
+2026) `rkat-tui` could also host the agent in its own process
+(`--no-attach`, or `attach = false` in a `tui.toml`). That runner is gone
+and `--no-attach` with it; an `attach` key in a `tui.toml` is ignored with
+a start-up notice. Sessions it created stay in the realm and are listed
+view only (see "`-c` and `--resume` at start").
 
 | Flag | Meaning |
 |---|---|
@@ -967,25 +943,7 @@ the in-process runner is removed.
 | `--attach=existing` | Attach only to a running daemon; refuse otherwise |
 | `--attach=DIRECTORY` | Attach to the running daemon of the workspace at or above `DIRECTORY` (never starts one; replaces `-w`) |
 | `--attach=HOST:PORT` | Attach to a daemon reached at that address (a tunnel), with `--attach-token-file` |
-| `--no-attach` | Host the agent in this process (overrides `--attach`) |
 | `--list` | List every daemon that has an endpoint file, then exit (also `rkat-tui-mob --list`) |
-
-**`--no-attach` beside a running daemon.** When the workspace's daemon
-answers, `--no-attach` first says which daemon it is (workspace, pid,
-uptime, running or idle) and that running alongside it means no memory
-search (the daemon holds the memory index) and two agents editing one
-tree. At a terminal it asks: attach to the daemon, run alongside, or stop
-the daemon and then run in this process (Esc starts nothing). With a
-prompt on the command line it does not ask: the same is a notice in the
-transcript, and it runs alongside. `--no-attach -c` (or `--resume`) on the
-conversation the daemon runs says so plainly: attach to it, or stop the
-daemon first.
-
-`attach = false` at the top of your own `tui.toml` (the user-global one, or
-the realm's) makes `--no-attach` the default (`attach = true` is the
-default spelled out); `--no-attach` and `--attach=…` still win. A
-project's `.rkat/tui.toml` cannot choose it (it is ignored with a notice,
-like its other trusted-only keys).
 
 **Attaching to another workspace.** `--attach=DIRECTORY` (a value with a
 `/`, or starting with `.` or `~`) finds that workspace as rkat-tui finds
@@ -1091,7 +1049,7 @@ it yourself: `rkat-tui-mob --foreground -w . --model …`.
 **Start-up notices.** What the daemon's start had to say (its shell's
 confinement, rules it could not load, ignored project settings, semantic
 memory being off) shows when a TUI first attaches to it, and again after
-it restarted, as the in-process TUI shows its own at start.
+it restarted.
 
 **Status bar.** The first segment is the connection: `connecting`,
 `daemon starting`, `attached 127.0.0.1:<port>`, `reconnecting`,
@@ -1113,7 +1071,7 @@ from the daemon's state (`rkat/status`):
 | Someone detached earlier, this TUI did not start the daemon, or the daemon cannot say (it restarted, or did not answer) | Asks: detach (keep the agent running, the default) or terminate (stop the daemon); when a turn is running, terminate says it interrupts it; Esc stays |
 
 Messages not yet delivered are saved either way, and while a turn runs or
-messages are queued `/quit` first asks for a second press, as in-process.
+messages are queued `/quit` first asks for a second press.
 "Started" means this TUI launched the daemon (`--attach` auto with none
 running): it hands the daemon a start token and presents it on attach. A
 daemon you ran yourself, or one a TUI restarted after it died, has no
@@ -1147,7 +1105,7 @@ sees the tool calls, as a resumed conversation does), messages typed mid-turn
 (steers, from any attached TUI), Esc (stops the run and the helpers it
 started; a second Esc a second later force-cancels the member), the model
 picker and `/model` (this TUI's endpoints, configured ones included: the
-daemon switches the session in place as in-process, with the endpoint's
+daemon switches the session in place, with the endpoint's
 auth binding and `[thinking]` setting; not while a turn runs; the session
 keeps the model), the context gauge,
 token counts, `/status`, `/export`, `/cost` (helpers included, kept per
@@ -1157,11 +1115,11 @@ policy) and `/compact now` (the agent's next model call compacts first; the
 reads the new content from its next model call), the Ctrl-T task checklist, approvals, the permission
 modes, `/rules`, `/trust`, `/rules trust` and `!` commands. The token
 counter shows the conversation's totals on attach and after `/new` or
-`/resume`, as in-process.
+`/resume`.
 
 **Helpers.** The agent delegates with the engine's `delegate` (and seats
 team members with `spawn_member`); the helpers run in the daemon behind the
-same gate and show here as in-process: a `[helper · model]` header, its
+same gate and show here: a `[helper · model]` header, its
 progress and result, the running count, its usage under `/cost`. Every
 attached TUI shows them. The agent can also fork itself with the engine's
 `fork_off`: the child starts from the conversation so far, works on the
@@ -1172,7 +1130,7 @@ it), shows as a helper and stops with Esc. Helpers at the
 **Conversations.** `/new` starts a fresh conversation for the daemon's
 agent, `/resume` lists this workspace's conversations (newest first, with
 their size and first message) and switches back to one, showing its
-transcript as the in-process `/resume` does; `/resume <ref>` takes `last`
+transcript; `/resume <ref>` takes `last`
 (the most recent conversation other than this one), `~N` (counting the
 others), an id or an id prefix. A switch retires the agent's member and
 seats it again on the other session; every attached TUI follows it. A
@@ -1182,12 +1140,12 @@ the turn ends or is interrupted. The daemon lists the conversations in
 `<workspace>/.rkat/tui/conversations.json`.
 
 **Approvals.** The daemon's agent and its helpers run behind the same
-approval gate as the in-process TUI: tiers, your rules, the classifier
+approval gate: tiers, your rules, the classifier
 (same endpoint and model), the permission mode and the escalation timeout.
 When a call needs you, every attached TUI shows the same dialog (a helper's
 call names the helper); answer it in any of them. The first answer counts;
 the other TUIs close their dialog and say it was answered from another
-client. A request nobody answers in time is denied, as in-process.
+client. A request nobody answers in time is denied.
 
 Each request is a durable decision of the engine: the daemon pushes it to
 every attached TUI as it opens (`decision/notice`, and to a TUI that
@@ -1207,7 +1165,7 @@ refused at attach with "too old": restart it (stop it, then attach again).
 daemon's mode: one mode for the daemon, shown in every attached TUI's
 status bar (refreshed on attach and after every turn). `/rules list`,
 `/rules add allow|deny <tool> [pattern]` and `/rules remove <n>` act on the
-daemon's rules and are saved in the realm rules file, as in-process. Deny
+daemon's rules and are saved in the realm rules file. Deny
 rules (and writes into `.git/` or `.rkat/`) are also the agent's recorded
 application tool policy: the daemon refuses to rebuild the agent without it.
 
@@ -1217,7 +1175,7 @@ is, and their output goes to the agent's context.
 **Quitting** detaches: the agent's turn goes on in the daemon, and so do
 the messages you typed mid-turn that the daemon took. Messages this TUI
 still held (queued, not yet sent) are saved to `<realm>/tui_unsent.txt`,
-as in-process, and the next start says so.
+and the next start says so.
 
 **`-c` and `--resume` at start.** `-c` (and `--resume last`) attaches to
 the daemon's current conversation: with a daemon, the most recent
@@ -1225,8 +1183,8 @@ conversation is the one it runs, so attaching is all it does.
 `--resume <ref>` attaches and switches the daemon to that conversation
 (`rkat/resume`, as `/resume <ref>`; a prompt on the command line goes to
 it), and says so when it is the current one already; `--resume` alone
-opens the picker once attached. A session started in-process (before
-the daemon) is not one of the daemon's conversations and cannot become
+opens the picker once attached. A session the removed in-process runner
+started (before the daemon) is not one of the daemon's conversations and cannot become
 one: the engine seats the daemon's agent only on sessions it ran as a mob
 member. `/resume` lists such sessions after the conversations, marked
 "view only, created before the daemon"; choosing one (or `--resume <its
@@ -1262,12 +1220,9 @@ saves the session shown. `last` and `~N` name daemon conversations only.
   in the order the agent takes steers, not by which message the agent
   took: the engine does not tell a TUI which input its message became, so
   one TUI's message can show delivered when the other's was.
-- `--no-attach` next to a running daemon works, at a cost: no memory
-  search (the daemon holds the memory index) and two agents in one tree;
-  the start says so and offers to attach or stop the daemon instead.
-- A session started in-process before the daemon cannot be continued in
-  it: the engine seats the daemon's agent only on sessions it ran.
-  `/resume` shows it view only.
+- A session the removed in-process runner created cannot be continued:
+  the engine seats the daemon's agent only on sessions it ran. `/resume`
+  shows it view only.
 
 ## Testing
 

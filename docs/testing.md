@@ -67,8 +67,8 @@ removed.
 |---|---|---|
 | Unit | `#[cfg(test)]` modules next to the code in `src/` | Pure logic: lexer, rules, keymap, input editing, completion, approval routing |
 | Integration | `tests/*.rs` | Drive the internal modules through the `test-support` feature (the crate's dev-dependency on itself turns it on) |
-| Headless runner | `tests/integrator.rs`, `tests/fork.rs`, `tests/compact.rs`, … | A real runtime-backed session with a scripted LLM (`tests/common/mod.rs`: `ScriptedClient`, `Step`, `args_for`, `Workspace`); no keys, no network |
-| Daemon and attach mode | `tests/daemon.rs` (the raw JSON-RPC wire), `tests/attach.rs`, `tests/attach_approvals.rs`, `tests/attach_helpers.rs`, `tests/attach_sessions.rs` | The `rkat-tui-mob` daemon started in-process with a scripted LLM; attach runners driven through the UI's `Effect`/`Msg` channels. The shared rig is `tests/common/attach.rs` (`Running`, `Client`, `AllowAll`) |
+| Headless harness | `tests/integrator.rs`, `tests/compact.rs`, `tests/mobs.rs`, `tests/attach*.rs`, … | The one rig: the real `rkat-tui-mob` daemon started in the test process with only the LLM scripted, and attach clients driven through the UI's `Effect`/`Msg` channels. `tests/common/attach.rs` has `Setup`, `Attached`, `Running`, `Client`, `AllowAll`, the shared `ScriptedClassifier` and `stored_session`; `tests/common/mod.rs` has the scripted LLM (`ScriptedLlmClient`, `Step`), `Workspace` and the command lines (`args_for`, `args_with`). No keys, no network |
+| Daemon wire | `tests/daemon.rs` | The raw JSON-RPC wire below the attach client (handshake, the proxy's method allow-list, endpoint files) |
 | Rendering | `tests/render_snapshot.rs` | Draws the UI into a ratatui `TestBackend` and asserts on rows; there are no snapshot files to update |
 | Confinement | `tests/confinement.rs` | Probes the host sandbox; prints `SKIPPED: <reason>` and passes where the backend is unavailable (nested namespaces, Ubuntu's user-namespace restriction) |
 | Live | `tests/e2e_classifier.rs`, `--lib e2e_list_models` | `#[ignore]`; need provider keys. Not part of the gate |

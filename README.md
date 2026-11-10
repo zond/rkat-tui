@@ -61,8 +61,8 @@ rkat-tui-mob --foreground -w . --model claude-sonnet-4-6
 `rkat-tui` runs the TUI against it, starting it when none answers;
 `/detach` leaves it running, `/quit` stops a daemon this TUI started (else
 it detaches or asks) and `/daemon stop` shuts it down. `--attach=DIRECTORY`
-attaches to another workspace's daemon, `--attach=HOST:PORT` to one through
-a tunnel, and `--no-attach` hosts the agent in-process instead. The agent works behind the same
+attaches to another workspace's daemon and `--attach=HOST:PORT` to one through
+a tunnel. The agent works behind the same
 approval gate, with its helpers, `/new`, `/resume` and the model picker; see
 [Attach mode](docs/manual.md#the-workspace-daemon-attach-mode) and
 [`docs/mob-split.md`](docs/mob-split.md).
@@ -109,9 +109,8 @@ approval gate, with its helpers, `/new`, `/resume` and the model picker; see
 ## Status
 
 Early, and moving fast. The engine is the crates.io release of Meerkat
-0.9.11. The agent runs in the `rkat-tui-mob` daemon by default; the
-in-process runner (`--no-attach`) is kept for one release as the escape
-hatch.
+0.9.11. The agent always runs in the `rkat-tui-mob` daemon; the
+in-process runner and `--no-attach` were removed in November 2026.
 
 ## License
 
