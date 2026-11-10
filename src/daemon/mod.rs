@@ -1013,6 +1013,9 @@ pub async fn run(cli: DaemonCli) -> Result<(), DaemonError> {
     cli.check()?;
     let (layers, config) = bootstrap::prepare(&cli.tui).await?;
     init_logging(&layers.scope.realm_root());
+    if let Some(notice) = sqlite_lock_notice(meerkat_sqlite::check_lock_profile()) {
+        tracing::warn!("{notice}");
+    }
     let daemon = Daemon::start_with(
         layers,
         config,
@@ -1062,6 +1065,23 @@ async fn termination_signal() {
     }
 }
 
+/// The one log line of a build whose bundled SQLite takes process-wide
+/// locks (a plain `cargo install`, without the repository's
+/// `.cargo/config.toml`). The engine warns about it at the first
+/// connection, which the daemon opens before its log is set up, so it says
+/// so itself: what it costs and the install that removes it.
+fn sqlite_lock_notice(
+    profile: Result<(), meerkat_sqlite::SqliteLockProfileMismatch>,
+) -> Option<String> {
+    let mismatch = profile.err()?;
+    Some(format!(
+        "SQLite runs with process-wide locks ({}): it works, but concurrent sessions queue on them; \
+         a faster build: LIBSQLITE3_FLAGS=\"{}\" cargo install rkat-tui --locked",
+        mismatch.effective,
+        meerkat_sqlite::REQUIRED_LIBSQLITE3_FLAGS
+    ))
+}
+
 /// Log to stderr and, like the TUI, to `<realm>/logs/rkat-tui-mob.log`
 /// (the file is skipped, with a warning, when it cannot be opened).
 fn init_logging(realm_root: &Path) {
@@ -1102,6 +1122,30 @@ fn init_logging(realm_root: &Path) {
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    /// A build with the lock profile logs nothing; one without names the
+    /// locks and the install that removes them, as a warning, not an error.
+    #[test]
+    fn the_sqlite_lock_notice_names_the_faster_install() {
+        assert_eq!(sqlite_lock_notice(Ok(())), None);
+        let effective = meerkat_sqlite::SqliteLockProfile {
+            shared_page_cache: true,
+            ..meerkat_sqlite::SqliteLockProfile::REQUIRED
+        };
+        let notice =
+            sqlite_lock_notice(Err(meerkat_sqlite::SqliteLockProfileMismatch { effective }))
+                .unwrap();
+        assert!(notice.contains("shared page cache on"), "{notice}");
+        assert!(
+            notice.contains(&format!(
+                "LIBSQLITE3_FLAGS=\"{}\" cargo install rkat-tui --locked",
+                meerkat_sqlite::REQUIRED_LIBSQLITE3_FLAGS
+            )),
+            "{notice}"
+        );
+        // This checkout's own builds carry the flags (`.cargo/config.toml`).
+        assert_eq!(meerkat_sqlite::check_lock_profile(), Ok(()));
+    }
 
     /// A database file this process holds open is listed, its lock files
     /// are not, and the settle waits for the close (the negative case: an
