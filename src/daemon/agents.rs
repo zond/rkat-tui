@@ -166,6 +166,11 @@ struct Agent {
     active: u64,
     /// Its event watcher for the gate.
     watcher: Option<tokio::task::JoinHandle<()>>,
+    /// What its unattended turns were denied, for its next client
+    /// ([`Agents::take_missed`]); at most [`MISSED_KEPT`].
+    missed: Vec<String>,
+    /// How many more were denied than `missed` keeps.
+    missed_dropped: usize,
 }
 
 impl Drop for Agent {
@@ -179,6 +184,9 @@ impl Drop for Agent {
 /// How long a seat or retire waits for its membership note to an idle
 /// agent ([`Agents::note_others`]) before leaving it to land on its own.
 const NOTE_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// How many unattended denials an agent keeps for its next client.
+const MISSED_KEPT: usize = 32;
 
 /// Append `text` to `name`'s system context under `key`. Best effort: a
 /// failure is logged.
@@ -379,6 +387,8 @@ impl Agents {
                 spare,
                 active,
                 watcher: Some(watcher),
+                missed: Vec::new(),
+                missed_dropped: 0,
             },
         );
     }
@@ -497,6 +507,58 @@ impl Agents {
                 Some((name, session))
             })
             .collect()
+    }
+
+    /// The live agent whose current conversation is `session`.
+    fn running_as(&self, session: &SessionId) -> Option<String> {
+        self.names()
+            .into_iter()
+            .find(|name| self.conversations.current(name).as_ref() == Some(session))
+    }
+
+    /// Whether a client is bound to the live agent that runs as `session`.
+    #[must_use]
+    pub fn attended(&self, session: &SessionId) -> bool {
+        let Some(name) = self.running_as(session) else {
+            return false;
+        };
+        self.table
+            .lock()
+            .get(&name)
+            .is_some_and(|agent| agent.clients > 0)
+    }
+
+    /// Keep `notice` of an unattended denial for the next client of the
+    /// agent that runs as `session` (dropped when no live agent does).
+    pub fn missed(&self, session: &SessionId, notice: String) {
+        let Some(name) = self.running_as(session) else {
+            tracing::warn!(%session, %notice, "an unattended denial of no live agent");
+            return;
+        };
+        tracing::info!(agent = %name, %notice, "denied in an unattended turn");
+        if let Some(agent) = self.table.lock().get_mut(&name) {
+            if agent.missed.len() < MISSED_KEPT {
+                agent.missed.push(notice);
+            } else {
+                agent.missed_dropped += 1;
+            }
+        }
+    }
+
+    /// The unattended denials `name` kept for its client, emptied.
+    pub fn take_missed(&self, name: &str) -> Vec<String> {
+        let mut table = self.table.lock();
+        let Some(agent) = table.get_mut(name) else {
+            return Vec::new();
+        };
+        let mut missed = std::mem::take(&mut agent.missed);
+        let dropped = std::mem::take(&mut agent.missed_dropped);
+        if dropped > 0 {
+            missed.push(format!(
+                "and {dropped} more actions denied while no client was attached (the daemon's log names them)"
+            ));
+        }
+        missed
     }
 
     /// The most recently active live agent (spares last).
@@ -838,6 +900,33 @@ impl Agents {
             if let Some(watcher) = agent.watcher.take() {
                 watcher.abort();
             }
+        }
+    }
+}
+
+/// [`crate::approval::Attendance`] over the live agents: the daemon's gate
+/// asks it whether a client is with an agent.
+pub struct AgentAttendance(std::sync::Weak<Agents>);
+
+impl AgentAttendance {
+    /// Attendance as `agents` keeps it (nothing is attended once they are
+    /// gone).
+    #[must_use]
+    pub fn new(agents: &Arc<Agents>) -> Self {
+        Self(Arc::downgrade(agents))
+    }
+}
+
+impl crate::approval::Attendance for AgentAttendance {
+    fn attached(&self, session: &SessionId) -> bool {
+        self.0
+            .upgrade()
+            .is_some_and(|agents| agents.attended(session))
+    }
+
+    fn missed(&self, session: &SessionId, notice: String) {
+        if let Some(agents) = self.0.upgrade() {
+            agents.missed(session, notice);
         }
     }
 }

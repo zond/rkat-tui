@@ -48,6 +48,10 @@
 //!   daemon's start-up had to say (the confinement, the rules, the
 //!   configuration); a client shows them when it first attaches to this
 //!   daemon;
+//! - [`MISSED`] `{}` → `{"notices": [{"warn", "text"}]}`: what the caller's
+//!   agent wanted to do and was denied in turns no user started while no
+//!   client was attached (A6, [`crate::approval::attendance`]); each is
+//!   answered once, to the first client that asks;
 //! - [`TASKS`] `{"session_id"}` → `{"tasks": [Task]}`: a conversation's
 //!   tasks in the engine's task store (the Ctrl+T checklist; the client
 //!   reads them on attach, after a switch and after each of the agent's
@@ -77,7 +81,9 @@
 //! What the forwarded methods tell the daemon ([`Local::observe`]): a
 //! prompt or steer for the orchestrator (`mob/member_send`,
 //! `mob/turn_start`) is the human's words, recorded in the classifier's
-//! transcript (the connection proved it holds the daemon's token); an
+//! transcript (the connection proved it holds the daemon's token), and the
+//! run that takes it is one a user started (attended, see
+//! [`crate::approval::attendance`]); an
 //! interrupt
 //! (`mob/stop_member_run`, `mob/force_cancel`) stops the session's review
 //! and answers its open escalations with Stop, and stops the session's
@@ -118,7 +124,7 @@ use super::protocol::{
     TRANSCRIPT, TRUST, USAGE,
 };
 use super::protocol::{DETACH, RETIRE, Retired, SHUTDOWN, STATUS, ShutdownParams, Status};
-use super::protocol::{NOTICES, Notices, StartupNotice};
+use super::protocol::{MISSED, NOTICES, Notices, StartupNotice};
 use super::protocol::{REPORT, Report, TrustedFile};
 
 /// The idempotency source of the daemon's system-context notes.
@@ -441,6 +447,17 @@ impl Local {
             NOTICES => answer(Notices {
                 notices: self.startup_notices.clone(),
             }),
+            MISSED => {
+                let agent = self.agent_of(&caller)?;
+                answer(Notices {
+                    notices: self
+                        .agents
+                        .take_missed(&agent)
+                        .into_iter()
+                        .map(StartupNotice::warn)
+                        .collect(),
+                })
+            }
             SET_MODEL => {
                 let params: SetModelParams = protocol::params(params)?;
                 answer(self.set_model(&self.agent_of(&caller)?, params).await?)
@@ -861,6 +878,10 @@ impl Local {
                     "prompt"
                 };
                 self.agents.touch(&agent);
+                // The user's input: the run that takes it is attended.
+                if let Some(session) = self.conversations.current(&agent) {
+                    self.engine.human_input(&session);
+                }
                 if let Some(text) = params.get(field).and_then(content_text)
                     && !text.trim().is_empty()
                     && let Some(session) = self.conversations.current(&agent)

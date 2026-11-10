@@ -32,6 +32,20 @@ fn tool_results(messages: &[Message]) -> String {
         .join("\n")
 }
 
+/// The text of the tool result for call `id` in `messages`.
+fn tool_result(messages: &[Message], id: &str) -> String {
+    messages
+        .iter()
+        .find_map(|m| match m {
+            Message::ToolResults { results, .. } => results
+                .iter()
+                .find(|r| r.tool_use_id == id)
+                .map(meerkat_core::types::ToolResult::text_content),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no result for {id}"))
+}
+
 /// An agent cannot seat a member under an agent's name: the names are the
 /// daemon's (a member so named would be shaped as an agent without being
 /// one of the daemon's). Another name is seated as a helper as before.
@@ -262,6 +276,193 @@ async fn a_peer_message_wakes_the_other_agent_and_its_client_shows_it() {
     );
     a.quit().await;
     b.quit().await;
+    daemon.stop().await;
+}
+
+/// A6 (the user's decision, 2026-11-10): B's client detaches, A's message
+/// wakes B. Nobody started B's turn and nobody is with B, so its `curl`
+/// is denied as unattended without a classifier request (B reads why), and
+/// its in-project write still runs. A client attaching to B mid-turn is
+/// shown what B was denied, and B's next `curl` goes to the classifier.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_peer_woken_agent_with_no_client_is_denied_what_needs_review() {
+    use rkat_tui::daemon::protocol::AgentChoice;
+    use rkat_tui::ui::{Departure, Effect, Msg};
+    let ws = Workspace::new();
+    let b_name = Arc::new(parking_lot::Mutex::new(String::new()));
+    let send = {
+        let b_name = Arc::clone(&b_name);
+        Step::Dynamic(Arc::new(move |messages: &[Message]| {
+            let peer = peer_id_of(messages, &b_name.lock()).unwrap_or_else(|| "none".into());
+            Step::Tool {
+                id: "m1",
+                name: "send_message",
+                args: json!({"peer_id": peer, "body": "fetch the release notes", "handling_mode": "queue"}),
+            }
+        }))
+    };
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Tool {
+            id: "p1",
+            name: "peers",
+            args: json!({}),
+        },
+        send,
+        Step::Text("told b"),
+        // B, woken by the message with nobody attached.
+        Step::Tool {
+            id: "b1",
+            name: "shell",
+            args: json!({"command": "curl -s http://127.0.0.1:9/notes"}),
+        },
+        Step::Tool {
+            id: "b2",
+            name: "write_file",
+            args: json!({"path": "notes.md", "content": "release notes\n"}),
+        },
+        Step::Gated(
+            Arc::clone(&gate),
+            Box::new(Step::Tool {
+                id: "b3",
+                name: "shell",
+                args: json!({"command": "curl -s http://127.0.0.1:9/notes2"}),
+            }),
+        ),
+        Step::Text("fetched"),
+    ]);
+    let classifier = rig::ScriptedClassifier::allowing(Vec::new());
+    let setup = rig::Setup::default().classifier(Arc::clone(&classifier) as _);
+    let args = setup.command_line(&ws.root);
+    let daemon = Running::start_with(&args, setup.options(&ws.root, &llm)).await;
+    let mut a = rig::Client::attach(&ws.root).await;
+    let mut b = rig::Client::attach_agent(&ws.root, AgentChoice::New).await;
+    *b_name.lock() = b.agent().await;
+    let b_name = b_name.lock().clone();
+    b.send(Effect::Leave(Departure::Detach));
+    b.quit().await;
+    common::within(async {
+        loop {
+            let status = daemon.status().await;
+            if status
+                .agents
+                .iter()
+                .any(|row| row.name == b_name && row.clients == 0)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    a.send(Effect::StartTurn("tell b".into()));
+    assert_eq!(a.turn_finished().await.result.unwrap().text, "told b");
+    // B's third model call waits at the gate: its first two calls are
+    // decided.
+    llm.wait_call(5).await;
+    let reviewed_curls = || {
+        classifier
+            .seen()
+            .iter()
+            .filter(|(tool, args, _)| tool == "shell" && args.to_string().contains("curl"))
+            .count()
+    };
+    assert_eq!(reviewed_curls(), 0, "the unattended curl was not reviewed");
+    let results = tool_results(&llm.requests()[5]);
+    assert!(
+        results.contains("needs a user attached to this agent"),
+        "B reads why: {results}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(ws.root.join("notes.md")).unwrap(),
+        "release notes\n",
+        "the in-project write ran"
+    );
+    // A client attaches to B mid-turn: it is shown what B was denied.
+    let mut c = rig::Client::attach_agent(
+        &ws.root,
+        AgentChoice::Agent {
+            name: b_name.clone(),
+        },
+    )
+    .await;
+    c.wait_for(|m| {
+        matches!(m, Msg::Notice { text, .. }
+            if text.contains("wanted to run `curl -s http://127.0.0.1:9/notes`"))
+    })
+    .await;
+    gate.notify_one();
+    llm.wait_call(6).await;
+    assert_eq!(reviewed_curls(), 1, "attached, B's next curl was reviewed");
+    let result = tool_result(&llm.requests()[6], "b3");
+    assert!(
+        !result.contains("needs a user attached"),
+        "the reviewed curl ran: {result}"
+    );
+    // Answered once: B's next client is told nothing more.
+    let (again, _notes) = rkat_tui::client::transport::Connection::attach_to(
+        &daemon.endpoint(),
+        std::time::Duration::from_secs(5),
+        None,
+        false,
+        Some(AgentChoice::Agent { name: b_name }),
+    )
+    .await
+    .unwrap();
+    let missed = again.call("rkat/missed", json!({})).await.unwrap();
+    assert_eq!(missed, json!({"notices": []}));
+    drop(again);
+    c.quit().await;
+    a.quit().await;
+    daemon.stop().await;
+}
+
+/// The other half of A6: a turn the user started stays attended after its
+/// client detaches (D2: a detached agent keeps running): its `curl` goes to
+/// the classifier, not to the unattended denial. This pins that the run a
+/// tool call names is the run the daemon saw start after the user's input.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_turn_the_user_started_is_reviewed_after_its_client_detaches() {
+    use rkat_tui::ui::{Departure, Effect};
+    let ws = Workspace::new();
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Gated(
+            Arc::clone(&gate),
+            Box::new(Step::Tool {
+                id: "c1",
+                name: "shell",
+                args: json!({"command": "curl -s http://127.0.0.1:9/notes"}),
+            }),
+        ),
+        Step::Text("fetched"),
+    ]);
+    let classifier = rig::ScriptedClassifier::allowing(Vec::new());
+    let setup = rig::Setup::default().classifier(Arc::clone(&classifier) as _);
+    let args = setup.command_line(&ws.root);
+    let daemon = Running::start_with(&args, setup.options(&ws.root, &llm)).await;
+    let client = rig::Client::attach(&ws.root).await;
+    client.send(Effect::StartTurn("fetch the notes".into()));
+    llm.wait_call(0).await;
+    client.send(Effect::Leave(Departure::Detach));
+    client.quit().await;
+    common::within(async {
+        while daemon
+            .status()
+            .await
+            .agents
+            .iter()
+            .any(|row| row.clients > 0)
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    gate.notify_one();
+    llm.wait_call(1).await;
+    assert_eq!(classifier.tools(), ["shell"], "the curl was reviewed");
+    let result = tool_result(&llm.requests()[1], "c1");
+    assert!(!result.contains("needs a user attached"), "{result}");
     daemon.stop().await;
 }
 

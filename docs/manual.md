@@ -1449,9 +1449,15 @@ boundary:
   agent by name.
 - Another agent can start a turn on yours that nobody prompted: a peer
   message wakes an idle agent, and the turn runs while you are away (a
-  `/detach`ed agent too) under the workspace's permission mode, `auto`
-  included. Every tool call it makes still passes the approval gate, and
-  the classifier sees the peer's text as a colleague's message, never as
-  your words, so it gives the turn no consent of yours. Leave plan or
-  default mode on when agents should not act on each other's messages
-  unwatched.
+  `/detach`ed agent too). Such a turn is **unattended** while no TUI is
+  attached to your agent: anything in it that would need review (what
+  the classifier would judge, or what the mode or a protected file would
+  ask you about) is denied, without asking the classifier. Reads,
+  allowlisted commands and the in-project edits your mode allows without
+  asking still run. Your agent reads in the tool result that the action
+  needs you attached, and the next TUI that attaches to it shows a
+  warning for each denied action ("wanted to run `curl …`; it was
+  denied"); ask again then to allow it. Attaching in the middle of such a
+  turn makes its later calls reviewed as usual. A turn you started stays
+  yours after you `/detach`: it is reviewed as usual. The classifier
+  never sees a peer's text as your words either.

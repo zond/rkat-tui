@@ -251,11 +251,18 @@ What is not isolated, by design (one principal per daemon):
   (`Local::observe`, `NOT_YOURS`), which keeps a client from steering the
   wrong agent by mistake; a token holder can still attach to any agent by
   name, so the binding is not an access control.
-- A peer agent can wake an idle agent and start a turn no client prompted,
-  under the workspace's mode (`auto` included). The gate still judges each
-  tool call, and the peer's text is never recorded as user input (only
-  client sends reach `record_user_input`), so the classifier sees no user
-  intent behind it.
+- A peer agent can wake an idle agent and start a turn no client prompted.
+  Such a turn is unattended (A6, `approval::attendance`): while no client
+  is attached to the agent, a call that needs review (the classifier's,
+  or a question to the human) is denied with `DenyReason::Unattended`
+  without a classifier request, and the notice is queued for the agent's
+  next client (`rkat/missed`); what the mode allows without review runs.
+  Attended is positive evidence only: a client bound to the agent now, or
+  the call's run (the dispatch context's run id) is one the engine saw
+  start after a client's `mob/member_send`/`mob/turn_start` to the
+  session (`ApprovalEngine::human_input`), or that input waits and the
+  run's start is not seen yet. The peer's text is never recorded as user
+  input (only client sends reach `record_user_input`).
 
 ### The `rkat/*` local methods
 
@@ -283,6 +290,7 @@ methods on the wire, and `daemon::protocol` types each one for both ends:
 | `rkat/trust` | `{"op": "project"\|"rules"}` | `{"ok", "text"}` |
 | `rkat/set_model` | `{"model", "provider"?, "auth_binding"?}` | `{"session_id", "model", "provider"}` (refused while a run is open) |
 | `rkat/notices` | `{}` | `{"notices": [{"warn", "text"}]}` (the daemon's start-up notices) |
+| `rkat/missed` | `{}` | `{"notices": [{"warn", "text"}]}` (what the caller's agent was denied in unattended turns, each answered once; a client asks on every attach) |
 | `rkat/tasks` | `{"session_id"}` | `{"tasks": [Task]}` (the engine's task store) |
 | `rkat/checklist_view` | `{"view": "hidden"\|"shown"}` | `{}` (saved as `[ui] checklist`) |
 | `rkat/decision_ended` | notification, daemon to client | a decision the client was shown ended |

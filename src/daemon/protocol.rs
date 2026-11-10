@@ -72,6 +72,10 @@ pub const DECISION_ENDED: &str = "rkat/decision_ended";
 /// confinement, the rules, the configuration), which a client shows when
 /// it first attaches.
 pub const NOTICES: &str = "rkat/notices";
+/// `{}` → [`Notices`]: what the caller's agent was denied in unattended
+/// turns since its last client asked (each is answered once; a client asks
+/// whenever it attaches).
+pub const MISSED: &str = "rkat/missed";
 /// The notification of a change the orchestrator's file tools made:
 /// [`FileDiffNote`].
 pub const FILE_DIFF: &str = "rkat/file_diff";

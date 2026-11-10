@@ -39,6 +39,7 @@
 //! the human's answer into the engine's decision for the daemon.
 
 pub mod admission;
+pub mod attendance;
 pub mod catalog;
 pub mod classifier;
 pub mod counters;
@@ -60,6 +61,7 @@ use rules::{Rule, RuleId, RulesError};
 use std::fmt;
 
 pub use admission::ApprovalGate;
+pub use attendance::Attendance;
 pub use catalog::ToolOrigins;
 pub use engine::{ApprovalConfig, ApprovalEngine};
 pub use transcript::InputKey;
@@ -73,6 +75,12 @@ pub const PLAN_MODE_DENIAL: &str = "plan mode is on: the user wants a plan befor
 so file writes, edits and commands that are not read-only are not run. Do not try another way \
 to make the change. Keep researching with read-only tools, then present your plan and wait for \
 the user to approve it";
+
+/// Why an unattended call was denied: the tool error the model reads.
+pub const UNATTENDED_DENIAL: &str = "this action needs a user attached to this agent: no user \
+started this turn (another agent's message did) and no user is attached now, so nothing that \
+needs review runs. The user is told what you wanted to do when they attach; say in your answer \
+that it waits for them";
 
 /// Final decision for one tool call.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,6 +163,10 @@ pub enum DenyReason {
     ClassifierUnavailable(String),
     /// Nobody answered the escalation in time.
     EscalationTimedOut,
+    /// The call needs review, no human started the turn (another agent's
+    /// message did) and no client is attached to the agent
+    /// ([`attendance`]).
+    Unattended,
 }
 
 impl DenyReason {
@@ -165,6 +177,7 @@ impl DenyReason {
             Self::UserRule { .. }
             | Self::Sealed { .. }
             | Self::PlanMode
+            | Self::Unattended
             | Self::ClassifierUnavailable(_) => Decider::Policy,
             Self::Classifier { .. } => Decider::Classifier,
             Self::Human { .. } | Self::Stopped | Self::EscalationTimedOut => Decider::Human,
@@ -208,6 +221,7 @@ impl fmt::Display for DenyReason {
             Self::EscalationTimedOut => {
                 f.write_str("the user did not answer the approval request in time")
             }
+            Self::Unattended => f.write_str(UNATTENDED_DENIAL),
         }
     }
 }

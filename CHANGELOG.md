@@ -9,6 +9,13 @@ design.
 
 ### Security
 
+- A turn another agent's message started on your agent is unattended
+  while no TUI is attached to it: an action that would need review is
+  denied instead of going to the classifier (or waiting for you), the
+  agent is told it needs you attached, and the next TUI that attaches to
+  the agent shows what it wanted to do. Reads, allowlisted commands and
+  the in-project edits your mode allows run as before; a turn you started
+  is reviewed as usual after `/detach`.
 - `[pricing] fetch = false` in `tui.toml` turns the community price-list
   download off, as `--no-pricing-fetch` does; the manual names the one
   host rkat-tui contacts besides your LLM endpoints.

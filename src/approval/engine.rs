@@ -49,6 +49,7 @@ use serde_json::value::RawValue;
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 
+use super::attendance::Attendance;
 use super::catalog::{ToolOrigin, ToolOrigins};
 use super::classifier::{ActionClassifier, ClassifierInput, ClassifierVerdict, Environment};
 use super::counters::{AutoMode, DenialCounters, PauseCause};
@@ -136,6 +137,9 @@ pub struct Caller<'a> {
     pub session_id: &'a SessionId,
     /// The helper making the call (`None`: the session's own agent).
     pub agent: Option<&'a str>,
+    /// The run the call belongs to, when the dispatch names it (`None`: the
+    /// session's current run, as the engine saw it start).
+    pub run: Option<&'a RunId>,
 }
 
 impl<'a> Caller<'a> {
@@ -145,6 +149,7 @@ impl<'a> Caller<'a> {
         Self {
             session_id,
             agent: None,
+            run: None,
         }
     }
 
@@ -154,7 +159,15 @@ impl<'a> Caller<'a> {
         Self {
             session_id,
             agent: Some(agent),
+            run: None,
         }
+    }
+
+    /// The call belongs to `run` (the dispatch context's run id).
+    #[must_use]
+    pub fn in_run(mut self, run: Option<&'a RunId>) -> Self {
+        self.run = run;
+        self
     }
 }
 
@@ -191,6 +204,12 @@ struct SessionState {
     /// session, in first-write order: shown to the classifier as
     /// agent-authored.
     agent_written: Vec<String>,
+    /// A client's input to the session waits for the run that takes it
+    /// ([`ApprovalEngine::human_input`]).
+    human_pending: bool,
+    /// The last [`RUNS_REMEMBERED`] runs that started with a client's input
+    /// waiting: runs a user started.
+    human_runs: VecDeque<RunId>,
 }
 
 impl Default for SessionState {
@@ -202,6 +221,8 @@ impl Default for SessionState {
             runs_seen: VecDeque::new(),
             current_run: None,
             agent_written: Vec::new(),
+            human_pending: false,
+            human_runs: VecDeque::new(),
         }
     }
 }
@@ -251,6 +272,9 @@ pub struct ApprovalEngine {
     rules_path: Option<PathBuf>,
     rules_trust: Option<Arc<Mutex<HostTrustRecord>>>,
     origins: OnceLock<Arc<dyn ToolOrigins>>,
+    /// Who is with each agent ([`super::attendance`]); unset: every call is
+    /// attended.
+    attendance: OnceLock<Arc<dyn Attendance>>,
     /// Called by [`Self::forget_session`] (helper hosts prune their state).
     forget_hooks: RwLock<Vec<ForgetHook>>,
 }
@@ -311,6 +335,7 @@ impl ApprovalEngine {
             rules_path,
             rules_trust,
             origins: OnceLock::new(),
+            attendance: OnceLock::new(),
             forget_hooks: RwLock::new(Vec::new()),
         })
     }
@@ -354,6 +379,43 @@ impl ApprovalEngine {
     /// Returns `false` when origins were already set.
     pub fn set_tool_origins(&self, origins: Arc<dyn ToolOrigins>) -> bool {
         self.origins.set(origins).is_ok()
+    }
+
+    /// Who is with each agent: from now on a call that needs review in a
+    /// turn no user started is denied unless a client is attached
+    /// ([`super::attendance`]). Set once; returns `false` when it was set
+    /// already.
+    pub fn set_attendance(&self, attendance: Arc<dyn Attendance>) -> bool {
+        self.attendance.set(attendance).is_ok()
+    }
+
+    /// A client sent `session_id` input (a prompt or a steer, on a
+    /// connection that proved it holds the daemon's token): the next run of
+    /// the session that starts is the user's.
+    pub fn human_input(&self, session_id: &SessionId) {
+        self.session(session_id).human_pending = true;
+    }
+
+    /// Whether a call of `session_id` in `run` (`None`: the session's
+    /// current run) is attended ([`super::attendance`]).
+    fn attended(&self, session_id: &SessionId, run: Option<&RunId>) -> bool {
+        let Some(attendance) = self.attendance.get() else {
+            return true;
+        };
+        if attendance.attached(session_id) {
+            return true;
+        }
+        let sessions = self.sessions.lock();
+        let Some(state) = sessions.get(session_id) else {
+            return false;
+        };
+        match run.or(state.current_run.as_ref()) {
+            Some(run) if state.human_runs.contains(run) => true,
+            // A run the engine saw start without a client's input waiting.
+            Some(run) if state.runs_seen.contains(run) => false,
+            // Its start is not seen yet: the user's when their input waits.
+            _ => state.human_pending,
+        }
     }
 
     /// The origin of `name` among `session_id`'s live tools.
@@ -418,6 +480,12 @@ impl ApprovalEngine {
         }
         state.runs_seen.push_back(run_id.clone());
         state.current_run = Some(run_id.clone());
+        if std::mem::take(&mut state.human_pending) {
+            if state.human_runs.len() == RUNS_REMEMBERED {
+                state.human_runs.pop_front();
+            }
+            state.human_runs.push_back(run_id.clone());
+        }
         let clears = match &state.stop {
             StopState::Running => false,
             StopState::Stopped(stopped) => stopped.as_ref() != Some(run_id),
@@ -627,11 +695,15 @@ impl ApprovalEngine {
     /// and the decision event name the helper. Records the call in the
     /// session's approval transcript and emits an [`ApprovalEvent::Decision`].
     pub async fn decide_as(&self, caller: Caller<'_>, call: ToolCall<'_>) -> Verdict {
-        let Caller { session_id, agent } = caller;
+        let Caller {
+            session_id,
+            agent,
+            run,
+        } = caller;
         let action = Action::parse(call.name, call.args, call.origin);
         let subjects = action.subjects(&self.root);
         let facts = Facts { action, subjects };
-        let verdict = self.evaluate(session_id, agent, &facts).await;
+        let verdict = self.evaluate(session_id, agent, run, &facts).await;
         let (tier, reason) = match &verdict {
             // A classifier allow carries the classifier's stated reason;
             // other allows carry none.
@@ -773,6 +845,7 @@ impl ApprovalEngine {
         &self,
         session_id: &SessionId,
         agent: Option<&str>,
+        run: Option<&RunId>,
         facts: &Facts<'_>,
     ) -> Verdict {
         let decision = self.tier_of(facts);
@@ -785,12 +858,18 @@ impl ApprovalEngine {
                 if self.stopped(session_id) {
                     return deny_at(asking.tier(), DenyReason::Stopped);
                 }
+                if !self.attended(session_id, run) {
+                    return self.unattended(session_id, agent, facts, asking.tier());
+                }
                 return self.escalate(session_id, agent, facts, asking, None).await;
             }
             Route::Review => {}
         }
         if self.stopped(session_id) {
             return deny3(DenyReason::Stopped);
+        }
+        if !self.attended(session_id, run) {
+            return self.unattended(session_id, agent, facts, Tier::Classifier);
         }
         let size = facts.action.args.get().len();
         if size > MAX_REVIEWED_ACTION_BYTES {
@@ -849,6 +928,21 @@ impl ApprovalEngine {
                 }
             }
         }
+    }
+
+    /// Deny a call that needs review in an unattended turn, and queue the
+    /// notice the agent's next attached client shows.
+    fn unattended(
+        &self,
+        session_id: &SessionId,
+        agent: Option<&str>,
+        facts: &Facts<'_>,
+        tier: Tier,
+    ) -> Verdict {
+        if let Some(attendance) = self.attendance.get() {
+            attendance.missed(session_id, unattended_notice(agent, &facts.action));
+        }
+        deny_at(tier, DenyReason::Unattended)
     }
 
     /// Act on a classifier verdict outside an escalation.
@@ -1302,6 +1396,23 @@ fn describe_rule(rule: &Rule) -> String {
     }
 }
 
+/// The longest action an unattended notice quotes.
+const NOTICE_ACTION_BYTES: usize = 300;
+
+/// What the agent's next client is told of an unattended denial.
+fn unattended_notice(agent: Option<&str>, action: &Action<'_>) -> String {
+    let what = match &action.kind {
+        ActionKind::Shell { command, .. } => format!("run `{command}`"),
+        _ => format!("call {} {}", action.name, action.args.get()),
+    };
+    let cut = truncate_at(&what, NOTICE_ACTION_BYTES);
+    let ellipsis = if cut.len() < what.len() { "…" } else { "" };
+    let who = agent.map_or_else(String::new, |helper| format!(" (its helper {helper})"));
+    format!(
+        "while no client was attached, in a turn another agent's message started, this agent{who} wanted to {cut}{ellipsis}; it was denied. Ask it again now that you are attached to allow it"
+    )
+}
+
 fn args_preview(action: &Action<'_>) -> String {
     let text = args_text(action);
     let cut = truncate_at(&text, ARGS_PREVIEW_BYTES);
@@ -1626,6 +1737,187 @@ mod tests {
     fn truncate_respects_char_boundaries() {
         assert_eq!(truncate_at("héllo", 2), "h");
         assert_eq!(truncate_at("abc", 10), "abc");
+    }
+
+    /// An [`Attendance`] a test sets: attached or not, and the notices.
+    #[derive(Default)]
+    struct Present {
+        attached: std::sync::atomic::AtomicBool,
+        missed: Mutex<Vec<String>>,
+    }
+
+    impl Attendance for Present {
+        fn attached(&self, _session: &SessionId) -> bool {
+            self.attached.load(Ordering::SeqCst)
+        }
+
+        fn missed(&self, _session: &SessionId, notice: String) {
+            self.missed.lock().push(notice);
+        }
+    }
+
+    async fn call_in(
+        rig: &Rig,
+        run: Option<&RunId>,
+        id: &str,
+        name: &str,
+        args: &Value,
+    ) -> Verdict {
+        let raw = serde_json::value::to_raw_value(args).unwrap();
+        let origin = origin(name);
+        rig.engine
+            .decide_as(
+                Caller::session(&rig.session).in_run(run),
+                ToolCall {
+                    id,
+                    name,
+                    args: &raw,
+                    origin: Some(&origin),
+                },
+            )
+            .await
+    }
+
+    /// A6: in a run no user started, with no client attached, a call that
+    /// needs review is denied without a classifier request and without a
+    /// question to the human, and its notice is queued; a read and an
+    /// in-project write still run. Attaching makes the next call reviewed;
+    /// a run that started after a client's input stays reviewed with
+    /// nobody attached, and so does a call whose run is not seen yet while
+    /// that input waits.
+    #[tokio::test]
+    async fn an_unattended_turn_is_denied_what_needs_review() {
+        let mut rig = rig(vec![], DEFAULT_ESCALATION_TIMEOUT);
+        let present = Arc::new(Present::default());
+        assert!(rig.engine.set_attendance(Arc::clone(&present) as _));
+        let peer_run = RunId::new();
+        rig.engine.run_started(&rig.session, Some(&peer_run));
+        let curl = json!({"command": "curl https://example.com/x"});
+        let verdict = call_in(&rig, Some(&peer_run), "c1", "shell", &curl).await;
+        assert_eq!(
+            verdict,
+            Verdict::Deny {
+                tier: Tier::Classifier,
+                reason: DenyReason::Unattended
+            }
+        );
+        assert!(
+            super::super::deny_message(&DenyReason::Unattended).contains("needs a user attached")
+        );
+        assert_eq!(rig.classifier.calls(), 0, "no classifier request");
+        let missed = present.missed.lock().clone();
+        assert_eq!(missed.len(), 1, "{missed:?}");
+        assert!(
+            missed[0].contains("wanted to run `curl https://example.com/x`"),
+            "{missed:?}"
+        );
+        // Without a run id the session's current run counts.
+        assert!(
+            !call_in(&rig, None, "c1b", "shell", &curl)
+                .await
+                .is_allowed()
+        );
+        // A protected write would ask the human: denied, nobody is asked.
+        let verdict = call_in(
+            &rig,
+            Some(&peer_run),
+            "c2",
+            "write_file",
+            &json!({"path": ".env", "content": "X=1"}),
+        )
+        .await;
+        assert!(
+            matches!(
+                verdict,
+                Verdict::Deny {
+                    tier: Tier::AskUser,
+                    reason: DenyReason::Unattended
+                }
+            ),
+            "{verdict:?}"
+        );
+        assert!(rig.escalations.try_recv().is_err(), "no human was asked");
+        // What needs no review runs.
+        assert!(
+            call_in(
+                &rig,
+                Some(&peer_run),
+                "c3",
+                "read_file",
+                &json!({"path": "a"})
+            )
+            .await
+            .is_allowed()
+        );
+        assert!(
+            call_in(
+                &rig,
+                Some(&peer_run),
+                "c4",
+                "shell",
+                &json!({"command": "ls"})
+            )
+            .await
+            .is_allowed()
+        );
+        assert!(
+            call_in(
+                &rig,
+                Some(&peer_run),
+                "c5",
+                "write_file",
+                &json!({"path": "src/x.rs", "content": "x"})
+            )
+            .await
+            .is_allowed()
+        );
+        assert_eq!(rig.classifier.calls(), 0);
+        // A client attaches mid-turn: the next reviewed call is reviewed.
+        present.attached.store(true, Ordering::SeqCst);
+        assert!(
+            call_in(&rig, Some(&peer_run), "c6", "shell", &curl)
+                .await
+                .is_allowed()
+        );
+        assert_eq!(rig.classifier.calls(), 1);
+        present.attached.store(false, Ordering::SeqCst);
+        // The user's input, then a call of a run not seen starting yet: the
+        // user's run.
+        rig.engine.human_input(&rig.session);
+        let user_run = RunId::new();
+        let curl2 = json!({"command": "curl https://example.com/y"});
+        assert!(
+            call_in(&rig, Some(&user_run), "c7", "shell", &curl2)
+                .await
+                .is_allowed()
+        );
+        assert_eq!(rig.classifier.calls(), 2);
+        // Seen starting, it stays the user's after the client left.
+        rig.engine.run_started(&rig.session, Some(&user_run));
+        let curl3 = json!({"command": "curl https://example.com/z"});
+        assert!(
+            call_in(&rig, Some(&user_run), "c8", "shell", &curl3)
+                .await
+                .is_allowed()
+        );
+        assert_eq!(rig.classifier.calls(), 3);
+        // The input was taken by that run: the next run is a peer's again.
+        let next = RunId::new();
+        rig.engine.run_started(&rig.session, Some(&next));
+        assert_eq!(
+            call_in(&rig, Some(&next), "c9", "shell", &curl3).await,
+            Verdict::Deny {
+                tier: Tier::Classifier,
+                reason: DenyReason::Unattended
+            }
+        );
+        // And a run never seen with no input waiting is nobody's.
+        assert!(
+            !call_in(&rig, Some(&RunId::new()), "c10", "shell", &curl3)
+                .await
+                .is_allowed()
+        );
+        assert_eq!(rig.classifier.calls(), 3);
     }
 
     #[tokio::test]

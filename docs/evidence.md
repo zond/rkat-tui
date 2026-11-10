@@ -4798,3 +4798,48 @@ URL.
 Tests: `pricing_fetch_is_a_user_setting_the_project_can_only_turn_off`
 (config) and the overlay test (`--set pricing.fetch=false` beside a
 `pricing."m".input`).
+
+### A6: a turn no user started runs unattended while nobody is attached
+
+Verified before the change: a peer's `send_message` to an idle agent
+starts a run (`a_peer_message_wakes_the_other_agent_and_its_client_shows_it`),
+and the gate judged its calls exactly like a user's turn: in auto mode the
+classifier decided them (the peer's text is not recorded as the user's, so
+the classifier saw no consent, but it still allowed what looked harmless),
+in manual mode the question waited for a human who may not be there. The
+review's "partly inferred" holds: nothing in the gate knew whether a human
+was present or had started the turn.
+
+The user's decision (2026-11-10) is now the gate's rule
+(`approval::attendance`): a call that needs review (`Route::Review`, and
+`Route::Ask`: a protected write, a mode's question) is denied with
+`DenyReason::Unattended` before the classifier or the broker, unless the
+call is attended. Attended needs positive evidence: a client bound to the
+agent that runs as the session now (`Agents::attended`, through
+`AgentAttendance`), or the call's run (the dispatch context's
+`run_id`; a helper's call takes its owner session's current run) is one
+the engine saw start while a client's `mob/member_send`/`mob/turn_start`
+to the session waited (`ApprovalEngine::human_input`, consumed by
+`run_started`), or that input waits and the run's start is not seen yet
+(the event watcher lags the dispatch). A run seen starting without such
+input, and a session no live agent runs as, are unattended. The denial
+queues a notice per agent (at most 32, then a count) that `rkat/missed`
+answers once; the client asks on every attach and shows each as a
+warning. The model reads `UNATTENDED_DENIAL` in the tool result.
+
+Known edge, kept: a user's input that is steered into a peer's running
+turn marks the next run that starts as the user's.
+
+Tests: `an_unattended_turn_is_denied_what_needs_review` (engine: a peer's
+run, nobody attached: `curl` and a protected write denied with no
+classifier call and no human asked, the notice queued; read, `ls` and an
+in-project write allowed; attaching makes the next call reviewed; the
+user's run, before and after its start is seen, is reviewed; the next run
+is a peer's again), `a_peer_woken_agent_with_no_client_is_denied_what_needs_review`
+(`tests/attach_agents.rs`: through the daemon, B detached and woken by A's
+message: no classifier request for its `curl`, B reads why, its
+`notes.md` written; a client attaching to B mid-turn is shown the notice
+and B's next `curl` is reviewed; `rkat/missed` answers it once) and
+`a_turn_the_user_started_is_reviewed_after_its_client_detaches` (the run
+id the dispatch carries is the one the watcher saw start after the
+user's prompt).

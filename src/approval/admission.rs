@@ -138,9 +138,12 @@ impl ToolDispatchAdmission for ApprovalGate {
                 .await?;
         }
         let origin_session = context.and_then(ToolDispatchContext::origin_session_id);
+        // A helper's run is its own member session's; its calls are judged
+        // by the run of the session it works for.
         let caller = match &self.helper {
             Some(helper) => Caller::helper(&self.session_id, helper),
-            None => Caller::session(origin_session.unwrap_or(&self.session_id)),
+            None => Caller::session(origin_session.unwrap_or(&self.session_id))
+                .in_run(context.and_then(ToolDispatchContext::run_id)),
         };
         // Where the calling agent's tool of this name comes from: the
         // session that is dispatching (a helper's own member session; for

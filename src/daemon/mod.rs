@@ -564,6 +564,11 @@ impl Daemon {
             origins: Arc::clone(&composed.origins),
             lifecycle: Arc::clone(&lifecycle),
         });
+        // Before any agent runs: a turn no user started is unattended
+        // unless a client is with its agent.
+        composed
+            .engine
+            .set_attendance(Arc::new(agents::AgentAttendance::new(&agents)));
         // Restored (their classifier seeded with what the user asked so
         // far), else one seated for the first client.
         let (first, session, created) = agents.start().await?;

@@ -987,6 +987,8 @@ impl AttachRunner {
         if new_daemon {
             self.startup_notices();
         }
+        // Every attach: what the agent was denied while nobody was with it.
+        self.missed_notices();
         if fresh && !switched_agent {
             self.other_agents();
             match std::mem::replace(&mut self.config.start, super::StartAt::Current) {
@@ -1025,6 +1027,40 @@ impl AttachRunner {
                     level: NoticeLevel::Info,
                     text,
                 });
+            }
+        });
+    }
+
+    /// Show what this client's agent was denied in turns no user started
+    /// while no client was attached (`rkat/missed`; a daemon of before it
+    /// answers nothing).
+    fn missed_notices(&self) {
+        let Some(connection) = self.connection() else {
+            return;
+        };
+        let ui_tx = self.ui_tx.clone();
+        tokio::spawn(async move {
+            let read = bounded(
+                CALL_TIMEOUT,
+                remote::local::<_, protocol::Notices>(
+                    &connection,
+                    protocol::MISSED,
+                    &serde_json::json!({}),
+                ),
+            )
+            .await;
+            match read {
+                Ok(read) => {
+                    for notice in read.notices {
+                        let _ = ui_tx.send(Msg::Notice {
+                            level: NoticeLevel::Warn,
+                            text: notice.text,
+                        });
+                    }
+                }
+                Err(err) => {
+                    tracing::debug!(error = %err, "cannot read what the agent was denied unattended");
+                }
             }
         });
     }
