@@ -22,7 +22,9 @@
 //! document's admission fence, which both stores name by forwarding
 //! [`ConfigStore::admission_fence`] to the file store.
 //!
-//! When the realm lives inside the workspace its document is a project input
+//! When the realm lives inside the workspace (a `--state-root` there; the
+//! workspace's own realm lives under the config directory) its document is
+//! a project input
 //! ([`super::project_trust`]): every read is guarded
 //! ([`ProjectInputs::guard`]: an untrusted document's MCP servers and hooks,
 //! and an untrusted project `.rkat/config.toml`'s hooks, do not reach the

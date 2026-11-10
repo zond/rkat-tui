@@ -5134,3 +5134,38 @@ the moved workspace's new realm refuses it and nothing is rewritten;
 adoption then goes through with the new realm set aside, not deleted),
 `a_moved_workspace_starts_anew_and_is_offered_its_old_state`, and
 `rehome_asks_the_runner_and_leaves_stopping_the_daemon` (UI).
+
+### What the move made unnecessary (item e)
+
+Removed where the move made it provably dead:
+
+- The committed-realm refusal (`bootstrap::committed`, bfb508b and
+  b2f8944) went with the move itself: no realm is ever read from the
+  workspace's `.rkat/tui/`.
+- The helper bindings' digest (4fb1416, reverted): its only reason was
+  that the agent's confined shell could write `tui_helpers.json` in the
+  workspace realm. Every realm on disk is now outside every grant of a
+  confined shell, the start refuses a plan that reaches one
+  (`RealmExposed`, which applies to `--state-root` realms too), and an
+  unconfined shell is the trusted host. `HostTrustRecord::record_digest`
+  and `ProjectInputs::trust_record`, used only by it, went with it, and so
+  did its test `a_bindings_file_changed_underneath_is_not_read`.
+- The realm `tui.toml`'s digest trust now applies only to a realm inside
+  the workspace (`bootstrap::approval::load_layers`), as the realm
+  `config.toml`'s project-input guard already did
+  (`ProjectInputs::new`: `realm_config` only when it starts with the
+  workspace); the workspace's own realm is the user's.
+
+Kept, because it still guards something a clone or the shell can write:
+the project inputs (`.rkat/mcp.toml`, `.rkat/config.toml`'s hooks), the
+project `.rkat/tui.toml`'s deny-only layering, the sealed `.rkat/` and
+`.git/` patterns, and the guard and digest of a realm placed inside the
+workspace with an explicit `--state-root` (a clone could carry it; under
+confinement such a realm now refuses the start anyway, so this covers
+`--no-confinement` only). Engine ask 8 shrinks to `.git/` (S5).
+
+Tests: `tests/realm_trust.rs`'s
+`a_rule_appended_under_the_daemon_is_not_adopted_and_is_named` now runs
+on a `--state-root` realm inside the workspace (the case still guarded),
+and `the_workspace_realms_rules_file_is_the_users` pins that a hand edit
+of the workspace's own realm rules applies with no notice.

@@ -54,11 +54,6 @@ design.
 - `[pricing] fetch = false` in `tui.toml` turns the community price-list
   download off, as `--no-pricing-fetch` does; the manual names the one
   host rkat-tui contacts besides your LLM endpoints.
-- The helper bindings file (`tui_helpers.json`, whom each helper works
-  for) is read only when it is what the daemon last wrote: its digest is
-  kept in the host trust record outside the workspace, so an owner the
-  agent's shell plants there is never used. A bindings file written by an
-  older rkat-tui is not read either (its helpers are not restored once).
 - The confined shell no longer gets the whole Cargo home writable: only
   `registry/` and `git/` are, the rest (`bin/`, `config.toml`, …) is read
   only, and `credentials.toml` is not in its view. Before, a confined
@@ -278,6 +273,13 @@ design.
   fresh state and offers the old one. The audit log moved there too,
   `/export` writes its default file there, and the daemon's endpoint
   directory is removed again when the daemon stops.
+- The workspace's own realm files are yours now that nothing in the
+  workspace can reach them: a hand edit of its `tui.toml` applies (no
+  `/rules trust` needed), its `config.toml`'s `[confinement]` is a floor
+  for the shell as a `--state-root` realm's always was (it was ignored
+  with a notice), and its endpoints and MCP servers need no `/trust`. A
+  realm placed inside the workspace with `--state-root` keeps the digest
+  checks.
 - `/quit` retires this rkat-tui's agent when other clients are attached
   to other agents (a running turn is interrupted first); its
   conversation stays for `/resume` and `--resume`, and nothing can wake

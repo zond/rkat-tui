@@ -203,10 +203,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     // Nobody renders the registry's helper updates in the daemon (clients
     // follow the helpers on the mobs' event streams); they tell the daemon
     // when a helper's run ended, so its tool catalog can be read.
-    // Its bindings file lies in the realm, which the confined shell may
-    // write: guarded by the host trust record's digest of the last write.
-    let (registry, updates) =
-        HelperRegistry::persistent(&realm_root, Some(project_inputs.trust_record()));
+    let (registry, updates) = HelperRegistry::persistent(&realm_root);
     let registry = Arc::new(registry);
     // A forgotten session's helper bookkeeping goes with it.
     let forget = Arc::downgrade(&registry);

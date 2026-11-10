@@ -7,13 +7,13 @@
 //! - the project `.rkat/mcp.toml` (MCP servers),
 //! - the project `.rkat/config.toml`, whose `[hooks]` the factory discovers
 //!   at the conventions root on every build,
-//! - the realm `config.toml` when the realm lives inside the workspace (the
-//!   default `<workspace>/.rkat/tui/config.toml`): its `[[tools.mcp_servers]]`
-//!   and `[hooks]`.
+//! - the realm `config.toml` when the realm lives inside the workspace
+//!   (only a `--state-root` there: the workspace's own realm lives under
+//!   the config directory, out of the shell's and a clone's reach, and is
+//!   the user's): its `[[tools.mcp_servers]]` and `[hooks]`.
 //!
-//! Any of them may have come with a cloned repository, and on Linux a
-//! confined shell can write `.rkat/` (the backend has no deny lists), so each
-//! is trusted only when its whole content is what the host trust record
+//! Any of them may have come with a cloned repository, so each is trusted
+//! only when its whole content is what the host trust record
 //! ([`HostTrustRecord`]) holds a digest of: what the user trusted with
 //! `/trust` (alias `/mcp trust`), or, for the realm config, what rkat-tui
 //! itself last wrote into a file that was trusted before the write.
@@ -115,13 +115,6 @@ pub struct ProjectInputs {
 }
 
 impl ProjectInputs {
-    /// The host trust record the inputs are judged by (shared, so every
-    /// writer of the record saves one state).
-    #[must_use]
-    pub fn trust_record(&self) -> SharedTrustRecord {
-        Arc::clone(&self.record)
-    }
-
     /// The inputs of `scope`, judged by `record`; `by_flag`: `--trust-project`.
     #[must_use]
     pub fn new(scope: &RuntimeScope, record: SharedTrustRecord, by_flag: bool) -> Self {

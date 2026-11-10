@@ -192,15 +192,11 @@ impl HelperRegistry {
         Self::with_bindings(HelperBindings::in_memory())
     }
 
-    /// A registry whose bindings persist under `realm_root`, guarded by
-    /// the host trust record `trust` (an unreadable bindings file, or one
-    /// changed underneath, is logged and replaced).
+    /// A registry whose bindings persist under `realm_root` (an
+    /// unreadable bindings file is logged and replaced).
     #[must_use]
-    pub fn persistent(
-        realm_root: &Path,
-        trust: Option<crate::bootstrap::project_trust::SharedTrustRecord>,
-    ) -> (Self, mpsc::UnboundedReceiver<HelperUpdate>) {
-        Self::with_bindings(HelperBindings::open_or_empty(realm_root, trust))
+    pub fn persistent(realm_root: &Path) -> (Self, mpsc::UnboundedReceiver<HelperUpdate>) {
+        Self::with_bindings(HelperBindings::open_or_empty(realm_root))
     }
 
     fn with_bindings(bindings: HelperBindings) -> (Self, mpsc::UnboundedReceiver<HelperUpdate>) {

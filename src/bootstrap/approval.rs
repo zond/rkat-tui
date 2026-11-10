@@ -1,9 +1,9 @@
 //! The approval engine every session's gate shares.
 //!
 //! [`load_layers`] layers `tui.toml` (global → realm → command line →
-//! project; the realm layer is fully applied only when the host trust
-//! record says rkat-tui wrote it or the user trusted it, see
-//! [`crate::bootstrap::trust`]). [`build`] reads the environment facts,
+//! project; a realm placed inside the workspace, with `--state-root`, is
+//! fully applied only when the host trust record says rkat-tui wrote it or
+//! the user trusted it, see [`crate::bootstrap::trust`]). [`build`] reads the environment facts,
 //! builds the classifier and opens the escalation broker, and returns the
 //! engine with the channels the runner serves.
 
@@ -96,7 +96,16 @@ pub(crate) fn load_layers(
     let realm_dir = scope.realm_root();
     let realm_rules = realm_dir.join(RULES_FILE_NAME);
     let mut notices = Vec::new();
-    let realm_trust = RealmTrust::from_status(trust_record(scope).check(&realm_rules));
+    // A realm outside the workspace (the workspace's own, under the config
+    // directory, or a `--state-root` elsewhere) is the user's: neither the
+    // agent's confined shell (the start refuses a plan that reaches it) nor
+    // a clone can write it. Only a realm placed inside the workspace is
+    // trusted by digest.
+    let realm_trust = if realm_dir.starts_with(&scope.context_root) {
+        RealmTrust::from_status(trust_record(scope).check(&realm_rules))
+    } else {
+        RealmTrust::Owned
+    };
     let global_rules = scope.global.as_ref().map(super::GlobalDirs::rules_file);
     let layered = config::load_layered_with(
         &realm_dir,
