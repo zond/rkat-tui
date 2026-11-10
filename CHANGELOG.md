@@ -9,6 +9,11 @@ design.
 
 ### Security
 
+- The manual and the design say what the daemon does not keep apart:
+  every attached TUI receives every agent's approval requests (each shows
+  only its own), and another agent's message can start a turn on an idle
+  agent nobody prompted (the approval gate still judges it, and the
+  classifier sees no consent of yours behind it).
 - `--attach=HOST:PORT` sends the attach token only to a loopback address
   (what an `ssh -L` tunnel gives). Any other address is refused, naming
   the tunnel recipe, before the token file is read; `--attach-insecure`

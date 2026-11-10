@@ -202,6 +202,23 @@ The token grants access, not identity: every decision is recorded as the
 daemon's one principal (`[daemon] principal` in the user's `tui.toml`,
 default the login name); the daemon is single-person by design.
 
+What is not isolated, by design (one principal per daemon):
+
+- Decision notices (`decision/notice`, `rkat/decision_ended`) go to every
+  attached client (`daemon::decisions`); each carries the full approval
+  rendering (command lines, diffs) of any agent's request, and the client
+  filters by its agent's session (`client::approvals`). No client should
+  be assumed blind to another agent's requests.
+- The proxy binds a connection's engine member actions to its agent
+  (`Local::observe`, `NOT_YOURS`), which keeps a client from steering the
+  wrong agent by mistake; a token holder can still attach to any agent by
+  name, so the binding is not an access control.
+- A peer agent can wake an idle agent and start a turn no client prompted,
+  under the workspace's mode (`auto` included). The gate still judges each
+  tool call, and the peer's text is never recorded as user input (only
+  client sends reach `record_user_input`), so the classifier sees no user
+  intent behind it.
+
 ### The `rkat/*` local methods
 
 The engine's wire has nothing for an application's permission mode, rule

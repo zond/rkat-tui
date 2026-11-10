@@ -1370,3 +1370,26 @@ stops and every agent retires, their conversations staying). `/detach`
 keeps your agent running and wired: it goes on with its turn, and another
 agent's message can wake it while you are away; `rkat-tui -c` (or
 `/agents <name>` from another TUI) brings you back to it.
+
+**What is and is not kept apart.** The agents share one daemon, one user
+and one token; the daemon keeps them apart for clarity, not as a security
+boundary:
+
+- Every TUI attached to the daemon receives every agent's approval
+  requests as the daemon renders them (the command line, the diff, the
+  reason), and shows only its own agent's. Anyone who can attach (anyone
+  with the token) can read them all; with one person per daemon, that
+  person is you.
+- A TUI drives only the agent it works with: the daemon refuses a prompt,
+  an interrupt, a compaction or a context note it sends for another agent
+  or another agent's helper. That stops a stray client from steering the
+  wrong agent; it does not stop a token holder, who can attach to any
+  agent by name.
+- Another agent can start a turn on yours that nobody prompted: a peer
+  message wakes an idle agent, and the turn runs while you are away (a
+  `/detach`ed agent too) under the workspace's permission mode, `auto`
+  included. Every tool call it makes still passes the approval gate, and
+  the classifier sees the peer's text as a colleague's message, never as
+  your words, so it gives the turn no consent of yours. Leave plan or
+  default mode on when agents should not act on each other's messages
+  unwatched.

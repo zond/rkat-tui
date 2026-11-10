@@ -4364,3 +4364,17 @@ it does the other client-only flags. Pinned by
 `reach_refuses_a_non_loopback_address_before_the_token`; the loopback
 path keeps its tests in `tests/attach.rs`.
 
+### Two things the daemon does not isolate, written down
+
+Documented rather than changed (`docs/manual.md`, "Several agents", "What
+is and is not kept apart"; `docs/mob-split.md`, "Wire and security"):
+decision notices reach every attached client with the full rendering of
+any agent's approval request, and the client filters by session; and a
+peer agent can wake an idle agent and start a turn no client prompted,
+under the workspace's mode, with the gate still judging every call and no
+user input recorded for it. Both follow from one principal per daemon
+(the token is the user); writing them down keeps a later change from
+assuming isolation that is not there. The engine-method binding of
+"Engine methods act on the caller's agent only" is described there as
+what it is: protection against a stray client, not an access control.
+
