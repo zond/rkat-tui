@@ -1,4 +1,5 @@
-//! In-crate file tools: `read_file`, `write_file`, `edit_file`, `glob`, `grep`.
+//! In-crate file tools: `read_file`, `write_file`, `edit_file`, `glob`, `grep`,
+//! and the watch tools `watch_paths` and `unwatch` ([`WatchToolDispatcher`]).
 //!
 //! [`FileToolDispatcher`] implements [`AgentToolDispatcher`] and is injected
 //! into sessions as an external tool source. It is deliberately policy-free:
@@ -21,12 +22,14 @@ mod glob;
 mod grep;
 mod read;
 mod read_only;
+mod watch;
 mod write;
 
 pub use diff::FileDiff;
 pub(crate) use glob::mention_walker;
 
 pub use read_only::ReadOnlyProjectTools;
+pub use watch::{UNWATCH, WATCH_PATHS, WATCH_TOOLS_SOURCE, WatchHost, WatchToolDispatcher};
 
 use crate::paths::{PathError, ProjectRoot, ResolvedPath};
 use async_trait::async_trait;

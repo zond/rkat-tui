@@ -43,6 +43,7 @@ pub mod policy;
 pub mod protocol;
 pub mod schedules;
 pub mod serve;
+pub mod watches;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -591,6 +592,7 @@ impl Daemon {
             )),
             decisions: Arc::clone(&composed.decisions),
             audit: audit.clone(),
+            watches: Arc::clone(&composed.watches),
         });
         // Before any agent runs: a turn no user started is unattended
         // unless a client is with its agent.
@@ -615,6 +617,22 @@ impl Daemon {
         // Restored (their classifier seeded with what the user asked so
         // far), else one seated for the first client.
         let (first, session, created) = agents.start().await?;
+        // The agents' file watches: each batch reaches its agent.
+        let watch_task = {
+            let agents = Arc::downgrade(&agents);
+            let mut batches = std::mem::replace(
+                &mut composed.watch_batches,
+                tokio::sync::mpsc::unbounded_channel().1,
+            );
+            tokio::spawn(async move {
+                while let Some(batch) = batches.recv().await {
+                    let Some(agents) = agents.upgrade() else {
+                        return;
+                    };
+                    agents.watch_event(batch).await;
+                }
+            })
+        };
         // Schedules fire while the daemon runs, from its start: the
         // runtime arms its firing host on a session's creation only, and a
         // restored agent creates none.
@@ -716,6 +734,7 @@ impl Daemon {
             compact_threshold: composed.root.compact_threshold,
             local,
             tasks: vec![
+                watch_task,
                 composed.desk_task,
                 composed.decisions_task,
                 composed.diffs_task,

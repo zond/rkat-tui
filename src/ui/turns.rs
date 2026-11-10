@@ -127,7 +127,15 @@ impl App {
         self.run_first_block = self.transcript.len();
         self.streamed_text = false;
         if let Some(text) = prompt {
-            self.transcript.push(Block::User { text });
+            // A watch event the daemon announced before its run started
+            // is shown labelled already.
+            let announced = matches!(
+                self.transcript.blocks().last(),
+                Some(Block::Triggered { text: shown, .. }) if *shown == text
+            );
+            if !announced {
+                self.transcript.push(Block::User { text });
+            }
         }
         self.running = true;
         self.status.running_since = Some(now);

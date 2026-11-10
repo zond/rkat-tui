@@ -98,6 +98,10 @@ pub struct Composed {
     pub helper_catalogs_task: tokio::task::JoinHandle<()>,
     /// The members' tool catalogs.
     pub origins: Arc<DaemonToolOrigins>,
+    /// The agents' file watches.
+    pub watches: Arc<super::watches::Watches>,
+    /// Their batches of changes, to deliver to the agents.
+    pub watch_batches: tokio::sync::mpsc::UnboundedReceiver<super::watches::Batch>,
     /// The `[thinking]` table (model switches over the wire).
     pub thinking: ThinkingTable,
     /// The daemon's endpoints (model switches over the wire).
@@ -217,9 +221,13 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         }));
     let (diff_tx, diff_rx) = tokio::sync::mpsc::unbounded_channel();
     let notes = Arc::new(note_tools(&scope));
+    // The agents' file watches: the daemon's process watches the
+    // workspace (`watch_paths`), never the agent's shell.
+    let (watches, watch_batches) =
+        super::watches::Watches::new(scope.project_root.as_path().to_path_buf());
     // The tools' names, for the gate's provenance (every agent's set has
     // the same ones).
-    let catalog = agent_tools(&scope, &notes, None)?;
+    let catalog = agent_tools(&scope, &notes, None, None)?;
     let engine = Arc::clone(&approval.engine);
     let origins = Arc::new(DaemonToolOrigins::new(
         runtime.session_service(),
@@ -263,9 +271,18 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     let root_tools: crate::mobs::customizer::RootTools = {
         let scope = scope.clone();
         let notes = Arc::clone(&notes);
+        let watches = Arc::clone(&watches);
         Arc::new(move |identity: &meerkat_mob::AgentIdentity| {
-            let diffs = tagged_diffs(identity.to_string(), diff_tx.clone());
-            match agent_tools(&scope, &notes, Some(diffs)) {
+            let diffs = tagged_diffs(
+                identity.to_string(),
+                diff_tx.clone(),
+                Arc::downgrade(&watches),
+            );
+            let watch = Arc::new(crate::tools::WatchToolDispatcher::new(
+                identity.to_string(),
+                Arc::clone(&watches) as Arc<dyn crate::tools::WatchHost>,
+            ));
+            match agent_tools(&scope, &notes, Some(diffs), Some(watch)) {
                 Ok(tools) => tools,
                 Err(err) => {
                     // The same composition succeeded at start for the
@@ -447,6 +464,8 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         follower_task: follower,
         helper_catalogs_task: helper_catalogs,
         origins,
+        watches,
+        watch_batches,
         thinking,
         endpoints: daemon_endpoints,
         project_inputs,
@@ -472,20 +491,43 @@ fn note_tools(scope: &RuntimeScope) -> NoteToolDispatcher {
 }
 
 /// One agent's external tools: its own file tools (reporting every change
-/// they make to `diffs`, which the clients show as a diff) and the shared
-/// note tools, behind one gateway.
+/// they make to `diffs`, which the clients show as a diff), the shared
+/// note tools and its watch tools, behind one gateway. Without `watch`
+/// (the catalog read at start) the watch tools are named over a host that
+/// watches nothing.
 fn agent_tools(
     scope: &RuntimeScope,
     notes: &Arc<NoteToolDispatcher>,
     diffs: Option<tokio::sync::mpsc::UnboundedSender<crate::tools::FileDiff>>,
+    watch: Option<Arc<crate::tools::WatchToolDispatcher>>,
 ) -> Result<Arc<dyn AgentToolDispatcher>, DaemonError> {
     let files = Arc::new(FileToolDispatcher::new(scope.project_root.clone(), diffs));
+    let watch = watch.unwrap_or_else(|| {
+        Arc::new(crate::tools::WatchToolDispatcher::new(
+            "",
+            Arc::new(NoWatches) as Arc<dyn crate::tools::WatchHost>,
+        ))
+    });
     let gateway = ToolGatewayBuilder::new()
         .add_dispatcher(files as Arc<dyn AgentToolDispatcher>)
         .add_dispatcher(Arc::clone(notes) as Arc<dyn AgentToolDispatcher>)
+        .add_dispatcher(watch as Arc<dyn AgentToolDispatcher>)
         .build()
         .map_err(TuiError::ToolGateway)?;
     Ok(Arc::new(gateway))
+}
+
+/// The watch host of the tool catalog read at start: it watches nothing.
+struct NoWatches;
+
+impl crate::tools::WatchHost for NoWatches {
+    fn watch(&self, _agent: &str, _patterns: &[String], _once: bool) -> Result<u64, String> {
+        Err("no watches here".to_string())
+    }
+
+    fn unwatch(&self, _agent: &str, _id: Option<u64>) -> usize {
+        0
+    }
 }
 
 /// A sender of file changes that forwards each to `all` tagged with
@@ -493,10 +535,15 @@ fn agent_tools(
 fn tagged_diffs(
     agent: String,
     all: tokio::sync::mpsc::UnboundedSender<(String, crate::tools::FileDiff)>,
+    watches: std::sync::Weak<super::watches::Watches>,
 ) -> tokio::sync::mpsc::UnboundedSender<crate::tools::FileDiff> {
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<crate::tools::FileDiff>();
     tokio::spawn(async move {
         while let Some(diff) = rx.recv().await {
+            // The agent's own write: its watches do not report it back.
+            if let Some(watches) = watches.upgrade() {
+                watches.own_write(&agent, &diff.path);
+            }
             if all.send((agent.clone(), diff)).is_err() {
                 break;
             }

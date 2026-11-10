@@ -219,6 +219,11 @@ pub struct Agents {
     decisions: Arc<super::decisions::Decisions>,
     /// The audit log, when it could be opened.
     audit: Option<Arc<super::audit::AuditLog>>,
+    /// The agents' file watches.
+    watches: Arc<super::watches::Watches>,
+    /// The last watch event sent to each agent: a run it starts is the
+    /// watch's.
+    watch_sent: parking_lot::Mutex<std::collections::HashMap<String, String>>,
     table: parking_lot::Mutex<BTreeMap<String, Agent>>,
     /// One seat or retire at a time: two `new` binds seat two agents, a
     /// `recent` bind never sees half of one.
@@ -253,6 +258,8 @@ pub struct AgentsParts {
     pub decisions: Arc<super::decisions::Decisions>,
     /// The audit log, when it could be opened.
     pub audit: Option<Arc<super::audit::AuditLog>>,
+    /// The agents' file watches.
+    pub watches: Arc<super::watches::Watches>,
 }
 
 impl Agents {
@@ -268,6 +275,7 @@ impl Agents {
             schedules,
             decisions,
             audit,
+            watches,
         } = parts;
         Arc::new(Self {
             state,
@@ -278,6 +286,8 @@ impl Agents {
             schedules,
             decisions,
             audit,
+            watches,
+            watch_sent: parking_lot::Mutex::new(std::collections::HashMap::new()),
             table: parking_lot::Mutex::new(BTreeMap::new()),
             seating: tokio::sync::Mutex::new(()),
             clock: AtomicU64::new(0),
@@ -296,6 +306,20 @@ impl Agents {
         run: &meerkat_core::RunId,
         prompt: &str,
     ) {
+        // The watch event the daemon sent it: positive by construction.
+        let from_watch = {
+            let mut sent = self.watch_sent.lock();
+            if sent.get(name).is_some_and(|text| text == prompt) {
+                sent.remove(name);
+                true
+            } else {
+                false
+            }
+        };
+        if from_watch {
+            self.audit_trigger(name, session, run, &format!("watch ({prompt})"));
+            return;
+        }
         let Some(fired) = self.schedules.attribute(name, run, prompt).await else {
             return;
         };
@@ -338,6 +362,77 @@ impl Agents {
                 prompt: prompt.to_string(),
             },
         );
+    }
+
+    /// The audit log's `run_triggered` line for `name`'s `run`.
+    fn audit_trigger(
+        &self,
+        name: &str,
+        session: &SessionId,
+        run: &meerkat_core::RunId,
+        detail: &str,
+    ) {
+        if let Some(audit) = &self.audit {
+            let mut line =
+                super::audit::Line::event("run_triggered", detail.to_string()).of_agent(name);
+            line.session = Some(session.to_string());
+            line.run = Some(run.to_string());
+            audit.write(&line);
+        }
+    }
+
+    /// Deliver a watch's `batch` to its agent: a message into its
+    /// session (into a running turn at its next step, else it starts one,
+    /// which is then a turn no user started), announced to its clients
+    /// and written to the audit log.
+    pub async fn watch_event(&self, batch: super::watches::Batch) {
+        let name = batch.agent.clone();
+        let Some(session) = self.conversations.current(&name) else {
+            return;
+        };
+        if !self.table.lock().contains_key(&name) {
+            return;
+        }
+        let text = batch.text();
+        self.watch_sent.lock().insert(name.clone(), text.clone());
+        let sent = self
+            .state
+            .mob_member_send(
+                &MobId::from(MOB_ID),
+                AgentIdentity::from(name.as_str()),
+                meerkat_core::types::ContentInput::from(text.clone()),
+                meerkat_core::types::HandlingMode::Steer,
+                None,
+            )
+            .await;
+        if let Err(err) = sent {
+            tracing::warn!(agent = %name, error = %err, "a watch event did not reach the agent");
+            self.watch_sent.lock().remove(&name);
+            return;
+        }
+        if let Some(audit) = &self.audit {
+            audit.write(&super::audit::Line::event("watch_event", text.clone()).of_agent(&name));
+        }
+        self.decisions.broadcast(
+            super::protocol::TRIGGERED,
+            &super::protocol::TriggeredNote {
+                agent: name,
+                session_id: session,
+                label: "files changed".to_string(),
+                prompt: text,
+            },
+        );
+    }
+
+    /// `name`'s run ended: its watches that live for a turn go.
+    pub fn run_ended(&self, name: &str) {
+        self.watches.end_turn(name);
+    }
+
+    /// The agents' file watches.
+    #[must_use]
+    pub fn watches(&self) -> &Arc<super::watches::Watches> {
+        &self.watches
     }
 
     /// A turn of `run` used `usage` on `model`: counted to the schedule
@@ -908,6 +1003,8 @@ impl Agents {
         }
         let session = self.conversations.retire(name).await?;
         self.table.lock().remove(name);
+        self.watches.forget(name);
+        self.watch_sent.lock().remove(name);
         if let Some(session) = &session {
             self.engine.forget_session(session);
         }

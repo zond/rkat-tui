@@ -451,7 +451,7 @@ impl Local {
                 }
             }
             GET_MODE => answer(ModeStatus::of(&self.engine)),
-            REPORT => answer(self.report()),
+            REPORT => answer(self.report(self.agent_of(&caller).ok().as_deref())),
             SET_MODE => {
                 let SetModeParams { mode } = protocol::params(params)?;
                 let mode = PermissionMode::parse(&mode).ok_or_else(|| {
@@ -570,8 +570,9 @@ impl Local {
         }
     }
 
-    /// `rkat/report`: the daemon's side of `/status`.
-    fn report(&self) -> Report {
+    /// `rkat/report`: the daemon's side of `/status` (`agent`: the caller's
+    /// agent, whose watches it lists).
+    fn report(&self, agent: Option<&str>) -> Report {
         let ReportParts {
             realm,
             realm_id,
@@ -606,6 +607,7 @@ impl Local {
             realm_rules,
             project_inputs,
             helper_depth,
+            watches: agent.map_or_else(Vec::new, |agent| self.agents.watches().describe(agent)),
         }
     }
 

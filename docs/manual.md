@@ -20,7 +20,7 @@ the test protocol for working on rkat-tui itself.
 - [Where things live](#where-things-live)
 - [The workspace daemon](#the-workspace-daemon)
 - [Several agents](#several-agents)
-- [Timers and watches](#timers-and-watches)
+- [Timers and watches](#timers-and-watches) ([Schedules](#schedules), [File watches](#file-watches))
 
 ## Overview
 
@@ -1691,3 +1691,28 @@ feels. The engine's schedules are the workspace realm's: an agent's
 target another agent's session; those calls are reviewed like any other
 schedule change. `/schedules` shows only schedules whose target is your
 agent.
+
+### File watches
+
+`watch_paths {"patterns": ["src/**"], "once": false}` asks to be told
+when workspace files change; `unwatch` (with a watch's `id`, or none for
+all) drops watches. Both are tier 1: a watch changes nothing, and what
+the agent does about an event passes the gate as usual. The daemon's own
+process watches the workspace (inotify through the `notify` crate), not
+the agent's confined shell. Changes are batched until none came for
+250 ms and reach the agent as one message, `files changed: a, b and 3
+more` (at most 50 paths named), into its running turn at the next step,
+or, when it is idle, as a turn of its own, which is then a turn no user
+started (unattended while nobody is attached, as above). Your TUI shows
+the message labelled `◉ files changed`, and `/status` lists the agent's
+live watches.
+
+A watch lives until the turn that made it ends; with `"once": true` it
+lives until its first event instead (past the turn: that event starts a
+turn), and goes after it. `unwatch` and retiring the agent drop watches
+too. Changes the agent's own `write_file` and `edit_file` make are not
+reported back to it (the file tools tell the daemon what they wrote; a
+temporary file created and renamed within one batch is never reported);
+changes its shell makes are, since nothing tells those apart. Patterns
+are globs relative to the workspace, matched against the changed file's
+path: `src/**`, `*.toml`, `target/report.json`.

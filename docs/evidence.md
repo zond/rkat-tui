@@ -5859,3 +5859,47 @@ dispatched). Unit: `daemon::schedules::tests`,
 `a_triggered_run_relabels_its_prompt`,
 `a_triggered_run_is_labelled_with_its_trigger`,
 `quitting_and_listing_name_the_schedules`, `daemon::list` (the count).
+
+### B: the file-watch tools (items 6 and 7)
+
+The engine has no file-watch facility a member could use, so the daemon
+watches: `notify` 8 (already in the engine's graph, CC0-1.0, allowed in
+`deny.toml`), one recursive watch on the workspace set up on the first
+`watch_paths`, held by the daemon's process; the confined shell plays no
+part. `tools::WatchToolDispatcher` (`watch_paths`, `unwatch`, provenance
+`rkat-tui.watch`, judged in the file tools' family as read-only, so tier
+1) registers watches with `daemon::watches::Watches`, which matches each
+changed path against every agent's globs, batches per agent until 250 ms
+pass without a change, caps a batch at 50 named paths, and hands it to
+`Agents::watch_event`: `mob_member_send` of `files changed: …` with
+`HandlingMode::Steer` (into a running turn at its next boundary, else it
+starts a run), an audit `watch_event` line and an `rkat/triggered`
+announcement (the UI shows `◉ files changed` and does not show the run's
+prompt again when the event starts a run). A run the event starts is
+attributed to the watch by the text the daemon itself sent (audit
+`run_triggered` "watch (…)"), and is a turn no user started.
+
+Lifetime, decided: a watch lives until the run that made it ends (the
+event watcher's run end calls `Watches::end_turn`); `once` watches live
+until their first event instead (so "wake me when the build output
+appears" works past the turn), then go; `unwatch` and retiring drop them
+(`Watches::forget` in `Agents::retire`).
+
+Own writes, found: distinguishable for the file tools, not for the
+shell. The file tools report every change as a diff; the daemon's diff
+forwarding records the path as the agent's own write
+(`Watches::own_write`), and a change of that path within 2 s is not
+reported to that agent (another agent's watch still hears it). The first
+rig run also reported the write's temporary file (`src/.tmpXXXX`, created
+and renamed over the target): a path created and gone (removed or renamed
+away) within one batch is dropped as transient, for every agent; a
+deletion of an existing file is still a change.
+
+Tests: `tests/watches.rs::a_watched_change_reaches_the_agent_in_its_turn`
+(the agent's own `write_file` not reported, another writer's file
+reported as one message the next request carries, announced to the TUI,
+`/status` lists the watch during the turn and nothing after it),
+`a_once_watch_wakes_the_agent_once` (outlives its turn, the event starts
+a turn labelled and audited as the watch's, gone after it); unit:
+`daemon::watches::tests` (batching, the cap, other agents, once and turn
+lifetimes, retire, own writes, transient files).

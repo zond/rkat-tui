@@ -178,6 +178,11 @@ design.
 
 ### Added
 
+- `watch_paths` and `unwatch`: an agent can ask to be told when
+  workspace files change (globs, once or for the turn); the daemon watches
+  and sends `files changed: …` into the agent's turn, shown labelled in
+  the TUI and listed by `/status`. The agent's own file-tool writes are
+  not reported back.
 - Schedules: an agent can set one-shot and recurring timers on its own
   session with the engine's schedule tools (creating or changing one is
   reviewed). The daemon fires them; the transcript labels the run

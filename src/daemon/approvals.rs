@@ -486,6 +486,9 @@ pub fn watch(
                     }
                     AgentEvent::RunCompleted { session_id, .. }
                     | AgentEvent::RunFailed { session_id, .. } => {
+                        if let Some(agents) = agents.upgrade() {
+                            agents.run_ended(&name);
+                        }
                         let origins = Arc::clone(&origins);
                         let session = session_id.clone();
                         tokio::spawn(async move {

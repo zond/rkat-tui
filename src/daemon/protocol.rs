@@ -585,6 +585,9 @@ pub struct Report {
     pub project_inputs: Vec<TrustedFile>,
     /// `[helpers] max_depth`.
     pub helper_depth: u8,
+    /// The caller's agent's file watches (`watch_paths`), described.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub watches: Vec<String>,
 }
 
 /// [`SET_MODE`]'s parameters.

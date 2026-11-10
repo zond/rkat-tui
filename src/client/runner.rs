@@ -3451,6 +3451,9 @@ fn report_lines(report: &protocol::Report) -> Vec<String> {
             .to_string(),
         n => format!("helpers: depth limit on (max_depth {n})"),
     });
+    if !report.watches.is_empty() {
+        lines.push(format!("file watches: {}", report.watches.join("; ")));
+    }
     lines
 }
 
@@ -4279,6 +4282,7 @@ mod tests {
                 trust: "not trusted: it changed".into(),
             }],
             helper_depth: 1,
+            watches: Vec::new(),
         };
         assert_eq!(
             report_lines(&report),
@@ -4308,6 +4312,14 @@ mod tests {
         assert_eq!(
             lines.last().unwrap(),
             "helpers: depth limit 0, every helper is refused"
+        );
+        let watching = protocol::Report {
+            watches: vec!["watch 1: src/** (once)".into()],
+            ..off
+        };
+        assert_eq!(
+            report_lines(&watching).last().unwrap(),
+            "file watches: watch 1: src/** (once)"
         );
     }
 

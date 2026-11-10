@@ -801,8 +801,13 @@ pub fn block_lines(block: &Block, width: u16) -> Vec<Line<'static>> {
         }
         Block::Triggered { label, text } => {
             let style = Style::default().fg(Color::Cyan);
+            let icon = if label.starts_with("files changed") {
+                "◉"
+            } else {
+                "⏰"
+            };
             out.push(Line::from(Span::styled(
-                format!("⏰ {label}"),
+                format!("{icon} {label}"),
                 style.add_modifier(Modifier::BOLD),
             )));
             if !text.is_empty() {

@@ -93,6 +93,7 @@ unicode-width = "0.2"
 # File tools and path policy
 ignore = "0.4"
 globset = "0.4"
+notify = "8"
 regex = "1"
 similar = "2"
 

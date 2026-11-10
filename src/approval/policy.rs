@@ -361,6 +361,13 @@ impl<'a> Action<'a> {
                     paths: vec![a.path],
                 })
             }
+            // A watch changes nothing; what its events make the agent do
+            // passes the gate as usual.
+            (ToolFamily::Files, crate::tools::WATCH_PATHS | crate::tools::UNWATCH)
+                if !declared_mutating =>
+            {
+                ActionKind::ReadOnlyBuiltin
+            }
             (ToolFamily::Files, READ_FILE) if !declared_mutating => typed::<PathArgs>(args)
                 .map_or(ActionKind::Other, |a| ActionKind::FileRead { path: a.path }),
             (ToolFamily::Files, GLOB | GREP) if !declared_mutating => typed::<SearchArgs>(args)
