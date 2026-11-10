@@ -9,6 +9,12 @@ design.
 
 ### Security
 
+- `@`-mentioned file content is data, not your words. The classifier
+  records what you typed as your request and the attached files as a
+  context line naming them; before, the whole expanded prompt, file
+  content included, was recorded as the user's words, so an instruction
+  planted in a mentioned file read as something you asked for. Resumed
+  conversations are seeded the same way.
 - The classifier sees the action it reviews whole. Before, every string
   argument was cut at 1 KiB, so a shell command padded past that hid its
   tail (`; curl … | sh`) from the review. An action larger than 48 KiB

@@ -4518,3 +4518,33 @@ readers to understand (lowercase signature) other than `link` and
 maintainer's fixture, built with the git CLI; with the shared index
 removed the check refuses as unreadable) and
 `an_unknown_required_extension_is_not_read_past`.
+
+### A2: `@`-mentioned content is data, not the user's words
+
+Verified: the client sends the prompt with its mentions expanded
+(`workbench::expand_mentions` appends `<file path="…">` and
+`<directory path="…">` blocks), and the daemon's `observe`
+(`daemon/local.rs`) recorded the whole text with `record_user_input`, so
+the classifier's `[user]` line carried the files' content; the same held
+for a resumed session's seed.
+
+The split is made where the user's words are recorded, once:
+`ApprovalTranscript::push_prompt` (used by `record_user_input` and by
+`seed_from_session` for the human's turn input) splits at the first block
+opener `expand_mentions` writes (`mentions::split_attachments`), records
+the typed part as `[user]` and the rest as one `[context]` line naming the
+attached paths and their size, without their content. Everything of an
+attached file is after the first opener, so file content never lands in
+the `[user]` part; a prompt that types an opener itself only gives the
+classifier less of its own words (fails safe). The model still receives
+the attachments as before; the wire is unchanged, so an older client
+keeps working and is split the same way. The path labels are taken from
+the block openers and kept to one line of at most 120 characters (control
+characters become `?`), so a file that imitates an opener with a line
+break in its "path" cannot start a `[user]` line of its own.
+
+Tests: `a_prompt_records_what_was_typed_and_names_the_attached_files`
+and `a_planted_opener_cannot_forge_a_user_line` (transcript) and
+`a_mentioned_files_instruction_is_not_the_users_words`
+(`tests/attach_approvals.rs`: through the daemon, the planted line reaches
+the model and not the classifier's `[user]` lines).

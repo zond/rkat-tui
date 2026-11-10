@@ -822,7 +822,11 @@ in all; a binary file or one past the budget is a one-line `<file path="…"
 note="…" />`), and a directory as a `<directory path="…/">` listing of its
 entries (at most 200). The transcript shows the prompt as typed with a dim
 `+ N files (…)` line under it; a sealed path is never read and gets a
-warning instead; a word that names nothing (`@someone`) stays plain text.
+warning instead; a word that names nothing (`@someone`) stays plain text. What
+an attached file says is data, not your words: the approval classifier
+records only what you typed as your request, and the attachments as a
+`[context]` line naming the files (their content is not shown to it), so
+an instruction planted in a mentioned file cannot pass for your consent.
 
 **Shell mode.** An input whose first line starts with `!` is a shell
 command: `!ls -la` (or `! ls -la`; the rest of the input, later lines

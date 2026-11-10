@@ -259,6 +259,64 @@ pub fn expand_mentions(text: &str, root: &ProjectRoot) -> Expanded {
     }
 }
 
+/// The separators [`expand_mentions`] puts before each attached block.
+const BLOCK_OPENERS: [&str; 2] = ["\n\n<file path=\"", "\n\n<directory path=\""];
+
+/// A prompt split into what the user typed and the blocks
+/// [`expand_mentions`] attached after it (`None`: nothing attached). The
+/// split is at the first block opener, so everything of an attached file
+/// is in the second part; a prompt that types an opener itself only gives
+/// less to the first part.
+#[must_use]
+pub fn split_attachments(text: &str) -> (&str, Option<&str>) {
+    match BLOCK_OPENERS
+        .iter()
+        .filter_map(|opener| text.find(opener))
+        .min()
+    {
+        Some(at) => (&text[..at], Some(&text[at + 2..])),
+        None => (text, None),
+    }
+}
+
+/// Longest path label [`attached_paths`] returns, in characters.
+const MAX_LABEL_CHARS: usize = 120;
+
+/// The paths the attached `blocks` ([`split_attachments`]) name at the
+/// start of a block, at most `max`, each on one line (control characters
+/// are `?`) and at most [`MAX_LABEL_CHARS`] long (a label for the
+/// classifier: file content that imitates an opener can only add a short
+/// one-line name).
+#[must_use]
+pub fn attached_paths(blocks: &str, max: usize) -> Vec<String> {
+    let mut paths = Vec::new();
+    for block in std::iter::once(blocks).chain(blocks.split("\n\n").skip(1)) {
+        let rest = block
+            .strip_prefix("<file path=\"")
+            .or_else(|| block.strip_prefix("<directory path=\""));
+        if let Some(path) = rest.and_then(|rest| rest.split('"').next()) {
+            // A label on one line: an opener planted in file content cannot
+            // start a transcript line of its own (`\n[user] …`).
+            let path: String = path
+                .replace("&quot;", "\"")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&amp;", "&")
+                .chars()
+                .map(|c| if c.is_control() { '?' } else { c })
+                .take(MAX_LABEL_CHARS)
+                .collect();
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+        if paths.len() == max {
+            break;
+        }
+    }
+    paths
+}
+
 /// `s` with `&`, `"`, `<` and `>` escaped, for an attribute value.
 fn attr(s: &str) -> String {
     s.replace('&', "&amp;")

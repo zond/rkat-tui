@@ -389,14 +389,16 @@ impl ApprovalEngine {
     }
 
     /// Record words the human submitted to a session (a prompt or a steer)
-    /// that the runtime admitted under the caller idempotency key `key`.
+    /// that the runtime admitted under the caller idempotency key `key`:
+    /// what they typed as their words, content their `@` mentions attached
+    /// as data ([`ApprovalTranscript::push_prompt`]).
     /// The session's allow cache is cleared: the intent changed.
     ///
     /// Does not clear a previous Stop: only a new run does that
     /// ([`Self::run_started`]).
     pub fn record_user_input(&self, session_id: &SessionId, key: InputKey, text: &str) {
         let mut state = self.session(session_id);
-        state.transcript.push_user_input(key, text);
+        state.transcript.push_prompt(Some(key), text);
         state.allow_cache.clear();
     }
 
