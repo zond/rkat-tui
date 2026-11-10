@@ -144,6 +144,9 @@ pub enum Command {
     Status,
     /// `/export [file]`: write the transcript as plain text.
     Export(Option<String>),
+    /// `/rehome [id|old path]`: list the state this workspace could adopt
+    /// (`None`), or adopt the state named (it stops the daemon and quits).
+    Rehome(Option<String>),
     /// `/init`: ask the agent to write or update the workspace `AGENTS.md`.
     Init,
     /// `/memory [user | system]`: open an instruction file in the user's
@@ -550,11 +553,31 @@ pub static COMMANDS: &[CommandSpec] = &[
         summary: "write the transcript as plain text",
         help: &[(
             "/export [file]",
-            "write the transcript as plain text (default:\n.rkat/tui/export-<session>-<time>.txt in the workspace)",
+            "write the transcript as plain text (default:\nexport-<session>-<time>.txt in the workspace's state\ndirectory, which the notice names)",
         )],
         parse: |rest| match words(rest).as_slice() {
             [] => Some(Command::Export(None)),
             words => Some(Command::Export(Some(words.join(" ")))),
+        },
+    },
+    CommandSpec {
+        name: "rehome",
+        aliases: &[],
+        usage: "[id|old path]",
+        summary: "adopt the state of this workspace before it moved",
+        help: &[
+            (
+                "/rehome",
+                "this workspace's state, and the state of workspaces whose\ndirectory is gone (or that was set aside), which it could adopt",
+            ),
+            (
+                "/rehome <id|old path>",
+                "stop this workspace's daemon and quit, then make that state\nthis workspace's (rkat-tui -c continues its conversation);\nthe state this workspace had is set aside, not deleted",
+            ),
+        ],
+        parse: |rest| match words(rest).as_slice() {
+            [] => Some(Command::Rehome(None)),
+            words => Some(Command::Rehome(Some(words.join(" ")))),
         },
     },
     CommandSpec {
@@ -990,10 +1013,11 @@ mod tests {
             "detach",
             "agents",
             "audit",
+            "rehome",
         ] {
             assert!(super::spec(name).is_some(), "/{name} has no spec");
         }
-        assert_eq!(seen.len(), 35);
+        assert_eq!(seen.len(), 36);
         // `/help`'s "Commands:" rows come from the specs, in their order.
         let commands = help_text().split_once("Keys:").unwrap().0;
         let mut at = 0;
@@ -1063,6 +1087,11 @@ mod tests {
         );
         assert_eq!(usage_of("/remember"), "/remember <text>");
         assert_eq!(ok("/status"), Command::Status);
+        assert_eq!(ok("/rehome"), Command::Rehome(None));
+        assert_eq!(
+            ok("/rehome /old/my project"),
+            Command::Rehome(Some("/old/my project".into()))
+        );
         assert_eq!(ok("/export"), Command::Export(None));
         assert_eq!(ok("/init"), Command::Init);
         assert_eq!(ok("/memory"), Command::Memory(MemoryTarget::Workspace));

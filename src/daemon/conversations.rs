@@ -19,7 +19,7 @@
 //!
 //! The engine keeps no list of a member's earlier sessions, so the daemon
 //! records each session an agent ran as in
-//! `<workspace>/.rkat/tui/conversations.json` ([`Log`], with the agent's
+//! `<realm>/conversations.json` ([`Log`], with the agent's
 //! name; a log written before P5 names none, and its sessions are the
 //! single orchestrator `main`'s); `/resume` offers those, newest first,
 //! with their first message read from the session's committed history
@@ -41,7 +41,7 @@ fn legacy_agent() -> String {
     ORCHESTRATOR.to_string()
 }
 
-/// The conversation log's file name under `<workspace>/.rkat/tui/`.
+/// The conversation log's file name in the realm.
 pub const LOG_NAME: &str = "conversations.json";
 
 /// How long a conversation's title may be.
@@ -87,10 +87,10 @@ fn now() -> u64 {
 }
 
 impl Log {
-    /// The log of the workspace at `context_root`.
+    /// The log in the realm at `realm_root`.
     #[must_use]
-    pub fn path(context_root: &Path) -> PathBuf {
-        context_root.join(".rkat").join("tui").join(LOG_NAME)
+    pub fn path(realm_root: &Path) -> PathBuf {
+        realm_root.join(LOG_NAME)
     }
 
     /// Read `path`; a missing or unreadable file is an empty log (an
@@ -287,16 +287,16 @@ impl std::fmt::Debug for Conversations {
 }
 
 impl Conversations {
-    /// The conversations of the workspace at `context_root`.
+    /// The conversations of the realm at `realm_root`.
     #[must_use]
     pub fn open(
         state: Arc<MobMcpState>,
         registry: Arc<HelperRegistry>,
-        context_root: &Path,
+        realm_root: &Path,
         model: String,
         auth_binding: Option<meerkat_core::AuthBindingRef>,
     ) -> Self {
-        let log_file = Log::path(context_root);
+        let log_file = Log::path(realm_root);
         let log = Log::load(&log_file);
         Self {
             state,

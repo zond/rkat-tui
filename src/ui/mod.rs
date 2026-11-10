@@ -467,6 +467,9 @@ pub enum Msg {
     },
     /// Attach mode: the runner's answer to [`Effect::DecideQuit`].
     QuitDecided(QuitDecision),
+    /// `/rehome <ref>` was checked: leave, stopping the daemon, so the
+    /// state can be adopted once it is gone.
+    Rehoming,
     /// The terminal hung up (SIGHUP): leave at once, as a detach (the
     /// daemon keeps running; unsent messages are saved).
     Hangup,
@@ -641,8 +644,8 @@ pub enum Effect {
     /// answers with one [`Msg::Notice`].
     ContextReport(String),
     /// `/export [file]`: write `text` (the transcript as plain text) to
-    /// `path` (relative to the workspace), or to a fresh file under the
-    /// workspace's `.rkat/tui/` when `None`; answered with a notice.
+    /// `path` (relative to the workspace), or to a fresh file in the
+    /// workspace's realm when `None`; answered with a notice.
     Export {
         /// Where to write, as typed.
         path: Option<String>,
@@ -656,6 +659,11 @@ pub enum Effect {
     /// `/daemon stop`: ask the attached daemon to shut down (attach mode;
     /// answered with a notice).
     DaemonStop,
+    /// `/rehome`: list the state this workspace could adopt (`None`), or
+    /// check that the state named can be adopted, then answer
+    /// [`Msg::Rehoming`] (the runner adopts it once the UI has left and the
+    /// daemon has stopped), else a notice.
+    Rehome(Option<String>),
     /// `/daemon start`: connect to the workspace's daemon again (starting
     /// it when this client may) after the connect failed or the daemon
     /// stopped (answered with notices and the connection's state).
@@ -1445,6 +1453,7 @@ impl App {
             Msg::SteerDelivered(id) => self.pending.show_delivered(&mut self.transcript, id),
             Msg::Recalled { recalled, errors } => self.recalled(&recalled, &errors),
             Msg::QuitDecided(decision) => self.quit_decided(decision, &mut fx),
+            Msg::Rehoming => self.leave(Some(Departure::Terminate), &mut fx),
             Msg::Hangup => self.leave(None, &mut fx),
             Msg::Diff {
                 tool_use_id,

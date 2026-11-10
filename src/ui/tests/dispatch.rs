@@ -534,6 +534,22 @@ fn attached_app() -> App {
     App::new(status)
 }
 
+/// `/rehome` asks the runner; once it checked the state can be adopted,
+/// the UI leaves stopping the daemon (the adoption needs it gone).
+#[test]
+fn rehome_asks_the_runner_and_leaves_stopping_the_daemon() {
+    let mut app = attached_app();
+    assert_eq!(submit(&mut app, "/rehome"), vec![Effect::Rehome(None)]);
+    assert_eq!(
+        submit(&mut app, "/rehome /old/place"),
+        vec![Effect::Rehome(Some("/old/place".into()))]
+    );
+    assert_eq!(
+        app.update(Msg::Rehoming),
+        vec![Effect::Leave(Departure::Terminate), Effect::Quit]
+    );
+}
+
 #[test]
 fn an_attached_quit_asks_the_runner_and_follows_its_decision() {
     let mut app = attached_app();

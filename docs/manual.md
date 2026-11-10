@@ -1003,23 +1003,58 @@ in the realm `tui.toml`; the daemon reads the list and saves the choice.
 
 ## Where things live
 
-All state for a workspace lives inside it, under `<workspace>/.rkat/tui/`:
-the realm (sessions, config with the endpoint connections and model
-profiles, `tui.toml` written by the UI, the approval issuer's
-`approvals.json`, process custody, semantic index), the per-session cost
-records (`tui_cost/`, owner-only), input history, unsent messages, notes,
-the external editor's draft files while Ctrl-G edits them (`drafts/`) and
-logs
-(`logs/rkat-tui.log`). Nothing is keyed by the absolute path, so a renamed
-or moved workspace still continues with `-c`. A `.gitignore` keeps the
-directory out of commits.
+A workspace's state lives outside it, in a directory of its own under the
+config directory: `~/.rkat/tui/workspaces/<id>/` (`<config-dir>/workspaces/<id>/`
+with `--config-dir`), where `<id>` is random, drawn on the workspace's first
+start. It holds the realm (sessions, config with the endpoint connections
+and model profiles, `tui.toml` written by the UI, the approval issuer's
+`approvals.json`, process custody, semantic index), the conversation log,
+the per-session cost records (`tui_cost/`, owner-only), input history,
+unsent messages, workspace notes (`notes/`), the attach cursors, the
+external editor's draft files while Ctrl-G edits them (`drafts/`), logs
+(`logs/rkat-tui.log`), `/export`'s default files and the audit log. The
+directories are owner-only. Nothing of it is in the workspace, so neither
+the agent's shell nor a cloned repository can reach it; what stays in the
+workspace is what the project owns: `.rkat/tui.toml`, `.rkat/mcp.toml`,
+`.rkat/config.toml` (hooks) and `AGENTS.md`, untrusted until `/trust` as
+before.
+
+Each state directory has a `workspace.toml` naming the workspace it belongs
+to (its canonical path, its directory name, its `origin` git remote, when
+it was made and last used). That file is the only thing that says which
+workspace owns which state: nothing in the workspace is read for it. Two
+of them naming the same workspace refuse the start, naming both; remove or
+re-home one. `rkat-tui --list` lists every workspace's state.
+
+**Moving or renaming a workspace** needs one re-home. The state still
+names the old path, so the first start in the new place begins with fresh
+state and offers the old one in a notice (it is not adopted on its own).
+`/rehome <id or old path>` in that TUI stops this workspace's daemon,
+quits, and makes the old state this workspace's; `rkat-tui --rehome <id or
+old path>` in the moved workspace does the same from the shell. Then
+`rkat-tui -c` continues the latest conversation. The fresh state the
+workspace had is set aside, not deleted (`--rehome <its id>` brings it
+back). A re-home is refused while a daemon may hold either state, and for
+state whose workspace still exists. `/rehome` alone lists what could be
+adopted.
+
+**Earlier releases** kept the state in `<workspace>/.rkat/tui/`. It is not
+migrated and never read: a workspace starts with empty history once, and
+each start that finds the old directory says so; delete it when you no
+longer need it.
 
 The workspace is `--workspace <dir>` (`-w`), else the nearest ancestor of the
-current directory that already has `.rkat/tui/` (the search stops at the git
-root and never picks your home directory), else the current directory.
-Running from your home directory requires an explicit `--workspace`.
-`--realm`, `--isolated` and `--state-root` opt into the shared realm model
-that `rkat` uses instead.
+current directory that has state (the search stops at the git root and never
+picks your home directory), else the current directory. Running from your
+home directory requires an explicit `--workspace`. `--realm`, `--isolated`
+and `--state-root` opt into the shared realm model that `rkat` uses instead.
+
+The agent's confined shell must not reach the state directory: the daemon
+refuses to start, and the TUI too for its `!` shell, when the confinement
+would grant it or a directory holding it. `-w ~` with the default config
+directory is such a case (the workspace holds `~/.rkat/tui`), and so is a
+`--confinement-write` (or `[confinement] extra_write`) of `~/.rkat`; pass
+`--config-dir <dir outside the workspace>`, or drop the grant.
 
 User-global files live in one config directory: `--config-dir <dir>`, else
 `~/.rkat/tui` (under Meerkat's own user config root `~/.rkat`;
@@ -1032,17 +1067,14 @@ while `~/.rkat/tui` does not exist and such a directory does, it is used as
 is, with a one-line start-up notice naming the new default and
 `--config-dir`. Nothing is moved; move the whole directory (the trust
 records included, whose names do not depend on where the directory is) to
-switch. With `--workspace ~` the workspace's own state directory is
-`~/.rkat/tui` too: rkat-tui refuses to start (exit 2) when the config
-directory and the realm directory are the same or one holds the other,
-naming both, so pass `--config-dir <other dir>` there. The price-list cache lives
+switch. With `--realm` or `--state-root`, rkat-tui refuses to start
+(exit 2) when the config directory and that realm's directory are the same
+or one holds the other, naming both. The price-list cache lives
 in the user cache directory (`<config-dir>/cache` when `--config-dir` is
 given).
 
-**The audit log** is the one record of the workspace kept outside it:
-`audit.jsonl` beside the daemon's endpoint file
-(`$XDG_STATE_HOME/rkat-tui/<key>/`, else `~/.local/state/rkat-tui/<key>/`),
-owner-only, written by the daemon alone. It holds one JSON line per
+**The audit log** is `audit.jsonl` in the workspace's state directory, so
+it follows a re-home; owner-only, written by the daemon alone. It holds one JSON line per
 approval decision (time, agent, helper, session, run, tool, the deciding
 argument whole, tier, `allow` or `deny`, who decided: `rule:<id>`,
 `classifier`, `human:<connection>`, `mode`, `policy`, `unattended`,
@@ -1050,8 +1082,7 @@ argument whole, tier, `allow` or `deny`, who decided: `rule:<id>`,
 switch, rule added or removed, `/trust`, `/rules trust`, an agent
 retired, daemon start and stop). It is out of the agent's reach: its
 confined shell is never granted the directory (the daemon refuses to
-start otherwise) and its file tools refuse to read it. Inside the
-workspace it would not be, since the shell can write `.rkat/` on Linux.
+start otherwise) and its file tools refuse to read it.
 Past 50 MB it is renamed `audit.1.jsonl` (one older generation is kept).
 `/audit [n]` shows its last lines for your agent; `rkat-tui --audit`
 prints the whole log, the older generation first.

@@ -48,15 +48,20 @@ fn allow_shell(args: &[&str]) -> Setup {
     }
 }
 
-/// [`allow_shell`] with this host's real paths, the endpoint file outside
-/// the temp dir (the shell is granted the temp dir, and the daemon refuses
-/// an endpoint file its shell could read). Keep the directory alive.
+/// [`allow_shell`] with this host's real paths, the endpoint file and the
+/// config directory (which holds the workspace's realm) outside the temp
+/// dir (the shell is granted the temp dir, and the daemon refuses an
+/// endpoint file its shell could read and a realm it could reach). Keep
+/// the directory alive.
 fn allow_shell_detected(args: &[&str]) -> (Setup, tempfile::TempDir) {
     let state = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let cfg = state.path().join("cfg");
+    let mut args = args.to_vec();
+    args.extend(["--config-dir", cfg.to_str().unwrap()]);
     let setup = Setup {
         host_paths: Some(HostPaths::detect()),
         endpoint_file: Some(state.path().join("mob.endpoint")),
-        ..Setup::args(args)
+        ..Setup::args(&args)
     };
     (setup, state)
 }
@@ -470,12 +475,13 @@ async fn no_confinement_below_a_realm_policy_is_a_typed_startup_error() {
     );
 }
 
-/// The workspace realm's `config.toml` sets no confinement (S1 of the
-/// security review: the agent's shell can write it on Linux, and a clone
-/// can carry it): its `[confinement]` is ignored with a notice, here one
-/// that would have refused `off`, and the command line decides.
+/// The workspace realm's `config.toml` is the user's own now that the
+/// realm lives under the config directory, out of the agent's shell's and a
+/// clone's reach: its `[confinement]` is the floor, as a `--state-root`
+/// realm's is (before the move it was ignored with a notice, S1 of the
+/// security review).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_workspace_realms_confinement_table_is_ignored_with_a_notice() {
+async fn the_workspace_realms_confinement_table_is_a_floor() {
     let ws = Workspace::new();
     let realm = rkat_tui::bootstrap::resolve_scope(&common::args_for(&ws.root))
         .unwrap()
@@ -486,18 +492,21 @@ async fn the_workspace_realms_confinement_table_is_ignored_with_a_notice() {
     )
     .unwrap();
     let llm = ScriptedLlmClient::new(Vec::new());
-    let mut attached =
-        Attached::try_start_with(&ws.root, &llm, allow_shell(&["--confinement=off"]))
-            .await
-            .unwrap_or_else(|err| panic!("the workspace realm's table still applies: {err}"));
-    attached
-        .client
-        .wait_for(|msg| {
-            matches!(msg, rkat_tui::ui::Msg::Notice { text, .. } if text.contains("[confinement] table is ignored"))
-        })
-        .await;
-    attached.client.quit().await;
-    attached.daemon.stop().await;
+    let Err(err) =
+        Attached::try_start_with(&ws.root, &llm, allow_shell(&["--confinement=off"])).await
+    else {
+        panic!("--no-confinement started below the workspace realm's policy");
+    };
+    let DaemonError::Bootstrap(err) = err else {
+        panic!("not a bootstrap error: {err}");
+    };
+    assert!(
+        matches!(
+            &*err,
+            TuiError::Confinement(rkat_tui::ConfinementError::BelowRealmFloor { .. })
+        ),
+        "{err}"
+    );
 }
 
 /// A `!` command runs under the shell's own confinement: it writes the
@@ -609,7 +618,7 @@ async fn cargo_builds_under_the_narrowed_cargo_home_grant() {
 }
 
 /// Recommendation 11: the audit log is out of the confined shell's reach.
-/// It lies beside the endpoint file, which the daemon refuses to start
+/// It lies in the workspace's realm, which the daemon refuses to start
 /// with inside any grant of its shell; with this host's real paths a
 /// confined command can neither read nor append to it, while the file
 /// holds that very command's decision (written before the command ran).
@@ -621,8 +630,11 @@ async fn the_confined_shell_cannot_read_or_write_the_audit_log() {
         println!("SKIPPED: --confinement=workspace is unavailable on this host: {reason}");
         return;
     }
-    let (setup, state) = allow_shell_detected(&["--confinement=workspace"]);
-    let log = state.path().join(rkat_tui::daemon::audit::AUDIT_FILE);
+    let (setup, _state) = allow_shell_detected(&["--confinement=workspace"]);
+    let log = rkat_tui::bootstrap::resolve_scope(&setup.command_line(&ws.root))
+        .unwrap()
+        .realm_root()
+        .join(rkat_tui::daemon::audit::AUDIT_FILE);
     let command = leak(format!(
         "cat '{log}' >/dev/null 2>&1 && echo LOG-READ; echo forged >> '{log}' 2>/dev/null && echo LOG-WRITTEN; echo END",
         log = log.display()
@@ -760,31 +772,116 @@ async fn the_confined_shell_cannot_read_the_cargo_credentials() {
     assert!(!output.contains("CREDENTIALS-VISIBLE"), "{output}");
 }
 
-/// Recommendation 12 asks that the confined shell cannot write `.rkat/`
-/// or `.git/`. That does not hold yet, and this test says so: on Linux the
-/// workspace grant is writable whole, and meerkat-sandbox 0.9.11 can
-/// express neither a deny list nor a read-only grant nested in it (engine
-/// ask 8 in `docs/mob-split.md`). What rkat-tui reads back from `.rkat/`
-/// is trusted by digest instead. When the engine lands the bind, this test
-/// fails and is turned around into the claim.
+/// Recommendation 12 asks that the confined shell cannot write the realm
+/// or `.git/`. The realm half holds: the realm lives under the config
+/// directory, outside every grant (the daemon refuses to start otherwise),
+/// so with this host's real paths a confined command can neither write nor
+/// list it. The `.git/` half does not hold yet, and this test says so: on
+/// Linux the workspace grant is writable whole, and meerkat-sandbox 0.9.11
+/// can express neither a deny list nor a read-only grant nested in it
+/// (engine ask 8 in `docs/mob-split.md`). When the engine lands the bind,
+/// the `.git/` assertion fails and is turned around into the claim.
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_realm_and_git_directories_stay_writable_until_engine_ask_8() {
+async fn the_realm_is_out_of_reach_and_git_stays_writable_until_engine_ask_8() {
     let ws = Workspace::new();
-    std::fs::create_dir_all(ws.root.join(".git/hooks")).unwrap();
-    std::fs::create_dir_all(ws.root.join(".rkat/tui")).unwrap();
-    let Some(output) = run_confined(
-        &ws,
-        "workspace",
-        "echo x > .git/hooks/probe && echo GIT-WRITTEN; echo x > .rkat/tui/probe && echo REALM-WRITTEN; echo END",
-    )
-    .await
-    else {
+    if let Some(reason) = sandbox_unavailable(&ws.root, ConfinementArg::Workspace).await {
+        println!("SKIPPED: --confinement=workspace is unavailable on this host: {reason}");
         return;
-    };
+    }
+    std::fs::create_dir_all(ws.root.join(".git/hooks")).unwrap();
+    let (setup, _state) = allow_shell_detected(&["--confinement=workspace"]);
+    let realm = rkat_tui::bootstrap::resolve_scope(&setup.command_line(&ws.root))
+        .unwrap()
+        .realm_root();
+    let command = leak(format!(
+        "echo x > .git/hooks/probe && echo GIT-WRITTEN; echo x > '{realm}/probe' 2>/dev/null && echo REALM-WRITTEN; ls '{realm}' >/dev/null 2>&1 && echo REALM-LISTED; echo END",
+        realm = realm.display()
+    ));
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Tool {
+            id: "sh",
+            name: "shell",
+            args: json!({ "command": command }),
+        },
+        Step::Text("done"),
+    ]);
+    let mut rig = Attached::try_start_with(&ws.root, &llm, setup)
+        .await
+        .unwrap_or_else(|err| panic!("daemon start: {err}"));
+    rig.send(Effect::StartTurn("probe".into()));
+    rig.turn_finished().await;
+    let output = tool_text(&llm.requests()[1], "sh");
+    rig.quit().await;
     assert!(output.contains("END"), "{output}");
+    assert!(!output.contains("REALM-WRITTEN"), "{output}");
+    assert!(!output.contains("REALM-LISTED"), "{output}");
+    assert!(!realm.join("probe").exists());
     assert!(
-        output.contains("GIT-WRITTEN") && output.contains("REALM-WRITTEN"),
-        "the engine now keeps them read only: make this test the claim ({output})"
+        output.contains("GIT-WRITTEN"),
+        "the engine now keeps .git/ read only: make this half the claim ({output})"
     );
+}
+
+/// Decision 5 of the realm move: a confinement plan that reaches the realm
+/// refuses the start, in the daemon and for the client's `!` shell alike:
+/// a workspace that holds the config directory (`-w` at an ancestor of
+/// the realm, as `-w ~` with the default `~/.rkat/tui`), and an extra
+/// write grant of the config directory.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_shell_that_could_reach_the_realm_refuses_the_start() {
+    let ws = Workspace::new();
+    if let Some(reason) = sandbox_unavailable(&ws.root, ConfinementArg::Workspace).await {
+        println!("SKIPPED: --confinement=workspace is unavailable on this host: {reason}");
+        return;
+    }
+    let ancestor = ws.root.parent().unwrap().to_path_buf();
+    let cfg = common::config_dir_for(&ws.root);
+    std::fs::create_dir_all(&cfg).unwrap();
+    let cases: [(&Path, Vec<&str>); 2] = [
+        (&ancestor, vec!["--confinement=workspace"]),
+        (
+            &ws.root,
+            vec![
+                "--confinement=workspace",
+                "--confinement-write",
+                cfg.to_str().unwrap(),
+            ],
+        ),
+    ];
+    for (workspace, extra) in cases {
+        let mut extra = extra;
+        extra.extend(["--config-dir", cfg.to_str().unwrap()]);
+        let args = common::args_with(workspace, &extra);
+        let llm = ScriptedLlmClient::new(Vec::new());
+        let options = rig::Running::options(workspace, &llm)
+            .with_bootstrap(rkat_tui::bootstrap::BootstrapOptions {
+                host_paths: Some(HostPaths::default()),
+                ..rig::Running::bootstrap(&llm)
+            })
+            .with_endpoint_file(ws.sibling("state").join("mob.endpoint"));
+        let refused = rig::Running::try_start_with(&args, options).await;
+        let Err(DaemonError::Bootstrap(err)) = refused else {
+            panic!("the daemon started with the realm in reach: {workspace:?} {extra:?}");
+        };
+        let TuiError::RealmExposed { realm, grant } = &*err else {
+            panic!("not the realm refusal: {err}");
+        };
+        assert!(realm.starts_with(&cfg), "{realm:?}");
+        assert!(realm.starts_with(grant), "{grant:?}");
+        // The client's `!` shell is planned from the same flags: refused too.
+        let layers = rkat_tui::bootstrap::read_layers(&args).unwrap();
+        let client = rkat_tui::client::configure_with(
+            layers,
+            &args,
+            rkat_tui::cli::AttachMode::Existing,
+            &HostPaths::default(),
+        )
+        .await;
+        assert!(
+            matches!(client, Err(TuiError::RealmExposed { .. })),
+            "{:?}",
+            client.err()
+        );
+    }
 }

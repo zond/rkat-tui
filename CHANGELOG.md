@@ -9,6 +9,15 @@ design.
 
 ### Security
 
+- A workspace's state (sessions, approvals, rules, conversations, notes,
+  the audit log) no longer lives in `<workspace>/.rkat/tui/`, where the
+  agent's confined shell could rewrite it and a clone could carry it,
+  but in `~/.rkat/tui/workspaces/<random id>/` (under `--config-dir` when
+  given). The daemon refuses to start, and so does the TUI for its `!`
+  shell, when the shell's confinement would reach that directory: a
+  workspace that holds it (`-w ~` with the default config directory), or
+  a `--confinement-write`/`extra_write` grant of `~/.rkat`. The agent's
+  file tools cannot read it either.
 - The manual's "Security decisions" says what rkat-tui does where the
   review asked for a choice: the network stays on by default
   (`--confinement=strict` turns it off), detached agents have no idle
@@ -17,9 +26,10 @@ design.
   until asked.
 - The sandbox's claims are pinned by tests on Linux: a confined command
   does not see `~/.ssh` or the Cargo home's credentials, and `strict`
-  has no network. It can still write `.rkat/` and `.git/` inside the
-  workspace (the engine cannot bind them read only yet); a test pins that
-  gap too, so it is noticed when the engine closes it.
+  has no network, and it can neither read nor write the workspace's
+  state directory. It can still write `.git/` inside the workspace (the
+  engine cannot bind it read only yet); a test pins that gap too, so it
+  is noticed when the engine closes it.
 - CI checks the dependencies with `cargo deny` (`deny.toml`): RustSec
   advisories, the licence allow-list and crates.io as the only source.
   Two advisories without a fix this release can take are ignored with a
@@ -31,8 +41,8 @@ design.
   command or paths whole, the tier, the verdict and who decided: a rule,
   the classifier, you through which connection, the mode, the policy) and
   every change of mode, rules, trust and agents, one JSON line each, in
-  `audit.jsonl` beside its endpoint file (outside the workspace and the
-  agent's reach; rotated once at 50 MB). `/audit [n]` shows your agent's
+  `audit.jsonl` in the workspace's state directory (outside the
+  workspace and the agent's reach; rotated once at 50 MB). `/audit [n]` shows your agent's
   last lines, `rkat-tui --audit` prints it.
 - A turn another agent's message started on your agent is unattended
   while no TUI is attached to it: an action that would need review is
@@ -156,6 +166,18 @@ design.
 
 ### Added
 
+- `/rehome [id|old path]` and `rkat-tui --rehome <id|old path>` adopt the
+  state of a workspace that was moved or renamed: the state's manifest
+  names the new place from then on, and `-c` continues its latest
+  conversation there. `/rehome` alone lists the state that could be
+  adopted; with a reference it stops this workspace's daemon and quits
+  first. The state the workspace had is set aside, never deleted
+  (`--rehome <its id>` brings it back). Refused while a daemon may hold
+  either. A start in a workspace with no state while other workspaces'
+  directories are gone offers their state instead of adopting any.
+- `--list` also lists every workspace's state: its id, the workspace
+  (`gone` when it no longer exists), the git remote, the last use and
+  whether a daemon runs for it.
 - `/daemon start` connects to the workspace's daemon again, starting it
   when this `rkat-tui` may: after a failed attach or a `/daemon stop`.
 - The daemon names its build (version and git commit) when a client
@@ -246,6 +268,16 @@ design.
 
 ### Changed
 
+- A workspace's state moved out of the workspace, into
+  `~/.rkat/tui/workspaces/<id>/`, each directory with a `workspace.toml`
+  naming the workspace it belongs to. Nothing is migrated: a
+  `<workspace>/.rkat/tui/` of an earlier release is never read (a start
+  says once that it is unused and can be deleted), so a workspace starts
+  with empty history once. A workspace that is moved or renamed no
+  longer keeps its sessions by itself: the start in the new place gets
+  fresh state and offers the old one. The audit log moved there too,
+  `/export` writes its default file there, and the daemon's endpoint
+  directory is removed again when the daemon stops.
 - `/quit` retires this rkat-tui's agent when other clients are attached
   to other agents (a running turn is interrupted first); its
   conversation stays for `/resume` and `--resume`, and nothing can wake

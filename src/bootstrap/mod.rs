@@ -31,7 +31,6 @@
 //! loaded once and given to every session build as its declarative servers.
 
 pub mod approval;
-pub mod committed;
 pub mod confinement;
 pub mod credentials;
 pub mod dirs;
@@ -40,6 +39,7 @@ pub mod mcp;
 pub mod persona;
 pub mod project_trust;
 pub mod realm_config;
+pub mod realm_home;
 pub mod scope;
 pub mod trust;
 
@@ -210,6 +210,27 @@ pub fn shell_plan(
     )?)
 }
 
+/// Refuse a shell confinement `plan` that reaches the realm directory
+/// `realm` ([`realm_home::exposing_grant`]): the confined shell must not
+/// read or rewrite the sessions, approvals, rules or the audit log. An
+/// unconfined shell is the trusted host and passes.
+///
+/// # Errors
+///
+/// [`TuiError::RealmExposed`] naming the grant.
+pub fn check_realm_private(
+    plan: &ConfinementPlan,
+    realm: &std::path::Path,
+) -> Result<(), TuiError> {
+    match realm_home::exposing_grant(plan, realm) {
+        Some(grant) => Err(TuiError::RealmExposed {
+            realm: realm.to_path_buf(),
+            grant,
+        }),
+        None => Ok(()),
+    }
+}
+
 /// [`user_shell`] from a [`shell_plan`].
 #[must_use]
 pub fn user_shell_with(layers: &Layers, plan: &ConfinementPlan) -> crate::user_shell::UserShell {
@@ -243,7 +264,14 @@ pub struct Layers {
 /// when the layers cannot be read.
 pub fn read_layers(args: &Args) -> Result<Layers, TuiError> {
     let scope = resolve_scope(args)?;
-    let (layered, notices) = approval::load_layers(&scope, args)?;
+    let (layered, layer_notices) = approval::load_layers(&scope, args)?;
+    let notices = scope
+        .notices
+        .iter()
+        .cloned()
+        .chain(scope.offer.clone())
+        .chain(layer_notices)
+        .collect();
     Ok(Layers {
         scope,
         layered,
@@ -401,6 +429,7 @@ pub async fn assemble(
     )?;
 
     let realm_root = realm_paths_in(&scope.state_root, &scope.realm_id).root;
+    check_realm_private(&confinement, &realm_root)?;
     let (manifest, persistence) = meerkat::open_realm_persistence_in(
         &scope.state_root,
         &scope.realm_id,
@@ -856,8 +885,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ws = std::fs::canonicalize(dir.path()).unwrap();
         let ws_arg = ws.to_str().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        let cfg_arg = cfg.path().to_str().unwrap();
         for mode in ["workspace", "strict", "off"] {
-            let args = args(&["-w", ws_arg, "--confinement", mode]);
+            let args = args(&["-w", ws_arg, "--config-dir", cfg_arg, "--confinement", mode]);
             let scope = resolve_scope(&args).unwrap();
             let shell = match confinement::lower(
                 args.effective_confinement(),

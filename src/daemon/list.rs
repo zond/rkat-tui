@@ -1,5 +1,6 @@
 //! `--list` (`rkat-tui --list`, `rkat-tui-mob --list`): every daemon whose
-//! endpoint file exists, one line each.
+//! endpoint file exists, one line each, then every workspace's realm under
+//! the config directory ([`realm_lines`]: id, workspace, last use, daemon).
 //!
 //! The files are found where the daemon writes them
 //! ([`super::endpoint::search_dirs`]: `<state>/rkat-tui/*/mob.endpoint`,
@@ -26,6 +27,8 @@ use std::time::Duration;
 
 use super::endpoint::{self, Endpoint};
 use super::protocol::{self, Status};
+use crate::bootstrap::GlobalDirs;
+use crate::bootstrap::realm_home::{self, Home};
 
 /// How long one daemon may take to answer.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -251,19 +254,66 @@ pub fn lines(listed: &Listed, now: chrono::DateTime<chrono::Utc>) -> Vec<String>
     lines
 }
 
+/// What `--list` says of the daemon of `home` among `listed`: the daemon
+/// of its workspace's own realm, by the workspace path its endpoint file
+/// names.
+#[must_use]
+pub fn daemon_of(home: &Home, listed: &[Listed]) -> String {
+    let daemon = home.manifest.path.as_ref().and_then(|path| {
+        listed.iter().find(|listed| {
+            listed.endpoint.realm.is_none() && listed.endpoint.workspace.as_ref() == Some(path)
+        })
+    });
+    match daemon {
+        None => "no daemon".to_string(),
+        Some(listed) => match &listed.found {
+            Found::Live(_) => format!("daemon pid {}", listed.endpoint.pid),
+            Found::Stale { .. } => "no daemon (a stale endpoint file)".to_string(),
+            Found::Unknown(why) => format!("daemon unknown ({why})"),
+        },
+    }
+}
+
+/// One line per realm of `homes`: its id, its workspace (`(gone)` when
+/// that no longer exists, or `set aside, was …`), the git remote, the last
+/// use, and its daemon among `listed`, tab-separated.
+#[must_use]
+pub fn realm_lines(homes: &[Home], listed: &[Listed]) -> Vec<String> {
+    homes
+        .iter()
+        .map(|home| format!("{}\t{}", home.describe(), daemon_of(home, listed)))
+        .collect()
+}
+
 /// Print every daemon, its agents under it (to stderr when there is
-/// none).
-pub async fn print(explicit: Option<&Path>) {
+/// none), then every workspace's realm under `global`'s config directory.
+pub async fn print(explicit: Option<&Path>, global: Option<&GlobalDirs>) {
     let listed = list(explicit).await;
     if listed.is_empty() {
         eprintln!("no rkat-tui-mob daemon has an endpoint file");
-        return;
     }
     let now = chrono::Utc::now();
     for listed in &listed {
         for line in lines(listed, now) {
             println!("{line}");
         }
+    }
+    let Some(global) = global else {
+        return;
+    };
+    let root = realm_home::root(global);
+    match realm_home::scan(&root) {
+        Ok(homes) if homes.is_empty() => {
+            eprintln!("no workspace has state in {}", root.display());
+        }
+        Ok(homes) => {
+            println!();
+            println!("workspace state in {}:", root.display());
+            for line in realm_lines(&homes, &listed) {
+                println!("{line}");
+            }
+        }
+        Err(err) => eprintln!("rkat-tui: {err}"),
     }
 }
 

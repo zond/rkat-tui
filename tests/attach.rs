@@ -193,7 +193,7 @@ async fn a_client_that_left_mid_turn_sees_the_turn_once_on_reattach() {
     // Detach mid-turn; the turn goes on in the daemon.
     client.quit().await;
     gate.notify_one();
-    let cursor = CursorFile::of_workspace(&ws.root)
+    let cursor = CursorFile::of_realm(&common::realm_of(&ws.root))
         .for_agent(&daemon.agent)
         .load()
         .expect("cursor saved");
@@ -275,7 +275,7 @@ async fn the_client_reconnects_to_a_restarted_daemon() {
             .any(|b| matches!(b, rkat_tui::ui::Block::User { text } if text == "one")),
         "{blocks:?}"
     );
-    let cursor = CursorFile::of_workspace(&ws.root).for_agent(&daemon.agent);
+    let cursor = CursorFile::of_realm(&common::realm_of(&ws.root)).for_agent(&daemon.agent);
     let before = cursor.load().unwrap();
     client.send(Effect::StartTurn("two".into()));
     assert_eq!(
@@ -359,7 +359,7 @@ async fn the_task_tools_fill_the_checklist_over_the_daemon() {
     for effect in fx {
         client.send(effect);
     }
-    let realm = ws.root.join(".rkat/tui/tui.toml");
+    let realm = common::realm_of(&ws.root).join("tui.toml");
     within(async {
         loop {
             let text = std::fs::read_to_string(&realm).unwrap_or_default();
@@ -551,7 +551,10 @@ async fn attach_to_a_directory_resolves_locally_against_its_workspace() {
     // served one: the workspace above it is found.
     let sub = served.root.join("src");
     std::fs::create_dir_all(&sub).unwrap();
-    let args = common::args_with(&elsewhere.root, &[]);
+    // The same user, so the same config directory: the served
+    // workspace's realm is found from it by its manifest.
+    let cfg = common::config_dir_for(&served.root);
+    let args = common::args_with(&elsewhere.root, &["--config-dir", cfg.to_str().unwrap()]);
     let mut config = rkat_tui::client::configure(&args, AttachTarget::Directory(sub))
         .await
         .unwrap();
@@ -761,7 +764,7 @@ fn the_daemon_is_the_default_and_a_tui_toml_attach_key_is_ignored_with_a_notice(
             .collect::<Vec<_>>()
     };
     assert!(notices(&args).iter().all(|n| !n.contains("attach")));
-    let user = ws.root.join(".cfg");
+    let user = common::config_dir_for(&ws.root);
     std::fs::create_dir_all(&user).unwrap();
     std::fs::write(user.join("tui.toml"), "attach = false\n").unwrap();
     let said = notices(&args);
@@ -870,7 +873,7 @@ async fn a_reconnect_restarts_a_daemon_that_died() {
     let ws = Workspace::new();
     // The real daemon below needs an endpoint with a key (any variable that
     // is set: it never calls the endpoint).
-    let user = ws.root.join(".cfg");
+    let user = common::config_dir_for(&ws.root);
     std::fs::create_dir_all(&user).unwrap();
     std::fs::write(
         user.join("tui.toml"),
@@ -1034,12 +1037,21 @@ async fn unsent_messages_are_saved_at_quit_and_announced_at_the_next_attach() {
 #[tokio::test]
 async fn attach_mode_runs_on_the_layers_read_at_start() {
     let ws = Workspace::new();
-    let args = common::args_with(&ws.root, &["--isolated"]);
+    let realms = ws.sibling("realms");
+    let args = common::args_with(
+        &ws.root,
+        &["--isolated", "--state-root", realms.to_str().unwrap()],
+    );
     let layers = rkat_tui::bootstrap::read_layers(&args).unwrap();
     let realm = layers.scope.realm_id.clone();
-    let config = rkat_tui::client::configure_with(layers, &args, AttachMode::Existing)
-        .await
-        .unwrap();
+    let config = rkat_tui::client::configure_with(
+        layers,
+        &args,
+        AttachMode::Existing,
+        &rkat_tui::bootstrap::HostPaths::default(),
+    )
+    .await
+    .unwrap();
     assert_eq!(config.scope.realm_id, realm);
     assert_ne!(
         rkat_tui::bootstrap::read_layers(&args)

@@ -123,6 +123,7 @@ impl DaemonCli {
             (tui.attach.is_some(), "--attach"),
             (tui.attach_token_file.is_some(), "--attach-token-file"),
             (tui.attach_insecure, "--attach-insecure"),
+            (tui.rehome.is_some(), "--rehome"),
         ];
         match refused.into_iter().find(|(given, _)| *given) {
             Some((_, flag)) => Err(DaemonError::Unsupported(flag)),
@@ -541,12 +542,12 @@ impl Daemon {
             bootstrap::assemble(layers, config, args, options.bootstrap, LEASE_SURFACE).await?;
         let file = choose_endpoint_file(&parts.confinement, &files)?;
         let mut composed = engine::compose(parts, options.policy)?;
-        // The audit log beside the endpoint file: owner-only, outside the
-        // workspace and every grant of the agent's shell, sealed for its
-        // file tools (see `audit`).
-        let audit = match file.parent().map(audit::AuditLog::open) {
-            Some(Ok(log)) => Some(log),
-            Some(Err(err)) => {
+        // The audit log in the realm: owner-only, outside the workspace
+        // and every grant of the agent's shell, secret to its file tools
+        // (see `audit`); it follows a re-home.
+        let audit = match audit::AuditLog::open(&composed.scope.realm_root()) {
+            Ok(log) => Some(log),
+            Err(err) => {
                 tracing::warn!(error = %err, "no audit log this run");
                 composed
                     .startup_notices
@@ -555,13 +556,12 @@ impl Daemon {
                     )));
                 None
             }
-            None => None,
         };
         orchestrator::ensure_mob(&composed.state, &composed.root).await?;
         let conversations = conversations::Conversations::open(
             Arc::clone(&composed.state),
             Arc::clone(&composed.root.registry),
-            &composed.scope.context_root,
+            &composed.scope.realm_root(),
             composed.root.model.clone(),
             composed.root.auth_binding.clone(),
         );
@@ -999,7 +999,15 @@ async fn stop_mobs(state: &Arc<MobMcpState>) {
 /// [`DaemonError`] when it cannot start or does not shut down cleanly.
 pub async fn run(cli: DaemonCli) -> Result<(), DaemonError> {
     if cli.tui.list {
-        list::print(cli.endpoint_file.as_deref()).await;
+        list::print(
+            cli.endpoint_file.as_deref(),
+            bootstrap::GlobalDirs::resolve(
+                cli.tui.config_dir.as_deref(),
+                cli.tui.user_config_root.as_deref(),
+            )
+            .as_ref(),
+        )
+        .await;
         return Ok(());
     }
     cli.check()?;

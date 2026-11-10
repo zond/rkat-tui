@@ -501,7 +501,7 @@ async fn a_session_outside_the_mob_cannot_be_seated_on_the_member() {
 
     // The engine's refusal, past the daemon's own log check (the session
     // recorded as the agent's own, which the restarted daemon restores).
-    let path = Log::path(&ws.root);
+    let path = Log::path(&common::realm_of(&ws.root));
     let mut log = Log::load(&path);
     log.touch(&in_process_id, &agent);
     log.save(&path).unwrap();

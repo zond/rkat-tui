@@ -148,8 +148,9 @@ fn args_with_user_root(root: &Path) -> rkat_tui::Args {
     use clap::Parser as _;
     let home = root.parent().unwrap().join("home");
     std::fs::create_dir_all(&home).unwrap();
+    let cfg = common::config_dir_for(root);
+    let cfg = cfg.to_str().unwrap();
     let root = root.to_str().unwrap();
-    let cfg = format!("{root}/.cfg");
     rkat_tui::Args::try_parse_from([
         "rkat-tui",
         "-w",
@@ -157,7 +158,7 @@ fn args_with_user_root(root: &Path) -> rkat_tui::Args {
         "--user-config-root",
         home.to_str().unwrap(),
         "--config-dir",
-        &cfg,
+        cfg,
         "--no-pricing-fetch",
         "--model",
         common::MODEL,
@@ -1431,10 +1432,7 @@ async fn every_gate_decision_is_one_audit_line_naming_who_decided() {
     use rkat_tui::daemon::audit::{AUDIT_FILE, Line};
     let ws = Workspace::new();
     std::fs::write(ws.root.join("a.txt"), "a\n").unwrap();
-    let log = endpoint_file_for(&ws.root)
-        .parent()
-        .unwrap()
-        .join(AUDIT_FILE);
+    let log = common::realm_of(&ws.root).join(AUDIT_FILE);
     let llm = ScriptedLlmClient::new(vec![
         Step::Tool {
             id: "r1",

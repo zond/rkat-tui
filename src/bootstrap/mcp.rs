@@ -144,9 +144,17 @@ mod tests {
             home.to_str().unwrap(),
             "--config-dir",
             base.join("cfg").to_str().unwrap(),
+            // A realm inside the workspace (`--state-root`), where its
+            // config is a project input: the workspace's own realm lives
+            // under the config directory and is the user's.
+            "--realm",
+            "tui",
+            "--state-root",
+            ws.join(".rkat").to_str().unwrap(),
         ])
         .unwrap();
         let scope = super::super::resolve_scope(&args).unwrap();
+        std::fs::create_dir_all(scope.realm_root()).unwrap();
         (dir, ws, scope)
     }
 

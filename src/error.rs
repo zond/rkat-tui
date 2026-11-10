@@ -173,10 +173,23 @@ pub enum TuiError {
     /// placed, or it cannot start).
     #[error(transparent)]
     Daemon(Box<crate::daemon::DaemonError>),
-    /// The workspace realm directory came with the repository (tracked by
-    /// git, or present without the `.gitignore` rkat-tui writes).
+    /// The workspace's realm cannot be found, made or re-homed.
     #[error(transparent)]
-    CommittedRealm(#[from] crate::bootstrap::committed::Committed),
+    RealmHome(#[from] crate::bootstrap::realm_home::HomeError),
+    /// The shell's confinement plan reaches the realm directory: the
+    /// agent's (or the `!`) shell could read or rewrite the sessions, the
+    /// approvals and the audit log.
+    #[error(
+        "refusing to start: the confined shell is granted {}, which reaches this workspace's state {} (sessions, approvals, rules, the audit log); drop that grant, or keep the state elsewhere with --config-dir",
+        grant.display(),
+        realm.display()
+    )]
+    RealmExposed {
+        /// The realm directory.
+        realm: PathBuf,
+        /// The shell's grant that reaches it.
+        grant: PathBuf,
+    },
     /// `--attach=DIRECTORY`: no daemon has an endpoint file for that
     /// workspace.
     #[error(
@@ -221,7 +234,8 @@ impl TuiError {
             | Self::Approval(_)
             | Self::Confinement(_)
             | Self::ConfigDirCollision { .. }
-            | Self::CommittedRealm(_)
+            | Self::RealmHome(_)
+            | Self::RealmExposed { .. }
             | Self::NoDaemonAt { .. }
             | Self::AttachAddress { .. }
             | Self::NotATerminal => 2,

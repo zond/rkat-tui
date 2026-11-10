@@ -120,9 +120,16 @@ pub(crate) fn load_layers(
 /// there is no user config directory: nothing is trusted across runs).
 #[must_use]
 pub fn trust_record(scope: &RuntimeScope) -> HostTrustRecord {
-    match &scope.global {
-        Some(global) => HostTrustRecord::open(&global.config, &scope.context_root, &scope.realm_id),
-        None => HostTrustRecord::in_memory(&scope.context_root),
+    match (&scope.global, &scope.home) {
+        // The workspace's own realm: the record follows it through a
+        // re-home.
+        (Some(global), Some(home)) => {
+            HostTrustRecord::open_for_realm(&global.config, &scope.context_root, &home.id)
+        }
+        (Some(global), None) => {
+            HostTrustRecord::open(&global.config, &scope.context_root, &scope.realm_id)
+        }
+        (None, _) => HostTrustRecord::in_memory(&scope.context_root),
     }
 }
 

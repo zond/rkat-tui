@@ -122,7 +122,19 @@ impl HostTrustRecord {
     /// missing or unreadable record is empty: nothing is trusted.
     #[must_use]
     pub fn open(config_dir: &Path, workspace: &Path, realm_id: &str) -> Self {
-        let key = workspace_key(workspace, realm_id);
+        Self::open_keyed(config_dir, workspace, &workspace_key(workspace, realm_id))
+    }
+
+    /// The record of the workspace's own realm `realm_id` (one under the
+    /// config directory, [`super::realm_home`]), at `workspace`: keyed by
+    /// the realm id alone, which never changes, so the record follows the
+    /// realm through a re-home (the files in it are workspace-relative).
+    #[must_use]
+    pub fn open_for_realm(config_dir: &Path, workspace: &Path, realm_id: &str) -> Self {
+        Self::open_keyed(config_dir, workspace, &realm_key(realm_id))
+    }
+
+    fn open_keyed(config_dir: &Path, workspace: &Path, key: &str) -> Self {
         let path = config_dir.join(TRUST_DIR).join(format!("{key}.toml"));
         let record = std::fs::read_to_string(&path)
             .ok()
@@ -299,6 +311,15 @@ pub fn hex_digest(bytes: &[u8]) -> String {
             let _ = write!(out, "{b:02x}");
             out
         })
+}
+
+/// The record file name of a workspace's own realm: a digest of its id
+/// (distinct from every [`workspace_key`] by its prefix).
+fn realm_key(realm_id: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"realm\0");
+    hasher.update(realm_id.as_bytes());
+    hex_digest(&hasher.finalize()).chars().take(32).collect()
 }
 
 /// The record file name of a workspace and realm: a digest of both, so the

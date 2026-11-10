@@ -199,7 +199,10 @@ pub enum ClientError {
 }
 
 /// [`configure_with`] for `target` on the layers of the workspace it
-/// names, read now.
+/// names, read now, its shells planned over [`HostPaths::default`]
+/// (nothing outside the workspace granted: the tests' host).
+///
+/// [`HostPaths::default`]: crate::bootstrap::HostPaths
 ///
 /// # Errors
 ///
@@ -224,7 +227,13 @@ pub async fn configure_at(
     local_files: &[std::path::PathBuf],
 ) -> Result<AttachConfig, TuiError> {
     let (args, layers, reached) = retarget(args.clone(), &target, None, local_files).await?;
-    let mut config = configure_with(layers, &args, target.mode()).await?;
+    let mut config = configure_with(
+        layers,
+        &args,
+        target.mode(),
+        &crate::bootstrap::HostPaths::default(),
+    )
+    .await?;
     if let Some(reached) = reached {
         reached.apply(&mut config);
     }
@@ -297,7 +306,12 @@ pub fn directory_args(args: &Args, dir: &std::path::Path) -> Result<Args, TuiErr
         path: dir.to_path_buf(),
         source,
     })?;
-    let resolved = crate::bootstrap::scope::workspace_at(&dir);
+    let homes = crate::bootstrap::GlobalDirs::resolve(
+        args.config_dir.as_deref(),
+        args.user_config_root.as_deref(),
+    )
+    .map(|global| crate::bootstrap::realm_home::root(&global));
+    let resolved = crate::bootstrap::scope::workspace_at(&dir, homes.as_deref());
     let reported =
         crate::daemon::endpoint::candidates(&resolved, &crate::daemon::endpoint::RealmKey::Default)
             .iter()
@@ -311,7 +325,10 @@ pub fn directory_args(args: &Args, dir: &std::path::Path) -> Result<Args, TuiErr
 
 /// Resolve what attach mode needs from `args` and the `tui.toml` `layers`
 /// read at start: the workspace, the endpoint and cursor files, the realm
-/// config (context windows) and how a missing daemon is started.
+/// config (context windows) and how a missing daemon is started. The `!`
+/// shell is planned over `host_paths` (this host's: [`HostPaths::detect`]).
+///
+/// [`HostPaths::detect`]: crate::bootstrap::HostPaths::detect
 ///
 /// # Errors
 ///
@@ -320,6 +337,7 @@ pub async fn configure_with(
     layers: crate::bootstrap::Layers,
     args: &Args,
     mode: AttachMode,
+    host_paths: &crate::bootstrap::HostPaths,
 ) -> Result<AttachConfig, TuiError> {
     let config = crate::bootstrap::guarded_config(
         &layers.scope,
@@ -329,12 +347,12 @@ pub async fn configure_with(
     .await;
     // The `!` shell, from the layers' confinement grants and timeout; the
     // same plan is what a running daemon's agent shell is compared with.
-    let plan = crate::bootstrap::shell_plan(
-        &layers,
-        &config,
-        args,
-        &crate::bootstrap::HostPaths::detect(),
-    );
+    let plan = crate::bootstrap::shell_plan(&layers, &config, args, host_paths);
+    // Fail closed, as the daemon does: a `!` shell that could reach the
+    // realm refuses the start.
+    if let Ok(plan) = &plan {
+        crate::bootstrap::check_realm_private(plan, &layers.scope.realm_root())?;
+    }
     let user_shell = plan
         .as_ref()
         .map(|plan| std::sync::Arc::new(crate::bootstrap::user_shell_with(&layers, plan)))
@@ -390,7 +408,7 @@ pub async fn configure_with(
                 files
             }
         },
-        cursor: catchup::CursorFile::of_workspace(&scope.context_root),
+        cursor: catchup::CursorFile::of_realm(&scope.realm_root()),
         config: Some(config),
         spawn,
         user_shell,
@@ -510,7 +528,13 @@ pub async fn run(
         &crate::daemon::list::files(None),
     )
     .await?;
-    let mut config = configure_with(layers, &args, target.mode()).await?;
+    let mut config = configure_with(
+        layers,
+        &args,
+        target.mode(),
+        &crate::bootstrap::HostPaths::detect(),
+    )
+    .await?;
     if let Some(reached) = reached {
         reached.apply(&mut config);
     }
@@ -541,6 +565,7 @@ pub async fn run(
     };
     let runner = AttachRunner::new(config, ui_tx, effect_rx);
     let farewells = runner.farewells();
+    let rehoming = runner.rehoming();
     // The runner leaves the daemon as `/quit` decided (stopped, or running
     // with the detach recorded), then saves the cursor and the unsent
     // messages.
@@ -560,8 +585,23 @@ pub async fn run(
     for line in farewells.lock().drain(..) {
         eprintln!("rkat-tui: {line}");
     }
+    // `/rehome <ref>`: the daemon was asked to stop as the UI left; the
+    // adoption proves it gone first.
+    let adopt = rehoming.lock().take();
+    if let Some(reference) = adopt {
+        match crate::bootstrap::realm_home::rehome_after_stop(&args, &reference, REHOME_WAIT).await
+        {
+            Ok(done) => eprintln!(
+                "rkat-tui: {done}; start rkat-tui again here (rkat-tui -c continues its latest conversation)"
+            ),
+            Err(err) => eprintln!("rkat-tui: the state was not adopted: {err}"),
+        }
+    }
     driven
 }
+
+/// How long `/rehome` waits for the stopped daemon to release the realm.
+const REHOME_WAIT: Duration = Duration::from_secs(15);
 
 /// Turn every SIGHUP into [`Msg::Hangup`] on `ui_tx` (the UI then leaves as
 /// a detach); the handler is installed before this returns.

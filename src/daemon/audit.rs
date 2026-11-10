@@ -2,15 +2,13 @@
 //! per gate decision and per lifecycle event that changes authority,
 //! appended by the daemon only.
 //!
-//! Where: `audit.jsonl` in the directory of the daemon's endpoint file
-//! (`<state>/rkat-tui/<workspace key>/` unless `--endpoint-file` moves it),
-//! not under the workspace. That directory is 0700 and the file 0600, the
-//! daemon refuses to start when its agent shell's confinement grants it
-//! (`DaemonError::EndpointExposed`), and the agent's file tools never read
-//! it (a secret root of the project root). Inside the workspace the
-//! confined shell could read and rewrite it on Linux: `.rkat/` is writable
-//! there until engine ask 8 (a read-only bind) lands, so a log there could
-//! be truncated by the actor it records.
+//! Where: `audit.jsonl` in the workspace's realm
+//! (`<config dir>/workspaces/<id>/`, [`crate::bootstrap::realm_home`]), so
+//! it follows a re-home. The realm directory is 0700 and the file 0600, the
+//! daemon refuses to start when its agent shell's confinement reaches the
+//! realm (`TuiError::RealmExposed`), and the agent's file tools never read
+//! it (the realm is a secret root of the project root): the actor it
+//! records cannot read, truncate or forge it.
 //!
 //! Lines (`Line`, every field but `time` and `event` optional):
 //!
@@ -39,7 +37,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::approval::audit::{AuditSink, DecisionRecord};
 
-/// The audit log's file name, beside the endpoint file.
+/// The audit log's file name, in the realm directory.
 pub const AUDIT_FILE: &str = "audit.jsonl";
 
 /// The previous generation of the audit log.
@@ -168,7 +166,7 @@ fn open_append(path: &Path) -> std::io::Result<(File, u64)> {
 }
 
 impl AuditLog {
-    /// The audit log in `dir` (the endpoint file's directory).
+    /// The audit log in `dir` (the realm directory).
     ///
     /// # Errors
     ///
@@ -266,17 +264,22 @@ pub fn tail(path: &Path, n: usize, keep: impl Fn(&Line) -> bool) -> std::io::Res
 }
 
 /// The audit log files of the workspace `args` names, oldest generation
-/// first: those beside each place its endpoint file may be.
+/// first: those in its realm (found, never made: a workspace without a
+/// realm has none).
 ///
 /// # Errors
 ///
-/// The workspace cannot be resolved.
+/// The workspace or its realm cannot be resolved.
 pub fn files(args: &crate::Args) -> Result<Vec<PathBuf>, crate::TuiError> {
-    let scope = crate::bootstrap::resolve_scope(args)?;
-    let realm = super::endpoint::RealmKey::of(&scope);
-    Ok(super::endpoint::candidates(&scope.context_root, &realm)
+    let dir = if args.realm.is_some() || args.isolated || args.state_root.is_some() {
+        Some(crate::bootstrap::resolve_scope(args)?.realm_root())
+    } else {
+        crate::bootstrap::scope::lookup(args)?
+            .2
+            .map(|home| home.dir)
+    };
+    Ok(dir
         .into_iter()
-        .filter_map(|file| file.parent().map(Path::to_path_buf))
         .flat_map(|dir| [dir.join(ROTATED_FILE), dir.join(AUDIT_FILE)])
         .filter(|file| file.is_file())
         .collect())
@@ -292,7 +295,7 @@ pub fn files(args: &crate::Args) -> Result<Vec<PathBuf>, crate::TuiError> {
 pub fn print(args: &crate::Args) -> Result<(), crate::TuiError> {
     let files = files(args)?;
     if files.is_empty() {
-        eprintln!("no audit log for this workspace: no daemon has run for it here");
+        eprintln!("no audit log for this workspace: no daemon has run for it");
         return Ok(());
     }
     for file in files {

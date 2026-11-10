@@ -50,7 +50,7 @@ impl Harness {
     fn stores(&self) -> (NoteStore, NoteStore) {
         (
             NoteStore::user(self.tmp.path().join("config")),
-            NoteStore::workspace(self.tmp.path().join("project")),
+            NoteStore::workspace(self.tmp.path().join("realm")),
         )
     }
 }
@@ -140,12 +140,13 @@ async fn prompt_index_is_an_untrusted_section() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn symlinked_rkat_dir_refuses_the_save() {
-    for linked in [".rkat", ".rkat/tui"] {
+async fn symlinked_notes_dir_refuses_the_save() {
+    {
+        let linked = "notes";
         let h = harness();
         let outside = h.tmp.path().join("outside");
         std::fs::create_dir_all(&outside).unwrap();
-        let link = h.tmp.path().join("project").join(linked);
+        let link = h.tmp.path().join("realm").join(linked);
         std::fs::create_dir_all(link.parent().unwrap()).unwrap();
         std::os::unix::fs::symlink(&outside, &link).unwrap();
         let (user, ws) = h.stores();

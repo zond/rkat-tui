@@ -45,7 +45,7 @@ async fn instruction_files_reach_the_prompt_in_order() {
     write(&ws.root.join("AGENTS.md"), "WORKSPACE-RULES apply.\n");
     let local = format!("LOCAL-RULES apply.\n{}", "x".repeat(AGENTS_MD_MAX_BYTES));
     write(&ws.root.join("AGENTS.local.md"), &local);
-    let global = ws.root.join(".cfg");
+    let global = common::config_dir_for(&ws.root);
     write(&global.join("SYSTEM.md"), "You are TESTPERSONA.\n");
     write(&global.join("AGENTS.md"), "GLOBAL-RULES apply.\n");
 

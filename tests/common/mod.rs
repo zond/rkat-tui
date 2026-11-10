@@ -285,21 +285,38 @@ impl Workspace {
     }
 }
 
-/// Arguments for a workspace-local realm at `root` (unconfined, no price
-/// fetch, on [`MODEL`] unless `extra` names a `--model`), plus `extra`.
+/// The config directory of the tests' workspace `root`: beside it, not in
+/// it (the workspace's realm lives under it, and a realm the agent's
+/// confined shell could reach refuses the start).
+pub fn config_dir_for(root: &Path) -> PathBuf {
+    root.parent().unwrap().join("cfg")
+}
+
+/// The realm directory of the workspace `root` (made when it has none).
+pub fn realm_of(root: &Path) -> PathBuf {
+    rkat_tui::bootstrap::resolve_scope(&args_for(root))
+        .unwrap()
+        .realm_root()
+}
+
+/// Arguments for the workspace at `root` (unconfined, no price fetch, on
+/// [`MODEL`] unless `extra` names a `--model`; its config directory
+/// [`config_dir_for`] unless `extra` names a `--config-dir`), plus `extra`.
 pub fn args_with(root: &Path, extra: &[&str]) -> Args {
+    let cfg = config_dir_for(root);
+    let cfg = cfg.to_str().unwrap();
     let root = root.to_str().unwrap();
-    let cfg = format!("{root}/.cfg");
     let mut argv = vec![
         "rkat-tui",
         "-w",
         root,
         "--user-config-root",
         root,
-        "--config-dir",
-        &cfg,
         "--no-pricing-fetch",
     ];
+    if !extra.contains(&"--config-dir") {
+        argv.extend(["--config-dir", cfg]);
+    }
     if !extra.contains(&"--model") {
         argv.extend(["--model", MODEL]);
     }

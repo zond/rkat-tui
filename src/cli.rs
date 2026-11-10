@@ -67,9 +67,9 @@ pub struct Args {
     pub continue_last: bool,
 
     /// Workspace directory: the project root for path policy and conventions
-    /// (AGENTS.md, .rkat/), and where session state lives (`.rkat/tui/`).
-    /// Defaults to the nearest ancestor of the current directory that already
-    /// has `.rkat/tui/`, else the current directory.
+    /// (AGENTS.md, .rkat/). Its session state lives outside it, in
+    /// `<config dir>/workspaces/<id>/`. Defaults to the nearest ancestor of the
+    /// current directory that has state there, else the current directory.
     #[arg(short = 'w', long = "workspace", alias = "context-root")]
     pub context_root: Option<PathBuf>,
 
@@ -81,16 +81,17 @@ pub struct Args {
     pub user_config_root: Option<PathBuf>,
 
     /// Directory for user-global rkat-tui files: AGENTS.md, SYSTEM.md, tui.toml
-    /// rules, notes, history, trust records. Defaults to ~/.rkat/tui (under
+    /// rules, notes, history, trust records, and every workspace's state
+    /// (`workspaces/<id>/`). Defaults to ~/.rkat/tui (under
     /// --user-config-root when given); an existing legacy ~/.config/rkat-tui
     /// ($XDG_CONFIG_HOME/rkat-tui) is used until ~/.rkat/tui exists. Moves
     /// only rkat-tui's own files; the engine's conventions stay under
-    /// --user-config-root. It may not be, hold or lie inside the realm
-    /// directory (with `-w ~`, pass another one).
+    /// --user-config-root. A confined shell may not reach it (with `-w ~`,
+    /// pass another one or --no-confinement).
     #[arg(long)]
     pub config_dir: Option<PathBuf>,
 
-    /// Join a shared realm by ID instead of using the workspace-local state
+    /// Join a shared realm by ID instead of using the workspace's own state
     /// directory (the realm model `rkat` uses).
     #[arg(long)]
     pub realm: Option<String>,
@@ -105,7 +106,8 @@ pub struct Args {
     #[arg(long, value_enum)]
     pub realm_backend: Option<RealmBackendArg>,
 
-    /// Store state under this realms root instead of `<workspace>/.rkat`.
+    /// Store state in a realm under this realms root instead of the
+    /// workspace's own state directory.
     #[arg(long)]
     pub state_root: Option<PathBuf>,
 
@@ -212,9 +214,19 @@ pub struct Args {
     /// List every `rkat-tui-mob` daemon that has an endpoint file
     /// (workspace, address, pid, uptime, clients, conversation, running or
     /// idle; `stale` for one that does not answer, whose file is removed
-    /// when its pid is gone), then exit.
+    /// when its pid is gone), then every workspace's state (its id, the
+    /// workspace, `gone` when that no longer exists, last use, its daemon),
+    /// then exit.
     #[arg(long)]
     pub list: bool,
+
+    /// Re-home the state of a workspace that moved: the state REF names
+    /// (its id, or the path the workspace had; `--list` shows both) serves
+    /// this workspace from now on, and the state this workspace had is set
+    /// aside (kept; `--rehome <its id>` brings it back). Refused while a
+    /// daemon may hold either. Then exit.
+    #[arg(long, value_name = "REF")]
+    pub rehome: Option<String>,
 
     /// Print the workspace daemon's audit log (every gate decision and who
     /// made it, and the changes of mode, rules and trust; the rotated

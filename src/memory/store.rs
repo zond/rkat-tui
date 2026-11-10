@@ -4,8 +4,8 @@
 //! listing is a fresh directory scan. Writes go through the shared
 //! [`crate::paths::write_atomic`] (temp file + persist, owner-only `0600`
 //! permissions since notes may hold secrets). Every component of the notes
-//! directory below the scope's trusted root (the workspace for
-//! `<workspace>/.rkat/tui/notes`, the config directory for `<config>/notes`)
+//! directory below the scope's trusted root (the workspace's realm for
+//! `<realm>/notes`, the config directory for `<config>/notes`)
 //! and every note file must be a real directory or file, never a symlink, so
 //! a planted link cannot redirect a note write (or, for reads, expose an
 //! arbitrary file through the always-allowed `note_read`).
@@ -38,8 +38,9 @@ const FIRST_LINE_MAX_CHARS: usize = 120;
 const PROMPT_MARKER_RESERVE: usize = 64;
 /// Slug reserved for the index file.
 const RESERVED_SLUG: &str = "memory";
-/// Workspace notes directory, relative to the workspace root.
-pub const WORKSPACE_NOTES_REL: &str = ".rkat/tui/notes";
+/// Workspace notes directory, relative to the workspace's realm.
+#[cfg(any(test, feature = "test-support"))]
+pub const WORKSPACE_NOTES_REL: &str = "notes";
 /// User notes directory, relative to the config directory.
 #[cfg(any(test, feature = "test-support"))]
 pub const USER_NOTES_REL: &str = "notes";
@@ -170,12 +171,12 @@ impl NoteStore {
         }
     }
 
-    /// The workspace notes store, `<workspace>/.rkat/tui/notes`, trusting only
-    /// `workspace` itself.
+    /// The workspace notes store, `<realm>/notes`, trusting only the
+    /// workspace's realm directory `realm`.
     #[must_use]
     #[cfg(any(test, feature = "test-support"))]
-    pub fn workspace(workspace: PathBuf) -> Self {
-        Self::open_in(workspace, Path::new(WORKSPACE_NOTES_REL), Scope::Workspace)
+    pub fn workspace(realm: PathBuf) -> Self {
+        Self::open_in(realm, Path::new(WORKSPACE_NOTES_REL), Scope::Workspace)
     }
 
     /// The user notes store, `<config>/notes`, trusting the config directory.
@@ -185,24 +186,12 @@ impl NoteStore {
         Self::open_in(config_dir, Path::new(USER_NOTES_REL), Scope::User)
     }
 
-    /// Use `dir` as the notes directory for `scope`. Performs no I/O.
-    ///
-    /// The trusted root is inferred: for a workspace directory ending in
-    /// `.rkat/tui/notes` it is the workspace (so `.rkat`, `.rkat/tui` and the
-    /// notes directory are all checked), otherwise the parent of `dir`.
-    /// Prefer [`NoteStore::workspace`], [`NoteStore::user`] or
+    /// Use `dir` as the notes directory for `scope`, trusting its parent
+    /// (the realm, or the config directory). Performs no I/O. Prefer
+    /// [`NoteStore::workspace`], [`NoteStore::user`] or
     /// [`NoteStore::open_in`], which state the trusted root explicitly.
     #[must_use]
     pub fn open(dir: PathBuf, scope: Scope) -> Self {
-        let ws_rel = Path::new(WORKSPACE_NOTES_REL);
-        let ws_depth = ws_rel.components().count();
-        if scope == Scope::Workspace && dir.ends_with(ws_rel) {
-            let mut root = dir;
-            for _ in 0..ws_depth {
-                root.pop();
-            }
-            return Self::open_in(root, ws_rel, scope);
-        }
         match (dir.parent(), dir.file_name()) {
             (Some(parent), Some(name)) => {
                 Self::open_in(parent.to_path_buf(), Path::new(name), scope)
@@ -822,9 +811,9 @@ mod tests {
 
     #[test]
     fn open_infers_trusted_roots() {
-        let ws = NoteStore::open(PathBuf::from("/w/.rkat/tui/notes"), Scope::Workspace);
-        assert_eq!(ws, NoteStore::workspace(PathBuf::from("/w")));
-        assert_eq!(ws.trusted_root(), Path::new("/w"));
+        let ws = NoteStore::open(PathBuf::from("/r/notes"), Scope::Workspace);
+        assert_eq!(ws, NoteStore::workspace(PathBuf::from("/r")));
+        assert_eq!(ws.trusted_root(), Path::new("/r"));
         let user = NoteStore::open(PathBuf::from("/c/notes"), Scope::User);
         assert_eq!(user, NoteStore::user(PathBuf::from("/c")));
         assert_eq!(user.dir(), Path::new("/c/notes"));
@@ -833,7 +822,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn symlinked_workspace_components_are_refused() {
-        for linked in [".rkat", ".rkat/tui"] {
+        {
+            let linked = "notes";
             let tmp = tempfile::tempdir().unwrap();
             let workspace = tmp.path().join("ws");
             let outside = tmp.path().join("outside");
@@ -841,7 +831,7 @@ mod tests {
             let link = workspace.join(linked);
             std::fs::create_dir_all(link.parent().unwrap()).unwrap();
             std::os::unix::fs::symlink(&outside, &link).unwrap();
-            let store = NoteStore::workspace(workspace.clone());
+            let store = NoteStore::workspace(workspace);
             assert!(
                 matches!(store.save("a", "b"), Err(NoteError::Symlink(p)) if p == link),
                 "{linked}"

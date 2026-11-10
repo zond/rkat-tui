@@ -23,9 +23,8 @@
 //! `~/.local/state`), under a key derived from the canonical workspace path
 //! and, for any realm but the workspace's own, the realm's identity
 //! ([`workspace_key`], [`RealmKey`]), never inside the workspace:
-//! the agent's confined shell is granted the workspace (`.rkat` included),
-//! the temp dir, the Cargo home and the user cache dir, none of which holds
-//! it. When the shell's confinement plan would grant that directory after
+//! the agent's confined shell is granted the workspace, the temp dir, the
+//! Cargo home and the user cache dir, none of which holds it. When the shell's confinement plan would grant that directory after
 //! all ([`exposing_grant`]), the daemon falls back to
 //! `$XDG_RUNTIME_DIR/rkat-tui/<key>/mob.endpoint` (same modes), and refuses
 //! to start when that is granted too, or unset ([`candidates`]; clients
@@ -78,7 +77,8 @@ pub fn search_dirs() -> Vec<PathBuf> {
 }
 
 /// Which realm of a workspace a daemon serves, as far as the endpoint key
-/// and `--list` care: the workspace's own realm (`<workspace>/.rkat/tui`),
+/// and `--list` care: the workspace's own realm (its realm under the
+/// config directory, [`crate::bootstrap::realm_home`]),
 /// another realm by its root (`--realm`, `--state-root`, `--isolated`), or
 /// an in-memory one (`--realm-backend memory`), which holds nothing a
 /// later start could reach.
@@ -100,14 +100,7 @@ impl RealmKey {
         if scope.backend_hint == Some(meerkat_store::RealmBackend::Memory) {
             return Self::Memory(root);
         }
-        let default = meerkat_store::realm_paths_in(
-            &scope
-                .context_root
-                .join(crate::bootstrap::scope::WORKSPACE_STATE_DIR),
-            crate::bootstrap::scope::WORKSPACE_REALM_ID,
-        )
-        .root;
-        if root == default {
+        if scope.home.is_some() {
             Self::Default
         } else {
             Self::Root(root)
@@ -505,9 +498,10 @@ mod tests {
         assert_eq!(old.workspace, None);
     }
 
-    fn scope(extra: &[&str]) -> crate::bootstrap::RuntimeScope {
+    /// The scope of `extra`, its config directory (and realms) in `cfg`.
+    fn scope(cfg: &tempfile::TempDir, extra: &[&str]) -> crate::bootstrap::RuntimeScope {
         use clap::Parser as _;
-        let mut argv = vec!["rkat-tui"];
+        let mut argv = vec!["rkat-tui", "--config-dir", cfg.path().to_str().unwrap()];
         argv.extend_from_slice(extra);
         crate::bootstrap::resolve_scope(&crate::cli::Args::try_parse_from(argv).unwrap()).unwrap()
     }
@@ -519,26 +513,30 @@ mod tests {
     fn the_key_tells_the_workspace_realm_from_isolated_and_memory_ones() {
         let dir = tempfile::tempdir().unwrap();
         let state = tempfile::tempdir().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
         let ws = dir.path().to_str().unwrap();
-        let own = scope(&["-w", ws]);
+        let own = scope(&cfg, &["-w", ws]);
         assert_eq!(RealmKey::of(&own), RealmKey::Default);
         assert_eq!(RealmKey::Default.describe(), None);
         let workspace = &own.context_root;
         let plain = workspace_key(workspace, &RealmKey::Default);
-        let isolated = scope(&[
-            "-w",
-            ws,
-            "--isolated",
-            "--state-root",
-            state.path().to_str().unwrap(),
-        ]);
+        let isolated = scope(
+            &cfg,
+            &[
+                "-w",
+                ws,
+                "--isolated",
+                "--state-root",
+                state.path().to_str().unwrap(),
+            ],
+        );
         let isolated_key = RealmKey::of(&isolated);
         assert_eq!(isolated_key, RealmKey::Root(isolated.realm_root()));
         assert_eq!(
             isolated_key.describe(),
             Some(isolated.realm_root().display().to_string())
         );
-        let memory = scope(&["-w", ws, "--realm-backend", "memory"]);
+        let memory = scope(&cfg, &["-w", ws, "--realm-backend", "memory"]);
         let memory_key = RealmKey::of(&memory);
         assert!(matches!(memory_key, RealmKey::Memory(_)), "{memory_key:?}");
         assert_eq!(memory_key.describe().as_deref(), Some("memory"));
@@ -554,13 +552,16 @@ mod tests {
             assert_eq!(key.len(), KEY_DIGITS);
         }
         // A second isolated start mints another realm, hence another key.
-        let again = scope(&[
-            "-w",
-            ws,
-            "--isolated",
-            "--state-root",
-            state.path().to_str().unwrap(),
-        ]);
+        let again = scope(
+            &cfg,
+            &[
+                "-w",
+                ws,
+                "--isolated",
+                "--state-root",
+                state.path().to_str().unwrap(),
+            ],
+        );
         assert_ne!(workspace_key(workspace, &RealmKey::of(&again)), keys[1]);
         // The workspace's own realm keeps the key it always had.
         assert_eq!(plain, workspace_key(workspace, &RealmKey::Default));

@@ -1,11 +1,14 @@
 //! Workspace and realm resolution.
 //!
-//! By default all state for a workspace (sessions, realm config, rules, input
-//! history, logs) lives inside it, under `<workspace>/.rkat/tui/`, in a realm
-//! with the constant id [`WORKSPACE_REALM_ID`]. Nothing is keyed by the
-//! workspace's absolute path, so renaming or moving the directory keeps every
-//! session reachable with `rkat-tui -c`. A `.gitignore` is written into the
-//! state directory so it is never committed.
+//! By default all state for a workspace (sessions, realm config, rules,
+//! input history, logs, notes, the audit log) lives outside it, in a realm
+//! of its own under the user's config directory:
+//! `<config dir>/workspaces/<random id>/` ([`super::realm_home`]). The
+//! realm's manifest names the workspace's canonical path and is the only
+//! authority for which workspace owns it; nothing in the workspace is read
+//! for it. A workspace that moves needs one explicit re-home
+//! (`/rehome`, `rkat-tui --rehome`). A `.rkat/tui/` left in the workspace by
+//! an earlier release is never read; a start that finds one says so.
 //!
 //! `--realm`, `--isolated` and `--state-root` opt back into the shared realm
 //! model `rkat` uses (`resolve_runtime_scope` / `load_config` in
@@ -18,14 +21,10 @@ use meerkat_core::{Config, ConfigRuntime, FileConfigStore, RealmConfig, RealmSel
 use meerkat_store::{RealmBackend, RealmOrigin, realm_paths_in};
 
 use super::dirs::GlobalDirs;
+use super::realm_home::{self, Home};
 use crate::cli::{Args, RealmBackendArg};
 use crate::error::TuiError;
 use crate::paths::{PathError, ProjectRoot};
-
-/// Realm id used for workspace-local state.
-pub const WORKSPACE_REALM_ID: &str = "tui";
-/// Directory under the workspace that holds realm directories.
-pub const WORKSPACE_STATE_DIR: &str = ".rkat";
 
 /// Where this TUI process lives: project, conventions roots and realm.
 #[derive(Debug, Clone)]
@@ -52,6 +51,15 @@ pub struct RuntimeScope {
     pub backend_hint: Option<RealmBackend>,
     /// How the realm was selected (recorded in a new realm's manifest).
     pub origin: RealmOrigin,
+    /// The workspace's own realm under the config directory, when that is
+    /// the realm (`None` for `--realm`, `--isolated`, `--state-root`).
+    pub home: Option<Home>,
+    /// What resolving had to say (an earlier release's `.rkat/tui/` that
+    /// is no longer used), shown by whichever process runs.
+    pub notices: Vec<String>,
+    /// The offer of realms whose workspace is gone, when this resolve made
+    /// the workspace a new realm (shown by the process that made it).
+    pub offer: Option<String>,
 }
 
 impl RuntimeScope {
@@ -90,69 +98,56 @@ impl From<RealmBackendArg> for RealmBackend {
 /// Resolve the workspace, conventions roots and realm from the arguments.
 ///
 /// The workspace is `--workspace`, else the nearest ancestor of the working
-/// directory that already contains `.rkat/tui/` (searching no higher than the
-/// git top-level, and never the home directory or above it), else the working
-/// directory. The home directory itself (or an ancestor of it) is used only
-/// when passed explicitly with `--workspace`.
-/// State lives in `<workspace>/.rkat/tui/` unless `--realm`, `--isolated` or
+/// directory that has a realm (its manifest names it; searching no higher
+/// than the git top-level, and never the home directory or above it), else
+/// the working directory. The home directory itself (or an ancestor of it)
+/// is used only when passed explicitly with `--workspace`. State lives in
+/// the workspace's realm under the config directory (made on its first
+/// start, see [`realm_home`]) unless `--realm`, `--isolated` or
 /// `--state-root` select the shared realm model.
 ///
 /// # Errors
 ///
 /// Returns [`TuiError::Realm`] for conflicting/invalid realm flags,
 /// [`TuiError::ProjectRoot`] when the root cannot be canonicalized or the
-/// working directory is the home directory,
+/// working directory is the home directory, [`TuiError::RealmHome`] when
+/// the realms cannot be read or the workspace's made (two manifests naming
+/// it, an unreadable one, no config directory), and
 /// [`TuiError::ConfigDirCollision`] when the user-global config directory
-/// and the realm directory are the same or nested (see
-/// [`check_config_dir_collision`]), and [`TuiError::Io`] when the state
-/// directory cannot be created.
+/// and a shared realm's directory are the same or nested (see
+/// [`check_config_dir_collision`]).
 pub fn resolve_scope(args: &Args) -> Result<RuntimeScope, TuiError> {
-    let context_root = match &args.context_root {
-        Some(root) => root.clone(),
-        None => {
-            let cwd = std::env::current_dir().map_err(|source| TuiError::ProjectRoot {
-                path: PathBuf::from("."),
-                source,
-            })?;
-            default_workspace(&cwd, dirs::home_dir().as_deref())?
-        }
-    };
-    let project_root = project_root_from(&context_root)?;
+    let global = GlobalDirs::resolve(args.config_dir.as_deref(), args.user_config_root.as_deref());
+    let uses_shared_realm = args.realm.is_some() || args.isolated || args.state_root.is_some();
+    let homes_root = global.as_ref().map(realm_home::root);
+    let project_root = project_root_from(&workspace_of(args, homes_root.as_deref())?)?;
     let context_root = project_root.as_path().to_path_buf();
     let user_config_root = args.user_config_root.clone().or_else(dirs::home_dir);
-    let global = GlobalDirs::resolve(args.config_dir.as_deref(), args.user_config_root.as_deref());
 
-    let uses_shared_realm = args.realm.is_some() || args.isolated || args.state_root.is_some();
     if !uses_shared_realm {
-        let state_root = context_root.join(WORKSPACE_STATE_DIR);
-        check_config_dir_collision(
-            global.as_ref(),
-            &realm_paths_in(&state_root, WORKSPACE_REALM_ID).root,
-        )?;
-        // A realm that came with the repository refuses the start, before
-        // the directory or its `.gitignore` is made (`--trust-project`
-        // starts anyway).
-        if !args.trust_project {
-            super::committed::check(
-                &context_root,
-                &realm_paths_in(&state_root, WORKSPACE_REALM_ID).root,
-            )?;
-        }
-        ensure_workspace_state_dir(&state_root)?;
-        let project_root = seal(
-            project_root,
-            &realm_paths_in(&state_root, WORKSPACE_REALM_ID).root,
-            global.as_ref(),
-        );
+        let root = homes_root.ok_or(realm_home::HomeError::NoConfigDir)?;
+        let opened = realm_home::open_or_create(&root, &context_root)?;
+        let notices = realm_home::old_realm_notice(&context_root, &opened.home)
+            .into_iter()
+            .collect();
+        let offer = if opened.created {
+            realm_home::offer(&opened.orphans)
+        } else {
+            None
+        };
+        let project_root = seal(project_root, &opened.home.dir, global.as_ref());
         return Ok(RuntimeScope {
             project_root,
             context_root,
             user_config_root,
             global,
-            realm_id: WORKSPACE_REALM_ID.to_string(),
-            state_root,
+            realm_id: opened.home.id.clone(),
+            state_root: root,
             backend_hint: args.realm_backend.map(Into::into),
             origin: RealmOrigin::Workspace,
+            home: Some(opened.home),
+            notices,
+            offer,
         });
     }
 
@@ -197,7 +192,54 @@ pub fn resolve_scope(args: &Args) -> Result<RuntimeScope, TuiError> {
         // with the backend recorded in their manifest.
         backend_hint,
         origin,
+        home: None,
+        notices: Vec::new(),
+        offer: None,
     })
+}
+
+/// The workspace `args` name (canonical) and the realm its manifest gives
+/// it, without making one: what `--audit` and `--rehome` look at. Shared
+/// realm flags are not looked at here.
+///
+/// # Errors
+///
+/// [`TuiError::RealmHome`] without a config directory or when the realms
+/// cannot be read, [`TuiError::ProjectRoot`] when the workspace cannot be
+/// resolved.
+pub fn lookup(args: &Args) -> Result<(PathBuf, PathBuf, Option<Home>), TuiError> {
+    let global = GlobalDirs::resolve(args.config_dir.as_deref(), args.user_config_root.as_deref())
+        .ok_or(realm_home::HomeError::NoConfigDir)?;
+    let root = realm_home::root(&global);
+    let workspace = project_root_from(&workspace_of(args, Some(&root))?)?
+        .as_path()
+        .to_path_buf();
+    let home = realm_home::find(&root, &workspace)?;
+    Ok((root, workspace, home))
+}
+
+/// The workspace `args` name, as it is given or found (not yet
+/// canonical): `--workspace`, else found from the working directory by the
+/// realms under `homes_root` ([`default_workspace`]).
+///
+/// # Errors
+///
+/// [`TuiError::ProjectRoot`] when the working directory cannot be read or
+/// is the home directory, [`TuiError::RealmHome`] when the realms cannot
+/// be read.
+pub fn workspace_of(args: &Args, homes_root: Option<&Path>) -> Result<PathBuf, TuiError> {
+    if let Some(root) = &args.context_root {
+        return Ok(root.clone());
+    }
+    let cwd = std::env::current_dir().map_err(|source| TuiError::ProjectRoot {
+        path: PathBuf::from("."),
+        source,
+    })?;
+    let homes = match homes_root {
+        Some(root) => realm_home::scan(root)?,
+        None => Vec::new(),
+    };
+    default_workspace(&cwd, dirs::home_dir().as_deref(), &homes)
 }
 
 /// Refuse a user-global config directory that is the realm directory, or
@@ -237,7 +279,7 @@ pub fn check_config_dir_collision(
 /// `path` with its longest existing ancestor canonicalized and the rest
 /// appended (a directory that is not created yet still compares by where
 /// it will be).
-fn canonical_prefix(path: &Path) -> PathBuf {
+pub(crate) fn canonical_prefix(path: &Path) -> PathBuf {
     let mut existing = path.to_path_buf();
     let mut rest: Vec<std::ffi::OsString> = Vec::new();
     loop {
@@ -265,10 +307,11 @@ const HOME_WORKSPACE_REFUSED: &str =
     "refusing to use your home directory as the workspace; pass --workspace or cd into a project";
 
 /// The workspace when `--workspace` is not given: a workspace found above
-/// `cwd`, else `cwd` itself unless it is `home` (or an ancestor of it).
-fn default_workspace(cwd: &Path, home: Option<&Path>) -> Result<PathBuf, TuiError> {
+/// `cwd` (one of `homes` names it), else `cwd` itself unless it is `home`
+/// (or an ancestor of it).
+fn default_workspace(cwd: &Path, home: Option<&Path>, homes: &[Home]) -> Result<PathBuf, TuiError> {
     let home = home.map(canonical_or_self);
-    if let Some(found) = find_workspace_above(cwd, home.as_deref()) {
+    if let Some(found) = find_workspace_above(cwd, home.as_deref(), homes)? {
         return Ok(found);
     }
     if home
@@ -288,66 +331,62 @@ fn canonical_or_self(path: &Path) -> PathBuf {
 }
 
 /// The workspace `--attach=DIRECTORY` names: the nearest ancestor of
-/// `dir` (inclusive, canonical) that already holds a workspace, as the
-/// default workspace is found from the current directory, else `dir`
+/// `dir` (inclusive, canonical) that has a realm under `homes_root`, as
+/// the default workspace is found from the current directory, else `dir`
 /// itself.
 #[must_use]
-pub fn workspace_at(dir: &Path) -> PathBuf {
+pub fn workspace_at(dir: &Path, homes_root: Option<&Path>) -> PathBuf {
     let home = dirs::home_dir().map(|home| canonical_or_self(&home));
-    find_workspace_above(dir, home.as_deref()).unwrap_or_else(|| canonical_or_self(dir))
+    let homes = homes_root
+        .and_then(|root| realm_home::scan(root).ok())
+        .unwrap_or_default();
+    find_workspace_above(dir, home.as_deref(), &homes)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| canonical_or_self(dir))
 }
 
-/// The nearest ancestor of `start` (inclusive) that already holds a
-/// workspace-local state directory, if any.
+/// The nearest ancestor of `start` (inclusive) that one of `homes` names,
+/// if any.
 ///
 /// The search stops at the git top-level (a directory containing `.git` is
-/// the last one checked) and never yields `home` or an ancestor of it: a
-/// stray `~/.rkat/tui/` must not turn the whole home directory into the
-/// workspace. `home` is expected canonical.
-fn find_workspace_above(start: &Path, home: Option<&Path>) -> Option<PathBuf> {
+/// the last one checked) and never yields `home` or an ancestor of it.
+/// Nothing in the workspace is read for it: an earlier release's
+/// `.rkat/tui/` marks nothing. `home` is expected canonical.
+///
+/// # Errors
+///
+/// [`TuiError::RealmHome`] when two realms name a directory on the way.
+fn find_workspace_above(
+    start: &Path,
+    home: Option<&Path>,
+    homes: &[Home],
+) -> Result<Option<PathBuf>, TuiError> {
     let mut current = canonical_or_self(start);
     loop {
         if home.is_some_and(|home| home.starts_with(&current)) {
-            return None;
+            return Ok(None);
         }
-        if current
-            .join(WORKSPACE_STATE_DIR)
-            .join(WORKSPACE_REALM_ID)
-            .is_dir()
-        {
-            return Some(current);
+        if realm_home::find_in(homes, &current)?.is_some() {
+            return Ok(Some(current));
         }
         if current.join(".git").exists() || !current.pop() {
-            return None;
+            return Ok(None);
         }
     }
-}
-
-/// Create `<workspace>/.rkat/tui/` and drop a `.gitignore` into it so session
-/// state, history, logs and realm rules are never committed.
-fn ensure_workspace_state_dir(state_root: &Path) -> Result<(), TuiError> {
-    let realm_dir = state_root.join(WORKSPACE_REALM_ID);
-    std::fs::create_dir_all(&realm_dir)
-        .map_err(|e| TuiError::io("create workspace state directory", e))?;
-    let gitignore = realm_dir.join(".gitignore");
-    if !gitignore.exists() {
-        std::fs::write(&gitignore, "# rkat-tui session state; never commit.\n*\n")
-            .map_err(|e| TuiError::io("write workspace state .gitignore", e))?;
-    }
-    Ok(())
 }
 
 /// Seal what a file tool must never write wherever it lies: the git
-/// directories governing the project ([`crate::paths::git_dirs`]), the
-/// realm directory (its `config.toml`, rules, approvals, `tui.toml`,
-/// sessions) and the user config directory (global rules, trust records).
+/// directories governing the project ([`crate::paths::git_dirs`]) and the
+/// user config directory (global rules, trust records); and keep the realm
+/// directory (its `config.toml`, rules, approvals, `tui.toml`, sessions,
+/// the audit log) from the file tools altogether, reads included: it is a
+/// secret root.
 fn seal(project_root: ProjectRoot, realm_root: &Path, global: Option<&GlobalDirs>) -> ProjectRoot {
     let git = crate::paths::git_dirs(project_root.as_path());
-    project_root.with_sealed_roots(
-        git.into_iter()
-            .chain(std::iter::once(realm_root.to_path_buf()))
-            .chain(global.map(|g| g.config.clone())),
-    )
+    project_root
+        .with_sealed_roots(git.into_iter().chain(global.map(|g| g.config.clone())))
+        .with_secret_roots(std::iter::once(realm_root.to_path_buf()))
 }
 
 fn project_root_from(path: &Path) -> Result<ProjectRoot, TuiError> {
@@ -408,69 +447,146 @@ mod tests {
         Args::try_parse_from(argv).unwrap()
     }
 
-    #[test]
-    fn default_state_lives_inside_the_workspace() {
+    /// A workspace `ws` and a config directory beside it, both canonical.
+    fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
-        let ws = dir.path().to_str().unwrap();
-        let scope = resolve_scope(&args(&["-w", ws])).unwrap();
-        let canonical = std::fs::canonicalize(dir.path()).unwrap();
-        assert_eq!(scope.realm_id, WORKSPACE_REALM_ID);
-        assert_eq!(scope.state_root, canonical.join(".rkat"));
-        assert_eq!(scope.realm_root(), canonical.join(".rkat").join("tui"));
-        assert_eq!(scope.origin, RealmOrigin::Workspace);
-        let gitignore = scope.realm_root().join(".gitignore");
-        assert!(gitignore.is_file());
-        assert!(std::fs::read_to_string(gitignore).unwrap().contains('*'));
+        let base = std::fs::canonicalize(dir.path()).unwrap();
+        let ws = base.join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        (dir, ws, base.join("cfg"))
+    }
+
+    fn resolve(ws: &Path, cfg: &Path, extra: &[&str]) -> Result<RuntimeScope, TuiError> {
+        let mut argv = vec![
+            "-w",
+            ws.to_str().unwrap(),
+            "--config-dir",
+            cfg.to_str().unwrap(),
+        ];
+        argv.extend_from_slice(extra);
+        resolve_scope(&args(&argv))
     }
 
     #[test]
-    fn workspace_is_found_from_a_subdirectory() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = std::fs::canonicalize(dir.path()).unwrap();
-        std::fs::create_dir_all(root.join(".rkat/tui")).unwrap();
-        let sub = root.join("src/deep");
+    fn default_state_lives_in_a_realm_under_the_config_dir() {
+        let (_dir, ws, cfg) = fixture();
+        let scope = resolve(&ws, &cfg, &[]).unwrap();
+        let home = scope.home.clone().unwrap();
+        assert_eq!(scope.realm_id, home.id);
+        assert_eq!(scope.state_root, cfg.join(realm_home::WORKSPACES_DIR));
+        assert_eq!(scope.realm_root(), cfg.join("workspaces").join(&home.id));
+        assert_eq!(scope.origin, RealmOrigin::Workspace);
+        assert_eq!(home.manifest.path.as_deref(), Some(ws.as_path()));
+        // Nothing is written into the workspace.
+        assert_eq!(std::fs::read_dir(&ws).unwrap().count(), 0);
+        // The next start finds the same realm, through the manifest.
+        assert_eq!(resolve(&ws, &cfg, &[]).unwrap().realm_id, home.id);
+        // The realm is secret to the file tools: reads are refused too.
+        let file = scope.realm_root().join("audit.jsonl");
+        assert!(
+            scope
+                .project_root
+                .resolve(file.to_str().unwrap())
+                .unwrap()
+                .secret
+        );
+    }
+
+    /// A `.rkat/tui/` in the workspace (an earlier release's realm, or one
+    /// planted by a clone or the agent's shell) is never read: the start
+    /// makes the workspace its own realm and says the old one is unused.
+    #[test]
+    fn a_planted_workspace_realm_is_ignored_with_a_notice() {
+        let (_dir, ws, cfg) = fixture();
+        let planted = ws.join(".rkat/tui");
+        std::fs::create_dir_all(&planted).unwrap();
+        std::fs::write(planted.join("tui.toml"), "[[allow]]\ntool = \"shell\"\n").unwrap();
+        std::fs::write(planted.join("workspace.toml"), "path = \"/elsewhere\"\n").unwrap();
+        let scope = resolve(&ws, &cfg, &[]).unwrap();
+        assert_ne!(scope.realm_root(), planted);
+        assert!(!scope.realm_root().starts_with(&ws));
+        assert_eq!(scope.notices.len(), 1, "{:?}", scope.notices);
+        assert!(
+            scope.notices[0].contains(planted.to_str().unwrap())
+                && scope.notices[0].contains("no longer used"),
+            "{}",
+            scope.notices[0]
+        );
+        // Nothing of it is read as a layer.
+        let (layered, _) = super::super::approval::load_layers(&scope, &args(&[])).unwrap();
+        assert_eq!(layered.rules.allow().len(), 0);
+        // And it marks no workspace for discovery from below.
+        let sub = ws.join("src");
         std::fs::create_dir_all(&sub).unwrap();
-        assert_eq!(find_workspace_above(&sub, None).as_deref(), Some(&*root));
+        let homes = Vec::new();
+        assert_eq!(find_workspace_above(&sub, None, &homes).unwrap(), None);
+    }
+
+    #[test]
+    fn workspace_is_found_from_a_subdirectory_by_its_manifest() {
+        let (_dir, ws, cfg) = fixture();
+        resolve(&ws, &cfg, &[]).unwrap();
+        let homes = realm_home::scan(&cfg.join("workspaces")).unwrap();
+        let sub = ws.join("src/deep");
+        std::fs::create_dir_all(&sub).unwrap();
+        assert_eq!(
+            find_workspace_above(&sub, None, &homes).unwrap().as_deref(),
+            Some(ws.as_path())
+        );
         let other = tempfile::tempdir().unwrap();
-        assert!(find_workspace_above(other.path(), None).is_none());
+        assert!(
+            find_workspace_above(other.path(), None, &homes)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
     fn discovery_stops_at_the_git_top_level() {
-        let dir = tempfile::tempdir().unwrap();
-        let outer = std::fs::canonicalize(dir.path()).unwrap();
+        let (_dir, outer, cfg) = fixture();
         // A workspace above the repository must not be picked up.
-        std::fs::create_dir_all(outer.join(".rkat/tui")).unwrap();
+        resolve(&outer, &cfg, &[]).unwrap();
         let repo = outer.join("repo");
         std::fs::create_dir_all(repo.join(".git")).unwrap();
         let sub = repo.join("src");
         std::fs::create_dir_all(&sub).unwrap();
-        assert!(find_workspace_above(&sub, None).is_none());
-        assert_eq!(default_workspace(&sub, None).unwrap(), sub);
+        let homes = realm_home::scan(&cfg.join("workspaces")).unwrap();
+        assert!(find_workspace_above(&sub, None, &homes).unwrap().is_none());
+        assert_eq!(default_workspace(&sub, None, &homes).unwrap(), sub);
         // A workspace at the repository root is still found.
-        std::fs::create_dir_all(repo.join(".rkat/tui")).unwrap();
-        assert_eq!(find_workspace_above(&sub, None), Some(repo));
+        resolve(&repo, &cfg, &[]).unwrap();
+        let homes = realm_home::scan(&cfg.join("workspaces")).unwrap();
+        assert_eq!(
+            find_workspace_above(&sub, None, &homes).unwrap(),
+            Some(repo)
+        );
     }
 
     #[test]
     fn discovery_never_returns_home_or_above() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let (_dir, root, cfg) = fixture();
         let home = root.join("home");
         let project = home.join("project");
         std::fs::create_dir_all(&project).unwrap();
-        // Stray state in the home directory and above it.
-        std::fs::create_dir_all(home.join(".rkat/tui")).unwrap();
-        std::fs::create_dir_all(root.join(".rkat/tui")).unwrap();
-        assert!(find_workspace_above(&project, Some(&home)).is_none());
-        assert_eq!(default_workspace(&project, Some(&home)).unwrap(), project);
+        // Realms of the home directory and above it.
+        resolve(&home, &cfg, &[]).unwrap();
+        resolve(&root, &cfg, &[]).unwrap();
+        let homes = realm_home::scan(&cfg.join("workspaces")).unwrap();
+        assert!(
+            find_workspace_above(&project, Some(&home), &homes)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            default_workspace(&project, Some(&home), &homes).unwrap(),
+            project
+        );
     }
 
     #[test]
     fn home_directory_is_refused_without_an_explicit_workspace() {
-        let dir = tempfile::tempdir().unwrap();
-        let home = std::fs::canonicalize(dir.path()).unwrap();
-        let err = default_workspace(&home, Some(&home)).unwrap_err();
+        let (_dir, home, cfg) = fixture();
+        let err = default_workspace(&home, Some(&home), &[]).unwrap_err();
         assert!(
             err.to_string()
                 .contains("refusing to use your home directory"),
@@ -478,43 +594,32 @@ mod tests {
         );
         // Above the home directory as well.
         let parent = home.parent().unwrap();
-        assert!(default_workspace(parent, Some(&home)).is_err());
+        assert!(default_workspace(parent, Some(&home), &[]).is_err());
         // An explicit --workspace is honoured.
-        let scope = resolve_scope(&args(&["-w", home.to_str().unwrap()])).unwrap();
+        let scope = resolve(&home, &cfg, &[]).unwrap();
         assert_eq!(scope.context_root, home);
     }
 
     #[test]
     fn realm_flags_opt_into_shared_state() {
-        let dir = tempfile::tempdir().unwrap();
+        let (_dir, ws, cfg) = fixture();
         let state = tempfile::tempdir().unwrap();
-        let scope = resolve_scope(&args(&[
-            "-w",
-            dir.path().to_str().unwrap(),
-            "--isolated",
-            "--state-root",
-            state.path().to_str().unwrap(),
-        ]))
+        let scope = resolve(
+            &ws,
+            &cfg,
+            &["--isolated", "--state-root", state.path().to_str().unwrap()],
+        )
         .unwrap();
-        assert_ne!(scope.realm_id, WORKSPACE_REALM_ID);
+        assert!(scope.home.is_none());
         assert_eq!(scope.state_root, state.path());
-        assert!(!dir.path().join(".rkat/tui").exists());
+        assert!(!cfg.join("workspaces").exists());
     }
 
     #[test]
     fn global_dirs_follow_flags() {
-        let dir = tempfile::tempdir().unwrap();
-        let ws = dir.path().to_str().unwrap();
-        let cfg = dir.path().join("cfg");
-        let scope = resolve_scope(&args(&[
-            "-w",
-            ws,
-            "--config-dir",
-            cfg.to_str().unwrap(),
-            "--user-config-root",
-            ws,
-        ]))
-        .unwrap();
+        let (_dir, ws, cfg) = fixture();
+        let ws_arg = ws.to_str().unwrap();
+        let scope = resolve(&ws, &cfg, &["--user-config-root", ws_arg]).unwrap();
         assert_eq!(
             scope.global,
             Some(GlobalDirs {
@@ -525,21 +630,27 @@ mod tests {
 
         let user = tempfile::tempdir().unwrap();
         let user_root = user.path().to_str().unwrap();
-        let scope = resolve_scope(&args(&["-w", ws, "--user-config-root", user_root])).unwrap();
+        let scope = resolve_scope(&args(&["-w", ws_arg, "--user-config-root", user_root])).unwrap();
         assert_eq!(
-            scope.global.map(|g| g.config),
+            scope.global.clone().map(|g| g.config),
             Some(user.path().join(".rkat").join("tui"))
         );
+        assert!(scope.realm_root().starts_with(user.path()));
     }
 
     #[test]
-    fn a_config_dir_colliding_with_the_realm_dir_is_refused() {
-        let dir = tempfile::tempdir().unwrap();
-        let home = std::fs::canonicalize(dir.path()).unwrap();
-        let ws = home.to_str().unwrap();
-        // `-w ~` with the default config dir `~/.rkat/tui`: the same dir.
-        let err = resolve_scope(&args(&["-w", ws, "--user-config-root", ws])).unwrap_err();
-        let realm = home.join(".rkat").join("tui");
+    fn a_config_dir_colliding_with_a_shared_realm_dir_is_refused() {
+        let (_dir, ws, _) = fixture();
+        let state = ws.join("state");
+        let realm = state.join("r1");
+        let shared = |cfg: &Path| {
+            resolve(
+                &ws,
+                cfg,
+                &["--realm", "r1", "--state-root", state.to_str().unwrap()],
+            )
+        };
+        let err = shared(&realm).unwrap_err();
         let shown = err.to_string();
         assert!(
             matches!(err, TuiError::ConfigDirCollision { .. }),
@@ -549,54 +660,19 @@ mod tests {
         assert!(shown.contains("are the same directory"), "{shown}");
         assert!(shown.contains(realm.to_str().unwrap()), "{shown}");
         assert!(shown.contains("--config-dir <other dir>"), "{shown}");
-        // Nothing was created before the refusal.
-        assert!(!realm.exists());
-
-        // The config dir inside the realm dir.
-        let inner = realm.join("cfg");
-        let err =
-            resolve_scope(&args(&["-w", ws, "--config-dir", inner.to_str().unwrap()])).unwrap_err();
         assert!(
-            err.to_string()
-                .contains("config dir is inside the realm dir"),
-            "{err}"
+            shared(&realm.join("cfg"))
+                .unwrap_err()
+                .to_string()
+                .contains("config dir is inside the realm dir")
         );
-        // The realm dir inside the config dir.
-        let outer = home.join(".rkat");
-        let err =
-            resolve_scope(&args(&["-w", ws, "--config-dir", outer.to_str().unwrap()])).unwrap_err();
         assert!(
-            err.to_string()
-                .contains("realm dir is inside the config dir"),
-            "{err}"
+            shared(&state)
+                .unwrap_err()
+                .to_string()
+                .contains("realm dir is inside the config dir")
         );
-        // Through a symbolic link to the realm dir as well.
-        #[cfg(unix)]
-        {
-            std::fs::create_dir_all(&realm).unwrap();
-            let link = home.join("link");
-            std::os::unix::fs::symlink(&realm, &link).unwrap();
-            let err = resolve_scope(&args(&["-w", ws, "--config-dir", link.to_str().unwrap()]))
-                .unwrap_err();
-            assert!(err.to_string().contains("are the same directory"), "{err}");
-        }
-
-        // `--config-dir` elsewhere resolves it; so does a sibling whose name
-        // merely shares a prefix.
-        let other = home.join("cfg");
-        let scope =
-            resolve_scope(&args(&["-w", ws, "--config-dir", other.to_str().unwrap()])).unwrap();
-        assert_eq!(scope.global.map(|g| g.config), Some(other));
-        let sibling = home.join(".rkat").join("tui2");
-        assert!(
-            resolve_scope(&args(&[
-                "-w",
-                ws,
-                "--config-dir",
-                sibling.to_str().unwrap()
-            ]))
-            .is_ok()
-        );
+        assert!(shared(&ws.join("cfg")).is_ok());
     }
 
     #[test]

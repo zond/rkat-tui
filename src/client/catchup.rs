@@ -19,14 +19,14 @@
 //! the stream reports truncated: it renders the conversation from its start
 //! (its committed transcript) and follows the live stream from there.
 //!
-//! The mark is saved per workspace in `<workspace>/.rkat/tui/attach.cursor`
+//! The mark is saved per workspace in its realm, `<realm>/attach.cursor`
 //! ([`CursorFile`]) after every run end and on detach.
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// The cursor file's name under `<workspace>/.rkat/tui/`.
+/// The cursor file's name in the workspace's realm.
 pub const CURSOR_NAME: &str = "attach.cursor";
 
 /// The last event shown, by session.
@@ -66,12 +66,12 @@ pub struct CursorFile {
 }
 
 impl CursorFile {
-    /// The cursor file of the workspace at `context_root`.
+    /// The cursor file of the workspace whose realm is `realm_root`.
     #[must_use]
-    pub fn of_workspace(context_root: &Path) -> Self {
+    pub fn of_realm(realm_root: &Path) -> Self {
         Self {
-            root: context_root.to_path_buf(),
-            path: context_root.join(".rkat").join("tui").join(CURSOR_NAME),
+            root: realm_root.to_path_buf(),
+            path: realm_root.join(CURSOR_NAME),
         }
     }
 
@@ -265,15 +265,12 @@ mod tests {
     #[test]
     fn the_cursor_survives_per_workspace_and_only_for_its_session() {
         let dir = tempfile::tempdir().unwrap();
-        let file = CursorFile::of_workspace(dir.path());
+        let file = CursorFile::of_realm(dir.path());
         assert_eq!(file.load(), None);
         let mut mark = Mark::resume("s1", None);
         assert!(mark.admit(Some("e1"), 7));
         file.save(&mark.cursor(Some("d1")));
-        assert_eq!(
-            file.path(),
-            dir.path().join(".rkat").join("tui").join(CURSOR_NAME)
-        );
+        assert_eq!(file.path(), dir.path().join(CURSOR_NAME));
         let saved = file.load().unwrap();
         assert_eq!(Mark::resume("s1", Some(&saved)).sequence(), 7);
         // Another session (the daemon's orchestrator was replaced) starts
@@ -290,13 +287,7 @@ mod tests {
         assert_eq!(daemon_id("token-a").len(), 16);
         // Each agent has its own file; `main` (before P5) keeps the old one.
         let agent = file.for_agent("main-ab12");
-        assert_eq!(
-            agent.path(),
-            dir.path()
-                .join(".rkat")
-                .join("tui")
-                .join("attach-main-ab12.cursor")
-        );
+        assert_eq!(agent.path(), dir.path().join("attach-main-ab12.cursor"));
         assert_eq!(agent.load(), None, "another agent's position is its own");
         assert_eq!(file.for_agent("main").path(), file.path());
     }

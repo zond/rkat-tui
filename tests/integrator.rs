@@ -2,8 +2,8 @@
 //! `rkat-tui-mob` daemon with a scripted LLM and an attached client. Covers
 //! a turn, a queued turn, a steered message applied at a tool boundary
 //! (and one typed while a slow shell call runs), interrupt (also during a
-//! slow tool), `-c` and `--resume` across daemon lifetimes, and a renamed
-//! workspace.
+//! slow tool), `-c` and `--resume` across daemon lifetimes, and a moved
+//! workspace and its re-home.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -17,6 +17,7 @@ use common::{ScriptedLlmClient, Step, Workspace, copy_tree, task_id, user_texts}
 use meerkat_core::{AgentEvent, Message};
 use rig::{Attached, ScriptedClassifier, Setup};
 use rkat_tui::approval::classifier::{ActionClassifier, ClassifierVerdict};
+use rkat_tui::bootstrap::realm_home;
 use rkat_tui::ui::delivery::PendingId;
 use rkat_tui::ui::{Block, Effect, EscalationAnswer, Msg, StatusUpdate, TurnFailure};
 use serde_json::json;
@@ -42,8 +43,17 @@ async fn creates_a_session_and_completes_a_turn() {
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![Step::Text("hello there")]);
     let mut rig = Attached::start(&ws.root, &llm).await;
-    // The workspace-local realm lives inside the workspace.
-    assert!(ws.root.join(".rkat/tui/.gitignore").is_file());
+    // The workspace's realm lives outside it, under the config directory
+    // (the rig's user config root is the workspace, so the engine's
+    // `.rkat/session_comms_identity` lands there; no realm does).
+    let realm = common::realm_of(&ws.root);
+    assert!(realm.starts_with(common::config_dir_for(&ws.root)));
+    assert!(
+        realm
+            .join(rkat_tui::bootstrap::realm_home::MANIFEST_FILE)
+            .is_file()
+    );
+    assert!(!ws.root.join(".rkat").join("tui").exists());
 
     rig.send(Effect::StartTurn("hi".into()));
     let outcome = rig.turn_finished().await;
@@ -311,17 +321,10 @@ async fn resume_without_a_reference_opens_the_picker_at_start() {
     rig.quit().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn workspace_state_survives_a_rename() {
-    let ws = Workspace::new();
-    let llm = ScriptedLlmClient::new(vec![Step::Text("ok")]);
-    let mut rig = Attached::start(&ws.root, &llm).await;
-    let first = rig.current_session().await;
-    rig.send(Effect::StartTurn("before the move".into()));
-    rig.turn_finished().await;
-    rig.quit().await;
-
-    let moved = ws.sibling("renamed-project");
+/// Move the workspace `ws` (its daemon stopped) to the sibling `name`:
+/// copied, then removed.
+async fn move_workspace(ws: &Workspace, name: &str) -> std::path::PathBuf {
+    let moved = ws.sibling(name);
     copy_tree(&ws.root, &moved);
     // A user moves the directory after rkat-tui exited; here the process
     // lives on, and a file operation the service's shutdown left in flight
@@ -345,13 +348,129 @@ async fn workspace_state_survives_a_rename() {
             ),
         }
     }
+    moved
+}
 
+/// A conversation in `ws`, then the daemon stopped: its session.
+async fn one_conversation(ws: &Workspace, prompt: &str) -> meerkat_core::SessionId {
+    let llm = ScriptedLlmClient::new(vec![Step::Text("ok")]);
+    let mut rig = Attached::start(&ws.root, &llm).await;
+    let first = rig.current_session().await;
+    rig.send(Effect::StartTurn(prompt.into()));
+    rig.turn_finished().await;
+    rig.quit().await;
+    first
+}
+
+/// The workspaces' realms of the rig's config directory beside `root`.
+fn realms(root: &std::path::Path) -> std::path::PathBuf {
+    common::config_dir_for(root).join(realm_home::WORKSPACES_DIR)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_moved_workspace_starts_anew_and_is_offered_its_old_state() {
+    let ws = Workspace::new();
+    let first = one_conversation(&ws, "before the move").await;
+    let moved = move_workspace(&ws, "renamed-project").await;
+    // The realm stays behind, unclaimed: the manifest names the old path,
+    // and nothing in the moved workspace says otherwise. A start there
+    // gets a new realm and is offered the old one; nothing is adopted.
+    let old = realm_home::find(&realms(&moved), &ws.root)
+        .unwrap()
+        .unwrap();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let mut rig = Attached::start_with(&moved, &llm, client_args(&["-c"])).await;
+    assert_ne!(rig.current_session().await, first);
+    rig.wait_for(|msg| {
+        matches!(msg, Msg::Notice { text, .. } if text.contains(&old.id) && text.contains("/rehome"))
+    })
+    .await;
+    rig.quit().await;
+    assert_eq!(
+        realm_home::find(&realms(&moved), &ws.root).unwrap(),
+        Some(old)
+    );
+}
+
+/// `rkat-tui --rehome <old path>` in the moved workspace adopts its state:
+/// `-c` continues the latest conversation there, under the realm id it
+/// always had.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn after_a_rehome_continue_resumes_the_latest_conversation_in_the_new_place() {
+    let ws = Workspace::new();
+    let first = one_conversation(&ws, "before the move").await;
+    let moved = move_workspace(&ws, "renamed-project").await;
+    let old = realm_home::find(&realms(&moved), &ws.root)
+        .unwrap()
+        .unwrap();
+    let done = realm_home::rehome_workspace(&common::args_for(&moved), ws.root.to_str().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(done.home.id, old.id);
+    assert_eq!(done.from.as_deref(), Some(ws.root.as_path()));
+    assert_eq!(done.set_aside, None);
     let llm = ScriptedLlmClient::new(vec![]);
     let rig = Attached::start_with(&moved, &llm, client_args(&["-c"])).await;
     assert_eq!(rig.current_session().await, first);
     let session = rig.messages().await;
     assert_eq!(user_texts(&session), vec!["before the move".to_string()]);
+    assert_eq!(common::realm_of(&moved), old.dir);
     rig.quit().await;
+}
+
+/// A re-home is refused while a daemon holds the realm it would set aside
+/// (its lease is live), and goes through once it stopped; the TUI's
+/// `/rehome <ref>` checks the state and has the UI leave, stopping the
+/// daemon, before anything is rewritten.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rehome_is_refused_while_a_daemon_holds_the_realm() {
+    let ws = Workspace::new();
+    one_conversation(&ws, "before the move").await;
+    let moved = move_workspace(&ws, "renamed-project").await;
+    let old = realm_home::find(&realms(&moved), &ws.root)
+        .unwrap()
+        .unwrap();
+    // A start in the moved workspace made it a new realm, whose daemon
+    // runs.
+    let llm = ScriptedLlmClient::new(vec![]);
+    let mut rig = Attached::start(&moved, &llm).await;
+    let fresh = common::realm_of(&moved);
+    let refused = realm_home::rehome_workspace(&common::args_for(&moved), &old.id).await;
+    assert!(
+        matches!(
+            &refused,
+            Err(rkat_tui::TuiError::RealmHome(realm_home::HomeError::InUse { why, .. }))
+                if why.contains("live lease")
+        ),
+        "{refused:?}"
+    );
+    // Nothing was rewritten.
+    assert_eq!(common::realm_of(&moved), fresh);
+    // `/rehome` with nothing lists what could be adopted; with the old
+    // realm, the runner checks it and has the UI leave.
+    rig.send(Effect::Rehome(None));
+    rig.wait_for(|msg| {
+        matches!(msg, Msg::Notice { text, .. } if text.contains(&old.id) && text.contains("can adopt"))
+    })
+    .await;
+    rig.send(Effect::Rehome(Some(old.id.clone())));
+    rig.wait_for(|msg| matches!(msg, Msg::Rehoming)).await;
+    rig.quit().await;
+    let done = realm_home::rehome_after_stop(
+        &common::args_for(&moved),
+        &old.id,
+        std::time::Duration::from_secs(15),
+    )
+    .await
+    .unwrap();
+    assert_eq!(done.home.id, old.id);
+    assert_eq!(
+        done.set_aside.map(|home| home.dir),
+        Some(fresh.clone()),
+        "the realm the workspace had is set aside, not deleted"
+    );
+    assert!(fresh.is_dir());
+    assert_eq!(common::realm_of(&moved), old.dir);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -760,8 +879,8 @@ async fn status_report_names_the_session_and_the_workspace() {
     rig.quit().await;
 }
 
-/// `/export`: the runner writes the UI's text to the default file under the
-/// workspace's `.rkat/tui/` (and to a typed path), and says where.
+/// `/export`: the runner writes the UI's text to the default file in the
+/// workspace's realm (and to a typed path), and says where.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn export_writes_the_transcript_and_names_the_file() {
     let ws = Workspace::new();
@@ -782,7 +901,7 @@ async fn export_writes_the_transcript_and_names_the_file() {
         .strip_prefix("exported the transcript to ")
         .unwrap_or_else(|| panic!("{text}"));
     let path = std::path::Path::new(path);
-    assert!(path.starts_with(ws.root.join(".rkat/tui")), "{text}");
+    assert!(path.starts_with(common::realm_of(&ws.root)), "{text}");
     let name = path.file_name().unwrap().to_string_lossy().into_owned();
     assert!(
         name.starts_with(&format!("export-{id}-")) && name.ends_with(".txt"),
@@ -809,10 +928,10 @@ async fn quitting_releases_the_realm_lease() {
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![]);
     let rig = Attached::start(&ws.root, &llm).await;
-    // The workspace-local realm lives inside the workspace.
-    assert_eq!(walk_leases(&ws.root), 1);
+    let realm = common::realm_of(&ws.root);
+    assert_eq!(walk_leases(&realm), 1);
     rig.quit().await;
-    assert_eq!(walk_leases(&ws.root), 0);
+    assert_eq!(walk_leases(&realm), 0);
 }
 
 /// Lease records (`<realm>/leases/*.json`) under `dir`.
@@ -942,7 +1061,7 @@ async fn plan_mode_refuses_a_write_and_the_model_reads_why() {
     );
     let system = llm.recorded()[0].system();
     assert!(system.contains("# Plan mode is on"), "{system}");
-    let realm_rules = std::fs::read_to_string(ws.root.join(".rkat/tui/tui.toml")).unwrap();
+    let realm_rules = std::fs::read_to_string(common::realm_of(&ws.root).join("tui.toml")).unwrap();
     assert!(realm_rules.contains("mode = \"plan\""), "{realm_rules}");
 
     rig.send(Effect::SetMode(PermissionMode::AcceptEdits));
@@ -951,7 +1070,7 @@ async fn plan_mode_refuses_a_write_and_the_model_reads_why() {
     rig.turn_finished().await;
     let system = llm.recorded().last().unwrap().system();
     assert!(system.contains("# Plan mode is off"), "{system}");
-    let realm_rules = std::fs::read_to_string(ws.root.join(".rkat/tui/tui.toml")).unwrap();
+    let realm_rules = std::fs::read_to_string(common::realm_of(&ws.root).join("tui.toml")).unwrap();
     assert!(
         realm_rules.contains("mode = \"accept-edits\""),
         "{realm_rules}"
@@ -1035,7 +1154,7 @@ async fn the_task_tools_fill_the_checklist_and_resume_restores_it() {
         rig.seen
     );
     rig.quit().await;
-    let realm_rules = std::fs::read_to_string(ws.root.join(".rkat/tui/tui.toml")).unwrap();
+    let realm_rules = std::fs::read_to_string(common::realm_of(&ws.root).join("tui.toml")).unwrap();
     assert!(
         realm_rules.contains("checklist = \"shown\""),
         "{realm_rules}"

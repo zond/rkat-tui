@@ -606,6 +606,20 @@ async fn the_orchestrator_shell_runs_confined() {
         &ws.root,
         &rkat_tui::daemon::endpoint::RealmKey::Default,
     );
+    // The config directory, and the realm under it, out of the temp dir
+    // too: a realm the shell could reach refuses the start.
+    let cfg = state.path().join("cfg");
+    let args = args_with(
+        &ws.root,
+        &[
+            "--confinement=workspace",
+            "--config-dir",
+            cfg.to_str().unwrap(),
+        ],
+    );
+    let realm = rkat_tui::bootstrap::resolve_scope(&args)
+        .unwrap()
+        .realm_root();
     let llm = ScriptedLlmClient::new(vec![
         Step::Tool {
             id: "sh",
@@ -613,12 +627,11 @@ async fn the_orchestrator_shell_runs_confined() {
             args: json!({"command": format!(
                 "echo confined-$((40+2)); cat '{}' 2>&1; ls -a '{}' 2>&1",
                 default.display(),
-                ws.root.join(".rkat").display(),
+                realm.display(),
             )}),
         },
         Step::Text("ran it"),
     ]);
-    let args = args_with(&ws.root, &["--confinement=workspace"]);
     let daemon = Running::start_with(
         &args,
         DaemonOptions::default()
@@ -637,21 +650,18 @@ async fn the_orchestrator_shell_runs_confined() {
     client.run_completed(&stream).await;
     let request = last_request(&llm);
     assert!(request.contains("confined-42"), "{request}");
-    // The agent's shell cannot read the attach token.
+    // The agent's shell cannot read the attach token, nor list the realm.
     assert!(!request.contains(&token), "{request}");
-    daemon.stop().await;
-    // The stop removed the file; the directory keeps the audit log only.
-    let dir = default.parent().unwrap();
-    let left: Vec<String> = std::fs::read_dir(dir)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-        .collect();
-    assert_eq!(
-        left,
-        [rkat_tui::daemon::audit::AUDIT_FILE],
-        "left behind in {}",
-        dir.display()
+    assert!(
+        !request.contains(rkat_tui::bootstrap::realm_home::MANIFEST_FILE),
+        "{request}"
     );
+    daemon.stop().await;
+    // The stop removed the file and its directory; the audit log is in the
+    // realm.
+    let dir = default.parent().unwrap();
+    assert!(!dir.exists(), "left behind: {}", dir.display());
+    assert!(realm.join(rkat_tui::daemon::audit::AUDIT_FILE).is_file());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

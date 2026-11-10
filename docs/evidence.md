@@ -4973,3 +4973,164 @@ only marks it detached). The manual's new "Security decisions" section
 it off, no idle timeout, unattended turns, the audit log and where), and
 `docs/mob-split.md`'s "Wire and security" lists the non-goals with the
 reason for each.
+
+## The realm moves out of the workspace (2026-11-10)
+
+The user's decisions of 2026-11-10 (the maintainer's comment on
+zond/rkat-tui#1: the engine cannot make a subtree read only inside a
+writable grant, so trusted state must stay outside every shell write
+grant): the realm leaves `<workspace>/.rkat/tui/` for
+`<config dir>/workspaces/<random id>/`, a manifest there is the only
+authority for which workspace owns it, re-homing is explicit, old realms
+are not migrated, and a sandbox that could reach the realm refuses the
+start.
+
+### Verified first: what a re-home must rewrite
+
+Read from a dogfood realm of this repository (a copy, opened read only)
+and the engine's sources:
+
+- Structural state names no workspace path. `realm_manifest.json` holds
+  the realm id, backend, origin and creation time; a session's
+  `SessionMetadata` holds `realm_id`, model, provider, tooling, comms
+  name, never a path; `conversations.json`, `tui_helpers.json` and the
+  cursors hold session ids. The realm id is the directory name and does
+  not change on a re-home, so every stored session still belongs to its
+  realm after one.
+- Absolute paths appear only in conversation content: tool results
+  (`pwd`'s output), the model's text, a compaction summary
+  (`sessions.sqlite3` `session_strand_messages`, and the engine's event
+  projection under `<realm>/.rkat/`). After a re-home the agent reads
+  its old path in its history; nothing resolves it.
+- The engine takes an arbitrary realm root: `open_realm_persistence_in`,
+  `start_realm_lease_in` and `inspect_realm_leases_in` all take
+  `(realms_root, realm_id)`, and `realm_paths_in` joins them. So
+  `realms_root = <config dir>/workspaces`, `realm_id = <id>`.
+- What is keyed by the workspace path outside the realm: the endpoint
+  file's key (`<state>/rkat-tui/<sha256(path)>/`), which is only live
+  while a daemon runs and is looked up again under the new path; and the
+  host trust record (`<config>/trust/<sha256(path, realm id)>.toml`),
+  which a re-home would lose. The record of a workspace's own realm is
+  therefore keyed by the realm id alone
+  (`HostTrustRecord::open_for_realm`; its files are workspace-relative).
+
+So a re-home is sound for stored sessions: it rewrites the manifest's
+path and nothing else.
+
+### The move
+
+`bootstrap::realm_home`: each realm directory (0700) holds
+`workspace.toml` (the canonical workspace path, its name, the `origin`
+remote read from `.git/config` with credentials removed, creation and
+last use). `resolve_scope` finds the workspace's realm by scanning the
+manifests for its canonical path, under an exclusive `flock` on
+`workspaces/.lock`, and makes one with a random 16-hex-digit id when
+none names it; two manifests naming one path refuse the start naming
+both (`HomeError::Duplicate`), and so does a manifest that cannot be
+read (it may name this workspace; a directory with no manifest at all
+is no realm, the manifest being written before anything else). The
+workspace is found from a subdirectory by the manifests too; nothing in
+the workspace is read for it.
+
+Fail closed (decision 5): `realm_home::exposing_grant` compares the
+shell plan's read and write grants with the realm directory, canonical,
+both ways (a grant holding it or inside it); `bootstrap::assemble`
+refuses with `TuiError::RealmExposed` before the realm persistence is
+opened, and the client's `configure_with` refuses on its `!` shell's
+plan. The realm is also a secret root of the project root, so the file
+tools neither write nor read it.
+
+No migration (decision c): a `<workspace>/.rkat/tui/` is never read or
+imported; a start that finds one says once, in a notice, that it is
+unused and can be deleted, and leaves it. A planted one marks nothing.
+
+The audit log follows the realm (addendum): `<realm>/audit.jsonl`, so
+the endpoint directory is removed again when the daemon stops, and
+`--audit` reads the realm the workspace's manifest names (never making
+one).
+
+Also moved to the realm: the conversation log (before, it was
+`<workspace>/.rkat/tui/conversations.json` even for an `--isolated`
+realm), the attach cursors, the workspace notes (`<realm>/notes`), and
+`/export`'s default file. The engine still writes its comms identity
+under the user config root (`<root>/.rkat/session_comms_identity`), not
+the workspace.
+
+Removed with the move: `bootstrap::committed` (the refusal of a realm
+directory git tracks, bfb508b and b2f8944) and `tests/committed_realm.rs`:
+no realm is ever in the workspace's `.rkat/tui/` any more, and one found
+there is not a realm.
+
+Tests: `realm_home`'s unit tests (a random 0700 realm with a manifest
+found again; `two_manifests_naming_one_workspace_refuse_and_name_both`;
+`an_unreadable_manifest_refuses_a_start`; orphans offered and set-aside
+realms not; `a_grant_holding_or_inside_the_realm_exposes_it`), `scope`'s
+(`default_state_lives_in_a_realm_under_the_config_dir`, nothing written
+into the workspace, the realm secret to the file tools;
+`a_planted_workspace_realm_is_ignored_with_a_notice`; discovery from a
+subdirectory by manifest, stopping at the git top-level and below the
+home directory), and in `tests/confinement.rs` on this host's real
+paths `the_realm_is_out_of_reach_and_git_stays_writable_until_engine_ask_8`
+(SEC-2's `the_realm_and_git_directories_stay_writable_until_engine_ask_8`
+turned around for the realm: a confined command neither writes nor lists
+it; the `.git/` half stays the recorded gap),
+`a_shell_that_could_reach_the_realm_refuses_the_start` (`-w` at an
+ancestor of the realm, and `--confinement-write` of the config
+directory: the daemon and the client both refuse), and
+`the_confined_shell_cannot_read_or_write_the_audit_log` on the realm's
+log. Rewritten to the new behaviour: `workspace_state_survives_a_rename`
+is now `a_moved_workspace_starts_anew_and_is_offered_its_old_state`, and
+`the_workspace_realms_confinement_table_is_ignored_with_a_notice` is
+`the_workspace_realms_confinement_table_is_a_floor` (the realm config is
+the user's now, as a `--state-root` realm's always was). The test rig's
+config directory moved beside the workspace (`common::config_dir_for`),
+out of it.
+
+### Re-homing, the orphan offer and `--list`
+
+Re-homing is explicit (decision 4): `realm_home::rehome` (the CLI's
+`--rehome <ref>`, the TUI's `/rehome <ref>`) takes the realm a reference
+names (its id, else the workspace path it served or, once set aside,
+served before; a gone path is compared lexically normalized, an existing
+one canonical), under the realms lock. It refuses the realm this
+workspace already has (`AlreadyHere`), a realm whose workspace still
+exists (`StillHomed`: re-homing is for a workspace that moved; a realm
+set aside has no path and is adoptable), and either realm a daemon may
+hold (`prove_idle`, positive proof only: no live and no unparseable lease
+in the realm, `inspect_realm_leases_in`, and every endpoint file of the
+workspace it serves or served absent or refusing a connect,
+`endpoint::check_stale`; a stale lease is the engine's own proof of a
+holder that stopped heartbeating). The realm the workspace had is set
+aside first (its manifest's `path` moves to `former_path`), then the
+adopted one names the workspace; a failure between the two leaves the
+workspace with no realm, never two. Nothing is deleted.
+
+In the TUI, `/rehome` alone lists this workspace's realm and those a
+re-home could adopt; `/rehome <ref>` checks the reference
+(`check_rehome`), records it and has the UI leave with the daemon
+stopped (`Msg::Rehoming` → `Departure::Terminate`), since the realm this
+workspace has is the daemon's; once the UI is gone, `client::run` adopts
+it (`rehome_after_stop`, retrying a realm proven in use for up to 15 s
+while the daemon releases its lease) and says on the terminal what it
+did. A start in a workspace with no realm while realms whose workspace
+is gone exist makes a new realm and offers those in a notice (the
+process that made the realm shows it: the client when it started first,
+else the daemon's start-up notices); nothing is adopted silently.
+
+`--list` prints, after the daemons, every realm under the config
+directory: id, workspace (`(gone)`, or `set aside, was …`), git remote,
+last use, and the daemon of its workspace from the endpoint files already
+probed (`daemon pid N`, `no daemon`, a stale file, or unknown).
+
+Tests: `a_rehome_moves_the_path_and_sets_the_new_realm_aside` and
+`a_rehome_is_refused_while_a_lease_is_live_or_unreadable` (unit), and in
+`tests/integrator.rs`:
+`after_a_rehome_continue_resumes_the_latest_conversation_in_the_new_place`
+(the brief's "re-home then `-c`": the same session and its message under
+the new path, the realm id unchanged),
+`a_rehome_is_refused_while_a_daemon_holds_the_realm` (the live lease of
+the moved workspace's new realm refuses it and nothing is rewritten;
+`/rehome` lists the old realm, `/rehome <id>` makes the UI leave, and the
+adoption then goes through with the new realm set aside, not deleted),
+`a_moved_workspace_starts_anew_and_is_offered_its_old_state`, and
+`rehome_asks_the_runner_and_leaves_stopping_the_daemon` (UI).

@@ -177,12 +177,11 @@ async fn shutdown_stops_the_daemon_and_removes_its_endpoint_file() {
     drop(owner);
     daemon.ended().await;
     assert!(!file.exists(), "the endpoint file is removed");
-    // The directory keeps the audit log, and nothing else.
-    let left: Vec<String> = std::fs::read_dir(file.parent().unwrap())
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-        .collect();
-    assert_eq!(left, [rkat_tui::daemon::audit::AUDIT_FILE], "{left:?}");
+    // Its directory goes with it (the audit log is in the realm).
+    assert!(
+        !file.parent().unwrap().exists(),
+        "the endpoint directory is removed"
+    );
 }
 
 // The attach runner's `/quit`, `/detach` and hangup against a daemon.

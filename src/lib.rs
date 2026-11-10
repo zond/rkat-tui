@@ -168,7 +168,20 @@ pub use ui::UiError;
 /// cannot be driven.
 pub async fn run(args: Args) -> Result<(), TuiError> {
     if args.list {
-        daemon::list::print(None).await;
+        daemon::list::print(
+            None,
+            bootstrap::GlobalDirs::resolve(
+                args.config_dir.as_deref(),
+                args.user_config_root.as_deref(),
+            )
+            .as_ref(),
+        )
+        .await;
+        return Ok(());
+    }
+    if let Some(reference) = &args.rehome {
+        let rehomed = bootstrap::realm_home::rehome_workspace(&args, reference).await?;
+        println!("{rehomed}");
         return Ok(());
     }
     if args.audit {

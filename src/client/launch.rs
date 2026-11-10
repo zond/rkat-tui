@@ -243,6 +243,7 @@ pub const NOT_FORWARDED: &[&str] = &[
     "attach_insecure",
     "context_root",
     "list",
+    "rehome",
     "audit",
 ];
 

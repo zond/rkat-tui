@@ -53,7 +53,7 @@ async fn a_rule_appended_under_the_daemon_is_not_adopted_and_is_named() {
     assert!(notices.is_empty(), "{notices:?}");
 
     // The agent's shell appends an allow rule to the same file.
-    let rules = ws.root.join(".rkat/tui/tui.toml");
+    let rules = common::realm_of(&ws.root).join("tui.toml");
     let mut text = std::fs::read_to_string(&rules).unwrap();
     text.push_str("\n[[allow]]\ntool = \"shell\"\narg = \"curl *\"\n\n[[deny]]\ntool = \"shell\"\narg = \"rm *\"\n");
     std::fs::write(&rules, text).unwrap();

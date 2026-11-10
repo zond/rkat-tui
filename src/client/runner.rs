@@ -519,6 +519,9 @@ pub struct AttachRunner {
     /// What to say on the terminal once the UI is gone (how this client
     /// left the daemon).
     farewells: Farewells,
+    /// The state `/rehome` adopts once the UI is gone and the daemon
+    /// stopped ([`AttachRunner::rehoming`]).
+    rehoming: Rehoming,
     /// Prompts sent before the first attach finished (the command line's
     /// prompt is sent as the UI opens) or while a conversation switch
     /// runs: held until the link is up and no switch runs, or the first
@@ -538,6 +541,10 @@ pub struct AttachRunner {
 
 /// Lines for the terminal after the UI closed ([`AttachRunner::farewells`]).
 pub type Farewells = Arc<parking_lot::Mutex<Vec<String>>>;
+
+/// The reference `/rehome` adopts after the UI closed
+/// ([`AttachRunner::rehoming`]).
+pub type Rehoming = Arc<parking_lot::Mutex<Option<String>>>;
 
 impl AttachRunner {
     /// A runner on `config`; it connects once [`AttachRunner::run`] runs.
@@ -589,6 +596,7 @@ impl AttachRunner {
             bench,
             admitted: Vec::new(),
             farewells: Farewells::default(),
+            rehoming: Rehoming::default(),
             held: Some(Vec::new()),
             first_failed: false,
             retry_at: None,
@@ -604,6 +612,63 @@ impl AttachRunner {
         Arc::clone(&self.farewells)
     }
 
+    /// The state `/rehome <ref>` asked to adopt, once the UI is gone and
+    /// the daemon stopped (the caller adopts it: the runner has left).
+    #[must_use]
+    pub fn rehoming(&self) -> Rehoming {
+        Arc::clone(&self.rehoming)
+    }
+
+    /// `/rehome`: without a reference, what this workspace could adopt;
+    /// with one, check it can be adopted, record it and have the UI leave,
+    /// stopping the daemon (the adoption needs it gone).
+    fn rehome(&self, reference: Option<String>) {
+        let scope = &self.config.scope;
+        let Some(global) = &scope.global else {
+            self.notice(
+                NoticeLevel::Warn,
+                crate::bootstrap::realm_home::HomeError::NoConfigDir.to_string(),
+            );
+            return;
+        };
+        let root = crate::bootstrap::realm_home::root(global);
+        let Some(reference) = reference else {
+            match crate::bootstrap::realm_home::adoptable(&root, scope.home.as_ref()) {
+                Ok(text) => self.notice(NoticeLevel::Info, text),
+                Err(err) => self.notice(NoticeLevel::Warn, err.to_string()),
+            }
+            return;
+        };
+        if scope.home.is_none() {
+            self.notice(
+                NoticeLevel::Warn,
+                "this client runs on a shared realm (--realm, --isolated, --state-root): /rehome moves a workspace's own state only",
+            );
+            return;
+        }
+        if self.config.address.is_some() {
+            self.notice(
+                NoticeLevel::Warn,
+                "/rehome works on this machine's workspace only; run it there",
+            );
+            return;
+        }
+        match crate::bootstrap::realm_home::check_rehome(&root, &reference, &scope.context_root) {
+            Ok(home) => {
+                *self.rehoming.lock() = Some(home.id.clone());
+                self.farewell(
+                    NoticeLevel::Info,
+                    format!(
+                        "adopting realm {} for this workspace: stopping the daemon and quitting first",
+                        home.id
+                    ),
+                );
+                self.send(Msg::Rehoming);
+            }
+            Err(err) => self.notice(NoticeLevel::Warn, err.to_string()),
+        }
+    }
+
     /// Say `text` now and again on the terminal after the UI closed.
     fn farewell(&self, level: NoticeLevel, text: String) {
         self.notice(level, text.clone());
@@ -615,6 +680,12 @@ impl AttachRunner {
     /// got were saved, when there were any.
     pub async fn run(mut self) -> Option<SavedUnsent> {
         self.bench.start();
+        // This client made the workspace's realm: it offers the realms
+        // whose workspace is gone (the daemon it starts finds the realm
+        // made and offers nothing).
+        if let Some(offer) = self.config.scope.offer.take() {
+            self.notice(NoticeLevel::Info, offer);
+        }
         self.show(LinkState::Connecting);
         self.connect();
         loop {
@@ -1948,6 +2019,7 @@ impl AttachRunner {
                 self.bench.export(path.as_deref(), &text, &session);
             }
             Effect::DaemonStop => self.daemon_stop().await,
+            Effect::Rehome(reference) => self.rehome(reference),
             Effect::DaemonStart => self.daemon_start(),
             Effect::Agents(None) => self.list_agents().await,
             Effect::Audit(lines) => self.show_audit(lines).await,
@@ -3939,7 +4011,7 @@ mod tests {
         let scope = crate::bootstrap::resolve_scope(&args).unwrap();
         let config = AttachConfig {
             endpoint_files: vec![dir.join("mob.endpoint")],
-            cursor: CursorFile::of_workspace(&scope.context_root),
+            cursor: CursorFile::of_realm(&scope.realm_root()),
             config: None,
             spawn: None,
             address: None,
