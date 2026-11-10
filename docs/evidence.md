@@ -1,12 +1,81 @@
-# RCT Evidence Log — rkat-tui
+# Evidence — rkat-tui
 
-Evidence is appended after each phase gate: exact commands, base commit,
-timestamp, and output excerpts.
+The engineering record: what was built and why, what was tried, what the
+engine does (with the probes that showed it), and the tests that pin each
+behaviour. Entries are appended in date order; the topic index below
+finds them by subject.
+
+The entries up to "The external editor and its launch exemption"
+(2026-11-05 and 06) were written in the Meerkat monorepo (lukacf/meerkat PR
+2069), where rkat-tui was the `meerkat-tui` crate, before it moved here
+(cb6bcbf, 2026-11-06): the base commits, Rust lanes, Bazel and `make`
+steps they name are that repository's and do not exist here, and their
+gate commands are given as the plain `cargo` equivalents. Later entries'
+commits and commands are this repository's.
 
 Entries are never deleted. One that later work fixed or replaced keeps its
 text and starts with **Resolved (date, by what, test):** or **Superseded
 (date, by what):**; one removed with its code starts with **Removed
 (date):**.
+
+## Topic index
+
+Sections by subject (titles as they appear below; a `###` title is inside
+the `##` section named after it):
+
+- **Approval:** "Phase 2 (approval gate)"; "Approval, security and helpers:
+  first review fixes"; "Shell lexer and project-input trust defects"; "The
+  approval prompt, deny comments and the `?` panel"; "Permission modes on
+  Shift+Tab"; "P3: approvals on the daemon side"; "The approval engine after
+  the senior review".
+- **Confinement:** "Phase 3 (confinement + custody)"; "Confinement refusal,
+  sandbox grants, config dir and env-only endpoint keys"; "Sealing, the fork
+  prompt and the model switch"; "Shell mode"; "Engine-property tests left
+  upstream".
+- **Compaction and memory:** "P6 — Context, memory, compaction policy,
+  docs"; "Runtime, endpoints and structure: first review fixes"; "Esc,
+  queued messages and commands to match Claude Code" (`/compact`); "P3b and
+  the 0.9.11 adoption".
+- **Models and endpoints:** "Phase 4 (models, endpoints, cost)"; "Runtime,
+  endpoints and structure: first review fixes"; "Anthropic thinking per
+  model"; "`/model` in attach mode switches in place (`rkat/set_model`)".
+- **Attach and the daemon:** "P1: the `rkat-tui-mob` daemon"; "P2:
+  `rkat-tui --attach`"; "P3: approvals on the daemon side"; "P4: helpers,
+  conversations and detach in attach mode"; "Daemon and attach fixes after
+  the P1–P4 review"; "P4b: attach-mode polish"; "The attach client and
+  daemon after the senior review"; "The daemon's stop waits for the realm's
+  databases to close"; "The daemon's proxy serves an allow-list of engine
+  methods"; "The proxy forwards only what it parsed".
+- **Helpers and mobs:** "P5 — Mobs (helpers as mob members)"; "Fork — the
+  TUI's `fork` tool"; "Helper depth limit"; "P4: helpers, conversations and
+  detach in attach mode".
+- **The review batches:** the Claude Code parity work ("Editor keys to
+  match Claude Code", "Esc, queued messages and commands to match Claude
+  Code", "The external editor and its launch exemption", "The approval
+  prompt, deny comments and the `?` panel", "Claude Code parity: the
+  controls changed", "The `/` command menu and `@` mentions", "Shell mode",
+  "Permission modes on Shift+Tab", "The task checklist on Ctrl+T",
+  "Conversation rewind in the in-process runner"); the maintainer's reviews
+  ("Shell lexer and project-input trust defects", "Reusing the engine's
+  owners: realm lease, session list, config writes"); the senior review of
+  2026-11-09 ("The approval engine after the senior review", "The attach
+  client and daemon after the senior review", "Engine-property tests left
+  upstream").
+- **The always-daemon phases (2026-11-09 and 10):** P1 parity ("The task
+  checklist in attach mode" to "P1 parity: what stays an engine limit, and
+  the texts"); P2 lifecycle ("The daemon's lifecycle state and its owner"
+  to "The endpoint file falls back to the runtime directory", with "Bug
+  class: a negative observation taken as positive evidence"); P3 the
+  default ("The default flip (P3): attach, else start" to "`--attach=HOST:PORT`
+  with a token file"); P4 the daemon as the only host ("The endpoint key
+  includes the realm (P4)", "Sessions created before the daemon are view
+  only (P4)", "P4: the in-process tests and where they went", "P4: the
+  in-process runner is deleted", "`/status` reads the daemon's side").
+  `docs/mob-split.md` has the plan and the status.
+- **Upstream asks and the engine pin:** "Open asks" below; "The pin moves
+  to upstream `main`"; "The pin moves to the 0.9.11 integration"; "P3b and
+  the 0.9.11 adoption"; "The engine moves to crates.io 0.9.11"; "Steer
+  delivery is attributed first in, first out (an engine ask)".
 
 ## Open asks
 
@@ -22,24 +91,26 @@ the mob split are numbered in `docs/mob-split.md`, "Open engine asks"):
 - End a retired member's event subscription, so the helper follower need
   not poll the roster: "P5 — Mobs", gap 4.
 - A live compaction-trigger update, and the per-build trigger kept across
-  `session_recovery`: "P6", gap 2, and "Review fixes — Agent B" (Z-H5).
+  `session_recovery`: "P6", gap 2, and "Runtime, endpoints and structure: first review fixes" (Z-H5).
 - Tool provenance and mutation class in `ToolDispatchContext`: "P6", gap 5,
-  and "Review fixes — Agent A" (D#5).
+  and "Approval, security and helpers: first review fixes" (D#5).
 - A host-local review tier policy for ungoverned realms (Z-H1), a typed host
-  reviewer (D#19) and typed authorship on host prompts (D#6): "Review fixes
-  — Agent A".
+  reviewer (D#19) and typed authorship on host prompts (D#6): "Approval, security and helpers: first
+  review fixes".
 - A typed "no size-triggered compaction" (D#13), a "list models for this
   binding" seam (Z-M9), a host secret-store write path (D#15) and the
-  summary call's usage in `CompactionCompleted` (B7): "Review fixes — Agent
-  B".
+  summary call's usage in `CompactionCompleted` (B7): "Runtime, endpoints and structure: first
+  review fixes".
 - An atomic "stop this run and abandon these queued inputs": "Typing during
   a slow tool".
-- Instruction-guided compaction (`/compact <instructions>`): "Batch 1 A2".
+- Instruction-guided compaction (`/compact <instructions>`): "Esc, queued messages and commands to match
+  Claude Code".
 - `mob/member_send` answering the input id it admitted, so a client can
   attribute a steer's delivery: "The attach client and daemon after the
   senior review", and `docs/mob-split.md` ask 6.
-- Same-identity `/rewind` of a mob member (#2126) and the governed realm
-  (#2122): "P4: helpers, conversations and detach in attach mode", "P3b and
+- Same-identity `/rewind` of a mob member (lukacf/meerkat#2126: the design
+  is merged, db8547a532; the implementation is not scheduled) and the
+  governed realm (#2122): "P4: helpers, conversations and detach in attach mode", "P3b and
   the 0.9.11 adoption", and `docs/mob-split.md`.
 
 ## Phase 0 (P0a skeleton) — partial
@@ -48,7 +119,7 @@ the mob split are numbered in `docs/mob-split.md`, "Open engine asks"):
 - Date: 2026-11-05
 - `make check-rust-release-config`: `Rust release config is valid (15 publish levels)`, crate-level tests `OK`.
 - `node scripts/generate-bazel-rust-builds.mjs --check`: clean after generation.
-- Not yet run (blocked): `./scripts/repo-cargo check/clippy/run -p meerkat-tui`
+- Not yet run (blocked): `cargo check/clippy/run`
   (host disk full), `make buildbuddy-lock-update` (GitHub downloads returned
   504), so `make verify-bazel-locks` still reports the stale MODULE.bazel.lock.
 
@@ -56,11 +127,11 @@ the mob split are numbered in `docs/mob-split.md`, "Open engine asks"):
 
 - Base commit: `c89d1ccc6e` (working tree before the P0 commit)
 - Lane: `RUST_LANE_ID=tui-p0b-logic` (ports built on `tui-p0b-ui` and `tui-p0b-logic`)
-- `./scripts/repo-cargo fmt -p meerkat-tui -- --check`: exit 0
-- `./scripts/repo-cargo clippy -p meerkat-tui --all-targets --all-features -- -D warnings`: exit 0
-- `./scripts/repo-cargo test -p meerkat-tui`: lib 349 passed / 3 ignored (live-API);
+- `cargo fmt -- --check`: exit 0
+- `cargo clippy --all-targets --all-features -- -D warnings`: exit 0
+- `cargo test`: lib 349 passed / 3 ignored (live-API);
   approval_policy 15, file_tools 22, memory_tools 2, render_snapshot 11; exit 0
-- `./scripts/repo-cargo run -p meerkat-tui --bin rkat-tui -- --help </dev/null`: exit 0
+- `cargo run --bin rkat-tui -- --help </dev/null`: exit 0
 - `make check-rust-release-config`: OK (6 crate-level tests)
 - Left for P2: `ApprovalEngine` wiring, `LlmClassifier` on `meerkat-llm-core`.
 - `make verify-bazel-locks`: all five gates pass after `make buildbuddy-lock-update` and BUILD regeneration.
@@ -69,11 +140,11 @@ the mob split are numbered in `docs/mob-split.md`, "Open engine asks"):
 
 - Base commit: `8a99d61a38` (P0), uncommitted working tree
 - Lane: `RUST_LANE_ID=tui-p1`
-- `./scripts/repo-cargo fmt -p meerkat-tui`: clean
-- `./scripts/repo-cargo clippy -p meerkat-tui --all-targets --all-features -- -D warnings`: exit 0
-- `./scripts/repo-cargo nextest run -p meerkat-tui`: 429 run, 429 passed, 3 skipped (live-API);
+- `cargo fmt`: clean
+- `cargo clippy --all-targets --all-features -- -D warnings`: exit 0
+- `cargo nextest run`: 429 run, 429 passed, 3 skipped (live-API);
   lib 368, approval_policy 15, file_tools 22, memory_tools 2, render_snapshot 11, integrator 8
-- `nextest run -p meerkat-tui --test integrator` repeated 5x: 8/8 each time (~1.3 s)
+- `nextest run --test integrator` repeated 5x: 8/8 each time (~1.3 s)
 - integrator (real `PersistentSessionService` + `MeerkatMachine`, scripted client):
   turn completes (P1-T001); `Queue` prompt behind a running turn and a `Steer`
   applied at a `read_file` tool boundary (`boundary_append_applied`, one run,
@@ -81,25 +152,25 @@ the mob split are numbered in `docs/mob-split.md`, "Open engine asks"):
   undelivered and it never reaches the model; `/new` + `/resume <id>`
   in-process, `last` resolution, `-c` and `--resume <prefix>` across
   lifetimes, workspace copied to a new path still resumes (P1-T003)
-- `./scripts/repo-cargo run -p meerkat-tui --bin rkat-tui -- --help </dev/null`: exit 0
-- `./scripts/repo-cargo run -p meerkat-tui --bin rkat-tui -- --realm-backend memory -w <dir> </dev/null`:
+- `cargo run --bin rkat-tui -- --help </dev/null`: exit 0
+- `cargo run --bin rkat-tui -- --realm-backend memory -w <dir> </dev/null`:
   exit 2 in 0.3 s, "stdin and stdout must be a terminal…" (no bootstrap)
-- `node scripts/generate-bazel-rust-builds.mjs`: `crates/meerkat-tui/BUILD.bazel` regenerated;
-  the root `BUILD.bazel` also needs `//crates/meerkat-tui:integrator_test` in its
+- `node scripts/generate-bazel-rust-builds.mjs`: the crate's `BUILD.bazel` regenerated;
+  the root `BUILD.bazel` also needs the crate's `integrator_test` target in its
   test suite (left to the pre-commit hook; outside this phase's edit scope)
 
 ## Phase 2 (approval gate) — 2026-11-05
 
 - Base commit: `99364f1e82` (P1), uncommitted working tree
 - Lane: `RUST_LANE_ID=tui-port`
-- `./scripts/repo-cargo fmt -p meerkat-tui -- --check`: exit 0
-- `./scripts/repo-cargo clippy -p meerkat-tui --all-targets --all-features -- -D warnings`: exit 0
-- `./scripts/repo-cargo nextest run -p meerkat-tui`: 477 run, 477 passed, 6 skipped (live-API);
+- `cargo fmt -- --check`: exit 0
+- `cargo clippy --all-targets --all-features -- -D warnings`: exit 0
+- `cargo nextest run`: 477 run, 477 passed, 6 skipped (live-API);
   lib+bin 398, approval_policy 15, approval_service 6, classifier_llm 15, file_tools 22,
   integrator 8, memory_tools 2, render_snapshot 11 (e2e_classifier: 3 ignored, live keys)
-- `nextest run -p meerkat-tui --test approval_service --test integrator` repeated 5x: 14/14 each time (~1.4 s)
-- `./scripts/repo-cargo run -p meerkat-tui --bin rkat-tui -- --help </dev/null`: exit 0
-- `node scripts/generate-bazel-rust-builds.mjs`: `crates/meerkat-tui/BUILD.bazel` and the root
+- `nextest run --test approval_service --test integrator` repeated 5x: 14/14 each time (~1.4 s)
+- `cargo run --bin rkat-tui -- --help </dev/null`: exit 0
+- `node scripts/generate-bazel-rust-builds.mjs`: the crate's `BUILD.bazel` and the root
   `BUILD.bazel` test suite gained `approval_service_test` and `classifier_llm_test`; `--check` clean
 - Gate: `approval::admission::ApprovalGate` implements `meerkat_core::ToolDispatchAdmission`;
   `SessionHandle::{create,resume}` install it via `SessionBuildOptions.tool_dispatch_admission`
@@ -201,8 +272,8 @@ the mob split are numbered in `docs/mob-split.md`, "Open engine asks"):
   (existing), `tests/models.rs`: picker → bare-id switch to a gateway-only model → next request's `model` is
   `my-alias`, session metadata carries the gateway binding, sidecar + cost survive quit/resume, switch back to
   `anthropic:claude-opus-4-8` clears the binding and the next request uses it; unknown endpoint leaves the model.
-- `./scripts/repo-cargo fmt -p meerkat-tui -- --check`: clean; `clippy -p meerkat-tui --all-targets --all-features -- -D warnings`: exit 0
-- `./scripts/repo-cargo nextest run -p meerkat-tui`: 496 run, 496 passed, 6 skipped (live-API);
+- `cargo fmt -- --check`: clean; `clippy --all-targets --all-features -- -D warnings`: exit 0
+- `cargo nextest run`: 496 run, 496 passed, 6 skipped (live-API);
   lib+bin 412, approval_policy 15, approval_service 6, classifier_llm 15, confinement 3 (2 skip internally, see P3),
   file_tools 22, integrator 8, memory_tools 2, models 2, render_snapshot 11
 - `--test models --test confinement --test integrator --test approval_service` repeated 5x: 19/19 each time (~2 s)
@@ -210,7 +281,7 @@ the mob split are numbered in `docs/mob-split.md`, "Open engine asks"):
   <0.01 s ("stdin and stdout must be a terminal"); in a pty with a fake key: default mode exits 2 with the confinement
   refusal; `--no-confinement` runs, `/help`, `/model`, `/cost`, `/quit` → exit 0, no panic.
 - `node scripts/generate-bazel-rust-builds.mjs`: `confinement_test` and `models_test` added to
-  `crates/meerkat-tui/BUILD.bazel` and the root `BUILD.bazel` test suite; `--check` clean.
+  the crate's `BUILD.bazel` and the root `BUILD.bazel` test suite; `--check` clean.
 - `Cargo.toml`: `meerkat-sandbox` left the machete `ignored` list (used by `bootstrap::confinement::check`).
 
 ## P5 — Mobs (helpers as mob members)
@@ -278,7 +349,9 @@ the mob split are numbered in `docs/mob-split.md`, "Open engine asks"):
      and `EndpointModels` are gone. `fork` still calls `ensure_implicit_mob_for_model` (the route-aware variant is
      `pub(crate)`), so on an uncatalogued model it fails with `ForkError::UncataloguedModel` unless `delegate` created
      the mob first. **Resolved (2026-11-09, by #2102 in the 0.9.11 pin; the rebuild is removed, test
-     `mobs::a_helper_delegated_after_a_model_switch_runs_on_the_new_model` passes without it):** found with it: the
+     `mobs::a_helper_delegated_after_a_model_switch_runs_on_the_new_model` passed without it; #2102 is closed, its
+     fix shipped in 0.9.11, and `attach_helpers::a_helper_delegated_after_a_model_switch_runs_on_the_new_model`
+     pins it on the daemon):** found with it: the
      agent's mob tools capture the
      model at build (`AgentMobToolSurface.model`), so after a hot `/model` switch `delegate` helpers ran on the old
      model. The TUI now rebuilds the session after every switch
@@ -302,14 +375,14 @@ the mob split are numbered in `docs/mob-split.md`, "Open engine asks"):
   helper session metadata model + `rkat-tui-endpoints/proxy` binding). Unit: registry owners/nesting/live, scoped path,
   transcript nested labels with model, cost roll-up/breakdown, policy delegation tier, personas, render snapshot shows
   `Helper: researcher`.
-- `./scripts/repo-cargo fmt -p meerkat-tui -- --check`: clean; `clippy -p meerkat-tui --all-targets --all-features -- -D
+- `cargo fmt -- --check`: clean; `clippy --all-targets --all-features -- -D
   warnings`: exit 0 (lint enforcement probed with a deliberate `unwrap`).
-- `./scripts/repo-cargo nextest run -p meerkat-tui`: 504 run, 504 passed, 6 skipped; lib+bin 417, approval_policy 15,
+- `cargo nextest run`: 504 run, 504 passed, 6 skipped; lib+bin 417, approval_policy 15,
   approval_service 6, classifier_llm 15, confinement 3, file_tools 22, integrator 8, memory_tools 2, mobs 3, models 2,
   render_snapshot 11. `--test mobs --test approval_service --test integrator --test models` ×5: 19/19 each.
 - `rkat-tui --help`: exit 0; pty smoke `--no-confinement` (fake key, DSR answered) `/help`, `/cost`, `/quit` → exit 0, no
   panic.
-- `node scripts/generate-bazel-rust-builds.mjs`: `mobs_test` added to `crates/meerkat-tui/BUILD.bazel` and the root
+- `node scripts/generate-bazel-rust-builds.mjs`: `mobs_test` added to the crate's `BUILD.bazel` and the root
   `BUILD.bazel`; `--check` clean. `Cargo.toml`: `meerkat-mob`, `meerkat-mob-mcp` left the machete `ignored` list.
 
 ## P6 — Context, memory, compaction policy, docs (2026-11-05)
@@ -379,12 +452,12 @@ the mob split are numbered in `docs/mob-split.md`, "Open engine asks"):
      files apply to new sessions; `/remember` covers the live session through system context.
   5. The admission gate sees only the tool name and arguments (`ToolDispatchContext` carries no provenance), so an MCP
      tool that shares a read-only builtin's name would be Tier 1. Ask: provenance in the dispatch context.
-  6. `MODULE.bazel.lock` records the hash of `crates/meerkat-tui/Cargo.toml` (stale since P0; P6 changed the manifest
+  6. `MODULE.bazel.lock` records the hash of the crate's `Cargo.toml` (stale since P0; P6 changed the manifest
      again): `make buildbuddy-lock-update` needed before CI (outside this phase's edit scope).
 - Machete: `meerkat-memory` now used (probe); `meerkat-hooks` and `meerkat-session` were never used (hooks only observe;
   compaction is native) and are removed from `[dependencies]`; the `[package.metadata.cargo-machete]` section is gone.
   Side effects: `Cargo.lock` (meerkat-tui's dependency list) and the generated `crates/meerkat-session/BUILD.bazel`
-  visibility (drops `//crates/meerkat-tui`) change.
+  visibility (drops the crate) change.
 - Tests: `tests/instructions.rs` (SYSTEM.md replaces the base prompt; order SYSTEM.md < workspace AGENTS.md < persona <
   global < ancestor (via a `.git` file) < local; 32 KiB truncation marker; `/remember` twice → two file lines, one system
   message, next session's prompt carries the line from AGENTS.md), `tests/compact.rs` (auto: native compaction at the
@@ -394,9 +467,9 @@ the mob split are numbered in `docs/mob-split.md`, "Open engine asks"):
   `memory_search`), `tests/approval_policy.rs` MCP test; unit: instructions (order, `.rkat` local, truncation, total
   cap, `.git` file, home never root, empty skipped, SYSTEM.md rules, remember target/append), mcp loader, compaction
   policy/gauge/describe, UI `/compact` + `/compact now` flows, remember key.
-- `./scripts/repo-cargo fmt -p meerkat-tui -- --check`: clean; `clippy -p meerkat-tui --all-targets --all-features -- -D
+- `cargo fmt -- --check`: clean; `clippy --all-targets --all-features -- -D
   warnings`: exit 0.
-- `./scripts/repo-cargo nextest run -p meerkat-tui`: 522 run, 522 passed, 6 skipped; lib+bin 428, approval_policy 16,
+- `cargo nextest run`: 522 run, 522 passed, 6 skipped; lib+bin 428, approval_policy 16,
   approval_service 6, classifier_llm 15, compact 2, confinement 3, file_tools 22, instructions 2, integrator 8,
   memory_tools 2, mobs 3, models 2, render_snapshot 11, semantic_recall 2. `--test compact --test instructions --test
   semantic_recall --test integrator --test mobs` ×5: 17/17 each.
@@ -404,12 +477,12 @@ the mob split are numbered in `docs/mob-split.md`, "Open engine asks"):
   `/compact`, `/compact now` ("nothing to compact yet"), `/quit` → exit 0, no panic, workspace `AGENTS.md` =
   `# AGENTS.md\n\n- note from hash\n- x\n`.
 - `node scripts/generate-bazel-rust-builds.mjs`: `compact_test`, `instructions_test`, `semantic_recall_test` added to
-  `crates/meerkat-tui/BUILD.bazel` and the root `BUILD.bazel`; `--check` clean. `make docs-check`: OK (covers the
+  the crate's `BUILD.bazel` and the root `BUILD.bazel`; `--check` clean. `make docs-check`: OK (covers the
   Mintlify docs only; the README is not under `docs/`). `make check-published-crates-standalone-guard`: meerkat-tui OK
   (no `standalone-tests` metadata: plain `cargo test`; README prints the ignored live-lane commands).
-- README: `crates/meerkat-tui/README.md` rewritten for the port. CHANGELOG `[Unreleased]` `### Added` entry completed.
+- README: the crate README rewritten for the port. CHANGELOG `[Unreleased]` `### Added` entry completed.
 
-## Review fixes — Agent A (approval, security, helpers)
+## Approval, security and helpers: first review fixes (2026-11-05)
 
 ### Why not the native operation review (A22, A23)
 
@@ -459,9 +532,9 @@ Upstream asks:
   `ToolDef`/`ToolProvenance` and `tool_mutation_class` of the owning dispatcher into
   `ToolDispatchAdmission::await_dispatch_admission`.
 
-## Review fixes — Agent B (runtime, endpoints, structure, docs)
+## Runtime, endpoints and structure: first review fixes (2026-11-05)
 
-Paths under `crates/meerkat-tui/`.
+Paths are relative to the repository root.
 
 - B1 durable endpoints: `src/endpoints.rs` (`endpoint_section`, `endpoint_patch`, `project_endpoints`,
   `model_profile_entry`, `ensure_model_profile`, `EndpointError::DialectConflict`) writes the `[realm.rkat-tui-endpoints]`
@@ -529,12 +602,12 @@ Upstream asks (one line each):
   emits it until `src/mobs/follow.rs` reports a follow failure (Agent A's file).
 
 Verification (Agent B, lane `tui-port`, 2026-11-05, concurrent with Agent A's edits):
-- `fmt -p meerkat-tui`: clean. `node scripts/generate-bazel-rust-builds.mjs`: regenerated (`test-support` feature on
+- `fmt`: clean. `node scripts/generate-bazel-rust-builds.mjs`: regenerated (`test-support` feature on
   the test targets, self dev-dependency); `--check` clean. `make check-published-crates-standalone-guard`: meerkat-tui OK.
-- `clippy -p meerkat-tui --all-targets --all-features -- -D warnings`: no finding in Agent B's files; the remaining
+- `clippy --all-targets --all-features -- -D warnings`: no finding in Agent B's files; the remaining
   findings are in Agent A's in-progress files (`approval/engine.rs` double_must_use, `memory/store.rs` redundant_clone,
   `tests/drift_pins.rs`, `tests/mobs.rs`).
-- `nextest run -p meerkat-tui --lib --test integrator --test models --test compact --test instructions --test
+- `nextest run --lib --test integrator --test models --test compact --test instructions --test
   semantic_recall --test confinement --test render_snapshot`: 495 passed; failing: `approval::policy::tests::
   user_rules_take_precedence` (A), and `integrator::a_steered_message_is_applied_at_the_next_tool_boundary` +
   `semantic_recall::a_compacted_fact_is_found_with_memory_search`, both because `read_file` / `memory_search` now reach
@@ -542,14 +615,14 @@ Verification (Agent B, lane `tui-port`, 2026-11-05, concurrent with Agent A's ed
   printed `SKIPPED:` (no unprivileged user namespaces on this host); the realm-floor case ran and passed.
 - `rkat-tui --help`: exit 0 (`--allow-project-mcp` listed).
 
-Verification (Agent A, lane `tui-port`, 2026-11-05): `repo-cargo fmt -p meerkat-tui -- --check` clean;
-`repo-cargo clippy -p meerkat-tui --all-targets --all-features -- -D warnings` clean;
-`repo-cargo nextest run -p meerkat-tui`: 588 tests run, 588 passed, 6 skipped (no hangs);
-`repo-cargo run -p meerkat-tui --bin rkat-tui -- --help </dev/null` prints usage.
+Verification (Agent A, lane `tui-port`, 2026-11-05): `cargo fmt -- --check` clean;
+`cargo clippy --all-targets --all-features -- -D warnings` clean;
+`cargo nextest run`: 588 tests run, 588 passed, 6 skipped (no hangs);
+`cargo run --bin rkat-tui -- --help </dev/null` prints usage.
 The A4 regression (Tier-1 `read_file`/`memory_search` reaching the classifier) was the missing
 `engine.set_tool_origins(ServiceToolOrigins::new(&service))` call in `bootstrap/mod.rs`, now wired.
 
-## User follow-ups — confinement refusal, sandbox grants, config dir, env-only endpoint keys (2026-11-05)
+## Confinement refusal, sandbox grants, config dir and env-only endpoint keys (2026-11-05)
 
 - Educational refusal: `ConfinementError::Unenforceable` now carries `status: HostUsernsStatus` and `help`
   (`unenforceable_help`): what blocked it (read from `/proc/sys/user/max_user_namespaces`,
@@ -646,7 +719,7 @@ The A4 regression (Tier-1 `read_file`/`memory_search` reaching the classifier) w
   spawn customizer for persisted-fork children). It only matters once
   the main session is a durable mob member, which would make `fork_off` (exact context) usable behind the gate.
 
-## Review fixes — 2026-11-06 (sealing, fork prompt, model switch)
+## Sealing, the fork prompt and the model switch (2026-11-06)
 
 - S1 hard links: `Shared::check_writable` refuses (Unix) a target with `nlink() > 1` (recoverable error naming the
   hard link); `commit_write` writes through `paths::write_atomic` with the new `FileMode::Preserve` (temp file renamed
@@ -704,7 +777,7 @@ The A4 regression (Tier-1 `read_file`/`memory_search` reaching the classifier) w
 - C5 vacuous env test: `workspace_mode_passes_the_curated_environment` reruns itself with `RKAT_TUI_TEST_SECRET` set
   (unsafe `set_var` is denied) and asserts the confined shell does not see it.
 
-## Dogfood follow-ups (2026-11-06, evening)
+## Dogfood fixes: pickers, retries, classifier wording, the helper panel (2026-11-06)
 
 - `/model` picker vanished while a turn ran: an escalation prompt replaced the open picker and `advance_escalation` cleared the modal afterwards. Now a picker is parked while escalations show and restored once none remains; key repeats of Enter/Esc/Ctrl-C never act in modals (kitty reports repeats). Tests: `ui::tests::escalation_parks_the_model_picker_and_restores_it`, `parked_picker_returns_after_the_last_queued_escalation`, `stopping_all_escalations_restores_the_parked_picker`, `escalation_parks_the_resume_picker_and_restores_it`, `repeated_enter_and_esc_do_not_act_in_modals`.
 - A prompt re-sent with the same text right after a failed turn was committed again (a failed run keeps its input; verified with a `RejectTools` probe): the runner now sends `(retrying the request above)` with a notice instead. Tests: `integrator::the_same_prompt_after_a_failed_turn_is_not_added_twice`, `a_different_prompt_after_a_failed_turn_is_sent_as_written`.
@@ -772,10 +845,10 @@ The A4 regression (Tier-1 `read_file`/`memory_search` reaching the classifier) w
   "could not recall: …"); the engine ask above (abandon-if-still-queued as one operation) closes it.
 - Backspace deleted two characters in kitty 0.32.2: with `DISAMBIGUATE_ESCAPE_CODES | REPORT_EVENT_TYPES` kitty sent one tap as two `\x7f` bytes (captured with `printf '\e[>3u'; kitty +kitten show_key -m unchanged`), the release of a legacy-encoded key emitted as a second press, which the protocol says must not be sent. The TUI now requests disambiguation only (`src/ui/runtime.rs`); the modal key-repeat guard stays but sees only presses. Kitty's changelog 0.33–0.50 names no fix.
 
-## Batch 1 A1 (2026-11-06)
+## Editor keys to match Claude Code (2026-11-06)
 
-Editor and key rebinds to match Claude Code (`docs/ux-parity.md` §2). Every step: `repo-cargo clippy -p
-meerkat-tui --all-targets --all-features -- -D warnings` exit 0, `repo-cargo nextest run -p meerkat-tui
+Editor and key rebinds to match Claude Code (`docs/ux-parity.md` §2). Every step: `cargo clippy
+--all-targets --all-features -- -D warnings` exit 0, `cargo nextest run
 --all-features` exit 0 (lane `tui-port`).
 - Ctrl+Enter = send now (`Action::SendNow` → `interrupt_and_send`, as Ctrl-X Ctrl-S); `\`+Enter at a line end
   is a newline (`InputEditor::backslash_newline`). Running/recall hints name Ctrl+Enter (render snapshot assertions
@@ -823,11 +896,11 @@ meerkat-tui --all-targets --all-features -- -D warnings` exit 0, `repo-cargo nex
   quit_while_busy_needs_confirmation_and_hands_over_held_messages, idle_quit_is_immediate}`,
   `render_snapshot::a_first_idle_ctrl_d_asks_for_a_second_in_the_editor_title`.
 
-## Batch 1 A2 (2026-11-06)
+## Esc, queued messages and commands to match Claude Code (2026-11-06)
 
 Runner and command changes to match Claude Code (`docs/ux-parity.md` §1–2). Every step:
-`repo-cargo clippy -p meerkat-tui --all-targets --all-features -- -D warnings` exit 0, `repo-cargo nextest run -p
-meerkat-tui --all-features` exit 0 (lane `tui-port`).
+`cargo clippy --all-targets --all-features -- -D warnings` exit 0, `cargo nextest run
+--all-features` exit 0 (lane `tui-port`).
 - Esc while running always interrupts (`Effect::Interrupt`, as Ctrl+C); after an interrupted turn the undelivered
   steers start the next turn through `send_unsent` (shown in place as user blocks); a failed/unknown/pending turn
   still returns them to the editor with the notice; Ctrl+D quit still saves them. The Esc recall path moved to ↑
@@ -902,7 +975,7 @@ meerkat-tui --all-features` exit 0 (lane `tui-port`).
   (`nix::sys::signal::raise(SIGTSTP)`: safe, no process launch; `libc::raise` would need `unsafe`, which the
   workspace denies), and on `fg` re-enters TUI mode, drains pending input and clears for a full repaint. Off Unix it
   is a no-op. `nix` (workspace dep, already in the lock) is a `cfg(unix)` dependency of meerkat-tui now; Cargo.lock
-  gains the edge, `crates/meerkat-tui/BUILD.bazel` was regenerated (`node scripts/generate-bazel-rust-builds.mjs`,
+  gains the edge, the crate's `BUILD.bazel` was regenerated (`node scripts/generate-bazel-rust-builds.mjs`,
   which also picked up the integrator test's `:package_runfiles` data from earlier commits: the commit hooks are not
   installed in this checkout), and `make buildbuddy-lock-update` refreshed MODULE.bazel.lock
   (`scripts/check_bazel_module_lock_inputs.py .`: 66 recorded inputs match; `generate-bazel-rust-builds.mjs --check`
@@ -910,14 +983,14 @@ meerkat-tui --all-features` exit 0 (lane `tui-port`).
   `runtime::tests::ctrl_z_suspends_in_the_loop_and_nothing_reaches_the_integrator`. The stop/continue itself was
   not run in a real terminal.
 - `/memory` (item 8) and Ctrl+G / Ctrl+X Ctrl+E (item 11) waited for an engine exemption; they landed in
-  "Batch 1 A2b" below.
+  "The external editor and its launch exemption" below.
 
-## Batch 1 A2b (2026-11-06)
+## The external editor and its launch exemption (2026-11-06)
 
 - Engine: `meerkat_core::HostLaunchExemption::UserEditor` (`user_editor`, in `ALL`, reason and display name) with
   the constructor `HostLaunchExemption::user_editor(program, untrusted)` (built by `launch` like
   `credential_command`; the host resolves the program). `crates/meerkat/tests/host_launch_sites.rs` maps it to its
-  constructor and lists its one site, `crates/meerkat-tui/src/ui/editor.rs`. The launch table in
+  constructor and lists its one site, `src/ui/editor.rs`. The launch table in
   `docs/concepts/configuration.mdx` and the platform skill's `references/security.md` name it. The TUI passes no
   untrusted-path judgement (`None`): the editor runs with rkat-tui's own environment, as the user started it.
 - External-editor primitive: `Effect::ExternalEditor(EditorTarget)` stays in the UI loop (like `Redraw`/`Suspend`).
@@ -952,19 +1025,19 @@ meerkat-tui --all-features` exit 0 (lane `tui-port`).
   `commands::tests` (parse, help), `keymap::tests::control_keys`, `render_snapshot::
   a_pending_ctrl_x_chord_names_its_second_keys`.
 - Commands: `clippy -p meerkat-core --all-targets --all-features -D warnings` exit 0; `nextest run -p meerkat-core
-  confinement` 41 passed; `nextest run -p meerkat --test host_launch_sites` 12 passed; `clippy -p meerkat-tui
-  --all-targets --all-features -D warnings` exit 0; `nextest run -p meerkat-tui --all-features` 760 passed, exit 0 (lane
+  confinement` 41 passed; `nextest run -p meerkat --test host_launch_sites` 12 passed; `clippy
+  --all-targets --all-features -D warnings` exit 0; `nextest run --all-features` 760 passed, exit 0 (lane
   `tui-port`).
 - Commit split: the exemption's commit carries rkat-tui's `ui/editor.rs` too, because
   `every_host_launch_exemption_is_in_use_and_named_where_it_launches` fails an exemption without a site; that tree
   was checked on its own (meerkat-tui clippy exit 0, the editor tests pass). `node
-  scripts/generate-bazel-rust-builds.mjs` added `//crates/meerkat-tui:cargo_manifest` to the `host_launch_sites`
+  scripts/generate-bazel-rust-builds.mjs` added the crate's `cargo_manifest` target to the `host_launch_sites`
   test's data (it now names a meerkat-tui source); `validate-mintlify-docs.py` ok.
 - Manual check: not run in a real terminal (no interactive terminal in this session, and starting rkat-tui needs a
   live endpoint). The launch itself is exercised by `a_real_editor_command_edits_the_draft` (`sh -c` through
   `HostLaunchExemption::user_editor`); the leave/restore path is the one Ctrl+Z uses, also not run interactively.
 
-## Review defects (2026-11-07)
+## Shell lexer and project-input trust defects (2026-11-07)
 
 Two defects from the Meerkat maintainer's review of the harness, one commit each.
 
@@ -1063,7 +1136,7 @@ Two defects from the Meerkat maintainer's review of the harness, one commit each
   untrusted; they start no process, but a planted endpoint `base_url` could receive an environment key. Not in
   this change's scope.
 
-## Review reuse items (2026-11-07)
+## Reusing the engine's owners: realm lease, session list, config writes (2026-11-07)
 
 Three "reuse the existing owner" items from the maintainer's review ("Existing owners to reuse before adding APIs").
 
@@ -1161,7 +1234,7 @@ Three "reuse the existing owner" items from the maintainer's review ("Existing o
 - Commands: `cargo clippy --all-targets --all-features -- -D warnings` exit 0; `cargo fmt --all -- --check` exit 0;
   `cargo nextest run --all-features` 775 passed, 6 skipped, exit 0.
 
-## Batch 1 A3 (2026-11-07)
+## The approval prompt, deny comments and the `?` panel (2026-11-07)
 
 ### 1. Approval prompt: numbered rows with a cursor
 
@@ -1240,7 +1313,7 @@ Three "reuse the existing owner" items from the maintainer's review ("Existing o
 - README: the command list names every alias once (`/?`, `/exit`, `/q`, `/new`, `/rules`, `remove`, `/cost`,
   `/stats`, `/mcp trust`, `/tasks`); `/status` describes the per-input trust lines; the stale "Ctrl-T is unbound"
   clause is gone; a "Claude Code parity" paragraph opens "Keys and commands" and points at `docs/ux-parity.md`.
-- CHANGELOG: the `rkat-tui` paragraph pointed at `crates/meerkat-tui/README.md` (now `README.md`), named
+- CHANGELOG: the `rkat-tui` paragraph pointed at the crate README (now `README.md`), named
   `/mcp trust`/`--allow-project-mcp` as the way to trust project MCP (now `/trust`/`--trust-project`), and still
   described Esc as pulling queued steers back and an interrupt as returning queued messages to the editor (both
   replaced in batch 1: Esc interrupts, ↑ pulls back, queued messages are sent next); the Ctrl+T and "Ctrl+Y no
@@ -1249,7 +1322,7 @@ Three "reuse the existing owner" items from the maintainer's review ("Existing o
   (`grep -n "Ctrl+T\|Ctrl-T\|Ctrl+Y no\|Esc recalls" README.md CHANGELOG.md src/ui/commands.rs src/ui/render.rs`:
   no match).
 
-## Batch 1 summary
+## Claude Code parity: the controls changed (2026-11-07)
 
 Controls changed by batch 1 (before → after):
 
@@ -1287,7 +1360,7 @@ Commands for the docs pass: `cargo clippy --all-targets --all-features -- -D war
 exit 0; `cargo nextest run --all-features` 785 passed, 6 skipped, exit 0 (`help_mentions_every_command_and_key`
 covers the HELP_TEXT edits).
 
-## Batch 2 A (2026-11-07)
+## The `/` command menu and `@` mentions (2026-11-07)
 
 ### 1. `/` command menu with Tab completion
 
@@ -1380,7 +1453,7 @@ covers the HELP_TEXT edits).
 - Commands: `cargo fmt --all` exit 0; `cargo clippy --all-targets --all-features -- -D warnings` exit 0;
   `cargo nextest run --all-features` 805 passed, 7 skipped (the ignored timing test is the new skip), exit 0.
 
-## Batch 2 B (2026-11-07)
+## Shell mode (2026-11-07)
 
 ### `!` shell mode
 
@@ -1443,7 +1516,7 @@ covers the HELP_TEXT edits).
 - Commands: `cargo fmt --all` exit 0; `cargo clippy --all-targets --all-features -- -D warnings` exit 0;
   `cargo nextest run --all-features` 820 passed, 7 skipped, exit 0.
 
-## Batch 3 A (2026-11-07)
+## Permission modes on Shift+Tab (2026-11-07)
 
 Permission modes on Shift+Tab (`docs/ux-parity.md` rows 9, 27, 28; candidate 5).
 
@@ -1500,7 +1573,7 @@ Permission modes on Shift+Tab (`docs/ux-parity.md` rows 9, 27, 28; candidate 5).
 - Commands: `cargo fmt --all` exit 0; `cargo clippy --all-targets --all-features -- -D warnings` exit 0;
   `cargo nextest run --all-features --no-fail-fast` 833 passed, 7 skipped, exit 0.
 
-## Batch 3 B (2026-11-07)
+## The task checklist on Ctrl+T (2026-11-07)
 
 Task checklist on Ctrl+T (`docs/ux-parity.md` row 22; candidate 7).
 
@@ -1545,7 +1618,11 @@ Task checklist on Ctrl+T (`docs/ux-parity.md` row 22; candidate 7).
 - Commands: `cargo fmt --all` exit 0; `cargo clippy --all-targets --all-features -- -D warnings` exit 0;
   `cargo nextest run --all-features --no-fail-fast` 846 passed, 7 skipped, exit 0.
 
-## Batch 3 C (2026-11-07)
+## Conversation rewind in the in-process runner (2026-11-07)
+
+**Removed (2026-11-10, P4):** the in-process runner and this rewind menu
+went with it; the daemon has no rewind ("P4: the in-process runner is
+deleted").
 
 Conversation rewind: `/rewind` (aliases `/checkpoint`, `/undo`) and Esc Esc on an empty idle input
 (`docs/ux-parity.md` row 7; candidate 2). Code restore is out of scope.
@@ -1968,7 +2045,7 @@ the P3 daemon with a scripted LLM before the client was written:
   keeps no list of a member's earlier sessions, hence
   `.rkat/tui/conversations.json`.
 - **Partly resolved (2026-11-09):** `mob/fork_member` exists (#2117), with a new identity; same-identity rewind
-  is still open (#2126). `/rewind`: `session/fork_at` on the member's session answers -32602
+  is designed upstream (#2126, merged as db8547a532), its implementation not scheduled. `/rewind`: `session/fork_at` on the member's session answers -32602
   "mob-owned session transcripts cannot be edited through the generic
   session surface"; `ForkContext` is `FullHistory` or `LastMessages
   {count}`, rendered as text into a fresh session. No boundary: recorded
@@ -2022,7 +2099,7 @@ registry's error for a bare unknown id); unit tests in `client::helpers`,
 `daemon::conversations`, `config::tests::rules_file_round_trip`
 (`attach` written before the tables).
 
-## Review fixes for P1–P4 (2026-11-08)
+## Daemon and attach fixes after the P1–P4 review (2026-11-08)
 
 A code review of the daemon and attach mode found ten problems; each fix
 below names the test that failed before it and passes after.
