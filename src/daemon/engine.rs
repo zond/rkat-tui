@@ -104,6 +104,8 @@ pub struct Composed {
     pub tasks_db: std::path::PathBuf,
     /// What the start-up had to say (`rkat/notices`).
     pub startup_notices: Vec<StartupNotice>,
+    /// `[helpers] max_depth` (`rkat/report`).
+    pub helper_max_depth: u8,
 }
 
 /// How the daemon composes its approval side (tests vary it).
@@ -409,6 +411,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         project_inputs,
         tasks_db,
         startup_notices,
+        helper_max_depth,
     })
 }
 

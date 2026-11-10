@@ -115,6 +115,7 @@ use super::protocol::{
 };
 use super::protocol::{DETACH, SHUTDOWN, STATUS, Status};
 use super::protocol::{NOTICES, Notices, StartupNotice};
+use super::protocol::{REPORT, Report, TrustedFile};
 
 /// The idempotency source of the daemon's system-context notes.
 const SYSTEM_CONTEXT_SOURCE: &str = "rkat-tui";
@@ -151,6 +152,8 @@ pub struct Local {
     /// The clients, the detach record and the shutdown request
     /// (`rkat/status`, `rkat/detach`, `rkat/shutdown`).
     lifecycle: Arc<Lifecycle>,
+    /// The fixed part of `rkat/report`.
+    report: ReportParts,
 }
 
 /// What [`Local`] is made of.
@@ -183,6 +186,31 @@ pub struct LocalParts {
     pub startup_notices: Vec<StartupNotice>,
     /// The daemon's lifecycle state.
     pub lifecycle: Arc<Lifecycle>,
+    /// What `rkat/report` names besides the engine's state.
+    pub report: ReportParts,
+}
+
+/// The fixed part of [`REPORT`]'s answer.
+#[derive(Debug, Clone)]
+pub struct ReportParts {
+    /// The realm directory.
+    pub realm: std::path::PathBuf,
+    /// The realm id.
+    pub realm_id: String,
+    /// The shell's confinement mode.
+    pub confinement: String,
+    /// `[helpers] max_depth`.
+    pub helper_depth: u8,
+}
+
+/// A trust state in words.
+fn trust_words(status: &crate::bootstrap::trust::TrustStatus) -> String {
+    use crate::bootstrap::trust::TrustStatus;
+    match status {
+        TrustStatus::Missing => "absent".to_string(),
+        TrustStatus::Trusted => "trusted".to_string(),
+        TrustStatus::Untrusted(why) => format!("not trusted: {why}"),
+    }
 }
 
 impl std::fmt::Debug for Local {
@@ -212,6 +240,7 @@ impl Local {
             realm_config,
             startup_notices,
             lifecycle,
+            report,
         } = parts;
         let in_plan = engine.mode() == PermissionMode::Plan;
         Self {
@@ -231,6 +260,7 @@ impl Local {
             realm_config,
             startup_notices,
             lifecycle,
+            report,
         }
     }
 
@@ -285,6 +315,7 @@ impl Local {
                 answer(json!({}))
             }
             GET_MODE => answer(ModeStatus::of(&self.engine)),
+            REPORT => answer(self.report()),
             SET_MODE => {
                 let SetModeParams { mode } = protocol::params(params)?;
                 let mode = PermissionMode::parse(&mode).ok_or_else(|| {
@@ -375,6 +406,44 @@ impl Local {
                 METHOD_NOT_FOUND,
                 format!("unknown method `{other}`"),
             )),
+        }
+    }
+
+    /// `rkat/report`: the daemon's side of `/status`.
+    fn report(&self) -> Report {
+        let ReportParts {
+            realm,
+            realm_id,
+            confinement,
+            helper_depth,
+        } = self.report.clone();
+        let rules = realm.join(crate::config::RULES_FILE_NAME);
+        let realm_rules = TrustedFile {
+            trust: trust_words(&self.project.status(&rules)),
+            path: rules,
+        };
+        let project_inputs = self
+            .project
+            .files()
+            .map(|file| {
+                let mut trust = trust_words(&self.project.status(file));
+                if self.project.by_flag() && trust.starts_with("not trusted") {
+                    trust.push_str(" (trusted for this run by --trust-project)");
+                }
+                TrustedFile {
+                    path: file.to_path_buf(),
+                    trust,
+                }
+            })
+            .collect();
+        Report {
+            realm,
+            realm_id,
+            confinement,
+            mode: ModeStatus::of(&self.engine),
+            realm_rules,
+            project_inputs,
+            helper_depth,
         }
     }
 

@@ -52,6 +52,10 @@ pub const TRUST: &str = "rkat/trust";
 /// [`SessionParams`] → [`Tasks`]: a conversation's tasks in the engine's
 /// task store (the Ctrl+T checklist).
 pub const TASKS: &str = "rkat/tasks";
+/// `{}` → [`Report`]: what `/status` shows of the daemon's side (the
+/// realm, the shell's confinement, the permission mode, the trust of the
+/// realm rules and the project inputs, the helpers' depth limit).
+pub const REPORT: &str = "rkat/report";
 /// [`ChecklistViewParams`] → `{}`: record the checklist panel's view
 /// (Ctrl+T) as the realm's `[ui] checklist`.
 pub const CHECKLIST_VIEW: &str = "rkat/checklist_view";
@@ -308,6 +312,34 @@ pub struct Status {
     /// Whether the orchestrator's turn is running (`false` when its state
     /// cannot be read).
     pub running: bool,
+}
+
+/// A file and its trust in words (`absent`, `trusted`, `not trusted: …`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrustedFile {
+    /// The file.
+    pub path: std::path::PathBuf,
+    /// Its trust in words.
+    pub trust: String,
+}
+
+/// [`REPORT`]'s result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Report {
+    /// The realm directory.
+    pub realm: std::path::PathBuf,
+    /// The realm id.
+    pub realm_id: String,
+    /// The shell's confinement mode (`workspace`, `strict`, `off`).
+    pub confinement: String,
+    /// The permission mode and the denial counters.
+    pub mode: crate::approval::desk::ModeStatus,
+    /// The realm rules file and its trust.
+    pub realm_rules: TrustedFile,
+    /// Each project input (`/trust`) and its trust.
+    pub project_inputs: Vec<TrustedFile>,
+    /// `[helpers] max_depth`.
+    pub helper_depth: u8,
 }
 
 /// [`SET_MODE`]'s parameters.

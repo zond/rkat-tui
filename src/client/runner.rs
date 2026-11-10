@@ -1699,7 +1699,7 @@ impl AttachRunner {
             Effect::CancelShell => self.bench.cancel_shell(),
             Effect::SetModel(reference) => self.set_model(&reference),
             Effect::CompactNow => self.compact_now(),
-            Effect::StatusReport => self.status_report(),
+            Effect::StatusReport => self.status_report().await,
             Effect::ContextReport(header) => self.context_report(header),
             Effect::Export { path: Some(_), .. } if self.local_refused("/export to a path") => {}
             Effect::Remember(_) if self.local_refused("/remember") => {}
@@ -2411,7 +2411,7 @@ impl AttachRunner {
         self.send(Msg::Status(StatusUpdate::CostTotals(cost)));
     }
 
-    fn status_report(&self) {
+    async fn status_report(&self) {
         let mut lines = vec![format!(
             "rkat-tui {} (attached to the workspace daemon)",
             env!("CARGO_PKG_VERSION")
@@ -2458,6 +2458,14 @@ impl AttachRunner {
             "approval gate: in the daemon (requests show here; /rules and Shift+Tab act on the daemon)"
                 .to_string(),
         );
+        match self
+            .call_local::<_, protocol::Report>(protocol::REPORT, &serde_json::json!({}))
+            .await
+        {
+            Ok(report) => lines.extend(report_lines(&report)),
+            Err(CallFailure::NotAttached) => {}
+            Err(err) => lines.push(format!("the daemon's side is unknown: {err}")),
+        }
         self.notice(NoticeLevel::Info, lines.join("\n"));
     }
 
@@ -2657,6 +2665,42 @@ pub(crate) async fn append_system_context(
         remote::append_system_context(&connection, text, key),
     )
     .await
+}
+
+/// `/status`'s lines for the daemon's side ([`protocol::REPORT`]).
+fn report_lines(report: &protocol::Report) -> Vec<String> {
+    use crate::approval::mode::PermissionMode;
+    let mut lines = vec![
+        format!("realm: {} (id {})", report.realm.display(), report.realm_id),
+        format!("shell confinement: {}", report.confinement),
+    ];
+    let mode = &report.mode;
+    let (c, cm, t, tm) = mode.denials;
+    lines.push(format!(
+        "permission mode: {}",
+        match mode.mode {
+            PermissionMode::Auto => format!(
+                "auto{} (consecutive denials {c}/{cm}, total {t}/{tm})",
+                if mode.paused { ", PAUSED" } else { "" }
+            ),
+            other => other.label().to_string(),
+        }
+    ));
+    lines.push(format!(
+        "realm {}: {}",
+        report.realm_rules.path.display(),
+        report.realm_rules.trust
+    ));
+    for input in &report.project_inputs {
+        lines.push(format!("project {}: {}", input.path.display(), input.trust));
+    }
+    lines.push(match report.helper_depth {
+        0 => "helpers: depth limit 0, every helper is refused".to_string(),
+        1 => "helpers: depth limit on (max_depth 1: the agent's helpers start none of their own)"
+            .to_string(),
+        n => format!("helpers: depth limit on (max_depth {n})"),
+    });
+    lines
 }
 
 /// The endpoint and model the status bar names, as the picker lists them
@@ -3180,6 +3224,63 @@ async fn sleep_until(deadline: Option<Instant>) {
 mod tests {
     use super::*;
     use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
+
+    /// `/status`'s daemon side: every line the in-process report had, in
+    /// its order.
+    #[test]
+    fn the_report_names_the_realm_confinement_mode_trust_and_helpers() {
+        use crate::approval::desk::ModeStatus;
+        use crate::approval::mode::PermissionMode;
+        use std::path::PathBuf;
+        let report = protocol::Report {
+            realm: PathBuf::from("/w/.rkat/tui"),
+            realm_id: "tui".into(),
+            confinement: "workspace".into(),
+            mode: ModeStatus {
+                mode: PermissionMode::Auto,
+                paused: true,
+                denials: (1, 3, 2, 20),
+            },
+            realm_rules: protocol::TrustedFile {
+                path: PathBuf::from("/w/.rkat/tui/tui.toml"),
+                trust: "absent".into(),
+            },
+            project_inputs: vec![protocol::TrustedFile {
+                path: PathBuf::from("/w/.rkat/mcp.toml"),
+                trust: "not trusted: it changed".into(),
+            }],
+            helper_depth: 1,
+        };
+        assert_eq!(
+            report_lines(&report),
+            [
+                "realm: /w/.rkat/tui (id tui)",
+                "shell confinement: workspace",
+                "permission mode: auto, PAUSED (consecutive denials 1/3, total 2/20)",
+                "realm /w/.rkat/tui/tui.toml: absent",
+                "project /w/.rkat/mcp.toml: not trusted: it changed",
+                "helpers: depth limit on (max_depth 1: the agent's helpers start none of their own)",
+            ]
+        );
+        let off = protocol::Report {
+            helper_depth: 0,
+            mode: ModeStatus {
+                mode: PermissionMode::Plan,
+                paused: false,
+                denials: (0, 3, 0, 20),
+            },
+            ..report
+        };
+        let lines = report_lines(&off);
+        assert_eq!(
+            lines[2],
+            format!("permission mode: {}", PermissionMode::Plan.label())
+        );
+        assert_eq!(
+            lines.last().unwrap(),
+            "helpers: depth limit 0, every helper is refused"
+        );
+    }
 
     /// A runner on a workspace in `dir`, never connected.
     fn runner(dir: &std::path::Path) -> (AttachRunner, mpsc::UnboundedReceiver<Msg>) {

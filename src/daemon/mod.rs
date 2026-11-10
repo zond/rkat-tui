@@ -511,6 +511,16 @@ impl Daemon {
                 started_at.clone(),
                 options.start_token,
             ),
+            report: local::ReportParts {
+                realm: composed.scope.realm_root(),
+                realm_id: composed.scope.realm_id.clone(),
+                confinement: clap::ValueEnum::to_possible_value(&args.effective_confinement())
+                    .map_or_else(
+                        || format!("{:?}", args.effective_confinement()),
+                        |value| value.get_name().to_string(),
+                    ),
+                helper_depth: composed.helper_max_depth,
+            },
         }));
         // The decisions an earlier daemon left open held dispatches that
         // ended with it.

@@ -3531,8 +3531,9 @@ and listed here.
   Re-expressed: `status_report_names_the_session_and_the_workspace`
   asserts the attach `/status` (session, workspace, the daemon, the
   approval gate); the in-process lines for shell confinement, permission
-  mode, the `tui.toml` and `mcp.toml` files and helpers are not in the
-  attach report (a gap left for the docs batch's `/status` pass);
+  mode, the `tui.toml` and `mcp.toml` files and helpers were not in the
+  attach report (closed in P4b by `rkat/report`, see "`/status` reads the
+  daemon's side");
   `context_report_describes_the_session` asserts the attach line for the
   TUI's tools. The migration found that attach mode sent a prompt
   repeated after a failed turn as a second copy: the client now sends
@@ -3746,3 +3747,21 @@ seeds the transcript again, pinned in
 `attach_sessions::new_starts_fresh_and_resume_brings_the_old_conversation_back`
 (the transcript is there, gone after `/new`, back after `/resume`). This
 closes the gap the `tests/mobs.rs` entry recorded.
+
+### `/status` reads the daemon's side (`rkat/report`)
+
+The in-process `/status` named the realm, the shell's confinement, the
+permission mode with its denial counters, the realm rules file's trust,
+each project input's trust ("trusted for this run" under
+`--trust-project`) and the helpers' depth limit, all read from the
+in-process runtime. In the daemon they are the daemon's: new local method
+`rkat/report` (`protocol::Report`; `Local::report`) answers them from the
+daemon's approval engine (`ModeStatus::of`), its project inputs (which
+share the trust record the realm rules are judged by, so the rules file's
+trust is `ProjectInputs::status` of it) and `local::ReportParts` (the
+realm, the confinement mode `--confinement` chose, `[helpers]
+max_depth`). The client appends them to its own lines
+(`client::runner::report_lines`, unit-tested with the old report's
+wording) and says "the daemon's side is unknown" when the call fails,
+rather than leaving the lines out silently. Pinned end to end by
+`integrator::status_report_names_the_session_and_the_workspace`.

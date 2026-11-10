@@ -15,6 +15,10 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
 
 ### Added
 
+- `/status` shows the daemon's side again, as the in-process report did:
+  the realm, the shell's confinement, the permission mode with its
+  denial counters, the trust of the realm rules file and of each project
+  input, and the helpers' depth limit (new local method `rkat/report`).
 - `/resume` (and `--resume <id>`) lists the realm's sessions created
   in-process before the daemon, marked "view only, created before the
   daemon": choosing one shows its transcript (`/export` saves it) and the
