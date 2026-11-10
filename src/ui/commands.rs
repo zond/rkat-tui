@@ -846,6 +846,8 @@ fn parse_rules(args: &[&str]) -> Option<RulesCommand> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::ui::keymap::{Action, EditAction, map_key};
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     fn ok(s: &str) -> Command {
         parse(s).unwrap().unwrap()
@@ -1310,5 +1312,163 @@ mod tests {
             CommandError::Unknown("frob".into()).to_string(),
             "unknown command /frob (try /help)"
         );
+    }
+
+    /// The `KEYS_HELP` rows (left column) that describe `action`. The match
+    /// has no wildcard, so a new keymap action does not compile until it is
+    /// placed here; empty only for unbound keys and self-evident editing.
+    fn key_rows(action: Action) -> &'static [&'static str] {
+        match action {
+            Action::Submit => &["Enter"],
+            Action::Newline => &["Shift+Enter, Alt+Enter, Ctrl+J"],
+            Action::SendNow => &["Ctrl+Enter"],
+            Action::CtrlC => &["Ctrl-C"],
+            Action::CtrlD => &["Ctrl-D"],
+            Action::Escape => &[
+                "Esc",
+                "Esc Esc (idle, with text)",
+                "Esc Esc (idle, empty input)",
+            ],
+            Action::ToggleDetail => &["Ctrl-O"],
+            Action::ToggleChecklist => &["Ctrl-T"],
+            Action::HistorySearch => &["Ctrl-R"],
+            Action::Stash => &["Ctrl-S"],
+            Action::CycleMode => &["Shift+Tab"],
+            Action::Redraw => &["Ctrl-L"],
+            Action::ModelPicker => &["Alt+P"],
+            Action::Suspend => &["Ctrl-Z"],
+            Action::ExternalEditor => &["Ctrl-G, Ctrl-X Ctrl-E"],
+            Action::ChordPrefix => &["Ctrl-X Ctrl-S", "Ctrl-G, Ctrl-X Ctrl-E"],
+            Action::ScrollUp(_) | Action::ScrollDown(_) | Action::PageUp | Action::PageDown => {
+                &["PgUp/PgDn, Shift+Up/Down"]
+            }
+            Action::ScrollTop | Action::ScrollBottom => &["Home/End"],
+            Action::HelperPrev | Action::HelperNext => &["Ctrl+Up/Down"],
+            Action::None => &[],
+            Action::Edit(edit) => match edit {
+                // The typed characters that mean something in the input.
+                EditAction::Insert(_) => &[
+                    "? (empty input)",
+                    "/ (one-line input)",
+                    "! (first character)",
+                    "@ (ending a word)",
+                ],
+                EditAction::Backspace
+                | EditAction::Delete
+                | EditAction::Left
+                | EditAction::Right => &[],
+                EditAction::Home
+                | EditAction::End
+                | EditAction::WordLeft
+                | EditAction::WordRight => &["Ctrl-A/E, Alt+B/F"],
+                EditAction::Up => &["Up/Down, Ctrl-P/N", "Up (empty input)"],
+                EditAction::Down => &["Up/Down, Ctrl-P/N"],
+                EditAction::DeleteWordBack
+                | EditAction::KillToLineStart
+                | EditAction::KillToLineEnd
+                | EditAction::KillWordForward => &["Ctrl-K/U, Ctrl-W, Alt+D"],
+                EditAction::Yank | EditAction::YankPop => &["Ctrl-Y, Alt+Y"],
+                EditAction::Undo => &["Ctrl-_"],
+            },
+        }
+    }
+
+    /// Every action the keymap can produce, from every key it matches on
+    /// under every modifier combination, with and without input.
+    fn reachable_actions() -> Vec<Action> {
+        let mut codes = vec![
+            KeyCode::Enter,
+            KeyCode::Esc,
+            KeyCode::Tab,
+            KeyCode::BackTab,
+            KeyCode::Backspace,
+            KeyCode::Delete,
+            KeyCode::Left,
+            KeyCode::Right,
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::PageUp,
+            KeyCode::PageDown,
+            KeyCode::Home,
+            KeyCode::End,
+        ];
+        codes.extend((' '..='~').map(KeyCode::Char));
+        let mods = [
+            KeyModifiers::NONE,
+            KeyModifiers::CONTROL,
+            KeyModifiers::ALT,
+            KeyModifiers::SHIFT,
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            KeyModifiers::ALT | KeyModifiers::SHIFT,
+        ];
+        let mut out: Vec<Action> = Vec::new();
+        for code in codes {
+            for m in mods {
+                for empty in [true, false] {
+                    let action = map_key(&KeyEvent::new(code, m), empty);
+                    if !out.contains(&action) {
+                        out.push(action);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The left column of the "Keys:" part of `KEYS_HELP`.
+    fn keys_help_rows() -> Vec<String> {
+        KEYS_HELP
+            .lines()
+            .skip_while(|l| *l != "Keys:")
+            .skip(1)
+            .take_while(|l| *l != "Approval prompt:")
+            .filter(|l| l.chars().nth(2).is_some_and(|c| c != ' '))
+            .map(|l| {
+                l.chars()
+                    .skip(2)
+                    .take(HELP_COLUMN - 2)
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn keys_help_names_every_keymap_action_and_nothing_else() {
+        let rows = keys_help_rows();
+        assert!(rows.len() > 20, "parsed too few rows: {rows:?}");
+        let actions = reachable_actions();
+        // Each bound action is described by rows that exist.
+        for action in &actions {
+            let wanted = key_rows(*action);
+            let self_evident = matches!(
+                action,
+                Action::None
+                    | Action::Edit(
+                        EditAction::Backspace
+                            | EditAction::Delete
+                            | EditAction::Left
+                            | EditAction::Right
+                    )
+            );
+            assert!(
+                self_evident || !wanted.is_empty(),
+                "{action:?} has no row in KEYS_HELP"
+            );
+            for row in wanted {
+                assert!(
+                    rows.iter().any(|r| r == row),
+                    "{action:?}: KEYS_HELP has no row {row:?}"
+                );
+            }
+        }
+        // Each row describes an action the keymap still produces.
+        for row in &rows {
+            assert!(
+                actions.iter().any(|a| key_rows(*a).contains(&row.as_str())),
+                "KEYS_HELP row {row:?} names no keymap action"
+            );
+        }
     }
 }
