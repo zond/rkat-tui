@@ -277,6 +277,15 @@ pub enum Block {
     },
     /// A helper's header (see [`HelperFold`]).
     Helper(HelperFold),
+    /// A message another agent of the workspace sent this one (a peer
+    /// message), labelled with its sender.
+    Peer {
+        /// The sending agent's name.
+        from: String,
+        /// The message (empty: delivered into a running turn, whose text
+        /// the live events do not carry).
+        text: String,
+    },
     /// A command the user ran with `!`, and its output.
     Shell {
         /// The command line.
@@ -473,6 +482,10 @@ impl Transcript {
                     if let (Some(output), false) = (output, collapsed) {
                         body(&mut out, output);
                     }
+                }
+                Block::Peer { from, text } => {
+                    let _ = writeln!(out, "## message from agent {from}");
+                    body(&mut out, text);
                 }
                 Block::Approval {
                     tool,

@@ -789,6 +789,16 @@ pub fn block_lines(block: &Block, width: u16) -> Vec<Line<'static>> {
             prefixed(text, w, "", "", style, &mut out);
         }
         Block::Helper(fold) => out.push(helper_header(fold, w)),
+        Block::Peer { from, text } => {
+            let style = Style::default().fg(Color::Magenta);
+            out.push(Line::from(Span::styled(
+                format!("✉ from agent {from}"),
+                style.add_modifier(Modifier::BOLD),
+            )));
+            if !text.is_empty() {
+                prefixed(text, w, "  ", "  ", style, &mut out);
+            }
+        }
         Block::Shell {
             command,
             state,
@@ -1019,6 +1029,25 @@ mod tests {
 
     fn line_text(line: &Line<'_>) -> String {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    /// Another agent's message is a block headed by its sender.
+    #[test]
+    fn a_peer_message_is_labelled_with_its_sender() {
+        let block = Block::Peer {
+            from: "main-ab12".into(),
+            text: "I am changing src/lib.rs".into(),
+        };
+        let lines: Vec<String> = block_lines(&block, 60).iter().map(line_text).collect();
+        assert_eq!(lines[0], "✉ from agent main-ab12");
+        assert_eq!(lines[1], "  I am changing src/lib.rs");
+        // Delivered into a running turn: the header alone.
+        let bare = Block::Peer {
+            from: "main-ab12".into(),
+            text: String::new(),
+        };
+        let lines: Vec<String> = block_lines(&bare, 60).iter().map(line_text).collect();
+        assert_eq!(lines, ["✉ from agent main-ab12", ""]);
     }
 
     #[test]

@@ -288,8 +288,11 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         is_root: super::agents::is_agent,
         profile: ORCHESTRATOR.to_string(),
         tools: root_tools,
-        instructions: Arc::new(move |_identity: &meerkat_mob::AgentIdentity| {
-            let mut sections = vec![CODING_PERSONA.to_string()];
+        instructions: Arc::new(move |identity: &meerkat_mob::AgentIdentity| {
+            let mut sections = vec![
+                CODING_PERSONA.to_string(),
+                crate::bootstrap::persona::agents_persona(identity.as_str()),
+            ];
             sections.extend(instructions.render());
             sections.extend(prompt_index(
                 notes_for_index.user(),

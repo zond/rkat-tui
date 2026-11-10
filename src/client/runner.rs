@@ -1308,6 +1308,24 @@ impl AttachRunner {
             self.send(Msg::RemoteTurn { prompt: None });
         }
         match &envelope.payload {
+            // Another agent's message (P5). Into a running turn it is
+            // delivered at the next boundary, and the events carry no text:
+            // the block names the sender. An idle agent wakes for it: the
+            // run's input carries the text (below).
+            AgentEvent::PeerContentIngested {
+                kind: meerkat_core::CommsNoticeKind::Message,
+                peer: Some(peer),
+                ..
+            } => {
+                if self.turn.active {
+                    let from = peer.display_name.as_deref().unwrap_or("another agent");
+                    self.send(Msg::Peer {
+                        from: crate::ui::peer::short_name(from).to_string(),
+                        text: String::new(),
+                    });
+                }
+                return;
+            }
             AgentEvent::RunStarted {
                 identity, input, ..
             } => {
@@ -1316,9 +1334,17 @@ impl AttachRunner {
                         active: true,
                         ..Turn::default()
                     };
-                    self.send(Msg::RemoteTurn {
-                        prompt: input.prompt_text(),
-                    });
+                    let prompt = input.prompt_text();
+                    match prompt.as_deref().and_then(crate::ui::peer::of_input) {
+                        Some((from, text)) => {
+                            self.send(Msg::Peer {
+                                from: crate::ui::peer::short_name(&from).to_string(),
+                                text,
+                            });
+                            self.send(Msg::RemoteTurn { prompt: None });
+                        }
+                        None => self.send(Msg::RemoteTurn { prompt }),
+                    }
                 } else if self.turn.saw_run {
                     // A follow-up run: it carries the steers that missed
                     // the boundary.

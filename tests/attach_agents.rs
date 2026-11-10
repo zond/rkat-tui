@@ -143,3 +143,184 @@ async fn agents_lists_the_agents_and_switches_to_one() {
     b.quit().await;
     daemon.stop().await;
 }
+
+/// The peer id of the agent `name` in the last `peers` result of
+/// `messages`: the id of the entry naming it.
+fn peer_id_of(messages: &[Message], name: &str) -> Option<String> {
+    fn find(value: &serde_json::Value, name: &str) -> Option<String> {
+        match value {
+            serde_json::Value::Object(map) => {
+                let names_it = map
+                    .values()
+                    .any(|v| v.as_str().is_some_and(|s| s.contains(name)));
+                if names_it && let Some(id) = map.get("peer_id").and_then(|v| v.as_str()) {
+                    return Some(id.to_string());
+                }
+                map.values().find_map(|v| find(v, name))
+            }
+            serde_json::Value::Array(items) => items.iter().find_map(|v| find(v, name)),
+            _ => None,
+        }
+    }
+    messages.iter().rev().find_map(|m| match m {
+        Message::ToolResults { results, .. } => results.iter().find_map(|r| {
+            let text = r.text_content();
+            serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|value| find(&value, name))
+        }),
+        _ => None,
+    })
+}
+
+/// A sends B a message with its `send_message` tool (B's peer id from its
+/// `peers` tool, which lists the other agent and no one else): B, idle,
+/// wakes for it, its client shows the message labelled with A's name, and
+/// B's turn sees it; the gate still judges what B does about it. Each agent
+/// was told about the other (the persona names it; a note at its join).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_peer_message_wakes_the_other_agent_and_its_client_shows_it() {
+    use rkat_tui::daemon::protocol::AgentChoice;
+    use rkat_tui::ui::{Effect, Msg};
+    let ws = Workspace::new();
+    let b_name = Arc::new(parking_lot::Mutex::new(String::new()));
+    let send = {
+        let b_name = Arc::clone(&b_name);
+        Step::Dynamic(Arc::new(move |messages: &[Message]| {
+            let peer = peer_id_of(messages, &b_name.lock()).unwrap_or_else(|| "none".into());
+            Step::Tool {
+                id: "m1",
+                name: "send_message",
+                args: json!({"peer_id": peer, "body": "I am changing src/lib.rs", "handling_mode": "queue"}),
+            }
+        }))
+    };
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Tool {
+            id: "p1",
+            name: "peers",
+            args: json!({}),
+        },
+        send,
+        Step::Text("told b"),
+        Step::Tool {
+            id: "s1",
+            name: "shell",
+            args: json!({"command": "python3 -c 'print(1)'"}),
+        },
+        Step::Text("noted"),
+    ]);
+    let classifier = rig::ScriptedClassifier::allowing(Vec::new());
+    let setup = rig::Setup::default().classifier(Arc::clone(&classifier) as _);
+    let args = setup.command_line(&ws.root);
+    let daemon = Running::start_with(&args, setup.options(&ws.root, &llm)).await;
+    let mut a = rig::Client::attach(&ws.root).await;
+    let mut b = rig::Client::attach_agent(&ws.root, AgentChoice::New).await;
+    let a_name = a.agent().await;
+    *b_name.lock() = b.agent().await;
+    let b_name = b_name.lock().clone();
+    a.send(Effect::StartTurn("tell b".into()));
+    assert_eq!(a.turn_finished().await.result.unwrap().text, "told b");
+    // A's peers: B, and only B.
+    let peers = tool_results(&llm.requests()[1]);
+    assert!(peers.contains(&format!("tui/main/{b_name}")), "{peers}");
+    assert_eq!(peers.matches("\"peer_id\"").count(), 1, "{peers}");
+    // B woke for the message: its client shows it, labelled.
+    b.wait_for(|m| {
+        matches!(m, Msg::Peer { from, text } if *from == a_name && text == "I am changing src/lib.rs")
+    })
+    .await;
+    assert_eq!(b.turn_finished().await.result.unwrap().text, "noted");
+    let seen = llm.recorded();
+    let b_turn = &seen[3];
+    assert!(
+        format!("{:?}", b_turn.messages).contains("I am changing src/lib.rs"),
+        "B's turn sees the message"
+    );
+    // Told about each other: B's persona names it, and a note names A.
+    let system = format!("{:?}", b_turn.messages);
+    assert!(
+        system.contains(&format!("You are agent `{b_name}`")),
+        "{system}"
+    );
+    assert!(
+        system.contains(&format!(
+            "Other agents working in this workspace now: `{a_name}`"
+        )),
+        "{system}"
+    );
+    let a_system = format!("{:?}", seen[0].messages);
+    assert!(
+        a_system.contains(&format!("Agent `{b_name}` joined this workspace")),
+        "{a_system}"
+    );
+    // The gate judged B's call (the classifier reviewed it).
+    assert!(
+        classifier.tools().iter().any(|tool| tool == "shell"),
+        "{:?}",
+        classifier.tools()
+    );
+    a.quit().await;
+    b.quit().await;
+    daemon.stop().await;
+}
+
+/// B quits (retires): A is told it left at its next turn, and a message A
+/// sends B with the peer id it had is not delivered; nothing runs for B.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_quit_agent_is_announced_and_takes_no_more_messages() {
+    use rkat_tui::daemon::protocol::AgentChoice;
+    use rkat_tui::ui::{Departure, Effect, Msg};
+    let ws = Workspace::new();
+    let b_name = Arc::new(parking_lot::Mutex::new(String::new()));
+    let send = {
+        let b_name = Arc::clone(&b_name);
+        Step::Dynamic(Arc::new(move |messages: &[Message]| {
+            let peer = peer_id_of(messages, &b_name.lock()).unwrap_or_else(|| "none".into());
+            Step::Tool {
+                id: "m2",
+                name: "send_message",
+                args: json!({"peer_id": peer, "body": "are you there?", "handling_mode": "queue"}),
+            }
+        }))
+    };
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Tool {
+            id: "p1",
+            name: "peers",
+            args: json!({}),
+        },
+        Step::Text("listed"),
+        send,
+        Step::Text("tried"),
+    ]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let mut a = rig::Client::attach(&ws.root).await;
+    let mut b = rig::Client::attach_agent(&ws.root, AgentChoice::New).await;
+    *b_name.lock() = b.agent().await;
+    let name = b_name.lock().clone();
+    a.send(Effect::StartTurn("who is here".into()));
+    assert_eq!(a.turn_finished().await.result.unwrap().text, "listed");
+    b.send(Effect::Leave(Departure::Retire));
+    b.wait_for(|m| matches!(m, Msg::Notice { text, .. } if text.contains("retired")))
+        .await;
+    b.quit().await;
+    a.send(Effect::StartTurn("ask b".into()));
+    assert_eq!(a.turn_finished().await.result.unwrap().text, "tried");
+    let seen = llm.recorded();
+    let told = format!("{:?}", seen[2].messages);
+    assert!(
+        told.contains(&format!("Agent `{name}` left this workspace")),
+        "{told}"
+    );
+    // The engine's refusal: the retired agent is no trusted peer now.
+    let result = tool_results(&seen[3].messages);
+    assert!(
+        result.contains("peer_not_found_or_not_trusted"),
+        "the send was refused: {result}"
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert_eq!(llm.recorded().len(), 4, "nothing ran for the retired agent");
+    a.quit().await;
+    daemon.stop().await;
+}

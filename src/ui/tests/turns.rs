@@ -37,6 +37,23 @@ fn a_remote_turn_shows_its_prompt_and_keeps_the_ui_busy_until_it_ends() {
     );
 }
 
+/// Another agent's message is shown labelled with its sender.
+#[test]
+fn a_peer_message_is_shown_labelled() {
+    let mut app = App::new(StatusInfo::default());
+    app.update(Msg::Peer {
+        from: "main-ab12".into(),
+        text: "I am changing src/lib.rs".into(),
+    });
+    assert_eq!(
+        app.transcript.blocks(),
+        &[Block::Peer {
+            from: "main-ab12".into(),
+            text: "I am changing src/lib.rs".into()
+        }]
+    );
+}
+
 #[test]
 fn submit_starts_turn_and_streams_into_one_block() {
     let mut app = App::new(StatusInfo::default());

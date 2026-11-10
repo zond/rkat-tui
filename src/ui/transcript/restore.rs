@@ -33,10 +33,54 @@ pub fn blocks_from_messages(messages: &[Message]) -> Vec<Block> {
                     blocks.push(restored_tool_block(call.name, args));
                 }
             }
+            Message::SystemNotice(notice) => blocks.extend(peer_blocks(notice)),
             _ => {}
         }
     }
     blocks
+}
+
+/// The peer messages another agent sent, of a committed system notice
+/// (a comms notice's incoming messages).
+fn peer_blocks(notice: &meerkat_core::SystemNoticeMessage) -> Vec<Block> {
+    use meerkat_core::{
+        CommsNoticeKind, SystemNoticeBlock, SystemNoticeDirection, SystemNoticeKind,
+    };
+    if notice.kind != SystemNoticeKind::Comms {
+        return Vec::new();
+    }
+    notice
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            SystemNoticeBlock::Comms {
+                kind: CommsNoticeKind::Message,
+                direction: SystemNoticeDirection::Incoming,
+                peer,
+                content,
+                ..
+            } => {
+                let from = peer
+                    .as_ref()
+                    .and_then(|peer| peer.display_name.clone())
+                    .unwrap_or_default();
+                let text: String = content
+                    .iter()
+                    .filter_map(|block| match block {
+                        meerkat_core::ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let body = crate::ui::peer::body(&from, &text);
+                Some(Block::Peer {
+                    from: crate::ui::peer::short_name(&from).to_string(),
+                    text: body,
+                })
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 fn restored_tool_block(name: &str, args: serde_json::Value) -> Block {
@@ -56,9 +100,62 @@ fn restored_tool_block(name: &str, args: serde_json::Value) -> Block {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use meerkat_core::UserMessage;
+
+    /// A committed peer message (a comms notice, as the engine stores an
+    /// incoming one) is restored as a block labelled with its sender; an
+    /// outgoing one is not shown.
+    #[test]
+    fn a_committed_peer_message_is_restored_labelled() {
+        use meerkat_core::{
+            CommsNoticeKind, ContentBlock, SystemNoticeBlock, SystemNoticeDirection,
+            SystemNoticeKind, SystemNoticeMessage, SystemNoticePeer,
+        };
+        let comms = |direction| SystemNoticeBlock::Comms {
+            kind: CommsNoticeKind::Message,
+            direction,
+            peer: Some(SystemNoticePeer {
+                id: serde_json::from_value(serde_json::json!(
+                    "46d5fbeb-acb0-5a56-a10f-31dd0fb07f9e"
+                ))
+                .unwrap(),
+                display_name: Some("tui/main/main-gak7".into()),
+            }),
+            sender_taint: None,
+            request_id: None,
+            intent: None,
+            status: None,
+            summary: Some("Peer message".into()),
+            payload: None,
+            content: vec![ContentBlock::Text {
+                text: "Peer message from tui/main/main-gak7:\nI am changing src/lib.rs".into(),
+            }],
+            delivery_id: None,
+            in_reply_to: None,
+        };
+        let notice = |direction| {
+            Message::SystemNotice(SystemNoticeMessage {
+                kind: SystemNoticeKind::Comms,
+                runtime_origin: None,
+                body: Some("Peer message".into()),
+                blocks: vec![comms(direction)],
+                created_at: meerkat_core::types::message_timestamp_now(),
+            })
+        };
+        assert_eq!(
+            blocks_from_messages(&[
+                notice(SystemNoticeDirection::Incoming),
+                notice(SystemNoticeDirection::Outgoing)
+            ]),
+            vec![Block::Peer {
+                from: "main-gak7".into(),
+                text: "I am changing src/lib.rs".into()
+            }]
+        );
+    }
 
     #[test]
     fn restored_blocks_skip_injected_context() {

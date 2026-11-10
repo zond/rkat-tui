@@ -21,6 +21,7 @@ mod keys;
 pub mod markdown;
 pub mod modal;
 mod mouse;
+pub mod peer;
 pub mod render;
 pub mod runtime;
 pub mod search;
@@ -406,6 +407,15 @@ pub enum Msg {
     RemoteTurn {
         /// The run's prompt (`None`: a continuation without one).
         prompt: Option<String>,
+    },
+    /// Another agent of the workspace messaged this one (attach mode):
+    /// shown as a block labelled with the sender, so the user sees why the
+    /// agent woke.
+    Peer {
+        /// The sending agent's name.
+        from: String,
+        /// The message (empty: delivered into a running turn).
+        text: String,
     },
     /// `/compact now`: the engine took the request, so the session's next
     /// compaction check compacts (or why it did not). The
@@ -1504,6 +1514,10 @@ impl App {
                 }
             }
             Msg::RemoteTurn { prompt } => self.remote_turn(prompt, now),
+            Msg::Peer { from, text } => {
+                self.transcript.push(Block::Peer { from, text });
+                self.scroll.bottom();
+            }
             Msg::ResetTranscript(blocks) => {
                 self.clear_selection();
                 self.panel_selected = None;

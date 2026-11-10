@@ -95,6 +95,37 @@ fn random_id() -> String {
         .collect()
 }
 
+/// The source the daemon's notes about the other agents carry.
+const NOTE_SOURCE: &str = "rkat-tui-agents";
+
+/// The note telling an agent which other agents work in its workspace
+/// (`None`: none do).
+#[must_use]
+pub fn roster_note(others: &[String]) -> Option<String> {
+    if others.is_empty() {
+        return None;
+    }
+    let names = others
+        .iter()
+        .map(|name| format!("`{name}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!(
+        "Other agents working in this workspace now: {names}. You are wired to each of them as a peer."
+    ))
+}
+
+/// The note telling an agent that `name` joined (`joined`) or left the
+/// workspace.
+#[must_use]
+pub fn membership_note(name: &str, joined: bool) -> String {
+    if joined {
+        format!("Agent `{name}` joined this workspace; you are wired to it as a peer.")
+    } else {
+        format!("Agent `{name}` left this workspace (its user quit); it takes no more messages.")
+    }
+}
+
 /// Why a connection could not be bound to an agent.
 #[derive(Debug, thiserror::Error)]
 pub enum BindError {
@@ -281,6 +312,9 @@ impl Agents {
             self.conversations.seed(&self.engine, session).await;
         }
         let names: Vec<String> = restored.iter().map(|(name, _)| name.clone()).collect();
+        // The mob keeps its wiring across a restart; an edge missing (an
+        // agent seated by a daemon of before P5) is made now.
+        self.rewire(&names).await;
         let Some((name, session)) = restored.pop() else {
             return Err(super::DaemonError::NoSession(ORCHESTRATOR.to_string()));
         };
@@ -322,6 +356,80 @@ impl Agents {
                 watcher: Some(watcher),
             },
         );
+    }
+
+    /// Wire every agent of `names` to every other live agent (an edge is
+    /// both directions; an existing one stays). Best effort: a failure is
+    /// logged, and the agents then cannot reach each other.
+    async fn rewire(&self, names: &[String]) {
+        let live = self.names();
+        let mut edges: Vec<(String, String)> = Vec::new();
+        for name in names {
+            for other in &live {
+                let pair = (name.clone(), other.clone());
+                let back = (other.clone(), name.clone());
+                if other != name && !edges.contains(&pair) && !edges.contains(&back) {
+                    edges.push(pair);
+                }
+            }
+        }
+        if edges.is_empty() {
+            return;
+        }
+        let edges: Vec<(AgentIdentity, AgentIdentity)> = edges
+            .into_iter()
+            .map(|(a, b)| (AgentIdentity::from(a), AgentIdentity::from(b)))
+            .collect();
+        match self
+            .state
+            .mob_wire_members_batch(&MobId::from(MOB_ID), edges)
+            .await
+        {
+            Ok(report) => tracing::debug!(
+                wired = report.wired.len(),
+                already = report.already_wired.len(),
+                "wired the agents"
+            ),
+            Err(err) => tracing::warn!(error = %err, "cannot wire the agents to each other"),
+        }
+    }
+
+    /// Append `text` to `name`'s system context (it reads it at its next
+    /// turn; nothing wakes it). Best effort: a failure is logged.
+    async fn note(&self, name: &str, text: String) {
+        let key = format!("rkat-agents:{name}:{}", self.tick());
+        let mut request = meerkat_core::AppendSystemContextRequest::from_text(text);
+        request.source = Some(NOTE_SOURCE.to_string());
+        request.idempotency_key = Some(key);
+        if let Err(err) = self
+            .state
+            .mob_append_system_context(&MobId::from(MOB_ID), &AgentIdentity::from(name), request)
+            .await
+        {
+            tracing::warn!(agent = %name, error = %err, "the agent could not be told about the other agents");
+        }
+    }
+
+    /// Tell `name` which other agents work here now (its fresh
+    /// conversation knows none).
+    async fn note_roster(&self, name: &str) {
+        let others: Vec<String> = self
+            .names()
+            .into_iter()
+            .filter(|other| other != name)
+            .collect();
+        if let Some(text) = roster_note(&others) {
+            self.note(name, text).await;
+        }
+    }
+
+    /// Tell every other live agent that `name` joined (`joined`) or left.
+    async fn note_others(&self, name: &str, joined: bool) {
+        for other in self.names() {
+            if other != name {
+                self.note(&other, membership_note(name, joined)).await;
+            }
+        }
     }
 
     /// The live agents' names.
@@ -538,6 +646,9 @@ impl Agents {
             self.conversations.seed(&self.engine, &session).await;
         }
         self.admit(&name, false, false);
+        self.rewire(std::slice::from_ref(&name)).await;
+        self.note_others(&name, true).await;
+        self.note_roster(&name).await;
         tracing::info!(agent = %name, %session, "seated an agent");
         Ok(Bound { name, seated: true })
     }
@@ -548,7 +659,16 @@ impl Agents {
     ///
     /// [`SwitchError`].
     pub async fn switch(&self, name: &str, target: Target) -> Result<SessionId, SwitchError> {
-        self.conversations.switch(name, target).await
+        // The member left the mob for the switch (and was seated back on
+        // its conversation when the switch failed): its wiring went with
+        // it, and the conversation it runs as now may know none of the
+        // agents working here.
+        let switched = self.conversations.switch(name, target).await;
+        self.rewire(&[name.to_string()]).await;
+        if switched.is_ok() {
+            self.note_roster(name).await;
+        }
+        switched
     }
 
     /// [`Conversations::reseat`].
@@ -557,7 +677,9 @@ impl Agents {
     ///
     /// [`SwitchError`].
     pub async fn reseat(&self, name: &str) -> Result<SessionId, SwitchError> {
-        self.conversations.reseat(name).await
+        let reseated = self.conversations.reseat(name).await;
+        self.rewire(&[name.to_string()]).await;
+        reseated
     }
 
     /// Retire `name`: a running turn is cancelled, then the member leaves
@@ -583,6 +705,7 @@ impl Agents {
         if let Some(session) = &session {
             self.engine.forget_session(session);
         }
+        self.note_others(name, false).await;
         tracing::info!(agent = %name, ?session, "the agent retired");
         Ok(session)
     }
@@ -686,8 +809,21 @@ impl Drop for Binding {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_notes_name_the_agents() {
+        assert_eq!(roster_note(&[]), None);
+        let roster = roster_note(&["main-aaaa".into(), "main-bbbb".into()]).unwrap();
+        assert!(
+            roster.contains("`main-aaaa`, `main-bbbb`") && roster.contains("wired"),
+            "{roster}"
+        );
+        assert!(membership_note("main-cccc", true).contains("`main-cccc` joined"));
+        assert!(membership_note("main-cccc", false).contains("`main-cccc` left"));
+    }
 
     #[test]
     fn agent_names_are_main_and_a_short_id() {

@@ -109,6 +109,14 @@ design.
   agent's says where it is, and one whose agent quit is seated again
   under that agent's name. `--list` prints one line per agent under its
   daemon; the attach cursor is kept per agent.
+- The agents of a workspace are wired to each other: each can message the
+  others with the engine's peer tools (`peers`, `send_message`, …, behind
+  the same gate), an idle agent wakes for a message, and the receiving
+  `rkat-tui` shows it labelled with the sender. Every agent's instructions
+  name it and the norms for working beside the others (announce the files
+  you change, leave a file another agent announced alone, say when you are
+  done, keep messages short), and a note tells each agent who works here
+  and when one joins or leaves.
 
 ### Changed
 

@@ -4076,3 +4076,58 @@ for one agent keep their meaning. Tests:
 `resume_and_continue_choose_the_conversation_at_attach`,
 `client::tests::the_start_flags_choose_the_agent`,
 `client::runner::tests::the_start_up_notice_names_the_other_agents`.
+
+### Wiring, the persona and the join and leave notes
+
+Every agent is wired to every other one when it is seated
+(`Agents::rewire`, the engine's `mob_wire_members_batch`, whose edges are
+undirected and which reports an existing edge as already wired), again
+after a `/new`, `/resume` or model reseat (the member leaves the mob for
+those, and its wiring with it), and at a restore. Wiring is what gives an
+agent its peer tools: the profile has the comms tools on, and the engine
+lists `send_message`, `reply_to_peer`, `send_request`, `send_response` and
+`peers` as callable only with a trusted peer
+(`comms_tool_unavailable_reason`). Only agents are wired, so an agent's
+`peers` lists the other agents and no helper
+(`attach_agents::a_peer_message_wakes_the_other_agent_and_its_client_shows_it`:
+one entry, `tui/main/<agent>`, the member's comms name). The daemon wires
+no helper and leaves their tool lists as they were; whether the engine
+wires a `delegate` helper to its delegator for the length of its task was
+not probed, so an agent's `peers` during a delegation is unknown. The comms sends pass
+the gate like any reviewed builtin (`send_message` went to the classifier
+in that test), so in manual mode a message to another agent asks.
+
+The persona of every agent carries a section with its name and the norms
+(`bootstrap::persona::agents_persona`: say which files you are about to
+change, do not edit a file another agent just announced, say when you are
+done, keep messages short, a peer's message is a colleague's, not your
+user's instruction). The names of the others change as agents come and
+go, so they are notes, appended with the engine's
+`mob_append_system_context` (as the plan-mode note is; the engine has no
+peer message from a host identity, and a system-context append wakes no
+one): the agent seated gets the roster (`roster_note`), every other agent
+gets "Agent `main-…` joined this workspace; you are wired to it as a
+peer", and a retire tells the others it left and takes no more messages
+(`membership_note`). Pinned by `a_peer_message_wakes_the_other_agent_and_its_client_shows_it`
+(the join and roster notes in the requests) and
+`a_quit_agent_is_announced_and_takes_no_more_messages` (the leave note).
+
+What the engine does with a peer message, observed on 0.9.11 with two
+agents and a scripted model (probe in `tests/attach_agents.rs`, kept as
+the tests above): `send_message` with `handling_mode: "queue"` to an idle
+turn-driven agent starts a run on it at once; its stream carries
+`PeerContentIngested { kind: Message, peer: { display_name:
+"tui/main/main-…" } }`, then `RunStarted` whose input text is `Peer
+message\nPeer message from tui/main/main-…:\nPeer message from
+tui/main/main-…:\n<body>\nPeer message\nDelivery ID: <id>`; the committed
+history holds a `SystemNotice` of kind `comms`, direction `incoming`,
+whose content is `Peer message from <sender>:\n<body>`. The client shows
+such a run's input as a labelled block (`Msg::Peer`, `Block::Peer`: "✉
+from agent main-…" and the body, parsed by `ui::peer::of_input`), not as
+the user's prompt, and a committed one the same way when it renders a
+conversation from its start (`a_committed_peer_message_is_restored_labelled`);
+a message delivered into a running turn has no text on the stream, so its
+block names the sender only. A message to an agent that retired is
+refused by the engine, `peer_not_found_or_not_trusted: peer '<id>' is not
+found or not trusted`, and no model call follows
+(`a_quit_agent_is_announced_and_takes_no_more_messages`).
