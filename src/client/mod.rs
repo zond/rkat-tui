@@ -39,6 +39,7 @@ pub mod approvals;
 pub mod catchup;
 pub mod helpers;
 pub mod launch;
+pub mod rehome;
 pub mod remote;
 pub mod runner;
 pub mod sessions;
@@ -419,6 +420,7 @@ pub async fn configure_with(
         compaction: layered.settings.compaction_policy(None),
         pricing,
         scope,
+        reroot: None,
     })
 }
 
@@ -538,6 +540,17 @@ pub async fn run(
     if let Some(reached) = reached {
         reached.apply(&mut config);
     }
+    let mode = target.mode();
+    config.reroot = Some(runner::Reroot {
+        args: args.clone(),
+        configure: std::sync::Arc::new(move |args: Args| {
+            Box::pin(async move {
+                let layers = crate::bootstrap::read_layers(&args)?;
+                configure_with(layers, &args, mode, &crate::bootstrap::HostPaths::detect()).await
+            })
+        }),
+        endpoint_files: rehome::default_endpoint_files(),
+    });
     app::init_logging(&config.scope.realm_root())?;
     // Attach mode sends every event on the integrator channel (in order with
     // the turn messages); the agent channel stays idle.
@@ -565,7 +578,6 @@ pub async fn run(
     };
     let runner = AttachRunner::new(config, ui_tx, effect_rx);
     let farewells = runner.farewells();
-    let rehoming = runner.rehoming();
     // The runner leaves the daemon as `/quit` decided (stopped, or running
     // with the detach recorded), then saves the cursor and the unsent
     // messages.
@@ -585,23 +597,8 @@ pub async fn run(
     for line in farewells.lock().drain(..) {
         eprintln!("rkat-tui: {line}");
     }
-    // `/rehome <ref>`: the daemon was asked to stop as the UI left; the
-    // adoption proves it gone first.
-    let adopt = rehoming.lock().take();
-    if let Some(reference) = adopt {
-        match crate::bootstrap::realm_home::rehome_after_stop(&args, &reference, REHOME_WAIT).await
-        {
-            Ok(done) => eprintln!(
-                "rkat-tui: {done}; start rkat-tui again here (rkat-tui -c continues its latest conversation)"
-            ),
-            Err(err) => eprintln!("rkat-tui: the state was not adopted: {err}"),
-        }
-    }
     driven
 }
-
-/// How long `/rehome` waits for the stopped daemon to release the realm.
-const REHOME_WAIT: Duration = Duration::from_secs(15);
 
 /// Turn every SIGHUP into [`Msg::Hangup`] on `ui_tx` (the UI then leaves as
 /// a detach); the handler is installed before this returns.

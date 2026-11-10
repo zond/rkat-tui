@@ -55,7 +55,7 @@ pub fn build_app(
 /// every submitted line to each.
 #[must_use]
 pub fn load_histories(scope: &RuntimeScope) -> (History, Option<History>) {
-    let history = History::load(scope.realm_root().join("tui_history"));
+    let history = History::load(scope.realm_root().join(crate::ui::runtime::HISTORY));
     let global_history = scope
         .global
         .as_ref()
@@ -101,7 +101,7 @@ pub(crate) fn open(
     Opened {
         app,
         histories: std::iter::once(history).chain(global_history).collect(),
-        drafts: realm_root.join("drafts"),
+        drafts: realm_root.join(crate::ui::runtime::DRAFTS),
     }
 }
 
@@ -138,23 +138,68 @@ pub(crate) async fn drive(
     ui_result.map_err(TuiError::from)
 }
 
-/// Route tracing to a log file inside the realm so nothing writes to the
-/// terminal while the UI owns it.
-pub(crate) fn init_logging(realm_root: &Path) -> Result<(), TuiError> {
+/// The log file tracing writes to ([`init_logging`]), `None` until it is
+/// open.
+static LOG_FILE: parking_lot::Mutex<Option<std::fs::File>> = parking_lot::Mutex::new(None);
+
+/// Writes to [`LOG_FILE`] (nowhere while it is not open).
+struct LogFile;
+
+impl std::io::Write for LogFile {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match LOG_FILE.lock().as_mut() {
+            Some(file) => file.write(buf),
+            None => Ok(buf.len()),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match LOG_FILE.lock().as_mut() {
+            Some(file) => file.flush(),
+            None => Ok(()),
+        }
+    }
+}
+
+/// The client's log file in the realm at `realm_root`.
+fn open_log(realm_root: &Path) -> Result<std::fs::File, TuiError> {
     let log_dir = realm_root.join("logs");
     std::fs::create_dir_all(&log_dir).map_err(|e| TuiError::io("create log directory", e))?;
-    let file = std::fs::OpenOptions::new()
+    std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(log_dir.join("rkat-tui.log"))
-        .map_err(|e| TuiError::io("open log file", e))?;
+        .map_err(|e| TuiError::io("open log file", e))
+}
+
+/// Route tracing to a log file inside the realm so nothing writes to the
+/// terminal while the UI owns it.
+pub(crate) fn init_logging(realm_root: &Path) -> Result<(), TuiError> {
+    *LOG_FILE.lock() = Some(open_log(realm_root)?);
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     // A second init (tests) is not an error worth failing the run for.
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_ansi(false)
-        .with_writer(std::sync::Mutex::new(file))
+        .with_writer(|| LogFile)
         .try_init();
     Ok(())
+}
+
+/// Move the log to the realm at `realm_root` (a re-home adopted another
+/// realm), when [`init_logging`] opened one; the old file is kept open
+/// when the new one cannot be.
+pub(crate) fn reroute_logging(realm_root: &Path) {
+    let mut log = LOG_FILE.lock();
+    if log.is_none() {
+        return;
+    }
+    match open_log(realm_root) {
+        Ok(file) => *log = Some(file),
+        Err(err) => {
+            drop(log);
+            tracing::warn!(error = %err, "the log stays where it was");
+        }
+    }
 }

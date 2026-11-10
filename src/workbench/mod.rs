@@ -199,6 +199,21 @@ impl Workbench {
         }
     }
 
+    /// Work in another workspace or realm from now on (a re-home): its
+    /// scope, its `!` shell and its endpoints. A running `!` command is
+    /// the caller's to cancel first.
+    pub fn reroot(
+        &mut self,
+        scope: RuntimeScope,
+        user_shell: Result<Arc<UserShell>, String>,
+        endpoints: EndpointRegistry,
+    ) {
+        self.scope = scope;
+        self.user_shell = user_shell;
+        self.endpoints = endpoints;
+        self.memory_before = None;
+    }
+
     /// Hold the messages the UI still had when the user quit
     /// ([`crate::ui::Effect::SaveUnsent`]).
     pub fn hold_unsent(&mut self, held: Vec<(Option<PendingId>, String)>) {

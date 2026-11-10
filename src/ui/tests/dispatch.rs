@@ -534,19 +534,31 @@ fn attached_app() -> App {
     App::new(status)
 }
 
-/// `/rehome` asks the runner; once it checked the state can be adopted,
-/// the UI leaves stopping the daemon (the adoption needs it gone).
+/// `/rehome` asks the runner, and the UI stays: a re-home re-roots it
+/// (`@` completion in the new workspace, the history of the realm) and
+/// the UI goes on.
 #[test]
-fn rehome_asks_the_runner_and_leaves_stopping_the_daemon() {
+fn rehome_asks_the_runner_and_a_reroot_moves_the_ui() {
     let mut app = attached_app();
     assert_eq!(submit(&mut app, "/rehome"), vec![Effect::Rehome(None)]);
     assert_eq!(
-        submit(&mut app, "/rehome /old/place"),
-        vec![Effect::Rehome(Some("/old/place".into()))]
+        submit(&mut app, "/rehome /new/place"),
+        vec![Effect::Rehome(Some("/new/place".into()))]
     );
+    let _ = app.take_local();
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace = crate::paths::ProjectRoot::new(tmp.path()).unwrap();
     assert_eq!(
-        app.update(Msg::Rehoming),
-        vec![Effect::Leave(Departure::Terminate), Effect::Quit]
+        app.update(Msg::Rerooted {
+            workspace,
+            realm: tmp.path().join("realm"),
+            shell_confined: false,
+        }),
+        Vec::new()
+    );
+    assert!(
+        app.take_local()
+            .contains(&LocalEffect::Reroot(tmp.path().join("realm"))),
     );
 }
 

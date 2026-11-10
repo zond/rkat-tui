@@ -182,8 +182,10 @@ pub async fn run(args: Args) -> Result<(), TuiError> {
         return Ok(());
     }
     if let Some(reference) = &args.rehome {
-        let rehomed = bootstrap::realm_home::rehome_workspace(&args, reference).await?;
-        println!("{rehomed}");
+        let rehomed =
+            client::rehome::pull_here(&args, reference, &client::rehome::default_endpoint_files())
+                .await?;
+        println!("rkat-tui: {rehomed}; rkat-tui -c here continues its latest conversation");
         return Ok(());
     }
     if args.audit {

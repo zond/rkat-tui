@@ -259,10 +259,9 @@ pub fn lines(listed: &Listed, now: chrono::DateTime<chrono::Utc>) -> Vec<String>
 /// names.
 #[must_use]
 pub fn daemon_of(home: &Home, listed: &[Listed]) -> String {
-    let daemon = home.manifest.path.as_ref().and_then(|path| {
-        listed.iter().find(|listed| {
-            listed.endpoint.realm.is_none() && listed.endpoint.workspace.as_ref() == Some(path)
-        })
+    let path = &home.manifest.path;
+    let daemon = listed.iter().find(|listed| {
+        listed.endpoint.realm.is_none() && listed.endpoint.workspace.as_ref() == Some(path)
     });
     match daemon {
         None => "no daemon".to_string(),
@@ -275,7 +274,7 @@ pub fn daemon_of(home: &Home, listed: &[Listed]) -> String {
 }
 
 /// One line per realm of `homes`: its id, its workspace (`(gone)` when
-/// that no longer exists, or `set aside, was …`), the git remote, the last
+/// that no longer exists), the git remote, the last
 /// use, and its daemon among `listed`, tab-separated.
 #[must_use]
 pub fn realm_lines(homes: &[Home], listed: &[Listed]) -> Vec<String> {

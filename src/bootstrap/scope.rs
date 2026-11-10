@@ -476,7 +476,7 @@ mod tests {
         assert_eq!(scope.state_root, cfg.join(realm_home::WORKSPACES_DIR));
         assert_eq!(scope.realm_root(), cfg.join("workspaces").join(&home.id));
         assert_eq!(scope.origin, RealmOrigin::Workspace);
-        assert_eq!(home.manifest.path.as_deref(), Some(ws.as_path()));
+        assert_eq!(home.manifest.path, ws);
         // Nothing is written into the workspace.
         assert_eq!(std::fs::read_dir(&ws).unwrap().count(), 0);
         // The next start finds the same realm, through the manifest.

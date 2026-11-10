@@ -467,9 +467,17 @@ pub enum Msg {
     },
     /// Attach mode: the runner's answer to [`Effect::DecideQuit`].
     QuitDecided(QuitDecision),
-    /// `/rehome <ref>` was checked: leave, stopping the daemon, so the
-    /// state can be adopted once it is gone.
-    Rehoming,
+    /// A re-home moved this client to another workspace (`/rehome`): `@`
+    /// mentions complete there, the `!` shell's confinement may differ,
+    /// and the input history and drafts are the realm's at `realm`.
+    Rerooted {
+        /// The workspace.
+        workspace: ProjectRoot,
+        /// Its realm directory.
+        realm: std::path::PathBuf,
+        /// Whether the `!` shell runs confined there.
+        shell_confined: bool,
+    },
     /// The terminal hung up (SIGHUP): leave at once, as a detach (the
     /// daemon keeps running; unsent messages are saved).
     Hangup,
@@ -660,9 +668,8 @@ pub enum Effect {
     /// answered with a notice).
     DaemonStop,
     /// `/rehome`: list the state this workspace could adopt (`None`), or
-    /// check that the state named can be adopted, then answer
-    /// [`Msg::Rehoming`] (the runner adopts it once the UI has left and the
-    /// daemon has stopped), else a notice.
+    /// re-home: the runner stops the daemon, moves the realm, re-roots
+    /// itself and reattaches, telling the UI with [`Msg::Rerooted`].
     Rehome(Option<String>),
     /// `/daemon start`: connect to the workspace's daemon again (starting
     /// it when this client may) after the connect failed or the daemon
@@ -716,6 +723,9 @@ pub enum LocalEffect {
         /// The workspace to walk.
         root: ProjectRoot,
     },
+    /// The realm changed (a re-home): the input history and the drafts
+    /// are this realm directory's from now on.
+    Reroot(std::path::PathBuf),
     /// Ring the terminal bell (after the next frame).
     Bell,
     /// The state changed: draw a frame.
@@ -1279,6 +1289,11 @@ impl App {
         self.gauge.policy()
     }
 
+    /// Replace the prompt history (another realm's, after a re-home).
+    pub fn replace_history(&mut self, history: Vec<String>) {
+        self.input.set_history(history);
+    }
+
     /// Seed the global prompt history (oldest first), searched by Ctrl-R after
     /// the workspace history. Up/Down recall stays workspace-only.
     pub fn with_global_history(mut self, history: Vec<String>) -> Self {
@@ -1453,7 +1468,17 @@ impl App {
             Msg::SteerDelivered(id) => self.pending.show_delivered(&mut self.transcript, id),
             Msg::Recalled { recalled, errors } => self.recalled(&recalled, &errors),
             Msg::QuitDecided(decision) => self.quit_decided(decision, &mut fx),
-            Msg::Rehoming => self.leave(Some(Departure::Terminate), &mut fx),
+            Msg::Rerooted {
+                workspace,
+                realm,
+                shell_confined,
+            } => {
+                self.workspace = Some(workspace);
+                self.path_index = PathIndex::Dropped;
+                self.path_index_generation += 1;
+                self.shell_confined = shell_confined;
+                self.local.push(LocalEffect::Reroot(realm));
+            }
             Msg::Hangup => self.leave(None, &mut fx),
             Msg::Diff {
                 tool_use_id,

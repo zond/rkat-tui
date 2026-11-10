@@ -87,6 +87,10 @@ pub const FILE_DIFF: &str = "rkat/file_diff";
 /// `{}` → [`Status`]: the daemon's lifecycle state as the caller sees it
 /// (`/quit` decides from it, `--list` and `/agents` print it).
 pub const STATUS: &str = "rkat/status";
+
+/// What the realm holds that a re-home replacing it would lose
+/// ([`Holds`]).
+pub const HOLDS: &str = "rkat/holds";
 /// `{}` → `{}`: the caller leaves and wants the agent kept running
 /// (`/detach`); the daemon records that it has been detached from.
 pub const DETACH: &str = "rkat/detach";
@@ -462,6 +466,14 @@ pub struct Status {
     /// daemon of before it said).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shell: Option<meerkat_tools::builtin::shell::ShellConfinement>,
+}
+
+/// [`HOLDS`]'s result.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Holds {
+    /// Each conversation with a user turn, or that cannot be read, in
+    /// words (empty: the realm is provably empty).
+    pub held: Vec<String>,
 }
 
 /// [`SHUTDOWN`]'s parameters.

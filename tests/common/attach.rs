@@ -297,41 +297,13 @@ impl Client {
         host_paths: Option<&HostPaths>,
         agent: Option<rkat_tui::daemon::protocol::AgentChoice>,
     ) -> Self {
-        let mut config = rkat_tui::client::configure(args, AttachTarget::Existing)
-            .await
-            .unwrap();
-        config.start_token = start_token.map(str::to_string);
-        match agent {
-            Some(agent) => config.agent = agent,
-            None if args.resume.is_none() && !args.continue_last => {
-                config.agent = rkat_tui::daemon::protocol::AgentChoice::Recent;
-            }
-            None => {}
-        }
-        config.lister = lister;
-        config.endpoint_files = vec![endpoint_file.to_path_buf()];
-        // The daemon of the rig plans its shell over these host paths (the
-        // default ones without), so the client compares with the same.
-        let (layers, realm_config) = rkat_tui::bootstrap::prepare(args).await.unwrap();
-        let realm_config =
-            rkat_tui::bootstrap::guarded_config(&layers.scope, args, realm_config).await;
-        let plan = rkat_tui::bootstrap::shell_plan(
-            &layers,
-            &realm_config,
-            args,
-            &host_paths.cloned().unwrap_or_default(),
-        );
-        config.shell = Some(Arc::new(
-            plan.as_ref()
-                .map(|plan| plan.shell.clone())
-                .map_err(ToString::to_string),
-        ));
-        if let Some(host_paths) = host_paths {
-            config.user_shell =
-                rkat_tui::bootstrap::user_shell(&layers, &realm_config, args, host_paths)
-                    .map(Arc::new)
-                    .map_err(|err| format!("the ! shell is unavailable: {err}"));
-        }
+        let config =
+            client_config(args, start_token, lister, endpoint_file, host_paths, agent).await;
+        Self::attach_with_config(config).await
+    }
+
+    /// Attach a runner on `config`.
+    pub async fn attach_with_config(config: rkat_tui::client::AttachConfig) -> Self {
         let mut client = Self {
             harness: spawn_attach_runner(config),
             seen: Vec::new(),
@@ -469,6 +441,108 @@ impl Client {
         self.send(Effect::Quit);
         within(self.harness.task).await.unwrap()
     }
+}
+
+/// The configuration of a rig client: see [`Client::attach_config`].
+pub async fn client_config(
+    args: &rkat_tui::Args,
+    start_token: Option<&str>,
+    lister: rkat_tui::models::ModelLister,
+    endpoint_file: &Path,
+    host_paths: Option<&HostPaths>,
+    agent: Option<rkat_tui::daemon::protocol::AgentChoice>,
+) -> rkat_tui::client::AttachConfig {
+    let mut config = rkat_tui::client::configure(args, AttachTarget::Existing)
+        .await
+        .unwrap();
+    config.start_token = start_token.map(str::to_string);
+    match agent {
+        Some(agent) => config.agent = agent,
+        None if args.resume.is_none() && !args.continue_last => {
+            config.agent = rkat_tui::daemon::protocol::AgentChoice::Recent;
+        }
+        None => {}
+    }
+    config.lister = lister;
+    config.endpoint_files = vec![endpoint_file.to_path_buf()];
+    // The daemon of the rig plans its shell over these host paths (the
+    // default ones without), so the client compares with the same.
+    let (layers, realm_config) = rkat_tui::bootstrap::prepare(args).await.unwrap();
+    let realm_config = rkat_tui::bootstrap::guarded_config(&layers.scope, args, realm_config).await;
+    let plan = rkat_tui::bootstrap::shell_plan(
+        &layers,
+        &realm_config,
+        args,
+        &host_paths.cloned().unwrap_or_default(),
+    );
+    config.shell = Some(Arc::new(
+        plan.as_ref()
+            .map(|plan| plan.shell.clone())
+            .map_err(ToString::to_string),
+    ));
+    if let Some(host_paths) = host_paths {
+        config.user_shell =
+            rkat_tui::bootstrap::user_shell(&layers, &realm_config, args, host_paths)
+                .map(Arc::new)
+                .map_err(|err| format!("the ! shell is unavailable: {err}"));
+    }
+    config
+}
+
+/// The daemons a re-home started in the rig, in order.
+pub type Restarted = Arc<parking_lot::Mutex<Vec<Running>>>;
+
+/// How a rig client on the command line `args` re-roots on `/rehome`: the
+/// configuration for a workspace starts the rig's daemon there (with
+/// `llm`, its endpoint file at `files(workspace)`, which is also where the
+/// re-home looks for a workspace's daemon) and attaches through it; the
+/// daemons it starts go into the returned list. The daemon gets the
+/// command line the runner passes (`args` with the new workspace), so its
+/// user config root, where the engine keeps the comms identity the
+/// realm's sessions are bound to, stays the one it was, as the home
+/// directory stays in production.
+pub fn reroot(
+    args: rkat_tui::Args,
+    llm: &Arc<ScriptedLlmClient>,
+    files: impl Fn(&Path) -> PathBuf + Send + Sync + 'static,
+) -> (rkat_tui::client::runner::Reroot, Restarted) {
+    let restarted = Restarted::default();
+    let files = Arc::new(files);
+    let configure = {
+        let llm = Arc::clone(llm);
+        let restarted = Arc::clone(&restarted);
+        let files = Arc::clone(&files);
+        Arc::new(move |args: rkat_tui::Args| {
+            let llm = Arc::clone(&llm);
+            let restarted = Arc::clone(&restarted);
+            let files = Arc::clone(&files);
+            Box::pin(async move {
+                let workspace = args
+                    .context_root
+                    .clone()
+                    .expect("a re-home names the workspace");
+                let file = files(&workspace);
+                let daemon_args = args;
+                let options = Running::options(&workspace, &llm).with_endpoint_file(file.clone());
+                let daemon = Running::start_with(&daemon_args, options).await;
+                restarted.lock().push(daemon);
+                Ok(client_config(&daemon_args, None, no_lists(), &file, None, None).await)
+            })
+                as std::pin::Pin<
+                    Box<
+                        dyn std::future::Future<
+                                Output = Result<rkat_tui::client::AttachConfig, rkat_tui::TuiError>,
+                            > + Send,
+                    >,
+                >
+        })
+    };
+    let reroot = rkat_tui::client::runner::Reroot {
+        args,
+        configure,
+        endpoint_files: Arc::new(move |workspace: &Path| vec![files(workspace)]),
+    };
+    (reroot, restarted)
 }
 
 /// What a daemon test starts with besides its scripted LLM: extra

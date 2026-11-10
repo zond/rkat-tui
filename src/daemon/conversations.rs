@@ -58,6 +58,24 @@ pub const TITLE_PAGES: usize = 8;
 /// How many conversations [`Conversations::list`] reads at once.
 const LIST_READS: usize = 8;
 
+/// The conversation log cannot be read.
+#[derive(Debug, thiserror::Error)]
+#[error("cannot read the conversation log {}: {why}", file.display())]
+pub struct LogError {
+    /// The log.
+    pub file: PathBuf,
+    /// Why.
+    pub why: String,
+}
+
+/// Whether `messages` hold a user turn.
+#[must_use]
+pub fn has_user_turn(messages: &[Message]) -> bool {
+    messages
+        .iter()
+        .any(|message| matches!(message, Message::User(_)))
+}
+
 /// One conversation an agent ran.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entry {
@@ -91,6 +109,30 @@ impl Log {
     #[must_use]
     pub fn path(realm_root: &Path) -> PathBuf {
         realm_root.join(LOG_NAME)
+    }
+
+    /// Read `path` strictly: `None` when there is no file.
+    ///
+    /// # Errors
+    ///
+    /// [`LogError`] naming the file when it cannot be read or parsed.
+    pub fn read(path: &Path) -> Result<Option<Self>, LogError> {
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => {
+                return Err(LogError {
+                    file: path.to_path_buf(),
+                    why: err.to_string(),
+                });
+            }
+        };
+        serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|err| LogError {
+                file: path.to_path_buf(),
+                why: err.to_string(),
+            })
     }
 
     /// Read `path`; a missing or unreadable file is an empty log (an
@@ -528,6 +570,48 @@ impl Conversations {
             .filter_map(std::future::ready)
             .collect()
             .await
+    }
+
+    /// What the realm holds, for a re-home that would replace it: each
+    /// conversation of the log with a user turn, or whose history cannot
+    /// be read, in words (empty: provably empty).
+    pub async fn holding(&self) -> Vec<String> {
+        const PAGE: usize = 64;
+        let entries = self.log.lock().newest_first();
+        let service = self.state.session_service();
+        let mut held = Vec::new();
+        for entry in entries {
+            let mut offset = 0;
+            loop {
+                let page = service
+                    .read_history(
+                        &entry.session_id,
+                        SessionHistoryQuery {
+                            offset,
+                            limit: Some(PAGE),
+                        },
+                    )
+                    .await;
+                match page {
+                    Ok(page) if has_user_turn(&page.messages) => {
+                        held.push(format!("conversation {} has user turns", entry.session_id));
+                        break;
+                    }
+                    Ok(page) if page.has_more && !page.messages.is_empty() => {
+                        offset += page.messages.len();
+                    }
+                    Ok(_) => break,
+                    Err(err) => {
+                        held.push(format!(
+                            "conversation {} cannot be read ({err})",
+                            entry.session_id
+                        ));
+                        break;
+                    }
+                }
+            }
+        }
+        held
     }
 
     /// `session`'s committed messages.

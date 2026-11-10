@@ -3,7 +3,7 @@
 //! a turn, a queued turn, a steered message applied at a tool boundary
 //! (and one typed while a slow shell call runs), interrupt (also during a
 //! slow tool), `-c` and `--resume` across daemon lifetimes, and a moved
-//! workspace and its re-home.
+//! workspace offered its old state (the re-home is `tests/rehome.rs`).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -390,87 +390,6 @@ async fn a_moved_workspace_starts_anew_and_is_offered_its_old_state() {
         realm_home::find(&realms(&moved), &ws.root).unwrap(),
         Some(old)
     );
-}
-
-/// `rkat-tui --rehome <old path>` in the moved workspace adopts its state:
-/// `-c` continues the latest conversation there, under the realm id it
-/// always had.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn after_a_rehome_continue_resumes_the_latest_conversation_in_the_new_place() {
-    let ws = Workspace::new();
-    let first = one_conversation(&ws, "before the move").await;
-    let moved = move_workspace(&ws, "renamed-project").await;
-    let old = realm_home::find(&realms(&moved), &ws.root)
-        .unwrap()
-        .unwrap();
-    let done = realm_home::rehome_workspace(&common::args_for(&moved), ws.root.to_str().unwrap())
-        .await
-        .unwrap();
-    assert_eq!(done.home.id, old.id);
-    assert_eq!(done.from.as_deref(), Some(ws.root.as_path()));
-    assert_eq!(done.set_aside, None);
-    let llm = ScriptedLlmClient::new(vec![]);
-    let rig = Attached::start_with(&moved, &llm, client_args(&["-c"])).await;
-    assert_eq!(rig.current_session().await, first);
-    let session = rig.messages().await;
-    assert_eq!(user_texts(&session), vec!["before the move".to_string()]);
-    assert_eq!(common::realm_of(&moved), old.dir);
-    rig.quit().await;
-}
-
-/// A re-home is refused while a daemon holds the realm it would set aside
-/// (its lease is live), and goes through once it stopped; the TUI's
-/// `/rehome <ref>` checks the state and has the UI leave, stopping the
-/// daemon, before anything is rewritten.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_rehome_is_refused_while_a_daemon_holds_the_realm() {
-    let ws = Workspace::new();
-    one_conversation(&ws, "before the move").await;
-    let moved = move_workspace(&ws, "renamed-project").await;
-    let old = realm_home::find(&realms(&moved), &ws.root)
-        .unwrap()
-        .unwrap();
-    // A start in the moved workspace made it a new realm, whose daemon
-    // runs.
-    let llm = ScriptedLlmClient::new(vec![]);
-    let mut rig = Attached::start(&moved, &llm).await;
-    let fresh = common::realm_of(&moved);
-    let refused = realm_home::rehome_workspace(&common::args_for(&moved), &old.id).await;
-    assert!(
-        matches!(
-            &refused,
-            Err(rkat_tui::TuiError::RealmHome(realm_home::HomeError::InUse { why, .. }))
-                if why.contains("live lease")
-        ),
-        "{refused:?}"
-    );
-    // Nothing was rewritten.
-    assert_eq!(common::realm_of(&moved), fresh);
-    // `/rehome` with nothing lists what could be adopted; with the old
-    // realm, the runner checks it and has the UI leave.
-    rig.send(Effect::Rehome(None));
-    rig.wait_for(|msg| {
-        matches!(msg, Msg::Notice { text, .. } if text.contains(&old.id) && text.contains("can adopt"))
-    })
-    .await;
-    rig.send(Effect::Rehome(Some(old.id.clone())));
-    rig.wait_for(|msg| matches!(msg, Msg::Rehoming)).await;
-    rig.quit().await;
-    let done = realm_home::rehome_after_stop(
-        &common::args_for(&moved),
-        &old.id,
-        std::time::Duration::from_secs(15),
-    )
-    .await
-    .unwrap();
-    assert_eq!(done.home.id, old.id);
-    assert_eq!(
-        done.set_aside.map(|home| home.dir),
-        Some(fresh.clone()),
-        "the realm the workspace had is set aside, not deleted"
-    );
-    assert!(fresh.is_dir());
-    assert_eq!(common::realm_of(&moved), old.dir);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

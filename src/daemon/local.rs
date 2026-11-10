@@ -67,6 +67,9 @@
 //!   attached clients, whether anyone detached, whether the caller started
 //!   the daemon, the current conversation and whether its turn runs
 //!   ([`super::lifecycle`]; `/quit` decides from it, `--list` prints it);
+//! - [`protocol::HOLDS`] `{}` → `{"held": [String]}`: each conversation
+//!   with a user turn (or that cannot be read): what a re-home replacing
+//!   this realm would lose (`/rehome` refuses then);
 //! - [`DETACH`] `{}` → `{}`: `/detach`, recorded so that a later `/quit`
 //!   asks before stopping the daemon;
 //! - [`SHUTDOWN`] `{}` → `{}`: stop the daemon (its endpoint file goes
@@ -393,6 +396,9 @@ impl Local {
     ) -> Result<Value, Refusal> {
         match method {
             STATUS => answer(self.status(&caller).await),
+            protocol::HOLDS => answer(protocol::Holds {
+                held: self.conversations.holding().await,
+            }),
             DETACH => {
                 let agent = self.agent_of(&caller)?;
                 tracing::info!(%agent, "a client detached: the agent keeps running without it");

@@ -5240,3 +5240,130 @@ does `/status`. Probe: the build script compiled alone and run with the
 manifest directory pointed at the checkout printed `0.0.1+<commit>`, at
 `target/package/rkat-tui-0.0.1` (a packaged crate inside this very work
 tree) and at a directory outside any repository `0.0.1`.
+
+## Re-home reworked (2026-11-10, the user's decisions)
+
+One realm and one daemon per workspace stays the model, and two
+manifests naming one path stay an error (`HomeError::Duplicate`). What
+changed is the re-home.
+
+### What a re-home is now
+
+`client::rehome`: `prepare` checks, `carry_out` stops daemons and
+commits (`realm_home::commit`). Every refusal comes before anything
+changes:
+
+- the new root must not reach the realm (`realm_home::check_reach`: the
+  workspace holds the realm directory or lies inside it); the daemon's
+  start checks the whole confinement plan again (`exposing_grant`);
+- a turn running on a daemon the re-home would stop (`rkat/status`'s
+  agent rows; unknown is not idle): `RehomeError::Running` names the
+  daemon and the agent;
+- the destination's realm, when the workspace has one, must be provably
+  empty: no daemon with a client other than the one re-homing
+  (`RehomeError::Busy`), no conversation of its log with a user message,
+  and what cannot be read is not empty (`HomeError::Holds`). With a
+  daemon running on it the daemon answers (`rkat/holds`, new:
+  `Conversations::holding` reads each logged conversation's history a
+  page at a time until a `Message::User`); without one the realm's files
+  do (`realm_home::holds`: the conversation log read strictly, a missing
+  log is empty, then each session from the session store). `commit`
+  checks it again under the realms lock, once both realms are proven
+  idle;
+- an argument that reads both ways (`HomeError::TwoReadings`);
+  `realm_home::read_reference`: a realm's id or a path some manifest
+  names is a pull, any other existing directory a push, both is refused
+  naming both readings, and `/rehome from <ref>` / `/rehome to <dir>` say
+  which; a realm whose leases cannot be read (`prove_idle`, fail closed);
+  duplicate manifests.
+
+Removed: `HomeError::StillHomed` (a re-home no longer looks at whether
+either workspace directory exists; a directory started again after its
+realm moved gets a fresh realm), and the set-aside machinery
+(`Manifest::former_path`, a manifest with no `path`, "recoverable by
+`--rehome <its id>`"): the replaced realm is empty by construction, so it
+is removed: its manifest first (a directory without one is no realm),
+then the adopted realm's manifest names the workspace, then the rest of
+the directory. A crash in between leaves the workspace with no realm or
+the adopted one, never two. The manifest is read strictly now
+(`deny_unknown_fields`, `path` required); a manifest of the set-aside
+shape is `Unreadable` and refuses starts until removed.
+
+A daemon running on the realm that moves is no reason to refuse: it is
+asked to stop with `rkat/shutdown {retire: false}`, so its agents are
+restored at the next start, and its other clients are disconnected;
+their reconnect looks for the old directory's daemon, which no longer
+exists, so it never reaches the moved realm.
+
+### A restart, not a hot swap
+
+The workspace root is composed into the daemon at its start: the
+confinement plan (`bootstrap::confinement`, the workspace grant), the
+file tools' project root, the project `.rkat/` layers and MCP servers,
+and the endpoint file's key (`sha256(path)`). None of these can be
+re-rooted in a running daemon through the engine's public API, so a
+re-home stops the daemon and the client starts it again in the new
+place.
+
+### The client is re-rooted in process
+
+`/rehome <arg>` no longer quits. The runner (`AttachRunner::rehome`)
+prepares, stops its own daemon over its connection, drops the link
+(`unlink`, so the stop is not taken for a lost connection), carries the
+re-home out, and then builds its configuration again for the new
+workspace through `AttachConfig::reroot` (`Reroot::configure`:
+production reads the workspace's layers again, `configure_with` with
+this host's paths, which also refuses a `!` shell that would reach the
+realm). `AttachRunner::reroot` installs it:
+
+- the workbench (`Workbench::reroot`: the scope, the `!` shell's plan,
+  the endpoints; a running `!` command is cancelled first; `@` mentions
+  expand in the new root through the scope);
+- the UI (`Msg::Rerooted`: `@` completion's workspace and its path index
+  dropped, the `!` shell's confinement label, and `LocalEffect::Reroot`
+  for the UI loop: the realm's input history and drafts directory);
+- the log (`app::reroute_logging`: the log file is behind a switchable
+  writer, so a pull, whose realm changes, logs into the adopted realm and
+  not into the removed one);
+- the attach: a first connect again (start on demand in the new
+  workspace), the cursor file of the new realm, and the agent: a push
+  asks for the conversation it showed (`AgentChoice::Conversation`, which
+  binds its restored agent), a pull for the most recent one of the
+  adopted realm. The conversation is rendered from its start (the new
+  daemon's events are numbered anew).
+
+A failure after the daemon stopped but before the commit restarts the
+daemon in the old place (nothing moved). A configuration that cannot be
+built after the commit (a flag or `tui.toml` grant that reaches the realm
+from the new root) is reported with what moved; the TUI then has no
+daemon and says to start `rkat-tui` in the new directory.
+
+`rkat-tui --rehome <id|old path>` is the pull from the shell
+(`rehome::pull_here`): the same checks with no client of its own, both
+daemons stopped when idle, nothing started.
+
+Tests (`tests/rehome.rs`):
+`a_push_moves_the_session_to_the_new_workspace_without_a_restart` (the
+same session after the push, a `pwd` through the agent's shell printing
+the new directory and a relative `write_file` landing there, the second
+client disconnected with one attach and the new daemon counting the
+issuer only, a fresh `-c` in the new directory continuing the session,
+and a start in the old directory getting a fresh realm that does not list
+the old session); `a_push_while_a_turn_runs_is_refused` (another agent's
+gated turn, named; the manifest untouched, the daemon serving);
+`a_rehome_into_a_realm_that_holds_a_conversation_is_refused` (push and
+pull, the realms unchanged);
+`a_pull_from_a_fresh_start_in_the_moved_directory_adopts_the_old_realm`
+(the empty realm removed, the transcript of the adopted conversation, a
+turn on it); `a_pull_stops_the_idle_daemon_of_the_adopted_realm` (the old
+path reads two ways until `from`; the original's daemon stopped);
+`after_a_shell_rehome_continue_resumes_the_latest_conversation_in_the_new_place`.
+Unit: `realm_home`'s
+`a_reference_reads_as_a_pull_or_a_push_and_both_is_refused`,
+`a_commit_moves_the_path_and_removes_only_an_empty_realm`,
+`a_commit_is_refused_while_a_lease_is_live_or_unreadable`,
+`a_workspace_that_reaches_the_realm_is_refused`,
+`a_manifest_is_read_strictly`; UI
+`rehome_asks_the_runner_and_a_reroot_moves_the_ui`. Removed with the
+behaviour they pinned: `a_rehome_is_refused_while_a_daemon_holds_the_realm`
+and `a_rehome_moves_the_path_and_sets_the_new_realm_aside`.

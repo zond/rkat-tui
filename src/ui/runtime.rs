@@ -144,6 +144,8 @@ struct LocalEffects {
     bell: bool,
     /// List the workspace's paths (the generation and the root).
     index: Option<(u64, crate::paths::ProjectRoot)>,
+    /// The realm changed: its directory.
+    reroot: Option<std::path::PathBuf>,
 }
 
 /// Leave TUI mode, run `job` with the terminal in cooked mode, then come
@@ -296,7 +298,7 @@ pub async fn run_ui(
     effects: mpsc::UnboundedSender<Effect>,
     mouse: bool,
     mut histories: Vec<History>,
-    scratch: std::path::PathBuf,
+    mut scratch: std::path::PathBuf,
 ) -> Result<(), UiError> {
     install_panic_hook();
     let _guard = TerminalGuard::enter(mouse)?;
@@ -325,6 +327,10 @@ pub async fn run_ui(
                 let paths = crate::mentions::workspace_paths(&root);
                 let _ = tx.send(Msg::PathIndex { generation, paths });
             });
+        }
+        if let Some(realm) = local.reroot.take() {
+            reroot(&mut app, &mut histories, &realm);
+            scratch = realm.join(DRAFTS);
         }
         if std::mem::take(&mut local.suspend) {
             #[cfg(unix)]
@@ -469,7 +475,26 @@ fn absorb(
             LocalEffect::Bell => local.bell = true,
             LocalEffect::IndexPaths { generation, root } => local.index = Some((generation, root)),
             LocalEffect::Draw => local.draw = true,
+            LocalEffect::Reroot(realm) => local.reroot = Some(realm),
         }
+    }
+}
+
+/// The realm's input history file and drafts directory names.
+pub const HISTORY: &str = "tui_history";
+/// See [`HISTORY`].
+pub const DRAFTS: &str = "drafts";
+
+/// The realm changed to `realm`: the first of `histories` (the realm's)
+/// is that realm's from now on, and so is what the UI recalls.
+fn reroot(app: &mut App, histories: &mut [History], realm: &std::path::Path) {
+    let path = realm.join(HISTORY);
+    let Some(first) = histories.first_mut() else {
+        return;
+    };
+    if first.path() != path {
+        *first = History::load(path);
+        app.replace_history(first.entries().to_vec());
     }
 }
 

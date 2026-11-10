@@ -179,15 +179,21 @@ design.
   the attach handshake compares: the version plus the git commit when
   built from a checkout (`0.0.1+0123456789`), the version alone from
   crates.io.
-- `/rehome [id|old path]` and `rkat-tui --rehome <id|old path>` adopt the
-  state of a workspace that was moved or renamed: the state's manifest
-  names the new place from then on, and `-c` continues its latest
-  conversation there. `/rehome` alone lists the state that could be
-  adopted; with a reference it stops this workspace's daemon and quits
-  first. The state the workspace had is set aside, never deleted
-  (`--rehome <its id>` brings it back). Refused while a daemon may hold
-  either. A start in a workspace with no state while other workspaces'
-  directories are gone offers their state instead of adopting any.
+- `/rehome <directory>` moves this workspace's state to another directory
+  from inside the TUI: the daemon restarts there and the same `rkat-tui`
+  reattaches to the same conversation without quitting. `/rehome <id|old
+  path>` in the TUI and `rkat-tui --rehome <id|old path>` from the shell
+  adopt the state of a workspace that was moved or renamed, replacing the
+  empty state a first start in the new place made (removed); the TUI
+  restarts its daemon on it and continues. A daemon on the state that
+  moves is stopped and started again; a re-home is refused, changing
+  nothing, while a turn runs on a daemon it would stop and when the
+  destination's state holds a conversation or another client. An
+  argument that reads both ways is refused naming both (`/rehome from
+  <ref>`, `/rehome to <dir>`). `/rehome` alone lists the state whose
+  workspace is gone; a start in a workspace with no state while such
+  state exists offers it instead of adopting any. After any re-home, `-c`
+  in the new directory continues the latest conversation.
 - `--list` also lists every workspace's state: its id, the workspace
   (`gone` when it no longer exists), the git remote, the last use and
   whether a daemon runs for it.

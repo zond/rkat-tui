@@ -19,13 +19,11 @@
 //! it too (it may name this workspace: [`HomeError::Unreadable`]).
 //!
 //! A workspace that moved has no realm under its new path. Re-homing is
-//! explicit ([`rehome`]: `/rehome` in the TUI, `rkat-tui --rehome
-//! <id|old path>`): it rewrites the manifest's path, and sets aside the realm
-//! the new path already had (its manifest keeps the path as
-//! `former_path`; nothing is deleted). It is refused while a daemon may hold
-//! either realm ([`prove_idle`]: a live or unreadable lease, or an endpoint
-//! file whose address does not refuse a connect). A start in a workspace
-//! with no realm while realms whose workspace is gone exist
+//! explicit (`/rehome` in the TUI, `rkat-tui --rehome <id|old path>`, see
+//! `crate::client::rehome`): it rewrites a manifest's path ([`commit`]).
+//! A workspace that already has a realm takes another one only when its
+//! own is provably empty ([`holds`]); that one is removed. A start in a
+//! workspace with no realm while realms whose workspace is gone exist
 //! ([`Home::orphaned`]) creates a new one and offers those ([`offer`]);
 //! nothing is adopted silently.
 //!
@@ -99,9 +97,10 @@ pub enum HomeError {
         #[source]
         source: std::io::Error,
     },
-    /// `--rehome`/`/rehome` names no realm.
+    /// `--rehome`/`/rehome` names no realm (and, inside the TUI, no
+    /// directory to move to either).
     #[error(
-        "no realm is `{0}`: name one by its id or the workspace path it served (rkat-tui --list shows them)"
+        "`{0}` is no realm and no directory: name a realm by its id or the workspace path it served (rkat-tui --list shows them), or an existing directory to move this workspace's state to"
     )]
     UnknownRealm(String),
     /// `--rehome`/`/rehome` names several realms.
@@ -112,21 +111,51 @@ pub enum HomeError {
         /// The realms it names.
         ids: Vec<String>,
     },
-    /// The realm already serves this workspace.
-    #[error("realm {0} already serves this workspace")]
-    AlreadyHere(String),
-    /// The realm's workspace still exists: re-homing would take its state
-    /// from it.
+    /// `/rehome` reads both ways: a realm to adopt here, and a directory
+    /// to move this workspace's state to.
     #[error(
-        "realm {id} serves {}, which still exists; re-homing moves the state of a workspace that moved, so move or remove that directory first",
+        "`{reference}` reads two ways: adopt realm {id} here (/rehome from {reference}), or move this workspace's state to {} (/rehome to {reference}); say which",
         path.display()
     )]
-    StillHomed {
-        /// The realm.
+    TwoReadings {
+        /// What was given.
+        reference: String,
+        /// The realm it names.
         id: String,
-        /// Its workspace.
+        /// The directory it names.
         path: PathBuf,
     },
+    /// The realm already serves the workspace.
+    #[error("realm {0} already serves this workspace")]
+    AlreadyHere(String),
+    /// The workspace would reach the realm: its shell's workspace grant
+    /// would hold the realm directory, or lie inside it.
+    #[error(
+        "{} would reach realm {id} ({}): a workspace there could read and write its own state; choose another directory",
+        workspace.display(),
+        dir.display()
+    )]
+    Exposed {
+        /// The realm.
+        id: String,
+        /// Its directory.
+        dir: PathBuf,
+        /// The workspace.
+        workspace: PathBuf,
+    },
+    /// A realm that would be replaced holds something.
+    #[error(
+        "the destination's realm {id} is not empty: {what}; a re-home replaces only an empty realm, so nothing was changed"
+    )]
+    Holds {
+        /// The realm.
+        id: String,
+        /// What it holds.
+        what: String,
+    },
+    /// The realms changed while the re-home ran.
+    #[error("the realms changed while re-homing ({0}); nothing was changed, try again")]
+    Changed(String),
     /// A daemon may hold a realm.
     #[error(
         "realm {id} may be in use: {why}; stop its daemon (rkat-tui --list shows it) and try again"
@@ -149,28 +178,22 @@ impl HomeError {
     }
 }
 
-/// A realm directory's manifest.
+/// A realm directory's manifest. Read strictly: a manifest of another
+/// shape is [`HomeError::Unreadable`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Manifest {
-    /// The canonical path of the workspace the realm serves (`None`: set
-    /// aside by a re-home).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<PathBuf>,
-    /// The path it served before it was re-homed or set aside.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub former_path: Option<PathBuf>,
+    /// The canonical path of the workspace the realm serves.
+    pub path: PathBuf,
     /// The workspace directory's name, for people.
-    #[serde(default)]
     pub name: String,
     /// The workspace's `origin` remote when it had one (credentials
     /// removed), for people.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_remote: Option<String>,
     /// When the realm was made (RFC 3339, UTC).
-    #[serde(default)]
     pub created: String,
     /// When a start last used it (RFC 3339, UTC).
-    #[serde(default)]
     pub last_used: String,
 }
 
@@ -179,8 +202,7 @@ impl Manifest {
     fn new(workspace: &Path) -> Self {
         let now = now();
         Self {
-            path: Some(workspace.to_path_buf()),
-            former_path: None,
+            path: workspace.to_path_buf(),
             name: name_of(workspace),
             git_remote: git_remote(workspace),
             created: now.clone(),
@@ -203,26 +225,20 @@ pub struct Home {
 impl Home {
     /// Whether the workspace it served is gone: its manifest names a path
     /// that does not exist (proven: a path that cannot be looked at is not
-    /// gone). A realm set aside by a re-home is not an orphan; it is
-    /// listed, and `--rehome <id>` still adopts it.
+    /// gone).
     #[must_use]
     pub fn orphaned(&self) -> bool {
-        self.manifest
-            .path
-            .as_deref()
-            .is_some_and(|path| matches!(path.try_exists(), Ok(false)))
+        matches!(self.manifest.path.try_exists(), Ok(false))
     }
 
-    /// One line for people: id, the workspace (or what it was), last use.
+    /// One line for people: id, the workspace, last use.
     #[must_use]
     pub fn describe(&self) -> String {
-        let place = match (&self.manifest.path, &self.manifest.former_path) {
-            (Some(path), _) if self.orphaned() => format!("{} (gone)", path.display()),
-            (Some(path), _) => path.display().to_string(),
-            (None, Some(former)) => format!("set aside, was {}", former.display()),
-            (None, None) => "set aside".to_string(),
+        let mut line = if self.orphaned() {
+            format!("{}\t{} (gone)", self.id, self.manifest.path.display())
+        } else {
+            format!("{}\t{}", self.id, self.manifest.path.display())
         };
-        let mut line = format!("{}\t{place}", self.id);
         if let Some(remote) = &self.manifest.git_remote {
             line.push_str(&format!("\t{remote}"));
         }
@@ -452,9 +468,7 @@ pub fn scan(root: &Path) -> Result<Vec<Home>, HomeError> {
 ///
 /// [`HomeError::Duplicate`] when two name it.
 pub fn find_in<'a>(homes: &'a [Home], workspace: &Path) -> Result<Option<&'a Home>, HomeError> {
-    let mut found = homes
-        .iter()
-        .filter(|home| home.manifest.path.as_deref() == Some(workspace));
+    let mut found = homes.iter().filter(|home| home.manifest.path == workspace);
     let first = found.next();
     if let (Some(first), Some(second)) = (first, found.next()) {
         return Err(HomeError::Duplicate {
@@ -554,7 +568,7 @@ pub fn offer(orphans: &[Home]) -> Option<String> {
         text.push_str(&home.describe().replace('\t', "  "));
     }
     text.push_str(
-        "\nif one of them is this workspace moved, /rehome <id> adopts it here (rkat-tui --rehome <id> from the shell); the new state is set aside, not deleted",
+        "\nif one of them is this workspace moved, /rehome <id> adopts it here (rkat-tui --rehome <id> from the shell); the new state, still empty, is removed",
     );
     Some(text)
 }
@@ -572,40 +586,38 @@ pub fn old_realm_notice(workspace: &Path, home: &Home) -> Option<String> {
     ))
 }
 
-/// The realm `reference` names among `homes`: its id, else the workspace
-/// path it serves or served (`reference` taken as a path, absolute
-/// against the working directory, and canonicalized when it exists).
-///
-/// # Errors
-///
-/// [`HomeError::UnknownRealm`], [`HomeError::Ambiguous`].
-pub fn resolve_ref<'a>(homes: &'a [Home], reference: &str) -> Result<&'a Home, HomeError> {
-    if let Some(home) = homes.iter().find(|home| home.id == reference) {
-        return Ok(home);
-    }
-    let given = Path::new(reference);
-    let absolute = if given.is_absolute() {
-        given.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .map(|cwd| cwd.join(given))
-            .unwrap_or_else(|_| given.to_path_buf())
-    };
-    let wanted: Vec<PathBuf> = [
+/// `reference` as a path: absolute against `base`, lexically normalized,
+/// and canonical too when it exists.
+fn as_paths(reference: &str, base: &Path) -> Vec<PathBuf> {
+    let absolute = base.join(reference);
+    [
         Some(normalize(&absolute)),
         std::fs::canonicalize(&absolute).ok(),
     ]
     .into_iter()
     .flatten()
-    .collect();
+    .collect()
+}
+
+/// The realm `reference` names among `homes`: its id, else the workspace
+/// path it serves (`reference` taken as a path against `base`; a gone path
+/// is compared lexically normalized, an existing one canonical too).
+///
+/// # Errors
+///
+/// [`HomeError::UnknownRealm`], [`HomeError::Ambiguous`].
+pub fn resolve_ref<'a>(
+    homes: &'a [Home],
+    reference: &str,
+    base: &Path,
+) -> Result<&'a Home, HomeError> {
+    if let Some(home) = homes.iter().find(|home| home.id == reference) {
+        return Ok(home);
+    }
+    let wanted = as_paths(reference, base);
     let named: Vec<&Home> = homes
         .iter()
-        .filter(|home| {
-            [&home.manifest.path, &home.manifest.former_path]
-                .into_iter()
-                .flatten()
-                .any(|path| wanted.contains(path))
-        })
+        .filter(|home| wanted.contains(&home.manifest.path))
         .collect();
     match named.as_slice() {
         [] => Err(HomeError::UnknownRealm(reference.to_string())),
@@ -634,14 +646,125 @@ fn normalize(path: &Path) -> PathBuf {
     out
 }
 
+/// Which way `/rehome <reference>` goes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reading {
+    /// Pull: adopt this realm for the current workspace (a workspace that
+    /// moved here).
+    Pull(Home),
+    /// Push: move the current workspace's realm to this directory
+    /// (canonical).
+    Push(PathBuf),
+}
+
+/// What `/rehome` was told: a reference read either way, or one the user
+/// said the way of (`from <ref>`, `to <path>`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Way {
+    /// Either: a realm's id or a path some manifest names pulls, any other
+    /// existing directory pushes, one that is both is refused.
+    Either,
+    /// `from <ref>`: pull only.
+    Pull,
+    /// `to <path>`: push only.
+    Push,
+}
+
+/// `/rehome`'s argument: `from <ref>`, `to <path>`, or a reference read
+/// either way.
+#[must_use]
+pub fn parse_way(argument: &str) -> (Way, &str) {
+    let argument = argument.trim();
+    if let Some(rest) = argument.strip_prefix("from ") {
+        return (Way::Pull, rest.trim());
+    }
+    if let Some(rest) = argument.strip_prefix("to ") {
+        return (Way::Push, rest.trim());
+    }
+    (Way::Either, argument)
+}
+
+/// Read `reference` among `homes` for the workspace `workspace`
+/// (canonical): a realm's id, or a path some manifest names, is a pull; any
+/// other existing directory (resolved against `base`) a push. One that
+/// reads both ways is refused naming both, unless `way` says which.
+///
+/// # Errors
+///
+/// [`HomeError::TwoReadings`], [`HomeError::UnknownRealm`],
+/// [`HomeError::Ambiguous`], [`HomeError::AlreadyHere`].
+pub fn read_reference(
+    homes: &[Home],
+    reference: &str,
+    way: Way,
+    base: &Path,
+    workspace: &Path,
+) -> Result<Reading, HomeError> {
+    let pull = match way {
+        Way::Push => None,
+        Way::Pull | Way::Either => match resolve_ref(homes, reference, base) {
+            Ok(home) => Some(home.clone()),
+            Err(HomeError::UnknownRealm(_)) if way == Way::Either => None,
+            Err(err) => return Err(err),
+        },
+    };
+    let push = match way {
+        Way::Pull => None,
+        Way::Push | Way::Either => std::fs::canonicalize(base.join(reference))
+            .ok()
+            .filter(|path| path.is_dir()),
+    };
+    if let Some(home) = &pull
+        && home.manifest.path == workspace
+    {
+        return Err(HomeError::AlreadyHere(home.id.clone()));
+    }
+    if push.as_deref() == Some(workspace) && pull.is_none() {
+        return match find_in(homes, workspace)? {
+            Some(home) => Err(HomeError::AlreadyHere(home.id.clone())),
+            None => Err(HomeError::UnknownRealm(reference.to_string())),
+        };
+    }
+    match (pull, push.filter(|path| path != workspace)) {
+        (Some(home), Some(path)) => Err(HomeError::TwoReadings {
+            reference: reference.to_string(),
+            id: home.id,
+            path,
+        }),
+        (Some(home), None) => Ok(Reading::Pull(home)),
+        (None, Some(path)) => Ok(Reading::Push(path)),
+        (None, None) => Err(HomeError::UnknownRealm(reference.to_string())),
+    }
+}
+
+/// Refuse a workspace `workspace` whose shell's workspace grant would
+/// reach `home`'s directory (holding it, or inside it). The daemon's start
+/// checks the whole confinement plan again ([`exposing_grant`]).
+///
+/// # Errors
+///
+/// [`HomeError::Exposed`].
+pub fn check_reach(home: &Home, workspace: &Path) -> Result<(), HomeError> {
+    let realm = super::scope::canonical_prefix(&home.dir);
+    let workspace = super::scope::canonical_prefix(workspace);
+    if realm.starts_with(&workspace) || workspace.starts_with(&realm) {
+        return Err(HomeError::Exposed {
+            id: home.id.clone(),
+            dir: home.dir.clone(),
+            workspace,
+        });
+    }
+    Ok(())
+}
+
 /// Prove that no daemon holds `home` (under `root`): no live or unreadable
-/// lease in the realm, and every endpoint file of the workspace it serves
-/// or served absent or refusing a connect. Anything else is no proof.
+/// lease in the realm, and every endpoint file of `files` (its workspace's)
+/// absent or refusing a connect. Anything else is no proof.
 ///
 /// # Errors
 ///
 /// [`HomeError::InUse`] naming what was found.
-pub async fn prove_idle(root: &Path, home: &Home) -> Result<(), HomeError> {
+pub async fn prove_idle(root: &Path, home: &Home, files: &[PathBuf]) -> Result<(), HomeError> {
     let in_use = |why: String| HomeError::InUse {
         id: home.id.clone(),
         why,
@@ -661,142 +784,150 @@ pub async fn prove_idle(root: &Path, home: &Home) -> Result<(), HomeError> {
             file.display()
         )));
     }
-    let workspaces = [&home.manifest.path, &home.manifest.former_path]
-        .into_iter()
-        .flatten();
-    for workspace in workspaces {
-        for file in crate::daemon::endpoint::candidates(
-            workspace,
-            &crate::daemon::endpoint::RealmKey::Default,
-        ) {
-            crate::daemon::endpoint::check_stale(&file)
-                .await
-                .map_err(|err| in_use(err.to_string()))?;
-        }
+    for file in files {
+        crate::daemon::endpoint::check_stale(file)
+            .await
+            .map_err(|err| in_use(err.to_string()))?;
     }
     Ok(())
 }
 
-/// What [`rehome`] did.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Rehomed {
-    /// The realm that serves the workspace now.
-    pub home: Home,
-    /// The workspace it served before.
-    pub from: Option<PathBuf>,
-    /// The realm the workspace had, now set aside.
-    pub set_aside: Option<Home>,
-}
-
-impl std::fmt::Display for Rehomed {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "realm {} now serves this workspace", self.home.id)?;
-        if let Some(from) = &self.from {
-            write!(f, " (it served {})", from.display())?;
-        }
-        if let Some(aside) = &self.set_aside {
-            write!(
-                f,
-                "; the realm it had, {}, is set aside (rkat-tui --rehome {} brings it back)",
-                aside.id, aside.id
-            )?;
-        }
-        Ok(())
-    }
-}
-
-/// Re-home the realm `reference` names (its id or the workspace path it
-/// served) to `workspace` (canonical), under the lock: refused while a
-/// daemon may hold it or the realm `workspace` has now, and when its own
-/// workspace still exists. The realm `workspace` had is set aside (its
-/// manifest keeps the path as `former_path`) before the adopted one names
-/// it, so a failure in between leaves the workspace with no realm, never
-/// with two.
+/// [`prove_idle`], tried again until `wait` has passed while the realm is
+/// proven in use (a daemon that was asked to stop releases its lease as it
+/// ends).
 ///
 /// # Errors
 ///
-/// See [`resolve_ref`], [`prove_idle`]; [`HomeError::AlreadyHere`],
-/// [`HomeError::StillHomed`], [`HomeError::Duplicate`], and
-/// [`HomeError::Io`] when a manifest cannot be written.
-pub async fn rehome(root: &Path, reference: &str, workspace: &Path) -> Result<Rehomed, HomeError> {
-    let _lock = Lock::take(root)?;
-    let target = check_rehome(root, reference, workspace)?;
-    let homes = scan(root)?;
-    let current = find_in(&homes, workspace)?.cloned();
-    prove_idle(root, &target).await?;
-    if let Some(current) = &current {
-        prove_idle(root, current).await?;
-    }
-    let set_aside = match current {
-        Some(mut current) => {
-            current.manifest.former_path = current.manifest.path.take();
-            current.write()?;
-            Some(current)
-        }
-        None => None,
-    };
-    let mut home = target;
-    let from = home
-        .manifest
-        .path
-        .take()
-        .or_else(|| home.manifest.former_path.clone());
-    home.manifest.former_path.clone_from(&from);
-    home.manifest.path = Some(workspace.to_path_buf());
-    home.manifest.name = name_of(workspace);
-    home.manifest.git_remote = git_remote(workspace).or(home.manifest.git_remote);
-    home.manifest.last_used = now();
-    home.write()?;
-    Ok(Rehomed {
-        home,
-        from,
-        set_aside,
-    })
-}
-
-/// `rkat-tui --rehome <reference>`: [`rehome`] the realm `reference`
-/// names to the workspace `args` name (`--workspace`, else the working
-/// directory), under the config directory `args` name.
-///
-/// # Errors
-///
-/// See [`rehome`] and [`super::scope::lookup`].
-pub async fn rehome_workspace(
-    args: &crate::cli::Args,
-    reference: &str,
-) -> Result<Rehomed, crate::TuiError> {
-    let (root, workspace, _) = super::scope::lookup(args)?;
-    Ok(rehome(&root, reference, &workspace).await?)
-}
-
-/// [`rehome_workspace`] once the daemon of this workspace was asked to
-/// stop (`/rehome` in the TUI): a realm proven in use is tried again until
-/// `wait` has passed (the daemon releases its lease as it ends).
-///
-/// # Errors
-///
-/// See [`rehome_workspace`]; the last [`HomeError::InUse`] after `wait`.
-pub async fn rehome_after_stop(
-    args: &crate::cli::Args,
-    reference: &str,
+/// The last [`HomeError::InUse`] after `wait`.
+pub async fn wait_idle(
+    root: &Path,
+    home: &Home,
+    files: &[PathBuf],
     wait: std::time::Duration,
-) -> Result<Rehomed, crate::TuiError> {
+) -> Result<(), HomeError> {
     let deadline = tokio::time::Instant::now() + wait;
     loop {
-        match rehome_workspace(args, reference).await {
-            Err(crate::TuiError::RealmHome(HomeError::InUse { .. }))
-                if tokio::time::Instant::now() < deadline =>
-            {
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        match prove_idle(root, home, files).await {
+            Err(HomeError::InUse { .. }) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
             done => return done,
         }
     }
 }
 
+/// What `home` (under `root`) holds, read from its files with no daemon
+/// running on it: each conversation of its log with a user turn, in words.
+/// Empty: provably empty (no log, or no conversation in it with a user
+/// message). What cannot be read is not empty.
+pub async fn holds(root: &Path, home: &Home) -> Vec<String> {
+    let log = crate::daemon::conversations::Log::path(&home.dir);
+    let log = match crate::daemon::conversations::Log::read(&log) {
+        Ok(Some(log)) => log,
+        Ok(None) => return Vec::new(),
+        Err(err) => return vec![err.to_string()],
+    };
+    if log.sessions.is_empty() {
+        return Vec::new();
+    }
+    let persistence = match meerkat::open_realm_persistence_in(root, &home.id, None, None).await {
+        Ok((_, persistence)) => persistence,
+        Err(err) => return vec![format!("its sessions cannot be read ({err})")],
+    };
+    let store = persistence.session_store();
+    let mut held = Vec::new();
+    for entry in &log.sessions {
+        match store.load(&entry.session_id).await {
+            Ok(Some(session)) => {
+                if crate::daemon::conversations::has_user_turn(session.messages()) {
+                    held.push(format!("conversation {} has user turns", entry.session_id));
+                }
+            }
+            Ok(None) => {}
+            Err(err) => held.push(format!(
+                "conversation {} cannot be read ({err})",
+                entry.session_id
+            )),
+        }
+    }
+    held
+}
+
+/// Make `adopt` (under `root`) the realm of `workspace` (canonical), under
+/// the lock, once no daemon holds it or `replace` (each proven with its
+/// workspace's endpoint `files`, waiting up to `wait` for daemons that
+/// were asked to stop). `replace` is the realm `workspace` has: it must
+/// still be (none when it had none), and still be provably empty
+/// ([`holds`]); its manifest goes first (a directory without one is no
+/// realm), then `adopt`'s names `workspace`, then the rest of `replace`'s
+/// directory. A failure in between leaves the workspace with no realm or
+/// with `adopt`, never with two.
+///
+/// # Errors
+///
+/// [`HomeError::Changed`] when the realms are no longer as checked,
+/// [`HomeError::InUse`], [`HomeError::Holds`], [`HomeError::Io`].
+pub async fn commit(
+    root: &Path,
+    adopt: &Home,
+    adopt_files: &[PathBuf],
+    workspace: &Path,
+    replace: Option<(&Home, &[PathBuf])>,
+    wait: std::time::Duration,
+) -> Result<Home, HomeError> {
+    let _lock = Lock::take(root)?;
+    let homes = scan(root)?;
+    let now_adopt = homes
+        .iter()
+        .find(|home| home.id == adopt.id)
+        .ok_or_else(|| HomeError::Changed(format!("realm {} is gone", adopt.id)))?;
+    if now_adopt.manifest.path != adopt.manifest.path {
+        return Err(HomeError::Changed(format!(
+            "realm {} serves {} now",
+            adopt.id,
+            now_adopt.manifest.path.display()
+        )));
+    }
+    let now_replace = find_in(&homes, workspace)?.map(|home| home.id.clone());
+    if now_replace != replace.map(|(home, _)| home.id.clone()) {
+        return Err(HomeError::Changed(format!(
+            "{} has realm {} now",
+            workspace.display(),
+            now_replace.as_deref().unwrap_or("none")
+        )));
+    }
+    wait_idle(root, adopt, adopt_files, wait).await?;
+    if let Some((replace, files)) = replace {
+        wait_idle(root, replace, files, wait).await?;
+        let held = holds(root, replace).await;
+        if !held.is_empty() {
+            return Err(HomeError::Holds {
+                id: replace.id.clone(),
+                what: held.join("; "),
+            });
+        }
+        let manifest = replace.dir.join(MANIFEST_FILE);
+        std::fs::remove_file(&manifest)
+            .map_err(|err| HomeError::io("remove the realm manifest", &manifest, err))?;
+    }
+    let mut home = now_adopt.clone();
+    home.manifest.path = workspace.to_path_buf();
+    home.manifest.name = name_of(workspace);
+    home.manifest.git_remote = git_remote(workspace).or(home.manifest.git_remote);
+    home.manifest.last_used = now();
+    home.write()?;
+    if let Some((replace, _)) = replace
+        && let Err(err) = std::fs::remove_dir_all(&replace.dir)
+    {
+        // No manifest names anything there any more: it is no realm.
+        tracing::warn!(dir = %replace.dir.display(), error = %err, "the replaced realm's directory was not removed");
+    }
+    Ok(home)
+}
+
 /// `/rehome` without an argument: this workspace's realm (`current`) and
-/// the others under `root` that a re-home could adopt (those whose
-/// workspace is gone or that were set aside), with how.
+/// the others under `root` whose workspace is gone, which a re-home could
+/// adopt.
 ///
 /// # Errors
 ///
@@ -811,48 +942,20 @@ pub fn adoptable(root: &Path, current: Option<&Home>) -> Result<String, HomeErro
         ),
         None => "this workspace has no state of its own".to_string(),
     };
-    let others: Vec<&Home> = homes
-        .iter()
-        .filter(|home| home.orphaned() || home.manifest.path.is_none())
-        .collect();
+    let others: Vec<&Home> = homes.iter().filter(|home| home.orphaned()).collect();
     if others.is_empty() {
         text.push_str("; no other workspace's state is waiting to be adopted");
-        return Ok(text);
-    }
-    text.push_str("; state that /rehome <id> can adopt here:");
-    for home in others {
-        text.push_str("\n  ");
-        text.push_str(&home.describe().replace('\t', "  "));
+    } else {
+        text.push_str("; state whose workspace is gone, which /rehome <id> adopts here:");
+        for home in others {
+            text.push_str("\n  ");
+            text.push_str(&home.describe().replace('\t', "  "));
+        }
     }
     text.push_str(
-        "\n/rehome <id> stops this workspace's daemon and quits, then adopts it (this workspace's state is set aside, not deleted)",
+        "\n/rehome <directory> moves this workspace's state there; either way the daemon restarts in the new place and this rkat-tui reattaches",
     );
     Ok(text)
-}
-
-/// Check that `reference` names a realm under `root` that may be
-/// re-homed to `workspace` (canonical) as far as can be told before the
-/// daemon stops: it exists, is not this workspace's, and its own
-/// workspace is gone (or it was set aside).
-///
-/// # Errors
-///
-/// See [`resolve_ref`]; [`HomeError::AlreadyHere`], [`HomeError::StillHomed`].
-pub fn check_rehome(root: &Path, reference: &str, workspace: &Path) -> Result<Home, HomeError> {
-    let homes = scan(root)?;
-    let target = resolve_ref(&homes, reference)?.clone();
-    if target.manifest.path.as_deref() == Some(workspace) {
-        return Err(HomeError::AlreadyHere(target.id));
-    }
-    if let Some(path) = &target.manifest.path
-        && !target.orphaned()
-    {
-        return Err(HomeError::StillHomed {
-            id: target.id,
-            path: path.clone(),
-        });
-    }
-    Ok(target)
 }
 
 /// The grant of the shell's confinement `plan` that reaches the realm
@@ -911,7 +1014,7 @@ mod tests {
         assert_eq!(opened.home.id.len(), ID_BYTES * 2);
         assert!(opened.home.id.chars().all(|c| c.is_ascii_hexdigit()));
         assert_eq!(opened.home.dir, root.join(&opened.home.id));
-        assert_eq!(opened.home.manifest.path.as_deref(), Some(ws.as_path()));
+        assert_eq!(opened.home.manifest.path, ws);
         assert_eq!(opened.home.manifest.name, "project");
         #[cfg(unix)]
         {
@@ -965,14 +1068,14 @@ mod tests {
     }
 
     #[test]
-    fn orphans_are_offered_and_set_aside_realms_are_not() {
+    fn orphans_are_offered() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("workspaces");
         let gone = tmp.path().join("gone");
         plant(&root, "dddd", &manifest(&gone));
-        let mut aside = manifest(&gone);
-        aside.former_path = aside.path.take();
-        plant(&root, "eeee", &aside);
+        let here = tmp.path().join("here");
+        std::fs::create_dir_all(&here).unwrap();
+        plant(&root, "eeee", &manifest(&here));
         let ws = tmp.path().join("new");
         std::fs::create_dir_all(&ws).unwrap();
         let opened = open_or_create(&root, &ws).unwrap();
@@ -987,8 +1090,85 @@ mod tests {
         assert!(super::offer(&[]).is_none());
     }
 
+    /// A manifest of another shape (a field it does not know, the path
+    /// missing) is unreadable, not read with defaults.
+    #[test]
+    fn a_manifest_is_read_strictly() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("workspaces");
+        let dir = root.join("abcd");
+        std::fs::create_dir_all(&dir).unwrap();
+        for text in [
+            "name = \"x\"\ncreated = \"\"\nlast_used = \"\"\n",
+            "path = \"/x\"\nformer_path = \"/y\"\nname = \"x\"\ncreated = \"\"\nlast_used = \"\"\n",
+        ] {
+            std::fs::write(dir.join(MANIFEST_FILE), text).unwrap();
+            let err = scan(&root).unwrap_err();
+            assert!(matches!(err, HomeError::Unreadable { .. }), "{err}");
+        }
+    }
+
+    /// An id or a path some manifest names pulls; any other existing
+    /// directory pushes; one that is both is refused naming both, unless
+    /// `from`/`to` says which.
+    #[test]
+    fn a_reference_reads_as_a_pull_or_a_push_and_both_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = std::fs::canonicalize(tmp.path()).unwrap();
+        let root = base.join("workspaces");
+        let here = base.join("here");
+        let other = base.join("other");
+        let free = base.join("free");
+        for dir in [&here, &other, &free] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let gone = base.join("gone");
+        plant(&root, "aaaa", &manifest(&here));
+        plant(&root, "bbbb", &manifest(&gone));
+        plant(&root, "cccc", &manifest(&other));
+        let homes = scan(&root).unwrap();
+        let read = |reference: &str| {
+            let (way, reference) = parse_way(reference);
+            read_reference(&homes, reference, way, &here, &here)
+        };
+        let pulled = |reading: Result<Reading, HomeError>| match reading {
+            Ok(Reading::Pull(home)) => home.id,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(pulled(read("bbbb")), "bbbb");
+        assert_eq!(pulled(read(gone.to_str().unwrap())), "bbbb");
+        assert_eq!(pulled(read("../gone")), "bbbb");
+        assert_eq!(read("../free").unwrap(), Reading::Push(free.clone()));
+        assert_eq!(
+            read(&format!("to {}", free.display())).unwrap(),
+            Reading::Push(free)
+        );
+        let both = read(other.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(&both, HomeError::TwoReadings { id, path, .. } if id == "cccc" && *path == other),
+            "{both}"
+        );
+        assert!(both.to_string().contains("/rehome from"), "{both}");
+        assert_eq!(pulled(read(&format!("from {}", other.display()))), "cccc");
+        assert_eq!(
+            read(&format!("to {}", other.display())).unwrap(),
+            Reading::Push(other)
+        );
+        assert!(matches!(read("aaaa"), Err(HomeError::AlreadyHere(_))));
+        assert!(matches!(read("."), Err(HomeError::AlreadyHere(_))));
+        assert!(matches!(read("nope"), Err(HomeError::UnknownRealm(_))));
+        assert!(matches!(
+            read("from ../free"),
+            Err(HomeError::UnknownRealm(_))
+        ));
+    }
+
+    /// A commit names the new workspace in the adopted realm's manifest
+    /// and removes the empty realm the workspace had; a realm that holds
+    /// a conversation log it cannot read is not empty, and nothing
+    /// changes.
     #[tokio::test]
-    async fn a_rehome_moves_the_path_and_sets_the_new_realm_aside() {
+    async fn a_commit_moves_the_path_and_removes_only_an_empty_realm() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("workspaces");
         let old = tmp.path().join("old");
@@ -996,62 +1176,86 @@ mod tests {
         let ws = tmp.path().join("new");
         std::fs::create_dir_all(&ws).unwrap();
         let fresh = open_or_create(&root, &ws).unwrap().home;
-        // By the old path.
-        let done = rehome(&root, old.to_str().unwrap(), &ws).await.unwrap();
-        assert_eq!(done.home.id, "ffff");
-        assert_eq!(done.from.as_deref(), Some(old.as_path()));
-        assert_eq!(
-            done.set_aside.as_ref().map(|h| h.id.clone()),
-            Some(fresh.id.clone())
+        let adopt = find(&root, &old).unwrap().unwrap();
+        // Not empty: its conversation log cannot be read.
+        let log = crate::daemon::conversations::Log::path(&fresh.dir);
+        std::fs::write(&log, "{").unwrap();
+        let wait = std::time::Duration::ZERO;
+        let refused = commit(&root, &adopt, &[], &ws, Some((&fresh, &[])), wait)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&refused, HomeError::Holds { id, what } if *id == fresh.id && what.contains("conversation log")),
+            "{refused}"
         );
-        let found = find(&root, &ws).unwrap().unwrap();
-        assert_eq!(found.id, "ffff");
-        assert_eq!(found.manifest.former_path.as_deref(), Some(old.as_path()));
-        // The set-aside realm is still there and comes back by its id.
-        let back = rehome(&root, &fresh.id, &ws).await.unwrap();
-        assert_eq!(back.home.id, fresh.id);
         assert_eq!(find(&root, &ws).unwrap().unwrap().id, fresh.id);
-        // Refusals: the realm here already, an unknown one, one whose
-        // workspace still exists.
-        assert!(matches!(
-            rehome(&root, &fresh.id, &ws).await,
-            Err(HomeError::AlreadyHere(_))
-        ));
-        assert!(matches!(
-            rehome(&root, "nope", &ws).await,
-            Err(HomeError::UnknownRealm(_))
-        ));
-        let elsewhere = tmp.path().join("elsewhere");
-        std::fs::create_dir_all(&elsewhere).unwrap();
-        let other = open_or_create(&root, &elsewhere).unwrap().home;
-        assert!(matches!(
-            rehome(&root, &other.id, &ws).await,
-            Err(HomeError::StillHomed { .. })
-        ));
+        assert_eq!(find(&root, &old).unwrap().unwrap().id, "ffff");
+        // Empty (no log at all): removed, and the adopted realm serves.
+        std::fs::remove_file(&log).unwrap();
+        let home = commit(&root, &adopt, &[], &ws, Some((&fresh, &[])), wait)
+            .await
+            .unwrap();
+        assert_eq!(home.id, "ffff");
+        assert_eq!(find(&root, &ws).unwrap().unwrap().id, "ffff");
+        assert!(!fresh.dir.exists());
+        assert_eq!(find(&root, &old).unwrap(), None);
+        // The realms changed since the check: refused.
+        let changed = commit(&root, &adopt, &[], &old, None, wait).await;
+        assert!(matches!(changed, Err(HomeError::Changed(_))), "{changed:?}");
     }
 
     #[tokio::test]
-    async fn a_rehome_is_refused_while_a_lease_is_live_or_unreadable() {
+    async fn a_commit_is_refused_while_a_lease_is_live_or_unreadable() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("workspaces");
         let old = tmp.path().join("old");
         let dir = plant(&root, "abcd", &manifest(&old));
+        let adopt = find(&root, &old).unwrap().unwrap();
         let ws = tmp.path().join("new");
         std::fs::create_dir_all(&ws).unwrap();
+        let wait = std::time::Duration::ZERO;
         let lease = meerkat_store::start_realm_lease_in(&root, "abcd", None, "test")
             .await
             .unwrap();
-        let err = rehome(&root, "abcd", &ws).await.unwrap_err();
+        let err = commit(&root, &adopt, &[], &ws, None, wait)
+            .await
+            .unwrap_err();
         assert!(matches!(err, HomeError::InUse { .. }), "{err}");
         assert!(err.to_string().contains("live lease"), "{err}");
         lease.shutdown().await;
         // A lease that cannot be read proves nothing either.
         std::fs::create_dir_all(dir.join("leases")).unwrap();
         std::fs::write(dir.join("leases").join("x.json"), "{").unwrap();
-        let err = rehome(&root, "abcd", &ws).await.unwrap_err();
+        let err = commit(&root, &adopt, &[], &ws, None, wait)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("cannot be read"), "{err}");
+        assert_eq!(find(&root, &old).unwrap().unwrap().id, "abcd");
         std::fs::remove_file(dir.join("leases").join("x.json")).unwrap();
-        rehome(&root, "abcd", &ws).await.unwrap();
+        commit(&root, &adopt, &[], &ws, None, wait).await.unwrap();
+        assert_eq!(find(&root, &ws).unwrap().unwrap().id, "abcd");
+    }
+
+    /// A workspace that holds the realm, or lies inside it, is refused.
+    #[test]
+    fn a_workspace_that_reaches_the_realm_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("cfg/workspaces");
+        let dir = plant(&root, "abcd", &manifest(&tmp.path().join("old")));
+        let home = find(&root, &tmp.path().join("old")).unwrap().unwrap();
+        let elsewhere = tmp.path().join("ws");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        assert!(check_reach(&home, &elsewhere).is_ok());
+        for reaching in [tmp.path().join("cfg"), dir.join("sub")] {
+            assert!(
+                matches!(
+                    check_reach(&home, &reaching),
+                    Err(HomeError::Exposed { .. })
+                ),
+                "{}",
+                reaching.display()
+            );
+        }
     }
 
     #[test]

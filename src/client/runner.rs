@@ -187,6 +187,35 @@ pub struct AttachConfig {
     /// The cost readout's prices (the `[pricing]` overrides and the cached
     /// community list; refreshed in the background).
     pub pricing: crate::pricing::PricingSetup,
+    /// How `/rehome` re-roots this client (`None`: it cannot, and says
+    /// so).
+    pub reroot: Option<Reroot>,
+}
+
+/// The configuration of this client for a command line
+/// ([`Reroot::configure`]).
+pub type Configure = Arc<
+    dyn Fn(
+            crate::cli::Args,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<AttachConfig, crate::TuiError>> + Send>,
+        > + Send
+        + Sync,
+>;
+
+/// How `/rehome` re-roots this client: the command line its configuration
+/// came from, the configuration for that command line with another
+/// workspace (production: the workspace's layers read again, its daemon
+/// started on demand), and where a workspace's daemon writes its endpoint
+/// file.
+#[derive(Clone)]
+pub struct Reroot {
+    /// The command line.
+    pub args: crate::cli::Args,
+    /// The configuration for a command line.
+    pub configure: Configure,
+    /// Where a workspace's daemon writes its endpoint file.
+    pub endpoint_files: super::rehome::EndpointFiles,
 }
 
 impl std::fmt::Debug for AttachConfig {
@@ -519,9 +548,6 @@ pub struct AttachRunner {
     /// What to say on the terminal once the UI is gone (how this client
     /// left the daemon).
     farewells: Farewells,
-    /// The state `/rehome` adopts once the UI is gone and the daemon
-    /// stopped ([`AttachRunner::rehoming`]).
-    rehoming: Rehoming,
     /// Prompts sent before the first attach finished (the command line's
     /// prompt is sent as the UI opens) or while a conversation switch
     /// runs: held until the link is up and no switch runs, or the first
@@ -541,10 +567,6 @@ pub struct AttachRunner {
 
 /// Lines for the terminal after the UI closed ([`AttachRunner::farewells`]).
 pub type Farewells = Arc<parking_lot::Mutex<Vec<String>>>;
-
-/// The reference `/rehome` adopts after the UI closed
-/// ([`AttachRunner::rehoming`]).
-pub type Rehoming = Arc<parking_lot::Mutex<Option<String>>>;
 
 impl AttachRunner {
     /// A runner on `config`; it connects once [`AttachRunner::run`] runs.
@@ -596,7 +618,6 @@ impl AttachRunner {
             bench,
             admitted: Vec::new(),
             farewells: Farewells::default(),
-            rehoming: Rehoming::default(),
             held: Some(Vec::new()),
             first_failed: false,
             retry_at: None,
@@ -612,61 +633,232 @@ impl AttachRunner {
         Arc::clone(&self.farewells)
     }
 
-    /// The state `/rehome <ref>` asked to adopt, once the UI is gone and
-    /// the daemon stopped (the caller adopts it: the runner has left).
-    #[must_use]
-    pub fn rehoming(&self) -> Rehoming {
-        Arc::clone(&self.rehoming)
-    }
-
-    /// `/rehome`: without a reference, what this workspace could adopt;
-    /// with one, check it can be adopted, record it and have the UI leave,
-    /// stopping the daemon (the adoption needs it gone).
-    fn rehome(&self, reference: Option<String>) {
+    /// `/rehome`: without an argument, what this workspace could adopt;
+    /// with one, re-home (a pull or a push, [`realm_home::read_reference`]),
+    /// then re-root this client on the workspace it serves now and
+    /// reattach ([`AttachRunner::reroot`]).
+    ///
+    /// [`realm_home::read_reference`]: crate::bootstrap::realm_home::read_reference
+    async fn rehome(&mut self, argument: Option<String>) {
+        use super::rehome::{self as rh, Side};
+        use crate::bootstrap::realm_home::{self, Reading};
         let scope = &self.config.scope;
         let Some(global) = &scope.global else {
             self.notice(
                 NoticeLevel::Warn,
-                crate::bootstrap::realm_home::HomeError::NoConfigDir.to_string(),
+                realm_home::HomeError::NoConfigDir.to_string(),
             );
             return;
         };
-        let root = crate::bootstrap::realm_home::root(global);
-        let Some(reference) = reference else {
-            match crate::bootstrap::realm_home::adoptable(&root, scope.home.as_ref()) {
+        let root = realm_home::root(global);
+        let Some(argument) = argument else {
+            match realm_home::adoptable(&root, scope.home.as_ref()) {
                 Ok(text) => self.notice(NoticeLevel::Info, text),
                 Err(err) => self.notice(NoticeLevel::Warn, err.to_string()),
             }
             return;
         };
-        if scope.home.is_none() {
-            self.notice(
-                NoticeLevel::Warn,
+        let refused = if scope.home.is_none() {
+            Some(
                 "this client runs on a shared realm (--realm, --isolated, --state-root): /rehome moves a workspace's own state only",
-            );
+            )
+        } else if self.config.address.is_some() {
+            Some("/rehome works on this machine's workspace only; run it there")
+        } else if self.config.reroot.is_none() {
+            Some("this client cannot be re-rooted; use rkat-tui --rehome from the shell")
+        } else if self.turn.active || self.switching {
+            Some(
+                "a turn is running or a switch is under way; re-home once it ends (or interrupt it)",
+            )
+        } else {
+            None
+        };
+        if let Some(why) = refused {
+            self.notice(NoticeLevel::Warn, why);
             return;
         }
-        if self.config.address.is_some() {
+        let (Some(link), Some(reroot)) = (&self.link, self.config.reroot.clone()) else {
             self.notice(
                 NoticeLevel::Warn,
-                "/rehome works on this machine's workspace only; run it there",
+                "not attached to the daemon (see the status bar); /rehome needs it",
+            );
+            return;
+        };
+        let connection = Arc::clone(&link.connection);
+        let endpoint = link.endpoint.clone();
+        let session = link.session.clone();
+        let workspace = scope.project_root.as_path().to_path_buf();
+        let read = realm_home::scan(&root).and_then(|homes| {
+            let (way, reference) = realm_home::parse_way(&argument);
+            let reading =
+                realm_home::read_reference(&homes, reference, way, &workspace, &workspace)?;
+            let current = realm_home::find_in(&homes, &workspace)?.cloned();
+            Ok((homes, reading, current))
+        });
+        let (homes, reading, current) = match read {
+            Ok(read) => read,
+            Err(err) => {
+                self.notice(NoticeLevel::Warn, err.to_string());
+                return;
+            }
+        };
+        let Some(current) = current else {
+            self.notice(
+                NoticeLevel::Warn,
+                format!("no realm serves {} any more", workspace.display()),
+            );
+            return;
+        };
+        let (adopt, destination, replace, side, agent) = match reading {
+            Reading::Push(path) => {
+                let replace = match realm_home::find_in(&homes, &path) {
+                    Ok(found) => found.cloned(),
+                    Err(err) => {
+                        self.notice(NoticeLevel::Warn, err.to_string());
+                        return;
+                    }
+                };
+                (
+                    current,
+                    path,
+                    replace,
+                    Side::Adopt,
+                    AgentChoice::Conversation {
+                        reference: session.to_string(),
+                    },
+                )
+            }
+            Reading::Pull(home) => (
+                home,
+                workspace,
+                Some(current),
+                Side::Replace,
+                AgentChoice::Recent,
+            ),
+        };
+        let plan = match rh::prepare(
+            &root,
+            adopt,
+            destination,
+            replace,
+            &reroot.endpoint_files,
+            Some((&connection, side)),
+        )
+        .await
+        {
+            Ok(plan) => plan,
+            Err(err) => {
+                self.notice(NoticeLevel::Warn, err.to_string());
+                return;
+            }
+        };
+        self.notice(
+            NoticeLevel::Info,
+            format!(
+                "re-homing realm {} to {}: stopping the daemon",
+                plan.adopt().id,
+                plan.workspace().display()
+            ),
+        );
+        // This client's daemon stops first; the link is dropped here, so
+        // its end is not taken for a lost connection.
+        if let Err(why) = rh::stop(&connection).await {
+            self.notice(
+                NoticeLevel::Warn,
+                format!("the re-home did not start: the daemon was not stopped ({why})"),
             );
             return;
         }
-        match crate::bootstrap::realm_home::check_rehome(&root, &reference, &scope.context_root) {
-            Ok(home) => {
-                *self.rehoming.lock() = Some(home.id.clone());
-                self.farewell(
-                    NoticeLevel::Info,
+        self.unlink();
+        self.show(LinkState::Starting);
+        drop(connection);
+        daemon_ended(&self.config.endpoint_files, &endpoint, true, rh::STOP_WAIT).await;
+        let done = match rh::carry_out(plan, rh::STOP_WAIT).await {
+            Ok(done) => done,
+            Err(err) => {
+                // Nothing moved: this workspace's daemon starts again.
+                self.notice(
+                    NoticeLevel::Error,
+                    format!("the re-home failed: {err}; restarting this workspace's daemon"),
+                );
+                self.first_connect = true;
+                self.connect();
+                return;
+            }
+        };
+        let mut args = reroot.args.clone();
+        args.context_root = Some(done.home.manifest.path.clone());
+        let config = match (reroot.configure)(args.clone()).await {
+            Ok(config) => config,
+            Err(err) => {
+                self.notice(
+                    NoticeLevel::Error,
                     format!(
-                        "adopting realm {} for this workspace: stopping the daemon and quitting first",
-                        home.id
+                        "{done}, but this rkat-tui cannot run there: {err}; start rkat-tui in {}",
+                        done.home.manifest.path.display()
                     ),
                 );
-                self.send(Msg::Rehoming);
+                self.show(LinkState::Stopped);
+                self.stopping = true;
+                return;
             }
-            Err(err) => self.notice(NoticeLevel::Warn, err.to_string()),
+        };
+        self.notice(
+            NoticeLevel::Info,
+            format!(
+                "{done}; this rkat-tui works in {} now, starting its daemon there",
+                done.home.manifest.path.display()
+            ),
+        );
+        self.reroot(config, Reroot { args, ..reroot }, agent);
+    }
+
+    /// Drop the link and everything shown from it (a re-home or an agent
+    /// switch makes a new one).
+    fn unlink(&mut self) {
+        self.save_cursor();
+        self.link = None;
+        self.followers.streams_lost();
+        self.orphans.clear();
+        self.discover_at = None;
+        self.session_check_at = None;
+        for id in self.approvals.clear() {
+            self.send(Msg::EscalationResolved(id));
         }
+    }
+
+    /// Work on `config` from now on (a re-home's workspace), asking for
+    /// `agent` on the first attach, which renders its conversation from the
+    /// start: the workbench, the UI and the log follow the workspace and
+    /// its realm.
+    fn reroot(&mut self, mut config: AttachConfig, reroot: Reroot, agent: AgentChoice) {
+        config.reroot = Some(reroot);
+        config.agent = agent;
+        config.start = super::StartAt::Current;
+        let realm = config.scope.realm_root();
+        if realm != self.config.scope.realm_root() {
+            crate::workbench::app::reroute_logging(&realm);
+        }
+        self.bench.cancel_shell();
+        self.bench.reroot(
+            config.scope.clone(),
+            config.user_shell.clone(),
+            config.endpoints.clone(),
+        );
+        self.send(Msg::Rerooted {
+            workspace: config.scope.project_root.clone(),
+            realm,
+            shell_confined: super::app_setup(&config).shell_confined,
+        });
+        self.config = config;
+        self.agent = None;
+        self.mark = None;
+        self.daemon_id_seen = None;
+        self.stopping = false;
+        self.retries = 0;
+        self.first_connect = true;
+        self.show(LinkState::Connecting);
+        self.connect();
     }
 
     /// Say `text` now and again on the terminal after the UI closed.
@@ -2019,7 +2211,7 @@ impl AttachRunner {
                 self.bench.export(path.as_deref(), &text, &session);
             }
             Effect::DaemonStop => self.daemon_stop().await,
-            Effect::Rehome(reference) => self.rehome(reference),
+            Effect::Rehome(reference) => self.rehome(reference).await,
             Effect::DaemonStart => self.daemon_start(),
             Effect::Agents(None) => self.list_agents().await,
             Effect::Audit(lines) => self.show_audit(lines).await,
@@ -2885,16 +3077,8 @@ impl AttachRunner {
             );
             return;
         }
-        self.save_cursor();
-        self.link = None;
+        self.unlink();
         self.mark = None;
-        self.followers.streams_lost();
-        self.orphans.clear();
-        self.discover_at = None;
-        self.session_check_at = None;
-        for id in self.approvals.clear() {
-            self.send(Msg::EscalationResolved(id));
-        }
         self.agent = Some(name);
         self.agent_switch = true;
         self.show(LinkState::Reconnecting);
@@ -4026,6 +4210,7 @@ mod tests {
             ui: crate::config::UiSettings::default(),
             compaction: crate::ui::CompactionPolicy::default(),
             pricing: crate::pricing::PricingSetup::default(),
+            reroot: None,
             scope,
         };
         let (ui_tx, ui_rx) = mpsc::unbounded_channel();

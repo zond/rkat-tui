@@ -175,6 +175,9 @@ pub enum TuiError {
     /// The workspace's realm cannot be found, made or re-homed.
     #[error(transparent)]
     RealmHome(#[from] crate::bootstrap::realm_home::HomeError),
+    /// A re-home was refused or failed.
+    #[error(transparent)]
+    Rehome(#[from] crate::client::rehome::RehomeError),
     /// The shell's confinement plan reaches the realm directory: the
     /// agent's (or the `!`) shell could read or rewrite the sessions, the
     /// approvals and the audit log.
@@ -234,6 +237,7 @@ impl TuiError {
             | Self::Confinement(_)
             | Self::ConfigDirCollision { .. }
             | Self::RealmHome(_)
+            | Self::Rehome(_)
             | Self::RealmExposed { .. }
             | Self::NoDaemonAt { .. }
             | Self::AttachAddress { .. }
