@@ -93,7 +93,7 @@ pub struct Entry {
 /// The conversation log (`conversations.json`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Log {
-    /// Every conversation, in the order they were first seated.
+    /// Every conversation, oldest touched first (see [`Log::touch`]).
     #[serde(default)]
     pub sessions: Vec<Entry>,
 }
@@ -158,12 +158,17 @@ impl Log {
         crate::paths::write_atomic(path, &bytes, crate::paths::FileMode::Private, None)
     }
 
-    /// `session` is `agent`'s current one now: recorded when new, its
-    /// `last_used` moved otherwise.
+    /// `session` is `agent`'s current one now, or was just used: recorded
+    /// when new, else its `last_used` moved and the entry moved last (the
+    /// log's order breaks a tie of seconds).
     pub fn touch(&mut self, session: &SessionId, agent: &str) {
         let at = now();
-        match self.sessions.iter_mut().find(|e| &e.session_id == session) {
-            Some(entry) => entry.last_used = at,
+        match self.sessions.iter().position(|e| &e.session_id == session) {
+            Some(index) => {
+                let mut entry = self.sessions.remove(index);
+                entry.last_used = at;
+                self.sessions.push(entry);
+            }
             None => self.sessions.push(Entry {
                 session_id: session.clone(),
                 agent: agent.to_string(),
@@ -202,11 +207,12 @@ impl Log {
         self.sessions.iter().any(|e| &e.session_id == session)
     }
 
-    /// The entries, last used first.
+    /// The entries, last used first (of two used in the same second, the
+    /// one touched later).
     #[must_use]
     pub fn newest_first(&self) -> Vec<Entry> {
-        let mut entries = self.sessions.clone();
-        entries.sort_by_key(|e| std::cmp::Reverse((e.last_used, e.started_at)));
+        let mut entries: Vec<Entry> = self.sessions.iter().rev().cloned().collect();
+        entries.sort_by_key(|e| std::cmp::Reverse(e.last_used));
         entries
     }
 }
@@ -1087,6 +1093,23 @@ mod tests {
         assert!(back.has(&a) && back.has(&b));
         assert_eq!(back.newest_first()[0].session_id, a);
         assert_eq!(back.agent_of(&b), Some("main-b"));
+        // Used in the same second, the one touched later is the newer:
+        // a turn on `b` after `a` was seated (the CI failure this guards:
+        // `-c` after a restart joined the idle agent seated last).
+        let mut tie = back.clone();
+        for entry in &mut tie.sessions {
+            entry.last_used = 7;
+        }
+        tie.touch(&b, "main-b");
+        for entry in &mut tie.sessions {
+            entry.last_used = 7;
+        }
+        assert_eq!(tie.newest_first()[0].session_id, b);
+        tie.touch(&a, "main-a");
+        for entry in &mut tie.sessions {
+            entry.last_used = 7;
+        }
+        assert_eq!(tie.newest_first()[0].session_id, a);
         let mut forgot = back;
         forgot.forget(&b);
         assert!(!forgot.has(&b) && forgot.has(&a));

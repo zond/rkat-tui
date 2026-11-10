@@ -356,6 +356,10 @@ design.
 
 ### Fixed
 
+- `-c` after the daemon restarted (a re-home, a stop) continues the
+  conversation you typed into last. Before, the conversation log recorded
+  only when a conversation was seated, so with several agents `-c` could
+  join an idle agent seated after the one you worked with.
 - A new agent's attach is answered at once while another agent (or its
   helper) runs a turn. The note telling the busy agent that one joined
   held the seating lock until that turn ended, so the attach waited 30 s

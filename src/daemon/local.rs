@@ -942,9 +942,12 @@ impl Local {
                     "prompt"
                 };
                 self.agents.touch(&agent);
-                // The user's input: the run that takes it is attended.
+                // The user's input: the run that takes it is attended, and
+                // its conversation is the one used last (`-c` after a
+                // restart continues it).
                 if let Some(session) = self.conversations.current(&agent) {
                     self.engine.human_input(&session);
+                    self.conversations.touch(&session, &agent);
                 }
                 if let Some(text) = params.get(field).and_then(content_text)
                     && !text.trim().is_empty()

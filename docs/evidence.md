@@ -5394,3 +5394,24 @@ has the agent write `.rkat/mcp.toml`, `.rkat/tui.toml`,
 allows everything: every call is refused, the classifier is never asked,
 and no file exists afterwards. `sealed_paths_are_denied_before_rules_and_classifier`
 lists the project `tui.toml` and a hook script too.
+
+## `-c` after a restart follows the last turn, not the last seat
+
+Hosted CI failed `a_push_moves_the_session_to_the_new_workspace_without_a_restart`
+twice (runs 42879079732, 42879973942): the fresh `-c` after the push
+showed another, newer session. Cause: two agents worked in the realm (the
+issuer's, and a second client's `AgentChoice::New`), both restored when the
+daemon started in the new place, and `Agents::start` orders restored agents
+by the conversation log's `last_used`, which only a seat or a switch moved
+(`Conversations::touch`), never a turn. The second agent was seated after
+the issuer's, so it counted as the most recent and `-c` joined its empty
+conversation; locally both seats usually fell in one second and the tie
+went the other way. So the product was wrong, not the test: `-c` after any
+restart (not only a re-home) could join the wrong agent.
+
+Fix: a user's prompt or steer for an agent (`Local::observe` on
+`mob/member_send`, `mob/turn_start`) touches its current conversation in
+the log, and `Log::touch` moves the entry last, so a tie of seconds goes to
+the conversation touched later (`Log::newest_first`). Pinned by the tie
+case in `the_log_records_each_session_once_and_lists_the_last_used_first`
+and, end to end on the hosted runner, by the push test.
