@@ -91,7 +91,7 @@ the end state.
 - CLAUDE.md layout table, README, manual, mob-split (now the architecture doc), changelog.
 
 #### P5 Several agents per workspace (done 2026-11-10)
-- A member per agent in the daemon's mob, named `main-<short random id>` (a bare `main` of an older daemon is kept), `/agents` and `/agents <name>`, a member column in the conversations list, a per-agent attach cursor. Approvals, rules and memory stay per workspace. As built: "The member model" below.
+- A member per agent in the daemon's mob, named `main-<short random id>` `/agents` and `/agents <name>`, a member column in the conversations list, a per-agent attach cursor. Approvals, rules and memory stay per workspace. As built: "The member model" below.
 - Decided with the user: always wired (every agent to every other, peer tools, peer messages shown labelled), the persona with the names and the norms, join and leave notes; no flag starts a new agent beside a live daemon, `-c` the most recent, `--resume <ref>` the owner (or a new seat); `/quit` retires the agent, the P2 daemon-stop rule applies to the last client; `/detach` keeps the agent live and wired.
 
 ### Interaction with the review batches
@@ -189,10 +189,8 @@ then sends a second `rkat/attach {"proof"}` keyed the same way under the
 client label, answered with `{"attached": true, …}`. A process that took
 the port of a daemon that is gone (or that answers in the shutdown
 window) cannot produce the daemon's proof, so the client refuses it
-(`ClientError::Unproven`) having sent nothing it could use; a daemon of
-before the handshake refuses an attach without a token, which the client
-reports as `ClientError::DaemonTooOld`. A client of before the handshake
-still attaches with `{"token"}`; its token was sent by then either way.
+(`ClientError::Unproven`) having sent nothing it could use. An attach
+without a nonce (a bare token) is refused.
 
 **The token is the whole access control.** A connection that presents it can
 do everything a TUI can: answer decisions, switch the permission mode, add
@@ -299,8 +297,9 @@ methods on the wire, and `daemon::protocol` types each one for both ends:
 
 | Method | Params | Result |
 |---|---|---|
-| `rkat/attach` | `{"nonce", "start_token"?, "probe"?, "agent"?: {"choice": "new"\|"recent"\|"agent"\|"conversation", "name"?, "reference"?}}`, then `{"proof"}` (an older client: `{"token", …}` alone) | `{"challenge": {"nonce", "proof"}}`, then `{"attached": true, "agent"?, "seated"?, "build"?}` (the first lines only; `build` is the daemon's version and commit; the start token marks the client that launched the daemon, a probe is not counted as a client and is bound to no agent; no `agent` is `recent`) |
-| `rkat/status` | `{}` | `{"workspace", "host"?, "pid", "started_at", "clients", "detached", "owner", "session_id"?, "running", "agent"?, "agents": [{"name", "session_id"?, "running", "clients", "detached"}], "shell"?}` (`shell`: the agent shell's confinement the daemon installed, the engine's `ShellConfinement`, which a client compares with its own flags' before attaching; `session_id` and `running` of the caller's agent, whose `running` is true when its state cannot be read; an agent row's `running` is `null` then; `detached`: a live agent runs without a client) |
+| `rkat/attach` | `{"nonce", "start_token"?, "probe"?, "agent"?: {"choice": "new"\|"recent"\|"agent"\|"conversation", "name"?, "reference"?}}`, then `{"proof"}` | `{"challenge": {"nonce", "proof"}}`, then `{"attached": true, "agent"?, "seated"?, "build"?}` (the first lines only; `build` is the daemon's version and commit; the start token marks the client that launched the daemon, a probe is not counted as a client and is bound to no agent; any other attach must name its `agent` choice) |
+| `rkat/status` | `{}` | `{"workspace", "host"?, "pid", "started_at", "clients", "detached", "owner", "session_id"?, "running", "agent"?, "agents": [{"name", "session_id"?, "running", "clients", "detached"}], "shell"}` (`shell`: the agent shell's confinement the daemon installed, the engine's `ShellConfinement`, which a client compares with its own flags' before attaching; `session_id` and `running` of the caller's agent, whose `running` is true when its state cannot be read; an agent row's `running` is `null` then; `detached`: a live agent runs without a client) |
+| `rkat/holds` | `{}` | `{"held": [String]}` (each conversation with a user turn, or that cannot be read: what a re-home replacing this realm would lose; empty means provably empty) |
 | `rkat/detach` | `{}` | `{}` (the caller's agent is marked detached: a later `/quit` asks) |
 | `rkat/retire` | `{}` | `{"agent", "session_id"?}` (the caller's agent leaves the mob; a running turn is interrupted; its conversation stays) |
 | `rkat/shutdown` | `{"retire"?}` | `{}` (the daemon removes its endpoint file and shuts down; with `retire` every agent retires first) |
@@ -355,10 +354,7 @@ the decision, which for one principal is every attached client. Timeouts and
 interrupts withdraw the decision; `rkat/decision_ended` closes the other
 dialogs. The decisions are the daemon's only record: nothing goes to the
 realm's approval store, and decisions a stopped daemon left open are
-withdrawn at start. The client never polls
-`approval/list`: a daemon whose `initialize` lacks `decision/notice` and
-`decision/decide` is refused at attach with "too old; restart it"
-(`ClientError::DaemonTooOld`).
+withdrawn at start. The client never polls `approval/list`.
 
 **The human's words.** The daemon records every `mob/member_send` and
 `mob/turn_start` for the orchestrator as user input for the classifier. An

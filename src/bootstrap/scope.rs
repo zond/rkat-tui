@@ -38,8 +38,7 @@ pub struct RuntimeScope {
     /// directory). `None` when neither is available.
     pub user_config_root: Option<PathBuf>,
     /// User-global `rkat-tui` directories (`--config-dir`, else
-    /// `<user config root>/.rkat/tui`, or an existing legacy directory; see
-    /// [`GlobalDirs`]). `None` when nothing resolves.
+    /// `<user config root>/.rkat/tui`; see [`GlobalDirs`]). `None` when nothing resolves.
     pub global: Option<GlobalDirs>,
     /// Realm the sessions and config are stored in.
     pub realm_id: String,
