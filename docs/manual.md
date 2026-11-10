@@ -2,11 +2,13 @@
 
 The full description of rkat-tui: how sessions, approvals, the sandbox,
 helpers, rules, endpoints, memory and the keys work. The
-[README](../README.md) is the short version.
+[README](../README.md) is the short version; [`testing.md`](testing.md) is
+the test protocol for working on rkat-tui itself.
 
 ## Contents
 
 - [Overview](#overview)
+- [First run](#first-run)
 - [Sessions](#sessions)
 - [How approval works](#how-approval-works) ([Permission modes](#permission-modes))
 - [Confinement](#confinement)
@@ -16,8 +18,7 @@ helpers, rules, endpoints, memory and the keys work. The
 - [Instructions and memory](#instructions-and-memory) ([Context and compaction](#context-and-compaction))
 - [Keys and commands](#keys-and-commands) ([Task checklist](#task-checklist))
 - [Where things live](#where-things-live)
-- [The workspace daemon (attach mode)](#the-workspace-daemon-attach-mode)
-- [Testing](#testing)
+- [The workspace daemon](#the-workspace-daemon)
 
 ## Overview
 
@@ -25,7 +26,7 @@ An interactive terminal coding harness built on the Meerkat agent engine.
 The agent runs in a per-workspace daemon, `rkat-tui-mob`, as a durable mob
 member on Meerkat's runtime-backed session path (the one `rkat`, REST and
 RPC use); `rkat-tui` is its client, starting it when none runs, and
-`/detach` leaves it working (see [The workspace daemon](#the-workspace-daemon-attach-mode)).
+`/detach` leaves it working (see [The workspace daemon](#the-workspace-daemon)).
 Every tool call goes through an
 **auto-mode** approval model: routine actions run without interruption,
 risky ones are judged by a reasoning-blind classifier, and you are asked only
@@ -46,6 +47,31 @@ rkat-tui --allow 'shell=cargo nextest run*' --set auto.compact=auto
 rkat-tui --no-confinement         # run the shell unsandboxed (see "Confinement")
 ```
 
+## First run
+
+1. **A provider key.** Export one of `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`
+   or `GEMINI_API_KEY` (or configure a key in the realm config, the `rkat`
+   token store, or an endpoint of your own: see
+   [Models, endpoints and cost](#models-endpoints-and-cost)). With none,
+   rkat-tui refuses to start and says which variables it looked for.
+2. **The first prompt.** In your project, run `rkat-tui` and type a
+   request, or pass it on the command line: `rkat-tui "fix the failing
+   test"`. The agent answers in the transcript; tool calls run, are
+   reviewed by the classifier or ask you (see
+   [How approval works](#how-approval-works)); `?` on an empty input lists
+   the keys and `/help` the commands.
+3. **The daemon.** The agent does not run inside the terminal UI: the
+   first `rkat-tui` in a workspace starts that workspace's daemon,
+   `rkat-tui-mob`, in the background and attaches to it, and every later
+   `rkat-tui` there attaches to the same one. The conversation, its turns
+   and its helpers live in the daemon, so they go on while no terminal is
+   attached (see [The workspace daemon](#the-workspace-daemon)).
+4. **Leaving.** `/detach` leaves and keeps the agent working; run
+   `rkat-tui` again to come back to it. `/quit` means you are done: it
+   stops the daemon this `rkat-tui` started (or asks, when someone
+   detached from it or it was started elsewhere), and `rkat-tui -c` later
+   continues the conversation.
+
 ## Sessions
 
 Every session is one of the workspace daemon's conversations: the
@@ -55,7 +81,7 @@ transcript, the model and the cost totals survive restarts: `-c` attaches
 to the conversation the daemon runs, `--resume <ref>` or `/resume [ref]`
 switches it to another (`last`, `~N` for the N-th most recent, an id or
 id prefix; `/resume` or `--resume` alone opens a picker), `/clear`
-(`/new`) starts a fresh one (see [The workspace daemon](#the-workspace-daemon-attach-mode)).
+(`/new`) starts a fresh one (see [The workspace daemon](#the-workspace-daemon)).
 While it runs, `rkat-tui` holds a lease on the realm (surface `rkat-tui`,
 one per process; released on quit), so `rkat realm prune` and realm
 inspection treat the realm as live.
@@ -74,7 +100,7 @@ the editor.
 the same (the first Esc or Ctrl-C after a mouse selection only clears it):
 the daemon stops the agent's run and its running helpers. A message sent to
 the daemon meanwhile is the runtime's: the agent gets it at its next step
-(see the limits under [The workspace daemon](#the-workspace-daemon-attach-mode)).
+(see the limits under [The workspace daemon](#the-workspace-daemon)).
 
 *↑ on an empty editor* takes back the messages the UI still holds (not yet
 sent); a message already sent to the daemon cannot be taken back, and the
@@ -89,13 +115,17 @@ when the stream shows it written at a boundary or the turn ends.
 **Rewind.** `/rewind` (also `/checkpoint`, `/undo`), or Esc twice on an
 empty idle editor, is not available yet: the daemon cannot rewind a
 conversation (the engine refuses a transcript fork of a mob member's
-session, lukacf/meerkat#2126), and it says so. `/new` starts over.
+session; a same-identity rewind is designed upstream, lukacf/meerkat#2126,
+but not yet implemented), and it says so. `/new` starts over.
 
 Ctrl-D on an empty editor quits on a second press within 3 s (the editor
-title asks for it); `/quit` quits at once when idle. While a turn runs or
-messages are pending both warn first; pressing again within 3 s
-interrupts the turn and appends every message the model never received to
-`<workspace>/.rkat/tui/tui_unsent.txt` (the next start says so).
+title asks for it); `/quit` quits at once when idle (whether the daemon
+stops with it: see [Detach and reattach](#the-workspace-daemon)). While a
+turn runs or messages are pending both warn first; pressing again within
+3 s interrupts the turn and appends every message this TUI still held,
+which the daemon never received, to the realm directory's
+`tui_unsent.txt` (`<workspace>/.rkat/tui/` by default; the next start
+says so).
 
 ## How approval works
 
@@ -435,7 +465,7 @@ by its tool access policy), and a deeper spawn is refused.
 
 The agent forks itself with the engine's `fork_off`: the child starts
 from the conversation so far, works on the task it is given, runs behind
-the same gate as every helper and shows as one (see "Attach mode"). The
+the same gate as every helper and shows as one (see [The workspace daemon](#the-workspace-daemon)). The
 TUI's own `fork` tool, which rendered the conversation into a helper's
 prompt for the in-process runner, is gone with that runner.
 
@@ -806,53 +836,65 @@ sent (several run in order); messages typed while a command runs wait for
 it the same way, and ↑ takes a waiting command back into the editor. `!!`
 at the start is sent as text, and `\!` sends a literal `!`.
 
-`?` on an empty input opens a panel with the keys part of `/help` (the
-editor title shows `? keys` while idle and empty); `?`, Esc or any other
-key closes it without being typed, and with text in the input `?` is just
-typed. Enter sends (steers while a turn runs); Ctrl+Enter sends now (while a
-turn runs it interrupts the turn and sends the input next, like Ctrl-X
-Ctrl-S); Shift+Enter, Alt+Enter or Ctrl-J insert a newline, and so does a
-`\` typed right before Enter at the end of a line (the backslash is
-dropped); Esc or Ctrl-C interrupts a running turn and the queued
-messages are sent next (Ctrl-C twice quits when idle); when idle, Esc twice on a draft clears it
-and saves it to the prompt history (↑ brings it back), and on an empty editor asks for
-[`/rewind`](#sessions) (not available yet); ↑ on an empty editor takes held
-messages back, else recalls prompt history (Ctrl-P/Ctrl-N are ↑/↓); Ctrl-R searches history (workspace,
-then global); Ctrl-X Ctrl-S interrupts and sends the input; Ctrl-O shows or
-hides detail (the last reasoning block and the last tool output together);
-Ctrl-T shows or hides the [task checklist](#task-checklist);
-Ctrl+↑/↓ select a helper in the panel under the
-input and Enter on an empty input opens its full view (Esc returns);
-PgUp/PgDn and Shift+↑/↓ scroll; Home/End jump when the editor is empty;
-Ctrl-L clears the screen and redraws it; Shift+Tab cycles the permission
-mode (see [Permission modes](#permission-modes)); Alt+P opens the model
-picker (as `/model`) and leaves the draft in the editor; Ctrl-Z suspends
-rkat-tui to the shell (on Unix: it gives the terminal back and stops with
-SIGTSTP; `fg` resumes it and repaints the screen, while the session's work
-was paused with the process); Ctrl-G or Ctrl-X Ctrl-E opens the input
-in your editor (`$VISUAL`, else `$EDITOR`, else `vi`, as `/memory` does)
-through a private temporary file in the realm directory's `drafts/`, and the
-edited text replaces the input when the editor exits successfully (trailing
-newline dropped, Ctrl-_ restores the old draft); a failed run keeps the
-draft with a notice. It works while a turn runs; the session goes on
-meanwhile and its output appears when the editor closes.
-Long lines wrap at the width of the input field (which grows up to six
-rows, then scrolls to the cursor), and ↑/↓ move by wrapped rows before
-reaching history.
+The keys, as `?` on an empty input lists them (the keys part of `/help`;
+the table below is the same list, which the source keeps in `KEYS_HELP`
+in `src/ui/commands.rs`, pinned to the keymap by a test):
 
-The editor has the readline keys: Ctrl-A/E and Alt+B/F (or Ctrl/Alt+←/→)
-move; Ctrl-K kills to the line end (at a line end, the newline), Ctrl-U to
-the line start, Ctrl-W (or Ctrl/Alt+Backspace) the word before, Alt+D the
-word after. Killed text goes onto a kill ring of 16 entries (consecutive
-kills join one entry); Ctrl-Y yanks the newest and Alt+Y right after a yank
-replaces it with the next older one. Ctrl-_ (Ctrl-7 or Ctrl-Shift-- in
-some terminals) undoes input edits: a word of typing, a run of deletes, a
-kill, a yank, a paste or a clear (Ctrl-C included) at a time, up to 64
-steps; sending a prompt starts afresh. Ctrl-S stashes the input (puts
-it aside and clears the editor) and, on an empty editor, brings the stash
-back, so a quick question can go first; stashing over a stash moves the
-older one to the prompt history. Ctrl-S right after Ctrl-X still completes
-the send-now chord.
+| Key | What it does |
+|---|---|
+| `?` (empty input) | Show the keys; any key closes them (with text, `?` is typed). The idle, empty editor title says `? keys` |
+| Enter | Send; while the agent works, queue the message and deliver it at the next step (a steer, see [Sessions](#sessions)) |
+| Ctrl+Enter | Send now: interrupt the turn and send the input next (sends normally when idle; the same as Ctrl-X Ctrl-S) |
+| Shift+Enter, Alt+Enter, Ctrl+J | Insert a newline; so does a `\` typed right before Enter at a line end (the backslash is dropped) |
+| Ctrl-C | Interrupt the turn (as Esc), else clear the input, else press twice to quit |
+| Esc | Interrupt the turn; queued messages are sent next. The first Esc or Ctrl-C after a mouse selection only clears it |
+| Esc Esc (idle, with text) | Clear the input and save it to the prompt history (↑ recalls it) |
+| Esc Esc (idle, empty input) | `/rewind`, which is not available yet and says why |
+| Up (empty input) | Take queued messages back into the editor |
+| Ctrl-D | On an empty input, quit on a second press within 3 s (see [Sessions](#sessions) and [Detach and reattach](#the-workspace-daemon)); with text, delete forward |
+| Ctrl-O | Show or hide detail: the last reasoning block and the output of the last tool call (a click toggles one tool) |
+| Ctrl-T | Show or hide the [task checklist](#task-checklist) |
+| Ctrl+Up/Down | Select a helper in the panel under the input (newest first); Enter on an empty input opens its full view (Esc returns, PgUp/PgDn scroll it) |
+| Ctrl-R | Search the prompt history, the workspace's then the global one (Ctrl-R again: older; Enter accepts; Esc cancels) |
+| Ctrl-X Ctrl-S | Interrupt and send the input (sends normally when idle) |
+| Ctrl-G, Ctrl-X Ctrl-E | Edit the input in `$VISUAL`, else `$EDITOR`, else `vi` (also while a turn runs) |
+| Up/Down, Ctrl-P/N | Move between lines (wrapped rows first), then recall prompt history |
+| Ctrl-A/E, Alt+B/F | Line start/end, word left/right (Ctrl/Alt+Left/Right too) |
+| Ctrl-K/U, Ctrl-W, Alt+D | Kill to the line end (at a line end, the newline) or start, the word before or after; Ctrl/Alt+Backspace = Ctrl-W |
+| Ctrl-Y, Alt+Y | Yank the last killed text; Alt+Y right after a yank cycles to older kills |
+| Ctrl-S | Stash the input (put it aside, clear); on an empty input, restore the stash (Ctrl-X Ctrl-S still sends now) |
+| Ctrl-_ | Undo the last input edit (Ctrl-7 or Ctrl-Shift-- in some terminals) |
+| PgUp/PgDn, Shift+Up/Down | Scroll the transcript |
+| Ctrl-L | Clear the screen and redraw it |
+| Ctrl-Z | Suspend to the shell (Unix; `fg` resumes) |
+| Shift+Tab | Cycle the permission mode: manual → accept edits → plan → auto (see [Permission modes](#permission-modes)) |
+| Alt+P | Pick a model (as `/model`) without clearing the input |
+| `/` (one-line input) | The command menu (above) |
+| `!` (first character) | Shell mode (above) |
+| `@` (ending a word) | The path menu (above) |
+| Home/End | Scroll to the top or bottom when the input is empty (Ctrl+Home/End always) |
+
+In the approval prompt: `1` or `y` allows once, `2` or `a` allows and adds
+the rule the row shows, `3`, `n` or Esc denies (type what the agent should
+do instead and Enter sends it with the denial), Up/Down, `j`/`k` and Enter
+move and pick, and `s` stops the turn (Ctrl-C stops every open prompt).
+
+Details the table leaves out:
+
+- **The editor.** The input wraps at its width and grows up to six rows,
+  then scrolls to the cursor. Killed text goes onto a kill ring of 16
+  entries (consecutive kills join one entry). Undo takes a word of typing,
+  a run of deletes, a kill, a yank, a paste or a clear (Ctrl-C included)
+  at a time, up to 64 steps; sending a prompt starts afresh. Stashing over
+  a stash moves the older one to the prompt history.
+- **The external editor** (Ctrl-G) edits a private temporary file in the
+  realm directory's `drafts/`; the edited text replaces the input when the
+  editor exits successfully (trailing newline dropped; Ctrl-_ restores the
+  old draft), and a failed run keeps the draft with a notice. The session
+  goes on meanwhile and its output appears when the editor closes.
+- **Ctrl-Z** gives the terminal back and stops rkat-tui with SIGTSTP; `fg`
+  repaints the screen. The agent runs in the daemon, so its work goes on
+  while the TUI is stopped.
 
 The mouse is captured by default: the wheel scrolls and a click expands or
 collapses a tool call's output (Ctrl-O for the latest). Dragging selects text
@@ -881,8 +923,7 @@ has some. The list is the engine's own task store (the realm's `tasks.db`,
 scoped to the session), read when a session opens and after each task call,
 so a resumed session gets its list back and a new one starts empty. Ctrl-T
 saves the choice as `[ui] checklist = "shown"` (or `"hidden"`, the default)
-in the realm `tui.toml`. In attach mode the daemon reads the list and saves the
-choice, the same way.
+in the realm `tui.toml`; the daemon reads the list and saves the choice.
 
 ## Where things live
 
@@ -922,7 +963,7 @@ naming both, so pass `--config-dir <other dir>` there. The price-list cache live
 in the user cache directory (`<config-dir>/cache` when `--config-dir` is
 given).
 
-## The workspace daemon (attach mode)
+## The workspace daemon
 
 `rkat-tui` runs the agent in the workspace's `rkat-tui-mob` daemon and is
 its client: with no daemon running for the workspace it starts one, with
@@ -1172,10 +1213,12 @@ application tool policy: the daemon refuses to rebuild the agent without it.
 **`!` commands** run in this TUI's process, confined as the agent's shell
 is, and their output goes to the agent's context.
 
-**Quitting** detaches: the agent's turn goes on in the daemon, and so do
-the messages you typed mid-turn that the daemon took. Messages this TUI
-still held (queued, not yet sent) are saved to `<realm>/tui_unsent.txt`,
-and the next start says so.
+**Leaving mid-turn.** When the TUI leaves and the daemon keeps running
+(`/detach`, or a `/quit` that detaches), the agent's turn goes on in the
+daemon, and so do the messages you typed mid-turn that the daemon took. A
+`/quit` that stops the daemon interrupts the turn. Either way, messages
+this TUI still held (queued, not yet sent) are saved to
+`<realm>/tui_unsent.txt`, and the next start says so.
 
 **`-c` and `--resume` at start.** `-c` (and `--resume last`) attaches to
 the daemon's current conversation: with a daemon, the most recent
@@ -1196,8 +1239,8 @@ saves the session shown. `last` and `~N` name daemon conversations only.
 
 - `/rewind` is not offered: the engine refuses a transcript fork of a mob
   member's session, and its member forks seat the copy under a new
-  identity; a same-identity rewind is with the engine's maintainers as a
-  design note.
+  identity; the design of a same-identity rewind is merged upstream
+  (lukacf/meerkat#2126), its implementation not scheduled yet.
 - Up on an empty input does not take back a message already sent to the
   daemon: the engine's `mob/member_send` answers no input id to cancel it
   by (the same engine ask as the steer attribution below). The agent gets
@@ -1223,8 +1266,3 @@ saves the session shown. `last` and `~N` name daemon conversations only.
 - A session the removed in-process runner created cannot be continued:
   the engine seats the daemon's agent only on sessions it ran. `/resume`
   shows it view only.
-
-## Testing
-
-[`testing.md`](testing.md) is the test protocol: the gate CI runs, how to scope
-a run, where each kind of test lives, the live lanes and a manual smoke list.
