@@ -27,6 +27,14 @@ pub enum Notice {
         /// Project rules file.
         path: PathBuf,
     },
+    /// The project-level file named a `classifier_model`; only the user's
+    /// own layers pick the model that reviews the agent's actions.
+    ProjectClassifierModelIgnored {
+        /// Project rules file.
+        path: PathBuf,
+        /// The model it named.
+        model: String,
+    },
     /// The realm rules file is not trusted (see [`crate::bootstrap::trust`]):
     /// only its deny rules apply.
     UntrustedRealmDenyOnly {
@@ -137,6 +145,11 @@ impl fmt::Display for Notice {
             Self::ProjectTrustIgnored { path } => write!(
                 f,
                 "ignored trust_project_builds=true in {}: a project file can only lower trust",
+                path.display()
+            ),
+            Self::ProjectClassifierModelIgnored { path, model } => write!(
+                f,
+                "ignored classifier_model={model:?} in {}: only your own configuration picks the classifier",
                 path.display()
             ),
             Self::UntrustedRealmDenyOnly {
@@ -327,7 +340,8 @@ pub fn load_layered(
 /// The project layer contributes deny rules and `[auto]` settings the
 /// command line did not set; its endpoints and `[confinement]` grants are
 /// ignored with a notice; it can never turn
-/// `trust_project_builds` or `classifier_tools` on, but may turn them off.
+/// `trust_project_builds` or `classifier_tools` on, but may turn them off,
+/// and never names the `classifier_model`.
 ///
 /// # Errors
 ///
@@ -538,7 +552,17 @@ pub fn load_layered_with(
     if let Some(mut auto) = project.auto {
         if auto.trust_project_builds == Some(true) {
             auto.trust_project_builds = None;
-            notices.push(Notice::ProjectTrustIgnored { path: project_path });
+            notices.push(Notice::ProjectTrustIgnored {
+                path: project_path.clone(),
+            });
+        }
+        // Nor the model that reviews the agent's actions: a cloned
+        // repository could pick one that is cheap to talk past.
+        if let Some(model) = auto.classifier_model.take() {
+            notices.push(Notice::ProjectClassifierModelIgnored {
+                path: project_path,
+                model,
+            });
         }
         // The permission mode is the user's choice: a cloned repository
         // cannot pick one (`/mode` writes the realm file, never this one),

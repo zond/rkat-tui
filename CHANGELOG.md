@@ -9,6 +9,10 @@ design.
 
 ### Security
 
+- A project's `.rkat/tui.toml` can no longer pick the classifier's model:
+  its `auto.classifier_model` is ignored with a notice, so a cloned
+  repository cannot hand the review of the agent's actions to a model
+  that is cheap to talk past.
 - The approval dialog's Ctrl+O view of the whole arguments scrolls:
   PgUp/PgDn, Home and End reach every line on an ordinary terminal, and a
   line says which lines are shown. Before, it showed what fit and said the

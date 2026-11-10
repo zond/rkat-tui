@@ -489,7 +489,9 @@ Rules live in TOML, layered (later settings win): the user-global
 `<config-dir>/tui.toml`, then `<realm>/tui.toml` (written by `/permissions add`),
 then the command line, then `<project>/.rkat/tui.toml`. The project file may
 only add deny rules and `[auto]` settings; its `[endpoints]`, `[pricing]`,
-`[thinking]` and `[confinement]` are ignored with a notice. Broad allow rules (blanket shell, interpreters, package-manager run
+`[thinking]` and `[confinement]` are ignored with a notice, and so is its
+`auto.classifier_model` (the model that reviews the agent's actions is
+yours to pick). Broad allow rules (blanket shell, interpreters, package-manager run
 commands) are dropped when auto mode starts.
 
 **Trusting the realm file.** The realm `tui.toml` lives in the workspace and
@@ -537,7 +539,7 @@ are never written to a file.
 |---|---|---|
 | `auto.mode` (`"default"`/`"accept-edits"`/`"plan"`/`"auto"`; `/mode` writes it to the realm file) | `--set auto.mode=plan` | `"auto"` |
 | `auto.enabled` (the older form: `false` is `mode = "default"`) | `--no-auto` (= `false`) | `true` |
-| `auto.classifier_model` | `--classifier-model <id>` | per-dialect default of the start-up endpoint |
+| `auto.classifier_model` (not from a project file) | `--classifier-model <id>` | per-dialect default of the start-up endpoint |
 | `auto.trust_project_builds` | `--trust-project-builds` / `--no-trust-project-builds` | `false` |
 | `auto.compact` (`"warn"`/`"auto"`) | `--auto-compact` / `--no-auto-compact` | `"warn"` |
 | `auto.compact_warn_percent` | `--set auto.compact_warn_percent=N` | `75` |

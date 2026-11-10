@@ -428,6 +428,30 @@ fn trust_defaults_off_and_project_can_only_lower_it() {
     );
 }
 
+/// A4 of the security review: a project file cannot pick the classifier's
+/// model; the user's layers keep theirs and the default stays the default.
+#[test]
+fn a_project_file_cannot_pick_the_classifier_model() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (realm, project) = (tmp.path().join("realm"), tmp.path().join("p"));
+    write(&realm, "");
+    write(&project, "[auto]\nclassifier_model = \"tiny-model\"\n");
+    let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+    assert_eq!(layered.settings.classifier_model, None);
+    assert!(
+        matches!(&layered.notices[..], [Notice::ProjectClassifierModelIgnored { model, .. }] if model == "tiny-model"),
+        "{:?}",
+        layered.notices
+    );
+    assert!(layered.notices[0].to_string().contains("classifier_model"));
+    write(&realm, "[auto]\nclassifier_model = \"realm-model\"\n");
+    let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+    assert_eq!(
+        layered.settings.classifier_model.as_deref(),
+        Some("realm-model")
+    );
+}
+
 #[test]
 fn untrusted_realm_contributes_only_deny_rules() {
     let tmp = tempfile::tempdir().unwrap();
