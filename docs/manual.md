@@ -1118,8 +1118,9 @@ workspace's ordinary endpoint file, and a plain `rkat-tui` in that
 workspace never attaches to a throwaway realm; `--list` names the realm
 after the workspace when it is not the workspace's own. The directory is created with mode 0700, the file with
 0600, and the file is removed when the daemon shuts down. The TUI reads
-it, connects, and presents the token with `rkat/attach` before anything
-else; then it speaks Meerkat's own JSON-RPC methods. A file whose address
+it, connects, and attaches with `rkat/attach` before anything else (the
+daemon proves it holds the token first, then the TUI does; the token
+itself is never sent); then it speaks Meerkat's own JSON-RPC methods. A file whose address
 no longer accepts is stale. `rkat-tui-mob --endpoint-file <path>` writes it
 elsewhere.
 
@@ -1135,7 +1136,8 @@ TUI and `--list` look in both places, in that order. The temp dir is never
 used: the shell is granted it. When neither place is safe (or
 `XDG_RUNTIME_DIR` is unset, or `--endpoint-file` names a granted path) the
 daemon refuses to start; point `XDG_STATE_HOME` or `--endpoint-file`
-elsewhere then. With
+elsewhere then. The agent's file tools never read either place (they are
+sealed for reads too, without asking the classifier). With
 `--no-confinement` the agent's shell runs as you and can read the file like
 anything else of yours.
 

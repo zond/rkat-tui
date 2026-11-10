@@ -200,14 +200,41 @@ rules. Nothing on a loopback TCP connection proves which program sent it, so
 the daemon does not try to tell a TUI from any other holder of the token.
 The token must therefore stay out of the agent's reach: the agent's confined
 shell is granted the workspace (`.rkat` included; the Linux backend has no
-deny lists), the temp dir, the Cargo home and the user cache dir, and
-loopback is reachable from it, so the file lives in the user's state
-directory, which none of these hold. The daemon refuses to start when its
-confinement plan grants the file's directory after all
+deny lists), the temp dir, the Cargo home's `registry/` and `git/` (the
+rest of it read only, entry by entry, its credentials not at all) and the
+user cache dir, and loopback is reachable from it, so the file lives in
+the user's state directory, which none of these hold. The daemon refuses
+to start when its confinement plan grants the file's directory after all
 (`DaemonError::EndpointExposed`: a workspace that contains the state
 directory, an `XDG_STATE_HOME` in the temp dir, an extra
-`--confinement-read`). With `--no-confinement` the shell is the trusted host
-and can read the file like any other process of the user.
+`--confinement-read`). The agent's file tools (and the classifier's) never
+read the endpoint directories either: they are secret roots of the
+project root, sealed at tier 0 for reads, searches and writes
+(`ProjectRoot::with_secret_roots`). With `--no-confinement` the shell is
+the trusted host and can read the file like any other process of the
+user.
+
+A client compares the agent shell's confinement the daemon reports
+(`rkat/status` `shell`) with what its own flags give before attaching,
+and refuses a daemon whose shell may do more (`ClientError::ShellWider`).
+
+What the confined shell can still write, until engine ask 8 lands: on
+Linux the whole workspace, `.rkat/` and `.git/` included (hooks, the
+workspace realm). Nothing rkat-tui reads back from there is trusted on
+sight: the workspace realm's `config.toml` never sets the confinement and,
+unless its digest is the host trust record's, names no endpoint, key
+source, skill source, MCP server or hook; the realm `tui.toml` only denies
+unless trusted by digest; `tui_helpers.json` is not read unless it is what
+the daemon last wrote; a realm directory git tracks refuses the start.
+The engine's own realm files (the sessions database, whose human-authored
+messages seed the classifier on resume, the approval and custody stores)
+have no such guard, and `.git/hooks` run unconfined by git later: both
+wait on the read-only bind.
+
+On the approval side: the classifier sees the action it reviews whole or
+does not decide it (over 48 KiB the human is asked, "too large to
+review"), and records as the user's words only what was typed: an `@`
+mention's file content is a `[context]` line naming the file.
 
 The token grants access, not identity: every decision is recorded as the
 daemon's one principal (`[daemon] principal` in the user's `tui.toml`,
