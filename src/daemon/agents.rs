@@ -213,6 +213,12 @@ pub struct Agents {
     engine: Arc<ApprovalEngine>,
     origins: Arc<DaemonToolOrigins>,
     lifecycle: Arc<Lifecycle>,
+    /// The agents' schedules (a run one fired is attributed to it).
+    schedules: Arc<super::schedules::Schedules>,
+    /// Where a fired run is announced to the clients.
+    decisions: Arc<super::decisions::Decisions>,
+    /// The audit log, when it could be opened.
+    audit: Option<Arc<super::audit::AuditLog>>,
     table: parking_lot::Mutex<BTreeMap<String, Agent>>,
     /// One seat or retire at a time: two `new` binds seat two agents, a
     /// `recent` bind never sees half of one.
@@ -241,6 +247,12 @@ pub struct AgentsParts {
     pub origins: Arc<DaemonToolOrigins>,
     /// The daemon's lifecycle (a shutdown leaves no agent detached).
     pub lifecycle: Arc<Lifecycle>,
+    /// The agents' schedules.
+    pub schedules: Arc<super::schedules::Schedules>,
+    /// The consent surface (its broadcast announces fired runs).
+    pub decisions: Arc<super::decisions::Decisions>,
+    /// The audit log, when it could be opened.
+    pub audit: Option<Arc<super::audit::AuditLog>>,
 }
 
 impl Agents {
@@ -253,6 +265,9 @@ impl Agents {
             engine,
             origins,
             lifecycle,
+            schedules,
+            decisions,
+            audit,
         } = parts;
         Arc::new(Self {
             state,
@@ -260,10 +275,81 @@ impl Agents {
             engine,
             origins,
             lifecycle,
+            schedules,
+            decisions,
+            audit,
             table: parking_lot::Mutex::new(BTreeMap::new()),
             seating: tokio::sync::Mutex::new(()),
             clock: AtomicU64::new(0),
         })
+    }
+
+    /// A run of `name` that no client's input started began with input
+    /// `prompt`: when a schedule of the agent fired it (on the evidence
+    /// [`super::schedules::Schedules::attribute`] takes), the audit log
+    /// records the trigger and the agent's clients are told
+    /// ([`super::protocol::TRIGGERED`]).
+    pub async fn unprompted_run(
+        &self,
+        name: &str,
+        session: &SessionId,
+        run: &meerkat_core::RunId,
+        prompt: &str,
+    ) {
+        let Some(fired) = self.schedules.attribute(name, run, prompt).await else {
+            return;
+        };
+        let label = format!("scheduled: {}", fired.name);
+        tracing::info!(agent = %name, %run, schedule = %fired.schedule_id, "a schedule fired the agent's run");
+        self.announce(
+            name,
+            session,
+            run,
+            label,
+            prompt,
+            &format!("schedule {} ({})", fired.name, fired.schedule_id),
+        );
+    }
+
+    /// Record and announce a run `trigger` started (`label` as the clients
+    /// show it, `detail` as the audit log names it).
+    pub fn announce(
+        &self,
+        name: &str,
+        session: &SessionId,
+        run: &meerkat_core::RunId,
+        label: String,
+        prompt: &str,
+        detail: &str,
+    ) {
+        if let Some(audit) = &self.audit {
+            let mut line =
+                super::audit::Line::event("run_triggered", detail.to_string()).of_agent(name);
+            line.session = Some(session.to_string());
+            line.run = Some(run.to_string());
+            audit.write(&line);
+        }
+        self.decisions.broadcast(
+            super::protocol::TRIGGERED,
+            &super::protocol::TriggeredNote {
+                agent: name.to_string(),
+                session_id: session.clone(),
+                label,
+                prompt: prompt.to_string(),
+            },
+        );
+    }
+
+    /// A turn of `run` used `usage` on `model`: counted to the schedule
+    /// that fired the run, if one did.
+    pub fn run_usage(&self, run: &meerkat_core::RunId, model: &str, usage: &meerkat_core::Usage) {
+        self.schedules.record_usage(run, model, usage);
+    }
+
+    /// The agents' schedules.
+    #[must_use]
+    pub fn schedules(&self) -> &Arc<super::schedules::Schedules> {
+        &self.schedules
     }
 
     fn tick(&self) -> u64 {
@@ -839,10 +925,12 @@ impl Agents {
             .map(|(name, agent)| (name.clone(), agent.clients, agent.detached))
             .collect();
         let mut rows = Vec::with_capacity(snapshot.len());
+        let schedules = self.schedules.counts().await;
         for (name, clients, detached) in snapshot {
             rows.push(AgentRow {
                 session_id: self.conversations.current(&name),
                 running: self.conversations.running(&name).await.reported(),
+                schedules: schedules.get(&name).copied().unwrap_or(0),
                 name,
                 clients,
                 detached,

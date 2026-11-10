@@ -425,6 +425,31 @@ impl Local {
                 let agent = self.agent_of(&caller)?;
                 answer(self.retire(&agent).await?)
             }
+            protocol::SCHEDULES => {
+                let protocol::SchedulesParams { action } = protocol::params(params)?;
+                let agent = self.agent_of(&caller)?;
+                let schedules = self.agents.schedules();
+                match action {
+                    None => answer(protocol::ScheduleList {
+                        schedules: schedules.rows(&agent).await.map_err(|err| {
+                            Refusal::new(protocol::INTERNAL_ERROR, err.to_string())
+                        })?,
+                    }),
+                    Some((op, name)) => answer(match schedules.act(&agent, op, &name).await {
+                        Ok(text) => {
+                            self.audit(
+                                super::audit::Line::event("schedule_changed", text.clone())
+                                    .of_agent(&agent),
+                            );
+                            RuleOutcome { ok: true, text }
+                        }
+                        Err(err) => RuleOutcome {
+                            ok: false,
+                            text: err.to_string(),
+                        },
+                    }),
+                }
+            }
             GET_MODE => answer(ModeStatus::of(&self.engine)),
             REPORT => answer(self.report()),
             SET_MODE => {
@@ -641,11 +666,20 @@ impl Local {
             self.engine.stop(session);
             self.desk.stop(session);
         }
+        // Nothing wakes a retired agent: its schedules go first, so none
+        // fires between the retire and their deletion.
+        let schedules_deleted = self.agents.schedules().delete_all(agent).await;
         let retired = self
             .agents
             .retire(agent)
             .await
             .map_err(|err| Refusal::new(SWITCH_FAILED, err.to_string()))?;
+        if !schedules_deleted.is_empty() {
+            self.audit(
+                super::audit::Line::event("schedules_deleted", schedules_deleted.join(", "))
+                    .of_agent(agent),
+            );
+        }
         self.plan_noted.lock().await.remove(agent);
         self.audit(
             super::audit::Line::event(
@@ -659,6 +693,7 @@ impl Local {
         Ok(Retired {
             agent: agent.to_string(),
             session_id: retired.or(session),
+            schedules_deleted,
         })
     }
 

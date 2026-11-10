@@ -115,6 +115,9 @@ pub enum Command {
     /// `/audit [n]`: the last `n` lines of the daemon's audit log for this
     /// agent.
     Audit(Option<usize>),
+    /// `/schedules [pause|resume|delete <name>]`: this agent's schedules,
+    /// or the user's own action on one.
+    Schedules(Option<(crate::daemon::protocol::ScheduleOp, String)>),
     /// `/clear`: clear the transcript and start a new session.
     Clear,
     /// `/resume [ref]`.
@@ -314,6 +317,38 @@ pub static COMMANDS: &[CommandSpec] = &[
             [] => Some(Command::Audit(None)),
             [n] => n.parse().ok().map(|n| Command::Audit(Some(n))),
             _ => None,
+        },
+    },
+    CommandSpec {
+        name: "schedules",
+        aliases: &[],
+        usage: "[pause|resume|delete <name>]",
+        summary: "this agent's schedules, or pause, resume or delete one",
+        help: &[
+            (
+                "/schedules",
+                "this agent's schedules (timers the agent set with\nmeerkat_schedule_create): name, when, next occurrence, state,\nhow often it fired and what its runs cost",
+            ),
+            (
+                "/schedules pause|resume|delete <name>",
+                "your own action on one of them (by name or id); no approval\nis asked, it is yours",
+            ),
+        ],
+        parse: |rest| {
+            use crate::daemon::protocol::ScheduleOp;
+            match words(rest).as_slice() {
+                [] => Some(Command::Schedules(None)),
+                [op, name] => {
+                    let op = match *op {
+                        "pause" => ScheduleOp::Pause,
+                        "resume" => ScheduleOp::Resume,
+                        "delete" => ScheduleOp::Delete,
+                        _ => return None,
+                    };
+                    Some(Command::Schedules(Some((op, (*name).to_string()))))
+                }
+                _ => None,
+            }
         },
     },
     CommandSpec {
@@ -1003,10 +1038,11 @@ mod tests {
             "agents",
             "audit",
             "rehome",
+            "schedules",
         ] {
             assert!(super::spec(name).is_some(), "/{name} has no spec");
         }
-        assert_eq!(seen.len(), 34);
+        assert_eq!(seen.len(), 35);
         // `/help`'s "Commands:" rows come from the specs, in their order.
         let commands = help_text().split_once("Keys:").unwrap().0;
         let mut at = 0;

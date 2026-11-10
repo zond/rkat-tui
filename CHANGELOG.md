@@ -178,6 +178,14 @@ design.
 
 ### Added
 
+- Schedules: an agent can set one-shot and recurring timers on its own
+  session with the engine's schedule tools (creating or changing one is
+  reviewed). The daemon fires them; the transcript labels the run
+  `⏰ scheduled: <name>`; `/schedules` lists this agent's (when, next,
+  state, times fired, cost) and pauses, resumes or deletes one; `--list`
+  counts them per agent. A fired run is unattended while nobody is
+  attached to the agent; `/quit` deletes the agent's schedules, `/detach`
+  keeps them.
 - `api_style = "chat_completions"` in `[endpoints.<name>]` (and
   `--endpoint-def …,api_style=chat_completions`) speaks Chat Completions to
   an OpenAI-dialect proxy or server without the Responses API; the default

@@ -88,6 +88,14 @@ pub const FILE_DIFF: &str = "rkat/file_diff";
 /// (`/quit` decides from it, `--list` and `/agents` print it).
 pub const STATUS: &str = "rkat/status";
 
+/// [`SchedulesParams`] → [`ScheduleList`] (`list`) or
+/// [`crate::approval::desk::RuleOutcome`] (an action): the caller's agent's
+/// schedules (`/schedules`), and the user's own pause, resume and delete.
+pub const SCHEDULES: &str = "rkat/schedules";
+/// The notification that a run no user started was fired by a schedule
+/// (or a file watch): [`TriggeredNote`].
+pub const TRIGGERED: &str = "rkat/triggered";
+
 /// What the realm holds that a re-home replacing it would lose
 /// ([`Holds`]).
 pub const HOLDS: &str = "rkat/holds";
@@ -362,6 +370,9 @@ pub struct AgentRow {
     pub clients: usize,
     /// It was left running without a client (`/detach`, a hangup).
     pub detached: bool,
+    /// How many live schedules target it.
+    #[serde(default)]
+    pub schedules: usize,
 }
 
 impl AgentRow {
@@ -482,6 +493,70 @@ pub struct Retired {
     /// The conversation it ran as (it stays in the conversation list).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<SessionId>,
+    /// The schedules deleted with it (by name).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub schedules_deleted: Vec<String>,
+}
+
+/// A user's action on one schedule (`/schedules pause|resume|delete`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduleOp {
+    /// Fire nothing until resumed.
+    Pause,
+    /// Fire again.
+    Resume,
+    /// Fire never again.
+    Delete,
+}
+
+/// [`SCHEDULES`]'s parameters: no action lists.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SchedulesParams {
+    /// The action, and the schedule's name or id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<(ScheduleOp, String)>,
+}
+
+/// One schedule as `/schedules` shows it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScheduleRow {
+    /// The engine's id.
+    pub id: String,
+    /// Its name (else the id).
+    pub name: String,
+    /// When it fires, in a line.
+    pub expression: String,
+    /// The next occurrence due, when one is planned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next: Option<String>,
+    /// `active` or `paused`.
+    pub state: String,
+    /// How many times it fired (occurrences delivered to the agent).
+    pub fired: usize,
+    /// The tokens its runs used, by model, as this daemon attributed them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<crate::ui::SessionCost>,
+}
+
+/// [`SCHEDULES`]'s list.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScheduleList {
+    /// The caller's agent's live schedules.
+    pub schedules: Vec<ScheduleRow>,
+}
+
+/// [`TRIGGERED`]'s parameters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TriggeredNote {
+    /// The agent whose run it is.
+    pub agent: String,
+    /// The run's session.
+    pub session_id: SessionId,
+    /// What fired it: `scheduled: <name>` or `files changed: <paths>`.
+    pub label: String,
+    /// The run's input.
+    pub prompt: String,
 }
 
 /// A file and its trust in words (`absent`, `trusted`, `not trusted: …`).

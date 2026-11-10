@@ -722,7 +722,10 @@ fn build_factory(
         .builtins(true)
         .shell(true)
         .memory(toggles.memory)
-        .mob(true);
+        .mob(true)
+        // The engine's schedule tools (`meerkat_schedule_*`); the firing
+        // host is the runtime's (`crate::daemon::engine`).
+        .schedule(true);
     if let Some(user_root) = &scope.user_config_root {
         factory = factory.user_config_root(user_root.clone());
     }

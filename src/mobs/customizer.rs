@@ -256,6 +256,9 @@ fn shape_root(
         spec.external_tools = Some((root.tools)(&key.member));
     }
     inherit_shell_env(spec, shell_env);
+    // The schedule tools: also for an agent whose mob was created before
+    // its profile named them (the mob keeps its creation definition).
+    spec.tool_category_overrides.schedule = meerkat_core::ToolCategoryOverride::Enable;
     if fresh {
         spec.additional_instructions
             .get_or_insert_with(Vec::new)
@@ -527,6 +530,9 @@ fn drop_mob_tools(spec: &mut SpawnMemberSpec) {
         }
     }
     overrides.mob = ToolCategoryOverride::Disable;
+    // A helper schedules nothing: a schedule targets an agent's own
+    // session and fires later on its own, which is the agent's to decide.
+    overrides.schedule = ToolCategoryOverride::Disable;
 }
 
 /// A refused helper, as the mob reports it.

@@ -286,6 +286,14 @@ pub enum Block {
         /// the live events do not carry).
         text: String,
     },
+    /// A run nobody typed: a schedule fired it, or a file watch
+    /// (`scheduled: <name>`, `files changed: …`), with its input.
+    Triggered {
+        /// What fired it.
+        label: String,
+        /// The run's input.
+        text: String,
+    },
     /// A command the user ran with `!`, and its output.
     Shell {
         /// The command line.
@@ -487,6 +495,10 @@ impl Transcript {
                     let _ = writeln!(out, "## message from agent {from}");
                     body(&mut out, text);
                 }
+                Block::Triggered { label, text } => {
+                    let _ = writeln!(out, "## {label}");
+                    body(&mut out, text);
+                }
                 Block::Approval {
                     tool,
                     tier,
@@ -602,6 +614,27 @@ impl Transcript {
             *slot = None;
         }
         self.blocks.get_mut(id.0)
+    }
+
+    /// A run nobody typed was fired by `label` with input `prompt`: the
+    /// prompt's block among the run's (from `run_first`) is relabelled,
+    /// else the labelled block is appended.
+    pub fn label_triggered(&mut self, run_first: usize, label: String, prompt: String) {
+        let at = (run_first.min(self.blocks.len())..self.blocks.len())
+            .rev()
+            .find(|&i| matches!(&self.blocks[i], Block::User { text } if *text == prompt));
+        let block = Block::Triggered {
+            label,
+            text: prompt,
+        };
+        match at {
+            Some(i) => {
+                self.replace_block(BlockId(i), block);
+            }
+            None => {
+                self.push(block);
+            }
+        }
     }
 
     /// Replace a block in place (keeps transcript order). Returns whether `id`
@@ -1412,6 +1445,29 @@ mod tests {
             delta: d.to_string(),
             assistant_message_id: None,
         }
+    }
+
+    /// A fired run's prompt, shown as the user's when its start arrived,
+    /// is relabelled with what fired it; one not in the run is appended.
+    #[test]
+    fn a_triggered_run_relabels_its_prompt() {
+        let mut t = Transcript::default();
+        t.push(Block::User {
+            text: "check the build".into(),
+        });
+        let run = t.len();
+        t.push(Block::User {
+            text: "check the build".into(),
+        });
+        t.label_triggered(run, "scheduled: nightly".into(), "check the build".into());
+        assert!(matches!(&t.blocks()[0], Block::User { .. }));
+        assert!(matches!(&t.blocks()[1], Block::Triggered { label, text }
+            if label == "scheduled: nightly" && text == "check the build"));
+        t.label_triggered(t.len(), "scheduled: other".into(), "elsewhere".into());
+        assert_eq!(t.len(), 3);
+        assert!(
+            matches!(&t.blocks()[2], Block::Triggered { label, .. } if label == "scheduled: other")
+        );
     }
 
     #[test]

@@ -79,7 +79,8 @@ the user to approve it";
 
 /// Why an unattended call was denied: the tool error the model reads.
 pub const UNATTENDED_DENIAL: &str = "this action needs a user attached to this agent: no user \
-started this turn (another agent's message did) and no user is attached now, so nothing that \
+started this turn (another agent's message, a schedule or a file watch did) and no user is \
+attached now, so nothing that \
 needs review runs. The user is told what you wanted to do when they attach; say in your answer \
 that it waits for them";
 

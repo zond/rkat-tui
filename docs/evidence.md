@@ -5769,3 +5769,93 @@ setting on one URL), `an_unknown_api_style_is_refused_naming_the_key`,
 `endpoints::tests::chat_completions_gets_v1_and_responses_keeps_the_url`,
 `api_style_is_parsed_strictly_and_only_for_the_openai_dialect` and the
 overlay cases.
+
+### A: schedules (items 1 to 5 and 15)
+
+The engine, read and run (0.9.11): the facade's `schedule` feature (and
+`meerkat-rpc`'s, which the daemon's `SessionRuntime` is) brings the
+whole composition; nothing had to be hand-built. `SessionRuntime` opens
+its `ScheduleService` from the realm's `PersistenceBundle` (the schedule
+domain lives in the realm's `sessions.sqlite3`, outside the workspace),
+installs `ScheduleToolDispatcher` as the builder's default schedule tools,
+and arms its own firing host (`spawn_schedule_host` with the RPC mob host
+over the runtime's mob state, `MobMcpScheduleHost`) on a session's
+creation. The factory composes the tools for a build whose schedule
+category resolves on (`AgentFactory::schedule(true)`, the orchestrator
+profile's `tools.schedule`, and for a mob created before that, the root
+member's spawn override `tool_category_overrides.schedule = Enable`), and
+wraps them for a mob member in `CurrentSessionScheduleToolDispatcher`
+with `MobMemberCurrentSessionScheduleResolver`: `"current_session"`
+becomes the identity target `mob_member:{"mob_id":"tui","member":…}`,
+which survives conversation switches and restarts, and fires as the
+mob's `member_send` of the prompt (waking a dormant member). Probes that
+needed a change: without the profile's or the spawn's category the tools
+are absent (`tool_not_found`, the first run of the rig test); a restored
+agent creates no session, so the daemon arms the host itself after the
+agents start (`SessionRuntime::ensure_schedule_host_started`). The host
+sleeps until the store's next action, so an occurrence fires on time
+(the rig test's fired at +2.6 s for +2.5 s). Misfires: the default policy
+`skip` has a 30 s grace (`DEFAULT_SKIP_MISFIRE_GRACE_SECONDS`), so a
+daemon stopped over a due time skips that occurrence when it is started
+again; `catch_up_within {window_seconds}` fires one at most that late.
+
+Cost, measured: the eight tools' definitions are 37 KB of JSON
+(`meerkat_schedule_create` 15.2 KB, `_update` 15.3 KB, `_occurrences`
+3.4 KB, the rest under 1.4 KB each), about 9k tokens on every request.
+The full suite found it: `the_live_member_switches_between_an_alias_and_a_built_in_model`
+ran its fake 32k-window model into "compaction is irreducible" (the
+request body 122 KB); the fixture's window is 64k now, with the reason.
+Recorded in the manual's limits; the brief's decision to enable the tools
+stands.
+
+Decisions:
+
+- Classification (`src/approval/policy.rs`): `get`, `list`,
+  `occurrences` read-only; `create`, `update`, `pause`, `resume`,
+  `delete` reviewed; `upstream_builtins_are_all_classified` now covers
+  `meerkat_schedule::schedule_tool_names()`. The dialog's argument text
+  leads with the schedule in a line (`schedule_summary`: name, when, what
+  it runs) before the whole arguments.
+- Helpers get no schedule tools (`drop_mob_tools` sets the category off):
+  a schedule is the agent's own decision to run later.
+- A fired run is a turn no user started, so SEC-2 applies unchanged:
+  unattended (reviewed calls denied, a queued notice) while nobody is
+  attached to the agent, reviewed as usual while someone is. The texts of
+  the denial and the notice no longer say "another agent's message" only.
+- Attribution, positive only (`daemon::schedules::Schedules::attribute`):
+  a run start the engine did not see a client's input start, whose input
+  is the prompt of an occurrence of one of the agent's schedules
+  dispatched since this daemon started and not attributed before. Tried
+  for about a second (the store's dispatch write can trail the run
+  start). An attributed run is announced to the agent's clients
+  (`rkat/triggered`, the UI relabels the run's prompt block `⏰ scheduled:
+  <name>`), written to the audit log as `run_triggered` with the run id
+  the run's decision lines carry, and its turns' usage is kept under the
+  cost record `schedule-<id>` in the realm (item 15). A run nothing proves
+  is shown as before (the prompt as typed text); nothing is guessed.
+- `/quit` deletes the retiring agent's schedules, before the retire so
+  none fires in between (`Local::retire`; `retire_all` for terminate),
+  audits `schedules_deleted` and names them in the farewell; the quit
+  dialog says how many the agent has. `/detach` keeps them.
+- `/schedules` (`rkat/schedules`, `ScheduleList`, `ScheduleOp`): the
+  agent's live schedules whose identity target names it, filtered on our
+  side. `meerkat_schedule_list`'s `phase`/`target_id` filters are
+  0.9.12-only; at the pin move the filter can move to the engine.
+  `--list` and `/agents` rows carry the count (`AgentRow::schedules`).
+
+Tests (`tests/schedules.rs`): `a_schedule_the_agent_creates_fires_its_turn`
+(the labelled block, the turn, `/schedules` before and after with `fired
+1x`, the audit line, the user's own delete without an approval),
+`creating_a_schedule_asks_in_manual_mode` (the dialog shows when, the
+target and the prompt; a denial creates nothing),
+`a_fired_schedule_is_unattended_while_nobody_is_attached` (detached: the
+fired run's `curl` denied with no classifier call, the notice at the next
+attach; attached: the next fired run's `curl` reviewed),
+`a_retiring_agent_s_schedules_are_deleted_and_never_fire` (`--list`'s
+count, the farewell, past the due time the other agent's sentinel turn is
+the only call, and the stored schedule is deleted with no occurrence
+dispatched). Unit: `daemon::schedules::tests`,
+`a_schedule_call_reads_as_when_and_what`,
+`a_triggered_run_relabels_its_prompt`,
+`a_triggered_run_is_labelled_with_its_trigger`,
+`quitting_and_listing_name_the_schedules`, `daemon::list` (the count).

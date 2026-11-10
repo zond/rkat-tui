@@ -36,7 +36,7 @@ path = "src/bin/rkat-tui-mob.rs"
 # One crates.io release for every `meerkat-*` line; 0.9.11 carries every
 # engine fix the application needs. Moving the version on every line is the
 # pin move.
-meerkat = { version = "0.9.11", features = ["anthropic", "openai", "gemini", "session-store", "jsonl-store", "session-compaction", "memory-store-session", "skills", "comms", "mcp"] }
+meerkat = { version = "0.9.11", features = ["anthropic", "openai", "gemini", "session-store", "jsonl-store", "session-compaction", "memory-store-session", "skills", "comms", "mcp", "schedule"] }
 meerkat-core = { version = "0.9.11" }
 meerkat-runtime = { version = "0.9.11", features = ["sqlite-store"] }
 meerkat-store = { version = "0.9.11" }
@@ -47,12 +47,13 @@ meerkat-models = { version = "0.9.11" }
 meerkat-llm-core = { version = "0.9.11" }
 meerkat-memory = { version = "0.9.11" }
 meerkat-sandbox = { version = "0.9.11" }
+meerkat-schedule = { version = "0.9.11" }
 meerkat-mob = { version = "0.9.11" }
 meerkat-mob-mcp = { version = "0.9.11" }
 # The `rkat-tui-mob` daemon serves Meerkat's own JSON-RPC method router
 # (`MethodRouter`, `RpcServer`, `SessionRuntime`) over loopback TCP. Default
 # features off: no realtime voice and no governed-realm host.
-meerkat-rpc = { version = "0.9.11", default-features = false, features = ["mob", "mcp", "comms"] }
+meerkat-rpc = { version = "0.9.11", default-features = false, features = ["mob", "mcp", "comms", "schedule"] }
 # The attach client (`rkat-tui --attach`) reads the daemon's replies with the
 # engine's own wire types (`events/list_since`, `events/snapshot`).
 meerkat-contracts = { version = "0.9.11" }

@@ -1457,6 +1457,22 @@ impl AttachRunner {
             }
             return;
         }
+        if note.method == protocol::TRIGGERED {
+            match serde_json::from_value::<protocol::TriggeredNote>(note.params.clone()) {
+                Ok(fired)
+                    if fired.agent == link.connection.agent()
+                        && fired.session_id == link.session =>
+                {
+                    self.send(Msg::Triggered {
+                        label: fired.label,
+                        prompt: fired.prompt,
+                    });
+                }
+                Ok(_) => {}
+                Err(err) => tracing::debug!(error = %err, "unreadable trigger note"),
+            }
+            return;
+        }
         if note.method == protocol::DECISION_ENDED {
             if let Some(change) = self.approvals.decision_ended(&note.params) {
                 for msg in change.messages() {
@@ -2201,6 +2217,7 @@ impl AttachRunner {
             Effect::DaemonStart => self.daemon_start(),
             Effect::Agents(None) => self.list_agents().await,
             Effect::Audit(lines) => self.show_audit(lines).await,
+            Effect::Schedules(action) => self.schedules(action).await,
             Effect::Agents(Some(name)) => self.switch_agent(name).await,
             Effect::DecideQuit => self.decide_quit().await,
             Effect::Leave(departure) => self.depart(departure).await,
@@ -2996,6 +3013,56 @@ impl AttachRunner {
         }
     }
 
+    /// `/schedules`: this agent's schedules (`rkat/schedules`), each with
+    /// what its runs cost at the readout's prices; or the user's own
+    /// pause, resume or delete of one.
+    async fn schedules(&self, action: Option<(protocol::ScheduleOp, String)>) {
+        let Some(connection) = self.connection() else {
+            self.notice(
+                NoticeLevel::Warn,
+                "not attached to the daemon (see the status bar)",
+            );
+            return;
+        };
+        let params = protocol::SchedulesParams { action };
+        if params.action.is_some() {
+            let done = bounded(
+                CALL_TIMEOUT,
+                remote::local::<_, crate::approval::desk::RuleOutcome>(
+                    &connection,
+                    protocol::SCHEDULES,
+                    &params,
+                ),
+            )
+            .await;
+            match done {
+                Ok(outcome) if outcome.ok => self.notice(NoticeLevel::Info, outcome.text),
+                Ok(outcome) => self.notice(NoticeLevel::Warn, outcome.text),
+                Err(err) => self.notice(NoticeLevel::Warn, format!("schedule not changed: {err}")),
+            }
+            return;
+        }
+        let listed = bounded(
+            CALL_TIMEOUT,
+            remote::local::<_, protocol::ScheduleList>(&connection, protocol::SCHEDULES, &params),
+        )
+        .await;
+        match listed {
+            Ok(list) if list.schedules.is_empty() => self.notice(
+                NoticeLevel::Info,
+                "this agent has no schedules (the agent sets them with meerkat_schedule_create)",
+            ),
+            Ok(list) => self.notice(
+                NoticeLevel::Info,
+                schedules_text(&list.schedules, self.bench.prices()),
+            ),
+            Err(err) => self.notice(
+                NoticeLevel::Warn,
+                format!("cannot list the schedules: {err}"),
+            ),
+        }
+    }
+
     /// `/agents`: the workspace's agents, from the daemon's `rkat/status`.
     async fn list_agents(&self) {
         match self.daemon_status().await {
@@ -3131,7 +3198,13 @@ impl AttachRunner {
         let decision = if self.stopping {
             QuitDecision::Leave
         } else {
-            quit_decision(status.as_ref())
+            match quit_decision(status.as_ref()) {
+                QuitDecision::Ask { reason, running } => QuitDecision::Ask {
+                    reason: with_schedules(reason, status.as_ref()),
+                    running,
+                },
+                other => other,
+            }
         };
         if let (QuitDecision::Leave, Some(status)) = (&decision, &status) {
             let others = status
@@ -3183,12 +3256,22 @@ impl AttachRunner {
         .await;
         let agent = connection.agent().to_string();
         match (departure, answered) {
-            (Departure::Retire, Ok(_)) => self.farewell(
-                NoticeLevel::Info,
-                format!(
-                    "agent {agent} retired; its conversation stays (rkat-tui --resume lists it); the daemon (pid {pid}) keeps running for the other clients"
-                ),
-            ),
+            (Departure::Retire, Ok(answer)) => {
+                let deleted = serde_json::from_value::<protocol::Retired>(answer)
+                    .map(|retired| retired.schedules_deleted)
+                    .unwrap_or_default();
+                let schedules = if deleted.is_empty() {
+                    String::new()
+                } else {
+                    format!("; its schedules were deleted: {}", deleted.join(", "))
+                };
+                self.farewell(
+                    NoticeLevel::Info,
+                    format!(
+                        "agent {agent} retired; its conversation stays (rkat-tui --resume lists it){schedules}; the daemon (pid {pid}) keeps running for the other clients"
+                    ),
+                );
+            }
             (Departure::Retire, Err(err)) => self.farewell(
                 NoticeLevel::Warn,
                 format!(
@@ -3988,10 +4071,107 @@ async fn sleep_until(deadline: Option<Instant>) {
     }
 }
 
+/// The `/quit` dialog's `reason`, plus what terminating does to this
+/// agent's schedules (detaching keeps them firing).
+fn with_schedules(reason: String, status: Option<&protocol::Status>) -> String {
+    let count = status
+        .and_then(|status| {
+            let agent = status.agent.as_ref()?;
+            status.agents.iter().find(|row| &row.name == agent)
+        })
+        .map_or(0, |row| row.schedules);
+    if count == 0 {
+        return reason;
+    }
+    format!(
+        "{reason}\nThis agent has {count} schedule{}: detaching keeps {} firing; terminating deletes {}.",
+        if count == 1 { "" } else { "s" },
+        if count == 1 { "it" } else { "them" },
+        if count == 1 { "it" } else { "them" },
+    )
+}
+
+/// `/schedules`' text: a line per schedule.
+fn schedules_text(rows: &[protocol::ScheduleRow], prices: &crate::pricing::PriceTable) -> String {
+    let mut text = format!(
+        "{} schedule{} of this agent:",
+        rows.len(),
+        if rows.len() == 1 { "" } else { "s" }
+    );
+    for row in rows {
+        let cost = match &row.cost {
+            None => "$0".to_string(),
+            Some(cost) => {
+                let (usd, all) = cost.cost_usd(prices);
+                if all {
+                    format!("${usd:.4}")
+                } else {
+                    format!("${usd:.4}+ (some models unpriced)")
+                }
+            }
+        };
+        text.push_str(&format!(
+            "\n  {}  {}  next {}  {}  fired {}x  {}",
+            row.name,
+            row.expression,
+            row.next.as_deref().unwrap_or("none"),
+            row.state,
+            row.fired,
+            cost,
+        ));
+    }
+    text
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    /// The `/quit` dialog says what terminating does to the agent's
+    /// schedules; `/schedules` prices each schedule's runs.
+    #[test]
+    fn quitting_and_listing_name_the_schedules() {
+        let status = |schedules| protocol::Status {
+            workspace: "/w".into(),
+            host: None,
+            pid: 1,
+            started_at: String::new(),
+            clients: 1,
+            detached: false,
+            owner: true,
+            session_id: None,
+            running: false,
+            agent: Some("main-ab12".into()),
+            agents: vec![protocol::AgentRow {
+                name: "main-ab12".into(),
+                session_id: None,
+                running: Some(false),
+                clients: 1,
+                detached: false,
+                schedules,
+            }],
+            shell: meerkat_tools::builtin::shell::ShellConfinement::TrustedHost,
+        };
+        assert_eq!(with_schedules("why".into(), Some(&status(0))), "why");
+        assert_eq!(
+            with_schedules("why".into(), Some(&status(2))),
+            "why\nThis agent has 2 schedules: detaching keeps them firing; terminating deletes them."
+        );
+        let row = protocol::ScheduleRow {
+            id: "id".into(),
+            name: "nightly".into(),
+            expression: "every 86400s from 2026-11-11 02:00:00Z".into(),
+            next: Some("2026-11-12 02:00:00Z".into()),
+            state: "active".into(),
+            fired: 1,
+            cost: None,
+        };
+        assert_eq!(
+            schedules_text(&[row], &crate::pricing::PriceTable::default()),
+            "1 schedule of this agent:\n  nightly  every 86400s from 2026-11-11 02:00:00Z  next 2026-11-12 02:00:00Z  active  fired 1x  $0"
+        );
+    }
 
     /// `/status`'s daemon side: the realm, confinement, mode, trust and
     /// helper lines, in their order.
@@ -4003,6 +4183,7 @@ mod tests {
             running,
             clients: 0,
             detached: false,
+            schedules: 0,
         };
         assert_eq!(
             others_notice(&[row("main-mine", Some(false))], "main-mine"),
@@ -4037,6 +4218,7 @@ mod tests {
                 running: Some(true),
                 clients: 1,
                 detached: false,
+                schedules: 0,
             },
             protocol::AgentRow {
                 name: "main-bbbb".into(),
@@ -4044,6 +4226,7 @@ mod tests {
                 running: Some(false),
                 clients: 0,
                 detached: true,
+                schedules: 0,
             },
             protocol::AgentRow {
                 name: "main-cccc".into(),
@@ -4051,6 +4234,7 @@ mod tests {
                 running: None,
                 clients: 1,
                 detached: false,
+                schedules: 0,
             },
         ];
         let lines = agent_lines(&rows, Some("main-aaaa"));

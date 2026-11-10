@@ -162,6 +162,11 @@ pub const READ_ONLY_BUILTINS: &[&str] = &[
     // mob's roster and a member's state).
     "list_members",
     "member_status",
+    // The engine's schedule queries (`meerkat_schedule_*`): what is
+    // scheduled and what fired.
+    "meerkat_schedule_get",
+    "meerkat_schedule_list",
+    "meerkat_schedule_occurrences",
 ];
 
 /// Upstream builtins that act (or read outside the project) and so pass the
@@ -197,6 +202,13 @@ pub const REVIEWED_BUILTINS: &[&str] = &[
     "wire_members",
     "unwire_members",
     "force_cancel_member",
+    // Schedules: each makes the agent (or the target it names) run later,
+    // on its own, or changes when it does.
+    "meerkat_schedule_create",
+    "meerkat_schedule_update",
+    "meerkat_schedule_pause",
+    "meerkat_schedule_resume",
+    "meerkat_schedule_delete",
 ];
 
 /// The engine's builtin that writes a stored blob to a file. Classified as
@@ -400,6 +412,48 @@ impl<'a> Action<'a> {
             | ActionKind::Other => vec![pretty_args(self.args)],
         }
     }
+}
+
+/// A schedule tool's call in a line the user reads before the arguments:
+/// when it fires and what it runs (`meerkat_schedule_create` and
+/// `meerkat_schedule_update`; `None` for anything else or arguments that
+/// do not say).
+#[must_use]
+pub fn schedule_summary(name: &str, args: &RawValue) -> Option<String> {
+    if !matches!(name, "meerkat_schedule_create" | "meerkat_schedule_update") {
+        return None;
+    }
+    let value: Value = serde_json::from_str(args.get()).ok()?;
+    let when = value
+        .get("trigger")
+        .and_then(|trigger| serde_json::from_value::<meerkat::TriggerSpec>(trigger.clone()).ok())
+        .map(|trigger| crate::daemon::schedules::expression(&trigger));
+    let target = value.get("target").map(|target| {
+        let kind = target
+            .get("type")
+            .or_else(|| target.get("target_kind"))
+            .and_then(Value::as_str)
+            .unwrap_or("?");
+        let prompt = target
+            .pointer("/action/prompt")
+            .and_then(Value::as_str)
+            .map_or_else(String::new, |prompt| format!(": {prompt}"));
+        format!("{kind}{prompt}")
+    });
+    if when.is_none() && target.is_none() {
+        return None;
+    }
+    let mut line = String::from("schedule");
+    if let Some(name) = value.get("name").and_then(Value::as_str) {
+        line.push_str(&format!(" {name}"));
+    }
+    if let Some(when) = when {
+        line.push_str(&format!(", {when}"));
+    }
+    if let Some(target) = target {
+        line.push_str(&format!(", runs {target}"));
+    }
+    Some(line)
 }
 
 /// Pretty JSON of raw arguments (their raw text when they are not JSON).
@@ -892,6 +946,30 @@ mod tests {
     }
 
     #[test]
+    fn a_schedule_call_reads_as_when_and_what() {
+        let args = json!({
+            "name": "nightly",
+            "trigger": {"type": "once", "due_at_utc": "2026-11-11T02:00:00Z"},
+            "target": {"target_kind": "session", "type": "current_session",
+                "action": {"type": "prompt", "prompt": "run the checks"}}
+        });
+        assert_eq!(
+            schedule_summary("meerkat_schedule_create", &raw(&args)).as_deref(),
+            Some(
+                "schedule nightly, once at 2026-11-11 02:00:00Z, runs current_session: run the checks"
+            )
+        );
+        assert_eq!(schedule_summary("meerkat_schedule_get", &raw(&args)), None);
+        assert_eq!(
+            schedule_summary(
+                "meerkat_schedule_update",
+                &raw(&json!({"schedule_id": "x"}))
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn delegation_and_mob_queries_need_no_review_but_mob_changes_do() {
         let (_dir, root) = project();
         let task = json!({"member_id": "scout", "task": "rm -rf /", "result_label": "r", "max_text_bytes": 10});
@@ -957,6 +1035,7 @@ mod tests {
             WEB_SEARCH_TOOL_NAMES,
             BRAIN_SWAP_TOOL_NAMES,
             meerkat_tools::builtin::image_generation::TOOL_NAMES,
+            meerkat_schedule::schedule_tool_names(),
         ];
         for name in upstream.into_iter().flatten() {
             let lists = [

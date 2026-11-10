@@ -3790,6 +3790,7 @@ dependencies = [
  "meerkat-rpc",
  "meerkat-runtime",
  "meerkat-sandbox",
+ "meerkat-schedule",
  "meerkat-sqlite",
  "meerkat-store",
  "meerkat-tools",

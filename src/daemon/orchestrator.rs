@@ -52,6 +52,7 @@ fn definition(plan: &RootPlan) -> MobDefinition {
             profile.tools.shell = true;
             profile.tools.comms = true;
             profile.tools.mob = true;
+            profile.tools.schedule = true;
             profile.tools.memory = plan.memory;
             profile.tools.mcp_servers.clone_from(&plan.mcp_servers);
             // The `[thinking]` of the start-up model; a rebuild re-applies

@@ -456,6 +456,7 @@ fn the_quit_decision_follows_the_rules() {
                 running: Some(running),
                 clients: *clients,
                 detached,
+                schedules: 0,
             })
             .collect(),
         shell: meerkat_tools::builtin::shell::ShellConfinement::TrustedHost,

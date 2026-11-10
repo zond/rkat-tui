@@ -526,6 +526,16 @@ impl ApprovalEngine {
         }
     }
 
+    /// Whether `run` of `session_id` is one a client's input started (the
+    /// engine saw it start while that input waited).
+    #[must_use]
+    pub fn human_run(&self, session_id: &SessionId, run: &RunId) -> bool {
+        self.sessions
+            .lock()
+            .get(session_id)
+            .is_some_and(|state| state.human_runs.contains(run))
+    }
+
     /// The human stopped `session_id`'s current run (an interrupt or a Stop
     /// answer): every call of that session that needs review is denied,
     /// without asking anyone, until a new run starts ([`Self::run_started`]).
@@ -1525,7 +1535,7 @@ fn unattended_notice(agent: Option<&str>, action: &Action<'_>) -> String {
     let ellipsis = if cut.len() < what.len() { "…" } else { "" };
     let who = agent.map_or_else(String::new, |helper| format!(" (its helper {helper})"));
     format!(
-        "while no client was attached, in a turn another agent's message started, this agent{who} wanted to {cut}{ellipsis}; it was denied. Ask it again now that you are attached to allow it"
+        "while no client was attached, in a turn no user started (another agent's message, a schedule or a file watch did), this agent{who} wanted to {cut}{ellipsis}; it was denied. Ask it again now that you are attached to allow it"
     )
 }
 
@@ -1553,7 +1563,13 @@ fn args_full(action: &Action<'_>) -> Option<String> {
 fn args_text(action: &Action<'_>) -> String {
     match &action.kind {
         ActionKind::Shell { command, .. } => command.clone(),
-        _ => super::policy::pretty_args(action.args),
+        _ => {
+            let args = super::policy::pretty_args(action.args);
+            match super::policy::schedule_summary(action.name, action.args) {
+                Some(summary) => format!("{summary}\n{args}"),
+                None => args,
+            }
+        }
     }
 }
 

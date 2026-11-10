@@ -41,6 +41,7 @@ pub mod local;
 pub mod orchestrator;
 pub mod policy;
 pub mod protocol;
+pub mod schedules;
 pub mod serve;
 
 use std::path::{Path, PathBuf};
@@ -584,6 +585,12 @@ impl Daemon {
             engine: Arc::clone(&composed.engine),
             origins: Arc::clone(&composed.origins),
             lifecycle: Arc::clone(&lifecycle),
+            schedules: Arc::new(schedules::Schedules::new(
+                composed.runtime.schedule_service(),
+                composed.scope.realm_root(),
+            )),
+            decisions: Arc::clone(&composed.decisions),
+            audit: audit.clone(),
         });
         // Before any agent runs: a turn no user started is unattended
         // unless a client is with its agent.
@@ -608,6 +615,12 @@ impl Daemon {
         // Restored (their classifier seeded with what the user asked so
         // far), else one seated for the first client.
         let (first, session, created) = agents.start().await?;
+        // Schedules fire while the daemon runs, from its start: the
+        // runtime arms its firing host on a session's creation only, and a
+        // restored agent creates none.
+        if let Err(err) = composed.runtime.ensure_schedule_host_started().await {
+            tracing::warn!(error = %err, "the schedule host did not start; schedules fire once a session is created");
+        }
         let orchestrator = Orchestrator {
             mob_id: meerkat_mob::MobId::from(MOB_ID),
             identity: meerkat_mob::AgentIdentity::from(first.as_str()),

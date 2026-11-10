@@ -441,6 +441,8 @@ pub fn watch(
             };
             let mut check = tokio::time::interval(RESUBSCRIBE);
             check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            // The run the events belong to now.
+            let mut run: Option<meerkat_core::RunId> = None;
             loop {
                 let envelope = tokio::select! {
                     envelope = stream.next() => match envelope {
@@ -458,11 +460,28 @@ pub fn watch(
                     AgentEvent::RunStarted {
                         session_id,
                         identity,
+                        input,
                         ..
                     } => {
                         engine.run_started(session_id, identity.run_id.as_ref());
+                        run.clone_from(&identity.run_id);
                         if let Some(agents) = agents.upgrade() {
                             agents.touch(&name);
+                            // A run no client's input started: a schedule
+                            // (or a watch) may have fired it.
+                            if let (Some(run), Some(prompt)) =
+                                (&identity.run_id, input.prompt_text())
+                                && !engine.human_run(session_id, run)
+                            {
+                                agents.unprompted_run(&name, session_id, run, &prompt).await;
+                            }
+                        }
+                    }
+                    AgentEvent::TurnCompleted {
+                        usage: Some(usage), ..
+                    } => {
+                        if let (Some(run), Some(agents)) = (&run, agents.upgrade()) {
+                            agents.run_usage(run, usage.accounting().model.trim(), usage);
                         }
                     }
                     AgentEvent::RunCompleted { session_id, .. }

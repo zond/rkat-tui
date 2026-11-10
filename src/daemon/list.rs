@@ -232,6 +232,9 @@ pub fn lines(listed: &Listed, now: chrono::DateTime<chrono::Utc>) -> Vec<String>
             if agent.detached && agent.clients == 0 {
                 fields.push("detached".to_string());
             }
+            if agent.schedules > 0 {
+                fields.push(count(agent.schedules, "schedule"));
+            }
             lines.push(fields.join("\t"));
         }
     }
@@ -397,6 +400,7 @@ mod tests {
                         running: Some(true),
                         clients: 1,
                         detached: false,
+                        schedules: 2,
                     },
                     crate::daemon::protocol::AgentRow {
                         name: "main-cd34".into(),
@@ -404,6 +408,7 @@ mod tests {
                         running: None,
                         clients: 0,
                         detached: true,
+                        schedules: 0,
                     },
                 ],
                 shell: meerkat_tools::builtin::shell::ShellConfinement::TrustedHost,
@@ -413,7 +418,7 @@ mod tests {
             lines(&agents, now),
             vec![
                 "/w\t127.0.0.1:4000\tpid 9\tup 1h30m\t1 client\t2 agents".to_string(),
-                format!("\tmain-ab12\trunning\t{session}\t1 client"),
+                format!("\tmain-ab12\trunning\t{session}\t1 client\t2 schedules"),
                 // Unknown is not idle.
                 "\tmain-cd34\tunknown\tno conversation\t0 clients\tdetached".to_string(),
             ]

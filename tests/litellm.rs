@@ -55,7 +55,9 @@ fn models() -> Vec<FakeModel> {
         },
         FakeModel {
             id: LOCAL,
-            max_input_tokens: 32_000,
+            // Room for the agent's tool definitions (the schedule tools
+            // alone are about 9k tokens), or the first turn compacts.
+            max_input_tokens: 64_000,
             max_output_tokens: 2_048,
             input_cost: 1e-6,
             output_cost: 2e-6,

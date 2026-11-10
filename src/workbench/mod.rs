@@ -214,6 +214,12 @@ impl Workbench {
         self.memory_before = None;
     }
 
+    /// The cost readout's prices.
+    #[must_use]
+    pub fn prices(&self) -> &PriceTable {
+        &self.prices
+    }
+
     /// Hold the messages the UI still had when the user quit
     /// ([`crate::ui::Effect::SaveUnsent`]).
     pub fn hold_unsent(&mut self, held: Vec<(Option<PendingId>, String)>) {

@@ -20,6 +20,7 @@ the test protocol for working on rkat-tui itself.
 - [Where things live](#where-things-live)
 - [The workspace daemon](#the-workspace-daemon)
 - [Several agents](#several-agents)
+- [Timers and watches](#timers-and-watches)
 
 ## Overview
 
@@ -1515,11 +1516,11 @@ alone joins the agent active last and opens the picker.
   daemon: the engine's `mob/member_send` answers no input id to cancel it
   by (the same engine ask as the steer attribution below). The agent gets
   it at its next step; Esc stops the turn.
-- `/compact now` and `/model` act on a running agent: right after a
-  daemon start the agent's session is cold, and the engine does not wake a
-  cold session for a compaction or an in-place model change (by design),
-  so it refuses them until the agent has run. The supported path is to
-  send a message first.
+- `/compact now` acts on a running agent: right after a daemon start the
+  agent's session is cold, and the engine does not wake a cold session
+  for a compaction (by design), so it refuses it until the agent has run.
+  The supported path is to send a message first. (`/model` wakes the
+  agent itself, without running a turn, and switches.)
 - `/trust` records the project files in the daemon's trust record: their
   hooks run from the agent's next conversation (`/new`, `/resume`) or a
   daemon restart. The agent's MCP servers are the ones its daemon mob was
@@ -1622,3 +1623,71 @@ boundary:
   turn makes its later calls reviewed as usual. A turn you started stays
   yours after you `/detach`: it is reviewed as usual. The classifier
   never sees a peer's text as your words either.
+
+## Timers and watches
+
+### Schedules
+
+An agent can set itself a timer: the engine's schedule tools
+(`meerkat_schedule_create`, `_get`, `_list`, `_update`, `_pause`,
+`_resume`, `_delete`, `_occurrences`) are among its tools. A schedule is
+one-shot (`"once"`, at a time) or recurring (`"interval"`, every N
+seconds; `"calendar"`, cron-like fields in a time zone), and its target
+is the agent's own session (`"type": "current_session"`) with a prompt.
+The daemon fires it: the agent's turn runs with that prompt, as if
+someone had typed it, and your TUI shows the prompt as a block labelled
+`⏰ scheduled: <name>`. A schedule follows its agent across `/new`,
+`/resume` and daemon restarts.
+
+**Approval.** Reading schedules (`_get`, `_list`, `_occurrences`) is
+tier 1. Creating, changing, pausing, resuming and deleting one is
+reviewed: the classifier judges it in auto mode, and manual mode asks you
+with the schedule in a line first (`schedule nightly, once at
+2026-11-11 02:00:00Z, runs current_session: run the checks`), then the
+whole arguments. Helpers get no schedule tools.
+
+**What a fired schedule can do.** A fired schedule is a turn no user
+started. While a TUI is attached to the agent, its calls are reviewed
+exactly like a turn you typed (the classifier in auto mode, you in
+manual mode). While **nobody is attached** (you `/detach`ed, or the
+daemon restored the agent and nobody joined it), the turn is
+**unattended**, the rule of [Several agents](#several-agents): reads,
+allowlisted commands and the in-project edits your mode allows without
+asking still run; anything that needs review (a command the classifier
+would judge, a write outside the project, a protected file, whatever
+manual mode would ask) is denied without asking the classifier, the agent
+reads that it needs you attached, and the next TUI to attach shows a
+warning per denied action. So a nightly `cargo test` runs unattended only
+when it is allowlisted (`--trust-project-builds`, or an `[[allow]]` rule);
+a nightly `curl` or `git push` waits for you.
+
+**`/schedules`.** Lists this agent's schedules: name, when it fires, the
+next occurrence, `active` or `paused`, how many times it fired and what
+its runs cost (at the cost readout's prices; the daemon attributes a run
+to the schedule that fired it). `/schedules pause <name>`, `resume` and
+`delete` (by name or id) are your own actions: no approval is asked.
+`--list` shows how many schedules each agent has; the audit log records a
+fired run as `run_triggered` with the schedule's name (its decisions
+carry the same run id), and your `/schedules` actions as
+`schedule_changed`.
+
+**Detach, quit, stop.** Schedules survive `/detach`: that is what detach
+means, and the agent's fired turns then run unattended. `/quit` that
+retires the agent (and terminate, which retires every agent) deletes the
+agent's schedules first: nothing wakes a retired agent, so nothing is
+left to fire for it. The `/quit` dialog says how many schedules the agent
+has, and the farewell names those deleted. While the daemon is stopped
+nothing fires. When it starts again, an occurrence that came due in
+between is skipped as misfired once it is more than 30 seconds late (the
+engine's default misfire policy); a schedule created with
+`"misfire_policy": {"type": "catch_up_within", "window_seconds": N}`
+fires an occurrence that is at most N seconds late instead.
+
+**Limits.** The schedule tools' definitions travel with every model
+request: about 37 KB of schemas (roughly 9k tokens; `meerkat_schedule_create`
+and `_update` are 15 KB each), which a model with a small context window
+feels. The engine's schedules are the workspace realm's: an agent's
+`meerkat_schedule_list` shows every agent's schedules, and an agent can
+target another agent's session; those calls are reviewed like any other
+schedule change. `/schedules` shows only schedules whose target is your
+agent.

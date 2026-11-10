@@ -799,6 +799,16 @@ pub fn block_lines(block: &Block, width: u16) -> Vec<Line<'static>> {
                 prefixed(text, w, "  ", "  ", style, &mut out);
             }
         }
+        Block::Triggered { label, text } => {
+            let style = Style::default().fg(Color::Cyan);
+            out.push(Line::from(Span::styled(
+                format!("⏰ {label}"),
+                style.add_modifier(Modifier::BOLD),
+            )));
+            if !text.is_empty() {
+                prefixed(text, w, "  ", "  ", style, &mut out);
+            }
+        }
         Block::Shell {
             command,
             state,
@@ -1051,6 +1061,17 @@ mod tests {
         };
         let lines: Vec<String> = block_lines(&bare, 60).iter().map(line_text).collect();
         assert_eq!(lines, ["✉ from agent main-ab12", ""]);
+    }
+
+    /// A run a schedule fired is a block headed by what fired it.
+    #[test]
+    fn a_triggered_run_is_labelled_with_its_trigger() {
+        let block = Block::Triggered {
+            label: "scheduled: nightly".into(),
+            text: "run the checks".into(),
+        };
+        let lines: Vec<String> = block_lines(&block, 60).iter().map(line_text).collect();
+        assert_eq!(lines, ["⏰ scheduled: nightly", "  run the checks", ""]);
     }
 
     #[test]

@@ -418,6 +418,15 @@ pub enum Msg {
         /// The message (empty: delivered into a running turn).
         text: String,
     },
+    /// The daemon says the current run was fired by a schedule (or a file
+    /// watch), not typed by a user: its prompt is shown labelled
+    /// (`scheduled: <name>`).
+    Triggered {
+        /// What fired it.
+        label: String,
+        /// The run's input.
+        prompt: String,
+    },
     /// `/compact now`: the engine took the request, so the session's next
     /// compaction check compacts (or why it did not). The
     /// `CompactionStarted`/`Completed` events confirm the compaction itself;
@@ -681,6 +690,9 @@ pub enum Effect {
     /// `/audit [n]`: show the daemon's audit log's last lines for this
     /// client's agent (answered with a notice).
     Audit(Option<usize>),
+    /// `/schedules`: list this agent's schedules, or act on one (answered
+    /// with a notice).
+    Schedules(Option<(crate::daemon::protocol::ScheduleOp, String)>),
     /// `/memory`: resolve the instruction file (creating `SYSTEM.md` with
     /// a comment header) and answer with [`Msg::EditFile`].
     OpenMemory(MemoryTarget),
@@ -1563,6 +1575,11 @@ impl App {
             Msg::RemoteTurn { prompt } => self.remote_turn(prompt, now),
             Msg::Peer { from, text } => {
                 self.transcript.push(Block::Peer { from, text });
+                self.scroll.bottom();
+            }
+            Msg::Triggered { label, prompt } => {
+                self.transcript
+                    .label_triggered(self.run_first_block, label, prompt);
                 self.scroll.bottom();
             }
             Msg::ResetTranscript(blocks) => {
