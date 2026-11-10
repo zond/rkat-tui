@@ -230,6 +230,17 @@ pub enum SwitchError {
     /// The member has no session after the switch.
     #[error("the agent has no session after the switch")]
     NoSession,
+    /// The switch failed after the member left the mob, and seating its
+    /// previous conversation again failed too: the agent is gone (its
+    /// conversations stay in the log).
+    #[error("agent {agent} was lost: {cause}, and its conversation could not be seated again")]
+    Lost {
+        /// The agent.
+        agent: String,
+        /// Why the switch failed.
+        #[source]
+        cause: Box<SwitchError>,
+    },
 }
 
 impl SwitchError {
@@ -262,6 +273,9 @@ pub struct Conversations {
     /// client switches it).
     model: String,
     auth_binding: Option<meerkat_core::AuthBindingRef>,
+    /// Tests: how many of the next spawns fail ([`Self::spawn`]).
+    #[cfg(any(test, feature = "test-support"))]
+    spawn_faults: Option<Arc<std::sync::atomic::AtomicUsize>>,
 }
 
 impl std::fmt::Debug for Conversations {
@@ -292,7 +306,22 @@ impl Conversations {
             switching: parking_lot::Mutex::default(),
             model,
             auth_binding,
+            #[cfg(any(test, feature = "test-support"))]
+            spawn_faults: None,
         }
+    }
+
+    /// Fail as many of the next spawns as `faults` holds (each failure
+    /// takes one), with [`SwitchError::NoSession`]: a switch, and seating
+    /// its previous conversation again, can then be made to fail.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn with_spawn_faults(
+        mut self,
+        faults: Option<Arc<std::sync::atomic::AtomicUsize>>,
+    ) -> Self {
+        self.spawn_faults = faults;
+        self
     }
 
     /// The helper key of `agent`.
@@ -704,12 +733,26 @@ impl Conversations {
         let spawned = self.spawn(&mob, agent, &target).await;
         if let Err(err) = spawned {
             tracing::warn!(error = %err, "the switch failed; seating the previous conversation again");
-            if let Some(previous) = &previous
-                && let Err(again) = self
+            let restored = match &previous {
+                Some(previous) => match self
                     .spawn(&mob, agent, &Target::Resume(previous.clone()))
                     .await
-            {
-                tracing::error!(error = %again, "the previous conversation could not be seated again");
+                {
+                    Ok(()) => true,
+                    Err(again) => {
+                        tracing::error!(error = %again, "the previous conversation could not be seated again");
+                        false
+                    }
+                },
+                None => false,
+            };
+            if !restored {
+                // Out of the mob: no owner any more.
+                self.registry.unregister_root(&Self::key(agent));
+                return Err(SwitchError::Lost {
+                    agent: agent.to_string(),
+                    cause: Box::new(err),
+                });
             }
             return Err(err);
         }
@@ -788,6 +831,18 @@ impl Conversations {
     }
 
     async fn spawn(&self, mob: &MobId, agent: &str, target: &Target) -> Result<(), SwitchError> {
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(faults) = &self.spawn_faults
+            && faults
+                .fetch_update(
+                    std::sync::atomic::Ordering::SeqCst,
+                    std::sync::atomic::Ordering::SeqCst,
+                    |n| n.checked_sub(1),
+                )
+                .is_ok()
+        {
+            return Err(SwitchError::NoSession);
+        }
         let mut spec = SpawnMemberSpec::host_root(ORCHESTRATOR, agent);
         spec.runtime_mode = Some(MobRuntimeMode::TurnDriven);
         if let Target::Resume(session) = target {

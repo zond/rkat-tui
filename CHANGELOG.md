@@ -181,6 +181,10 @@ design.
 
 ### Fixed
 
+- An agent lost in a failed `/new` or `/resume` (the new conversation
+  failed to start and the old one could not be seated again) is no longer
+  listed as live: the daemon drops it, tells the other agents it left, and
+  the error says it was lost. Its conversations stay for `--resume`.
 - A prompt that quotes a message from another agent is shown as the
   prompt it is, not as a message from that agent: a peer message is
   recognised only when the engine's framing opens the input.

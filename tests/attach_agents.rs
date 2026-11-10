@@ -324,3 +324,63 @@ async fn a_quit_agent_is_announced_and_takes_no_more_messages() {
     a.quit().await;
     daemon.stop().await;
 }
+
+/// The finding this guards (second review, item 9): a switch whose
+/// target failed to spawn, and whose previous conversation could not be
+/// seated again either, left the agent out of the mob but listed as live
+/// (a ghost: `/agents`, `--list` and the proxy counted it, and its
+/// prompts met engine errors).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agent_lost_in_a_failed_switch_is_no_ghost() {
+    use rkat_tui::client::transport::Connection;
+    use rkat_tui::daemon::protocol::{AgentChoice, Status};
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![Step::Text("b answered")]);
+    let faults = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let daemon = Running::start_with(
+        &common::args_for(&ws.root),
+        Running::options(&ws.root, &llm).with_spawn_faults(Arc::clone(&faults)),
+    )
+    .await;
+    let a = daemon.connect_bound().await;
+    let (b, _notes) = Connection::attach_to(
+        &daemon.endpoint(),
+        std::time::Duration::from_secs(5),
+        None,
+        false,
+        Some(AgentChoice::New),
+    )
+    .await
+    .unwrap();
+    let lost = daemon.agent.clone();
+    assert_ne!(b.agent(), lost);
+    // The new conversation fails to spawn, and so does seating the old one.
+    faults.store(2, std::sync::atomic::Ordering::SeqCst);
+    let refused = a.call("rkat/new", json!({})).await.unwrap_err().to_string();
+    assert!(
+        refused.contains(&format!("agent {lost} was lost")),
+        "{refused}"
+    );
+    let status: Status = rkat_tui::client::remote::local(&b, "rkat/status", &json!({}))
+        .await
+        .unwrap();
+    assert!(
+        status.agents.iter().all(|row| row.name != lost),
+        "no ghost: {:?}",
+        status.agents
+    );
+    // The other agent was told it left.
+    b.call(
+        "mob/turn_start",
+        json!({"mob_id": "tui", "agent_identity": b.agent(), "prompt": "who is here"}),
+    )
+    .await
+    .unwrap();
+    let told = format!("{:?}", llm.recorded()[0].messages);
+    assert!(
+        told.contains(&format!("Agent `{lost}` left this workspace")),
+        "{told}"
+    );
+    drop((a, b));
+    daemon.stop().await;
+}

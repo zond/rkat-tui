@@ -271,6 +271,9 @@ pub struct DaemonOptions {
     pub(crate) policy: engine::PolicyOptions,
     /// The build the daemon names (`None`: [`crate::BUILD`]).
     pub(crate) build: Option<String>,
+    /// Tests: how many of the next agent spawns fail.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) spawn_faults: Option<Arc<std::sync::atomic::AtomicUsize>>,
     /// The state directory the default endpoint file goes in (`None`:
     /// the user's, [`endpoint::state_home`], or the runtime directory's).
     pub(crate) state_home: Option<PathBuf>,
@@ -286,6 +289,8 @@ impl Default for DaemonOptions {
             policy: engine::PolicyOptions::default(),
             build: None,
             state_home: None,
+            #[cfg(any(test, feature = "test-support"))]
+            spawn_faults: None,
         }
     }
 }
@@ -306,6 +311,15 @@ impl DaemonOptions {
     #[cfg(any(test, feature = "test-support"))]
     pub fn with_state_home(mut self, dir: PathBuf) -> Self {
         self.state_home = Some(dir);
+        self
+    }
+
+    /// Fail as many of the next agent spawns as `faults` holds (a switch,
+    /// and seating the previous conversation again, can then fail).
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_spawn_faults(mut self, faults: Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        self.spawn_faults = Some(faults);
         self
     }
 
@@ -513,13 +527,16 @@ impl Daemon {
         let file = choose_endpoint_file(&parts.confinement, &files)?;
         let composed = engine::compose(parts, options.policy)?;
         orchestrator::ensure_mob(&composed.state, &composed.root).await?;
-        let conversations = Arc::new(conversations::Conversations::open(
+        let conversations = conversations::Conversations::open(
             Arc::clone(&composed.state),
             Arc::clone(&composed.root.registry),
             &composed.scope.context_root,
             composed.root.model.clone(),
             composed.root.auth_binding.clone(),
-        ));
+        );
+        #[cfg(any(test, feature = "test-support"))]
+        let conversations = conversations.with_spawn_faults(options.spawn_faults.clone());
+        let conversations = Arc::new(conversations);
         let lifecycle = lifecycle::Lifecycle::built(
             workspace.clone(),
             started_at.clone(),

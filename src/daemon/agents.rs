@@ -667,11 +667,28 @@ impl Agents {
         // it, and the conversation it runs as now may know none of the
         // agents working here.
         let switched = self.conversations.switch(name, target).await;
+        if self.lost(name, &switched).await {
+            return switched;
+        }
         self.rewire(&[name.to_string()]).await;
         if switched.is_ok() {
             self.note_roster(name).await;
         }
         switched
+    }
+
+    /// When `result` says the agent `name` was lost (out of the mob, its
+    /// conversation not seated again), drop it from the live agents and
+    /// tell the others it left; returns whether it was. A lost agent is no
+    /// ghost: `/agents`, `--list` and the proxy no longer count it live.
+    async fn lost<T>(&self, name: &str, result: &Result<T, SwitchError>) -> bool {
+        let Err(SwitchError::Lost { .. }) = result else {
+            return false;
+        };
+        tracing::error!(agent = %name, "the agent was lost in a failed switch");
+        self.table.lock().remove(name);
+        self.note_others(name, false).await;
+        true
     }
 
     /// [`Conversations::reseat`].
@@ -681,6 +698,9 @@ impl Agents {
     /// [`SwitchError`].
     pub async fn reseat(&self, name: &str) -> Result<SessionId, SwitchError> {
         let reseated = self.conversations.reseat(name).await;
+        if self.lost(name, &reseated).await {
+            return reseated;
+        }
         self.rewire(&[name.to_string()]).await;
         reseated
     }

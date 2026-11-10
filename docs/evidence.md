@@ -4309,3 +4309,22 @@ anchor alone removes the quoting case. Pinned by
 `a_peer_message_input_names_its_sender_and_body` (a quoting prompt, at
 the end and in the middle, is no peer message).
 
+### An agent lost in a failed switch is dropped, not a ghost
+
+`Conversations::seat` retires the member, spawns the target and, when that
+fails, spawns the previous conversation again. When the second spawn
+failed too, it logged and returned the first error: the member was out of
+the mob while `Agents::table` still listed it, so `is_live`, `/agents`,
+`--list` and the proxy's binding check counted it, and its client's
+prompts met engine errors. That case is now `SwitchError::Lost { agent,
+cause }` (also when there was no previous conversation to seat); the
+conversation module drops the agent as a helper owner, and
+`Agents::switch` and `Agents::reseat` (`Agents::lost`) remove its row and
+send the other agents the leave note. Its conversations stay in the log
+(`--resume` seats them again). The engine offers no way to make a spawn
+fail on demand, so the test injects it: `DaemonOptions::with_spawn_faults`
+(test-support) fails the next N spawns. Pinned by
+`an_agent_lost_in_a_failed_switch_is_no_ghost` (`rkat/new` with two
+injected failures: the error names the lost agent, `rkat/status` no
+longer lists it, the other agent's next request carries the leave note).
+
