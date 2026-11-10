@@ -897,6 +897,8 @@ async fn a_reconnect_restarts_a_daemon_that_died() {
     // The daemon dies and leaves its endpoint file behind.
     let left = std::fs::read(&endpoint_file).unwrap();
     daemon.stop().await;
+    // (A crash leaves the file in its directory; the stop removed both.)
+    std::fs::create_dir_all(endpoint_file.parent().unwrap()).unwrap();
     std::fs::write(&endpoint_file, left).unwrap();
     client
         .wait_for(

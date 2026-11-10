@@ -601,11 +601,15 @@ async fn the_orchestrator_shell_runs_confined() {
         println!("SKIPPED: --confinement=workspace is unavailable on this host: {reason}");
         return;
     }
-    // The temp dir is granted to the shell here, so the endpoint file
-    // goes to its default place in the user's state directory.
-    let default =
-        rkat_tui::daemon::endpoint_file(&ws.root, &rkat_tui::daemon::endpoint::RealmKey::Default)
-            .unwrap();
+    // The temp dir is granted to the shell here, so the endpoint file goes
+    // to its default place under a state directory of the test's own in
+    // Cargo's target dir, which no grant covers (never the user's).
+    let state = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let default = rkat_tui::daemon::endpoint::file_in(
+        state.path(),
+        &ws.root,
+        &rkat_tui::daemon::endpoint::RealmKey::Default,
+    );
     let llm = ScriptedLlmClient::new(vec![
         Step::Tool {
             id: "sh",
@@ -621,10 +625,12 @@ async fn the_orchestrator_shell_runs_confined() {
     let args = args_with(&ws.root, &["--confinement=workspace"]);
     let daemon = Running::start_with(
         &args,
-        DaemonOptions::default().with_bootstrap(BootstrapOptions {
-            host_paths: Some(HostPaths::detect()),
-            ..Running::bootstrap(&llm)
-        }),
+        DaemonOptions::default()
+            .with_bootstrap(BootstrapOptions {
+                host_paths: Some(HostPaths::detect()),
+                ..Running::bootstrap(&llm)
+            })
+            .with_state_home(state.path().to_path_buf()),
     )
     .await;
     assert_eq!(daemon.endpoint_file, default);
@@ -638,9 +644,9 @@ async fn the_orchestrator_shell_runs_confined() {
     // The agent's shell cannot read the attach token.
     assert!(!request.contains(&token), "{request}");
     daemon.stop().await;
-    if let Some(dir) = default.parent() {
-        let _ = std::fs::remove_dir(dir);
-    }
+    // The stop removed the file and its directory.
+    let dir = default.parent().unwrap();
+    assert!(!dir.exists(), "left behind: {}", dir.display());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

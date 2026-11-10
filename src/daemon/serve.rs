@@ -133,11 +133,21 @@ impl Listener {
         &self.file
     }
 
-    /// Remove the endpoint file, when it is still ours.
+    /// Remove the endpoint file, when it is still ours, and its
+    /// per-workspace directory once that is empty (a later daemon creates
+    /// it again).
     pub fn remove_files(&self) {
         let ours = Endpoint::read(&self.file).is_ok_and(|e| *e.token == *self.token);
-        if ours && let Err(err) = std::fs::remove_file(&self.file) {
+        if !ours {
+            return;
+        }
+        if let Err(err) = std::fs::remove_file(&self.file) {
             tracing::warn!(file = %self.file.display(), error = %err, "cannot remove the endpoint file");
+            return;
+        }
+        // Fails, and is left, when anything else is in it.
+        if let Some(dir) = self.file.parent() {
+            let _ = std::fs::remove_dir(dir);
         }
     }
 }

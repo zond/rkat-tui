@@ -181,6 +181,10 @@ design.
 
 ### Fixed
 
+- A daemon's stop removes the per-workspace directory of its endpoint file
+  once it is empty, and the test suite no longer writes into the user's
+  state directory (one test left a `rkat-tui/<key>/` directory there on
+  every run).
 - A failed first attach is no longer final and silent. The client retries
   it three times with a growing wait (starting the daemon again when it
   may), and the status bar says why it failed, when it retries and where

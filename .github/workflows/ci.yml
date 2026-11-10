@@ -61,4 +61,19 @@ jobs:
           toolchain: 1.97.0
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
+      # The tests must not write into the user's state directory (where
+      # the daemon's endpoint files live): point it at an empty one and
+      # fail the job if anything is left in it.
+      - name: An empty state directory
+        run: |
+          mkdir -p "$RUNNER_TEMP/state"
+          echo "XDG_STATE_HOME=$RUNNER_TEMP/state" >> "$GITHUB_ENV"
       - run: cargo nextest run --all-features
+      - name: The tests left nothing in the state directory
+        run: |
+          left=$(find "$XDG_STATE_HOME" -mindepth 1)
+          if [ -n "$left" ]; then
+            echo "the tests left files in XDG_STATE_HOME:"
+            echo "$left"
+            exit 1
+          fi

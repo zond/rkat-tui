@@ -177,6 +177,10 @@ async fn shutdown_stops_the_daemon_and_removes_its_endpoint_file() {
     drop(owner);
     daemon.ended().await;
     assert!(!file.exists(), "the endpoint file is removed");
+    assert!(
+        !file.parent().unwrap().exists(),
+        "and its directory, empty now"
+    );
 }
 
 // The attach runner's `/quit`, `/detach` and hangup against a daemon.

@@ -259,6 +259,9 @@ pub struct DaemonOptions {
     pub(crate) policy: engine::PolicyOptions,
     /// The build the daemon names (`None`: [`crate::BUILD`]).
     pub(crate) build: Option<String>,
+    /// The state directory the default endpoint file goes in (`None`:
+    /// the user's, [`endpoint::state_home`], or the runtime directory's).
+    pub(crate) state_home: Option<PathBuf>,
 }
 
 impl Default for DaemonOptions {
@@ -270,6 +273,7 @@ impl Default for DaemonOptions {
             bootstrap: BootstrapOptions::default(),
             policy: engine::PolicyOptions::default(),
             build: None,
+            state_home: None,
         }
     }
 }
@@ -280,6 +284,16 @@ impl DaemonOptions {
     #[cfg(any(test, feature = "test-support"))]
     pub fn with_endpoint_file(mut self, file: PathBuf) -> Self {
         self.endpoint_file = Some(file);
+        self
+    }
+
+    /// Put the default endpoint file under `dir` instead of the user's
+    /// state directory: the default place is still chosen (and checked
+    /// against the shell's grants), in a directory a test owns.
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_state_home(mut self, dir: PathBuf) -> Self {
+        self.state_home = Some(dir);
         self
     }
 
@@ -460,9 +474,14 @@ impl Daemon {
         let workspace = std::fs::canonicalize(&layers.scope.context_root)
             .unwrap_or_else(|_| layers.scope.context_root.clone());
         let realm = endpoint::RealmKey::of(&layers.scope);
-        let files = match options.endpoint_file {
-            Some(file) => vec![file],
-            None => {
+        let files = match (options.endpoint_file, options.state_home) {
+            (Some(file), _) => vec![file],
+            (None, Some(state_home)) => vec![endpoint::file_in(
+                &state_home,
+                &layers.scope.context_root,
+                &realm,
+            )],
+            (None, None) => {
                 let mut files = endpoint::candidates(&layers.scope.context_root, &realm);
                 if files.is_empty() {
                     files.push(endpoint_file(&layers.scope.context_root, &realm)?);

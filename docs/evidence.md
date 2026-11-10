@@ -4206,3 +4206,24 @@ the reason and the log, then `/daemon start` attaches to a serving
 daemon), `a_daemon_of_another_build_is_announced` (`DaemonOptions::with_build`),
 and `ui::connection`'s unit tests (the segment's text).
 
+### The tests stop writing into the user's state directory
+
+`the_orchestrator_shell_runs_confined` started its daemon on the real
+default place (`daemon::endpoint_file`, the user's `$XDG_STATE_HOME`) on
+purpose: the temp dir is granted to the confined shell, so a file beside
+the workspace would be refused. `Listener::remove_files` removed the file
+and never its 0700 `<key>/` directory, so every run left one behind. The
+test now passes `DaemonOptions::with_state_home` (a directory under
+`CARGO_TARGET_TMPDIR`, outside every grant; the daemon still makes the
+default-place choice, `choose_endpoint_file`, over
+`endpoint::file_in(state_home, …)`), and `remove_files` removes the
+directory once empty (`remove_dir` refuses a non-empty one). The rig does
+not set `XDG_STATE_HOME` itself: edition 2024's `set_var` is unsafe and
+the crate denies `unsafe_code`, and a Cargo `[env]` entry would reach
+`cargo run` too. CI sets it for the test job and fails when anything is
+left in it. Pinned by `the_orchestrator_shell_runs_confined` (the file
+and its directory gone after the stop; skipped where the sandbox is
+unavailable) and `shutdown_stops_the_daemon_and_removes_its_endpoint_file`
+(the directory gone, everywhere); the full suite run with
+`XDG_STATE_HOME` at an empty directory left it empty.
+

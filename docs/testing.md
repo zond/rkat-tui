@@ -90,6 +90,20 @@ plus, if it touches the service gate, a case in
 `keys_help_names_every_keymap_action_and_nothing_else` fails until the
 key reference and the keymap agree.
 
+## The tests leave the user's state directory alone
+
+The daemon's endpoint files live in the user's state directory
+(`$XDG_STATE_HOME/rkat-tui/<key>/`). No test writes there: the rig's
+daemons write theirs beside the test's workspace (`endpoint_file_for`),
+and the one test that needs the default place, because the temp dir is
+granted to its confined shell
+(`the_orchestrator_shell_runs_confined`), puts it under a state directory
+of its own in Cargo's target dir (`DaemonOptions::with_state_home`), which
+no grant covers. A daemon's stop removes its endpoint file and the empty
+directory it was in. CI points `XDG_STATE_HOME` at an empty directory for
+the test job and fails it if anything is left there; a new test that
+starts a daemon on the default place fails that step.
+
 ## Known flaky tests
 
 Two tests were flaky on CI and have been hardened. If either fails again, the
