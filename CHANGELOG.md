@@ -9,6 +9,11 @@ design.
 
 ### Security
 
+- The agent's file tools can no longer read the daemon's attach token:
+  the endpoint directories are sealed for `read_file`, `grep` and `glob`
+  (tier 0, never a question for the classifier), and a search above them
+  skips them. Before, a read outside the project went to the classifier,
+  which could allow it.
 - The attach handshake no longer sends the token. The daemon proves it
   holds it first (an HMAC over a nonce from each side), then the client
   does; a process that took a dead daemon's port, or answers during the

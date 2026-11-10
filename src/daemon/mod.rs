@@ -489,7 +489,7 @@ impl Daemon {
     ///
     /// See [`Daemon::start`].
     pub async fn start_with(
-        layers: bootstrap::Layers,
+        mut layers: bootstrap::Layers,
         config: meerkat_core::Config,
         args: &Args,
         options: DaemonOptions,
@@ -523,6 +523,19 @@ impl Daemon {
         for file in &files {
             endpoint::check_stale(file).await?;
         }
+        // The token's directories are secret to the agent's file tools
+        // (read included) and to the classifier's: the confined shell
+        // cannot reach them ([`choose_endpoint_file`]), and neither may a
+        // `read_file` a classifier would allow.
+        let secret: Vec<PathBuf> = endpoint::search_dirs()
+            .into_iter()
+            .chain(
+                files
+                    .iter()
+                    .filter_map(|file| file.parent().map(Path::to_path_buf)),
+            )
+            .collect();
+        layers.scope.project_root = layers.scope.project_root.clone().with_secret_roots(secret);
         let parts =
             bootstrap::assemble(layers, config, args, options.bootstrap, LEASE_SURFACE).await?;
         let file = choose_endpoint_file(&parts.confinement, &files)?;

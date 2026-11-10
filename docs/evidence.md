@@ -4624,3 +4624,30 @@ daemon proof copied: all refused by the real `read_attach`),
 `the_proofs_depend_on_the_token_both_nonces_and_the_side`; the transport
 tests and every attach integration test run the real handshake end to
 end, and `tests/daemon.rs` still attaches with the older client's line.
+
+### D3: the endpoint directories are sealed for the file tools
+
+Verified: `read_file` and `grep`/`glob` outside the project were not
+sealed but `Err` in `builtin_tier` (`approval/policy.rs`), i.e. a
+classifier question, and the endpoint directory was not among the sealed
+roots (`bootstrap/scope.rs::seal` names the git dirs, the realm and the
+user config dir). An allowed read of `mob.endpoint` handed the agent the
+token, with which it could attach from its shell and change its own gate.
+
+`ProjectRoot::with_secret_roots` adds directories that are sealed and
+also never read: `ResolvedPath::secret`. The daemon passes
+`endpoint::search_dirs()` (`<state>/rkat-tui`, `$XDG_RUNTIME_DIR/rkat-tui`)
+and the parent of each endpoint file it may use (`--endpoint-file`
+included) before it assembles anything, so the agent's, the helpers' and
+the classifier's file tools share the root. The gate returns
+`Tier::Sealed` for a `read_file`, or a `grep`/`glob` path, under a secret
+root before any allow rule; the tools refuse such a path themselves
+(`Shared::resolve`), and their walker skips secret directories, so a
+search the classifier allows above them never enters them.
+
+Tests: `the_endpoint_directory_is_sealed_for_reads_and_searches` (policy:
+read, grep, glob, write sealed under an allow-all rule; a neighbour still
+goes to the classifier) and `the_endpoint_file_is_sealed_for_the_file_tools`
+(`tests/attach_approvals.rs`: through the daemon the read is refused
+without a classifier question, and an allowed grep above the state
+directory ran and does not show the token or the file).

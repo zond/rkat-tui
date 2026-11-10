@@ -135,7 +135,7 @@ pub(crate) fn run(shared: &Shared, _call: CallMeta, args: GrepArgs) -> ToolOutco
     let mut out = Output::new(args.head_limit.unwrap_or(DEFAULT_HEAD_LIMIT).max(1));
     let mut any = false;
 
-    let mut builder = walker(&root, shared.hide_secrets);
+    let mut builder = walker(&root, shared.hide_secrets, shared.root.secret_roots());
     builder.sort_by_file_name(std::cmp::Ord::cmp);
     'files: for entry in builder.build().flatten() {
         if !entry.file_type().is_some_and(|ft| ft.is_file()) {

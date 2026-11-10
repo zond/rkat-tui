@@ -224,7 +224,19 @@ pub(crate) struct Shared {
 
 impl Shared {
     /// Resolve a model-supplied path against the project root.
+    /// A secret path ([`ResolvedPath::secret`]: the daemon's endpoint
+    /// directories) is refused here too, whatever the gate decided.
     pub(crate) fn resolve(&self, tool: &str, raw: &str) -> Result<ResolvedPath, ToolFailure> {
+        let resolved = self.resolve_any(tool, raw)?;
+        if resolved.secret {
+            return Err(ToolFailure::recoverable(format!(
+                "`{raw}` is sealed: it holds the daemon's attach token, which no file tool reads"
+            )));
+        }
+        Ok(resolved)
+    }
+
+    fn resolve_any(&self, tool: &str, raw: &str) -> Result<ResolvedPath, ToolFailure> {
         self.root.resolve(raw).map_err(|err| match err {
             PathError::Empty | PathError::NulByte => {
                 ToolFailure::Fatal(ToolError::InvalidArguments {

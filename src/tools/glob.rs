@@ -56,8 +56,11 @@ pub(crate) fn search_root(
 }
 
 /// A gitignore-aware walker that includes hidden files but never descends
-/// into `.git`; with `hide_secrets` it also skips environment files.
-pub(crate) fn walker(root: &Path, hide_secrets: bool) -> WalkBuilder {
+/// into `.git` or a directory of `secret` (the project root's secret roots,
+/// [`crate::paths::ProjectRoot::secret_roots`]); with `hide_secrets` it also
+/// skips environment files.
+pub(crate) fn walker(root: &Path, hide_secrets: bool, secret: &[PathBuf]) -> WalkBuilder {
+    let secret = secret.to_vec();
     let mut builder = WalkBuilder::new(root);
     builder
         .hidden(false)
@@ -70,6 +73,7 @@ pub(crate) fn walker(root: &Path, hide_secrets: bool) -> WalkBuilder {
         .filter_entry(move |entry| {
             entry.file_name() != ".git"
                 && !(hide_secrets && crate::paths::is_secret_file_name(entry.file_name()))
+                && !secret.iter().any(|dir| entry.path().starts_with(dir))
         });
     builder
 }
@@ -81,7 +85,7 @@ pub(crate) fn walker(root: &Path, hide_secrets: bool) -> WalkBuilder {
 pub(crate) fn mention_walker(root: &crate::paths::ProjectRoot, start: &Path) -> WalkBuilder {
     let base = root.as_path().to_path_buf();
     let sealed = root.sealed_roots().to_vec();
-    let mut builder = walker(start, false);
+    let mut builder = walker(start, false, root.secret_roots());
     builder.filter_entry(move |entry| {
         let path = entry.path();
         entry.file_name() != ".git"
@@ -108,7 +112,10 @@ pub(crate) fn run(shared: &Shared, _call: CallMeta, args: GlobArgs) -> ToolOutco
     }
 
     let mut hits: Vec<(SystemTime, PathBuf)> = Vec::new();
-    for entry in walker(&root, shared.hide_secrets).build().flatten() {
+    for entry in walker(&root, shared.hide_secrets, shared.root.secret_roots())
+        .build()
+        .flatten()
+    {
         if !entry.file_type().is_some_and(|ft| ft.is_file()) {
             continue;
         }

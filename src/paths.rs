@@ -164,6 +164,9 @@ pub struct ProjectRoot {
     root: PathBuf,
     /// Canonical (as far as they exist) sealed directories.
     sealed_roots: Vec<PathBuf>,
+    /// Canonical (as far as they exist) secret directories: sealed, and
+    /// never read either.
+    secret_roots: Vec<PathBuf>,
 }
 
 impl ProjectRoot {
@@ -182,6 +185,7 @@ impl ProjectRoot {
         Ok(Self {
             root: canonical,
             sealed_roots: Vec::new(),
+            secret_roots: Vec::new(),
         })
     }
 
@@ -202,10 +206,35 @@ impl ProjectRoot {
         self
     }
 
-    /// The sealed roots added with [`Self::with_sealed_roots`].
+    /// The sealed roots added with [`Self::with_sealed_roots`] (the secret
+    /// ones included).
     #[must_use]
     pub fn sealed_roots(&self) -> &[PathBuf] {
         &self.sealed_roots
+    }
+
+    /// Add secret roots: sealed ([`Self::with_sealed_roots`]), and every
+    /// path at or below one resolves [`ResolvedPath::secret`], which no
+    /// file tool reads and no search walks into. The daemon passes the
+    /// directories that hold its endpoint file (the attach token).
+    #[must_use]
+    pub fn with_secret_roots(mut self, dirs: impl IntoIterator<Item = PathBuf>) -> Self {
+        for dir in dirs {
+            let dir = canonicalize_existing_prefix(&dir).unwrap_or(dir);
+            if !self.secret_roots.contains(&dir) {
+                self.secret_roots.push(dir.clone());
+            }
+            if !self.sealed_roots.contains(&dir) {
+                self.sealed_roots.push(dir);
+            }
+        }
+        self
+    }
+
+    /// The secret roots added with [`Self::with_secret_roots`].
+    #[must_use]
+    pub fn secret_roots(&self) -> &[PathBuf] {
+        &self.secret_roots
     }
 
     /// The canonical root path.
@@ -244,11 +273,13 @@ impl ProjectRoot {
             .as_deref()
             .is_some_and(|rel| sealed_set().is_match(rel))
             || self.sealed_roots.iter().any(|dir| abs.starts_with(dir));
+        let secret = self.secret_roots.iter().any(|dir| abs.starts_with(dir));
         Ok(ResolvedPath {
             abs,
             relative,
             protected: protected || sealed,
             sealed,
+            secret,
         })
     }
 
@@ -340,6 +371,10 @@ pub struct ResolvedPath {
     /// roots (the git directories, the realm directory, the user config
     /// directory), inside the project or not. Implies `protected`.
     pub sealed: bool,
+    /// Whether no file tool reads the path either: it lies at or below one
+    /// of the root's secret roots (the daemon's endpoint directories).
+    /// Implies `sealed`.
+    pub secret: bool,
 }
 
 impl ResolvedPath {

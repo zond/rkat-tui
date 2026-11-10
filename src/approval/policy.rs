@@ -520,6 +520,9 @@ fn builtin_tier(action: &Action<'_>, ctx: &PolicyContext<'_>) -> Result<TierDeci
             }
         }
         ActionKind::FileRead { path } => {
+            if let Some(sealed) = secret(ctx.root, path) {
+                return Ok(sealed);
+            }
             require_inside(ctx.root, path)?;
             Ok(TierDecision::new(
                 Tier::AlwaysAllow,
@@ -528,6 +531,9 @@ fn builtin_tier(action: &Action<'_>, ctx: &PolicyContext<'_>) -> Result<TierDeci
         }
         ActionKind::Search { path, pattern } => {
             if let Some(path) = path.as_deref() {
+                if let Some(sealed) = secret(ctx.root, path) {
+                    return Ok(sealed);
+                }
                 require_inside(ctx.root, path)?;
             }
             if let Some(pattern) = pattern.as_deref()
@@ -655,6 +661,23 @@ fn protected_kind(relative: &std::path::Path) -> &'static str {
     }
 }
 
+/// [`Tier::Sealed`] when `path` lies in a secret root (the daemon's
+/// endpoint directories: the attach token): never read, never a question
+/// for the classifier or the user.
+fn secret(root: &ProjectRoot, path: &str) -> Option<TierDecision> {
+    root.resolve(path)
+        .is_ok_and(|resolved| resolved.secret)
+        .then(|| {
+            TierDecision::new(
+                Tier::Sealed,
+                format!(
+                    "`{path}` is sealed: it holds the daemon's attach token, which file tools \
+                     never read"
+                ),
+            )
+        })
+}
+
 fn require_inside(root: &ProjectRoot, path: &str) -> Result<(), String> {
     let resolved = root
         .resolve(path)
@@ -723,6 +746,50 @@ mod tests {
             posix_shell: true,
         };
         classify_tier(&parse(name, &raw(args)), rules, &ctx).tier
+    }
+
+    /// D3 of the security review: a secret root (the daemon's endpoint
+    /// directory) is sealed for reads, searches and writes alike, an allow
+    /// rule notwithstanding; its neighbours outside the project still go
+    /// to the classifier.
+    #[test]
+    fn the_endpoint_directory_is_sealed_for_reads_and_searches() {
+        let (dir, root) = project();
+        let state = tempfile::tempdir().unwrap();
+        let secret = state.path().join("rkat-tui/abc");
+        std::fs::create_dir_all(&secret).unwrap();
+        std::fs::write(secret.join("mob.endpoint"), "{}").unwrap();
+        let root = root.with_secret_roots([state.path().join("rkat-tui")]);
+        let file = secret.join("mob.endpoint").display().to_string();
+        let mut allow = RuleSet::default();
+        allow.push(Rule::new(RuleKind::Allow, "read_file", Some("*"), RuleOrigin::Realm).unwrap());
+        for (name, args) in [
+            ("read_file", json!({"path": file})),
+            (
+                "grep",
+                json!({"pattern": "token", "path": secret.display().to_string()}),
+            ),
+            ("glob", json!({"pattern": "*", "path": file})),
+            ("write_file", json!({"path": file, "content": ""})),
+        ] {
+            assert_eq!(
+                tier(&root, &allow, false, name, &args),
+                Tier::Sealed,
+                "{name}"
+            );
+        }
+        let elsewhere = state.path().join("other.txt").display().to_string();
+        assert_eq!(
+            tier(
+                &root,
+                &RuleSet::default(),
+                false,
+                "read_file",
+                &json!({"path": elsewhere})
+            ),
+            Tier::Classifier
+        );
+        drop(dir);
     }
 
     /// A protected write asks the user: a user allow rule for the path

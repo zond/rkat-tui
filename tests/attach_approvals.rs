@@ -1370,3 +1370,53 @@ async fn a_mentioned_files_instruction_is_not_the_users_words() {
     );
     client.quit().await;
 }
+
+/// D3 of the security review: the endpoint file (the attach token) is
+/// sealed for the agent's file tools: a `read_file` of it is refused at
+/// tier 0 without asking the classifier, and a search the classifier
+/// allows above it never walks into its directory.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_endpoint_file_is_sealed_for_the_file_tools() {
+    let ws = Workspace::new();
+    let file = endpoint_file_for(&ws.root);
+    let above = ws.root.parent().unwrap().to_path_buf();
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Tool {
+            id: "r1",
+            name: "read_file",
+            args: json!({"path": file.display().to_string()}),
+        },
+        Step::Tool {
+            id: "g1",
+            name: "grep",
+            args: json!({"pattern": "token", "path": above.display().to_string(), "output_mode": "content"}),
+        },
+        Step::Text("done"),
+    ]);
+    let classifier = rig::ScriptedClassifier::allowing(Vec::new());
+    let setup = rig::Setup::default().classifier(Arc::clone(&classifier) as _);
+    let mut client = rig::Attached::start_with(&ws.root, &llm, setup).await;
+    let token = client.daemon.endpoint().token;
+    client.send(Effect::StartTurn("look around".into()));
+    assert_eq!(client.turn_finished().await.result.unwrap().text, "done");
+    let read = result_text(&llm, 1, "r1");
+    assert!(read.contains("sealed"), "{read}");
+    assert!(!read.contains(&token), "{read}");
+    let grep = result_text(&llm, 2, "g1");
+    assert!(
+        !grep.contains(&token) && !grep.contains("mob.endpoint"),
+        "{grep}"
+    );
+    // The search ran (the classifier allowed it) and walked past the
+    // token's directory.
+    assert!(
+        classifier.tools().iter().any(|tool| tool == "grep") && grep.contains("token"),
+        "{grep}"
+    );
+    assert!(
+        !classifier.tools().iter().any(|tool| tool == "read_file"),
+        "the read is never a classifier question: {:?}",
+        classifier.tools()
+    );
+    client.quit().await;
+}
