@@ -260,6 +260,19 @@ impl HostTrustRecord {
         self.save()
     }
 
+    /// Record `hex_sha256` ([`hex_digest`]) as `file`'s digest and save
+    /// the record: the digest of bytes rkat-tui itself just wrote, not of
+    /// the file read again (which someone may have changed in between).
+    ///
+    /// # Errors
+    ///
+    /// [`TrustError::Write`] when the record cannot be saved.
+    pub fn record_digest(&mut self, file: &Path, hex_sha256: String) -> Result<(), TrustError> {
+        let key = self.key(file);
+        self.record.files.insert(key, hex_sha256);
+        self.save()
+    }
+
     fn save(&mut self) -> Result<(), TrustError> {
         let Some(path) = &self.path else {
             return Ok(());

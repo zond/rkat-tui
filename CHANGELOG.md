@@ -9,6 +9,11 @@ design.
 
 ### Security
 
+- The helper bindings file (`tui_helpers.json`, whom each helper works
+  for) is read only when it is what the daemon last wrote: its digest is
+  kept in the host trust record outside the workspace, so an owner the
+  agent's shell plants there is never used. A bindings file written by an
+  older rkat-tui is not read either (its helpers are not restored once).
 - The confined shell no longer gets the whole Cargo home writable: only
   `registry/` and `git/` are, the rest (`bin/`, `config.toml`, …) is read
   only, and `credentials.toml` is not in its view. Before, a confined

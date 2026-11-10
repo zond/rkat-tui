@@ -516,6 +516,13 @@ symbolic link and its digest matches the record; otherwise it can only deny,
 its `[endpoints]`, `[pricing]`, `[thinking]`, `[confinement]` and `[auto]` are ignored,
 and a notice says why. `/permissions add` and the escalation dialog update the record; `/permissions
 trust` shows a summary of the file as it is now and records its digest.
+The same record holds the digest of the helper bindings
+(`<realm>/tui_helpers.json`, whom each helper works for) after every write
+of the daemon's: a file that is not what the daemon last wrote is not read
+(a helper bound only by it is not restored) and the next write replaces
+it. On Linux the agent's confined shell can write the workspace realm
+(`.rkat/tui/`), so what it writes there is not trusted; the engine's own
+files there (sessions, approvals, custody) are not covered by this.
 
 ```toml
 [auto]

@@ -24,6 +24,8 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use super::registry::{HelperKey, HelperTag};
+use crate::bootstrap::project_trust::SharedTrustRecord;
+use crate::bootstrap::trust::hex_digest;
 use crate::paths::{AtomicWriteError, FileMode, write_atomic};
 
 /// The bindings file, under the realm directory.
@@ -50,6 +52,16 @@ pub enum BindingsError {
         path: PathBuf,
         /// Why.
         source: serde_json::Error,
+    },
+    /// The file is not what this daemon last wrote there (its digest is not
+    /// the one the host trust record holds): someone else changed it, the
+    /// agent's confined shell for one, which may write the workspace realm.
+    #[error(
+        "{path} is not what rkat-tui last wrote (changed by something else, or written by an older rkat-tui); its bindings are not used"
+    )]
+    Changed {
+        /// The bindings file.
+        path: PathBuf,
     },
     /// The file's version is not [`FORMAT_VERSION`].
     #[error("{path} has format version {found}, expected {FORMAT_VERSION}")]
@@ -196,17 +208,47 @@ impl Bindings {
 }
 
 /// Where the bindings persist.
-#[derive(Debug)]
 struct Store {
     realm_root: PathBuf,
     path: PathBuf,
+    /// The host trust record (outside the workspace) holding the digest of
+    /// what was last written; `None`: the file is taken as it is (tests).
+    trust: Option<SharedTrustRecord>,
+}
+
+impl std::fmt::Debug for Store {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Store")
+            .field("path", &self.path)
+            .field("guarded", &self.trust.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Store {
-    /// The file's bindings; empty when there is no file.
+    fn new(realm_root: &Path, trust: Option<SharedTrustRecord>) -> Self {
+        Self {
+            realm_root: realm_root.to_path_buf(),
+            path: realm_root.join(BINDINGS_FILE),
+            trust,
+        }
+    }
+
+    /// The file's bindings; empty when there is no file. With a trust
+    /// record, a file whose digest is not the one recorded at the last
+    /// write is [`BindingsError::Changed`]: never read as bindings.
     fn read(&self) -> Result<Bindings, BindingsError> {
         match std::fs::read(&self.path) {
-            Ok(bytes) => Bindings::decode(&self.path, &bytes),
+            Ok(bytes) => {
+                if let Some(trust) = &self.trust
+                    && !trust.lock().holds_digest(&self.path, &hex_digest(&bytes))
+                {
+                    return Err(BindingsError::Changed {
+                        path: self.path.clone(),
+                    });
+                }
+                Bindings::decode(&self.path, &bytes)
+            }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Bindings::default()),
             Err(source) => Err(BindingsError::Read {
                 path: self.path.clone(),
@@ -215,13 +257,21 @@ impl Store {
         }
     }
 
+    /// Write `bindings` and record the digest of the bytes written.
     fn write(&self, bindings: &Bindings) -> Result<(), BindingsError> {
+        let bytes = bindings.encode()?;
         write_atomic(
             &self.path,
-            &bindings.encode()?,
+            &bytes,
             FileMode::Private,
             Some(&self.realm_root),
         )?;
+        if let Some(trust) = &self.trust
+            && let Err(err) = trust.lock().record_digest(&self.path, hex_digest(&bytes))
+        {
+            // The next read finds no digest for it and refuses it.
+            tracing::warn!(error = %err, file = %self.path.display(), "could not record the helper bindings' digest");
+        }
         Ok(())
     }
 }
@@ -245,16 +295,18 @@ impl HelperBindings {
         }
     }
 
-    /// The bindings persisted under `realm_root`.
+    /// The bindings persisted under `realm_root`, guarded by `trust` (see
+    /// [`BindingsError::Changed`]).
     ///
     /// # Errors
     ///
-    /// [`BindingsError`] when the file exists but cannot be read or parsed.
-    pub fn open(realm_root: &Path) -> Result<Self, BindingsError> {
-        let store = Store {
-            realm_root: realm_root.to_path_buf(),
-            path: realm_root.join(BINDINGS_FILE),
-        };
+    /// [`BindingsError`] when the file exists but cannot be read or parsed,
+    /// or is not what was last written.
+    pub fn open(
+        realm_root: &Path,
+        trust: Option<SharedTrustRecord>,
+    ) -> Result<Self, BindingsError> {
+        let store = Store::new(realm_root, trust);
         let memory = store.read()?;
         Ok(Self {
             store: Some(store),
@@ -263,17 +315,15 @@ impl HelperBindings {
     }
 
     /// [`Self::open`], or empty bindings that still persist under
-    /// `realm_root` when the file cannot be read (logged): members bound
-    /// only by the unreadable file are refused, never attributed elsewhere.
+    /// `realm_root` when the file cannot be read or changed underneath
+    /// (logged): members bound only by that file are refused, never
+    /// attributed elsewhere, and the next write replaces it.
     #[must_use]
-    pub fn open_or_empty(realm_root: &Path) -> Self {
-        Self::open(realm_root).unwrap_or_else(|err| {
+    pub fn open_or_empty(realm_root: &Path, trust: Option<SharedTrustRecord>) -> Self {
+        Self::open(realm_root, trust.clone()).unwrap_or_else(|err| {
             tracing::warn!(error = %err, "helper bindings unreadable; starting empty");
             Self {
-                store: Some(Store {
-                    realm_root: realm_root.to_path_buf(),
-                    path: realm_root.join(BINDINGS_FILE),
-                }),
+                store: Some(Store::new(realm_root, trust)),
                 memory: Mutex::new(Bindings::default()),
             }
         })
@@ -449,7 +499,7 @@ mod tests {
         let helper_session = SessionId::new();
         let key = HelperKey::new(MobId::from("team"), AgentIdentity::from("scout"));
         {
-            let bindings = HelperBindings::open(dir.path()).unwrap();
+            let bindings = HelperBindings::open(dir.path(), None).unwrap();
             bindings
                 .set_mob_owner(&MobId::from("team"), &owner)
                 .unwrap();
@@ -461,7 +511,7 @@ mod tests {
                 .set_mob_owner(&MobId::from("nested"), &helper_session)
                 .unwrap();
         }
-        let reopened = HelperBindings::open(dir.path()).unwrap();
+        let reopened = HelperBindings::open(dir.path(), None).unwrap();
         assert_eq!(
             reopened.mob_owner(&MobId::from("team")),
             Some(owner.clone())
@@ -490,15 +540,75 @@ mod tests {
         assert!(reopened.mob_owner(&MobId::from("team")).is_none());
     }
 
+    /// The realm is writable by the agent's confined shell (the engine
+    /// cannot bind it read only), so the bindings file is read only when it
+    /// is what this daemon last wrote: a planted owner, in a live daemon or
+    /// across a restart, is never read, and the next write replaces it.
+    #[test]
+    fn a_bindings_file_changed_underneath_is_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let trust: SharedTrustRecord = std::sync::Arc::new(Mutex::new(
+            crate::bootstrap::trust::HostTrustRecord::in_memory(dir.path()),
+        ));
+        let owner = SessionId::new();
+        let planted = SessionId::new();
+        let bindings = HelperBindings::open(dir.path(), Some(trust.clone())).unwrap();
+        bindings
+            .set_mob_owner(&MobId::from("team"), &owner)
+            .unwrap();
+        // What it wrote reads back, after a restart too.
+        let reopened = HelperBindings::open(dir.path(), Some(trust.clone())).unwrap();
+        assert_eq!(
+            reopened.mob_owner(&MobId::from("team")),
+            Some(owner.clone())
+        );
+        // The shell plants an owner for another mob.
+        let file = dir.path().join(BINDINGS_FILE);
+        let text = std::fs::read_to_string(&file).unwrap().replace(
+            "\"mobs\": {",
+            &format!("\"mobs\": {{\n    \"evil\": \"{planted}\","),
+        );
+        std::fs::write(&file, text).unwrap();
+        assert!(
+            bindings.mob_owner(&MobId::from("evil")).is_none(),
+            "a live lookup does not read the changed file"
+        );
+        assert!(matches!(
+            HelperBindings::open(dir.path(), Some(trust.clone())),
+            Err(BindingsError::Changed { .. })
+        ));
+        let restarted = HelperBindings::open_or_empty(dir.path(), Some(trust.clone()));
+        assert!(restarted.mob_owner(&MobId::from("evil")).is_none());
+        // The next write is memory's, and is read again.
+        bindings
+            .set_mob_owner(&MobId::from("other"), &owner)
+            .unwrap();
+        let reopened = HelperBindings::open(dir.path(), Some(trust.clone())).unwrap();
+        assert!(reopened.mob_owner(&MobId::from("evil")).is_none());
+        assert_eq!(reopened.mob_owner(&MobId::from("team")), Some(owner));
+        // A file the record holds no digest of (an older rkat-tui's, or
+        // one that came with the checkout) is not read either.
+        let fresh = tempfile::tempdir().unwrap();
+        std::fs::write(
+            fresh.path().join(BINDINGS_FILE),
+            std::fs::read(&file).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            HelperBindings::open(fresh.path(), Some(trust)),
+            Err(BindingsError::Changed { .. })
+        ));
+    }
+
     #[test]
     fn an_unreadable_file_is_refused_or_started_empty() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(BINDINGS_FILE), b"not json").unwrap();
         assert!(matches!(
-            HelperBindings::open(dir.path()),
+            HelperBindings::open(dir.path(), None),
             Err(BindingsError::Parse { .. })
         ));
-        let bindings = HelperBindings::open_or_empty(dir.path());
+        let bindings = HelperBindings::open_or_empty(dir.path(), None);
         assert!(bindings.mob_owner(&MobId::from("team")).is_none());
     }
 }

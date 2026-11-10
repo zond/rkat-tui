@@ -441,8 +441,11 @@ list of what the daemon and its client do not do yet.
    `deny_write` lowered to read-only re-binds of existing subtrees inside
    a writable grant, installed after their parent (macOS already honours
    `deny_write`). Not opened; the user decides. Meanwhile the realm's
-   files are trusted by digest (`docs/evidence.md`, "After the security
-   review").
+   own files are trusted by digest (`tui.toml`, `config.toml`,
+   `tui_helpers.json`; `docs/evidence.md`, "After the security review"
+   and "1(e)"); the engine's files in the realm (`sessions.sqlite3`, whose
+   human-authored messages seed the classifier on resume, the approval
+   and custody stores) are not, and need this bind.
 
 ## History
 

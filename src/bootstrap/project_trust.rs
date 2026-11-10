@@ -115,6 +115,13 @@ pub struct ProjectInputs {
 }
 
 impl ProjectInputs {
+    /// The host trust record the inputs are judged by (shared, so every
+    /// writer of the record saves one state).
+    #[must_use]
+    pub fn trust_record(&self) -> SharedTrustRecord {
+        Arc::clone(&self.record)
+    }
+
     /// The inputs of `scope`, judged by `record`; `by_flag`: `--trust-project`.
     #[must_use]
     pub fn new(scope: &RuntimeScope, record: SharedTrustRecord, by_flag: bool) -> Self {

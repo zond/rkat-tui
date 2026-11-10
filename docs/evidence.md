@@ -4741,3 +4741,39 @@ itself is not writable) and
 Linux, this host's real paths: `cargo build --offline` of a crate with a
 registry dependency succeeds confined, and `touch` in the Cargo home's
 `bin/` and on its `config.toml` fails).
+
+### 1(e): the daemon's own realm files by digest
+
+The engine cannot bind `<workspace>/.rkat/` read only (ask 8 in
+`docs/mob-split.md`), so on Linux the agent's confined shell writes the
+workspace realm. Of the files rkat-tui itself writes there and reads
+back, `tui.toml` and `config.toml` were already trusted only by the host
+trust record's digest (outside the workspace; `bootstrap::trust`,
+`bootstrap::project_trust`). `tui_helpers.json` was not: it says which
+session each helper and agent-made mob works for, and it is read on every
+lookup that misses memory and at the next start, so an owner planted
+there attributed a restored helper to another session's gate (its rules,
+transcript and counters).
+
+`HelperBindings` now records the SHA-256 of the bytes it writes
+(`HostTrustRecord::record_digest`: the bytes written, not the file read
+again) in the daemon's one shared trust record
+(`ProjectInputs::trust_record`, so its saves and the realm files' do not
+overwrite each other), and reads the file only when its digest is the one
+recorded: otherwise `BindingsError::Changed`, a lookup finds nothing (a
+helper bound only by the file is refused, never attributed elsewhere),
+`open_or_empty` starts empty, and the next write is memory's. A file the
+record holds no digest of (one an older rkat-tui wrote) is refused the
+same way, once. `conversations.json`, the cursor, the cost and history
+files decide nothing the gate relies on and stay unguarded.
+
+Still exposed until the engine ask lands, and said so in the manual: the
+engine's files in the realm, `sessions.sqlite3` above all (its messages of
+human authorship seed the classifier's `[user]` lines when a conversation
+is resumed), the approval and custody stores. A digest cannot cover a
+database the engine writes continuously; the read-only bind is the fix.
+
+Test: `a_bindings_file_changed_underneath_is_not_read` (mobs::bindings: an
+owner planted in the file is not read by a live lookup or after a restart,
+the next write replaces it, and a file without a recorded digest is
+refused).
