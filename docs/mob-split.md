@@ -214,9 +214,16 @@ project root, sealed at tier 0 for reads, searches and writes
 the trusted host and can read the file like any other process of the
 user.
 
-A client compares the agent shell's confinement the daemon reports
-(`rkat/status` `shell`) with what its own flags give before attaching,
-and refuses a daemon whose shell may do more (`ClientError::ShellWider`).
+A client on the daemon's own machine compares the agent shell's
+confinement the daemon reports (`rkat/status` `shell`) with what its own
+flags give before attaching, and refuses a daemon whose shell may do more
+(`ClientError::ShellWider`). The comparison is local only: a daemon
+reached on another machine (`--attach=HOST:PORT` to a remote workspace)
+is not compared at all, because its grants name that machine's paths
+(`Reached::apply` clears the client's expected shell for a remote target,
+and `establish` skips `check_shell` without one). Such an attachment
+gives no assurance about the remote agent shell's confinement; it is the
+remote daemon's command line that decides it.
 
 What the confined shell can still write, until engine ask 8 lands: on
 Linux the whole workspace, `.rkat/` and `.git/` included (hooks, the

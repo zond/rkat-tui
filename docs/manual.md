@@ -1177,9 +1177,12 @@ more (unconfined against a confined request, network allowed against
 shells; stop that daemon (`/daemon stop` from a TUI with its flags, or
 SIGTERM to its pid) and attach again to start one with yours, or attach
 with the flags it was started with. A daemon whose shell may do less is
-attached with a warning that names both. A daemon reached with
-`--attach=HOST:PORT` on another machine is not compared (its paths are
-that machine's).
+attached with a warning that names both. The comparison is made
+only for a daemon on this machine: a daemon reached with
+`--attach=HOST:PORT` on another machine is not compared at all (its paths
+are that machine's), so attaching to it says nothing about how its agent
+shell is confined; that is decided by the flags the remote daemon was
+started with.
 
 **When the attach fails.** The segment says why, when the TUI tries
 again, and where the daemon's output is, for example `daemon exited (exit
