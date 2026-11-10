@@ -108,6 +108,8 @@ pub struct EscalationDialog {
     pub cursor: usize,
     /// The comment field: `Some` once the deny choice was picked.
     pub comment: Option<String>,
+    /// Ctrl+O: the whole arguments instead of the preview.
+    pub expanded: bool,
 }
 
 impl EscalationDialog {
@@ -120,6 +122,10 @@ impl EscalationDialog {
         }
         if is_ctrl_c(key) {
             return ModalKey::Close;
+        }
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('o') {
+            self.expanded = !self.expanded;
+            return ModalKey::Stay;
         }
         if has_ctrl_or_alt(key) {
             return ModalKey::Stay;
@@ -589,7 +595,10 @@ pub fn draw_modal(frame: &mut Frame<'_>, area: Rect, modal: &Modal) {
             } else {
                 " Approval needed ".to_string()
             };
-            (title, escalation_lines(prompt, dialog, inner_w))
+            let room = usize::from(area.height)
+                .saturating_sub(16)
+                .max(MAX_ARGS_LINES);
+            (title, escalation_lines(prompt, dialog, inner_w, room))
         }
         Modal::Resume(picker) => (
             " Resume session ".to_string(),
@@ -672,6 +681,7 @@ fn escalation_lines(
     prompt: &RecordedPrompt,
     dialog: &EscalationDialog,
     width: usize,
+    room: usize,
 ) -> Vec<Line<'static>> {
     let dim = Style::default().add_modifier(Modifier::DIM);
     let mut lines = Vec::new();
@@ -693,11 +703,25 @@ fn escalation_lines(
             Style::default().add_modifier(Modifier::BOLD),
         ),
     ]));
-    let args = wrap_text(&prompt.args_preview, width);
-    let extra = args.len().saturating_sub(MAX_ARGS_LINES);
-    lines.extend(args.into_iter().take(MAX_ARGS_LINES).map(Line::from));
+    let (text, shown) = match (&prompt.args_full, dialog.expanded) {
+        (Some(full), true) => (full.as_str(), room),
+        _ if dialog.expanded => (prompt.args_preview.as_str(), room),
+        _ => (prompt.args_preview.as_str(), MAX_ARGS_LINES),
+    };
+    let args = wrap_text(text, width);
+    let extra = args.len().saturating_sub(shown);
+    lines.extend(args.into_iter().take(shown).map(Line::from));
     if extra > 0 {
-        lines.push(Line::styled(format!("… ({extra} more lines)"), dim));
+        lines.push(Line::styled(
+            if dialog.expanded {
+                format!("… ({extra} more lines do not fit this terminal)")
+            } else {
+                format!("… ({extra} more lines; Ctrl+O shows all)")
+            },
+            dim,
+        ));
+    } else if prompt.args_full.is_some() && !dialog.expanded {
+        lines.push(Line::styled("(abbreviated; Ctrl+O shows all)", dim));
     }
     if let Some(reason) = &prompt.policy_reason {
         lines.push(Line::default());
@@ -742,7 +766,11 @@ fn escalation_lines(
     lines.push(Line::default());
     let Some(comment) = &dialog.comment else {
         lines.push(Line::styled(
-            "Enter select · s stop the turn · Ctrl+C stop all",
+            if prompt.args_full.is_some() {
+                "Enter select · s stop · Ctrl+O all arguments · Ctrl+C stop all"
+            } else {
+                "Enter select · s stop the turn · Ctrl+C stop all"
+            },
             dim,
         ));
         return lines;
@@ -1206,6 +1234,7 @@ mod tests {
         let mut d = EscalationDialog {
             cursor: 2,
             comment: None,
+            expanded: false,
         };
         assert_eq!(d.answer(KeyCode::Enter), None);
         // Empty (or blank) Enter denies without a comment.

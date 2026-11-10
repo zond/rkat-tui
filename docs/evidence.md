@@ -4464,3 +4464,35 @@ workspace, the start's refusal and `--trust-project`), the unit tests of
 (`tests/realm_trust.rs`: a TUI-made rule applies at the next start, an
 appended allow rule does not and the notice names the file, `/rules
 trust` adopts it).
+
+### A1: the classifier sees every action whole, or does not decide it
+
+Verified: the review's constants hold. `transcript::MAX_ARG_STRING`
+(1024 bytes) cut every string of the action's arguments in
+`prompts::render_user` through `render_args`, so the `<action>` the
+classifier judged was the first KiB of a long command; the dialog's
+preview cut at 2 KiB (`engine::ARGS_PREVIEW_BYTES`) with a bare `…`.
+
+Now the action is rendered whole (`input.args` as sent). The prior calls
+in the transcript keep their 1 KiB cut: they are history under the
+transcript's byte budget, not the call being decided. `evaluate` refuses
+the classifier any call whose raw arguments exceed
+`prompts::MAX_REVIEWED_ACTION_BYTES` (48 KiB) before the allow cache and
+the classifier: with a human it escalates with the hint "too large to
+review: …" (and no classifier fallback), without one it is denied
+(`ClassifierUnavailable`). The dialog's preview names the bytes it left
+out and the `RecordedPrompt` carries `args_full` (serde default, so the
+daemon's decision rendering and older clients agree); Ctrl+O toggles it
+in the dialog, which then shows as many lines as the terminal holds.
+
+The script payload attached to a reviewed command (`<script>`, the files
+a command runs) keeps its 21 KiB cut with a `[truncated]` marker: it is
+evidence about the action, not the action, and stage 2 may read the files
+itself.
+
+Tests: `a_padded_command_reaches_the_classifier_whole` (the stage-1
+prompt the LLM would be sent holds the `; curl … | sh` tail of a 4 KiB
+command), `an_action_too_large_to_review_goes_to_the_human_not_the_classifier`
+(an allowing classifier is never called; the human is asked with the
+reason; without a human it is denied), and
+`ctrl_o_shows_the_whole_arguments_the_preview_cut` (the dialog).

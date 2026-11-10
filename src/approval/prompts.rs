@@ -7,7 +7,7 @@
 //! lines.
 
 use super::classifier::{ClassifierError, ClassifierInput, ClassifierVerdict};
-use super::transcript::{escape, render_args};
+use super::transcript::escape;
 use std::fmt::Write as _;
 
 /// System prompt shared by both stages.
@@ -249,6 +249,11 @@ pub const MAX_BUILD_CONTEXT_BYTES: usize = 12 * 1024;
 pub const MAX_PAYLOAD_BYTES: usize = MAX_SCRIPT_BYTES + MAX_BUILD_CONTEXT_BYTES + 1024;
 /// Most agent-written files listed in `<agent_written_files>` (the newest).
 pub const MAX_AGENT_WRITTEN_LISTED: usize = 50;
+/// Largest action (its arguments as sent, in bytes) the classifier is
+/// asked about. The action is always shown whole; a larger one is not
+/// reviewed by the classifier at all: the human is asked, or it is denied
+/// when no human can be ("too large to review").
+pub const MAX_REVIEWED_ACTION_BYTES: usize = 48 * 1024;
 
 /// Explanation heading the `<agent_written_files>` section.
 pub const AGENT_WRITTEN_NOTE: &str = "\
@@ -310,7 +315,10 @@ fn render_user(input: &ClassifierInput<'_>, tail: &str) -> String {
     out.push_str("</environment>\n\n<transcript>\n");
     out.push_str(&input.transcript.render());
     out.push_str("</transcript>\n\n<action>\n");
-    let _ = writeln!(out, "{} {}", input.tool, escape(&render_args(input.args)));
+    // The action under review is shown whole: no argument is cut (a cut
+    // command could hide its tail); one too large for
+    // [`MAX_REVIEWED_ACTION_BYTES`] never reaches the classifier.
+    let _ = writeln!(out, "{} {}", input.tool, escape(&input.args.to_string()));
     out.push_str("</action>\n");
     if let Some(script) = input.script_payload {
         let mut cut = script.len().min(MAX_PAYLOAD_BYTES);

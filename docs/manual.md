@@ -183,6 +183,13 @@ allows show none), and a denial's `[classifier checked N files, M searches]`
 tag counts what the classifier itself read before deciding, not the session's
 reads.
 
+The action under review is shown to the classifier whole: no argument of
+it is cut (a shell command, a write's path and content). An action whose
+arguments are larger than 48 KiB is not given to the classifier at all:
+you are asked, the dialog saying "too large to review", and with nobody to
+ask it is denied. The approval dialog abbreviates long arguments (2 KiB,
+ten lines) and says so; Ctrl+O shows all of them.
+
 After **3 consecutive** or **20 total** classifier blocks, auto mode pauses
 and each tier-3 action opens a dialog. The same dialog answers a protected
 write, and a helper's call names the helper. As in Claude Code, it lists

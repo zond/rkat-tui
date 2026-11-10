@@ -9,6 +9,12 @@ design.
 
 ### Security
 
+- The classifier sees the action it reviews whole. Before, every string
+  argument was cut at 1 KiB, so a shell command padded past that hid its
+  tail (`; curl … | sh`) from the review. An action larger than 48 KiB
+  is no longer given to the classifier: you are asked ("too large to
+  review"), or it is denied when nobody can be. The approval dialog says
+  when it abbreviates the arguments, and Ctrl+O shows them all.
 - A workspace realm config (`.rkat/tui/config.toml`) can no longer
   redirect or widen anything. Its `[confinement]` table is ignored, with a
   start-up notice (only `--confinement` and your own `tui.toml` set the

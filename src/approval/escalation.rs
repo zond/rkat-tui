@@ -47,9 +47,13 @@ pub struct RecordedPrompt {
     /// The helper making the call (`None`: the session's own agent).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
-    /// Short rendering of the arguments.
+    /// Short rendering of the arguments (says when it is abbreviated).
     #[serde(default)]
     pub args_preview: String,
+    /// The whole arguments when the preview abbreviates them (the
+    /// dialog's Ctrl+O shows them).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args_full: Option<String>,
     /// Canonical rule subjects of the action (see
     /// [`super::policy::Action::subjects`]); "allow + add rule" mints a
     /// literal rule from the first one.
