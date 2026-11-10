@@ -357,7 +357,6 @@ async fn a_retired_agent_takes_no_input_and_its_conversation_is_seated_again() {
     assert_eq!(retired.agent, name);
     assert_eq!(retired.session_id.as_ref(), Some(&session));
     drop(leaver);
-    let calls = llm.recorded().len();
     let refused = keeper
         .call(
             "mob/member_send",
@@ -370,8 +369,6 @@ async fn a_retired_agent_takes_no_input_and_its_conversation_is_seated_again() {
         refused.contains(&name) && refused.to_lowercase().contains("not found"),
         "the engine's not-a-member refusal: {refused}"
     );
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(llm.recorded().len(), calls, "nothing ran");
     // Seated again on its conversation (the agent's name is the
     // conversation's), which goes on from where it was.
     let back = attach_agent(
@@ -394,6 +391,13 @@ async fn a_retired_agent_takes_no_input_and_its_conversation_is_seated_again() {
     llm.wait_call(1).await;
     let seen = llm.recorded();
     assert!(seen[1].user().contains("hello"), "the conversation went on");
+    // The sentinel: the request after the refused send is this one, and
+    // the refused text never reached the model.
+    assert!(seen[1].user().contains("and now"), "{:?}", seen[1].user());
+    assert!(
+        !format!("{:?}", seen[1].messages).contains("wake up"),
+        "nothing ran for the refused send"
+    );
     drop((back, keeper));
     daemon.stop().await;
 }

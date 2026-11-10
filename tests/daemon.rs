@@ -288,16 +288,7 @@ async fn a_connection_without_the_token_never_reaches_the_router() {
 async fn the_proxy_forwards_only_requests_it_parsed() {
     use rkat_tui::daemon::protocol::{INVALID_REQUEST, NOT_SERVED, PARSE_ERROR};
     let ws = Workspace::new();
-    let marker = ws.root.join("ran.txt");
-    let command: &'static str = Box::leak(format!("touch {}", marker.display()).into_boxed_str());
-    let llm = ScriptedLlmClient::new(vec![
-        Step::Tool {
-            id: "s1",
-            name: "shell",
-            args: json!({ "command": command }),
-        },
-        Step::Text("done"),
-    ]);
+    let llm = ScriptedLlmClient::new(vec![Step::Text("sentinel answered")]);
     let daemon = Running::start(&ws.root, &llm).await;
     let mut client = connect(&daemon).await;
     let create = json!({"jsonrpc": "2.0", "id": 7, "method": "session/create",
@@ -341,10 +332,15 @@ async fn the_proxy_forwards_only_requests_it_parsed() {
         members_include_orchestrator(&listed, &daemon.agent),
         "{listed}"
     );
-    // Nothing the refused lines asked for ran: no model call, no command.
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    assert!(llm.recorded().is_empty(), "{}", llm.recorded().len());
-    assert!(!marker.exists());
+    // Nothing the refused lines asked for ran: a sentinel turn on the
+    // agent is the model's first request (a forwarded session/create runs
+    // its turn before it answers, and would have taken the one step).
+    let stream = client.open_stream().await;
+    client.ok("mob/turn_start", client.turn("sentinel")).await;
+    client.run_completed(&stream).await;
+    let seen = llm.recorded();
+    assert_eq!(seen.len(), 1, "only the sentinel ran");
+    assert!(seen[0].user().contains("sentinel"), "{:?}", seen[0].user());
     daemon.stop().await;
 }
 

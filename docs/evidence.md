@@ -4328,3 +4328,21 @@ fail on demand, so the test injects it: `DaemonOptions::with_spawn_faults`
 injected failures: the error names the lost agent, `rkat/status` no
 longer lists it, the other agent's next request carries the leave note).
 
+### Sentinel barriers instead of a sleep before "nothing happened"
+
+Four tests slept (200 to 500 ms) and then asserted that nothing ran: they
+could not fail on a fast machine and went falsely green on a slow one.
+Each now proves the absence with a later event that must arrive and would
+have come after the forbidden one: a sentinel turn on a live agent, whose
+request must be the model's next (the scripted model hands out its steps
+in order, so a stray run would have taken the step the sentinel needs, and
+the sentinel's text would be wrong). `a_quit_agent_is_announced_and_takes_no_more_messages`
+(the fifth request is the sentinel's), `a_retired_agent_takes_no_input_and_its_conversation_is_seated_again`
+(the request after the refused send is the reseated agent's "and now", and
+"wake up" is in no message), `engine_methods_that_make_sessions_outside_the_mob_are_refused`
+and `the_proxy_forwards_only_requests_it_parsed` (a forwarded
+`session/create` runs its turn before it answers; the sentinel is the
+first and only request). The two refusal tests no longer script a shell
+call and a marker file: the sentinel covers any run, not only a shell one.
+No CHANGELOG line: nothing a user sees changed.
+

@@ -293,6 +293,7 @@ async fn a_quit_agent_is_announced_and_takes_no_more_messages() {
         Step::Text("listed"),
         send,
         Step::Text("tried"),
+        Step::Text("sentinel answered"),
     ]);
     let daemon = Running::start(&ws.root, &llm).await;
     let mut a = rig::Client::attach(&ws.root).await;
@@ -319,8 +320,17 @@ async fn a_quit_agent_is_announced_and_takes_no_more_messages() {
         result.contains("peer_not_found_or_not_trusted"),
         "the send was refused: {result}"
     );
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    assert_eq!(llm.recorded().len(), 4, "nothing ran for the retired agent");
+    // A sentinel turn on the agent left: its request is the next one the
+    // model gets, so a run for the retired agent (which the send would
+    // have started at once) would have come first.
+    a.send(Effect::StartTurn("sentinel".into()));
+    assert_eq!(
+        a.turn_finished().await.result.unwrap().text,
+        "sentinel answered"
+    );
+    let seen = llm.recorded();
+    assert_eq!(seen.len(), 5, "nothing ran for the retired agent");
+    assert!(seen[4].user().contains("sentinel"), "{:?}", seen[4].user());
     a.quit().await;
     daemon.stop().await;
 }

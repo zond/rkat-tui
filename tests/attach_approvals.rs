@@ -1270,14 +1270,7 @@ async fn a_parameter_refusal_answers_its_request() {
 async fn engine_methods_that_make_sessions_outside_the_mob_are_refused() {
     use rkat_tui::daemon::protocol::{NOT_SERVED, engine};
     let ws = Workspace::new();
-    let marker = ws.root.join("ran.txt");
-    let command: &'static str = Box::leak(format!("touch {}", marker.display()).into_boxed_str());
-    let shell = Step::Tool {
-        id: "s1",
-        name: "shell",
-        args: json!({ "command": command }),
-    };
-    let llm = ScriptedLlmClient::new(vec![shell.clone(), shell, Step::Text("done")]);
+    let llm = ScriptedLlmClient::new(vec![Step::Text("sentinel answered")]);
     let daemon = start(&ws.root, &llm, &Setup::default()).await;
     let raw = daemon.connect().await;
     let session = daemon.session.to_string();
@@ -1308,10 +1301,21 @@ async fn engine_methods_that_make_sessions_outside_the_mob_are_refused() {
             "{method}: {text}"
         );
     }
-    // Nothing ran: no model call, no command.
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(llm.recorded().is_empty(), "{:?}", llm.recorded().len());
-    assert!(!marker.exists());
+    // Nothing ran: a sentinel turn on the agent is the model's first
+    // request (a session the refused methods made would have run its turn
+    // before the refusal was answered, and taken the one scripted step).
+    let agent = daemon.connect_bound().await;
+    agent
+        .call(
+            "mob/turn_start",
+            json!({"mob_id": "tui", "agent_identity": daemon.agent, "prompt": "sentinel"}),
+        )
+        .await
+        .unwrap();
+    let seen = llm.recorded();
+    assert_eq!(seen.len(), 1, "only the sentinel ran");
+    assert!(seen[0].user().contains("sentinel"), "{:?}", seen[0].user());
+    drop(agent);
     // What the client uses still works on the same connection.
     let members = raw
         .call(engine::MEMBERS, json!({"mob_id": "tui"}))
