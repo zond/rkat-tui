@@ -1115,6 +1115,7 @@ mod tests {
             key_env: Some("PROXY_KEY".into()),
             builtin: false,
             priority: 0,
+            api_style: crate::endpoints::ApiStyle::default(),
         };
         let listing = list_endpoint(&endpoint, Duration::from_secs(5))
             .await

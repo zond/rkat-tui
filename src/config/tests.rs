@@ -53,6 +53,7 @@ fn rules_file_round_trip() {
                 api_key_env: Some("LITELLM_KEY".into()),
                 api_key: None,
                 priority: Some(2),
+                api_style: Some(crate::endpoints::ApiStyle::ChatCompletions),
             },
         )]),
         pricing: PricingTable {

@@ -172,6 +172,79 @@ impl fmt::Display for WireDialect {
     }
 }
 
+/// Which of the engine's OpenAI-compatible APIs a self-hosted endpoint
+/// ([`Endpoint::is_self_hosted`]) is spoken to with: `api_style` in
+/// `[endpoints.<name>]` (and `--endpoint-def`'s `api_style=`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum ApiStyle {
+    /// The Responses API (`<base>/v1/responses`), what rkat-tui's OpenAI
+    /// dialect always spoke.
+    #[default]
+    Responses,
+    /// Chat Completions (`<base>/v1/chat/completions`), for a proxy or
+    /// server without the Responses API.
+    ChatCompletions,
+}
+
+impl ApiStyle {
+    /// Every style, in the order the error message names them.
+    pub const ALL: [Self; 2] = [Self::Responses, Self::ChatCompletions];
+
+    /// The setting's value (`responses`, `chat_completions`).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Responses => "responses",
+            Self::ChatCompletions => "chat_completions",
+        }
+    }
+
+    /// Parse a setting's value; anything else is refused, naming the key.
+    ///
+    /// # Errors
+    ///
+    /// [`ApiStyleError`] for any other value.
+    pub fn parse(value: &str) -> Result<Self, ApiStyleError> {
+        Self::ALL
+            .into_iter()
+            .find(|style| style.as_str() == value)
+            .ok_or_else(|| ApiStyleError(value.to_string()))
+    }
+
+    /// The engine's API style.
+    #[must_use]
+    pub fn engine(self) -> SelfHostedApiStyle {
+        match self {
+            Self::Responses => SelfHostedApiStyle::Responses,
+            Self::ChatCompletions => SelfHostedApiStyle::ChatCompletions,
+        }
+    }
+}
+
+impl fmt::Display for ApiStyle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// An `api_style` value that is neither `responses` nor `chat_completions`.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("`api_style` must be \"responses\" or \"chat_completions\", not \"{0}\"")]
+pub struct ApiStyleError(pub String);
+
+impl serde::Serialize for ApiStyle {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ApiStyle {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(&value).map_err(serde::de::Error::custom)
+    }
+}
+
 /// A secret that never shows up in `Debug` output and has no `Display`.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct SecretString(String);
@@ -246,6 +319,9 @@ pub struct Endpoint {
     /// Tie-break when several endpoints list the same bare model id
     /// (higher wins; built-ins are 0).
     pub priority: i64,
+    /// The API a self-hosted endpoint is spoken to with (the default for
+    /// every other endpoint, where it means nothing).
+    pub api_style: ApiStyle,
 }
 
 impl Endpoint {
@@ -779,6 +855,7 @@ impl EndpointRegistry {
                     key_env: None,
                     builtin: true,
                     priority: 0,
+                    api_style: crate::endpoints::ApiStyle::default(),
                 });
             }
         }
@@ -813,6 +890,7 @@ impl EndpointRegistry {
                         key_env: None,
                         builtin: true,
                         priority: 0,
+                        api_style: crate::endpoints::ApiStyle::default(),
                     },
                 );
             }
@@ -877,6 +955,9 @@ pub enum EndpointSkip {
     /// No key at all.
     #[error("no key: set `api_key_env` to the environment variable that holds it")]
     NoKey,
+    /// `api_style` on an endpoint that is not of the `openai` dialect.
+    #[error("`api_style` applies to the openai dialect only, not {0}")]
+    ApiStyleDialect(WireDialect),
 }
 
 /// Validate one `[endpoints.<name>]` entry (an inline `api_key` is refused
@@ -892,6 +973,7 @@ fn configured_endpoint(
         api_key_env,
         api_key: _,
         priority,
+        api_style,
     } = &layered.section;
     if !is_valid_endpoint_name(name) {
         return Err(EndpointSkip::InvalidName);
@@ -905,6 +987,9 @@ fn configured_endpoint(
             WireDialect::parse(raw).ok_or_else(|| EndpointSkip::UnknownDialect(raw.to_string()))?
         }
     };
+    if api_style.is_some() && dialect != WireDialect::OpenAi {
+        return Err(EndpointSkip::ApiStyleDialect(dialect));
+    }
     let Some(var) = api_key_env else {
         return Err(EndpointSkip::NoKey);
     };
@@ -922,6 +1007,7 @@ fn configured_endpoint(
         key_env: Some(var.clone()),
         builtin: false,
         priority: priority.unwrap_or(0),
+        api_style: api_style.unwrap_or_default(),
     })
 }
 
@@ -972,7 +1058,7 @@ impl EndpointProjection {
 /// The `self_hosted.servers` entry of each self-hosted endpoint of
 /// `endpoints` ([`Endpoint::is_self_hosted`]): the OpenAI-compatible
 /// transport on the endpoint's URL (the public OpenAI API without one),
-/// speaking the Responses API as rkat-tui's OpenAI dialect always has.
+/// speaking the endpoint's [`ApiStyle`] ([`server_base_url`]).
 #[must_use]
 pub fn self_hosted_servers(endpoints: &[Endpoint]) -> BTreeMap<String, SelfHostedServerConfig> {
     endpoints
@@ -988,12 +1074,34 @@ pub fn self_hosted_servers(endpoints: &[Endpoint]) -> BTreeMap<String, SelfHoste
                 endpoint.name.clone(),
                 SelfHostedServerConfig {
                     transport: SelfHostedTransport::OpenAiCompatible,
-                    base_url,
-                    api_style: SelfHostedApiStyle::Responses,
+                    base_url: server_base_url(&base_url, endpoint.api_style),
+                    api_style: endpoint.api_style.engine(),
                 },
             )
         })
         .collect()
+}
+
+/// The engine server's base URL for an endpoint at `base_url` (the
+/// server's root, as the manual asks, with or without `/v1`) in `style`.
+/// The engine's two clients read it differently: the Responses client
+/// trims a trailing `/v1` and appends `/v1/responses`, the Chat
+/// Completions client appends `/chat/completions` as given. So Chat
+/// Completions gets `/v1` appended when the URL does not end in it, and
+/// the Responses URL is left as configured.
+#[must_use]
+pub fn server_base_url(base_url: &str, style: ApiStyle) -> String {
+    match style {
+        ApiStyle::Responses => base_url.to_string(),
+        ApiStyle::ChatCompletions => {
+            let root = base_url.trim_end_matches('/');
+            if root.ends_with("/v1") {
+                root.to_string()
+            } else {
+                format!("{root}/v1")
+            }
+        }
+    }
 }
 
 /// The [`SELF_HOSTED_REALM`] section entries of the self-hosted endpoints
@@ -1080,7 +1188,14 @@ fn connections(endpoints: &[Endpoint]) -> Result<RealmConfigSection, EndpointErr
             BackendProfileConfig {
                 provider: provider.as_str().to_string(),
                 backend_kind,
-                base_url: endpoint.base_url.clone(),
+                base_url: if endpoint.is_self_hosted() {
+                    endpoint
+                        .base_url
+                        .as_deref()
+                        .map(|url| server_base_url(url, endpoint.api_style))
+                } else {
+                    endpoint.base_url.clone()
+                },
                 options: serde_json::Value::Null,
                 server: endpoint.self_hosted_server(),
             },
@@ -1762,6 +1877,7 @@ mod tests {
             key_env: None,
             builtin,
             priority: 0,
+            api_style: crate::endpoints::ApiStyle::default(),
         }
     }
 
@@ -1973,7 +2089,53 @@ mod tests {
             api_key_env: key_env.map(str::to_string),
             api_key: key.map(str::to_string),
             priority: None,
+            api_style: None,
         }
+    }
+
+    #[test]
+    fn chat_completions_gets_v1_and_responses_keeps_the_url() {
+        for (url, chat) in [
+            ("http://h:4000", "http://h:4000/v1"),
+            ("http://h:4000/", "http://h:4000/v1"),
+            ("http://h:4000/v1", "http://h:4000/v1"),
+            ("http://h:4000/v1/", "http://h:4000/v1"),
+            ("https://h/openai", "https://h/openai/v1"),
+        ] {
+            assert_eq!(server_base_url(url, ApiStyle::ChatCompletions), chat);
+            assert_eq!(server_base_url(url, ApiStyle::Responses), url);
+        }
+    }
+
+    #[test]
+    fn api_style_is_parsed_strictly_and_only_for_the_openai_dialect() {
+        assert_eq!(ApiStyle::parse("responses"), Ok(ApiStyle::Responses));
+        assert_eq!(
+            ApiStyle::parse("chat_completions"),
+            Ok(ApiStyle::ChatCompletions)
+        );
+        for bad in ["Responses", "chat", "chat-completions", ""] {
+            let err = ApiStyle::parse(bad).unwrap_err().to_string();
+            assert!(err.starts_with("`api_style` must be"), "{err}");
+        }
+        let env = |_: &str| Some("k".to_string());
+        let mut chat = section(Some("openai"), Some("K"), None);
+        chat.api_style = Some(ApiStyle::ChatCompletions);
+        let endpoint = configured_endpoint("p", &layered(chat, RuleOrigin::Global), &env).unwrap();
+        assert_eq!(endpoint.api_style, ApiStyle::ChatCompletions);
+        let mut gateway = section(Some("anthropic"), Some("K"), None);
+        gateway.api_style = Some(ApiStyle::Responses);
+        assert_eq!(
+            configured_endpoint("g", &layered(gateway, RuleOrigin::Global), &env).unwrap_err(),
+            EndpointSkip::ApiStyleDialect(WireDialect::Anthropic)
+        );
+        let plain = configured_endpoint(
+            "q",
+            &layered(section(Some("openai"), Some("K"), None), RuleOrigin::Global),
+            &env,
+        )
+        .unwrap();
+        assert_eq!(plain.api_style, ApiStyle::Responses);
     }
 
     #[test]
@@ -2225,6 +2387,7 @@ mod tests {
             key_env: key_env.map(str::to_string),
             builtin: false,
             priority: 0,
+            api_style: crate::endpoints::ApiStyle::default(),
         }
     }
 

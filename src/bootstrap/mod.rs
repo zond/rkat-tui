@@ -824,6 +824,7 @@ mod tests {
             key_env: None,
             builtin,
             priority: 0,
+            api_style: crate::endpoints::ApiStyle::default(),
         }
     }
 

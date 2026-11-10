@@ -2,11 +2,6 @@
 
 ## [Unreleased]
 
-### Fixed
-
-- `/model` before a restored agent's first turn switches the model
-  instead of failing with "Runtime not ready: destroyed".
-
 ## [0.0.1] - 2026-11-10
 
 The first release on crates.io, opening the 0.0.x line: the maintainer's
@@ -183,6 +178,11 @@ design.
 
 ### Added
 
+- `api_style = "chat_completions"` in `[endpoints.<name>]` (and
+  `--endpoint-def …,api_style=chat_completions`) speaks Chat Completions to
+  an OpenAI-dialect proxy or server without the Responses API; the default
+  stays `responses`, `base_url` stays the server's root in both, and any
+  other value is refused naming the key.
 - `cargo install rkat-tui --locked` installs both binaries from
   crates.io. A plain install builds the bundled SQLite with its default
   process-wide locks (the daemon's log says so once, and it works); the
@@ -412,6 +412,8 @@ design.
 
 ### Fixed
 
+- `/model` before a restored agent's first turn switches the model
+  instead of failing with "Runtime not ready: destroyed".
 - `-c` after the daemon restarted (a re-home, a stop) continues the
   conversation you typed into last. Before, the conversation log recorded
   only when a conversation was seated, so with several agents `-c` could

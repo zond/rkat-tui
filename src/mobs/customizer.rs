@@ -725,6 +725,7 @@ mod tests {
             key_env: None,
             builtin,
             priority: 0,
+            api_style: crate::endpoints::ApiStyle::default(),
         };
         let gateway = ep("gateway", WireDialect::Anthropic, false);
         let other = ep("oai-proxy", WireDialect::OpenAi, false);
@@ -784,6 +785,7 @@ mod tests {
             key_env: Some("KEY".to_string()),
             builtin: false,
             priority: 0,
+            api_style: crate::endpoints::ApiStyle::default(),
         };
         let endpoints = vec![proxy.clone()];
         let owner = Owner {

@@ -5738,3 +5738,34 @@ refusal. Test:
 (a restarted daemon, `/model anthropic:claude-opus-4-8` before any turn
 is applied, and the next turn's request names it; it failed with the
 notice "model not changed: Runtime not ready: destroyed" before the fix).
+
+### X2: `api_style` for OpenAI-dialect endpoints
+
+`[endpoints.<name>] api_style = "responses" | "chat_completions"`
+(`ApiStyle`, `--endpoint-def …,api_style=STYLE`), default `responses`,
+`openai` dialect only (another dialect's endpoint is skipped with
+`EndpointSkip::ApiStyleDialect`). Parsed strictly by its own
+`Deserialize`, whose error names the key and both values
+(`ApiStyleError`), so a `tui.toml` or `--set` with another value stops
+the start with that sentence. The style goes to the engine's
+`self_hosted.servers.<endpoint>.api_style`.
+
+The base URL, verified on the engine's clients (meerkat-openai 0.9.11
+`client_compatible.rs`): the Chat Completions client posts to
+`<base>/chat/completions` as given, the Responses delegate trims a
+trailing `/v1` and posts to `<base>/v1/responses`; and the URL it uses is
+the binding's backend profile's, not only the server entry's (the first
+run of the new test went to `/chat/completions` with only the server
+entry adjusted). `server_base_url` therefore appends `/v1` for Chat
+Completions unless the URL ends in it, in both the server entry and the
+self-hosted backend profile, and leaves the Responses URL as configured;
+the user keeps writing the server's root, as the manual already asked.
+Tests: `tests/litellm.rs::the_api_style_setting_picks_the_wire_end_to_end`
+(through the daemon, the same base URL, both styles: reasoning streamed, a
+`read_file` call through the gate whose result is in the second request,
+the answer, the projected server's style and URL),
+`both_api_styles_stream_text_reasoning_and_tool_calls` (now chosen by the
+setting on one URL), `an_unknown_api_style_is_refused_naming_the_key`,
+`endpoints::tests::chat_completions_gets_v1_and_responses_keeps_the_url`,
+`api_style_is_parsed_strictly_and_only_for_the_openai_dialect` and the
+overlay cases.

@@ -4,6 +4,7 @@
 use crate::approval::mode::PermissionMode;
 use crate::approval::rules::{Rule, RuleKind, RuleOrigin, RulesError};
 use crate::bootstrap::confinement::ConfinementSection;
+use crate::endpoints::ApiStyle;
 use crate::thinking::ThinkingSetting;
 use crate::ui::checklist::ChecklistView;
 use crate::ui::compaction::{CompactMode, CompactionPolicy};
@@ -249,6 +250,11 @@ pub struct EndpointSection {
     /// (higher wins; default 0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priority: Option<i64>,
+    /// The OpenAI-dialect API the endpoint is spoken to with
+    /// (`responses`, the default, or `chat_completions`); only for the
+    /// `openai` dialect.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_style: Option<ApiStyle>,
 }
 
 impl fmt::Debug for EndpointSection {
@@ -259,6 +265,7 @@ impl fmt::Debug for EndpointSection {
             .field("api_key_env", &self.api_key_env)
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .field("priority", &self.priority)
+            .field("api_style", &self.api_style)
             .finish()
     }
 }
@@ -272,6 +279,7 @@ impl EndpointSection {
             api_key_env,
             api_key,
             priority,
+            api_style,
         } = other;
         if dialect.is_some() {
             self.dialect.clone_from(dialect);
@@ -287,6 +295,9 @@ impl EndpointSection {
         }
         if priority.is_some() {
             self.priority = *priority;
+        }
+        if api_style.is_some() {
+            self.api_style = *api_style;
         }
     }
 }

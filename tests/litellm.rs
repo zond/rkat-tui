@@ -445,21 +445,24 @@ async fn stream_once(
 /// projects for a self-hosted endpoint builds the OpenAI-compatible client
 /// with the key from the auth binding's environment variable (which the
 /// confined shell's environment never carries), in either of the engine's
-/// API styles; the Responses API (rkat-tui's choice, what its OpenAI
-/// dialect always spoke) and Chat Completions both stream text, reasoning
-/// and tool calls, and name the endpoint's model on the wire.
+/// API styles, chosen by the endpoint's `api_style` setting on the same
+/// configured base URL (the server's root, without `/v1`); the Responses
+/// API (the default, what its OpenAI dialect always spoke) and Chat
+/// Completions both stream text, reasoning and tool calls, and name the
+/// endpoint's model on the wire.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn both_api_styles_stream_text_reasoning_and_tool_calls() {
-    use meerkat_core::config::SelfHostedApiStyle;
-    use rkat_tui::endpoints::{EndpointProjection, SecretString, WireDialect, alias_entry};
+    use rkat_tui::endpoints::{
+        ApiStyle, EndpointProjection, SecretString, WireDialect, alias_entry,
+    };
     assert!(
         !rkat_tui::bootstrap::confinement::confined_environment(std::env::vars_os())
             .contains_key(KEY_ENV),
         "the confined shell never gets the key's variable"
     );
     for (style, path) in [
-        (SelfHostedApiStyle::Responses, "/v1/responses"),
-        (SelfHostedApiStyle::ChatCompletions, "/v1/chat/completions"),
+        (ApiStyle::Responses, "/v1/responses"),
+        (ApiStyle::ChatCompletions, "/v1/chat/completions"),
     ] {
         let fake = FakeEndpoint::start(
             models(),
@@ -475,15 +478,12 @@ async fn both_api_styles_stream_text_reasoning_and_tool_calls() {
         let endpoint = Endpoint {
             name: "litellm".into(),
             dialect: WireDialect::OpenAi,
-            base_url: Some(match style {
-                SelfHostedApiStyle::Responses => fake.base_url.clone(),
-                // The chat client appends `/chat/completions` as given.
-                SelfHostedApiStyle::ChatCompletions => format!("{}/v1", fake.base_url),
-            }),
+            base_url: Some(fake.base_url.clone()),
             api_key: SecretString::new(key()),
             key_env: Some(KEY_ENV.into()),
             builtin: false,
             priority: 0,
+            api_style: style,
         };
         let projection = EndpointProjection::of(std::slice::from_ref(&endpoint)).unwrap();
         let mut config = meerkat_core::Config::default();
@@ -491,12 +491,10 @@ async fn both_api_styles_stream_text_reasoning_and_tool_calls() {
             .realm
             .insert(SELF_HOSTED_REALM.to_string(), projection.self_hosted);
         config.self_hosted.servers = projection.servers;
-        config
-            .self_hosted
-            .servers
-            .get_mut("litellm")
-            .unwrap()
-            .api_style = style;
+        assert_eq!(
+            config.self_hosted.servers["litellm"].api_style,
+            style.engine()
+        );
         let alias = endpoint.engine_model(CLAUDE);
         let mut entry = alias_entry(&endpoint, CLAUDE, None);
         entry.supports_reasoning = true;
@@ -586,4 +584,97 @@ async fn a_conversation_stored_under_the_dialect_provider_moves_onto_the_alias()
     assert_eq!(outcome.result.unwrap().text, "on the alias");
     assert_eq!(fake.turns().pop().unwrap().body["model"], CLAUDE);
     rig.quit().await;
+}
+
+/// X2: the `api_style` setting end to end through the daemon. On the same
+/// base URL (the proxy's root, as the manual asks) the default speaks the
+/// Responses API and `api_style = "chat_completions"` Chat Completions; in
+/// both a turn streams reasoning, calls a tool through the gate, gets its
+/// result back on the wire, and answers. The projected server names the
+/// style, with `/v1` added for Chat Completions.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_api_style_setting_picks_the_wire_end_to_end() {
+    for (style, extra, path) in [
+        ("responses", &[][..], "/v1/responses"),
+        (
+            "chat_completions",
+            &["--set", "endpoints.litellm.api_style=chat_completions"][..],
+            "/v1/chat/completions",
+        ),
+    ] {
+        let fake = FakeEndpoint::start(
+            models(),
+            vec![
+                Reply::Tool {
+                    name: "read_file",
+                    args: json!({"path": "notes.txt"}),
+                },
+                Reply::Reasoning("looked at the notes", "the notes say hi"),
+            ],
+        )
+        .await;
+        let ws = Workspace::new();
+        std::fs::write(ws.root.join("notes.txt"), "marker-7f3a\n").unwrap();
+        let llm = ScriptedLlmClient::new(Vec::new());
+        let mut rig = Attached::start_with(&ws.root, &llm, setup(&fake, CLAUDE, extra)).await;
+        rig.saw(|m| is_model(m, "litellm", CLAUDE)).await;
+        rig.send(Effect::StartTurn("read the notes".into()));
+        let outcome = rig.turn_finished().await;
+        assert_eq!(outcome.result.unwrap().text, "the notes say hi", "{style}");
+        assert!(
+            llm.recorded().is_empty(),
+            "{style}: the engine's own client ran"
+        );
+        assert!(
+            rig.seen.iter().any(|m| matches!(m, Msg::Agent(env) if matches!(
+                &env.payload,
+                meerkat_core::AgentEvent::ReasoningDelta { delta, .. } if delta.contains("looked")
+            ))),
+            "{style}: the reasoning streamed"
+        );
+        let turns = fake.turns();
+        assert_eq!(turns.len(), 2, "{style}: {turns:#?}");
+        for turn in &turns {
+            assert_eq!(turn.path, path, "{style}");
+            assert_eq!(turn.body["model"], CLAUDE, "{style}");
+        }
+        assert!(
+            turns[1].body.to_string().contains("marker-7f3a"),
+            "{style}: the tool's result went back: {}",
+            turns[1].body
+        );
+        rig.quit().await;
+        let (config, text) = document(&ws).await;
+        let server = &config.self_hosted.servers["litellm"];
+        assert!(text.contains(&format!("api_style = \"{style}\"")), "{text}");
+        let expected = match style {
+            "responses" => fake.base_url.clone(),
+            _ => format!("{}/v1", fake.base_url),
+        };
+        assert_eq!(server.base_url, expected, "{style}");
+    }
+}
+
+/// X2: an unknown `api_style` in a `tui.toml` is refused, naming the key
+/// and the values it takes; on another dialect the endpoint is skipped
+/// with a notice saying why.
+#[test]
+fn an_unknown_api_style_is_refused_naming_the_key() {
+    let ws = Workspace::new();
+    std::fs::create_dir_all(ws.root.join(".rkat")).unwrap();
+    std::fs::write(
+        ws.root.join(".rkat/tui.toml"),
+        "[endpoints.litellm]\ndialect = \"openai\"\nbase_url = \"http://h\"\napi_style = \"completions\"\n",
+    )
+    .unwrap();
+    let args = common::args_with(&ws.root, &[]);
+    // The project file layer is parsed at start: its error names the key.
+    let err = bootstrap::read_layers(&args).expect_err("an unknown api_style");
+    let text = format!("{err:#}");
+    assert!(
+        text.contains(
+            "`api_style` must be \"responses\" or \"chat_completions\", not \"completions\""
+        ),
+        "{text}"
+    );
 }

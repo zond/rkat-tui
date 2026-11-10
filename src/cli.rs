@@ -41,9 +41,14 @@ pub struct Args {
     #[arg(long, value_name = "TOOL[=PATTERN]")]
     pub deny: Vec<String>,
 
-    /// Define an endpoint for this run: `<name>=<dialect>=<url>[,key_env=VAR]`
-    /// (dialect: anthropic, openai, gemini). Repeatable.
-    #[arg(long = "endpoint-def", value_name = "NAME=DIALECT=URL[,key_env=VAR]")]
+    /// Define an endpoint for this run:
+    /// `<name>=<dialect>=<url>[,key_env=VAR][,api_style=STYLE]` (dialect:
+    /// anthropic, openai, gemini; api_style, openai only: responses or
+    /// chat_completions). Repeatable.
+    #[arg(
+        long = "endpoint-def",
+        value_name = "NAME=DIALECT=URL[,key_env=VAR][,api_style=STYLE]"
+    )]
     pub endpoint_def: Vec<String>,
 
     /// Treat `cargo build|test|nextest|check|clippy` as tier 1 (`[auto]

@@ -16,7 +16,7 @@ use toml::{Table, Value};
 use crate::approval::rules::RuleOrigin;
 use crate::cli::Args;
 use crate::config::RulesFile;
-use crate::endpoints::{WireDialect, is_valid_endpoint_name};
+use crate::endpoints::{ApiStyle, WireDialect, is_valid_endpoint_name};
 
 /// A command-line setting that cannot be applied. Fatal at start-up.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -280,30 +280,57 @@ fn rule_table(list: &str, arg: &str, flag: &'static str) -> Result<Table, Overla
     Ok(root)
 }
 
-/// `--endpoint-def name=dialect=url[,key_env=VAR]` → `[endpoints.name]`.
+/// `--endpoint-def name=dialect=url[,key_env=VAR][,api_style=STYLE]` →
+/// `[endpoints.name]`. The options follow the URL in either order; an
+/// `api_style` other than `responses` or `chat_completions` is refused
+/// here, naming the key.
 fn endpoint_def_table(arg: &str) -> Result<Table, OverlayError> {
+    const SHAPE: &str = "expected <name>=<dialect>=<url>[,key_env=VAR][,api_style=STYLE]";
     let bad = |reason: &str| OverlayError::new("--endpoint-def", arg, reason);
-    let (name, rest) = arg
-        .split_once('=')
-        .ok_or_else(|| bad("expected <name>=<dialect>=<url>[,key_env=VAR]"))?;
-    let (dialect, rest) = rest
-        .split_once('=')
-        .ok_or_else(|| bad("expected <name>=<dialect>=<url>[,key_env=VAR]"))?;
-    let (url, key_env) = match rest.rsplit_once(",key_env=") {
-        Some((url, var)) => (url, Some(var)),
-        None => (rest, None),
-    };
+    let (name, rest) = arg.split_once('=').ok_or_else(|| bad(SHAPE))?;
+    let (dialect, rest) = rest.split_once('=').ok_or_else(|| bad(SHAPE))?;
+    let mut url = rest;
+    let mut key_env = None;
+    let mut api_style = None;
+    // Peel the known options off the end: a comma inside the URL stays.
+    loop {
+        if let Some((head, var)) = url.rsplit_once(",key_env=")
+            && key_env.is_none()
+            && !var.contains(',')
+        {
+            key_env = Some(var);
+            url = head;
+        } else if let Some((head, style)) = url.rsplit_once(",api_style=")
+            && api_style.is_none()
+            && !style.contains(',')
+        {
+            api_style = Some(style);
+            url = head;
+        } else {
+            break;
+        }
+    }
     if url.trim().is_empty() {
         return Err(bad("the base URL is empty"));
     }
     if key_env.is_some_and(|var| var.trim().is_empty()) {
         return Err(bad("key_env is empty"));
     }
+    let api_style = api_style
+        .map(|style| ApiStyle::parse(style.trim()))
+        .transpose()
+        .map_err(|err| bad(&err.to_string()))?;
     let mut section = Table::new();
     section.insert("dialect".into(), Value::String(dialect.trim().to_string()));
     section.insert("base_url".into(), Value::String(url.trim().to_string()));
     if let Some(var) = key_env {
         section.insert("api_key_env".into(), Value::String(var.trim().to_string()));
+    }
+    if let Some(style) = api_style {
+        section.insert(
+            "api_style".into(),
+            Value::String(style.as_str().to_string()),
+        );
     }
     Ok(nested(&["endpoints", name.trim()], Value::Table(section)))
 }
@@ -511,6 +538,14 @@ mod tests {
             ),
             (&["--endpoint-def", "x=cohere=http://h"], "unknown dialect"),
             (
+                &["--endpoint-def", "x=openai=http://h,api_style=chat"],
+                "`api_style` must be \"responses\" or \"chat_completions\", not \"chat\"",
+            ),
+            (
+                &["--set", "endpoints.x.api_style=completions"],
+                "`api_style` must be \"responses\" or \"chat_completions\", not \"completions\"",
+            ),
+            (
                 &["--endpoint-def", "bad.name=openai=http://h"],
                 "invalid endpoint name",
             ),
@@ -534,6 +569,8 @@ mod tests {
             "litellm=openai=http://localhost:4000,key_env=LITELLM_KEY",
             "--endpoint-def",
             "local=anthropic=http://127.0.0.1:9000/x?a=b",
+            "--endpoint-def",
+            "vllm=openai=http://h:8000/x,y,api_style=chat_completions,key_env=VLLM_KEY",
             "--no-auto",
             "--classifier-model",
             "gpt-5.2",
@@ -554,6 +591,11 @@ mod tests {
             Some("http://127.0.0.1:9000/x?a=b")
         );
         assert_eq!(local.api_key_env, None);
+        assert_eq!(local.api_style, None);
+        let vllm = &f.endpoints["vllm"];
+        assert_eq!(vllm.base_url.as_deref(), Some("http://h:8000/x,y"));
+        assert_eq!(vllm.api_key_env.as_deref(), Some("VLLM_KEY"));
+        assert_eq!(vllm.api_style, Some(ApiStyle::ChatCompletions));
         let auto = f.auto.unwrap();
         assert_eq!(auto.enabled, Some(false));
         assert_eq!(auto.classifier_model.as_deref(), Some("gpt-5.2"));

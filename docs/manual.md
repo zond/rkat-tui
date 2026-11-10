@@ -600,7 +600,7 @@ are never written to a file.
 | `auto.compact_auto_percent` | `--set auto.compact_auto_percent=N` | `85` |
 | `auto.classifier_tools` | `--set auto.classifier_tools=false` | `true` |
 | `[[allow]]` / `[[deny]]` `tool`, `arg` (glob) or `literal` | `--allow` / `--deny <tool>[=<glob>]` (repeatable) | none |
-| `endpoints.<name>.dialect`, `.base_url`, `.api_key_env`, `.priority` (an inline `.api_key` is refused at start-up) | `--endpoint-def <name>=<dialect>=<url>[,key_env=VAR]` | |
+| `endpoints.<name>.dialect`, `.base_url`, `.api_key_env`, `.priority` (an inline `.api_key` is refused at start-up), `.api_style` (`"responses"`/`"chat_completions"`, `openai` dialect only) | `--endpoint-def <name>=<dialect>=<url>[,key_env=VAR][,api_style=STYLE]` | `api_style`: `"responses"` |
 | `helpers.max_depth` (levels of helpers; a project file may only lower it) | `--set helpers.max_depth=N` | `1` |
 | `ui.helpers` (`"folded"`/`"expanded"`: how helper headers start) | `--set ui.helpers=expanded` | `"folded"` |
 | `ui.checklist` (`"hidden"`/`"shown"`: the task checklist under the input; Ctrl-T writes it) | `--set ui.checklist=shown` | `"hidden"` |
@@ -667,12 +667,30 @@ keeps the catalog's row. The status bar and `/model` show the endpoint and
 the model (`litellm` `claude-opus-5-5`); the picker matches both
 `litellm:claude` and `claude`; a stored conversation records the alias,
 and a bare model id that only one endpoint lists still resolves to it.
-The wire is the Responses API (`/v1/responses`), what rkat-tui's OpenAI
-dialect always spoke; text, reasoning and tool calls stream through it.
-Limits: `[thinking]` does not apply to such an endpoint (it is Anthropic's
-setting; the proxy's reasoning flag decides); a proxy without the
-Responses API is not supported yet; helpers run on the proxy too (a model
-a helper asks for by its plain name becomes the proxy's alias of it).
+The wire is the Responses API (`/v1/responses`) by default, what
+rkat-tui's OpenAI dialect always spoke. A proxy or server without it (an
+older LiteLLM route, vLLM, llama.cpp, Ollama) takes Chat Completions:
+
+```toml
+[endpoints.vllm]
+dialect = "openai"
+base_url = "http://localhost:8000"   # the server's root; /v1 is added
+api_key_env = "VLLM_KEY"
+api_style = "chat_completions"       # or "responses", the default
+```
+
+(or `--endpoint-def vllm=openai=http://localhost:8000,key_env=VLLM_KEY,api_style=chat_completions`).
+`base_url` is the server's root in both styles, with or without `/v1`:
+rkat-tui gives the engine `<base_url>/v1` for Chat Completions (requests
+go to `/v1/chat/completions`), and the Responses client goes to
+`/v1/responses` either way. Text, reasoning and tool calls stream in both
+styles. `api_style` takes exactly `responses` or `chat_completions`;
+anything else stops the start naming the key, and on an `anthropic` or
+`gemini` endpoint it skips the endpoint with a notice (those dialects have
+one wire each). Limits: `[thinking]` does not apply to such an endpoint
+(it is Anthropic's setting; the proxy's reasoning flag decides); helpers
+run on the proxy too (a model a helper asks for by its plain name becomes
+the proxy's alias of it).
 
 **An Anthropic- or Gemini-dialect gateway** keeps that dialect's client and
 the catalog's request shaping for a model the catalog knows (the engine
