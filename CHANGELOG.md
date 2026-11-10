@@ -181,6 +181,9 @@ design.
 
 ### Fixed
 
+- A prompt that quotes a message from another agent is shown as the
+  prompt it is, not as a message from that agent: a peer message is
+  recognised only when the engine's framing opens the input.
 - Only a refused connection proves an endpoint file stale. A daemon no
   longer starts beside a file whose address did not answer within 2 s or
   that cannot be read (it says so and names the file), and `--list` shows

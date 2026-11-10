@@ -4294,3 +4294,18 @@ Pinned by `only_a_refused_connect_proves_a_file_stale` (a non-routable
 address and an unparsable file both refuse) and `daemon::list`'s line
 test.
 
+### A peer message is recognised at the start of the input only
+
+`ui::peer::of_input` looked for `Peer message from ` anywhere in a run's
+input, so a prompt (this client's or another's) that quoted a peer
+message was rendered as a message from the agent it quoted. The engine
+opens a peer message's run input with its framing (`Peer message\n`, then
+`Peer message from <sender>:\n`, observed on 0.9.11, see "Wiring, the
+persona and the join and leave notes"), so `of_input` now accepts the
+header only right after that summary or at the very start. The review's
+second suggestion, to also require that no client recorded user input for
+the run, is not done: the client cannot see the daemon's record, and the
+anchor alone removes the quoting case. Pinned by
+`a_peer_message_input_names_its_sender_and_body` (a quoting prompt, at
+the end and in the middle, is no peer message).
+

@@ -11,6 +11,8 @@
 
 /// The engine's header of a peer message's body.
 const HEADER: &str = "Peer message from ";
+/// The notice summary the engine puts first in a peer message's run input.
+const SUMMARY: &str = "Peer message\n";
 
 /// The agent's own name in a comms name (`tui/main/main-ab12` →
 /// `main-ab12`).
@@ -39,11 +41,14 @@ pub fn body(from: &str, text: &str) -> String {
 }
 
 /// The sender (its comms name) and body of a run input that is a peer
-/// message (`None`: another input, a prompt).
+/// message (`None`: another input, a prompt). The input must open with
+/// the engine's framing (the summary, then the header): a prompt that
+/// quotes a peer message further in is a prompt.
 #[must_use]
 pub fn of_input(text: &str) -> Option<(String, String)> {
-    let start = text.find(HEADER)? + HEADER.len();
-    let from = text[start..].split(":\n").next()?.to_string();
+    let rest = text.strip_prefix(SUMMARY).unwrap_or(text);
+    let rest = rest.strip_prefix(HEADER)?;
+    let from = rest.split(":\n").next()?.to_string();
     if from.is_empty() || from.contains('\n') {
         return None;
     }
@@ -76,6 +81,17 @@ mod tests {
         );
         // A prompt is no peer message.
         assert_eq!(of_input("fix the failing test"), None);
+        // Nor is one that quotes a peer message (second review, item 9:
+        // another client's prompt was labelled as a message from the
+        // agent it quoted).
+        assert_eq!(
+            of_input(&format!("why did you answer this?\n\n{INPUT}")),
+            None
+        );
+        assert_eq!(
+            of_input("see: Peer message from tui/main/main-gak7:\nhello"),
+            None
+        );
         assert_eq!(short_name("main-ab12"), "main-ab12");
     }
 }
