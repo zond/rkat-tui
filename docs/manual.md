@@ -36,7 +36,7 @@ modes (manual, accept edits, plan). The shell runs inside an OS sandbox by
 default.
 
 ```bash
-cargo run -- "fix the failing test"
+rkat-tui "fix the failing test"   # start the workspace's agent with a first request
 rkat-tui -c                       # join the agent that was active last in the workspace's daemon
 rkat-tui --attach=../other        # attach to another workspace's running daemon
 rkat-tui --resume ~2
@@ -50,6 +50,10 @@ rkat-tui --no-confinement         # run the shell unsandboxed (see "Confinement"
 
 ## First run
 
+0. **Installing.** `cargo install rkat-tui --locked` installs both
+   binaries, `rkat-tui` and its daemon `rkat-tui-mob` (Rust 1.97 or later;
+   Linux and macOS). The README's Install section has the build setting
+   that makes the bundled SQLite faster, and what the sandbox needs.
 1. **A provider key.** Export one of `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`
    or `GEMINI_API_KEY` (or configure a key in the realm config, the `rkat`
    token store, or an endpoint of your own: see

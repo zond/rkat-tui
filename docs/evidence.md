@@ -5169,3 +5169,65 @@ Tests: `tests/realm_trust.rs`'s
 on a `--state-root` realm inside the workspace (the case still guarded),
 and `the_workspace_realms_rules_file_is_the_users` pins that a hand edit
 of the workspace's own realm rules applies with no notice.
+
+## Publishing 0.0.1 on crates.io (2026-11-10)
+
+The 0.0.x line is the maintainer's dogfood line, installed with
+`cargo install rkat-tui --locked` on other machines; prebuilt binaries
+wait for a 0.1.0 meant for other people.
+
+### The SQLite lock profile without the repository's config
+
+`meerkat_sqlite::REQUIRED_LIBSQLITE3_FLAGS` is a performance profile, not
+a correctness requirement: without it the bundled SQLite takes three
+process-wide locks (allocator statistics, one shared page cache, page-cache
+overflow statistics) and every connection in the process queues on them
+(`meerkat-sqlite-0.9.11/src/lock_profile.rs`). A registry install reads no
+`.cargo/config.toml` of ours, so a plain `cargo install rkat-tui` builds
+without the flags. Decision: that build is supported and works; the
+README's Install section gives `LIBSQLITE3_FLAGS="…" cargo install
+rkat-tui --locked` as the faster form.
+
+Both binaries already called `disable_memory_statistics_at_process_start()`
+as the first statement of `main`, which removes the one lock with a runtime
+switch; the other two need the flags. Probe: `cd /tmp && cargo install
+--path <checkout> --locked --root /tmp/rkat-install-check` (no repository
+config, `LIBSQLITE3_FLAGS` unset) built in 27 minutes on a loaded machine,
+and the daemon started in the foreground against a scratch home with a
+fake key served and shut down cleanly on SIGTERM. Its log had no word of
+the locks: the engine's warning fires once, at the first connection
+(`check_at_first_open`), and the daemon opens its first connection in
+`bootstrap::prepare`, before `init_logging` installs a subscriber, so the
+warning went nowhere. The daemon now checks `check_lock_profile()` right
+after its log is up and logs one warning naming the locks and the faster
+install (`daemon::sqlite_lock_notice`, test
+`the_sqlite_lock_notice_names_the_faster_install`, which also pins that
+this checkout's own builds carry the flags). The TUI logs only to its file
+and never shows it.
+
+### The package
+
+`cargo publish --dry-run` packaged the crate as it was: the self
+dev-dependency (`rkat-tui = { path = ".", features = ["test-support"] }`)
+has no version, and cargo drops such a dev-dependency from the published
+manifest, so the packaged crate's tests do not build from the registry
+(they need the feature), which nothing asks of them. `exclude` leaves out
+the development-only files a registry build never reads (`.github/`,
+`.cargo/`, `rust-toolchain.toml`, `CLAUDE.md`, `deny.toml`); the docs,
+`docs/evidence.md` included, ship, at about 1.1 MiB compressed. The
+licence files were symbolic links into the monorepo the crate came from
+(`../../LICENSE-*`), dangling here; they are real files now.
+
+### The build id
+
+`rkat_tui::BUILD` is `build.rs`'s `RKAT_TUI_BUILD`: the version plus the
+commit when the crate is built from its own checkout, the version alone
+otherwise. A registry build unpacks into `~/.cargo/registry/src/`, which
+may sit inside another repository (a home directory kept in git), so the
+commit is taken only when `git rev-parse --show-toplevel` is the manifest
+directory and the sources carry no `.cargo_vcs_info.json`. `--version` of
+both binaries prints it (`cli::tests::version_is_the_build_id`), and so
+does `/status`. Probe: the build script compiled alone and run with the
+manifest directory pointed at the checkout printed `0.0.1+<commit>`, at
+`target/package/rkat-tui-0.0.1` (a packaged crate inside this very work
+tree) and at a directory outside any repository `0.0.1`.

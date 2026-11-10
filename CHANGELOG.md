@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.0.1] - 2026-11-10
+
+The first release on crates.io, opening the 0.0.x line: the maintainer's
+dogfood builds, each carrying the fixes from using the one before. The
+state before the daemon was recorded as 0.1.0 on 2026-11-08 but never
+published; the numbers were renumbered for this line, so that section is
+the last part of this one.
+
 The agent moved out of the terminal UI into a per-workspace daemon:
 `rkat-tui` is now the client of `rkat-tui-mob`. `docs/evidence.md` holds
 the detailed record of every change below, and `docs/mob-split.md` the
@@ -161,6 +169,16 @@ design.
 
 ### Added
 
+- `cargo install rkat-tui --locked` installs both binaries from
+  crates.io. A plain install builds the bundled SQLite with its default
+  process-wide locks (the daemon's log says so once, and it works); the
+  README's Install section gives the `LIBSQLITE3_FLAGS` setting that
+  builds it without them. `LICENSE-MIT` and `LICENSE-APACHE` are real
+  files now.
+- `rkat-tui --version` and `rkat-tui-mob --version` print the build id
+  the attach handshake compares: the version plus the git commit when
+  built from a checkout (`0.0.1+0123456789`), the version alone from
+  crates.io.
 - `/rehome [id|old path]` and `rkat-tui --rehome <id|old path>` adopt the
   state of a workspace that was moved or renamed: the state's manifest
   names the new place from then on, and `-c` continues its latest
@@ -374,14 +392,14 @@ design.
 - A slash command with wrong arguments answers with the usage its
   completion row shows (`/resume`'s two usage texts disagreed).
 
-## [0.1.0] - 2026-11-08
+### Before the daemon (2026-11-08)
 
 The harness as it moved out of the Meerkat monorepo (lukacf/meerkat PR
 2069) into this repository, and the Claude Code parity work that
 followed, before the daemon: the agent ran in the `rkat-tui` process.
 `docs/ux-parity.md` is the parity audit.
 
-### Added
+#### Added
 
 - `/rewind` (aliases `/checkpoint`, `/undo`), and Esc Esc on an empty idle
   input, open a menu of the session's messages (newest first, one numbered
@@ -589,7 +607,7 @@ followed, before the daemon: the agent ran in the `rkat-tui` process.
   binding control (lukacf/meerkat#2095). Non-Anthropic endpoints and types
   a catalogued model refuses are ignored with a start-up notice.
 
-### Changed
+#### Changed
 
 - Built on a git revision of Meerkat `main` with rkat-tui's fixes on
   top (the Linux sandbox's pid namespace and procfs, `[thinking]` for
@@ -607,7 +625,7 @@ followed, before the daemon: the agent ran in the `rkat-tui` process.
   interleave with another surface's write (`rkat config`, REST, RPC); a
   write that lost the race is rebuilt from the new document and retried.
 
-### Fixed
+#### Fixed
 
 - A hook written into the project `.rkat/config.toml` while a session was
   being built (for example by a confined shell command) could run once

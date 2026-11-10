@@ -10,18 +10,31 @@ The agent's shell runs inside an OS sandbox.
 
 ## Install
 
-rkat-tui builds with plain `cargo` on Rust 1.97 (`rust-toolchain.toml` pins
-1.97.0):
+0.0.x is the maintainer's dogfood line: each release carries the fixes
+from using the one before. Expect sharp edges, and read the
+[changelog](CHANGELOG.md) before you upgrade.
 
 ```bash
-cargo install --path .     # installs rkat-tui and its daemon, rkat-tui-mob
+cargo install rkat-tui --locked   # installs rkat-tui and its daemon, rkat-tui-mob
+export ANTHROPIC_API_KEY=…        # or OPENAI_API_KEY or GEMINI_API_KEY
 ```
 
-On Linux the sandbox needs unprivileged user namespaces; a host that cannot
-confine the shell refuses to start and explains how to enable them (for
-example an AppArmor profile on Ubuntu 24.04 and later). macOS uses Seatbelt;
-other platforms have no sandbox. `--no-confinement` runs the shell
-unsandboxed.
+It needs Rust 1.97 or later and runs on Linux and macOS. On Linux the
+sandbox needs unprivileged user namespaces; a host that cannot confine the
+shell refuses to start and explains how to enable them (for example an
+AppArmor profile on Ubuntu 24.04 and later). macOS uses Seatbelt; other
+platforms have no sandbox. `--no-confinement` runs the shell unsandboxed.
+
+The daemon's log may say that SQLite runs with process-wide locks: a plain
+install builds the bundled SQLite with its defaults, which work but make
+concurrent sessions in the daemon queue on three global locks;
+`LIBSQLITE3_FLAGS="-DSQLITE_DEFAULT_MEMSTATUS=0 -USQLITE_ENABLE_MEMORY_MANAGEMENT -DSQLITE_DISABLE_PAGECACHE_OVERFLOW_STATS" cargo install rkat-tui --locked`
+builds it without them (this checkout's `.cargo/config.toml` sets the same,
+so `cargo install --path .` here gets them too).
+
+Your projects stay clean: a workspace's sessions, approvals and audit log
+live under `~/.rkat/tui/workspaces/<id>/`, not in the project (see
+[Where things live](docs/manual.md#where-things-live)).
 
 ## Start
 

@@ -212,3 +212,19 @@ the workspace's daemon and attaches to it):
    something: the other's TUI shows the message labelled with the
    sender, and the other agent answers it. `/quit` in the second TUI
    retires its agent; the first one is told it left.
+
+## Releasing a 0.0.x
+
+The 0.0.x line is the maintainer's dogfood line on crates.io: each
+`0.0.(n+1)` carries the fixes from using `0.0.n`.
+
+1. Set `version = "0.0.N"` in `Cargo.toml` (`cargo check` updates
+   `Cargo.lock`), and move `## [Unreleased]` in `CHANGELOG.md` into a new
+   `## [0.0.N] - <date>` under an empty `## [Unreleased]`.
+2. Run the gate, then `cargo publish --dry-run --locked`; commit and push.
+3. The maintainer tags and publishes:
+   `git tag -a v0.0.N -m "rkat-tui 0.0.N" && git push origin v0.0.N`,
+   then `cargo publish --locked`.
+4. On the other machine: `cargo install rkat-tui --locked` (`--force` over
+   an older one), `rkat-tui --version`, and record what goes wrong as
+   issues in the repository.
