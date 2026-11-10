@@ -163,8 +163,14 @@ the workspace's daemon and attaches to it):
    `?` opens the key reference; Ctrl+R searches history.
 6. `/rewind` (or Esc Esc on an empty input) says why rewinding is not
    available yet; `/resume` lists the workspace's conversations.
-7. `/detach` leaves with the daemon running; `rkat-tui` again reattaches
-   to the same conversation. `/quit` then asks whether to detach or stop
-   the daemon (it stops without asking when this `rkat-tui` started the
-   daemon and nobody detached since); after a stop, `rkat-tui -c`
-   resumes the conversation in a fresh daemon.
+7. `/detach` leaves with the daemon running; `rkat-tui -c` reattaches
+   to the same agent and conversation. `/quit` then asks whether to
+   detach or stop the daemon (it stops without asking when this
+   `rkat-tui` started the daemon, is the last one attached and no agent
+   was left detached); after a stop, `rkat-tui -c` resumes the
+   conversation in a fresh daemon.
+8. A second `rkat-tui` in the same directory gets an agent of its own and
+   names the first; `/agents` lists both. Ask one agent to tell the other
+   something: the other's TUI shows the message labelled with the
+   sender, and the other agent answers it. `/quit` in the second TUI
+   retires its agent; the first one is told it left.

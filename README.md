@@ -45,12 +45,19 @@ workspace starts that workspace's daemon, `rkat-tui-mob`, in the
 background and attaches to it; every later `rkat-tui` there attaches to
 the same one. So the agent keeps working when you leave:
 
-- `/detach` leaves and keeps the agent running; `rkat-tui` again brings
-  you back to the same conversation.
-- `/quit` means you are done: it stops the daemon this `rkat-tui` started
-  (or asks, when someone detached from it).
-- `rkat-tui -c` continues the last conversation, `/resume` picks another
-  one, and `rkat-tui --list` shows every running daemon.
+- `/detach` leaves and keeps the agent running; `rkat-tui -c` brings
+  you back to it.
+- `/quit` means you are done: your agent retires (its conversation
+  stays), and the daemon stops when this `rkat-tui` started it and is the
+  last one attached (or asks, when an agent was left running).
+- `rkat-tui -c` continues with the agent active last, `/resume` picks
+  another conversation, and `rkat-tui --list` shows every running daemon
+  and its agents.
+
+A second `rkat-tui` in the same directory gets an agent of its own in the
+same daemon, wired to the others so they can tell each other which files
+they are changing (`/agents` lists them; see the manual's "Several
+agents").
 
 ## Highlights
 

@@ -19,6 +19,7 @@ the test protocol for working on rkat-tui itself.
 - [Keys and commands](#keys-and-commands) ([Task checklist](#task-checklist))
 - [Where things live](#where-things-live)
 - [The workspace daemon](#the-workspace-daemon)
+- [Several agents](#several-agents)
 
 ## Overview
 
@@ -36,7 +37,7 @@ default.
 
 ```bash
 cargo run -- "fix the failing test"
-rkat-tui -c                       # attach to the conversation the workspace's daemon runs
+rkat-tui -c                       # join the agent that was active last in the workspace's daemon
 rkat-tui --attach=../other        # attach to another workspace's running daemon
 rkat-tui --resume ~2
 rkat-tui --model gpt-5.5 --classifier-model gpt-5.5
@@ -65,12 +66,15 @@ rkat-tui --no-confinement         # run the shell unsandboxed (see "Confinement"
    `rkat-tui-mob`, in the background and attaches to it, and every later
    `rkat-tui` there attaches to the same one. The conversation, its turns
    and its helpers live in the daemon, so they go on while no terminal is
-   attached (see [The workspace daemon](#the-workspace-daemon)).
+   attached (see [The workspace daemon](#the-workspace-daemon)). A second
+   `rkat-tui` in the same directory gets an agent of its own, wired to the
+   first (see [Several agents](#several-agents)).
 4. **Leaving.** `/detach` leaves and keeps the agent working; run
-   `rkat-tui` again to come back to it. `/quit` means you are done: it
-   stops the daemon this `rkat-tui` started (or asks, when someone
-   detached from it or it was started elsewhere), and `rkat-tui -c` later
-   continues the conversation.
+   `rkat-tui -c` to come back to it. `/quit` means you are done: your
+   agent retires (its conversation stays), and the daemon stops when this
+   `rkat-tui` started it and is the last one attached (it asks when an
+   agent was left running or it was started elsewhere); `rkat-tui -c`
+   later continues the conversation.
 
 ## Sessions
 
@@ -759,7 +763,7 @@ why, is recorded in [`docs/ux-parity.md`](ux-parity.md), the dated audit
 behind these controls (its Status column is the current state).
 
 
-`/help` (alias `/?`), `/quit` (aliases `/exit`, `/q`), `/clear` (alias `/new`), `/resume [ref]`,
+`/help` (alias `/?`), `/quit` (aliases `/exit`, `/q`), `/detach`, `/agents [name]`, `/daemon stop`, `/clear` (alias `/new`), `/resume [ref]`,
 `/rewind` (aliases `/checkpoint`, `/undo`), `/permissions [list|add allow|deny <tool> [pattern]|rm <n>|trust]` (alias `/rules`; `remove` for `rm`),
 `/mode [default|accept-edits|plan|auto]`, `/auto [on|off|resume]`, `/model [[endpoint:]id|refresh]`,
 `/remember <text>`, `/memory [user|system]`, `/init`, `/compact [now|status|<instructions>]`, `/context`, `/status`, `/export [file]`, `/usage` (aliases `/cost`, `/stats`), `/copy [N]`, `/trust` (alias `/mcp trust`),
@@ -968,8 +972,9 @@ given).
 `rkat-tui` runs the agent in the workspace's `rkat-tui-mob` daemon and is
 its client: with no daemon running for the workspace it starts one, with
 one running it attaches to it. The agent lives in the daemon (a durable
-mob member: mob `tui`, member `main`), keeps working when you `/detach`,
-and any number of TUIs can attach to it.
+mob member: mob `tui`, member `main-<id>`), keeps working when you
+`/detach`, and any number of TUIs can attach to it. A daemon hosts one
+agent per `rkat-tui` you start beside it (see [Several agents](#several-agents)).
 
 **How it used to work.** Until P4 of the always-daemon plan (November
 2026) `rkat-tui` could also host the agent in its own process
@@ -1031,8 +1036,10 @@ the prompt.
 
 **Listing daemons.** `rkat-tui --list` prints one line per daemon whose
 endpoint file exists, tab-separated in a fixed order: the workspace, the
-address, `pid N`, `up <uptime>`, then the attached clients, the current
-conversation and `running` or `idle`. A file nothing answers at is
+address, `pid N`, `up <uptime>`, then the attached clients and the
+number of agents; under it, indented by a tab, one line per agent: its
+name, `running` or `idle`, its conversation, its clients and `detached`
+when it runs without one. A file nothing answers at is
 `stale`, and is removed when its process is gone (`stale (file removed)`).
 A daemon of another realm than the workspace's own shows it after the
 workspace: `(realm <root>)` or `(realm memory)`.
@@ -1094,22 +1101,25 @@ it restarted.
 
 **Status bar.** The first segment is the connection: `connecting`,
 `daemon starting`, `attached 127.0.0.1:<port>`, `reconnecting`,
-`detached` or `daemon stopped`.
+`detached` or `daemon stopped`; the next one the agent this TUI works
+with (`agent main-<id>`).
 
-**Detach and reattach.** `/detach` leaves and keeps the agent running:
-the daemon and a running turn go on, and the daemon records that someone
-detached from it (a later `/quit` then asks before stopping it). Closing
-the terminal (SIGHUP), losing the connection or a crash of the TUI is a
-detach too: the terminal is restored, and the daemon keeps running. After
-the TUI closes it says on the terminal whether the daemon still runs.
-`/quit` (also Ctrl-D, and Ctrl-C twice) means you are done, and decides
+**Detach and reattach.** `/detach` leaves and keeps this TUI's agent
+running: the daemon and a running turn go on, and the daemon marks the
+agent detached (a later `/quit` then asks before stopping the daemon).
+Closing the terminal (SIGHUP), losing the connection or a crash of the TUI
+is a detach too when it was the agent's last TUI: the terminal is
+restored, and the agent keeps running. After the TUI closes it says on
+the terminal whether the agent and the daemon still run. `/quit` (also
+Ctrl-D, and Ctrl-C twice) means you are done with your agent, and decides
 from the daemon's state (`rkat/status`):
 
 | Situation | `/quit` |
 |---|---|
-| This TUI started the daemon, nobody detached since, no other TUI attached | Stops the daemon |
-| Other TUIs are attached | Leaves the daemon running for them, and says so |
-| Someone detached earlier, this TUI did not start the daemon, or the daemon cannot say (it restarted, or did not answer) | Asks: detach (keep the agent running, the default) or terminate (stop the daemon); when a turn is running, terminate says it interrupts it; Esc stays |
+| Other TUIs work with this agent | Leaves; the agent and the daemon stay for them, and it says so |
+| Other TUIs are attached to other agents | Retires this agent (a running turn is interrupted; its conversation stays for `/resume` and `--resume`); the daemon stays for them |
+| This TUI is the last one, started the daemon, and no agent was left detached | Stops the daemon; every agent retires |
+| The last TUI, and an agent was left detached, this TUI did not start the daemon, or the daemon cannot say (it restarted, or did not answer) | Asks: detach (keep this agent running, the default) or terminate (stop the daemon and retire every agent; their conversations stay); when a turn is running, terminate says it interrupts it; Esc stays |
 
 Messages not yet delivered are saved either way, and while a turn runs or
 messages are queued `/quit` first asks for a second press.
@@ -1127,8 +1137,11 @@ running shows as running (Esc interrupts it). Attaching for the first time,
 or to a daemon that restarted since (its events are numbered anew), the TUI
 shows the conversation from its start, as `/resume` does, and follows the
 live stream from there. Where the stream stopped is remembered per
-workspace in `.rkat/tui/attach.cursor` (with the stream's epoch and a digest
-of the daemon's token, never the token).
+agent in `.rkat/tui/attach-<agent>.cursor` (`attach.cursor` for the `main`
+of a daemon from before several agents; with the stream's epoch and a
+digest of the daemon's token, never the token). An agent seated for this
+TUI (a new one, or one seated again on its conversation) shows its
+conversation from the start.
 
 **Stopping the daemon.** `/quit` stops the daemon this TUI started (the
 table above) with `rkat/shutdown`; the choice "terminate" does the same.
@@ -1138,7 +1151,9 @@ still be running (check with `--list`). `/daemon stop` stops it from any
 attached TUI: it sends SIGTERM to the pid in the endpoint file, after
 checking that the file still names the daemon this TUI is attached to.
 Either way the daemon removes its endpoint file and shuts down; its
-sessions stay in the realm and the next start restores the member.
+sessions stay in the realm. After `/daemon stop` (or SIGTERM) the next
+start restores the agents, marked detached; after a terminate they were
+retired, and the next start seats a fresh first agent.
 
 **What works:** prompts and streaming output, the agent's file changes as
 diffs (in every attached TUI, as they are made; a TUI that attaches later
@@ -1168,13 +1183,17 @@ task it is given and runs behind the same gate (its calls ask you, naming
 it), shows as a helper and stops with Esc. Helpers at the
 `[helpers] max_depth` limit cannot fork.
 
-**Conversations.** `/new` starts a fresh conversation for the daemon's
+**Conversations.** `/new` starts a fresh conversation for this TUI's
 agent, `/resume` lists this workspace's conversations (newest first, with
-their size and first message) and switches back to one, showing its
-transcript; `/resume <ref>` takes `last`
-(the most recent conversation other than this one), `~N` (counting the
-others), an id or an id prefix. A switch retires the agent's member and
-seats it again on the other session; every attached TUI follows it. A
+their size, first message and, for another agent's, its name) and
+switches back to one of this agent's, showing its transcript; `/resume
+<ref>` takes `last` (this agent's most recent conversation other than
+this one), `~N` (counting those), an id or an id prefix. A conversation
+belongs to the agent that ran it (the engine seats a session only under
+the identity that created it): `/resume` of another agent's says where it
+is (`/agents <name>` when that agent works, `rkat-tui --resume <id>` when
+it quit). A switch retires the agent's member and seats it again on the
+other session; every TUI on that agent follows it. A
 `/model` switch carries over to a `/new` conversation. Neither runs while a
 turn does, whichever TUI started it: the daemon refuses the switch until
 the turn ends or is interrupted. The daemon lists the conversations in
@@ -1220,13 +1239,14 @@ daemon, and so do the messages you typed mid-turn that the daemon took. A
 this TUI still held (queued, not yet sent) are saved to
 `<realm>/tui_unsent.txt`, and the next start says so.
 
-**`-c` and `--resume` at start.** `-c` (and `--resume last`) attaches to
-the daemon's current conversation: with a daemon, the most recent
-conversation is the one it runs, so attaching is all it does.
-`--resume <ref>` attaches and switches the daemon to that conversation
-(`rkat/resume`, as `/resume <ref>`; a prompt on the command line goes to
-it), and says so when it is the current one already; `--resume` alone
-opens the picker once attached. A session the removed in-process runner
+**`-c` and `--resume` at start.** With neither, `rkat-tui` beside a live
+daemon starts a new agent (see [Several agents](#several-agents)). `-c`
+(and `--resume last`) joins the agent that was active last: attaching is
+all it does. `--resume <ref>` attaches to the agent that owns that
+conversation (seated again on it, under its name, when that agent quit;
+switched to it with `rkat/resume` when that agent moved on to another
+conversation since; a prompt on the command line goes to it); `--resume`
+alone joins the agent active last and opens the picker. A session the removed in-process runner
 started (before the daemon) is not one of the daemon's conversations and cannot become
 one: the engine seats the daemon's agent only on sessions it ran as a mob
 member. `/resume` lists such sessions after the conversations, marked
@@ -1266,3 +1286,63 @@ saves the session shown. `last` and `~N` name daemon conversations only.
 - A session the removed in-process runner created cannot be continued:
   the engine seats the daemon's agent only on sessions it ran. `/resume`
   shows it view only.
+
+## Several agents
+
+One daemon serves a workspace, and it hosts one agent per `rkat-tui` you
+start there: several agents can work in the same directory at once, each
+with its own user, conversation, model and helpers, and they know about
+each other.
+
+**Names.** Each agent is a member of the daemon's mob named `main-<id>`
+(four letters and digits, fixed for the agent's life): the status bar
+shows it after the connection, and `/agents`, `--list` and `/status` name
+it. A daemon from before several agents keeps its one agent, `main`.
+
+**Starting.** The first `rkat-tui` in a workspace starts the daemon and
+works with its first agent. A `rkat-tui` started beside a live daemon,
+with neither `-c` nor `--resume`, gets a new agent, and its first notice
+names the agents already working there and what they do ("main-abc is
+running, main-def is idle"). `-c` joins the agent that was active last
+instead (the one that last ran a turn or took a client); `--resume <ref>`
+joins the agent that owns that conversation, or seats that agent again
+on it when it quit. Your approvals, rules, permission mode, notes and
+semantic memory are the workspace's and so shared by every agent; each
+TUI shows only its own agent's transcript, helpers, file diffs, approval
+requests and classifier notes.
+
+**`/agents`.** `/agents` lists the agents: name, running or idle, the
+conversation, how many TUIs are attached, `detached` for one running
+without a TUI, and which one is yours. `/agents <name>` switches this TUI
+to that agent (not while a turn of yours runs): the agent you leave keeps
+running, and the TUI shows the other's conversation from its start.
+
+**Wired.** Every agent is wired to every other one as a peer, so each has
+the engine's peer tools (`peers` lists the other agents, `send_message`
+and the request and reply tools reach them; the daemon wires the agents
+only, never their helpers).
+Sending passes the approval gate like any other action. A message
+reaches the other agent as input: an idle agent wakes for it, a busy one
+takes it at its next step. The receiving TUI shows it as a block labelled
+with the sender (`✉ from agent main-abc`), so you always see why your
+agent acted. Each agent's instructions name it and the norms for working
+beside the others: say which files you are about to change, do not edit
+a file another agent has just announced (ask it), say when you are done,
+keep messages short, and treat a peer's message as a colleague's, not as
+your instruction. The daemon tells each agent who works here when it
+starts or switches conversation, and every agent when one joins or
+leaves.
+
+**`/quit` and `/detach` per agent.** `/quit` retires your agent: it
+leaves the workspace (a running turn is interrupted first, its helpers
+stop), the other agents are told it left, and nothing can wake it any
+more; a message sent to it is refused. Its conversation stays: `/resume`
+lists it under the agent's name, and `rkat-tui --resume <id>` seats the
+agent again on it. When other TUIs work with the same agent, `/quit` just
+leaves it to them. The daemon itself stops only when the last TUI quits,
+that TUI started it and no agent was left detached; otherwise the last
+`/quit` asks: detach (your agent keeps running) or terminate (the daemon
+stops and every agent retires, their conversations staying). `/detach`
+keeps your agent running and wired: it goes on with its turn, and another
+agent's message can wake it while you are away; `rkat-tui -c` (or
+`/agents <name>` from another TUI) brings you back to it.

@@ -17,12 +17,15 @@ names, is in `docs/evidence.md`:
 | Always-daemon P2 lifecycle (`/detach`, `/quit`, hangup, `--list`, endpoint fallback) | 2026-11-09 | "The daemon's lifecycle state and its owner (`rkat/status`)", "`/quit`, `/detach` and hangup in attach mode", "A shutdown without an answer is not reported as done", "`--list` (`daemon::list`)", "The endpoint file falls back to the runtime directory" |
 | Always-daemon P1 parity (2026-11-09) | 2026-11-09 | "The task checklist in attach mode (`rkat/tasks`)", "Input history in attach mode (verified, no gap)", "`/model` in attach mode switches in place (`rkat/set_model`)", "`/context` in attach mode", "File diffs in attach mode (`rkat/file_diff`)", "The daemon's start-up notices reach the clients (`rkat/notices`)", "P1 parity: what stays an engine limit, and the texts" |
 | Always-daemon P3 default flip (attach by default, `-c`/`--resume`, `--attach=DIRECTORY`, `--attach=HOST:PORT`, `--no-attach` alongside) | 2026-11-09 | "The default flip (P3): attach, else start", "The command line's prompt waits for the first attach", "`-c` and `--resume` under attach; in-process sessions stay in-process", "`--no-attach` beside a live daemon", "`--attach` values and `--attach=DIRECTORY`", "`--attach=HOST:PORT` with a token file" |
+| P5 several agents per workspace (members `main-<id>`, a binding per connection, `/quit` retires, start semantics, wiring, the persona and notes, peer messages shown) | 2026-11-10 | "P5: several agents per workspace" (its subsections) |
 | Always-daemon P4 (the in-process runner deleted; every test on the daemon rig; `/status` parity; the proxy's method allow-list) | 2026-11-10 | "The endpoint key includes the realm (P4)", "Sessions created before the daemon are view only (P4)", "P4: the in-process tests and where they went", "P4: the in-process runner is deleted", "`/status` reads the daemon's side (`rkat/report`)", "The daemon's proxy serves an allow-list of engine methods", "The proxy forwards only what it parsed", "The daemon's stop waits for the realm's databases to close" |
 
 Phases P1 to P4 of the always-daemon plan are done: every session runs in
 the daemon and `rkat-tui` is only its client; the in-process runner and
 `--no-attach` are gone, and with them the limit that an in-process TUI and
-the daemon could not share a workspace.
+the daemon could not share a workspace. P5 is done too: one daemon hosts
+several agents per workspace, wired to each other ("The member model"
+below).
 
 What remains, in order of priority:
 
@@ -32,7 +35,6 @@ What remains, in order of priority:
 | `/rewind` on the engine's implementation (ask 1) | The same-identity rewind design is merged upstream (lukacf/meerkat#2126, db8547a532); its implementation is not scheduled. `/rewind` explains why it is not available |
 | Seating a member on a non-member session (ask 7) | Sessions the in-process runner created stay view only until the engine can seat the daemon's agent on them |
 | MCP servers added or trusted after the daemon's mob was created | They do not reach the agent until the mob is made again (the manual's limits) |
-| P5 several agents per workspace | Optional; not started |
 | The governed realm (ask 2, #2122) | Lower priority now that remote attach goes through a tunnel to a loopback daemon (`--attach=HOST:PORT`) rather than a governed connection |
 
 ## Direction (decided 2026-11-09): every session runs in the daemon
@@ -88,8 +90,9 @@ the end state.
 - Migrate `tests/integrator.rs`, `tests/fork.rs`, `tests/compact.rs`, `tests/mobs.rs`, … onto the daemon rig (`tests/common/attach.rs`), keeping each behaviour assertion; delete `tests/common/mod.rs`'s `Rig`. Record in `docs/evidence.md` which in-process test became which attach test.
 - CLAUDE.md layout table, README, manual, mob-split (now the architecture doc), changelog.
 
-#### P5 Several agents per workspace (optional, after P4)
-- A member per agent in the daemon's mob (`main`, `main-2`, … or named), `--agent NAME` / `/agents`, a member column in the conversations list, a per-member attach cursor. Approvals, rules and memory stay per workspace.
+#### P5 Several agents per workspace (done 2026-11-10)
+- A member per agent in the daemon's mob, named `main-<short random id>` (a bare `main` of an older daemon is kept), `/agents` and `/agents <name>`, a member column in the conversations list, a per-agent attach cursor. Approvals, rules and memory stay per workspace. As built: "The member model" below.
+- Decided with the user: always wired (every agent to every other, peer tools, peer messages shown labelled), the persona with the names and the norms, join and leave notes; no flag starts a new agent beside a live daemon, `-c` the most recent, `--resume <ref>` the owner (or a new seat); `/quit` retires the agent, the P2 daemon-stop rule applies to the last client; `/detach` keeps the agent live and wired.
 
 ### Interaction with the review batches
 - Batch D (running): the workbench is what the one runner uses; it was told not to build two-runner abstractions.
@@ -136,8 +139,10 @@ rkat-tui-mob (daemon, src/daemon/, one per workspace realm)
   engine: AgentFactory + SessionRuntime + our MobMcpState
     SpawnMemberCustomizer for every member, re-supplied on resume: gate
       (ToolDispatchAdmission), tools, persona, auth, consequence policy
-    orchestrator: mob `tui`, member `main`, host root, TurnDriven, durable;
-      spawned by the daemon in Rust at start (or restored)
+    agents: mob `tui`, members `main-<id>` (one per agent; an older
+      daemon's `main` kept), profile `main`, host root, TurnDriven,
+      durable, wired to each other; the first seated by the daemon at
+      start (or restored), the others when a client asks for one
     agent mob tools (delegate, mob_*, council) + gated fork_off
   decisions: subscribe_openings -> decision/notice to attached clients;
     decision/decide -> AuthenticatedDecisionEvent as the daemon's principal
@@ -147,8 +152,9 @@ rkat-tui-mob (daemon, src/daemon/, one per workspace realm)
   realm lease + $XDG_STATE_HOME/rkat-tui/<key>/mob.endpoint
 
 rkat-tui (client, src/client/)
-  reads the endpoint file, attaches with the token (starts the daemon if
-    none answers); refuses a daemon without decision/notice+decide
+  reads the endpoint file, attaches with the token and the agent it wants
+    (new, recent, a name, a conversation; starts the daemon if none
+    answers); refuses a daemon without decision/notice+decide
   mob/member_send for prompts and steers (detach-safe); rkat/set_model
     for a /model switch, in place (model, provider, auth_binding)
   mob/stream_open with the saved {epoch, seq} cursor; rkat/transcript and
@@ -206,10 +212,11 @@ methods on the wire, and `daemon::protocol` types each one for both ends:
 
 | Method | Params | Result |
 |---|---|---|
-| `rkat/attach` | `{"token", "start_token"?, "probe"?}` | `{"attached": true}` (first line only; the start token marks the client that launched the daemon, a probe is not counted as a client) |
-| `rkat/status` | `{}` | `{"workspace", "host"?, "pid", "started_at", "clients", "detached", "owner", "session_id"?, "running"}` |
-| `rkat/detach` | `{}` | `{}` (recorded: a later `/quit` asks) |
-| `rkat/shutdown` | `{}` | `{}` (the daemon removes its endpoint file and shuts down) |
+| `rkat/attach` | `{"token", "start_token"?, "probe"?, "agent"?: {"choice": "new"\|"recent"\|"agent"\|"conversation", "name"?, "reference"?}}` | `{"attached": true, "agent"?, "seated"?}` (first line only; the start token marks the client that launched the daemon, a probe is not counted as a client and is bound to no agent; no `agent` is `recent`) |
+| `rkat/status` | `{}` | `{"workspace", "host"?, "pid", "started_at", "clients", "detached", "owner", "session_id"?, "running", "agent"?, "agents": [{"name", "session_id"?, "running", "clients", "detached"}]}` (`session_id` and `running` of the caller's agent; `detached`: a live agent runs without a client) |
+| `rkat/detach` | `{}` | `{}` (the caller's agent is marked detached: a later `/quit` asks) |
+| `rkat/retire` | `{}` | `{"agent", "session_id"?}` (the caller's agent leaves the mob; a running turn is interrupted; its conversation stays) |
+| `rkat/shutdown` | `{"retire"?}` | `{}` (the daemon removes its endpoint file and shuts down; with `retire` every agent retires first) |
 | `rkat/get_mode` | `{}` | `{"mode", "paused", "denials"}` |
 | `rkat/set_mode` | `{"mode": "default"\|"accept-edits"\|"plan"\|"auto"}` | `{"status", "notice", "warning"?}` |
 | `rkat/rules` | `{"op": "list"}`, `{"op": "add", "deny", "tool", "pattern"?}`, `{"op": "remove", "n"}` | `{"ok", "text"}` |
@@ -301,17 +308,43 @@ client never calls `mob/fork_helper` or `mob/spawn_helper` itself.
 session was not a mob member and the engine refuses `fork_off` to one; it
 went with that runner.)
 
-**Conversations.** One member identity (`tui/main`), many sessions. `/new`
-retires the member (the engine archives its session) and spawns it fresh;
-`/resume` retires it and spawns it with `launch_mode = resume` on an earlier
-session. The identity, gate, `rkat/*` methods and every client's addressing
-stay; only `current_session_id` moves, which every client polls (1 s) and
-follows. The daemon keeps the list in
-`<workspace>/.rkat/tui/conversations.json` (the engine keeps no list of a
-member's earlier sessions). A member per conversation (`main-2`, …) was
-rejected: it would make the root a set of identities through the customizer,
-the gate, the watcher and the local methods, and keep every old conversation
-seated.
+**Conversations.** One member identity per agent (`tui/main-<id>`), many
+sessions. `/new` retires the member (the engine archives its session) and
+spawns it fresh; `/resume` retires it and spawns it with `launch_mode =
+resume` on an earlier session of its own. The identity, gate, `rkat/*`
+methods and every client's addressing stay; only `current_session_id`
+moves, which every client on that agent polls (1 s) and follows. The
+daemon keeps the list in `<workspace>/.rkat/tui/conversations.json`, each
+entry naming its agent (the engine keeps no list of a member's earlier
+sessions). A session belongs to the identity that ran it: the engine
+refuses to seat another (`ResumeSessionBoundToAnotherMember`), so a
+conversation whose agent quit is seated again under that agent's name.
+(A member per conversation was rejected in P4: it would keep every old
+conversation seated. P5's member per agent is the set of identities that
+rejection describes, built for agents, not conversations.)
+
+### The member model (P5)
+
+`daemon::agents::Agents` keeps the live agents: per agent its clients, a
+detached flag (set by `/detach`, by its last client leaving without a
+retire, and for an agent the daemon restored), a spare flag (the agent the
+daemon seated at start, which the first `new` takes) and when it was last
+active (a bind, a prompt, a run start). `rkat/attach` binds each
+connection to one agent (`serve::admit`, before the acknowledgement),
+seating one for `new` (or for a conversation whose agent quit); every
+member-scoped `rkat/*` method acts on the connection's agent, the engine
+methods the client calls name it, and a client follows only its agent's
+stream, helpers, diffs, decisions and classifier notes. The spawn
+customizer shapes every member whose name `is_agent` accepts as an owner
+with its own gate and file tools, and refuses such a name from any spawn
+the host did not make. Every agent is wired to every other one (seat,
+switch, reseat, restore), its persona names it and the norms, and system
+notes (`mob_append_system_context`) give it the roster and tell the others
+of a join or a leave. `rkat/retire` (a `/quit` with other clients on other
+agents) cancels a running turn, stops its helpers and retires the member;
+`rkat/shutdown {"retire": true}` (the last client's stop, or "terminate")
+retires every agent before the daemon stops; SIGTERM keeps them for the
+next start.
 
 **Policy on the daemon side.** The realm stays ungoverned. The classifier
 and tiers run as the orchestrator's `ToolDispatchAdmission`
