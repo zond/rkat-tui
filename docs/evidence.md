@@ -5520,3 +5520,25 @@ Deleted with them: `dirs::tests::an_existing_legacy_dir_is_used_when_the_default
 `config::tests::legacy_global_rules_notice_only_when_old_file_exists`;
 `cli::tests` and `commands::tests::rules_commands` now pin that the old
 names no longer parse.
+
+## `blob_save_file` passes the path seals (2026-11-10)
+
+The engine's `blob_save_file` (`meerkat-tools` 0.9.11,
+`builtin/utility/blob_file.rs`: `BlobSaveFileArgs { blob_id, path,
+overwrite }`) writes a stored blob to `path` inside the project root. The
+gate parsed it as `ActionKind::Other`, so it went to the classifier (or,
+in manual mode, to the user) and no seal saw its target: a save into
+`.git/hooks/pre-commit` or `.rkat/mcp.toml` was a question, not a
+refusal. `Action::kind` now reads a native `blob_save_file` as
+`ActionKind::FileWrite { paths: [path] }` (`policy::BLOB_SAVE_FILE`), so
+tier 0 (sealed and secret roots, the daemon's `DenySnapshot` consequence
+policy included), the protected paths, the permission modes, plan mode
+and the agent-written list treat it as a `write_file` of that path. An
+MCP tool of the same name stays foreign. Tests:
+`approval::engine::tests::a_blob_save_into_a_sealed_path_is_refused_at_tier_zero`
+(every mode, no classifier call, nobody asked),
+`a_blob_save_is_decided_like_a_write_of_its_destination` (an ordinary and
+a protected destination, every mode, the same question and verdict as
+`write_file`), the secret root in
+`policy::tests::the_endpoint_directory_is_sealed_for_reads_and_searches`,
+and `daemon::policy::tests::deny_rules_and_sealed_writes_are_refused_and_nothing_else`.

@@ -41,6 +41,13 @@ design.
   user-namespace restriction lifted, and a skip there is a failure), and
   a test pins that the agent's file tools cannot write the project's
   `.rkat/` inputs (`mcp.toml`, `tui.toml`, `config.toml`, hook scripts).
+- The engine's `blob_save_file` (saving a generated image or other blob to
+  a file) is judged as the file write it is: a save into a sealed path
+  (`.git/hooks/`, `.rkat/`, the realm, the endpoint directories) is
+  refused at tier 0, a protected path asks you, and an ordinary
+  in-project destination is decided exactly like a `write_file` there in
+  every permission mode. It used to go to the classifier as an opaque
+  action, so no seal saw its target.
 - CI checks the dependencies with `cargo deny` (`deny.toml`): RustSec
   advisories, the licence allow-list and crates.io as the only source.
   Two advisories without a fix this release can take are ignored with a

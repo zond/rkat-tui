@@ -166,7 +166,8 @@ pub const READ_ONLY_BUILTINS: &[&str] = &[
 
 /// Upstream builtins that act (or read outside the project) and so pass the
 /// classifier unless a user rule decides them: the shell and its job
-/// controls, file blobs, skill functions, web search, image generation,
+/// controls, loading a file into a blob ([`BLOB_SAVE_FILE`] is judged as
+/// the file write it is), skill functions, web search, image generation,
 /// comms sends, councils and objective conclusions. The
 /// mutating `mob_*` tools need review too (any `mob_*` not in
 /// [`READ_ONLY_BUILTINS`]).
@@ -197,6 +198,11 @@ pub const REVIEWED_BUILTINS: &[&str] = &[
     "unwire_members",
     "force_cancel_member",
 ];
+
+/// The engine's builtin that writes a stored blob to a file. Classified as
+/// a [`ActionKind::FileWrite`] of its destination, so the seals and the
+/// protected paths judge it exactly like `write_file` of that path.
+pub const BLOB_SAVE_FILE: &str = "blob_save_file";
 
 /// Tools that hand work to a helper (a mob member, see [`crate::mobs`]).
 /// Delegating does nothing by itself: every call the helper makes passes
@@ -233,7 +239,8 @@ pub enum ActionKind {
         /// `glob`'s pattern, which can itself name a directory.
         pattern: Option<String>,
     },
-    /// `write_file` / `edit_file`.
+    /// `write_file` / `edit_file`, and the engine's `blob_save_file`
+    /// ([`BLOB_SAVE_FILE`]) on its destination.
     FileWrite {
         /// Every path the call may create, modify, delete or move to.
         paths: Vec<String>,
@@ -335,6 +342,13 @@ impl<'a> Action<'a> {
                 ActionKind::ReadOnlyBuiltin
             }
             (ToolFamily::Native, n) if DELEGATION_TOOLS.contains(&n) => ActionKind::Delegation,
+            // The engine's blob save writes a file at `path`: every seal and
+            // protected-path rule applies to it as to a `write_file` there.
+            (ToolFamily::Native, BLOB_SAVE_FILE) => {
+                typed::<PathArgs>(args).map_or(ActionKind::Other, |a| ActionKind::FileWrite {
+                    paths: vec![a.path],
+                })
+            }
             (ToolFamily::Files, READ_FILE) if !declared_mutating => typed::<PathArgs>(args)
                 .map_or(ActionKind::Other, |a| ActionKind::FileRead { path: a.path }),
             (ToolFamily::Files, GLOB | GREP) if !declared_mutating => typed::<SearchArgs>(args)
@@ -771,6 +785,10 @@ mod tests {
             ),
             ("glob", json!({"pattern": "*", "path": file})),
             ("write_file", json!({"path": file, "content": ""})),
+            (
+                "blob_save_file",
+                json!({"blob_id": "b1", "path": file, "overwrite": true}),
+            ),
         ] {
             assert_eq!(
                 tier(&root, &allow, false, name, &args),

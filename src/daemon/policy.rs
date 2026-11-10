@@ -289,6 +289,19 @@ mod tests {
             snap.refusal("edit_file", &edit),
             Some(DenyReason::Sealed { .. })
         ));
+        // The engine's blob save is the file write it is.
+        for path in [".git/hooks/pre-commit", ".rkat/mcp.toml"] {
+            let save = raw(&serde_json::json!({"blob_id": "b1", "path": path}));
+            assert!(
+                matches!(
+                    snap.refusal("blob_save_file", &save),
+                    Some(DenyReason::Sealed { .. })
+                ),
+                "{path}"
+            );
+        }
+        let save = raw(&serde_json::json!({"blob_id": "b1", "path": "img/a.png"}));
+        assert_eq!(snap.refusal("blob_save_file", &save), None);
         let read = raw(&serde_json::json!({"path": "a.txt"}));
         assert_eq!(snap.refusal("read_file", &read), None);
     }

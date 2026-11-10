@@ -2601,6 +2601,81 @@ mod tests {
         assert_eq!(rig.engine.auto_state().0.consecutive, 0);
     }
 
+    /// The engine's `blob_save_file` passes the path seals: a save into
+    /// `.git/hooks` or `.rkat/` is refused at tier 0 in every mode, with
+    /// no classifier call and nobody asked.
+    #[tokio::test]
+    async fn a_blob_save_into_a_sealed_path_is_refused_at_tier_zero() {
+        let mut rig = rig(vec![], DEFAULT_ESCALATION_TIMEOUT);
+        for mode in PermissionMode::ALL {
+            rig.engine.set_mode(mode);
+            for path in [".git/hooks/pre-commit", ".rkat/mcp.toml"] {
+                let args = json!({"blob_id": "b1", "path": path, "overwrite": true});
+                let verdict = call(&rig, "b1", "blob_save_file", &args).await;
+                assert!(
+                    matches!(
+                        verdict,
+                        Verdict::Deny {
+                            tier: Tier::Sealed,
+                            ..
+                        }
+                    ),
+                    "{mode:?} {path}: {verdict:?}"
+                );
+            }
+        }
+        assert!(rig.escalations.try_recv().is_err(), "nobody was asked");
+        assert_eq!(rig.classifier.calls(), 0, "no classifier request");
+    }
+
+    /// How a call ends: the question put to the human (answered "allow
+    /// once"), if any, and the verdict.
+    async fn outcome(
+        rig: &mut Rig,
+        id: &'static str,
+        name: &'static str,
+        args: Value,
+    ) -> (Option<String>, Verdict) {
+        let mut task = spawn_call(rig, id, name, args);
+        tokio::select! {
+            verdict = &mut task => (None, verdict.unwrap()),
+            request = rig.escalations.recv() => {
+                let request = request.unwrap();
+                let reason = request.prompt.shown.policy_reason.clone();
+                request.respond.send(HumanDecision::AllowOnce).unwrap();
+                (Some(reason.unwrap_or_default()), task.await.unwrap())
+            }
+        }
+    }
+
+    /// A `blob_save_file` to an ordinary or a protected in-project path is
+    /// decided exactly like a `write_file` of that path, in every mode.
+    #[tokio::test]
+    async fn a_blob_save_is_decided_like_a_write_of_its_destination() {
+        let mut rig = rig(vec![], DEFAULT_ESCALATION_TIMEOUT);
+        for mode in PermissionMode::ALL {
+            rig.engine.set_mode(mode);
+            for path in ["img/logo.png", ".env.local"] {
+                let write = outcome(
+                    &mut rig,
+                    "w",
+                    "write_file",
+                    json!({"path": path, "content": "x"}),
+                )
+                .await;
+                let save = outcome(
+                    &mut rig,
+                    "s",
+                    "blob_save_file",
+                    json!({"blob_id": "b1", "path": path}),
+                )
+                .await;
+                assert_eq!(save, write, "{mode:?} {path}");
+            }
+        }
+        assert_eq!(rig.classifier.calls(), 0);
+    }
+
     /// Manual mode (`/auto off`): a protected write still asks.
     #[tokio::test]
     async fn manual_mode_still_asks_for_protected_writes() {
