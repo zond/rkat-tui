@@ -3696,6 +3696,37 @@ the engine past the proxy (a plain session for the view-only listing, the
 engine's own `session/fork_at` refusal) use the test-support
 `Daemon::engine_side`, which holds the runtime weakly.
 
+### The proxy forwards only what it parsed
+
+The maintainer's source review of e7314db: `serve::route` parsed
+`line.trim_end()` with `serde_json` and, when that failed (or the value
+named no method), forwarded the client's original line to the engine,
+on the reasoning that the engine would answer it with its own parse
+error. The engine's frame parser (`meerkat-rpc` 0.9.11,
+`transport.rs`, `parse_rpc_message_frame`) parses `line.trim()`, which
+also strips Unicode whitespace (a form feed, U+000C, among it) that JSON
+does not count as whitespace. So `\x0c{"jsonrpc":"2.0","id":1,"method":"session/create",…}`
+failed the proxy's parse, took the raw-forward branch, and became a
+valid request on the engine's side, never meeting
+`protocol::engine::SERVED`: the allow-list above was bypassed by a parser
+differential. The rule now: the proxy forwards only what it parsed.
+`route` validates the envelope itself (an object, `jsonrpc` "2.0",
+`method` a string, `id` absent, a string or an integer); a parse failure
+is answered with `PARSE_ERROR` (id null), an envelope it refuses with
+`INVALID_REQUEST` under the request's id (dropped when there is none),
+a blank line is dropped, and none of them is forwarded
+(`Routed::Malformed`). A served request goes on as the proxy's own
+serialization of the parsed value, so the engine never sees bytes the
+proxy did not judge (duplicate keys collapse to the one the proxy read).
+The client sends no responses to the engine, so refusing methodless
+objects costs nothing. Pinned by
+`daemon::the_proxy_forwards_only_requests_it_parsed`: the form-feed
+variants of a refused `session/create` and of a served `mob/members`
+both get the proxy's parse error, the well-formed `session/create`
+keeps `NOT_SERVED` (the control), methodless, wrong-version and
+array-id envelopes are invalid requests, no model call is made and the
+shell marker is absent, and `mob/members` still answers afterwards.
+
 ### P4: the in-process runner is deleted
 
 `src/runner/`, `src/session/`, `src/client/alongside.rs` and the

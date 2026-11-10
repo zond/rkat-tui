@@ -18,7 +18,9 @@ use serde_json::Value;
 use super::conversations::Listed;
 use crate::approval::desk::{ModeStatus, RemoteAnswer};
 
-pub use meerkat_rpc::error::{INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND};
+pub use meerkat_rpc::error::{
+    INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, PARSE_ERROR,
+};
 
 /// Every local method starts with this.
 pub const PREFIX: &str = "rkat/";

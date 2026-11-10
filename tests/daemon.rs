@@ -242,6 +242,78 @@ async fn a_connection_without_the_token_never_reaches_the_router() {
     daemon.stop().await;
 }
 
+/// The proxy forwards only what it parsed. The engine's frame parser trims
+/// Unicode whitespace (`str::trim`) that `serde_json` does not, so a
+/// `session/create` behind a leading form feed used to fail the proxy's
+/// parse, take a raw-forward branch and run in the engine as a session
+/// outside the mob. Now a line the proxy cannot read as a JSON-RPC request
+/// is answered by the proxy and never forwarded: the form-feed variants of
+/// a refused and of a served method both get a parse error, the
+/// well-formed refusal stays `NOT_SERVED`, envelopes without a method or
+/// with a bad `jsonrpc` are invalid requests, and nothing the refused lines
+/// asked for runs. A well-formed served method still works afterwards on
+/// the same connection, as the proxy's own serialization.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_proxy_forwards_only_requests_it_parsed() {
+    use rkat_tui::daemon::protocol::{INVALID_REQUEST, NOT_SERVED, PARSE_ERROR};
+    let ws = Workspace::new();
+    let marker = ws.root.join("ran.txt");
+    let command: &'static str = Box::leak(format!("touch {}", marker.display()).into_boxed_str());
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Tool {
+            id: "s1",
+            name: "shell",
+            args: json!({ "command": command }),
+        },
+        Step::Text("done"),
+    ]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let mut client = connect(&daemon).await;
+    let create = json!({"jsonrpc": "2.0", "id": 7, "method": "session/create",
+        "params": {"prompt": "run it", "model": common::MODEL}});
+    let members = json!({"jsonrpc": "2.0", "id": 8, "method": "mob/members",
+        "params": {"mob_id": MOB_ID}});
+
+    // The well-formed refusal: the control.
+    let refused = client
+        .call("session/create", create["params"].clone())
+        .await;
+    assert_eq!(refused["error"]["code"], NOT_SERVED, "{refused}");
+
+    // The form-feed variants, refused and served: parse errors, answered
+    // by the proxy (a parse error names no id).
+    for request in [&create, &members] {
+        let line = format!("\u{c}{request}\n");
+        client.writer.write_all(line.as_bytes()).await.unwrap();
+        let answer = client.line().await.expect("connection open");
+        assert_eq!(answer["error"]["code"], PARSE_ERROR, "{request}: {answer}");
+        assert_eq!(answer["id"], Value::Null, "{answer}");
+    }
+    // Envelopes the proxy refuses: answered under their id, not forwarded.
+    for bad in [
+        json!({"jsonrpc": "2.0", "id": 9, "params": {"prompt": "run it"}}),
+        json!({"jsonrpc": "1.0", "id": 10, "method": "mob/members", "params": {"mob_id": MOB_ID}}),
+        json!({"id": 11, "method": "mob/members", "params": {"mob_id": MOB_ID}}),
+        json!({"jsonrpc": "2.0", "id": [12], "method": "mob/members", "params": {"mob_id": MOB_ID}}),
+    ] {
+        client.send(&bad).await;
+        let answer = client.line().await.expect("connection open");
+        assert_eq!(answer["error"]["code"], INVALID_REQUEST, "{bad}: {answer}");
+        if bad["id"].is_i64() {
+            assert_eq!(answer["id"], bad["id"], "{answer}");
+        }
+    }
+
+    // A served method still works, after the malformed lines.
+    let listed = client.ok("mob/members", json!({"mob_id": MOB_ID})).await;
+    assert!(members_include_orchestrator(&listed), "{listed}");
+    // Nothing the refused lines asked for ran: no model call, no command.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(llm.recorded().is_empty(), "{}", llm.recorded().len());
+    assert!(!marker.exists());
+    daemon.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_turn_streams_to_every_attached_client() {
     let ws = Workspace::new();

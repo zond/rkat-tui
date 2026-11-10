@@ -427,6 +427,12 @@ pub async fn proxy<R, W, E, L>(
                     )));
                 }
             }
+            Routed::Malformed { answer } => {
+                if let Some(answer) = answer {
+                    tracing::warn!("answered a malformed client line without forwarding it");
+                    let _ = out_tx.send(Outgoing::line(answer));
+                }
+            }
             Routed::Forward(forward) => {
                 if let Some(id) = initialize_id(&forward) {
                     initializing.lock().insert(id);
@@ -501,8 +507,17 @@ pub enum Routed {
         /// Its params (`Null` when absent).
         params: Value,
     },
-    /// The line for the engine (newline included).
+    /// The line for the engine (newline included): the proxy's own
+    /// serialization of the request it parsed, never the client's bytes.
     Forward(String),
+    /// A line that is not a JSON-RPC request the proxy accepts (unparsable,
+    /// not an object, no `method`, a bad `jsonrpc` or `id`): never
+    /// forwarded; `answer` is the error line for the client, `None` for a
+    /// blank line or one without an id.
+    Malformed {
+        /// The error line (newline included) to answer with.
+        answer: Option<String>,
+    },
     /// An engine method the daemon does not serve
     /// ([`protocol::engine::SERVED`]): answered with
     /// [`protocol::NOT_SERVED`] (a request) or dropped (a notification).
@@ -514,34 +529,80 @@ pub enum Routed {
     },
 }
 
-/// Pick out a local method call, else hand `line` on (observed).
+/// Pick out a local method call, else hand a served engine request on
+/// (observed), as the proxy's own serialization of what it parsed.
+///
+/// The proxy forwards only what it parsed. A line it cannot read as a
+/// JSON-RPC request object (`jsonrpc` "2.0", `method` a string, `id` absent,
+/// a string or an integer) is answered here ([`Routed::Malformed`]) and
+/// never reaches the engine: the engine's frame parser trims Unicode
+/// whitespace that `serde_json` does not, so a raw line this parse refused
+/// could still be a request the engine runs without having met
+/// [`protocol::engine::SERVED`] (a leading form feed did exactly that).
 pub fn route<L: LocalMethods + ?Sized>(line: &str, local: &L) -> Routed {
-    let Ok(request) = serde_json::from_str::<Value>(line.trim_end()) else {
-        // Not JSON: the engine answers it with its own parse error.
-        return Routed::Forward(line.to_string());
+    if line.trim().is_empty() {
+        return Routed::Malformed { answer: None };
+    }
+    let Ok(request) = serde_json::from_str::<Value>(line.trim_end_matches(['\r', '\n'])) else {
+        return Routed::Malformed {
+            answer: Some(protocol::error_line(
+                None,
+                protocol::PARSE_ERROR,
+                "not a JSON-RPC message: the daemon reads one JSON object per line",
+            )),
+        };
     };
-    let method = request.get("method").and_then(Value::as_str);
+    let method = match envelope(&request) {
+        Ok(method) => method,
+        Err(problem) => {
+            // A request (it has an id) gets an answer, under its id when
+            // that reads as one; anything else is dropped.
+            let answer = request.get("id").map(|id| {
+                protocol::error_line(protocol::request_id(id), protocol::INVALID_REQUEST, problem)
+            });
+            return Routed::Malformed { answer };
+        }
+    };
     let id = || protocol::request_id(request.get("id").unwrap_or(&Value::Null));
     match method {
-        Some(protocol::DECISION_DECIDE) => Routed::Decide {
+        protocol::DECISION_DECIDE => Routed::Decide {
             id: id(),
             params: request.get("params").cloned().unwrap_or(Value::Null),
         },
-        Some(method) if method.starts_with(protocol::PREFIX) => Routed::Local {
+        method if method.starts_with(protocol::PREFIX) => Routed::Local {
             id: id(),
             method: method.to_string(),
             params: request.get("params").cloned().unwrap_or(Value::Null),
         },
-        Some(method) if !protocol::engine::serves(method) => Routed::Refused {
-            id: request.get("id").and_then(protocol::request_id),
+        method if !protocol::engine::serves(method) => Routed::Refused {
+            id: id(),
             method: method.to_string(),
         },
-        Some(_) => {
+        _ => {
             let observed = local.observe(request);
             Routed::Forward(format!("{observed}\n"))
         }
-        None => Routed::Forward(line.to_string()),
     }
+}
+
+/// The method of `request` when it is a JSON-RPC request object the proxy
+/// accepts, else what is wrong with it.
+fn envelope(request: &Value) -> Result<&str, &'static str> {
+    let Some(object) = request.as_object() else {
+        return Err("not a JSON-RPC request: one object per line (no batches)");
+    };
+    if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+        return Err("not a JSON-RPC 2.0 request: \"jsonrpc\" must be \"2.0\"");
+    }
+    match object.get("id") {
+        None | Some(Value::String(_)) => {}
+        Some(Value::Number(n)) if n.is_i64() => {}
+        Some(_) => return Err("the request id must be a string or an integer"),
+    }
+    object
+        .get("method")
+        .and_then(Value::as_str)
+        .ok_or("not a request: the daemon takes no responses, and a request names its method")
 }
 
 /// The answer line (newline included) of `caller`'s local call `method`.

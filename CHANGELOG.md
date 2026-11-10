@@ -12,6 +12,15 @@ Moved out of the Meerkat monorepo (lukacf/meerkat PR 2069) into this repository 
   call the engine's `session/create` (or `turn/start`, `mob/create`, …)
   and run a session outside the daemon's mob, whose tool calls never
   reached the approval gate.
+- The daemon forwards only what it parsed. A client line that is not a
+  JSON-RPC request object (unparsable, no `method`, a `jsonrpc` other
+  than `"2.0"`, an `id` that is neither a string nor an integer) is
+  answered by the daemon with a parse or invalid-request error and never
+  reaches the engine, and a served request is forwarded as the daemon's
+  own serialization of it. Before, a line the daemon could not parse was
+  forwarded as sent, and the engine trims Unicode whitespace the daemon's
+  parser does not: a `session/create` behind a leading form feed passed
+  the allow-list above and ran outside the mob.
 
 ### Added
 
