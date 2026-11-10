@@ -82,9 +82,13 @@ ANTHROPIC_API_KEY=… OPENAI_API_KEY=… GEMINI_API_KEY=… cargo test --lib e2e
 
 Every behaviour change ships with a test in the matching place. A UI change
 gets a `render_snapshot` row assertion or an `App::update` unit test; a
-runner or session change gets a scripted-client test; an approval change gets
-a routing test in `src/approval/` plus, if it touches the service gate, a
-case in `tests/approval_service.rs`.
+client or daemon change gets a test on the daemon rig (`ScriptedLlmClient`
+for the model); an approval change gets a routing test in `src/approval/`
+plus, if it touches the service gate, a case in
+`tests/approval_service.rs`. A key binding change updates `KEYS_HELP` in
+`src/ui/commands.rs`, which is hand-kept: the unit test
+`keys_help_names_every_keymap_action_and_nothing_else` fails until the
+key reference and the keymap agree.
 
 ## Known flaky tests
 
@@ -143,11 +147,13 @@ inside the harness means the binary predates the sandbox fixes of
 ## Manual smoke (a person at a terminal)
 
 Not automated; worth doing after changes to keys, rendering or the approval
-flow. Start `cargo run -- --no-auto` in a scratch git repository:
+flow. Start `cargo run -- --no-auto` in a scratch git repository (it starts
+the workspace's daemon and attaches to it):
 
 1. Type a prompt, press Enter; while the turn runs, type another line and
    press Enter: it shows as queued and is delivered at the next boundary.
-   Press Esc while it is queued: it comes back into the editor.
+   Up on an empty input takes it back into the editor; Esc interrupts the
+   turn and sends what is queued next.
 2. `/` opens the command menu; `@` offers files; `!ls` runs a shell
    command and shows its output in the transcript.
 3. Ask for a file edit: the approval prompt appears; `n` with a comment
@@ -155,6 +161,10 @@ flow. Start `cargo run -- --no-auto` in a scratch git repository:
 4. Shift+Tab cycles manual, accept edits, plan, auto in the status bar.
 5. Ctrl+T shows the task checklist; Ctrl+O toggles the latest tool output;
    `?` opens the key reference; Ctrl+R searches history.
-6. `/rewind` lists your messages; picking one forks the session and puts
-   the message back in the editor; `/resume` still offers the old session.
-7. `/quit` exits cleanly and `rkat-tui -c` resumes the session.
+6. `/rewind` (or Esc Esc on an empty input) says why rewinding is not
+   available yet; `/resume` lists the workspace's conversations.
+7. `/detach` leaves with the daemon running; `rkat-tui` again reattaches
+   to the same conversation. `/quit` then asks whether to detach or stop
+   the daemon (it stops without asking when this `rkat-tui` started the
+   daemon and nobody detached since); after a stop, `rkat-tui -c`
+   resumes the conversation in a fresh daemon.
