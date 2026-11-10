@@ -129,6 +129,15 @@ pub fn resolve_scope(args: &Args) -> Result<RuntimeScope, TuiError> {
             global.as_ref(),
             &realm_paths_in(&state_root, WORKSPACE_REALM_ID).root,
         )?;
+        // A realm that came with the repository refuses the start, before
+        // the directory or its `.gitignore` is made (`--trust-project`
+        // starts anyway).
+        if !args.trust_project {
+            super::committed::check(
+                &context_root,
+                &realm_paths_in(&state_root, WORKSPACE_REALM_ID).root,
+            )?;
+        }
         ensure_workspace_state_dir(&state_root)?;
         let project_root = seal(
             project_root,

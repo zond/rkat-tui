@@ -60,13 +60,22 @@
 //! host: confining every launch kind makes a host guard its own inputs
 //! (`HostConfinement::admit_host_inputs`), and the TUI's default realm state
 //! lives inside the workspace (`<workspace>/.rkat`), which the Linux backend
-//! cannot protect (it has no deny lists). On macOS the requirement denies
-//! writes to `<workspace>/.rkat`, as the upstream preset does; on Linux a
-//! confined shell can write it, and the approval policy's protected paths,
-//! not the sandbox, keep the model from editing it.
+//! cannot protect (it has no deny lists, and it refuses a grant nested in
+//! another, so a read-only `.rkat` inside the writable workspace cannot be
+//! expressed; recorded as an engine ask in `docs/evidence.md`). On macOS the
+//! requirement denies writes to `<workspace>/.rkat`, as the upstream preset
+//! does; on Linux a confined shell can write it, so nothing rkat-tui reads
+//! from there is taken on faith: the file tools never write it, the realm
+//! config and rules are trusted by digest
+//! ([`super::project_trust`], [`super::trust`]), and the workspace realm's
+//! `[confinement]` table is never read.
 //!
-//! A realm config that requires confinement for the shell (`[confinement]`
+//! A realm config outside the workspace (`--state-root`, `--realm`: the
+//! user's own) that requires confinement for the shell (`[confinement]`
 //! `shell`, else `all`) is the floor: the command line may only narrow it.
+//! The workspace realm's `config.toml` sets no floor (the guard of
+//! [`super::project_trust::ProjectInputs`] drops its table, with a start-up
+//! notice).
 //! The realm's requirement is lowered with upstream's
 //! [`meerkat::HostConfinement`] and installed as is under `--confinement
 //! workspace` (the default); `--confinement strict` installs it with IP

@@ -281,7 +281,12 @@ pub async fn configure_with(
     args: &Args,
     mode: AttachMode,
 ) -> Result<AttachConfig, TuiError> {
-    let config = crate::bootstrap::load_config(&layers.scope).await?;
+    let config = crate::bootstrap::guarded_config(
+        &layers.scope,
+        args,
+        crate::bootstrap::load_config(&layers.scope).await?,
+    )
+    .await;
     // The `!` shell, from the layers' confinement grants and timeout.
     let user_shell = crate::bootstrap::user_shell(
         &layers,

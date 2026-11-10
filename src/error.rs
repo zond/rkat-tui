@@ -173,6 +173,10 @@ pub enum TuiError {
     /// placed, or it cannot start).
     #[error(transparent)]
     Daemon(Box<crate::daemon::DaemonError>),
+    /// The workspace realm directory came with the repository (tracked by
+    /// git, or present without the `.gitignore` rkat-tui writes).
+    #[error(transparent)]
+    CommittedRealm(#[from] crate::bootstrap::committed::Committed),
     /// `--attach=DIRECTORY`: no daemon has an endpoint file for that
     /// workspace.
     #[error(
@@ -217,6 +221,7 @@ impl TuiError {
             | Self::Approval(_)
             | Self::Confinement(_)
             | Self::ConfigDirCollision { .. }
+            | Self::CommittedRealm(_)
             | Self::NoDaemonAt { .. }
             | Self::AttachAddress { .. }
             | Self::NotATerminal => 2,

@@ -9,6 +9,23 @@ design.
 
 ### Security
 
+- A workspace realm config (`.rkat/tui/config.toml`) can no longer
+  redirect or widen anything. Its `[confinement]` table is ignored, with a
+  start-up notice (only `--confinement` and your own `tui.toml` set the
+  sandbox; a realm outside the workspace still sets a floor). When the
+  file is not trusted (it came with the repository, or changed since
+  rkat-tui last wrote it or you trusted it), its provider connections
+  (backend `base_url`s, credential sources such as host commands,
+  bindings), `[self_hosted]` servers and `[skills] repositories` are left
+  out as well as its MCP servers and hooks, in the daemon and in the
+  client's model listing; the endpoint connections rkat-tui projects from
+  your `tui.toml` stay. A realm directory that git tracks, or that holds
+  files without the `.gitignore` rkat-tui writes, refuses the start with
+  the `git rm -r --cached` recipe (`--trust-project` starts anyway). The
+  realm rules file keeps its digest trust: a rule appended under the
+  daemon gives only its deny rules and a notice until `/rules trust`.
+  (On Linux the agent's shell can still write `.rkat/`; a read-only
+  mount needs an engine change, recorded as an ask.)
 - The manual and the design say what the daemon does not keep apart:
   every attached TUI receives every agent's approval requests (each shows
   only its own), and another agent's message can start a turn on an idle

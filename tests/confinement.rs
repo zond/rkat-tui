@@ -426,10 +426,15 @@ fn walk(dir: &Path) -> Vec<std::path::PathBuf> {
     out
 }
 
+/// A realm of the user's own (`--state-root`, outside the workspace) whose
+/// `[confinement]` requires the shell confined is the floor: `off` is a
+/// typed start-up error.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn no_confinement_below_a_realm_policy_is_a_typed_startup_error() {
     let ws = Workspace::new();
-    let realm = rkat_tui::bootstrap::resolve_scope(&common::args_for(&ws.root))
+    let state = ws.sibling("realms");
+    let state_arg = leak(format!("--state-root={}", state.display()));
+    let realm = rkat_tui::bootstrap::resolve_scope(&common::args_with(&ws.root, &[state_arg]))
         .unwrap()
         .realm_root();
     std::fs::create_dir_all(&realm).unwrap();
@@ -440,8 +445,12 @@ async fn no_confinement_below_a_realm_policy_is_a_typed_startup_error() {
     .unwrap();
     let llm = ScriptedLlmClient::new(Vec::new());
     // `--confinement=off`, the same as `--no-confinement`.
-    let Err(err) =
-        Attached::try_start_with(&ws.root, &llm, allow_shell(&["--confinement=off"])).await
+    let Err(err) = Attached::try_start_with(
+        &ws.root,
+        &llm,
+        allow_shell(&["--confinement=off", state_arg]),
+    )
+    .await
     else {
         panic!("--no-confinement started below the realm's policy");
     };
@@ -456,6 +465,36 @@ async fn no_confinement_below_a_realm_policy_is_a_typed_startup_error() {
         ),
         "{err}"
     );
+}
+
+/// The workspace realm's `config.toml` sets no confinement (S1 of the
+/// security review: the agent's shell can write it on Linux, and a clone
+/// can carry it): its `[confinement]` is ignored with a notice, here one
+/// that would have refused `off`, and the command line decides.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_workspace_realms_confinement_table_is_ignored_with_a_notice() {
+    let ws = Workspace::new();
+    let realm = rkat_tui::bootstrap::resolve_scope(&common::args_for(&ws.root))
+        .unwrap()
+        .realm_root();
+    std::fs::write(
+        realm.join("config.toml"),
+        "[confinement.shell]\nmode = \"workspace\"\nnetwork = \"unrestricted\"\n",
+    )
+    .unwrap();
+    let llm = ScriptedLlmClient::new(Vec::new());
+    let mut attached =
+        Attached::try_start_with(&ws.root, &llm, allow_shell(&["--confinement=off"]))
+            .await
+            .unwrap_or_else(|err| panic!("the workspace realm's table still applies: {err}"));
+    attached
+        .client
+        .wait_for(|msg| {
+            matches!(msg, rkat_tui::ui::Msg::Notice { text, .. } if text.contains("[confinement] table is ignored"))
+        })
+        .await;
+    attached.client.quit().await;
+    attached.daemon.stop().await;
 }
 
 /// A `!` command runs under the shell's own confinement: it writes the

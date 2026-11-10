@@ -31,6 +31,7 @@
 //! loaded once and given to every session build as its declarative servers.
 
 pub mod approval;
+pub mod committed;
 pub mod confinement;
 pub mod credentials;
 pub mod dirs;
@@ -56,7 +57,8 @@ use meerkat_tools::builtin::shell::ShellConfinement;
 use crate::cli::Args;
 use crate::endpoints::{
     EndpointError, EndpointName, EndpointRef, EndpointRegistry, ModelRefError, StartupPlan,
-    StartupRequest, ensure_model_profile, needs_lookup, plan_startup, project_endpoints,
+    StartupRequest, endpoint_section, ensure_model_profile, needs_lookup, plan_startup,
+    project_endpoints,
 };
 use crate::error::TuiError;
 use crate::models::{ModelCache, ModelLister, live_lister};
@@ -150,6 +152,18 @@ fn extra_grants(args: &Args, layered: &crate::config::Layered) -> confinement::E
     let mut extra = confinement::ExtraGrants::from_args(args);
     extra.extend_from(&layered.confinement);
     extra
+}
+
+/// The realm `config` of `scope` as a process may read it: a workspace
+/// realm config sets no confinement, and an untrusted one names no
+/// endpoint, key source or skill source and starts no MCP server or hook
+/// ([`project_trust::ProjectInputs::guard`]).
+pub async fn guarded_config(scope: &RuntimeScope, args: &Args, mut config: Config) -> Config {
+    let trust = Arc::new(parking_lot::Mutex::new(approval::trust_record(scope)));
+    project_trust::ProjectInputs::new(scope, trust, args.trust_project)
+        .guard(&mut config)
+        .await;
+    config
 }
 
 /// The user's `!` shell of `scope`, built from the agent shell's
@@ -305,6 +319,16 @@ pub async fn assemble(
         notices: mut approval_notices,
     } = layers;
     let realm = RealmId::parse(scope.realm_id.clone()).ok();
+    let trust = Arc::new(parking_lot::Mutex::new(approval::trust_record(&scope)));
+    let project_inputs =
+        project_trust::ProjectInputs::new(&scope, Arc::clone(&trust), args.trust_project);
+    // Everything below reads the realm config as the guard leaves it: a
+    // workspace realm config sets no confinement, and an untrusted one
+    // names no endpoint, key source or skill source. `raw` is the document
+    // as read, for the notices.
+    let raw = config;
+    let mut config = raw.clone();
+    project_inputs.guard(&mut config).await;
     let (mut endpoints, endpoint_notices) =
         EndpointRegistry::discover(&config, realm.as_ref(), &layered.endpoints)?;
     if options.llm_override.is_some() {
@@ -316,9 +340,7 @@ pub async fn assemble(
     let (choice, models) = plan_model(args, &config, &endpoints, &lister).await?;
     let choice = choice.with_thinking(&thinking);
 
-    let trust = Arc::new(parking_lot::Mutex::new(approval::trust_record(&scope)));
-    let project_inputs =
-        project_trust::ProjectInputs::new(&scope, Arc::clone(&trust), args.trust_project);
+    project_inputs.set_endpoint_projection(endpoint_section(endpoints.as_slice())?);
     let realm_config = Arc::new(
         RealmConfigStore::new(
             &scope.config_path(),
@@ -421,14 +443,15 @@ pub async fn assemble(
         trust,
     )
     .await?;
-    let mcp = mcp::load(&scope, &config, &project_inputs).await?;
+    let mcp = mcp::load(&scope, &raw, &project_inputs).await?;
     let mut refused = mcp.refused;
-    for item in project_inputs.guard(&mut config.clone()).await {
+    for item in project_inputs.guard(&mut raw.clone()).await {
         if !refused.contains(&item) {
             refused.push(item);
         }
     }
     notices.extend(project_inputs.notice(&refused));
+    notices.extend(project_inputs.ignored_confinement(&raw));
     notices.extend(mcp.notices);
     Ok(Assembled {
         scope,

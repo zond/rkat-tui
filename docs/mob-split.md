@@ -422,6 +422,16 @@ list of what the daemon and its client do not do yet.
    runner made them) into its mob. Without
    it those sessions are view only in the daemon
    (`docs/evidence.md`, "Sessions created before the daemon are view only").
+8. Linux `deny_write` (S1 and S5 of the security review): a read-only
+   `<workspace>/.rkat/` and `.git/` inside the writable workspace grant.
+   The 0.9.11 Linux backend refuses both ways to say it:
+   `LinuxPolicy::compile` refuses any non-empty `deny_read`/`deny_write`,
+   and `push_disjoint` refuses a grant nested in another. The ask is
+   `deny_write` lowered to read-only re-binds of existing subtrees inside
+   a writable grant, installed after their parent (macOS already honours
+   `deny_write`). Not opened; the user decides. Meanwhile the realm's
+   files are trusted by digest (`docs/evidence.md`, "After the security
+   review").
 
 ## History
 

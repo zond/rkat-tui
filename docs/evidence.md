@@ -4403,3 +4403,64 @@ Each note is now its own task: one to an idle agent is still awaited
 one to a running or unreadable agent lands when its turn ends. The test
 asserts the attach answers within 5 s, and that the busy agent's next
 turn reads the join note. A retire's "left" note goes the same way.
+
+### S1, S2, E1: the workspace realm cannot widen or redirect anything
+
+Verified before the fix: `confinement::plan` read the realm config's
+`[confinement]` as the shell's floor (`realm_floor`), and the realm config
+is `<workspace>/.rkat/tui/config.toml`, which the agent's confined shell
+can write on Linux and a clone can carry. `ProjectInputs::guard` stripped
+only MCP servers and hooks of an untrusted realm config, and
+`EndpointRegistry::discover`, `plan_model` and the client's model listing
+read the raw document: a planted `[realm.tui.binding.*]` with
+`provider_default = true` and a `base_url` received the built-in
+provider's environment key (the review's S2 "likely" holds:
+`resolve_builtin` returns the planted URL, pinned in the test below
+before the guard runs).
+
+What changed:
+
+- The guard drops the workspace realm config's `[confinement]` always
+  (notice: "its [confinement] table is ignored"); a realm outside the
+  workspace (`--state-root`) is the user's and still sets the floor.
+- Untrusted, it also drops every `[realm.*]` connection except the
+  entries of `rkat-tui-endpoints` that equal what rkat-tui projected
+  this run (`ProjectInputs::set_endpoint_projection`), `[self_hosted]`
+  and `[skills] repositories`. `assemble` now guards the document before
+  discovery, model planning and confinement; the client guards it before
+  its own discovery (`bootstrap::guarded_config`).
+- `bootstrap::committed::check` refuses a realm directory that git
+  tracks or that holds files without its `.gitignore`, before the
+  directory is made. It reads the git index itself (versions 2 to 4,
+  SHA-1 and SHA-256, sparse directory entries, a worktree's `gitdir:`);
+  a missing index tracks nothing, an unreadable one refuses (it may track
+  the realm). `--trust-project` starts anyway.
+- Item 1(e), the realm's own files by digest: the realm rules file and
+  config were already trusted by digest in the host trust record outside
+  the workspace (`bootstrap::trust`): what rkat-tui wrote or the user
+  trusted. With the guard above, a changed config gives nothing that
+  names an endpoint, key source, skill source or confinement. The
+  approvals state (`approvals.json` and the decision store beside it) is
+  the engine's: rkat-tui's gate does not read consent from it (the
+  decision owner holds open decisions in this process), so it is not
+  digest-checked.
+
+Not done, an engine ask (`docs/mob-split.md`, "Open engine asks" 8):
+binding `.rkat/` read-only on Linux. `LinuxPolicy::compile`
+(meerkat-sandbox 0.9.11, `linux.rs`) refuses any non-empty `deny_write`,
+and `push_disjoint` refuses a read grant nested in the writable workspace,
+so neither a deny list nor a read-only overlay can be expressed from
+here. The agent's shell can still write `.rkat/`; what it writes there is
+not trusted.
+
+Tests: `an_untrusted_realm_config_names_no_endpoint_key_or_skill_source`
+(project_trust), `the_workspace_realms_confinement_table_is_ignored_with_a_notice`
+and `no_confinement_below_a_realm_policy_is_a_typed_startup_error` (now on
+a `--state-root` realm) in `tests/confinement.rs`,
+`tests/committed_realm.rs` (every index version, a subdirectory
+workspace, the start's refusal and `--trust-project`), the unit tests of
+`bootstrap::committed` (no `.gitignore`, an unreadable index), and
+`a_rule_appended_under_the_daemon_is_not_adopted_and_is_named`
+(`tests/realm_trust.rs`: a TUI-made rule applies at the next start, an
+appended allow rule does not and the notice names the file, `/rules
+trust` adopts it).
