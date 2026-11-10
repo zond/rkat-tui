@@ -9,6 +9,11 @@ design.
 
 ### Security
 
+- The sandbox's claims are pinned by tests on Linux: a confined command
+  does not see `~/.ssh` or the Cargo home's credentials, and `strict`
+  has no network. It can still write `.rkat/` and `.git/` inside the
+  workspace (the engine cannot bind them read only yet); a test pins that
+  gap too, so it is noticed when the engine closes it.
 - CI checks the dependencies with `cargo deny` (`deny.toml`): RustSec
   advisories, the licence allow-list and crates.io as the only source.
   Two advisories without a fix this release can take are ignored with a

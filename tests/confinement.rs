@@ -3,7 +3,10 @@
 //! command write the workspace but not outside it and keeps the network;
 //! the strict mode denies IP network access. An interrupted shell call runs
 //! in durable process custody and leaves no process behind. A `!` command
-//! runs in the attached client under the same confinement.
+//! runs in the attached client under the same confinement. The security
+//! review's sandbox claims (recommendation 12): no `~/.ssh`, no Cargo
+//! credentials, no network in strict; `.rkat/` and `.git/` are still
+//! writable (engine ask 8), pinned as the gap it is.
 //!
 //! The confined cases need the platform backend (Linux: unprivileged user
 //! namespaces; macOS: Seatbelt). Each case first probes the backend directly
@@ -648,4 +651,140 @@ async fn the_confined_shell_cannot_read_or_write_the_audit_log() {
         "the log held the command's decision: {text}"
     );
     assert!(!text.lines().any(|line| line == "forged"), "{text}");
+}
+
+/// Recommendation 12: the user's `~/.ssh` is not in a confined command's
+/// view. With this host's real paths (its home holds the Cargo home, the
+/// cache dir and the rustup home, each granted), the home directory itself
+/// is only the mount view's way to them: `.ssh` beside them is not there.
+/// `SKIPPED:` on a host whose home has no `.ssh` (nothing to hide) or
+/// without the backend.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_confined_shell_does_not_see_the_users_ssh_directory() {
+    let ws = Workspace::new();
+    if let Some(reason) = sandbox_unavailable(&ws.root, ConfinementArg::Workspace).await {
+        println!("SKIPPED: --confinement=workspace is unavailable on this host: {reason}");
+        return;
+    }
+    let Some(ssh) = dirs::home_dir()
+        .map(|home| home.join(".ssh"))
+        .filter(|ssh| ssh.is_dir())
+    else {
+        println!("SKIPPED: this host's home has no .ssh directory");
+        return;
+    };
+    let command = leak(format!(
+        "test -e '{ssh}' && echo SSH-VISIBLE; ls -a \"$HOME\" 2>/dev/null | grep -qx .ssh && echo SSH-LISTED; echo END",
+        ssh = ssh.display()
+    ));
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Tool {
+            id: "sh",
+            name: "shell",
+            args: json!({ "command": command }),
+        },
+        Step::Text("done"),
+    ]);
+    let (setup, _state) = allow_shell_detected(&["--confinement=workspace"]);
+    let mut rig = Attached::try_start_with(&ws.root, &llm, setup)
+        .await
+        .unwrap_or_else(|err| panic!("daemon start: {err}"));
+    rig.send(Effect::StartTurn("look".into()));
+    rig.turn_finished().await;
+    let output = tool_text(&llm.requests()[1], "sh");
+    rig.quit().await;
+    assert!(output.contains("END"), "{output}");
+    assert!(!output.contains("SSH-VISIBLE"), "{output}");
+    assert!(!output.contains("SSH-LISTED"), "{output}");
+}
+
+/// Recommendation 12 and S3: `credentials.toml` (and `credentials`) of the
+/// Cargo home are not in a confined command's view, while the entries
+/// beside them are readable. A Cargo home made for the test (the real one
+/// may hold no credentials, and a test must not write one there).
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_confined_shell_cannot_read_the_cargo_credentials() {
+    use rkat_tui::bootstrap::confinement::CargoHome;
+    let ws = Workspace::new();
+    if let Some(reason) = sandbox_unavailable(&ws.root, ConfinementArg::Workspace).await {
+        println!("SKIPPED: --confinement=workspace is unavailable on this host: {reason}");
+        return;
+    }
+    let home = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    std::fs::create_dir_all(home.path().join("registry")).unwrap();
+    std::fs::write(home.path().join("config.toml"), "# config-visible\n").unwrap();
+    std::fs::write(
+        home.path().join("credentials.toml"),
+        "[registry]\ntoken = \"secret-token\"\n",
+    )
+    .unwrap();
+    std::fs::write(home.path().join("credentials"), "secret-legacy\n").unwrap();
+    let cargo = CargoHome::of(home.path());
+    let command = leak(format!(
+        "cat '{h}/config.toml'; cat '{h}/credentials.toml' 2>/dev/null; cat '{h}/credentials' 2>/dev/null; \
+         test -e '{h}/credentials.toml' && echo CREDENTIALS-VISIBLE; echo END",
+        h = home.path().display()
+    ));
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Tool {
+            id: "sh",
+            name: "shell",
+            args: json!({ "command": command }),
+        },
+        Step::Text("done"),
+    ]);
+    let setup = Setup {
+        host_paths: Some(HostPaths {
+            write: cargo.write,
+            read: cargo.read,
+            read_files: cargo.read_files,
+        }),
+        ..Setup::args(&["--confinement=workspace"])
+    };
+    let mut rig = Attached::try_start_with(&ws.root, &llm, setup)
+        .await
+        .unwrap_or_else(|err| panic!("daemon start: {err}"));
+    rig.send(Effect::StartTurn("look".into()));
+    rig.turn_finished().await;
+    let output = tool_text(&llm.requests()[1], "sh");
+    rig.quit().await;
+    assert!(output.contains("END"), "{output}");
+    assert!(
+        output.contains("config-visible"),
+        "the grant works: {output}"
+    );
+    assert!(!output.contains("secret-token"), "{output}");
+    assert!(!output.contains("secret-legacy"), "{output}");
+    assert!(!output.contains("CREDENTIALS-VISIBLE"), "{output}");
+}
+
+/// Recommendation 12 asks that the confined shell cannot write `.rkat/`
+/// or `.git/`. That does not hold yet, and this test says so: on Linux the
+/// workspace grant is writable whole, and meerkat-sandbox 0.9.11 can
+/// express neither a deny list nor a read-only grant nested in it (engine
+/// ask 8 in `docs/mob-split.md`). What rkat-tui reads back from `.rkat/`
+/// is trusted by digest instead. When the engine lands the bind, this test
+/// fails and is turned around into the claim.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_realm_and_git_directories_stay_writable_until_engine_ask_8() {
+    let ws = Workspace::new();
+    std::fs::create_dir_all(ws.root.join(".git/hooks")).unwrap();
+    std::fs::create_dir_all(ws.root.join(".rkat/tui")).unwrap();
+    let Some(output) = run_confined(
+        &ws,
+        "workspace",
+        "echo x > .git/hooks/probe && echo GIT-WRITTEN; echo x > .rkat/tui/probe && echo REALM-WRITTEN; echo END",
+    )
+    .await
+    else {
+        return;
+    };
+    assert!(output.contains("END"), "{output}");
+    assert!(
+        output.contains("GIT-WRITTEN") && output.contains("REALM-WRITTEN"),
+        "the engine now keeps them read only: make this test the claim ({output})"
+    );
 }

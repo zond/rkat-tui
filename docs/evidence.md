@@ -4930,3 +4930,30 @@ cargo-deny 0.20.2 against the advisory database of 2026-11-10:
 
 `cargo-vet` is not added: a deliberate non-goal until asked
 (`docs/mob-split.md`, security).
+
+### Recommendation 12: the sandbox claims, pinned
+
+Checked one by one in `tests/confinement.rs` (Linux, the `SKIPPED:`
+convention where the backend is unavailable; each ran on this host):
+
+- No network in `strict`: already pinned by
+  `strict_mode_denies_the_network_and_workspace_mode_allows_it` (a
+  loopback connect is refused in strict and succeeds in workspace mode).
+- No `~/.ssh`: `the_confined_shell_does_not_see_the_users_ssh_directory`,
+  with this host's real paths (the home holds granted entries: the Cargo
+  home's, the cache dir, the rustup home), `test -e ~/.ssh` and a listing
+  of `$HOME` both miss it. `SKIPPED:` when the host's home has no `.ssh`:
+  then there is nothing whose absence would prove anything.
+- `credentials.toml` not readable (S3, SEC-1):
+  `the_confined_shell_cannot_read_the_cargo_credentials`, over a Cargo
+  home made for the test (a test must not write the user's) holding
+  `config.toml`, `credentials.toml` and `credentials`: the config is read
+  (the grant works), neither credentials file is in the view.
+- No write to `.rkat/` or `.git/`: does not hold. The brief said SEC-1 made
+  them read only; SEC-1 recorded the opposite (engine ask 8: the 0.9.11
+  Linux backend refuses `deny_write` and a grant nested in the writable
+  workspace). `the_realm_and_git_directories_stay_writable_until_engine_ask_8`
+  writes `.git/hooks/probe` and `.rkat/tui/probe` from the confined shell
+  and asserts both succeed, with a message saying to turn the test into
+  the claim once the engine binds them read only. What rkat-tui reads back
+  from `.rkat/` stays trusted only by digest (see "1(e)").
