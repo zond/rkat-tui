@@ -202,6 +202,13 @@ pub struct Args {
     #[arg(long, value_name = "PATH")]
     pub attach_token_file: Option<PathBuf>,
 
+    /// Let `--attach=HOST:PORT` reach a non-loopback address. The attach
+    /// token then crosses the network in clear text to whatever answers
+    /// there; forward the daemon's port with `ssh -L` instead, which
+    /// gives a loopback address.
+    #[arg(long)]
+    pub attach_insecure: bool,
+
     /// List every `rkat-tui-mob` daemon that has an endpoint file
     /// (workspace, address, pid, uptime, clients, conversation, running or
     /// idle; `stale` for one that does not answer, whose file is removed

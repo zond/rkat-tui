@@ -121,6 +121,7 @@ impl DaemonCli {
             (tui.continue_last, "--continue"),
             (tui.attach.is_some(), "--attach"),
             (tui.attach_token_file.is_some(), "--attach-token-file"),
+            (tui.attach_insecure, "--attach-insecure"),
         ];
         match refused.into_iter().find(|(given, _)| *given) {
             Some((_, flag)) => Err(DaemonError::Unsupported(flag)),

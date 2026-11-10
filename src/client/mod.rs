@@ -217,8 +217,13 @@ async fn retarget(
             Ok((args, layers, None))
         }
         AttachTarget::Address(at) => {
-            let reached =
-                address::reach(at, args.attach_token_file.as_deref(), local_files).await?;
+            let reached = address::reach(
+                at,
+                args.attach_token_file.as_deref(),
+                args.attach_insecure,
+                local_files,
+            )
+            .await?;
             // A workspace on this machine: run on it, as a directory
             // attach does; else on the client's own (its history and cost
             // record), with the file features refused.

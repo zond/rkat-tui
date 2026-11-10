@@ -151,7 +151,8 @@ pub fn remote_reason(
     })
 }
 
-/// Resolve `address`, read the token, attach as a probe and read the
+/// Resolve `address` (refused unless it is loopback or `insecure`, see
+/// [`check_loopback`]), read the token, attach as a probe and read the
 /// daemon's status; its workspace is local only when one of
 /// `local_files` names it ([`remote_reason`]).
 ///
@@ -161,6 +162,7 @@ pub fn remote_reason(
 pub async fn reach(
     address: &str,
     token_file: Option<&Path>,
+    insecure: bool,
     local_files: &[PathBuf],
 ) -> Result<Reached, TuiError> {
     let fail = |reason: String| TuiError::AttachAddress {
@@ -172,8 +174,9 @@ pub async fn reach(
             "needs --attach-token-file (the daemon's token, or a copy of its endpoint file)".into(),
         )
     })?;
-    let token = read_token_file(token_file).map_err(fail)?;
     let socket = resolve(address).await.map_err(fail)?;
+    check_loopback(socket, insecure).map_err(fail)?;
+    let token = read_token_file(token_file).map_err(fail)?;
     let probe = Endpoint {
         address: socket,
         token,
@@ -197,6 +200,24 @@ pub async fn reach(
         status,
         remote,
     })
+}
+
+/// Refuse `socket` unless it is a loopback address or `insecure` allows
+/// another: the attach token is sent in clear text, and the documented
+/// way to reach a daemon elsewhere (`ssh -L`) always gives a loopback
+/// address, so anything else is a typo or a host that should not get it.
+///
+/// # Errors
+///
+/// Why, with the tunnel recipe.
+pub fn check_loopback(socket: SocketAddr, insecure: bool) -> Result<(), String> {
+    if insecure || socket.ip().is_loopback() {
+        return Ok(());
+    }
+    Err(format!(
+        "{} is not a loopback address, and the attach token would cross the network in clear text to whatever answers there; forward the daemon's port instead (ssh -N -L 127.0.0.1:4100:127.0.0.1:<daemon port> <host>, then --attach=127.0.0.1:4100), or pass --attach-insecure to send it anyway",
+        socket.ip()
+    ))
 }
 
 /// The first address `address` (`HOST:PORT`) resolves to.
@@ -228,6 +249,42 @@ pub async fn status_of(endpoint: &Endpoint) -> Result<Status, ClientError> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    /// The finding this guards (second review, security): any host named
+    /// in `--attach=HOST:PORT` received the token in clear text.
+    #[test]
+    fn only_a_loopback_address_gets_the_token_unless_insecure() {
+        let remote: SocketAddr = "192.0.2.7:4100".parse().unwrap();
+        let refused = check_loopback(remote, false).unwrap_err();
+        assert!(refused.contains("ssh -N -L"), "{refused}");
+        assert!(refused.contains("--attach-insecure"), "{refused}");
+        assert_eq!(check_loopback(remote, true), Ok(()));
+        for local in ["127.0.0.1:4100", "[::1]:4100", "127.3.2.1:9"] {
+            assert_eq!(
+                check_loopback(local.parse().unwrap(), false),
+                Ok(()),
+                "{local}"
+            );
+        }
+    }
+
+    /// A non-loopback address is refused before the token is read or
+    /// anything is connected to.
+    #[tokio::test]
+    async fn reach_refuses_a_non_loopback_address_before_the_token() {
+        let refused = reach(
+            "192.0.2.7:4100",
+            Some(Path::new("/nonexistent/token")),
+            false,
+            &[],
+        )
+        .await;
+        assert!(
+            matches!(&refused, Err(TuiError::AttachAddress { reason, .. })
+                if reason.contains("not a loopback address")),
+            "{refused:?}"
+        );
+    }
 
     fn status(host: Option<&str>, workspace: &Path) -> Status {
         Status {

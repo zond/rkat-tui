@@ -988,7 +988,7 @@ view only (see "`-c` and `--resume` at start").
 | (none), `--attach`, `--attach=auto` | Attach to the workspace's daemon; start it when none answers |
 | `--attach=existing` | Attach only to a running daemon; refuse otherwise |
 | `--attach=DIRECTORY` | Attach to the running daemon of the workspace at or above `DIRECTORY` (never starts one; replaces `-w`) |
-| `--attach=HOST:PORT` | Attach to a daemon reached at that address (a tunnel), with `--attach-token-file` |
+| `--attach=HOST:PORT` | Attach to a daemon reached at that address (a tunnel), with `--attach-token-file`; a loopback address only, unless `--attach-insecure` |
 | `--list` | List every daemon that has an endpoint file, then exit (also `rkat-tui-mob --list`) |
 
 **Attaching to another workspace.** `--attach=DIRECTORY` (a value with a
@@ -1030,6 +1030,14 @@ mentions (sent as typed), `/remember`, `/memory` and `/export` to a path
 approvals, modes, rules, `/model`, `/new`, `/resume`, `/cost`, `/context`
 and the pickers work as usual. `/daemon stop` asks such a daemon to shut
 down instead of signalling a pid that may be another machine's.
+
+The token travels in clear text, so `--attach=HOST:PORT` accepts a
+loopback address only (`127.0.0.1`, `::1`, or a name resolving to one),
+which is what the `ssh -L` recipe above gives: the network sees only the
+encrypted tunnel. Any other address is refused with that recipe before
+the token file is read; `--attach-insecure` sends the token there anyway,
+for a network you trust end to end. `--attach=DIRECTORY` and the
+workspace's own daemon are unaffected.
 
 The value needs `=`: `rkat-tui --attach "fix the test"` attaches and sends
 the prompt.

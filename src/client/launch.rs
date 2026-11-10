@@ -240,6 +240,7 @@ pub const NOT_FORWARDED: &[&str] = &[
     "no_mouse",
     "attach",
     "attach_token_file",
+    "attach_insecure",
     "context_root",
     "list",
 ];

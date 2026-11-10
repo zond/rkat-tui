@@ -9,6 +9,10 @@ design.
 
 ### Security
 
+- `--attach=HOST:PORT` sends the attach token only to a loopback address
+  (what an `ssh -L` tunnel gives). Any other address is refused, naming
+  the tunnel recipe, before the token file is read; `--attach-insecure`
+  allows it. Before, any host named received the token in clear text.
 - A connection drives only the agent it is bound to. The daemon refuses,
   with error `-32013` (`NOT_YOURS`), an engine request that would prompt,
   steer, start, stop, cancel, compact or append to another agent or a

@@ -4346,3 +4346,21 @@ first and only request). The two refusal tests no longer script a shell
 call and a marker file: the sentinel covers any run, not only a shell one.
 No CHANGELOG line: nothing a user sees changed.
 
+### `--attach=HOST:PORT` sends the token to loopback only
+
+The token is the whole access control and travels in clear text on the
+attach line. `client::address::reach` resolved any host and sent it there,
+although the design and the manual describe a tunnel, whose local end is
+always loopback: a typo or a hostile name received the token. `reach` now
+resolves first and refuses a non-loopback address
+(`address::check_loopback`) with the `ssh -N -L` recipe, before the token
+file is even read; `--attach-insecure` lets it through for a network the
+user trusts. No `tui.toml` key: a per-invocation flag keeps the choice
+visible where the address is typed. `--attach=DIRECTORY` and the
+workspace's own daemon (always loopback, the daemon refuses another
+listen address) are unaffected; the daemon refuses `--attach-insecure` as
+it does the other client-only flags. Pinned by
+`only_a_loopback_address_gets_the_token_unless_insecure` and
+`reach_refuses_a_non_loopback_address_before_the_token`; the loopback
+path keeps its tests in `tests/attach.rs`.
+
