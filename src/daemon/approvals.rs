@@ -156,6 +156,8 @@ pub struct Desk {
     /// The engine's escalation timeout (each decision's deadline).
     timeout: Duration,
     waiting: Mutex<HashMap<u64, Waiting>>,
+    /// The engine told who answered each escalation (the audit log).
+    engine: Mutex<std::sync::Weak<ApprovalEngine>>,
 }
 
 impl std::fmt::Debug for Desk {
@@ -181,6 +183,7 @@ impl Desk {
             decisions,
             timeout,
             waiting: Mutex::new(HashMap::new()),
+            engine: Mutex::new(std::sync::Weak::new()),
         });
         let task = tokio::spawn({
             let desk = Arc::clone(&desk);
@@ -191,6 +194,12 @@ impl Desk {
             }
         });
         (desk, task)
+    }
+
+    /// Tell `engine` who answers each escalation from now on (held
+    /// weakly: the engine owns the broker this desk serves).
+    pub fn report_to(&self, engine: &Arc<ApprovalEngine>) {
+        *self.engine.lock() = Arc::downgrade(engine);
     }
 
     /// The human interrupted `session`'s turn: its open escalations are
@@ -273,6 +282,9 @@ impl Desk {
                     DecisionPhase::Rejected
                 };
                 self.decisions.ended(&id, Some(phase)).await;
+                if let (Some(by), Some(engine)) = (settled.by, self.engine.lock().upgrade()) {
+                    engine.answered_by(prompt.id, by);
+                }
                 let answer = EscalationAnswer::from_decision(
                     settled.approve,
                     settled.answer,
@@ -679,6 +691,7 @@ mod tests {
                 approve: false,
                 answer: Some(RemoteAnswer::Deny),
                 reason: Some("not that".into()),
+                by: None,
             },
         );
         assert_eq!(
@@ -702,6 +715,7 @@ mod tests {
                 approve: true,
                 answer: Some(RemoteAnswer::AllowAndAddRule),
                 reason: None,
+                by: None,
             },
         );
         assert!(matches!(
@@ -730,6 +744,7 @@ mod tests {
                 approve: true,
                 answer: None,
                 reason: None,
+                by: None,
             },
         );
         assert_eq!(kept.await.unwrap(), HumanDecision::AllowOnce);

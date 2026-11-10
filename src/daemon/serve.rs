@@ -271,7 +271,8 @@ impl Listener {
             tracing::warn!(file = %self.file.display(), error = %err, "cannot remove the endpoint file");
             return;
         }
-        // Fails, and is left, when anything else is in it.
+        // Fails, and is left, when anything else is in it (the audit log
+        // stays there).
         if let Some(dir) = self.file.parent() {
             let _ = std::fs::remove_dir(dir);
         }

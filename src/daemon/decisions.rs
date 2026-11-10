@@ -238,6 +238,8 @@ pub struct Settled {
     pub answer: Option<RemoteAnswer>,
     /// The decider's reason (the dialog's comment).
     pub reason: Option<String>,
+    /// Who decided: `human:<connection scope>` (the audit log's decider).
+    pub by: Option<String>,
 }
 
 /// One attached client.
@@ -854,6 +856,7 @@ impl Decisions {
                     approve: request.approve,
                     answer: request.answer,
                     reason: request.reason,
+                    by: Some(format!("human:{}", client.scope.as_str())),
                 },
             );
         }

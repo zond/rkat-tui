@@ -297,6 +297,7 @@ methods on the wire, and `daemon::protocol` types each one for both ends:
 | `rkat/trust` | `{"op": "project"\|"rules"}` | `{"ok", "text"}` |
 | `rkat/set_model` | `{"model", "provider"?, "auth_binding"?}` | `{"session_id", "model", "provider"}` (refused while a run is open) |
 | `rkat/notices` | `{}` | `{"notices": [{"warn", "text"}]}` (the daemon's start-up notices) |
+| `rkat/audit` | `{"lines"?}` | `{"path", "lines": [String]}` (the audit log's last lines naming the caller's agent or none, oldest first; `daemon::audit`) |
 | `rkat/missed` | `{}` | `{"notices": [{"warn", "text"}]}` (what the caller's agent was denied in unattended turns, each answered once; a client asks on every attach) |
 | `rkat/tasks` | `{"session_id"}` | `{"tasks": [Task]}` (the engine's task store) |
 | `rkat/checklist_view` | `{"view": "hidden"\|"shown"}` | `{}` (saved as `[ui] checklist`) |

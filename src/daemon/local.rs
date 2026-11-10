@@ -48,6 +48,9 @@
 //!   daemon's start-up had to say (the confinement, the rules, the
 //!   configuration); a client shows them when it first attaches to this
 //!   daemon;
+//! - [`AUDIT`] `{"lines"?}` → `{"path", "lines": [String]}`: the last lines
+//!   of the audit log ([`super::audit`]) naming the caller's agent or no
+//!   agent (default [`AUDIT_LINES`]), oldest first (`/audit`);
 //! - [`MISSED`] `{}` → `{"notices": [{"warn", "text"}]}`: what the caller's
 //!   agent wanted to do and was denied in turns no user started while no
 //!   client was attached (A6, [`crate::approval::attendance`]); each is
@@ -116,6 +119,7 @@ use super::protocol::{
     self, ConversationList, METHOD_NOT_FOUND, ModeSet, SWITCH_BUSY, SWITCH_FAILED, SessionParams,
     SetModeParams, Switched, Transcript, TrustOp, TrustParams, Usage, engine,
 };
+use super::protocol::{AUDIT, AUDIT_LINES, AuditParams, AuditTail};
 use super::protocol::{
     CHECKLIST_VIEW, ChecklistViewParams, ModelSet, SET_MODEL, SetModelParams, TASKS, Tasks,
 };
@@ -165,6 +169,8 @@ pub struct Local {
     lifecycle: Arc<Lifecycle>,
     /// The fixed part of `rkat/report`.
     report: ReportParts,
+    /// The audit log (`rkat/audit`), when it could be opened.
+    audit: Option<Arc<super::audit::AuditLog>>,
 }
 
 /// What [`Local`] is made of.
@@ -201,6 +207,8 @@ pub struct LocalParts {
     pub lifecycle: Arc<Lifecycle>,
     /// What `rkat/report` names besides the engine's state.
     pub report: ReportParts,
+    /// The audit log, when it could be opened.
+    pub audit: Option<Arc<super::audit::AuditLog>>,
 }
 
 /// The fixed part of [`REPORT`]'s answer.
@@ -257,6 +265,7 @@ impl Local {
             startup_notices,
             lifecycle,
             report,
+            audit,
         } = parts;
         // In plan mode every restored agent heard it (its conversation
         // has the note): leaving plan mode tells it.
@@ -285,7 +294,34 @@ impl Local {
             startup_notices,
             lifecycle,
             report,
+            audit,
         }
+    }
+
+    /// Append `line` to the audit log (nothing when there is none).
+    pub fn audit(&self, line: super::audit::Line) {
+        if let Some(log) = &self.audit {
+            log.write(&line);
+        }
+    }
+
+    /// `rkat/audit`: the last lines of the audit log for `agent` (its
+    /// decisions and the workspace-wide changes of authority).
+    fn audit_tail(&self, agent: &str, lines: usize) -> Result<AuditTail, Refusal> {
+        let Some(log) = &self.audit else {
+            return Err(Refusal::new(
+                protocol::INTERNAL_ERROR,
+                "this daemon keeps no audit log (its start-up notice says why)",
+            ));
+        };
+        let lines = super::audit::tail(log.path(), lines, |line| {
+            line.agent.as_deref().is_none_or(|of| of == agent)
+        })
+        .map_err(|err| Refusal::new(protocol::INTERNAL_ERROR, err.to_string()))?;
+        Ok(AuditTail {
+            path: log.path().to_path_buf(),
+            lines,
+        })
     }
 
     /// The daemon's lifecycle state.
@@ -447,6 +483,11 @@ impl Local {
             NOTICES => answer(Notices {
                 notices: self.startup_notices.clone(),
             }),
+            AUDIT => {
+                let AuditParams { lines } = protocol::params(params)?;
+                let agent = self.agent_of(&caller)?;
+                answer(self.audit_tail(&agent, lines.unwrap_or(AUDIT_LINES))?)
+            }
             MISSED => {
                 let agent = self.agent_of(&caller)?;
                 answer(Notices {
@@ -594,6 +635,15 @@ impl Local {
             .await
             .map_err(|err| Refusal::new(SWITCH_FAILED, err.to_string()))?;
         self.plan_noted.lock().await.remove(agent);
+        self.audit(
+            super::audit::Line::event(
+                "agent_retired",
+                session
+                    .as_ref()
+                    .map_or_else(String::new, |s| format!("session {s}")),
+            )
+            .of_agent(agent),
+        );
         Ok(Retired {
             agent: agent.to_string(),
             session_id: retired.or(session),
@@ -624,6 +674,14 @@ impl Local {
                 text: "the project has no .rkat/mcp.toml, .rkat/config.toml or workspace realm config.toml to trust".to_string(),
             },
             Ok(recorded) => {
+                self.audit(super::audit::Line::event(
+                    "project_trusted",
+                    recorded
+                        .iter()
+                        .map(|p| p.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                ));
                 let files = recorded
                     .iter()
                     .map(|p| p.display().to_string())

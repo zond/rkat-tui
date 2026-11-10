@@ -171,6 +171,9 @@ pub async fn run(args: Args) -> Result<(), TuiError> {
         daemon::list::print(None).await;
         return Ok(());
     }
+    if args.audit {
+        return daemon::audit::print(&args);
+    }
     // The workspace and its `tui.toml` layers are read once, here, and
     // handed to the client.
     let layers = bootstrap::read_layers(&args)?;

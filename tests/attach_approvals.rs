@@ -1420,3 +1420,152 @@ async fn the_endpoint_file_is_sealed_for_the_file_tools() {
     );
     client.quit().await;
 }
+
+/// Recommendation 11: every gate decision is one line of the daemon's
+/// audit log naming who decided (the policy, the classifier allowing and
+/// blocking, the human by connection, a sealed read denied), a mode switch
+/// is one line, the agent's file tools cannot read the log, and `/audit`
+/// shows this agent's lines.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_gate_decision_is_one_audit_line_naming_who_decided() {
+    use rkat_tui::daemon::audit::{AUDIT_FILE, Line};
+    let ws = Workspace::new();
+    std::fs::write(ws.root.join("a.txt"), "a\n").unwrap();
+    let log = endpoint_file_for(&ws.root)
+        .parent()
+        .unwrap()
+        .join(AUDIT_FILE);
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Tool {
+            id: "r1",
+            name: "read_file",
+            args: json!({"path": "a.txt"}),
+        },
+        Step::Tool {
+            id: "s1",
+            name: "shell",
+            args: json!({"command": "python3 -c 'print(1)'"}),
+        },
+        Step::Tool {
+            id: "s2",
+            name: "shell",
+            args: json!({"command": "python3 -c 'print(2)'"}),
+        },
+        Step::Tool {
+            id: "w1",
+            name: "write_file",
+            args: json!({"path": ".env", "content": "X=1\n"}),
+        },
+        Step::Tool {
+            id: "r2",
+            name: "read_file",
+            args: json!({"path": log.display().to_string()}),
+        },
+        Step::Text("done"),
+    ]);
+    let classifier = rig::ScriptedClassifier::allowing(vec![
+        ClassifierVerdict::Allow {
+            reason: "fine".into(),
+        },
+        ClassifierVerdict::Block {
+            rule: Some("T1".into()),
+            reason: "not that one".into(),
+        },
+    ]);
+    let setup = rig::Setup::default().classifier(Arc::clone(&classifier) as _);
+    let mut client = rig::Attached::start_with(&ws.root, &llm, setup).await;
+    client.send(Effect::StartTurn("go".into()));
+    let (prompt, id) = client.escalation().await;
+    assert_eq!(prompt.tool, "write_file");
+    client.send(Effect::RespondEscalation(id, EscalationAnswer::AllowOnce));
+    assert_eq!(client.turn_finished().await.result.unwrap().text, "done");
+    let sealed = result_text(&llm, 5, "r2");
+    assert!(sealed.contains("sealed"), "{sealed}");
+    assert!(!sealed.contains("\"decision\""), "{sealed}");
+    client.set_mode(PermissionMode::Plan).await;
+    let lines: Vec<Line> = std::fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let decided = |needle: &str| -> Vec<&Line> {
+        lines
+            .iter()
+            .filter(|line| {
+                line.event == "decision"
+                    && line.argument.as_deref().is_some_and(|a| a.contains(needle))
+            })
+            .collect()
+    };
+    let one = |needle: &str| -> &Line {
+        let found = decided(needle);
+        assert_eq!(found.len(), 1, "{needle}: {lines:#?}");
+        found[0]
+    };
+    let agent = client.agent().await;
+    let read = one("a.txt");
+    assert_eq!(
+        (read.verdict.as_deref(), read.decider.as_deref()),
+        (Some("allow"), Some("policy"))
+    );
+    assert_eq!(read.agent.as_deref(), Some(agent.as_str()));
+    assert!(read.session.is_some() && read.run.is_some(), "{read:?}");
+    let allowed = one("print(1)");
+    assert_eq!(
+        (allowed.verdict.as_deref(), allowed.decider.as_deref()),
+        (Some("allow"), Some("classifier"))
+    );
+    let blocked = one("print(2)");
+    assert_eq!(
+        (blocked.verdict.as_deref(), blocked.decider.as_deref()),
+        (Some("deny"), Some("classifier"))
+    );
+    assert!(
+        blocked
+            .reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("not that one"),
+        "{blocked:?}"
+    );
+    let human = one(".env");
+    assert_eq!(human.verdict.as_deref(), Some("allow"));
+    assert!(
+        human.decider.as_deref().unwrap_or("").starts_with("human:"),
+        "{human:?}"
+    );
+    let refused = one(AUDIT_FILE);
+    assert_eq!(
+        (refused.verdict.as_deref(), refused.decider.as_deref()),
+        (Some("deny"), Some("policy"))
+    );
+    assert_eq!(
+        lines.iter().filter(|line| line.event == "decision").count(),
+        5,
+        "{lines:#?}"
+    );
+    assert!(
+        lines.iter().any(|line| line.event == "mode"
+            && line
+                .detail
+                .as_deref()
+                .is_some_and(|d| d.ends_with("-> plan"))),
+        "{lines:#?}"
+    );
+    assert!(lines.iter().any(|line| line.event == "daemon_start"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = std::fs::metadata(&log).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+    // `/audit` shows this agent's lines.
+    client.send(Effect::Audit(Some(50)));
+    client
+        .wait_for(|m| {
+            matches!(m, Msg::Notice { text, .. }
+                if text.starts_with("audit log") && text.contains("print(2)") && text.contains("\"mode\""))
+        })
+        .await;
+    client.quit().await;
+}

@@ -510,7 +510,8 @@ impl Agents {
     }
 
     /// The live agent whose current conversation is `session`.
-    fn running_as(&self, session: &SessionId) -> Option<String> {
+    #[must_use]
+    pub fn agent_running_as(&self, session: &SessionId) -> Option<String> {
         self.names()
             .into_iter()
             .find(|name| self.conversations.current(name).as_ref() == Some(session))
@@ -519,7 +520,7 @@ impl Agents {
     /// Whether a client is bound to the live agent that runs as `session`.
     #[must_use]
     pub fn attended(&self, session: &SessionId) -> bool {
-        let Some(name) = self.running_as(session) else {
+        let Some(name) = self.agent_running_as(session) else {
             return false;
         };
         self.table
@@ -531,7 +532,7 @@ impl Agents {
     /// Keep `notice` of an unattended denial for the next client of the
     /// agent that runs as `session` (dropped when no live agent does).
     pub fn missed(&self, session: &SessionId, notice: String) {
-        let Some(name) = self.running_as(session) else {
+        let Some(name) = self.agent_running_as(session) else {
             tracing::warn!(%session, %notice, "an unattended denial of no live agent");
             return;
         };

@@ -640,9 +640,18 @@ async fn the_orchestrator_shell_runs_confined() {
     // The agent's shell cannot read the attach token.
     assert!(!request.contains(&token), "{request}");
     daemon.stop().await;
-    // The stop removed the file and its directory.
+    // The stop removed the file; the directory keeps the audit log only.
     let dir = default.parent().unwrap();
-    assert!(!dir.exists(), "left behind: {}", dir.display());
+    let left: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        left,
+        [rkat_tui::daemon::audit::AUDIT_FILE],
+        "left behind in {}",
+        dir.display()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

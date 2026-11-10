@@ -50,6 +50,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 
 use super::attendance::Attendance;
+use super::audit::{AuditSink, DecisionRecord};
 use super::catalog::{ToolOrigin, ToolOrigins};
 use super::classifier::{ActionClassifier, ClassifierInput, ClassifierVerdict, Environment};
 use super::counters::{AutoMode, DenialCounters, PauseCause};
@@ -275,6 +276,12 @@ pub struct ApprovalEngine {
     /// Who is with each agent ([`super::attendance`]); unset: every call is
     /// attended.
     attendance: OnceLock<Arc<dyn Attendance>>,
+    /// Where decisions and changes of authority are recorded
+    /// ([`super::audit`]); unset: nowhere.
+    audit: OnceLock<Arc<dyn AuditSink>>,
+    /// Who answered each escalation, by its id, as the desk was told
+    /// ([`ApprovalEngine::answered_by`]), until the escalation reads it.
+    answerers: Mutex<HashMap<u64, String>>,
     /// Called by [`Self::forget_session`] (helper hosts prune their state).
     forget_hooks: RwLock<Vec<ForgetHook>>,
 }
@@ -293,6 +300,10 @@ impl fmt::Debug for ApprovalEngine {
 struct Facts<'a> {
     action: Action<'a>,
     subjects: Vec<String>,
+    /// The allow rule that made the call Tier 1, once the tier is known.
+    allow_rule: Mutex<Option<RuleId>>,
+    /// Who answered the call's escalation, when the desk said.
+    answerer: Mutex<Option<String>>,
 }
 
 impl ApprovalEngine {
@@ -336,6 +347,8 @@ impl ApprovalEngine {
             rules_trust,
             origins: OnceLock::new(),
             attendance: OnceLock::new(),
+            audit: OnceLock::new(),
+            answerers: Mutex::new(HashMap::new()),
             forget_hooks: RwLock::new(Vec::new()),
         })
     }
@@ -387,6 +400,24 @@ impl ApprovalEngine {
     /// already.
     pub fn set_attendance(&self, attendance: Arc<dyn Attendance>) -> bool {
         self.attendance.set(attendance).is_ok()
+    }
+
+    /// Record every decision and change of authority in `audit` from now
+    /// on. Set once; returns `false` when it was set already.
+    pub fn set_audit(&self, audit: Arc<dyn AuditSink>) -> bool {
+        self.audit.set(audit).is_ok()
+    }
+
+    /// Escalation `id` was answered by `who` (`human:<connection>`): the
+    /// audit line of its call names them.
+    pub fn answered_by(&self, id: u64, who: String) {
+        self.answerers.lock().insert(id, who);
+    }
+
+    fn audit_event(&self, event: &str, detail: String) {
+        if let Some(audit) = self.audit.get() {
+            audit.event(event, detail);
+        }
     }
 
     /// A client sent `session_id` input (a prompt or a steer, on a
@@ -533,6 +564,7 @@ impl ApprovalEngine {
     ///
     /// Returns [`RulesError`] when persistence fails (the rule stays active).
     pub fn add_rule(&self, rule: Rule) -> Result<(), RulesError> {
+        self.audit_event("rule_added", describe_rule(&rule));
         let snapshot = self.push_rule(rule);
         self.persist(&snapshot)
     }
@@ -572,6 +604,10 @@ impl ApprovalEngine {
                 }
             }
         }
+        self.audit_event(
+            "rules_trusted",
+            format!("{}: {added} allow rule(s) applied", path.display()),
+        );
         Ok(format!(
             "{summary}\ntrusted; {added} allow rule(s) apply now, its [auto] settings, endpoints and prices from the next start"
         ))
@@ -588,7 +624,8 @@ impl ApprovalEngine {
             let removed = rules.remove(id);
             (removed, rules.clone())
         };
-        if removed.is_some() {
+        if let Some(rule) = &removed {
+            self.audit_event("rule_removed", describe_rule(rule));
             self.persist(&snapshot)?;
         }
         Ok(removed)
@@ -639,6 +676,7 @@ impl ApprovalEngine {
         if resumed {
             self.emit(ApprovalEvent::Resumed);
         }
+        self.audit_event("mode", format!("{previous} -> {mode}"));
         previous
     }
 
@@ -702,7 +740,12 @@ impl ApprovalEngine {
         } = caller;
         let action = Action::parse(call.name, call.args, call.origin);
         let subjects = action.subjects(&self.root);
-        let facts = Facts { action, subjects };
+        let facts = Facts {
+            action,
+            subjects,
+            allow_rule: Mutex::new(None),
+            answerer: Mutex::new(None),
+        };
         let verdict = self.evaluate(session_id, agent, run, &facts).await;
         let (tier, reason) = match &verdict {
             // A classifier allow carries the classifier's stated reason;
@@ -726,6 +769,28 @@ impl ApprovalEngine {
             Some(summary),
         );
         tracing::debug!(tool = call.name, %tier, ?summary, "auto-mode decision");
+        if let Some(audit) = self.audit.get() {
+            let current = run.cloned().or_else(|| {
+                self.sessions
+                    .lock()
+                    .get(session_id)
+                    .and_then(|state| state.current_run.clone())
+            });
+            audit.decision(DecisionRecord {
+                session: session_id,
+                helper: agent,
+                run: current.as_ref(),
+                tool: call.name,
+                argument: decisive_argument(&facts),
+                tier,
+                allowed: verdict.is_allowed(),
+                decider: decider_label(&verdict, &facts),
+                reason: match &verdict {
+                    Verdict::Deny { reason, .. } => Some(reason.to_string()),
+                    Verdict::Allow { .. } => None,
+                },
+            });
+        }
         self.emit(ApprovalEvent::Decision {
             session_id: session_id.clone(),
             agent: agent.map(str::to_string),
@@ -849,6 +914,7 @@ impl ApprovalEngine {
         facts: &Facts<'_>,
     ) -> Verdict {
         let decision = self.tier_of(facts);
+        *facts.allow_rule.lock() = decision.allow_rule;
         let mode = self.mode();
         match self.route(facts, decision, mode) {
             Route::Settled(verdict) => return verdict,
@@ -1088,6 +1154,7 @@ impl ApprovalEngine {
         .await;
         let decision = match asked {
             Err(_) => {
+                self.answerers.lock().remove(&id);
                 pending.withdraw();
                 return deny_at(tier, DenyReason::EscalationTimedOut);
             }
@@ -1097,6 +1164,7 @@ impl ApprovalEngine {
             }
             Ok(Asked::Answered(decision)) => decision,
         };
+        *facts.answerer.lock() = self.answerers.lock().remove(&id);
         pending.settled = true;
         match decision {
             HumanDecision::AllowOnce => {
@@ -1104,6 +1172,7 @@ impl ApprovalEngine {
                 allow_at(tier, Decider::Human, "allowed once by the user")
             }
             HumanDecision::AllowAndAddRule(rule) => {
+                self.audit_event("rule_added", describe_rule(&rule));
                 let snapshot = self.push_rule(*rule);
                 if let Err(err) = self.persist_blocking(snapshot).await {
                     tracing::warn!(error = %err, "failed to persist rule");
@@ -1393,6 +1462,53 @@ fn describe_rule(rule: &Rule) -> String {
     match &rule.arg {
         Some(arg) => format!("{} {}", rule.tool.as_str(), arg.as_str()),
         None => rule.tool.as_str().to_string(),
+    }
+}
+
+/// The argument that decides a call, whole: the command or the paths it
+/// touches, else the raw arguments.
+fn decisive_argument(facts: &Facts<'_>) -> String {
+    if facts.subjects.is_empty() {
+        facts.action.args.get().to_string()
+    } else {
+        facts.subjects.join("\n")
+    }
+}
+
+/// Who decided `verdict`, as the audit log names it.
+fn decider_label(verdict: &Verdict, facts: &Facts<'_>) -> String {
+    let human = || {
+        facts
+            .answerer
+            .lock()
+            .clone()
+            .unwrap_or_else(|| "human".to_string())
+    };
+    match verdict {
+        Verdict::Allow {
+            by: Decider::Human, ..
+        } => human(),
+        Verdict::Allow {
+            by: Decider::Classifier,
+            ..
+        } => "classifier".to_string(),
+        Verdict::Allow { tier, .. } => match (*facts.allow_rule.lock(), tier) {
+            (Some(id), Tier::AlwaysAllow) => format!("rule:{id}"),
+            (_, Tier::InProjectEdit) => "mode".to_string(),
+            _ => "policy".to_string(),
+        },
+        Verdict::Deny { reason, .. } => match reason {
+            DenyReason::UserRule { id, .. } => format!("rule:{id}"),
+            DenyReason::Classifier { .. } => "classifier".to_string(),
+            DenyReason::Human { .. } => human(),
+            DenyReason::Stopped => "human".to_string(),
+            DenyReason::EscalationTimedOut => "timeout".to_string(),
+            DenyReason::PlanMode => "mode".to_string(),
+            DenyReason::Unattended => "unattended".to_string(),
+            DenyReason::Sealed { .. } | DenyReason::ClassifierUnavailable(_) => {
+                "policy".to_string()
+            }
+        },
     }
 }
 

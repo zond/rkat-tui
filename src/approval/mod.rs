@@ -40,6 +40,7 @@
 
 pub mod admission;
 pub mod attendance;
+pub mod audit;
 pub mod catalog;
 pub mod classifier;
 pub mod counters;

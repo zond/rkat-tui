@@ -29,6 +29,7 @@
 
 pub mod agents;
 pub mod approvals;
+pub mod audit;
 pub mod conversations;
 pub mod decisions;
 pub mod endpoint;
@@ -539,7 +540,23 @@ impl Daemon {
         let parts =
             bootstrap::assemble(layers, config, args, options.bootstrap, LEASE_SURFACE).await?;
         let file = choose_endpoint_file(&parts.confinement, &files)?;
-        let composed = engine::compose(parts, options.policy)?;
+        let mut composed = engine::compose(parts, options.policy)?;
+        // The audit log beside the endpoint file: owner-only, outside the
+        // workspace and every grant of the agent's shell, sealed for its
+        // file tools (see `audit`).
+        let audit = match file.parent().map(audit::AuditLog::open) {
+            Some(Ok(log)) => Some(log),
+            Some(Err(err)) => {
+                tracing::warn!(error = %err, "no audit log this run");
+                composed
+                    .startup_notices
+                    .push(protocol::StartupNotice::warn(format!(
+                        "no audit log this run: {err}"
+                    )));
+                None
+            }
+            None => None,
+        };
         orchestrator::ensure_mob(&composed.state, &composed.root).await?;
         let conversations = conversations::Conversations::open(
             Arc::clone(&composed.state),
@@ -569,6 +586,21 @@ impl Daemon {
         composed
             .engine
             .set_attendance(Arc::new(agents::AgentAttendance::new(&agents)));
+        if let Some(log) = &audit {
+            composed
+                .engine
+                .set_audit(Arc::new(audit::DaemonAudit::new(Arc::clone(log), &agents)));
+            log.write(&audit::Line::event(
+                "daemon_start",
+                format!(
+                    "pid {} on {}, mode {}",
+                    std::process::id(),
+                    workspace.display(),
+                    composed.engine.mode()
+                ),
+            ));
+        }
+        composed.desk.report_to(&composed.engine);
         // Restored (their classifier seeded with what the user asked so
         // far), else one seated for the first client.
         let (first, session, created) = agents.start().await?;
@@ -603,6 +635,7 @@ impl Daemon {
             realm_config: Arc::clone(&composed.realm_config),
             startup_notices: composed.startup_notices.clone(),
             lifecycle,
+            audit,
             report: local::ReportParts {
                 realm: composed.scope.realm_root(),
                 realm_id: composed.scope.realm_id.clone(),
@@ -790,6 +823,10 @@ impl Daemon {
         if self.local.lifecycle().retires_all() {
             self.local.retire_all().await;
         }
+        self.local.audit(audit::Line::event(
+            "daemon_stop",
+            format!("pid {}", std::process::id()),
+        ));
         let mut connections = served;
         for task in &self.tasks {
             task.abort();

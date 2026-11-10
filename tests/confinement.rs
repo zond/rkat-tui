@@ -604,3 +604,48 @@ async fn cargo_builds_under_the_narrowed_cargo_home_grant() {
     assert!(!output.contains("CONFIG-WRITABLE"), "{output}");
     assert!(!home.join("bin/rkat-probe").exists());
 }
+
+/// Recommendation 11: the audit log is out of the confined shell's reach.
+/// It lies beside the endpoint file, which the daemon refuses to start
+/// with inside any grant of its shell; with this host's real paths a
+/// confined command can neither read nor append to it, while the file
+/// holds that very command's decision (written before the command ran).
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_confined_shell_cannot_read_or_write_the_audit_log() {
+    let ws = Workspace::new();
+    if let Some(reason) = sandbox_unavailable(&ws.root, ConfinementArg::Workspace).await {
+        println!("SKIPPED: --confinement=workspace is unavailable on this host: {reason}");
+        return;
+    }
+    let (setup, state) = allow_shell_detected(&["--confinement=workspace"]);
+    let log = state.path().join(rkat_tui::daemon::audit::AUDIT_FILE);
+    let command = leak(format!(
+        "cat '{log}' >/dev/null 2>&1 && echo LOG-READ; echo forged >> '{log}' 2>/dev/null && echo LOG-WRITTEN; echo END",
+        log = log.display()
+    ));
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Tool {
+            id: "sh",
+            name: "shell",
+            args: json!({ "command": command }),
+        },
+        Step::Text("done"),
+    ]);
+    let mut rig = Attached::try_start_with(&ws.root, &llm, setup)
+        .await
+        .unwrap_or_else(|err| panic!("daemon start: {err}"));
+    rig.send(Effect::StartTurn("look".into()));
+    rig.turn_finished().await;
+    let output = tool_text(&llm.requests()[1], "sh");
+    rig.quit().await;
+    assert!(output.contains("END"), "{output}");
+    assert!(!output.contains("LOG-READ"), "{output}");
+    assert!(!output.contains("LOG-WRITTEN"), "{output}");
+    let text = std::fs::read_to_string(&log).unwrap();
+    assert!(
+        text.contains("\"event\":\"decision\"") && text.contains("LOG-READ"),
+        "the log held the command's decision: {text}"
+    );
+    assert!(!text.lines().any(|line| line == "forged"), "{text}");
+}

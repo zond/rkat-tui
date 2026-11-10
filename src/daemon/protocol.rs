@@ -76,6 +76,11 @@ pub const NOTICES: &str = "rkat/notices";
 /// turns since its last client asked (each is answered once; a client asks
 /// whenever it attaches).
 pub const MISSED: &str = "rkat/missed";
+/// [`AuditParams`] → [`AuditTail`]: the last lines of the audit log for
+/// the caller's agent (`/audit`).
+pub const AUDIT: &str = "rkat/audit";
+/// How many lines `/audit` shows unless it names a number.
+pub const AUDIT_LINES: usize = 20;
 /// The notification of a change the orchestrator's file tools made:
 /// [`FileDiffNote`].
 pub const FILE_DIFF: &str = "rkat/file_diff";
@@ -796,6 +801,23 @@ impl StartupNotice {
     pub fn warn(text: String) -> Self {
         Self { warn: true, text }
     }
+}
+
+/// [`AUDIT`]'s parameters.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuditParams {
+    /// How many lines (default [`AUDIT_LINES`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lines: Option<usize>,
+}
+
+/// [`AUDIT`]'s result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuditTail {
+    /// The audit log's file.
+    pub path: std::path::PathBuf,
+    /// Its last lines for the agent, oldest first, as written (JSON).
+    pub lines: Vec<String>,
 }
 
 /// [`NOTICES`]'s result.

@@ -4843,3 +4843,57 @@ and B's next `curl` is reviewed; `rkat/missed` answers it once) and
 `a_turn_the_user_started_is_reviewed_after_its_client_detaches` (the run
 id the dispatch carries is the one the watcher saw start after the
 user's prompt).
+
+### Recommendation 11: the audit log, outside the workspace
+
+The brief placed the log at `<workspace>/.rkat/tui/audit.jsonl`, "sealed
+from the agent's tools like the rest of `.rkat/`", and asked for a test
+that the confined shell cannot read it. Verified that this does not hold
+there: on Linux the confined shell is granted the whole workspace,
+`.rkat/` included (engine ask 8, "S1, S2, E1" above), so a log in the
+realm could be read, truncated and forged by the agent it records. The
+log is therefore `audit.jsonl` in the directory of the daemon's endpoint
+file (`<state>/rkat-tui/<key>/`, or beside `--endpoint-file`), which
+already has every property the brief asks for: 0700, the daemon refuses
+to start when its shell's plan grants it (`EndpointExposed`), and it is a
+secret root of the project root, so the file tools refuse it at tier 0.
+The file is opened 0600 with `O_NOFOLLOW` (an existing file is made
+0600), appended by the daemon only (`daemon::audit::AuditLog`), and
+renamed to `audit.1.jsonl` when a write would take it past 50 MB. A
+directory under `$XDG_RUNTIME_DIR` (the endpoint fallback) is cleared at
+reboot; the log goes with it there. The endpoint directory no longer
+disappears at a stop: the daemon removes its endpoint file and the
+directory only when empty, so the audit log keeps it
+(`shutdown_stops_the_daemon_and_removes_its_endpoint_file` and
+`the_orchestrator_shell_runs_confined` now assert it holds the log and
+nothing else; `--list` reads only endpoint files and is unaffected).
+
+What writes it: the engine's `AuditSink` (`approval::audit`), installed
+by the daemon (`DaemonAudit`, the agent named from the live agents),
+gets one `DecisionRecord` per `decide_as` (the decisive argument is the
+action's subjects, else the raw arguments, never cut) and the engine's
+own changes of authority (`mode`, `rule_added` also from an escalation's
+"allow and add rule", `rule_removed`, `rules_trusted`). The human
+decider is the connection that decided: `decision/decide` puts
+`human:<connection scope>` on `Settled`, the desk tells the engine
+(`ApprovalEngine::answered_by`, the desk holding the engine weakly) and
+the escalation's call takes it. `daemon::local` writes
+`project_trusted` and `agent_retired`, the daemon `daemon_start` and
+`daemon_stop`. A log that cannot be opened is a start-up warning and the
+daemon runs without one; a line that cannot be written is logged.
+`rkat/audit` answers `/audit` with the last lines naming the caller's
+agent or none; `rkat-tui --audit` prints the files beside the endpoint
+file's candidate places for the workspace.
+
+Tests: `every_gate_decision_is_one_audit_line_naming_who_decided`
+(`tests/attach_approvals.rs`: a policy-allowed read, a classifier allow
+and block with its reason, a human's allow named `human:…`, a sealed read
+of the log itself refused with nothing of it in the result, exactly five
+decision lines, the mode switch, 0600, and `/audit` showing them),
+`the_confined_shell_cannot_read_or_write_the_audit_log`
+(`tests/confinement.rs`, Linux, this host's real paths: `cat` and an
+append from the confined shell fail while the file holds that command's
+own decision; `SKIPPED:` without the backend), and the unit tests of
+`daemon::audit` (owner-only, one rotated generation, no symbolic link).
+`--audit`'s file lookup is not driven by a test: it reads the real state
+directory, which the tests must leave alone.

@@ -1950,6 +1950,7 @@ impl AttachRunner {
             Effect::DaemonStop => self.daemon_stop().await,
             Effect::DaemonStart => self.daemon_start(),
             Effect::Agents(None) => self.list_agents().await,
+            Effect::Audit(lines) => self.show_audit(lines).await,
             Effect::Agents(Some(name)) => self.switch_agent(name).await,
             Effect::DecideQuit => self.decide_quit().await,
             Effect::Leave(departure) => self.depart(departure).await,
@@ -2719,6 +2720,46 @@ impl AttachRunner {
         .await
         .map_err(|err| tracing::info!(error = %err, "the daemon's status is unknown"))
         .ok()
+    }
+
+    /// `/audit [n]`: the audit log's last lines for this agent
+    /// (`rkat/audit`).
+    async fn show_audit(&self, lines: Option<usize>) {
+        let Some(connection) = self.connection() else {
+            self.notice(
+                NoticeLevel::Warn,
+                "not attached to the daemon (see the status bar)",
+            );
+            return;
+        };
+        let read = bounded(
+            CALL_TIMEOUT,
+            remote::local::<_, protocol::AuditTail>(
+                &connection,
+                protocol::AUDIT,
+                &protocol::AuditParams { lines },
+            ),
+        )
+        .await;
+        match read {
+            Ok(tail) if tail.lines.is_empty() => self.notice(
+                NoticeLevel::Info,
+                format!(
+                    "the audit log {} has nothing for this agent yet",
+                    tail.path.display()
+                ),
+            ),
+            Ok(tail) => self.notice(
+                NoticeLevel::Info,
+                format!(
+                    "audit log {} (last {} lines for this agent):\n{}",
+                    tail.path.display(),
+                    tail.lines.len(),
+                    tail.lines.join("\n")
+                ),
+            ),
+            Err(err) => self.notice(NoticeLevel::Warn, format!("no audit log: {err}")),
+        }
     }
 
     /// `/agents`: the workspace's agents, from the daemon's `rkat/status`.

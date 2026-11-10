@@ -800,7 +800,7 @@ why, is recorded in [`docs/ux-parity.md`](ux-parity.md), the dated audit
 behind these controls (its Status column is the current state).
 
 
-`/help` (alias `/?`), `/quit` (aliases `/exit`, `/q`), `/detach`, `/agents [name]`, `/daemon stop`, `/daemon start`, `/clear` (alias `/new`), `/resume [ref]`,
+`/help` (alias `/?`), `/quit` (aliases `/exit`, `/q`), `/detach`, `/agents [name]`, `/audit [n]`, `/daemon stop`, `/daemon start`, `/clear` (alias `/new`), `/resume [ref]`,
 `/rewind` (aliases `/checkpoint`, `/undo`), `/permissions [list|add allow|deny <tool> [pattern]|rm <n>|trust]` (alias `/rules`; `remove` for `rm`),
 `/mode [default|accept-edits|plan|auto]`, `/auto [on|off|resume]`, `/model [[endpoint:]id|refresh]`,
 `/remember <text>`, `/memory [user|system]`, `/init`, `/compact [now|status|<instructions>]`, `/context`, `/status`, `/export [file]`, `/usage` (aliases `/cost`, `/stats`), `/copy [N]`, `/trust` (alias `/mcp trust`),
@@ -1008,6 +1008,23 @@ naming both, so pass `--config-dir <other dir>` there. The price-list cache live
 in the user cache directory (`<config-dir>/cache` when `--config-dir` is
 given).
 
+**The audit log** is the one record of the workspace kept outside it:
+`audit.jsonl` beside the daemon's endpoint file
+(`$XDG_STATE_HOME/rkat-tui/<key>/`, else `~/.local/state/rkat-tui/<key>/`),
+owner-only, written by the daemon alone. It holds one JSON line per
+approval decision (time, agent, helper, session, run, tool, the deciding
+argument whole, tier, `allow` or `deny`, who decided: `rule:<id>`,
+`classifier`, `human:<connection>`, `mode`, `policy`, `unattended`,
+`timeout`, and for a denial why) and one per change of authority (mode
+switch, rule added or removed, `/trust`, `/rules trust`, an agent
+retired, daemon start and stop). It is out of the agent's reach: its
+confined shell is never granted the directory (the daemon refuses to
+start otherwise) and its file tools refuse to read it. Inside the
+workspace it would not be, since the shell can write `.rkat/` on Linux.
+Past 50 MB it is renamed `audit.1.jsonl` (one older generation is kept).
+`/audit [n]` shows its last lines for your agent; `rkat-tui --audit`
+prints the whole log, the older generation first.
+
 ## The workspace daemon
 
 `rkat-tui` runs the agent in the workspace's `rkat-tui-mob` daemon and is
@@ -1031,6 +1048,7 @@ view only (see "`-c` and `--resume` at start").
 | `--attach=DIRECTORY` | Attach to the running daemon of the workspace at or above `DIRECTORY` (never starts one; replaces `-w`) |
 | `--attach=HOST:PORT` | Attach to a daemon reached at that address (a tunnel), with `--attach-token-file`; a loopback address only, unless `--attach-insecure` |
 | `--list` | List every daemon that has an endpoint file, then exit (also `rkat-tui-mob --list`) |
+| `--audit` | Print the workspace daemon's audit log, then exit (see "Where things live") |
 
 **Attaching to another workspace.** `--attach=DIRECTORY` (a value with a
 `/`, or starting with `.` or `~`) finds that workspace as rkat-tui finds

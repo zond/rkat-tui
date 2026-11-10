@@ -9,6 +9,13 @@ design.
 
 ### Security
 
+- The daemon keeps an audit log: every approval decision (the tool, the
+  command or paths whole, the tier, the verdict and who decided: a rule,
+  the classifier, you through which connection, the mode, the policy) and
+  every change of mode, rules, trust and agents, one JSON line each, in
+  `audit.jsonl` beside its endpoint file (outside the workspace and the
+  agent's reach; rotated once at 50 MB). `/audit [n]` shows your agent's
+  last lines, `rkat-tui --audit` prints it.
 - A turn another agent's message started on your agent is unattended
   while no TUI is attached to it: an action that would need review is
   denied instead of going to the classifier (or waiting for you), the

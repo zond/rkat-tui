@@ -112,6 +112,9 @@ pub enum Command {
     /// `/agents [name]`: list the workspace's agents, or switch this
     /// rkat-tui to the agent `name`.
     Agents(Option<String>),
+    /// `/audit [n]`: the last `n` lines of the daemon's audit log for this
+    /// agent.
+    Audit(Option<usize>),
     /// `/clear`: clear the transcript and start a new session.
     Clear,
     /// `/resume [ref]`.
@@ -293,6 +296,21 @@ pub static COMMANDS: &[CommandSpec] = &[
         parse: |rest| match words(rest).as_slice() {
             [] => Some(Command::Agents(None)),
             [name] => Some(Command::Agents(Some((*name).to_string()))),
+            _ => None,
+        },
+    },
+    CommandSpec {
+        name: "audit",
+        aliases: &[],
+        usage: "[n]",
+        summary: "the audit log's last lines for this agent",
+        help: &[(
+            "/audit [n]",
+            "the last n (default 20) lines of the daemon's audit log for this\nagent: each gate decision and who made it, and the changes of\nmode, rules and trust (rkat-tui --audit prints the whole file)",
+        )],
+        parse: |rest| match words(rest).as_slice() {
+            [] => Some(Command::Audit(None)),
+            [n] => n.parse().ok().map(|n| Command::Audit(Some(n))),
             _ => None,
         },
     },
@@ -971,10 +989,11 @@ mod tests {
             "undo",
             "detach",
             "agents",
+            "audit",
         ] {
             assert!(super::spec(name).is_some(), "/{name} has no spec");
         }
-        assert_eq!(seen.len(), 34);
+        assert_eq!(seen.len(), 35);
         // `/help`'s "Commands:" rows come from the specs, in their order.
         let commands = help_text().split_once("Keys:").unwrap().0;
         let mut at = 0;

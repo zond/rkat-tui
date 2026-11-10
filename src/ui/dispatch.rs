@@ -94,6 +94,7 @@ impl App {
             Command::DaemonStop => fx.push(Effect::DaemonStop),
             Command::DaemonStart => fx.push(Effect::DaemonStart),
             Command::Agents(name) => fx.push(Effect::Agents(name)),
+            Command::Audit(lines) => fx.push(Effect::Audit(lines)),
             Command::Init => {
                 if self.idle_or_notice() {
                     self.start_turn(commands::INIT_PROMPT.to_string(), now, fx);

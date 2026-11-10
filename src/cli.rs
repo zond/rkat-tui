@@ -215,6 +215,12 @@ pub struct Args {
     /// when its pid is gone), then exit.
     #[arg(long)]
     pub list: bool,
+
+    /// Print the workspace daemon's audit log (every gate decision and who
+    /// made it, and the changes of mode, rules and trust; the rotated
+    /// generation first), then exit.
+    #[arg(long)]
+    pub audit: bool,
 }
 
 impl Args {

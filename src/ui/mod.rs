@@ -663,6 +663,9 @@ pub enum Effect {
     /// `/agents`: list the workspace's agents (`None`), or switch this
     /// client to the agent named (answered with notices).
     Agents(Option<String>),
+    /// `/audit [n]`: show the daemon's audit log's last lines for this
+    /// client's agent (answered with a notice).
+    Audit(Option<usize>),
     /// `/memory`: resolve the instruction file (creating `SYSTEM.md` with
     /// a comment header) and answer with [`Msg::EditFile`].
     OpenMemory(MemoryTarget),
