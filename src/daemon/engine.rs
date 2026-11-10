@@ -149,17 +149,13 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         tasks_db,
         notices,
         compaction,
+        context_window,
         ..
     } = parts;
     // The `[auto]` compaction policy as the orchestrator's threshold, for
-    // the start-up model's window (unknown: the policy's fallback).
-    let compact_threshold = compaction
-        .trigger(crate::endpoints::registry_context_window(
-            &effective,
-            choice.provider,
-            &choice.model,
-        ))
-        .threshold_override();
+    // the start-up model's window (a configured endpoint's own listing
+    // first; unknown: the policy's fallback).
+    let compact_threshold = compaction.trigger(context_window).threshold_override();
     // What a client shows when it first attaches (`rkat/notices`): the confinement's observations, then the rules'
     // and the bootstrap's warnings.
     let startup_notices: Vec<StartupNotice> = confinement

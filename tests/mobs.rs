@@ -219,6 +219,7 @@ fn proxy_lister(model: &'static str) -> ModelLister {
                             source: ModelSource::Provider,
                             context_window: Some(50_000),
                             max_output_tokens: Some(4_096),
+                            capabilities: Default::default(),
                         }]
                     } else {
                         Vec::new()

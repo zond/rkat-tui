@@ -44,6 +44,20 @@ pub struct ModelEntry {
     pub context_window: Option<u64>,
     /// Maximum output tokens per response, as reported by the endpoint.
     pub max_output_tokens: Option<u64>,
+    /// What the endpoint says the model supports (LiteLLM's `/model/info`).
+    pub capabilities: ModelCapabilities,
+}
+
+/// What an endpoint reports a model supports; `None` where it says nothing.
+/// Only LiteLLM's `/model/info` reports these today.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ModelCapabilities {
+    /// Reasoning or extended thinking (`supports_reasoning`).
+    pub reasoning: Option<bool>,
+    /// Image input (`supports_vision`).
+    pub vision: Option<bool>,
+    /// Tool calls (`supports_function_calling`).
+    pub function_calling: Option<bool>,
 }
 
 /// Origin of a [`ModelEntry`].
@@ -253,6 +267,7 @@ pub fn with_current(current: &str, live: Vec<ModelEntry>) -> Vec<ModelEntry> {
             source: ModelSource::Current,
             context_window: known.and_then(|entry| entry.context_window),
             max_output_tokens: known.and_then(|entry| entry.max_output_tokens),
+            capabilities: known.map(|entry| entry.capabilities).unwrap_or_default(),
         });
         seen.insert(current.to_string());
     }
@@ -298,9 +313,29 @@ struct LiteLlmModelInfo {
     cache_read_input_token_cost: Option<f64>,
     #[serde(default, deserialize_with = "crate::pricing::lenient_f64")]
     cache_creation_input_token_cost: Option<f64>,
+    #[serde(default, deserialize_with = "lenient_bool")]
+    supports_reasoning: Option<bool>,
+    #[serde(default, deserialize_with = "lenient_bool")]
+    supports_vision: Option<bool>,
+    #[serde(default, deserialize_with = "lenient_bool")]
+    supports_function_calling: Option<bool>,
+}
+
+/// A LiteLLM flag: a boolean, else nothing (`null` or any other shape is
+/// "not reported", never a refusal of the whole page).
+fn lenient_bool<'de, D: serde::Deserializer<'de>>(de: D) -> Result<Option<bool>, D::Error> {
+    Ok(serde_json::Value::deserialize(de)?.as_bool())
 }
 
 impl LiteLlmModelInfo {
+    fn capabilities(&self) -> ModelCapabilities {
+        ModelCapabilities {
+            reasoning: self.supports_reasoning,
+            vision: self.supports_vision,
+            function_calling: self.supports_function_calling,
+        }
+    }
+
     /// Prices per million tokens, when input and output are both set.
     fn price(&self) -> Option<ModelPrice> {
         let price = ModelPrice::from_per_token(
@@ -329,8 +364,9 @@ async fn litellm_model_info(
     fetch_json(client.get(url).bearer_auth(api_key.expose())).await
 }
 
-/// Fill missing windows from LiteLLM's model info (first deployment with a
-/// value wins) and collect its prices.
+/// Fill missing windows, output limits and capability flags from
+/// LiteLLM's model info (first deployment with a value wins) and collect
+/// its prices.
 fn apply_litellm_info(listing: &mut EndpointListing, info: LiteLlmInfoPage) {
     for model in info.data {
         let Some(details) = model.model_info else {
@@ -350,6 +386,11 @@ fn apply_litellm_info(listing: &mut EndpointListing, info: LiteLlmInfoPage) {
             if entry.max_output_tokens.is_none() {
                 entry.max_output_tokens = details.max_output_tokens;
             }
+            let reported = details.capabilities();
+            let flags = &mut entry.capabilities;
+            flags.reasoning = flags.reasoning.or(reported.reasoning);
+            flags.vision = flags.vision.or(reported.vision);
+            flags.function_calling = flags.function_calling.or(reported.function_calling);
         }
     }
 }
@@ -442,6 +483,7 @@ impl From<AnthropicModel> for ModelEntry {
             source: ModelSource::Provider,
             context_window: model.max_input_tokens,
             max_output_tokens: model.max_tokens,
+            capabilities: Default::default(),
         }
     }
 }
@@ -514,6 +556,7 @@ fn openai_entries(page: OpenAiPage) -> Vec<ModelEntry> {
             source: ModelSource::Provider,
             context_window: None,
             max_output_tokens: None,
+            capabilities: Default::default(),
         })
         .collect()
 }
@@ -577,6 +620,7 @@ fn gemini_entry(model: GeminiModel) -> Option<ModelEntry> {
         source: ModelSource::Provider,
         context_window: model.input_token_limit,
         max_output_tokens: model.output_token_limit,
+        capabilities: Default::default(),
     })
 }
 
@@ -725,6 +769,7 @@ mod tests {
             source,
             context_window: None,
             max_output_tokens: None,
+            capabilities: Default::default(),
         }
     }
 
@@ -1041,6 +1086,56 @@ mod tests {
             matches!(err, ListModelsError::Read(CappedReadError::TooLarge { .. })),
             "{err}"
         );
+    }
+
+    /// A LiteLLM proxy: `/v1/models`, then `/model/info` with the window,
+    /// output limit, prices and the capability flags, which fill the
+    /// listing; a flag that is not a boolean is "not reported".
+    #[tokio::test]
+    async fn litellm_model_info_fills_the_listing_with_its_flags() {
+        let (base, server) = stub_server(vec![
+            (
+                200,
+                r#"{"object":"list","data":[{"id":"claude-opus-5-5","object":"model","created":1},{"id":"plain","object":"model","created":0}]}"#,
+            ),
+            (
+                200,
+                r#"{"data":[
+                    {"model_name":"claude-opus-5-5","model_info":{"max_input_tokens":50000,"max_output_tokens":4096,"input_cost_per_token":3e-06,"output_cost_per_token":1.5e-05,"supports_reasoning":true,"supports_vision":false,"supports_function_calling":true}},
+                    {"model_name":"plain","model_info":{"supports_reasoning":null,"supports_vision":"yes"}}
+                ]}"#,
+            ),
+        ])
+        .await;
+        let endpoint = Endpoint {
+            name: "litellm".into(),
+            dialect: WireDialect::OpenAi,
+            base_url: Some(base.trim_end_matches('/').to_string()),
+            api_key: SecretString::new("sk-proxy"),
+            key_env: Some("PROXY_KEY".into()),
+            builtin: false,
+            priority: 0,
+        };
+        let listing = list_endpoint(&endpoint, Duration::from_secs(5))
+            .await
+            .unwrap();
+        let heads = server.await.unwrap();
+        assert!(heads[1].starts_with("GET /model/info "), "{}", heads[1]);
+        let opus = &listing.models[0];
+        assert_eq!(opus.id, "claude-opus-5-5");
+        assert_eq!(opus.context_window, Some(50_000));
+        assert_eq!(opus.max_output_tokens, Some(4_096));
+        assert_eq!(
+            opus.capabilities,
+            ModelCapabilities {
+                reasoning: Some(true),
+                vision: Some(false),
+                function_calling: Some(true),
+            }
+        );
+        assert_eq!(listing.models[1].capabilities, ModelCapabilities::default());
+        assert_eq!(listing.prices.len(), 1);
+        assert!((listing.prices[0].1.input - 3.0).abs() < 1e-9);
     }
 
     #[tokio::test]

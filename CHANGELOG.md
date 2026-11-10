@@ -291,6 +291,13 @@ design.
 
 ### Changed
 
+- A configured endpoint (a LiteLLM proxy, a gateway) is the authority for
+  its models' facts: the context gauge, `/context` and the agent's
+  compaction threshold use the window the endpoint lists, even for a
+  model the engine's catalog also knows (which used to win). The daemon
+  reads that endpoint's list at start even when `--model` names the
+  model. The listing now also carries LiteLLM's `supports_reasoning`,
+  `supports_vision` and `supports_function_calling` flags.
 - A workspace's state moved out of the workspace, into
   `~/.rkat/tui/workspaces/<id>/`, each directory with a `workspace.toml`
   naming the workspace it belongs to. Nothing is migrated: a

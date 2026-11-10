@@ -328,6 +328,9 @@ pub struct Assembled {
     pub tasks_db: PathBuf,
     /// The context-compaction policy of the `tui.toml` `[auto]` settings.
     pub compaction: crate::ui::compaction::CompactionPolicy,
+    /// The start-up model's context window ([`model_window`]): what the
+    /// compaction threshold is computed from.
+    pub context_window: Option<u64>,
     /// How deep helpers may nest.
     pub helper_max_depth: u8,
     /// `[daemon] principal` of the user's `tui.toml` layers.
@@ -390,7 +393,16 @@ pub async fn assemble(
     let lister = options.lister.clone().unwrap_or_else(live_lister);
     let (thinking, thinking_notices) =
         ThinkingTable::validate(std::mem::take(&mut layered.thinking), endpoints.as_slice());
-    let (choice, models) = plan_model(args, &config, &endpoints, &lister).await?;
+    let (choice, mut models) = plan_model(args, &config, &endpoints, &lister).await?;
+    // A configured endpoint is the authority for its models' facts: its
+    // list is read at start even when the model was named explicitly.
+    if models.is_none()
+        && let Some(endpoint) = endpoints
+            .get(choice.endpoint.as_str())
+            .filter(|e| !e.builtin && e.has_key())
+    {
+        models = Some(ModelCache::from_results(lister(vec![endpoint.clone()]).await).0);
+    }
     let choice = choice.with_thinking(&thinking);
 
     project_inputs.set_endpoint_projection(endpoint_section(endpoints.as_slice())?);
@@ -417,6 +429,7 @@ pub async fn assemble(
         .get()
         .await
         .map_err(EndpointError::ConfigRead)?;
+    let context_window = model_window(&effective, &endpoints, &choice, listed);
 
     let host_paths = options.host_paths.clone().unwrap_or_else(HostPaths::detect);
     let confinement = confinement::plan(
@@ -514,11 +527,36 @@ pub async fn assemble(
         memory,
         tasks_db,
         compaction,
+        context_window,
         helper_max_depth: helper_depth,
         daemon_principal,
         notices,
         llm_override: options.llm_override,
     })
+}
+
+/// The context window of `choice`'s model: a configured endpoint's own
+/// listing (`listed`), else the realm's model registry; for a built-in
+/// endpoint the registry (the catalog, or a profile written from a
+/// listing), else the listing.
+#[must_use]
+pub fn model_window(
+    config: &Config,
+    endpoints: &EndpointRegistry,
+    choice: &ModelChoice,
+    listed: Option<&crate::models::ModelEntry>,
+) -> Option<u64> {
+    let registry =
+        || crate::endpoints::registry_context_window(config, choice.provider, &choice.model);
+    let listed = || listed.and_then(|entry| entry.context_window);
+    if endpoints
+        .get(choice.endpoint.as_str())
+        .is_some_and(|e| !e.builtin)
+    {
+        listed().or_else(registry)
+    } else {
+        registry().or_else(listed)
+    }
 }
 
 /// The canonical home directory, if any.
@@ -721,6 +759,7 @@ mod tests {
             source: ModelSource::Provider,
             context_window: Some(64_000),
             max_output_tokens: None,
+            capabilities: Default::default(),
         }
     }
 

@@ -1124,6 +1124,7 @@ mod tests {
             source,
             context_window: None,
             max_output_tokens: None,
+            capabilities: Default::default(),
         }
     }
 

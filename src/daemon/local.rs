@@ -732,6 +732,7 @@ impl Local {
                 source: crate::models::ModelSource::Provider,
                 context_window: listed.context_window,
                 max_output_tokens: listed.max_output_tokens,
+                capabilities: Default::default(),
             });
             let written = crate::endpoints::ensure_model_profile(
                 self.realm_config.runtime(),

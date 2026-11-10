@@ -39,6 +39,13 @@ impl Workbench {
         self.models.as_ref()
     }
 
+    /// Whether `endpoint` is a configured (not a built-in) endpoint of this
+    /// process: its own listing decides its models' facts.
+    #[must_use]
+    pub fn is_configured_endpoint(&self, endpoint: &str) -> bool {
+        self.endpoints.get(endpoint).is_some_and(|e| !e.builtin)
+    }
+
     /// Start the background fetch unless one is running.
     pub fn ensure_fetch(&mut self, announce: bool) {
         if self.model_fetch.is_some() {

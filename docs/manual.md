@@ -640,6 +640,14 @@ from the endpoint's listing. A session's binding therefore resolves for
 names one provider, so the same unknown model id on endpoints of two
 dialects is refused.
 
+A configured endpoint is the authority for its own models' facts: the
+context gauge, `/context` and the agent's compaction threshold use the
+window the endpoint lists (LiteLLM's `/model/info` fills windows, output
+limits, prices and the `supports_reasoning`, `supports_vision` and
+`supports_function_calling` flags), also for a model the Meerkat catalog
+knows; the catalog's row decides only where the endpoint says nothing. On
+a built-in endpoint the catalog's row comes first.
+
 Model references are `endpoint:id` or a bare id. A bare id is looked up in
 the endpoints' live model lists (fetched in parallel in the background, 10 s
 each); an id the lists do not have goes to its provider's endpoint only when

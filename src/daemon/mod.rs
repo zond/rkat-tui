@@ -459,6 +459,8 @@ pub struct Daemon {
     registry: Arc<crate::mobs::HelperRegistry>,
     #[cfg(any(test, feature = "test-support"))]
     engine: Arc<crate::approval::ApprovalEngine>,
+    #[cfg(any(test, feature = "test-support"))]
+    compact_threshold: Option<std::num::NonZeroU64>,
     local: Arc<local::Local>,
     /// The desk and the event watcher, aborted at shutdown.
     tasks: Vec<tokio::task::JoinHandle<()>>,
@@ -696,6 +698,8 @@ impl Daemon {
             registry: Arc::clone(&composed.root.registry),
             #[cfg(any(test, feature = "test-support"))]
             engine: Arc::clone(&composed.engine),
+            #[cfg(any(test, feature = "test-support"))]
+            compact_threshold: composed.root.compact_threshold,
             local,
             tasks: vec![
                 composed.desk_task,
@@ -731,6 +735,13 @@ impl Daemon {
             runtime: Arc::downgrade(&self.runtime),
             config_store: Arc::downgrade(&self.config_store),
         }
+    }
+
+    /// The orchestrator profile's auto-compaction threshold.
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn compact_threshold(&self) -> Option<std::num::NonZeroU64> {
+        self.compact_threshold
     }
 
     /// The mob host every member lives in.

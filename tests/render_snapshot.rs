@@ -597,6 +597,7 @@ fn model_picker_snapshot() {
         source,
         context_window: window,
         max_output_tokens: None,
+        capabilities: Default::default(),
     };
     let mut status = StatusInfo::default();
     status.apply(StatusUpdate::Model {

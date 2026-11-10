@@ -59,6 +59,7 @@ fn lister() -> ModelLister {
                             source: ModelSource::Provider,
                             context_window: Some(50_000),
                             max_output_tokens: Some(4_096),
+                            capabilities: Default::default(),
                         }]
                     } else {
                         Vec::new()
@@ -389,5 +390,88 @@ async fn a_resume_follows_the_thinking_configured_now() {
     rig.send(Effect::StartTurn("third".into()));
     rig.turn_finished().await;
     assert_eq!(thinking_of(&llm.recorded()[0]), None);
+    rig.quit().await;
+}
+
+/// The proxy lists the catalogued [`common::MODEL`] with a 50k window.
+fn catalogued_lister() -> ModelLister {
+    Arc::new(|endpoints: Vec<Endpoint>| {
+        Box::pin(async move {
+            endpoints
+                .into_iter()
+                .map(|e| {
+                    let models = vec![ModelEntry {
+                        id: common::MODEL.into(),
+                        display_name: None,
+                        source: ModelSource::Provider,
+                        context_window: Some(50_000),
+                        max_output_tokens: Some(4_096),
+                        capabilities: rkat_tui::models::ModelCapabilities::default(),
+                    }];
+                    (
+                        e.name,
+                        Ok(EndpointListing {
+                            models,
+                            prices: Vec::new(),
+                        }),
+                    )
+                })
+                .collect()
+        })
+    })
+}
+
+/// Start on `model` in auto compaction.
+fn window_options(model: &str) -> Setup {
+    let mut args = proxy_args();
+    args.extend(["--model", model, "--set", "auto.compact=auto"].map(str::to_string));
+    Setup {
+        args,
+        lister: Some(catalogued_lister()),
+        ..Setup::default()
+    }
+}
+
+/// A configured endpoint is the authority for its models' facts: a
+/// gateway serving a catalogued id with a 50k window has the gauge (and
+/// so `/context`) show 50k and the orchestrator's threshold follow it, not
+/// of the catalog's window, although the model was named explicitly (its
+/// list is read at start). The same id on the built-in endpoint keeps the
+/// catalog's window.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_configured_endpoint_s_listing_decides_the_window_and_the_threshold() {
+    let catalog = rkat_tui::endpoints::registry_context_window(
+        &meerkat_core::Config::default(),
+        meerkat_core::Provider::Anthropic,
+        common::MODEL,
+    )
+    .expect("a catalogued window");
+    assert_ne!(catalog, 50_000);
+
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let reference = format!("proxy:{}", common::MODEL);
+    let setup = window_options(&reference);
+    let policy = bootstrap::read_layers(&setup.command_line(&ws.root))
+        .unwrap()
+        .layered
+        .settings
+        .compaction_policy(None);
+    let threshold = |window| policy.trigger(Some(window)).threshold_override();
+    assert_ne!(threshold(50_000), threshold(catalog));
+    let mut rig = Attached::start_with(&ws.root, &llm, setup).await;
+    rig.saw(|m| is_model(m, "proxy", common::MODEL)).await;
+    rig.saw(|m| matches!(m, Msg::Status(StatusUpdate::ContextWindow(Some(50_000)))))
+        .await;
+    assert_eq!(rig.daemon.compact_threshold, threshold(50_000));
+    rig.quit().await;
+
+    let ws = Workspace::new();
+    let reference = format!("anthropic:{}", common::MODEL);
+    let mut rig = Attached::start_with(&ws.root, &llm, window_options(&reference)).await;
+    rig.saw(|m| is_model(m, "anthropic", common::MODEL)).await;
+    rig.saw(|m| matches!(m, Msg::Status(StatusUpdate::ContextWindow(Some(w))) if *w == catalog))
+        .await;
+    assert_eq!(rig.daemon.compact_threshold, threshold(catalog));
     rig.quit().await;
 }

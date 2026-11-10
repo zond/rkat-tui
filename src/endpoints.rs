@@ -1974,6 +1974,7 @@ mod tests {
             source: crate::models::ModelSource::Provider,
             context_window: Some(8_192),
             max_output_tokens: Some(2_048),
+            capabilities: Default::default(),
         };
         assert!(
             ensure_model_profile(&store, Provider::OpenAI, "llama3:8b", Some(&listed))

@@ -5542,3 +5542,28 @@ a protected destination, every mode, the same question and verdict as
 `write_file`), the secret root in
 `policy::tests::the_endpoint_directory_is_sealed_for_reads_and_searches`,
 and `daemon::policy::tests::deny_rules_and_sealed_writes_are_refused_and_nothing_else`.
+
+## A configured endpoint's listing decides its models' window (2026-11-10)
+
+Before, a configured endpoint's window reached rkat-tui's own consumers
+only for models the catalog did not know: the client's gauge asked the
+realm's model registry first (`registry_context_window`, the catalog row
+for a catalogued id) and the endpoint's list only when the registry had
+nothing, and the orchestrator's compaction threshold came from the
+registry alone. An Anthropic-dialect gateway serving `claude-sonnet-4-6`
+with a 50k window therefore showed, and compacted at, the catalog's
+window. Now, for a configured (non-built-in) endpoint, the listing comes
+first in both (`bootstrap::model_window`, the runner's
+`send_context_window`), and the registry decides only where the listing
+says nothing; built-in endpoints keep the registry first. The daemon
+lists the chosen configured endpoint at start when `--model` named the
+model explicitly (before, the list was read only to resolve a bare id),
+and the client fetches the lists in the background when it shows a
+configured endpoint's model and sends the window again when they arrive.
+`/context` reads the same status window. `LiteLlmModelInfo` parses
+`supports_reasoning`, `supports_vision` and `supports_function_calling`
+into `ModelEntry::capabilities` (a non-boolean value is "not reported").
+Tests: `tests/models.rs::a_configured_endpoint_s_listing_decides_the_window_and_the_threshold`
+(the gauge and `Daemon::compact_threshold` follow the gateway's 50k; the
+built-in endpoint keeps the catalog's window) and
+`models::tests::litellm_model_info_fills_the_listing_with_its_flags`.

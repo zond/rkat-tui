@@ -528,6 +528,8 @@ pub struct AttachRunner {
     last_switch: Option<ModelSwitch>,
     /// The endpoint the status bar names.
     current_endpoint: Option<String>,
+    /// The dialect of the current model's provider.
+    current_dialect: Option<WireDialect>,
     /// `!` shell mode, `/remember`, `/memory`, `/export`, prices and the
     /// cost record, the model lists and unsent messages.
     bench: Workbench,
@@ -603,6 +605,7 @@ impl AttachRunner {
             switching: false,
             last_switch: None,
             current_endpoint: None,
+            current_dialect: None,
             bench,
             admitted: Vec::new(),
             farewells: Farewells::default(),
@@ -1615,23 +1618,41 @@ impl AttachRunner {
             provider: endpoint.to_string(),
             model: model.to_string(),
         }));
-        // The realm config this client read at start, else the endpoint's
-        // list (a model only an endpoint knows, whose profile the daemon
-        // wrote since).
-        let window = self
-            .config
-            .config
-            .as_ref()
-            .and_then(|config| {
-                let provider = dialect?.into();
-                crate::endpoints::registry_context_window(config, provider, model)
-            })
-            .or_else(|| {
-                self.bench
-                    .models()
-                    .and_then(|models| models.entry(endpoint, model))
-                    .and_then(|entry| entry.context_window)
-            });
+        self.current_dialect = dialect;
+        let configured = self.bench.is_configured_endpoint(endpoint);
+        if configured && self.bench.models().is_none() {
+            // Its window is the endpoint's: fetch the lists, and show the
+            // window again when they arrive (`model_lists`).
+            self.bench.ensure_fetch(false);
+        }
+        self.send_context_window();
+    }
+
+    /// The status bar's context window for the current model: for a
+    /// configured endpoint its own listing, else the realm config's model
+    /// registry this client read at start; for a built-in endpoint the
+    /// other way round (the listing then covers a model only an endpoint
+    /// knows, whose profile the daemon wrote since).
+    fn send_context_window(&self) {
+        let Some((endpoint, model)) = &self.model else {
+            return;
+        };
+        let registry = || {
+            let config = self.config.config.as_ref()?;
+            let provider = self.current_dialect?.into();
+            crate::endpoints::registry_context_window(config, provider, model)
+        };
+        let listed = || {
+            self.bench
+                .models()
+                .and_then(|models| models.entry(endpoint, model))
+                .and_then(|entry| entry.context_window)
+        };
+        let window = if self.bench.is_configured_endpoint(endpoint) {
+            listed().or_else(registry)
+        } else {
+            registry().or_else(listed)
+        };
         self.send(Msg::Status(StatusUpdate::ContextWindow(window)));
     }
 
@@ -2602,7 +2623,16 @@ impl AttachRunner {
     /// <ref>` that waited for them switches now.
     fn model_lists(&mut self, joined: Result<FetchResults, tokio::task::JoinError>) {
         let current = current(self.current_endpoint.as_deref(), self.model.as_ref());
-        if let Some(reference) = self.bench.lists_arrived(joined, current) {
+        let reference = self.bench.lists_arrived(joined, current);
+        // A configured endpoint's window is its listing's.
+        if self
+            .current_endpoint
+            .as_deref()
+            .is_some_and(|endpoint| self.bench.is_configured_endpoint(endpoint))
+        {
+            self.send_context_window();
+        }
+        if let Some(reference) = reference {
             self.set_model(&reference);
         }
     }

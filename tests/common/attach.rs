@@ -65,6 +65,8 @@ pub struct Running {
     engine: std::sync::Weak<rkat_tui::approval::ApprovalEngine>,
     /// The engine's router past the proxy's allow-list.
     pub engine_side: rkat_tui::daemon::testing::EngineSide,
+    /// The orchestrator profile's auto-compaction threshold.
+    pub compact_threshold: Option<std::num::NonZeroU64>,
 }
 
 impl Running {
@@ -120,6 +122,7 @@ impl Running {
         let registry = Arc::downgrade(daemon.helper_registry());
         let engine = Arc::downgrade(daemon.approval_engine());
         let engine_side = daemon.engine_side();
+        let compact_threshold = daemon.compact_threshold();
         let (stop, stopped) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(daemon.serve_until(async move {
             let _ = stopped.await;
@@ -136,6 +139,7 @@ impl Running {
             registry,
             engine,
             engine_side,
+            compact_threshold,
         }
     }
 
