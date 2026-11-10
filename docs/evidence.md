@@ -72,6 +72,8 @@ the `##` section named after it):
   only (P4)", "P4: the in-process tests and where they went", "P4: the
   in-process runner is deleted", "`/status` reads the daemon's side").
   P5, several agents per workspace: "P5: several agents per workspace".
+  The second senior review's fixes: "After the second senior review
+  (2026-11-10)".
   `docs/mob-split.md` has the plan and the status.
 - **Upstream asks and the engine pin:** "Open asks" below; "The pin moves
   to upstream `main`"; "The pin moves to the 0.9.11 integration"; "P3b and
@@ -4131,3 +4133,43 @@ block names the sender only. A message to an agent that retired is
 refused by the engine, `peer_not_found_or_not_trusted: peer '<id>' is not
 found or not trusted`, and no model call follows
 (`a_quit_agent_is_announced_and_takes_no_more_messages`).
+
+## After the second senior review (2026-11-10)
+
+The pointed fixes of the second senior review (its items 1, 2, 3, 5 and 9
+and the remote-token finding); the refactors it asked for are separate.
+
+### Engine methods act on the caller's agent only
+
+P5 bound each connection to one agent, but only the `rkat/*` methods used
+the binding: the engine methods name their member in their params
+(`agent_identity`), and `Local::observe` acted on whichever live agent a
+request named. A client bound to agent A could send B a prompt
+(`mob/member_send`, recorded as the human's words in B's classifier
+transcript), start, stop, cancel or compact B's run, and append to B's
+system context. The proxy now passes the connection's `Caller` to
+`observe`, which refuses (`protocol::NOT_YOURS`, -32013, answered and
+never forwarded) a member action (`protocol::engine::MEMBER_ACTIONS`:
+`mob/member_send`, `mob/turn_start`, `mob/stop_member_run`,
+`mob/force_cancel`, `mob/append_system_context`, `mob/compact_member`)
+on another live agent, or on a helper the registry says works for another
+live agent's session (`HelperRegistry::owner_of`; a refusal needs that
+positive evidence, so a member nobody accounts for passes as before), and
+refuses a `mob/compact_member` of anything but the caller's agent and a
+`session/compact` of anything but its current conversation (a compaction
+is a model call the user pays for, and `session/compact` took any session
+id, the view-only sessions of before the daemon included). Reads
+(`mob/member_status`, streams, `mob/members`) stay open: every client
+follows every mob's helpers. A probe (`--list`) is bound to no agent and
+may only read; the rig's raw connections that drive an agent attach bound
+to it (`Running::connect_bound`). Pinned by
+`a_client_cannot_drive_another_agent_through_the_engine` and
+`a_client_cannot_cancel_another_agents_helper` (`tests/daemon.rs`).
+
+While writing the helper test: a second client attaching as a `new` agent
+while the first agent's helper runs a turn did not get its attach answered
+within the rig's 30 s; attached before the turn it is immediate. This is
+the review's "the handshake waits behind a seat" (`Agents::bind` holds
+`seating` across the seat and its notes to the other agents), seen in
+practice; left for the refactor batch, recorded here.
+

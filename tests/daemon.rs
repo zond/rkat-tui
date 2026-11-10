@@ -50,6 +50,14 @@ impl Client {
     }
 
     async fn attach(endpoint: &Endpoint) -> Self {
+        Self::attach_to(endpoint, None).await
+    }
+
+    /// Attach working with `agent` (an [`AgentChoice`] as JSON; `None`:
+    /// the most recently active agent).
+    ///
+    /// [`AgentChoice`]: rkat_tui::daemon::protocol::AgentChoice
+    async fn attach_to(endpoint: &Endpoint, agent: Option<Value>) -> Self {
         let (reader, writer) = Self::raw(endpoint).await;
         let mut client = Self {
             agent: String::new(),
@@ -58,9 +66,11 @@ impl Client {
             next: 100,
             notifications: Vec::new(),
         };
-        let attached = client
-            .call("rkat/attach", json!({"token": endpoint.token}))
-            .await;
+        let mut params = json!({"token": endpoint.token});
+        if let Some(agent) = agent {
+            params["agent"] = agent;
+        }
+        let attached = client.call("rkat/attach", params).await;
         // An attach that names no agent (a client of before P5) is bound
         // to the most recently active one, which the answer names.
         assert_eq!(attached["result"]["attached"], json!(true), "{attached}");
@@ -354,6 +364,114 @@ async fn a_turn_streams_to_every_attached_client() {
         assert!(text.contains("hello from the orchestrator"), "{text}");
     }
     assert!(llm.recorded()[0].user().contains("say hello"));
+    daemon.stop().await;
+}
+
+/// The error code of `response`, failing on a result.
+fn error_code(response: &Value) -> i64 {
+    response["error"]["code"]
+        .as_i64()
+        .unwrap_or_else(|| panic!("not refused: {response}"))
+}
+
+/// The finding this guards (second review, item 1): the agent binding was
+/// enforced for `rkat/*` only, so a client could drive another agent
+/// through the engine's member methods by naming it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_cannot_drive_another_agent_through_the_engine() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![Step::Text("own turn done"), Step::Text("compacted")]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let mut a = connect(&daemon).await;
+    let mut b = Client::attach_to(&daemon.endpoint(), Some(json!({"choice": "new"}))).await;
+    assert_ne!(a.agent, b.agent, "two agents");
+    let not_yours = i64::from(rkat_tui::daemon::protocol::NOT_YOURS);
+    let on_a = |extra: Value| {
+        let mut params = a.member();
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        params
+    };
+    for (method, params) in [
+        ("mob/member_send", on_a(json!({"content": "from b"}))),
+        ("mob/turn_start", on_a(json!({"prompt": "from b"}))),
+        (
+            "mob/stop_member_run",
+            on_a(json!({"run_id": "r", "reason": "b"})),
+        ),
+        ("mob/force_cancel", a.member()),
+        (
+            "mob/append_system_context",
+            on_a(json!({"text": "b says", "source": "b", "idempotency_key": "k"})),
+        ),
+        ("mob/compact_member", a.member()),
+        ("session/compact", json!({"session_id": daemon.session})),
+    ] {
+        let refused = b.call(method, params).await;
+        assert_eq!(error_code(&refused), not_yours, "{method}: {refused}");
+    }
+    // B's own agent is not A's session either.
+    let refused = b
+        .call("session/compact", json!({"session_id": "not-a-session"}))
+        .await;
+    assert_eq!(error_code(&refused), not_yours, "{refused}");
+    // Reads pass: every client follows every agent.
+    b.ok("mob/member_status", a.member()).await;
+    // Nothing of B's reached A: its first turn is A's own.
+    let stream = a.open_stream().await;
+    a.ok("mob/turn_start", a.turn("from a")).await;
+    a.run_completed(&stream).await;
+    assert_eq!(llm.recorded().len(), 1, "B started nothing");
+    assert!(llm.recorded()[0].user().contains("from a"));
+    assert!(!last_request(&llm).contains("from b"));
+    assert!(!last_request(&llm).contains("b says"));
+    // A still acts on its own agent.
+    a.ok("mob/force_cancel", a.member()).await;
+    a.ok("mob/compact_member", a.member()).await;
+    daemon.stop().await;
+}
+
+/// A helper is driven by the client of the agent it works for only.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_cannot_cancel_another_agents_helper() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Tool {
+            id: "d1",
+            name: "delegate",
+            args: json!({
+                "member_id": "slow",
+                "task": "wait forever",
+                "result_label": "result",
+                "max_text_bytes": 4000,
+            }),
+        },
+        Step::Hang,
+        Step::Text("after"),
+    ]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let mut a = connect(&daemon).await;
+    let mut b = Client::attach_to(&daemon.endpoint(), Some(json!({"choice": "new"}))).await;
+    a.ok(
+        "mob/member_send",
+        json!({"mob_id": MOB_ID, "agent_identity": a.agent, "content": "delegate"}),
+    )
+    .await;
+    llm.wait_call(1).await;
+    let helper =
+        json!({"mob_id": format!("implicit-{}", daemon.session), "agent_identity": "slow"});
+    let refused = b.call("mob/force_cancel", helper.clone()).await;
+    assert_eq!(
+        error_code(&refused),
+        i64::from(rkat_tui::daemon::protocol::NOT_YOURS),
+        "{refused}"
+    );
+    // B still follows it.
+    b.ok("mob/member_status", helper.clone()).await;
+    // A cancels its own helper.
+    a.ok("mob/force_cancel", helper).await;
     daemon.stop().await;
 }
 

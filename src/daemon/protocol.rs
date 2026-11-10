@@ -167,6 +167,21 @@ pub mod engine {
         APPROVAL_LIST,
     ];
 
+    /// The served methods that act on one member (`mob_id` and
+    /// `agent_identity` in their params): the proxy refuses them on a
+    /// member that works for another agent than the caller's
+    /// ([`super::NOT_YOURS`]). The member reads (`mob/member_status`, a
+    /// member's stream) are not among them: every client follows every
+    /// mob's helpers.
+    pub const MEMBER_ACTIONS: &[&str] = &[
+        MEMBER_SEND,
+        TURN_START,
+        STOP_MEMBER_RUN,
+        FORCE_CANCEL,
+        APPEND_SYSTEM_CONTEXT,
+        COMPACT_MEMBER,
+    ];
+
     /// Whether the daemon forwards `method` to the engine.
     #[must_use]
     pub fn serves(method: &str) -> bool {
@@ -189,6 +204,11 @@ pub const SWITCH_BUSY: i32 = -32011;
 /// `METHOD_NOT_FOUND`, so a client can tell the proxy's refusal from the
 /// engine's.
 pub const NOT_SERVED: i32 = -32012;
+/// An engine request that would act on another agent than the one the
+/// connection is bound to (its `agent_identity`, a helper working for
+/// another agent, or a session that is not the caller's agent's): the
+/// connection drives its own agent only.
+pub const NOT_YOURS: i32 = -32013;
 
 /// A local method's refusal: a JSON-RPC error code and message.
 #[derive(Debug, Clone, PartialEq, Eq)]

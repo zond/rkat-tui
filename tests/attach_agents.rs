@@ -55,7 +55,7 @@ async fn an_agent_cannot_seat_a_member_under_an_agents_name() {
     }));
     let llm = ScriptedLlmClient::new(vec![step.clone(), step]);
     let daemon = Running::start(&ws.root, &llm).await;
-    let connection = daemon.connect().await;
+    let connection = daemon.connect_bound().await;
     connection
         .call(
             "mob/turn_start",

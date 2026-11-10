@@ -423,6 +423,12 @@ impl HelperRegistry {
         }
     }
 
+    /// The session the running helper `key` works for.
+    #[must_use]
+    pub fn owner_of(&self, key: &HelperKey) -> Option<SessionId> {
+        self.live.lock().get(key).map(|tag| tag.owner.clone())
+    }
+
     /// Running helpers that work for `owner`.
     #[must_use]
     pub fn live_for(&self, owner: &SessionId) -> Vec<HelperKey> {

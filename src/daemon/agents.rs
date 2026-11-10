@@ -11,7 +11,10 @@
 //! Each connection is bound to one agent when it attaches
 //! ([`super::protocol::AgentChoice`]: a new agent, the most recently
 //! active one, an agent by name, or the agent owning a conversation) and
-//! every member-scoped method it calls acts on that agent. [`Agents`]
+//! every member-scoped method it calls acts on that agent: the `rkat/*`
+//! methods act on it by construction, and the proxy refuses an engine
+//! member action on another agent or on another agent's helper
+//! ([`super::local::Local::observe`], [`super::protocol::NOT_YOURS`]). [`Agents`]
 //! keeps the live ones: how many clients each has, whether it was left
 //! running without one (detached), and when it was last active; it seats
 //! new ones, retires them, and follows each one's events for the gate

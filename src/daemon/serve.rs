@@ -331,8 +331,14 @@ impl Drop for AbortOnDrop {
 pub trait LocalMethods: Send + Sync {
     /// Answer the local method `method` for `caller`.
     async fn call(&self, caller: Caller, method: &str, params: Value) -> Result<Value, Refusal>;
-    /// Learn from an engine request on its way; returns it as forwarded.
-    fn observe(&self, request: Value) -> Value;
+    /// Learn from `caller`'s engine request on its way; returns it as
+    /// forwarded, or the refusal to answer instead (a request acting on
+    /// another agent than the caller's).
+    ///
+    /// # Errors
+    ///
+    /// The refusal, answered to the client; the request is not forwarded.
+    fn observe(&self, caller: &Caller, request: Value) -> Result<Value, Refusal>;
     /// A client attached: the daemon's consent surface offers it decisions
     /// through `out` until the guard is dropped.
     fn connect(&self, out: mpsc::UnboundedSender<Outgoing>) -> ClientGuard;
@@ -346,8 +352,8 @@ impl LocalMethods for Local {
         Local::call(self, caller, method, params).await
     }
 
-    fn observe(&self, request: Value) -> Value {
-        Local::observe(self, request)
+    fn observe(&self, caller: &Caller, request: Value) -> Result<Value, Refusal> {
+        Local::observe(self, caller, request)
     }
 
     fn connect(&self, out: mpsc::UnboundedSender<Outgoing>) -> ClientGuard {
@@ -437,7 +443,7 @@ pub async fn proxy<R, W, E, L>(
             Ok(0) | Err(_) => break,
             Ok(_) => {}
         }
-        match route(&line, &*local) {
+        match route(&line, &*local, &caller) {
             Routed::Local { id, method, params } => {
                 let local = Arc::clone(&local);
                 let caller = caller.clone();
@@ -470,6 +476,16 @@ pub async fn proxy<R, W, E, L>(
                         &format!(
                             "rkat-tui-mob does not serve {method}: clients reach the agent through the daemon's mob only, so every session runs behind the approval gate"
                         ),
+                    )));
+                }
+            }
+            Routed::Denied { id, refusal } => {
+                tracing::warn!(message = %refusal.message, "refused an engine request for another agent");
+                if id.is_some() {
+                    let _ = out_tx.send(Outgoing::line(protocol::error_line(
+                        id,
+                        refusal.code,
+                        &refusal.message,
                     )));
                 }
             }
@@ -553,6 +569,15 @@ pub enum Routed {
         /// Its params (`Null` when absent).
         params: Value,
     },
+    /// A served engine request the caller may not send (see
+    /// [`LocalMethods::observe`]): answered with the refusal (a request)
+    /// or dropped (a notification), never forwarded.
+    Denied {
+        /// The request id (`None`: a notification).
+        id: Option<RpcId>,
+        /// Why.
+        refusal: Refusal,
+    },
     /// The line for the engine (newline included): the proxy's own
     /// serialization of the request it parsed, never the client's bytes.
     Forward(String),
@@ -585,7 +610,7 @@ pub enum Routed {
 /// whitespace that `serde_json` does not, so a raw line this parse refused
 /// could still be a request the engine runs without having met
 /// [`protocol::engine::SERVED`] (a leading form feed did exactly that).
-pub fn route<L: LocalMethods + ?Sized>(line: &str, local: &L) -> Routed {
+pub fn route<L: LocalMethods + ?Sized>(line: &str, local: &L, caller: &Caller) -> Routed {
     if line.trim().is_empty() {
         return Routed::Malformed { answer: None };
     }
@@ -625,8 +650,11 @@ pub fn route<L: LocalMethods + ?Sized>(line: &str, local: &L) -> Routed {
             method: method.to_string(),
         },
         _ => {
-            let observed = local.observe(request);
-            Routed::Forward(format!("{observed}\n"))
+            let id = id();
+            match local.observe(caller, request) {
+                Ok(observed) => Routed::Forward(format!("{observed}\n")),
+                Err(refusal) => Routed::Denied { id, refusal },
+            }
         }
     }
 }
@@ -776,8 +804,8 @@ mod tests {
             Ok(json!({"method": method}))
         }
 
-        fn observe(&self, request: Value) -> Value {
-            request
+        fn observe(&self, _caller: &Caller, request: Value) -> Result<Value, Refusal> {
+            Ok(request)
         }
 
         fn connect(&self, out: mpsc::UnboundedSender<Outgoing>) -> ClientGuard {

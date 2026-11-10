@@ -68,6 +68,12 @@
 //! A future engine extension (an application-defined method namespace, or
 //! the governed realm's own review policy) could replace them.
 //!
+//! What a connection may send the engine ([`Local::observe`]): a member
+//! action ([`engine::MEMBER_ACTIONS`]) on its own agent or that agent's
+//! helpers, a `session/compact` of its agent's current conversation, and
+//! any read; anything else is answered with [`protocol::NOT_YOURS`] and
+//! never forwarded.
+//!
 //! What the forwarded methods tell the daemon ([`Local::observe`]): a
 //! prompt or steer for the orchestrator (`mob/member_send`,
 //! `mob/turn_start`) is the human's words, recorded in the classifier's
@@ -819,24 +825,29 @@ impl Local {
         }
     }
 
-    /// Learn from an engine request on its way to the router (see the
-    /// module docs); returns the request as it is forwarded.
-    #[must_use]
-    pub fn observe(&self, mut request: Value) -> Value {
+    /// Learn from `caller`'s engine request on its way to the router (see
+    /// the module docs); returns the request as it is forwarded.
+    ///
+    /// # Errors
+    ///
+    /// [`protocol::NOT_YOURS`] for a request [`Self::admit`] refuses: it is
+    /// answered to the client and never forwarded.
+    pub fn observe(&self, caller: &Caller, mut request: Value) -> Result<Value, Refusal> {
         let method = request
             .get("method")
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
+        self.admit(caller, &method, request.get("params"))?;
         let Some(params) = request.get_mut("params") else {
-            return request;
+            return Ok(request);
         };
         let agent = match (
             params.get("mob_id").and_then(Value::as_str),
             params.get("agent_identity").and_then(Value::as_str),
         ) {
             (Some(MOB_ID), Some(agent)) if self.agents.is_live(agent) => agent.to_string(),
-            _ => return request,
+            _ => return Ok(request),
         };
         match method.as_str() {
             engine::MEMBER_SEND | engine::TURN_START => {
@@ -873,7 +884,77 @@ impl Local {
             }
             _ => {}
         }
-        request
+        Ok(request)
+    }
+
+    /// Whether `caller` may send the engine request `method` with
+    /// `params`. A connection drives the agent it is bound to: a member
+    /// action ([`engine::MEMBER_ACTIONS`]) on another live agent, or on a
+    /// helper that works for another live agent's session, is refused, and
+    /// so is a compaction (`mob/compact_member`, `session/compact`) of
+    /// anything but the caller's own agent and its current session (a
+    /// compaction is a model call the user pays for). Reads pass: every
+    /// client follows every mob.
+    ///
+    /// # Errors
+    ///
+    /// [`protocol::NOT_YOURS`], naming what was refused.
+    fn admit(&self, caller: &Caller, method: &str, params: Option<&Value>) -> Result<(), Refusal> {
+        let own = caller.agent.as_deref();
+        let field = |name: &str| params.and_then(|params| params.get(name)?.as_str());
+        let refuse = |what: String| {
+            Refusal::new(
+                protocol::NOT_YOURS,
+                format!(
+                    "{method} on {what} is refused: this connection works with {}",
+                    own.map_or_else(|| "no agent".to_string(), |own| format!("agent {own}"))
+                ),
+            )
+        };
+        if method == engine::SESSION_COMPACT {
+            let session = field("session_id").unwrap_or("");
+            let current = own.and_then(|own| self.conversations.current(own));
+            return if current.is_some_and(|current| current.to_string() == session) {
+                Ok(())
+            } else {
+                Err(refuse(format!(
+                    "session {session}, which is not its agent's current conversation"
+                )))
+            };
+        }
+        if !engine::MEMBER_ACTIONS.contains(&method) {
+            return Ok(());
+        }
+        let (Some(mob), Some(member)) = (field("mob_id"), field("agent_identity")) else {
+            return Ok(());
+        };
+        if mob == MOB_ID {
+            let foreign = Some(member) != own
+                && (self.agents.is_live(member) || method == engine::COMPACT_MEMBER);
+            return if foreign {
+                Err(refuse(format!("member {member}")))
+            } else {
+                Ok(())
+            };
+        }
+        if method == engine::COMPACT_MEMBER {
+            return Err(refuse(format!("helper {member} of mob {mob}")));
+        }
+        let key = crate::mobs::HelperKey::new(MobId::from(mob), AgentIdentity::from(member));
+        let Some(owner) = self.registry.owner_of(&key) else {
+            return Ok(());
+        };
+        match self
+            .agents
+            .live()
+            .into_iter()
+            .find(|(_, session)| *session == owner)
+        {
+            Some((agent, _)) if Some(agent.as_str()) != own => Err(refuse(format!(
+                "helper {member} of mob {mob}, which works for agent {agent}"
+            ))),
+            _ => Ok(()),
+        }
     }
 
     /// A model switch carries the `[thinking]` the new model is configured

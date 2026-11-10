@@ -333,7 +333,9 @@ active (a bind, a prompt, a run start). `rkat/attach` binds each
 connection to one agent (`serve::admit`, before the acknowledgement),
 seating one for `new` (or for a conversation whose agent quit); every
 member-scoped `rkat/*` method acts on the connection's agent, the engine
-methods the client calls name it, and a client follows only its agent's
+methods the client calls name it (and the proxy refuses an engine member
+action on another agent or its helpers, or a compaction of another
+agent's session, with `NOT_YOURS`), and a client follows only its agent's
 stream, helpers, diffs, decisions and classifier notes. The spawn
 customizer shapes every member whose name `is_agent` accepts as an owner
 with its own gate and file tools, and refuses such a name from any spawn

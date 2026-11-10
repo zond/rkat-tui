@@ -180,6 +180,29 @@ impl Running {
         connection
     }
 
+    /// A raw connection bound to the daemon's start agent, initialized: a
+    /// client of that agent (counted, its end a detach), which the daemon
+    /// lets drive the agent through the engine's member methods (a probe
+    /// is bound to no agent and may only read).
+    pub async fn connect_bound(&self) -> Connection {
+        let (connection, _notes) = Connection::attach_to(
+            &self.endpoint(),
+            Duration::from_secs(5),
+            None,
+            false,
+            Some(rkat_tui::daemon::protocol::AgentChoice::Agent {
+                name: self.agent.clone(),
+            }),
+        )
+        .await
+        .unwrap();
+        connection
+            .call("initialize", serde_json::json!({}))
+            .await
+            .unwrap();
+        connection
+    }
+
     /// Wait for the daemon to end by itself (`rkat/shutdown`).
     pub async fn ended(self) {
         within(self.task).await.unwrap().expect("clean shutdown");

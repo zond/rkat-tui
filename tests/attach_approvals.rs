@@ -699,7 +699,7 @@ async fn a_helpers_shell_is_judged_as_the_native_shell() {
     ]);
     let setup = Setup::default();
     let daemon = start(&ws.root, &llm, &setup).await;
-    let connection = daemon.connect().await;
+    let connection = daemon.connect_bound().await;
     let added = connection
         .call(
             "rkat/rules",
@@ -744,7 +744,7 @@ async fn plan_mode_survives_a_restart_and_leaving_it_is_announced() {
     let llm = ScriptedLlmClient::new(vec![Step::Text("in plan"), Step::Text("out of plan")]);
     let setup = Setup::default();
     let daemon = start(&ws.root, &llm, &setup).await;
-    let connection = daemon.connect().await;
+    let connection = daemon.connect_bound().await;
     let set = connection
         .call("rkat/set_mode", json!({"mode": "plan"}))
         .await
@@ -754,7 +754,7 @@ async fn plan_mode_survives_a_restart_and_leaving_it_is_announced() {
     daemon.stop().await;
 
     let daemon = start(&ws.root, &llm, &setup).await;
-    let connection = daemon.connect().await;
+    let connection = daemon.connect_bound().await;
     let mode = connection.call("rkat/get_mode", json!({})).await.unwrap();
     assert_eq!(mode["mode"], "plan", "{mode}");
     let turn =
@@ -911,7 +911,7 @@ async fn a_seated_helpers_catalog_is_read_after_its_first_run() {
     }));
     let llm = ScriptedLlmClient::new(vec![step.clone(), step.clone(), step]);
     let daemon = start(&ws.root, &llm, &Setup::default()).await;
-    let connection = daemon.connect().await;
+    let connection = daemon.connect_bound().await;
     connection
         .call(
             "mob/turn_start",
@@ -958,8 +958,8 @@ async fn overlapping_mode_changes_leave_the_plan_note_matching_the_mode() {
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![Step::Text("ok")]);
     let daemon = start(&ws.root, &llm, &Setup::default()).await;
-    let a = daemon.connect().await;
-    let b = daemon.connect().await;
+    let a = daemon.connect_bound().await;
+    let b = daemon.connect_bound().await;
     let calls = (0..12).map(|i| {
         let connection = if i % 2 == 0 { &a } else { &b };
         let mode = if i % 3 == 0 { "default" } else { "plan" };

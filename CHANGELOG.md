@@ -9,6 +9,13 @@ design.
 
 ### Security
 
+- A connection drives only the agent it is bound to. The daemon refuses,
+  with error `-32013` (`NOT_YOURS`), an engine request that would prompt,
+  steer, start, stop, cancel, compact or append to another agent or a
+  helper working for another agent, and a `session/compact` of any session
+  but the caller's agent's current one. Before, any client could act on
+  any agent by naming it, and its prompt was recorded as the user's words
+  in that agent's classifier transcript.
 - The daemon forwards only the engine methods its client uses
   (`protocol::engine::SERVED`) and refuses the rest with error
   `-32012` (`NOT_SERVED`). Before, an authenticated connection could

@@ -162,7 +162,7 @@ async fn a_switch_is_refused_while_another_clients_turn_runs() {
         Box::new(Step::Text("finished")),
     )]);
     let daemon = Running::start(&ws.root, &llm).await;
-    let running = daemon.connect().await;
+    let running = daemon.connect_bound().await;
     running
         .call(
             "mob/member_send",
