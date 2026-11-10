@@ -5190,20 +5190,29 @@ rkat-tui --locked` as the faster form.
 
 Both binaries already called `disable_memory_statistics_at_process_start()`
 as the first statement of `main`, which removes the one lock with a runtime
-switch; the other two need the flags. Probe: `cd /tmp && cargo install
---path <checkout> --locked --root /tmp/rkat-install-check` (no repository
-config, `LIBSQLITE3_FLAGS` unset) built in 27 minutes on a loaded machine,
-and the daemon started in the foreground against a scratch home with a
-fake key served and shut down cleanly on SIGTERM. Its log had no word of
-the locks: the engine's warning fires once, at the first connection
-(`check_at_first_open`), and the daemon opens its first connection in
-`bootstrap::prepare`, before `init_logging` installs a subscriber, so the
-warning went nowhere. The daemon now checks `check_lock_profile()` right
-after its log is up and logs one warning naming the locks and the faster
-install (`daemon::sqlite_lock_notice`, test
-`the_sqlite_lock_notice_names_the_faster_install`, which also pins that
-this checkout's own builds carry the flags). The TUI logs only to its file
-and never shows it.
+switch; the other two need the flags.
+
+Probe, and a trap in it: `cd /tmp && cargo install --path <checkout>`
+still applied the checkout's `.cargo/config.toml` `[env]` (the SQLite
+archive it built lists `DEFAULT_MEMSTATUS=0` and
+`DISABLE_PAGECACHE_OVERFLOW_STATS` among its compile options), so it is not
+a registry install, and its daemon logged nothing about locks. Installing
+from a copy of the packaged crate (`target/package/rkat-tui-0.0.1`, which
+has no `.cargo/`) under `/tmp` is: 19 minutes on a loaded machine, an
+archive with `ENABLE_MEMORY_MANAGEMENT`, `--version` printing `0.0.1`, and
+a daemon started in the foreground against a scratch home with a fake key
+that served and shut down cleanly on SIGTERM, logging the engine's one
+warning (`meerkat_sqlite::lock_profile`, at the first connection, after
+the daemon's log is up): "SQLite runs with process-wide locks (memory
+statistics off, shared page cache on, page-cache overflow statistics on);
+build with LIBSQLITE3_FLAGS=…; concurrent connections in this process
+queue on these locks (allocator statistics switch at process start:
+applied)". It names the setting itself, so the application adds nothing
+(a notice of the daemon's own, 39a235b, was reverted as a duplicate once
+the right probe showed the engine's line). The TUI logs only to its file,
+so the line never reaches the screen. A small probe binary on
+`meerkat-sqlite` alone, built the same way, reports the same profile through
+`check_lock_profile()`.
 
 ### The package
 
