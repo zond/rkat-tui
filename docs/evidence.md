@@ -3845,6 +3845,23 @@ under `~/.cargo/registry/src/*/meerkat-*-0.9.11/tests/`):
 
 The migration to the daemon rig had removed none of them.
 
+### The changelog keeps what a user sees
+
+`CHANGELOG.md` was cut into `[0.1.0] - 2026-11-08` (the state before the
+daemon work: the changelog as of 79ca814^) and `[Unreleased]` (the
+daemon and what came with it, rewritten as the change from 0.1.0, so
+features added and removed again since, such as `--no-attach`'s alongside
+dialog or the attach-mode catch-up fixes, are not listed). The engine
+pin moves are one line each section. The mechanics the old entries
+carried are recorded here instead: `MeerkatMachine::request_compaction`
+for `/compact` ("Superseded (2026-11-09, by `request_compaction` …)"
+under "Esc, queued messages and commands to match Claude Code", and "P6"
+gap 1), the `ConfigRuntime` writes and the admission fence (`set_held` /
+`patch_held`, "The pin moves to the 0.9.11 integration", and "Reusing
+the engine's owners", item 3), `SessionService::list` (same section,
+item 2) and the removal of the implicit-mob customizer
+(`mobs::endpoint_models`, "P5 — Mobs", superseded upstream).
+
 ### P4: the in-process runner is deleted
 
 `src/runner/`, `src/session/`, `src/client/alongside.rs` and the
