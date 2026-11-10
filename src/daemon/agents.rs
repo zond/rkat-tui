@@ -613,21 +613,14 @@ impl Agents {
                 }
             }
             AgentChoice::Conversation { reference } => match self.resolve(reference).await {
-                // No agent's conversation (a session created before the
-                // daemon, which the client shows view only) or no match
-                // (the client's `/resume` says why): the most recent agent.
+                // No match (the client's `/resume` says why): the most
+                // recent agent.
                 None => self.bind_recent().await?,
-                Some((session, None)) => {
-                    tracing::debug!(%session, "a view-only conversation: binding the most recent agent");
-                    self.bind_recent().await?
-                }
-                Some((_, Some(owner))) if self.is_live(&owner) => Bound {
+                Some((_, owner)) if self.is_live(&owner) => Bound {
                     name: owner,
                     seated: false,
                 },
-                Some((session, Some(owner))) => {
-                    self.seat(Target::Resume(session), Some(owner)).await?
-                }
+                Some((session, owner)) => self.seat(Target::Resume(session), Some(owner)).await?,
             },
         };
         let active = self.tick();
@@ -706,14 +699,13 @@ impl Agents {
     }
 
     /// The conversation `reference` names (a session id or a unique
-    /// prefix, as `/resume` takes it) and the agent it belongs to (`None`:
-    /// a view-only session); `None` when nothing (or more than one)
-    /// matches.
-    async fn resolve(&self, reference: &str) -> Option<(SessionId, Option<String>)> {
+    /// prefix, as `/resume` takes it) and the agent it belongs to; `None`
+    /// when nothing (or more than one) matches.
+    async fn resolve(&self, reference: &str) -> Option<(SessionId, String)> {
         let listed = self.conversations.list(None, &self.live()).await;
         match crate::client::sessions::resolve(reference, &listed, None) {
             Ok(session) => {
-                let owner = self.conversations.agent_of(&session);
+                let owner = self.conversations.agent_of(&session)?;
                 Some((session, owner))
             }
             Err(why) => {

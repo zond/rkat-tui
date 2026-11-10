@@ -33,7 +33,7 @@ What remains, in order of priority:
 |---|---|
 | Steer correlation (ask 6): which client's steer a boundary delivered when several steer one turn | The upstream fix is in progress ("Upstream follow-up: ask 6" below); the client attributes first in, first out until a release carries it |
 | `/rewind` on the engine's implementation (ask 1) | The same-identity rewind design is merged upstream (lukacf/meerkat#2126, db8547a532); its implementation is not scheduled. `/rewind` explains why it is not available |
-| Seating a member on a non-member session (ask 7) | Sessions the in-process runner created stay view only until the engine can seat the daemon's agent on them |
+| Seating a member on a non-member session (ask 7) | No longer needed by rkat-tui: realms live outside the workspace since 2026-11-10 and hold no session of the removed in-process runner; the view-only listing went |
 | MCP servers added or trusted after the daemon's mob was created | They do not reach the agent until the mob is made again (the manual's limits) |
 | The governed realm (ask 2, #2122) | Lower priority now that remote attach goes through a tunnel to a loopback daemon (`--attach=HOST:PORT`) rather than a governed connection |
 
@@ -491,9 +491,10 @@ list of what the daemon and its client do not do yet.
    on an existing non-member session, or to write the durable
    `comms_name` (and member binding) when seating one, so a consumer can
    bring sessions created outside the mob (rkat-tui's former in-process
-   runner made them) into its mob. Without
-   it those sessions are view only in the daemon
-   (`docs/evidence.md`, "Sessions created before the daemon are view only").
+   runner made them) into its mob. No longer needed here: no realm holds
+   such a session since the realm moved out of the workspace, and the
+   view-only listing was removed (`docs/evidence.md`, "Backwards
+   compatibility removed").
 8. Linux `deny_write` (S5 of the security review): a read-only `.git/`
    (its hooks above all, which git later runs unconfined) inside the
    writable workspace grant. The 0.9.11 Linux backend refuses both ways

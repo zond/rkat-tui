@@ -261,11 +261,6 @@ design.
   attaches and switches the daemon to that conversation, and `--resume`
   alone opens the picker once attached. A prompt on the command line
   waits until the TUI has attached.
-- `/resume` lists sessions created before the daemon after the daemon's
-  conversations, marked "view only, created before the daemon": choosing
-  one shows its transcript (`/export` saves it) while the agent stays on
-  its conversation. The engine seats the daemon's agent only on sessions
-  it ran.
 - Several agents per workspace, in one daemon: each is a member of the
   daemon's mob named `main-<id>` (shown in the status bar, `/agents`,
   `--list` and `rkat/status`; a daemon whose mob still has the single
@@ -366,6 +361,8 @@ design.
   the old `tui_endpoints/` layout are no longer read, and the retired
   `attach` key of `tui.toml` is now an unknown key (the file is refused,
   naming it, instead of a notice).
+- The view-only listing of sessions the removed in-process runner made:
+  no realm holds one since the state moved out of the workspace.
 
 ### Fixed
 

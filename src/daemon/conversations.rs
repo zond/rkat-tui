@@ -203,10 +203,8 @@ impl Log {
 pub struct Listed {
     /// The session.
     pub session_id: SessionId,
-    /// The agent that ran it (`None`: a view-only session, or an older
-    /// daemon).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent: Option<String>,
+    /// The agent that ran it.
+    pub agent: String,
     /// Another live agent runs as it now (not the caller's).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_use: Option<String>,
@@ -218,11 +216,6 @@ pub struct Listed {
     pub title: Option<String>,
     /// Whether the caller's agent runs as it now.
     pub current: bool,
-    /// A session no member of the daemon ran (one the removed in-process
-    /// runner created before P4): its transcript can be shown, but the engine
-    /// will not seat the orchestrator on it ([`Conversations::earlier`]).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub view_only: bool,
 }
 
 /// Why a switch was refused or failed.
@@ -424,8 +417,7 @@ impl Conversations {
             .map_or(RunState::Unknown, |status| run_state(&status))
     }
 
-    /// The conversations, last used first, then the realm's sessions
-    /// created before the daemon ([`Self::earlier`], view only), with their size and first
+    /// The conversations, last used first, with their size and first
     /// message: each conversation's history is read [`TITLE_PAGE`]
     /// messages at a time until its first user message (at most
     /// [`TITLE_PAGES`] pages; the size is the first page's message count),
@@ -469,98 +461,16 @@ impl Conversations {
                         title,
                         messages: count,
                         session_id: entry.session_id,
-                        agent: Some(entry.agent),
+                        agent: entry.agent,
                         in_use,
                         last_used: entry.last_used,
-                        view_only: false,
                     }
                 }
             })
             .buffered(LIST_READS)
             .collect::<Vec<_>>()
             .await;
-        let known: Vec<SessionId> = conversations
-            .iter()
-            .map(|row| row.session_id.clone())
-            .collect();
-        let mut listed = conversations;
-        listed.extend(self.earlier(&known).await);
-        listed
-    }
-
-    /// The realm's sessions that are no member's (the engine records no
-    /// durable `comms_name` for them) and not in `known`: the ones the
-    /// removed in-process runner created before P4. The engine refuses to
-    /// seat the orchestrator on such a session ("missing durable
-    /// comms_name for resumed mob member") and a mob-owned transcript
-    /// cannot be copied into a fresh one, so they are listed view only,
-    /// most recently updated first. A session whose metadata cannot be
-    /// read is left out.
-    async fn earlier(&self, known: &[SessionId]) -> Vec<Listed> {
-        use futures::StreamExt as _;
-        let service = self.state.session_service();
-        let mut sessions = match service
-            .list(meerkat_core::service::SessionQuery::default())
-            .await
-        {
-            Ok(sessions) => sessions,
-            Err(err) => {
-                tracing::warn!(error = %err, "cannot list the realm's sessions");
-                return Vec::new();
-            }
-        };
-        sessions.retain(|summary| !known.contains(&summary.session_id));
-        sessions.sort_by_key(|summary| std::cmp::Reverse(summary.updated_at));
-        futures::stream::iter(sessions)
-            .map(|summary| {
-                let service = Arc::clone(&service);
-                async move {
-                    let session = summary.session_id.clone();
-                    let member = match service.load_persisted_session_metadata(&session).await {
-                        Ok(Some(view)) => view
-                            .session_metadata
-                            .is_none_or(|metadata| metadata.comms_name.is_some()),
-                        _ => true,
-                    };
-                    if member {
-                        return None;
-                    }
-                    let read = |offset| {
-                        let service = Arc::clone(&service);
-                        let session = session.clone();
-                        async move {
-                            service
-                                .read_history(
-                                    &session,
-                                    SessionHistoryQuery {
-                                        offset,
-                                        limit: Some(TITLE_PAGE),
-                                    },
-                                )
-                                .await
-                                .ok()
-                        }
-                    };
-                    let (count, title) = count_and_title(read).await;
-                    Some(Listed {
-                        session_id: summary.session_id,
-                        agent: None,
-                        in_use: None,
-                        last_used: summary
-                            .updated_at
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map_or(0, |elapsed| elapsed.as_secs()),
-                        messages: count,
-                        title,
-                        current: false,
-                        view_only: true,
-                    })
-                }
-            })
-            .buffered(LIST_READS)
-            .filter_map(std::future::ready)
-            .collect()
-            .await
+        conversations
     }
 
     /// What the realm holds, for a re-home that would replace it: each

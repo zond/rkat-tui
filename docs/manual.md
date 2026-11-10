@@ -1439,14 +1439,7 @@ all it does. `--resume <ref>` attaches to the agent that owns that
 conversation (seated again on it, under its name, when that agent quit;
 switched to it with `rkat/resume` when that agent moved on to another
 conversation since; a prompt on the command line goes to it); `--resume`
-alone joins the agent active last and opens the picker. A session the removed in-process runner
-started (before the daemon) is not one of the daemon's conversations and cannot become
-one: the engine seats the daemon's agent only on sessions it ran as a mob
-member. `/resume` lists such sessions after the conversations, marked
-"view only, created before the daemon"; choosing one (or `--resume <its
-id>`) shows its transcript, and a notice says the agent stays on its
-conversation and how to show that again (`/resume <its id>`). `/export`
-saves the session shown. `last` and `~N` name daemon conversations only.
+alone joins the agent active last and opens the picker.
 
 **Limits for now:**
 
@@ -1476,9 +1469,6 @@ saves the session shown. `last` and `~N` name daemon conversations only.
   in the order the agent takes steers, not by which message the agent
   took: the engine does not tell a TUI which input its message became, so
   one TUI's message can show delivered when the other's was.
-- A session the removed in-process runner created cannot be continued:
-  the engine seats the daemon's agent only on sessions it ran. `/resume`
-  shows it view only.
 
 ## Several agents
 

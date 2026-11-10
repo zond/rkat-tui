@@ -5478,3 +5478,18 @@ Deleted with the paths they pinned: `a_log_from_before_p5_belongs_to_main`,
 `the_daemon_is_the_default_and_a_tui_toml_attach_key_is_refused` (was
 `…_is_ignored_with_a_notice`), and the log test now pins that an
 unreadable or agentless log is an error naming the file.
+
+### The view-only sessions
+
+`/resume` listed the realm's sessions no mob member ran (the removed
+in-process runner's) as "view only", and could show their transcript
+(`Conversations::earlier`, `Listed::view_only`, the runner's `viewing`,
+`Report::Viewed`, `Again::Back`, `sessions::view_only_notice`). Realms
+live outside the workspace since the move and none was migrated, so no
+realm can hold such a session: all of it went, and `Listed::agent` is
+required (a listed conversation is always some agent's). Engine ask 7
+(seating a member on a non-member session) is no longer needed here.
+Deleted with it: `sessions::tests::earlier_sessions_are_marked_and_named_by_id_only`
+and `attach_sessions::a_session_outside_the_mob_cannot_be_seated_on_the_member`
+(its second half probed the engine's refusal for such a session, which
+no product path reaches any more).

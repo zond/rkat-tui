@@ -337,12 +337,6 @@ enum Report {
     /// conversations could not be listed, the reference resolved to none
     /// or to the current one): why. Ends the switch.
     SwitchRefused(NoticeLevel, String),
-    /// A session created before the daemon, read to be shown (view only):
-    /// its transcript, or why not. Ends the switch.
-    Viewed {
-        session: SessionId,
-        blocks: Result<Vec<crate::ui::Block>, String>,
-    },
 }
 
 /// Why the current conversation is read again from its start.
@@ -353,8 +347,6 @@ enum Again {
     /// The daemon ended the conversation's stream: it seated the agent
     /// again (a model switch to a model it had no profile for).
     Reseated,
-    /// Back from a view-only session.
-    Back,
 }
 
 /// What a client shows of the conversation it switched to.
@@ -532,9 +524,6 @@ pub struct AttachRunner {
     checking_session: bool,
     /// A conversation switch (this client's, or adopting another's) runs.
     switching: bool,
-    /// The session shown instead of the current conversation (one created
-    /// before the daemon, view only); `None`: the conversation is shown.
-    viewing: Option<SessionId>,
     /// The last `/model` switch (carried to a `/new` conversation).
     last_switch: Option<ModelSwitch>,
     /// The endpoint the status bar names.
@@ -612,7 +601,6 @@ impl AttachRunner {
             session_check_at: None,
             checking_session: false,
             switching: false,
-            viewing: None,
             last_switch: None,
             current_endpoint: None,
             bench,
@@ -1855,10 +1843,7 @@ impl AttachRunner {
     fn on_report(&mut self, epoch: u64, report: Report) {
         if epoch != self.link_epoch {
             match report {
-                Report::Switched { .. }
-                | Report::Rerendered(..)
-                | Report::MobOpened { .. }
-                | Report::Viewed { .. } => {
+                Report::Switched { .. } | Report::Rerendered(..) | Report::MobOpened { .. } => {
                     tracing::debug!("dropped a report of a connection lost since");
                     return;
                 }
@@ -1997,27 +1982,6 @@ impl AttachRunner {
             Report::SwitchRefused(level, text) => {
                 self.switching = false;
                 self.notice(level, text);
-            }
-            Report::Viewed { session, blocks } => {
-                self.switching = false;
-                match blocks {
-                    Ok(blocks) => {
-                        let Some(current) = self.link.as_ref().map(|link| link.session.clone())
-                        else {
-                            return;
-                        };
-                        self.send(Msg::ResetTranscript(blocks));
-                        self.notice(
-                            NoticeLevel::Info,
-                            sessions::view_only_notice(&session, &current),
-                        );
-                        self.viewing = Some(session);
-                    }
-                    Err(why) => self.notice(
-                        NoticeLevel::Error,
-                        format!("could not read session {session}: {why}"),
-                    ),
-                }
             }
             Report::Tasks { session, tasks } => {
                 // A list read for a conversation left since is not shown.
@@ -2194,12 +2158,10 @@ impl AttachRunner {
             Effect::Remember(_) if self.local_refused("/remember") => {}
             Effect::OpenMemory(_) if self.local_refused("/memory") => {}
             Effect::Export { path, text } => {
-                // What is shown: a view-only session, else the conversation.
                 let session = self
-                    .viewing
-                    .clone()
-                    .or_else(|| self.link.as_ref().map(|link| link.session.clone()))
-                    .map(|session| session.to_string())
+                    .link
+                    .as_ref()
+                    .map(|link| link.session.to_string())
                     .unwrap_or_default();
                 self.bench.export(path.as_deref(), &text, &session);
             }
@@ -2744,12 +2706,11 @@ impl AttachRunner {
         let Some(link) = &mut self.link else {
             return;
         };
-        self.viewing = None;
         link.session = session.clone();
         link.stream = stream;
         // The old conversation's turn and dialogs are over (the same
-        // conversation, seated again or shown again, keeps them).
-        if !matches!(again, Some(Again::Reseated | Again::Back)) {
+        // conversation, seated again, keeps them).
+        if again != Some(Again::Reseated) {
             if self.turn.active {
                 self.turn.record(Err(TurnFailure::Interrupted));
                 self.finish_turn();
@@ -2798,7 +2759,6 @@ impl AttachRunner {
             _ if again == Some(Again::Reseated) => format!(
                 "the daemon rebuilt the agent on conversation {short} (a model it had no profile for); it is shown from its start"
             ),
-            _ if again == Some(Again::Back) => format!("conversation {short} is shown again"),
             Some(true) => {
                 format!("a new conversation ({short}); the previous one stays in /resume")
             }
@@ -2825,7 +2785,6 @@ impl AttachRunner {
         let connection = Arc::clone(&link.connection);
         let stream = link.stream.clone();
         let current = link.session.clone();
-        let viewing = self.viewing.is_some();
         let reports = self.reporter();
         tokio::spawn(async move {
             let listed = match remote::conversations(&connection).await {
@@ -2839,14 +2798,6 @@ impl AttachRunner {
                 }
             };
             let target = match sessions::resolve(&reference, &listed, Some(connection.agent())) {
-                // Back from a view-only session to the conversation.
-                Ok(target) if target == current && viewing => {
-                    reports.send(Report::Rerendered(
-                        adopt(&connection, &stream, target).await,
-                        Again::Back,
-                    ));
-                    return;
-                }
                 Ok(target) if target == current => {
                     reports.send(Report::SwitchRefused(
                         NoticeLevel::Info,
@@ -2860,20 +2811,6 @@ impl AttachRunner {
                     return;
                 }
             };
-            if listed
-                .iter()
-                .any(|row| row.session_id == target && row.view_only)
-            {
-                let blocks = bounded(CALL_TIMEOUT, remote::transcript(&connection, &target))
-                    .await
-                    .map(|messages| crate::ui::transcript::blocks_from_messages(&messages))
-                    .map_err(|err| err.to_string());
-                reports.send(Report::Viewed {
-                    session: target,
-                    blocks,
-                });
-                return;
-            }
             reports.send(switch_and_adopt(&connection, &stream, Some(&target), false).await);
         });
     }

@@ -14,28 +14,6 @@ use crate::daemon::conversations::Listed;
 /// Why `/rewind` is not offered.
 pub const REWIND_UNAVAILABLE: &str = "/rewind is not available yet: the agent runs in the workspace's daemon, and the engine refuses session/fork_at for a mob member's session, while its member forks (mob/fork_member, mob/fork_helper) seat the copy under a new identity rather than rewinding the conversation in place; a same-identity rewind is with the engine's maintainers as a design note (lukacf/meerkat#2126). /new starts over";
 
-/// What the resume picker adds to a session created before the daemon.
-pub const VIEW_ONLY: &str = "view only, created before the daemon";
-
-/// The notice shown with a session created before the daemon (`viewed`):
-/// its transcript is shown, the agent stays on `current`. Such a session
-/// is no mob member's, and the engine refuses to seat the daemon's member
-/// on it (`missing durable comms_name for resumed mob member`, pinned by
-/// `attach_sessions::an_in_process_session_cannot_be_seated_on_the_member`).
-#[must_use]
-pub fn view_only_notice(viewed: &SessionId, current: &SessionId) -> String {
-    let short = |id: &SessionId| {
-        let id = id.to_string();
-        id.get(..8).unwrap_or(&id).to_string()
-    };
-    format!(
-        "showing session {} (view only): it was created before the daemon, and the engine seats the daemon's agent only on sessions it ran, so it cannot be continued; the agent stays on conversation {}, which /resume {} shows again. /export saves what is shown",
-        short(viewed),
-        short(current),
-        current
-    )
-}
-
 /// How long ago `at` (Unix seconds) was, roughly.
 fn age(at: u64) -> String {
     let now = std::time::SystemTime::now()
@@ -72,15 +50,12 @@ pub fn picker_items(listed: &[Listed], mine: Option<&str>) -> Vec<(String, Strin
             if row.current {
                 label.push_str(" (current)");
             }
-            match (&row.in_use, &row.agent) {
-                (Some(agent), _) => label.push_str(&format!(" (agent {agent} works on it)")),
-                (None, Some(agent)) if Some(agent.as_str()) != mine && !row.current => {
-                    label.push_str(&format!(" (agent {agent}'s)"));
+            match &row.in_use {
+                Some(agent) => label.push_str(&format!(" (agent {agent} works on it)")),
+                None if Some(row.agent.as_str()) != mine && !row.current => {
+                    label.push_str(&format!(" (agent {}'s)", row.agent));
                 }
-                _ => {}
-            }
-            if row.view_only {
-                label.push_str(&format!(" ({VIEW_ONLY})"));
+                None => {}
             }
             (id, label)
         })
@@ -92,8 +67,7 @@ pub fn picker_items(listed: &[Listed], mine: Option<&str>) -> Vec<(String, Strin
 /// `last` and `~N` count the conversations other than the current one (the
 /// current one is the most recently used, so `last` would always name it):
 /// `last` is the one before it; with `mine` (this client's agent) only that
-/// agent's conversations count, the ones it can resume. Sessions created
-/// before the daemon (view only) are named by id or prefix only.
+/// agent's conversations count, the ones it can resume.
 ///
 /// # Errors
 ///
@@ -120,11 +94,8 @@ pub fn resolve(
     if let Some(offset) = offset {
         let others: Vec<&Listed> = listed
             .iter()
-            .filter(|row| !row.current && !row.view_only)
-            .filter(|row| match (mine, &row.agent) {
-                (Some(mine), Some(agent)) => agent == mine,
-                _ => true,
-            })
+            .filter(|row| !row.current)
+            .filter(|row| mine.is_none_or(|mine| row.agent == mine))
             .collect();
         return match others.get(offset) {
             Some(row) => Ok(row.session_id.clone()),
@@ -163,45 +134,13 @@ mod tests {
     fn row(current: bool) -> Listed {
         Listed {
             session_id: SessionId::new(),
-            agent: None,
+            agent: "main-aaaa".into(),
             in_use: None,
             last_used: 0,
             messages: Some(4),
             title: Some("fix the bug".into()),
             current,
-            view_only: false,
         }
-    }
-
-    /// Sessions created before the daemon are offered by id, marked, and
-    /// never named by `last` or `~N`.
-    #[test]
-    fn earlier_sessions_are_marked_and_named_by_id_only() {
-        let mut earlier = row(false);
-        earlier.view_only = true;
-        let listed = vec![row(true), earlier.clone()];
-        assert!(
-            resolve("last", &listed, None)
-                .unwrap_err()
-                .contains("no other conversations")
-        );
-        let full = earlier.session_id.to_string();
-        assert_eq!(resolve(&full, &listed, None).unwrap(), earlier.session_id);
-        let items = picker_items(&listed, None);
-        assert!(
-            items[1].1.ends_with(&format!("({VIEW_ONLY})")),
-            "{}",
-            items[1].1
-        );
-        let notice = view_only_notice(&earlier.session_id, &listed[0].session_id);
-        assert!(
-            notice.contains("view only")
-                && notice.contains(&format!(
-                    "/resume {}",
-                    &listed[0].session_id.to_string()[..8]
-                )),
-            "{notice}"
-        );
     }
 
     #[test]
@@ -249,14 +188,14 @@ mod tests {
     #[test]
     fn last_counts_this_agents_conversations_and_the_picker_names_the_others() {
         let mut current = row(true);
-        current.agent = Some("main-aaaa".into());
+        current.agent = "main-aaaa".into();
         let mut theirs = row(false);
-        theirs.agent = Some("main-bbbb".into());
+        theirs.agent = "main-bbbb".into();
         let mut held = row(false);
-        held.agent = Some("main-cccc".into());
+        held.agent = "main-cccc".into();
         held.in_use = Some("main-cccc".into());
         let mut mine = row(false);
-        mine.agent = Some("main-aaaa".into());
+        mine.agent = "main-aaaa".into();
         let listed = vec![current, theirs, held, mine.clone()];
         assert_eq!(
             resolve("last", &listed, Some("main-aaaa")).unwrap(),
