@@ -1,21 +1,29 @@
 //! Conversations: `/new` and `/resume` over the mob (P4 of
-//! `docs/mob-split.md`).
+//! `docs/mob-split.md`), one agent at a time.
 //!
-//! The orchestrator is one member identity (`tui/main`) whatever it talks
-//! about; a conversation is the session that identity runs as. `/new`
-//! retires the member (the engine archives its session) and spawns the
-//! identity again, fresh; `/resume` retires it and spawns it on an earlier
-//! session (`MemberLaunchMode::Resume`, which revives the archived
-//! session). The identity, its approval gate, the `rkat/*` methods, the
-//! catch-up and every client's addressing stay as they were: only the
-//! member's `current_session_id` moves, which clients read with
-//! `mob/member_status`.
+//! An agent is one member identity of the daemon's mob (`tui/main-<id>`,
+//! [`super::agents`]) whatever it talks about; a conversation is the
+//! session that identity runs as. `/new` retires the member (the engine
+//! archives its session) and spawns the identity again, fresh; `/resume`
+//! retires it and spawns it on an earlier session of its own
+//! (`MemberLaunchMode::Resume`, which revives the archived session). The
+//! identity, its approval gate, the `rkat/*` methods, the catch-up and
+//! every client's addressing stay as they were: only the member's
+//! `current_session_id` moves, which clients read with `mob/member_status`.
+//!
+//! A session belongs to the identity that ran it: the engine refuses to
+//! seat another identity on it (`ResumeSessionBoundToAnotherMember`, its
+//! durable `comms_name` names the first), so `/resume` offers another
+//! agent's conversation only through that agent, and a conversation whose
+//! agent quit is seated again under that agent's name.
 //!
 //! The engine keeps no list of a member's earlier sessions, so the daemon
-//! records each session its orchestrator ran as in
-//! `<workspace>/.rkat/tui/conversations.json` ([`Log`]); `/resume` offers
-//! those, newest first, with their first message read from the session's
-//! committed history (`SessionServiceHistoryExt::read_history`).
+//! records each session an agent ran as in
+//! `<workspace>/.rkat/tui/conversations.json` ([`Log`], with the agent's
+//! name; a log written before P5 names none, and its sessions are the
+//! single orchestrator `main`'s); `/resume` offers those, newest first,
+//! with their first message read from the session's committed history
+//! (`SessionServiceHistoryExt::read_history`).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -27,6 +35,11 @@ use serde::{Deserialize, Serialize};
 
 use super::{MOB_ID, ORCHESTRATOR};
 use crate::mobs::{HelperKey, HelperRegistry};
+
+/// The agent of a log entry written before P5 (the single orchestrator).
+fn legacy_agent() -> String {
+    ORCHESTRATOR.to_string()
+}
 
 /// The conversation log's file name under `<workspace>/.rkat/tui/`.
 pub const LOG_NAME: &str = "conversations.json";
@@ -45,11 +58,14 @@ pub const TITLE_PAGES: usize = 8;
 /// How many conversations [`Conversations::list`] reads at once.
 const LIST_READS: usize = 8;
 
-/// One conversation the orchestrator ran.
+/// One conversation an agent ran.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entry {
     /// The session.
     pub session_id: SessionId,
+    /// The agent (member identity) that ran it; a session belongs to it.
+    #[serde(default = "legacy_agent")]
+    pub agent: String,
     /// When it was first seated (Unix seconds).
     pub started_at: u64,
     /// When it was last made current (Unix seconds).
@@ -100,18 +116,42 @@ impl Log {
         crate::paths::write_atomic(path, &bytes, crate::paths::FileMode::Private, None)
     }
 
-    /// `session` is current now: recorded when new, its `last_used`
-    /// moved otherwise.
-    pub fn touch(&mut self, session: &SessionId) {
+    /// `session` is `agent`'s current one now: recorded when new, its
+    /// `last_used` moved otherwise.
+    pub fn touch(&mut self, session: &SessionId, agent: &str) {
         let at = now();
         match self.sessions.iter_mut().find(|e| &e.session_id == session) {
             Some(entry) => entry.last_used = at,
             None => self.sessions.push(Entry {
                 session_id: session.clone(),
+                agent: agent.to_string(),
                 started_at: at,
                 last_used: at,
             }),
         }
+    }
+
+    /// `session` is `agent`'s: recorded when new (a restored agent's), its
+    /// `last_used` left as it is otherwise.
+    pub fn record(&mut self, session: &SessionId, agent: &str) {
+        if !self.has(session) {
+            self.touch(session, agent);
+        }
+    }
+
+    /// Drop `session` from the log (an agent's first conversation that
+    /// nobody used).
+    pub fn forget(&mut self, session: &SessionId) {
+        self.sessions.retain(|e| &e.session_id != session);
+    }
+
+    /// The agent `session` belongs to, when it is one of the log's.
+    #[must_use]
+    pub fn agent_of(&self, session: &SessionId) -> Option<&str> {
+        self.sessions
+            .iter()
+            .find(|e| &e.session_id == session)
+            .map(|e| e.agent.as_str())
     }
 
     /// Whether `session` is one of the log's.
@@ -134,13 +174,20 @@ impl Log {
 pub struct Listed {
     /// The session.
     pub session_id: SessionId,
+    /// The agent that ran it (`None`: a view-only session, or an older
+    /// daemon).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// Another live agent runs as it now (not the caller's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_use: Option<String>,
     /// When it was last current (Unix seconds).
     pub last_used: u64,
     /// How many messages its history holds (`None`: unreadable).
     pub messages: Option<usize>,
     /// Its first user message, cut short.
     pub title: Option<String>,
-    /// Whether the orchestrator runs as it now.
+    /// Whether the caller's agent runs as it now.
     pub current: bool,
     /// A session no member of the daemon ran (one the removed in-process
     /// runner created before P4): its transcript can be shown, but the engine
@@ -152,9 +199,18 @@ pub struct Listed {
 /// Why a switch was refused or failed.
 #[derive(Debug, thiserror::Error)]
 pub enum SwitchError {
-    /// `/resume` named a session this workspace's orchestrator never ran as.
+    /// `/resume` named a session no agent of this workspace ran as.
     #[error("session {0} is not one of this workspace's conversations")]
     Unknown(SessionId),
+    /// `/resume` named another agent's conversation: the engine seats a
+    /// session only under the identity that ran it.
+    #[error("conversation {session} is agent {agent}'s")]
+    OtherAgent {
+        /// The conversation.
+        session: SessionId,
+        /// Its agent.
+        agent: String,
+    },
     /// `/resume` named the current conversation.
     #[error("already in this conversation")]
     Current,
@@ -172,7 +228,7 @@ pub enum SwitchError {
         source: Box<meerkat_mob::MobError>,
     },
     /// The member has no session after the switch.
-    #[error("the orchestrator has no session after the switch")]
+    #[error("the agent has no session after the switch")]
     NoSession,
 }
 
@@ -194,14 +250,14 @@ pub enum Target {
     Resume(SessionId),
 }
 
-/// The orchestrator's conversations.
+/// The agents' conversations.
 pub struct Conversations {
     state: Arc<MobMcpState>,
     registry: Arc<HelperRegistry>,
     log_file: PathBuf,
     log: parking_lot::Mutex<Log>,
-    /// One switch at a time.
-    switching: tokio::sync::Mutex<()>,
+    /// One switch at a time per agent.
+    switching: parking_lot::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// The start-up model and binding (a fresh conversation's, until the
     /// client switches it).
     model: String,
@@ -217,49 +273,91 @@ impl std::fmt::Debug for Conversations {
 }
 
 impl Conversations {
-    /// The conversations of the workspace at `context_root`, the current
-    /// one being `current` (recorded in the log).
+    /// The conversations of the workspace at `context_root`.
     #[must_use]
     pub fn open(
         state: Arc<MobMcpState>,
         registry: Arc<HelperRegistry>,
         context_root: &Path,
-        current: &SessionId,
         model: String,
         auth_binding: Option<meerkat_core::AuthBindingRef>,
     ) -> Self {
         let log_file = Log::path(context_root);
-        let mut log = Log::load(&log_file);
-        log.touch(current);
-        if let Err(err) = log.save(&log_file) {
-            tracing::warn!(error = %err, "cannot record the conversation");
-        }
+        let log = Log::load(&log_file);
         Self {
             state,
             registry,
             log_file,
             log: parking_lot::Mutex::new(log),
-            switching: tokio::sync::Mutex::new(()),
+            switching: parking_lot::Mutex::default(),
             model,
             auth_binding,
         }
     }
 
-    fn key() -> HelperKey {
-        HelperKey::new(MobId::from(MOB_ID), AgentIdentity::from(ORCHESTRATOR))
-    }
-
-    /// The session the orchestrator runs as now.
+    /// The helper key of `agent`.
     #[must_use]
-    pub fn current(&self) -> Option<SessionId> {
-        self.registry.root_session(&Self::key())
+    pub fn key(agent: &str) -> HelperKey {
+        HelperKey::new(MobId::from(MOB_ID), AgentIdentity::from(agent))
     }
 
-    /// Whether the orchestrator's run is open now (`None`: its state could
-    /// not be read).
-    pub async fn running(&self) -> Option<bool> {
+    fn lock_of(&self, agent: &str) -> Arc<tokio::sync::Mutex<()>> {
+        Arc::clone(self.switching.lock().entry(agent.to_string()).or_default())
+    }
+
+    /// The session `agent` runs as now.
+    #[must_use]
+    pub fn current(&self, agent: &str) -> Option<SessionId> {
+        self.registry.root_session(&Self::key(agent))
+    }
+
+    /// The agent the log says ran `session`.
+    #[must_use]
+    pub fn agent_of(&self, session: &SessionId) -> Option<String> {
+        self.log.lock().agent_of(session).map(str::to_string)
+    }
+
+    /// The log's entries, last used first.
+    #[must_use]
+    pub fn entries(&self) -> Vec<Entry> {
+        self.log.lock().newest_first()
+    }
+
+    /// Record `session` as `agent`'s current conversation.
+    pub fn touch(&self, session: &SessionId, agent: &str) {
+        let mut log = self.log.lock();
+        log.touch(session, agent);
+        if let Err(err) = log.save(&self.log_file) {
+            tracing::warn!(error = %err, "cannot record the conversation");
+        }
+    }
+
+    /// Record `session` as `agent`'s when the log does not have it yet.
+    pub fn record(&self, session: &SessionId, agent: &str) {
+        let mut log = self.log.lock();
+        if log.has(session) {
+            return;
+        }
+        log.record(session, agent);
+        if let Err(err) = log.save(&self.log_file) {
+            tracing::warn!(error = %err, "cannot record the conversation");
+        }
+    }
+
+    /// Drop `session` from the log.
+    pub fn forget(&self, session: &SessionId) {
+        let mut log = self.log.lock();
+        log.forget(session);
+        if let Err(err) = log.save(&self.log_file) {
+            tracing::warn!(error = %err, "cannot record the conversation");
+        }
+    }
+
+    /// Whether `agent`'s run is open now (`None`: its state could not be
+    /// read).
+    pub async fn running(&self, agent: &str) -> Option<bool> {
         self.state
-            .mob_member_status(&MobId::from(MOB_ID), &AgentIdentity::from(ORCHESTRATOR))
+            .mob_member_status(&MobId::from(MOB_ID), &AgentIdentity::from(agent))
             .await
             .ok()
             .map(|status| run_open(&status))
@@ -270,16 +368,22 @@ impl Conversations {
     /// message: each conversation's history is read [`TITLE_PAGE`]
     /// messages at a time until its first user message (at most
     /// [`TITLE_PAGES`] pages; the size is the first page's message count),
-    /// [`LIST_READS`] conversations at a time.
-    pub async fn list(&self) -> Vec<Listed> {
+    /// [`LIST_READS`] conversations at a time. `viewer` is the caller's
+    /// agent (its current one is marked current); `live` names every live
+    /// agent and the session it runs as (another agent's is marked in use).
+    pub async fn list(&self, viewer: Option<&str>, live: &[(String, SessionId)]) -> Vec<Listed> {
         use futures::StreamExt as _;
         let entries = self.log.lock().newest_first();
-        let current = self.current();
         let service = self.state.session_service();
         let conversations = futures::stream::iter(entries)
             .map(|entry| {
                 let service = Arc::clone(&service);
-                let current = current.as_ref() == Some(&entry.session_id);
+                let holder = live
+                    .iter()
+                    .find(|(_, session)| session == &entry.session_id)
+                    .map(|(agent, _)| agent.clone());
+                let current = holder.is_some() && holder.as_deref() == viewer;
+                let in_use = holder.filter(|_| !current);
                 async move {
                     let session = entry.session_id.clone();
                     let read = |offset| {
@@ -304,6 +408,8 @@ impl Conversations {
                         title,
                         messages: count,
                         session_id: entry.session_id,
+                        agent: Some(entry.agent),
+                        in_use,
                         last_used: entry.last_used,
                         view_only: false,
                     }
@@ -377,6 +483,8 @@ impl Conversations {
                     let (count, title) = count_and_title(read).await;
                     Some(Listed {
                         session_id: summary.session_id,
+                        agent: None,
+                        in_use: None,
                         last_used: summary
                             .updated_at
                             .duration_since(std::time::UNIX_EPOCH)
@@ -468,46 +576,107 @@ impl Conversations {
             .map(|view| view.billing.usage)
     }
 
-    /// Make `target` the orchestrator's conversation: stop the current
-    /// one's helpers, retire the member and spawn it again on `target`.
-    /// When the spawn fails the member is spawned back on the session it
-    /// had. Returns the session it runs as now.
+    /// Make `target` `agent`'s conversation: stop the current one's
+    /// helpers, retire the member and spawn it again on `target`. When the
+    /// spawn fails the member is spawned back on the session it had.
+    /// Returns the session it runs as now. The member leaves its mob for
+    /// the switch: its wiring goes with it, which the caller restores
+    /// ([`super::agents::Agents::switch`]).
     ///
     /// # Errors
     ///
     /// [`SwitchError`].
-    pub async fn switch(&self, target: Target) -> Result<SessionId, SwitchError> {
-        self.seat(target, false).await
+    pub async fn switch(&self, agent: &str, target: Target) -> Result<SessionId, SwitchError> {
+        self.seat(agent, target, false).await
     }
 
-    /// Seat the orchestrator again on the session it runs as, so its agent
-    /// is built anew from the realm config (a model profile written since
-    /// is in a rebuilt agent's model registry only: the engine captures
-    /// the registry at build). Refused while a turn runs.
+    /// Seat `agent` again on the session it runs as, so its agent is built
+    /// anew from the realm config (a model profile written since is in a
+    /// rebuilt agent's model registry only: the engine captures the
+    /// registry at build). Refused while a turn runs.
     ///
     /// # Errors
     ///
     /// [`SwitchError`]; [`SwitchError::NoSession`] without a session.
-    pub async fn reseat(&self) -> Result<SessionId, SwitchError> {
-        let current = self.current().ok_or(SwitchError::NoSession)?;
-        self.seat(Target::Resume(current), true).await
+    pub async fn reseat(&self, agent: &str) -> Result<SessionId, SwitchError> {
+        let current = self.current(agent).ok_or(SwitchError::NoSession)?;
+        self.seat(agent, Target::Resume(current), true).await
+    }
+
+    /// Seat `agent`, which is no member now, on `target` (a new agent, or
+    /// one whose earlier conversation is seated again after it quit), and
+    /// record it. Returns the session it runs as.
+    ///
+    /// # Errors
+    ///
+    /// [`SwitchError`]: the engine refused the spawn, or `target` is
+    /// another agent's conversation.
+    pub async fn seat_new(&self, agent: &str, target: &Target) -> Result<SessionId, SwitchError> {
+        let lock = self.lock_of(agent);
+        let _one = lock.lock().await;
+        if let Target::Resume(session) = target {
+            self.check_own(agent, session)?;
+        }
+        let mob = MobId::from(MOB_ID);
+        self.spawn(&mob, agent, target).await?;
+        self.seated(&mob, agent).await
+    }
+
+    /// Retire `agent` (it leaves the mob; the engine archives its session,
+    /// which stays in the log and can be seated again under its name): its
+    /// helpers are stopped first. Returns the session it ran as.
+    ///
+    /// # Errors
+    ///
+    /// [`SwitchError::Mob`] when the engine refuses the retire.
+    pub async fn retire(&self, agent: &str) -> Result<Option<SessionId>, SwitchError> {
+        let lock = self.lock_of(agent);
+        let _one = lock.lock().await;
+        let previous = self.current(agent);
+        if let Some(previous) = &previous {
+            crate::mobs::cancel_helpers(&self.state, &self.registry, previous).await;
+        }
+        self.state
+            .mob_retire(&MobId::from(MOB_ID), AgentIdentity::from(agent))
+            .await
+            .map_err(|err| SwitchError::mob("retiring the agent", err))?;
+        self.registry.unregister_root(&Self::key(agent));
+        self.switching.lock().remove(agent);
+        Ok(previous)
+    }
+
+    /// [`SwitchError::Unknown`] or [`SwitchError::OtherAgent`] unless
+    /// `session` is one of `agent`'s conversations.
+    fn check_own(&self, agent: &str, session: &SessionId) -> Result<(), SwitchError> {
+        match self.log.lock().agent_of(session) {
+            None => Err(SwitchError::Unknown(session.clone())),
+            Some(owner) if owner != agent => Err(SwitchError::OtherAgent {
+                session: session.clone(),
+                agent: owner.to_string(),
+            }),
+            Some(_) => Ok(()),
+        }
     }
 
     /// [`Self::switch`]; `again`: the current session is a valid target
     /// ([`Self::reseat`]).
-    async fn seat(&self, target: Target, again: bool) -> Result<SessionId, SwitchError> {
-        let _one = self.switching.lock().await;
-        let previous = self.current();
+    async fn seat(
+        &self,
+        agent: &str,
+        target: Target,
+        again: bool,
+    ) -> Result<SessionId, SwitchError> {
+        let lock = self.lock_of(agent);
+        let _one = lock.lock().await;
+        let previous = self.current(agent);
         if let Target::Resume(session) = &target {
             if previous.as_ref() == Some(session) && !again {
                 return Err(SwitchError::Current);
             }
-            if !self.log.lock().has(session) {
-                return Err(SwitchError::Unknown(session.clone()));
-            }
+            self.check_own(agent, session)?;
         }
         let mob = MobId::from(MOB_ID);
-        let identity = AgentIdentity::from(ORCHESTRATOR);
+        let identity = AgentIdentity::from(agent);
         // Another client may be running a turn: its own guard is in
         // another process. The engine's run phase decides.
         self.refuse_running(&mob, &identity).await?;
@@ -523,7 +692,7 @@ impl Conversations {
         self.state
             .mob_retire(&mob, identity.clone())
             .await
-            .map_err(|err| SwitchError::mob("retiring the orchestrator", err))?;
+            .map_err(|err| SwitchError::mob("retiring the agent", err))?;
         // Seated again on the same session: its retired actor must be gone
         // first, or the new one shares runtime state the old one's exit
         // drops (an auth lease rotation then finds its store gone).
@@ -533,64 +702,76 @@ impl Conversations {
                 .await_removed_actor_exit(previous)
                 .await;
         }
-        let spawned = self.spawn(&mob, &target).await;
+        let spawned = self.spawn(&mob, agent, &target).await;
         if let Err(err) = spawned {
             tracing::warn!(error = %err, "the switch failed; seating the previous conversation again");
             if let Some(previous) = &previous
-                && let Err(again) = self.spawn(&mob, &Target::Resume(previous.clone())).await
+                && let Err(again) = self
+                    .spawn(&mob, agent, &Target::Resume(previous.clone()))
+                    .await
             {
                 tracing::error!(error = %again, "the previous conversation could not be seated again");
             }
             return Err(err);
         }
-        let session = self
-            .state
-            .mob_member_status(&mob, &identity)
-            .await
-            .map_err(|err| SwitchError::mob("reading the orchestrator", err))?
-            .current_session_id
-            .ok_or(SwitchError::NoSession)?;
-        let (model, binding) = match self.registry.model_of(&session) {
-            Some(model) => (model, self.registry.auth_binding_of(&session)),
-            None => (self.model.clone(), self.auth_binding.clone()),
-        };
-        self.registry
-            .register_root(Self::key(), &session, &model, binding.as_ref());
-        {
-            let mut log = self.log.lock();
-            log.touch(&session);
-            if let Err(err) = log.save(&self.log_file) {
-                tracing::warn!(error = %err, "cannot record the conversation");
-            }
-        }
-        tracing::info!(%session, ?previous, "the orchestrator switched conversations");
+        let session = self.seated(&mob, agent).await?;
+        tracing::info!(%session, ?previous, agent, "the agent switched conversations");
         Ok(session)
     }
 
-    /// Run `apply` on the orchestrator's current session while it is idle:
-    /// no conversation switch runs meanwhile (the switch lock is held) and
-    /// no run is open when it starts (a model switch, `rkat/set_model`).
+    /// The session the just spawned `agent` runs as, registered as an
+    /// owner (on its session's model, else the start-up one) and recorded
+    /// in the log.
+    async fn seated(&self, mob: &MobId, agent: &str) -> Result<SessionId, SwitchError> {
+        let session = self
+            .state
+            .mob_member_status(mob, &AgentIdentity::from(agent))
+            .await
+            .map_err(|err| SwitchError::mob("reading the agent", err))?
+            .current_session_id
+            .ok_or(SwitchError::NoSession)?;
+        self.register(agent, &session);
+        self.touch(&session, agent);
+        Ok(session)
+    }
+
+    /// Register `agent` as an owner running as `session`, on its session's
+    /// model when the registry knows it, else the start-up one.
+    pub fn register(&self, agent: &str, session: &SessionId) {
+        let (model, binding) = match self.registry.model_of(session) {
+            Some(model) => (model, self.registry.auth_binding_of(session)),
+            None => (self.model.clone(), self.auth_binding.clone()),
+        };
+        self.registry
+            .register_root(Self::key(agent), session, &model, binding.as_ref());
+    }
+
+    /// Run `apply` on `agent`'s current session while it is idle: no
+    /// conversation switch runs meanwhile (the switch lock is held) and no
+    /// run is open when it starts (a model switch, `rkat/set_model`).
     ///
     /// # Errors
     ///
     /// [`SwitchError::Running`] when a turn runs, [`SwitchError::NoSession`]
-    /// when the orchestrator has none, [`SwitchError::Mob`] when its status
+    /// when the agent has none, [`SwitchError::Mob`] when its status
     /// cannot be read.
     pub async fn while_idle<T, F>(
         &self,
+        agent: &str,
         apply: impl FnOnce(SessionId) -> F,
     ) -> Result<T, SwitchError>
     where
         F: std::future::Future<Output = T>,
     {
-        let _one = self.switching.lock().await;
-        let session = self.current().ok_or(SwitchError::NoSession)?;
-        self.refuse_running(&MobId::from(MOB_ID), &AgentIdentity::from(ORCHESTRATOR))
+        let lock = self.lock_of(agent);
+        let _one = lock.lock().await;
+        let session = self.current(agent).ok_or(SwitchError::NoSession)?;
+        self.refuse_running(&MobId::from(MOB_ID), &AgentIdentity::from(agent))
             .await?;
         Ok(apply(session).await)
     }
 
-    /// [`SwitchError::Running`] when the orchestrator's run is open now.
+    /// [`SwitchError::Running`] when the member's run is open now.
     async fn refuse_running(
         &self,
         mob: &MobId,
@@ -600,15 +781,15 @@ impl Conversations {
             .state
             .mob_member_status(mob, identity)
             .await
-            .map_err(|err| SwitchError::mob("reading the orchestrator", err))?;
+            .map_err(|err| SwitchError::mob("reading the agent", err))?;
         if run_open(&status) {
             return Err(SwitchError::Running);
         }
         Ok(())
     }
 
-    async fn spawn(&self, mob: &MobId, target: &Target) -> Result<(), SwitchError> {
-        let mut spec = SpawnMemberSpec::host_root(ORCHESTRATOR, ORCHESTRATOR);
+    async fn spawn(&self, mob: &MobId, agent: &str, target: &Target) -> Result<(), SwitchError> {
+        let mut spec = SpawnMemberSpec::host_root(ORCHESTRATOR, agent);
         spec.runtime_mode = Some(MobRuntimeMode::TurnDriven);
         if let Target::Resume(session) = target {
             spec.launch_mode = MemberLaunchMode::Resume {
@@ -620,7 +801,7 @@ impl Conversations {
             .mob_spawn_spec(mob, spec)
             .await
             .map(drop)
-            .map_err(|err| SwitchError::mob("seating the orchestrator", err))
+            .map_err(|err| SwitchError::mob("seating the agent", err))
     }
 }
 
@@ -700,15 +881,19 @@ mod tests {
         let (a, b) = (SessionId::new(), SessionId::new());
         let mut log = Log::load(&file);
         assert!(log.sessions.is_empty());
-        log.touch(&a);
-        log.touch(&b);
+        log.touch(&a, "main-a");
+        log.touch(&b, "main-b");
         log.sessions[1].last_used = 1;
-        log.touch(&a);
+        log.touch(&a, "main-a");
         log.save(&file).unwrap();
         let back = Log::load(&file);
         assert_eq!(back.sessions.len(), 2);
         assert!(back.has(&a) && back.has(&b));
         assert_eq!(back.newest_first()[0].session_id, a);
+        assert_eq!(back.agent_of(&b), Some("main-b"));
+        let mut forgot = back;
+        forgot.forget(&b);
+        assert!(!forgot.has(&b) && forgot.has(&a));
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
@@ -717,6 +902,24 @@ mod tests {
         }
         std::fs::write(&file, "garbage").unwrap();
         assert!(Log::load(&file).sessions.is_empty());
+    }
+
+    /// A log written before P5 names no agent: its conversations are the
+    /// single orchestrator `main`'s.
+    #[test]
+    fn a_log_from_before_p5_belongs_to_main() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = Log::path(dir.path());
+        let session = SessionId::new();
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(
+            &file,
+            serde_json::json!({"sessions": [{"session_id": session, "started_at": 1, "last_used": 2}]})
+                .to_string(),
+        )
+        .unwrap();
+        let log = Log::load(&file);
+        assert_eq!(log.agent_of(&session), Some(ORCHESTRATOR));
     }
 
     /// A conversation that opens with notes before the first prompt is

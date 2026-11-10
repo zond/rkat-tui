@@ -194,6 +194,7 @@ async fn a_client_that_left_mid_turn_sees_the_turn_once_on_reattach() {
     client.quit().await;
     gate.notify_one();
     let cursor = CursorFile::of_workspace(&ws.root)
+        .for_agent(&daemon.agent)
         .load()
         .expect("cursor saved");
     // The reattach resumes the stream from this position (same daemon).
@@ -267,7 +268,8 @@ async fn the_client_reconnects_to_a_restarted_daemon() {
             .any(|b| matches!(b, rkat_tui::ui::Block::User { text } if text == "one")),
         "{blocks:?}"
     );
-    let before = CursorFile::of_workspace(&ws.root).load().unwrap();
+    let cursor = CursorFile::of_workspace(&ws.root).for_agent(&daemon.agent);
+    let before = cursor.load().unwrap();
     client.send(Effect::StartTurn("two".into()));
     assert_eq!(
         client.turn_finished().await.result.unwrap().text,
@@ -279,7 +281,7 @@ async fn the_client_reconnects_to_a_restarted_daemon() {
         "the catch-up did not repeat the first turn"
     );
     assert!(llm.recorded()[1].user().contains("two"));
-    let after = CursorFile::of_workspace(&ws.root).load().unwrap();
+    let after = cursor.load().unwrap();
     assert_ne!(after.daemon, before.daemon, "the new daemon's cursor");
     assert!(after.epoch.is_some());
     client.quit().await;
@@ -491,7 +493,7 @@ async fn what_the_daemon_cannot_do_yet_says_so() {
         .await;
     client.send(Effect::StatusReport);
     client
-        .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text.contains("attached to the workspace daemon") && text.contains("orchestrator `main`")))
+        .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text.contains("attached to the workspace daemon") && text.contains(&format!("agent `{}`", daemon.agent))))
         .await;
     client.quit().await;
     daemon.stop().await;

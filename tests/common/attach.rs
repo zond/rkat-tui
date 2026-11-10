@@ -51,6 +51,8 @@ pub struct Running {
     stop: tokio::sync::oneshot::Sender<()>,
     task: tokio::task::JoinHandle<Result<(), DaemonError>>,
     pub endpoint_file: PathBuf,
+    /// The agent the daemon started with (`main-<id>`).
+    pub agent: String,
     pub session: meerkat_core::SessionId,
     /// Whether the orchestrator was created (not restored) at start.
     pub created: bool,
@@ -111,6 +113,7 @@ impl Running {
     pub fn serve(daemon: Daemon) -> Self {
         let endpoint_file = daemon.endpoint_file().to_path_buf();
         let session = daemon.orchestrator().session_id.clone();
+        let agent = daemon.orchestrator().identity.to_string();
         let created = daemon.orchestrator().created;
         let origins = Arc::clone(daemon.tool_origins());
         let state = Arc::downgrade(daemon.mob_state());
@@ -125,6 +128,7 @@ impl Running {
             stop,
             task,
             endpoint_file,
+            agent,
             session,
             created,
             origins,
@@ -156,9 +160,12 @@ impl Running {
     }
 
     /// A raw connection to the daemon (not initialized) and its
-    /// notifications.
+    /// notifications. It attaches as a probe: not counted as a client and
+    /// bound to no agent (its `rkat/*` calls act on the most recently
+    /// active one), so a test's look at the daemon leaves no agent
+    /// detached when it closes.
     pub async fn connect_with_notes(&self) -> (Connection, UnboundedReceiver<Notification>) {
-        Connection::attach(&self.endpoint(), Duration::from_secs(5))
+        Connection::attach_as(&self.endpoint(), Duration::from_secs(5), None, true)
             .await
             .unwrap()
     }
@@ -205,6 +212,22 @@ impl Client {
         Self::attach_args(root, &args_for(root), start_token).await
     }
 
+    /// Attach working with the agent `choice` names (a new one, …).
+    pub async fn attach_agent(
+        root: &Path,
+        choice: rkat_tui::daemon::protocol::AgentChoice,
+    ) -> Self {
+        Self::attach_config(
+            &args_for(root),
+            None,
+            no_lists(),
+            &endpoint_file_for(root),
+            None,
+            Some(choice),
+        )
+        .await
+    }
+
     /// Attach with these arguments (`-c`, `--resume`, …).
     pub async fn attach_args(
         root: &Path,
@@ -234,10 +257,26 @@ impl Client {
         endpoint_file: &Path,
         host_paths: Option<&HostPaths>,
     ) -> Self {
+        Self::attach_config(args, start_token, lister, endpoint_file, host_paths, None).await
+    }
+
+    /// [`Self::attach_setup`], asking for the agent `agent` names (`None`:
+    /// as the command line says).
+    pub async fn attach_config(
+        args: &rkat_tui::Args,
+        start_token: Option<&str>,
+        lister: rkat_tui::models::ModelLister,
+        endpoint_file: &Path,
+        host_paths: Option<&HostPaths>,
+        agent: Option<rkat_tui::daemon::protocol::AgentChoice>,
+    ) -> Self {
         let mut config = rkat_tui::client::configure(args, AttachTarget::Existing)
             .await
             .unwrap();
         config.start_token = start_token.map(str::to_string);
+        if let Some(agent) = agent {
+            config.agent = agent;
+        }
         config.lister = lister;
         config.endpoint_files = vec![endpoint_file.to_path_buf()];
         if let Some(host_paths) = host_paths {
@@ -293,6 +332,19 @@ impl Client {
             matches!(msg, Msg::Status(StatusUpdate::Attach(Some(state))) if state.starts_with("attached"))
         })
         .await;
+    }
+
+    /// The agent this client works with (the status bar's).
+    pub async fn agent(&mut self) -> String {
+        let shown = |msg: &Msg| match msg {
+            Msg::Status(StatusUpdate::Agent(Some(agent))) => Some(agent.clone()),
+            _ => None,
+        };
+        if let Some(agent) = self.seen.iter().rev().find_map(shown) {
+            return agent;
+        }
+        let msg = self.wait_for(|msg| shown(msg).is_some()).await;
+        shown(&msg).unwrap()
     }
 
     pub async fn turn_finished(&mut self) -> TurnOutcome {
@@ -515,18 +567,35 @@ impl std::ops::DerefMut for Attached {
 }
 
 impl Running {
-    /// The session the orchestrator runs as now (`mob/member_status`).
+    /// The session the daemon's first agent runs as now
+    /// (`mob/member_status`).
     pub async fn current_session(&self) -> meerkat_core::SessionId {
+        self.session_of(&self.agent).await
+    }
+
+    /// The session the agent `agent` runs as now (`mob/member_status`).
+    pub async fn session_of(&self, agent: &str) -> meerkat_core::SessionId {
         let status = self
             .connect()
             .await
             .call(
                 "mob/member_status",
-                serde_json::json!({"mob_id": "tui", "agent_identity": "main"}),
+                serde_json::json!({"mob_id": "tui", "agent_identity": agent}),
             )
             .await
             .unwrap();
         serde_json::from_value(status["current_session_id"].clone()).unwrap()
+    }
+
+    /// The daemon's `rkat/status` as a client bound to no agent sees it.
+    pub async fn status(&self) -> rkat_tui::daemon::protocol::Status {
+        let answer = self
+            .connect()
+            .await
+            .call("rkat/status", serde_json::json!({}))
+            .await
+            .unwrap();
+        serde_json::from_value(answer).unwrap()
     }
 
     /// The committed messages of `session` (`rkat/transcript`).

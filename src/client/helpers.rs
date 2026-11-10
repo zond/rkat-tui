@@ -35,7 +35,8 @@ use indexmap::IndexMap;
 use meerkat_core::{AgentEvent, EventEnvelope, EventSourceIdentity, SessionId};
 use meerkat_mob::AttributedEvent;
 
-use crate::daemon::{MOB_ID, ORCHESTRATOR};
+use crate::daemon::MOB_ID;
+use crate::daemon::agents::is_agent;
 use crate::mobs::{HelperStatus, HelperTag};
 use crate::ui::{Msg, StatusUpdate};
 
@@ -146,10 +147,30 @@ impl Followers {
         model.clone_into(&mut self.default_model);
     }
 
-    /// Whether `mob` should be opened: not yet open or opening. Marks it
-    /// opening.
+    /// Whether `mob` should be opened: one of this agent's (the daemon's
+    /// mob, the implicit mob of the agent's session or of one of its
+    /// helpers' sessions; another agent's helpers are its own clients'),
+    /// and not yet open or opening. Marks it opening.
     pub fn should_open(&mut self, mob: &str) -> bool {
+        if !self.is_ours(mob) {
+            return false;
+        }
         self.open.insert(mob.to_string())
+    }
+
+    /// Whether `mob` holds this agent's helpers.
+    fn is_ours(&self, mob: &str) -> bool {
+        let Some(session) = mob.strip_prefix(IMPLICIT_PREFIX) else {
+            return mob == MOB_ID;
+        };
+        self.owner
+            .as_ref()
+            .is_some_and(|owner| owner.to_string() == session)
+            || self
+                .helpers
+                .values()
+                .filter_map(|helper| helper.session.as_ref())
+                .any(|helper| helper.to_string() == session)
     }
 
     /// Opening `mob`'s stream failed: it may be tried again.
@@ -249,7 +270,7 @@ impl Followers {
 
     /// A member of `mob` found by listing it after its stream opened.
     pub fn member(&mut self, mob: &str, label: &str, session: Option<SessionId>) -> Vec<Action> {
-        if mob == MOB_ID && label == ORCHESTRATOR {
+        if mob == MOB_ID && is_agent(label) {
             return Vec::new();
         }
         let id = (mob.to_string(), label.to_string());
@@ -265,8 +286,9 @@ impl Followers {
             return Vec::new();
         };
         let label = attributed.source.identity.to_string();
-        if mob == MOB_ID && label == ORCHESTRATOR {
-            // The orchestrator's own stream shows these.
+        if mob == MOB_ID && is_agent(&label) {
+            // The agent's own stream shows its events; another agent's
+            // are its clients'.
             return Vec::new();
         }
         let envelope = attributed.envelope;
@@ -371,6 +393,7 @@ impl Followers {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::daemon::ORCHESTRATOR;
     use meerkat_core::StreamScopeFrame;
     use meerkat_mob::{AgentIdentity, AgentRuntimeId, FenceToken, ProfileName};
 
@@ -520,6 +543,30 @@ mod tests {
         followers.ended("b");
         assert!(followers.should_open(&nested));
         assert!(!followers.owns("b"));
+    }
+
+    /// Another agent's helpers are its own clients': its implicit mob is
+    /// not opened, and an agent in the daemon's mob is no helper.
+    #[test]
+    fn another_agents_helpers_are_not_followed() {
+        let owner = SessionId::new();
+        let other = SessionId::new();
+        let mut followers = Followers::default();
+        followers.reset(owner.clone());
+        assert!(followers.should_open(MOB_ID));
+        assert!(!followers.should_open(&format!("{IMPLICIT_PREFIX}{other}")));
+        assert!(followers.should_open(&format!("{IMPLICIT_PREFIX}{owner}")));
+        followers.opened("tui".into(), MOB_ID);
+        assert!(
+            followers
+                .event("tui", attributed("main-ab12", &other, 1, text("x")))
+                .is_empty()
+        );
+        assert!(
+            followers
+                .member(MOB_ID, "main-ab12", Some(other))
+                .is_empty()
+        );
     }
 
     #[test]

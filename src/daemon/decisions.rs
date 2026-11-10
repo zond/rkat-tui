@@ -661,19 +661,21 @@ impl Decisions {
         }
     }
 
-    /// Push every file change the orchestrator's file tools report to the
-    /// attached clients as an `rkat/file_diff` notification
-    /// ([`protocol::FileDiffNote`]), until the tools are gone. A client
-    /// that is not attached when the change is made does not get it (the
-    /// diff is a view; the tool result in the conversation stays).
+    /// Push every file change the agents' file tools report (each tagged
+    /// with its agent) to the attached clients as an `rkat/file_diff`
+    /// notification ([`protocol::FileDiffNote`]; a client shows its own
+    /// agent's), until the tools are gone. A client that is not attached
+    /// when the change is made does not get it (the diff is a view; the
+    /// tool result in the conversation stays).
     pub fn forward_diffs(
         hub: &Arc<Self>,
-        mut diffs: mpsc::UnboundedReceiver<crate::tools::FileDiff>,
+        mut diffs: mpsc::UnboundedReceiver<(String, crate::tools::FileDiff)>,
     ) -> tokio::task::JoinHandle<()> {
         let hub = Arc::clone(hub);
         tokio::spawn(async move {
-            while let Some(diff) = diffs.recv().await {
+            while let Some((agent, diff)) = diffs.recv().await {
                 let params = protocol::FileDiffNote {
+                    agent: Some(agent),
                     tool_use_id: diff.tool_use_id,
                     path: diff.path.display().to_string(),
                     unified: diff.unified,

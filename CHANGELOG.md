@@ -97,9 +97,29 @@ design.
   one shows its transcript (`/export` saves it) while the agent stays on
   its conversation. The engine seats the daemon's agent only on sessions
   it ran.
+- Several agents per workspace, in one daemon: each is a member of the
+  daemon's mob named `main-<id>` (shown in the status bar, `/agents`,
+  `--list` and `rkat/status`; a daemon whose mob still has the single
+  `main` keeps it). Each `rkat-tui` works with one agent, which its
+  commands act on (`/new`, `/resume`, `/model`, prompts, Esc), and sees
+  only its own agent's transcript, helpers, diffs and approval requests.
+  `/agents` lists the agents (state, conversation, attached clients);
+  `/agents <name>` switches this `rkat-tui` to another one. A
+  conversation belongs to the agent that ran it: `/resume` of another
+  agent's says where it is, and one whose agent quit is seated again
+  under that agent's name. `--list` prints one line per agent under its
+  daemon; the attach cursor is kept per agent.
 
 ### Changed
 
+- `/quit` retires this rkat-tui's agent when other clients are attached
+  to other agents (a running turn is interrupted first); its
+  conversation stays for `/resume` and `--resume`, and nothing can wake
+  it. With other clients on the same agent it just leaves; as the last
+  client the P2 rule holds (stop when this rkat-tui started the daemon
+  and no agent was left detached, else ask), and "terminate" retires
+  every agent before the daemon stops. `/detach` (and a hangup) leaves
+  the agent running; the detached flag is the agent's.
 - The agent always runs in the workspace's daemon, never in the
   `rkat-tui` process: closing the terminal no longer ends its turn, and
   any number of TUIs can attach to it. An `attach` key in a `tui.toml` is

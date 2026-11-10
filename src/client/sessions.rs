@@ -54,8 +54,9 @@ fn age(at: u64) -> String {
 }
 
 /// The resume picker's rows: `(session id, label)`, last used first.
+/// Another agent's conversation names that agent (`mine` is this client's).
 #[must_use]
-pub fn picker_items(listed: &[Listed]) -> Vec<(String, String)> {
+pub fn picker_items(listed: &[Listed], mine: Option<&str>) -> Vec<(String, String)> {
     listed
         .iter()
         .map(|row| {
@@ -71,6 +72,13 @@ pub fn picker_items(listed: &[Listed]) -> Vec<(String, String)> {
             if row.current {
                 label.push_str(" (current)");
             }
+            match (&row.in_use, &row.agent) {
+                (Some(agent), _) => label.push_str(&format!(" (agent {agent} works on it)")),
+                (None, Some(agent)) if Some(agent.as_str()) != mine && !row.current => {
+                    label.push_str(&format!(" (agent {agent}'s)"));
+                }
+                _ => {}
+            }
             if row.view_only {
                 label.push_str(&format!(" ({VIEW_ONLY})"));
             }
@@ -83,13 +91,18 @@ pub fn picker_items(listed: &[Listed]) -> Vec<(String, String)> {
 /// first): `last` (`~`, `~0`), `~N`, a full id, or a unique id prefix.
 /// `last` and `~N` count the conversations other than the current one (the
 /// current one is the most recently used, so `last` would always name it):
-/// `last` is the one before it. Sessions created before the daemon
-/// (view only) are named by id or prefix only.
+/// `last` is the one before it; with `mine` (this client's agent) only that
+/// agent's conversations count, the ones it can resume. Sessions created
+/// before the daemon (view only) are named by id or prefix only.
 ///
 /// # Errors
 ///
 /// Why nothing (or more than one conversation) matches.
-pub fn resolve(reference: &str, listed: &[Listed]) -> Result<SessionId, String> {
+pub fn resolve(
+    reference: &str,
+    listed: &[Listed],
+    mine: Option<&str>,
+) -> Result<SessionId, String> {
     let reference = reference.trim();
     if reference.is_empty() {
         return Err("empty session reference".to_string());
@@ -108,12 +121,18 @@ pub fn resolve(reference: &str, listed: &[Listed]) -> Result<SessionId, String> 
         let others: Vec<&Listed> = listed
             .iter()
             .filter(|row| !row.current && !row.view_only)
+            .filter(|row| match (mine, &row.agent) {
+                (Some(mine), Some(agent)) => agent == mine,
+                _ => true,
+            })
             .collect();
         return match others.get(offset) {
             Some(row) => Ok(row.session_id.clone()),
-            None if others.is_empty() => {
-                Err("no other conversations in this workspace".to_string())
-            }
+            None if others.is_empty() => Err(if mine.is_some() {
+                "no other conversations of this agent".to_string()
+            } else {
+                "no other conversations in this workspace".to_string()
+            }),
             None => Err(format!(
                 "only {} other conversation(s) exist; ~{offset} is out of range",
                 others.len()
@@ -144,6 +163,8 @@ mod tests {
     fn row(current: bool) -> Listed {
         Listed {
             session_id: SessionId::new(),
+            agent: None,
+            in_use: None,
             last_used: 0,
             messages: Some(4),
             title: Some("fix the bug".into()),
@@ -160,13 +181,13 @@ mod tests {
         earlier.view_only = true;
         let listed = vec![row(true), earlier.clone()];
         assert!(
-            resolve("last", &listed)
+            resolve("last", &listed, None)
                 .unwrap_err()
                 .contains("no other conversations")
         );
         let full = earlier.session_id.to_string();
-        assert_eq!(resolve(&full, &listed).unwrap(), earlier.session_id);
-        let items = picker_items(&listed);
+        assert_eq!(resolve(&full, &listed, None).unwrap(), earlier.session_id);
+        let items = picker_items(&listed, None);
         assert!(
             items[1].1.ends_with(&format!("({VIEW_ONLY})")),
             "{}",
@@ -188,34 +209,82 @@ mod tests {
         let listed = vec![row(true), row(false), row(false)];
         // `last` is the most recent conversation other than the current one.
         for last in ["last", "~", "~0"] {
-            assert_eq!(resolve(last, &listed).unwrap(), listed[1].session_id);
+            assert_eq!(resolve(last, &listed, None).unwrap(), listed[1].session_id);
         }
-        assert_eq!(resolve("~1", &listed).unwrap(), listed[2].session_id);
-        assert!(resolve("~2", &listed).unwrap_err().contains("out of range"));
+        assert_eq!(resolve("~1", &listed, None).unwrap(), listed[2].session_id);
         assert!(
-            resolve("last", &listed[..1])
+            resolve("~2", &listed, None)
+                .unwrap_err()
+                .contains("out of range")
+        );
+        assert!(
+            resolve("last", &listed[..1], None)
                 .unwrap_err()
                 .contains("no other conversations")
         );
-        assert!(resolve("~x", &listed).is_err());
+        assert!(resolve("~x", &listed, None).is_err());
         let full = listed[1].session_id.to_string();
-        assert_eq!(resolve(&full, &listed).unwrap(), listed[1].session_id);
+        assert_eq!(resolve(&full, &listed, None).unwrap(), listed[1].session_id);
         // A full id may name the current one (the daemon says so).
         let current = listed[0].session_id.to_string();
-        assert_eq!(resolve(&current, &listed).unwrap(), listed[0].session_id);
-        assert!(resolve("zzzz", &listed).unwrap_err().contains("matches"));
-        assert!(resolve("", &listed).is_err());
+        assert_eq!(
+            resolve(&current, &listed, None).unwrap(),
+            listed[0].session_id
+        );
         assert!(
-            resolve("last", &[])
+            resolve("zzzz", &listed, None)
+                .unwrap_err()
+                .contains("matches")
+        );
+        assert!(resolve("", &listed, None).is_err());
+        assert!(
+            resolve("last", &[], None)
                 .unwrap_err()
                 .contains("no other conversations")
         );
     }
 
+    /// `last` and `~N` count this agent's conversations; the picker names
+    /// another agent's, and the one another agent works on.
+    #[test]
+    fn last_counts_this_agents_conversations_and_the_picker_names_the_others() {
+        let mut current = row(true);
+        current.agent = Some("main-aaaa".into());
+        let mut theirs = row(false);
+        theirs.agent = Some("main-bbbb".into());
+        let mut held = row(false);
+        held.agent = Some("main-cccc".into());
+        held.in_use = Some("main-cccc".into());
+        let mut mine = row(false);
+        mine.agent = Some("main-aaaa".into());
+        let listed = vec![current, theirs, held, mine.clone()];
+        assert_eq!(
+            resolve("last", &listed, Some("main-aaaa")).unwrap(),
+            mine.session_id
+        );
+        assert_eq!(
+            resolve("last", &listed, None).unwrap(),
+            listed[1].session_id,
+            "without an agent every conversation counts"
+        );
+        let items = picker_items(&listed, Some("main-aaaa"));
+        assert!(
+            items[1].1.ends_with("(agent main-bbbb's)"),
+            "{}",
+            items[1].1
+        );
+        assert!(
+            items[2].1.ends_with("(agent main-cccc works on it)"),
+            "{}",
+            items[2].1
+        );
+        assert!(!items[3].1.contains("agent"), "{}", items[3].1);
+    }
+
     #[test]
     fn picker_rows_name_the_size_title_and_the_current_one() {
         let listed = vec![row(true)];
-        let items = picker_items(&listed);
+        let items = picker_items(&listed, None);
         assert_eq!(items[0].0, listed[0].session_id.to_string());
         assert!(items[0].1.contains("4 msgs"), "{}", items[0].1);
         assert!(items[0].1.contains("fix the bug"));

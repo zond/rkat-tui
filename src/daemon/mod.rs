@@ -27,6 +27,7 @@
 //! the deny rules are the members' durable application tool policy
 //! ([`policy`]).
 
+pub mod agents;
 pub mod approvals;
 pub mod conversations;
 pub mod decisions;
@@ -62,7 +63,9 @@ pub const LEASE_SURFACE: &str = "rkat-tui-mob";
 /// The mob the daemon hosts in its realm (one per workspace realm).
 pub const MOB_ID: &str = "tui";
 
-/// The orchestrator's member identity (and its profile name).
+/// The agents' profile name, and the member identity of the single
+/// orchestrator of a daemon from before P5 (agents are named
+/// `main-<id>` now, see [`agents`]).
 pub const ORCHESTRATOR: &str = "main";
 
 /// The endpoint file name (in the workspace's directory under the user's
@@ -154,6 +157,9 @@ pub enum DaemonError {
         #[source]
         source: Box<meerkat_mob::MobError>,
     },
+    /// The workspace's first agent could not be seated.
+    #[error("cannot seat the workspace's first agent: {0}")]
+    FirstAgent(String),
     /// The orchestrator has no session after its spawn or restore.
     #[error("the orchestrator `{0}` has no session")]
     NoSession(String),
@@ -461,40 +467,46 @@ impl Daemon {
             bootstrap::assemble(layers, config, args, options.bootstrap, LEASE_SURFACE).await?;
         let file = choose_endpoint_file(&parts.confinement, &files)?;
         let composed = engine::compose(parts, options.policy)?;
-        let orchestrator = orchestrator::ensure(&composed.state, &composed.root).await?;
-        // The orchestrator is idle now: its tool catalog can be read.
-        if !composed.origins.refresh(&orchestrator.session_id).await {
-            tracing::info!(
-                "the orchestrator's tool catalog is read after its first run; until then only the TUI's own tools are known to the gate"
-            );
-        }
+        orchestrator::ensure_mob(&composed.state, &composed.root).await?;
         let conversations = Arc::new(conversations::Conversations::open(
             Arc::clone(&composed.state),
             Arc::clone(&composed.root.registry),
             &composed.scope.context_root,
-            &orchestrator.session_id,
             composed.root.model.clone(),
             composed.root.auth_binding.clone(),
         ));
-        // A restored orchestrator's classifier sees what the user asked in
-        // the conversation so far.
-        if !orchestrator.created {
-            conversations
-                .seed(&composed.engine, &orchestrator.session_id)
-                .await;
+        let lifecycle =
+            lifecycle::Lifecycle::new(workspace.clone(), started_at.clone(), options.start_token);
+        let agents = agents::Agents::new(agents::AgentsParts {
+            state: Arc::clone(&composed.state),
+            conversations: Arc::clone(&conversations),
+            engine: Arc::clone(&composed.engine),
+            origins: Arc::clone(&composed.origins),
+            lifecycle: Arc::clone(&lifecycle),
+        });
+        // Restored (their classifier seeded with what the user asked so
+        // far), else one seated for the first client.
+        let (first, session, created) = agents.start().await?;
+        let orchestrator = Orchestrator {
+            mob_id: meerkat_mob::MobId::from(MOB_ID),
+            identity: meerkat_mob::AgentIdentity::from(first.as_str()),
+            session_id: session,
+            created,
+        };
+        // The agents are idle now: their tool catalogs can be read.
+        for (agent, session) in agents.live() {
+            if !composed.origins.refresh(&session).await {
+                tracing::info!(
+                    %agent,
+                    "the agent's tool catalog is read after its first run; until then only the TUI's own tools are known to the gate"
+                );
+            }
         }
-        let watcher = approvals::watch(
-            Arc::clone(&composed.state),
-            orchestrator.mob_id.clone(),
-            orchestrator.identity.clone(),
-            Arc::clone(&composed.engine),
-            Arc::clone(&composed.origins),
-            Arc::clone(&conversations),
-        );
         let local = Arc::new(local::Local::new(local::LocalParts {
             engine: Arc::clone(&composed.engine),
             state: Arc::clone(&composed.state),
             conversations,
+            agents: Arc::clone(&agents),
             registry: Arc::clone(&composed.root.registry),
             origins: Arc::clone(&composed.origins),
             desk: Arc::clone(&composed.desk),
@@ -505,11 +517,7 @@ impl Daemon {
             machine: composed.runtime.runtime_adapter(),
             realm_config: Arc::clone(&composed.realm_config),
             startup_notices: composed.startup_notices.clone(),
-            lifecycle: lifecycle::Lifecycle::new(
-                workspace.clone(),
-                started_at.clone(),
-                options.start_token,
-            ),
+            lifecycle,
             report: local::ReportParts {
                 realm: composed.scope.realm_root(),
                 realm_id: composed.scope.realm_id.clone(),
@@ -545,7 +553,7 @@ impl Daemon {
             address = %listener.address(),
             endpoint = %file.display(),
             mob = MOB_ID,
-            orchestrator = ORCHESTRATOR,
+            agent = %orchestrator.identity,
             session = %orchestrator.session_id,
             "rkat-tui-mob serving"
         );
@@ -575,7 +583,6 @@ impl Daemon {
                 composed.notes_task,
                 composed.follower_task,
                 composed.helper_catalogs_task,
-                watcher,
             ],
         })
     }
@@ -638,7 +645,8 @@ impl Daemon {
         self.listener.endpoint_file()
     }
 
-    /// The orchestrator member.
+    /// The agent the daemon started with (the most recent one it
+    /// restored, else the one it seated for the first client).
     #[must_use]
     pub fn orchestrator(&self) -> &Orchestrator {
         &self.orchestrator
@@ -691,6 +699,11 @@ impl Daemon {
         // The endpoint goes first: nobody should find a daemon that no
         // longer accepts.
         self.listener.remove_files();
+        // "Terminate": the agents leave with the daemon (their
+        // conversations stay); else they are restored at the next start.
+        if self.local.lifecycle().retires_all() {
+            self.local.retire_all().await;
+        }
         let (served, mut connections) = match served {
             Ok(connections) => (Ok(()), connections),
             Err(err) => (Err(err), tokio::task::JoinSet::new()),
@@ -698,6 +711,7 @@ impl Daemon {
         for task in &self.tasks {
             task.abort();
         }
+        self.local.agents().stop_watching();
         // Joined, so nothing they hold outlives the shutdown.
         for task in self.tasks.drain(..) {
             let _ = task.await;
@@ -885,9 +899,10 @@ pub async fn run(cli: DaemonCli) -> Result<(), DaemonError> {
     )
     .await?;
     eprintln!(
-        "rkat-tui-mob: serving {} (endpoint file {}; mob `{MOB_ID}`, orchestrator `{ORCHESTRATOR}`, session {})",
+        "rkat-tui-mob: serving {} (endpoint file {}; mob `{MOB_ID}`, agent `{}`, session {})",
         daemon.address(),
         daemon.endpoint_file().display(),
+        daemon.orchestrator().identity,
         daemon.orchestrator().session_id
     );
     daemon.serve_until(termination_signal()).await

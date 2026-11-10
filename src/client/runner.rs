@@ -43,7 +43,7 @@ use crate::approval::desk::{ModeStatus, RuleCommand, RuleOutcome};
 use crate::bootstrap::RuntimeScope;
 use crate::cli::AttachMode;
 use crate::daemon::endpoint::Endpoint;
-use crate::daemon::protocol::{self, ModeSet, SetModeParams, TrustOp, TrustParams};
+use crate::daemon::protocol::{self, AgentChoice, ModeSet, SetModeParams, TrustOp, TrustParams};
 use crate::endpoints::{EndpointRegistry, ModelRefError, WireDialect, parse_model_ref};
 use crate::models::{FetchResults, ModelCache};
 use crate::ui::delivery::{PendingId, SteerFailure};
@@ -159,6 +159,9 @@ pub struct AttachConfig {
     pub spawn: Option<SpawnPlan>,
     /// Which conversation the first attach shows (`-c`, `--resume`).
     pub start: super::StartAt,
+    /// Which agent the first attach works with (a reconnect asks for the
+    /// agent it was bound to).
+    pub agent: AgentChoice,
     /// The start token handed to a daemon this client starts, presented
     /// on every attach: the daemon counts the client that started it as
     /// its owner (`/quit` then stops a daemon nobody detached from).
@@ -446,6 +449,12 @@ impl<T> Orphans<T> {
 /// The attach-mode runner.
 pub struct AttachRunner {
     config: AttachConfig,
+    /// The agent the daemon bound this client to (`None` before the first
+    /// attach); a reconnect asks for it again.
+    agent: Option<String>,
+    /// An `/agents <name>` switch runs: the next link renders that agent's
+    /// conversation from its start.
+    agent_switch: bool,
     ui_tx: mpsc::UnboundedSender<Msg>,
     effect_rx: mpsc::UnboundedReceiver<Effect>,
     link: Option<Link>,
@@ -534,6 +543,8 @@ impl AttachRunner {
         });
         Self {
             config,
+            agent: None,
+            agent_switch: false,
             ui_tx,
             effect_rx,
             link: None,
@@ -663,23 +674,30 @@ impl AttachRunner {
     /// start-on-demand, afterwards as a reconnect with backoff.
     fn connect(&mut self) {
         let files = self.config.endpoint_files.clone();
+        // The agent's saved cursor is read once it is known (at attach).
         let saved = self
             .mark
             .as_ref()
-            .map(|mark| mark.cursor(self.daemon_id_seen.as_deref()))
-            .or_else(|| self.config.cursor.load());
+            .map(|mark| mark.cursor(self.daemon_id_seen.as_deref()));
         let ui_tx = self.ui_tx.clone();
         let start_token = self.config.start_token.clone();
+        let attach = Attach {
+            agent: match &self.agent {
+                Some(name) => AgentChoice::Agent { name: name.clone() },
+                None => self.config.agent.clone(),
+            },
+            cursor: (!self.agent_switch).then(|| self.config.cursor.clone()),
+            start_token: start_token.clone(),
+        };
         let task = if let Some(endpoint) = self.config.address.clone() {
             // Reached by address: the same address again, with backoff.
             let first = std::mem::take(&mut self.first_connect);
             tokio::spawn(async move {
                 let mut wait = BACKOFF_FIRST;
                 loop {
-                    match establish(endpoint.clone(), saved.as_ref(), start_token.as_deref()).await
-                    {
+                    match establish(endpoint.clone(), saved.as_ref(), &attach).await {
                         Ok(established) => return Ok(established),
-                        Err(err) if first => return Err(err),
+                        Err(err) if first || gone(&err) => return Err(err),
                         Err(err) => tracing::debug!(error = %err, "reconnect failed"),
                     }
                     tokio::time::sleep(wait).await;
@@ -691,7 +709,7 @@ impl AttachRunner {
             tokio::spawn(async move {
                 let endpoint =
                     first_endpoint(&files, spawn.as_ref(), start_token.as_deref(), &ui_tx).await?;
-                establish(endpoint, saved.as_ref(), start_token.as_deref()).await
+                establish(endpoint, saved.as_ref(), &attach).await
             })
         } else {
             let spawn = self.config.spawn.clone();
@@ -701,9 +719,9 @@ impl AttachRunner {
                 loop {
                     match launch::probe_any(&files).await {
                         launch::Liveness::Live(endpoint) => {
-                            match establish(endpoint, saved.as_ref(), start_token.as_deref()).await
-                            {
+                            match establish(endpoint, saved.as_ref(), &attach).await {
                                 Ok(established) => return Ok(established),
+                                Err(err) if gone(&err) => return Err(err),
                                 Err(err) => tracing::debug!(error = %err, "reconnect failed"),
                             }
                         }
@@ -717,18 +735,14 @@ impl AttachRunner {
                             if let Some(plan) = &spawn {
                                 restarted = Some(Instant::now());
                                 match restart(&files, plan, &ui_tx).await {
-                                    Ok(endpoint) => match establish(
-                                        endpoint,
-                                        saved.as_ref(),
-                                        start_token.as_deref(),
-                                    )
-                                    .await
-                                    {
-                                        Ok(established) => return Ok(established),
-                                        Err(err) => {
-                                            tracing::debug!(error = %err, "reattach failed");
+                                    Ok(endpoint) => {
+                                        match establish(endpoint, saved.as_ref(), &attach).await {
+                                            Ok(established) => return Ok(established),
+                                            Err(err) => {
+                                                tracing::debug!(error = %err, "reattach failed");
+                                            }
                                         }
-                                    },
+                                    }
                                     Err(err) => {
                                         let _ = ui_tx.send(Msg::Notice {
                                             level: NoticeLevel::Error,
@@ -781,6 +795,11 @@ impl AttachRunner {
             context,
         } = established;
         let address = link.endpoint.address;
+        let agent = link.connection.agent().to_string();
+        let switched_agent = std::mem::take(&mut self.agent_switch);
+        let seated = link.connection.seated();
+        self.agent = Some(agent.clone());
+        self.send(Msg::Status(StatusUpdate::Agent(Some(agent.clone()))));
         let daemon_id = super::catchup::daemon_id(&link.endpoint.token);
         // A daemon this client has not shown yet (the first attach, or one
         // that restarted): what its start-up had to say.
@@ -799,8 +818,21 @@ impl AttachRunner {
             self.mark = Some(mark);
         }
         self.send(Msg::Status(StatusUpdate::Session(session)));
-        if fresh {
+        if switched_agent {
+            self.notice(
+                NoticeLevel::Info,
+                format!("switched to agent {agent}; the agent you left keeps running"),
+            );
+        } else if fresh {
             self.notice(NoticeLevel::Info, ATTACH_NOTICE);
+            self.notice(
+                NoticeLevel::Info,
+                if seated {
+                    format!("working with agent {agent} (seated for this rkat-tui)")
+                } else {
+                    format!("working with agent {agent}")
+                },
+            );
         } else {
             self.notice(
                 NoticeLevel::Info,
@@ -978,6 +1010,11 @@ impl AttachRunner {
         }
         if note.method == protocol::APPROVAL_NOTE {
             match serde_json::from_value::<protocol::ApprovalNote>(note.params.clone()) {
+                // Another agent's call (its helpers' are its session's).
+                Ok(protocol::ApprovalNote::Decision {
+                    session_id: Some(session),
+                    ..
+                }) if session != link.session => {}
                 Ok(approval) => {
                     let (msgs, mode) = super::approvals::note_messages(approval);
                     for msg in msgs {
@@ -993,6 +1030,12 @@ impl AttachRunner {
         }
         if note.method == protocol::FILE_DIFF {
             match serde_json::from_value::<protocol::FileDiffNote>(note.params.clone()) {
+                // Another agent's change.
+                Ok(diff)
+                    if diff
+                        .agent
+                        .as_deref()
+                        .is_some_and(|agent| agent != link.connection.agent()) => {}
                 Ok(diff) => self.send(Msg::Diff {
                     tool_use_id: diff.tool_use_id,
                     path: diff.path,
@@ -1187,10 +1230,12 @@ impl AttachRunner {
 
     fn save_cursor(&self) {
         if let Some(mark) = &self.mark
+            && let Some(agent) = &self.agent
             && mark.sequence() > 0
         {
             self.config
                 .cursor
+                .for_agent(agent)
                 .save(&mark.cursor(self.daemon_id_seen.as_deref()));
         }
     }
@@ -1714,6 +1759,8 @@ impl AttachRunner {
                 self.bench.export(path.as_deref(), &text, &session);
             }
             Effect::DaemonStop => self.daemon_stop().await,
+            Effect::Agents(None) => self.list_agents().await,
+            Effect::Agents(Some(name)) => self.switch_agent(name).await,
             Effect::DecideQuit => self.decide_quit().await,
             Effect::Leave(departure) => self.depart(departure).await,
             Effect::NewSession => self.switch_conversation(None),
@@ -2343,7 +2390,7 @@ impl AttachRunner {
                     return;
                 }
             };
-            let target = match sessions::resolve(&reference, &listed) {
+            let target = match sessions::resolve(&reference, &listed, Some(connection.agent())) {
                 // Back from a view-only session to the conversation.
                 Ok(target) if target == current && viewing => {
                     reports.send(Report::Rerendered(
@@ -2394,8 +2441,9 @@ impl AttachRunner {
             let listed = bounded(CALL_TIMEOUT, remote::conversations(&connection))
                 .await
                 .map_err(|err| err.to_string());
+            let mine = connection.agent().to_string();
             reports.send(Report::Picker(
-                listed.map(|listed| sessions::picker_items(&listed)),
+                listed.map(|listed| sessions::picker_items(&listed, Some(&mine))),
             ));
         });
     }
@@ -2417,11 +2465,11 @@ impl AttachRunner {
         match &self.link {
             Some(link) => {
                 lines.push(format!(
-                    "daemon: {} (pid {}), mob `{}`, orchestrator `{}`",
+                    "daemon: {} (pid {}), mob `{}`, agent `{}`",
                     link.endpoint.address,
                     link.endpoint.pid,
                     crate::daemon::MOB_ID,
-                    crate::daemon::ORCHESTRATOR
+                    link.connection.agent()
                 ));
                 lines.push(format!("session: {}", link.session));
             }
@@ -2465,6 +2513,89 @@ impl AttachRunner {
             Err(err) => lines.push(format!("the daemon's side is unknown: {err}")),
         }
         self.notice(NoticeLevel::Info, lines.join("\n"));
+    }
+
+    /// The daemon's `rkat/status` (`None`: not attached, or no answer).
+    async fn daemon_status(&self) -> Option<protocol::Status> {
+        let connection = self.connection()?;
+        bounded(
+            LEAVE_TIMEOUT,
+            remote::local::<_, protocol::Status>(
+                &connection,
+                protocol::STATUS,
+                &serde_json::json!({}),
+            ),
+        )
+        .await
+        .map_err(|err| tracing::info!(error = %err, "the daemon's status is unknown"))
+        .ok()
+    }
+
+    /// `/agents`: the workspace's agents, from the daemon's `rkat/status`.
+    async fn list_agents(&self) {
+        match self.daemon_status().await {
+            Some(status) => {
+                let mine = status.agent.as_deref().or(self.agent.as_deref());
+                self.notice(
+                    NoticeLevel::Info,
+                    agent_lines(&status.agents, mine).join("\n"),
+                );
+            }
+            None => self.notice(
+                NoticeLevel::Warn,
+                "not attached to the daemon (see the status bar)",
+            ),
+        }
+    }
+
+    /// `/agents <name>`: work with the agent `name` from now on. The agent
+    /// left keeps running (detached when this was its last client); this
+    /// client attaches again, bound to `name`, and shows its conversation
+    /// from the start.
+    async fn switch_agent(&mut self, name: String) {
+        if self.agent.as_deref() == Some(name.as_str()) {
+            self.notice(
+                NoticeLevel::Info,
+                format!("already working with agent {name}"),
+            );
+            return;
+        }
+        if self.turn.active || self.switching {
+            self.notice(
+                NoticeLevel::Warn,
+                "a turn is running or a switch is under way; switch agents once it ends (or interrupt it)",
+            );
+            return;
+        }
+        let Some(status) = self.daemon_status().await else {
+            self.notice(
+                NoticeLevel::Warn,
+                "not attached to the daemon (see the status bar)",
+            );
+            return;
+        };
+        if !status.agents.iter().any(|row| row.name == name) {
+            let names: Vec<&str> = status.agents.iter().map(|row| row.name.as_str()).collect();
+            self.notice(
+                NoticeLevel::Warn,
+                format!("no agent {name} works here (agents: {})", names.join(", ")),
+            );
+            return;
+        }
+        self.save_cursor();
+        self.link = None;
+        self.mark = None;
+        self.followers.streams_lost();
+        self.orphans.clear();
+        self.discover_at = None;
+        self.session_check_at = None;
+        for id in self.approvals.clear() {
+            self.send(Msg::EscalationResolved(id));
+        }
+        self.agent = Some(name);
+        self.agent_switch = true;
+        self.status(RECONNECTING);
+        self.connect();
     }
 
     /// `/daemon stop`: SIGTERM to the pid the endpoint file names, once the
@@ -2546,11 +2677,16 @@ impl AttachRunner {
             quit_decision(status.as_ref())
         };
         if let (QuitDecision::Leave, Some(status)) = (&decision, &status) {
-            let others = status.clients.saturating_sub(1);
+            let others = status
+                .agent
+                .as_ref()
+                .and_then(|agent| status.agents.iter().find(|row| &row.name == agent))
+                .map_or(status.clients, |row| row.clients)
+                .saturating_sub(1);
             self.farewell(
                 NoticeLevel::Info,
                 format!(
-                    "{others} other client{} attached: detached; the daemon (pid {}) keeps running for {}",
+                    "{others} other client{} attached to this agent: left; the agent and the daemon (pid {}) keep running for {}",
                     if others == 1 { " is" } else { "s are" },
                     status.pid,
                     if others == 1 { "it" } else { "them" },
@@ -2573,19 +2709,38 @@ impl AttachRunner {
         };
         let endpoint = self.link.as_ref().map(|link| link.endpoint.clone());
         let pid = endpoint.as_ref().map_or(0, |endpoint| endpoint.pid);
-        let method = match departure {
-            Departure::Detach => protocol::DETACH,
-            Departure::Terminate => protocol::SHUTDOWN,
+        let (method, params, wait) = match departure {
+            Departure::Detach => (protocol::DETACH, serde_json::json!({}), LEAVE_TIMEOUT),
+            // Retiring interrupts a running turn and stops its helpers.
+            Departure::Retire => (protocol::RETIRE, serde_json::json!({}), CALL_TIMEOUT),
+            Departure::Terminate => (
+                protocol::SHUTDOWN,
+                serde_json::json!({"retire": true}),
+                LEAVE_TIMEOUT,
+            ),
         };
         let answered = bounded(
-            LEAVE_TIMEOUT,
-            remote::local::<_, serde_json::Value>(&connection, method, &serde_json::json!({})),
+            wait,
+            remote::local::<_, serde_json::Value>(&connection, method, &params),
         )
         .await;
+        let agent = connection.agent().to_string();
         match (departure, answered) {
+            (Departure::Retire, Ok(_)) => self.farewell(
+                NoticeLevel::Info,
+                format!(
+                    "agent {agent} retired; its conversation stays (rkat-tui --resume lists it); the daemon (pid {pid}) keeps running for the other clients"
+                ),
+            ),
+            (Departure::Retire, Err(err)) => self.farewell(
+                NoticeLevel::Warn,
+                format!(
+                    "agent {agent} may still be running: the daemon (pid {pid}) did not confirm its retirement ({err}); rkat-tui --list shows it"
+                ),
+            ),
             (Departure::Detach, Ok(_)) => self.farewell(
                 NoticeLevel::Info,
-                format!("detached: the agent keeps running in the daemon (pid {pid}); rkat-tui --attach reattaches"),
+                format!("detached: agent {agent} keeps running in the daemon (pid {pid}); rkat-tui -c reattaches"),
             ),
             (Departure::Detach, Err(err)) => self.farewell(
                 NoticeLevel::Warn,
@@ -2593,7 +2748,10 @@ impl AttachRunner {
             ),
             (Departure::Terminate, Ok(_)) => {
                 self.stopping = true;
-                self.farewell(NoticeLevel::Info, format!("stopped the daemon (pid {pid})"));
+                self.farewell(
+                    NoticeLevel::Info,
+                    format!("stopped the daemon (pid {pid}); its agents retired, their conversations stay"),
+                );
             }
             // No answer (the connection dropped, before or after the
             // daemon read the request, or the call timed out): whether it
@@ -2663,6 +2821,42 @@ pub(crate) async fn append_system_context(
         remote::append_system_context(&connection, text, key),
     )
     .await
+}
+
+/// `/agents`' lines: one per agent (name, state, conversation, clients),
+/// `mine` marked.
+#[must_use]
+pub fn agent_lines(agents: &[protocol::AgentRow], mine: Option<&str>) -> Vec<String> {
+    let mut lines = vec![format!(
+        "{} agent{} in this workspace:",
+        agents.len(),
+        if agents.len() == 1 { "" } else { "s" }
+    )];
+    for row in agents {
+        let session = row.session_id.as_ref().map_or_else(
+            || "no conversation".to_string(),
+            |session| {
+                let id = session.to_string();
+                format!("conversation {}", id.get(..8).unwrap_or(&id))
+            },
+        );
+        let mut line = format!(
+            "  {} · {} · {session} · {} client{}",
+            row.name,
+            if row.running { "running" } else { "idle" },
+            row.clients,
+            if row.clients == 1 { "" } else { "s" }
+        );
+        if row.detached && row.clients == 0 {
+            line.push_str(" (detached)");
+        }
+        if mine == Some(row.name.as_str()) {
+            line.push_str(" (this rkat-tui)");
+        }
+        lines.push(line);
+    }
+    lines.push("/agents <name> switches to one".to_string());
+    lines
 }
 
 /// `/status`'s lines for the daemon's side ([`protocol::REPORT`]).
@@ -2789,9 +2983,13 @@ pub fn classify(err: &std::io::Error) -> Probe {
 }
 
 /// How an attached `/quit` leaves, from the daemon's status (`None`: it
-/// could not say): stop the daemon when this client started it, nobody
-/// detached and nobody else is attached; leave it to the other clients
-/// when there are any; else ask.
+/// could not say). With several agents: when other clients work with this
+/// client's agent, leave it to them; when other clients are attached to
+/// other agents, retire this one (the daemon stays for them); as the last
+/// client, stop the daemon when this client started it and no agent was
+/// left running without a client, else ask. A daemon of before P5 (no
+/// agent list) has one agent every client shares: other clients mean
+/// leave.
 #[must_use]
 pub fn quit_decision(status: Option<&protocol::Status>) -> QuitDecision {
     let Some(status) = status else {
@@ -2800,11 +2998,27 @@ pub fn quit_decision(status: Option<&protocol::Status>) -> QuitDecision {
             running: false,
         };
     };
-    if status.clients > 1 {
+    let mine = status
+        .agent
+        .as_ref()
+        .and_then(|agent| status.agents.iter().find(|row| &row.name == agent));
+    if mine.is_some_and(|row| row.clients > 1) {
         return QuitDecision::Leave;
     }
-    let reason = if status.detached {
-        "a client detached from it earlier"
+    if status.clients > 1 {
+        return if mine.is_some() {
+            QuitDecision::Retire
+        } else {
+            QuitDecision::Leave
+        };
+    }
+    let others = status
+        .agents
+        .iter()
+        .filter(|row| Some(&row.name) != status.agent.as_ref())
+        .count();
+    let reason = if status.detached || others > 0 {
+        "an agent runs here without a client (detached earlier)"
     } else if status.owner {
         return QuitDecision::Terminate;
     } else {
@@ -3083,17 +3297,48 @@ async fn restart(
     launch::wait_for_endpoint(files, launch::START_TIMEOUT, &mut exited, &plan.log).await
 }
 
-/// Attach, find the orchestrator's session and open its stream: resumed
-/// from the saved cursor when it names this daemon's stream of the session
-/// (the events since come on the stream), else live after rendering the
-/// conversation from its start.
+/// How a connect attaches: the agent it asks for, where the agent's
+/// saved cursor is (`None`: render its conversation from the start), and
+/// the start token it presents.
+#[derive(Debug, Clone)]
+struct Attach {
+    agent: AgentChoice,
+    cursor: Option<CursorFile>,
+    start_token: Option<String>,
+}
+
+/// Whether a failed attach will fail again: the daemon refused to bind
+/// this client to its agent (it is no longer live).
+fn gone(err: &ClientError) -> bool {
+    matches!(err, ClientError::Refused { code, .. } if *code == protocol::NO_AGENT)
+}
+
+/// Attach (bound to the agent `attach` asks for), find the agent's
+/// session and open its stream: resumed from `saved` or the agent's saved
+/// cursor when it names this daemon's stream of the session (the events
+/// since come on the stream), else live after rendering the conversation
+/// from its start.
 async fn establish(
     endpoint: Endpoint,
     saved: Option<&Cursor>,
-    start_token: Option<&str>,
+    attach: &Attach,
 ) -> Result<Established, ClientError> {
-    let (connection, mut notifications) =
-        Connection::attach_as(&endpoint, ATTACH_TIMEOUT, start_token, false).await?;
+    let (connection, mut notifications) = Connection::attach_to(
+        &endpoint,
+        ATTACH_TIMEOUT,
+        attach.start_token.as_deref(),
+        false,
+        Some(attach.agent.clone()),
+    )
+    .await?;
+    let from_file = match saved {
+        Some(_) => None,
+        None => attach
+            .cursor
+            .as_ref()
+            .and_then(|cursor| cursor.for_agent(connection.agent()).load()),
+    };
+    let saved = saved.or(from_file.as_ref());
     tokio::time::timeout(CALL_TIMEOUT, async {
         let capabilities = connection
             .call(protocol::engine::INITIALIZE, serde_json::json!({}))
@@ -3165,7 +3410,7 @@ async fn establish(
         })
     })
     .await
-    .map_err(|_| ClientError::Timeout("reading the orchestrator's state"))?
+    .map_err(|_| ClientError::Timeout("reading the agent's state"))?
 }
 
 /// Whether a daemon's `initialize` answer lists the decision methods
@@ -3224,6 +3469,39 @@ mod tests {
 
     /// `/status`'s daemon side: the realm, confinement, mode, trust and
     /// helper lines, in their order.
+    #[test]
+    fn agents_are_listed_with_state_conversation_and_clients() {
+        let session = SessionId::new();
+        let rows = vec![
+            protocol::AgentRow {
+                name: "main-aaaa".into(),
+                session_id: Some(session.clone()),
+                running: true,
+                clients: 1,
+                detached: false,
+            },
+            protocol::AgentRow {
+                name: "main-bbbb".into(),
+                session_id: None,
+                running: false,
+                clients: 0,
+                detached: true,
+            },
+        ];
+        let lines = agent_lines(&rows, Some("main-aaaa"));
+        let short = &session.to_string()[..8];
+        assert_eq!(lines[0], "2 agents in this workspace:");
+        assert_eq!(
+            lines[1],
+            format!("  main-aaaa · running · conversation {short} · 1 client (this rkat-tui)")
+        );
+        assert_eq!(
+            lines[2],
+            "  main-bbbb · idle · no conversation · 0 clients (detached)"
+        );
+        assert!(lines[3].contains("/agents <name>"));
+    }
+
     #[test]
     fn the_report_names_the_realm_confinement_mode_trust_and_helpers() {
         use crate::approval::desk::ModeStatus;
@@ -3302,6 +3580,7 @@ mod tests {
             address: None,
             remote: None,
             start: super::super::StartAt::Current,
+            agent: AgentChoice::Recent,
             start_token: None,
             user_shell: Err("none".into()),
             endpoints: EndpointRegistry::from_endpoints(Vec::new()),

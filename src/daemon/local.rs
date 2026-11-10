@@ -82,14 +82,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use meerkat_core::lifecycle::run_primitive::TurnMetadataOverride;
-use meerkat_core::{AppendSystemContextRequest, Provider, SessionId};
+use meerkat_core::{AppendSystemContextRequest, Provider};
 use meerkat_mob::{AgentIdentity, MobId};
 use meerkat_mob_mcp::MobMcpState;
 use serde_json::{Value, json};
 
+use super::MOB_ID;
+use super::agents::Agents;
 use super::approvals::{DaemonToolOrigins, Desk};
 use super::conversations::{Conversations, Target};
-use super::{MOB_ID, ORCHESTRATOR};
 use crate::approval::desk::{ModeStatus, RuleCommand, RuleOutcome, mode_notice, run_rule_command};
 use crate::approval::mode::PermissionMode;
 use crate::approval::{ApprovalEngine, InputKey};
@@ -110,7 +111,7 @@ use super::protocol::{
     CONVERSATIONS, ENDPOINT, GET_MODE, NEW, RESUME, RULES, Refusal, SET_MODE, SessionEndpoint,
     TRANSCRIPT, TRUST, USAGE,
 };
-use super::protocol::{DETACH, SHUTDOWN, STATUS, Status};
+use super::protocol::{DETACH, RETIRE, Retired, SHUTDOWN, STATUS, ShutdownParams, Status};
 use super::protocol::{NOTICES, Notices, StartupNotice};
 use super::protocol::{REPORT, Report, TrustedFile};
 
@@ -122,17 +123,18 @@ pub struct Local {
     engine: Arc<ApprovalEngine>,
     state: Arc<MobMcpState>,
     conversations: Arc<Conversations>,
+    agents: Arc<Agents>,
     registry: Arc<HelperRegistry>,
     origins: Arc<DaemonToolOrigins>,
     desk: Arc<Desk>,
     thinking: ThinkingTable,
-    /// The orchestrator was told plan mode is on. Starts as the persisted
-    /// mode says (a daemon started in plan mode tells the orchestrator,
-    /// [`Local::announce_plan_mode`]), so leaving plan mode after a restart
-    /// says so. An async lock held across the note's append, so two
-    /// overlapping mode changes (on any connections) cannot interleave
-    /// their check and their note.
-    plan_noted: tokio::sync::Mutex<bool>,
+    /// Which agents were told plan mode is on (an agent missing was told
+    /// nothing: it is told when plan mode is on). A daemon started in plan
+    /// mode tells every agent ([`Local::announce_plan_mode`]), so leaving
+    /// plan mode after a restart says so. An async lock held across the
+    /// notes' appends, so two overlapping mode changes (on any connections)
+    /// cannot interleave their check and their note.
+    plan_noted: tokio::sync::Mutex<std::collections::HashMap<String, bool>>,
     inputs: AtomicU64,
     /// The workspace's project inputs and their trust (`rkat/trust`).
     project: ProjectInputs,
@@ -159,9 +161,11 @@ pub struct LocalParts {
     pub engine: Arc<ApprovalEngine>,
     /// The mob host.
     pub state: Arc<MobMcpState>,
-    /// The orchestrator's conversations.
+    /// The agents' conversations.
     pub conversations: Arc<Conversations>,
-    /// The helpers the orchestrator started.
+    /// The live agents.
+    pub agents: Arc<Agents>,
+    /// The helpers the agents started.
     pub registry: Arc<HelperRegistry>,
     /// The members' tool catalogs the gate reads.
     pub origins: Arc<DaemonToolOrigins>,
@@ -226,6 +230,7 @@ impl Local {
             engine,
             state,
             conversations,
+            agents,
             registry,
             origins,
             desk,
@@ -239,16 +244,24 @@ impl Local {
             lifecycle,
             report,
         } = parts;
+        // In plan mode every restored agent heard it (its conversation
+        // has the note): leaving plan mode tells it.
         let in_plan = engine.mode() == PermissionMode::Plan;
+        let noted = agents
+            .names()
+            .into_iter()
+            .map(|name| (name, in_plan))
+            .collect();
         Self {
             engine,
             state,
             conversations,
+            agents,
             registry,
             origins,
             desk,
             thinking,
-            plan_noted: tokio::sync::Mutex::new(in_plan),
+            plan_noted: tokio::sync::Mutex::new(noted),
             inputs: AtomicU64::new(0),
             project,
             decisions,
@@ -267,18 +280,45 @@ impl Local {
         &self.lifecycle
     }
 
+    /// The live agents.
+    #[must_use]
+    pub fn agents(&self) -> &Arc<Agents> {
+        &self.agents
+    }
+
+    /// The agent `caller` works with: its binding, else (a connection that
+    /// asked for none) the most recently active one.
+    ///
+    /// # Errors
+    ///
+    /// [`protocol::NO_AGENT`] when no agent is live.
+    fn agent_of(&self, caller: &Caller) -> Result<String, Refusal> {
+        caller
+            .agent
+            .clone()
+            .or_else(|| self.agents.recent())
+            .ok_or_else(|| Refusal::new(protocol::NO_AGENT, "no agent works in this workspace"))
+    }
+
     /// `rkat/status` for `caller`.
-    async fn status(&self, caller: Caller) -> Status {
+    async fn status(&self, caller: &Caller) -> Status {
+        let agents = self.agents.rows().await;
+        let agent = self.agent_of(caller).ok();
+        let row = agent
+            .as_ref()
+            .and_then(|name| agents.iter().find(|row| &row.name == name));
         Status {
             workspace: self.lifecycle.workspace().to_path_buf(),
             host: crate::client::address::local_host(),
             pid: std::process::id(),
             started_at: self.lifecycle.started_at().to_string(),
             clients: self.lifecycle.clients(),
-            detached: self.lifecycle.detached(),
+            detached: self.agents.any_detached(),
             owner: caller.owner,
-            session_id: self.session(),
-            running: self.conversations.running().await.unwrap_or(false),
+            session_id: row.and_then(|row| row.session_id.clone()),
+            running: row.is_some_and(|row| row.running),
+            agent: caller.agent.clone(),
+            agents,
         }
     }
 
@@ -301,15 +341,26 @@ impl Local {
         params: Value,
     ) -> Result<Value, Refusal> {
         match method {
-            STATUS => answer(self.status(caller).await),
+            STATUS => answer(self.status(&caller).await),
             DETACH => {
-                self.lifecycle.detach();
+                let agent = self.agent_of(&caller)?;
+                tracing::info!(%agent, "a client detached: the agent keeps running without it");
+                self.agents.detach(&agent);
                 answer(json!({}))
             }
             SHUTDOWN => {
-                tracing::info!(owner = caller.owner, "rkat/shutdown: shutting down");
-                self.lifecycle.shutdown();
+                let ShutdownParams { retire } = protocol::params(params)?;
+                tracing::info!(owner = caller.owner, retire, "rkat/shutdown: shutting down");
+                if retire {
+                    self.lifecycle.shutdown_retiring();
+                } else {
+                    self.lifecycle.shutdown();
+                }
                 answer(json!({}))
+            }
+            RETIRE => {
+                let agent = self.agent_of(&caller)?;
+                answer(self.retire(&agent).await?)
             }
             GET_MODE => answer(ModeStatus::of(&self.engine)),
             REPORT => answer(self.report()),
@@ -327,13 +378,22 @@ impl Local {
                 let command: RuleCommand = protocol::params(params)?;
                 answer(run_rule_command(&self.engine, &command))
             }
-            CONVERSATIONS => answer(ConversationList {
-                conversations: self.conversations.list().await,
-            }),
-            NEW => answer(self.switch(Target::Fresh).await?),
+            CONVERSATIONS => {
+                let agent = self.agent_of(&caller).ok();
+                answer(ConversationList {
+                    conversations: self
+                        .conversations
+                        .list(agent.as_deref(), &self.agents.live())
+                        .await,
+                })
+            }
+            NEW => answer(self.switch(&self.agent_of(&caller)?, Target::Fresh).await?),
             RESUME => {
                 let SessionParams { session_id } = protocol::params(params)?;
-                answer(self.switch(Target::Resume(session_id)).await?)
+                answer(
+                    self.switch(&self.agent_of(&caller)?, Target::Resume(session_id))
+                        .await?,
+                )
             }
             TRANSCRIPT => {
                 let SessionParams { session_id } = protocol::params(params)?;
@@ -374,7 +434,7 @@ impl Local {
             }),
             SET_MODEL => {
                 let params: SetModelParams = protocol::params(params)?;
-                answer(self.set_model(params).await?)
+                answer(self.set_model(&self.agent_of(&caller)?, params).await?)
             }
             CHECKLIST_VIEW => {
                 let ChecklistViewParams { view } = protocol::params(params)?;
@@ -444,20 +504,30 @@ impl Local {
         }
     }
 
-    /// `/new` or `/resume`: switch the orchestrator's conversation, forget
-    /// the gate's state of the one left (its classifier transcript, allow
+    /// `/new` or `/resume`: switch `agent`'s conversation, forget the
+    /// gate's state of the one left (its classifier transcript, allow
     /// cache and helpers; a later `/resume` seeds the transcript again),
     /// then tell the new one about plan mode when it is on, and read its
-    /// tools.
-    async fn switch(&self, target: Target) -> Result<Switched, Refusal> {
+    /// tools. Another agent's conversation is refused with where it is.
+    async fn switch(&self, agent: &str, target: Target) -> Result<Switched, Refusal> {
+        use super::conversations::SwitchError;
         let resumed = matches!(target, Target::Resume(_));
-        let previous = self.conversations.current();
-        let session = self.conversations.switch(target).await.map_err(|err| {
+        let previous = self.conversations.current(agent);
+        let session = self.agents.switch(agent, target).await.map_err(|err| {
             let code = match err {
-                super::conversations::SwitchError::Running => SWITCH_BUSY,
+                SwitchError::Running => SWITCH_BUSY,
                 _ => SWITCH_FAILED,
             };
-            Refusal::new(code, err.to_string())
+            let message = match &err {
+                SwitchError::OtherAgent { agent: owner, .. } if self.agents.is_live(owner) => {
+                    format!("{err}, which works on it now: /agents {owner} switches to it")
+                }
+                SwitchError::OtherAgent { .. } => {
+                    format!("{err}, which has quit: `rkat-tui --resume <id>` seats it again on it")
+                }
+                _ => err.to_string(),
+            };
+            Refusal::new(code, message)
         })?;
         if let Some(previous) = previous.filter(|previous| *previous != session) {
             self.engine.forget_session(&previous);
@@ -466,7 +536,7 @@ impl Local {
             self.conversations.seed(&self.engine, &session).await;
         }
         // The new conversation was never told anything.
-        *self.plan_noted.lock().await = false;
+        self.plan_noted.lock().await.remove(agent);
         let warning = self.note_plan_mode().await;
         let origins = Arc::clone(&self.origins);
         let idle = session.clone();
@@ -477,6 +547,40 @@ impl Local {
             session_id: session,
             warning,
         })
+    }
+
+    /// `rkat/retire`: `agent` leaves the workspace. A running turn is
+    /// interrupted first (its review stops, its open escalations are
+    /// answered with Stop), then the agent retires
+    /// ([`Agents::retire`]): its helpers stop, the engine archives its
+    /// session, which stays in the conversation list and can be seated
+    /// again.
+    async fn retire(&self, agent: &str) -> Result<Retired, Refusal> {
+        let session = self.conversations.current(agent);
+        if let Some(session) = &session {
+            self.engine.stop(session);
+            self.desk.stop(session);
+        }
+        let retired = self
+            .agents
+            .retire(agent)
+            .await
+            .map_err(|err| Refusal::new(SWITCH_FAILED, err.to_string()))?;
+        self.plan_noted.lock().await.remove(agent);
+        Ok(Retired {
+            agent: agent.to_string(),
+            session_id: retired.or(session),
+        })
+    }
+
+    /// Retire every agent ([`Self::retire`]; the daemon is shutting down
+    /// with `rkat/shutdown {"retire": true}`). A refusal is logged.
+    pub async fn retire_all(&self) {
+        for agent in self.agents.names() {
+            if let Err(refusal) = self.retire(&agent).await {
+                tracing::warn!(%agent, error = %refusal.message, "the agent did not retire");
+            }
+        }
     }
 
     /// `rkat/trust {"op": "project"}`: `/trust`, every present project
@@ -518,7 +622,7 @@ impl Local {
     /// new model is configured with. Refused while a turn runs;
     /// the session keeps the model, and the next prompt is an
     /// ordinary `mob/member_send`, tied to no connection.
-    async fn set_model(&self, params: SetModelParams) -> Result<ModelSet, Refusal> {
+    async fn set_model(&self, agent: &str, params: SetModelParams) -> Result<ModelSet, Refusal> {
         use meerkat_runtime::SessionServiceRuntimeExt as _;
 
         let SetModelParams {
@@ -551,7 +655,7 @@ impl Local {
             // agent.
             if written {
                 reseated = true;
-                self.conversations.reseat().await.map_err(|err| {
+                self.agents.reseat(agent).await.map_err(|err| {
                     let code = match err {
                         super::conversations::SwitchError::Running => SWITCH_BUSY,
                         _ => SWITCH_FAILED,
@@ -588,7 +692,7 @@ impl Local {
         let machine = Arc::clone(&self.machine);
         let switched = self
             .conversations
-            .while_idle(|session| async move {
+            .while_idle(agent, |session| async move {
                 let report = machine
                     .reconfigure_session_llm_identity(&session, request)
                     .await?;
@@ -620,11 +724,6 @@ impl Local {
         })
     }
 
-    /// The session the orchestrator runs as now.
-    fn session(&self) -> Option<SessionId> {
-        self.conversations.current()
-    }
-
     async fn set_mode(&self, mode: PermissionMode) -> ModeSet {
         self.engine.set_mode(mode);
         let mut warnings = Vec::new();
@@ -643,40 +742,53 @@ impl Local {
         }
     }
 
-    /// At start: when the persisted mode is plan, tell the orchestrator
-    /// (a fresh one never heard it; a restored one may have been switched
-    /// to plan mode by another process). Returns a warning when it could
-    /// not be told.
+    /// At start: when the persisted mode is plan, tell every agent (a
+    /// fresh one never heard it; a restored one may have been switched to
+    /// plan mode by another process). Returns a warning when one could not
+    /// be told.
     pub async fn announce_plan_mode(&self) -> Option<String> {
         let mut noted = self.plan_noted.lock().await;
         if self.engine.mode() != PermissionMode::Plan {
             return None;
         }
-        let warning = self.append_plan_note(true).await;
-        if warning.is_none() {
-            *noted = true;
+        let mut warnings = Vec::new();
+        for agent in self.agents.names() {
+            match self.append_plan_note(&agent, true).await {
+                None => {
+                    noted.insert(agent, true);
+                }
+                Some(warning) => warnings.push(warning),
+            }
         }
-        warning
+        (!warnings.is_empty()).then(|| warnings.join("\n"))
     }
 
-    /// Tell the orchestrator plan mode started or ended, once per change.
-    /// The mode is read under the lock, not taken from the caller: of two
-    /// overlapping changes, the later note always matches the mode that
-    /// holds, and the notes alternate.
+    /// Tell every live agent plan mode started or ended, once per change
+    /// (an agent never told is told only when plan mode is on). The mode is
+    /// read under the lock, not taken from the caller: of two overlapping
+    /// changes, the later note always matches the mode that holds, and the
+    /// notes alternate.
     async fn note_plan_mode(&self) -> Option<String> {
         let mut noted = self.plan_noted.lock().await;
         let plan = self.engine.mode() == PermissionMode::Plan;
-        if *noted == plan {
-            return None;
+        let live = self.agents.names();
+        noted.retain(|agent, _| live.contains(agent));
+        let mut warnings = Vec::new();
+        for agent in live {
+            if noted.get(&agent).copied().unwrap_or(false) == plan {
+                continue;
+            }
+            match self.append_plan_note(&agent, plan).await {
+                None => {
+                    noted.insert(agent, plan);
+                }
+                Some(warning) => warnings.push(warning),
+            }
         }
-        let warning = self.append_plan_note(plan).await;
-        if warning.is_none() {
-            *noted = plan;
-        }
-        warning
+        (!warnings.is_empty()).then(|| warnings.join("\n"))
     }
 
-    async fn append_plan_note(&self, plan: bool) -> Option<String> {
+    async fn append_plan_note(&self, agent: &str, plan: bool) -> Option<String> {
         let note = if plan {
             crate::approval::mode::PLAN_ON_NOTE
         } else {
@@ -687,17 +799,23 @@ impl Local {
         request.idempotency_key = Some(crate::approval::mode::plan_note_key(plan));
         match self
             .state
-            .mob_append_system_context(
-                &MobId::from(MOB_ID),
-                &AgentIdentity::from(ORCHESTRATOR),
-                request,
-            )
+            .mob_append_system_context(&MobId::from(MOB_ID), &AgentIdentity::from(agent), request)
             .await
         {
             Ok(_) => None,
             Err(err) => Some(format!(
-                "the agent could not be told about plan mode now (the tool errors say it): {err}"
+                "agent {agent} could not be told about plan mode now (the tool errors say it): {err}"
             )),
+        }
+    }
+
+    /// A connection was just bound to `agent`: when plan mode is on and the
+    /// agent was never told (one seated for it), tell it.
+    pub async fn bound(&self, agent: &str) {
+        if self.engine.mode() == PermissionMode::Plan
+            && let Some(warning) = self.note_plan_mode().await
+        {
+            tracing::warn!(%agent, %warning, "plan mode");
         }
     }
 
@@ -713,11 +831,13 @@ impl Local {
         let Some(params) = request.get_mut("params") else {
             return request;
         };
-        let ours = params.get("mob_id").and_then(Value::as_str) == Some(MOB_ID)
-            && params.get("agent_identity").and_then(Value::as_str) == Some(ORCHESTRATOR);
-        if !ours {
-            return request;
-        }
+        let agent = match (
+            params.get("mob_id").and_then(Value::as_str),
+            params.get("agent_identity").and_then(Value::as_str),
+        ) {
+            (Some(MOB_ID), Some(agent)) if self.agents.is_live(agent) => agent.to_string(),
+            _ => return request,
+        };
         match method.as_str() {
             engine::MEMBER_SEND | engine::TURN_START => {
                 let field = if method == engine::MEMBER_SEND {
@@ -725,9 +845,10 @@ impl Local {
                 } else {
                     "prompt"
                 };
+                self.agents.touch(&agent);
                 if let Some(text) = params.get(field).and_then(content_text)
                     && !text.trim().is_empty()
-                    && let Some(session) = self.session()
+                    && let Some(session) = self.conversations.current(&agent)
                 {
                     let n = self.inputs.fetch_add(1, Ordering::Relaxed);
                     let key = InputKey::new(format!("rkat-attach:{}:{n}", std::process::id()));
@@ -738,7 +859,7 @@ impl Local {
                 }
             }
             engine::STOP_MEMBER_RUN | engine::FORCE_CANCEL => {
-                if let Some(session) = self.session() {
+                if let Some(session) = self.conversations.current(&agent) {
                     self.engine.stop(&session);
                     self.desk.stop(&session);
                     // The `delegate` call that would retire a helper is

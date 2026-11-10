@@ -55,6 +55,9 @@ pub enum HandshakeError {
     /// Missing or wrong token.
     #[error("wrong or missing token")]
     Unauthorized,
+    /// The connection could not be bound to the agent it asked for.
+    #[error("no agent: {0}")]
+    NoAgent(String),
     /// Reading or writing the connection failed.
     #[error("connection error: {0}")]
     Io(#[from] std::io::Error),
@@ -63,7 +66,8 @@ pub enum HandshakeError {
 /// A valid attach line, not acknowledged yet ([`acknowledge`]).
 #[derive(Debug)]
 pub struct Pending {
-    id: RpcId,
+    /// The request's id.
+    pub id: RpcId,
     /// What the client presented besides the token (its start token,
     /// whether it is a probe).
     pub params: AttachParams,
@@ -86,13 +90,14 @@ where
     W: AsyncWrite + Unpin,
 {
     let pending = read_attach(reader, writer, token, timeout).await?;
-    acknowledge(writer, &pending, timeout).await?;
+    acknowledge(writer, &pending, None, timeout).await?;
     Ok(pending.params)
 }
 
-/// Answer `pending` with `{attached: true}` on `writer`. The daemon
-/// registers the connection first ([`super::serve`]): a client that read
-/// this answer is counted for every other connection.
+/// Answer `pending` with `{attached: true}` on `writer`, naming the agent
+/// the connection was bound to. The daemon registers the connection first
+/// ([`super::serve`]): a client that read this answer is counted for every
+/// other connection.
 ///
 /// # Errors
 ///
@@ -101,9 +106,17 @@ where
 pub async fn acknowledge<W: AsyncWrite + Unpin>(
     writer: &mut W,
     pending: &Pending,
+    agent: Option<&super::agents::Bound>,
     timeout: Duration,
 ) -> Result<(), HandshakeError> {
-    let reply = protocol::result_line(Some(pending.id.clone()), Attached { attached: true });
+    let reply = protocol::result_line(
+        Some(pending.id.clone()),
+        Attached {
+            attached: true,
+            agent: agent.map(|bound| bound.name.clone()),
+            seated: agent.is_some_and(|bound| bound.seated),
+        },
+    );
     tokio::time::timeout(timeout, write_line(writer, &reply))
         .await
         .map_err(|_| HandshakeError::Timeout(timeout))??;

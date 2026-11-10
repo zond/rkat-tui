@@ -200,7 +200,15 @@ async fn connection(
 ) {
     let (read, mut write) = stream.into_split();
     let mut reader = BufReader::new(read);
-    let seat = match admit(&mut reader, &mut write, &token, local.lifecycle()).await {
+    let seat = match admit(
+        &mut reader,
+        &mut write,
+        &token,
+        local.lifecycle(),
+        Some(local.agents()),
+    )
+    .await
+    {
         Ok(seat) => seat,
         Err(err) => {
             tracing::warn!(%peer, error = %err, "refused a connection");
@@ -208,7 +216,10 @@ async fn connection(
         }
     };
     let caller = seat.caller();
-    tracing::info!(%peer, owner = caller.owner, counted = seat.counted(), "client attached");
+    tracing::info!(%peer, owner = caller.owner, counted = seat.counted(), agent = ?caller.agent, "client attached");
+    if let Some(agent) = &caller.agent {
+        local.bound(agent).await;
+    }
     let (engine_side, proxy_side) = tokio::io::duplex(PIPE);
     let (server_read, server_write) = tokio::io::split(engine_side);
     // Aborted with this task (a shutdown aborts the connections), so the
@@ -240,11 +251,13 @@ async fn connection(
 
 /// The handshake of one connection: read and check the attach line, take
 /// the connection's seat in `lifecycle` (counted until the connection
-/// ends; the owner's end without `rkat/shutdown` is a detach), and only
-/// then acknowledge it, so a client that read `{attached: true}` is
-/// already counted for every other connection's `rkat/status`. A seat
-/// whose acknowledgement cannot be written is given up without counting
-/// as a detach: that client never attached.
+/// ends), bind it to the agent it asks for (with `agents`; a probe is bound
+/// to none, a client of before P5 to the most recent agent; a new agent is
+/// seated here), and only then acknowledge it, naming the agent, so a
+/// client that read `{attached: true}` is already counted for every other
+/// connection's `rkat/status`. A seat whose acknowledgement cannot be
+/// written is given up without leaving its agent detached: that client
+/// never attached. A bind that fails is answered with the refusal.
 ///
 /// # Errors
 ///
@@ -255,14 +268,46 @@ pub async fn admit<R, W>(
     writer: &mut W,
     token: &str,
     lifecycle: &Arc<super::lifecycle::Lifecycle>,
+    agents: Option<&Arc<super::agents::Agents>>,
 ) -> Result<super::lifecycle::Seat, handshake::HandshakeError>
 where
     R: tokio::io::AsyncBufRead + Unpin,
     W: tokio::io::AsyncWrite + Unpin,
 {
     let pending = handshake::read_attach(reader, writer, token, handshake::TIMEOUT).await?;
-    let seat = lifecycle.seat(&pending.params);
-    match handshake::acknowledge(writer, &pending, handshake::TIMEOUT).await {
+    let mut seat = lifecycle.seat(&pending.params);
+    let mut bound = None;
+    if let Some(agents) = agents
+        && !pending.params.probe
+    {
+        let choice = pending
+            .params
+            .agent
+            .clone()
+            .unwrap_or(protocol::AgentChoice::Recent);
+        match agents.bind(&choice).await {
+            Ok((binding, agent)) => {
+                seat.bind(binding);
+                bound = Some(agent);
+            }
+            Err(err) => {
+                let line = protocol::error_line(
+                    Some(pending.id.clone()),
+                    protocol::NO_AGENT,
+                    &err.to_string(),
+                );
+                let _ = tokio::time::timeout(handshake::TIMEOUT, async {
+                    let _ = writer.write_all(line.as_bytes()).await;
+                    let _ = writer.flush().await;
+                    let _ = writer.shutdown().await;
+                })
+                .await;
+                seat.withdraw();
+                return Err(handshake::HandshakeError::NoAgent(err.to_string()));
+            }
+        }
+    }
+    match handshake::acknowledge(writer, &pending, bound.as_ref(), handshake::TIMEOUT).await {
         Ok(()) => Ok(seat),
         Err(err) => {
             seat.withdraw();
@@ -395,6 +440,7 @@ pub async fn proxy<R, W, E, L>(
         match route(&line, &*local) {
             Routed::Local { id, method, params } => {
                 let local = Arc::clone(&local);
+                let caller = caller.clone();
                 // Weak: a call still running when the client leaves does
                 // not keep the writer waiting for its answer.
                 let out_tx = out_tx.downgrade();
@@ -679,7 +725,7 @@ mod tests {
             seen: None,
             fail: false,
         };
-        let seat = admit(&mut reader, &mut writer, "t", &lifecycle)
+        let seat = admit(&mut reader, &mut writer, "t", &lifecycle, None)
             .await
             .unwrap();
         assert_eq!(writer.seen, Some(1), "counted when the answer was written");
@@ -704,14 +750,10 @@ mod tests {
             seen: None,
             fail: true,
         };
-        let refused = admit(&mut reader, &mut writer, "t", &lifecycle).await;
+        let refused = admit(&mut reader, &mut writer, "t", &lifecycle, None).await;
         assert!(refused.is_err());
         assert_eq!(writer.seen, Some(1), "the seat was taken before the write");
         assert_eq!(lifecycle.clients(), 0, "and given up after it failed");
-        assert!(
-            !lifecycle.detached(),
-            "a client that never attached did not detach"
-        );
     }
 
     /// `rkat/slow` waits for its gate; everything else passes unchanged.

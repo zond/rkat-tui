@@ -21,7 +21,7 @@ use meerkat::LlmClient;
 use rig::Running;
 use rkat_tui::bootstrap::{BootstrapOptions, HostPaths};
 use rkat_tui::daemon::endpoint::Endpoint;
-use rkat_tui::daemon::{Daemon, DaemonError, DaemonOptions, MOB_ID, ORCHESTRATOR};
+use rkat_tui::daemon::{Daemon, DaemonError, DaemonOptions, MOB_ID};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 use tokio::net::TcpStream;
@@ -34,6 +34,8 @@ async fn connect(daemon: &Running) -> Client {
 
 /// A JSON-RPC client over one connection.
 struct Client {
+    /// The agent the daemon bound the connection to.
+    agent: String,
     reader: BufReader<OwnedReadHalf>,
     writer: OwnedWriteHalf,
     next: u64,
@@ -50,6 +52,7 @@ impl Client {
     async fn attach(endpoint: &Endpoint) -> Self {
         let (reader, writer) = Self::raw(endpoint).await;
         let mut client = Self {
+            agent: String::new(),
             reader,
             writer,
             next: 100,
@@ -58,7 +61,16 @@ impl Client {
         let attached = client
             .call("rkat/attach", json!({"token": endpoint.token}))
             .await;
-        assert_eq!(attached["result"], json!({"attached": true}), "{attached}");
+        // An attach that names no agent (a client of before P5) is bound
+        // to the most recently active one, which the answer names.
+        assert_eq!(attached["result"]["attached"], json!(true), "{attached}");
+        assert!(
+            attached["result"]["agent"]
+                .as_str()
+                .is_some_and(rkat_tui::daemon::agents::is_agent),
+            "{attached}"
+        );
+        client.agent = attached["result"]["agent"].as_str().unwrap().to_string();
         let init = client.call("initialize", json!({})).await;
         assert!(init.get("result").is_some(), "{init}");
         client
@@ -120,10 +132,20 @@ impl Client {
         let opened = self
             .ok(
                 "mob/stream_open",
-                json!({"mob_id": MOB_ID, "agent_identity": ORCHESTRATOR}),
+                json!({"mob_id": MOB_ID, "agent_identity": self.agent}),
             )
             .await;
         opened["stream_id"].clone()
+    }
+
+    /// A turn for the connection's agent.
+    fn turn(&self, prompt: &str) -> Value {
+        json!({"mob_id": MOB_ID, "agent_identity": self.agent, "prompt": prompt})
+    }
+
+    /// The connection's agent as a member.
+    fn member(&self) -> Value {
+        json!({"mob_id": MOB_ID, "agent_identity": self.agent})
     }
 
     /// Wait until the stream `stream` reports its run completed; returns the
@@ -146,16 +168,8 @@ impl Client {
     }
 }
 
-fn members_include_orchestrator(result: &Value) -> bool {
-    result.to_string().contains(&format!("\"{ORCHESTRATOR}\""))
-}
-
-fn turn(prompt: &str) -> Value {
-    json!({"mob_id": MOB_ID, "agent_identity": ORCHESTRATOR, "prompt": prompt})
-}
-
-fn member() -> Value {
-    json!({"mob_id": MOB_ID, "agent_identity": ORCHESTRATOR})
+fn members_include_orchestrator(result: &Value, agent: &str) -> bool {
+    result.to_string().contains(&format!("\"{agent}\""))
 }
 
 /// The text of the last request's messages (tool results included).
@@ -195,8 +209,11 @@ async fn a_client_attaches_and_finds_the_orchestrator() {
     }
     let mut client = connect(&daemon).await;
     let members = client.ok("mob/members", json!({"mob_id": MOB_ID})).await;
-    assert!(members_include_orchestrator(&members), "{members}");
-    let status = client.ok("mob/member_status", member()).await;
+    assert!(
+        members_include_orchestrator(&members, &daemon.agent),
+        "{members}"
+    );
+    let status = client.ok("mob/member_status", client.member()).await;
     assert_eq!(
         status["current_session_id"],
         json!(daemon.session),
@@ -239,7 +256,10 @@ async fn a_connection_without_the_token_never_reaches_the_router() {
     // The daemon still serves a client that holds the token.
     let mut client = connect(&daemon).await;
     let members = client.ok("mob/members", json!({"mob_id": MOB_ID})).await;
-    assert!(members_include_orchestrator(&members), "{members}");
+    assert!(
+        members_include_orchestrator(&members, &daemon.agent),
+        "{members}"
+    );
     daemon.stop().await;
 }
 
@@ -307,7 +327,10 @@ async fn the_proxy_forwards_only_requests_it_parsed() {
 
     // A served method still works, after the malformed lines.
     let listed = client.ok("mob/members", json!({"mob_id": MOB_ID})).await;
-    assert!(members_include_orchestrator(&listed), "{listed}");
+    assert!(
+        members_include_orchestrator(&listed, &daemon.agent),
+        "{listed}"
+    );
     // Nothing the refused lines asked for ran: no model call, no command.
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     assert!(llm.recorded().is_empty(), "{}", llm.recorded().len());
@@ -324,7 +347,7 @@ async fn a_turn_streams_to_every_attached_client() {
     let mut second = connect(&daemon).await;
     let first_stream = first.open_stream().await;
     let second_stream = second.open_stream().await;
-    first.ok("mob/turn_start", turn("say hello")).await;
+    first.ok("mob/turn_start", first.turn("say hello")).await;
     for (client, stream) in [(&mut first, &first_stream), (&mut second, &second_stream)] {
         let events = client.run_completed(stream).await;
         let text = Value::Array(events).to_string();
@@ -352,17 +375,17 @@ async fn a_client_leaving_mid_turn_leaves_the_turn_running() {
     let sent = client
         .ok(
             "mob/member_send",
-            json!({"mob_id": MOB_ID, "agent_identity": ORCHESTRATOR, "content": "long work"}),
+            json!({"mob_id": MOB_ID, "agent_identity": client.agent, "content": "long work"}),
         )
         .await;
-    assert_eq!(sent["agent_identity"], ORCHESTRATOR, "{sent}");
+    assert_eq!(sent["agent_identity"], json!(client.agent), "{sent}");
     llm.wait_call(0).await;
     drop(client);
     gate.notify_one();
     // A new client catches up from the member's durable session events
     // (`mob/stream_open` has no cursor): the turn ran to its end.
     let mut client = connect(&daemon).await;
-    let status = client.ok("mob/member_status", member()).await;
+    let status = client.ok("mob/member_status", client.member()).await;
     assert_eq!(
         status["current_session_id"],
         json!(daemon.session),
@@ -405,7 +428,9 @@ async fn the_orchestrator_has_the_tui_file_tools() {
     let daemon = Running::start(&ws.root, &llm).await;
     let mut client = connect(&daemon).await;
     let stream = client.open_stream().await;
-    client.ok("mob/turn_start", turn("read notes.txt")).await;
+    client
+        .ok("mob/turn_start", client.turn("read notes.txt"))
+        .await;
     client.run_completed(&stream).await;
     assert!(llm.recorded()[0].tools.iter().any(|t| t == "read_file"));
     let request = last_request(&llm);
@@ -488,7 +513,7 @@ async fn the_orchestrator_shell_runs_confined() {
     let token = daemon.endpoint().token;
     let mut client = connect(&daemon).await;
     let stream = client.open_stream().await;
-    client.ok("mob/turn_start", turn("echo")).await;
+    client.ok("mob/turn_start", client.turn("echo")).await;
     client.run_completed(&stream).await;
     let request = last_request(&llm);
     assert!(request.contains("confined-42"), "{request}");
@@ -558,7 +583,7 @@ async fn a_restarted_daemon_restores_the_orchestrator_with_its_tools() {
     let first_session = daemon.session.clone();
     let mut client = connect(&daemon).await;
     let stream = client.open_stream().await;
-    client.ok("mob/turn_start", turn("one")).await;
+    client.ok("mob/turn_start", client.turn("one")).await;
     client.run_completed(&stream).await;
     drop(client);
     daemon.stop().await;
@@ -579,9 +604,12 @@ async fn a_restarted_daemon_restores_the_orchestrator_with_its_tools() {
     assert_eq!(daemon.session, first_session);
     let mut client = connect(&daemon).await;
     let members = client.ok("mob/members", json!({"mob_id": MOB_ID})).await;
-    assert!(members_include_orchestrator(&members), "{members}");
+    assert!(
+        members_include_orchestrator(&members, &daemon.agent),
+        "{members}"
+    );
     let stream = client.open_stream().await;
-    client.ok("mob/turn_start", turn("two")).await;
+    client.ok("mob/turn_start", client.turn("two")).await;
     let events = client.run_completed(&stream).await;
     assert!(Value::Array(events).to_string().contains("second life"));
     let request = last_request(&llm);
@@ -628,7 +656,7 @@ async fn set_model_switches_in_place_and_waits_for_the_run() {
     client
         .ok(
             "mob/member_send",
-            json!({"mob_id": MOB_ID, "agent_identity": ORCHESTRATOR, "content": "work"}),
+            json!({"mob_id": MOB_ID, "agent_identity": client.agent, "content": "work"}),
         )
         .await;
     llm.wait_call(0).await;
@@ -649,7 +677,7 @@ async fn set_model_switches_in_place_and_waits_for_the_run() {
     client
         .ok(
             "mob/member_send",
-            json!({"mob_id": MOB_ID, "agent_identity": ORCHESTRATOR, "content": "more"}),
+            json!({"mob_id": MOB_ID, "agent_identity": client.agent, "content": "more"}),
         )
         .await;
     client.run_completed(&stream).await;

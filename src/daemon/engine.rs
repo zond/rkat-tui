@@ -40,7 +40,7 @@ use crate::mobs::{HelperKey, HelperRegistry};
 use crate::thinking::ThinkingTable;
 use crate::tools::FileToolDispatcher;
 
-/// What [`super::orchestrator::ensure`] spawns the orchestrator with.
+/// What the agents are seated with ([`super::orchestrator::ensure_mob`] creates their mob from it).
 #[derive(Debug, Clone)]
 pub struct RootPlan {
     /// The start-up model.
@@ -213,13 +213,14 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
             }
         }));
     let (diff_tx, diff_rx) = tokio::sync::mpsc::unbounded_channel();
-    let root_tools = orchestrator_tools(&scope, diff_tx)?;
-    let tools_for_root = Arc::clone(&root_tools.0);
-    let notes = root_tools.1;
+    let notes = Arc::new(note_tools(&scope));
+    // The tools' names, for the gate's provenance (every agent's set has
+    // the same ones).
+    let catalog = agent_tools(&scope, &notes, None)?;
     let engine = Arc::clone(&approval.engine);
     let origins = Arc::new(DaemonToolOrigins::new(
         runtime.session_service(),
-        &[Arc::clone(&root_tools.0)],
+        &[catalog],
     ));
     engine.set_tool_origins(Arc::clone(&origins) as Arc<dyn crate::approval::ToolOrigins>);
     let helper_catalogs = super::approvals::watch_helpers(updates, Arc::clone(&origins));
@@ -236,7 +237,6 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
             "the realm keeps no durable decisions (an ephemeral persistence); approval requests could not reach a client".to_string(),
         ));
     }
-    let key = HelperKey::new(MOB_ID.into(), ORCHESTRATOR.into());
     let root_thinking: crate::mobs::customizer::RootThinking = Arc::new({
         let thinking = thinking.clone();
         move |identity: &meerkat_core::SessionLlmIdentity| {
@@ -254,22 +254,52 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
             )
         }
     });
+    let notes_for_index = Arc::clone(&notes);
+    let root_tools: crate::mobs::customizer::RootTools = {
+        let scope = scope.clone();
+        let notes = Arc::clone(&notes);
+        Arc::new(move |identity: &meerkat_mob::AgentIdentity| {
+            let diffs = tagged_diffs(identity.to_string(), diff_tx.clone());
+            match agent_tools(&scope, &notes, Some(diffs)) {
+                Ok(tools) => tools,
+                Err(err) => {
+                    // The same composition succeeded at start for the
+                    // catalog; an agent without its file tools still has
+                    // the engine's.
+                    tracing::error!(error = %err, agent = %identity, "the agent's file tools could not be composed");
+                    Arc::new(meerkat_tools::EmptyToolDispatcher) as Arc<dyn AgentToolDispatcher>
+                }
+            }
+        })
+    };
+    let admission: crate::mobs::customizer::RootAdmission = {
+        let engine = Arc::clone(&engine);
+        let registry = Arc::clone(&registry);
+        Arc::new(move |key: &HelperKey| {
+            Arc::new(RootGate::new(
+                Arc::clone(&engine),
+                Arc::clone(&registry),
+                key.clone(),
+            )) as Arc<dyn meerkat_core::ToolDispatchAdmission>
+        })
+    };
     let root = RootMember {
-        key: key.clone(),
-        tools: Arc::new(move || Arc::clone(&tools_for_root)),
-        instructions: Arc::new(move || {
+        mob: MOB_ID.into(),
+        is_root: super::agents::is_agent,
+        profile: ORCHESTRATOR.to_string(),
+        tools: root_tools,
+        instructions: Arc::new(move |_identity: &meerkat_mob::AgentIdentity| {
             let mut sections = vec![CODING_PERSONA.to_string()];
             sections.extend(instructions.render());
-            sections.extend(prompt_index(notes.user(), notes.workspace()));
+            sections.extend(prompt_index(
+                notes_for_index.user(),
+                notes_for_index.workspace(),
+            ));
             sections
         }),
         model: choice.model.clone(),
         auth_binding: choice.auth_binding.clone(),
-        admission: Some(Arc::new(RootGate::new(
-            Arc::clone(&engine),
-            Arc::clone(&registry),
-            key,
-        ))),
+        admission: Some(admission),
         thinking: Some(root_thinking),
     };
     let project_root = scope.project_root.clone();
@@ -414,19 +444,9 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     })
 }
 
-/// The orchestrator's external tools (the TUI session's file and note
-/// tools behind one gateway; no `fork`, which needs the TUI's service) and
-/// the note stores its instructions index. The file tools report every
-/// change they make to `diffs` (the clients show it as a diff).
-fn orchestrator_tools(
-    scope: &RuntimeScope,
-    diffs: tokio::sync::mpsc::UnboundedSender<crate::tools::FileDiff>,
-) -> Result<(Arc<dyn AgentToolDispatcher>, Arc<NoteToolDispatcher>), DaemonError> {
-    let files = Arc::new(FileToolDispatcher::new(
-        scope.project_root.clone(),
-        Some(diffs),
-    ));
-    let notes = Arc::new(NoteToolDispatcher::new(
+/// The note tools every agent shares (one store per scope).
+fn note_tools(scope: &RuntimeScope) -> NoteToolDispatcher {
+    NoteToolDispatcher::new(
         scope
             .global
             .as_ref()
@@ -435,13 +455,41 @@ fn orchestrator_tools(
             crate::memory::workspace_notes_dir(&scope.context_root),
             Scope::Workspace,
         ),
-    ));
+    )
+}
+
+/// One agent's external tools: its own file tools (reporting every change
+/// they make to `diffs`, which the clients show as a diff) and the shared
+/// note tools, behind one gateway.
+fn agent_tools(
+    scope: &RuntimeScope,
+    notes: &Arc<NoteToolDispatcher>,
+    diffs: Option<tokio::sync::mpsc::UnboundedSender<crate::tools::FileDiff>>,
+) -> Result<Arc<dyn AgentToolDispatcher>, DaemonError> {
+    let files = Arc::new(FileToolDispatcher::new(scope.project_root.clone(), diffs));
     let gateway = ToolGatewayBuilder::new()
         .add_dispatcher(files as Arc<dyn AgentToolDispatcher>)
-        .add_dispatcher(Arc::clone(&notes) as Arc<dyn AgentToolDispatcher>)
+        .add_dispatcher(Arc::clone(notes) as Arc<dyn AgentToolDispatcher>)
         .build()
         .map_err(TuiError::ToolGateway)?;
-    Ok((Arc::new(gateway), notes))
+    Ok(Arc::new(gateway))
+}
+
+/// A sender of file changes that forwards each to `all` tagged with
+/// `agent` (until either end is gone).
+fn tagged_diffs(
+    agent: String,
+    all: tokio::sync::mpsc::UnboundedSender<(String, crate::tools::FileDiff)>,
+) -> tokio::sync::mpsc::UnboundedSender<crate::tools::FileDiff> {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        while let Some(diff) = rx.recv().await {
+            if all.send((agent.clone(), diff)).is_err() {
+                break;
+            }
+        }
+    });
+    tx
 }
 
 /// Push every event of the approval engine's `events` to the clients as

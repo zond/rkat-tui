@@ -1,14 +1,16 @@
 //! The daemon's lifecycle as its clients see it: how many are attached,
-//! whether any has detached since the daemon started, which connection
-//! started it, and the request to shut down.
+//! which connection started it, and the request to shut down. Which agent
+//! each connection works with, and whether an agent was left running
+//! without a client, is [`super::agents`]'.
 //!
-//! The rules (`docs/mob-split.md`, "Direction"): `/detach` means "keep
-//! going without me" and is recorded ([`Lifecycle::detach`]); `/quit` stops
-//! the daemon only when the client that started it quits and nobody has
-//! detached since ([`super::protocol::Status`] tells the client); a
-//! connection that ends without `rkat/shutdown` (a hangup, a crash, a
-//! dropped socket) is a detach when it is the owner's ([`Seat`]'s drop),
-//! and never stops the daemon.
+//! The rules (`docs/mob-split.md`, "Direction"): `/detach` means "keep my
+//! agent going without me" and is recorded with the agent
+//! ([`super::agents::Agents::detach`]); `/quit` stops the daemon only when
+//! the client that started it is the last one and no agent was left
+//! detached ([`super::protocol::Status`] tells the client); a connection
+//! that ends without retiring its agent or a shutdown (a hangup, a crash, a
+//! dropped socket) leaves the agent detached when it was its last client
+//! ([`super::agents::Binding`]'s drop), and never stops the daemon.
 //!
 //! The owner is the connection that presents the start token: the client
 //! that launches the daemon draws one, hands it to the daemon in
@@ -27,11 +29,14 @@ use super::protocol::AttachParams;
 /// without it).
 pub const START_TOKEN_ENV: &str = "RKAT_TUI_START_TOKEN";
 
-/// What the connection proved at attach.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// What the connection proved at attach, and the agent it is bound to.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Caller {
     /// It presented the daemon's start token.
     pub owner: bool,
+    /// The agent it works with (`None`: a probe, or a connection that
+    /// asked for none).
+    pub agent: Option<String>,
 }
 
 /// The daemon's lifecycle state.
@@ -41,10 +46,11 @@ pub struct Lifecycle {
     started_at: String,
     start_token: Option<String>,
     clients: AtomicUsize,
-    detached: AtomicBool,
     /// A shutdown was asked for (or began): connections ending now are no
     /// detach.
     terminating: AtomicBool,
+    /// The shutdown retires every agent first (`rkat/shutdown {retire}`).
+    retire_all: AtomicBool,
     shutdown: tokio::sync::watch::Sender<bool>,
 }
 
@@ -59,8 +65,8 @@ impl Lifecycle {
             started_at,
             start_token: start_token.filter(|token| !token.is_empty()),
             clients: AtomicUsize::new(0),
-            detached: AtomicBool::new(false),
             terminating: AtomicBool::new(false),
+            retire_all: AtomicBool::new(false),
             shutdown: tokio::sync::watch::channel(false).0,
         })
     }
@@ -94,9 +100,9 @@ impl Lifecycle {
         }
         Seat {
             lifecycle: Arc::clone(self),
-            caller: Caller { owner },
+            caller: Caller { owner, agent: None },
             counted,
-            withdrawn: false,
+            binding: None,
         }
     }
 
@@ -106,17 +112,17 @@ impl Lifecycle {
         self.clients.load(Ordering::SeqCst)
     }
 
-    /// Whether any client has detached since the daemon started.
-    #[must_use]
-    pub fn detached(&self) -> bool {
-        self.detached.load(Ordering::SeqCst)
+    /// `rkat/shutdown {"retire": true}`: stop the daemon, every agent
+    /// retired first.
+    pub fn shutdown_retiring(&self) {
+        self.retire_all.store(true, Ordering::SeqCst);
+        self.shutdown();
     }
 
-    /// `rkat/detach`: a client leaves and wants the agent kept running.
-    pub fn detach(&self) {
-        if !self.detached.swap(true, Ordering::SeqCst) {
-            tracing::info!("a client detached: /quit asks before stopping this daemon from now on");
-        }
+    /// Whether the shutdown retires every agent.
+    #[must_use]
+    pub fn retires_all(&self) -> bool {
+        self.retire_all.load(Ordering::SeqCst)
     }
 
     /// `rkat/shutdown` (or a signal): stop the daemon.
@@ -131,6 +137,12 @@ impl Lifecycle {
         self.terminating.store(true, Ordering::SeqCst);
     }
 
+    /// Whether the daemon is shutting down.
+    #[must_use]
+    pub fn is_terminating(&self) -> bool {
+        self.terminating.load(Ordering::SeqCst)
+    }
+
     /// Resolves once [`Lifecycle::shutdown`] was called.
     pub async fn shutdown_requested(&self) {
         let mut asked = self.shutdown.subscribe();
@@ -139,24 +151,29 @@ impl Lifecycle {
     }
 }
 
-/// One attached connection's place in the [`Lifecycle`]: released when
-/// the connection ends. The owner's connection ending without a shutdown
-/// is a detach (a hangup, a crash or a dropped socket keeps the agent
-/// running, as `/detach` does).
+/// One attached connection's place in the [`Lifecycle`], and its binding
+/// to an agent: released when the connection ends (the binding's end
+/// leaves an agent without a client detached, see
+/// [`super::agents::Binding`]).
 #[derive(Debug)]
 pub struct Seat {
     lifecycle: Arc<Lifecycle>,
     caller: Caller,
     counted: bool,
-    /// Given up before the acknowledgement reached the client.
-    withdrawn: bool,
+    binding: Option<super::agents::Binding>,
 }
 
 impl Seat {
-    /// What the connection proved.
+    /// What the connection proved, and its agent.
     #[must_use]
     pub fn caller(&self) -> Caller {
-        self.caller
+        self.caller.clone()
+    }
+
+    /// The connection works with the agent `binding` holds.
+    pub fn bind(&mut self, binding: super::agents::Binding) {
+        self.caller.agent = Some(binding.name().to_string());
+        self.binding = Some(binding);
     }
 
     /// Whether the seat counts as an attached client (not a probe).
@@ -166,9 +183,12 @@ impl Seat {
     }
 
     /// Give the seat up before the client learned it attached (its
-    /// acknowledgement could not be written): uncounted, and no detach.
+    /// acknowledgement could not be written): uncounted, and its agent is
+    /// not detached.
     pub fn withdraw(mut self) {
-        self.withdrawn = true;
+        if let Some(binding) = self.binding.take() {
+            binding.withdraw();
+        }
     }
 }
 
@@ -176,15 +196,6 @@ impl Drop for Seat {
     fn drop(&mut self) {
         if self.counted {
             self.lifecycle.clients.fetch_sub(1, Ordering::SeqCst);
-        }
-        if self.withdrawn {
-            return;
-        }
-        if self.caller.owner && !self.lifecycle.terminating.load(Ordering::SeqCst) {
-            tracing::info!(
-                "the client that started this daemon left without stopping it: a detach"
-            );
-            self.lifecycle.detach();
         }
     }
 }
@@ -198,33 +209,34 @@ mod tests {
             token: "t".into(),
             start_token: start_token.map(str::to_string),
             probe,
+            agent: None,
         }
     }
 
     #[test]
-    fn the_owner_presents_the_start_token_and_its_hangup_is_a_detach() {
+    fn the_owner_presents_the_start_token_and_a_probe_is_not_counted() {
         let lifecycle = Lifecycle::new("/w".into(), "now".into(), Some("start".into()));
         let other = lifecycle.seat(&attach(Some("wrong"), false));
         let probe = lifecycle.seat(&attach(Some("start"), true));
         assert!(!other.caller().owner && !probe.caller().owner);
         let owner = lifecycle.seat(&attach(Some("start"), false));
         assert!(owner.caller().owner);
+        assert_eq!(owner.caller().agent, None, "bound to no agent yet");
         assert_eq!(lifecycle.clients(), 2, "the probe is not counted");
         drop((other, probe));
         assert_eq!(lifecycle.clients(), 1);
-        assert!(!lifecycle.detached(), "only the owner's end is a detach");
         drop(owner);
         assert_eq!(lifecycle.clients(), 0);
-        assert!(lifecycle.detached());
     }
 
     #[test]
-    fn a_shutdown_is_no_detach_and_without_a_start_token_nobody_owns() {
+    fn a_shutdown_is_terminating_and_without_a_start_token_nobody_owns() {
         let lifecycle = Lifecycle::new("/w".into(), "now".into(), Some("start".into()));
         let owner = lifecycle.seat(&attach(Some("start"), false));
+        assert!(!lifecycle.is_terminating());
         lifecycle.shutdown();
         drop(owner);
-        assert!(!lifecycle.detached());
+        assert!(lifecycle.is_terminating());
         let unowned = Lifecycle::new("/w".into(), "now".into(), Some(String::new()));
         assert!(!unowned.seat(&attach(Some(""), false)).caller().owner);
         assert!(!unowned.seat(&attach(None, false)).caller().owner);

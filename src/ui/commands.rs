@@ -109,6 +109,9 @@ pub enum Command {
     Quit,
     /// `/detach`: leave and keep the agent running (attach mode).
     Detach,
+    /// `/agents [name]`: list the workspace's agents, or switch this
+    /// rkat-tui to the agent `name`.
+    Agents(Option<String>),
     /// `/clear`: clear the transcript and start a new session.
     Clear,
     /// `/resume [ref]`.
@@ -275,6 +278,21 @@ pub static COMMANDS: &[CommandSpec] = &[
             "leave; the daemon's agent and its turn go on, and a later /quit\nasks before stopping the daemon (rkat-tui reattaches)",
         )],
         parse: |rest| arg_free(rest, Command::Detach),
+    },
+    CommandSpec {
+        name: "agents",
+        aliases: &[],
+        usage: "[name]",
+        summary: "list the workspace's agents, or switch to one",
+        help: &[(
+            "/agents [name]",
+            "list the agents working in this workspace (name, state,\nconversation, attached clients); with a name, switch this\nrkat-tui to that agent (yours keeps running)",
+        )],
+        parse: |rest| match words(rest).as_slice() {
+            [] => Some(Command::Agents(None)),
+            [name] => Some(Command::Agents(Some((*name).to_string()))),
+            _ => None,
+        },
     },
     CommandSpec {
         name: "clear",
@@ -941,10 +959,11 @@ mod tests {
             "checkpoint",
             "undo",
             "detach",
+            "agents",
         ] {
             assert!(super::spec(name).is_some(), "/{name} has no spec");
         }
-        assert_eq!(seen.len(), 33);
+        assert_eq!(seen.len(), 34);
         // `/help`'s "Commands:" rows come from the specs, in their order.
         let commands = help_text().split_once("Keys:").unwrap().0;
         let mut at = 0;

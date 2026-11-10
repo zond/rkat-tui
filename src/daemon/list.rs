@@ -12,9 +12,13 @@
 //! A line is tab-separated, in a fixed order: workspace (followed by
 //! `(realm <root>)` or `(realm memory)` when the daemon serves another
 //! realm than the workspace's own), address, `pid N`,
-//! `up <uptime>`, then for a live daemon `<n> client(s)`, the current
-//! conversation and `running` or `idle`, for a stale one `stale` and
-//! whether its file was removed.
+//! `up <uptime>`, then for a live daemon `<n> client(s)` and `<m>
+//! agent(s)`, for a stale one `stale` and whether its file was removed.
+//! Under a live daemon's line, one line per agent, indented by a tab: its
+//! name, `running` or `idle`, its conversation, `<k> client(s)`, and
+//! `detached` when it runs without one. A daemon of before P5 (one agent,
+//! no agent list) gets the conversation and `running` or `idle` on its own
+//! line instead.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -175,6 +179,10 @@ pub fn line(listed: &Listed, now: chrono::DateTime<chrono::Utc>) -> String {
         format!("up {up}"),
     ];
     match (&listed.found, status) {
+        (Found::Live(_), Some(status)) if !status.agents.is_empty() => {
+            fields.push(count(status.clients, "client"));
+            fields.push(count(status.agents.len(), "agent"));
+        }
         (Found::Live(_), Some(status)) => {
             fields.push(format!(
                 "{} client{}",
@@ -202,7 +210,39 @@ pub fn line(listed: &Listed, now: chrono::DateTime<chrono::Utc>) -> String {
     fields.join("\t")
 }
 
-/// Print every daemon, one per line (to stderr when there is none).
+/// `n` things, singular or plural.
+fn count(n: usize, thing: &str) -> String {
+    format!("{n} {thing}{}", if n == 1 { "" } else { "s" })
+}
+
+/// The lines for `listed`: the daemon's ([`line()`]), then one per agent of
+/// a live one, indented by a tab.
+#[must_use]
+pub fn lines(listed: &Listed, now: chrono::DateTime<chrono::Utc>) -> Vec<String> {
+    let mut lines = vec![line(listed, now)];
+    if let Found::Live(Some(status)) = &listed.found {
+        for agent in &status.agents {
+            let mut fields = vec![
+                String::new(),
+                agent.name.clone(),
+                if agent.running { "running" } else { "idle" }.to_string(),
+                agent
+                    .session_id
+                    .as_ref()
+                    .map_or_else(|| "no conversation".to_string(), ToString::to_string),
+                count(agent.clients, "client"),
+            ];
+            if agent.detached && agent.clients == 0 {
+                fields.push("detached".to_string());
+            }
+            lines.push(fields.join("\t"));
+        }
+    }
+    lines
+}
+
+/// Print every daemon, its agents under it (to stderr when there is
+/// none).
 pub async fn print(explicit: Option<&Path>) {
     let listed = list(explicit).await;
     if listed.is_empty() {
@@ -211,7 +251,9 @@ pub async fn print(explicit: Option<&Path>) {
     }
     let now = chrono::Utc::now();
     for listed in &listed {
-        println!("{}", line(listed, now));
+        for line in lines(listed, now) {
+            println!("{line}");
+        }
     }
 }
 
@@ -279,6 +321,8 @@ mod tests {
                 owner: false,
                 session_id: None,
                 running: true,
+                agent: None,
+                agents: Vec::new(),
             })),
         };
         let shown = line(&live, now);
@@ -287,6 +331,47 @@ mod tests {
             "/w\t127.0.0.1:4000\tpid 9\tup 1h30m\t2 clients\tno conversation\trunning"
         );
         assert!(!shown.contains("secret"));
+        // A daemon with agents: one line each under its own.
+        let session = meerkat_core::SessionId::new();
+        let agents = Listed {
+            endpoint: endpoint.clone(),
+            found: Found::Live(Some(Status {
+                host: None,
+                workspace: "/w".into(),
+                pid: 9,
+                started_at: String::new(),
+                clients: 1,
+                detached: true,
+                owner: false,
+                session_id: None,
+                running: false,
+                agent: None,
+                agents: vec![
+                    crate::daemon::protocol::AgentRow {
+                        name: "main-ab12".into(),
+                        session_id: Some(session.clone()),
+                        running: true,
+                        clients: 1,
+                        detached: false,
+                    },
+                    crate::daemon::protocol::AgentRow {
+                        name: "main-cd34".into(),
+                        session_id: None,
+                        running: false,
+                        clients: 0,
+                        detached: true,
+                    },
+                ],
+            })),
+        };
+        assert_eq!(
+            lines(&agents, now),
+            vec![
+                "/w\t127.0.0.1:4000\tpid 9\tup 1h30m\t1 client\t2 agents".to_string(),
+                format!("\tmain-ab12\trunning\t{session}\t1 client"),
+                "\tmain-cd34\tidle\tno conversation\t0 clients\tdetached".to_string(),
+            ]
+        );
         // Another realm than the workspace's own is named after it.
         let isolated = Listed {
             endpoint: Endpoint {

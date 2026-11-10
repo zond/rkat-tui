@@ -14,8 +14,8 @@ use std::sync::Arc;
 
 use meerkat_core::{AgentToolDispatcher, AuthBindingRef, SessionId, ToolDispatchAdmission};
 use meerkat_mob::{
-    MobError, ResumedMemberView, SpawnCustomizationContext, SpawnMemberCustomizer, SpawnMemberSpec,
-    SpawnSource,
+    AgentIdentity, MobError, MobId, ResumedMemberView, SpawnCustomizationContext,
+    SpawnMemberCustomizer, SpawnMemberSpec, SpawnSource,
 };
 use tokio::sync::mpsc;
 
@@ -61,8 +61,15 @@ pub struct Spawning {
 }
 
 /// Builds the instruction sections of a fresh root member (the persona
-/// first), read again on every fresh spawn.
-pub type RootInstructions = Arc<dyn Fn() -> Vec<String> + Send + Sync>;
+/// first) for its identity, read again on every fresh spawn.
+pub type RootInstructions = Arc<dyn Fn(&AgentIdentity) -> Vec<String> + Send + Sync>;
+
+/// Builds the external tools of one root member (each its own: the file
+/// tools report their changes under the member's name).
+pub type RootTools = Arc<dyn Fn(&AgentIdentity) -> Arc<dyn AgentToolDispatcher> + Send + Sync>;
+
+/// Builds the approval gate of one root member (its key names it).
+pub type RootAdmission = Arc<dyn Fn(&HelperKey) -> Arc<dyn ToolDispatchAdmission> + Send + Sync>;
 
 /// The `[thinking]` a rebuilt root member's identity is configured with
 /// (its model may have been switched since the spawn).
@@ -74,25 +81,32 @@ pub type RootThinking = Arc<
         + Sync,
 >;
 
-/// A host-root member that is an owner itself, not a helper: the mob
-/// daemon's orchestrator.
+/// The host-root members that are owners themselves, not helpers: the mob
+/// daemon's agents (its orchestrators), every member of one mob whose
+/// identity [`RootMember::is_root`] accepts. A member an agent seats
+/// itself (`spawn_member`) under such a name is refused: the names are
+/// the daemon's.
 pub struct RootMember {
-    /// Its mob and member identity.
-    pub key: HelperKey,
-    /// Its external tools (the TUI session's file and note tools); not
-    /// persisted by the engine, so supplied again on every rebuild.
-    pub tools: HelperTools,
+    /// Their mob.
+    pub mob: MobId,
+    /// Whether an identity of that mob names one of them.
+    pub is_root: fn(&str) -> bool,
+    /// The profile the daemon seats them with.
+    pub profile: String,
+    /// Each one's external tools (the TUI session's file and note tools);
+    /// not persisted by the engine, so supplied again on every rebuild.
+    pub tools: RootTools,
     /// Its instruction sections on a fresh spawn.
     pub instructions: RootInstructions,
     /// The model it starts on (a rebuilt member keeps its session's).
     pub model: String,
     /// The start-up endpoint's auth binding.
     pub auth_binding: Option<AuthBindingRef>,
-    /// The approval gate for the root member's own calls (the daemon's
+    /// The approval gate for a root member's own calls (the daemon's
     /// `RootGate`: the TUI's tiers, rules, classifier and modes, consent
     /// through the approval store). Re-installed on every rebuild: the
     /// engine does not persist an admission.
-    pub admission: Option<Arc<dyn ToolDispatchAdmission>>,
+    pub admission: Option<RootAdmission>,
     /// The `[thinking]` of a rebuilt member's model; `None`: the persisted
     /// provider params stay as they are.
     pub thinking: Option<RootThinking>,
@@ -101,7 +115,7 @@ pub struct RootMember {
 impl std::fmt::Debug for RootMember {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RootMember")
-            .field("key", &self.key)
+            .field("mob", &self.mob)
             .field("model", &self.model)
             .field("gated", &self.admission.is_some())
             .field("thinking", &self.thinking.is_some())
@@ -197,17 +211,21 @@ impl HelperCustomizer {
         self
     }
 
-    /// The root member, when `key` names it.
+    /// The root members, when `key` names one of them.
     fn root_for(&self, key: &HelperKey) -> Option<&RootMember> {
-        self.root.as_ref().filter(|root| &root.key == key)
+        self.root
+            .as_ref()
+            .filter(|root| root.mob == key.mob && (root.is_root)(key.member.as_str()))
     }
 }
 
-/// Shape the root member's `spec` as an owner session: its tools, the
-/// curated shell environment, the TUI's tool access policy, its binding
-/// and (fresh only) its instructions. The model is the mob profile's.
+/// Shape the root member `key`'s `spec` as an owner session: its tools,
+/// the curated shell environment, the TUI's tool access policy, its
+/// binding and (fresh only) its instructions. The model is the mob
+/// profile's.
 fn shape_root(
     spec: &mut SpawnMemberSpec,
+    key: &HelperKey,
     root: &RootMember,
     shell_env: Option<&HashMap<String, String>>,
     fresh: bool,
@@ -217,16 +235,16 @@ fn shape_root(
         spec.auth_binding.clone_from(&root.auth_binding);
     }
     if let Some(admission) = &root.admission {
-        spec.tool_dispatch_admission = Some(Arc::clone(admission));
+        spec.tool_dispatch_admission = Some(admission(key));
     }
     if spec.external_tools.is_none() {
-        spec.external_tools = Some((root.tools)());
+        spec.external_tools = Some((root.tools)(&key.member));
     }
     inherit_shell_env(spec, shell_env);
     if fresh {
         spec.additional_instructions
             .get_or_insert_with(Vec::new)
-            .extend((root.instructions)());
+            .extend((root.instructions)(&key.member));
     }
     deny_tools(spec, &[], gated_fork_off);
 }
@@ -489,8 +507,21 @@ impl SpawnMemberCustomizer for HelperCustomizer {
         let key = HelperKey::new(ctx.mob_id.clone(), spec.identity.clone());
         if let Some(root) = self.root_for(&key) {
             let fresh = !matches!(ctx.spawn_source, SpawnSource::Resume);
+            // Only the host seats an agent: a member another member seats
+            // under an agent's name would be shaped as an agent without
+            // being one of the daemon's.
+            if fresh
+                && (ctx.spawner_identity.is_some()
+                    || ctx.requested_profile.as_str() != root.profile)
+            {
+                return Err(refuse(format_args!(
+                    "the member name `{}` is reserved for the workspace's agents; choose another",
+                    key.member
+                )));
+            }
             shape_root(
                 spec,
+                &key,
                 root,
                 self.shell_env.as_ref(),
                 fresh,
@@ -536,9 +567,10 @@ impl SpawnMemberCustomizer for HelperCustomizer {
                 |identity| (identity.model.clone(), identity.auth_binding.clone()),
             );
             self.registry
-                .register_root(key, &durable.session_id, &model, binding.as_ref());
+                .register_root(key.clone(), &durable.session_id, &model, binding.as_ref());
             shape_root(
                 spec,
+                &key,
                 root,
                 self.shell_env.as_ref(),
                 false,
@@ -729,16 +761,22 @@ mod tests {
         assert_eq!(Depth::admit("inner", 2, 1, false).unwrap(), Depth::Last);
     }
 
+    fn key() -> HelperKey {
+        HelperKey::new(
+            meerkat_mob::MobId::from("tui"),
+            meerkat_mob::AgentIdentity::from("main"),
+        )
+    }
+
     fn root() -> RootMember {
         RootMember {
-            key: HelperKey::new(
-                meerkat_mob::MobId::from("tui"),
-                meerkat_mob::AgentIdentity::from("main"),
-            ),
-            tools: Arc::new(|| {
+            mob: meerkat_mob::MobId::from("tui"),
+            is_root: |name| name == "main" || name.starts_with("main-"),
+            profile: "main".to_string(),
+            tools: Arc::new(|_| {
                 Arc::new(meerkat_tools::EmptyToolDispatcher) as Arc<dyn AgentToolDispatcher>
             }),
-            instructions: Arc::new(|| vec!["persona".to_string(), "agents".to_string()]),
+            instructions: Arc::new(|_| vec!["persona".to_string(), "agents".to_string()]),
             model: "m".to_string(),
             auth_binding: None,
             admission: None,
@@ -751,7 +789,7 @@ mod tests {
         let curated = HashMap::from([("PATH".to_string(), "/bin".to_string())]);
         let root = root();
         let mut spec = SpawnMemberSpec::host_root("main", "main");
-        shape_root(&mut spec, &root, Some(&curated), true, false);
+        shape_root(&mut spec, &key(), &root, Some(&curated), true, false);
         assert!(spec.external_tools.is_some());
         assert!(spec.tool_dispatch_admission.is_none(), "no gate was given");
         assert_eq!(spec.shell_env.as_ref(), Some(&curated));
@@ -762,12 +800,12 @@ mod tests {
         assert_eq!(spec.tool_access_policy, Some(tool_access_policy()));
         // A rebuild gets its tools back, not a second set of instructions.
         let mut resumed = SpawnMemberSpec::host_root("main", "main");
-        shape_root(&mut resumed, &root, Some(&curated), false, false);
+        shape_root(&mut resumed, &key(), &root, Some(&curated), false, false);
         assert!(resumed.external_tools.is_some());
         assert_eq!(resumed.additional_instructions, None);
         // The daemon's root keeps `fork_off` (its children are gated).
         let mut gated = SpawnMemberSpec::host_root("main", "main");
-        shape_root(&mut gated, &root, Some(&curated), true, true);
+        shape_root(&mut gated, &key(), &root, Some(&curated), true, true);
         let Some(meerkat_core::ops::ToolAccessPolicy::DenyList(names)) = &gated.tool_access_policy
         else {
             panic!("{:?}", gated.tool_access_policy);

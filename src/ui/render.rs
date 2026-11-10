@@ -562,6 +562,9 @@ pub fn status_bar(status: &StatusInfo, now: Instant) -> Line<'static> {
             Style::default().add_modifier(Modifier::BOLD),
         ));
     }
+    if let Some(agent) = &status.agent {
+        segs.push(Span::raw(format!("agent {agent}")));
+    }
     if !status.provider.is_empty() || !status.model.is_empty() {
         segs.push(Span::raw(format!("{}/{}", status.provider, status.model)));
     }
@@ -1002,6 +1005,14 @@ mod tests {
             line.starts_with(" attached 127.0.0.1:4000 │ anthropic/claude-sonnet-4-6"),
             "{line}"
         );
+        // The agent this client works with follows the connection.
+        s.apply(crate::ui::StatusUpdate::Agent(Some("main-ab12".into())));
+        let line = status_line(&s, now);
+        assert!(
+            line.starts_with(" attached 127.0.0.1:4000 │ agent main-ab12 │ anthropic/"),
+            "{line}"
+        );
+        s.apply(crate::ui::StatusUpdate::Agent(None));
         s.apply(crate::ui::StatusUpdate::Attach(None));
         assert!(status_line(&s, now).starts_with(" anthropic/"));
     }

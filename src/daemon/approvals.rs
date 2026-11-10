@@ -395,11 +395,12 @@ impl ToolOrigins for DaemonToolOrigins {
     }
 }
 
-/// Follow the orchestrator's events until the task is aborted: every run
-/// start goes to the engine (it lifts a Stop given to an earlier run),
-/// every run end refreshes the session's tool catalog. After a
-/// conversation switch (`current` names another session) it subscribes
-/// again: the member's old stream does not end by itself.
+/// Follow an agent's events until the task is aborted: every run start
+/// goes to the engine (it lifts a Stop given to an earlier run) and makes
+/// the agent the most recently active one (`agents`), every run end
+/// refreshes the session's tool catalog. After a conversation switch
+/// (`current` names another session) it subscribes again: the member's old
+/// stream does not end by itself.
 pub fn watch(
     state: Arc<MobMcpState>,
     mob: MobId,
@@ -407,11 +408,13 @@ pub fn watch(
     engine: Arc<ApprovalEngine>,
     origins: Arc<DaemonToolOrigins>,
     current: Arc<super::conversations::Conversations>,
+    agents: std::sync::Weak<super::agents::Agents>,
 ) -> tokio::task::JoinHandle<()> {
     use futures::StreamExt as _;
     tokio::spawn(async move {
+        let name = identity.to_string();
         loop {
-            let following = current.current();
+            let following = current.current(&name);
             let subscribed = match state.handle_for(&mob).await {
                 Ok(handle) => handle.subscribe_agent_events(&identity).await,
                 Err(err) => Err(err),
@@ -419,7 +422,7 @@ pub fn watch(
             let mut stream = match subscribed {
                 Ok(stream) => stream,
                 Err(err) => {
-                    tracing::debug!(error = %err, "cannot follow the orchestrator's events yet");
+                    tracing::debug!(error = %err, agent = %name, "cannot follow the agent's events yet");
                     tokio::time::sleep(RESUBSCRIBE).await;
                     continue;
                 }
@@ -433,7 +436,7 @@ pub fn watch(
                         None => break,
                     },
                     _ = check.tick() => {
-                        if current.current() != following {
+                        if current.current(&name) != following {
                             break;
                         }
                         continue;
@@ -444,7 +447,12 @@ pub fn watch(
                         session_id,
                         identity,
                         ..
-                    } => engine.run_started(session_id, identity.run_id.as_ref()),
+                    } => {
+                        engine.run_started(session_id, identity.run_id.as_ref());
+                        if let Some(agents) = agents.upgrade() {
+                            agents.touch(&name);
+                        }
+                    }
                     AgentEvent::RunCompleted { session_id, .. }
                     | AgentEvent::RunFailed { session_id, .. } => {
                         let origins = Arc::clone(&origins);

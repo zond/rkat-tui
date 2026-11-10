@@ -166,7 +166,7 @@ async fn a_switch_is_refused_while_another_clients_turn_runs() {
     running
         .call(
             "mob/member_send",
-            json!({"mob_id": "tui", "agent_identity": "main", "content": "long work"}),
+            json!({"mob_id": "tui", "agent_identity": daemon.agent, "content": "long work"}),
         )
         .await
         .unwrap();
@@ -183,7 +183,7 @@ async fn a_switch_is_refused_while_another_clients_turn_runs() {
     let status = other
         .call(
             "mob/member_status",
-            json!({"mob_id": "tui", "agent_identity": "main"}),
+            json!({"mob_id": "tui", "agent_identity": daemon.agent}),
         )
         .await
         .unwrap();
@@ -474,7 +474,7 @@ async fn a_session_outside_the_mob_cannot_be_seated_on_the_member() {
         .await
         .call(
             "mob/member_status",
-            json!({"mob_id": "tui", "agent_identity": "main"}),
+            json!({"mob_id": "tui", "agent_identity": daemon.agent}),
         )
         .await
         .unwrap();
@@ -491,12 +491,14 @@ async fn a_session_outside_the_mob_cannot_be_seated_on_the_member() {
         })
         .await;
     client.quit().await;
+    let agent = daemon.agent.clone();
     daemon.stop().await;
 
-    // The engine's refusal, past the daemon's own log check.
+    // The engine's refusal, past the daemon's own log check (the session
+    // recorded as the agent's own, which the restarted daemon restores).
     let path = Log::path(&ws.root);
     let mut log = Log::load(&path);
-    log.touch(&in_process_id);
+    log.touch(&in_process_id, &agent);
     log.save(&path).unwrap();
     let daemon = Running::start(&ws.root, &llm).await;
     let connection = daemon.connect().await;
@@ -513,7 +515,7 @@ async fn a_session_outside_the_mob_cannot_be_seated_on_the_member() {
     let status = connection
         .call(
             "mob/member_status",
-            json!({"mob_id": "tui", "agent_identity": "main"}),
+            json!({"mob_id": "tui", "agent_identity": daemon.agent}),
         )
         .await
         .unwrap();

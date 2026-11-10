@@ -1,9 +1,11 @@
-//! The daemon's lifecycle (P2 of the always-daemon plan,
-//! `docs/mob-split.md`): `rkat/status` reports the clients, the detach
-//! record and the owner (the client that presents the daemon's start
-//! token); `rkat/detach` and an owner's connection ending without
-//! `rkat/shutdown` are detaches that keep the daemon running;
-//! `rkat/shutdown` stops it and removes its endpoint file.
+//! The daemon's lifecycle (P2 of the always-daemon plan, per agent since
+//! P5, `docs/mob-split.md`): `rkat/status` reports the clients, the agents,
+//! the detach record and the owner (the client that presents the daemon's
+//! start token); `rkat/detach` and an agent's last connection ending
+//! without retiring it are detaches that keep the agent running;
+//! `rkat/retire` retires the caller's agent; `rkat/shutdown` stops the
+//! daemon (retiring every agent with `retire`) and removes its endpoint
+//! file.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -13,12 +15,12 @@ mod rig;
 
 use std::time::Duration;
 
-use common::{ScriptedLlmClient, TIMEOUT, Workspace, args_for};
+use common::{ScriptedLlmClient, Step, TIMEOUT, Workspace, args_for};
 use rig::{Client, Running};
 use rkat_tui::client::remote;
 use rkat_tui::client::runner::quit_decision;
 use rkat_tui::client::transport::Connection;
-use rkat_tui::daemon::protocol::{self, Status};
+use rkat_tui::daemon::protocol::{self, AgentChoice, AgentRow, Status};
 use rkat_tui::ui::{Departure, Effect, Msg, QuitDecision};
 use serde_json::json;
 
@@ -39,6 +41,24 @@ async fn attach(daemon: &Running, start_token: Option<&str>, probe: bool) -> Con
         Duration::from_secs(5),
         start_token,
         probe,
+    )
+    .await
+    .unwrap();
+    connection
+}
+
+/// A connection bound to the agent `choice` names.
+async fn attach_agent(
+    daemon: &Running,
+    start_token: Option<&str>,
+    choice: AgentChoice,
+) -> Connection {
+    let (connection, _notes) = Connection::attach_to(
+        &daemon.endpoint(),
+        Duration::from_secs(5),
+        start_token,
+        false,
+        Some(choice),
     )
     .await
     .unwrap();
@@ -221,7 +241,7 @@ async fn detach_keeps_the_daemon_and_a_later_quit_asks() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn quit_with_another_client_attached_leaves_the_daemon_to_it() {
+async fn quit_with_another_client_on_the_agent_leaves_it_to_that_client() {
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![]);
     let daemon = owned_daemon(&ws, &llm).await;
@@ -235,15 +255,141 @@ async fn quit_with_another_client_attached_leaves_the_daemon_to_it() {
     );
     leave(owner, None).await;
     assert!(daemon.serving());
-    // The owner left it running: the other client is asked.
+    // The agent still has a client: no detach; the other client, the last
+    // one and not the owner, is asked.
     let watcher = attach(&daemon, None, true).await;
-    status_until(&watcher, |s| s.clients == 1 && s.detached).await;
+    let seen = status_until(&watcher, |s| s.clients == 1).await;
+    assert!(!seen.detached, "{seen:?}");
+    assert_eq!(seen.agents.len(), 1);
     let QuitDecision::Ask { reason, .. } = decide(&mut other).await else {
         panic!("not asked");
     };
-    assert!(reason.contains("detached"), "{reason}");
+    assert!(reason.contains("did not start"), "{reason}");
     leave(other, Some(Departure::Terminate)).await;
     daemon.ended().await;
+}
+
+/// Two clients on two agents: one quits, which retires its agent (gone
+/// from `rkat/status`, its conversation still listed and seated again on
+/// demand); the other agent still works; the last client's quit follows
+/// the P2 rule (the owner, nobody detached: stop).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn quitting_one_of_two_agents_retires_it_and_the_last_quit_stops_the_daemon() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![Step::Text("from b"), Step::Text("still here")]);
+    let daemon = owned_daemon(&ws, &llm).await;
+    let mut a = Client::attach_with(&ws.root, Some(START)).await;
+    let mut b = Client::attach_agent(&ws.root, AgentChoice::New).await;
+    let a_name = a.agent().await;
+    let b_name = b.agent().await;
+    assert_ne!(a_name, b_name);
+    assert_eq!(
+        a_name, daemon.agent,
+        "the first client took the start's agent"
+    );
+    b.send(Effect::StartTurn("b's work".into()));
+    assert_eq!(b.turn_finished().await.result.unwrap().text, "from b");
+    let b_session = daemon.session_of(&b_name).await;
+    // B quits: other clients (A) are attached, so B's agent retires.
+    assert_eq!(decide(&mut b).await, QuitDecision::Retire);
+    b.send(Effect::Leave(Departure::Retire));
+    b.wait_for(|m| matches!(m, Msg::Notice { text, .. } if text.contains("retired")))
+        .await;
+    b.quit().await;
+    let watcher = attach(&daemon, None, true).await;
+    let seen = status_until(&watcher, |s| s.clients == 1).await;
+    let names: Vec<&str> = seen.agents.iter().map(|row| row.name.as_str()).collect();
+    assert_eq!(names, vec![a_name.as_str()], "{seen:?}");
+    assert!(!seen.detached, "a retired agent is no detached one");
+    // Its conversation is listed, under its agent.
+    let listed: serde_json::Value = remote::local(&watcher, protocol::CONVERSATIONS, &json!({}))
+        .await
+        .unwrap();
+    let row = listed["conversations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["session_id"] == json!(b_session.to_string()))
+        .cloned()
+        .unwrap_or_else(|| panic!("{listed}"));
+    assert_eq!(row["agent"], json!(b_name));
+    // A still works.
+    a.send(Effect::StartTurn("a's work".into()));
+    assert_eq!(a.turn_finished().await.result.unwrap().text, "still here");
+    // The last client, the owner, nobody detached: /quit stops the daemon.
+    assert_eq!(decide(&mut a).await, QuitDecision::Terminate);
+    leave(a, Some(Departure::Terminate)).await;
+    daemon.ended().await;
+}
+
+/// A retired agent is no member: the engine refuses a send to it (no run
+/// starts), and its conversation is seated again under its name on demand.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_retired_agent_takes_no_input_and_its_conversation_is_seated_again() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![Step::Text("first"), Step::Text("again")]);
+    let daemon = owned_daemon(&ws, &llm).await;
+    let keeper = attach(&daemon, Some(START), false).await;
+    let leaver = attach_agent(&daemon, None, AgentChoice::New).await;
+    let name = leaver.agent().to_string();
+    assert_ne!(name, keeper.agent());
+    leaver
+        .call(
+            "mob/member_send",
+            json!({"mob_id": "tui", "agent_identity": name, "content": "hello"}),
+        )
+        .await
+        .unwrap();
+    llm.wait_call(0).await;
+    let session = status_until(&leaver, |s| !s.running && s.session_id.is_some())
+        .await
+        .session_id
+        .unwrap();
+    let retired: protocol::Retired = remote::local(&leaver, protocol::RETIRE, &json!({}))
+        .await
+        .unwrap();
+    assert_eq!(retired.agent, name);
+    assert_eq!(retired.session_id.as_ref(), Some(&session));
+    drop(leaver);
+    let calls = llm.recorded().len();
+    let refused = keeper
+        .call(
+            "mob/member_send",
+            json!({"mob_id": "tui", "agent_identity": name, "content": "wake up"}),
+        )
+        .await
+        .unwrap_err();
+    let refused = refused.to_string();
+    assert!(
+        refused.contains(&name) && refused.to_lowercase().contains("not found"),
+        "the engine's not-a-member refusal: {refused}"
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(llm.recorded().len(), calls, "nothing ran");
+    // Seated again on its conversation (the agent's name is the
+    // conversation's), which goes on from where it was.
+    let back = attach_agent(
+        &daemon,
+        None,
+        AgentChoice::Conversation {
+            reference: session.to_string(),
+        },
+    )
+    .await;
+    assert_eq!(back.agent(), name);
+    assert!(back.seated());
+    assert_eq!(remote::session_id(&back).await.unwrap(), session);
+    back.call(
+        "mob/member_send",
+        json!({"mob_id": "tui", "agent_identity": name, "content": "and now"}),
+    )
+    .await
+    .unwrap();
+    llm.wait_call(1).await;
+    let seen = llm.recorded();
+    assert!(seen[1].user().contains("hello"), "the conversation went on");
+    drop((back, keeper));
+    daemon.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -278,7 +424,9 @@ async fn the_owner_hanging_up_keeps_the_daemon() {
 
 #[test]
 fn the_quit_decision_follows_the_rules() {
-    let status = |clients, detached, owner, running| Status {
+    // `agents`: (name, clients) of every live agent; this client's is the
+    // first.
+    let status = |clients, detached, owner, running, agents: &[(&str, usize)]| Status {
         host: None,
         workspace: "/w".into(),
         pid: 1,
@@ -288,26 +436,66 @@ fn the_quit_decision_follows_the_rules() {
         owner,
         session_id: None,
         running,
+        agent: agents.first().map(|(name, _)| (*name).to_string()),
+        agents: agents
+            .iter()
+            .map(|(name, clients)| AgentRow {
+                name: (*name).to_string(),
+                session_id: None,
+                running,
+                clients: *clients,
+                detached,
+            })
+            .collect(),
     };
+    let mine = [("main-aaaa", 1)];
     assert_eq!(
-        quit_decision(Some(&status(1, false, true, false))),
+        quit_decision(Some(&status(1, false, true, false, &mine))),
         QuitDecision::Terminate
     );
+    // Another client on this agent: leave it to that client.
     assert_eq!(
-        quit_decision(Some(&status(2, false, true, false))),
+        quit_decision(Some(&status(2, false, true, false, &[("main-aaaa", 2)]))),
         QuitDecision::Leave
     );
+    // Other clients on another agent: this agent retires, the daemon stays.
     assert_eq!(
-        quit_decision(Some(&status(1, true, true, true))),
+        quit_decision(Some(&status(
+            2,
+            false,
+            true,
+            false,
+            &[("main-aaaa", 1), ("main-bbbb", 1)]
+        ))),
+        QuitDecision::Retire
+    );
+    assert_eq!(
+        quit_decision(Some(&status(1, true, true, true, &mine))),
         QuitDecision::Ask {
-            reason: "a client detached from it earlier".into(),
+            reason: "an agent runs here without a client (detached earlier)".into(),
             running: true
         }
     );
+    // The last client, with another agent left running without one: ask.
     assert!(matches!(
-        quit_decision(Some(&status(1, false, false, false))),
+        quit_decision(Some(&status(
+            1,
+            false,
+            true,
+            false,
+            &[("main-aaaa", 1), ("main-bbbb", 0)]
+        ))),
         QuitDecision::Ask { .. }
     ));
+    assert!(matches!(
+        quit_decision(Some(&status(1, false, false, false, &mine))),
+        QuitDecision::Ask { .. }
+    ));
+    // A daemon of before P5 (no agent list): another client means leave.
+    assert_eq!(
+        quit_decision(Some(&status(2, false, true, false, &[]))),
+        QuitDecision::Leave
+    );
     // The daemon could not say (the status failed, or it lost the owner).
     assert!(matches!(quit_decision(None), QuitDecision::Ask { .. }));
 }
@@ -341,9 +529,14 @@ async fn list_shows_a_live_daemon_and_removes_a_stale_file() {
         )),
         "{line}"
     );
-    assert!(line.contains("\t1 client\t"), "{line}");
-    assert!(line.ends_with("\tidle"), "{line}");
+    assert!(line.ends_with("\t1 client\t1 agent"), "{line}");
     assert!(!line.contains(&endpoint.token));
+    // The agent under it.
+    let lines = list::lines(&rows[0], chrono::Utc::now());
+    assert_eq!(
+        lines[1],
+        format!("\t{}\tidle\t{}\t1 client", daemon.agent, daemon.session)
+    );
     drop(client);
     daemon.stop().await;
 

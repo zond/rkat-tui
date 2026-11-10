@@ -1,8 +1,9 @@
-//! The orchestrator: one durable, turn-driven, host-root member of the
-//! workspace's mob, created on first start and restored after.
+//! The orchestrators: durable, turn-driven, host-root members of the
+//! workspace's mob, one per agent ([`super::agents`]), all seated with the
+//! one profile `main` this module defines.
 //!
-//! Clients find it with `mob/members {mob_id: "tui"}` (identity `main`)
-//! and its session with `mob/member_status` (`current_session_id`).
+//! Clients find their agent's session with `mob/member_status`
+//! (`current_session_id`).
 
 use std::sync::Arc;
 
@@ -13,9 +14,9 @@ use meerkat_mob_mcp::MobMcpState;
 
 use super::engine::RootPlan;
 use super::{DaemonError, MOB_ID, ORCHESTRATOR};
-use crate::mobs::HelperKey;
 
-/// Where the orchestrator lives.
+/// Where the agent the daemon started with lives (the most recent one it
+/// restored, else the one it seated).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Orchestrator {
     /// Its mob.
@@ -24,7 +25,7 @@ pub struct Orchestrator {
     pub identity: AgentIdentity,
     /// The session it runs as.
     pub session_id: meerkat_core::SessionId,
-    /// Whether this start created it (else it was restored).
+    /// Whether this start seated it (else it was restored).
     pub created: bool,
 }
 
@@ -66,18 +67,14 @@ fn definition(plan: &RootPlan) -> MobDefinition {
     definition
 }
 
-/// Create or restore the mob and seat the orchestrator if it is missing.
+/// Create the mob, or restore it (and resume it when it was stopped). Its
+/// agents are restored or seated by [`super::agents::Agents::start`].
 ///
 /// # Errors
 ///
-/// [`DaemonError::Mob`] when the mob cannot be created, resumed or spawned
-/// into; [`DaemonError::NoSession`] when the member has no session.
-pub async fn ensure(
-    state: &Arc<MobMcpState>,
-    plan: &RootPlan,
-) -> Result<Orchestrator, DaemonError> {
+/// [`DaemonError::Mob`] when the mob cannot be created or resumed.
+pub async fn ensure_mob(state: &Arc<MobMcpState>, plan: &RootPlan) -> Result<(), DaemonError> {
     let mob_id = MobId::from(MOB_ID);
-    let identity = AgentIdentity::from(ORCHESTRATOR);
     let mob_err = |err| DaemonError::mob(&MobId::from(MOB_ID), err);
     // Listing restores the persisted mobs first.
     let listed = state.mob_list().await.map_err(mob_err)?;
@@ -91,33 +88,5 @@ pub async fn ensure(
             .await
             .map_err(mob_err)?;
     }
-    let members = state.mob_list_members(&mob_id).await.map_err(mob_err)?;
-    let created = !members
-        .iter()
-        .any(|member| member.agent_identity == identity);
-    if created {
-        let mut spec = meerkat_mob::SpawnMemberSpec::host_root(ORCHESTRATOR, ORCHESTRATOR);
-        spec.runtime_mode = Some(MobRuntimeMode::TurnDriven);
-        state.mob_spawn_spec(&mob_id, spec).await.map_err(mob_err)?;
-    }
-    let snapshot = state
-        .mob_member_status(&mob_id, &identity)
-        .await
-        .map_err(mob_err)?;
-    let session_id = snapshot
-        .current_session_id
-        .ok_or_else(|| DaemonError::NoSession(ORCHESTRATOR.to_string()))?;
-    // A restored orchestrator registered itself in its customizer's resume;
-    // a fresh one registers here, before its first turn can delegate.
-    let key = HelperKey::new(mob_id.clone(), identity.clone());
-    if plan.registry.root_session(&key).as_ref() != Some(&session_id) {
-        plan.registry
-            .register_root(key, &session_id, &plan.model, plan.auth_binding.as_ref());
-    }
-    Ok(Orchestrator {
-        mob_id,
-        identity,
-        session_id,
-        created,
-    })
+    Ok(())
 }

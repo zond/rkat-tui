@@ -21,10 +21,10 @@ use serde_json::{Value, json};
 
 use super::ClientError;
 use super::transport::{Connection, Notification};
+use crate::daemon::MOB_ID;
 use crate::daemon::protocol::{
     self, ConversationList, SessionParams, Switched, Transcript, Usage, engine,
 };
-use crate::daemon::{MOB_ID, ORCHESTRATOR};
 
 /// The notification that carries a member stream's events.
 pub const STREAM_EVENT: &str = engine::STREAM_EVENT;
@@ -35,13 +35,14 @@ pub const STREAM_END: &str = engine::STREAM_END;
 /// How many replayed events one `events/list_since` page asks for.
 pub const REPLAY_PAGE: usize = 500;
 
-/// The member params every member-targeted call carries.
-fn member() -> Value {
-    json!({"mob_id": MOB_ID, "agent_identity": ORCHESTRATOR})
+/// The member params every member-targeted call carries: the agent the
+/// connection is bound to.
+fn member(connection: &Connection) -> Value {
+    json!({"mob_id": MOB_ID, "agent_identity": connection.agent()})
 }
 
-fn with_member(extra: Value) -> Value {
-    let mut params = member();
+fn with_member(connection: &Connection, extra: Value) -> Value {
+    let mut params = member(connection);
     if let (Some(params), Value::Object(extra)) = (params.as_object_mut(), extra) {
         params.extend(extra);
     }
@@ -55,13 +56,13 @@ fn decode<T: serde::de::DeserializeOwned>(
     serde_json::from_value(value).map_err(|source| ClientError::Decode { what, source })
 }
 
-/// The orchestrator's current session.
+/// The current session of the connection's agent.
 ///
 /// # Errors
 ///
 /// The call's error, or [`ClientError::NoSession`].
 pub async fn session_id(connection: &Connection) -> Result<SessionId, ClientError> {
-    member_session(connection, MOB_ID, ORCHESTRATOR).await
+    member_session(connection, MOB_ID, connection.agent()).await
 }
 
 /// The model and provider the session runs on (`events/snapshot`).
@@ -152,7 +153,7 @@ pub async fn open_stream(
     connection: &Connection,
     cursor: Option<(&str, u64)>,
 ) -> Result<String, ClientError> {
-    let mut params = member();
+    let mut params = member(connection);
     if let Some((epoch, seq)) = cursor {
         params["cursor"] = json!(meerkat_contracts::MobStreamCursor {
             epoch: epoch.to_string(),
@@ -240,10 +241,13 @@ pub async fn send(connection: &Connection, text: &str, steer: bool) -> Result<()
     connection
         .call(
             engine::MEMBER_SEND,
-            with_member(json!({
-                "content": text,
-                "handling_mode": if steer { "steer" } else { "queue" },
-            })),
+            with_member(
+                connection,
+                json!({
+                    "content": text,
+                    "handling_mode": if steer { "steer" } else { "queue" },
+                }),
+            ),
         )
         .await
         .map(drop)
@@ -278,7 +282,7 @@ pub async fn stop_run(
     connection
         .call(
             engine::STOP_MEMBER_RUN,
-            with_member(json!({"run_id": run_id, "reason": reason})),
+            with_member(connection, json!({"run_id": run_id, "reason": reason})),
         )
         .await
 }
@@ -290,7 +294,7 @@ pub async fn stop_run(
 /// The call's error.
 pub async fn force_cancel(connection: &Connection) -> Result<(), ClientError> {
     connection
-        .call(engine::FORCE_CANCEL, member())
+        .call(engine::FORCE_CANCEL, member(connection))
         .await
         .map(drop)
 }
@@ -326,7 +330,10 @@ pub async fn append_system_context(
     connection
         .call(
             engine::APPEND_SYSTEM_CONTEXT,
-            with_member(json!({"text": text, "source": "rkat-tui", "idempotency_key": key})),
+            with_member(
+                connection,
+                json!({"text": text, "source": "rkat-tui", "idempotency_key": key}),
+            ),
         )
         .await
         .map(drop)
@@ -545,7 +552,7 @@ pub async fn usage(
 /// The call's error, as text.
 pub async fn compact_member(connection: &Connection) -> Result<(), String> {
     connection
-        .call(engine::COMPACT_MEMBER, member())
+        .call(engine::COMPACT_MEMBER, member(connection))
         .await
         .map(drop)
         .map_err(|err| err.to_string())

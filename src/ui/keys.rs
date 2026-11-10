@@ -546,9 +546,10 @@ impl App {
                     if queued == 1 { "" } else { "s" }
                 ));
             }
-            // Attach mode decides next whether the daemon stops.
+            // Attach mode decides next whether the agent retires and the
+            // daemon stops.
             let after = if self.status.attach.is_some() {
-                "messages the daemon has not received are saved"
+                "quitting retires this agent and interrupts its turn unless other clients work with it, /detach keeps it running; messages the daemon has not received are saved"
             } else {
                 "the turn is interrupted, undelivered messages are saved"
             };
@@ -594,6 +595,7 @@ impl App {
         match decision {
             QuitDecision::Terminate => self.leave(Some(Departure::Terminate), fx),
             QuitDecision::Leave => self.leave(None, fx),
+            QuitDecision::Retire => self.leave(Some(Departure::Retire), fx),
             QuitDecision::Ask { reason, running } => {
                 if matches!(self.modal, Some(Modal::Escalation { .. })) {
                     self.transcript.push_notice(

@@ -65,6 +65,11 @@ impl Drop for Forget<'_> {
 /// One attached connection to the daemon.
 pub struct Connection {
     address: SocketAddr,
+    /// The agent the daemon bound the connection to (`None`: a probe, or
+    /// a daemon of before P5, whose one agent is `main`).
+    agent: Option<String>,
+    /// The daemon seated the agent for this connection.
+    seated: bool,
     outgoing: mpsc::UnboundedSender<String>,
     pending: Pending,
     next: AtomicU64,
@@ -118,6 +123,23 @@ impl Connection {
         start_token: Option<&str>,
         probe: bool,
     ) -> Result<(Self, mpsc::UnboundedReceiver<Notification>), ClientError> {
+        Self::attach_to(endpoint, timeout, start_token, probe, None).await
+    }
+
+    /// [`Connection::attach_as`], asking to work with the agent `agent`
+    /// names ([`Connection::agent`] says which one the daemon bound).
+    ///
+    /// # Errors
+    ///
+    /// As [`Connection::attach`]; [`ClientError::Refused`] when the daemon
+    /// cannot bind the connection to that agent.
+    pub async fn attach_to(
+        endpoint: &Endpoint,
+        timeout: Duration,
+        start_token: Option<&str>,
+        probe: bool,
+        agent: Option<crate::daemon::protocol::AgentChoice>,
+    ) -> Result<(Self, mpsc::UnboundedReceiver<Notification>), ClientError> {
         let stream =
             tokio::time::timeout(timeout, tokio::net::TcpStream::connect(endpoint.address))
                 .await
@@ -132,6 +154,7 @@ impl Connection {
             token: endpoint.token.clone(),
             start_token: start_token.map(str::to_string),
             probe,
+            agent,
         };
         Self::attach_io(read, write, params, endpoint.address, timeout).await
     }
@@ -172,7 +195,7 @@ impl Connection {
         let line = tokio::time::timeout(timeout, handshake)
             .await
             .map_err(|_| ClientError::Timeout("the attach handshake"))??;
-        check_attached(&line)?;
+        let attached = check_attached(&line)?;
 
         let pending: Pending = Arc::new(Mutex::new(Some(HashMap::new())));
         let (notify_tx, notify_rx) = mpsc::unbounded_channel();
@@ -191,6 +214,8 @@ impl Connection {
         Ok((
             Self {
                 address,
+                agent: attached.agent,
+                seated: attached.seated,
                 outgoing,
                 pending,
                 next: AtomicU64::new(ATTACH_ID + 1),
@@ -198,6 +223,19 @@ impl Connection {
             },
             notify_rx,
         ))
+    }
+
+    /// The agent the daemon bound this connection to; a daemon of before
+    /// P5 names none, and its one agent is `main`.
+    #[must_use]
+    pub fn agent(&self) -> &str {
+        self.agent.as_deref().unwrap_or(crate::daemon::ORCHESTRATOR)
+    }
+
+    /// Whether the daemon seated the agent for this connection.
+    #[must_use]
+    pub fn seated(&self) -> bool {
+        self.seated
     }
 
     /// The daemon's address.
@@ -257,7 +295,7 @@ impl Connection {
 }
 
 /// Check the handshake's answer.
-fn check_attached(line: &str) -> Result<(), ClientError> {
+fn check_attached(line: &str) -> Result<crate::daemon::protocol::Attached, ClientError> {
     let reply: Value = serde_json::from_str(line.trim())
         .map_err(|err| ClientError::Protocol(format!("not JSON ({err}): {}", line.trim())))?;
     if reply.get("id") != Some(&json!(ATTACH_ID)) {
@@ -280,7 +318,11 @@ fn check_attached(line: &str) -> Result<(), ClientError> {
         });
     }
     if reply.pointer("/result/attached") == Some(&Value::Bool(true)) {
-        Ok(())
+        reply
+            .get("result")
+            .cloned()
+            .and_then(|result| serde_json::from_value(result).ok())
+            .ok_or_else(|| ClientError::Protocol(format!("an unreadable attach answer: {reply}")))
     } else {
         Err(ClientError::Protocol(format!(
             "not an attach result: {reply}"

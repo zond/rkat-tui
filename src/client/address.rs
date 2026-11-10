@@ -240,6 +240,8 @@ mod tests {
             owner: false,
             session_id: None,
             running: false,
+            agent: None,
+            agents: Vec::new(),
         }
     }
 

@@ -75,6 +75,21 @@ impl CursorFile {
         }
     }
 
+    /// The cursor file of `agent` in the same workspace:
+    /// `attach-<agent>.cursor` beside this one (the agent of before P5,
+    /// `main`, keeps `attach.cursor`).
+    #[must_use]
+    pub fn for_agent(&self, agent: &str) -> Self {
+        if agent == crate::daemon::ORCHESTRATOR {
+            return self.clone();
+        }
+        let name = format!("attach-{agent}.cursor");
+        Self {
+            root: self.root.clone(),
+            path: self.path.with_file_name(name),
+        }
+    }
+
     /// Its path.
     #[must_use]
     #[cfg(any(test, feature = "test-support"))]
@@ -273,6 +288,17 @@ mod tests {
         assert_eq!(old.resumable("s1", "d1"), None);
         assert_ne!(daemon_id("token-a"), daemon_id("token-b"));
         assert_eq!(daemon_id("token-a").len(), 16);
+        // Each agent has its own file; `main` (before P5) keeps the old one.
+        let agent = file.for_agent("main-ab12");
+        assert_eq!(
+            agent.path(),
+            dir.path()
+                .join(".rkat")
+                .join("tui")
+                .join("attach-main-ab12.cursor")
+        );
+        assert_eq!(agent.load(), None, "another agent's position is its own");
+        assert_eq!(file.for_agent("main").path(), file.path());
     }
 
     #[test]

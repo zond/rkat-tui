@@ -711,7 +711,7 @@ async fn a_helpers_shell_is_judged_as_the_native_shell() {
     connection
         .call(
             "mob/turn_start",
-            json!({"mob_id": "tui", "agent_identity": "main", "prompt": "delegate it"}),
+            json!({"mob_id": "tui", "agent_identity": daemon.agent, "prompt": "delegate it"}),
         )
         .await
         .unwrap();
@@ -757,7 +757,8 @@ async fn plan_mode_survives_a_restart_and_leaving_it_is_announced() {
     let connection = daemon.connect().await;
     let mode = connection.call("rkat/get_mode", json!({})).await.unwrap();
     assert_eq!(mode["mode"], "plan", "{mode}");
-    let turn = |prompt: &str| json!({"mob_id": "tui", "agent_identity": "main", "prompt": prompt});
+    let turn =
+        |prompt: &str| json!({"mob_id": "tui", "agent_identity": daemon.agent, "prompt": prompt});
     connection
         .call("mob/turn_start", turn("first"))
         .await
@@ -914,7 +915,7 @@ async fn a_seated_helpers_catalog_is_read_after_its_first_run() {
     connection
         .call(
             "mob/turn_start",
-            json!({"mob_id": "tui", "agent_identity": "main", "prompt": "seat a scout"}),
+            json!({"mob_id": "tui", "agent_identity": daemon.agent, "prompt": "seat a scout"}),
         )
         .await
         .unwrap();
@@ -972,7 +973,7 @@ async fn overlapping_mode_changes_leave_the_plan_note_matching_the_mode() {
     let plan = mode["mode"] == "plan";
     a.call(
         "mob/turn_start",
-        json!({"mob_id": "tui", "agent_identity": "main", "prompt": "go"}),
+        json!({"mob_id": "tui", "agent_identity": daemon.agent, "prompt": "go"}),
     )
     .await
     .unwrap();

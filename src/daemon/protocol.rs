@@ -34,7 +34,8 @@ pub const SET_MODE: &str = "rkat/set_mode";
 /// A [`crate::approval::desk::RuleCommand`] →
 /// [`crate::approval::desk::RuleOutcome`]: a `/rules` command.
 pub const RULES: &str = "rkat/rules";
-/// `{}` → [`ConversationList`]: the orchestrator's conversations.
+/// `{}` → [`ConversationList`]: the agents' conversations (the caller's
+/// agent's current one marked).
 pub const CONVERSATIONS: &str = "rkat/conversations";
 /// `{}` → [`Switched`]: `/new`.
 pub const NEW: &str = "rkat/new";
@@ -75,15 +76,22 @@ pub const NOTICES: &str = "rkat/notices";
 /// [`FileDiffNote`].
 pub const FILE_DIFF: &str = "rkat/file_diff";
 /// `{}` → [`Status`]: the daemon's lifecycle state as the caller sees it
-/// (`/quit` decides from it, `--list` prints it).
+/// (`/quit` decides from it, `--list` and `/agents` print it).
 pub const STATUS: &str = "rkat/status";
 /// `{}` → `{}`: the caller leaves and wants the agent kept running
 /// (`/detach`); the daemon records that it has been detached from.
 pub const DETACH: &str = "rkat/detach";
-/// `{}` → `{}`: stop the daemon (`/quit` when this client started it and
-/// nobody detached since, or the choice "terminate"): it removes its
-/// endpoint file and shuts down as on SIGTERM.
+/// [`ShutdownParams`] → `{}`: stop the daemon (`/quit` when this client
+/// started it, is the last one and no agent was left detached, or the
+/// choice "terminate"): it removes its endpoint file and shuts down as on
+/// SIGTERM; with `retire`, every agent retires first (their conversations
+/// stay).
 pub const SHUTDOWN: &str = "rkat/shutdown";
+/// `{}` → [`Retired`]: `/quit` while other clients are attached to other
+/// agents: the caller's agent leaves the workspace (a running turn is
+/// interrupted first, its helpers stop); its conversation stays for
+/// `/resume`, and nothing can wake it.
+pub const RETIRE: &str = "rkat/retire";
 /// The engine's decision notice, pushed by the daemon.
 pub const DECISION_NOTICE: &str = meerkat_contracts::DECISION_NOTICE_NOTIFICATION;
 /// The engine's decide method, decided by the daemon ([`DecideParams`]).
@@ -168,6 +176,9 @@ pub mod engine {
 
 /// The attach token is missing or wrong, or no attach arrived in time.
 pub const UNAUTHORIZED: i32 = -32001;
+/// The attach named an agent or a conversation the daemon cannot bind the
+/// connection to.
+pub const NO_AGENT: i32 = -32002;
 /// A conversation switch or read the engine refused.
 pub const SWITCH_FAILED: i32 = -32010;
 /// A conversation switch refused because the orchestrator's turn is
@@ -265,6 +276,50 @@ pub struct AttachParams {
     /// an attached client, and its end is no detach.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub probe: bool,
+    /// The agent the connection works with (`None` from a client of before
+    /// P5: the most recently active one, [`AgentChoice::Recent`]). A probe
+    /// is bound to none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentChoice>,
+}
+
+/// Which agent a connection works with ([`AttachParams::agent`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "choice", rename_all = "snake_case")]
+pub enum AgentChoice {
+    /// A new agent (the one the daemon seated at start, while no client
+    /// took it).
+    New,
+    /// The most recently active agent; with none but the start's, the
+    /// conversation used last, seated again under the agent that ran it.
+    Recent,
+    /// This agent (`/agents <name>`, a reconnect).
+    Agent {
+        /// Its name.
+        name: String,
+    },
+    /// The agent that owns this conversation (`--resume <ref>`; a session
+    /// id or a unique prefix), seated again on it when that agent quit.
+    Conversation {
+        /// The reference.
+        reference: String,
+    },
+}
+
+/// One live agent ([`Status::agents`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentRow {
+    /// Its name (`main-<id>`).
+    pub name: String,
+    /// The conversation it runs as.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<SessionId>,
+    /// Whether its turn is running.
+    pub running: bool,
+    /// The clients attached to it.
+    pub clients: usize,
+    /// It was left running without a client (`/detach`, a hangup).
+    pub detached: bool,
 }
 
 impl std::fmt::Debug for AttachParams {
@@ -273,15 +328,23 @@ impl std::fmt::Debug for AttachParams {
         f.debug_struct("AttachParams")
             .field("start_token", &self.start_token.as_ref().map(|_| "…"))
             .field("probe", &self.probe)
+            .field("agent", &self.agent)
             .finish_non_exhaustive()
     }
 }
 
 /// [`ATTACH`]'s result.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Attached {
     /// Always `true`.
     pub attached: bool,
+    /// The agent the connection is bound to (`None`: a probe, or a daemon
+    /// of before P5, whose one agent is `main`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// The agent was seated for this connection.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub seated: bool,
 }
 
 /// [`STATUS`]'s result.
@@ -301,18 +364,43 @@ pub struct Status {
     pub started_at: String,
     /// The attached clients, the caller included (probes are not counted).
     pub clients: usize,
-    /// Whether any client has detached from this daemon since it started
-    /// (`/detach`, or its owner's connection ending without
-    /// [`SHUTDOWN`]); never reset.
+    /// Whether a live agent was left running without a client
+    /// (`/detach`, a client's hangup, or the daemon restored it).
     pub detached: bool,
     /// Whether the caller is the client that started the daemon.
     pub owner: bool,
-    /// The orchestrator's current conversation.
+    /// The caller's agent's current conversation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<SessionId>,
-    /// Whether the orchestrator's turn is running (`false` when its state
-    /// cannot be read).
+    /// Whether the caller's agent's turn is running (`false` when its
+    /// state cannot be read).
     pub running: bool,
+    /// The agent the caller is bound to (`None`: a probe).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// Every live agent, names in order (empty from a daemon of before
+    /// P5).
+    #[serde(default)]
+    pub agents: Vec<AgentRow>,
+}
+
+/// [`SHUTDOWN`]'s parameters.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShutdownParams {
+    /// Retire every agent before stopping (else they are restored at the
+    /// next start, as after SIGTERM).
+    #[serde(default)]
+    pub retire: bool,
+}
+
+/// [`RETIRE`]'s result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Retired {
+    /// The agent that retired.
+    pub agent: String,
+    /// The conversation it ran as (it stays in the conversation list).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<SessionId>,
 }
 
 /// A file and its trust in words (`absent`, `trusted`, `not trusted: …`).
@@ -406,7 +494,11 @@ pub const APPROVAL_NOTE: &str = "rkat/approval_note";
 pub enum ApprovalNote {
     /// A tool call was decided.
     Decision {
-        /// The helper that made the call (`None`: the orchestrator).
+        /// The session whose gate decided (the agent's, for its helpers
+        /// too; `None`: a daemon of before P5).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<SessionId>,
+        /// The helper that made the call (`None`: the agent itself).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent: Option<String>,
         /// Its tool-use id.
@@ -458,6 +550,7 @@ impl ApprovalNote {
         use crate::approval::ApprovalEvent;
         Some(match event {
             ApprovalEvent::Decision {
+                session_id,
                 agent,
                 tool_use_id,
                 tool,
@@ -465,6 +558,7 @@ impl ApprovalNote {
                 reason,
                 ..
             } => Self::Decision {
+                session_id: Some(session_id),
                 agent,
                 tool_use_id,
                 tool,
@@ -641,6 +735,9 @@ pub struct Notices {
 /// file tools report it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileDiffNote {
+    /// The agent whose file tools made it (`None`: a daemon of before P5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
     /// The tool call that made the change.
     pub tool_use_id: String,
     /// The file (relative to the workspace when inside it).

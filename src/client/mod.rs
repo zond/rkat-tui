@@ -323,6 +323,7 @@ pub async fn configure_with(
         address: None,
         remote: None,
         start: StartAt::from_args(args),
+        agent: crate::daemon::protocol::AgentChoice::Recent,
         start_token,
         endpoint_files: {
             let realm = crate::daemon::endpoint::RealmKey::of(&scope);

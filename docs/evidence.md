@@ -71,6 +71,7 @@ the `##` section named after it):
   includes the realm (P4)", "Sessions created before the daemon are view
   only (P4)", "P4: the in-process tests and where they went", "P4: the
   in-process runner is deleted", "`/status` reads the daemon's side").
+  P5, several agents per workspace: "P5: several agents per workspace".
   `docs/mob-split.md` has the plan and the status.
 - **Upstream asks and the engine pin:** "Open asks" below; "The pin moves
   to upstream `main`"; "The pin moves to the 0.9.11 integration"; "P3b and
@@ -3931,3 +3932,119 @@ max_depth`). The client appends them to its own lines
 wording) and says "the daemon's side is unknown" when the call fails,
 rather than leaving the lines out silently. Pinned end to end by
 `integrator::status_report_names_the_session_and_the_workspace`.
+
+## P5: several agents per workspace (2026-11-10)
+
+The daemon hosts several orchestrator members in its mob `tui`, one per
+agent a user works with (`docs/mob-split.md`, "P5"); the decisions are the
+user's (names, always wired, start semantics, `/quit` retires, `/detach`
+keeps the agent live).
+
+### The member set, its names and the conversation log
+
+An agent is a member `main-<id>` (`daemon::agents::new_name`: four
+characters of an unambiguous lower-case alphabet from `/dev/urandom`,
+redrawn while the name is taken by a live agent or by the conversation
+log); `daemon::agents::is_agent` accepts those and the bare `main` of a
+daemon from before P5, which keeps its name. Every agent is seated with
+the one profile `main` (`orchestrator::definition`, unchanged, so a mob
+created before P5 needs no new definition). The spawn customizer had one
+root member keyed by `tui/main`; it now shapes every member of `tui` whose
+identity `is_agent` accepts (`mobs::customizer::RootMember`: `is_root`, a
+gate, tools and instructions built per identity), and refuses a fresh
+spawn under such a name that the host did not make (a `spawn_member` from
+an agent, or another profile): "the member name `main-…` is reserved for
+the workspace's agents".
+
+Each agent gets its own file tools (`engine::agent_tools`), whose diffs
+are tagged with its name (`engine::tagged_diffs`, `FileDiffNote.agent`):
+a client shows only its own agent's diffs. The classifier notes carry the
+deciding session (`ApprovalNote::Decision.session_id`) and a client shows
+only its own agent's (its helpers' are its session's). A client follows
+only its agent's helpers: the daemon's mob, the implicit mob of its
+agent's session and those of its helpers' sessions
+(`client::helpers::Followers::should_open`), never another agent as a
+helper (`another_agents_helpers_are_not_followed`).
+
+`conversations.json` entries name their agent (`Entry::agent`; a log
+written before P5 names none and is read as `main`'s,
+`a_log_from_before_p5_belongs_to_main`). The engine decides who may run a
+conversation: `apply_resumed_session_metadata_with_role_migration`
+(meerkat-mob `build.rs`) refuses to seat a session under another identity
+than the one whose durable `comms_name` it carries
+(`MobError::ResumeSessionBoundToAnotherMember`, pinned upstream by
+`test_attach_existing_session_rejects_comms_name_mismatch`). So a
+conversation belongs to the agent that ran it: `/resume` of another
+agent's conversation is refused by the daemon with where it is
+(`SwitchError::OtherAgent`: "/agents <name>" when that agent is live,
+"`rkat-tui --resume <id>`" when it quit), `last` and `~N` count only the
+client's agent's conversations (`sessions::resolve` with `mine`,
+`last_counts_this_agents_conversations_and_the_picker_names_the_others`),
+and a conversation whose agent quit is seated again under that agent's
+name (`Agents::bind` with `AgentChoice::Conversation`).
+
+### Binding a connection to an agent
+
+`rkat/attach` carries `agent` (`protocol::AgentChoice`: `new`, `recent`,
+an agent by name, or a conversation reference); the daemon binds the
+connection between reading the attach line and acknowledging it
+(`serve::admit`), seating an agent when needed, and the acknowledgement
+names it (`Attached.agent`, `seated`). A probe binds none; an attach
+without `agent` (a client of before P5, the tests' raw connections) is
+`recent`. Every member-scoped `rkat/*` method acts on the connection's
+agent (`Local::agent_of`): `rkat/new`, `rkat/resume`, `rkat/set_model`,
+`rkat/conversations` (current is the caller's agent's), `rkat/detach`,
+`rkat/retire`, `rkat/status`; the engine methods the client calls name
+the agent itself (`Connection::agent`), and the daemon's observer records
+the human's words and interrupts for whichever live agent a request names.
+The plan-mode note is per agent (`Local::plan_noted`; a seated agent is
+told when plan mode is on, `Local::bound`).
+
+The daemon seats one agent at start when the mob has none: a spare that
+the first `new` (or `recent`) takes, so a client that launched the daemon
+does not leave an idle agent behind; a `recent` or conversation bind that
+seats another conversation retires an untaken spare and forgets its empty
+conversation. `recent` is the most recently active agent (a bind, a
+prompt, a run start: `Agents::touch`), else the conversation used last,
+seated again under its agent. The attach cursor is per agent
+(`CursorFile::for_agent`: `attach-<agent>.cursor`; `main` keeps
+`attach.cursor`). `/agents` lists the agents from `rkat/status`
+(`client::runner::agent_lines`), `/agents <name>` attaches again bound to
+that agent and renders its conversation from its start (the agent left
+keeps running, detached when it lost its last client).
+
+`rkat/status` gains `agent` and `agents` (name, conversation, running,
+clients, detached); `--list` prints one line per agent under its daemon
+(`daemon::list::lines`).
+
+### Lifecycle per agent
+
+`rkat/retire` retires the caller's agent: a running turn's review stops
+and its open escalations are answered with Stop (`engine.stop`,
+`desk.stop`), the run is cancelled (`mob_force_cancel`), its helpers stop
+(`cancel_helpers`), the member leaves the mob (`mob_retire`, which retires
+its descendants too) and its root registration and gate state go. The
+engine archives the session, which stays in the log; seating it again
+under the agent's name revives it with its history
+(`attach_lifecycle::a_retired_agent_takes_no_input_and_its_conversation_is_seated_again`:
+the second model call sees the first prompt). A retired agent is no
+member: a `mob/member_send` to it is refused by the engine and no model
+call follows (the same test; the negative case is the refusal itself, not
+an absence of output).
+
+The detached flag is per agent (`daemon::agents::Agent::detached`): set by
+`rkat/detach`, by an agent's last binding ending without a retire or a
+shutdown (a hangup, a crash), and for every agent the daemon restored at
+start (it was left running); it stays set while the agent lives, so a
+later `/quit` asks ("nobody detached since"). `Status.detached` is whether
+any live agent has it. The client's `/quit` (`quit_decision`): other
+clients on this agent, leave it to them; other clients on other agents,
+retire this agent (`Departure::Retire`); the last client, stop the daemon
+when it started it and no agent was left detached, else ask (detach:
+leave this agent running; terminate: `rkat/shutdown {"retire": true}`,
+which retires every agent before the daemon stops, `Lifecycle::retires_all`).
+A plain `rkat/shutdown` and SIGTERM keep the agents; the next start
+restores them, detached.
+Tests: `attach_lifecycle::quitting_one_of_two_agents_retires_it_and_the_last_quit_stops_the_daemon`,
+`quit_with_another_client_on_the_agent_leaves_it_to_that_client`,
+`the_quit_decision_follows_the_rules`, `detach_is_recorded_and_never_reset`.

@@ -65,6 +65,7 @@ pub fn note_messages(note: ApprovalNote) -> (Vec<Msg>, bool) {
             tool,
             verdict,
             reason,
+            ..
         } => {
             let tool = match agent {
                 Some(agent) => format!("[{agent}] {tool}"),

@@ -252,6 +252,13 @@ impl HelperRegistry {
         self.roots.write().insert(key, session.clone());
     }
 
+    /// The host-root member `key` left its mob (retired): it is no owner
+    /// any more. Its session's bookkeeping goes with
+    /// [`Self::forget_session`].
+    pub fn unregister_root(&self, key: &HelperKey) {
+        self.roots.write().remove(key);
+    }
+
     /// The session the host-root member `key` runs as, when it is one.
     #[must_use]
     pub fn root_session(&self, key: &HelperKey) -> Option<SessionId> {

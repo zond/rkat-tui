@@ -313,14 +313,14 @@ impl QuitDialog {
     /// The rows, in order.
     fn rows(&self) -> [(QuitChoice, String); 2] {
         let terminate = if self.running {
-            "Terminate: stop the daemon (interrupts the running turn)"
+            "Terminate: stop the daemon and retire every agent (interrupts the running turn; conversations stay)"
         } else {
-            "Terminate: stop the daemon"
+            "Terminate: stop the daemon and retire every agent (conversations stay)"
         };
         [
             (
                 QuitChoice::Detach,
-                "Detach: keep the agent running (rkat-tui reattaches)".to_string(),
+                "Detach: keep this agent running (rkat-tui -c reattaches)".to_string(),
             ),
             (QuitChoice::Terminate, terminate.to_string()),
         ]

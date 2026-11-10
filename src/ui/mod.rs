@@ -263,6 +263,9 @@ pub enum StatusUpdate {
     /// Attach mode: the daemon connection's state, shown first in the
     /// status bar.
     Attach(Option<String>),
+    /// Attach mode: the agent this client works with (`main-<id>`), shown
+    /// after the connection's state.
+    Agent(Option<String>),
     /// The price table changed (start-up, fetched lists); the cost readout
     /// is recomputed.
     Prices(Arc<crate::pricing::PriceTable>),
@@ -464,11 +467,15 @@ pub enum Msg {
 /// runner from the daemon's `rkat/status`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QuitDecision {
-    /// This client started the daemon and nobody detached since: stop it.
+    /// This client started the daemon, is the last one and no agent was
+    /// left running without a client: stop it (every agent retires).
     Terminate,
-    /// Other clients are attached: leave, the daemon stays for them (the
-    /// runner said so).
+    /// Other clients work with this client's agent: leave, the agent stays
+    /// for them (the runner said so).
     Leave,
+    /// Other clients are attached to other agents: retire this client's
+    /// agent, the daemon stays for them.
+    Retire,
     /// Ask: detach or terminate.
     Ask {
         /// Why the daemon is not just stopped.
@@ -483,7 +490,10 @@ pub enum QuitDecision {
 pub enum Departure {
     /// `/detach`: keep the agent running and record the detach.
     Detach,
-    /// Stop the daemon (`rkat/shutdown`).
+    /// `/quit`: the agent leaves the workspace (`rkat/retire`; a running
+    /// turn is interrupted), its conversation stays for `/resume`.
+    Retire,
+    /// Stop the daemon and retire every agent (`rkat/shutdown`).
     Terminate,
 }
 
@@ -635,6 +645,9 @@ pub enum Effect {
     /// `/daemon stop`: ask the attached daemon to shut down (attach mode;
     /// answered with a notice).
     DaemonStop,
+    /// `/agents`: list the workspace's agents (`None`), or switch this
+    /// client to the agent named (answered with notices).
+    Agents(Option<String>),
     /// `/memory`: resolve the instruction file (creating `SYSTEM.md` with
     /// a comment header) and answer with [`Msg::EditFile`].
     OpenMemory(MemoryTarget),
@@ -730,6 +743,8 @@ pub struct StatusInfo {
     /// `reconnecting`, `daemon starting`); `None` until the runner reports
     /// one.
     attach: Option<String>,
+    /// Attach mode: the agent this client works with.
+    agent: Option<String>,
 }
 
 /// The prompt the "Plan ready" dialog's proceed choices send.
@@ -820,6 +835,7 @@ impl StatusInfo {
             StatusUpdate::CostTotals(cost) => self.cost = cost,
             StatusUpdate::Prices(prices) => self.prices = prices,
             StatusUpdate::Attach(state) => self.attach = state,
+            StatusUpdate::Agent(agent) => self.agent = agent,
         }
     }
 }

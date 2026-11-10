@@ -26,6 +26,15 @@ fn a_remote_turn_shows_its_prompt_and_keeps_the_ui_busy_until_it_ends() {
     // `/daemon stop` is handed to the integrator.
     type_str(&mut app, "/daemon stop");
     assert_eq!(app.update(key(KeyCode::Enter)), vec![Effect::DaemonStop]);
+    // `/agents` lists the agents, `/agents <name>` switches: both the
+    // integrator's.
+    type_str(&mut app, "/agents");
+    assert_eq!(app.update(key(KeyCode::Enter)), vec![Effect::Agents(None)]);
+    type_str(&mut app, "/agents main-ab12");
+    assert_eq!(
+        app.update(key(KeyCode::Enter)),
+        vec![Effect::Agents(Some("main-ab12".into()))]
+    );
 }
 
 #[test]
