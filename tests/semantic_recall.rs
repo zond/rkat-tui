@@ -2,8 +2,12 @@
 //! with a scripted LLM and an attached client: the agent is offered
 //! `memory_search` (and every builtin it is offered is classified by the
 //! approval policy);
-//! a fact native auto-compaction discarded from the context is found again
-//! through `memory_search`.
+//! a fact native auto-compaction discarded from the context is found
+//! through `memory_search`, so the daemon wires the memory store the
+//! compaction indexes into and the tool reads. That compaction drops the
+//! fact from the context and indexes it is the engine's own property,
+//! tested upstream (`meerkat` `compaction_ownership_gaps.rs`, the setup
+//! `compact_during_run_n` its tests share).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -12,7 +16,7 @@ mod common;
 mod rig;
 
 use common::{ScriptedLlmClient, Step, Workspace};
-use meerkat_core::{AgentEvent, Message};
+use meerkat_core::Message;
 use rig::{Attached, Setup};
 use rkat_tui::approval::catalog::ToolOrigin;
 use rkat_tui::approval::policy::{
@@ -128,13 +132,6 @@ async fn a_compacted_fact_is_found_with_memory_search() {
     }
     rig.send(Effect::StartTurn("compact".into()));
     rig.turn_finished().await.result.expect("turn succeeds");
-    assert!(
-        rig.events()
-            .iter()
-            .any(|e| matches!(e, AgentEvent::CompactionStarted { .. }))
-    );
-    let compacted = llm.recorded().last().unwrap().clone();
-    assert!(!compacted.user().contains(SECRET), "{}", compacted.user());
 
     rig.send(Effect::StartTurn("what was the recipe?".into()));
     let outcome = rig.turn_finished().await;

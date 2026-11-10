@@ -8,8 +8,12 @@
 //! (meerkat's `FactoryAgentBuilder` does exactly these two steps). These
 //! tests write the file in that interval, between the store's `get` and the
 //! factory's build, with the factory configured as bootstrap configures it
-//! (`with_hook_source_trust(ProjectInputs)`), and a control without it that
-//! shows the interval is real.
+//! (`with_hook_source_trust(ProjectInputs)`). That the interval is real
+//! without a trust, and that an entry the user file states identically
+//! survives the refusal, are the engine's own properties, tested upstream
+//! (`meerkat` `hook_source_trust.rs`:
+//! `without_a_trust_the_project_hooks_run_as_before`,
+//! `an_identical_user_entry_runs_from_an_untrusted_project`).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -144,9 +148,9 @@ struct Run {
     refused: Vec<(HookId, HookFailureReason)>,
 }
 
-/// Builds an agent as bootstrap's factory does (with `trust` installed when
-/// given) over `config`, and runs one turn that calls the guarded tool.
-async fn build_and_run(fx: &Fixture, config: &Config, trust: Option<&ProjectInputs>) -> Run {
+/// Builds an agent as bootstrap's factory does (with `trust` installed)
+/// over `config`, and runs one turn that calls the guarded tool.
+async fn build_and_run(fx: &Fixture, config: &Config, trust: &ProjectInputs) -> Run {
     let llm = ScriptedLlmClient::new(vec![
         Step::Tool {
             id: "guarded-call",
@@ -161,17 +165,15 @@ async fn build_and_run(fx: &Fixture, config: &Config, trust: Option<&ProjectInpu
     build.llm_client_override = Some(llm as Arc<dyn LlmClient>);
     build.external_tools = Some(Arc::clone(&tool) as Arc<dyn AgentToolDispatcher>);
     build.event_tx = Some(tx);
-    let mut factory = AgentFactory::new(fx.base.join("sessions"))
+    let factory = AgentFactory::new(fx.base.join("sessions"))
         .session_store(Arc::new(meerkat_store::MemoryStore::new()))
         .runtime_root(fx.base.join("runtime"))
         .project_root(fx.ws.as_path())
         .context_root(fx.ws.clone())
         .user_config_root(fx.home.clone())
         .builtins(false)
-        .shell(false);
-    if let Some(trust) = trust {
-        factory = factory.with_hook_source_trust(Arc::new(trust.clone()));
-    }
+        .shell(false)
+        .with_hook_source_trust(Arc::new(trust.clone()));
     let mut agent = within(factory.build_agent(build, config)).await.unwrap();
     let result = within(agent.run("Attempt the guarded operation".to_string().into()))
         .await
@@ -204,73 +206,24 @@ fn untrusted_source(id: &str) -> (HookId, HookFailureReason) {
 /// The race the guard alone left open: the project file is trusted (no
 /// hooks) when the store serves the build config, a hook is written into it
 /// before the factory reads it, and the factory's question about the bytes
-/// it read refuses the hook. Without the trust installed the same sequence
-/// runs it.
+/// it read, answered by rkat-tui's `ProjectInputs`, refuses the hook.
 #[tokio::test]
 async fn a_hook_written_between_the_guard_and_the_build_never_runs() {
-    for installed in [true, false] {
-        let fx = fixture();
-        let project = fx.ws.join(".rkat/config.toml");
-        let marker = fx.base.join("planted-hook-entered");
-        write_hooks(&project, vec![]);
-        fx.inputs.trust_all().unwrap();
-        let config = fx.store.get().await.unwrap();
-        assert!(config.hooks.entries.is_empty(), "nothing to shadow");
+    let fx = fixture();
+    let project = fx.ws.join(".rkat/config.toml");
+    let marker = fx.base.join("planted-hook-entered");
+    write_hooks(&project, vec![]);
+    fx.inputs.trust_all().unwrap();
+    let config = fx.store.get().await.unwrap();
+    assert!(config.hooks.entries.is_empty(), "nothing to shadow");
 
-        // The interval between the guard's read and the factory's.
-        write_hooks(&project, vec![marker_guardrail("planted", &marker)]);
+    // The interval between the guard's read and the factory's.
+    write_hooks(&project, vec![marker_guardrail("planted", &marker)]);
 
-        let run = build_and_run(&fx, &config, installed.then_some(&fx.inputs)).await;
-        if installed {
-            assert!(!marker.exists(), "the planted hook never ran");
-            assert_eq!(run.dispatched, 0, "the tool it gates is withheld");
-            assert_eq!(run.refused, [untrusted_source("planted")]);
-        } else {
-            assert!(marker.exists(), "control: the interval is real");
-            assert_eq!(run.dispatched, 1);
-            assert!(run.refused.is_empty());
-        }
-    }
-}
-
-/// A hook the user's `~/.rkat/config.toml` states identically stays the
-/// user's when the project file's content is refused; the same id with a
-/// different definition in the user file does not let the project's run.
-#[tokio::test]
-async fn a_hook_the_user_file_states_identically_survives_the_refusal() {
-    for identical in [true, false] {
-        let fx = fixture();
-        let project = fx.ws.join(".rkat/config.toml");
-        let user = fx.home.join(".rkat/config.toml");
-        let marker = fx.base.join("hook-entered");
-        let user_marker = fx.base.join("user-variant-entered");
-        let hook = marker_guardrail("fmt", &marker);
-        write_hooks(&project, vec![]);
-        fx.inputs.trust_all().unwrap();
-        write_hooks(
-            &user,
-            vec![if identical {
-                hook.clone()
-            } else {
-                marker_guardrail("fmt", &user_marker)
-            }],
-        );
-        let config = fx.store.get().await.unwrap();
-
-        write_hooks(&project, vec![hook]);
-
-        let run = build_and_run(&fx, &config, Some(&fx.inputs)).await;
-        assert!(!user_marker.exists());
-        if identical {
-            assert!(marker.exists(), "the user's own hook ran");
-            assert_eq!(run.dispatched, 1);
-            assert!(run.refused.is_empty());
-        } else {
-            assert!(!marker.exists(), "the project's definition never ran");
-            assert_eq!(run.dispatched, 0);
-            assert_eq!(run.refused, [untrusted_source("fmt")]);
-        }
-    }
+    let run = build_and_run(&fx, &config, &fx.inputs).await;
+    assert!(!marker.exists(), "the planted hook never ran");
+    assert_eq!(run.dispatched, 0, "the tool it gates is withheld");
+    assert_eq!(run.refused, [untrusted_source("planted")]);
 }
 
 /// A project file untrusted when the store serves the build config keeps
@@ -286,7 +239,7 @@ async fn a_project_file_untrusted_before_the_build_stays_inert() {
     assert_eq!(config.hooks.entries.len(), 1);
     assert!(!config.hooks.entries[0].enabled);
 
-    let run = build_and_run(&fx, &config, Some(&fx.inputs)).await;
+    let run = build_and_run(&fx, &config, &fx.inputs).await;
     assert!(!marker.exists());
     assert_eq!(run.dispatched, 1);
     assert!(run.refused.is_empty());
@@ -303,7 +256,7 @@ async fn recorded_bytes_and_the_flag_run_the_project_hook() {
     write_hooks(&project, vec![marker_guardrail("fmt", &marker)]);
     fx.inputs.trust_all().unwrap();
     let config = fx.store.get().await.unwrap();
-    let run = build_and_run(&fx, &config, Some(&fx.inputs)).await;
+    let run = build_and_run(&fx, &config, &fx.inputs).await;
     assert!(marker.exists(), "the recorded hook ran");
     assert_eq!(run.dispatched, 1);
     assert!(run.refused.is_empty());
@@ -311,7 +264,7 @@ async fn recorded_bytes_and_the_flag_run_the_project_hook() {
     let planted = fx.base.join("planted-hook-entered");
     write_hooks(&project, vec![marker_guardrail("planted", &planted)]);
     let flagged = ProjectInputs::new(&fx.scope, Arc::clone(&fx.record), true);
-    let run = build_and_run(&fx, &config, Some(&flagged)).await;
+    let run = build_and_run(&fx, &config, &flagged).await;
     assert!(planted.exists(), "--trust-project admits it for the run");
     assert_eq!(run.dispatched, 1);
     assert!(run.refused.is_empty());
@@ -328,7 +281,7 @@ async fn a_user_file_hook_runs_without_a_record() {
         vec![marker_guardrail("fmt", &marker)],
     );
     let config = fx.store.get().await.unwrap();
-    let run = build_and_run(&fx, &config, Some(&fx.inputs)).await;
+    let run = build_and_run(&fx, &config, &fx.inputs).await;
     assert!(marker.exists(), "the user's hook ran");
     assert_eq!(run.dispatched, 1);
     assert!(run.refused.is_empty());

@@ -580,7 +580,8 @@ The A4 regression (Tier-1 `read_file`/`memory_search` reaching the classifier) w
   `linux_file_grant_through_a_final_symlink_binds_its_target_at_the_link`. The TUI now grants the
   link only (`canonical` admits a final file link on Linux; the target's directory is not granted); the
   `resolv_conf_link` notice is gone, and
-  `workspace_mode_resolves_localhost_and_dns_names` no longer skips DNS for a link.
+  `workspace_mode_resolves_localhost_and_dns_names` no longer skips DNS for a link (its DNS half was later
+  left upstream: "Engine-property tests left upstream").
 - Extra grants: `--confinement-read`/`--confinement-write <dir>` (`ExtraGrants`, validated by `grants_with`: absolute,
   existing, canonical, directory, off baseline/`/proc`/`/sys`/`/dev`, disjoint from the workspace and each other,
   not redundant; typed `ConfinementError::ExtraGrant`); refused under a realm floor. `ConfinementSection`
@@ -1054,8 +1055,9 @@ Two defects from the Meerkat maintainer's review of the harness, one commit each
   `project_trust::tests::{the_hook_source_trust_judges_the_bytes_the_factory_read,
   the_hook_source_trust_keeps_a_workspace_that_is_the_user_root}`; `tests/hook_source_trust.rs`
   (`a_hook_written_between_the_guard_and_the_build_never_runs` writes the hook between `RealmConfigStore::get` and
-  `AgentFactory::build_agent`, the two steps `FactoryAgentBuilder` takes, with a control without the trust that runs
-  it; `a_hook_the_user_file_states_identically_survives_the_refusal`;
+  `AgentFactory::build_agent`, the two steps `FactoryAgentBuilder` takes; its control without the trust and
+  `a_hook_the_user_file_states_identically_survives_the_refusal` were later left upstream, see "Engine-property
+  tests left upstream";
   `a_project_file_untrusted_before_the_build_stays_inert`); the engine's reproducer is
   `crates/meerkat/tests/hook_source_trust.rs`. The realm config's other sections (endpoints, models) still load
   untrusted; they start no process, but a planted endpoint `base_url` could receive an environment key. Not in
@@ -3726,6 +3728,45 @@ both get the proxy's parse error, the well-formed `session/create`
 keeps `NOT_SERVED` (the control), methodless, wrong-version and
 array-id envelopes are invalid requests, no model call is made and the
 shell marker is absent, and `mob/members` still answers afterwards.
+
+### Engine-property tests left upstream
+
+The senior review of 55f89b4 found three tests whose halves tested the
+engine rather than this crate's wiring. Each keeps the assertion that
+pins rkat-tui's wiring; the dropped halves are covered by the engine's
+own tests, which landed with the fixes (lukacf/meerkat #2100, #2104,
+#2105 and the 0.9.11 integration #2124; read in the registry source
+under `~/.cargo/registry/src/*/meerkat-*-0.9.11/tests/`):
+
+- `tests/hook_source_trust.rs`: kept
+  `a_hook_written_between_the_guard_and_the_build_never_runs` with the
+  trust installed (rkat-tui's `ProjectInputs` refuses the planted hook)
+  and the cases that judge rkat-tui's record (`--trust-project`, the
+  user file, a file untrusted before the build). Dropped its control
+  without a trust, covered by `meerkat` `tests/hook_source_trust.rs`
+  `without_a_trust_the_project_hooks_run_as_before`, and
+  `a_hook_the_user_file_states_identically_survives_the_refusal`, covered
+  by `an_identical_user_entry_runs_from_an_untrusted_project` there
+  (the engine decides identity; the differing-definition half is the
+  same engine comparison).
+- `tests/confinement.rs`: `workspace_mode_resolves_localhost_and_dns_names`
+  became `workspace_mode_resolves_localhost`: `localhost` resolves, so
+  rkat-tui's plan grants `/etc/hosts` and `/etc/nsswitch.conf`. DNS
+  through a granted or linked `/etc/resolv.conf` is the sandbox's,
+  covered by `meerkat-sandbox` `tests/process_confinement.rs`
+  `linux_resolves_a_host_name_through_a_symlinked_resolv_conf` (an
+  `#[ignore]` positive lane upstream runs on eligible hosts).
+- `tests/semantic_recall.rs`: `a_compacted_fact_is_found_with_memory_search`
+  keeps the wiring: under rkat-tui's `[auto]` compaction settings a fact
+  from compacted history is found by `memory_search`, so the daemon
+  wires the memory store compaction indexes into and the tool reads. It
+  no longer asserts the engine's part, that compaction started and the
+  compacted request lost the fact; `meerkat`
+  `tests/compaction_ownership_gaps.rs` (`compact_during_run_n`, the setup its tests share) asserts
+  the compaction, its committed summary and the discarded history as a
+  finalized compaction memory record.
+
+The migration to the daemon rig had removed none of them.
 
 ### P4: the in-process runner is deleted
 

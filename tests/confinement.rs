@@ -228,35 +228,27 @@ async fn workspace_mode_passes_the_curated_environment() {
 const SENTINEL_VAR: &str = "RKAT_TUI_TEST_SECRET";
 
 /// Name resolution inside workspace mode, with this host's real system
-/// paths (`HostPaths::detect`): `localhost` resolves from the granted
-/// `/etc/hosts`, and a DNS name resolves through the stub resolver named in
-/// a granted `/etc/resolv.conf`, a regular file or a symbolic link
-/// (systemd-resolved: the sandbox binds the link's target at
-/// `/etc/resolv.conf`). The DNS half prints `SKIPPED:` only when the host
-/// itself cannot resolve the name (no network).
+/// paths (`HostPaths::detect`): `localhost` resolves, so the plan grants
+/// `/etc/hosts` and `/etc/nsswitch.conf` to the confined shell. Resolving a
+/// DNS name through a granted (or symbolically linked) `/etc/resolv.conf`
+/// is the sandbox's own property, tested upstream
+/// (`meerkat-sandbox` `process_confinement.rs`,
+/// `linux_resolves_a_host_name_through_a_symlinked_resolv_conf`).
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn workspace_mode_resolves_localhost_and_dns_names() {
-    use std::net::ToSocketAddrs as _;
+async fn workspace_mode_resolves_localhost() {
     let ws = Workspace::new();
     if let Some(reason) = sandbox_unavailable(&ws.root, ConfinementArg::Workspace).await {
         println!("SKIPPED: --confinement=workspace is unavailable on this host: {reason}");
         return;
     }
     let host = HostPaths::detect();
-    let dns_skip = if !Path::new("/etc/resolv.conf").is_file() {
-        Some("this host has no /etc/resolv.conf".to_string())
-    } else if ("example.com", 80).to_socket_addrs().is_err() {
-        Some("the host itself cannot resolve example.com".to_string())
-    } else {
-        None
-    };
     let llm = ScriptedLlmClient::new(vec![
         Step::Tool {
             id: "sh",
             name: "shell",
             args: json!({
-                "command": "getent hosts localhost && echo LOCAL-OK; getent hosts example.com && echo DNS-OK; echo END"
+                "command": "getent hosts localhost && echo LOCAL-OK; echo END"
             }),
         },
         Step::Text("done"),
@@ -275,13 +267,6 @@ async fn workspace_mode_resolves_localhost_and_dns_names() {
         output.contains("LOCAL-OK"),
         "localhost did not resolve: {output}"
     );
-    match dns_skip {
-        Some(reason) => println!("SKIPPED: DNS inside the sandbox: {reason}"),
-        None => assert!(
-            output.contains("DNS-OK"),
-            "example.com did not resolve: {output}"
-        ),
-    }
 }
 
 /// Accept connections on a loopback port until the test ends.
