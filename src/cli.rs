@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 /// Interactive coding harness for Meerkat.
 #[derive(Parser, Debug, Clone)]
-#[command(name = "rkat-tui", version)]
+#[command(name = "rkat-tui", version = crate::BUILD)]
 #[command(about = "Interactive terminal coding harness for Meerkat")]
 #[command(
     after_help = "Examples:\n  rkat-tui\n  rkat-tui \"fix the failing test\"\n  rkat-tui --resume last\n  rkat-tui --model claude-sonnet-4-6 --classifier-model claude-haiku-5-5\n  rkat-tui --endpoint-def litellm=openai=http://localhost:4000,key_env=LITELLM_KEY --model litellm:gpt-5.5\n  rkat-tui --allow 'shell=cargo nextest run*' --set auto.compact=auto\n\nEvery tui.toml setting can be given with --set <dotted.key>=<value> (TOML value; bare words are strings).\nCommand-line settings apply after the global and realm tui.toml, before the project file's deny rules."
@@ -354,6 +354,27 @@ pub enum RealmBackendArg {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    /// `--version` of both binaries prints the build id the attach
+    /// handshake compares: the crate version, plus the commit in a checkout.
+    #[test]
+    fn version_is_the_build_id() {
+        use clap::CommandFactory;
+        assert!(
+            crate::BUILD == env!("CARGO_PKG_VERSION")
+                || crate::BUILD.starts_with(concat!(env!("CARGO_PKG_VERSION"), "+")),
+            "{}",
+            crate::BUILD
+        );
+        assert_eq!(
+            Args::command().render_version(),
+            format!("rkat-tui {}\n", crate::BUILD)
+        );
+        assert_eq!(
+            crate::daemon::DaemonCli::command().render_version(),
+            format!("rkat-tui-mob {}\n", crate::BUILD)
+        );
+    }
 
     #[test]
     fn parses_bare_invocation() {

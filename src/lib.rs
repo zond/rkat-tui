@@ -37,10 +37,11 @@
 //! - `client` — the TUI against the workspace's daemon (attach, start on demand)
 //! - `workbench` — what the client does on this side of the agent (`!`, `/remember`, `/export`, prices, models)
 
-/// This build: the crate version and the git commit it was built from
-/// (`build.rs`). The daemon names its own in its attach answer, and a
-/// client built from another commit says so.
-pub const BUILD: &str = concat!(env!("CARGO_PKG_VERSION"), "+", env!("RKAT_TUI_GIT"));
+/// This build: the crate version, plus the git commit when built from the
+/// crate's own checkout (`0.0.1+0123456789`; a crates.io build is the
+/// version alone, see `build.rs`). `--version` prints it, the daemon names
+/// its own in its attach answer, and a client of another build says so.
+pub const BUILD: &str = env!("RKAT_TUI_BUILD");
 
 // The internal modules: crate-private, public with the `test-support`
 // feature (the crate's integration tests). Without it, an item or re-export

@@ -81,7 +81,7 @@ pub const DEFAULT_LISTEN: &str = "127.0.0.1:0";
 /// confinement, trust, `--set`). The UI-only ones (`--resume`, `-c`, a
 /// prompt, mouse) are refused.
 #[derive(Parser, Debug, Clone)]
-#[command(name = "rkat-tui-mob", version)]
+#[command(name = "rkat-tui-mob", version = crate::BUILD)]
 #[command(
     about = "Experimental: the rkat-tui mob daemon. Serves Meerkat's JSON-RPC methods for one workspace over loopback TCP"
 )]

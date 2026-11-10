@@ -2723,7 +2723,7 @@ impl AttachRunner {
     async fn status_report(&self) {
         let mut lines = vec![format!(
             "rkat-tui {} (attached to the workspace daemon)",
-            env!("CARGO_PKG_VERSION")
+            crate::BUILD
         )];
         match &self.link {
             Some(link) => {
