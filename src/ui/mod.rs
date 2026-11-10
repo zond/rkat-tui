@@ -617,10 +617,10 @@ pub enum Effect {
     RemoveRule(usize),
     /// List rules; answer with [`Msg::Notice`].
     ListRules,
-    /// `/rules trust`: show the realm `tui.toml` and record its digest in
+    /// `/permissions trust`: show the realm `tui.toml` and record its digest in
     /// the host trust record; answered with [`Msg::Notice`].
     TrustRealmRules,
-    /// `/trust` (alias `/mcp trust`): record every project input's digest
+    /// `/trust`: record every project input's digest
     /// in the host trust record; their servers and hooks run from the next
     /// session.
     TrustProject,

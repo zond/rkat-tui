@@ -13,7 +13,7 @@ pub enum RuleEffect {
     Deny,
 }
 
-/// `/rules` subcommands.
+/// `/permissions` subcommands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RulesCommand {
     /// List the active rules.
@@ -27,7 +27,7 @@ pub enum RulesCommand {
         /// Optional argument pattern (rest of the line).
         pattern: Option<String>,
     },
-    /// Remove rule number `n` (as shown by `/rules list`).
+    /// Remove rule number `n` (as shown by `/permissions list`).
     Remove(usize),
     /// Trust the realm `tui.toml` as it is now (its summary is shown and its
     /// digest recorded in the host trust record).
@@ -122,7 +122,7 @@ pub enum Command {
     /// `/rewind` (`/checkpoint`, `/undo`): pick one of the session's
     /// messages and continue from just before it.
     Rewind,
-    /// `/rules ...`.
+    /// `/permissions ...`.
     Rules(RulesCommand),
     /// `/auto [on|off|resume]`.
     Auto(AutoCommand),
@@ -158,7 +158,7 @@ pub enum Command {
     /// `/copy [N]`: copy the Nth latest assistant answer (1, the default,
     /// is the latest) to the clipboard (OSC 52).
     Copy(usize),
-    /// `/trust` (alias `/mcp trust`): trust every project input
+    /// `/trust`: trust every project input
     /// (`.rkat/mcp.toml`, `.rkat/config.toml`, the workspace realm's
     /// `config.toml`) as it is now; their servers and hooks run from the
     /// next session.
@@ -207,8 +207,7 @@ pub struct CommandSpec {
     /// One line on what the command does (the completion menu's).
     pub summary: &'static str,
     /// `/help` rows: the left column and the description, whose `\n`
-    /// separates continuation lines. Empty: the command is described in
-    /// another one's rows (`/mcp trust` under `/trust`).
+    /// separates continuation lines.
     pub help: &'static [(&'static str, &'static str)],
     /// Parse the text after the name (trimmed); `None` when the arguments
     /// are wrong (the parser then reports [`Self::usage`]).
@@ -352,14 +351,11 @@ pub static COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "permissions",
-        aliases: &["rules"],
+        aliases: &[],
         usage: "[list | add allow|deny <tool> [pattern] | rm <n> | trust]",
         summary: "list or edit the approval rules",
         help: &[
-            (
-                "/permissions [list]",
-                "list approval rules (/rules is an alias)",
-            ),
+            ("/permissions [list]", "list approval rules"),
             (
                 "/permissions add allow|deny <tool> [pattern]",
                 "add an approval rule",
@@ -379,20 +375,9 @@ pub static COMMANDS: &[CommandSpec] = &[
         summary: "trust the project's MCP and config files as they are now",
         help: &[(
             "/trust",
-            "trust the project's .rkat/mcp.toml, .rkat/config.toml and\nworkspace realm config.toml as they are now (their MCP\nservers and hooks run from the next session; /mcp trust\nis an alias; rkat-tui --trust-project trusts them for one\nrun without recording)",
+            "trust the project's .rkat/mcp.toml, .rkat/config.toml and\nworkspace realm config.toml as they are now (their MCP\nservers and hooks run from the next session; rkat-tui\n--trust-project trusts them for one run without recording)",
         )],
         parse: |rest| arg_free(rest, Command::TrustProject),
-    },
-    CommandSpec {
-        name: "mcp",
-        aliases: &[],
-        usage: "trust",
-        summary: "the same as /trust",
-        help: &[],
-        parse: |rest| match words(rest).as_slice() {
-            ["trust"] => Some(Command::TrustProject),
-            _ => None,
-        },
     },
     CommandSpec {
         name: "mode",
@@ -948,7 +933,6 @@ mod tests {
             spec("resume").map(|s| s.usage),
             Some("[last | ~N | id-prefix]")
         );
-        assert_eq!(usage_of("/mcp"), "/mcp trust");
         assert_eq!(usage_of("/copy 0"), "/copy [N]");
         assert_eq!(
             parse("/rewind 2").map(|r| r.map_err(|e| e.to_string())),
@@ -961,7 +945,6 @@ mod tests {
         // Sample arguments for the commands that need some.
         let args = |name: &str| match name {
             "remember" => " a note",
-            "mcp" => " trust",
             "daemon" => " stop",
             _ => "",
         };
@@ -977,7 +960,7 @@ mod tests {
                 );
                 assert!(std::ptr::eq(super::spec(name).unwrap(), spec));
             }
-            // Every spec is in /help: its own rows, or (/mcp) another's.
+            // Every spec is in /help.
             assert!(
                 help_text().contains(&format!("/{}", spec.name)),
                 "{}",
@@ -1008,9 +991,7 @@ mod tests {
             "model",
             "auto",
             "permissions",
-            "rules",
             "trust",
-            "mcp",
             "helpers",
             "tasks",
             "remember",
@@ -1025,7 +1006,7 @@ mod tests {
         ] {
             assert!(super::spec(name).is_some(), "/{name} has no spec");
         }
-        assert_eq!(seen.len(), 36);
+        assert_eq!(seen.len(), 34);
         // `/help`'s "Commands:" rows come from the specs, in their order.
         let commands = help_text().split_once("Keys:").unwrap().0;
         let mut at = 0;
@@ -1216,10 +1197,10 @@ mod tests {
 
     #[test]
     fn rules_commands() {
-        assert_eq!(ok("/rules"), Command::Rules(RulesCommand::List));
-        assert_eq!(ok("/rules list"), Command::Rules(RulesCommand::List));
+        assert_eq!(ok("/permissions"), Command::Rules(RulesCommand::List));
+        assert_eq!(ok("/permissions list"), Command::Rules(RulesCommand::List));
         assert_eq!(
-            ok("/rules add allow shell cargo test *"),
+            ok("/permissions add allow shell cargo test *"),
             Command::Rules(RulesCommand::Add {
                 effect: RuleEffect::Allow,
                 tool: "shell".into(),
@@ -1227,25 +1208,33 @@ mod tests {
             })
         );
         assert_eq!(
-            ok("/rules add deny web_fetch"),
+            ok("/permissions add deny web_fetch"),
             Command::Rules(RulesCommand::Add {
                 effect: RuleEffect::Deny,
                 tool: "web_fetch".into(),
                 pattern: None,
             })
         );
-        assert_eq!(ok("/rules rm 3"), Command::Rules(RulesCommand::Remove(3)));
-        assert_eq!(ok("/rules trust"), Command::Rules(RulesCommand::Trust));
-        assert_eq!(ok("/mcp trust"), Command::TrustProject);
+        assert_eq!(
+            ok("/permissions rm 3"),
+            Command::Rules(RulesCommand::Remove(3))
+        );
+        assert_eq!(
+            ok("/permissions trust"),
+            Command::Rules(RulesCommand::Trust)
+        );
         assert_eq!(ok("/trust"), Command::TrustProject);
         assert!(parse("/trust all").is_some_and(|r| r.is_err()));
-        assert!(parse("/mcp").is_some_and(|r| r.is_err()));
+        // The old names are gone.
+        for old in ["/rules", "/rules list", "/mcp trust"] {
+            assert!(!matches!(parse(old), Some(Ok(_))), "{old}");
+        }
         assert!(matches!(
-            parse("/rules rm x"),
+            parse("/permissions rm x"),
             Some(Err(CommandError::Usage(_)))
         ));
         assert!(matches!(
-            parse("/rules add maybe t"),
+            parse("/permissions add maybe t"),
             Some(Err(CommandError::Usage(_)))
         ));
     }
@@ -1258,7 +1247,7 @@ mod tests {
             "/exit",
             "/clear",
             "/resume",
-            "/rules",
+            "/permissions",
             "/permissions",
             "/usage",
             "/context",
@@ -1350,7 +1339,7 @@ mod tests {
         ] {
             assert_eq!(
                 parse(&format!("/permissions{line}")),
-                parse(&format!("/rules{line}")),
+                parse(&format!("/permissions{line}")),
                 "{line}"
             );
         }

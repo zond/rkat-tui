@@ -8,19 +8,11 @@
 //! Resolution order (first match wins):
 //!
 //! 1. `--config-dir <dir>`
-//! 2. `<user config root>/.rkat/tui` when it exists, where the user config
-//!    root is `--user-config-root`, else the home directory (the root
-//!    Meerkat's own user config `~/.rkat` lives under)
-//! 3. a legacy directory of an earlier release, when it exists (used as is,
-//!    with a start-up notice; nothing is moved, see
-//!    [`legacy_config_notice`]): `<--user-config-root>/.config/rkat-tui`
-//!    when that flag is given, else `$XDG_CONFIG_HOME/rkat-tui` (when set
-//!    and non-empty) or `~/.config/rkat-tui` (`<platform config
-//!    dir>/rkat-tui` on Windows)
-//! 4. `<user config root>/.rkat/tui` (created on first write)
+//! 2. `<user config root>/.rkat/tui` (created on first write), where the
+//!    user config root is `--user-config-root`, else the home directory
+//!    (the root Meerkat's own user config `~/.rkat` lives under)
 //!
-//! `$XDG_CONFIG_HOME` no longer decides the default; it only locates a
-//! legacy directory.
+//! `$XDG_CONFIG_HOME` does not decide it.
 //!
 //! Re-creatable data (the community price list) lives in a cache directory
 //! instead ([`GlobalDirs::cache`]):
@@ -34,8 +26,7 @@
 
 use std::path::{Path, PathBuf};
 
-/// Name of the application directory inside a legacy config root
-/// (`~/.config/rkat-tui`) and a cache root.
+/// Name of the application directory inside a cache root.
 pub const APP_DIR: &str = "rkat-tui";
 
 /// The default config directory under the user config root: `.rkat/tui`.
@@ -66,19 +57,8 @@ impl GlobalDirs {
     /// `None` when nothing resolves.
     #[must_use]
     pub fn resolve(config_dir: Option<&Path>, user_config_root: Option<&Path>) -> Option<Self> {
-        let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
         let home = dirs::home_dir();
-        let platform = dirs::config_dir();
-        let mut resolved = Self::resolve_with(
-            config_dir,
-            user_config_root,
-            &LegacyRoots {
-                xdg_config_home: xdg.as_deref(),
-                home: home.as_deref(),
-                platform_config: platform.as_deref(),
-            },
-            Path::is_dir,
-        )?;
+        let mut resolved = Self::resolve_with(config_dir, user_config_root, home.as_deref())?;
         let xdg_cache = std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from);
         let platform_cache = dirs::cache_dir();
         if let Some(cache) = cache_dir_with(
@@ -92,27 +72,16 @@ impl GlobalDirs {
         Some(resolved)
     }
 
-    /// [`GlobalDirs::resolve`] with every platform input supplied explicitly
-    /// and `exists` deciding whether a directory exists.
+    /// [`GlobalDirs::resolve`] with the home directory supplied explicitly.
     #[must_use]
     pub fn resolve_with(
         config_dir: Option<&Path>,
         user_config_root: Option<&Path>,
-        roots: &LegacyRoots<'_>,
-        exists: impl Fn(&Path) -> bool,
+        home: Option<&Path>,
     ) -> Option<Self> {
-        let config = if let Some(dir) = config_dir {
-            dir.to_path_buf()
-        } else {
-            let default = default_config_dir(user_config_root.or(roots.home)?);
-            if exists(&default) {
-                default
-            } else {
-                legacy_candidates(user_config_root, roots)
-                    .into_iter()
-                    .find(|legacy| exists(legacy))
-                    .unwrap_or(default)
-            }
+        let config = match config_dir {
+            Some(dir) => dir.to_path_buf(),
+            None => default_config_dir(user_config_root.or(home)?),
         };
         let cache = config.join("cache");
         Some(Self { config, cache })
@@ -156,65 +125,6 @@ impl GlobalDirs {
     }
 }
 
-/// Where earlier releases kept the config directory, for
-/// [`GlobalDirs::resolve_with`].
-#[derive(Debug, Clone, Copy, Default)]
-pub struct LegacyRoots<'a> {
-    /// `$XDG_CONFIG_HOME` (Unix and macOS).
-    pub xdg_config_home: Option<&'a Path>,
-    /// The home directory; also the user config root without
-    /// `--user-config-root`.
-    pub home: Option<&'a Path>,
-    /// The platform config directory (Windows).
-    pub platform_config: Option<&'a Path>,
-}
-
-/// The legacy config directories, most specific first.
-fn legacy_candidates(user_config_root: Option<&Path>, roots: &LegacyRoots<'_>) -> Vec<PathBuf> {
-    if let Some(root) = user_config_root {
-        return vec![root.join(".config").join(APP_DIR)];
-    }
-    if cfg!(windows) {
-        return roots
-            .platform_config
-            .map(|dir| dir.join(APP_DIR))
-            .into_iter()
-            .collect();
-    }
-    roots
-        .xdg_config_home
-        .filter(|xdg| !xdg.as_os_str().is_empty())
-        .map(|xdg| xdg.join(APP_DIR))
-        .into_iter()
-        .chain(roots.home.map(|home| home.join(".config").join(APP_DIR)))
-        .collect()
-}
-
-/// The one-line start-up notice when `dirs` is a legacy config directory
-/// (see the module docs): it names the new default and `--config-dir`.
-/// `None` under `--config-dir` (`config_dir`) or when `dirs` is the default.
-/// `user_config_root` is the effective root (`--user-config-root`, else the
-/// home directory).
-#[must_use]
-pub fn legacy_config_notice(
-    dirs: &GlobalDirs,
-    config_dir: Option<&Path>,
-    user_config_root: Option<&Path>,
-) -> Option<String> {
-    if config_dir.is_some() {
-        return None;
-    }
-    let default = default_config_dir(user_config_root?);
-    (dirs.config != default).then(|| {
-        format!(
-            "using the legacy config dir {}; the default is now {} (move the files there, or keep this one with --config-dir {})",
-            dirs.config.display(),
-            default.display(),
-            dirs.config.display()
-        )
-    })
-}
-
 /// The cache directory (see the module docs), `None` when only the
 /// `<config>/cache` fallback is left.
 #[must_use]
@@ -244,131 +154,31 @@ mod tests {
         Path::new(s)
     }
 
-    /// The config dir resolved with only `existing` directories present.
-    fn resolved(
-        flag: Option<&str>,
-        root: Option<&str>,
-        xdg: Option<&str>,
-        home: Option<&str>,
-        existing: &[&str],
-    ) -> Option<PathBuf> {
-        GlobalDirs::resolve_with(
-            flag.map(p),
-            root.map(p),
-            &LegacyRoots {
-                xdg_config_home: xdg.map(p),
-                home: home.map(p),
-                platform_config: Some(p("/p")),
-            },
-            |dir| existing.iter().any(|e| Path::new(e) == dir),
-        )
-        .map(|d| d.config)
+    /// The config dir resolved.
+    fn resolved(flag: Option<&str>, root: Option<&str>, home: Option<&str>) -> Option<PathBuf> {
+        GlobalDirs::resolve_with(flag.map(p), root.map(p), home.map(p)).map(|d| d.config)
     }
 
     #[test]
     fn flag_wins_over_everything() {
         assert_eq!(
-            resolved(
-                Some("/f"),
-                Some("/r"),
-                Some("/x"),
-                Some("/h"),
-                &["/h/.rkat/tui"]
-            ),
+            resolved(Some("/f"), Some("/r"), Some("/h")),
             Some(PathBuf::from("/f"))
         );
     }
 
     #[test]
     fn the_default_is_under_the_user_config_root() {
-        // Nothing exists yet: the new default, whatever XDG says.
         assert_eq!(
-            resolved(None, None, Some("/x"), Some("/h"), &[]),
+            resolved(None, None, Some("/h")),
             Some(PathBuf::from("/h/.rkat/tui"))
         );
         // `--user-config-root` replaces the home directory.
         assert_eq!(
-            resolved(None, Some("/r"), Some("/x"), Some("/h"), &[]),
+            resolved(None, Some("/r"), Some("/h")),
             Some(PathBuf::from("/r/.rkat/tui"))
         );
-        // An existing default wins over an existing legacy dir.
-        assert_eq!(
-            resolved(
-                None,
-                None,
-                Some("/x"),
-                Some("/h"),
-                &["/h/.rkat/tui", "/x/rkat-tui", "/h/.config/rkat-tui"]
-            ),
-            Some(PathBuf::from("/h/.rkat/tui"))
-        );
-        assert_eq!(resolved(None, None, Some("/x"), None, &[]), None);
-    }
-
-    #[cfg(not(windows))]
-    #[test]
-    fn an_existing_legacy_dir_is_used_when_the_default_is_missing() {
-        assert_eq!(
-            resolved(
-                None,
-                None,
-                Some("/x"),
-                Some("/h"),
-                &["/x/rkat-tui", "/h/.config/rkat-tui"]
-            ),
-            Some(PathBuf::from("/x/rkat-tui"))
-        );
-        assert_eq!(
-            resolved(None, None, Some("/x"), Some("/h"), &["/h/.config/rkat-tui"]),
-            Some(PathBuf::from("/h/.config/rkat-tui"))
-        );
-        assert_eq!(
-            resolved(None, None, Some(""), Some("/h"), &["/h/.config/rkat-tui"]),
-            Some(PathBuf::from("/h/.config/rkat-tui"))
-        );
-        // Under `--user-config-root` only that root's legacy dir counts.
-        assert_eq!(
-            resolved(None, Some("/r"), Some("/x"), Some("/h"), &["/x/rkat-tui"]),
-            Some(PathBuf::from("/r/.rkat/tui"))
-        );
-        assert_eq!(
-            resolved(None, Some("/r"), None, Some("/h"), &["/r/.config/rkat-tui"]),
-            Some(PathBuf::from("/r/.config/rkat-tui"))
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_legacy_dir_is_the_platform_config() {
-        assert_eq!(
-            resolved(None, None, Some("/x"), Some("/h"), &["/p/rkat-tui"]),
-            Some(PathBuf::from("/p").join(APP_DIR))
-        );
-    }
-
-    #[test]
-    fn a_legacy_dir_gets_one_notice_naming_the_default_and_the_flag() {
-        let legacy = GlobalDirs {
-            config: PathBuf::from("/h/.config/rkat-tui"),
-            cache: PathBuf::from("/k"),
-        };
-        let notice = legacy_config_notice(&legacy, None, Some(p("/h"))).unwrap();
-        assert!(notice.contains("/h/.rkat/tui"), "{notice}");
-        assert!(
-            notice.contains("--config-dir /h/.config/rkat-tui"),
-            "{notice}"
-        );
-        assert!(!notice.contains('\n'));
-        // No notice for the default or under `--config-dir`.
-        let default = GlobalDirs {
-            config: PathBuf::from("/h/.rkat/tui"),
-            cache: PathBuf::from("/k"),
-        };
-        assert_eq!(legacy_config_notice(&default, None, Some(p("/h"))), None);
-        assert_eq!(
-            legacy_config_notice(&legacy, Some(p("/h/.config/rkat-tui")), Some(p("/h"))),
-            None
-        );
+        assert_eq!(resolved(None, None, None), None);
     }
 
     #[test]

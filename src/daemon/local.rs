@@ -14,7 +14,7 @@
 //!   and its helpers), records it in the realm rules file and tells the
 //!   orchestrator when plan mode starts or ends;
 //! - [`RULES`] a [`RuleCommand`] (`{"op": "add"|"remove"|"list", …}`) →
-//!   [`crate::approval::desk::RuleOutcome`]: `/rules` run on the daemon's
+//!   [`crate::approval::desk::RuleOutcome`]: `/permissions` run on the daemon's
 //!   engine, which persists to the realm rules file.
 //!
 //! - [`CONVERSATIONS`] `{}` → `{"conversations": [Listed]}`: the
@@ -41,7 +41,7 @@
 //!   `project` is `/trust`
 //!   (every present input recorded as it is now, in the host trust record
 //!   the daemon's realm config store and factory read on every session
-//!   build); `rules` is `/rules trust` (the realm rules file's summary, then
+//!   build); `rules` is `/permissions trust` (the realm rules file's summary, then
 //!   its digest recorded and its allow rules applied).
 //!
 //! - [`NOTICES`] `{}` → `{"notices": [{"warn", "text"}]}`: what the

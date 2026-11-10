@@ -2,7 +2,7 @@
 //! trusted by digest (item 1(e) of the security fixes): a change rkat-tui
 //! made applies at the next start; the same file changed under it (a clone
 //! could carry it) gives only its deny rules and a notice naming it, until
-//! the user adopts it with `/rules trust`. The workspace's own realm lives
+//! the user adopts it with `/permissions trust`. The workspace's own realm lives
 //! under the config directory, out of the shell's and a clone's reach: its
 //! rules file is the user's, a hand edit applies.
 
@@ -91,7 +91,7 @@ async fn a_rule_appended_under_the_daemon_is_not_adopted_and_is_named() {
         "deny rules still apply"
     );
 
-    // `/rules trust` adopts it.
+    // `/permissions trust` adopts it.
     let daemon = Running::start_with(&args, Running::options(&ws.root, &llm)).await;
     daemon.engine().trust_realm_rules().unwrap();
     daemon.stop().await;

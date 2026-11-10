@@ -201,37 +201,6 @@ fn global_rules_come_from_the_file_path() {
 }
 
 #[test]
-fn legacy_global_rules_notice_only_when_old_file_exists() {
-    let tmp = tempfile::tempdir().unwrap();
-    let new_path = tmp.path().join(".config/rkat-tui/tui.toml");
-    assert_eq!(
-        legacy_global_rules_notice(Some(tmp.path()), Some(&new_path)),
-        None
-    );
-    let old = tmp.path().join(".rkat").join(RULES_FILE_NAME);
-    std::fs::create_dir_all(old.parent().unwrap()).unwrap();
-    std::fs::write(&old, "").unwrap();
-    let notice = legacy_global_rules_notice(Some(tmp.path()), Some(&new_path)).unwrap();
-    assert_eq!(
-        notice,
-        Notice::LegacyGlobalRulesIgnored {
-            path: old.clone(),
-            new_path: new_path.clone()
-        }
-    );
-    assert_eq!(
-        notice.to_string(),
-        format!(
-            "{} is no longer read; move it to {}",
-            old.display(),
-            new_path.display()
-        )
-    );
-    assert_eq!(legacy_global_rules_notice(None, Some(&new_path)), None);
-    assert_eq!(legacy_global_rules_notice(Some(tmp.path()), None), None);
-}
-
-#[test]
 fn missing_files_give_defaults() {
     let tmp = tempfile::tempdir().unwrap();
     let (rules, settings, notices) = load_layered(

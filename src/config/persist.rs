@@ -29,7 +29,7 @@ pub fn save_realm(path: &Path, file: &RulesFile) -> Result<(), RulesError> {
     })
 }
 
-/// A human-readable summary of a rules file (what `/rules trust` shows
+/// A human-readable summary of a rules file (what `/permissions trust` shows
 /// before trusting it).
 #[must_use]
 pub fn summarize(path: &Path, file: &RulesFile) -> String {

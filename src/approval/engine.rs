@@ -228,7 +228,7 @@ impl Default for SessionState {
     }
 }
 
-/// Why `/rules trust` failed.
+/// Why `/permissions trust` failed.
 #[derive(Debug, thiserror::Error)]
 pub enum TrustRulesError {
     /// This run keeps no realm rules file.
@@ -578,7 +578,7 @@ impl ApprovalEngine {
         rules.clone()
     }
 
-    /// `/rules trust`: trust the realm rules file as it is now. Records its
+    /// `/permissions trust`: trust the realm rules file as it is now. Records its
     /// digest in the host trust record and applies its allow rules from now
     /// on (its `[auto]`, endpoints and prices apply from the next start).
     /// Returns a summary of what was trusted, for the human to see.

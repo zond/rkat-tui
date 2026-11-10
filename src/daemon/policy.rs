@@ -13,7 +13,7 @@
 //! rule matches or a file write into a sealed path (`.git/`, `.rkat/`), and
 //! allows everything else, for the admission to decide. It never asks and
 //! never allows what the admission would refuse. It reads the approval
-//! engine's rules as they are when a snapshot is taken, so a `/rules add
+//! engine's rules as they are when a snapshot is taken, so a `/permissions add
 //! deny …` applies to the next call; each change of the deny rules is a new
 //! revision.
 

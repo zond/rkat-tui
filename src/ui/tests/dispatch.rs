@@ -59,7 +59,10 @@ fn slash_commands_map_to_effects() {
         run(&mut app, "/resume last"),
         vec![Effect::ResumeSession("last".into())]
     );
-    assert_eq!(run(&mut app, "/rules rm 2"), vec![Effect::RemoveRule(2)]);
+    assert_eq!(
+        run(&mut app, "/permissions rm 2"),
+        vec![Effect::RemoveRule(2)]
+    );
     assert_eq!(run(&mut app, "/status"), vec![Effect::StatusReport]);
     app.transcript.push(Block::User { text: "hi".into() });
     let text = app.transcript.export_text();

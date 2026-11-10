@@ -209,11 +209,11 @@ pub fn mode_notice(mode: PermissionMode) -> &'static str {
     }
 }
 
-/// A `/rules` command (`rkat/rules` carries it to the daemon).
+/// A `/permissions` command (`rkat/rules` carries it to the daemon).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum RuleCommand {
-    /// `/rules add allow|deny <tool> [pattern]`.
+    /// `/permissions add allow|deny <tool> [pattern]`.
     Add {
         /// Allow or deny.
         deny: bool,
@@ -223,12 +223,12 @@ pub enum RuleCommand {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pattern: Option<String>,
     },
-    /// `/rules remove <n>`.
+    /// `/permissions remove <n>`.
     Remove {
-        /// The number `/rules list` shows.
+        /// The number `/permissions list` shows.
         n: usize,
     },
-    /// `/rules list`.
+    /// `/permissions list`.
     List,
 }
 
@@ -303,7 +303,7 @@ pub fn run_rule_command(engine: &ApprovalEngine, command: &RuleCommand) -> RuleO
     }
 }
 
-/// Every rule with the number `/rules list` shows and `/rules remove`
+/// Every rule with the number `/permissions list` shows and `/permissions remove`
 /// takes: its stable serial ([`RuleId::serial`]), which never shifts when
 /// other rules are removed.
 pub fn numbered_rules(rules: &RuleSet) -> impl Iterator<Item = (u64, &Rule)> {
@@ -313,7 +313,7 @@ pub fn numbered_rules(rules: &RuleSet) -> impl Iterator<Item = (u64, &Rule)> {
         .map(|(id, rule)| (id.serial, rule))
 }
 
-/// The id of the rule `/rules list` numbers `n`.
+/// The id of the rule `/permissions list` numbers `n`.
 #[must_use]
 pub fn nth_rule_id(rules: &RuleSet, n: usize) -> Option<RuleId> {
     let serial = u64::try_from(n).ok()?;
@@ -324,13 +324,13 @@ pub fn nth_rule_id(rules: &RuleSet, n: usize) -> Option<RuleId> {
         .find(|id| id.serial == serial)
 }
 
-/// One `/rules list` line: number, rule and the layer it came from.
+/// One `/permissions list` line: number, rule and the layer it came from.
 #[must_use]
 pub fn rule_list_line(n: u64, rule: &Rule) -> String {
     format!("{n}. {} ({})", describe_rule(rule), rule.origin.as_str())
 }
 
-/// A rule as `/rules` writes it (`deny shell git push*`).
+/// A rule as `/permissions` writes it (`deny shell git push*`).
 #[must_use]
 pub fn describe_rule(rule: &Rule) -> String {
     let kind = match rule.kind {

@@ -2210,20 +2210,20 @@ impl AttachRunner {
                     tool,
                     pattern,
                 };
-                self.outcome_command(protocol::RULES, &command, "/rules")
+                self.outcome_command(protocol::RULES, &command, "/permissions")
                     .await;
             }
             Effect::RemoveRule(n) => {
-                self.outcome_command(protocol::RULES, &RuleCommand::Remove { n }, "/rules")
+                self.outcome_command(protocol::RULES, &RuleCommand::Remove { n }, "/permissions")
                     .await;
             }
             Effect::ListRules => {
-                self.outcome_command(protocol::RULES, &RuleCommand::List, "/rules")
+                self.outcome_command(protocol::RULES, &RuleCommand::List, "/permissions")
                     .await;
             }
             Effect::TrustRealmRules => {
                 let params = TrustParams { op: TrustOp::Rules };
-                self.outcome_command(protocol::TRUST, &params, "/rules trust")
+                self.outcome_command(protocol::TRUST, &params, "/permissions trust")
                     .await;
             }
             Effect::TrustProject => {
@@ -2356,8 +2356,8 @@ impl AttachRunner {
         }
     }
 
-    /// A command whose answer is a [`RuleOutcome`] (`/rules …` on the
-    /// daemon's engine, `/trust` and `/rules trust` on its trust record),
+    /// A command whose answer is a [`RuleOutcome`] (`/permissions …` on the
+    /// daemon's engine, `/trust` and `/permissions trust` on its trust record),
     /// named `name` in what goes wrong.
     async fn outcome_command<P: serde::Serialize>(
         &self,
@@ -2886,7 +2886,7 @@ impl AttachRunner {
             .collect();
         lines.push(format!("endpoint file: {}", files.join(", then ")));
         lines.push(
-            "approval gate: in the daemon (requests show here; /rules and Shift+Tab act on the daemon)"
+            "approval gate: in the daemon (requests show here; /permissions and Shift+Tab act on the daemon)"
                 .to_string(),
         );
         match self

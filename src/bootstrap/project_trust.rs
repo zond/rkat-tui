@@ -15,9 +15,9 @@
 //! Any of them may have come with a cloned repository, so each is trusted
 //! only when its whole content is what the host trust record
 //! ([`HostTrustRecord`]) holds a digest of: what the user trusted with
-//! `/trust` (alias `/mcp trust`), or, for the realm config, what rkat-tui
+//! `/trust`, or, for the realm config, what rkat-tui
 //! itself last wrote into a file that was trusted before the write.
-//! `--trust-project` (alias `--allow-project-mcp`) trusts all of them for one
+//! `--trust-project` trusts all of them for one
 //! run without recording anything. A file that changes after it was trusted
 //! is untrusted again, with a start-up notice naming it.
 //!

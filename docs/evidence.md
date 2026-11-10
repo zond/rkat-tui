@@ -5493,3 +5493,30 @@ Deleted with it: `sessions::tests::earlier_sessions_are_marked_and_named_by_id_o
 and `attach_sessions::a_session_outside_the_mob_cannot_be_seated_on_the_member`
 (its second half probed the engine's refusal for such a session, which
 no product path reaches any more).
+
+### Names, aliases and upgrade notices
+
+Removed, each an older name or a one-time upgrade message:
+`--provider` (`--endpoint`), `--context-root` (`-w`), `--allow-project-mcp`
+(`--trust-project`), `/rules` (`/permissions`, the Claude Code name),
+`/mcp trust` (`/trust`; Claude Code's `/mcp` manages servers, which this
+was not), the serde spellings `manual` and `accept_edits` of the
+permission modes (`acceptEdits`, Claude Code's settings name, stays, and
+so do the typed forms `/mode manual` and `/mode accept_edits`: `manual`
+is the status bar's own label); the legacy config directory fallback
+(`~/.config/rkat-tui`, `$XDG_CONFIG_HOME/rkat-tui`, `%APPDATA%`) with its
+notice (`dirs::legacy_config_notice`, `LegacyRoots`); the notice about the
+pre-`GlobalDirs` global rules file `~/.rkat/tui.toml`
+(`Notice::LegacyGlobalRulesIgnored`); and the notice about an old
+`<workspace>/.rkat/tui/` (`realm_home::old_realm_notice`,
+`RuntimeScope::notices`). Kept: such a directory is still never read
+(`scope::tests::a_planted_workspace_realm_is_ignored`, rewritten without
+the notice), and Claude Code's command aliases (`/exit`, `/q`, `/new`,
+`/checkpoint`, `/undo`, `/cost`, `/stats`, `/tasks`, `/?`).
+
+Deleted with them: `dirs::tests::an_existing_legacy_dir_is_used_when_the_default_is_missing`,
+`windows_legacy_dir_is_the_platform_config`,
+`a_legacy_dir_gets_one_notice_naming_the_default_and_the_flag`,
+`config::tests::legacy_global_rules_notice_only_when_old_file_exists`;
+`cli::tests` and `commands::tests::rules_commands` now pin that the old
+names no longer parse.

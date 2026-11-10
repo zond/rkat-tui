@@ -32,7 +32,7 @@ pub const GET_MODE: &str = "rkat/get_mode";
 /// [`SetModeParams`] → [`ModeSet`]: switch the permission mode.
 pub const SET_MODE: &str = "rkat/set_mode";
 /// A [`crate::approval::desk::RuleCommand`] →
-/// [`crate::approval::desk::RuleOutcome`]: a `/rules` command.
+/// [`crate::approval::desk::RuleOutcome`]: a `/permissions` command.
 pub const RULES: &str = "rkat/rules";
 /// `{}` → [`ConversationList`]: the agents' conversations (the caller's
 /// agent's current one marked).
@@ -49,7 +49,7 @@ pub const USAGE: &str = "rkat/usage";
 /// conversation's auth binding names (the status bar shows it).
 pub const ENDPOINT: &str = "rkat/endpoint";
 /// [`TrustParams`] → [`crate::approval::desk::RuleOutcome`]: the project
-/// trust record (`/trust`, `/rules trust`).
+/// trust record (`/trust`, `/permissions trust`).
 pub const TRUST: &str = "rkat/trust";
 /// [`SessionParams`] → [`Tasks`]: a conversation's tasks in the engine's
 /// task store (the Ctrl+T checklist).
@@ -600,7 +600,7 @@ pub enum ApprovalNote {
     Resumed,
     /// Broad allow rules were dropped on entering auto mode (described).
     RulesDropped {
-        /// The rules, as `/rules` lists them.
+        /// The rules, as `/permissions` lists them.
         rules: Vec<String>,
     },
     /// The classifier started or finished a review.
@@ -748,7 +748,7 @@ pub struct ModelSet {
 pub enum TrustOp {
     /// `/trust`: the project inputs.
     Project,
-    /// `/rules trust`: the realm rules file.
+    /// `/permissions trust`: the realm rules file.
     Rules,
 }
 

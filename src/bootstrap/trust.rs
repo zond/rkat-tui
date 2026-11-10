@@ -4,7 +4,7 @@
 //! `.rkat/` directory, a checked-out realm). rkat-tui therefore trusts such a
 //! file only when it is byte-for-byte what rkat-tui itself last wrote there,
 //! or what the user explicitly trusted after seeing a summary of it
-//! (`/rules trust`). The digests live outside the workspace, in the user's
+//! (`/permissions trust`). The digests live outside the workspace, in the user's
 //! config directory: `<config>/trust/<workspace key>.toml`, one record per
 //! workspace and realm. Nothing in the workspace can write that record.
 //!

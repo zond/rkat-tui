@@ -55,14 +55,6 @@ pub enum Notice {
         /// Ignored `[confinement]` grants (directories).
         confinement: usize,
     },
-    /// A global rules file exists at the pre-`GlobalDirs` location and is no
-    /// longer read.
-    LegacyGlobalRulesIgnored {
-        /// The old file (`<user config root>/.rkat/tui.toml`).
-        path: PathBuf,
-        /// Where the global rules file now lives.
-        new_path: PathBuf,
-    },
     /// A configured endpoint is invalid and was skipped.
     EndpointSkipped {
         /// Endpoint name.
@@ -165,12 +157,6 @@ impl fmt::Display for Notice {
                 }
                 f.write_str("); review it and run /permissions trust to use all of it")
             }
-            Self::LegacyGlobalRulesIgnored { path, new_path } => write!(
-                f,
-                "{} is no longer read; move it to {}",
-                path.display(),
-                new_path.display()
-            ),
             Self::EndpointSkipped { name, reason } => {
                 write!(f, "endpoint `{name}` skipped: {reason}")
             }
@@ -213,24 +199,6 @@ impl fmt::Display for Notice {
             ),
         }
     }
-}
-
-/// A [`Notice::LegacyGlobalRulesIgnored`] when the old global rules file
-/// `<user_config_root>/.rkat/tui.toml` exists.
-///
-/// `new_path` is the current global rules file; without one the notice is not
-/// emitted (there is nowhere to point the user).
-#[must_use]
-pub fn legacy_global_rules_notice(
-    user_config_root: Option<&Path>,
-    new_path: Option<&Path>,
-) -> Option<Notice> {
-    let path = user_config_root?.join(".rkat").join(RULES_FILE_NAME);
-    let new_path = new_path?;
-    (path.is_file() && path != new_path).then(|| Notice::LegacyGlobalRulesIgnored {
-        path,
-        new_path: new_path.to_path_buf(),
-    })
 }
 
 /// How far the realm rules file (`<realm>/tui.toml`) is trusted (decided

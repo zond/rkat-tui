@@ -573,19 +573,6 @@ pub fn offer(orphans: &[Home]) -> Option<String> {
     Some(text)
 }
 
-/// The notice for a workspace that still holds a realm of an earlier
-/// release (`<workspace>/.rkat/tui/`): it is never read or imported.
-#[must_use]
-pub fn old_realm_notice(workspace: &Path, home: &Home) -> Option<String> {
-    let old = workspace.join(".rkat").join("tui");
-    std::fs::symlink_metadata(&old).ok()?;
-    Some(format!(
-        "{} is an earlier release's state directory and is no longer used (this workspace's state is {}); nothing of it was imported, delete it when you no longer need it",
-        old.display(),
-        home.dir.display()
-    ))
-}
-
 /// `reference` as a path: absolute against `base`, lexically normalized,
 /// and canonical too when it exists.
 fn as_paths(reference: &str, base: &Path) -> Vec<PathBuf> {

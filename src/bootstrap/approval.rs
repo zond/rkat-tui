@@ -116,12 +116,6 @@ pub(crate) fn load_layers(
     )
     .map_err(crate::approval::ApprovalError::from)?;
     notices.extend(layered.notices.iter().map(ToString::to_string));
-    if let Some(notice) = config::legacy_global_rules_notice(
-        scope.user_config_root.as_deref(),
-        global_rules.as_deref(),
-    ) {
-        notices.push(notice.to_string());
-    }
     Ok((layered, notices))
 }
 

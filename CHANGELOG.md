@@ -126,7 +126,7 @@ design.
   split index is read through its shared index, and an index that cannot
   be read in full refuses. The
   realm rules file keeps its digest trust: a rule appended under the
-  daemon gives only its deny rules and a notice until `/rules trust`.
+  daemon gives only its deny rules and a notice until `/permissions trust`.
   (On Linux the agent's shell can still write `.rkat/`; a read-only
   mount needs an engine change, recorded as an ask.)
 - The manual and the design say what the daemon does not keep apart:
@@ -287,8 +287,7 @@ design.
 - A workspace's state moved out of the workspace, into
   `~/.rkat/tui/workspaces/<id>/`, each directory with a `workspace.toml`
   naming the workspace it belongs to. Nothing is migrated: a
-  `<workspace>/.rkat/tui/` of an earlier release is never read (a start
-  says once that it is unused and can be deleted), so a workspace starts
+  `<workspace>/.rkat/tui/` of an earlier release is never read, so a workspace starts
   with empty history once. A workspace that is moved or renamed no
   longer keeps its sessions by itself: the start in the new place gets
   fresh state and offers the old one. The audit log moved there too,
@@ -296,7 +295,7 @@ design.
   directory is removed again when the daemon stops.
 - The workspace's own realm files are yours now that nothing in the
   workspace can reach them: a hand edit of its `tui.toml` applies (no
-  `/rules trust` needed), its `config.toml`'s `[confinement]` is a floor
+  `/permissions trust` needed), its `config.toml`'s `[confinement]` is a floor
   for the shell as a `--state-root` realm's always was (it was ignored
   with a notice), and its endpoints and MCP servers need no `/trust`. A
   realm placed inside the workspace with `--state-root` keeps the digest
@@ -328,8 +327,6 @@ design.
   one idle check and one notice for what is in the way: `/model` and
   `/init` are refused while a `!` command runs, and `/clear` and `/resume`
   while a message waits to be sent.
-- `--provider` is an alias of `--endpoint` (it was a separate flag that
-  conflicted with it).
 - The `mob` and `mcp` cargo features are gone: helpers, MCP servers and
   the daemon are always built.
 - A host that refuses the confined launch's private `/proc` mount runs
@@ -363,6 +360,15 @@ design.
   naming it, instead of a notice).
 - The view-only listing of sessions the removed in-process runner made:
   no realm holds one since the state moved out of the workspace.
+- Old names: `--provider` (use `--endpoint`), `--context-root` (`-w`,
+  `--workspace`), `--allow-project-mcp` (`--trust-project`), `/rules`
+  (`/permissions`), `/mcp trust` (`/trust`), and the `manual` and
+  `accept_edits` spellings of the permission modes in `tui.toml`
+  (`default`, `accept-edits`; Claude Code's `acceptEdits` stays). The
+  legacy config directory `~/.config/rkat-tui` is no longer used when
+  `~/.rkat/tui` is missing, and the notices about it, about the old global
+  rules file `~/.rkat/tui.toml` and about an old `<workspace>/.rkat/tui/`
+  are gone (that directory is still never read).
 
 ### Fixed
 
@@ -472,8 +478,7 @@ followed, before the daemon: the agent ran in the `rkat-tui` process.
   `rkat-tui`'s environment but a curated set of it (`PATH`, `HOME`, locale,
   TLS roots, proxies and a few tool directories; provider API keys stay
   outside). User-global files live in `~/.rkat/tui`
-  (`--config-dir` overrides; an existing `~/.config/rkat-tui` is used with a
-  notice until the new directory exists). File tools never write the gate's
+  (`--config-dir` overrides). File tools never write the gate's
   own `.rkat/` state or `.git/`, nor, wherever they lie, the git directories
   governing the project (an enclosing repository's, a worktree's and its
   common dir), the realm directory or the user config directory (sealed
@@ -548,7 +553,7 @@ followed, before the daemon: the agent ran in the `rkat-tui` process.
   - `/compact` compacts (as `/compact now`, kept as an alias, did);
     `/compact status` shows the policy; `/compact <instructions>` compacts
     with a warning that focus instructions are not supported yet.
-  - `/permissions` is the rules command (`/rules` stays an alias),
+  - `/permissions` is the rules command,
     `/usage` the cost readout (`/cost` and `/stats` are aliases), and
     `/tasks` an alias of `/helpers`.
   - `rkat-tui --resume` without a reference opens the session picker.
@@ -687,8 +692,7 @@ followed, before the daemon: the agent ran in the `rkat-tui` process.
   record; until it matches, the file's MCP servers do not start, its hooks
   are overridden by disabled entries (helpers included), and a start-up
   notice names the file, why (never trusted, or changed since) and what did
-  not start. `/trust` trusts them all (`/mcp trust` is an alias),
-  `--trust-project` for one run (`--allow-project-mcp` is an alias);
+  not start. `/trust` trusts them all, `--trust-project` for one run;
   rkat-tui's own writes keep the realm config trusted only when it was
   trusted before. `/status` lists each file's state. An existing realm
   `config.toml` that defines MCP servers or hooks needs one `/trust` after

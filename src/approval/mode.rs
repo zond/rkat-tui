@@ -24,11 +24,11 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PermissionMode {
     /// Every action above Tier 1 asks the user (Claude Code's `default`).
-    #[serde(rename = "default", alias = "manual")]
+    #[serde(rename = "default")]
     Manual,
     /// In-project, unprotected edits are allowed; everything else as
     /// [`Self::Manual`].
-    #[serde(rename = "accept-edits", alias = "acceptEdits", alias = "accept_edits")]
+    #[serde(rename = "accept-edits", alias = "acceptEdits")]
     AcceptEdits,
     /// Read-only: writes, edits and commands that are not read-only are
     /// denied, so the model researches and presents a plan.

@@ -781,7 +781,7 @@ async fn plan_mode_survives_a_restart_and_leaving_it_is_announced() {
     daemon.stop().await;
 }
 
-/// `/trust` and `/rules trust` in attach mode act on the daemon's trust
+/// `/trust` and `/permissions trust` in attach mode act on the daemon's trust
 /// record: a project hook file nobody trusted is refused (its hook does not
 /// run), `/trust` from the client records it, and a restarted daemon keeps
 /// it trusted (the hook runs on the rebuilt agent's next call).
@@ -842,7 +842,7 @@ args = ["-c", "printf entered > \"$1\"; cat >/dev/null; printf '{{}}'", "hook-pr
             matches!(msg, Msg::Notice { text, .. } if text.starts_with("trusted ") && text.contains(".rkat/config.toml"))
         })
         .await;
-    // `/rules trust` reaches the daemon too: the realm rules file a rule
+    // `/permissions trust` reaches the daemon too: the realm rules file a rule
     // created is summarised and trusted.
     client.send(Effect::AddRule {
         effect: RuleEffect::Allow,

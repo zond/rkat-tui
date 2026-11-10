@@ -14,13 +14,13 @@
 //! - [`approvals`]: the approval dialogs: the daemon's pushed decisions
 //!   (`decision/notice`, `decision/decide`).
 //! - [`runner`]: the loop between the UI and the daemon over the UI's
-//!   [`Effect`]/[`Msg`] contract: approval dialogs, permission modes and `/rules` act on the
+//!   [`Effect`]/[`Msg`] contract: approval dialogs, permission modes and `/permissions` act on the
 //!   daemon's gate (`rkat/*` methods, see [`crate::daemon::local`]); the
 //!   user's `!` shell, the model picker (this process's endpoints),
 //!   `/remember`, `/memory`, `/export` and the cost readout run here, in
 //!   the [`crate::workbench`] (the new context reaches the orchestrator
 //!   with `mob/append_system_context`);
-//!   `/trust` and `/rules trust` act on the
+//!   `/trust` and `/permissions trust` act on the
 //!   daemon's trust record (`rkat/trust`); `/compact now` asks the daemon's
 //!   engine (`mob/compact_member`). What the daemon cannot do (`/rewind`)
 //!   says why.

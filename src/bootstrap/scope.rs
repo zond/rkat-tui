@@ -7,8 +7,8 @@
 //! realm's manifest names the workspace's canonical path and is the only
 //! authority for which workspace owns it; nothing in the workspace is read
 //! for it. A workspace that moves needs one explicit re-home
-//! (`/rehome`, `rkat-tui --rehome`). A `.rkat/tui/` left in the workspace by
-//! an earlier release is never read; a start that finds one says so.
+//! (`/rehome`, `rkat-tui --rehome`). A `.rkat/tui/` in the workspace is
+//! never read.
 //!
 //! `--realm`, `--isolated` and `--state-root` opt back into the shared realm
 //! model `rkat` uses (`resolve_runtime_scope` / `load_config` in
@@ -54,9 +54,6 @@ pub struct RuntimeScope {
     /// The workspace's own realm under the config directory, when that is
     /// the realm (`None` for `--realm`, `--isolated`, `--state-root`).
     pub home: Option<Home>,
-    /// What resolving had to say (an earlier release's `.rkat/tui/` that
-    /// is no longer used), shown by whichever process runs.
-    pub notices: Vec<String>,
     /// The offer of realms whose workspace is gone, when this resolve made
     /// the workspace a new realm (shown by the process that made it).
     pub offer: Option<String>,
@@ -127,9 +124,6 @@ pub fn resolve_scope(args: &Args) -> Result<RuntimeScope, TuiError> {
     if !uses_shared_realm {
         let root = homes_root.ok_or(realm_home::HomeError::NoConfigDir)?;
         let opened = realm_home::open_or_create(&root, &context_root)?;
-        let notices = realm_home::old_realm_notice(&context_root, &opened.home)
-            .into_iter()
-            .collect();
         let offer = if opened.created {
             realm_home::offer(&opened.orphans)
         } else {
@@ -146,7 +140,6 @@ pub fn resolve_scope(args: &Args) -> Result<RuntimeScope, TuiError> {
             backend_hint: args.realm_backend.map(Into::into),
             origin: RealmOrigin::Workspace,
             home: Some(opened.home),
-            notices,
             offer,
         });
     }
@@ -193,7 +186,6 @@ pub fn resolve_scope(args: &Args) -> Result<RuntimeScope, TuiError> {
         backend_hint,
         origin,
         home: None,
-        notices: Vec::new(),
         offer: None,
     })
 }
@@ -351,8 +343,8 @@ pub fn workspace_at(dir: &Path, homes_root: Option<&Path>) -> PathBuf {
 ///
 /// The search stops at the git top-level (a directory containing `.git` is
 /// the last one checked) and never yields `home` or an ancestor of it.
-/// Nothing in the workspace is read for it: an earlier release's
-/// `.rkat/tui/` marks nothing. `home` is expected canonical.
+/// Nothing in the workspace is read for it: a `.rkat/tui/` marks
+/// nothing. `home` is expected canonical.
 ///
 /// # Errors
 ///
@@ -492,11 +484,10 @@ mod tests {
         );
     }
 
-    /// A `.rkat/tui/` in the workspace (an earlier release's realm, or one
-    /// planted by a clone or the agent's shell) is never read: the start
-    /// makes the workspace its own realm and says the old one is unused.
+    /// A `.rkat/tui/` in the workspace (planted by a clone or the agent's
+    /// shell) is never read: the start makes the workspace its own realm.
     #[test]
-    fn a_planted_workspace_realm_is_ignored_with_a_notice() {
+    fn a_planted_workspace_realm_is_ignored() {
         let (_dir, ws, cfg) = fixture();
         let planted = ws.join(".rkat/tui");
         std::fs::create_dir_all(&planted).unwrap();
@@ -505,13 +496,6 @@ mod tests {
         let scope = resolve(&ws, &cfg, &[]).unwrap();
         assert_ne!(scope.realm_root(), planted);
         assert!(!scope.realm_root().starts_with(&ws));
-        assert_eq!(scope.notices.len(), 1, "{:?}", scope.notices);
-        assert!(
-            scope.notices[0].contains(planted.to_str().unwrap())
-                && scope.notices[0].contains("no longer used"),
-            "{}",
-            scope.notices[0]
-        );
         // Nothing of it is read as a layer.
         let (layered, _) = super::super::approval::load_layers(&scope, &args(&[])).unwrap();
         assert_eq!(layered.rules.allow().len(), 0);

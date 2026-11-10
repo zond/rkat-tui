@@ -266,10 +266,9 @@ pub fn read_layers(args: &Args) -> Result<Layers, TuiError> {
     let scope = resolve_scope(args)?;
     let (layered, layer_notices) = approval::load_layers(&scope, args)?;
     let notices = scope
-        .notices
-        .iter()
-        .cloned()
-        .chain(scope.offer.clone())
+        .offer
+        .clone()
+        .into_iter()
         .chain(layer_notices)
         .collect();
     Ok(Layers {
@@ -454,18 +453,7 @@ pub async fn assemble(
         .store_path()
         .map_or_else(|| realm_root.clone(), PathBuf::from);
 
-    let mut notices: Vec<String> = scope
-        .global
-        .as_ref()
-        .and_then(|global| {
-            dirs::legacy_config_notice(
-                global,
-                args.config_dir.as_deref(),
-                scope.user_config_root.as_deref(),
-            )
-        })
-        .into_iter()
-        .collect();
+    let mut notices: Vec<String> = Vec::new();
     let memory = memory_probe(&store_path, manifest.backend, &mut notices);
     let tasks_db = tasks_db(&store_path);
     let factory = build_factory(
@@ -799,7 +787,7 @@ mod tests {
         let choice = plan(&["--model", "litellm:gpt-5.5"], "").await.unwrap();
         assert_eq!(choice.endpoint.as_str(), "litellm");
         assert_eq!(choice.provider, Provider::OpenAI);
-        // `--provider` / `--endpoint` with a bare id.
+        // `--endpoint` with a bare id.
         let choice = plan(&["--endpoint", "litellm", "--model", "x"], "")
             .await
             .unwrap();
@@ -810,7 +798,7 @@ mod tests {
         // The config model.
         let choice = plan(&[], "gpt-5.5").await.unwrap();
         assert_eq!(choice.reference().to_string(), "openai:gpt-5.5");
-        let err = plan(&["--provider", "nope"], "").await.unwrap_err();
+        let err = plan(&["--endpoint", "nope"], "").await.unwrap_err();
         assert!(err.to_string().contains("unknown endpoint `nope`"), "{err}");
     }
 

@@ -277,10 +277,10 @@ you placed inside the workspace with `--state-root`, that realm's
 `config.toml` (`[[tools.mcp_servers]]` and `[hooks]`; the workspace's own
 realm lives outside it and is yours). Any of them may have come with a
 cloned repository, and on Linux a confined shell can write `.rkat/`, so
-each runs nothing until you trust it: `/trust` (alias `/mcp trust`)
+each runs nothing until you trust it: `/trust`
 records the SHA-256 of every one of them, as it is now, in the host trust
 record under `~/.rkat/tui/trust/` (outside the workspace), and
-`--trust-project` (alias `--allow-project-mcp`) trusts them for one run
+`--trust-project` trusts them for one run
 without recording. A file that is absent, or whose digest matches, is
 trusted; rkat-tui's own writes into the realm config (endpoints, model
 profiles) keep it trusted, but only when it was trusted before the write.
@@ -609,11 +609,11 @@ are never written to a file.
 | `pricing.fetch` (fetch the community price list; a project file may only set `false`) | `--no-pricing-fetch` (= `false`) | `true` |
 | `thinking."<endpoint:id or id>"` (`"adaptive"`, `{ enabled = <budget tokens> }` or `"default"`; Anthropic-dialect endpoints only, see "Thinking") | `--set 'thinking."proxy:my-alias"=adaptive'` | the engine's default |
 
-Other flags: `--model`/`-m <[endpoint:]id>`, `--endpoint <name>`
-(alias `--provider`), `--resume [ref]`, `-c`/`--continue`,
+Other flags: `--model`/`-m <[endpoint:]id>`, `--endpoint <name>`,
+`--resume [ref]`, `-c`/`--continue`,
 `-w`/`--workspace`, `--config-dir`, `--user-config-root`, `--realm`,
 `--isolated`, `--realm-backend`, `--state-root`, `--confinement`,
-`--confinement-read`, `--confinement-write`, `--no-confinement`, `--no-mouse`, `--wait-for-mcp`, `--trust-project` (alias `--allow-project-mcp`),
+`--confinement-read`, `--confinement-write`, `--no-confinement`, `--no-mouse`, `--wait-for-mcp`, `--trust-project`,
 `--no-pricing-fetch`.
 
 ## Models, endpoints and cost
@@ -835,9 +835,9 @@ behind these controls (its Status column is the current state).
 
 
 `/help` (alias `/?`), `/quit` (aliases `/exit`, `/q`), `/detach`, `/agents [name]`, `/audit [n]`, `/daemon stop`, `/daemon start`, `/clear` (alias `/new`), `/resume [ref]`,
-`/rewind` (aliases `/checkpoint`, `/undo`), `/permissions [list|add allow|deny <tool> [pattern]|rm <n>|trust]` (alias `/rules`; `remove` for `rm`),
+`/rewind` (aliases `/checkpoint`, `/undo`), `/permissions [list|add allow|deny <tool> [pattern]|rm <n>|trust]` (`remove` for `rm`),
 `/mode [default|accept-edits|plan|auto]`, `/auto [on|off|resume]`, `/model [[endpoint:]id|refresh]`,
-`/remember <text>`, `/memory [user|system]`, `/init`, `/compact [now|status|<instructions>]`, `/context`, `/status`, `/export [file]`, `/usage` (aliases `/cost`, `/stats`), `/copy [N]`, `/trust` (alias `/mcp trust`),
+`/remember <text>`, `/memory [user|system]`, `/init`, `/compact [now|status|<instructions>]`, `/context`, `/status`, `/export [file]`, `/usage` (aliases `/cost`, `/stats`), `/copy [N]`, `/trust`,
 `/helpers [expand|fold <label>|all]` (alias `/tasks`). `/status` prints the
 rkat-tui version, the model and its endpoint, the session id, the workspace
 and realm directories, the shell confinement, the permission mode, whether
@@ -1064,10 +1064,8 @@ state, or lie inside it, is refused. After any re-home, `rkat-tui -c` in
 the new directory continues the latest conversation. `/rehome` alone
 lists this workspace's state and the state whose workspace is gone.
 
-**Earlier releases** kept the state in `<workspace>/.rkat/tui/`. It is not
-migrated and never read: a workspace starts with empty history once, and
-each start that finds the old directory says so; delete it when you no
-longer need it.
+A `.rkat/tui/` inside the workspace is never read (one a clone carries
+or the agent's shell writes marks nothing).
 
 The workspace is `--workspace <dir>` (`-w`), else the nearest ancestor of the
 current directory that has state (the search stops at the git root and never
@@ -1086,14 +1084,7 @@ User-global files live in one config directory: `--config-dir <dir>`, else
 `~/.rkat/tui` (under Meerkat's own user config root `~/.rkat`;
 `<--user-config-root>/.rkat/tui` when that flag is given). It holds
 `tui.toml`, `AGENTS.md`, `SYSTEM.md`, `notes/`, `history` and the host trust
-records (`trust/`). `$XDG_CONFIG_HOME` no longer decides it. Earlier
-releases used `~/.config/rkat-tui` (`$XDG_CONFIG_HOME/rkat-tui`;
-`<--user-config-root>/.config/rkat-tui`; `%APPDATA%\rkat-tui` on Windows):
-while `~/.rkat/tui` does not exist and such a directory does, it is used as
-is, with a one-line start-up notice naming the new default and
-`--config-dir`. Nothing is moved; move the whole directory (the trust
-records included, whose names do not depend on where the directory is) to
-switch. With `--realm` or `--state-root`, rkat-tui refuses to start
+records (`trust/`). `$XDG_CONFIG_HOME` does not decide it. With `--realm` or `--state-root`, rkat-tui refuses to start
 (exit 2) when the config directory and that realm's directory are the same
 or one holds the other, naming both. The price-list cache lives
 in the user cache directory (`<config-dir>/cache` when `--config-dir` is
@@ -1105,7 +1096,7 @@ approval decision (time, agent, helper, session, run, tool, the deciding
 argument whole, tier, `allow` or `deny`, who decided: `rule:<id>`,
 `classifier`, `human:<connection>`, `mode`, `policy`, `unattended`,
 `timeout`, and for a denial why) and one per change of authority (mode
-switch, rule added or removed, `/trust`, `/rules trust`, an agent
+switch, rule added or removed, `/trust`, `/permissions trust`, an agent
 retired, daemon start and stop). It is out of the agent's reach: its
 confined shell is never granted the directory (the daemon refuses to
 start otherwise) and its file tools refuse to read it.
@@ -1362,7 +1353,7 @@ conversation), `/copy`, `/context` (the conversation read from the daemon), `/co
 ✓ compacted notice and the gauge confirm it) and `/compact status` (the
 policy), `/remember` and `/memory` (the files are edited here; the agent
 reads the new content from its next model call), the Ctrl-T task checklist, approvals, the permission
-modes, `/rules`, `/trust`, `/rules trust` and `!` commands. The token
+modes, `/permissions`, `/trust`, `/permissions trust` and `!` commands. The token
 counter shows the conversation's totals on attach and after `/new` or
 `/resume`.
 
@@ -1416,8 +1407,8 @@ refused at attach with "too old": restart it (stop it, then attach again).
 
 **Modes and rules.** Shift+Tab, `/mode` and `/auto resume` switch the
 daemon's mode: one mode for the daemon, shown in every attached TUI's
-status bar (refreshed on attach and after every turn). `/rules list`,
-`/rules add allow|deny <tool> [pattern]` and `/rules remove <n>` act on the
+status bar (refreshed on attach and after every turn). `/permissions list`,
+`/permissions add allow|deny <tool> [pattern]` and `/permissions remove <n>` act on the
 daemon's rules and are saved in the realm rules file. Deny
 rules (and writes into `.git/` or `.rkat/`) are also the agent's recorded
 application tool policy: the daemon refuses to rebuild the agent without it.

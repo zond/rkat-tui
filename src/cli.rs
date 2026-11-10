@@ -22,8 +22,7 @@ pub struct Args {
 
     /// Endpoint for a bare `--model` id and the default endpoint (a built-in
     /// `anthropic`/`openai`/`gemini`, or a `[endpoints.<name>]` from tui.toml).
-    /// `--provider` is an alias.
-    #[arg(long, visible_alias = "provider")]
+    #[arg(long)]
     pub endpoint: Option<String>,
 
     /// Set any tui.toml key for this run: `--set auto.compact=auto`,
@@ -70,7 +69,7 @@ pub struct Args {
     /// (AGENTS.md, .rkat/). Its session state lives outside it, in
     /// `<config dir>/workspaces/<id>/`. Defaults to the nearest ancestor of the
     /// current directory that has state there, else the current directory.
-    #[arg(short = 'w', long = "workspace", alias = "context-root")]
+    #[arg(short = 'w', long = "workspace")]
     pub context_root: Option<PathBuf>,
 
     /// Stand-in for the home directory (defaults to it): the engine's
@@ -83,8 +82,7 @@ pub struct Args {
     /// Directory for user-global rkat-tui files: AGENTS.md, SYSTEM.md, tui.toml
     /// rules, notes, history, trust records, and every workspace's state
     /// (`workspaces/<id>/`). Defaults to ~/.rkat/tui (under
-    /// --user-config-root when given); an existing legacy ~/.config/rkat-tui
-    /// ($XDG_CONFIG_HOME/rkat-tui) is used until ~/.rkat/tui exists. Moves
+    /// --user-config-root when given). Moves
     /// only rkat-tui's own files; the engine's conventions stay under
     /// --user-config-root. A confined shell may not reach it (with `-w ~`,
     /// pass another one or --no-confinement).
@@ -155,8 +153,8 @@ pub struct Args {
     /// Trust the project inputs (`.rkat/mcp.toml`, `.rkat/config.toml`'s
     /// hooks, the workspace realm's `config.toml`) for this run even though
     /// they are not in the host trust record (`/trust` records them for
-    /// later runs). `--allow-project-mcp` is an alias.
-    #[arg(long, visible_alias = "allow-project-mcp")]
+    /// later runs).
+    #[arg(long)]
     pub trust_project: bool,
     /// Block until every configured MCP server has finished connecting before
     /// the first turn (default: connect in the background).
@@ -421,11 +419,13 @@ mod tests {
             args.context_root.as_deref(),
             Some(std::path::Path::new("/tmp/x"))
         );
-        let args = Args::try_parse_from(["rkat-tui", "--context-root", "/tmp/y"]).unwrap();
-        assert_eq!(
-            args.context_root.as_deref(),
-            Some(std::path::Path::new("/tmp/y"))
-        );
+        // The old names are gone.
+        for old in ["--context-root", "--provider", "--allow-project-mcp"] {
+            assert!(
+                Args::try_parse_from(["rkat-tui", old, "x"]).is_err(),
+                "{old}"
+            );
+        }
     }
 
     #[test]
@@ -451,7 +451,7 @@ mod tests {
             .is_err()
         );
         assert_eq!(
-            Args::try_parse_from(["rkat-tui", "--provider", "openai"])
+            Args::try_parse_from(["rkat-tui", "--endpoint", "openai"])
                 .unwrap()
                 .endpoint
                 .as_deref(),
