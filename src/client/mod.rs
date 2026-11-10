@@ -1,6 +1,6 @@
 //! The client: `rkat-tui` runs the TUI against the workspace's
 //! `rkat-tui-mob` daemon, which hosts the agent (the always-daemon plan in
-//! `docs/mob-split.md`; the in-process runner was removed in P4).
+//! `docs/mob-split.md`).
 //!
 //! - [`transport`]: the connection (attach handshake with the endpoint
 //!   file's token, then a JSON-RPC multiplexer over newline-delimited JSON).
@@ -286,7 +286,7 @@ pub async fn configure_with(
     )
     .map(std::sync::Arc::new)
     .map_err(|err| format!("the ! shell is unavailable: {err}"));
-    // The layers the in-process TUI reads for its display and endpoints:
+    // The layers this process reads for its display and endpoints:
     // the picker lists this process's endpoints, and a switch to a
     // configured one carries its auth binding.
     let crate::bootstrap::Layers {
@@ -376,8 +376,7 @@ impl StartAt {
     }
 }
 
-/// What the UI of attach mode takes from `config` (the in-process runner
-/// reads the same from its runtime, `crate::runner::app_setup`).
+/// What the client's UI takes from `config`.
 #[must_use]
 pub fn app_setup(config: &AttachConfig) -> AppSetup {
     AppSetup {

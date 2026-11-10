@@ -1,10 +1,9 @@
-//! The approval desk, shared by the in-process runner and the daemon: the
-//! human's answer to a durable decision, rule commands, and the permission
-//! mode's status.
+//! The approval desk, shared by the daemon and its clients: the human's
+//! answer to a durable decision, rule commands, and the permission mode's
+//! status.
 //!
-//! In-process, the escalation broker hands each request to the runner and
-//! the UI answers through a channel. In attach mode the gate runs in the
-//! `rkat-tui-mob` daemon and the dialog in a client: the daemon holds each
+//! The gate runs in the `rkat-tui-mob` daemon and the dialog in a client:
+//! the escalation broker hands each request to the daemon, which holds each
 //! escalation as a durable decision (`crate::daemon::decisions`) and pushes
 //! it to every attached client, and the client answers with
 //! `decision/decide`. The engine's decision vocabulary is approve or
@@ -13,7 +12,7 @@
 //! decision, and the user's comment as its reason
 //! ([`EscalationAnswer::remote`], [`EscalationAnswer::from_decision`]). A
 //! decision without a tag (any other client of the engine's methods) is
-//! allow once or deny. Both hosts turn the human's [`EscalationAnswer`]
+//! allow once or deny. The daemon turns the human's [`EscalationAnswer`]
 //! into the [`HumanDecision`] the engine waits for with [`answered`].
 
 use meerkat_core::ApprovalDecision;
@@ -259,7 +258,7 @@ impl RuleOutcome {
 }
 
 /// Run `command` on `engine` (rules added or removed are persisted to the
-/// realm rules file, trusted, as the in-process `/rules` does).
+/// realm rules file, trusted).
 #[must_use]
 pub fn run_rule_command(engine: &ApprovalEngine, command: &RuleCommand) -> RuleOutcome {
     match command {

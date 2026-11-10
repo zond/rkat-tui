@@ -1,7 +1,6 @@
-//! `/context`'s breakdown, for both runners: the UI's header, the
-//! session's system prompt and message counts, the instruction files on
-//! disk and what is known of the tools. The in-process runner reads the
-//! messages from its session, the attach runner from the daemon
+//! `/context`'s breakdown: the UI's header, the session's system prompt
+//! and message counts, the instruction files on disk and what is known of
+//! the tools. The client reads the messages from the daemon
 //! (`rkat/transcript`); the instruction files are found the same way the
 //! session builds find them ([`InstructionSources::of`]).
 

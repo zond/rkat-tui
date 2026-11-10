@@ -358,7 +358,7 @@ the mob split are numbered in `docs/mob-split.md`, "Open engine asks"):
      (`RebuildReason::ModelSwitch`); `mobs::a_helper_delegated_after_a_model_switch_runs_on_the_new_model`. Ask: the
      mob tools read the session's current model.
   2. **Resolved in attach mode (2026-11-09, by P3b on #2112, test
-     `attach_approvals::a_fork_off_child_runs_behind_the_gate`); still true in-process, where the main session is
+     `attach_approvals::a_fork_off_child_runs_behind_the_gate`); true of the in-process runner, removed in P4, where the main session was
      not a mob member:** `fork_off` requires the caller to be a durable mob member; the TUI's primary session is not one and delegate
      helpers are `durable: false`, so only `delegate` (and the `mob_*` tools) are usable from the TUI.
   3. Hook inheritance for members: not used (the TUI gates via admission, hooks only observe); not verified.

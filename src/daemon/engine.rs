@@ -4,8 +4,8 @@
 //! `set_realm_context`, `set_config_runtime`, `require_hosting_mode`, the
 //! mob state set before any `MethodRouter`), with these differences: the
 //! factory, config store and confinement come from
-//! [`crate::bootstrap::assemble`], so the realm is configured exactly as
-//! for the in-process TUI; the mob state is this crate's own (not
+//! [`crate::bootstrap::assemble`], so the realm is configured as the
+//! client reads it; the mob state is this crate's own (not
 //! `compose_rpc_mob_state`), carrying the TUI's spawn customizer with the
 //! orchestrator as its [`RootMember`]; and the connection callback-tool
 //! routes `compose_rpc_mob_state` installs are left out (their builders are
@@ -158,8 +158,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
             &choice.model,
         ))
         .threshold_override();
-    // What the in-process runner shows at start, for the clients
-    // (`rkat/notices`): the confinement's observations, then the rules'
+    // What a client shows when it first attaches (`rkat/notices`): the confinement's observations, then the rules'
     // and the bootstrap's warnings.
     let startup_notices: Vec<StartupNotice> = confinement
         .notices
@@ -278,7 +277,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         Arc::new(FileToolDispatcher::new(project_root.clone(), None))
             as Arc<dyn AgentToolDispatcher>
     });
-    // The daemon follows its helpers as the in-process host does: the
+    // The daemon follows its helpers: the
     // registry's running set (an interrupt cancels it), and each helper's
     // session bound for the helpers it delegates to in turn. Clients see
     // the helpers' events on the mobs' own streams.
@@ -418,7 +417,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
 /// The orchestrator's external tools (the TUI session's file and note
 /// tools behind one gateway; no `fork`, which needs the TUI's service) and
 /// the note stores its instructions index. The file tools report every
-/// change they make to `diffs` (the clients show it as in-process).
+/// change they make to `diffs` (the clients show it as a diff).
 fn orchestrator_tools(
     scope: &RuntimeScope,
     diffs: tokio::sync::mpsc::UnboundedSender<crate::tools::FileDiff>,
@@ -446,8 +445,7 @@ fn orchestrator_tools(
 }
 
 /// Push every event of the approval engine's `events` to the clients as
-/// an [`ApprovalNote`](super::protocol::ApprovalNote) (what the in-process
-/// runner showed: classifier verdicts, pauses, the classifier's work and
+/// an [`ApprovalNote`](super::protocol::ApprovalNote) (classifier verdicts, pauses, the classifier's work and
 /// usage), until the engine is gone.
 fn forward_approval_notes(
     decisions: &Arc<Decisions>,

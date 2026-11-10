@@ -1,5 +1,6 @@
 //! Attach mode: the TUI's attach runner (`rkat-tui --attach`) against the
-//! `rkat-tui-mob` daemon started in-process with a scripted LLM, driven
+//! `rkat-tui-mob` daemon started inside the test process with a scripted
+//! LLM, driven
 //! through the same `Effect`/`Msg` channels the UI uses.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -102,7 +103,7 @@ async fn esc_interrupts_a_hanging_turn() {
 }
 
 /// `/model` in attach mode switches the session in place
-/// (`rkat/set_model`, as the in-process switch): the session keeps the
+/// (`rkat/set_model`): the session keeps the
 /// model, the next prompt is an ordinary send, and the switch is tied to no
 /// connection (the client that made it can leave; another client's prompt
 /// runs on the new model).
@@ -150,7 +151,7 @@ async fn model_switches_in_place_and_stays() {
     daemon.stop().await;
 }
 
-/// A model switch is refused while a turn runs, as in-process.
+/// A model switch is refused while a turn runs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_model_switch_waits_for_the_turn() {
     let ws = Workspace::new();
@@ -381,7 +382,7 @@ async fn the_task_tools_fill_the_checklist_over_the_daemon() {
 }
 
 /// `/context` in attach mode: the conversation's messages read from the
-/// daemon, the instruction files on disk, as in-process.
+/// daemon, the instruction files on disk.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn context_reports_the_daemons_conversation() {
     let ws = Workspace::new();
@@ -409,8 +410,8 @@ async fn context_reports_the_daemons_conversation() {
     daemon.stop().await;
 }
 
-/// The agent's file changes show as diffs in every attached client, as
-/// in-process (the daemon pushes `rkat/file_diff`).
+/// The agent's file changes show as diffs in every attached client (the
+/// daemon pushes `rkat/file_diff`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_agents_file_changes_show_as_diffs() {
     use rkat_tui::approval::mode::PermissionMode;
@@ -460,7 +461,7 @@ async fn the_agents_file_changes_show_as_diffs() {
 }
 
 /// The daemon's start-up notices (here: its shell runs unconfined) show in
-/// a client when it first attaches, as the in-process TUI shows its own.
+/// a client when it first attaches.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_daemons_start_up_notices_show_on_attach() {
     let ws = Workspace::new();

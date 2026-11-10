@@ -2,11 +2,11 @@
 //!
 //! The factory gives every session a [`SqliteTaskStore`] scoped to its id in
 //! the realm's `tasks.db` ([`crate::bootstrap::tasks_db`]); the task tools
-//! (`task_create`, `task_update`) write there and nothing else does. A
-//! runner reads the session's tasks when a session opens (a resumed one
+//! (`task_create`, `task_update`) write there and nothing else does. The
+//! client reads the session's tasks when a session opens (a resumed one
 //! gets its list back) and after each of its task tool calls completes, and
-//! sends the UI the list: the in-process runner from the store itself, the
-//! attach runner through the daemon's `rkat/tasks`, which reads it here. A
+//! sends the UI the list, through the daemon's `rkat/tasks`, which reads it
+//! here. A
 //! store that cannot be read leaves the checklist as it was and is named at
 //! the next Ctrl+T.
 

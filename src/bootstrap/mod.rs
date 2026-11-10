@@ -152,9 +152,9 @@ fn extra_grants(args: &Args, layered: &crate::config::Layered) -> confinement::E
     extra
 }
 
-/// The user's `!` shell of `scope` as the in-process TUI builds it (the
-/// agent shell's confinement plan, curated environment and the `[shell]`
-/// timeout), for a host that runs no engine of its own (attach mode).
+/// The user's `!` shell of `scope`, built from the agent shell's
+/// confinement plan, curated environment and the `[shell]` timeout, for
+/// the client, which runs no engine of its own.
 ///
 /// # Errors
 ///
@@ -184,7 +184,7 @@ pub fn user_shell(
 }
 
 /// The workspace and its layered `tui.toml`, read once at start and handed
-/// to whichever host runs (in-process, attach mode, the daemon).
+/// to the process that runs (the client or the daemon).
 #[derive(Debug)]
 pub struct Layers {
     /// The workspace and realm.

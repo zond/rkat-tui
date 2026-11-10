@@ -321,7 +321,7 @@ pub enum RealmBackendArg {
     Jsonl,
     /// SQLite database (the default for the workspace-local realm).
     Sqlite,
-    /// In-process only: nothing survives the process (throwaway sessions).
+    /// Held in memory: nothing survives the daemon process (throwaway sessions).
     Memory,
 }
 
@@ -467,7 +467,7 @@ mod tests {
             mode(&["rkat-tui", "--attach=existing"]),
             Some(AttachTarget::Existing)
         );
-        // The in-process runner is gone, and its flag with it.
+        // `--no-attach` went with the removed in-process runner.
         assert!(Args::try_parse_from(["rkat-tui", "--no-attach"]).is_err());
         // A prompt after a bare --attach is still the prompt.
         let args = Args::try_parse_from(["rkat-tui", "--attach", "fix it"]).unwrap();

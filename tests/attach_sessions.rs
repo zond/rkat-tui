@@ -108,7 +108,7 @@ async fn new_starts_fresh_and_resume_brings_the_old_conversation_back() {
     assert_eq!(client.turn_finished().await.result.unwrap().text, "three");
     assert_eq!(user_texts(&llm.recorded()[2].messages), ["first", "third"]);
     // Resuming the current one is a no-op (`last` names the most recent
-    // other one, as in-process).
+    // other one).
     client.send(Effect::ResumeSession(first.clone()));
     client
         .wait_for(

@@ -3,7 +3,7 @@
 //! The daemon (its `initialize` lists `decision/notice`, P3b; a daemon
 //! without it is refused at attach) holds every escalation as a durable decision and pushes it to every
 //! attached client: this client shows each `decision/notice` for the
-//! orchestrator's session as the in-process dialog ([`Msg::Escalation`];
+//! orchestrator's session as the approval dialog ([`Msg::Escalation`];
 //! the notice's rendering is the dialog, [`DialogRendering`]), answers with
 //! `decision/decide` ([`decision_params`]: the answer, the digest of what
 //! was shown, the comment as the reason, and the dialog's answer for the
@@ -49,8 +49,8 @@ pub fn classifier_allow_note(reason: Option<&str>) -> String {
 }
 
 /// What the UI shows for an approval note the daemon pushed
-/// ([`crate::daemon::protocol::APPROVAL_NOTE`]), as the in-process runner
-/// showed the engine's events, and whether the permission-mode status
+/// ([`crate::daemon::protocol::APPROVAL_NOTE`]) from the engine's events,
+/// and whether the permission-mode status
 /// should be read again (a decision moves the denial counters; a pause or
 /// resume changes the mode). Tier-1/2 allows are routine and show
 /// nothing; a classifier allow is one dim line under its tool block; other

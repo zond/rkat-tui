@@ -163,7 +163,7 @@ pub struct AttachConfig {
     /// on every attach: the daemon counts the client that started it as
     /// its owner (`/quit` then stops a daemon nobody detached from).
     pub start_token: Option<String>,
-    /// The user's `!` shell (this process's own, as in-process), or why
+    /// The user's `!` shell (this process's own), or why
     /// there is none.
     pub user_shell: Result<Arc<UserShell>, String>,
     /// This process's LLM endpoints (the model picker, `/model`).
@@ -175,7 +175,7 @@ pub struct AttachConfig {
     /// The context-compaction policy of the `tui.toml` layers.
     pub compaction: crate::ui::CompactionPolicy,
     /// The cost readout's prices (the `[pricing]` overrides and the cached
-    /// community list; refreshed in the background as in-process).
+    /// community list; refreshed in the background).
     pub pricing: crate::pricing::PricingSetup,
 }
 
@@ -845,7 +845,7 @@ impl AttachRunner {
         for note in queued {
             self.on_notification(&note);
         }
-        // The counters are the session's totals, as in-process; after the
+        // The counters are the session's totals; after the
         // replay and the live events queued before the usage read, whose
         // turns they already hold. Live turn ends after this add to them.
         if let Some((input, output)) = usage {
@@ -868,8 +868,7 @@ impl AttachRunner {
         }
     }
 
-    /// Show the daemon's start-up notices (`rkat/notices`), as the
-    /// in-process TUI shows its own at start.
+    /// Show the daemon's start-up notices (`rkat/notices`).
     fn startup_notices(&self) {
         let Some(connection) = self.connection() else {
             return;
@@ -1550,8 +1549,8 @@ impl AttachRunner {
         }
     }
 
-    /// `/context`: the UI's `header` plus what the context holds, as
-    /// in-process ([`crate::workbench::context`]): the conversation's
+    /// `/context`: the UI's `header` plus what the context holds
+    /// ([`crate::workbench::context`]): the conversation's
     /// messages from the daemon (`rkat/transcript`), the instruction files
     /// the daemon's session builds read (this workspace's, found here).
     fn context_report(&self, header: String) {
@@ -1586,7 +1585,7 @@ impl AttachRunner {
     }
 
     /// Read the conversation's tasks from the daemon (`rkat/tasks`) for the
-    /// Ctrl+T checklist, as the in-process runner reads its session's.
+    /// Ctrl+T checklist.
     fn refresh_tasks(&self) {
         let Some(link) = &self.link else {
             return;
@@ -1972,8 +1971,8 @@ impl AttachRunner {
     /// What to send for the prompt `text`: [`RETRY_INPUT`] when it repeats
     /// the prompt of the turn that just failed and that prompt is still the
     /// conversation's last message (a failed run keeps it committed, so
-    /// the text again would be in the transcript twice), as the in-process
-    /// runner did; `None` sends `text`. Applies once.
+    /// the text again would be in the transcript twice); `None` sends
+    /// `text`. Applies once.
     async fn retry_input(&mut self, connection: &Connection, text: &str) -> Option<&'static str> {
         let (session, failed) = self.failed_prompt.take()?;
         if self
@@ -2085,8 +2084,8 @@ impl AttachRunner {
     /// `/model <reference>` or a picker selection: the daemon switches the
     /// session in place ([`AttachRunner::switch_model`], with the model,
     /// provider and the endpoint's auth binding); it keeps the model.
-    /// A bare id is resolved against this process's endpoints as
-    /// in-process (their lists fetched first when several could serve it).
+    /// A bare id is resolved against this process's endpoints (their lists
+    /// fetched first when several could serve it).
     fn set_model(&mut self, reference: &str) {
         match model_switch(
             reference,
@@ -2104,7 +2103,7 @@ impl AttachRunner {
     }
 
     /// Switch the orchestrator's session to `switch` in place
-    /// (`rkat/set_model`), as the in-process `/model` does: refused while a
+    /// (`rkat/set_model`): refused while a
     /// turn runs; the next prompt is an ordinary send.
     fn switch_model(&self, switch: ModelSwitch) {
         if self.turn.active {
@@ -2271,8 +2270,7 @@ impl AttachRunner {
         self.orphans.clear();
         self.send(Msg::Status(StatusUpdate::Session(id.clone())));
         self.send(Msg::ResetTranscript(blocks));
-        // The conversation's own totals and gauge, as the in-process
-        // switch reads them from the session.
+        // The conversation's own totals and gauge, read from the daemon.
         let (input, output) = usage.unwrap_or_default();
         self.send(Msg::Status(StatusUpdate::Tokens { input, output }));
         self.send(Msg::Status(StatusUpdate::Context {
@@ -2289,7 +2287,7 @@ impl AttachRunner {
                 &model,
             );
             // A fresh conversation starts on the daemon's start-up model:
-            // this client's last `/model` carries over, as in-process.
+            // this client's last `/model` carries over.
             if own == Some(true)
                 && let Some(switch) = self.last_switch.clone()
                 && switch.model != model
@@ -2858,8 +2856,7 @@ fn terminate(_pid: u32) -> Result<(), String> {
 }
 
 /// `/model <reference>` in attach mode: resolved against this process's
-/// endpoints and their fetched lists as in-process
-/// ([`parse_model_ref`]); a configured endpoint's switch carries its auth
+/// endpoints and their fetched lists ([`parse_model_ref`]); a configured endpoint's switch carries its auth
 /// binding, a built-in one's clears it.
 ///
 /// # Errors
@@ -3225,8 +3222,8 @@ mod tests {
     use super::*;
     use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 
-    /// `/status`'s daemon side: every line the in-process report had, in
-    /// its order.
+    /// `/status`'s daemon side: the realm, confinement, mode, trust and
+    /// helper lines, in their order.
     #[test]
     fn the_report_names_the_realm_confinement_mode_trust_and_helpers() {
         use crate::approval::desk::ModeStatus;

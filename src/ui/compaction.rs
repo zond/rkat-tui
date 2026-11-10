@@ -26,8 +26,8 @@
 //!
 //! `/compact` reports the policy; `/compact now` asks the engine to compact
 //! at the session's next compaction check, before its next model request,
-//! without a rebuild (in-process `MeerkatMachine::request_compaction`, in
-//! attach mode `mob/compact_member`). The `CompactionStarted`/`Completed`
+//! without a rebuild (the client asks the daemon with
+//! `mob/compact_member`). The `CompactionStarted`/`Completed`
 //! events confirm the compaction; a check with nothing to fold publishes
 //! `RequestedCompactionSkipped` instead, which the transcript shows.
 //!

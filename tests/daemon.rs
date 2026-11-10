@@ -1,4 +1,5 @@
-//! The `rkat-tui-mob` daemon, started in-process in a temporary workspace
+//! The `rkat-tui-mob` daemon, started inside the test process in a
+//! temporary workspace
 //! with a scripted LLM, driven over loopback TCP the way any client would:
 //! read the endpoint file, attach with its token, then speak the engine's
 //! own JSON-RPC methods.

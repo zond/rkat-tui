@@ -727,7 +727,8 @@ pub struct StatusInfo {
     /// Prices for the cost readout.
     prices: Arc<crate::pricing::PriceTable>,
     /// Attach mode: the daemon connection's state (`attached <addr>`,
-    /// `reconnecting`, `daemon starting`); `None` in-process.
+    /// `reconnecting`, `daemon starting`); `None` until the runner reports
+    /// one.
     attach: Option<String>,
 }
 

@@ -11,13 +11,11 @@
 //! - [`SET_MODE`] `{"mode": "default"|"accept-edits"|"plan"|"auto"}` →
 //!   `{"status": ModeStatus, "notice": "…", "warning"?: "…"}`: switches the
 //!   daemon's permission mode (one per daemon: it governs the orchestrator
-//!   and its helpers, like the in-process mode governs a session and its
-//!   helpers), records it in the realm rules file and tells the
+//!   and its helpers), records it in the realm rules file and tells the
 //!   orchestrator when plan mode starts or ends;
 //! - [`RULES`] a [`RuleCommand`] (`{"op": "add"|"remove"|"list", …}`) →
 //!   [`crate::approval::desk::RuleOutcome`]: `/rules` run on the daemon's
-//!   engine, which persists to the realm rules file as the in-process one
-//!   does.
+//!   engine, which persists to the realm rules file.
 //!
 //! - [`CONVERSATIONS`] `{}` → `{"conversations": [Listed]}`: the
 //!   orchestrator's conversations, last used first
@@ -30,15 +28,14 @@
 //!   client's turn);
 //! - [`TRANSCRIPT`] `{"session_id"}` → `{"messages": [Message]}`: a
 //!   conversation's committed messages (the client renders a resumed
-//!   conversation from them, as the in-process `/resume` does);
+//!   conversation from them);
 //! - [`ENDPOINT`] `{"session_id"}` → `{"endpoint"?}`: the configured
 //!   endpoint a conversation's durable auth binding names (absent: a
 //!   built-in one), which the status bar shows;
 //! - [`USAGE`] `{"session_id"}` → `{"input_tokens", "output_tokens"}`: a
 //!   conversation's total usage as the engine keeps it with the session (the
-//!   client seeds its token counter from it on attach and after a switch,
-//!   as the in-process runner does from `Session::total_usage`; the engine's
-//!   wire reports usage only per turn);
+//!   client seeds its token counter from it on attach and after a switch;
+//!   the engine's wire reports usage only per turn);
 //! - [`TRUST`] `{"op": "project"|"rules"}` → `{"ok", "text"}`: the
 //!   project trust record the daemon owns (a missing `op` is refused).
 //!   `project` is `/trust`
@@ -50,7 +47,7 @@
 //! - [`NOTICES`] `{}` → `{"notices": [{"warn", "text"}]}`: what the
 //!   daemon's start-up had to say (the confinement, the rules, the
 //!   configuration); a client shows them when it first attaches to this
-//!   daemon, as the in-process TUI shows its own at start;
+//!   daemon;
 //! - [`TASKS`] `{"session_id"}` → `{"tasks": [Task]}`: a conversation's
 //!   tasks in the engine's task store (the Ctrl+T checklist; the client
 //!   reads them on attach, after a switch and after each of the agent's
@@ -74,11 +71,11 @@
 //! What the forwarded methods tell the daemon ([`Local::observe`]): a
 //! prompt or steer for the orchestrator (`mob/member_send`,
 //! `mob/turn_start`) is the human's words, recorded in the classifier's
-//! transcript as the in-process session records them at admission (the
-//! connection proved it holds the daemon's token); an interrupt
+//! transcript (the connection proved it holds the daemon's token); an
+//! interrupt
 //! (`mob/stop_member_run`, `mob/force_cancel`) stops the session's review
 //! and answers its open escalations with Stop, and stops the session's
-//! running helpers, as the in-process runner does; and a `mob/turn_start` that switches the model carries the
+//! running helpers; and a `mob/turn_start` that switches the model carries the
 //! `[thinking]` provider params for the new model unless it names its own.
 
 use std::sync::Arc;
@@ -531,8 +528,7 @@ impl Local {
             listed,
         } = params;
         // A model only an endpoint knows needs its profile in the realm
-        // config before the runtime accepts it, as the in-process switch
-        // registered one.
+        // config before the runtime accepts it.
         let mut reseated = false;
         if let Some(dialect) = provider.as_deref().and_then(WireDialect::parse) {
             let listed = listed.map(|listed| crate::models::ModelEntry {
@@ -551,8 +547,8 @@ impl Local {
             .await
             .map_err(|err| Refusal::new(SWITCH_FAILED, err.to_string()))?;
             // The live agent's model registry predates the profile: seat
-            // the orchestrator again on its session, as the in-process
-            // switch rebuilt its agent.
+            // the orchestrator again on its session, which rebuilds its
+            // agent.
             if written {
                 reseated = true;
                 self.conversations.reseat().await.map_err(|err| {

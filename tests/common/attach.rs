@@ -1,7 +1,7 @@
 //! The attach-mode rig shared by `tests/attach.rs`,
 //! `tests/attach_approvals.rs`, `tests/attach_helpers.rs`,
 //! `tests/attach_sessions.rs` and `tests/daemon.rs`: a daemon started
-//! in-process with a scripted LLM (an allow-all classifier unless the test
+//! inside the test process with a scripted LLM (an allow-all classifier unless the test
 //! passes its own options), and attach runners driven through the UI's
 //! `Effect`/`Msg` channels. `tests/daemon.rs` keeps its own raw JSON-RPC
 //! client, which tests the wire below the attach runner.

@@ -552,7 +552,7 @@ fn an_attached_quit_asks_the_runner_and_follows_its_decision() {
     // A second /quit while the runner decides leaves at once (a detach).
     assert_eq!(submit(&mut app, "/quit"), vec![Effect::DecideQuit]);
     assert_eq!(submit(&mut app, "/quit"), vec![Effect::Quit]);
-    // In-process, /quit quits.
+    // With no connection state reported, /quit quits.
     let mut app = App::new(StatusInfo::default());
     assert_eq!(submit(&mut app, "/quit"), vec![Effect::Quit]);
 }

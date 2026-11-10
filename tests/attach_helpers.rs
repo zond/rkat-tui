@@ -1,6 +1,6 @@
 //! Helpers in attach mode (P4): the daemon's orchestrator delegates with
-//! the engine's `delegate`, and the attached TUI shows the helper as the
-//! in-process follower does (`[helper · model]`, its events nested, its
+//! the engine's `delegate`, and the attached TUI shows the helper
+//! (`[helper · model]`, its events nested, its
 //! result, the running count, its usage in `/cost`), from the mobs' own
 //! event streams. Esc stops the orchestrator's run and its helpers.
 

@@ -5,7 +5,7 @@
 //! ([`super::approvals::Desk`]) holds one durable decision through the
 //! runtime's decision owner (`SessionRuntime::decision_service()`): kind
 //! [`KIND`], the escalation as its subject, the dialog's content as its
-//! rendering ([`DialogRendering`], JSON a client renders as the in-process
+//! rendering ([`DialogRendering`], JSON a client renders as the approval
 //! dialog), the gate as its requester and the daemon's [`Principal`] as its
 //! approver, until the engine's escalation timeout (and [`DEADLINE_SLACK`]).
 //! [`Decisions`] is the daemon's side of the consent surface:
@@ -124,7 +124,7 @@ const STORE_BACKOFF: Duration = Duration::from_millis(20);
 /// environment has no login name.
 pub const DEFAULT_PRINCIPAL: &str = "owner";
 
-/// What a decision's rendering holds: the dialog the in-process UI shows,
+/// What a decision's rendering holds: the dialog a client shows,
 /// and the session the call belongs to (a helper's call belongs to the
 /// session it works for). Serialized as JSON; that text is the rendering
 /// the human is shown and whose digest a decision binds.

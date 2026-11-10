@@ -11,8 +11,8 @@
 //! under it too.
 //!
 //! Entering and leaving plan mode also tells the agent, as system context
-//! ([`PLAN_ON_NOTE`], [`PLAN_OFF_NOTE`] under [`plan_note_key`]); the
-//! in-process runner and the daemon append the same notes.
+//! ([`PLAN_ON_NOTE`], [`PLAN_OFF_NOTE`] under [`plan_note_key`]), which
+//! the daemon appends.
 
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};

@@ -142,8 +142,8 @@ pub struct Listed {
     pub title: Option<String>,
     /// Whether the orchestrator runs as it now.
     pub current: bool,
-    /// A session no member of the daemon ran (created by the in-process
-    /// TUI before the daemon): its transcript can be shown, but the engine
+    /// A session no member of the daemon ran (one the removed in-process
+    /// runner created before P4): its transcript can be shown, but the engine
     /// will not seat the orchestrator on it ([`Conversations::earlier`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub view_only: bool,
@@ -323,7 +323,7 @@ impl Conversations {
 
     /// The realm's sessions that are no member's (the engine records no
     /// durable `comms_name` for them) and not in `known`: the ones the
-    /// in-process TUI created before the daemon. The engine refuses to
+    /// removed in-process runner created before P4. The engine refuses to
     /// seat the orchestrator on such a session ("missing durable
     /// comms_name for resumed mob member") and a mob-owned transcript
     /// cannot be copied into a fresh one, so they are listed view only,
@@ -417,8 +417,8 @@ impl Conversations {
     }
 
     /// Seed the approval `engine`'s classifier transcript of `session` from
-    /// its committed history (the human's words and tool calls), as the
-    /// in-process resume did: the classifier of a restored or resumed
+    /// its committed history (the human's words and tool calls): the
+    /// classifier of a restored or resumed
     /// conversation then sees what the user asked before. A session that
     /// cannot be read is left unseeded.
     pub async fn seed(&self, engine: &crate::approval::ApprovalEngine, session: &SessionId) {

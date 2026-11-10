@@ -38,8 +38,8 @@ pub struct EscalationPrompt {
     pub shown: RecordedPrompt,
 }
 
-/// What the escalation dialog shows, in-process and in a client of the
-/// daemon (a durable decision's rendering carries it).
+/// What the escalation dialog shows in a client of the daemon (a durable
+/// decision's rendering carries it).
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct RecordedPrompt {
     /// Tool name.

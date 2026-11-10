@@ -3,7 +3,7 @@
 //! attached TUI over the engine's `approval/*` methods, the permission mode
 //! and the rules reach the daemon through its `rkat/*` methods, and the
 //! deny rules are the members' durable application tool policy. The daemon
-//! runs in-process with a scripted LLM and a scripted classifier; the
+//! runs inside the test process with a scripted LLM and a scripted classifier; the
 //! clients are attach runners driven through the UI's channels.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -671,8 +671,7 @@ async fn the_local_methods_answer_before_the_engine() {
     daemon.stop().await;
 }
 
-/// A helper's `shell` is the engine's native shell to the gate, as
-/// in-process (where the gate reads the helper's own definitions): an allow
+/// A helper's `shell` is the engine's native shell to the gate: an allow
 /// rule for it matches, and the classifier is not asked. The helper runs
 /// from its spawn on, so its own catalog is never read before its first
 /// call; the daemon judges it by the natives of the catalogs it has read.
@@ -822,7 +821,7 @@ args = ["-c", "printf entered > \"$1\"; cat >/dev/null; printf '{{}}'", "hook-pr
     };
     let daemon = start(&ws.root, &llm, &setup).await;
     let connection = daemon.connect().await;
-    // `rkat/trust` names its op; there is no list form (as in-process).
+    // `rkat/trust` names its op; there is no list form.
     for params in [json!({}), json!({"op": "list"})] {
         let refused = connection.call("rkat/trust", params.clone()).await;
         assert!(

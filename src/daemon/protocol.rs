@@ -45,8 +45,7 @@ pub const TRANSCRIPT: &str = "rkat/transcript";
 /// [`SessionParams`] → [`Usage`]: a conversation's total token usage.
 pub const USAGE: &str = "rkat/usage";
 /// [`SessionParams`] → [`SessionEndpoint`]: the configured endpoint a
-/// conversation's auth binding names (the status bar shows it, as the
-/// in-process runner derived it from the session's binding).
+/// conversation's auth binding names (the status bar shows it).
 pub const ENDPOINT: &str = "rkat/endpoint";
 /// [`TrustParams`] → [`crate::approval::desk::RuleOutcome`]: the project
 /// trust record (`/trust`, `/rules trust`).
@@ -69,8 +68,8 @@ pub const SET_MODEL: &str = "rkat/set_model";
 /// [`DecisionEnded`].
 pub const DECISION_ENDED: &str = "rkat/decision_ended";
 /// `{}` → [`Notices`]: what the daemon's start-up had to say (the
-/// confinement, the rules, the configuration), as the in-process TUI shows
-/// it at start.
+/// confinement, the rules, the configuration), which a client shows when
+/// it first attaches.
 pub const NOTICES: &str = "rkat/notices";
 /// The notification of a change the orchestrator's file tools made:
 /// [`FileDiffNote`].
@@ -536,8 +535,8 @@ pub struct SetModelParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_binding: Option<meerkat_core::AuthBindingRef>,
     /// What the endpoint's model list says of the model (a model only an
-    /// endpoint knows gets a profile in the realm config from it, as the
-    /// in-process switch registered one); `None`: not listed.
+    /// endpoint knows gets a profile in the realm config from it); `None`:
+    /// not listed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub listed: Option<ListedModel>,
 }
@@ -633,12 +632,13 @@ impl StartupNotice {
 /// [`NOTICES`]'s result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Notices {
-    /// In the order the in-process TUI shows them.
+    /// In the order the daemon's start-up produced them, which a client
+    /// keeps.
     pub notices: Vec<StartupNotice>,
 }
 
-/// [`FILE_DIFF`]'s parameters: one file change, as the in-process file
-/// tools report it to the UI.
+/// [`FILE_DIFF`]'s parameters: one file change, as the orchestrator's
+/// file tools report it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileDiffNote {
     /// The tool call that made the change.

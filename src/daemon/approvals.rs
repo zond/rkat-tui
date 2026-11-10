@@ -1,15 +1,15 @@
 //! The approval gate on the daemon side (P3 of `docs/mob-split.md`).
 //!
-//! The daemon runs the same [`ApprovalEngine`] the in-process TUI does
-//! (tiers, rules, classifier, permission modes, escalation timeouts), built
-//! by the shared bootstrap; the durable decisions are the record of its
-//! escalations. Three things differ, all here:
+//! The daemon runs the [`ApprovalEngine`] (tiers, rules, classifier,
+//! permission modes, escalation timeouts), built by the shared bootstrap;
+//! the durable decisions are the record of its escalations. Three parts
+//! are the daemon's own, all here:
 //!
 //! - [`RootGate`]: the orchestrator's `ToolDispatchAdmission`. It is the
-//!   in-process [`ApprovalGate`], resolved per call to the orchestrator's
+//!   shared [`ApprovalGate`], resolved per call to the orchestrator's
 //!   session (unknown until its first spawn: the helper registry knows it).
-//! - [`Desk`]: where an escalation goes. In-process the broker hands it to
-//!   the runner and the UI answers on a channel; here it holds a durable
+//! - [`Desk`]: where an escalation goes. The engine's broker hands it to
+//!   the desk, which holds a durable
 //!   decision ([`super::decisions`]), which every attached client is shown
 //!   as it opens and decides with `decision/decide`, and hands the engine
 //!   the [`crate::approval::escalation::HumanDecision`] the decision
@@ -24,12 +24,11 @@
 //!   before its first call; a fresh conversation) is judged by the TUI's
 //!   own file and note tools plus the engine-native tools of the catalogs
 //!   read so far: every session of the daemon is built by the same factory,
-//!   so its native `shell` is the orchestrator's (as the in-process gate
-//!   reads it from the helper's own definitions). Everything else is judged
+//!   so its native `shell` is the orchestrator's. Everything else is judged
 //!   as a foreign tool (the classifier or the human decides it).
 //!
-//! [`watch`] follows the orchestrator's events: a run start lifts a Stop
-//! (as the in-process runner reports `RunStarted`), a run end refreshes
+//! [`watch`] follows the orchestrator's events: a run start lifts a Stop,
+//! a run end refreshes
 //! the tool catalog. [`watch_helpers`] reads a helper's catalog after its
 //! first run, from the helper events the follower forwards; a helper that
 //! stays seated (`spawn_member`) is judged by its own catalog from its
@@ -66,8 +65,8 @@ const CATALOG_READ: Duration = Duration::from_secs(30);
 /// How long the event watcher waits before subscribing again.
 const RESUBSCRIBE: Duration = Duration::from_secs(1);
 
-/// The orchestrator's approval gate: the in-process gate, for the session
-/// the orchestrator runs as.
+/// The orchestrator's approval gate: the shared [`ApprovalGate`], for the
+/// session the orchestrator runs as.
 pub struct RootGate {
     engine: Arc<ApprovalEngine>,
     registry: Arc<HelperRegistry>,
@@ -195,8 +194,7 @@ impl Desk {
     }
 
     /// The human interrupted `session`'s turn: its open escalations are
-    /// answered with Stop (the engine denies them and stops the session,
-    /// as the in-process runner does).
+    /// answered with Stop (the engine denies them and stops the session).
     pub fn stop(&self, session: &SessionId) {
         for waiting in self.waiting.lock().values_mut() {
             if &waiting.session == session

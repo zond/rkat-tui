@@ -4,8 +4,7 @@
 //! ([`crate::daemon::conversations`]): `/new` and `/resume` ask the daemon
 //! to switch (`rkat/new`, `rkat/resume`), every attached client notices the
 //! orchestrator's new `current_session_id` and shows it (a resumed one from
-//! its committed messages, `rkat/transcript`, as the in-process `/resume`
-//! shows it). `/rewind` has no engine route for a member's session (see
+//! its committed messages, `rkat/transcript`). `/rewind` has no engine route for a member's session (see
 //! [`REWIND_UNAVAILABLE`]).
 
 use meerkat_core::SessionId;
@@ -81,8 +80,7 @@ pub fn picker_items(listed: &[Listed]) -> Vec<(String, String)> {
 }
 
 /// Resolve a `/resume` reference against the conversations (last used
-/// first), as the in-process `/resume` resolves one against the realm's
-/// sessions: `last` (`~`, `~0`), `~N`, a full id, or a unique id prefix.
+/// first): `last` (`~`, `~0`), `~N`, a full id, or a unique id prefix.
 /// `last` and `~N` count the conversations other than the current one (the
 /// current one is the most recently used, so `last` would always name it):
 /// `last` is the one before it. Sessions created before the daemon

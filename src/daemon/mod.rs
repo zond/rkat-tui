@@ -1,11 +1,10 @@
 //! `rkat-tui-mob`: the workspace's mob daemon (experimental, P1 of
 //! `docs/mob-split.md`).
 //!
-//! The daemon embeds the engine the same way the in-process TUI does
+//! The daemon embeds the engine through the shared bootstrap
 //! ([`crate::bootstrap::assemble`]: realm, config layers, endpoints,
 //! confinement plan, project trust, approval engine, instructions, MCP set
-//! and factory), but composes Meerkat's JSON-RPC host on top of it instead
-//! of a TUI session: a `meerkat_rpc` [`SessionRuntime`] with this crate's own
+//! and factory) and composes Meerkat's JSON-RPC host on top of it: a `meerkat_rpc` [`SessionRuntime`] with this crate's own
 //! [`MobMcpState`] ([`engine`]), one durable host-root mob member as the
 //! orchestrator ([`orchestrator`]), and the engine's `MethodRouter` served
 //! per connection over loopback TCP ([`serve`]), each connection first
