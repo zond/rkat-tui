@@ -755,8 +755,8 @@ agent works and Ctrl+Enter sends now, Esc interrupts, Shift+Tab switches
 the mode, `?` shows the keys, `/permissions`, `/usage`, `/context` and
 `/compact` mean what they mean there, and the approval prompt offers the
 same three numbered choices. Where rkat-tui differs or lacks a feature, and
-why, is recorded in [`docs/ux-parity.md`](ux-parity.md) (the audit
-behind these controls; its table describes the state before the change).
+why, is recorded in [`docs/ux-parity.md`](ux-parity.md), the dated audit
+behind these controls (its Status column is the current state).
 
 
 `/help` (alias `/?`), `/quit` (aliases `/exit`, `/q`), `/clear` (alias `/new`), `/resume [ref]`,
@@ -1150,9 +1150,9 @@ daemon switches the session in place, with the endpoint's
 auth binding and `[thinking]` setting; not while a turn runs; the session
 keeps the model), the context gauge,
 token counts, `/status`, `/export`, `/cost` (helpers included, kept per
-conversation), `/copy`, `/context` (the conversation read from the daemon), `/compact` (the
-policy) and `/compact now` (the agent's next model call compacts first; the
-✓ compacted notice and the gauge confirm it), `/remember` and `/memory` (the files are edited here; the agent
+conversation), `/copy`, `/context` (the conversation read from the daemon), `/compact` (the agent's next model call compacts first; the
+✓ compacted notice and the gauge confirm it) and `/compact status` (the
+policy), `/remember` and `/memory` (the files are edited here; the agent
 reads the new content from its next model call), the Ctrl-T task checklist, approvals, the permission
 modes, `/rules`, `/trust`, `/rules trust` and `!` commands. The token
 counter shows the conversation's totals on attach and after `/new` or
