@@ -9,6 +9,11 @@ design.
 
 ### Security
 
+- The confined shell no longer gets the whole Cargo home writable: only
+  `registry/` and `git/` are, the rest (`bin/`, `config.toml`, …) is read
+  only, and `credentials.toml` is not in its view. Before, a confined
+  command could replace `~/.cargo/bin` tools, set `build.rustc-wrapper` or
+  read the registry token.
 - A helper on another model than its owner's runs through the owner's
   endpoint, or its spawn is refused naming the endpoints that would serve
   it. Before, it fell back to that model's provider default: the public

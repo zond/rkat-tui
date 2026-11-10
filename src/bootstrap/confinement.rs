@@ -409,18 +409,81 @@ impl HostPaths {
         };
         let mut read: Vec<PathBuf> = env_or_home("RUSTUP_HOME", ".rustup").into_iter().collect();
         read.extend(SYSTEM_READ_DIRS.iter().map(PathBuf::from));
+        let cargo = env_or_home("CARGO_HOME", ".cargo")
+            .map(|home| CargoHome::of(&home))
+            .unwrap_or_default();
+        read.extend(cargo.read);
         Self {
-            write: [
-                Some(std::env::temp_dir()),
-                env_or_home("CARGO_HOME", ".cargo"),
-                dirs::cache_dir(),
-            ]
-            .into_iter()
-            .flatten()
-            .collect(),
+            write: [Some(std::env::temp_dir()), dirs::cache_dir()]
+                .into_iter()
+                .flatten()
+                .chain(cargo.write)
+                .collect(),
             read,
-            read_files: SYSTEM_READ_FILES.iter().map(PathBuf::from).collect(),
+            read_files: SYSTEM_READ_FILES
+                .iter()
+                .map(PathBuf::from)
+                .chain(cargo.read_files)
+                .collect(),
         }
+    }
+}
+
+/// What a confined shell gets of the Cargo home: the registry and git
+/// caches writable (cargo fetches into them), every other entry read-only
+/// (`bin/`, `config.toml`, `env`: a confined command must not replace a
+/// tool or point `build.rustc-wrapper` somewhere), and the credentials
+/// (`credentials.toml`, the older `credentials`) not at all. The engine
+/// takes no exclusion inside a grant, so each entry is its own sibling
+/// grant, as found at start: an entry created later is not in the view.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CargoHome {
+    /// `registry/` and `git/`, as they exist.
+    pub write: Vec<PathBuf>,
+    /// The other directories.
+    pub read: Vec<PathBuf>,
+    /// The other files, the credentials left out.
+    pub read_files: Vec<PathBuf>,
+}
+
+/// The Cargo home's entries a confined shell never sees.
+pub const CARGO_CREDENTIALS: [&str; 2] = ["credentials.toml", "credentials"];
+
+/// The Cargo home's directories a confined shell may write.
+pub const CARGO_WRITABLE: [&str; 2] = ["registry", "git"];
+
+impl CargoHome {
+    /// The grants of the Cargo home at `home` (none when it is not a
+    /// directory or cannot be listed).
+    #[must_use]
+    pub fn of(home: &Path) -> Self {
+        let mut grants = Self::default();
+        let Ok(entries) = std::fs::read_dir(home) else {
+            return grants;
+        };
+        let mut entries: Vec<_> = entries.flatten().collect();
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if CARGO_CREDENTIALS.contains(&name) {
+                continue;
+            }
+            // Followed: a symbolic link is granted as what it names.
+            let Ok(meta) = std::fs::metadata(entry.path()) else {
+                continue;
+            };
+            if meta.is_dir() && CARGO_WRITABLE.contains(&name) {
+                grants.write.push(entry.path());
+            } else if meta.is_dir() {
+                grants.read.push(entry.path());
+            } else if meta.is_file() {
+                grants.read_files.push(entry.path());
+            }
+        }
+        grants
     }
 }
 
@@ -1286,6 +1349,72 @@ mod tests {
             words.contains("network denied") && words.contains(&f.ws.display().to_string()),
             "{words}"
         );
+    }
+
+    /// S3 of the security review: of the Cargo home only `registry/` and
+    /// `git/` are writable, the rest is read only entry by entry, and the
+    /// credentials are not granted at all.
+    #[test]
+    fn the_cargo_home_is_granted_entry_by_entry_without_credentials() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        for sub in ["registry", "git", "bin"] {
+            std::fs::create_dir_all(home.join(sub)).unwrap();
+        }
+        for file in [
+            "config.toml",
+            "credentials.toml",
+            "credentials",
+            "env",
+            ".package-cache",
+        ] {
+            std::fs::write(home.join(file), "x").unwrap();
+        }
+        let grants = CargoHome::of(home);
+        assert_eq!(grants.write, vec![home.join("git"), home.join("registry")]);
+        assert_eq!(grants.read, vec![home.join("bin")]);
+        assert_eq!(
+            grants.read_files,
+            vec![
+                home.join(".package-cache"),
+                home.join("config.toml"),
+                home.join("env")
+            ]
+        );
+        // Lowered: the credentials are in no grant, the Cargo home itself
+        // is not writable.
+        let f = fixture();
+        let host = HostPaths {
+            write: grants.write.clone(),
+            read: grants.read.clone(),
+            read_files: grants.read_files,
+        };
+        let requirement = lower(ConfinementArg::Workspace, &f.ws, &host)
+            .unwrap()
+            .unwrap();
+        let spec = requirement.specification();
+        let canonical_home = std::fs::canonicalize(home).unwrap();
+        let FilesystemAccess::Paths(read) = &spec.read else {
+            panic!("{:?}", spec.read)
+        };
+        let FilesystemAccess::Paths(write) = &spec.write else {
+            panic!("{:?}", spec.write)
+        };
+        for access in read.iter().chain(write) {
+            let path = access.path();
+            assert!(
+                !path.ends_with("credentials.toml") && !path.ends_with("credentials"),
+                "{path:?}"
+            );
+            assert_ne!(path, canonical_home.as_path());
+        }
+        assert!(
+            write
+                .iter()
+                .all(|access| !access.path().starts_with(canonical_home.join("bin")))
+        );
+        // No Cargo home: nothing granted.
+        assert_eq!(CargoHome::of(&home.join("missing")), CargoHome::default());
     }
 
     #[test]

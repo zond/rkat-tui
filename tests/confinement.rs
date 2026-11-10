@@ -537,3 +537,70 @@ async fn a_bang_command_runs_under_the_shells_confinement() {
     assert_eq!(context, Ok(()));
     rig.quit().await;
 }
+
+/// S3 of the security review: the Cargo home is granted entry by entry.
+/// Under workspace confinement with this host's real paths, `cargo build`
+/// of a crate with a registry dependency (offline, from the local cache)
+/// still works, while `bin/` and `config.toml` of the Cargo home cannot
+/// be written (a confined command must not replace a tool or set
+/// `build.rustc-wrapper`).
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cargo_builds_under_the_narrowed_cargo_home_grant() {
+    let ws = Workspace::new();
+    if let Some(reason) = sandbox_unavailable(&ws.root, ConfinementArg::Workspace).await {
+        println!("SKIPPED: --confinement=workspace is unavailable on this host: {reason}");
+        return;
+    }
+    let Some(home) = std::env::var_os("CARGO_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".cargo")))
+        .filter(|home| home.join("registry").is_dir())
+    else {
+        println!("SKIPPED: no Cargo home with a registry on this host");
+        return;
+    };
+    let krate = ws.root.join("probe");
+    std::fs::create_dir_all(krate.join("src")).unwrap();
+    std::fs::write(
+        krate.join("Cargo.toml"),
+        "[package]\nname = \"probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ncfg-if = \"1\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        krate.join("src/main.rs"),
+        "cfg_if::cfg_if! { if #[cfg(unix)] { fn os() -> &'static str { \"unix\" } } else { fn os() -> &'static str { \"other\" } } }\nfn main() { println!(\"built-ok {}\", os()); }\n",
+    )
+    .unwrap();
+    let command = leak(format!(
+        "cd probe && cargo build --offline -q 2>&1; echo BUILD=$?; ./target/debug/probe; \
+         touch '{bin}/rkat-probe' 2>/dev/null && echo BIN-WRITABLE; \
+         touch '{config}' 2>/dev/null && echo CONFIG-WRITABLE; echo END",
+        bin = home.join("bin").display(),
+        config = home.join("config.toml").display(),
+    ));
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Tool {
+            id: "sh",
+            name: "shell",
+            args: json!({ "command": command, "timeout_secs": 300 }),
+        },
+        Step::Text("done"),
+    ]);
+    let (setup, _state) = allow_shell_detected(&["--confinement=workspace"]);
+    let mut rig = Attached::try_start_with(&ws.root, &llm, setup)
+        .await
+        .unwrap_or_else(|err| panic!("daemon start: {err}"));
+    rig.send(Effect::StartTurn("build it".into()));
+    rig.turn_finished().await;
+    let output = tool_text(&llm.requests()[1], "sh");
+    rig.quit().await;
+    assert!(output.contains("END"), "{output}");
+    assert!(
+        output.contains("BUILD=0") && output.contains("built-ok unix"),
+        "{output}"
+    );
+    assert!(!output.contains("BIN-WRITABLE"), "{output}");
+    assert!(!output.contains("CONFIG-WRITABLE"), "{output}");
+    assert!(!home.join("bin/rkat-probe").exists());
+}

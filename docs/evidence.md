@@ -4710,3 +4710,34 @@ for another). The brief's two-scripted-endpoint integration test was not
 built: the rig's daemon runs every session on one `llm_override`, so the
 endpoint a helper reaches is not observable there; the binding decision
 is pinned at the unit instead.
+
+### S3: the Cargo home is granted entry by entry
+
+Verified: `HostPaths::detect` put `$CARGO_HOME` among the writable
+directories, so a confined command could replace `~/.cargo/bin` tools
+(run unconfined later by the user), write `config.toml`
+(`build.rustc-wrapper`) and read `credentials.toml`.
+
+Engine fact (meerkat-sandbox 0.9.11, Linux): no deny lists and no grant
+nested inside another, so "the Cargo home read only with `registry/`
+writable and `credentials.toml` hidden" cannot be one grant with
+exclusions. It is expressed instead by sibling grants
+(`confinement::CargoHome::of`): `registry/` and `git/` writable, every
+other entry of the Cargo home its own read-only grant (directories as
+subtrees, files as literal files), `credentials.toml` and `credentials`
+in no grant. The Cargo home directory itself is then only the mount view's
+intermediate directory. Limits, kept explicit: the entries are those found
+when the plan is made (an entry created later is not in the view until the
+daemon restarts), and cargo's lock files (`.package-cache`,
+`.package-cache-mutate`, `.global-cache`) are read only; cargo builds
+without them (measured below), `cargo install` fails as intended. A
+read-only bind of one path inside a writable grant stays an engine ask
+(the same gap as `.rkat/` and `.git/`, below).
+
+Tests: `the_cargo_home_is_granted_entry_by_entry_without_credentials`
+(confinement: the grant split, no grant names the credentials, the home
+itself is not writable) and
+`cargo_builds_under_the_narrowed_cargo_home_grant` (`tests/confinement.rs`,
+Linux, this host's real paths: `cargo build --offline` of a crate with a
+registry dependency succeeds confined, and `touch` in the Cargo home's
+`bin/` and on its `config.toml` fails).

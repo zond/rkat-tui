@@ -293,7 +293,7 @@ background jobs, monitors) runs:
 
 | Mode | Read and write | Read only | Network |
 |---|---|---|---|
-| `workspace` (default) | the workspace, the temp dir, the Cargo home, the user cache dir, each `--confinement-write` | the rustup home, `/usr/{local,share,include}`, `/opt`, `/etc/{ssl,pki,ca-certificates}`, each `--confinement-read`; the files `/etc/{resolv.conf,hosts,nsswitch.conf,host.conf,gai.conf,services,protocols,passwd,group,gitconfig}` | allowed |
+| `workspace` (default) | the workspace, the temp dir, the Cargo home's `registry/` and `git/`, the user cache dir, each `--confinement-write` | the rest of the Cargo home (each entry as found at start: `bin/`, `config.toml`, `env`, …; never `credentials.toml` or `credentials`), the rustup home, `/usr/{local,share,include}`, `/opt`, `/etc/{ssl,pki,ca-certificates}`, each `--confinement-read`; the files `/etc/{resolv.conf,hosts,nsswitch.conf,host.conf,gai.conf,services,protocols,passwd,group,gitconfig}` | allowed |
 | `strict` | as `workspace` | as `workspace` | denied |
 | `off` (`--no-confinement`) | no sandbox | | the host's |
 
@@ -309,8 +309,17 @@ the sandbox's own baseline, read only (`/bin`, `/sbin`, `/usr/bin`,
 exist on the host. Nothing else of `/etc`, `/run`, `/proc`, `/sys` or your
 home directory is there, and Unix sockets are refused. Why each grant:
 
-- the workspace, temp dir, Cargo home and cache dir: builds, `cargo fetch`,
-  scratch files;
+- the workspace, temp dir, the Cargo home's `registry/` and `git/`, and
+  the cache dir: builds, `cargo fetch`, scratch files;
+- the rest of the Cargo home, read only: the tools in `bin/` and
+  `config.toml` resolve, but a confined command cannot replace a tool or
+  set `build.rustc-wrapper`; the registry token in `credentials.toml` is
+  not in the view at all. The engine takes no read-only or hidden part
+  inside a granted directory, so each entry of the Cargo home is its own
+  grant, as it was when the shell's plan was made: an entry created later
+  (a first `cargo install` creating `bin/`) shows after a restart. `cargo
+  build` keeps working (its lock files are read only; cargo builds without
+  them), `cargo install` does not;
 - the rustup home, `/usr/{local,share,include}`, `/opt`: toolchains,
   headers, shared data;
 - `/etc/{ssl,pki,ca-certificates}`: TLS root certificates (`curl`, `git`,
@@ -1105,7 +1114,7 @@ elsewhere.
 The token is the only thing that keeps other programs out: whoever holds it
 can answer approval dialogs, switch the permission mode and add rules. That
 is why the file is not in the workspace: the agent's confined shell can
-read the whole workspace (and the temp dir, the Cargo home and the cache
+read the whole workspace (and the temp dir, most of the Cargo home and the cache
 directory) and reach loopback. When the shell's confinement would grant
 the state directory (for example a workspace that contains
 `~/.local/state`, such as your home directory), the daemon writes the file
