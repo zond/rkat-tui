@@ -4378,3 +4378,28 @@ assuming isolation that is not there. The engine-method binding of
 "Engine methods act on the caller's agent only" is described there as
 what it is: protection against a stray client, not an access control.
 
+
+## After the security review (2026-11-10)
+
+The review of commit 1898683 (rkat-tui against Codex CLI and opencode)
+named findings by id (S sandbox, A approval, D daemon, E egress). Each
+entry below names its id, what was verified in the code before the fix,
+and the tests that pin the refused path.
+
+### A new agent's attach never waits on another agent's turn
+
+Not a review finding: a dogfooding blocker found while checking R1. A
+client attaching as a new agent while the first agent's helper ran a turn
+got no attach answer for the client's whole timeout. Reproduced by
+`a_new_agent_attaches_while_another_agents_helper_runs` (the attach
+during the helper's gated model call): the seat itself (the mob spawn,
+the wiring) finished at once, and the wait was `Agents::note_others`, the
+"agent X joined" note appended to every other agent's system context
+under the seating lock. The engine's `mob_append_system_context` on a
+member whose turn is running returns only when that turn ends, so the
+lock, and every bind behind it, waited on the busy agent and its helper.
+Each note is now its own task: one to an idle agent is still awaited
+(bounded at 2 s, so the next turn reads it, which the peer test pins),
+one to a running or unreadable agent lands when its turn ends. The test
+asserts the attach answers within 5 s, and that the busy agent's next
+turn reads the join note. A retire's "left" note goes the same way.

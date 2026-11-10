@@ -176,6 +176,28 @@ impl Drop for Agent {
     }
 }
 
+/// How long a seat or retire waits for its membership note to an idle
+/// agent ([`Agents::note_others`]) before leaving it to land on its own.
+const NOTE_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Append `text` to `name`'s system context under `key`. Best effort: a
+/// failure is logged.
+async fn append_note(state: Arc<MobMcpState>, name: String, text: String, key: String) {
+    let mut request = meerkat_core::AppendSystemContextRequest::from_text(text);
+    request.source = Some(NOTE_SOURCE.to_string());
+    request.idempotency_key = Some(key);
+    if let Err(err) = state
+        .mob_append_system_context(
+            &MobId::from(MOB_ID),
+            &AgentIdentity::from(name.as_str()),
+            request,
+        )
+        .await
+    {
+        tracing::warn!(agent = %name, error = %err, "the agent could not be told about the other agents");
+    }
+}
+
 /// The live agents.
 pub struct Agents {
     state: Arc<MobMcpState>,
@@ -401,16 +423,7 @@ impl Agents {
     /// turn; nothing wakes it). Best effort: a failure is logged.
     async fn note(&self, name: &str, text: String) {
         let key = format!("rkat-agents:{name}:{}", self.tick());
-        let mut request = meerkat_core::AppendSystemContextRequest::from_text(text);
-        request.source = Some(NOTE_SOURCE.to_string());
-        request.idempotency_key = Some(key);
-        if let Err(err) = self
-            .state
-            .mob_append_system_context(&MobId::from(MOB_ID), &AgentIdentity::from(name), request)
-            .await
-        {
-            tracing::warn!(agent = %name, error = %err, "the agent could not be told about the other agents");
-        }
+        append_note(Arc::clone(&self.state), name.to_string(), text, key).await;
     }
 
     /// Tell `name` which other agents work here now (its fresh
@@ -427,10 +440,37 @@ impl Agents {
     }
 
     /// Tell every other live agent that `name` joined (`joined`) or left.
+    ///
+    /// The engine applies an append to a running member's session only
+    /// when its turn ends, so a note to a busy agent would hold the
+    /// seating lock (and the attach waiting on it) for that agent's whole
+    /// turn, its helpers' included. Each note is its own task: one to an
+    /// idle agent is waited for (bounded by [`NOTE_WAIT`]), so the agent
+    /// reads it at its next turn; one to a running agent, or one whose
+    /// state cannot be read, is left to land when that turn ends.
     async fn note_others(&self, name: &str, joined: bool) {
+        let mut waited = Vec::new();
         for other in self.names() {
-            if other != name {
-                self.note(&other, membership_note(name, joined)).await;
+            if other == name {
+                continue;
+            }
+            let idle = self.conversations.running(&other).await == RunState::Idle;
+            let key = format!("rkat-agents:{other}:{}", self.tick());
+            let task = tokio::spawn(append_note(
+                Arc::clone(&self.state),
+                other.clone(),
+                membership_note(name, joined),
+                key,
+            ));
+            if idle {
+                waited.push((other, task));
+            } else {
+                tracing::debug!(agent = %other, "the agent is busy: its membership note lands after its turn");
+            }
+        }
+        for (other, task) in waited {
+            if tokio::time::timeout(NOTE_WAIT, task).await.is_err() {
+                tracing::debug!(agent = %other, "the membership note was not applied in time: it lands later");
             }
         }
     }

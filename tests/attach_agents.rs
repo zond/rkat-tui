@@ -394,3 +394,57 @@ async fn an_agent_lost_in_a_failed_switch_is_no_ghost() {
     drop((a, b));
     daemon.stop().await;
 }
+
+/// A new agent's attach is answered while another agent's helper runs a
+/// turn: seating it waits on nothing of the other agent's work.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_new_agent_attaches_while_another_agents_helper_runs() {
+    use rkat_tui::daemon::protocol::AgentChoice;
+    use rkat_tui::ui::Effect;
+    let ws = Workspace::new();
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Tool {
+            id: "d1",
+            name: "delegate",
+            args: json!({
+                "member_id": "scout",
+                "task": "HELPER-TASK: look around",
+                "result_label": "result",
+                "max_text_bytes": 4000,
+            }),
+        },
+        Step::Gated(Arc::clone(&gate), Box::new(Step::Text("HELPER-DONE"))),
+        Step::Text("parent done"),
+        Step::Text("next"),
+    ]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let mut a = rig::Client::attach(&ws.root).await;
+    a.send(Effect::StartTurn("delegate it".into()));
+    // The helper's model call waits on the gate: the helper is running.
+    llm.wait_call(1).await;
+    let started = std::time::Instant::now();
+    let b = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        rig::Client::attach_agent(&ws.root, AgentChoice::New),
+    )
+    .await;
+    let waited = started.elapsed();
+    gate.notify_one();
+    let mut b = b.unwrap_or_else(|_| panic!("the attach waited on the helper ({waited:?})"));
+    assert!(waited < std::time::Duration::from_secs(5), "{waited:?}");
+    let b_name = b.agent().await;
+    assert_ne!(a.agent().await, b_name);
+    assert_eq!(a.turn_finished().await.result.unwrap().text, "parent done");
+    // The note that B joined landed after A's turn: A's next turn reads it.
+    a.send(Effect::StartTurn("again".into()));
+    assert_eq!(a.turn_finished().await.result.unwrap().text, "next");
+    let last = llm.recorded().pop().unwrap();
+    assert!(
+        format!("{:?}", last.messages).contains(&format!("Agent `{b_name}` joined this workspace")),
+        "A was told B joined"
+    );
+    a.quit().await;
+    b.quit().await;
+    daemon.stop().await;
+}

@@ -190,6 +190,10 @@ design.
 
 ### Fixed
 
+- A new agent's attach is answered at once while another agent (or its
+  helper) runs a turn. The note telling the busy agent that one joined
+  held the seating lock until that turn ended, so the attach waited 30 s
+  or more; it now lands when the busy agent's turn ends.
 - An agent lost in a failed `/new` or `/resume` (the new conversation
   failed to start and the old one could not be seated again) is no longer
   listed as live: the daemon drops it, tells the other agents it left, and
