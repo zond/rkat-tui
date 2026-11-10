@@ -119,10 +119,9 @@ pub enum TuiError {
     /// composed into one gateway.
     #[error("cannot compose the file and note tools: {0}")]
     ToolGateway(#[source] meerkat_core::error::ToolError),
-    /// The user-global config directory and the realm directory are the
-    /// same directory, or one holds the other (`--workspace ~` with the
-    /// default `~/.rkat/tui`): their `tui.toml`, trust records and notes
-    /// would collide.
+    /// The user-global config directory and a shared realm's directory
+    /// (`--realm`, `--state-root`) are the same directory, or one holds the
+    /// other: their `tui.toml`, trust records and notes would collide.
     #[error(
         "the config dir {} and the realm dir {} {relation}; their tui.toml, trust records and notes would collide; pass --config-dir <other dir> to keep the user-global files elsewhere",
         .config.display(),

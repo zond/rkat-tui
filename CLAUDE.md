@@ -68,7 +68,7 @@ shell (`src/user_shell.rs`) and attach mode's start-on-demand of the
 | Path | Owns |
 |---|---|
 | `src/main.rs`, `src/cli.rs` | Entry point and `clap` arguments |
-| `src/bootstrap/` | The workspace's `tui.toml` layers and realm config (`read_layers`), what the daemon composes over (`assemble`: endpoints, model, the confinement plan `confinement.rs`, the approval engine, persistence, factory), project trust (`project_trust.rs`), the host trust record (`trust.rs`), instructions, MCP |
+| `src/bootstrap/` | Where the workspace's realm lives (`realm_home.rs`: manifests, lookup, re-home, the exposure check), the workspace's `tui.toml` layers and realm config (`read_layers`), what the daemon composes over (`assemble`: endpoints, model, the confinement plan `confinement.rs`, the approval engine, persistence, factory), project trust (`project_trust.rs`), the host trust record (`trust.rs`), instructions, MCP |
 | `src/config/` | `tui.toml`: the schema (`file.rs`), the layering of global, realm, command-line and project files (`layers.rs`), the realm file's trusted writes (`persist.rs`) |
 | `src/approval/` | The approval engine: policy tiers (`policy.rs`), rules and their patterns (`rules.rs`), classifier, the dispatch admission the daemon installs (`admission.rs`), permission modes (`mode.rs`), escalation, the desk (`desk.rs`) |
 | `src/daemon/`, `src/bin/rkat-tui-mob.rs` | The `rkat-tui-mob` daemon: composition over `bootstrap::assemble` (`engine.rs`), the orchestrator member (`orchestrator.rs`), the TCP serve loop and the proxy with its method allow-list (`serve.rs`), the `rkat/attach` token handshake (`handshake.rs`), the `rkat/*` local methods including `rkat/report` (`local.rs`), the wire types and codes (`protocol.rs`), the gate's desk and tool catalogs (`approvals.rs`), consent as durable decisions pushed to clients (`decisions.rs`), the members' tool policy (`policy.rs`), conversations (`conversations.rs`), clients, owner and detach state (`lifecycle.rs`), the endpoint file (`endpoint.rs`), `--list` (`list.rs`) |
@@ -137,4 +137,12 @@ Rust toolchain can link. `--no-confinement` runs the shell as the trusted
 host. The curated environment passes no provider keys into the sandbox.
 The agent's shell is the daemon's; a `!` command runs in the client under
 the confinement plan it builds from the same flags and `tui.toml` layers.
-The daemon refuses an endpoint file its confined shell could read.
+The daemon refuses an endpoint file its confined shell could read, and
+both refuse a confinement plan that reaches the workspace's realm, which
+lives outside the workspace in `<config dir>/workspaces/<id>/`
+(`src/bootstrap/realm_home.rs`: a `workspace.toml` manifest per realm is
+the only authority for which workspace owns it; re-homing is explicit).
+The confined shell can still write the workspace's `.rkat/` and `.git/`
+(engine ask 8, now only for `.git/`). Tests keep their config directory,
+and so the realms, beside the workspace (`common::config_dir_for`), never
+in it and never in the user's `~/.rkat`.

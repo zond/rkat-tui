@@ -4,7 +4,8 @@
 //! ([`daemon`]), which hosts the agent as a mob member on the engine's
 //! runtime-backed session path: prompts are runtime inputs, messages typed
 //! mid-turn reach the agent at its next step, and conversations persist in
-//! the workspace (`.rkat/tui/`) for `-c` / `--resume`. Every tool call is
+//! the workspace's realm, outside it (`<config dir>/workspaces/<id>/`), for
+//! `-c` / `--resume`. Every tool call is
 //! gated by an auto-mode approval model installed as each member's
 //! `ToolDispatchAdmission` ([`approval`]).
 //!

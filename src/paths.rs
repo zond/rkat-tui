@@ -98,9 +98,11 @@ fn protected_set() -> &'static ProtectedSet {
 /// ([`PROTECTED_PATTERNS`]); a shell command is judged by the classifier.
 ///
 /// These cover the project tree only. The same state outside it (the git
-/// directory of an enclosing repository or of a worktree, a `--realm` or
-/// `--state-root` realm, the user config directory `~/.rkat/tui`) is sealed
-/// through [`ProjectRoot::with_sealed_roots`].
+/// directory of an enclosing repository or of a worktree, the user config
+/// directory `~/.rkat/tui`) is sealed through
+/// [`ProjectRoot::with_sealed_roots`]; the realm directory (the
+/// workspace's own, or a `--realm`/`--state-root` one) is a secret root,
+/// [`ProjectRoot::with_secret_roots`].
 pub const SEALED_PATTERNS: &[&str] = &[
     ".rkat",
     ".rkat/**",

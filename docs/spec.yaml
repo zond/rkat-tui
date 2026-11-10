@@ -32,7 +32,7 @@ contracts:
     text: "Classifier: reasoning-blind (sees the user prompts and the proposed action, never the agent's reasoning), runs on `meerkat-llm-core` clients with its own read-only tools, and its verdict is advisory to the tier/rule decision."
     priority: must
   - id: CONTRACT-005
-    text: "State layout: realm state under `<workspace>/.rkat/tui/` by default (or the realm named by `--realm`, an isolated realm with `--isolated`, or `--state-root`); user-global files (AGENTS.md, SYSTEM.md, tui.toml, notes, history) under `$XDG_CONFIG_HOME/rkat-tui` or `--config-dir`; project settings in `<workspace>/.rkat/tui.toml`. `.rkat/sessions/` projections are never read as authority."
+    text: "State layout: realm state outside the workspace, under `<config dir>/workspaces/<id>/` by default (a `workspace.toml` manifest naming the workspace is the only authority for which workspace owns it; re-homing is explicit) (or the realm named by `--realm`, an isolated realm with `--isolated`, or `--state-root`); user-global files (AGENTS.md, SYSTEM.md, tui.toml, notes, history) under `$XDG_CONFIG_HOME/rkat-tui` or `--config-dir`; project settings in `<workspace>/.rkat/tui.toml`. `.rkat/sessions/` projections are never read as authority."
     priority: must
   - id: CONTRACT-006
     text: "Confinement: shell, command hooks and MCP stdio servers launch under `meerkat-sandbox` workspace confinement by default; `strict` denies IP network access; `off` / `--no-confinement` launches unconfined."

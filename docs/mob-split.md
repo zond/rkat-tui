@@ -54,7 +54,7 @@ the end state.
 
 ### Rules (what the user asked for, made precise)
 
-- **Storage.** Everything a user cares about stays under `<workspace>/.rkat/`: sessions, the conversations list, memory notes, the semantic index, rules. Moving the directory carries it. The only out-of-workspace state is the daemon's endpoint file (address, token, pid, workspace path, start time), which is runtime state, is deleted on shutdown, and must stay out of the workspace because the confined shell reads the workspace and reaches loopback.
+- **Storage.** Everything a user cares about is the workspace's realm: sessions, the conversations list, memory notes, the semantic index, rules, the audit log. Since 2026-11-10 it lives outside the workspace, in `<config dir>/workspaces/<random id>/`, whose `workspace.toml` manifest is the only authority for which workspace owns it (the confined shell can write the workspace, and the engine cannot bind a subtree of it read only). Moving the directory needs one explicit re-home (`/rehome`, `rkat-tui --rehome`). The daemon's endpoint file (address, token, pid, workspace path, start time) is runtime state in the user's state directory, deleted on shutdown.
 - **One daemon per workspace, several agents possible.** Several clients attach to the same daemon. "Several rkat-tui in one directory" is several mob members in that daemon, not several daemons: the realm config, notes and the memory index (exclusive lock) are per workspace and belong to one process. Multiple agents per daemon is the last phase and optional.
 - **Start.** Default: attach if a daemon is running for this workspace, else start one and attach. `-c` with a running daemon attaches to its current conversation; `--resume <ref>` attaches and asks the daemon to switch (`rkat/resume`). `--attach=DIRECTORY` attaches to that workspace's daemon. `--attach=HOST:PORT` attaches to a daemon reached through a tunnel, with the token from `--attach-token-file` (the daemon keeps binding loopback only; the manual documents `ssh -L`). The `=` stays required because a bare `--attach` followed by a word is a prompt. `--no-attach` is kept for one release as the in-process escape hatch and then deleted with the in-process runner.
 - **`/detach`** means "keep going without me": the client exits, the daemon records that it has been detached from, the turn goes on.
@@ -199,8 +199,7 @@ do everything a TUI can: answer decisions, switch the permission mode, add
 rules. Nothing on a loopback TCP connection proves which program sent it, so
 the daemon does not try to tell a TUI from any other holder of the token.
 The token must therefore stay out of the agent's reach: the agent's confined
-shell is granted the workspace (`.rkat` included; the Linux backend has no
-deny lists), the temp dir, the Cargo home's `registry/` and `git/` (the
+shell is granted the workspace, the temp dir, the Cargo home's `registry/` and `git/` (the
 rest of it read only, entry by entry, its credentials not at all) and the
 user cache dir, and loopback is reachable from it, so the file lives in
 the user's state directory, which none of these hold. The daemon refuses
@@ -225,18 +224,21 @@ and `establish` skips `check_shell` without one). Such an attachment
 gives no assurance about the remote agent shell's confinement; it is the
 remote daemon's command line that decides it.
 
+The realm (the sessions database, whose human-authored messages seed the
+classifier on resume, the approval and custody stores, the rules, the
+realm config, the helper bindings, the audit log) is outside every grant
+of the confined shell: it lives in `<config dir>/workspaces/<id>/`, the
+daemon refuses to start when its shell's plan reaches it
+(`TuiError::RealmExposed`: a workspace that holds the config directory,
+as `-w ~` with the default one, or an extra grant of it), the client does
+the same for its `!` shell, and it is a secret root for the file tools.
 What the confined shell can still write, until engine ask 8 lands: on
-Linux the whole workspace, `.rkat/` and `.git/` included (hooks, the
-workspace realm). Nothing rkat-tui reads back from there is trusted on
-sight: the workspace realm's `config.toml` never sets the confinement and,
-unless its digest is the host trust record's, names no endpoint, key
-source, skill source, MCP server or hook; the realm `tui.toml` only denies
-unless trusted by digest; `tui_helpers.json` is not read unless it is what
-the daemon last wrote; a realm directory git tracks refuses the start.
-The engine's own realm files (the sessions database, whose human-authored
-messages seed the classifier on resume, the approval and custody stores)
-have no such guard, and `.git/hooks` run unconfined by git later: both
-wait on the read-only bind.
+Linux the whole workspace, `.rkat/` and `.git/` included. Nothing
+rkat-tui reads back from the project's `.rkat/` is trusted on sight (its
+`mcp.toml` and hooks run only when trusted by digest, its `tui.toml` only
+denies), and nothing in the workspace says which realm it owns; but
+`.git/hooks` run unconfined by git later, which waits on the read-only
+bind.
 
 Deliberate non-goals for now (the user's decision of 2026-11-10; each
 comes back only when someone asks for it explicitly):
@@ -371,7 +373,7 @@ through `mob/member_send`; a `/model` switch is the daemon's
 so no run is tied to a connection.
 Every member `mob/stream_event` carries its envelope's `seq` and the `epoch`
 of that sequence space. The client keeps a mark (session, epoch, sequence)
-in `<workspace>/.rkat/tui/attach.cursor` and reattaches with
+in `<realm>/attach.cursor` and reattaches with
 `mob/stream_open` from that `{epoch, seq}`; an event is shown only past the
 mark. A first attach, a cursor of another daemon (the cursor records a
 digest of the daemon's token) or without an epoch, or a truncated stream
@@ -401,7 +403,7 @@ spawns it fresh; `/resume` retires it and spawns it with `launch_mode =
 resume` on an earlier session of its own. The identity, gate, `rkat/*`
 methods and every client's addressing stay; only `current_session_id`
 moves, which every client on that agent polls (1 s) and follows. The
-daemon keeps the list in `<workspace>/.rkat/tui/conversations.json`, each
+daemon keeps the list in `<realm>/conversations.json`, each
 entry naming its agent (the engine keeps no list of a member's earlier
 sessions). A session belongs to the identity that ran it: the engine
 refuses to seat another (`ResumeSessionBoundToAnotherMember`), so a
@@ -492,19 +494,18 @@ list of what the daemon and its client do not do yet.
    runner made them) into its mob. Without
    it those sessions are view only in the daemon
    (`docs/evidence.md`, "Sessions created before the daemon are view only").
-8. Linux `deny_write` (S1 and S5 of the security review): a read-only
-   `<workspace>/.rkat/` and `.git/` inside the writable workspace grant.
-   The 0.9.11 Linux backend refuses both ways to say it:
-   `LinuxPolicy::compile` refuses any non-empty `deny_read`/`deny_write`,
-   and `push_disjoint` refuses a grant nested in another. The ask is
-   `deny_write` lowered to read-only re-binds of existing subtrees inside
-   a writable grant, installed after their parent (macOS already honours
-   `deny_write`). Not opened; the user decides. Meanwhile the realm's
-   own files are trusted by digest (`tui.toml`, `config.toml`,
-   `tui_helpers.json`; `docs/evidence.md`, "After the security review"
-   and "1(e)"); the engine's files in the realm (`sessions.sqlite3`, whose
-   human-authored messages seed the classifier on resume, the approval
-   and custody stores) are not, and need this bind.
+8. Linux `deny_write` (S5 of the security review): a read-only `.git/`
+   (its hooks above all, which git later runs unconfined) inside the
+   writable workspace grant. The 0.9.11 Linux backend refuses both ways
+   to say it: `LinuxPolicy::compile` refuses any non-empty
+   `deny_read`/`deny_write`, and `push_disjoint` refuses a grant nested in
+   another. The ask is `deny_write` lowered to read-only re-binds of
+   existing subtrees inside a writable grant, installed after their
+   parent (macOS already honours `deny_write`). Not opened; the user
+   decides. The realm no longer needs it: it moved out of the workspace,
+   to `<config dir>/workspaces/<id>/`, outside every grant
+   (`docs/evidence.md`, "The realm moves out of the workspace"); the
+   project's own `.rkat/` files are project inputs, trusted by digest.
 
 ## History
 

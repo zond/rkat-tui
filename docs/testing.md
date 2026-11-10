@@ -116,6 +116,14 @@ directory it was in. CI points `XDG_STATE_HOME` at an empty directory for
 the test job and fails it if anything is left there; a new test that
 starts a daemon on the default place fails that step.
 
+The same holds for the user's config directory, which holds every
+workspace's realm (`~/.rkat/tui/workspaces/<id>/`): every scope a test
+resolves names `--config-dir` (or `--user-config-root`) of the test's
+own. The rig puts it beside the workspace, never in it
+(`common::config_dir_for`; a realm the confined shell could reach refuses
+the start), and the tests whose shell is granted the temp dir put it under
+Cargo's target dir with their endpoint file (`allow_shell_detected`).
+
 ## Known flaky tests
 
 Two tests were flaky on CI and have been hardened. If either fails again, the
@@ -124,9 +132,13 @@ output now says why; report it rather than retrying silently:
 - `parallel_escalations_share_one_timeout_including_the_queue`
   (`src/approval/engine.rs`): the paused tokio clock auto-advances while a task
   waits on `spawn_blocking`, so budget checks must happen after every await.
-- `workspace_state_survives_a_rename` (`tests/integrator.rs`): copies and
+- `workspace_state_survives_a_rename` (`tests/integrator.rs`; since the
+  realm moved out of the workspace, its successors
+  `a_moved_workspace_starts_anew_and_is_offered_its_old_state` and the
+  re-home tests share its `move_workspace`): copies and
   removes the workspace right after quit and names any file that vanished
   mid-copy (`copy …: No such file`) or was left behind (`left behind: …`).
+  The realm's databases are no longer in the copied tree.
   Its hosted failure after the daemon migration was a real shutdown race:
   the daemon's stop returned while engine store connections were still
   open (the schedule store's worker closes its connection at a 250 ms idle

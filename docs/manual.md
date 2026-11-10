@@ -128,8 +128,8 @@ stops with it: see [Detach and reattach](#the-workspace-daemon)). While a
 turn runs or messages are pending both warn first; pressing again within
 3 s interrupts the turn and appends every message this TUI still held,
 which the daemon never received, to the realm directory's
-`tui_unsent.txt` (`<workspace>/.rkat/tui/` by default; the next start
-says so).
+`tui_unsent.txt` (the workspace's state directory, see [Where things
+live](#where-things-live); the next start says so).
 
 ## How approval works
 
@@ -139,7 +139,7 @@ resumed sessions and helpers carry it too. First match wins:
 
 | Tier | What | Review |
 |---|---|---|
-| 0 | A user **deny** rule matches, or `write_file` / `edit_file` (or any target of a patch) is a **sealed** path: the project's `.rkat/` (the realm's `config.toml`, rules, MCP servers, sessions) and every `.git` inside it, and, wherever they lie, the git directories governing the project (an enclosing repository's `.git` when the workspace is a subdirectory, a worktree's git dir and the common dir its `commondir` names, with the hooks), the realm directory (`--realm`/`--state-root`: `config.toml`, approvals, `tui.toml`) and the user config directory (`~/.rkat/tui`: global rules, trust records). Neither the classifier nor an allow rule opens a sealed path, and reading one is not sealed (except the daemon's endpoint directories, below); a shell command that writes there is still judged by the classifier. The directories that hold the daemon's endpoint file and its attach token (`$XDG_STATE_HOME/rkat-tui/`, else `~/.local/state/rkat-tui/`, and `$XDG_RUNTIME_DIR/rkat-tui/`) are sealed for reads and searches too: `read_file`, `grep` and `glob` never open them, and a search above them skips them | denied |
+| 0 | A user **deny** rule matches, or `write_file` / `edit_file` (or any target of a patch) is a **sealed** path: the project's `.rkat/` (its `tui.toml`, `mcp.toml`, hooks) and every `.git` inside it, and, wherever they lie, the git directories governing the project (an enclosing repository's `.git` when the workspace is a subdirectory, a worktree's git dir and the common dir its `commondir` names, with the hooks), the realm directory (the workspace's state directory, or a `--realm`/`--state-root` realm: `config.toml`, approvals, `tui.toml`, sessions, the audit log) and the user config directory (`~/.rkat/tui`: global rules, trust records). Neither the classifier nor an allow rule opens a sealed path, and reading one is not sealed (except the daemon's endpoint directories, below); a shell command that writes there is still judged by the classifier. The directories that hold the daemon's endpoint file and its attach token (`$XDG_STATE_HOME/rkat-tui/`, else `~/.local/state/rkat-tui/`, and `$XDG_RUNTIME_DIR/rkat-tui/`) are sealed for reads and searches too: `read_file`, `grep` and `glob` never open them, and a search above them skips them; so is the realm directory | denied |
 | 1 | Read-only tools (`read_file`, `glob`, `grep` inside the project, task tools, `memory_search`, `note_list`/`note_read`, `blob_inspect`, skill browsing, `shell_jobs`, read-only `mob_*` queries, `delegate`, `fork`), read-only shell commands (`cat`, `ls`, `rg`, `git status/diff/log`, `cargo check/test` when builds are trusted, …), narrow user **allow** rules | allowed |
 | 2 | `write_file` / `edit_file` where every target is inside the project and not protected (`.rkat/`, `.git/` and any `.git` file, `.env*`, …); workspace notes | allowed (manual mode asks you) |
 | ask | `write_file` / `edit_file` (or any target of a patch) is a **protected** path in the project: `.env*`, `.envrc`, `build.rs`, `.cargo/`, `rust-toolchain*`, `AGENTS.md`, `.claude/`, `.gitmodules`, `.gitattributes`, `tui.toml`, `.vscode/`, `.idea/`. Never the classifier, whatever auto mode's state: the dialog names each path and what it is (`protected path: .env.local (secrets); the policy always asks for these`). A user allow rule for the path (what the dialog's "allow and add a rule" adds) allows it, a deny rule denies it | asks you, every time |
@@ -268,9 +268,10 @@ cover the agent's tool calls. Local MCP stdio servers and command hooks are
 not tool calls: rkat-tui starts them itself, with your privileges and
 outside the shell's confinement. Three workspace files can define them: the
 project's `.rkat/mcp.toml` (MCP servers), the project's `.rkat/config.toml`
-(`[hooks]`, which Meerkat discovers at the workspace) and, when the realm
-lives in the workspace (the default), the realm's `.rkat/tui/config.toml`
-(`[[tools.mcp_servers]]` and `[hooks]`). Any of them may have come with a
+(`[hooks]`, which Meerkat discovers at the workspace) and, only for a realm
+you placed inside the workspace with `--state-root`, that realm's
+`config.toml` (`[[tools.mcp_servers]]` and `[hooks]`; the workspace's own
+realm lives outside it and is yours). Any of them may have come with a
 cloned repository, and on Linux a confined shell can write `.rkat/`, so
 each runs nothing until you trust it: `/trust` (alias `/mcp trust`)
 records the SHA-256 of every one of them, as it is now, in the host trust
@@ -453,8 +454,8 @@ What rkat-tui does by default where a security review asked for a choice
   [Several agents](#several-agents)). A turn you started stays reviewed
   as usual after you detach.
 - **The audit log** records every approval decision and who made it, and
-  every change of mode, rules and trust, in `audit.jsonl` outside the
-  workspace, beside the daemon's endpoint file (see
+  every change of mode, rules and trust, in `audit.jsonl` in the
+  workspace's state directory, outside the workspace (see
   [Where things live](#where-things-live)); `/audit` and `rkat-tui
   --audit` show it.
 
@@ -538,22 +539,20 @@ only add deny rules and `[auto]` settings; its `[endpoints]`, `[pricing]`,
 yours to pick). Broad allow rules (blanket shell, interpreters, package-manager run
 commands) are dropped when auto mode starts.
 
-**Trusting the realm file.** The realm `tui.toml` lives in the workspace and
-could have arrived with a repository. rkat-tui keeps a **host trust record**
+**Trusting the realm file.** The workspace's own realm `tui.toml` lives in
+its state directory under the config directory, out of the agent's and a
+repository's reach: it is yours, and a hand edit applies. A realm placed
+inside the workspace with `--state-root` could have arrived with a
+repository, so its file is trusted by digest. rkat-tui keeps a **host trust record**
 outside the workspace (`<config-dir>/trust/<workspace key>.toml`) with the
 SHA-256 of each workspace file it wrote itself or you trusted. The realm
-`tui.toml` counts as yours only when it is a regular file reached through no
+`tui.toml` of such a realm counts as yours only when it is a regular file reached through no
 symbolic link and its digest matches the record; otherwise it can only deny,
 its `[endpoints]`, `[pricing]`, `[thinking]`, `[confinement]` and `[auto]` are ignored,
 and a notice says why. `/permissions add` and the escalation dialog update the record; `/permissions
 trust` shows a summary of the file as it is now and records its digest.
-The same record holds the digest of the helper bindings
-(`<realm>/tui_helpers.json`, whom each helper works for) after every write
-of the daemon's: a file that is not what the daemon last wrote is not read
-(a helper bound only by it is not restored) and the next write replaces
-it. On Linux the agent's confined shell can write the workspace realm
-(`.rkat/tui/`), so what it writes there is not trusted; the engine's own
-files there (sessions, approvals, custody) are not covered by this.
+The record of the workspace's own realm is keyed by the realm's id, so a
+re-home keeps it.
 
 ```toml
 [auto]
@@ -744,7 +743,7 @@ model reads it from its next request; it is fully applied, as part of
 
 **Notes** are small Markdown files the agent keeps across sessions with
 `note_save`, `note_read`, `note_list` and `note_forget`. Workspace notes live
-in `<workspace>/.rkat/tui/notes/`, user notes (personal preferences that
+in the workspace's state directory (`<state>/notes/`), user notes (personal preferences that
 follow you into every project) in `<config-dir>/notes/`; each directory has a
 generated `MEMORY.md` index. The system prompt carries only a capped index,
 labelled as untrusted context an earlier session wrote; the agent reads full
@@ -845,7 +844,8 @@ the helper depth limit. `/export [file]` writes the transcript as plain text
 (a `## user`, `## assistant`, `## tool …`, `## notice` header per block;
 folded reasoning and collapsed tool output keep only their headers, as on
 screen) to `file` (relative to the workspace; owner-readable only), by
-default `.rkat/tui/export-<session id>-<unix time>.txt` in the workspace.
+default `export-<session id>-<unix time>.txt` in the workspace's state
+directory (the notice names the file).
 It is rkat-tui's own write, like the history file, not a tool call. `/init` (idle only) sends a
 fixed prompt as an ordinary turn, shown in the transcript: inspect the
 project and write or update the workspace `AGENTS.md` with the build and
@@ -1114,8 +1114,7 @@ view only (see "`-c` and `--resume` at start").
 
 **Attaching to another workspace.** `--attach=DIRECTORY` (a value with a
 `/`, or starting with `.` or `~`) finds that workspace as rkat-tui finds
-its own (the nearest ancestor that already holds `.rkat/tui/`, else the
-directory), reads its endpoint file and attaches; with no daemon there it
+its own (the nearest ancestor that has state, else the directory), reads its endpoint file and attaches; with no daemon there it
 refuses before the TUI opens. Everything this TUI does locally then
 happens in the daemon's workspace, not the directory you started in: `!`
 commands run there, `@` mentions resolve there, `/export`, `/remember` and
@@ -1306,7 +1305,7 @@ running shows as running (Esc interrupts it). Attaching for the first time,
 or to a daemon that restarted since (its events are numbered anew), the TUI
 shows the conversation from its start, as `/resume` does, and follows the
 live stream from there. Where the stream stopped is remembered per
-agent in `.rkat/tui/attach-<agent>.cursor` (`attach.cursor` for the `main`
+agent in `attach-<agent>.cursor` in the workspace's state directory (`attach.cursor` for the `main`
 of a daemon from before several agents; with the stream's epoch and a
 digest of the daemon's token, never the token). An agent seated for this
 TUI (a new one, or one seated again on its conversation) shows its
@@ -1366,7 +1365,7 @@ other session; every TUI on that agent follows it. A
 `/model` switch carries over to a `/new` conversation. Neither runs while a
 turn does, whichever TUI started it: the daemon refuses the switch until
 the turn ends or is interrupted. The daemon lists the conversations in
-`<workspace>/.rkat/tui/conversations.json`.
+`conversations.json` in the workspace's state directory.
 
 **Approvals.** The daemon's agent and its helpers run behind the same
 approval gate: tiers, your rules, the classifier
