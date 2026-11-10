@@ -9,6 +9,12 @@ design.
 
 ### Security
 
+- The attach handshake no longer sends the token. The daemon proves it
+  holds it first (an HMAC over a nonce from each side), then the client
+  does; a process that took a dead daemon's port, or answers during the
+  shutdown window, is refused before the client sends anything it could
+  attach with. A daemon of before this handshake is reported as too old;
+  a client of before it still attaches.
 - A project's `.rkat/tui.toml` can no longer pick the classifier's model:
   its `auto.classifier_model` is ignored with a notice, so a cloned
   repository cannot hand the review of the agent's actions to a model

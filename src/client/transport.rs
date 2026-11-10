@@ -18,20 +18,27 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt as _, AsyncRead, AsyncWrite, AsyncWriteExt as _, BufReader};
+use tokio::io::{
+    AsyncBufRead, AsyncBufReadExt as _, AsyncRead, AsyncReadExt as _, AsyncWrite,
+    AsyncWriteExt as _, BufReader,
+};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use super::ClientError;
 use crate::daemon::endpoint::Endpoint;
-use crate::daemon::handshake::ATTACH_METHOD;
-use crate::daemon::protocol::AttachParams;
+use crate::daemon::handshake::{self, ATTACH_METHOD, UNAUTHORIZED};
+use crate::daemon::protocol::{AttachParams, Challenged};
 
 /// How long connecting and the attach handshake may take.
 pub const ATTACH_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The id of the attach request (the first line on the wire).
+/// The id of the first attach request (the first line on the wire: the
+/// client's nonce).
 const ATTACH_ID: u64 = 1;
+
+/// The id of the second attach request (the client's proof).
+const PROOF_ID: u64 = 2;
 
 /// A JSON-RPC notification from the daemon.
 #[derive(Debug, Clone, PartialEq)]
@@ -102,8 +109,11 @@ impl Connection {
     ///
     /// [`ClientError::Connect`] when nothing accepts, [`ClientError::Timeout`]
     /// when connecting or the handshake takes longer than `timeout`,
-    /// [`ClientError::Refused`] when the daemon refuses the token, and
-    /// [`ClientError::Protocol`] for an answer that is not the handshake's.
+    /// [`ClientError::Unproven`] when the process there does not prove it
+    /// holds the token, [`ClientError::DaemonTooOld`] for a daemon that
+    /// asks for the token itself, [`ClientError::Refused`] when the daemon
+    /// refuses the attach, and [`ClientError::Protocol`] for an answer that
+    /// is not the handshake's.
     #[cfg(any(test, feature = "test-support"))]
     pub async fn attach(
         endpoint: &Endpoint,
@@ -157,12 +167,24 @@ impl Connection {
             start_token: start_token.map(str::to_string),
             probe,
             agent,
+            ..AttachParams::default()
         };
-        Self::attach_io(read, write, params, endpoint.address, timeout).await
+        Self::attach_io(read, write, params, endpoint.address, timeout)
+            .await
+            .map_err(|err| match err {
+                ClientError::DaemonTooOld { pid: None, lacks } => ClientError::DaemonTooOld {
+                    pid: Some(endpoint.pid),
+                    lacks,
+                },
+                err => err,
+            })
     }
 
     /// Attach over an already open byte stream (`address` is what
-    /// [`Connection::address`] reports).
+    /// [`Connection::address`] reports). `params.token` is the secret the
+    /// proofs are keyed with and is never written to the stream
+    /// ([`crate::daemon::handshake`]): the daemon proves it holds the token
+    /// first, and only then does this client prove it does.
     ///
     /// # Errors
     ///
@@ -179,20 +201,31 @@ impl Connection {
         W: AsyncWrite + Unpin + Send + 'static,
     {
         let mut reader = BufReader::new(read);
-        let request = json!({
-            "jsonrpc": "2.0",
-            "id": ATTACH_ID,
-            "method": ATTACH_METHOD,
-            "params": params,
-        });
+        let mut params = params;
+        let token = std::mem::take(&mut params.token);
+        let client_nonce = handshake::new_nonce().map_err(ClientError::Io)?;
+        params.nonce = Some(client_nonce.clone());
         let handshake = async {
-            write_line(&mut write, &request).await?;
-            let mut line = String::new();
-            let read = reader.read_line(&mut line).await.map_err(ClientError::Io)?;
-            if read == 0 {
-                return Err(ClientError::Disconnected);
-            }
-            Ok(line)
+            let hello = json!({
+                "jsonrpc": "2.0",
+                "id": ATTACH_ID,
+                "method": ATTACH_METHOD,
+                "params": params,
+            });
+            write_line(&mut write, &hello).await?;
+            let line = read_reply(&mut reader).await?;
+            let daemon_nonce = check_challenge(&line, &token, &client_nonce, address)?;
+            let proof = json!({
+                "jsonrpc": "2.0",
+                "id": PROOF_ID,
+                "method": ATTACH_METHOD,
+                "params": AttachParams {
+                    proof: Some(handshake::client_proof(&token, &client_nonce, &daemon_nonce)),
+                    ..AttachParams::default()
+                },
+            });
+            write_line(&mut write, &proof).await?;
+            read_reply(&mut reader).await
         };
         let line = tokio::time::timeout(timeout, handshake)
             .await
@@ -221,7 +254,7 @@ impl Connection {
                 daemon_build: attached.build,
                 outgoing,
                 pending,
-                next: AtomicU64::new(ATTACH_ID + 1),
+                next: AtomicU64::new(PROOF_ID + 1),
                 tasks: [reader_task, writer_task],
             },
             notify_rx,
@@ -303,11 +336,75 @@ impl Connection {
     }
 }
 
+/// One line of the daemon's, during the handshake (at most
+/// [`handshake::MAX_LINE`] bytes: whoever answers is not trusted yet).
+async fn read_reply<R: AsyncBufRead + Unpin>(reader: &mut R) -> Result<String, ClientError> {
+    let mut line = String::new();
+    let read = (&mut *reader)
+        .take(handshake::MAX_LINE)
+        .read_line(&mut line)
+        .await
+        .map_err(ClientError::Io)?;
+    if read == 0 {
+        return Err(ClientError::Disconnected);
+    }
+    Ok(line)
+}
+
+/// The daemon's nonce from its answer to the first attach request, once
+/// its proof checks out for `token`. Nothing else is trusted: an answer
+/// without a valid proof is [`ClientError::Unproven`] (the token is not
+/// sent), and the refusal a daemon of before the mutual handshake gives an
+/// attach without a token is [`ClientError::DaemonTooOld`].
+fn check_challenge(
+    line: &str,
+    token: &str,
+    client_nonce: &str,
+    address: SocketAddr,
+) -> Result<String, ClientError> {
+    let unproven = |reason: String| ClientError::Unproven { address, reason };
+    let reply: Value =
+        serde_json::from_str(line.trim()).map_err(|_| unproven("its answer is not JSON".into()))?;
+    if reply.get("id") != Some(&json!(ATTACH_ID)) {
+        return Err(unproven("it answered another request".into()));
+    }
+    if let Some(error) = reply.get("error") {
+        let code = error.get("code").and_then(Value::as_i64);
+        let message = error.get("message").and_then(Value::as_str);
+        // What a daemon of before the mutual handshake answers.
+        if code == Some(i64::from(UNAUTHORIZED)) && message == Some("wrong or missing token") {
+            return Err(ClientError::DaemonTooOld {
+                pid: None,
+                lacks: "it does not prove that it holds the token before asking for it",
+            });
+        }
+        return Err(ClientError::Refused {
+            code: code.and_then(|code| i32::try_from(code).ok()).unwrap_or(0),
+            message: message.unwrap_or_default().to_string(),
+        });
+    }
+    let Some(Challenged { challenge }) = reply
+        .get("result")
+        .cloned()
+        .and_then(|result| serde_json::from_value::<Challenged>(result).ok())
+    else {
+        return Err(unproven("it answered without a proof".into()));
+    };
+    let expected = handshake::daemon_proof(token, client_nonce, &challenge.nonce);
+    if challenge.nonce.is_empty()
+        || challenge.nonce == client_nonce
+        || !handshake::same(challenge.proof.as_bytes(), expected.as_bytes())
+    {
+        return Err(unproven("its proof does not match the token".into()));
+    }
+    Ok(challenge.nonce)
+}
+
 /// Check the handshake's answer.
 fn check_attached(line: &str) -> Result<crate::daemon::protocol::Attached, ClientError> {
     let reply: Value = serde_json::from_str(line.trim())
         .map_err(|err| ClientError::Protocol(format!("not JSON ({err}): {}", line.trim())))?;
-    if reply.get("id") != Some(&json!(ATTACH_ID)) {
+    if reply.get("id") != Some(&json!(PROOF_ID)) {
         return Err(ClientError::Protocol(format!(
             "an answer to another request: {reply}"
         )));
@@ -449,19 +546,131 @@ mod tests {
             write_line(&mut self.writer, &value).await.unwrap();
         }
 
-        /// Answer the attach line like the daemon does.
+        /// Answer the attach with the daemon's own handshake.
         async fn accept(&mut self, token: &str) {
-            let attach = self.line().await.unwrap();
-            assert_eq!(attach["method"], ATTACH_METHOD);
-            if attach["params"]["token"] == token {
-                self.send(
-                    json!({"jsonrpc": "2.0", "id": attach["id"], "result": {"attached": true}}),
-                )
-                .await;
-            } else {
-                self.send(json!({"jsonrpc": "2.0", "id": attach["id"], "error": {"code": UNAUTHORIZED, "message": "wrong or missing token"}}))
-                    .await;
+            if let Ok(pending) = handshake::read_attach(
+                &mut self.reader,
+                &mut self.writer,
+                token,
+                handshake::TIMEOUT,
+            )
+            .await
+            {
+                handshake::acknowledge(&mut self.writer, &pending, None, None, handshake::TIMEOUT)
+                    .await
+                    .unwrap();
             }
+        }
+
+        /// Everything the client wrote until it closed.
+        async fn rest(&mut self) -> String {
+            let mut rest = String::new();
+            let _ = self.reader.read_to_string(&mut rest).await;
+            rest
+        }
+    }
+
+    /// A client and a server over a duplex, the client's attach not
+    /// started yet.
+    fn raw(
+        params: AttachParams,
+    ) -> (
+        Server,
+        impl std::future::Future<
+            Output = Result<(Connection, mpsc::UnboundedReceiver<Notification>), ClientError>,
+        >,
+    ) {
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let (sr, sw) = tokio::io::split(server);
+        let (cr, cw) = tokio::io::split(client);
+        (
+            Server {
+                reader: BufReader::new(sr),
+                writer: sw,
+            },
+            Connection::attach_io(cr, cw, params, ADDR.parse().unwrap(), ATTACH_TIMEOUT),
+        )
+    }
+
+    /// D1 of the security review: a process on the daemon's port that
+    /// does not know the token never receives it, whatever it answers; a
+    /// daemon of before the mutual handshake is reported as too old.
+    #[tokio::test]
+    async fn a_squatter_that_does_not_know_the_token_never_receives_it() {
+        let answers = [
+            json!({"jsonrpc": "2.0", "id": 1, "result": {"attached": true}}),
+            json!({"jsonrpc": "2.0", "id": 1, "result": {"challenge": {"nonce": "ab".repeat(32), "proof": "00".repeat(32)}}}),
+            json!({"jsonrpc": "2.0", "id": 1, "result": {"challenge": {"nonce": "ab".repeat(32), "proof": handshake::daemon_proof("guess", "x", &"ab".repeat(32))}}}),
+            json!({"jsonrpc": "2.0", "id": 9, "result": {}}),
+        ];
+        for answer in answers {
+            let (mut server, attach) = raw(token("secret"));
+            let squatter = async {
+                let hello = server.line().await.unwrap();
+                assert_eq!(hello["method"], ATTACH_METHOD);
+                assert!(hello["params"].get("token").is_none(), "{hello}");
+                server.send(answer.clone()).await;
+            };
+            let (attached, ()) = tokio::join!(attach, squatter);
+            assert!(
+                matches!(attached, Err(ClientError::Unproven { .. })),
+                "{answer}: {attached:?}"
+            );
+            let rest = server.rest().await;
+            assert!(!rest.contains("secret"), "{answer}: {rest}");
+        }
+        // The refusal an old daemon gives an attach without a token.
+        let (mut server, attach) = raw(token("secret"));
+        let old = async {
+            let hello = server.line().await.unwrap();
+            server.send(json!({"jsonrpc": "2.0", "id": hello["id"], "error": {"code": UNAUTHORIZED, "message": "wrong or missing token"}})).await;
+        };
+        let (attached, ()) = tokio::join!(attach, old);
+        assert!(
+            matches!(attached, Err(ClientError::DaemonTooOld { .. })),
+            "{attached:?}"
+        );
+        assert!(!server.rest().await.contains("secret"));
+    }
+
+    /// The daemon's side: a client proof that does not match (one keyed by
+    /// another token, or the daemon's own proof played back) is refused.
+    #[tokio::test]
+    async fn a_client_without_the_token_cannot_prove_it() {
+        let nonce = "cd".repeat(32);
+        for forge in [
+            |_: &str, dn: &str| handshake::client_proof("guess", &"cd".repeat(32), dn),
+            |_: &str, dn: &str| handshake::daemon_proof("secret", &"cd".repeat(32), dn),
+            |proof: &str, _: &str| proof.to_string(),
+        ] {
+            let (client, server) = tokio::io::duplex(64 * 1024);
+            let (sr, mut sw) = tokio::io::split(server);
+            let (cr, mut cw) = tokio::io::split(client);
+            let mut sr = BufReader::new(sr);
+            let mut cr = BufReader::new(cr);
+            let daemon = handshake::read_attach(&mut sr, &mut sw, "secret", handshake::TIMEOUT);
+            let attacker = async {
+                write_line(&mut cw, &json!({"jsonrpc": "2.0", "id": 1, "method": ATTACH_METHOD, "params": {"nonce": nonce}})).await.unwrap();
+                let challenge: Value =
+                    serde_json::from_str(&read_reply(&mut cr).await.unwrap()).unwrap();
+                let dn = challenge["result"]["challenge"]["nonce"]
+                    .as_str()
+                    .unwrap()
+                    .to_string();
+                let daemon_proof = challenge["result"]["challenge"]["proof"]
+                    .as_str()
+                    .unwrap()
+                    .to_string();
+                write_line(&mut cw, &json!({"jsonrpc": "2.0", "id": 2, "method": ATTACH_METHOD, "params": {"proof": forge(&daemon_proof, &dn)}})).await.unwrap();
+                let refusal: Value =
+                    serde_json::from_str(&read_reply(&mut cr).await.unwrap()).unwrap();
+                assert_eq!(refusal["error"]["code"], UNAUTHORIZED);
+            };
+            let (admitted, ()) = tokio::join!(daemon, attacker);
+            assert!(
+                matches!(admitted, Err(handshake::HandshakeError::Unauthorized)),
+                "{admitted:?}"
+            );
         }
     }
 
@@ -595,33 +804,17 @@ mod tests {
 
     #[tokio::test]
     async fn a_wrong_token_or_another_answer_is_refused() {
-        let (client, server) = tokio::io::duplex(4096);
-        let (sr, sw) = tokio::io::split(server);
-        let mut server = Server {
-            reader: BufReader::new(sr),
-            writer: sw,
-        };
-        let (cr, cw) = tokio::io::split(client);
-        let attach = Connection::attach_io(
-            cr,
-            cw,
-            token("wrong"),
-            ADDR.parse().unwrap(),
-            ATTACH_TIMEOUT,
-        );
+        // A client with another token cannot check the daemon's proof:
+        // to it, that daemon is unproven.
+        let (mut server, attach) = raw(token("wrong"));
         let (attached, ()) = tokio::join!(attach, server.accept("secret"));
         assert!(
-            matches!(
-                attached,
-                Err(ClientError::Refused {
-                    code: UNAUTHORIZED,
-                    ..
-                })
-            ),
+            matches!(attached, Err(ClientError::Unproven { .. })),
             "{attached:?}"
         );
+        assert!(!server.rest().await.contains("wrong"));
         assert!(matches!(
-            check_attached(&json!({"jsonrpc": "2.0", "id": 1, "error": {"code": INVALID_REQUEST, "message": "x"}}).to_string()),
+            check_attached(&json!({"jsonrpc": "2.0", "id": 2, "error": {"code": INVALID_REQUEST, "message": "x"}}).to_string()),
             Err(ClientError::Refused { code: INVALID_REQUEST, .. })
         ));
         assert!(matches!(

@@ -281,11 +281,23 @@ pub fn response_line(response: &RpcResponse) -> String {
     line
 }
 
-/// [`ATTACH`]'s parameters.
+/// [`ATTACH`]'s parameters. A current client sends no `token`: its first
+/// attach carries a `nonce`, the daemon answers with an
+/// [`AttachChallenge`], and the second attach carries only the client's
+/// `proof` ([`super::handshake`]).
 #[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachParams {
-    /// The endpoint file's token.
+    /// The endpoint file's token, sent as is (a client of before the
+    /// mutual handshake; empty from a current client, and never sent).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub token: String,
+    /// The client's nonce: asks the daemon to prove it holds the token
+    /// before the client proves it does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nonce: Option<String>,
+    /// The client's proof, in the second attach request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proof: Option<String>,
     /// The start token the client that launched the daemon handed it
     /// (`RKAT_TUI_START_TOKEN`): the daemon counts the connection that
     /// presents it as its owner ([`Status::owner`]). A client presents its
@@ -365,6 +377,23 @@ impl std::fmt::Debug for AttachParams {
             .field("agent", &self.agent)
             .finish_non_exhaustive()
     }
+}
+
+/// The daemon's answer to an attach that carries a nonce: its own nonce
+/// and its proof that it holds the token ([`super::handshake`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttachChallenge {
+    /// The daemon's nonce.
+    pub nonce: String,
+    /// `HMAC-SHA256(token, daemon label ‖ client nonce ‖ daemon nonce)`, hex.
+    pub proof: String,
+}
+
+/// [`ATTACH`]'s first result in the mutual handshake.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Challenged {
+    /// The challenge.
+    pub challenge: AttachChallenge,
 }
 
 /// [`ATTACH`]'s result.

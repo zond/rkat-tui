@@ -7,24 +7,41 @@
 //! holds the daemon's token (from the endpoint file, mode 0600) before the
 //! stream is handed to the engine's `RpcServer`.
 //!
-//! The first line the client sends must be the JSON-RPC request
+//! The token itself never travels: each side proves it holds it with an
+//! HMAC over both sides' nonces, the daemon first, so a process that took
+//! the daemon's port (after a crash, in the shutdown window) learns
+//! nothing a client could be talked into sending. The client's first line
+//! is
 //!
 //! ```json
-//! {"jsonrpc":"2.0","id":1,"method":"rkat/attach","params":{"token":"<token>"}}
+//! {"jsonrpc":"2.0","id":1,"method":"rkat/attach","params":{"nonce":"<client nonce>"}}
 //! ```
 //!
-//! answered with `{"jsonrpc":"2.0","id":1,"result":{"attached":true}}`;
-//! every later line is the engine's. Any other first line, a wrong token,
-//! a line longer than [`MAX_LINE`] or no line within [`TIMEOUT`] is
-//! answered with a JSON-RPC error ([`INVALID_REQUEST`] or
+//! (with its start token, probe flag and agent choice beside the nonce),
+//! answered with
+//! `{"jsonrpc":"2.0","id":1,"result":{"challenge":{"nonce":"<daemon nonce>","proof":"<daemon proof>"}}}`.
+//! The client checks the daemon's proof ([`daemon_proof`]) and only then
+//! sends its own ([`client_proof`]) in a second attach request,
+//! `{"jsonrpc":"2.0","id":2,"method":"rkat/attach","params":{"proof":"…"}}`,
+//! answered with `{"jsonrpc":"2.0","id":2,"result":{"attached":true}}`;
+//! every later line is the engine's. The two proofs are keyed by the token
+//! over distinct labels, so neither can be replayed as the other.
+//!
+//! A client of before the mutual handshake sends `{"token":"<token>"}` in
+//! its one attach line instead; the daemon still admits it (its token was
+//! already sent by then). Any other first line, a wrong token or proof, a
+//! malformed nonce, a line longer than [`MAX_LINE`] or no line within
+//! [`TIMEOUT`] is answered with a JSON-RPC error ([`INVALID_REQUEST`] or
 //! [`UNAUTHORIZED`]) and the connection is closed.
 
 use std::time::Duration;
 
+use hmac::{Hmac, Mac as _};
 use meerkat_rpc::protocol::RpcId;
 use serde_json::Value;
+use sha2::Sha256;
 
-use super::protocol::{self, AttachParams, Attached};
+use super::protocol::{self, AttachChallenge, AttachParams, Attached, Challenged};
 use tokio::io::{
     AsyncBufRead, AsyncBufReadExt as _, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _,
 };
@@ -37,6 +54,67 @@ pub const TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The longest attach line accepted, newline included.
 pub const MAX_LINE: u64 = 4096;
+
+/// What the daemon's proof is computed over, before the nonces.
+const DAEMON_LABEL: &[u8] = b"rkat-tui attach: daemon proof\0";
+
+/// What the client's proof is computed over, before the nonces.
+const CLIENT_LABEL: &[u8] = b"rkat-tui attach: client proof\0";
+
+/// Random bytes in a nonce.
+const NONCE_BYTES: usize = 32;
+
+/// `HMAC-SHA256(token, label ‖ client_nonce ‖ "\0" ‖ daemon_nonce)`, hex.
+fn proof(token: &str, label: &[u8], client_nonce: &str, daemon_nonce: &str) -> String {
+    // HMAC takes a key of any length.
+    let Ok(mut mac) = Hmac::<Sha256>::new_from_slice(token.as_bytes()) else {
+        return String::new();
+    };
+    mac.update(label);
+    mac.update(client_nonce.as_bytes());
+    mac.update(b"\0");
+    mac.update(daemon_nonce.as_bytes());
+    hex(&mac.finalize().into_bytes())
+}
+
+/// The daemon's proof that it holds `token`, for the two nonces.
+#[must_use]
+pub fn daemon_proof(token: &str, client_nonce: &str, daemon_nonce: &str) -> String {
+    proof(token, DAEMON_LABEL, client_nonce, daemon_nonce)
+}
+
+/// The client's proof that it holds `token`, for the two nonces.
+#[must_use]
+pub fn client_proof(token: &str, client_nonce: &str, daemon_nonce: &str) -> String {
+    proof(token, CLIENT_LABEL, client_nonce, daemon_nonce)
+}
+
+/// A fresh nonce: [`NONCE_BYTES`] from the OS, hex-encoded.
+///
+/// # Errors
+///
+/// When the OS randomness cannot be read.
+pub fn new_nonce() -> std::io::Result<String> {
+    use std::io::Read as _;
+    let mut bytes = [0u8; NONCE_BYTES];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    Ok(hex(&bytes))
+}
+
+/// Whether `nonce` is one a client may send: 32 to 128 hex digits.
+fn valid_nonce(nonce: &str) -> bool {
+    (32..=128).contains(&nonce.len()) && nonce.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut out, byte| {
+            use std::fmt::Write as _;
+            let _ = write!(out, "{byte:02x}");
+            out
+        })
+}
 
 pub use super::protocol::{INVALID_REQUEST, UNAUTHORIZED};
 
@@ -52,7 +130,7 @@ pub enum HandshakeError {
     /// The first line is not an attach request.
     #[error("the first request is not `{ATTACH_METHOD}`: {0}")]
     NotAttach(String),
-    /// Missing or wrong token.
+    /// Missing or wrong token, or a wrong proof.
     #[error("wrong or missing token")]
     Unauthorized,
     /// The connection could not be bound to the agent it asked for.
@@ -125,8 +203,10 @@ pub async fn acknowledge<W: AsyncWrite + Unpin>(
     Ok(())
 }
 
-/// Read and check the attach line from `reader` against `token`; a
-/// refusal is answered on `writer`, a valid line is not answered yet
+/// Read and check the attach request(s) from `reader` against `token`:
+/// with a client nonce, answer the challenge and read the client's proof;
+/// with a token (a client of before the mutual handshake), compare it. A
+/// refusal is answered on `writer`, a valid attach is not answered yet
 /// ([`acknowledge`]). On success the caller hands `reader` (which may
 /// already buffer the client's next requests) and `writer` to the engine.
 ///
@@ -143,47 +223,128 @@ where
     R: AsyncBufRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    let mut line = String::new();
-    let read =
-        tokio::time::timeout(timeout, (&mut *reader).take(MAX_LINE).read_line(&mut line)).await;
-    let checked = match read {
-        Err(_) => Err((None, HandshakeError::Timeout(timeout))),
-        Ok(Err(err)) => Err((None, HandshakeError::Io(err))),
-        Ok(Ok(0)) => Err((None, HandshakeError::Closed)),
-        Ok(Ok(_)) if !line.ends_with('\n') => Err((
-            None,
-            HandshakeError::NotAttach(format!("no complete line within {MAX_LINE} bytes")),
-        )),
-        Ok(Ok(_)) => check(&line, token),
+    let checked = match read_request(reader, timeout).await {
+        Ok(line) => match check(&line) {
+            Ok((id, params)) => match params.nonce.clone() {
+                Some(client_nonce) => {
+                    challenge(reader, writer, token, timeout, id, params, &client_nonce).await
+                }
+                None if same(params.token.as_bytes(), token.as_bytes())
+                    && !params.token.is_empty() =>
+                {
+                    Ok((id, params))
+                }
+                None => Err((Some(id), HandshakeError::Unauthorized)),
+            },
+            Err(refused) => Err(refused),
+        },
+        Err(err) => Err((None, err)),
     };
     match checked {
         Ok((id, params)) => Ok(Pending { id, params }),
         Err((id, err)) => {
-            if !matches!(err, HandshakeError::Closed | HandshakeError::Io(_)) {
-                let code = match err {
-                    HandshakeError::NotAttach(_) => INVALID_REQUEST,
-                    _ => UNAUTHORIZED,
-                };
-                let reply = protocol::error_line(id, code, &err.to_string());
-                // Bounded: a client that never reads must not hold the
-                // connection task.
-                let _ = tokio::time::timeout(timeout, async {
-                    let _ = write_line(writer, &reply).await;
-                    let _ = writer.shutdown().await;
-                })
-                .await;
-            }
+            refuse(writer, id, &err, timeout).await;
             Err(err)
         }
     }
 }
 
-/// The request id and parameters of a valid attach `line` for `token`, or
-/// the id to answer with and the refusal.
-fn check(
-    line: &str,
+/// The mutual part: answer `id` with the daemon's nonce and proof, then
+/// read the client's proof (a second attach request) and check it.
+async fn challenge<R, W>(
+    reader: &mut R,
+    writer: &mut W,
     token: &str,
-) -> Result<(RpcId, AttachParams), (Option<RpcId>, HandshakeError)> {
+    timeout: Duration,
+    id: RpcId,
+    mut params: AttachParams,
+    client_nonce: &str,
+) -> Result<(RpcId, AttachParams), (Option<RpcId>, HandshakeError)>
+where
+    R: AsyncBufRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    if !valid_nonce(client_nonce) {
+        return Err((
+            Some(id),
+            HandshakeError::NotAttach("a nonce of 32 to 128 hex digits".into()),
+        ));
+    }
+    let daemon_nonce = new_nonce().map_err(|err| (Some(id.clone()), HandshakeError::Io(err)))?;
+    let reply = protocol::result_line(
+        Some(id),
+        Challenged {
+            challenge: AttachChallenge {
+                proof: daemon_proof(token, client_nonce, &daemon_nonce),
+                nonce: daemon_nonce.clone(),
+            },
+        },
+    );
+    tokio::time::timeout(timeout, write_line(writer, &reply))
+        .await
+        .map_err(|_| (None, HandshakeError::Timeout(timeout)))?
+        .map_err(|err| (None, HandshakeError::Io(err)))?;
+    let line = read_request(reader, timeout)
+        .await
+        .map_err(|err| (None, err))?;
+    let (id, answer) = check(&line)?;
+    let expected = client_proof(token, client_nonce, &daemon_nonce);
+    match answer.proof {
+        Some(given) if same(given.as_bytes(), expected.as_bytes()) => {
+            params.nonce = None;
+            Ok((id, params))
+        }
+        _ => Err((Some(id), HandshakeError::Unauthorized)),
+    }
+}
+
+/// One request line within `timeout` and [`MAX_LINE`].
+async fn read_request<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+    timeout: Duration,
+) -> Result<String, HandshakeError> {
+    let mut line = String::new();
+    let read =
+        tokio::time::timeout(timeout, (&mut *reader).take(MAX_LINE).read_line(&mut line)).await;
+    match read {
+        Err(_) => Err(HandshakeError::Timeout(timeout)),
+        Ok(Err(err)) => Err(HandshakeError::Io(err)),
+        Ok(Ok(0)) => Err(HandshakeError::Closed),
+        Ok(Ok(_)) if !line.ends_with('\n') => Err(HandshakeError::NotAttach(format!(
+            "no complete line within {MAX_LINE} bytes"
+        ))),
+        Ok(Ok(_)) => Ok(line),
+    }
+}
+
+/// Answer a refusal (best effort, bounded) and close the writer; nothing
+/// for a connection that is closed or broken.
+async fn refuse<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    id: Option<RpcId>,
+    err: &HandshakeError,
+    timeout: Duration,
+) {
+    if matches!(err, HandshakeError::Closed | HandshakeError::Io(_)) {
+        return;
+    }
+    let code = match err {
+        HandshakeError::NotAttach(_) => INVALID_REQUEST,
+        _ => UNAUTHORIZED,
+    };
+    let reply = protocol::error_line(id, code, &err.to_string());
+    // Bounded: a client that never reads must not hold the connection
+    // task.
+    let _ = tokio::time::timeout(timeout, async {
+        let _ = write_line(writer, &reply).await;
+        let _ = writer.shutdown().await;
+    })
+    .await;
+}
+
+/// The request id and parameters of an attach `line`, or the id to answer
+/// with and the refusal.
+fn check(line: &str) -> Result<(RpcId, AttachParams), (Option<RpcId>, HandshakeError)> {
     let request: Value = serde_json::from_str(line.trim_end())
         .map_err(|err| (None, HandshakeError::NotAttach(err.to_string())))?;
     let id = protocol::request_id(request.get("id").unwrap_or(&Value::Null));
@@ -194,14 +355,12 @@ fn check(
         let what = method.map_or_else(|| "no method".to_string(), |m| format!("`{m}`"));
         return Err((id, HandshakeError::NotAttach(what)));
     };
-    let given = request
+    request
         .get("params")
         .cloned()
-        .and_then(|params| serde_json::from_value::<AttachParams>(params).ok());
-    match given {
-        Some(given) if same(given.token.as_bytes(), token.as_bytes()) => Ok((id, given)),
-        _ => Err((Some(id), HandshakeError::Unauthorized)),
-    }
+        .and_then(|params| serde_json::from_value::<AttachParams>(params).ok())
+        .map(|params| (id.clone(), params))
+        .ok_or((Some(id), HandshakeError::Unauthorized))
 }
 
 /// Compare without stopping at the first differing byte.
@@ -330,6 +489,33 @@ mod tests {
         let mut reader = BufReader::new(read);
         let result = accept(&mut reader, &mut write, "secret", TIMEOUT).await;
         assert!(matches!(result, Err(HandshakeError::NotAttach(_))));
+    }
+
+    /// A nonce that is not 32 to 128 hex digits gets no challenge.
+    #[tokio::test]
+    async fn a_malformed_nonce_gets_no_challenge() {
+        for nonce in ["", "abc", "zz", &"a".repeat(130)] {
+            let input = format!(
+                "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"rkat/attach\",\"params\":{{\"nonce\":\"{nonce}\"}}}}\n"
+            );
+            let (result, reply, _) = run(input.as_bytes(), TIMEOUT).await;
+            assert!(
+                matches!(result, Err(HandshakeError::NotAttach(_))),
+                "{nonce}"
+            );
+            assert_eq!(reply["error"]["code"], INVALID_REQUEST, "{nonce}");
+        }
+    }
+
+    /// The two proofs are keyed by the token and labelled apart.
+    #[test]
+    fn the_proofs_depend_on_the_token_both_nonces_and_the_side() {
+        let p = daemon_proof("t", "a", "b");
+        assert_eq!(p.len(), 64);
+        assert_ne!(p, client_proof("t", "a", "b"));
+        assert_ne!(p, daemon_proof("u", "a", "b"));
+        assert_ne!(p, daemon_proof("t", "b", "a"));
+        assert_ne!(daemon_proof("t", "ab", "c"), daemon_proof("t", "a", "bc"));
     }
 
     #[tokio::test]

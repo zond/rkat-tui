@@ -231,6 +231,7 @@ mod tests {
             start_token: start_token.map(str::to_string),
             probe,
             agent: None,
+            ..AttachParams::default()
         }
     }
 

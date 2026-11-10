@@ -74,6 +74,8 @@ parking_lot = "0.12"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 # Durable digests (allow cache, trust record) and atomic file writes.
 sha2 = "0.10"
+# The attach handshake's proofs (the token never travels).
+hmac = "0.12"
 tempfile = "3.14"
 # Task update stamps (the checklist orders by them).
 chrono = { version = "0.4", default-features = false, features = ["std"] }

@@ -179,9 +179,20 @@ canonical workspace path; directory 0700, file 0600), one JSON line
 overrides it, and the TUI passes the path it waits on to a daemon it
 starts.
 
-Each connection must first send `rkat/attach {"token"}`; anything else is
-answered with a JSON-RPC error and closed before the engine sees it
-(`src/daemon/handshake.rs`).
+Each connection must first attach (`src/daemon/handshake.rs`); anything
+else is answered with a JSON-RPC error and closed before the engine sees
+it. The token never travels: the client sends `rkat/attach {"nonce"}`
+with a fresh client nonce, the daemon answers `{"challenge": {"nonce",
+"proof"}}` with its own nonce and `HMAC-SHA256(token, daemon label ‖
+client nonce ‖ 0 ‖ daemon nonce)`, the client checks that proof and only
+then sends a second `rkat/attach {"proof"}` keyed the same way under the
+client label, answered with `{"attached": true, …}`. A process that took
+the port of a daemon that is gone (or that answers in the shutdown
+window) cannot produce the daemon's proof, so the client refuses it
+(`ClientError::Unproven`) having sent nothing it could use; a daemon of
+before the handshake refuses an attach without a token, which the client
+reports as `ClientError::DaemonTooOld`. A client of before the handshake
+still attaches with `{"token"}`; its token was sent by then either way.
 
 **The token is the whole access control.** A connection that presents it can
 do everything a TUI can: answer decisions, switch the permission mode, add
@@ -229,7 +240,7 @@ methods on the wire, and `daemon::protocol` types each one for both ends:
 
 | Method | Params | Result |
 |---|---|---|
-| `rkat/attach` | `{"token", "start_token"?, "probe"?, "agent"?: {"choice": "new"\|"recent"\|"agent"\|"conversation", "name"?, "reference"?}}` | `{"attached": true, "agent"?, "seated"?, "build"?}` (first line only; `build` is the daemon's version and commit; the start token marks the client that launched the daemon, a probe is not counted as a client and is bound to no agent; no `agent` is `recent`) |
+| `rkat/attach` | `{"nonce", "start_token"?, "probe"?, "agent"?: {"choice": "new"\|"recent"\|"agent"\|"conversation", "name"?, "reference"?}}`, then `{"proof"}` (an older client: `{"token", …}` alone) | `{"challenge": {"nonce", "proof"}}`, then `{"attached": true, "agent"?, "seated"?, "build"?}` (the first lines only; `build` is the daemon's version and commit; the start token marks the client that launched the daemon, a probe is not counted as a client and is bound to no agent; no `agent` is `recent`) |
 | `rkat/status` | `{}` | `{"workspace", "host"?, "pid", "started_at", "clients", "detached", "owner", "session_id"?, "running", "agent"?, "agents": [{"name", "session_id"?, "running", "clients", "detached"}]}` (`session_id` and `running` of the caller's agent, whose `running` is true when its state cannot be read; an agent row's `running` is `null` then; `detached`: a live agent runs without a client) |
 | `rkat/detach` | `{}` | `{}` (the caller's agent is marked detached: a later `/quit` asks) |
 | `rkat/retire` | `{}` | `{"agent", "session_id"?}` (the caller's agent leaves the mob; a running turn is interrupted; its conversation stays) |

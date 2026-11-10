@@ -3527,7 +3527,10 @@ async fn establish(
             .call(protocol::engine::INITIALIZE, serde_json::json!({}))
             .await?;
         if !pushes_decisions(&capabilities) {
-            return Err(ClientError::DaemonTooOld { pid: endpoint.pid });
+            return Err(ClientError::DaemonTooOld {
+                pid: Some(endpoint.pid),
+                lacks: "it pushes no approval decisions",
+            });
         }
         let session = remote::session_id(&connection).await?;
         let id = session.to_string();
@@ -3648,7 +3651,6 @@ async fn sleep_until(deadline: Option<Instant>) {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 
     /// `/status`'s daemon side: the realm, confinement, mode, trust and
     /// helper lines, in their order.
@@ -3835,12 +3837,12 @@ mod tests {
         let (server_read, mut server_write) = tokio::io::split(server);
         tokio::spawn(async move {
             let mut lines = tokio::io::BufReader::new(server_read);
-            let mut line = String::new();
-            lines.read_line(&mut line).await.unwrap();
-            let attach: serde_json::Value = serde_json::from_str(&line).unwrap();
-            let answer = serde_json::json!({"jsonrpc": "2.0", "id": attach["id"], "result": {"attached": true}});
-            server_write
-                .write_all(format!("{answer}\n").as_bytes())
+            let timeout = crate::daemon::handshake::TIMEOUT;
+            let pending =
+                crate::daemon::handshake::read_attach(&mut lines, &mut server_write, "t", timeout)
+                    .await
+                    .unwrap();
+            crate::daemon::handshake::acknowledge(&mut server_write, &pending, None, None, timeout)
                 .await
                 .unwrap();
             // Held open: the link stays up.
@@ -4092,7 +4094,11 @@ mod tests {
         ] {
             assert!(!pushes_decisions(&old), "{old}");
         }
-        let err = ClientError::DaemonTooOld { pid: 42 }.to_string();
+        let err = ClientError::DaemonTooOld {
+            pid: Some(42),
+            lacks: "it pushes no approval decisions",
+        }
+        .to_string();
         assert!(err.contains("too old") && err.contains("restart"), "{err}");
     }
 

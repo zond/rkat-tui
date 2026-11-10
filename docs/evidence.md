@@ -4587,3 +4587,40 @@ the user's layers and `--classifier-model` are unchanged.
 Test: `a_project_file_cannot_pick_the_classifier_model` (the project's
 model is not used and is named in the notice; the realm's still applies
 beside it).
+
+### D1: the daemon proves it holds the token before the client does
+
+Verified: `Connection::attach_io` wrote `rkat/attach {"token"}` as its
+first line to whatever accepted at the endpoint file's address
+(`launch::probe` counts any acceptor as live) and checked only
+`attached: true` in the answer, so a process that bound the port after a
+daemon crashed, or in its 2 s shutdown window, received the token and the
+prompts after it.
+
+The handshake (`daemon/handshake.rs`) is now two attach requests on the
+same one-line JSON-RPC shape: the client's nonce, answered with the
+daemon's nonce and `HMAC-SHA256(token, "rkat-tui attach: daemon proof\0"
+‖ client nonce ‖ "\0" ‖ daemon nonce)` (hmac 0.12, already in the lock
+through the engine); the client checks it in constant time and only then
+sends its proof under the client label, which the daemon checks before
+acknowledging. The labels keep either proof from being replayed as the
+other; nonces are 32 bytes from `/dev/urandom` (the daemon refuses a
+client nonce that is not 32 to 128 hex digits); the client reads at most
+`MAX_LINE` of an unproven answer. An answer without a valid proof is
+`ClientError::Unproven` (the token is never written); the refusal an
+older daemon gives an attach without a token (`-32001 "wrong or missing
+token"`) is `ClientError::DaemonTooOld`, now naming what the daemon lacks.
+The daemon still admits an older client's `{"token"}` line: refusing it
+would protect nothing (that client has sent its token already).
+`--list`'s probe and the lifecycle checks attach through the same
+`Connection::attach_to` and are unchanged otherwise.
+
+Tests: `a_squatter_that_does_not_know_the_token_never_receives_it` (four
+answers a squatter might give, none receives the token; an old daemon's
+refusal is `DaemonTooOld`), `a_client_without_the_token_cannot_prove_it`
+(a proof under another token, the daemon's own proof played back, the
+daemon proof copied: all refused by the real `read_attach`),
+`a_malformed_nonce_gets_no_challenge`,
+`the_proofs_depend_on_the_token_both_nonces_and_the_side`; the transport
+tests and every attach integration test run the real handshake end to
+end, and `tests/daemon.rs` still attaches with the older client's line.

@@ -1047,12 +1047,17 @@ approvals, modes, rules, `/model`, `/new`, `/resume`, `/cost`, `/context`
 and the pickers work as usual. `/daemon stop` asks such a daemon to shut
 down instead of signalling a pid that may be another machine's.
 
-The token travels in clear text, so `--attach=HOST:PORT` accepts a
+The token itself never travels: the daemon first proves it holds it (an
+HMAC over two fresh nonces), and only then does the TUI prove it does the
+same way, so a program listening on a port the daemon left behind gets
+nothing it could attach with, and the TUI says the process there did not
+prove it is the daemon. What follows the attach (your prompts, the
+agent's output) travels in clear text, so `--attach=HOST:PORT` accepts a
 loopback address only (`127.0.0.1`, `::1`, or a name resolving to one),
 which is what the `ssh -L` recipe above gives: the network sees only the
 encrypted tunnel. Any other address is refused with that recipe before
-the token file is read; `--attach-insecure` sends the token there anyway,
-for a network you trust end to end. `--attach=DIRECTORY` and the
+the token file is read; `--attach-insecure` attaches there anyway, for a
+network you trust end to end. `--attach=DIRECTORY` and the
 workspace's own daemon are unaffected.
 
 The value needs `=`: `rkat-tui --attach "fix the test"` attaches and sends
