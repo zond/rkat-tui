@@ -11,23 +11,29 @@ names, is in `docs/evidence.md`:
 | P2 `rkat-tui --attach` | 2026-11-08 | "P2: `rkat-tui --attach`" |
 | P3 approvals on the daemon side | 2026-11-08 | "P3: approvals on the daemon side" |
 | P4 helpers, conversations, detach | 2026-11-08 | "P4: helpers, conversations and detach in attach mode" |
-| Review fixes for P1–P4 | 2026-11-08 | "Review fixes for P1–P4" |
+| Review fixes for P1–P4 | 2026-11-08 | "Daemon and attach fixes after the P1–P4 review" |
 | P4b attach-mode polish | 2026-11-08 | "P4b: attach-mode polish" |
 | P3b and the 0.9.11 adoption | 2026-11-09 | "P3b and the 0.9.11 adoption" |
 | Always-daemon P2 lifecycle (`/detach`, `/quit`, hangup, `--list`, endpoint fallback) | 2026-11-09 | "The daemon's lifecycle state and its owner (`rkat/status`)", "`/quit`, `/detach` and hangup in attach mode", "A shutdown without an answer is not reported as done", "`--list` (`daemon::list`)", "The endpoint file falls back to the runtime directory" |
 | Always-daemon P1 parity (2026-11-09) | 2026-11-09 | "The task checklist in attach mode (`rkat/tasks`)", "Input history in attach mode (verified, no gap)", "`/model` in attach mode switches in place (`rkat/set_model`)", "`/context` in attach mode", "File diffs in attach mode (`rkat/file_diff`)", "The daemon's start-up notices reach the clients (`rkat/notices`)", "P1 parity: what stays an engine limit, and the texts" |
 | Always-daemon P3 default flip (attach by default, `-c`/`--resume`, `--attach=DIRECTORY`, `--attach=HOST:PORT`, `--no-attach` alongside) | 2026-11-09 | "The default flip (P3): attach, else start", "The command line's prompt waits for the first attach", "`-c` and `--resume` under attach; in-process sessions stay in-process", "`--no-attach` beside a live daemon", "`--attach` values and `--attach=DIRECTORY`", "`--attach=HOST:PORT` with a token file" |
-| Always-daemon P4 (the in-process runner deleted; every test on the daemon rig; `/status` parity; the proxy's method allow-list) | 2026-11-10 | "The endpoint key includes the realm (P4)", "Sessions created before the daemon are view only (P4)", "P4: the in-process tests and where they went", "P4: the in-process runner is deleted", "`/status` reads the daemon's side (`rkat/report`)", "The daemon's proxy serves an allow-list of engine methods", "The daemon's stop waits for the realm's databases to close" |
+| Always-daemon P4 (the in-process runner deleted; every test on the daemon rig; `/status` parity; the proxy's method allow-list) | 2026-11-10 | "The endpoint key includes the realm (P4)", "Sessions created before the daemon are view only (P4)", "P4: the in-process tests and where they went", "P4: the in-process runner is deleted", "`/status` reads the daemon's side (`rkat/report`)", "The daemon's proxy serves an allow-list of engine methods", "The proxy forwards only what it parsed", "The daemon's stop waits for the realm's databases to close" |
 
-Since P4 of the always-daemon plan every session runs in the daemon and
-`rkat-tui` is only its client: the in-process runner and `--no-attach`
-are gone, and with them the limit that an in-process TUI and the daemon
-could not share a workspace. Sessions the in-process runner created stay
-view only (the engine refuses to seat the member on them, ask 7). Open:
-same-identity `/rewind` (lukacf/meerkat#2126); P5, the governed realm
-(#2122); MCP servers added or trusted after the
-daemon's mob was created; which client's steer a boundary delivered when
-several clients steer the same turn (ask 6).
+Phases P1 to P4 of the always-daemon plan are done: every session runs in
+the daemon and `rkat-tui` is only its client; the in-process runner and
+`--no-attach` are gone, and with them the limit that an in-process TUI and
+the daemon could not share a workspace.
+
+What remains, in order of priority:
+
+| Item | State |
+|---|---|
+| Steer correlation (ask 6): which client's steer a boundary delivered when several steer one turn | The upstream fix is in progress ("Upstream follow-up: ask 6" below); the client attributes first in, first out until a release carries it |
+| `/rewind` on the engine's implementation (ask 1) | The same-identity rewind design is merged upstream (lukacf/meerkat#2126, db8547a532); its implementation is not scheduled. `/rewind` explains why it is not available |
+| Seating a member on a non-member session (ask 7) | Sessions the in-process runner created stay view only until the engine can seat the daemon's agent on them |
+| MCP servers added or trusted after the daemon's mob was created | They do not reach the agent until the mob is made again (the manual's limits) |
+| P5 several agents per workspace | Optional; not started |
+| The governed realm (ask 2, #2122) | Lower priority now that remote attach goes through a tunnel to a loopback daemon (`--attach=HOST:PORT`) rather than a governed connection |
 
 ## Direction (decided 2026-11-09): every session runs in the daemon
 
@@ -140,7 +146,7 @@ rkat-tui-mob (daemon, src/daemon/, one per workspace realm)
     (RpcServer per connection, shared runtime, skip_shutdown_on_eof)
   realm lease + $XDG_STATE_HOME/rkat-tui/<key>/mob.endpoint
 
-rkat-tui --attach (client, src/client/)
+rkat-tui (client, src/client/)
   reads the endpoint file, attaches with the token (starts the daemon if
     none answers); refuses a daemon without decision/notice+decide
   mob/member_send for prompts and steers (detach-safe); rkat/set_model
@@ -150,7 +156,7 @@ rkat-tui --attach (client, src/client/)
   mob-wide mob/stream_open per mob for the helpers' follower view
   mob/stop_member_run, mob/force_cancel for Esc
   decision/notice + decision/decide for the approval dialog
-  mob/compact_member (fallback session/compact) for /compact now
+  mob/compact_member (fallback session/compact) for /compact
   local: rendering, editor, `!` shell, model picker, history, notes
 ```
 
@@ -221,16 +227,16 @@ methods on the wire, and `daemon::protocol` types each one for both ends:
 | `rkat/file_diff` | notification, daemon to client | `{"tool_use_id", "path", "unified", "added", "removed"}`: a change the orchestrator's file tools made |
 
 The mode is the daemon's (one per daemon; it governs the orchestrator and
-its helpers, as the in-process mode governs a session and its helpers), is
+its helpers), is
 recorded in the realm rules file and tells the orchestrator when plan mode
-starts or ends. `/rules` writes the realm rules file as in-process.
+starts or ends. `/rules` writes the realm rules file.
 `rkat/new` and `rkat/resume` are refused while the orchestrator's run is
 open. An application method namespace in the engine, or the governed
 realm's review policy, could replace these methods.
 
 ## How each concern works
 
-**Consent.** The daemon's approval engine is the in-process one (tiers,
+**Consent.** The daemon runs rkat-tui's approval engine (tiers,
 layered rules, the classifier on the same endpoint and model, permission
 modes, escalation timeout). A call that needs the human becomes one durable
 decision (`daemon::decisions`: kind `rkat-tui.tool-call`, the dialog as its
@@ -253,8 +259,7 @@ the decision, which for one principal is every attached client. Timeouts and
 interrupts withdraw the decision; `rkat/decision_ended` closes the other
 dialogs. The decisions are the daemon's only record: nothing goes to the
 realm's approval store, and decisions a stopped daemon left open are
-withdrawn at start. The in-process TUI keeps no record beyond the dialog
-itself. The client never polls
+withdrawn at start. The client never polls
 `approval/list`: a daemon whose `initialize` lacks `decision/notice` and
 `decision/decide` is refused at attach with "too old; restart it"
 (`ClientError::DaemonTooOld`).
@@ -269,7 +274,7 @@ lifts the stop.
 cancelled when the sending connection closes), so prompts and steers go
 through `mob/member_send`; a `/model` switch is the daemon's
 `rkat/set_model`, the engine's LLM reconfigure on the member's live session
-(the in-process switch), so no run is tied to a connection.
+so no run is tied to a connection.
 Every member `mob/stream_event` carries its envelope's `seq` and the `epoch`
 of that sequence space. The client keeps a mark (session, epoch, sequence)
 in `<workspace>/.rkat/tui/attach.cursor` and reattaches with
@@ -328,20 +333,21 @@ client builds from the same flags and `tui.toml` layers as the daemon's
 shell; its output, like `/remember` and `/memory` edits,
 reaches the orchestrator with `mob/append_system_context`.
 
-**Compaction.** `/compact now` sends `mob/compact_member` (fallback
+**Compaction.** `/compact` (or `/compact now`) sends `mob/compact_member` (fallback
 `session/compact`); a cold session is not woken for it (run a turn
 first, see the manual's limits).
 
 ## Known limits
 
-`docs/manual.md`, "The workspace daemon (attach mode)", is the one list of what
-attach mode does not do yet.
+`docs/manual.md`, "The workspace daemon", "Limits for now", is the one
+list of what the daemon and its client do not do yet.
 
 ## Open engine asks
 
 1. Same-identity rewind (lukacf/meerkat#2126): `session/fork_at` is refused
-   for a mob-owned session and member forks give the copy a new identity;
-   the design note recommends a `mob/rewind_member`.
+   for a mob-owned session and member forks give the copy a new identity.
+   The design (a `mob/rewind_member`) is merged as db8547a532; the
+   implementation is not scheduled.
 2. The governed connection (#2122): mob methods on a governed connection, a
    governed connection on a shared runtime, and consent scoped beyond one
    pipe. These make the engine's own review contract usable from a
@@ -355,7 +361,8 @@ attach mode does not do yet.
    send answers a delivery id, `WireContinuationReceipt`, not the input
    id), so a client can match it to `boundary_append_applied`'s
    `input_id` and tell its own steer's delivery from another client's: the
-   attach runner marks its steers delivered first in, first out.
+   attach runner marks its steers delivered first in, first out. An
+   upstream fix is in progress (below).
 7. Adopting a session created outside the mob: a way to seat a mob member
    on an existing non-member session, or to write the durable
    `comms_name` (and member binding) when seating one, so a consumer can
@@ -376,7 +383,7 @@ rather than plain approval records (#2115).
 Upstream PRs:
 
 - #2100: sandbox pid namespace, read-only procfs, Unix socketpairs.
-- #2102: `delegate` follows the member's current identity and model.
+- #2102: `delegate` follows the member's current identity and model (closed; the fix shipped in 0.9.11 and `attach_helpers::a_helper_delegated_after_a_model_switch_runs_on_the_new_model` pins it).
 - #2104: the thinking binding for uncatalogued model ids.
 - #2105: host trust over hook source bytes (`HookSourceTrust`).
 - #2112: fork children inherit the source's dispatch admission.
@@ -386,5 +393,5 @@ Upstream PRs:
 - #2116: session events routed to the turn's connection.
 - #2117: `mob/fork_member` as an operator method (rewind deferred).
 - #2124: the 0.9.11 release integration, `bffcd8f98a`, released on crates.io as 0.9.11.
-- #2126: the same-identity rewind design note (open).
+- #2126: the same-identity rewind design (merged as db8547a532; implementation not scheduled).
 - #2122: the map of the governed-realm gaps (open).
