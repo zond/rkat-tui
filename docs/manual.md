@@ -188,7 +188,10 @@ it is cut (a shell command, a write's path and content). An action whose
 arguments are larger than 48 KiB is not given to the classifier at all:
 you are asked, the dialog saying "too large to review", and with nobody to
 ask it is denied. The approval dialog abbreviates long arguments (2 KiB,
-ten lines) and says so; Ctrl+O shows all of them.
+ten lines) and says so; Ctrl+O shows all of them, as many lines as the
+terminal has room for, with a `(lines 11-20 of 42; …)` line saying which:
+PgUp and PgDn scroll them a page, Home and End go to the start and the end,
+so the end of a long command can be read on any terminal before you answer.
 
 After **3 consecutive** or **20 total** classifier blocks, auto mode pauses
 and each tier-3 action opens a dialog. The same dialog answers a protected

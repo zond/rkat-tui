@@ -748,6 +748,7 @@ Approval prompt:
                                  with the denial (empty Enter or Esc denies without a comment)
   Up/Down, j/k, Enter            move between the rows and pick one
   Ctrl+O                         show the whole arguments when the prompt abbreviates them
+  PgUp/PgDn, Home/End            while they are shown whole: scroll them, start, end
   s                              stop the turn (Ctrl-C stops every open prompt)";
 
 /// The line that ends `/help`.

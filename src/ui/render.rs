@@ -93,7 +93,7 @@ pub fn draw_at(frame: &mut Frame<'_>, app: &mut App, now: Instant) {
             .style(Style::default().add_modifier(Modifier::REVERSED)),
         status_area,
     );
-    if let Some(modal) = &app.modal {
+    if let Some(modal) = &mut app.modal {
         draw_modal(frame, area, modal);
     }
 }

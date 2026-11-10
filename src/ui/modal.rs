@@ -87,6 +87,10 @@ fn has_ctrl_or_alt(key: &KeyEvent) -> bool {
 /// Maximum lines of the args preview shown in the escalation dialog.
 const MAX_ARGS_LINES: usize = 10;
 
+/// Argument lines one PgUp/PgDn moves in the expanded dialog (a page of
+/// the smallest room, so no line is skipped).
+const ARGS_PAGE: usize = MAX_ARGS_LINES - 1;
+
 /// Identifier of a pending escalation, assigned by the approval engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EscalationId(pub u64);
@@ -110,6 +114,11 @@ pub struct EscalationDialog {
     pub comment: Option<String>,
     /// Ctrl+O: the whole arguments instead of the preview.
     pub expanded: bool,
+    /// The first argument line shown while expanded (PgUp/PgDn/Home/End).
+    pub scroll: usize,
+    /// The last useful [`Self::scroll`]: argument lines past the room the
+    /// terminal has, recorded by the renderer (it knows the width).
+    pub scroll_max: usize,
 }
 
 impl EscalationDialog {
@@ -125,18 +134,43 @@ impl EscalationDialog {
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('o') {
             self.expanded = !self.expanded;
+            self.scroll = 0;
             return ModalKey::Stay;
         }
         if has_ctrl_or_alt(key) {
+            return ModalKey::Stay;
+        }
+        if self.scroll_args(key.code) {
             return ModalKey::Stay;
         }
         self.answer(key.code)
             .map_or(ModalKey::Stay, ModalKey::Choose)
     }
 
-    /// Whether a held (repeating) `code` may act: it moves the cursor or
-    /// edits the comment, never answers.
+    /// While expanded, PgUp/PgDn move the arguments by a page and
+    /// Home/End go to their start and end (none of them answers or moves
+    /// the cursor). Whether `code` was such a key.
+    fn scroll_args(&mut self, code: KeyCode) -> bool {
+        if !self.expanded {
+            return false;
+        }
+        self.scroll = match code {
+            KeyCode::PageUp => self.scroll.saturating_sub(ARGS_PAGE),
+            KeyCode::PageDown => self.scroll.saturating_add(ARGS_PAGE),
+            KeyCode::Home => 0,
+            KeyCode::End => self.scroll_max,
+            _ => return false,
+        }
+        .min(self.scroll_max);
+        true
+    }
+
+    /// Whether a held (repeating) `code` may act: it moves the cursor,
+    /// scrolls the arguments or edits the comment, never answers.
     fn accepts_repeat(&self, code: KeyCode) -> bool {
+        if self.expanded && matches!(code, KeyCode::PageUp | KeyCode::PageDown) {
+            return true;
+        }
         if self.comment.is_some() {
             matches!(code, KeyCode::Char(_) | KeyCode::Backspace)
         } else {
@@ -579,8 +613,9 @@ pub fn centered(area: Rect, width: u16, height: u16) -> Rect {
     }
 }
 
-/// Draw `modal` centered over `area`.
-pub fn draw_modal(frame: &mut Frame<'_>, area: Rect, modal: &Modal) {
+/// Draw `modal` centered over `area` (an expanded escalation dialog
+/// records how far its arguments can scroll at this size).
+pub fn draw_modal(frame: &mut Frame<'_>, area: Rect, modal: &mut Modal) {
     let width = area.width.saturating_sub(4).clamp(20, 80);
     let inner_w = usize::from(width.saturating_sub(2));
     let (title, lines) = match modal {
@@ -679,7 +714,7 @@ fn keys_lines(width: usize, max_lines: usize) -> Vec<Line<'static>> {
 
 fn escalation_lines(
     prompt: &RecordedPrompt,
-    dialog: &EscalationDialog,
+    dialog: &mut EscalationDialog,
     width: usize,
     room: usize,
 ) -> Vec<Line<'static>> {
@@ -703,25 +738,47 @@ fn escalation_lines(
             Style::default().add_modifier(Modifier::BOLD),
         ),
     ]));
-    let (text, shown) = match (&prompt.args_full, dialog.expanded) {
-        (Some(full), true) => (full.as_str(), room),
-        _ if dialog.expanded => (prompt.args_preview.as_str(), room),
-        _ => (prompt.args_preview.as_str(), MAX_ARGS_LINES),
-    };
-    let args = wrap_text(text, width);
-    let extra = args.len().saturating_sub(shown);
-    lines.extend(args.into_iter().take(shown).map(Line::from));
-    if extra > 0 {
-        lines.push(Line::styled(
-            if dialog.expanded {
-                format!("… ({extra} more lines do not fit this terminal)")
-            } else {
-                format!("… ({extra} more lines; Ctrl+O shows all)")
-            },
-            dim,
-        ));
-    } else if prompt.args_full.is_some() && !dialog.expanded {
-        lines.push(Line::styled("(abbreviated; Ctrl+O shows all)", dim));
+    if dialog.expanded {
+        // Every line is reachable: a window of `room` lines at `scroll`.
+        let text = prompt.args_full.as_deref().unwrap_or(&prompt.args_preview);
+        let args = wrap_text(text, width);
+        dialog.scroll_max = args.len().saturating_sub(room);
+        dialog.scroll = dialog.scroll.min(dialog.scroll_max);
+        let total = args.len();
+        let end = (dialog.scroll + room).min(total);
+        if dialog.scroll_max > 0 {
+            lines.push(Line::styled(
+                format!(
+                    "(lines {}-{end} of {total}; PgUp/PgDn/Home/End scroll)",
+                    dialog.scroll + 1,
+                ),
+                dim,
+            ));
+        }
+        lines.extend(
+            args.into_iter()
+                .skip(dialog.scroll)
+                .take(room)
+                .map(Line::from),
+        );
+        if end < total {
+            lines.push(Line::styled(
+                format!("… ({} more lines; PgDn/End to see them)", total - end),
+                dim,
+            ));
+        }
+    } else {
+        let args = wrap_text(&prompt.args_preview, width);
+        let extra = args.len().saturating_sub(MAX_ARGS_LINES);
+        lines.extend(args.into_iter().take(MAX_ARGS_LINES).map(Line::from));
+        if extra > 0 {
+            lines.push(Line::styled(
+                format!("… ({extra} more lines; Ctrl+O shows all)"),
+                dim,
+            ));
+        } else if prompt.args_full.is_some() {
+            lines.push(Line::styled("(abbreviated; Ctrl+O shows all)", dim));
+        }
     }
     if let Some(reason) = &prompt.policy_reason {
         lines.push(Line::default());
@@ -1233,8 +1290,7 @@ mod tests {
         }
         let mut d = EscalationDialog {
             cursor: 2,
-            comment: None,
-            expanded: false,
+            ..EscalationDialog::default()
         };
         assert_eq!(d.answer(KeyCode::Enter), None);
         // Empty (or blank) Enter denies without a comment.

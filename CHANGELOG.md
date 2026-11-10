@@ -9,6 +9,11 @@ design.
 
 ### Security
 
+- The approval dialog's Ctrl+O view of the whole arguments scrolls:
+  PgUp/PgDn, Home and End reach every line on an ordinary terminal, and a
+  line says which lines are shown. Before, it showed what fit and said the
+  rest did not, so the end of an action too large for the classifier could
+  not be read before allowing it.
 - `@`-mentioned file content is data, not your words. The classifier
   records what you typed as your request and the attached files as a
   context line naming them; before, the whole expanded prompt, file
