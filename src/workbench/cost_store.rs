@@ -8,9 +8,6 @@
 //! atomic and owner-only ([`crate::paths::write_atomic`]); a record that
 //! cannot be parsed is moved aside as `<id>.toml.corrupt-<unix seconds>`
 //! (never overwritten) and the session starts from its authoritative usage.
-//!
-//! Records written before this layout lived in `<realm>/tui_endpoints/`
-//! together with an endpoint choice; their totals are still read.
 
 use std::path::{Path, PathBuf};
 
@@ -22,9 +19,6 @@ use crate::ui::cost::{CostConfidence, ModelTotals, SessionCost};
 
 /// Directory (inside the realm root) of the cost records.
 pub const COST_DIR: &str = "tui_cost";
-
-/// Directory of the records written before [`COST_DIR`] (read only).
-const LEGACY_DIR: &str = "tui_endpoints";
 
 /// The cost record could not be written.
 #[derive(Debug, thiserror::Error)]
@@ -48,17 +42,6 @@ struct CostFile {
     cost: ModelTotals,
     /// `[helper_cost.<label>."<model>"]`: the helpers' share of `cost`.
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
-    helper_cost: IndexMap<String, ModelTotals>,
-}
-
-/// The legacy sidecar: an endpoint choice plus the totals.
-#[derive(Debug, Deserialize)]
-struct LegacyFile {
-    #[serde(default)]
-    cost_estimated: bool,
-    #[serde(default)]
-    cost: ModelTotals,
-    #[serde(default)]
     helper_cost: IndexMap<String, ModelTotals>,
 }
 
@@ -110,26 +93,8 @@ pub fn load_cost(realm_root: &Path, session_id: &str) -> Option<SessionCost> {
                 None
             }
         },
-        Err(_) => load_legacy(realm_root, session_id),
+        Err(_) => None,
     }
-}
-
-/// The totals of a pre-[`COST_DIR`] sidecar.
-fn load_legacy(realm_root: &Path, session_id: &str) -> Option<SessionCost> {
-    let path = realm_root
-        .join(LEGACY_DIR)
-        .join(format!("{session_id}.toml"));
-    let text = std::fs::read_to_string(path).ok()?;
-    let file = toml::from_str::<LegacyFile>(&text).ok()?;
-    (!file.cost.is_empty()).then(|| SessionCost {
-        per_model: file.cost,
-        confidence: if file.cost_estimated {
-            CostConfidence::Approximate
-        } else {
-            CostConfidence::Exact
-        },
-        helpers: file.helper_cost,
-    })
 }
 
 /// Move an unreadable record aside, so the next write does not destroy it.
@@ -231,26 +196,5 @@ mod tests {
             std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
             2
         );
-    }
-
-    #[test]
-    fn legacy_sidecars_still_load() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join(LEGACY_DIR);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("old.toml"),
-            "endpoint = \"openai\"\nmodel = \"gpt-5.4\"\ncost_estimated = true\n[cost.\"gpt-5.4\"]\ninput = 5\n",
-        )
-        .unwrap();
-        let cost = load_cost(tmp.path(), "old").unwrap();
-        assert_eq!(cost.per_model["gpt-5.4"].input, 5);
-        assert_eq!(cost.confidence, CostConfidence::Approximate);
-        std::fs::write(
-            dir.join("bare.toml"),
-            "endpoint = \"openai\"\nmodel = \"gpt-5.4\"\n",
-        )
-        .unwrap();
-        assert!(load_cost(tmp.path(), "bare").is_none());
     }
 }

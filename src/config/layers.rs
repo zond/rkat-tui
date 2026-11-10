@@ -104,13 +104,6 @@ pub enum Notice {
         /// Number of ignored model entries.
         count: usize,
     },
-    /// A file set `attach`, which chose the in-process runner with `false`
-    /// until it was removed: the agent always runs in the workspace's
-    /// daemon now.
-    AttachRetired {
-        /// The rules file.
-        path: PathBuf,
-    },
     /// A project rules file's `[daemon]` section (only the user's own
     /// files configure the daemon).
     DaemonIgnored {
@@ -200,11 +193,6 @@ impl fmt::Display for Notice {
             Self::ThinkingIgnored { path, count } => write!(
                 f,
                 "ignored {count} [thinking] setting(s) in {}: only your own tui.toml files set thinking",
-                path.display()
-            ),
-            Self::AttachRetired { path } => write!(
-                f,
-                "ignored `attach` in {}: the agent always runs in the workspace's daemon (the in-process runner was removed); delete the key",
                 path.display()
             ),
             Self::DaemonIgnored { path } => write!(
@@ -466,9 +454,6 @@ pub fn load_layered_with(
         if let Some(section) = &file.ui {
             ui.apply(section);
         }
-        if file.attach.is_some() {
-            notices.push(Notice::AttachRetired { path: path.clone() });
-        }
         if let Some(principal) = file.daemon.as_ref().and_then(|d| d.principal.clone()) {
             daemon_principal = Some(principal);
         }
@@ -512,11 +497,6 @@ pub fn load_layered_with(
         notices.push(Notice::ThinkingIgnored {
             path: project_path.clone(),
             count: project.thinking.len(),
-        });
-    }
-    if project.attach.is_some() {
-        notices.push(Notice::AttachRetired {
-            path: project_path.clone(),
         });
     }
     if project.daemon.is_some() {

@@ -19,9 +19,8 @@
 //!
 //! The engine keeps no list of a member's earlier sessions, so the daemon
 //! records each session an agent ran as in
-//! `<realm>/conversations.json` ([`Log`], with the agent's
-//! name; a log written before P5 names none, and its sessions are the
-//! single orchestrator `main`'s); `/resume` offers those, newest first,
+//! `<realm>/conversations.json` ([`Log`], with the agent's name; read
+//! strictly, a log that cannot be read stops the daemon's start); `/resume` offers those, newest first,
 //! with their first message read from the session's committed history
 //! (`SessionServiceHistoryExt::read_history`).
 
@@ -35,11 +34,6 @@ use serde::{Deserialize, Serialize};
 
 use super::{MOB_ID, ORCHESTRATOR};
 use crate::mobs::{HelperKey, HelperRegistry};
-
-/// The agent of a log entry written before P5 (the single orchestrator).
-fn legacy_agent() -> String {
-    ORCHESTRATOR.to_string()
-}
 
 /// The conversation log's file name in the realm.
 pub const LOG_NAME: &str = "conversations.json";
@@ -78,11 +72,11 @@ pub fn has_user_turn(messages: &[Message]) -> bool {
 
 /// One conversation an agent ran.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Entry {
     /// The session.
     pub session_id: SessionId,
     /// The agent (member identity) that ran it; a session belongs to it.
-    #[serde(default = "legacy_agent")]
     pub agent: String,
     /// When it was first seated (Unix seconds).
     pub started_at: u64,
@@ -92,9 +86,9 @@ pub struct Entry {
 
 /// The conversation log (`conversations.json`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Log {
     /// Every conversation, oldest touched first (see [`Log::touch`]).
-    #[serde(default)]
     pub sessions: Vec<Entry>,
 }
 
@@ -133,19 +127,6 @@ impl Log {
                 file: path.to_path_buf(),
                 why: err.to_string(),
             })
-    }
-
-    /// Read `path`; a missing or unreadable file is an empty log (an
-    /// unreadable one is logged).
-    #[must_use]
-    pub fn load(path: &Path) -> Self {
-        match std::fs::read(path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|err| {
-                tracing::warn!(file = %path.display(), error = %err, "unreadable conversation log; starting a new one");
-                Self::default()
-            }),
-            Err(_) => Self::default(),
-        }
     }
 
     /// Write the log to `path` (0600, by rename).
@@ -336,17 +317,21 @@ impl std::fmt::Debug for Conversations {
 
 impl Conversations {
     /// The conversations of the realm at `realm_root`.
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// [`LogError`] when the conversation log cannot be read: it is not
+    /// started anew over (a new log would forget every conversation).
     pub fn open(
         state: Arc<MobMcpState>,
         registry: Arc<HelperRegistry>,
         realm_root: &Path,
         model: String,
         auth_binding: Option<meerkat_core::AuthBindingRef>,
-    ) -> Self {
+    ) -> Result<Self, LogError> {
         let log_file = Log::path(realm_root);
-        let log = Log::load(&log_file);
-        Self {
+        let log = Log::read(&log_file)?.unwrap_or_default();
+        Ok(Self {
             state,
             registry,
             log_file,
@@ -356,7 +341,7 @@ impl Conversations {
             auth_binding,
             #[cfg(any(test, feature = "test-support"))]
             spawn_faults: None,
-        }
+        })
     }
 
     /// Fail as many of the next spawns as `faults` holds (each failure
@@ -1081,14 +1066,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = Log::path(dir.path());
         let (a, b) = (SessionId::new(), SessionId::new());
-        let mut log = Log::load(&file);
-        assert!(log.sessions.is_empty());
+        assert_eq!(Log::read(&file).unwrap(), None);
+        let mut log = Log::default();
         log.touch(&a, "main-a");
         log.touch(&b, "main-b");
         log.sessions[1].last_used = 1;
         log.touch(&a, "main-a");
         log.save(&file).unwrap();
-        let back = Log::load(&file);
+        let back = Log::read(&file).unwrap().unwrap();
         assert_eq!(back.sessions.len(), 2);
         assert!(back.has(&a) && back.has(&b));
         assert_eq!(back.newest_first()[0].session_id, a);
@@ -1119,26 +1104,19 @@ mod tests {
             let mode = std::fs::metadata(&file).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+        // A log that cannot be read is an error naming it, not an empty
+        // log (which would forget every conversation), and so is one of
+        // another shape (an entry naming no agent).
         std::fs::write(&file, "garbage").unwrap();
-        assert!(Log::load(&file).sessions.is_empty());
-    }
-
-    /// A log written before P5 names no agent: its conversations are the
-    /// single orchestrator `main`'s.
-    #[test]
-    fn a_log_from_before_p5_belongs_to_main() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = Log::path(dir.path());
-        let session = SessionId::new();
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let err = Log::read(&file).unwrap_err();
+        assert!(err.to_string().contains(file.to_str().unwrap()), "{err}");
         std::fs::write(
             &file,
-            serde_json::json!({"sessions": [{"session_id": session, "started_at": 1, "last_used": 2}]})
+            serde_json::json!({"sessions": [{"session_id": a, "started_at": 1, "last_used": 2}]})
                 .to_string(),
         )
         .unwrap();
-        let log = Log::load(&file);
-        assert_eq!(log.agent_of(&session), Some(ORCHESTRATOR));
+        assert!(Log::read(&file).is_err());
     }
 
     /// A conversation that opens with notes before the first prompt is

@@ -360,6 +360,12 @@ design.
   `main-<id>`), and its cursor file is gone; the status always carries
   the agents and the agent shell, the approval and diff notes always name
   their session and agent.
+- Readers of older file shapes: the conversation log is read strictly (an
+  entry must name its agent; a log that cannot be read stops the daemon
+  naming the file, where it was silently started anew), cost records of
+  the old `tui_endpoints/` layout are no longer read, and the retired
+  `attach` key of `tui.toml` is now an unknown key (the file is refused,
+  naming it, instead of a notice).
 
 ### Fixed
 

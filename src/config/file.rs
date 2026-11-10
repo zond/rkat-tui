@@ -399,12 +399,6 @@ pub struct LayeredEndpoint {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RulesFile {
-    /// Retired: `false` hosted the agent in-process until that runner was
-    /// removed. Still read, so an older file loads; any layer setting it
-    /// gets a notice that it is ignored. First: a plain key is written
-    /// before the tables.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attach: Option<bool>,
     /// Auto-mode settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto: Option<AutoSection>,

@@ -1124,10 +1124,9 @@ agent per `rkat-tui` you start beside it (see [Several agents](#several-agents))
 
 **How it used to work.** Until P4 of the always-daemon plan (November
 2026) `rkat-tui` could also host the agent in its own process
-(`--no-attach`, or `attach = false` in a `tui.toml`). That runner is gone
-and `--no-attach` with it; an `attach` key in a `tui.toml` is ignored with
-a start-up notice. Sessions it created stay in the realm and are listed
-view only (see "`-c` and `--resume` at start").
+(`--no-attach`, or `attach = false` in a `tui.toml`). That runner is gone,
+and so are `--no-attach` and the `attach` key (a `tui.toml` that sets it
+is refused, as any unknown key is).
 
 | Flag | Meaning |
 |---|---|

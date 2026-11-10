@@ -159,6 +159,9 @@ pub enum DaemonError {
         #[source]
         source: Box<meerkat_mob::MobError>,
     },
+    /// The conversation log cannot be read.
+    #[error(transparent)]
+    ConversationLog(#[from] conversations::LogError),
     /// The workspace's first agent could not be seated.
     #[error("cannot seat the workspace's first agent: {0}")]
     FirstAgent(String),
@@ -563,7 +566,7 @@ impl Daemon {
             &composed.scope.realm_root(),
             composed.root.model.clone(),
             composed.root.auth_binding.clone(),
-        );
+        )?;
         #[cfg(any(test, feature = "test-support"))]
         let conversations = conversations.with_spawn_faults(options.spawn_faults.clone());
         let conversations = Arc::new(conversations);

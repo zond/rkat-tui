@@ -5455,3 +5455,26 @@ the old-daemon half of
 `transport::tests::a_squatter_that_does_not_know_the_token_never_receives_it`,
 the "daemon of before P5" case of `the_quit_decision_follows_the_rules`
 (`tests/attach_lifecycle.rs`) and the agentless shape of `--list` (`list::tests`).
+
+### On-disk formats
+
+- `conversations.json`: `Entry::agent` is required (a log of before P5
+  named none and was the single orchestrator's), both structs deny
+  unknown fields, and `Log::load`, which read an unreadable log as an
+  empty one (the next save then forgot every conversation), is gone:
+  `Log::read` returns `LogError` naming the file, and the daemon's start
+  fails with it (`DaemonError::ConversationLog`).
+- The cost record's `tui_endpoints/` sidecars (before `tui_cost/`) are no
+  longer read. A `tui_cost/` record that cannot be parsed is still moved
+  aside and the session starts from its authoritative usage: that is
+  corruption handling, not an older shape.
+- `tui.toml`'s `attach` (the in-process runner's switch, ignored with a
+  notice since P4) is no field any more; `RulesFile` denies unknown
+  fields, so a file setting it is refused naming the file.
+- The realm manifest went strict with the re-home rework above.
+
+Deleted with the paths they pinned: `a_log_from_before_p5_belongs_to_main`,
+`legacy_sidecars_still_load`; rewritten:
+`the_daemon_is_the_default_and_a_tui_toml_attach_key_is_refused` (was
+`…_is_ignored_with_a_notice`), and the log test now pins that an
+unreadable or agentless log is an error naming the file.

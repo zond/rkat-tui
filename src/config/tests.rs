@@ -22,7 +22,6 @@ fn rules_file_round_trip() {
         daemon: Some(DaemonSection {
             principal: Some("alice".into()),
         }),
-        attach: Some(true),
         auto: Some(AutoSection {
             enabled: Some(true),
             classifier_model: Some("claude-sonnet-4-6".into()),

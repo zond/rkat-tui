@@ -745,48 +745,27 @@ async fn attach_by_address_refuses_a_readable_or_missing_token_file() {
     daemon.stop().await;
 }
 
-/// The workspace's daemon is the default; `attach` in a `tui.toml`
-/// (which chose the in-process runner with `false` until P4) is retired:
-/// the file still reads, and the start-up notices say it is ignored.
+/// The workspace's daemon is the default; `attach` in a `tui.toml` (which
+/// chose the removed in-process runner) is no key any more: a file that
+/// sets it is refused naming the file, as any unknown key is.
 #[test]
-fn the_daemon_is_the_default_and_a_tui_toml_attach_key_is_ignored_with_a_notice() {
+fn the_daemon_is_the_default_and_a_tui_toml_attach_key_is_refused() {
     use rkat_tui::bootstrap::read_layers;
     let ws = Workspace::new();
     let args = args_for(&ws.root);
     assert_eq!(args.attach_target(), AttachTarget::Auto);
-    let notices = |args: &rkat_tui::Args| {
-        read_layers(args)
-            .unwrap()
-            .layered
-            .notices
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-    };
-    assert!(notices(&args).iter().all(|n| !n.contains("attach")));
-    let user = common::config_dir_for(&ws.root);
-    std::fs::create_dir_all(&user).unwrap();
-    std::fs::write(user.join("tui.toml"), "attach = false\n").unwrap();
-    let said = notices(&args);
-    assert!(
-        said.iter().any(|n| n.contains("ignored `attach`")
-            && n.contains("always runs in the workspace's daemon")),
-        "{said:?}"
-    );
+    assert!(read_layers(&args).is_ok());
     assert_eq!(
         common::args_with(&ws.root, &["--attach=existing"]).attach_target(),
         AttachTarget::Existing
     );
-    // A project file's too.
-    std::fs::remove_file(user.join("tui.toml")).unwrap();
-    std::fs::create_dir_all(ws.root.join(".rkat")).unwrap();
-    std::fs::write(ws.root.join(".rkat/tui.toml"), "attach = false\n").unwrap();
+    let user = common::config_dir_for(&ws.root);
+    std::fs::create_dir_all(&user).unwrap();
+    std::fs::write(user.join("tui.toml"), "attach = false\n").unwrap();
+    let refused = read_layers(&args).map(|_| ()).unwrap_err().to_string();
     assert!(
-        notices(&args)
-            .iter()
-            .any(|n| n.contains("ignored `attach`")),
-        "{:?}",
-        notices(&args)
+        refused.contains(user.join("tui.toml").to_str().unwrap()),
+        "{refused}"
     );
 }
 
