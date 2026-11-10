@@ -4683,3 +4683,30 @@ inside unconfined, one more write grant is wider) and
 (`tests/attach_lifecycle.rs`: an unconfined daemon, a client with
 `--confinement=workspace`: refused naming the daemon's shell, not
 retried, no agent seated).
+
+### E2: helpers run through their owner's endpoint
+
+Verified: `mobs/customizer.rs::shape` gave a helper its owner's auth
+binding only when it ran on the owner's model; on another model the
+binding stayed `None`, which the engine resolves as that model's provider
+default: the public base URL and the provider's environment key. Behind a
+gateway (only its key in the environment) a helper on another model went
+around it.
+
+The binding is now chosen in `HelperCustomizer::admit` before the member
+is shaped (`helper_binding`): the owner's binding for the owner's model,
+for a model the catalog (`WireDialect::of_catalog_model`) does not know
+(the endpoint serves or refuses it), and for one whose dialect is the
+owner's endpoint's; a model of another dialect is refused (`MobError`, the
+agent reads why) naming the configured endpoints of that dialect. A
+binding the spawn already names is kept. The daemon hands the customizer
+its endpoint registry. A rebuilt helper goes through the same rule.
+
+Test: `a_helper_runs_through_its_owners_endpoint_or_is_refused` (a gateway
+owner: same, same-dialect and uncatalogued models get the gateway's
+binding; an OpenAI model is refused naming `openai, oai-proxy`; an owner
+on a built-in endpoint keeps `None` for its own dialect and is refused
+for another). The brief's two-scripted-endpoint integration test was not
+built: the rig's daemon runs every session on one `llm_override`, so the
+endpoint a helper reaches is not observable there; the binding decision
+is pinned at the unit instead.

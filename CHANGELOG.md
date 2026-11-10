@@ -9,6 +9,10 @@ design.
 
 ### Security
 
+- A helper on another model than its owner's runs through the owner's
+  endpoint, or its spawn is refused naming the endpoints that would serve
+  it. Before, it fell back to that model's provider default: the public
+  URL with whatever key the environment held.
 - A TUI no longer attaches to a daemon whose agent shell may do more than
   the TUI's own flags allow (started unconfined, or with network, or with
   more directories): it names both and says how to restart the daemon. A

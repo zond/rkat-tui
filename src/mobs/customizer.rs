@@ -143,6 +143,9 @@ pub struct HelperCustomizer {
     /// its source's dispatch admission (it asks this customizer for the
     /// child), so the child runs behind the gate.
     gated_fork_off: bool,
+    /// The configured endpoints (a helper on another model than its
+    /// owner's is routed through the owner's, see [`helper_binding`]).
+    endpoints: Vec<crate::endpoints::Endpoint>,
 }
 
 impl std::fmt::Debug for HelperCustomizer {
@@ -174,7 +177,16 @@ impl HelperCustomizer {
             root: None,
             application_tool_policy: None,
             gated_fork_off: false,
+            endpoints: Vec::new(),
         }
+    }
+
+    /// The configured endpoints, which name the owner's endpoint and the
+    /// ones a refused helper model could run on ([`helper_binding`]).
+    #[must_use]
+    pub fn with_endpoints(mut self, endpoints: Vec<crate::endpoints::Endpoint>) -> Self {
+        self.endpoints = endpoints;
+        self
     }
 
     /// Let the members keep `fork_off` (see the field). Only for a host
@@ -316,23 +328,80 @@ impl Depth {
     }
 }
 
-/// Apply the owner's gate, binding, tools, instructions and the shell's
-/// environment to `spec`.
+/// The auth binding a helper of `owner` on `model` runs with: always its
+/// owner's endpoint, never the model's provider default (its public URL
+/// with an environment key). On another model than its owner's, that
+/// endpoint must speak the model's dialect: a model the catalog does not
+/// know is the endpoint's to serve or refuse; one the catalog places with
+/// another provider is refused, naming the configured endpoints that speak
+/// its dialect.
+///
+/// # Errors
+///
+/// The refusal, in words for the agent.
+fn helper_binding(
+    owner: &Owner,
+    model: &str,
+    endpoints: &[crate::endpoints::Endpoint],
+) -> Result<Option<AuthBindingRef>, String> {
+    use crate::endpoints::WireDialect;
+    if model == owner.model {
+        return Ok(owner.auth_binding.clone());
+    }
+    let Some(wanted) = WireDialect::of_catalog_model(model) else {
+        return Ok(owner.auth_binding.clone());
+    };
+    let own = endpoints
+        .iter()
+        .find(|endpoint| endpoint.binding() == owner.auth_binding && !endpoint.builtin)
+        .or_else(|| {
+            // A built-in endpoint (no binding): the one of the owner's
+            // model's dialect.
+            owner.auth_binding.is_none().then(|| {
+                endpoints.iter().find(|endpoint| {
+                    endpoint.builtin
+                        && Some(endpoint.dialect) == WireDialect::of_catalog_model(&owner.model)
+                })
+            })?
+        });
+    let own_dialect = own
+        .map(|endpoint| endpoint.dialect)
+        .or_else(|| WireDialect::of_catalog_model(&owner.model));
+    if own_dialect == Some(wanted) {
+        return Ok(owner.auth_binding.clone());
+    }
+    let serving: Vec<&str> = endpoints
+        .iter()
+        .filter(|endpoint| endpoint.dialect == wanted)
+        .map(|endpoint| endpoint.name.as_str())
+        .collect();
+    Err(format!(
+        "a helper runs through its owner's endpoint ({}), which does not serve `{model}` ({wanted} dialect){}; use a model that endpoint serves, or switch your own model (/model) first",
+        own.map_or_else(
+            || "unknown".to_string(),
+            |endpoint| format!("`{}`", endpoint.name)
+        ),
+        if serving.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "; configured endpoints of that dialect: {}",
+                serving.join(", ")
+            )
+        }
+    ))
+}
+
+/// Apply the owner's gate, tools, instructions and the shell's environment
+/// to `spec` (its binding is [`helper_binding`]'s).
 fn shape(
     spec: &mut SpawnMemberSpec,
     owner: &Owner,
     label: &str,
-    model: &str,
     engine: &Arc<ApprovalEngine>,
     tools: &HelperTools,
     shell_env: Option<&HashMap<String, String>>,
 ) {
-    // A helper on its owner's model reaches it through the same endpoint;
-    // a helper that asks for another model resolves that model's default
-    // credentials (its owner's binding may serve another provider).
-    if spec.auth_binding.is_none() && model == owner.model {
-        spec.auth_binding.clone_from(&owner.auth_binding);
-    }
     let gate = ApprovalGate::for_helper(Arc::clone(engine), owner.session.clone(), label)
         .after(spec.tool_dispatch_admission.take());
     spec.tool_dispatch_admission = Some(Arc::new(gate));
@@ -460,6 +529,9 @@ impl HelperCustomizer {
             model: model.clone(),
         };
         let depth = Depth::admit(&label, tag.path.len(), self.max_depth, fresh)?;
+        if spec.auth_binding.is_none() {
+            spec.auth_binding = helper_binding(owner, &model, &self.endpoints).map_err(refuse)?;
+        }
         // Bound durably before the member exists: a member whose owner a
         // restart would lose never runs.
         self.registry
@@ -472,7 +544,6 @@ impl HelperCustomizer {
             spec,
             owner,
             &label,
-            &model,
             &self.engine,
             &self.tools,
             self.shell_env.as_ref(),
@@ -608,6 +679,64 @@ mod tests {
             assert!(names.0.iter().any(|n| n.as_str() == name), "{name}");
         }
         assert!(names.0.iter().any(|n| n.as_str() == "fork_off"));
+    }
+
+    /// E2 of the security review: a helper on another model than its
+    /// owner's runs through the owner's endpoint or is refused; it never
+    /// falls back to the model's provider default (its public URL and an
+    /// environment key).
+    #[test]
+    fn a_helper_runs_through_its_owners_endpoint_or_is_refused() {
+        use crate::endpoints::{Endpoint, SecretString, WireDialect};
+        let ep = |name: &str, dialect, builtin: bool| Endpoint {
+            name: name.to_string(),
+            dialect,
+            base_url: (!builtin).then(|| "http://localhost:4000".to_string()),
+            api_key: SecretString::new("k"),
+            key_env: None,
+            builtin,
+            priority: 0,
+        };
+        let gateway = ep("gateway", WireDialect::Anthropic, false);
+        let other = ep("oai-proxy", WireDialect::OpenAi, false);
+        let endpoints = vec![
+            ep("anthropic", WireDialect::Anthropic, true),
+            ep("openai", WireDialect::OpenAi, true),
+            gateway.clone(),
+            other,
+        ];
+        let owner = Owner {
+            session: SessionId::new(),
+            path: Vec::new(),
+            model: "claude-sonnet-4-6".into(),
+            auth_binding: gateway.binding(),
+        };
+        // The same model, another model of the endpoint's dialect, and one
+        // the catalog does not know: the owner's endpoint.
+        for model in ["claude-sonnet-4-6", "claude-opus-4-6", "house-model"] {
+            assert_eq!(
+                helper_binding(&owner, model, &endpoints),
+                Ok(gateway.binding()),
+                "{model}"
+            );
+        }
+        // Another provider's model: refused, naming the endpoints that
+        // speak its dialect; never `None` (the provider default).
+        let refused = helper_binding(&owner, "gpt-5.5", &endpoints).unwrap_err();
+        assert!(
+            refused.contains("`gateway`") && refused.contains("openai, oai-proxy"),
+            "{refused}"
+        );
+        // An owner on a built-in endpoint: same rule, its dialect.
+        let builtin = Owner {
+            auth_binding: None,
+            ..owner
+        };
+        assert_eq!(
+            helper_binding(&builtin, "claude-opus-4-6", &endpoints),
+            Ok(None)
+        );
+        assert!(helper_binding(&builtin, "gpt-5.5", &endpoints).is_err());
     }
 
     fn denies_fork_off(names: &meerkat_core::ToolNameSet) -> bool {

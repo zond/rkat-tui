@@ -239,6 +239,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
             "the realm keeps no durable decisions (an ephemeral persistence); approval requests could not reach a client".to_string(),
         ));
     }
+    let helper_endpoints = endpoints.as_slice().to_vec();
     let root_thinking: crate::mobs::customizer::RootThinking = Arc::new({
         let thinking = thinking.clone();
         move |identity: &meerkat_core::SessionLlmIdentity| {
@@ -327,6 +328,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         helper_max_depth,
     )
     .with_root(root)
+    .with_endpoints(helper_endpoints)
     .with_gated_fork_off();
     let registry_for_policy = if policy.without_registry {
         None
