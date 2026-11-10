@@ -464,7 +464,7 @@ pub async fn run(
     let (ui_tx, ui_rx) = mpsc::unbounded_channel::<Msg>();
     let (effect_tx, effect_rx) = mpsc::unbounded_channel::<Effect>();
     let mut status = StatusInfo::default();
-    status.apply(StatusUpdate::Attach(Some(runner::CONNECTING.to_string())));
+    status.apply(StatusUpdate::Connection(crate::ui::Connection::Connecting));
     let opened = app::open(
         &app_setup(&config),
         status,

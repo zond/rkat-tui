@@ -918,7 +918,12 @@ fn a_first_idle_ctrl_d_asks_for_a_second_in_the_editor_title() {
     assert!(!lines[9].contains("anyway"), "title: {:?}", lines[9]);
     // Attached, /quit may stop the daemon; the title names /detach.
     let mut status = StatusInfo::default();
-    status.apply(StatusUpdate::Attach(Some("attached 127.0.0.1:1".into())));
+    status.apply(StatusUpdate::Connection(
+        rkat_tui::ui::Connection::Attached {
+            address: "127.0.0.1:1".into(),
+            daemon_build: None,
+        },
+    ));
     let mut app = App::new(status);
     app.update(Msg::Key(KeyEvent::new(
         KeyCode::Char('d'),

@@ -250,7 +250,14 @@ async fn the_client_reconnects_to_a_restarted_daemon() {
     );
     daemon.stop().await;
     client
-        .wait_for(|msg| matches!(msg, Msg::Status(StatusUpdate::Attach(Some(state))) if state == "reconnecting"))
+        .wait_for(|msg| {
+            matches!(
+                msg,
+                Msg::Status(StatusUpdate::Connection(
+                    rkat_tui::ui::Connection::Reconnecting
+                ))
+            )
+        })
         .await;
     let daemon = Running::start(&ws.root, &llm).await;
     client.attached().await;

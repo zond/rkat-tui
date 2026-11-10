@@ -527,7 +527,10 @@ fn cost_command_prints_the_breakdown() {
 /// An idle app attached to a daemon.
 fn attached_app() -> App {
     let mut status = StatusInfo::default();
-    status.apply(StatusUpdate::Attach(Some("attached 127.0.0.1:1".into())));
+    status.apply(StatusUpdate::Connection(crate::ui::Connection::Attached {
+        address: "127.0.0.1:1".into(),
+        daemon_build: None,
+    }));
     App::new(status)
 }
 
@@ -601,7 +604,10 @@ fn the_quit_dialog_detaches_by_default_terminates_on_request_and_esc_stays() {
 #[test]
 fn unsent_messages_are_saved_whichever_way_an_attached_quit_leaves() {
     let mut status = StatusInfo::default();
-    status.apply(StatusUpdate::Attach(Some("attached 127.0.0.1:1".into())));
+    status.apply(StatusUpdate::Connection(crate::ui::Connection::Attached {
+        address: "127.0.0.1:1".into(),
+        daemon_build: None,
+    }));
     let mut app = App::new(status);
     assert_eq!(
         submit(&mut app, "one"),

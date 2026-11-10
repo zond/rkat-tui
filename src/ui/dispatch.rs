@@ -92,6 +92,7 @@ impl App {
             Command::Context => fx.push(Effect::ContextReport(self.context_header())),
             Command::Status => fx.push(Effect::StatusReport),
             Command::DaemonStop => fx.push(Effect::DaemonStop),
+            Command::DaemonStart => fx.push(Effect::DaemonStart),
             Command::Agents(name) => fx.push(Effect::Agents(name)),
             Command::Init => {
                 if self.idle_or_notice() {

@@ -281,7 +281,7 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect, now: Instant) {
         " · Ctrl+↑/↓ pick a helper"
     };
     // Attached, quitting may stop the daemon; /detach keeps it.
-    let quit = if app.status.attach.is_some() {
+    let quit = if app.status.reached_daemon() {
         "quit (/detach keeps the agent)"
     } else {
         "quit"
@@ -556,9 +556,9 @@ fn mode_segment(status: &StatusInfo) -> Option<Span<'static>> {
 /// The styled status bar (drawn on a reversed background).
 pub fn status_bar(status: &StatusInfo, now: Instant) -> Line<'static> {
     let mut segs: Vec<Span<'static>> = Vec::new();
-    if let Some(attach) = &status.attach {
+    if let Some(connection) = &status.connection {
         segs.push(Span::styled(
-            attach.clone(),
+            connection.segment(now),
             Style::default().add_modifier(Modifier::BOLD),
         ));
     }
@@ -1007,9 +1007,12 @@ mod tests {
             provider: "anthropic".into(),
             model: "claude-sonnet-4-6".into(),
         });
-        s.apply(crate::ui::StatusUpdate::Attach(Some(
-            "attached 127.0.0.1:4000".into(),
-        )));
+        s.apply(crate::ui::StatusUpdate::Connection(
+            crate::ui::Connection::Attached {
+                address: "127.0.0.1:4000".into(),
+                daemon_build: None,
+            },
+        ));
         let line = status_line(&s, now);
         assert!(
             line.starts_with(" attached 127.0.0.1:4000 │ anthropic/claude-sonnet-4-6"),
@@ -1023,7 +1026,7 @@ mod tests {
             "{line}"
         );
         s.apply(crate::ui::StatusUpdate::Agent(None));
-        s.apply(crate::ui::StatusUpdate::Attach(None));
+        s.connection = None;
         assert!(status_line(&s, now).starts_with(" anthropic/"));
     }
 

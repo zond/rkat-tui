@@ -8,6 +8,7 @@ pub mod checklist;
 pub mod commands;
 pub mod compaction;
 pub mod complete;
+pub mod connection;
 pub mod cost;
 pub mod delivery;
 mod dispatch;
@@ -52,6 +53,7 @@ pub use commands::{
 #[cfg(any(test, feature = "test-support"))]
 pub use compaction::CompactMode;
 pub use compaction::{CompactFailure, CompactionGauge, CompactionPolicy};
+pub use connection::Connection;
 #[cfg(any(test, feature = "test-support"))]
 pub use cost::{CostConfidence, CostReadout, UsageTotals};
 pub use cost::{SessionCost, SessionCostSnapshot};
@@ -261,9 +263,8 @@ pub enum StatusUpdate {
     Helpers(Vec<crate::mobs::HelperStatus>),
     /// Replace the session's cost totals (new or resumed session).
     CostTotals(SessionCostSnapshot),
-    /// Attach mode: the daemon connection's state, shown first in the
-    /// status bar.
-    Attach(Option<String>),
+    /// The daemon connection's state, shown first in the status bar.
+    Connection(Connection),
     /// Attach mode: the agent this client works with (`main-<id>`), shown
     /// after the connection's state.
     Agent(Option<String>),
@@ -655,6 +656,10 @@ pub enum Effect {
     /// `/daemon stop`: ask the attached daemon to shut down (attach mode;
     /// answered with a notice).
     DaemonStop,
+    /// `/daemon start`: connect to the workspace's daemon again (starting
+    /// it when this client may) after the connect failed or the daemon
+    /// stopped (answered with notices and the connection's state).
+    DaemonStart,
     /// `/agents`: list the workspace's agents (`None`), or switch this
     /// client to the agent named (answered with notices).
     Agents(Option<String>),
@@ -749,10 +754,9 @@ pub struct StatusInfo {
     cost: SessionCost,
     /// Prices for the cost readout.
     prices: Arc<crate::pricing::PriceTable>,
-    /// Attach mode: the daemon connection's state (`attached <addr>`,
-    /// `reconnecting`, `daemon starting`); `None` until the runner reports
+    /// The daemon connection's state; `None` until the runner reports
     /// one.
-    attach: Option<String>,
+    connection: Option<Connection>,
     /// Attach mode: the agent this client works with.
     agent: Option<String>,
 }
@@ -768,6 +772,12 @@ const UNKNOWN_HELPER_MODEL: &str = "unknown";
 const SESSION_SHORT_LEN: usize = 8;
 
 impl StatusInfo {
+    /// Whether this client reached the daemon ([`Connection::reached`]).
+    #[must_use]
+    pub fn reached_daemon(&self) -> bool {
+        self.connection.as_ref().is_some_and(Connection::reached)
+    }
+
     /// Add to the token counters (a model call's usage).
     fn add_tokens(&mut self, input: u64, output: u64) {
         self.input_tokens = self.input_tokens.saturating_add(input);
@@ -844,7 +854,7 @@ impl StatusInfo {
             StatusUpdate::Helpers(helpers) => self.helpers = helpers.len(),
             StatusUpdate::CostTotals(cost) => self.cost = cost,
             StatusUpdate::Prices(prices) => self.prices = prices,
-            StatusUpdate::Attach(state) => self.attach = state,
+            StatusUpdate::Connection(state) => self.connection = Some(state),
             StatusUpdate::Agent(agent) => self.agent = agent,
         }
     }

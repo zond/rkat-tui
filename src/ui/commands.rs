@@ -161,6 +161,8 @@ pub enum Command {
     Helpers(HelpersCommand),
     /// `/daemon stop`: shut the attached `rkat-tui-mob` down (attach mode).
     DaemonStop,
+    /// `/daemon start`: connect again, starting the daemon when needed.
+    DaemonStart,
 }
 
 /// Slash-command parse failure.
@@ -478,14 +480,21 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "daemon",
         aliases: &[],
-        usage: "stop",
-        summary: "shut the workspace's daemon down",
-        help: &[(
-            "/daemon stop",
-            "shut the workspace's rkat-tui-mob down from any client\n(its sessions stay)",
-        )],
+        usage: "stop | start",
+        summary: "shut the workspace's daemon down, or connect again",
+        help: &[
+            (
+                "/daemon stop",
+                "shut the workspace's rkat-tui-mob down from any client\n(its sessions stay)",
+            ),
+            (
+                "/daemon start",
+                "connect to the workspace's daemon again, starting it when\nrkat-tui may: after a failed attach (the status bar says\nwhy) or a /daemon stop",
+            ),
+        ],
         parse: |rest| match words(rest).as_slice() {
             ["stop"] => Some(Command::DaemonStop),
+            ["start"] => Some(Command::DaemonStart),
             _ => None,
         },
     },

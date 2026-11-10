@@ -360,7 +360,12 @@ impl Client {
 
     pub async fn attached(&mut self) {
         self.wait_for(|msg| {
-            matches!(msg, Msg::Status(StatusUpdate::Attach(Some(state))) if state.starts_with("attached"))
+            matches!(
+                msg,
+                Msg::Status(StatusUpdate::Connection(
+                    rkat_tui::ui::Connection::Attached { .. }
+                ))
+            )
         })
         .await;
     }

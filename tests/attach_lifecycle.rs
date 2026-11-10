@@ -585,3 +585,128 @@ async fn an_answered_attach_is_counted_for_every_other_connection_at_once() {
     drop(watcher);
     daemon.stop().await;
 }
+
+/// The last connection state `client` was shown.
+fn connection_state(client: &Client) -> Option<rkat_tui::ui::Connection> {
+    client.seen.iter().rev().find_map(|msg| match msg {
+        Msg::Status(rkat_tui::ui::StatusUpdate::Connection(state)) => Some(state.clone()),
+        _ => None,
+    })
+}
+
+/// The finding this guards (second review, item 2): a failed first attach
+/// set the status to `detached`, said why once in a notice that scrolled
+/// away and never tried again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_daemon_that_exits_at_start_is_retried_reported_and_started_by_hand() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let ws = Workspace::new();
+    let endpoint_file = common::endpoint_file_for(&ws.root);
+    let bin = ws.root.parent().unwrap().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let starts = bin.join("starts");
+    let program = bin.join("rkat-tui-mob");
+    std::fs::write(
+        &program,
+        format!("#!/bin/sh\necho start >> '{}'\nexit 3\n", starts.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let log = bin.join("daemon.log");
+    let args = args_for(&ws.root);
+    let mut config = rkat_tui::client::configure(&args, rkat_tui::cli::AttachTarget::Existing)
+        .await
+        .unwrap();
+    config.endpoint_files = vec![endpoint_file.clone()];
+    config.spawn = Some(rkat_tui::client::runner::SpawnPlan {
+        program,
+        argv: Vec::new(),
+        log: log.clone(),
+    });
+    config.lister = common::no_lists();
+    let mut client = Client {
+        harness: rkat_tui::client::testing::spawn_attach_runner(config),
+        seen: Vec::new(),
+    };
+    // Retried with a backoff, then given up on with the reason and the log.
+    let given_up = |msg: &Msg| {
+        matches!(
+            msg,
+            Msg::Status(rkat_tui::ui::StatusUpdate::Connection(
+                rkat_tui::ui::Connection::Failed { retry_at: None, .. }
+            ))
+        )
+    };
+    client.wait_for(given_up).await;
+    let retried = client
+        .seen
+        .iter()
+        .filter(|msg| {
+            matches!(
+                msg,
+                Msg::Status(rkat_tui::ui::StatusUpdate::Connection(
+                    rkat_tui::ui::Connection::Failed {
+                        retry_at: Some(_),
+                        ..
+                    }
+                ))
+            )
+        })
+        .count();
+    assert_eq!(retried, 3, "three retries before giving up");
+    assert_eq!(
+        std::fs::read_to_string(&starts).unwrap().lines().count(),
+        4,
+        "the first start and three restarts"
+    );
+    let Some(rkat_tui::ui::Connection::Failed {
+        reason, log: shown, ..
+    }) = connection_state(&client)
+    else {
+        panic!("{:?}", connection_state(&client));
+    };
+    assert!(
+        reason.contains("exited") && reason.contains('3'),
+        "{reason}"
+    );
+    assert_eq!(shown.as_deref(), Some(log.as_path()));
+    // Once a daemon serves, /daemon start attaches.
+    let llm = ScriptedLlmClient::new(vec![Step::Text("served")]);
+    let daemon = Running::start_with(&args, Running::options(&ws.root, &llm)).await;
+    client.send(Effect::DaemonStart);
+    client.attached().await;
+    client.send(Effect::StartTurn("hello".into()));
+    assert_eq!(client.turn_finished().await.result.unwrap().text, "served");
+    client.quit().await;
+    daemon.stop().await;
+}
+
+/// A client attached to a daemon of another build says so (the user
+/// rebuilt the binaries under a running daemon).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_daemon_of_another_build_is_announced() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let daemon = Running::start_with(
+        &args_for(&ws.root),
+        Running::options(&ws.root, &llm).with_build("0.0.0+elsewhere"),
+    )
+    .await;
+    let mut client = Client::attach(&ws.root).await;
+    client
+        .saw(|msg| {
+            matches!(msg, Msg::Notice { text, .. }
+                if text.contains("the daemon runs build 0.0.0+elsewhere")
+                    && text.contains(rkat_tui::BUILD))
+        })
+        .await;
+    assert_eq!(
+        connection_state(&client),
+        Some(rkat_tui::ui::Connection::Attached {
+            address: daemon.endpoint().address.to_string(),
+            daemon_build: Some("0.0.0+elsewhere".into()),
+        })
+    );
+    client.quit().await;
+    daemon.stop().await;
+}

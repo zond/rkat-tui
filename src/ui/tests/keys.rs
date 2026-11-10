@@ -556,7 +556,12 @@ fn quitting_a_busy_attached_ui_promises_only_what_holds_either_way() {
         Some((NoticeLevel::Warn, text)) if text.contains("the turn is interrupted")
     ));
     let mut app = running_app();
-    app.update(Msg::Status(StatusUpdate::Attach(Some("attached".into()))));
+    app.update(Msg::Status(StatusUpdate::Connection(
+        crate::ui::Connection::Attached {
+            address: "127.0.0.1:1".into(),
+            daemon_build: None,
+        },
+    )));
     app.update_at(ctrl('d'), t0);
     assert!(matches!(
         last_notice(&app),

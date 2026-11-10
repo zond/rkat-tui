@@ -51,7 +51,7 @@ use crate::ui::{
     Block, Checklist, ChecklistView, CompactFailure, Effect, EscalationAnswer, EscalationId, Msg,
     NoticeLevel, RuleEffect, StatusUpdate, TurnFailure, TurnOutcome, TurnSummary,
 };
-use crate::ui::{Departure, QuitDecision};
+use crate::ui::{Connection as LinkState, Departure, QuitDecision};
 use crate::user_shell::UserShell;
 use crate::workbench::models::Current;
 use crate::workbench::{AgentContext, SavedUnsent, Workbench, WorkbenchParts};
@@ -61,12 +61,13 @@ use crate::workbench::{context, tasks};
 /// already committed ([`AttachRunner::retry_input`]).
 const RETRY_INPUT: &str = "(retrying the request above)";
 
-/// The status-bar segment while the first connection is made.
-pub const CONNECTING: &str = "connecting";
-/// The status-bar segment while a started daemon comes up.
-pub const STARTING: &str = "daemon starting";
-/// The status-bar segment while a dropped connection is re-made.
-pub const RECONNECTING: &str = "reconnecting";
+/// How many times a failed first connect is retried by itself (each
+/// retry may start the daemon again): a daemon that fails the same way
+/// every time (a bad config, a missing key) must not be restarted in a
+/// loop. `/daemon start` retries once more.
+const START_RETRIES: u32 = 3;
+/// The wait before the first of those retries; each next one doubles it.
+const START_RETRY_FIRST: Duration = Duration::from_millis(500);
 
 /// Why Up on an empty input takes nothing back in attach mode.
 pub const RECALL_UNAVAILABLE: &str = "a message sent to the daemon cannot be taken back: the engine's mob/member_send answers no input id to cancel it by (an engine ask, docs/mob-split.md ask 6); the agent gets it at its next step, or interrupt (Esc) to stop the turn";
@@ -514,8 +515,14 @@ pub struct AttachRunner {
     /// runs: held until the link is up and no switch runs, or the first
     /// connect failed; `None` once released.
     held: Option<Vec<Effect>>,
-    /// The first connect failed (held prompts then fail as not attached).
+    /// The first connect failed for good (held prompts then fail as not
+    /// attached).
     first_failed: bool,
+    /// When a failed connect is tried again by itself.
+    retry_at: Option<Instant>,
+    /// The automatic retries of the failed connect so far
+    /// ([`START_RETRIES`]).
+    retries: u32,
     /// The prompt of the turn that just failed, in its conversation.
     failed_prompt: Option<(SessionId, String)>,
 }
@@ -575,6 +582,8 @@ impl AttachRunner {
             farewells: Farewells::default(),
             held: Some(Vec::new()),
             first_failed: false,
+            retry_at: None,
+            retries: 0,
             failed_prompt: None,
         }
     }
@@ -597,7 +606,7 @@ impl AttachRunner {
     /// got were saved, when there were any.
     pub async fn run(mut self) -> Option<SavedUnsent> {
         self.bench.start();
-        self.status(CONNECTING);
+        self.show(LinkState::Connecting);
         self.connect();
         loop {
             for effect in self.releasable() {
@@ -624,6 +633,7 @@ impl AttachRunner {
                 Some((epoch, report)) = self.reports_rx.recv() => self.on_report(epoch, report),
                 () = sleep_until(self.turn.deadline()) => self.on_deadline(),
                 () = sleep_until(self.discover_at) => self.discover(),
+                () = sleep_until(self.retry_at) => self.retry(),
                 () = sleep_until(self.session_check_at) => self.check_session(),
                 joined = self.bench.background() => self.model_lists(joined),
             }
@@ -666,8 +676,69 @@ impl AttachRunner {
         });
     }
 
-    fn status(&self, state: &str) {
-        self.send(Msg::Status(StatusUpdate::Attach(Some(state.to_string()))));
+    fn show(&self, state: LinkState) {
+        self.send(Msg::Status(StatusUpdate::Connection(state)));
+    }
+
+    /// Try the failed connect again, as the first one (a daemon may be
+    /// started).
+    fn retry(&mut self) {
+        self.retry_at = None;
+        self.first_connect = true;
+        self.show(LinkState::Connecting);
+        self.connect();
+    }
+
+    /// `/daemon start`: connect again after the connect failed for good
+    /// (or the daemon was stopped), starting the daemon when this client
+    /// may; attached or connecting, there is nothing to do.
+    fn daemon_start(&mut self) {
+        if let Some(link) = &self.link {
+            self.notice(
+                NoticeLevel::Info,
+                format!(
+                    "already attached to the daemon at {}",
+                    link.endpoint.address
+                ),
+            );
+            return;
+        }
+        if self.connecting.is_some() {
+            self.notice(NoticeLevel::Info, "already connecting to the daemon");
+            return;
+        }
+        self.stopping = false;
+        self.retries = 0;
+        self.notice(NoticeLevel::Info, "connecting to the workspace's daemon");
+        self.retry();
+    }
+
+    /// A connect failed with `reason`: try again after a backoff while
+    /// retries are left (none for an agent the daemon no longer has),
+    /// else say so for good.
+    fn connect_failed(&mut self, reason: String, log: Option<PathBuf>, retry: bool) {
+        let retry_at = (retry && self.retries < START_RETRIES).then(|| {
+            let wait = START_RETRY_FIRST * 2u32.pow(self.retries);
+            self.retries += 1;
+            Instant::now() + wait
+        });
+        self.retry_at = retry_at;
+        if retry_at.is_none() {
+            self.first_failed = true;
+            self.notice(
+                NoticeLevel::Error,
+                format!(
+                    "cannot attach to the workspace daemon: {reason}; /daemon start tries again"
+                ),
+            );
+        } else {
+            tracing::warn!(%reason, retries = self.retries, "attach failed, retrying");
+        }
+        self.show(LinkState::Failed {
+            reason,
+            log,
+            retry_at: retry_at.map(Instant::into_std),
+        });
     }
 
     /// Start connecting in the background: the first time with
@@ -771,20 +842,17 @@ impl AttachRunner {
         let established = match joined {
             Ok(Ok(established)) => established,
             Ok(Err(err)) => {
-                self.first_failed = true;
-                self.send(Msg::Status(StatusUpdate::Attach(Some("detached".into()))));
-                self.notice(
-                    NoticeLevel::Error,
-                    format!("cannot attach to the workspace daemon: {err}"),
-                );
+                let (reason, log) = failure(&err);
+                self.connect_failed(reason, log, !gone(&err));
                 return;
             }
             Err(err) => {
-                self.first_failed = true;
                 tracing::warn!(error = %err, "the connect task failed");
+                self.connect_failed(format!("the connect task failed: {err}"), None, true);
                 return;
             }
         };
+        self.retries = 0;
         let Established {
             link,
             mark,
@@ -850,7 +918,21 @@ impl AttachRunner {
         if fresh {
             self.load_cost(&link.session);
         }
-        self.status(&format!("attached {address}"));
+        let daemon_build = link.connection.daemon_build().map(str::to_string);
+        if new_daemon && daemon_build.as_deref() != Some(crate::BUILD) {
+            self.notice(
+                NoticeLevel::Warn,
+                format!(
+                    "the daemon runs build {}, this rkat-tui is build {}: /daemon stop and attach again to run this build",
+                    daemon_build.as_deref().unwrap_or("unknown (older)"),
+                    crate::BUILD
+                ),
+            );
+        }
+        self.show(LinkState::Attached {
+            address: address.to_string(),
+            daemon_build,
+        });
         // The helpers of this conversation: what was shown before a
         // reconnect stays shown.
         if fresh || self.followers.owner() != Some(&link.session) {
@@ -1011,9 +1093,7 @@ impl AttachRunner {
             self.send(Msg::EscalationResolved(id));
         }
         if self.stopping {
-            self.send(Msg::Status(StatusUpdate::Attach(Some(
-                "daemon stopped".into(),
-            ))));
+            self.show(LinkState::Stopped);
             self.notice(
                 NoticeLevel::Info,
                 "the daemon has shut down; /quit to leave",
@@ -1024,7 +1104,7 @@ impl AttachRunner {
             }
             return;
         }
-        self.status(RECONNECTING);
+        self.show(LinkState::Reconnecting);
         self.connect();
     }
 
@@ -1818,6 +1898,7 @@ impl AttachRunner {
                 self.bench.export(path.as_deref(), &text, &session);
             }
             Effect::DaemonStop => self.daemon_stop().await,
+            Effect::DaemonStart => self.daemon_start(),
             Effect::Agents(None) => self.list_agents().await,
             Effect::Agents(Some(name)) => self.switch_agent(name).await,
             Effect::DecideQuit => self.decide_quit().await,
@@ -2653,7 +2734,7 @@ impl AttachRunner {
         }
         self.agent = Some(name);
         self.agent_switch = true;
-        self.status(RECONNECTING);
+        self.show(LinkState::Reconnecting);
         self.connect();
     }
 
@@ -3333,7 +3414,7 @@ async fn first_endpoint(
     match (decision, spawn) {
         (Decision::Attach(endpoint), _) => Ok(endpoint),
         (Decision::Start, Some(plan)) => {
-            let _ = ui_tx.send(Msg::Status(StatusUpdate::Attach(Some(STARTING.into()))));
+            let _ = ui_tx.send(Msg::Status(StatusUpdate::Connection(LinkState::Starting)));
             let (pid, mut exited) = launch::spawn_daemon(
                 &plan.program,
                 &launch::argv_for(&plan.argv, files),
@@ -3362,7 +3443,7 @@ async fn restart(
     plan: &SpawnPlan,
     ui_tx: &mpsc::UnboundedSender<Msg>,
 ) -> Result<Endpoint, ClientError> {
-    let _ = ui_tx.send(Msg::Status(StatusUpdate::Attach(Some(STARTING.into()))));
+    let _ = ui_tx.send(Msg::Status(StatusUpdate::Connection(LinkState::Starting)));
     // No start token: a daemon that died lost what it knew about its
     // clients, so the restarted one has no owner and `/quit` asks.
     let (pid, mut exited) = launch::spawn_daemon(
@@ -3389,6 +3470,22 @@ struct Attach {
     agent: AgentChoice,
     cursor: Option<CursorFile>,
     start_token: Option<String>,
+}
+
+/// What the status bar says of a failed connect: the reason and the
+/// daemon's log, when there is one to read.
+fn failure(err: &ClientError) -> (String, Option<PathBuf>) {
+    match err {
+        ClientError::DaemonExited { status, log } => {
+            (format!("daemon exited ({status})"), Some(log.clone()))
+        }
+        ClientError::NeverCameUp { waited, log } => (
+            format!("daemon did not come up within {}s", waited.as_secs()),
+            Some(log.clone()),
+        ),
+        ClientError::NoDaemon { .. } => ("no daemon answers".to_string(), None),
+        other => (other.to_string(), None),
+    }
 }
 
 /// Whether a failed attach will fail again: the daemon refused to bind

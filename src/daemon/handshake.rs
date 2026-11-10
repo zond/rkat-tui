@@ -90,12 +90,12 @@ where
     W: AsyncWrite + Unpin,
 {
     let pending = read_attach(reader, writer, token, timeout).await?;
-    acknowledge(writer, &pending, None, timeout).await?;
+    acknowledge(writer, &pending, None, None, timeout).await?;
     Ok(pending.params)
 }
 
 /// Answer `pending` with `{attached: true}` on `writer`, naming the agent
-/// the connection was bound to. The daemon registers the connection first
+/// the connection was bound to and the daemon's `build`. The daemon registers the connection first
 /// ([`super::serve`]): a client that read this answer is counted for every
 /// other connection.
 ///
@@ -107,6 +107,7 @@ pub async fn acknowledge<W: AsyncWrite + Unpin>(
     writer: &mut W,
     pending: &Pending,
     agent: Option<&super::agents::Bound>,
+    build: Option<&str>,
     timeout: Duration,
 ) -> Result<(), HandshakeError> {
     let reply = protocol::result_line(
@@ -115,6 +116,7 @@ pub async fn acknowledge<W: AsyncWrite + Unpin>(
             attached: true,
             agent: agent.map(|bound| bound.name.clone()),
             seated: agent.is_some_and(|bound| bound.seated),
+            build: build.map(str::to_string),
         },
     );
     tokio::time::timeout(timeout, write_line(writer, &reply))

@@ -307,7 +307,15 @@ where
             }
         }
     }
-    match handshake::acknowledge(writer, &pending, bound.as_ref(), handshake::TIMEOUT).await {
+    match handshake::acknowledge(
+        writer,
+        &pending,
+        bound.as_ref(),
+        Some(lifecycle.build()),
+        handshake::TIMEOUT,
+    )
+    .await
+    {
         Ok(()) => Ok(seat),
         Err(err) => {
             seat.withdraw();

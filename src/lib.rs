@@ -36,6 +36,11 @@
 //! - `client` — the TUI against the workspace's daemon (attach, start on demand)
 //! - `workbench` — what the client does on this side of the agent (`!`, `/remember`, `/export`, prices, models)
 
+/// This build: the crate version and the git commit it was built from
+/// (`build.rs`). The daemon names its own in its attach answer, and a
+/// client built from another commit says so.
+pub const BUILD: &str = concat!(env!("CARGO_PKG_VERSION"), "+", env!("RKAT_TUI_GIT"));
+
 // The internal modules: crate-private, public with the `test-support`
 // feature (the crate's integration tests). Without it, an item or re-export
 // nothing in the binaries uses is dead code, which the default-features

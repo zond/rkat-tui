@@ -42,6 +42,7 @@ pub struct Caller {
 /// The daemon's lifecycle state.
 #[derive(Debug)]
 pub struct Lifecycle {
+    build: String,
     workspace: PathBuf,
     started_at: String,
     start_token: Option<String>,
@@ -59,8 +60,22 @@ impl Lifecycle {
     /// `started_at` (RFC 3339), with the start token its launcher handed
     /// it (an empty one counts as none).
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn new(workspace: PathBuf, started_at: String, start_token: Option<String>) -> Arc<Self> {
+        Self::built(workspace, started_at, start_token, crate::BUILD.to_string())
+    }
+
+    /// [`Self::new`], naming `build` as the daemon's build (tests name
+    /// another than [`crate::BUILD`]).
+    #[must_use]
+    pub fn built(
+        workspace: PathBuf,
+        started_at: String,
+        start_token: Option<String>,
+        build: String,
+    ) -> Arc<Self> {
         Arc::new(Self {
+            build,
             workspace,
             started_at,
             start_token: start_token.filter(|token| !token.is_empty()),
@@ -69,6 +84,12 @@ impl Lifecycle {
             retire_all: AtomicBool::new(false),
             shutdown: tokio::sync::watch::channel(false).0,
         })
+    }
+
+    /// The daemon's build, as its attach answer names it.
+    #[must_use]
+    pub fn build(&self) -> &str {
+        &self.build
     }
 
     /// The workspace the daemon serves.

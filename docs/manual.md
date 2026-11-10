@@ -763,7 +763,7 @@ why, is recorded in [`docs/ux-parity.md`](ux-parity.md), the dated audit
 behind these controls (its Status column is the current state).
 
 
-`/help` (alias `/?`), `/quit` (aliases `/exit`, `/q`), `/detach`, `/agents [name]`, `/daemon stop`, `/clear` (alias `/new`), `/resume [ref]`,
+`/help` (alias `/?`), `/quit` (aliases `/exit`, `/q`), `/detach`, `/agents [name]`, `/daemon stop`, `/daemon start`, `/clear` (alias `/new`), `/resume [ref]`,
 `/rewind` (aliases `/checkpoint`, `/undo`), `/permissions [list|add allow|deny <tool> [pattern]|rm <n>|trust]` (alias `/rules`; `remove` for `rm`),
 `/mode [default|accept-edits|plan|auto]`, `/auto [on|off|resume]`, `/model [[endpoint:]id|refresh]`,
 `/remember <text>`, `/memory [user|system]`, `/init`, `/compact [now|status|<instructions>]`, `/context`, `/status`, `/export [file]`, `/usage` (aliases `/cost`, `/stats`), `/copy [N]`, `/trust` (alias `/mcp trust`),
@@ -1100,9 +1100,21 @@ memory being off) shows when a TUI first attaches to it, and again after
 it restarted.
 
 **Status bar.** The first segment is the connection: `connecting`,
-`daemon starting`, `attached 127.0.0.1:<port>`, `reconnecting`,
-`detached` or `daemon stopped`; the next one the agent this TUI works
-with (`agent main-<id>`).
+`daemon starting`, `attached 127.0.0.1:<port>`, `reconnecting`, a
+failure, or `daemon stopped`; the next one the agent this TUI works with
+(`agent main-<id>`). A daemon built from another commit than this TUI
+adds `· daemon build <version>+<commit>` to the attached segment and says
+so once in the transcript (`/daemon stop` and attach again runs the new
+build).
+
+**When the attach fails.** The segment says why, when the TUI tries
+again, and where the daemon's output is, for example `daemon exited (exit
+status: 3) · retry 2s · log ~/.rkat/logs/rkat-tui-mob.log`. A failed first
+attach is retried three times with a growing wait (each try starts the
+daemon again when this TUI may start it), then left with `/daemon start
+retries`: fix what the log says and type `/daemon start`, which also
+starts a daemon again after `/daemon stop`. Prompts typed meanwhile wait
+for the retries and fail as not attached once the TUI gives up.
 
 **Detach and reattach.** `/detach` leaves and keeps this TUI's agent
 running: the daemon and a running turn go on, and the daemon marks the

@@ -4173,3 +4173,36 @@ the review's "the handshake waits behind a seat" (`Agents::bind` holds
 `seating` across the seat and its notes to the other agents), seen in
 practice; left for the refactor batch, recorded here.
 
+### The first failed attach is retried and explained
+
+The runner set `first_failed` and a status of `detached` on a failed first
+connect, said why once in a transcript notice and never called `connect`
+again; the UI decided "attached?" from that display string
+(`status.attach.is_some()`), so `/detach` sent a departure to a daemon it
+never reached. The status is now typed, `ui::Connection` (`Connecting`,
+`Starting`, `Attached { address, daemon_build }`, `Reconnecting`,
+`Failed { reason, log, retry_at }`, `Stopped`); the UI asks
+`Connection::reached` (attached, or reconnecting to a daemon it had
+reached). The agent stays its own status field: it outlives a connection
+(it is shown while reconnecting). A failed connect is retried
+`START_RETRIES` (3) times, 0.5 s, 1 s, 2 s apart, each as a first connect
+(a daemon this client may start is started again), unless the daemon
+refused the agent (`gone`): a daemon that fails the same way every time
+(a bad config, a missing key) is not restarted in a loop. Then `Failed`
+without a retry, and `/daemon start` (`Effect::DaemonStart`) resets the
+count and connects again; it also starts a daemon after `/daemon stop`.
+The reason and the log come from `ClientError::DaemonExited` and
+`NeverCameUp`, which carried them already.
+
+The daemon names its build in the attach answer (`Attached::build`,
+`rkat_tui::BUILD`: the crate version and the commit `build.rs` reads with
+`git rev-parse`, `unknown` outside a checkout; the build script is not
+library code, so the rule on direct process launches does not cover it),
+and a client of another build says so once per daemon and in the status
+segment. Pinned by
+`a_daemon_that_exits_at_start_is_retried_reported_and_started_by_hand`
+(a stand-in daemon binary that exits 3: four starts, three retries shown,
+the reason and the log, then `/daemon start` attaches to a serving
+daemon), `a_daemon_of_another_build_is_announced` (`DaemonOptions::with_build`),
+and `ui::connection`'s unit tests (the segment's text).
+

@@ -257,6 +257,8 @@ pub struct DaemonOptions {
     pub start_token: Option<String>,
     pub(crate) bootstrap: BootstrapOptions,
     pub(crate) policy: engine::PolicyOptions,
+    /// The build the daemon names (`None`: [`crate::BUILD`]).
+    pub(crate) build: Option<String>,
 }
 
 impl Default for DaemonOptions {
@@ -267,6 +269,7 @@ impl Default for DaemonOptions {
             start_token: None,
             bootstrap: BootstrapOptions::default(),
             policy: engine::PolicyOptions::default(),
+            build: None,
         }
     }
 }
@@ -277,6 +280,15 @@ impl DaemonOptions {
     #[cfg(any(test, feature = "test-support"))]
     pub fn with_endpoint_file(mut self, file: PathBuf) -> Self {
         self.endpoint_file = Some(file);
+        self
+    }
+
+    /// Name `build` as the daemon's build (a client of another build
+    /// says so).
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_build(mut self, build: &str) -> Self {
+        self.build = Some(build.to_string());
         self
     }
 
@@ -475,8 +487,12 @@ impl Daemon {
             composed.root.model.clone(),
             composed.root.auth_binding.clone(),
         ));
-        let lifecycle =
-            lifecycle::Lifecycle::new(workspace.clone(), started_at.clone(), options.start_token);
+        let lifecycle = lifecycle::Lifecycle::built(
+            workspace.clone(),
+            started_at.clone(),
+            options.start_token,
+            options.build.unwrap_or_else(|| crate::BUILD.to_string()),
+        );
         let agents = agents::Agents::new(agents::AgentsParts {
             state: Arc::clone(&composed.state),
             conversations: Arc::clone(&conversations),

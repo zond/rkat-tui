@@ -548,7 +548,7 @@ impl App {
             }
             // Attach mode decides next whether the agent retires and the
             // daemon stops.
-            let after = if self.status.attach.is_some() {
+            let after = if self.status.reached_daemon() {
                 "quitting retires this agent and interrupts its turn unless other clients work with it, /detach keeps it running; messages the daemon has not received are saved"
             } else {
                 "the turn is interrupted, undelivered messages are saved"
@@ -564,7 +564,7 @@ impl App {
         // Attached: the runner asks the daemon whether this client stops
         // it, leaves it to other clients, or asks (detach or terminate). A
         // second `/quit` while it asks leaves at once, as a detach.
-        if self.status.attach.is_some() && !std::mem::take(&mut self.deciding_quit) {
+        if self.status.reached_daemon() && !std::mem::take(&mut self.deciding_quit) {
             self.deciding_quit = true;
             fx.push(Effect::DecideQuit);
             return;
@@ -576,7 +576,7 @@ impl App {
     /// records the detach); not attached (yet), there is nothing to detach
     /// from.
     pub(super) fn request_detach(&mut self, fx: &mut Vec<Effect>) {
-        if self.status.attach.is_some() {
+        if self.status.reached_daemon() {
             self.leave(Some(Departure::Detach), fx);
         } else {
             self.transcript.push_notice(

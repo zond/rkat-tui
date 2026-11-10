@@ -42,6 +42,11 @@ design.
 
 ### Added
 
+- `/daemon start` connects to the workspace's daemon again, starting it
+  when this `rkat-tui` may: after a failed attach or a `/daemon stop`.
+- The daemon names its build (version and git commit) when a client
+  attaches; a client of another build says so and shows it in the status
+  bar.
 - `rkat-tui-mob`, the workspace daemon. It bootstraps the workspace realm
   as `rkat-tui` did (config layers, endpoints, confinement, project trust,
   instructions, MCP), takes the same engine flags, and hosts the agent as
@@ -176,6 +181,12 @@ design.
 
 ### Fixed
 
+- A failed first attach is no longer final and silent. The client retries
+  it three times with a growing wait (starting the daemon again when it
+  may), and the status bar says why it failed, when it retries and where
+  the daemon's log is (`daemon exited (exit status: 3) · retry 2s · log
+  …`). Before, the status said `detached` and nothing happened again,
+  and `/detach` and `/quit` acted as if a daemon had been reached.
 - An approval the human gives is never turned into a denial afterwards:
   rkat-tui recorded every escalation in the realm's approval store and
   denied the call when that write failed, even after the human allowed

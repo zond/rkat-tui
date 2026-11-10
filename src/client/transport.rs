@@ -70,6 +70,8 @@ pub struct Connection {
     agent: Option<String>,
     /// The daemon seated the agent for this connection.
     seated: bool,
+    /// The daemon's build (`None`: a daemon of before it said).
+    daemon_build: Option<String>,
     outgoing: mpsc::UnboundedSender<String>,
     pending: Pending,
     next: AtomicU64,
@@ -216,6 +218,7 @@ impl Connection {
                 address,
                 agent: attached.agent,
                 seated: attached.seated,
+                daemon_build: attached.build,
                 outgoing,
                 pending,
                 next: AtomicU64::new(ATTACH_ID + 1),
@@ -236,6 +239,12 @@ impl Connection {
     #[must_use]
     pub fn seated(&self) -> bool {
         self.seated
+    }
+
+    /// The daemon's build ([`crate::BUILD`] of its binary).
+    #[must_use]
+    pub fn daemon_build(&self) -> Option<&str> {
+        self.daemon_build.as_deref()
     }
 
     /// The daemon's address.

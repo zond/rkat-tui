@@ -365,6 +365,10 @@ pub struct Attached {
     /// The agent was seated for this connection.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub seated: bool,
+    /// The daemon's build ([`crate::BUILD`]; `None`: a daemon of before
+    /// it said).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<String>,
 }
 
 /// [`STATUS`]'s result.
