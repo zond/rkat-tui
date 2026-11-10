@@ -10,9 +10,12 @@
 //!
 //! "Tracked" is read from the git index itself (no `git` subprocess): the
 //! index of the nearest repository at or above the workspace, through a
-//! `.git` file's `gitdir:` pointer for a worktree or submodule. A missing
-//! index tracks nothing; an index that cannot be read or parsed refuses the
-//! start (it may track the realm, and that cannot be told).
+//! `.git` file's `gitdir:` pointer for a worktree or submodule, and for a
+//! split index the shared index its `link` extension names. A missing
+//! index tracks nothing; an index that cannot be read or parsed, a shared
+//! index that is missing, or an extension git requires readers to
+//! understand that this reader does not, refuses the start (it may track
+//! the realm, and that cannot be told).
 
 use std::path::{Path, PathBuf};
 
@@ -101,7 +104,28 @@ pub fn check(workspace: &Path, realm: &Path) -> Result<(), Committed> {
     let hash_len = if sha256_repository(&git_dir) { 32 } else { 20 };
     let mut prefix = relative.to_string_lossy().replace('\\', "/");
     prefix.push('/');
-    let files = tracked_under(&bytes, &prefix, hash_len).map_err(unreadable)?;
+    let scan = tracked_under(&bytes, &prefix, hash_len).map_err(unreadable)?;
+    let mut files = scan.found;
+    if let Some(hex) = scan.shared {
+        // A split index: the shared index holds the named entries. Its
+        // entries are all counted (one this index deletes refuses too,
+        // which fails closed), and an unreadable one refuses.
+        let shared_path = git_dir.join(format!("sharedindex.{hex}"));
+        let shared_unreadable = |reason: String| Committed::Unreadable {
+            realm: realm.to_path_buf(),
+            index: shared_path.clone(),
+            reason: format!("the split index's shared index: {reason}"),
+        };
+        let shared =
+            std::fs::read(&shared_path).map_err(|err| shared_unreadable(err.to_string()))?;
+        let shared_scan = tracked_under(&shared, &prefix, hash_len).map_err(shared_unreadable)?;
+        if shared_scan.shared.is_some() {
+            return Err(shared_unreadable(
+                "it links another shared index".to_string(),
+            ));
+        }
+        files.extend(shared_scan.found);
+    }
     if files.is_empty() {
         Ok(())
     } else {
@@ -165,7 +189,7 @@ fn sha256_repository(git_dir: &Path) -> bool {
 /// # Errors
 ///
 /// A description of the first malformation.
-pub fn tracked_under(bytes: &[u8], prefix: &str, hash_len: usize) -> Result<Vec<String>, String> {
+pub fn tracked_under(bytes: &[u8], prefix: &str, hash_len: usize) -> Result<IndexScan, String> {
     let u32_at = |pos: usize| -> Result<u32, String> {
         bytes
             .get(pos..pos + 4)
@@ -219,7 +243,73 @@ pub fn tracked_under(bytes: &[u8], prefix: &str, hash_len: usize) -> Result<Vec<
         }
         previous = path;
     }
-    Ok(found)
+    let shared = extensions(bytes, pos, hash_len)?;
+    Ok(IndexScan { found, shared })
+}
+
+/// What [`tracked_under`] read of one index file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexScan {
+    /// The entries under the prefix.
+    pub found: Vec<String>,
+    /// A split index's shared index (`link` extension): the hex name of
+    /// `sharedindex.<hex>`, which holds the entries this file only
+    /// replaces or deletes by position.
+    pub shared: Option<String>,
+}
+
+/// Walk the extensions from `pos` to the trailing checksum: the shared
+/// index a `link` extension names. An extension git requires readers to
+/// understand (a lowercase signature) that this reader does not is an
+/// error: it may change which paths are tracked.
+fn extensions(bytes: &[u8], mut pos: usize, hash_len: usize) -> Result<Option<String>, String> {
+    let end = bytes
+        .len()
+        .checked_sub(hash_len)
+        .ok_or_else(|| "truncated checksum".to_string())?;
+    let mut shared = None;
+    while pos < end {
+        let header = bytes
+            .get(pos..pos + 8)
+            .filter(|_| pos + 8 <= end)
+            .ok_or_else(|| "truncated extension".to_string())?;
+        let signature = &header[..4];
+        let size = u32::from_be_bytes([header[4], header[5], header[6], header[7]]) as usize;
+        let data_at = pos + 8;
+        let data_end = data_at
+            .checked_add(size)
+            .filter(|data_end| *data_end <= end)
+            .ok_or_else(|| "truncated extension".to_string())?;
+        match signature {
+            b"link" => {
+                let hash = bytes
+                    .get(data_at..data_at + hash_len)
+                    .filter(|_| size >= hash_len)
+                    .ok_or_else(|| "short link extension".to_string())?;
+                shared = Some(hash.iter().fold(String::new(), |mut hex, byte| {
+                    use std::fmt::Write as _;
+                    let _ = write!(hex, "{byte:02x}");
+                    hex
+                }));
+            }
+            // A sparse index: its directory entries are matched above.
+            b"sdir" => {}
+            required if required[0].is_ascii_lowercase() => {
+                return Err(format!(
+                    "it requires the extension `{}`, which rkat-tui cannot read",
+                    String::from_utf8_lossy(required)
+                ));
+            }
+            // Optional extensions (cache tree, untracked cache, resolve
+            // undo, offsets) name no tracked entry.
+            _ => {}
+        }
+        pos = data_end;
+    }
+    if pos != end {
+        return Err("trailing bytes after the extensions".to_string());
+    }
+    Ok(shared)
 }
 
 /// The offset of the NUL that ends the name starting at `from`.
@@ -282,5 +372,26 @@ mod tests {
         // No index at all: nothing is tracked.
         std::fs::remove_file(root.join(".git/index")).unwrap();
         assert_eq!(check(root, &realm), Ok(()));
+    }
+
+    /// An extension git requires readers to understand (lowercase
+    /// signature) that this reader does not is an error, never a pass;
+    /// optional ones are skipped.
+    #[test]
+    fn an_unknown_required_extension_is_not_read_past() {
+        let index = |ext: &[u8]| {
+            let mut bytes = b"DIRC\0\0\0\x02\0\0\0\0".to_vec();
+            bytes.extend_from_slice(ext);
+            bytes.extend_from_slice(&[0; 20]);
+            bytes
+        };
+        assert_eq!(
+            tracked_under(&index(b""), ".rkat/tui/", 20).map(|scan| scan.found),
+            Ok(Vec::new())
+        );
+        assert!(tracked_under(&index(b"TREE\0\0\0\0"), ".rkat/tui/", 20).is_ok());
+        let err = tracked_under(&index(b"zzzz\0\0\0\0"), ".rkat/tui/", 20).unwrap_err();
+        assert!(err.contains("zzzz"), "{err}");
+        assert!(tracked_under(&index(b"link\0\0\0\x04abcd"), ".rkat/tui/", 20).is_err());
     }
 }

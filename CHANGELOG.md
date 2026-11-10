@@ -27,7 +27,9 @@ design.
   client's model listing; the endpoint connections rkat-tui projects from
   your `tui.toml` stay. A realm directory that git tracks, or that holds
   files without the `.gitignore` rkat-tui writes, refuses the start with
-  the `git rm -r --cached` recipe (`--trust-project` starts anyway). The
+  the `git rm -r --cached` recipe (`--trust-project` starts anyway); a
+  split index is read through its shared index, and an index that cannot
+  be read in full refuses. The
   realm rules file keeps its digest trust: a rule appended under the
   daemon gives only its deny rules and a notice until `/rules trust`.
   (On Linux the agent's shell can still write `.rkat/`; a read-only

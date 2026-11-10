@@ -4496,3 +4496,25 @@ command), `an_action_too_large_to_review_goes_to_the_human_not_the_classifier`
 (an allowing classifier is never called; the human is asked with the
 reason; without a human it is denied), and
 `ctrl_o_shows_the_whole_arguments_the_preview_cut` (the dialog).
+
+### The committed-realm check reads a split index's shared index
+
+A maintainer finding on `bootstrap::committed`: with a split index
+(`git update-index --split-index`, twice) the primary index holds one
+unnamed replacement entry and a `link` extension, and the tracked
+`.rkat/tui/config.toml` is named only in `.git/sharedindex.<hash>`;
+`tracked_under` read the primary entries alone, so the check found
+nothing and, with the `.gitignore` present, refused nothing. Absence of
+evidence passed for evidence.
+
+`tracked_under` now walks the extensions to the trailing checksum: a
+`link` extension names the shared index, which `check` reads and scans
+too (every one of its entries counts, so an entry the primary index
+deletes refuses as well: fails closed); a missing or unreadable shared
+index, a shared index that links another, an extension git requires
+readers to understand (lowercase signature) other than `link` and
+`sdir`, a truncated extension or trailing bytes all refuse as
+`Unreadable`. Tests: `a_tracked_realm_in_a_split_index_is_found` (the
+maintainer's fixture, built with the git CLI; with the shared index
+removed the check refuses as unreadable) and
+`an_unknown_required_extension_is_not_read_past`.

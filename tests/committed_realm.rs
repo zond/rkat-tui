@@ -97,3 +97,51 @@ fn the_start_refuses_a_tracked_realm_unless_trusted() {
     );
     assert!(rkat_tui::bootstrap::resolve_scope(&args(&["--trust-project"])).is_ok());
 }
+
+/// A split index keeps the entries' names in `.git/sharedindex.<hash>`
+/// and only a `link` extension in the index itself: the shared index is
+/// read too (a maintainer's fixture: two `--split-index` runs leave one
+/// unnamed replacement entry in the primary index).
+#[test]
+fn a_tracked_realm_in_a_split_index_is_found() {
+    let Some((_dir, root)) = repo() else { return };
+    let realm = root.join(".rkat/tui");
+    std::fs::create_dir_all(&realm).unwrap();
+    std::fs::write(realm.join(".gitignore"), "*\n").unwrap();
+    std::fs::write(realm.join("config.toml"), "[self_hosted]\n").unwrap();
+    assert!(git(&root, &["add", "-f", ".rkat/tui/config.toml"]));
+    assert!(git(&root, &["update-index", "--split-index"]));
+    assert!(git(&root, &["update-index", "--split-index"]));
+    let shared = std::fs::read_dir(root.join(".git"))
+        .unwrap()
+        .flatten()
+        .any(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("sharedindex.")
+        });
+    if !shared {
+        eprintln!("SKIPPED: this git wrote no split index");
+        return;
+    }
+    let err = check(&root, &realm).unwrap_err();
+    assert!(
+        matches!(&err, Committed::Tracked { files, .. } if files.contains(&".rkat/tui/config.toml".to_string())),
+        "{err:?}"
+    );
+    // The shared index gone: refused as unreadable, never passed.
+    for entry in std::fs::read_dir(root.join(".git")).unwrap().flatten() {
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with("sharedindex.")
+        {
+            std::fs::remove_file(entry.path()).unwrap();
+        }
+    }
+    assert!(
+        matches!(check(&root, &realm), Err(Committed::Unreadable { .. })),
+        "a missing shared index must not pass"
+    );
+}
