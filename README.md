@@ -1,15 +1,12 @@
 # rkat-tui
 
-An interactive terminal coding harness built on the
-[Meerkat](https://github.com/lukacf/meerkat) agent engine. The agent runs in a
-per-workspace daemon (`rkat-tui-mob`, a durable mob member on Meerkat's
-runtime-backed session path) that `rkat-tui` attaches to, starting it when
-none runs; `/detach` leaves the agent working and a later `rkat-tui`
-reattaches. Every tool call goes through an **auto-mode** approval
-model: routine actions run without interruption, risky ones are judged by a
-reasoning-blind classifier, and you are asked only after repeated blocks. The
-shell runs inside an OS sandbox by default, and the keys, the commands and the
-approval prompt follow Claude Code's wherever both have the feature.
+A terminal coding agent with Claude Code's keys and feel, built on the
+[Meerkat](https://github.com/lukacf/meerkat) agent engine. You type what
+you want done; the agent reads, edits and runs things in your project.
+Every tool call goes through an **auto-mode** approval model: routine
+actions run without interruption, risky ones are judged by a
+reasoning-blind classifier, and you are asked only after repeated blocks.
+The agent's shell runs inside an OS sandbox.
 
 ## Install
 
@@ -17,8 +14,7 @@ rkat-tui builds with plain `cargo` on Rust 1.97 (`rust-toolchain.toml` pins
 1.97.0):
 
 ```bash
-cargo install --path .     # installs rkat-tui and the rkat-tui-mob daemon
-cargo run -- "fix the failing test"   # or run it from the checkout
+cargo install --path .     # installs rkat-tui and its daemon, rkat-tui-mob
 ```
 
 On Linux the sandbox needs unprivileged user namespaces; a host that cannot
@@ -27,90 +23,66 @@ example an AppArmor profile on Ubuntu 24.04 and later). macOS uses Seatbelt;
 other platforms have no sandbox. `--no-confinement` runs the shell
 unsandboxed.
 
-## Quick start
+## Start
 
-Set a provider key first: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or
-`GEMINI_API_KEY` (also `GOOGLE_API_KEY`; each can be given as
-`RKAT_<NAME>` too). A key in the realm config or the `rkat` token store also
-works, and other servers are added with `--endpoint-def` or
-`[endpoints.<name>]` in `tui.toml` (see
+You need a provider key: export `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or
+`GEMINI_API_KEY` (other servers, such as a LiteLLM proxy or a local model,
+are added as endpoints; see
 [Models, endpoints and cost](docs/manual.md#models-endpoints-and-cost)).
+Then, in your project:
 
 ```bash
-rkat-tui "fix the failing test"
-rkat-tui -c                       # continue the latest session of this workspace
-rkat-tui --resume ~2
-rkat-tui --model llama3:8b        # bare ids are looked up in every endpoint's model list
-rkat-tui --allow 'shell=cargo nextest run*' --set auto.compact=auto
+rkat-tui                          # type a request and press Enter
+rkat-tui "fix the failing test"   # or start with one
 ```
 
-### The workspace daemon
+`?` on an empty input lists the keys and `/help` the commands.
 
-`rkat-tui-mob` hosts the agent as a long-lived Meerkat mob member instead of
-inside the terminal UI, and serves Meerkat's own JSON-RPC methods for the
-workspace to any number of clients, which can disconnect and come back while
-it works. It listens on loopback TCP and writes the address and an access
-token to `~/.local/state/rkat-tui/<workspace key>/mob.endpoint` (outside
-the workspace, where the agent's confined shell cannot read it); every
-connection must first send `rkat/attach` with that token. It takes the same engine flags as `rkat-tui`:
+## The agent lives in a daemon
 
-```bash
-rkat-tui-mob --foreground -w . --model claude-sonnet-4-6
-```
+The agent does not run inside the terminal UI. The first `rkat-tui` in a
+workspace starts that workspace's daemon, `rkat-tui-mob`, in the
+background and attaches to it; every later `rkat-tui` there attaches to
+the same one. So the agent keeps working when you leave:
 
-`rkat-tui` runs the TUI against it, starting it when none answers;
-`/detach` leaves it running, `/quit` stops a daemon this TUI started (else
-it detaches or asks) and `/daemon stop` shuts it down. `--attach=DIRECTORY`
-attaches to another workspace's daemon and `--attach=HOST:PORT` to one through
-a tunnel. The agent works behind the same
-approval gate, with its helpers, `/new`, `/resume` and the model picker; see
-[Attach mode](docs/manual.md#the-workspace-daemon-attach-mode) and
-[`docs/mob-split.md`](docs/mob-split.md).
+- `/detach` leaves and keeps the agent running; `rkat-tui` again brings
+  you back to the same conversation.
+- `/quit` means you are done: it stops the daemon this `rkat-tui` started
+  (or asks, when someone detached from it).
+- `rkat-tui -c` continues the last conversation, `/resume` picks another
+  one, and `rkat-tui --list` shows every running daemon.
 
 ## Highlights
 
-- **Sessions that survive restarts.** The transcript, the model and the cost
-  totals persist; `-c` continues the workspace's latest session, `--resume`
-  or `/resume` any other, and Enter while the agent works steers the running
-  turn.
-- **Auto-mode approval**, first match wins:
-  - read-only tools and commands and narrow allow rules run;
-  - in-project edits outside protected paths run;
-  - everything else (other shell commands, MCP tools, out-of-project paths)
-    goes to the classifier, and after 3 consecutive or 20 total blocks you
-    are asked.
-- **Permission modes.** Shift+Tab cycles manual → accept edits → plan → auto,
-  as in Claude Code; plan mode is read-only.
-- **Sandboxed shell.** The agent's shell (and your own `!` commands) runs in
-  an empty private mount view holding only the workspace and a few granted
-  directories, with a curated environment that keeps provider keys out;
-  `strict` also denies the network.
-- **Helpers and `fork`.** The agent can `delegate` subtasks to helper agents
-  (Meerkat mob members) or `fork` a side quest with the conversation as
-  context (attached to the daemon, the engine's `fork_off`); their calls pass the same gate, and a panel shows what they do.
-- **Any endpoint.** `anthropic`, `openai` (also LiteLLM and other
-  OpenAI-compatible proxies) and `gemini` dialects, `/model` to hot-swap
-  between them, and a context gauge and cost estimate in the status bar.
+- **Auto-mode approval.** Read-only tools and narrow allow rules run,
+  in-project edits outside protected paths run, everything else goes to
+  the classifier; after 3 consecutive or 20 total blocks you are asked.
+  Shift+Tab cycles manual → accept edits → plan → auto, as in Claude Code.
+- **Sandboxed shell.** The agent's shell (and your own `!` commands) sees
+  only the workspace and a few granted directories, with an environment
+  that keeps provider keys out; `--confinement=strict` also denies the
+  network.
+- **Helpers.** The agent can `delegate` subtasks to helper agents or fork
+  itself; their calls pass the same gate, and a panel shows what they do.
+- **Any endpoint.** `anthropic`, `openai` (also OpenAI-compatible proxies)
+  and `gemini`; `/model` switches between them, with a context gauge and a
+  cost estimate in the status bar.
 - **Instructions and memory.** `AGENTS.md` and `SYSTEM.md` files,
-  `/remember`, notes the agent keeps across sessions, and Meerkat's semantic
-  memory over compacted history.
-- **`/rewind`** forks the session just before an earlier message, leaving
-  the previous session intact.
+  `/remember`, notes the agent keeps across sessions, and semantic memory
+  over compacted history.
 
 ## Documentation
 
-- [`docs/manual.md`](docs/manual.md): the user manual (sessions, approval,
-  confinement, helpers, rules and `tui.toml`, endpoints, memory, keys and
-  commands, where state lives).
-- [`docs/testing.md`](docs/testing.md): the test protocol.
+- [`docs/manual.md`](docs/manual.md): the user manual, starting with
+  "First run".
 - [`docs/ux-parity.md`](docs/ux-parity.md): the Claude Code parity audit.
 - [`CHANGELOG.md`](CHANGELOG.md).
+- Working on rkat-tui itself: [`docs/testing.md`](docs/testing.md) (the
+  test protocol), [`docs/mob-split.md`](docs/mob-split.md) (the daemon's
+  design) and [`docs/evidence.md`](docs/evidence.md) (the engineering
+  record).
 
-## Status
-
-Early, and moving fast. The engine is the crates.io release of Meerkat
-0.9.11. The agent always runs in the `rkat-tui-mob` daemon; the
-in-process runner and `--no-attach` were removed in November 2026.
+Early and moving fast; built on Meerkat 0.9.11 from crates.io.
 
 ## License
 
