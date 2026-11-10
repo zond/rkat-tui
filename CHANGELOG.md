@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `/model` before a restored agent's first turn switches the model
+  instead of failing with "Runtime not ready: destroyed".
+
 ## [0.0.1] - 2026-11-10
 
 The first release on crates.io, opening the 0.0.x line: the maintainer's

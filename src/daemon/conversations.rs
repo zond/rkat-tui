@@ -772,15 +772,22 @@ impl Conversations {
             .register_root(Self::key(agent), session, &model, binding.as_ref());
     }
 
-    /// Run `apply` on `agent`'s current session while it is idle: no
-    /// conversation switch runs meanwhile (the switch lock is held) and no
-    /// run is open when it starts (a model switch, `rkat/set_model`).
+    /// Run `apply` on `agent`'s current session while it is idle and
+    /// live: no conversation switch runs meanwhile (the switch lock is
+    /// held), no run is open when it starts, and the member's session is
+    /// materialized in the runtime (a model switch, `rkat/set_model`).
+    ///
+    /// A member the daemon restored at start is seated but dormant until
+    /// something reaches it: the runtime has no state for its session, and
+    /// the engine's LLM reconfigure refuses it ("Runtime not ready:
+    /// destroyed"). The member is woken first
+    /// ([`meerkat_mob::MobHandle::ensure_member_live`], which runs no turn).
     ///
     /// # Errors
     ///
     /// [`SwitchError::Running`] when a turn runs, [`SwitchError::NoSession`]
     /// when the agent has none, [`SwitchError::Mob`] when its status
-    /// cannot be read.
+    /// cannot be read or the engine refuses to wake it.
     pub async fn while_idle<T, F>(
         &self,
         agent: &str,
@@ -792,9 +799,34 @@ impl Conversations {
         let lock = self.lock_of(agent);
         let _one = lock.lock().await;
         let session = self.current(agent).ok_or(SwitchError::NoSession)?;
-        self.refuse_running(&MobId::from(MOB_ID), &AgentIdentity::from(agent))
-            .await?;
+        let mob = MobId::from(MOB_ID);
+        let identity = AgentIdentity::from(agent);
+        self.refuse_running(&mob, &identity).await?;
+        self.ensure_live(&mob, &identity).await?;
         Ok(apply(session).await)
+    }
+
+    /// Wake `identity` of `mob` when its session is not materialized in
+    /// the runtime ([`Self::while_idle`]).
+    async fn ensure_live(&self, mob: &MobId, identity: &AgentIdentity) -> Result<(), SwitchError> {
+        let handles = self
+            .state
+            .mob_handles_snapshot()
+            .await
+            .map_err(|err| SwitchError::mob("finding the agent's mob", err))?;
+        let handle = handles
+            .into_iter()
+            .find_map(|(id, handle)| (&id == mob).then_some(handle))
+            .ok_or_else(|| {
+                SwitchError::mob(
+                    "finding the agent's mob",
+                    meerkat_mob::MobError::MobNotFound(mob.clone()),
+                )
+            })?;
+        handle
+            .ensure_member_live(identity)
+            .await
+            .map_err(|err| SwitchError::mob("waking the agent", err))
     }
 
     /// [`SwitchError::Running`] when the member's run is open now.

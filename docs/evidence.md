@@ -5685,6 +5685,7 @@ and `customizer::tests::the_root_member_is_shaped_as_an_owner`. Found and
 not fixed (it is not this batch's): `/model` before a restored agent's
 first turn is refused with "Runtime not ready: destroyed" on every
 endpoint, built-in ones included; the first input loads the session.
+Fixed in P6 X1 (below).
 
 ### Item 4: ownership and pruning for the other dialects
 
@@ -5713,3 +5714,27 @@ prices price the turn, and the realm document holds the alias and no
 `the_built_in_endpoint_keeps_the_catalog_row` (the same id on the built-in
 `anthropic` endpoint: the catalog's window, provider `anthropic`, no
 binding, no alias).
+
+## P6 (2026-11-10)
+
+### X1: `/model` before a restored agent's first turn
+
+Cause, on running code: an agent the daemon restores at start is seated
+in the mob but dormant: the engine materializes its session in the
+runtime only when something reaches it (a turn, a peer's message). The
+engine's LLM reconfigure (`reconfigure_session_llm_identity_inner`,
+meerkat-runtime 0.9.11 `meerkat_machine/llm_reconfigure.rs`) reads the
+session's runtime state and answers a missing one as
+`NotReady { state: Destroyed }`, which is the "Runtime not ready:
+destroyed" the user saw. A switch to a model whose profile had to be
+written first worked by accident: it reseats the member, which loads it.
+The fix is the engine's own wake: `MobHandle::ensure_member_live`
+(`WakeMember`, cause Operator; runs no turn) through
+`MobMcpState::mob_handles_snapshot`, called by
+`Conversations::while_idle` after the running check and before the
+reconfigure. No retry or fallback: a refused wake is the switch's typed
+refusal. Test:
+`tests/models.rs::a_restored_agent_switches_models_before_its_first_turn`
+(a restarted daemon, `/model anthropic:claude-opus-4-8` before any turn
+is applied, and the next turn's request names it; it failed with the
+notice "model not changed: Runtime not ready: destroyed" before the fix).

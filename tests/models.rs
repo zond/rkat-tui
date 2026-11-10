@@ -525,3 +525,34 @@ async fn a_profile_the_catalog_now_defines_is_dropped_or_named() {
     let document = std::fs::read_to_string(realm.join("config.toml")).unwrap();
     assert!(!document.contains("[models."), "{document}");
 }
+
+/// `/model` before a restored agent's first turn switches it (the daemon
+/// wakes the dormant member first), and
+/// the turn after runs on the new model.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restored_agent_switches_models_before_its_first_turn() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![Step::Text("one")]);
+    let mut rig = Attached::start_with(&ws.root, &llm, options()).await;
+    let id = rig.current_session().await;
+    rig.send(Effect::StartTurn("first".into()));
+    rig.turn_finished().await;
+    rig.quit().await;
+
+    let llm = ScriptedLlmClient::new(vec![Step::Text("two")]);
+    let mut rig = Attached::start_with(&ws.root, &llm, options()).await;
+    assert_eq!(rig.current_session().await, id);
+    rig.saw(|m| is_model(m, "anthropic", common::MODEL)).await;
+    rig.send(Effect::SetModel("anthropic:claude-opus-4-8".into()));
+    let msg = rig
+        .wait_for(|m| {
+            is_model(m, "anthropic", "claude-opus-4-8")
+                || matches!(m, Msg::Notice { text, .. } if text.starts_with("model not changed"))
+        })
+        .await;
+    assert!(is_model(&msg, "anthropic", "claude-opus-4-8"), "{msg:?}");
+    rig.send(Effect::StartTurn("second".into()));
+    rig.turn_finished().await;
+    assert_eq!(llm.recorded()[0].model, "claude-opus-4-8");
+    rig.quit().await;
+}
