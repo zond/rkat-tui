@@ -111,7 +111,7 @@ pub struct ProjectInputs {
     /// The endpoint connections rkat-tui projected into the realm config
     /// this run ([`Self::set_endpoint_projection`]): the only connections
     /// an untrusted realm config keeps.
-    projected: Arc<parking_lot::Mutex<Option<RealmConfigSection>>>,
+    projected: Arc<parking_lot::Mutex<Option<crate::endpoints::EndpointProjection>>>,
 }
 
 impl ProjectInputs {
@@ -136,12 +136,15 @@ impl ProjectInputs {
         }
     }
 
-    /// Record the endpoint connections rkat-tui projects into the realm
-    /// config ([`crate::endpoints::endpoint_section`]): an untrusted realm
+    /// Record the endpoint connections and self-hosted servers rkat-tui
+    /// projects into the realm config
+    /// ([`crate::endpoints::EndpointProjection`]): an untrusted realm
     /// config keeps those entries of [`crate::endpoints::ENDPOINT_REALM`]
-    /// that equal them, and nothing else of its `[realm.*]` sections.
-    pub fn set_endpoint_projection(&self, section: RealmConfigSection) {
-        *self.projected.lock() = Some(section);
+    /// and `[self_hosted.servers]` that equal them (with the
+    /// `[self_hosted.models]` aliases on those servers), and nothing else of
+    /// its `[realm.*]` sections or `[self_hosted]`.
+    pub fn set_endpoint_projection(&self, projection: crate::endpoints::EndpointProjection) {
+        *self.projected.lock() = Some(projection);
     }
 
     /// The project `.rkat/mcp.toml`.
@@ -323,11 +326,12 @@ impl ProjectInputs {
     /// bindings) except the endpoint connections rkat-tui projected this
     /// run, the `[self_hosted]` servers, and the `[skills] repositories`.
     fn strip_connections(&self, file: &Path, config: &mut Config, refused: &mut Vec<Refused>) {
-        let projected = self.projected.lock().clone().unwrap_or_default();
+        let projection = self.projected.lock().clone().unwrap_or_default();
+        let projected_servers = &projection.servers;
         let realms = std::mem::take(&mut config.realm);
         for (id, section) in realms {
             let mut kept = RealmConfigSection::default();
-            if id == crate::endpoints::ENDPOINT_REALM {
+            if let Some(projected) = projection.section_of(&id) {
                 kept.backend = keep_equal(section.backend.clone(), &projected.backend);
                 kept.auth = keep_equal(section.auth.clone(), &projected.auth);
                 kept.binding = keep_equal(section.binding.clone(), &projected.binding);
@@ -348,15 +352,32 @@ impl ProjectInputs {
                 config.realm.insert(id, kept);
             }
         }
-        if config.self_hosted != meerkat_core::config::SelfHostedConfig::default() {
+        // rkat-tui's own self-hosted servers stay, with the aliases on them.
+        let mut kept = meerkat_core::config::SelfHostedConfig {
+            servers: keep_equal(config.self_hosted.servers.clone(), projected_servers),
+            ..meerkat_core::config::SelfHostedConfig::default()
+        };
+        kept.models = config
+            .self_hosted
+            .models
+            .iter()
+            .filter(|(_, model)| kept.servers.contains_key(&model.server))
+            .map(|(alias, model)| (alias.clone(), model.clone()))
+            .collect();
+        kept.default_model = config
+            .self_hosted
+            .default_model
+            .clone()
+            .filter(|model| kept.models.contains_key(model));
+        if config.self_hosted != kept {
             refused.push(Refused {
                 file: file.to_path_buf(),
                 what: format!(
                     "[self_hosted] servers ({})",
-                    config.self_hosted.servers.len()
+                    config.self_hosted.servers.len() - kept.servers.len()
                 ),
             });
-            config.self_hosted = meerkat_core::config::SelfHostedConfig::default();
+            config.self_hosted = kept;
         }
         if !config.skills.repositories.is_empty() {
             refused.push(Refused {
@@ -686,7 +707,10 @@ network = "unrestricted"
         let mut mine = parsed.realm["rkat-tui-endpoints"].backend["mine"].clone();
         mine.base_url = Some("http://localhost:4000/v1".to_string());
         projection.backend.insert("mine".to_string(), mine.clone());
-        inputs.set_endpoint_projection(projection);
+        inputs.set_endpoint_projection(crate::endpoints::EndpointProjection {
+            section: projection,
+            ..Default::default()
+        });
         let mut guarded = parsed.clone();
         let refused = inputs.guard(&mut guarded).await;
         let guarded_anthropic =
@@ -891,9 +915,11 @@ network = "unrestricted"
             None,
         )
         .with_inputs(inputs.clone());
+        let owned = crate::endpoints::OwnedProfiles::in_realm(&fx.scope.realm_root());
         let profile = |model: &'static str| {
             crate::endpoints::ensure_model_profile(
                 store.runtime(),
+                &owned,
                 meerkat_core::Provider::OpenAI,
                 model,
                 None,

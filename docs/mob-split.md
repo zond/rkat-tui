@@ -504,6 +504,32 @@ list of what the daemon and its client do not do yet.
    (`docs/evidence.md`, "The realm moves out of the workspace"); the
    project's own `.rkat/` files are project inputs, trusted by digest.
 
+9. A realm config stops validating when a later release's catalog adds a
+   model id the realm already defines under `[models.<id>]` (drafted
+   2026-11-10, not opened; the user decides). A host that profiles a
+   model newer than its catalog, as `CustomModelConfig`'s docs invite,
+   writes `[models."<id>"]`; when a later release adds `<id>` to
+   `meerkat-models`, `insert_unique` (`meerkat-core`
+   `model_registry.rs:842-857`) fails, `Config::validate` (`config.rs:1135`)
+   then refuses every config write (`config_store.rs:593/606/1097/1122`),
+   so the realm can no longer be written and every build of a session on
+   the model fails. Reproducer: a `meerkat-core` test with
+   `config.models.custom["claude-opus-5-5"] = CustomModelConfig { provider:
+   Anthropic, .. }` makes `ModelRegistry::from_config(&config,
+   canonical())` return `Err` (today's
+   `custom_models_reject_catalog_id_conflicts`, turned around for the
+   same-provider case). Smallest fix: a `[models.<id>]` entry whose
+   provider equals the catalog row's yields to the row, with a warning,
+   instead of failing; a different provider still fails (optionally its
+   numeric limits narrow the row's). Wider, optional: `remote_model` on
+   `CustomModelConfig`, so a provider-native dialect (Anthropic, Gemini)
+   can register endpoint-qualified aliases as `self_hosted` already can.
+   rkat-tui works around it: OpenAI-dialect proxies are `self_hosted`
+   servers whose aliases can never equal a catalog id, and the
+   `[models.<id>]` entries it writes for the other dialects are recorded
+   and dropped once the catalog defines the id (`docs/evidence.md`, "The
+   endpoint is the authority for the models it serves").
+
 ## History
 
 The phase records are the evidence sections in the status table, plus "The

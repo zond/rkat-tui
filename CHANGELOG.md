@@ -298,6 +298,27 @@ design.
   reads that endpoint's list at start even when `--model` names the
   model. The listing now also carries LiteLLM's `supports_reasoning`,
   `supports_vision` and `supports_function_calling` flags.
+- An OpenAI-dialect endpoint you configure (a LiteLLM or vLLM proxy) runs
+  as the engine's self-hosted server: each model it serves is
+  `<endpoint>:<model>` (`litellm:claude-opus-5-5`), and its window,
+  output limit, reasoning and image support and prices come from the
+  proxy's `/v1/models` and `/model/info`, never from Meerkat's catalog. A
+  model the catalog also knows (a Claude id behind LiteLLM) now runs
+  through the proxy instead of being refused, without Anthropic's request
+  shaping. The status bar and `/model` show the endpoint and the model;
+  stored conversations record the alias. A conversation an earlier build
+  stored on such an endpoint resumes as it ran (its connection is left in
+  place), and `/model` moves it onto the alias.
+- An agent the daemon rebuilds (a restart, a restored conversation) keeps
+  its conversation's own endpoint: it used to take the endpoint the daemon
+  started on, so a conversation made on another endpoint could not be
+  rebuilt (or silently moved).
+- A model only an Anthropic- or Gemini-dialect gateway knows still gets
+  a `[models.<id>]` profile, now recorded as rkat-tui's own: when a later
+  Meerkat release adds that id to its catalog, rkat-tui removes its
+  profile at start with a notice, instead of a realm the engine refuses
+  to write; a profile you wrote for such an id refuses the start with an
+  error naming it.
 - A workspace's state moved out of the workspace, into
   `~/.rkat/tui/workspaces/<id>/`, each directory with a `workspace.toml`
   naming the workspace it belongs to. Nothing is migrated: a

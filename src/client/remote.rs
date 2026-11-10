@@ -132,11 +132,16 @@ pub async fn snapshot(
     let latest = snapshot.cursor.sequence;
     #[allow(unreachable_patterns)]
     match snapshot.snapshot {
-        EventsSnapshotBody::Session { session } => Ok(Snapshot {
-            model: session.model,
-            provider: session.provider,
-            latest,
-        }),
+        EventsSnapshotBody::Session { session } => {
+            // A self-hosted alias is the model on its endpoint.
+            let (model, provider) =
+                crate::endpoints::from_engine(&session.model, &session.provider);
+            Ok(Snapshot {
+                model,
+                provider,
+                latest,
+            })
+        }
         _ => Err(ClientError::NoSession),
     }
 }

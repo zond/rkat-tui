@@ -5567,3 +5567,149 @@ Tests: `tests/models.rs::a_configured_endpoint_s_listing_decides_the_window_and_
 (the gauge and `Daemon::compact_threshold` follow the gateway's 50k; the
 built-in endpoint keeps the catalog's window) and
 `models::tests::litellm_model_info_fills_the_listing_with_its_flags`.
+
+## The endpoint is the authority for the models it serves (2026-11-10)
+
+The user's decision: for a configured endpoint (a LiteLLM proxy first)
+the model list and every per-model fact come from the endpoint, not the
+engine's static catalog, and a later catalog addition must never stop the
+daemon from starting. Endpoint-qualified names `<endpoint>:<model>` in
+`/model`, the status line and stored sessions are accepted. The engine
+facts are `.handover`'s section 8 (0.9.11, re-verified at HEAD c42e5e4: the
+`src/` lines it cites moved with the compatibility removal, the engine
+lines did not).
+
+### The probe, on running code
+
+Settled against a fake LiteLLM-shaped endpoint in the test process
+(`tests/common/fake_openai.rs`: `/v1/models`, `/model/info`, streamed
+`/v1/responses` and `/v1/chat/completions` from a script, every request
+recorded), with the engine's own HTTP clients, no provider key and the
+user's token store closed (`BootstrapOptions::without_token_store`, the
+rig's `Setup::engine_clients`). The key is read from `CARGO_MANIFEST_DIR`,
+which Cargo sets for every test process and the confined shell's
+allow-list never passes.
+
+- (a) Credentials: a realm binding whose backend is `self_hosted` /
+  `openai_compatible` with `server = <endpoint>` and an `api_key` auth
+  profile reading the endpoint's `api_key_env` carries the key; the engine
+  sends it as `Authorization: Bearer` (the explicit binding is validated
+  against the alias's server, `validate_explicit_self_hosted_target`). The
+  realm document names the variable, never the key, and the confined
+  shell's environment does not carry it (`confined_environment`, an
+  allow-list). Tests:
+  `tests/litellm.rs::a_litellm_endpoint_runs_a_catalogued_claude_id_on_its_own_facts`,
+  `both_api_styles_stream_text_reasoning_and_tool_calls`.
+- (b) Switching: `rkat/set_model` reconfigures the live member from
+  `litellm:local-coder` (provider `self_hosted`) to the built-in
+  `openai:gpt-5.5` and back to `litellm:claude-opus-5-5`, each turn on the
+  wire with the right model; a restarted daemon resumes the conversation
+  on the alias and runs it. Test:
+  `the_live_member_switches_between_an_alias_and_a_built_in_model`. Found
+  on the way: the hot swap resolves a built-in provider's default binding
+  from the `global` realm root, not from the workspace realm's own
+  `[realm.<id>]` section, which rkat-tui's `resolve_builtin` does read;
+  the test therefore puts the built-in binding under `[realm.global]`
+  (in real use the built-in key comes from the environment, where both
+  agree). Recorded, not acted on.
+- (c) Helpers: a `delegate` helper of an agent on an alias inherits it
+  through the owner's endpoint (SEC-1 E2 rule): its requests name the
+  proxy's model and carry the proxy's key. A model a helper asks for by
+  its plain name becomes the endpoint's alias (`customizer::qualify_model`,
+  unit-tested in
+  `a_helper_of_a_self_hosted_owner_asks_for_the_endpoint_s_alias`). Test:
+  `a_helper_inherits_the_alias_through_the_owner_s_endpoint`.
+- (d) `[thinking]` resolves to nothing for a self-hosted session
+  (`ThinkingTable::resolve` is Anthropic-only, and start-up already drops
+  an `endpoint:model` key on an OpenAI-dialect endpoint with a notice);
+  the proxy's `supports_reasoning` decides `supports_reasoning` and
+  `supports_thinking` of the alias. Price lookup: the client names the
+  model as the proxy lists it (`endpoints::from_engine` turns the
+  engine's alias back into the model and the OpenAI dialect, in
+  `remote::snapshot` and the `rkat/set_model` answer), and the usage the
+  engine accounts to the alias is priced as its model
+  (`PriceTable::lookup` retries `<endpoint>:<model>` as `<model>`;
+  `pricing::tests::lookups_follow_normalisation_and_file_order`). The
+  context gauge looks the alias up in the registry when the listing is
+  not there yet.
+- (e) Protocol: both engine API styles work against the fake, text,
+  reasoning (`reasoning_summary_text.delta`, `reasoning_content`) and tool
+  calls alike, and name the proxy's model on the wire. rkat-tui uses the
+  Responses API, which its OpenAI dialect always spoke to LiteLLM; Chat
+  Completions needs the base URL with `/v1` (the chat client appends
+  `/chat/completions` as given, the Responses delegate trims `/v1` and
+  appends `/v1/responses`). Test:
+  `both_api_styles_stream_text_reasoning_and_tool_calls`.
+
+### What was built (item 3; item 5's fallback was not needed)
+
+- A configured OpenAI-dialect endpoint is a self-hosted endpoint
+  (`Endpoint::is_self_hosted`). `EndpointProjection` adds its
+  `self_hosted.servers.<endpoint>` (OpenAI-compatible, the endpoint's URL,
+  Responses) and its connection in `rkat-tui-self-hosted`, whose backend
+  names the server. The project-input guard keeps exactly these
+  servers and the aliases on them in an untrusted realm config.
+- Every model is the alias `<endpoint>:<model>`
+  (`Endpoint::engine_model`), with `remote_model` the model, written by
+  `alias_patch` from the listing; at start for the start-up model, the
+  classifier's and every model the proxy lists, in `rkat/set_model` for
+  the target (and the member is seated again when its alias was new). The
+  first alias becomes `self_hosted.default_model`, which the engine
+  requires once there are two. No `[models.<id>]` is written for such an
+  endpoint, so no alias can collide with a catalog id.
+- `ModelChoice` carries the engine's model, provider and server; the
+  orchestrator profile, the root customizer, the classifier and
+  `rkat/set_model` give the engine those, and everything the client sees
+  is the model as the endpoint lists it.
+
+### Conversations stored before, and a rebuild's binding
+
+A self-hosted endpoint's connection is projected into its own realm
+section, `rkat-tui-self-hosted` (`SELF_HOSTED_REALM`), not over the
+`rkat-tui-endpoints` entry of the same name: a conversation an earlier
+build stored on the proxy names that entry with the OpenAI provider, and
+overwriting it with a `self_hosted` backend made its rebuild fail
+("resolves backend=SelfHosted ..., expected provider ..."), and with it
+every turn, `/model` and `/new` of that agent (retiring it stuck at
+`retire-runtime-route`). Entries are never removed, so the old one keeps
+resolving; nothing reads an older shape. `is_endpoint_realm` names both
+sections wherever a binding is mapped to its endpoint. On the way: a
+rebuilt root member took the start-up endpoint's binding
+(`shape_root` filled an empty `auth_binding` on resume as on a fresh
+spawn, and the engine prefers the spec's over the durable one), so a
+conversation made on another endpoint could not be rebuilt, or moved
+silently when the dialects agreed; `customize_resume` now gives it its
+durable binding. Test:
+`tests/litellm.rs::a_conversation_stored_under_the_dialect_provider_moves_onto_the_alias`
+and `customizer::tests::the_root_member_is_shaped_as_an_owner`. Found and
+not fixed (it is not this batch's): `/model` before a restored agent's
+first turn is refused with "Runtime not ready: destroyed" on every
+endpoint, built-in ones included; the first input loads the session.
+
+### Item 4: ownership and pruning for the other dialects
+
+`ensure_model_profile` records each `[models.<id>]` entry it creates in
+the realm's `tui_models.json` (`OwnedProfiles`) before writing it.
+`prune_catalogued_profiles` runs before the first realm write at start
+and in `rkat/set_model`: an entry whose id the catalog now defines is
+dropped when rkat-tui wrote it (start-up notice `pruned_notice`) and is
+`EndpointError::ProfileShadowsCatalog`, naming the entry and the fix,
+when the user did. Reading such a document works (only writes and the
+registry validate), so the prune can run where the engine would refuse.
+Tests: `endpoints::tests::profiles_the_catalog_now_defines_are_pruned_or_refused`,
+`written_profiles_are_recorded_as_rkat_tui_s`, and on the rig
+`tests/models.rs::a_profile_the_catalog_now_defines_is_dropped_or_named`.
+The upstream ask is engine ask 9 in `docs/mob-split.md`.
+
+### The section 8 rig test
+
+`a_litellm_endpoint_runs_a_catalogued_claude_id_on_its_own_facts`: the
+fake lists `claude-opus-5-5` with a 50k window, a 4,096 output limit and
+prices; the session runs, the request's `model` is `claude-opus-5-5`, it
+carries no `anthropic-beta` header and no `thinking` field, the gauge
+shows 50k and `Daemon::compact_threshold` follows it, the endpoint's
+prices price the turn, and the realm document holds the alias and no
+`[models."claude-opus-5-5"]`. Negative case:
+`the_built_in_endpoint_keeps_the_catalog_row` (the same id on the built-in
+`anthropic` endpoint: the catalog's window, provider `anthropic`, no
+binding, no alias).

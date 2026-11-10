@@ -1639,6 +1639,16 @@ impl AttachRunner {
         };
         let registry = || {
             let config = self.config.config.as_ref()?;
+            // A self-hosted endpoint's model is registered as its alias.
+            if let Some(endpoint) = self.bench.endpoint(endpoint)
+                && endpoint.is_self_hosted()
+            {
+                return crate::endpoints::registry_context_window(
+                    config,
+                    endpoint.engine_provider(),
+                    &endpoint.engine_model(model),
+                );
+            }
             let provider = self.current_dialect?.into();
             crate::endpoints::registry_context_window(config, provider, model)
         };
@@ -3560,6 +3570,8 @@ pub fn model_switch(
         .map(|entry| crate::daemon::protocol::ListedModel {
             context_window: entry.context_window,
             max_output_tokens: entry.max_output_tokens,
+            reasoning: entry.capabilities.reasoning,
+            vision: entry.capabilities.vision,
         });
     Ok(ModelSwitch {
         model: target.model,

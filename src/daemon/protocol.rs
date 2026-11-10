@@ -724,6 +724,12 @@ pub struct ListedModel {
     /// Its output limit in tokens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u64>,
+    /// Whether it reasons (LiteLLM's `supports_reasoning`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<bool>,
+    /// Whether it takes images (LiteLLM's `supports_vision`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vision: Option<bool>,
 }
 
 /// [`SET_MODEL`]'s result: the session's identity after the switch.

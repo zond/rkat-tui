@@ -243,7 +243,10 @@ fn shape_root(
     fresh: bool,
     gated_fork_off: bool,
 ) {
-    if spec.auth_binding.is_none() {
+    // A fresh agent runs on the start-up endpoint; a rebuilt one keeps its
+    // session's own binding (its customizer sets it), which may name
+    // another endpoint than the start-up one, or none.
+    if fresh && spec.auth_binding.is_none() {
         spec.auth_binding.clone_from(&root.auth_binding);
     }
     if let Some(admission) = &root.admission {
@@ -392,6 +395,28 @@ fn helper_binding(
     ))
 }
 
+/// A helper of an owner on a self-hosted endpoint runs on that endpoint: a
+/// model it asks for by its plain name becomes the endpoint's alias of it
+/// (`<endpoint>:<model>`), the engine id the endpoint's facts are
+/// registered under.
+fn qualify_model(
+    owner: &Owner,
+    spec: &mut SpawnMemberSpec,
+    endpoints: &[crate::endpoints::Endpoint],
+) {
+    let Some(endpoint) = endpoints
+        .iter()
+        .find(|e| e.is_self_hosted() && e.binding() == owner.auth_binding)
+    else {
+        return;
+    };
+    if let Some(model) = &spec.model_override
+        && !model.starts_with(&format!("{}:", endpoint.name))
+    {
+        spec.model_override = Some(endpoint.engine_model(model));
+    }
+}
+
 /// Apply the owner's gate, tools, instructions and the shell's environment
 /// to `spec` (its binding is [`helper_binding`]'s).
 fn shape(
@@ -520,6 +545,7 @@ impl HelperCustomizer {
         fresh: bool,
     ) -> Result<(), MobError> {
         let label = spec.identity.to_string();
+        qualify_model(owner, spec, &self.endpoints);
         let model = requested_model(spec).unwrap_or_else(|| owner.model.clone());
         let mut path = owner.path.clone();
         path.push(label.clone());
@@ -639,6 +665,9 @@ impl SpawnMemberCustomizer for HelperCustomizer {
             );
             self.registry
                 .register_root(key.clone(), &durable.session_id, &model, binding.as_ref());
+            if spec.auth_binding.is_none() {
+                spec.auth_binding = binding;
+            }
             shape_root(
                 spec,
                 &key,
@@ -737,6 +766,57 @@ mod tests {
             Ok(None)
         );
         assert!(helper_binding(&builtin, "gpt-5.5", &endpoints).is_err());
+    }
+
+    /// A helper of an owner on a self-hosted endpoint (an OpenAI-dialect
+    /// proxy) that asks for a model by its plain name runs on the
+    /// endpoint's alias of it, through the owner's binding, a catalogued
+    /// Claude id included; an alias is kept, and an owner on another
+    /// endpoint keeps the plain name.
+    #[test]
+    fn a_helper_of_a_self_hosted_owner_asks_for_the_endpoint_s_alias() {
+        use crate::endpoints::{Endpoint, SecretString, WireDialect};
+        let proxy = Endpoint {
+            name: "litellm".to_string(),
+            dialect: WireDialect::OpenAi,
+            base_url: Some("http://localhost:4000".to_string()),
+            api_key: SecretString::new("k"),
+            key_env: Some("KEY".to_string()),
+            builtin: false,
+            priority: 0,
+        };
+        let endpoints = vec![proxy.clone()];
+        let owner = Owner {
+            session: SessionId::new(),
+            path: Vec::new(),
+            model: "litellm:gpt-5.5".into(),
+            auth_binding: proxy.binding(),
+        };
+        for (asked, runs) in [
+            ("claude-opus-4-6", "litellm:claude-opus-4-6"),
+            ("litellm:house", "litellm:house"),
+        ] {
+            let mut spec = SpawnMemberSpec::new("delegate", "worker");
+            spec.model_override = Some(asked.to_string());
+            qualify_model(&owner, &mut spec, &endpoints);
+            assert_eq!(spec.model_override.as_deref(), Some(runs));
+            assert_eq!(
+                helper_binding(&owner, runs, &endpoints),
+                Ok(proxy.binding()),
+                "{runs}"
+            );
+        }
+        let mut inherited = SpawnMemberSpec::new("delegate", "worker");
+        qualify_model(&owner, &mut inherited, &endpoints);
+        assert_eq!(inherited.model_override, None);
+        let elsewhere = Owner {
+            auth_binding: None,
+            ..owner
+        };
+        let mut spec = SpawnMemberSpec::new("delegate", "worker");
+        spec.model_override = Some("gpt-5.5".to_string());
+        qualify_model(&elsewhere, &mut spec, &endpoints);
+        assert_eq!(spec.model_override.as_deref(), Some("gpt-5.5"));
     }
 
     fn denies_fork_off(names: &meerkat_core::ToolNameSet) -> bool {
@@ -927,11 +1007,32 @@ mod tests {
             Some(vec!["persona".to_string(), "agents".to_string()])
         );
         assert_eq!(spec.tool_access_policy, Some(tool_access_policy()));
-        // A rebuild gets its tools back, not a second set of instructions.
+        // A rebuild gets its tools back, not a second set of instructions,
+        // and never the start-up endpoint's binding (it keeps its own).
         let mut resumed = SpawnMemberSpec::host_root("main", "main");
-        shape_root(&mut resumed, &key(), &root, Some(&curated), false, false);
+        let on_proxy = RootMember {
+            auth_binding: Some(meerkat_core::AuthBindingRef {
+                realm: meerkat_core::RealmId::parse(crate::endpoints::SELF_HOSTED_REALM).unwrap(),
+                binding: meerkat_core::BindingId::parse("litellm").unwrap(),
+                profile: None,
+                origin: meerkat_core::BindingOrigin::Configured,
+            }),
+            ..self::root()
+        };
+        shape_root(
+            &mut resumed,
+            &key(),
+            &on_proxy,
+            Some(&curated),
+            false,
+            false,
+        );
         assert!(resumed.external_tools.is_some());
         assert_eq!(resumed.additional_instructions, None);
+        assert_eq!(resumed.auth_binding, None);
+        let mut fresh = SpawnMemberSpec::host_root("main", "main");
+        shape_root(&mut fresh, &key(), &on_proxy, Some(&curated), true, false);
+        assert_eq!(fresh.auth_binding, on_proxy.auth_binding);
         // The daemon's root keeps `fork_off` (its children are gated).
         let mut gated = SpawnMemberSpec::host_root("main", "main");
         shape_root(&mut gated, &key(), &root, Some(&curated), true, true);

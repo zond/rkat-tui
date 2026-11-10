@@ -43,10 +43,13 @@ use crate::tools::FileToolDispatcher;
 /// What the agents are seated with ([`super::orchestrator::ensure_mob`] creates their mob from it).
 #[derive(Debug, Clone)]
 pub struct RootPlan {
-    /// The start-up model.
+    /// The start-up model, as the engine names it (a self-hosted
+    /// endpoint's alias).
     pub model: String,
-    /// Its provider.
+    /// Its engine provider.
     pub provider: Provider,
+    /// Its self-hosted server, on a self-hosted endpoint.
+    pub self_hosted_server: Option<String>,
     /// Its endpoint's auth binding.
     pub auth_binding: Option<meerkat_core::AuthBindingRef>,
     /// The declarative MCP servers (the profile carries them durably).
@@ -97,6 +100,8 @@ pub struct Composed {
     pub origins: Arc<DaemonToolOrigins>,
     /// The `[thinking]` table (model switches over the wire).
     pub thinking: ThinkingTable,
+    /// The daemon's endpoints (model switches over the wire).
+    pub endpoints: crate::endpoints::EndpointRegistry,
     /// The workspace's project inputs and the trust record they are judged
     /// by (`rkat/trust`).
     pub project_inputs: crate::bootstrap::project_trust::ProjectInputs,
@@ -236,6 +241,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         ));
     }
     let helper_endpoints = endpoints.as_slice().to_vec();
+    let daemon_endpoints = endpoints.clone();
     let root_thinking: crate::mobs::customizer::RootThinking = Arc::new({
         let thinking = thinking.clone();
         move |identity: &meerkat_core::SessionLlmIdentity| {
@@ -299,7 +305,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
             ));
             sections
         }),
-        model: choice.model.clone(),
+        model: choice.engine_model.clone(),
         auth_binding: choice.auth_binding.clone(),
         admission: Some(admission),
         thinking: Some(root_thinking),
@@ -419,8 +425,9 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         realm_config,
         state,
         root: RootPlan {
-            model: choice.model,
-            provider: choice.provider,
+            model: choice.engine_model,
+            provider: choice.engine_provider,
+            self_hosted_server: choice.self_hosted_server,
             auth_binding: choice.auth_binding,
             mcp_servers,
             memory,
@@ -441,6 +448,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         helper_catalogs_task: helper_catalogs,
         origins,
         thinking,
+        endpoints: daemon_endpoints,
         project_inputs,
         tasks_db,
         startup_notices,

@@ -39,6 +39,9 @@ fn definition(plan: &RootPlan) -> MobDefinition {
     let profiles = std::mem::take(&mut definition.profiles);
     for (_, binding) in profiles {
         if let ProfileBinding::Inline(mut profile) = binding {
+            profile
+                .self_hosted_server_id
+                .clone_from(&plan.self_hosted_server);
             profile.durable = true;
             profile.runtime_mode = MobRuntimeMode::TurnDriven;
             profile.peer_description = "rkat-tui orchestrator".to_string();

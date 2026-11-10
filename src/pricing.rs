@@ -413,8 +413,20 @@ impl PriceTable {
     }
 
     /// The price of `model` and its source, `None` when no source knows it.
+    /// A self-hosted endpoint's alias `<endpoint>:<model>` (the engine's
+    /// name of a model on a LiteLLM endpoint) that no source knows as such
+    /// is priced as its model.
     #[must_use]
     pub fn lookup(&self, model: &str) -> Option<(ModelPrice, PriceSource)> {
+        self.lookup_id(model).or_else(|| {
+            let (endpoint, served) = model.split_once(':')?;
+            crate::endpoints::is_valid_endpoint_name(endpoint)
+                .then(|| self.lookup_id(served))
+                .flatten()
+        })
+    }
+
+    fn lookup_id(&self, model: &str) -> Option<(ModelPrice, PriceSource)> {
         let base = self.base(model);
         let configured = id_candidates(model)
             .into_iter()
@@ -699,6 +711,11 @@ mod tests {
         assert!(approx(gemini.input, 2.0));
         assert!(table.lookup("text-embedding-3-small").is_none());
         assert!(table.lookup("unknown-model").is_none());
+        // A self-hosted endpoint's alias is priced as its model.
+        let (aliased, _) = table.lookup("litellm:claude-opus-4-6").unwrap();
+        assert!(approx(aliased.input, 5.0));
+        assert!(table.lookup("litellm:unknown-model").is_none());
+        assert!(table.lookup("not an endpoint:claude-opus-4-6").is_none());
     }
 
     #[test]

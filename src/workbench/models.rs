@@ -39,6 +39,12 @@ impl Workbench {
         self.models.as_ref()
     }
 
+    /// This process's endpoint called `name`.
+    #[must_use]
+    pub fn endpoint(&self, name: &str) -> Option<&crate::endpoints::Endpoint> {
+        self.endpoints.get(name)
+    }
+
     /// Whether `endpoint` is a configured (not a built-in) endpoint of this
     /// process: its own listing decides its models' facts.
     #[must_use]

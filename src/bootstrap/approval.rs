@@ -76,6 +76,9 @@ pub(crate) struct ClassifierSource<'a> {
     pub provider: Provider,
     /// The auth binding of the start-up endpoint (`None` for a built-in one).
     pub auth_binding: Option<AuthBindingRef>,
+    /// The start-up endpoint, when the engine reaches it as a self-hosted
+    /// server: the classifier runs on its alias of the classifier model.
+    pub self_hosted: Option<crate::endpoints::Endpoint>,
     /// Client every session uses instead of resolving credentials, if any.
     pub llm_override: Option<Arc<dyn LlmClient>>,
 }
@@ -193,6 +196,16 @@ pub(crate) async fn build(
     })
 }
 
+/// The classifier's model: `[auto] classifier_model`, else the default
+/// of the start-up model's `provider` ([`classifier_default_model`]).
+#[must_use]
+pub(crate) fn classifier_model(settings: &AutoSettings, provider: Provider) -> Option<String> {
+    settings
+        .classifier_model
+        .clone()
+        .or_else(|| classifier_default_model(provider).map(str::to_string))
+}
+
 /// The two-stage LLM classifier on the session's provider (model from
 /// `[auto] classifier_model`, else [`classifier_default_model`]), built with
 /// the factory's own credential resolution. Without a model or a client
@@ -203,11 +216,7 @@ async fn make_classifier(
     root: ProjectRoot,
     events: mpsc::UnboundedSender<ApprovalEvent>,
 ) -> (Arc<dyn ActionClassifier>, Option<String>) {
-    let model = settings
-        .classifier_model
-        .clone()
-        .or_else(|| classifier_default_model(source.provider).map(str::to_string));
-    let Some(model) = model else {
+    let Some(model) = classifier_model(settings, source.provider) else {
         return (
             Arc::new(UnavailableClassifier),
             Some(format!(
@@ -220,9 +229,18 @@ async fn make_classifier(
         Some(client) => client,
         None => {
             let identity = SessionLlmIdentity {
-                model: model.clone(),
-                provider: source.provider,
-                self_hosted_server_id: None,
+                model: source
+                    .self_hosted
+                    .as_ref()
+                    .map_or_else(|| model.clone(), |endpoint| endpoint.engine_model(&model)),
+                provider: source
+                    .self_hosted
+                    .as_ref()
+                    .map_or(source.provider, crate::endpoints::Endpoint::engine_provider),
+                self_hosted_server_id: source
+                    .self_hosted
+                    .as_ref()
+                    .and_then(crate::endpoints::Endpoint::self_hosted_server),
                 provider_params: None,
                 auth_binding: source.auth_binding.clone(),
             };

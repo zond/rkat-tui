@@ -81,6 +81,7 @@ impl Setup {
                 classifier: Some(Arc::clone(&self.classifier) as Arc<dyn ActionClassifier>),
                 escalation_timeout: self.escalation_timeout,
             },
+            without_token_store: true,
         });
         if self.without_registry {
             options.without_policy_registry()

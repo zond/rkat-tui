@@ -56,8 +56,8 @@ use meerkat_tools::builtin::shell::ShellConfinement;
 
 use crate::cli::Args;
 use crate::endpoints::{
-    EndpointError, EndpointName, EndpointRef, EndpointRegistry, ModelRefError, StartupPlan,
-    StartupRequest, endpoint_section, ensure_model_profile, needs_lookup, plan_startup,
+    EndpointError, EndpointName, EndpointProjection, EndpointRef, EndpointRegistry, ModelRefError,
+    StartupPlan, StartupRequest, ensure_aliases, ensure_model_profile, needs_lookup, plan_startup,
     project_endpoints,
 };
 use crate::error::TuiError;
@@ -88,6 +88,16 @@ pub struct ModelChoice {
     /// The Anthropic thinking `[thinking]` configures for the model on
     /// this endpoint (`None`: no override; see [`crate::thinking`]).
     pub thinking: Option<AnthropicThinkingConfig>,
+    /// The engine's model id: the alias `<endpoint>:<model>` on a
+    /// self-hosted endpoint ([`crate::endpoints::Endpoint::engine_model`]),
+    /// else the model.
+    pub engine_model: String,
+    /// The engine's provider ([`Provider::SelfHosted`] on a self-hosted
+    /// endpoint, else [`Self::provider`]).
+    pub engine_provider: Provider,
+    /// The engine's self-hosted server (the endpoint's name), on a
+    /// self-hosted endpoint.
+    pub self_hosted_server: Option<String>,
 }
 
 impl ModelChoice {
@@ -123,6 +133,9 @@ fn choice_for(
         provider: endpoint.provider(),
         auth_binding: endpoint.binding(),
         thinking: None,
+        engine_model: endpoint.engine_model(&reference.model),
+        engine_provider: endpoint.engine_provider(),
+        self_hosted_server: endpoint.self_hosted_server(),
     })
 }
 
@@ -142,6 +155,10 @@ pub struct BootstrapOptions {
     /// The directories outside the workspace a confined shell may use
     /// (default: [`HostPaths::detect`]).
     pub host_paths: Option<HostPaths>,
+    /// Tests that run the engine's own clients against a fake endpoint:
+    /// never open the user's provider token store.
+    #[cfg(any(test, feature = "test-support"))]
+    pub without_token_store: bool,
 }
 
 /// The shell's extra grants: the command line's `--confinement-read`/
@@ -405,7 +422,7 @@ pub async fn assemble(
     }
     let choice = choice.with_thinking(&thinking);
 
-    project_inputs.set_endpoint_projection(endpoint_section(endpoints.as_slice())?);
+    project_inputs.set_endpoint_projection(EndpointProjection::of(endpoints.as_slice())?);
     let realm_config = Arc::new(
         RealmConfigStore::new(
             &scope.config_path(),
@@ -414,17 +431,54 @@ pub async fn assemble(
         )
         .with_inputs(project_inputs.clone()),
     );
+    // Before any write: a profile rkat-tui wrote for a model the catalog
+    // has since added would make the engine refuse the document.
+    let owned_profiles = crate::endpoints::OwnedProfiles::in_realm(&scope.realm_root());
+    let pruned =
+        crate::endpoints::prune_catalogued_profiles(realm_config.runtime(), &owned_profiles)
+            .await?;
     project_endpoints(realm_config.runtime(), endpoints.as_slice()).await?;
     let listed = models
         .as_ref()
         .and_then(|cache| cache.entry(choice.endpoint.as_str(), &choice.model));
-    ensure_model_profile(
-        realm_config.runtime(),
-        choice.provider,
-        &choice.model,
-        listed,
-    )
-    .await?;
+    let endpoint = endpoints.get(choice.endpoint.as_str());
+    match endpoint {
+        Some(endpoint) if endpoint.is_self_hosted() => {
+            // Every fact of a self-hosted endpoint's models is its own:
+            // the start-up model, the classifier's and every model it
+            // lists get an alias, so a switch or a helper finds its model
+            // in the registry the session was built with.
+            let classifier = approval::classifier_model(&layered.settings, choice.provider);
+            let mut wanted: Vec<(&str, Option<&crate::models::ModelEntry>)> =
+                vec![(choice.model.as_str(), listed)];
+            if let Some(classifier) = classifier.as_deref()
+                && classifier != choice.model
+            {
+                let entry = models
+                    .as_ref()
+                    .and_then(|cache| cache.entry(&endpoint.name, classifier));
+                wanted.push((classifier, entry));
+            }
+            if let Some(Ok(list)) = models.as_ref().and_then(|cache| cache.get(&endpoint.name)) {
+                for entry in list {
+                    if !wanted.iter().any(|(id, _)| *id == entry.id) {
+                        wanted.push((entry.id.as_str(), Some(entry)));
+                    }
+                }
+            }
+            ensure_aliases(realm_config.runtime(), endpoint, &wanted).await?;
+        }
+        _ => {
+            ensure_model_profile(
+                realm_config.runtime(),
+                &owned_profiles,
+                choice.provider,
+                &choice.model,
+                listed,
+            )
+            .await?;
+        }
+    }
     let effective = realm_config
         .get()
         .await
@@ -467,13 +521,14 @@ pub async fn assemble(
         .map_or_else(|| realm_root.clone(), PathBuf::from);
 
     let mut notices: Vec<String> = Vec::new();
+    notices.extend(crate::endpoints::pruned_notice(&pruned));
     let memory = memory_probe(&store_path, manifest.backend, &mut notices);
     let tasks_db = tasks_db(&store_path);
     let factory = build_factory(
         &scope,
         store_path,
         FactoryToggles {
-            token_store: options.llm_override.is_none(),
+            token_store: options.llm_override.is_none() && !without_token_store(&options),
             memory,
         },
         &confinement.shell,
@@ -493,6 +548,10 @@ pub async fn assemble(
             config: &effective,
             provider: choice.provider,
             auth_binding: choice.auth_binding.clone(),
+            self_hosted: endpoints
+                .get(choice.endpoint.as_str())
+                .filter(|endpoint| endpoint.is_self_hosted())
+                .cloned(),
             llm_override: options.llm_override.clone(),
         },
         &options.approval,
@@ -546,8 +605,13 @@ pub fn model_window(
     choice: &ModelChoice,
     listed: Option<&crate::models::ModelEntry>,
 ) -> Option<u64> {
-    let registry =
-        || crate::endpoints::registry_context_window(config, choice.provider, &choice.model);
+    let registry = || {
+        crate::endpoints::registry_context_window(
+            config,
+            choice.engine_provider,
+            &choice.engine_model,
+        )
+    };
     let listed = || listed.and_then(|entry| entry.context_window);
     if endpoints
         .get(choice.endpoint.as_str())
@@ -557,6 +621,17 @@ pub fn model_window(
     } else {
         registry().or_else(listed)
     }
+}
+
+/// Whether `options` keep the user's token store closed (tests only).
+#[cfg(any(test, feature = "test-support"))]
+fn without_token_store(options: &BootstrapOptions) -> bool {
+    options.without_token_store
+}
+
+#[cfg(not(any(test, feature = "test-support")))]
+fn without_token_store(_: &BootstrapOptions) -> bool {
+    false
 }
 
 /// The canonical home directory, if any.
@@ -817,8 +892,12 @@ mod tests {
             ("litellm", "llama3:8b")
         );
         let binding = choice.auth_binding.unwrap();
-        assert_eq!(binding.realm.as_str(), crate::endpoints::ENDPOINT_REALM);
+        assert_eq!(binding.realm.as_str(), crate::endpoints::SELF_HOSTED_REALM);
         assert_eq!(binding.binding.as_str(), "litellm");
+        // An OpenAI-dialect proxy runs the model as its alias.
+        assert_eq!(choice.engine_model, "litellm:llama3:8b");
+        assert_eq!(choice.engine_provider, Provider::SelfHosted);
+        assert_eq!(choice.self_hosted_server.as_deref(), Some("litellm"));
         // Listed by both: the built-in of its dialect wins.
         let choice = plan(&["--model", "gpt-5.5"], "").await.unwrap();
         assert_eq!(choice.endpoint.as_str(), "openai");

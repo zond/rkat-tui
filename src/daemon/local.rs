@@ -113,7 +113,7 @@ use crate::approval::desk::{ModeStatus, RuleCommand, RuleOutcome, mode_notice, r
 use crate::approval::mode::PermissionMode;
 use crate::approval::{ApprovalEngine, InputKey};
 use crate::bootstrap::project_trust::ProjectInputs;
-use crate::endpoints::{ENDPOINT_REALM, WireDialect};
+use crate::endpoints::{WireDialect, is_endpoint_realm};
 use crate::mobs::HelperRegistry;
 use crate::thinking::{self, ThinkingTable};
 
@@ -165,6 +165,8 @@ pub struct Local {
     machine: Arc<meerkat_runtime::MeerkatMachine>,
     /// The realm config (a switched-to model's profile is written there).
     realm_config: Arc<crate::bootstrap::RealmConfigStore>,
+    /// The daemon's endpoints (a switch names one by its binding).
+    endpoints: crate::endpoints::EndpointRegistry,
     /// What the start-up had to say (`rkat/notices`).
     startup_notices: Vec<StartupNotice>,
     /// The clients, the detach record and the shutdown request
@@ -204,6 +206,8 @@ pub struct LocalParts {
     pub machine: Arc<meerkat_runtime::MeerkatMachine>,
     /// The realm config store.
     pub realm_config: Arc<crate::bootstrap::RealmConfigStore>,
+    /// The daemon's endpoints.
+    pub endpoints: crate::endpoints::EndpointRegistry,
     /// What the start-up had to say.
     pub startup_notices: Vec<StartupNotice>,
     /// The daemon's lifecycle state.
@@ -265,6 +269,7 @@ impl Local {
             tasks_db,
             machine,
             realm_config,
+            endpoints,
             startup_notices,
             lifecycle,
             report,
@@ -294,6 +299,7 @@ impl Local {
             tasks_db,
             machine,
             realm_config,
+            endpoints,
             startup_notices,
             lifecycle,
             report,
@@ -722,8 +728,16 @@ impl Local {
             auth_binding,
             listed,
         } = params;
-        // A model only an endpoint knows needs its profile in the realm
-        // config before the runtime accepts it.
+        // The configured endpoint the switch's binding names (`None`: a
+        // built-in endpoint).
+        let endpoint = auth_binding
+            .as_ref()
+            .filter(|binding| is_endpoint_realm(binding.realm.as_str()))
+            .and_then(|binding| self.endpoints.get(binding.binding.as_str()))
+            .cloned();
+        // A model only an endpoint knows needs its profile (on a
+        // self-hosted endpoint: its alias) in the realm config before the
+        // runtime accepts it.
         let mut reseated = false;
         if let Some(dialect) = provider.as_deref().and_then(WireDialect::parse) {
             let listed = listed.map(|listed| crate::models::ModelEntry {
@@ -732,15 +746,44 @@ impl Local {
                 source: crate::models::ModelSource::Provider,
                 context_window: listed.context_window,
                 max_output_tokens: listed.max_output_tokens,
-                capabilities: Default::default(),
+                capabilities: crate::models::ModelCapabilities {
+                    reasoning: listed.reasoning,
+                    vision: listed.vision,
+                    function_calling: None,
+                },
             });
-            let written = crate::endpoints::ensure_model_profile(
-                self.realm_config.runtime(),
-                dialect.into(),
-                &model,
-                listed.as_ref(),
-            )
-            .await
+            let owned = crate::endpoints::OwnedProfiles::in_realm(&self.report.realm);
+            // A profile rkat-tui wrote for a model the catalog has since
+            // added goes first (the engine refuses the document with it).
+            let pruned =
+                crate::endpoints::prune_catalogued_profiles(self.realm_config.runtime(), &owned)
+                    .await
+                    .map_err(|err| Refusal::new(SWITCH_FAILED, err.to_string()))?;
+            if !pruned.is_empty() {
+                tracing::info!(?pruned, "dropped profiles the catalog now defines");
+            }
+            let written = match &endpoint {
+                Some(endpoint) => {
+                    crate::endpoints::ensure_endpoint_model(
+                        self.realm_config.runtime(),
+                        &owned,
+                        endpoint,
+                        &model,
+                        listed.as_ref(),
+                    )
+                    .await
+                }
+                None => {
+                    crate::endpoints::ensure_model_profile(
+                        self.realm_config.runtime(),
+                        &owned,
+                        dialect.into(),
+                        &model,
+                        listed.as_ref(),
+                    )
+                    .await
+                }
+            }
             .map_err(|err| Refusal::new(SWITCH_FAILED, err.to_string()))?;
             // The live agent's model registry predates the profile: seat
             // the orchestrator again on its session, which rebuilds its
@@ -761,7 +804,7 @@ impl Local {
             // A configured endpoint is named by its auth binding.
             let endpoint = auth_binding
                 .as_ref()
-                .filter(|binding| binding.realm.as_str() == ENDPOINT_REALM)
+                .filter(|binding| is_endpoint_realm(binding.realm.as_str()))
                 .map_or(provider, |binding| binding.binding.as_str());
             let configured = self
                 .thinking
@@ -771,10 +814,19 @@ impl Local {
                 None => TurnMetadataOverride::Clear,
             })
         });
+        // On a self-hosted endpoint the engine runs the model's alias.
+        let (engine_model, engine_provider, self_hosted_server_id) = match &endpoint {
+            Some(endpoint) if endpoint.is_self_hosted() => (
+                endpoint.engine_model(&model),
+                Some(endpoint.engine_provider().as_str().to_string()),
+                endpoint.self_hosted_server(),
+            ),
+            _ => (model, provider, None),
+        };
         let request = meerkat_runtime::SessionLlmReconfigureRequest {
-            model: Some(model),
-            provider,
-            self_hosted_server_id: None,
+            model: Some(engine_model),
+            provider: engine_provider,
+            self_hosted_server_id,
             provider_params,
             auth_binding: Some(match auth_binding {
                 Some(binding) => TurnMetadataOverride::Set(binding),
@@ -808,10 +860,14 @@ impl Local {
         let (session, report) =
             switched.map_err(|err| Refusal::new(SWITCH_FAILED, err.to_string()))?;
         tracing::debug!(?report, "switched the orchestrator's model");
+        let (model, provider) = crate::endpoints::from_engine(
+            &report.new_identity.model,
+            report.new_identity.provider.as_str(),
+        );
         Ok(ModelSet {
             session_id: session,
-            model: report.new_identity.model,
-            provider: report.new_identity.provider.as_str().to_string(),
+            model,
+            provider,
             reseated,
         })
     }
@@ -1069,7 +1125,12 @@ impl Local {
         // A configured endpoint is named by its auth binding.
         let endpoint = params
             .pointer("/auth_binding/value")
-            .filter(|binding| binding.get("realm").and_then(Value::as_str) == Some(ENDPOINT_REALM))
+            .filter(|binding| {
+                binding
+                    .get("realm")
+                    .and_then(Value::as_str)
+                    .is_some_and(is_endpoint_realm)
+            })
             .and_then(|binding| binding.get("binding").and_then(Value::as_str))
             .unwrap_or(provider);
         let configured = self.thinking.resolve(Some(endpoint), provider_kind, model);

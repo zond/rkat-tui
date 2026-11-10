@@ -81,6 +81,7 @@ impl Running {
                 classifier: Some(Arc::new(AllowAll) as Arc<dyn ActionClassifier>),
                 escalation_timeout: None,
             },
+            without_token_store: true,
         }
     }
 
@@ -564,6 +565,10 @@ pub struct Setup {
     pub escalation_timeout: Option<Duration>,
     pub lister: Option<rkat_tui::models::ModelLister>,
     pub host_paths: Option<HostPaths>,
+    /// Run every session on the engine's own clients (against a fake
+    /// endpoint) instead of the scripted LLM; the user's token store stays
+    /// closed either way.
+    pub engine_clients: bool,
     /// Where the endpoint file goes (default [`endpoint_file_for`] the
     /// workspace; a test whose shell is granted the temp dir puts it
     /// elsewhere, or the daemon refuses it as exposed).
@@ -589,7 +594,10 @@ impl Setup {
     pub fn options(&self, root: &Path, llm: &Arc<ScriptedLlmClient>) -> DaemonOptions {
         DaemonOptions::default()
             .with_bootstrap(BootstrapOptions {
-                llm_override: Some(Arc::clone(llm) as Arc<dyn LlmClient>),
+                // A setup on the engine's own clients (a fake endpoint)
+                // has no scripted LLM.
+                llm_override: (!self.engine_clients).then(|| Arc::clone(llm) as Arc<dyn LlmClient>),
+                without_token_store: true,
                 lister: Some(self.lister.clone().unwrap_or_else(no_lists)),
                 host_paths: Some(self.host_paths.clone().unwrap_or_default()),
                 approval: ApprovalOverrides {

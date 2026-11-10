@@ -566,7 +566,7 @@ impl Conversations {
             .await
             .ok()??;
         let binding = view.session_metadata?.auth_binding?;
-        (binding.realm.as_str() == crate::endpoints::ENDPOINT_REALM)
+        crate::endpoints::is_endpoint_realm(binding.realm.as_str())
             .then(|| binding.binding.as_str().to_string())
     }
 

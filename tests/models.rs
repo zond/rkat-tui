@@ -475,3 +475,53 @@ async fn a_configured_endpoint_s_listing_decides_the_window_and_the_threshold() 
     assert_eq!(rig.daemon.compact_threshold, threshold(catalog));
     rig.quit().await;
 }
+
+/// Section 8 item 4 on the rig: a realm config that profiles a model the
+/// catalog defines (a catalog addition since rkat-tui wrote it) starts.
+/// rkat-tui's own entry (recorded in the realm's `tui_models.json`) is
+/// dropped with a notice; the same entry the user wrote refuses the start
+/// with a typed error naming it, instead of a daemon that cannot write its
+/// realm config for an opaque reason.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_profile_the_catalog_now_defines_is_dropped_or_named() {
+    let ws = Workspace::new();
+    let realm = bootstrap::resolve_scope(&args_with(&ws.root, &[]))
+        .unwrap()
+        .realm_root();
+    std::fs::create_dir_all(&realm).unwrap();
+    let shadowing = format!(
+        "[models.\"{}\"]\nprovider = \"anthropic\"\ncontext_window = 50000\n",
+        common::MODEL
+    );
+    std::fs::write(realm.join("config.toml"), &shadowing).unwrap();
+    let llm = ScriptedLlmClient::new(vec![Step::Text("ok")]);
+    let refused = Attached::try_start_with(&ws.root, &llm, Setup::default()).await;
+    let Err(err) = refused else {
+        panic!("a user's entry shadowing the catalog was dropped");
+    };
+    let message = err.to_string();
+    assert!(
+        message.contains(&format!("[models.\"{}\"]", common::MODEL)),
+        "{message}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(realm.join("config.toml")).unwrap(),
+        shadowing
+    );
+
+    // rkat-tui wrote it: dropped, and the agent runs.
+    std::fs::write(
+        realm.join(rkat_tui::endpoints::OWNED_PROFILES_FILE),
+        format!("{{\"profiles\": [\"{}\"]}}", common::MODEL),
+    )
+    .unwrap();
+    let mut rig = Attached::start_with(&ws.root, &llm, Setup::default()).await;
+    let entry = format!("[models.\"{}\"]", common::MODEL);
+    rig.saw(|m| matches!(m, Msg::Notice { text, .. } if text.contains(&entry)))
+        .await;
+    rig.send(Effect::StartTurn("hi".into()));
+    rig.turn_finished().await;
+    rig.quit().await;
+    let document = std::fs::read_to_string(realm.join("config.toml")).unwrap();
+    assert!(!document.contains("[models."), "{document}");
+}

@@ -633,12 +633,60 @@ realm section: a backend with the endpoint's URL, an auth profile reading
 the environment variable `api_key_env` names (the document records the
 variable's name, never a key) and a binding. Keys come from the environment
 only: an inline `api_key` in `[endpoints.<name>]` (or through `--set`)
-refuses the start (exit 2) with a message naming `api_key_env`. Models
-only an endpoint knows get a `[models.<id>]` profile there, kept current
-from the endpoint's listing. A session's binding therefore resolves for
-`rkat`, REST and RPC on the same realm too. One `[models.<id>]` profile
-names one provider, so the same unknown model id on endpoints of two
-dialects is refused.
+refuses the start (exit 2) with a message naming `api_key_env`. A
+session's binding therefore resolves for `rkat`, REST and RPC on the same
+realm too.
+
+**A LiteLLM proxy** (or vLLM, or any OpenAI-compatible server) is an
+`openai`-dialect endpoint:
+
+```toml
+[endpoints.litellm]
+dialect = "openai"
+base_url = "http://localhost:4000"   # the proxy, without /v1
+api_key_env = "LITELLM_KEY"          # the variable holding its key
+```
+
+(or `--endpoint-def litellm=openai=http://localhost:4000,key_env=LITELLM_KEY`).
+The engine reaches it as one of its `self_hosted` servers (its connection
+is in the realm section `rkat-tui-self-hosted`), and every
+model it serves as the alias **`litellm:<model>`**: the request names the
+model exactly as the proxy lists it, and everything the engine knows of
+the model comes from the proxy, never from Meerkat's catalog. At start the
+daemon reads the proxy's `/v1/models` and LiteLLM's `/model/info`, and
+writes one `[self_hosted.models."litellm:<model>"]` entry per listed model
+into the realm config: the context window, the output limit, reasoning
+(`supports_reasoning`, which also lets the engine pass a reasoning effort)
+and images (`supports_vision`); a flag the proxy does not report is off,
+sampling temperature is on. A `/model` switch to a model the proxy listed
+since adds its alias then. Prices come from `/model/info` too. So
+`litellm:claude-opus-5-5` runs on the proxy's window and prices over the
+OpenAI wire, with none of the Anthropic request shaping (no thinking
+field, no beta headers); the same id on the built-in `anthropic` endpoint
+keeps the catalog's row. The status bar and `/model` show the endpoint and
+the model (`litellm` `claude-opus-5-5`); the picker matches both
+`litellm:claude` and `claude`; a stored conversation records the alias,
+and a bare model id that only one endpoint lists still resolves to it.
+The wire is the Responses API (`/v1/responses`), what rkat-tui's OpenAI
+dialect always spoke; text, reasoning and tool calls stream through it.
+Limits: `[thinking]` does not apply to such an endpoint (it is Anthropic's
+setting; the proxy's reasoning flag decides); a proxy without the
+Responses API is not supported yet; helpers run on the proxy too (a model
+a helper asks for by its plain name becomes the proxy's alias of it).
+
+**An Anthropic- or Gemini-dialect gateway** keeps that dialect's client and
+the catalog's request shaping for a model the catalog knows (the engine
+has no alias for these dialects); the window, the compaction threshold and
+the prices are still the gateway's (see the next paragraph). A model only the gateway
+knows gets a `[models.<id>]` profile from its listing, which rkat-tui
+records as its own (`tui_models.json` in the workspace's state
+directory). When a later Meerkat release adds that id to its catalog,
+rkat-tui removes its own profile at the next start (with a notice), so the
+realm keeps working; a `[models.<id>]` entry you wrote yourself for an id
+the catalog defines refuses the start with an error naming it, since the
+engine refuses such a config. One `[models.<id>]` profile names one
+provider, so the same unknown model id on gateways of two dialects is
+refused.
 
 A configured endpoint is the authority for its own models' facts: the
 context gauge, `/context` and the agent's compaction threshold use the
