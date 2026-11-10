@@ -4227,3 +4227,26 @@ unavailable) and `shutdown_stops_the_daemon_and_removes_its_endpoint_file`
 (the directory gone, everywhere); the full suite run with
 `XDG_STATE_HOME` at an empty directory left it empty.
 
+### Bounded client queues and an accept loop that survives errors
+
+The proxy drained the engine's lines for a client into an unbounded
+channel, so a client that stopped reading made the daemon hold its whole
+event stream in memory; and one failed `accept` ended the serve loop and
+the daemon with it. Each client now has a bounded queue
+(`serve::ClientOut`, `CLIENT_QUEUE` = 4096 lines). The engine's lines wait
+for room up to `CLIENT_STALL` (5 s: a burst the client drains in time
+costs nothing, and the wait backs up into that connection's engine pipe
+only); the daemon's own lines (answers, decision notices) never wait. When
+room does not come, the client is dropped: the proxy ends without waiting
+for its stuck writer, which is a detach like a hangup, and the client
+reconnects and catches up from its cursor (`catchup.rs`). A failed accept
+is logged and accepting goes on after `ACCEPT_BACKOFF` (100 ms): tokio's
+listener errors (EMFILE, ECONNABORTED) are transient, and a listener that
+is gone is only ever dropped by the shutdown. `serve` therefore returns
+its connections without an error. Pinned by
+`a_client_that_does_not_read_is_dropped_and_another_keeps_streaming` (a
+small queue and stall: the reading client gets every line, the other
+proxy ends) and `a_failed_accept_does_not_end_accepting` (the accept loop,
+`accept_until`, over a scripted accept: two failures, both connections
+after them served).
+

@@ -242,7 +242,7 @@ pub struct Settled {
 
 /// One attached client.
 struct Client {
-    out: mpsc::UnboundedSender<Outgoing>,
+    out: super::serve::ClientOut,
     /// The principal the client's connection authenticated as.
     approver_id: ApproverId,
     /// The connection's own authentication scope.
@@ -412,7 +412,7 @@ impl Decisions {
     /// A client attached: decisions are offered to it through `out` from
     /// now on, and the decisions open now are offered to it (the
     /// catch-up). The guard ends it.
-    pub fn connect(self: &Arc<Self>, out: mpsc::UnboundedSender<Outgoing>) -> ClientGuard {
+    pub fn connect(self: &Arc<Self>, out: super::serve::ClientOut) -> ClientGuard {
         let id = self.next_client.fetch_add(1, Ordering::Relaxed);
         let client = Arc::new(Client {
             out,
@@ -954,7 +954,7 @@ mod tests {
     /// A client whose notices are acknowledged as written: returns the
     /// lines it was sent.
     fn client(hub: &Arc<Decisions>) -> (ClientGuard, mpsc::UnboundedReceiver<String>) {
-        let (out, mut out_rx) = mpsc::unbounded_channel::<Outgoing>();
+        let (out, mut out_rx) = super::super::serve::ClientOut::channel(64);
         let (lines, lines_rx) = mpsc::unbounded_channel();
         tokio::spawn(async move {
             while let Some(outgoing) = out_rx.recv().await {

@@ -181,6 +181,12 @@ design.
 
 ### Fixed
 
+- The daemon no longer buffers without limit for a client that stops
+  reading (a suspended `rkat-tui`, a stalled tunnel): when the client's
+  queue (4096 lines) stays full for 5 s, the daemon drops the connection,
+  and the client reconnects and catches up. A failed `accept` (for
+  example out of file descriptors) no longer ends the daemon: it logs it
+  and accepts again 100 ms later.
 - A daemon's stop removes the per-workspace directory of its endpoint file
   once it is empty, and the test suite no longer writes into the user's
   state directory (one test left a `rkat-tui/<key>/` directory there on

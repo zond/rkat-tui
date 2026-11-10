@@ -67,6 +67,132 @@ impl Outgoing {
     }
 }
 
+/// The lines one client's queue holds before the client counts as not
+/// reading: it is dropped (a detach, as a hangup is), and it catches up
+/// from its cursor when it reconnects. A stopped TUI (Ctrl+Z) or a
+/// stalled tunnel no longer makes the daemon buffer a whole event stream.
+pub const CLIENT_QUEUE: usize = 4096;
+/// How long the engine's next line for a client waits for room in its
+/// full queue before the client is dropped (a burst the client drains in
+/// time costs nothing).
+pub const CLIENT_STALL: Duration = Duration::from_secs(5);
+
+/// A client queue's bounds.
+#[derive(Debug, Clone, Copy)]
+struct Limits {
+    /// [`CLIENT_QUEUE`].
+    queue: usize,
+    /// [`CLIENT_STALL`].
+    stall: Duration,
+}
+
+impl Limits {
+    const DEFAULT: Self = Self {
+        queue: CLIENT_QUEUE,
+        stall: CLIENT_STALL,
+    };
+}
+
+/// The sending side of one client's outgoing queue (bounded,
+/// [`CLIENT_QUEUE`]): a send that finds it full gives the client up
+/// instead of waiting or growing.
+#[derive(Debug, Clone)]
+pub struct ClientOut {
+    tx: mpsc::Sender<Outgoing>,
+    overflow: Arc<tokio::sync::Notify>,
+}
+
+/// A [`ClientOut`] that does not keep the queue open.
+#[derive(Debug, Clone)]
+pub struct WeakClientOut {
+    tx: mpsc::WeakSender<Outgoing>,
+    overflow: Arc<tokio::sync::Notify>,
+}
+
+/// The queue was full (the client is being dropped) or closed (it left).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NotQueued;
+
+impl ClientOut {
+    /// A queue of `capacity` lines and its receiving side.
+    #[must_use]
+    pub fn channel(capacity: usize) -> (Self, mpsc::Receiver<Outgoing>) {
+        let (tx, rx) = mpsc::channel(capacity);
+        (
+            Self {
+                tx,
+                overflow: Arc::default(),
+            },
+            rx,
+        )
+    }
+
+    /// Queue `outgoing` without waiting (an answer, a decision notice: a
+    /// client whose queue is full of the engine's lines is that far
+    /// behind, and catches up after its reconnect).
+    ///
+    /// # Errors
+    ///
+    /// [`NotQueued`] when the client left, or its queue is full: then the
+    /// client is given up ([`Self::overflowed`] resolves).
+    pub fn send(&self, outgoing: Outgoing) -> Result<(), NotQueued> {
+        match self.tx.try_send(outgoing) {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                self.overflow.notify_one();
+                Err(NotQueued)
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => Err(NotQueued),
+        }
+    }
+
+    /// Queue the engine's `outgoing`, waiting up to `patience` for room.
+    ///
+    /// # Errors
+    ///
+    /// [`NotQueued`] when the client left, or no room came in time: then
+    /// the client is given up ([`Self::overflowed`] resolves).
+    pub async fn send_waiting(
+        &self,
+        outgoing: Outgoing,
+        patience: Duration,
+    ) -> Result<(), NotQueued> {
+        match tokio::time::timeout(patience, self.tx.send(outgoing)).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(_)) => Err(NotQueued),
+            Err(_) => {
+                self.overflow.notify_one();
+                Err(NotQueued)
+            }
+        }
+    }
+
+    /// Resolves once a send found the queue full.
+    pub async fn overflowed(&self) {
+        self.overflow.notified().await;
+    }
+
+    /// A handle that does not keep the queue open.
+    #[must_use]
+    pub fn downgrade(&self) -> WeakClientOut {
+        WeakClientOut {
+            tx: self.tx.downgrade(),
+            overflow: Arc::clone(&self.overflow),
+        }
+    }
+}
+
+impl WeakClientOut {
+    /// The queue, while it is open.
+    #[must_use]
+    pub fn upgrade(&self) -> Option<ClientOut> {
+        Some(ClientOut {
+            tx: self.tx.upgrade()?,
+            overflow: Arc::clone(&self.overflow),
+        })
+    }
+}
+
 /// The methods the daemon adds to the engine's `initialize`
 /// catalog: it pushes `decision/notice` to every attached client and
 /// decides `decision/decide` itself (plain TCP serves neither).
@@ -154,48 +280,82 @@ impl Listener {
 
 /// Accept until `shutdown`; then stop accepting, wait up to [`DRAIN`] for
 /// the connections to end, and return those still running (the caller
-/// aborts them once the runtime has shut down).
-///
-/// # Errors
-///
-/// [`DaemonError::Io`] when accepting fails.
+/// aborts them once the runtime has shut down). A failed accept (out of
+/// file descriptors, a connection aborted before it was accepted) ends
+/// nothing: it is logged and accepting goes on after [`ACCEPT_BACKOFF`].
 pub async fn serve(
     listener: &mut Listener,
     runtime: &Arc<SessionRuntime>,
     config_store: &Arc<dyn ConfigStore>,
     local: &Arc<Local>,
     shutdown: impl std::future::Future<Output = ()> + Send,
-) -> Result<JoinSet<()>, DaemonError> {
-    let Some(tcp) = listener.tcp.take() else {
-        return Ok(JoinSet::new());
-    };
+) -> JoinSet<()> {
     let mut connections = JoinSet::new();
-    tokio::pin!(shutdown);
-    let accepted = loop {
-        let (stream, peer) = tokio::select! {
-            () = &mut shutdown => break Ok(()),
-            accepted = tcp.accept() => match accepted {
-                Ok(accepted) => accepted,
-                Err(err) => break Err(DaemonError::io("accept on", &listener.file, err)),
-            },
-            Some(_) = connections.join_next(), if !connections.is_empty() => continue,
-        };
-        let _ = stream.set_nodelay(true);
-        connections.spawn(connection(
-            stream,
-            peer,
-            Arc::clone(runtime),
-            Arc::clone(config_store),
-            Arc::clone(local),
-            Arc::clone(&listener.token),
-        ));
+    let Some(tcp) = listener.tcp.take() else {
+        return connections;
     };
+    let token = Arc::clone(&listener.token);
+    accept_until(
+        || tcp.accept(),
+        shutdown,
+        &mut connections,
+        |stream: tokio::net::TcpStream, peer| {
+            let _ = stream.set_nodelay(true);
+            connection(
+                stream,
+                peer,
+                Arc::clone(runtime),
+                Arc::clone(config_store),
+                Arc::clone(local),
+                Arc::clone(&token),
+            )
+        },
+    )
+    .await;
     drop(tcp);
     let _ = tokio::time::timeout(DRAIN, async {
         while connections.join_next().await.is_some() {}
     })
     .await;
-    accepted.map(|()| connections)
+    connections
+}
+
+/// The wait after a failed accept before accepting again.
+pub const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
+
+/// Accept with `accept` until `shutdown`, serving each connection with
+/// `serve_one` in `connections` (reaped as they end); a failed accept is
+/// logged and accepting goes on after [`ACCEPT_BACKOFF`].
+async fn accept_until<S, A, AF, F, FF>(
+    mut accept: A,
+    shutdown: impl std::future::Future<Output = ()>,
+    connections: &mut JoinSet<()>,
+    mut serve_one: F,
+) where
+    A: FnMut() -> AF,
+    AF: std::future::Future<Output = std::io::Result<(S, SocketAddr)>>,
+    F: FnMut(S, SocketAddr) -> FF,
+    FF: std::future::Future<Output = ()> + Send + 'static,
+{
+    tokio::pin!(shutdown);
+    loop {
+        tokio::select! {
+            () = &mut shutdown => return,
+            accepted = accept() => match accepted {
+                Ok((stream, peer)) => {
+                    connections.spawn(serve_one(stream, peer));
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, "accept failed; accepting again shortly");
+                    tokio::select! {
+                        () = &mut shutdown => return,
+                        () = tokio::time::sleep(ACCEPT_BACKOFF) => {}
+                    }
+                }
+            },
+            Some(_) = connections.join_next(), if !connections.is_empty() => {}
+        }
+    }
 }
 
 /// One client: the handshake, then the engine's server until the client
@@ -359,7 +519,7 @@ pub trait LocalMethods: Send + Sync {
     fn observe(&self, caller: &Caller, request: Value) -> Result<Value, Refusal>;
     /// A client attached: the daemon's consent surface offers it decisions
     /// through `out` until the guard is dropped.
-    fn connect(&self, out: mpsc::UnboundedSender<Outgoing>) -> ClientGuard;
+    fn connect(&self, out: ClientOut) -> ClientGuard;
     /// The client `client`'s `decision/decide`: its answer line.
     async fn decide(&self, client: u64, id: Option<RpcId>, params: Value) -> String;
 }
@@ -374,7 +534,7 @@ impl LocalMethods for Local {
         Local::observe(self, caller, request)
     }
 
-    fn connect(&self, out: mpsc::UnboundedSender<Outgoing>) -> ClientGuard {
+    fn connect(&self, out: ClientOut) -> ClientGuard {
         self.decisions().connect(out)
     }
 
@@ -392,11 +552,13 @@ impl LocalMethods for Local {
 /// consent surface offers this client. Ends when the client closes (the
 /// engine then sees its end of input) or the engine's side closes; a local
 /// call still running then finishes (a conversation switch is not cut in
-/// half), and its answer is dropped. `caller` is what the client proved
-/// at attach (the lifecycle methods answer for it).
+/// half), and its answer is dropped. Ends too when the client's queue
+/// fills ([`CLIENT_QUEUE`]): a client that does not read is dropped.
+/// `caller` is what the client proved at attach (the lifecycle methods
+/// answer for it).
 pub async fn proxy<R, W, E, L>(
     client_read: R,
-    mut client_write: W,
+    client_write: W,
     engine: E,
     local: Arc<L>,
     caller: Caller,
@@ -406,8 +568,33 @@ pub async fn proxy<R, W, E, L>(
     E: tokio::io::AsyncRead + AsyncWrite + Unpin + Send + 'static,
     L: LocalMethods + ?Sized + 'static,
 {
+    proxy_with(
+        client_read,
+        client_write,
+        engine,
+        local,
+        caller,
+        Limits::DEFAULT,
+    )
+    .await;
+}
+
+/// [`proxy`] with the client queue's `limits`.
+async fn proxy_with<R, W, E, L>(
+    client_read: R,
+    mut client_write: W,
+    engine: E,
+    local: Arc<L>,
+    caller: Caller,
+    limits: Limits,
+) where
+    R: AsyncBufRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin + Send + 'static,
+    E: tokio::io::AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    L: LocalMethods + ?Sized + 'static,
+{
     let (engine_read, mut engine_write) = tokio::io::split(engine);
-    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Outgoing>();
+    let (out_tx, mut out_rx) = ClientOut::channel(limits.queue);
     let mut writer = AbortOnDrop(tokio::spawn(async move {
         while let Some(outgoing) = out_rx.recv().await {
             if client_write
@@ -445,7 +632,11 @@ pub async fn proxy<R, W, E, L>(
                         if !initializing.lock().is_empty() {
                             forward = with_decision_methods(forward, &initializing);
                         }
-                        if out_tx.send(Outgoing::line(forward)).is_err() {
+                        if out_tx
+                            .send_waiting(Outgoing::line(forward), limits.stall)
+                            .await
+                            .is_err()
+                        {
                             break;
                         }
                     }
@@ -455,11 +646,23 @@ pub async fn proxy<R, W, E, L>(
     }));
     let mut lines = client_read;
     let mut line = String::new();
+    let mut overflowed = false;
     loop {
         line.clear();
-        match lines.read_line(&mut line).await {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {}
+        tokio::select! {
+            read = lines.read_line(&mut line) => match read {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            },
+            () = out_tx.overflowed() => {
+                tracing::warn!(
+                    agent = ?caller.agent,
+                    queued = limits.queue,
+                    "dropped a client that does not read what the daemon sends (it reconnects and catches up)"
+                );
+                overflowed = true;
+                break;
+            }
         }
         match route(&line, &*local, &caller) {
             Routed::Local { id, method, params } => {
@@ -526,6 +729,11 @@ pub async fn proxy<R, W, E, L>(
     drop(decisions);
     let _ = engine_write.shutdown().await;
     drop(out_tx);
+    if overflowed {
+        // The writer is stuck on a client that does not read: abort it
+        // (dropped here) rather than wait for what it still holds.
+        return;
+    }
     let _ = (&mut from_engine.0).await;
     let _ = (&mut writer.0).await;
 }
@@ -826,7 +1034,7 @@ mod tests {
             Ok(request)
         }
 
-        fn connect(&self, out: mpsc::UnboundedSender<Outgoing>) -> ClientGuard {
+        fn connect(&self, out: ClientOut) -> ClientGuard {
             self.decisions.connect(out)
         }
 
@@ -894,6 +1102,148 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5), proxied)
             .await
             .expect("the proxy ends with the client")
+            .unwrap();
+    }
+
+    fn slow_local() -> Arc<Slow> {
+        let service = meerkat_runtime::decision::DurableDecisionService::new(Arc::new(
+            meerkat_core::approval::decision::InMemoryDecisionStore::new(),
+        ));
+        let principal = super::super::decisions::Principal::new("alice").unwrap();
+        Arc::new(Slow {
+            gate: tokio::sync::Notify::new(),
+            decisions: super::super::decisions::Decisions::new(service, principal, None).unwrap(),
+        })
+    }
+
+    /// Write `n` engine lines on `engine` (errors ignored: the proxy may
+    /// be gone).
+    fn engine_lines(engine: tokio::io::DuplexStream, n: usize) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let (_read, mut write) = tokio::io::split(engine);
+            for i in 0..n {
+                let line = format!(
+                    "{}\n",
+                    json!({"jsonrpc": "2.0", "method": "mob/stream_event", "params": {"n": i}})
+                );
+                if write.write_all(line.as_bytes()).await.is_err() {
+                    return;
+                }
+            }
+            // Keep the engine's side open: the proxy ends by itself.
+            std::future::pending::<()>().await;
+        })
+    }
+
+    /// The finding this guards (second review, item 5): the engine's
+    /// lines for a client went into an unbounded queue, so a client that
+    /// stopped reading (a suspended TUI, a stalled tunnel) made the daemon
+    /// buffer its whole event stream.
+    #[tokio::test]
+    async fn a_client_that_does_not_read_is_dropped_and_another_keeps_streaming() {
+        let limits = Limits {
+            queue: 8,
+            stall: Duration::from_millis(200),
+        };
+        const LINES: usize = 500;
+        // A client that never reads, behind a tiny pipe.
+        let (stalled_client, stalled_side) = tokio::io::duplex(64);
+        let (stalled_engine, stalled_engine_side) = tokio::io::duplex(1 << 16);
+        let (read, write) = tokio::io::split(stalled_side);
+        let stalled = tokio::spawn(proxy_with(
+            BufReader::new(read),
+            write,
+            stalled_engine_side,
+            slow_local(),
+            Caller::default(),
+            limits,
+        ));
+        // A client that reads.
+        let (healthy_client, healthy_side) = tokio::io::duplex(1 << 16);
+        let (healthy_engine, healthy_engine_side) = tokio::io::duplex(1 << 16);
+        let (read, write) = tokio::io::split(healthy_side);
+        let _healthy = AbortOnDrop(tokio::spawn(proxy_with(
+            BufReader::new(read),
+            write,
+            healthy_engine_side,
+            slow_local(),
+            Caller::default(),
+            limits,
+        )));
+        let _stalled_writes = AbortOnDrop(engine_lines(stalled_engine, LINES));
+        let _healthy_writes = AbortOnDrop(engine_lines(healthy_engine, LINES));
+        tokio::time::timeout(Duration::from_secs(5), stalled)
+            .await
+            .expect("the client that does not read is dropped")
+            .unwrap();
+        let (client_in, _client_out) = tokio::io::split(healthy_client);
+        let mut client_in = BufReader::new(client_in);
+        for i in 0..LINES {
+            let line = next_line(&mut client_in).await;
+            assert!(line.contains(&format!("\"n\":{i}}}")), "{i}: {line}");
+        }
+        drop(stalled_client);
+    }
+
+    /// The finding this guards (second review, item 5): one failed
+    /// `accept` (out of file descriptors, a connection aborted before it
+    /// was accepted) ended the serve loop and with it the daemon.
+    #[tokio::test]
+    async fn a_failed_accept_does_not_end_accepting() {
+        let peer = SocketAddr::from(([127, 0, 0, 1], 1));
+        // Taken when an accept is polled, as a listener's accept is
+        // cancel-safe: one dropped unpolled takes nothing.
+        let script: Arc<parking_lot::Mutex<std::collections::VecDeque<std::io::Result<u32>>>> =
+            Arc::new(parking_lot::Mutex::new(
+                [
+                    Err(std::io::Error::from(std::io::ErrorKind::ConnectionAborted)),
+                    Ok(1),
+                    Err(std::io::Error::other("too many open files")),
+                    Ok(2),
+                ]
+                .into(),
+            ));
+        let served = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let accepting = tokio::spawn({
+            let served = Arc::clone(&served);
+            async move {
+                let mut connections = JoinSet::new();
+                accept_until(
+                    move || {
+                        let script = Arc::clone(&script);
+                        async move {
+                            let next = script.lock().pop_front();
+                            match next {
+                                Some(result) => result.map(|n| (n, peer)),
+                                None => std::future::pending().await,
+                            }
+                        }
+                    },
+                    async {
+                        let _ = stopped.await;
+                    },
+                    &mut connections,
+                    |n, _| {
+                        let served = Arc::clone(&served);
+                        async move { served.lock().push(n) }
+                    },
+                )
+                .await;
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while served.lock().len() < 2 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("both connections after the failures are served");
+        assert_eq!(*served.lock(), vec![1, 2]);
+        stop.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), accepting)
+            .await
+            .expect("the shutdown ends accepting")
             .unwrap();
     }
 }

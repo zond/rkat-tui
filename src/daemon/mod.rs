@@ -739,10 +739,7 @@ impl Daemon {
         if self.local.lifecycle().retires_all() {
             self.local.retire_all().await;
         }
-        let (served, mut connections) = match served {
-            Ok(connections) => (Ok(()), connections),
-            Err(err) => (Err(err), tokio::task::JoinSet::new()),
-        };
+        let mut connections = served;
         for task in &self.tasks {
             task.abort();
         }
@@ -765,7 +762,6 @@ impl Daemon {
         let realm_root = self.realm_root.clone();
         drop(self);
         settle_stores(&realm_root, STORE_SETTLE).await;
-        served?;
         shutdown.map_err(DaemonError::from)
     }
 }
