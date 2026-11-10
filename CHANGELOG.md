@@ -9,6 +9,13 @@ design.
 
 ### Security
 
+- CI checks the dependencies with `cargo deny` (`deny.toml`): RustSec
+  advisories, the licence allow-list and crates.io as the only source.
+  Two advisories without a fix this release can take are ignored with a
+  date and what lifts them: the bundled SQLite (RUSTSEC-2026-0459, fixed
+  in the next Meerkat release) and rmcp's unbounded HTTP bodies
+  (RUSTSEC-2026-0462, reachable only from an HTTP MCP server you
+  configure).
 - The daemon keeps an audit log: every approval decision (the tool, the
   command or paths whole, the tier, the verdict and who decided: a rule,
   the classifier, you through which connection, the mode, the policy) and

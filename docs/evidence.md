@@ -4897,3 +4897,36 @@ own decision; `SKIPPED:` without the backend), and the unit tests of
 `daemon::audit` (owner-only, one rotated generation, no symbolic link).
 `--audit`'s file lookup is not driven by a test: it reads the real state
 directory, which the tests must leave alone.
+
+### Recommendation 10: `cargo deny` in CI
+
+`deny.toml` and a `deny` job in `.github/workflows/ci.yml`
+(`EmbarkStudios/cargo-deny-action@v2`, `check`); the local gate stays the
+five steps (`docs/testing.md`, "Dependency checks"). Run here with
+cargo-deny 0.20.2 against the advisory database of 2026-11-10:
+
+- Sources: crates.io only (`unknown-registry`/`unknown-git` deny); the
+  tree has no git source, as the pin policy says.
+- Licences: the brief's set (MIT, Apache-2.0, BSD-2/3-Clause, ISC,
+  Unicode-3.0, Zlib, MPL-2.0) refused three crates of the engine's graph,
+  so three more are allowed: MIT-0 (`borrow-or-share`, via `jsonschema`),
+  CC0-1.0 (`notify`) and CDLA-Permissive-2.0 (`webpki-roots`, the
+  Mozilla root list).
+- Advisories (vulnerabilities, `unmaintained = "all"`, yanked denied):
+  two hits, neither fixable here. RUSTSEC-2026-0459 (bundled SQLite before
+  3.54) through `libsqlite3-sys` 0.35 of the engine's `rusqlite` 0.37:
+  `cargo update -p libsqlite3-sys` locks nothing newer (the fix is 0.39, a
+  semver-breaking line only the engine can take); fixed upstream in
+  lukacf/meerkat#2164, lands with the next Meerkat release.
+  RUSTSEC-2026-0462 (rmcp's Streamable HTTP client buffers a response
+  body without a limit, fixed in 3.9) through `meerkat-mcp` 0.9.11's
+  `rmcp = "1.4"`: `cargo update -p rmcp` locks nothing newer; only an HTTP
+  MCP server the user configured can send such a body. Both are in
+  `ignore` with a dated reason naming what lifts them, so a new advisory
+  still fails the job. Without the two entries `cargo deny check` fails
+  with exactly them (verified); with them it passes (`advisories ok, bans
+  ok, licenses ok, sources ok`).
+- Bans: none (`multiple-versions` and wildcards allowed) to start.
+
+`cargo-vet` is not added: a deliberate non-goal until asked
+(`docs/mob-split.md`, security).

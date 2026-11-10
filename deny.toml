@@ -1,0 +1,58 @@
+# cargo-deny (recommendation 10 of the security review). CI runs
+# `cargo deny check` as its own job (`.github/workflows/ci.yml`, `deny`);
+# it is not part of the local five-step gate. docs/testing.md says how to
+# run it locally.
+
+[graph]
+all-features = true
+
+[advisories]
+# Vulnerabilities are always errors (cargo-deny has no switch for
+# them); unmaintained crates are errors too, for the whole graph.
+unmaintained = "all"
+yanked = "deny"
+# Only advisories with no fixed version this tree can take. Each entry is
+# dated and says what lifts it.
+ignore = [
+    # The bundled SQLite of libsqlite3-sys 0.35 (through the engine's
+    # rusqlite 0.37); the fix is libsqlite3-sys 0.39, a semver-breaking
+    # move only the engine can make. Fixed upstream in lukacf/meerkat#2164,
+    # lands with the next Meerkat release. Ignored 2026-11-10.
+    { id = "RUSTSEC-2026-0459", reason = "fixed upstream in lukacf/meerkat#2164, lands with the next Meerkat release (libsqlite3-sys 0.39 is outside the engine's rusqlite 0.37)" },
+    # rmcp 1.8 buffers an MCP HTTP server's response body without a limit;
+    # the fix is rmcp 3.9, outside meerkat-mcp 0.9.11's `rmcp = "1.4"`
+    # requirement. Only a configured HTTP MCP server can send such a body.
+    # Ignored 2026-11-10; lifts when a Meerkat release takes rmcp >= 3.9.
+    { id = "RUSTSEC-2026-0462", reason = "no fixed rmcp within meerkat-mcp 0.9.11's ^1.4; reachable only from an HTTP MCP server the user configures; lifts with a Meerkat release on rmcp >= 3.9" },
+]
+
+[licenses]
+# What the tree needs, no more (docs/evidence.md, "cargo-deny in CI",
+# lists why each beyond the brief's set is here).
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",
+    # Beyond the brief's set, each needed by one crate of the engine's
+    # graph: borrow-or-share (MIT-0, via jsonschema), notify (CC0-1.0),
+    # webpki-roots (CDLA-Permissive-2.0, the Mozilla root list's data).
+    "MIT-0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "allow"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

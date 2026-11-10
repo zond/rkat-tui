@@ -36,6 +36,18 @@ variables apply. `.cargo/config.toml` already sets the test-thread stack and
 the SQLite flags the engine needs; do not override `RUST_MIN_STACK` or
 `LIBSQLITE3_FLAGS`.
 
+## Dependency checks (CI only)
+
+CI's `deny` job runs `cargo deny check` over `deny.toml`: RustSec
+advisories (vulnerabilities, unmaintained and yanked crates), the licence
+allow-list and the sources (crates.io only). It is not a step of the gate
+above, which stays five steps; run it locally with `cargo deny check`
+(cargo-deny 0.18 or later, which fetches the advisory database) after a
+dependency change. An advisory with no fixed version this tree can take
+goes into `deny.toml`'s `ignore` list with the date and what lifts it,
+never silently; one with a fix in semver range is fixed with `cargo update
+-p <crate>`.
+
 ## While iterating
 
 Scope the run to what changed, then run the full gate once at the end:

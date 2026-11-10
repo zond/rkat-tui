@@ -77,3 +77,15 @@ jobs:
             echo "$left"
             exit 1
           fi
+
+  # Recommendation 10 of the security review: advisories, licences and
+  # sources (deny.toml). Not part of the local gate; docs/testing.md says
+  # how to run it.
+  deny:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
