@@ -448,7 +448,7 @@ fn the_quit_decision_follows_the_rules() {
             .map(|(name, clients)| AgentRow {
                 name: (*name).to_string(),
                 session_id: None,
-                running,
+                running: Some(running),
                 clients: *clients,
                 detached,
             })

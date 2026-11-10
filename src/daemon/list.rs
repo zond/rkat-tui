@@ -225,7 +225,7 @@ pub fn lines(listed: &Listed, now: chrono::DateTime<chrono::Utc>) -> Vec<String>
             let mut fields = vec![
                 String::new(),
                 agent.name.clone(),
-                if agent.running { "running" } else { "idle" }.to_string(),
+                agent.run_label().to_string(),
                 agent
                     .session_id
                     .as_ref()
@@ -350,14 +350,14 @@ mod tests {
                     crate::daemon::protocol::AgentRow {
                         name: "main-ab12".into(),
                         session_id: Some(session.clone()),
-                        running: true,
+                        running: Some(true),
                         clients: 1,
                         detached: false,
                     },
                     crate::daemon::protocol::AgentRow {
                         name: "main-cd34".into(),
                         session_id: None,
-                        running: false,
+                        running: None,
                         clients: 0,
                         detached: true,
                     },
@@ -369,7 +369,8 @@ mod tests {
             vec![
                 "/w\t127.0.0.1:4000\tpid 9\tup 1h30m\t1 client\t2 agents".to_string(),
                 format!("\tmain-ab12\trunning\t{session}\t1 client"),
-                "\tmain-cd34\tidle\tno conversation\t0 clients\tdetached".to_string(),
+                // Unknown is not idle.
+                "\tmain-cd34\tunknown\tno conversation\t0 clients\tdetached".to_string(),
             ]
         );
         // Another realm than the workspace's own is named after it.

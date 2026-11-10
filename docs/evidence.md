@@ -4250,3 +4250,25 @@ proxy ends) and `a_failed_accept_does_not_end_accepting` (the accept loop,
 `accept_until`, over a scripted accept: two failures, both connections
 after them served).
 
+### Unknown is not idle: the agent's run state
+
+`Conversations::running` returned `Option<bool>`, and its callers read
+`None` (a failed status read) as idle: `Agents::retire` cancelled a turn
+only on `Some(true)`, `rows` reported `unwrap_or(false)`, and `run_open`
+was false for a snapshot without `progress`. It now returns
+`conversations::RunState` (`Running`, `Idle`, `Unknown`; a snapshot
+without progress, or with the engine's own `MemberRunState::Unknown`, is
+`Unknown`). A retire force-cancels unless the state is `Idle` (a cancel of
+an idle member is harmless); `rkat/status`'s agent rows carry `running:
+null` for unknown, shown as `unknown` by `/agents`, the start-up notice
+and `--list` (`AgentRow::run_label`); the caller's own `running` stays a
+bool and is true when unknown, so `/quit` warns as for a running turn. A
+switch still refuses only on a positive `Running` (`refuse_running`): a
+refusal needs the evidence, and the switch re-checks after spawning. Live
+agents read `Idle` on 0.9.11 (`attach_agents` lists them as idle), so the
+unknown state is the failed read, not the normal one. Pinned by
+`a_status_without_a_run_state_is_unknown_not_idle`,
+`agents_are_listed_with_state_conversation_and_clients`,
+`the_start_up_notice_names_the_other_agents` and
+`daemon::list`'s line test.
+

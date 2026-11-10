@@ -181,6 +181,10 @@ design.
 
 ### Fixed
 
+- An agent whose state the daemon cannot read is shown as `unknown` in
+  `/agents` and `--list`, not `idle`, and retiring it cancels its turn
+  anyway. Before, a failed status read retired a running agent without
+  cancelling its turn.
 - The daemon no longer buffers without limit for a client that stops
   reading (a suspended `rkat-tui`, a stalled tunnel): when the client's
   queue (4096 lines) stays full for 5 s, the daemon drops the connection,

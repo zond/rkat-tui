@@ -334,12 +334,26 @@ pub struct AgentRow {
     /// The conversation it runs as.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<SessionId>,
-    /// Whether its turn is running.
-    pub running: bool,
+    /// Whether its turn is running (`None`: its state could not be read,
+    /// which is not idle).
+    #[serde(default)]
+    pub running: Option<bool>,
     /// The clients attached to it.
     pub clients: usize,
     /// It was left running without a client (`/detach`, a hangup).
     pub detached: bool,
+}
+
+impl AgentRow {
+    /// Its run state in words: `running`, `idle` or `unknown`.
+    #[must_use]
+    pub fn run_label(&self) -> &'static str {
+        match self.running {
+            Some(true) => "running",
+            Some(false) => "idle",
+            None => "unknown",
+        }
+    }
 }
 
 impl std::fmt::Debug for AttachParams {
@@ -396,8 +410,8 @@ pub struct Status {
     /// The caller's agent's current conversation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<SessionId>,
-    /// Whether the caller's agent's turn is running (`false` when its
-    /// state cannot be read).
+    /// Whether the caller's agent's turn is running, or its state cannot
+    /// be read (unknown is not idle: `/quit` warns as for a running turn).
     pub running: bool,
     /// The agent the caller is bound to (`None`: a probe).
     #[serde(default, skip_serializing_if = "Option::is_none")]

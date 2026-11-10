@@ -1038,7 +1038,8 @@ the prompt.
 endpoint file exists, tab-separated in a fixed order: the workspace, the
 address, `pid N`, `up <uptime>`, then the attached clients and the
 number of agents; under it, indented by a tab, one line per agent: its
-name, `running` or `idle`, its conversation, its clients and `detached`
+name, `running`, `idle` or `unknown` (the daemon could not read its
+state), its conversation, its clients and `detached`
 when it runs without one. A file nothing answers at is
 `stale`, and is removed when its process is gone (`stale (file removed)`).
 A daemon of another realm than the workspace's own shows it after the
@@ -1323,7 +1324,7 @@ semantic memory are the workspace's and so shared by every agent; each
 TUI shows only its own agent's transcript, helpers, file diffs, approval
 requests and classifier notes.
 
-**`/agents`.** `/agents` lists the agents: name, running or idle, the
+**`/agents`.** `/agents` lists the agents: name, running, idle or unknown, the
 conversation, how many TUIs are attached, `detached` for one running
 without a TUI, and which one is yours. `/agents <name>` switches this TUI
 to that agent (not while a turn of yours runs): the agent you leave keeps

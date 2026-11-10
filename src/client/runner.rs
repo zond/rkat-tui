@@ -2971,13 +2971,7 @@ pub fn others_notice(agents: &[protocol::AgentRow], mine: &str) -> Option<String
     let others: Vec<String> = agents
         .iter()
         .filter(|row| row.name != mine)
-        .map(|row| {
-            format!(
-                "{} is {}",
-                row.name,
-                if row.running { "running" } else { "idle" }
-            )
-        })
+        .map(|row| format!("{} is {}", row.name, row.run_label()))
         .collect();
     if others.is_empty() {
         return None;
@@ -3008,7 +3002,7 @@ pub fn agent_lines(agents: &[protocol::AgentRow], mine: Option<&str>) -> Vec<Str
         let mut line = format!(
             "  {} · {} · {session} · {} client{}",
             row.name,
-            if row.running { "running" } else { "idle" },
+            row.run_label(),
             row.clients,
             if row.clients == 1 { "" } else { "s" }
         );
@@ -3667,19 +3661,23 @@ mod tests {
             clients: 0,
             detached: false,
         };
-        assert_eq!(others_notice(&[row("main-mine", false)], "main-mine"), None);
+        assert_eq!(
+            others_notice(&[row("main-mine", Some(false))], "main-mine"),
+            None
+        );
         let text = others_notice(
             &[
-                row("main-abcd", true),
-                row("main-mine", false),
-                row("main-efgh", false),
+                row("main-abcd", Some(true)),
+                row("main-mine", Some(false)),
+                row("main-efgh", Some(false)),
+                row("main-ijkl", None),
             ],
             "main-mine",
         )
         .unwrap();
         assert!(
             text.starts_with(
-                "other agents work in this workspace: main-abcd is running, main-efgh is idle;"
+                "other agents work in this workspace: main-abcd is running, main-efgh is idle, main-ijkl is unknown;"
             ),
             "{text}"
         );
@@ -3693,21 +3691,28 @@ mod tests {
             protocol::AgentRow {
                 name: "main-aaaa".into(),
                 session_id: Some(session.clone()),
-                running: true,
+                running: Some(true),
                 clients: 1,
                 detached: false,
             },
             protocol::AgentRow {
                 name: "main-bbbb".into(),
                 session_id: None,
-                running: false,
+                running: Some(false),
                 clients: 0,
                 detached: true,
+            },
+            protocol::AgentRow {
+                name: "main-cccc".into(),
+                session_id: None,
+                running: None,
+                clients: 1,
+                detached: false,
             },
         ];
         let lines = agent_lines(&rows, Some("main-aaaa"));
         let short = &session.to_string()[..8];
-        assert_eq!(lines[0], "2 agents in this workspace:");
+        assert_eq!(lines[0], "3 agents in this workspace:");
         assert_eq!(
             lines[1],
             format!("  main-aaaa · running · conversation {short} · 1 client (this rkat-tui)")
@@ -3716,7 +3721,12 @@ mod tests {
             lines[2],
             "  main-bbbb · idle · no conversation · 0 clients (detached)"
         );
-        assert!(lines[3].contains("/agents <name>"));
+        // Unknown is not idle.
+        assert_eq!(
+            lines[3],
+            "  main-cccc · unknown · no conversation · 1 client"
+        );
+        assert!(lines[4].contains("/agents <name>"));
     }
 
     #[test]

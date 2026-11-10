@@ -213,7 +213,7 @@ methods on the wire, and `daemon::protocol` types each one for both ends:
 | Method | Params | Result |
 |---|---|---|
 | `rkat/attach` | `{"token", "start_token"?, "probe"?, "agent"?: {"choice": "new"\|"recent"\|"agent"\|"conversation", "name"?, "reference"?}}` | `{"attached": true, "agent"?, "seated"?, "build"?}` (first line only; `build` is the daemon's version and commit; the start token marks the client that launched the daemon, a probe is not counted as a client and is bound to no agent; no `agent` is `recent`) |
-| `rkat/status` | `{}` | `{"workspace", "host"?, "pid", "started_at", "clients", "detached", "owner", "session_id"?, "running", "agent"?, "agents": [{"name", "session_id"?, "running", "clients", "detached"}]}` (`session_id` and `running` of the caller's agent; `detached`: a live agent runs without a client) |
+| `rkat/status` | `{}` | `{"workspace", "host"?, "pid", "started_at", "clients", "detached", "owner", "session_id"?, "running", "agent"?, "agents": [{"name", "session_id"?, "running", "clients", "detached"}]}` (`session_id` and `running` of the caller's agent, whose `running` is true when its state cannot be read; an agent row's `running` is `null` then; `detached`: a live agent runs without a client) |
 | `rkat/detach` | `{}` | `{}` (the caller's agent is marked detached: a later `/quit` asks) |
 | `rkat/retire` | `{}` | `{"agent", "session_id"?}` (the caller's agent leaves the mob; a running turn is interrupted; its conversation stays) |
 | `rkat/shutdown` | `{"retire"?}` | `{}` (the daemon removes its endpoint file and shuts down; with `retire` every agent retires first) |

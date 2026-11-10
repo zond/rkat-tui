@@ -322,7 +322,7 @@ impl Local {
             detached: self.agents.any_detached(),
             owner: caller.owner,
             session_id: row.and_then(|row| row.session_id.clone()),
-            running: row.is_some_and(|row| row.running),
+            running: row.is_some_and(|row| row.running != Some(false)),
             agent: caller.agent.clone(),
             agents,
         }

@@ -353,14 +353,13 @@ impl Conversations {
         }
     }
 
-    /// Whether `agent`'s run is open now (`None`: its state could not be
-    /// read).
-    pub async fn running(&self, agent: &str) -> Option<bool> {
+    /// Whether `agent`'s run is open now: [`RunState::Unknown`] when its
+    /// status cannot be read or says nothing of its run (not idle).
+    pub async fn running(&self, agent: &str) -> RunState {
         self.state
             .mob_member_status(&MobId::from(MOB_ID), &AgentIdentity::from(agent))
             .await
-            .ok()
-            .map(|status| run_open(&status))
+            .map_or(RunState::Unknown, |status| run_state(&status))
     }
 
     /// The conversations, last used first, then the realm's sessions
@@ -836,13 +835,50 @@ where
     (count, title(&page.messages))
 }
 
+/// What a member's run is doing, as far as its status says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunState {
+    /// Its run is open.
+    Running,
+    /// Its run is closed.
+    Idle,
+    /// The status could not be read, or carries no run state: neither
+    /// running nor idle is known (a retire cancels anyway).
+    Unknown,
+}
+
+impl RunState {
+    /// As `rkat/status` reports it: `None` when unknown.
+    #[must_use]
+    pub fn reported(self) -> Option<bool> {
+        match self {
+            Self::Running => Some(true),
+            Self::Idle => Some(false),
+            Self::Unknown => None,
+        }
+    }
+}
+
+/// What the member's snapshot says of its run.
+#[must_use]
+pub fn run_state(status: &meerkat_mob::MobMemberSnapshot) -> RunState {
+    run_state_of(status.progress.as_ref().map(|progress| progress.run_state))
+}
+
+/// [`run_state`] of a snapshot whose progress says `state` (`None`: it
+/// carries no progress).
+fn run_state_of(state: Option<meerkat_mob::MemberRunState>) -> RunState {
+    match state {
+        Some(meerkat_mob::MemberRunState::RunOpen) => RunState::Running,
+        Some(meerkat_mob::MemberRunState::Idle) => RunState::Idle,
+        Some(meerkat_mob::MemberRunState::Unknown) | None => RunState::Unknown,
+    }
+}
+
 /// Whether the member's snapshot says its run is open.
 #[must_use]
 pub fn run_open(status: &meerkat_mob::MobMemberSnapshot) -> bool {
-    status
-        .progress
-        .as_ref()
-        .is_some_and(|progress| progress.run_state == meerkat_mob::MemberRunState::RunOpen)
+    run_state(status) == RunState::Running
 }
 
 /// The first conversational user message of `messages`, cut to
@@ -872,6 +908,27 @@ pub fn title(messages: &[Message]) -> Option<String> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+
+    /// The finding this guards (second review, item 9): a status without
+    /// a run state read as idle, so a retire skipped the cancel and
+    /// `/agents` said idle.
+    #[test]
+    fn a_status_without_a_run_state_is_unknown_not_idle() {
+        use meerkat_mob::MemberRunState;
+        assert_eq!(
+            run_state_of(Some(MemberRunState::RunOpen)),
+            RunState::Running
+        );
+        assert_eq!(run_state_of(Some(MemberRunState::Idle)), RunState::Idle);
+        assert_eq!(
+            run_state_of(Some(MemberRunState::Unknown)),
+            RunState::Unknown
+        );
+        assert_eq!(run_state_of(None), RunState::Unknown);
+        assert_eq!(RunState::Unknown.reported(), None);
+        assert_eq!(RunState::Idle.reported(), Some(false));
+    }
+
     use super::*;
 
     #[test]

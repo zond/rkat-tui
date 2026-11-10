@@ -34,7 +34,7 @@ use meerkat_mob::{AgentIdentity, MobId};
 use meerkat_mob_mcp::MobMcpState;
 
 use super::approvals::DaemonToolOrigins;
-use super::conversations::{Conversations, SwitchError, Target};
+use super::conversations::{Conversations, RunState, SwitchError, Target};
 use super::lifecycle::Lifecycle;
 use super::protocol::{AgentChoice, AgentRow};
 use super::{MOB_ID, ORCHESTRATOR};
@@ -685,7 +685,9 @@ impl Agents {
         reseated
     }
 
-    /// Retire `name`: a running turn is cancelled, then the member leaves
+    /// Retire `name`: a running turn is cancelled (also when whether it
+    /// runs cannot be told: a cancel of an idle member is harmless), then
+    /// the member leaves
     /// the mob ([`Conversations::retire`]: its helpers stop, the engine
     /// archives its session, which stays in the log). Nothing reaches it
     /// afterwards: it is no member, so a peer's send to it is refused.
@@ -698,7 +700,7 @@ impl Agents {
         let _one = self.seating.lock().await;
         let mob = MobId::from(MOB_ID);
         let identity = AgentIdentity::from(name);
-        if self.conversations.running(name).await == Some(true)
+        if self.conversations.running(name).await != RunState::Idle
             && let Err(err) = self.state.mob_force_cancel(&mob, identity).await
         {
             tracing::warn!(agent = %name, error = %err, "the running turn could not be cancelled before the retire");
@@ -725,7 +727,7 @@ impl Agents {
         for (name, clients, detached) in snapshot {
             rows.push(AgentRow {
                 session_id: self.conversations.current(&name),
-                running: self.conversations.running(&name).await.unwrap_or(false),
+                running: self.conversations.running(&name).await.reported(),
                 name,
                 clients,
                 detached,
