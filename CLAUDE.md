@@ -17,9 +17,11 @@ owns (session lifecycle, persistence, tool dispatch, mobs, confinement) is
 used through its public API; the application owns the UI, the approval
 policy, the classifier, prompts, tool selection and consent presentation. There are two binaries: `rkat-tui-mob`, the per-workspace daemon that hosts
 the agent as a mob member and serves the engine's JSON-RPC over loopback
-TCP, and `rkat-tui`, the interactive TUI, which is its client by default
-(`docs/mob-split.md`). The in-process runner (`--no-attach`, `src/runner/`)
-is the escape hatch until P4 of the always-daemon plan removes it.
+TCP (the proxy forwards only the engine methods the client uses,
+`daemon::protocol::engine::SERVED`), and `rkat-tui`, the interactive TUI,
+which is only its client and starts it on demand (`docs/mob-split.md`).
+There is no in-process host: the in-process runner and `--no-attach` were
+removed on 2026-11-10.
 
 ## Build and test
 
@@ -66,24 +68,21 @@ shell (`src/user_shell.rs`) and attach mode's start-on-demand of the
 | Path | Owns |
 |---|---|
 | `src/main.rs`, `src/cli.rs` | Entry point and `clap` arguments |
-| `src/bootstrap/` | Realm, config, factory and session-service construction; confinement plan (`confinement.rs`), project trust (`project_trust.rs`), the host trust record (`trust.rs`), instructions, MCP |
+| `src/bootstrap/` | The workspace's `tui.toml` layers and realm config (`read_layers`), what the daemon composes over (`assemble`: endpoints, model, the confinement plan `confinement.rs`, the approval engine, persistence, factory), project trust (`project_trust.rs`), the host trust record (`trust.rs`), instructions, MCP |
 | `src/config/` | `tui.toml`: the schema (`file.rs`), the layering of global, realm, command-line and project files (`layers.rs`), the realm file's trusted writes (`persist.rs`) |
-| `src/session/` | The session handle over the engine's service: turns, interrupt, tool access policy, resume (`resolve.rs` turns a session reference into an id) |
-| `src/workbench/` | What both runners share above the agent: the `!` shell, `/remember` and `/memory`, `/export`, cost, the model lists and picker, unsent messages, `build_app` and the terminal session; `AgentContext` is its one-method view of the agent |
-| `src/runner/` | The application loop between the UI and the session: effects, lifecycle (new, resume, rewind, compact), approval dialogs, shell, cost, quit |
-| `src/approval/` | The approval engine: policy tiers (`policy.rs`), rules and their patterns (`rules.rs`), classifier, the dispatch admission the session installs (`admission.rs`), permission modes (`mode.rs`), escalation |
-| `src/ui/` | Elm-style UI: `App::update(Msg) -> Vec<Effect>`, rendering, input editor, command table (`commands.rs`), completion, modals, checklist |
-| `src/tools/` | File tools and the shell tool the agent gets |
-| `src/mobs/` | Helpers (delegate) as mob members: customizer, follower, registry |
-| `src/daemon/`, `src/bin/rkat-tui-mob.rs` | The `rkat-tui-mob` daemon: engine composition over `bootstrap::assemble` (`engine.rs`), the orchestrator member (`orchestrator.rs`), the TCP serve loop (`serve.rs`), the `rkat/attach` token handshake (`handshake.rs`), the endpoint file (`endpoint.rs`), the `rkat/*` local methods (`local.rs`), the daemon-side approval gate and desk (`approvals.rs`), the members' application tool policy (`policy.rs`) and the orchestrator's conversations, `/new` and `/resume` (`conversations.rs`) |
-| `src/daemon/` | The `rkat-tui-mob` daemon: composition (`engine.rs`), the orchestrator, the TCP serve loop and proxy (`serve.rs`), the `rkat/*` methods (`local.rs`), the gate's desk and tool catalogs (`approvals.rs`), consent as durable decisions pushed to clients (`decisions.rs`), conversations, endpoint file |
-| `src/client/` | Attach mode: the runner over the daemon connection, the transport, the stream cursor (`catchup.rs`), approval dialogs, helpers, start-on-demand |
-| `src/fork/` | The `fork` tool: a child helper started with the parent's rendered conversation |
-| `src/client/` | Attach mode (`--attach`, experimental): the daemon connection (`transport.rs`), start-on-demand (`launch.rs`), the member's methods (`remote.rs`), catch-up and de-duplication (`catchup.rs`), the approval dialogs over `approval/*` (`approvals.rs`), the helpers' follower view from mob-wide streams (`helpers.rs`), `/new`, `/resume` and `/rewind` (`sessions.rs`), the attach runner (`runner.rs`) |
+| `src/approval/` | The approval engine: policy tiers (`policy.rs`), rules and their patterns (`rules.rs`), classifier, the dispatch admission the daemon installs (`admission.rs`), permission modes (`mode.rs`), escalation, the desk (`desk.rs`) |
+| `src/daemon/`, `src/bin/rkat-tui-mob.rs` | The `rkat-tui-mob` daemon: composition over `bootstrap::assemble` (`engine.rs`), the orchestrator member (`orchestrator.rs`), the TCP serve loop and the proxy with its method allow-list (`serve.rs`), the `rkat/attach` token handshake (`handshake.rs`), the `rkat/*` local methods including `rkat/report` (`local.rs`), the wire types and codes (`protocol.rs`), the gate's desk and tool catalogs (`approvals.rs`), consent as durable decisions pushed to clients (`decisions.rs`), the members' tool policy (`policy.rs`), conversations (`conversations.rs`), clients, owner and detach state (`lifecycle.rs`), the endpoint file (`endpoint.rs`), `--list` (`list.rs`) |
+| `src/client/` | The TUI as the daemon's client: the runner (`runner.rs`), the connection (`transport.rs`), start-on-demand (`launch.rs`), `--attach` targets (`address.rs`), the member's methods (`remote.rs`), catch-up and de-duplication (`catchup.rs`), the approval dialogs over `approval/*` (`approvals.rs`), the helpers' follower view from mob-wide streams (`helpers.rs`), `/new`, `/resume` and the view-only sessions (`sessions.rs`) |
+| `src/workbench/` | What the client does on its own side of the agent: the `!` shell, `/remember` and `/memory`, `/export`, `/context`, prices and the cost record, model lists and picker, the checklist source (`tasks.rs`), unsent messages, the app it starts and the terminal session (`app.rs`); `AgentContext` reaches the agent over the connection |
+| `src/ui/` | Elm-style UI: `App::update(Msg) -> Vec<Effect>` (`mod.rs`), split by concern (`turns.rs`, `keys.rs`, `mouse.rs`, `dispatch.rs`, `delivery.rs`, `escalations.rs`, `helpers.rs`, `shell.rs`), rendering (`render.rs`), the input editor, the command table (`commands.rs`), completion, modals, the checklist; `ui/tests/` holds its unit tests split the same way |
+| `src/ui/transcript/` | The transcript model: blocks, the event-to-block mapping, helper folds (`helpers.rs`), notices (`notices.rs`), a stored conversation as blocks (`restore.rs`) |
+| `src/tools/` | The file tools the agent gets (the shell is the engine's) |
+| `src/mobs/` | Helpers (delegate) as mob members: the customizer with the members' tool policy, follower, registry |
 | `src/memory/` | Notes at user and workspace scope, memory tools |
 | `src/endpoints.rs`, `src/models.rs`, `src/pricing.rs`, `src/thinking.rs` | LLM endpoints, model listing, price table, the per-model `[thinking]` setting |
-| `tests/` | Integration tests over the internal modules through the `test-support` feature; `tests/common/mod.rs` holds the scripted LLM and the rig |
-| `docs/` | `testing.md` (protocol), `evidence.md` (what was built, why, with the probes and test names), `ux-parity.md` (Claude Code parity audit), `spec.yaml` / `traceability.md` (the requirements and where each is implemented and tested) |
+| `src/mentions.rs`, `src/paths.rs`, `src/overlay.rs`, `src/http.rs`, `src/user_shell.rs`, `src/error.rs` | `@` mentions and the path index, path expansion, `--set` overlays, the HTTP client, the user's `!` shell, the crate's error types |
+| `tests/` | Integration tests through the `test-support` feature on the one rig: the real daemon with a scripted LLM (`tests/common/attach.rs`: `Setup`, `Attached`, `Running`, `Client`); `tests/common/mod.rs` holds the scripted LLM, the workspace and the command lines |
+| `docs/` | `testing.md` (protocol), `evidence.md` (what was built, why, with the probes and test names), `mob-split.md` (the architecture, its status and the engine asks), `ux-parity.md` (Claude Code parity audit), `spec.yaml` / `traceability.md` (the requirements and where each is implemented and tested) |
 
 The README is the front page; the full user manual is `docs/manual.md`.
 
@@ -96,10 +95,11 @@ The README is the front page; the full user manual is `docs/manual.md`.
   a dead route or a design decision gets a short entry there (what was tried,
   what the engine does, the test names that pin it).
 - The UI is Elm-style: state changes only in `App::update`, side effects are
-  returned as `Effect`s and run by the runner. Rendering tests draw into a
+  returned as `Effect`s and run by the client runner. Rendering tests draw into a
   ratatui `TestBackend` and assert on rows; there are no snapshot files.
-- Commands and keys are declared in one table each (`src/ui/commands.rs`,
-  the keymap) and the help text is generated from them.
+- Commands are declared in one table (`src/ui/commands.rs`) and `/help` is
+  generated from it; the key reference (`KEYS_HELP`) is hand-kept next to
+  the keymap and changes with it.
 - Paused-clock tokio tests count a task blocked in `spawn_blocking` as idle,
   so the virtual clock jumps; re-check deadlines after any await.
 - Commit messages say what changed and why, in sentences. Commits made with
@@ -135,3 +135,6 @@ without it), and a seccomp filter. Inside it the command is pid 2 under a
 small init, host processes are invisible, and `/etc/alternatives` and `/usr/libexec` are granted so a
 Rust toolchain can link. `--no-confinement` runs the shell as the trusted
 host. The curated environment passes no provider keys into the sandbox.
+The agent's shell is the daemon's; a `!` command runs in the client under
+the confinement plan it builds from the same flags and `tui.toml` layers.
+The daemon refuses an endpoint file its confined shell could read.
