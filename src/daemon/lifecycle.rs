@@ -227,7 +227,6 @@ mod tests {
 
     fn attach(start_token: Option<&str>, probe: bool) -> AttachParams {
         AttachParams {
-            token: "t".into(),
             start_token: start_token.map(str::to_string),
             probe,
             agent: None,

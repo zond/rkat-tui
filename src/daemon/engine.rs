@@ -113,8 +113,8 @@ pub struct Composed {
 /// How the daemon composes its approval side (tests vary it).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PolicyOptions {
-    /// Leave the consequence-policy registry out (a daemon of an older
-    /// version, as far as the members' durable binding is concerned).
+    /// Leave the consequence-policy registry out (tests: what the engine
+    /// does with a member whose durable binding names it).
     pub without_registry: bool,
 }
 

@@ -10,8 +10,7 @@
 //! ```
 //!
 //! (on one line). `workspace` is the canonical workspace path the daemon
-//! serves and `started_at` when it started (RFC 3339, UTC); a file written
-//! by an older daemon has neither and still reads. A daemon of another
+//! serves and `started_at` when it started (RFC 3339, UTC). A daemon of another
 //! realm than the workspace's own adds `"realm"` (its root, or `memory`). Written (atomically, by
 //! rename) once the listener is bound, removed on shutdown. A file left by a daemon that died is stale: the next daemon
 //! replaces it when nothing accepts at its address.
@@ -260,11 +259,12 @@ pub struct Endpoint {
     pub token: String,
     /// The daemon's process id.
     pub pid: u32,
-    /// The canonical workspace path the daemon serves (`None`: a file an
-    /// older daemon wrote).
+    /// The canonical workspace path the daemon serves (every file names
+    /// it; `None`: not known yet, for a daemon reached by address).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<PathBuf>,
-    /// When the daemon started, RFC 3339 in UTC (`None`: an older file).
+    /// When the daemon started, RFC 3339 in UTC (every file names it;
+    /// `None` as for `workspace`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at: Option<String>,
     /// The realm it serves when that is not the workspace's own

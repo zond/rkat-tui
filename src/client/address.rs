@@ -301,7 +301,7 @@ mod tests {
             running: false,
             agent: None,
             agents: Vec::new(),
-            shell: None,
+            shell: meerkat_tools::builtin::shell::ShellConfinement::TrustedHost,
         }
     }
 

@@ -54,7 +54,7 @@ impl Client {
     }
 
     /// Attach working with `agent` (an [`AgentChoice`] as JSON; `None`:
-    /// the most recently active agent).
+    /// the most recently active agent, asked for explicitly).
     ///
     /// [`AgentChoice`]: rkat_tui::daemon::protocol::AgentChoice
     async fn attach_to(endpoint: &Endpoint, agent: Option<Value>) -> Self {
@@ -66,13 +66,28 @@ impl Client {
             next: 100,
             notifications: Vec::new(),
         };
-        let mut params = json!({"token": endpoint.token});
-        if let Some(agent) = agent {
-            params["agent"] = agent;
-        }
-        let attached = client.call("rkat/attach", params).await;
-        // An attach that names no agent (a client of before P5) is bound
-        // to the most recently active one, which the answer names.
+        // The mutual handshake: the daemon proves it holds the token,
+        // then this client does; the token never travels.
+        let nonce = "0123456789abcdef0123456789abcdef";
+        let mut params = json!({
+            "nonce": nonce,
+            "agent": agent.unwrap_or_else(|| json!({"choice": "recent"})),
+        });
+        params["probe"] = json!(false);
+        let challenge = client.call("rkat/attach", params).await;
+        let daemon_nonce = challenge["result"]["challenge"]["nonce"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{challenge}"))
+            .to_string();
+        assert_eq!(
+            challenge["result"]["challenge"]["proof"],
+            rkat_tui::daemon::handshake::daemon_proof(&endpoint.token, nonce, &daemon_nonce)
+        );
+        let proof =
+            rkat_tui::daemon::handshake::client_proof(&endpoint.token, nonce, &daemon_nonce);
+        let attached = client.call("rkat/attach", json!({"proof": proof})).await;
+        // An attach that asks for the most recent agent is bound to it,
+        // which the answer names.
         assert_eq!(attached["result"]["attached"], json!(true), "{attached}");
         assert!(
             attached["result"]["agent"]

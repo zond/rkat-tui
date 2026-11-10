@@ -37,8 +37,8 @@ pub struct Cursor {
     /// The sequence of the last event shown.
     pub sequence: u64,
     /// The sequence space of `sequence` (the stream's `epoch`); `None`
-    /// before the first event of a stream named one (a cursor of an earlier
-    /// version).
+    /// before the first event of a stream named one (such a cursor does
+    /// not resume).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub epoch: Option<String>,
     /// The daemon the events came from ([`daemon_id`]).
@@ -76,13 +76,9 @@ impl CursorFile {
     }
 
     /// The cursor file of `agent` in the same workspace:
-    /// `attach-<agent>.cursor` beside this one (the agent of before P5,
-    /// `main`, keeps `attach.cursor`).
+    /// `attach-<agent>.cursor` beside this one.
     #[must_use]
     pub fn for_agent(&self, agent: &str) -> Self {
-        if agent == crate::daemon::ORCHESTRATOR {
-            return self.clone();
-        }
         let name = format!("attach-{agent}.cursor");
         Self {
             root: self.root.clone(),
@@ -280,16 +276,18 @@ mod tests {
         assert_eq!(saved.resumable("s1", "d1"), Some(("e1".to_string(), 7)));
         assert_eq!(saved.resumable("s1", "d2"), None, "a restarted daemon");
         assert_eq!(saved.resumable("s2", "d1"), None);
-        // A cursor of an earlier version (no epoch) does not resume.
-        let old: Cursor = serde_json::from_str(r#"{"session_id":"s1","sequence":7}"#).unwrap();
-        assert_eq!(old.resumable("s1", "d1"), None);
+        // A cursor saved before its stream named an epoch does not resume.
+        let unnamed = Cursor {
+            epoch: None,
+            ..saved
+        };
+        assert_eq!(unnamed.resumable("s1", "d1"), None);
         assert_ne!(daemon_id("token-a"), daemon_id("token-b"));
         assert_eq!(daemon_id("token-a").len(), 16);
-        // Each agent has its own file; `main` (before P5) keeps the old one.
+        // Each agent has its own file.
         let agent = file.for_agent("main-ab12");
         assert_eq!(agent.path(), dir.path().join("attach-main-ab12.cursor"));
         assert_eq!(agent.load(), None, "another agent's position is its own");
-        assert_eq!(file.for_agent("main").path(), file.path());
     }
 
     #[test]

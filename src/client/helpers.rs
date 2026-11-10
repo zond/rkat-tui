@@ -393,7 +393,6 @@ impl Followers {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::daemon::ORCHESTRATOR;
     use meerkat_core::StreamScopeFrame;
     use meerkat_mob::{AgentIdentity, AgentRuntimeId, FenceToken, ProfileName};
 
@@ -511,12 +510,12 @@ mod tests {
         followers.opened("tui".into(), MOB_ID);
         assert!(
             followers
-                .event("tui", attributed(ORCHESTRATOR, &owner, 1, text("x")))
+                .event("tui", attributed("main-ab12", &owner, 1, text("x")))
                 .is_empty()
         );
         assert!(
             followers
-                .member(MOB_ID, ORCHESTRATOR, Some(owner.clone()))
+                .member(MOB_ID, "main-ab12", Some(owner.clone()))
                 .is_empty()
         );
         // A helper with a known session, then its own implicit mob.

@@ -677,7 +677,7 @@ impl Decisions {
         tokio::spawn(async move {
             while let Some((agent, diff)) = diffs.recv().await {
                 let params = protocol::FileDiffNote {
-                    agent: Some(agent),
+                    agent,
                     tool_use_id: diff.tool_use_id,
                     path: diff.path.display().to_string(),
                     unified: diff.unified,

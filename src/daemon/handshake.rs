@@ -27,9 +27,8 @@
 //! every later line is the engine's. The two proofs are keyed by the token
 //! over distinct labels, so neither can be replayed as the other.
 //!
-//! A client of before the mutual handshake sends `{"token":"<token>"}` in
-//! its one attach line instead; the daemon still admits it (its token was
-//! already sent by then). Any other first line, a wrong token or proof, a
+//! An attach without a nonce (a bare token, say) is refused. Any other
+//! first line, a wrong proof, a
 //! malformed nonce, a line longer than [`MAX_LINE`] or no line within
 //! [`TIMEOUT`] is answered with a JSON-RPC error ([`INVALID_REQUEST`] or
 //! [`UNAUTHORIZED`]) and the connection is closed.
@@ -204,9 +203,8 @@ pub async fn acknowledge<W: AsyncWrite + Unpin>(
 }
 
 /// Read and check the attach request(s) from `reader` against `token`:
-/// with a client nonce, answer the challenge and read the client's proof;
-/// with a token (a client of before the mutual handshake), compare it. A
-/// refusal is answered on `writer`, a valid attach is not answered yet
+/// answer the challenge to the client's nonce and read the client's
+/// proof; an attach without a nonce is refused. A refusal is answered on `writer`, a valid attach is not answered yet
 /// ([`acknowledge`]). On success the caller hands `reader` (which may
 /// already buffer the client's next requests) and `writer` to the engine.
 ///
@@ -228,11 +226,6 @@ where
             Ok((id, params)) => match params.nonce.clone() {
                 Some(client_nonce) => {
                     challenge(reader, writer, token, timeout, id, params, &client_nonce).await
-                }
-                None if same(params.token.as_bytes(), token.as_bytes())
-                    && !params.token.is_empty() =>
-                {
-                    Ok((id, params))
                 }
                 None => Err((Some(id), HandshakeError::Unauthorized)),
             },
@@ -397,42 +390,89 @@ mod tests {
         (result, reply, rest)
     }
 
-    #[tokio::test]
-    async fn the_right_token_attaches_and_keeps_the_next_requests() {
-        let input = b"{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"rkat/attach\",\"params\":{\"token\":\"secret\"}}\n{\"next\":1}\n";
-        let (result, reply, rest) = run(input, TIMEOUT).await;
+    /// A client nonce (32 hex digits).
+    const NONCE: &str = "0123456789abcdef0123456789abcdef";
+
+    /// The mutual handshake as a client holding `token` plays it, with
+    /// `extra` beside the nonce in the first request and `then` sent after
+    /// the proof: the daemon's result, its last answer and what it left
+    /// unread.
+    async fn mutual(
+        token: &str,
+        extra: Value,
+        then: &str,
+    ) -> (Result<AttachParams, HandshakeError>, Value, String) {
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let (sr, mut sw) = tokio::io::split(server);
+        let daemon = tokio::spawn(async move {
+            let mut reader = BufReader::new(sr);
+            let result = accept(&mut reader, &mut sw, "secret", TIMEOUT).await;
+            let mut rest = String::new();
+            let _ = reader.read_to_string(&mut rest).await;
+            (result, rest)
+        });
+        let (cr, mut cw) = tokio::io::split(client);
+        let mut cr = BufReader::new(cr);
+        let mut params = extra;
+        params["nonce"] = json!(NONCE);
+        let hello = json!({"jsonrpc": "2.0", "id": 7, "method": "rkat/attach", "params": params});
+        write_line(&mut cw, &format!("{hello}\n")).await.unwrap();
+        let mut line = String::new();
+        cr.read_line(&mut line).await.unwrap();
+        let challenge: Value = serde_json::from_str(&line).unwrap();
+        let daemon_nonce = challenge["result"]["challenge"]["nonce"]
+            .as_str()
+            .unwrap()
+            .to_string();
         assert_eq!(
-            result.unwrap(),
-            AttachParams {
-                token: "secret".into(),
-                ..AttachParams::default()
-            }
+            challenge["result"]["challenge"]["proof"],
+            daemon_proof("secret", NONCE, &daemon_nonce)
         );
+        let proof = json!({"jsonrpc": "2.0", "id": 8, "method": "rkat/attach", "params": {"proof": client_proof(token, NONCE, &daemon_nonce)}});
+        write_line(&mut cw, &format!("{proof}\n{then}"))
+            .await
+            .unwrap();
+        cw.shutdown().await.unwrap();
+        let mut last = String::new();
+        cr.read_line(&mut last).await.unwrap();
+        let (result, rest) = daemon.await.unwrap();
+        let last = serde_json::from_str(&last).unwrap_or(Value::Null);
+        (result, last, rest)
+    }
+
+    #[tokio::test]
+    async fn the_right_proof_attaches_and_keeps_the_next_requests() {
+        let (result, reply, rest) = mutual("secret", json!({}), "{\"next\":1}\n").await;
+        assert!(result.is_ok(), "{result:?}");
         assert_eq!(
             reply,
-            json!({"jsonrpc":"2.0","id":7,"result":{"attached":true}})
+            json!({"jsonrpc":"2.0","id":8,"result":{"attached":true}})
         );
         assert_eq!(rest, "{\"next\":1}\n", "pipelined requests stay buffered");
     }
 
     #[tokio::test]
     async fn the_attach_carries_the_start_token_and_the_probe_flag() {
-        let input = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"rkat/attach\",\"params\":{\"token\":\"secret\",\"start_token\":\"s\",\"probe\":true}}\n";
-        let (result, _, _) = run(input, TIMEOUT).await;
+        let (result, _, _) = mutual("secret", json!({"start_token": "s", "probe": true}), "").await;
         let params = result.unwrap();
         assert_eq!(params.start_token.as_deref(), Some("s"));
         assert!(params.probe);
         // Debug never shows a token.
         let shown = format!("{params:?}");
-        assert!(
-            !shown.contains("secret") && !shown.contains("\"s\""),
-            "{shown}"
-        );
+        assert!(!shown.contains("\"s\""), "{shown}");
     }
 
+    /// A proof keyed by another token is refused; so is an attach that
+    /// sends the token itself instead of a nonce, or nothing at all.
     #[tokio::test]
-    async fn a_wrong_or_missing_token_is_unauthorized() {
-        for params in ["{\"token\":\"nope\"}", "{}", "{\"token\":\"secre\"}"] {
+    async fn a_wrong_proof_or_a_bare_token_is_unauthorized() {
+        let (result, reply, _) = mutual("nope", json!({}), "").await;
+        assert!(
+            matches!(result, Err(HandshakeError::Unauthorized)),
+            "{result:?}"
+        );
+        assert_eq!(reply["error"]["code"], UNAUTHORIZED);
+        for params in ["{\"token\":\"secret\"}", "{}"] {
             let input = format!(
                 "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"rkat/attach\",\"params\":{params}}}\n"
             );
@@ -450,7 +490,7 @@ mod tests {
     async fn any_other_first_request_is_refused() {
         for line in [
             "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n",
-            "{\"jsonrpc\":\"2.0\",\"method\":\"rkat/attach\",\"params\":{\"token\":\"secret\"}}\n",
+            "{\"jsonrpc\":\"2.0\",\"method\":\"rkat/attach\",\"params\":{\"nonce\":\"0123456789abcdef0123456789abcdef\"}}\n",
             "not json\n",
         ] {
             let (result, reply, _) = run(line.as_bytes(), TIMEOUT).await;

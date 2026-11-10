@@ -84,7 +84,7 @@ pub async fn identity(
 ///
 /// # Errors
 ///
-/// The call's error (an older daemon has no such method).
+/// The call's error.
 pub async fn session_endpoint(
     connection: &Connection,
     session: &SessionId,

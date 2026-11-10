@@ -372,7 +372,7 @@ impl Local {
             running: row.is_some_and(|row| row.running != Some(false)),
             agent: caller.agent.clone(),
             agents,
-            shell: Some(self.report.shell.clone()),
+            shell: self.report.shell.clone(),
         }
     }
 

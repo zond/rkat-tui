@@ -64,9 +64,8 @@ pub const LEASE_SURFACE: &str = "rkat-tui-mob";
 /// The mob the daemon hosts in its realm (one per workspace realm).
 pub const MOB_ID: &str = "tui";
 
-/// The agents' profile name, and the member identity of the single
-/// orchestrator of a daemon from before P5 (agents are named
-/// `main-<id>` now, see [`agents`]).
+/// The agents' profile name (agents are named `main-<id>`, see
+/// [`agents`]).
 pub const ORCHESTRATOR: &str = "main";
 
 /// The endpoint file name (in the workspace's directory under the user's

@@ -88,8 +88,7 @@ design.
   holds it first (an HMAC over a nonce from each side), then the client
   does; a process that took a dead daemon's port, or answers during the
   shutdown window, is refused before the client sends anything it could
-  attach with. A daemon of before this handshake is reported as too old;
-  a client of before it still attaches.
+  attach with. An attach that sends the token itself is refused.
 - A project's `.rkat/tui.toml` can no longer pick the classifier's model:
   its `auto.classifier_model` is ignored with a notice, so a cloned
   repository cannot hand the review of the agent's actions to a model
@@ -353,6 +352,14 @@ design.
 - The TUI's own `fork` tool: the agent forks itself with the engine's
   `fork_off`, behind the same gate.
 - The hidden no-op `--mouse` flag (`--no-mouse` stays).
+- Everything kept only for builds older than this one (client and daemon
+  are always built together): the daemon no longer admits an attach that
+  sends the token instead of the mutual handshake, nor one that names no
+  agent; the client no longer detects a daemon too old for it (no pushed
+  decisions, no handshake); `main` is no longer an agent name (agents are
+  `main-<id>`), and its cursor file is gone; the status always carries
+  the agents and the agent shell, the approval and diff notes always name
+  their session and agent.
 
 ### Fixed
 

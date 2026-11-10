@@ -458,7 +458,7 @@ fn the_quit_decision_follows_the_rules() {
                 detached,
             })
             .collect(),
-        shell: None,
+        shell: meerkat_tools::builtin::shell::ShellConfinement::TrustedHost,
     };
     let mine = [("main-aaaa", 1)];
     assert_eq!(
@@ -503,11 +503,6 @@ fn the_quit_decision_follows_the_rules() {
         quit_decision(Some(&status(1, false, false, false, &mine))),
         QuitDecision::Ask { .. }
     ));
-    // A daemon of before P5 (no agent list): another client means leave.
-    assert_eq!(
-        quit_decision(Some(&status(2, false, true, false, &[]))),
-        QuitDecision::Leave
-    );
     // The daemon could not say (the status failed, or it lost the owner).
     assert!(matches!(quit_decision(None), QuitDecision::Ask { .. }));
 }

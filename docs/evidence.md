@@ -5415,3 +5415,43 @@ the log, and `Log::touch` moves the entry last, so a tie of seconds goes to
 the conversation touched later (`Log::newest_first`). Pinned by the tie
 case in `the_log_records_each_session_once_and_lists_the_last_used_first`
 and, end to end on the hosted runner, by the push test.
+
+## Backwards compatibility removed (2026-11-10)
+
+The user's decision: rkat-tui has one user, who always builds the client
+and the daemon together, so nothing is kept only for reading or meeting
+what an older build produced. Kept: what is a feature in its own right
+(Claude Code parity names), and fail-closed refusals that merely trigger
+on old layouts.
+
+### The wire
+
+- The handshake: the daemon refused nothing but a wrong token from a
+  client that sent the token as is (ce98fe7 kept it); now an attach
+  without a nonce is refused (`handshake::read_attach`), and
+  `AttachParams` has no `token` field (`Connection::attach_io` takes the
+  token beside the parameters and never serializes it). The client's
+  `ClientError::DaemonTooOld` (an old daemon's token request, a daemon
+  whose `initialize` lists no decision methods) is gone.
+- An attach that is no probe must name its agent choice
+  (`BindError::Unnamed`); a client of before P5 named none and got the
+  most recent agent. `Connection::attach_as` asks for the most recent one
+  explicitly.
+- `main` (the single orchestrator of before P5) is no longer an agent
+  name (`agents::is_agent`), and its cursor file `attach.cursor` is no
+  longer special (`CursorFile::for_agent`). `ORCHESTRATOR` stays as the
+  profile name.
+- `Status::agents` and `Status::shell` are required (the client's "a
+  confinement it does not report (an older daemon)" branch is gone), and
+  so are `ApprovalNote::Decision::session_id` and `FileDiffNote::agent`;
+  `--list` has no line shape for a daemon without agents.
+
+Tests rewritten to the mutual handshake: `handshake`'s unit tests (the
+right proof attaches, a wrong proof or a bare token is unauthorized),
+`serve`'s seat tests (`admit_one`), `tests/daemon.rs`'s raw client.
+Deleted with the paths they pinned:
+`client::runner::tests::a_daemon_without_the_decision_methods_is_too_old`,
+the old-daemon half of
+`transport::tests::a_squatter_that_does_not_know_the_token_never_receives_it`,
+the "daemon of before P5" case of `the_quit_decision_follows_the_rules`
+(`tests/attach_lifecycle.rs`) and the agentless shape of `--list` (`list::tests`).

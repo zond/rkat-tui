@@ -294,16 +294,12 @@ pub fn response_line(response: &RpcResponse) -> String {
     line
 }
 
-/// [`ATTACH`]'s parameters. A current client sends no `token`: its first
-/// attach carries a `nonce`, the daemon answers with an
-/// [`AttachChallenge`], and the second attach carries only the client's
-/// `proof` ([`super::handshake`]).
+/// [`ATTACH`]'s parameters. The token is never sent: the first attach
+/// carries a `nonce`, the daemon answers with an [`AttachChallenge`], and
+/// the second attach carries only the client's `proof`
+/// ([`super::handshake`]).
 #[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachParams {
-    /// The endpoint file's token, sent as is (a client of before the
-    /// mutual handshake; empty from a current client, and never sent).
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub token: String,
     /// The client's nonce: asks the daemon to prove it holds the token
     /// before the client proves it does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -321,9 +317,8 @@ pub struct AttachParams {
     /// an attached client, and its end is no detach.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub probe: bool,
-    /// The agent the connection works with (`None` from a client of before
-    /// P5: the most recently active one, [`AgentChoice::Recent`]). A probe
-    /// is bound to none.
+    /// The agent the connection works with; required unless it is a
+    /// probe, which is bound to none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<AgentChoice>,
 }
@@ -414,15 +409,13 @@ pub struct Challenged {
 pub struct Attached {
     /// Always `true`.
     pub attached: bool,
-    /// The agent the connection is bound to (`None`: a probe, or a daemon
-    /// of before P5, whose one agent is `main`).
+    /// The agent the connection is bound to (`None`: a probe).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
     /// The agent was seated for this connection.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub seated: bool,
-    /// The daemon's build ([`crate::BUILD`]; `None`: a daemon of before
-    /// it said).
+    /// The daemon's build ([`crate::BUILD`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<String>,
 }
@@ -432,8 +425,8 @@ pub struct Attached {
 pub struct Status {
     /// The canonical workspace path the daemon serves.
     pub workspace: std::path::PathBuf,
-    /// The host name of the machine the daemon runs on (`None`: an older
-    /// daemon, or one that could not read it). A client reached through a
+    /// The host name of the machine the daemon runs on (`None`: it could
+    /// not read it). A client reached through a
     /// tunnel compares it with its own to tell whether the workspace is
     /// on its machine.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -458,14 +451,10 @@ pub struct Status {
     /// The agent the caller is bound to (`None`: a probe).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
-    /// Every live agent, names in order (empty from a daemon of before
-    /// P5).
-    #[serde(default)]
+    /// Every live agent, names in order.
     pub agents: Vec<AgentRow>,
-    /// The agent shell's confinement the daemon installed (`None`: a
-    /// daemon of before it said).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub shell: Option<meerkat_tools::builtin::shell::ShellConfinement>,
+    /// The agent shell's confinement the daemon installed.
+    pub shell: meerkat_tools::builtin::shell::ShellConfinement,
 }
 
 /// [`HOLDS`]'s result.
@@ -587,9 +576,8 @@ pub enum ApprovalNote {
     /// A tool call was decided.
     Decision {
         /// The session whose gate decided (the agent's, for its helpers
-        /// too; `None`: a daemon of before P5).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        session_id: Option<SessionId>,
+        /// too).
+        session_id: SessionId,
         /// The helper that made the call (`None`: the agent itself).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent: Option<String>,
@@ -650,7 +638,7 @@ impl ApprovalNote {
                 reason,
                 ..
             } => Self::Decision {
-                session_id: Some(session_id),
+                session_id,
                 agent,
                 tool_use_id,
                 tool,
@@ -844,9 +832,8 @@ pub struct Notices {
 /// file tools report it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileDiffNote {
-    /// The agent whose file tools made it (`None`: a daemon of before P5).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent: Option<String>,
+    /// The agent whose file tools made it.
+    pub agent: String,
     /// The tool call that made the change.
     pub tool_use_id: String,
     /// The file (relative to the workspace when inside it).

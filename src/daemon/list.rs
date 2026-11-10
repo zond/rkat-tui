@@ -18,9 +18,7 @@
 //! agent(s)`, for a stale one `stale` and whether its file was removed.
 //! Under a live daemon's line, one line per agent, indented by a tab: its
 //! name, `running` or `idle`, its conversation, `<k> client(s)`, and
-//! `detached` when it runs without one. A daemon of before P5 (one agent,
-//! no agent list) gets the conversation and `running` or `idle` on its own
-//! line instead.
+//! `detached` when it runs without one.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -191,25 +189,11 @@ pub fn line(listed: &Listed, now: chrono::DateTime<chrono::Utc>) -> String {
         format!("up {up}"),
     ];
     match (&listed.found, status) {
-        (Found::Live(_), Some(status)) if !status.agents.is_empty() => {
+        (Found::Live(_), Some(status)) => {
             fields.push(count(status.clients, "client"));
             fields.push(count(status.agents.len(), "agent"));
         }
-        (Found::Live(_), Some(status)) => {
-            fields.push(format!(
-                "{} client{}",
-                status.clients,
-                if status.clients == 1 { "" } else { "s" }
-            ));
-            fields.push(
-                status
-                    .session_id
-                    .as_ref()
-                    .map_or_else(|| "no conversation".to_string(), ToString::to_string),
-            );
-            fields.push(if status.running { "running" } else { "idle" }.to_string());
-        }
-        (Found::Live(_), None) => fields.push("live (no status: an older daemon)".to_string()),
+        (Found::Live(_), None) => fields.push("live (its status could not be read)".to_string()),
         (Found::Unknown(why), _) => fields.push(format!("unknown ({why})")),
         (Found::Stale { removed }, _) => fields.push(
             if *removed {
@@ -382,13 +366,13 @@ mod tests {
                 running: true,
                 agent: None,
                 agents: Vec::new(),
-                shell: None,
+                shell: meerkat_tools::builtin::shell::ShellConfinement::TrustedHost,
             })),
         };
         let shown = line(&live, now);
         assert_eq!(
             shown,
-            "/w\t127.0.0.1:4000\tpid 9\tup 1h30m\t2 clients\tno conversation\trunning"
+            "/w\t127.0.0.1:4000\tpid 9\tup 1h30m\t2 clients\t0 agents"
         );
         assert!(!shown.contains("secret"));
         // A daemon with agents: one line each under its own.
@@ -422,7 +406,7 @@ mod tests {
                         detached: true,
                     },
                 ],
-                shell: None,
+                shell: meerkat_tools::builtin::shell::ShellConfinement::TrustedHost,
             })),
         };
         assert_eq!(

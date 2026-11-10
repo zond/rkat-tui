@@ -1201,7 +1201,7 @@ impl AttachRunner {
                 NoticeLevel::Warn,
                 format!(
                     "the daemon runs build {}, this rkat-tui is build {}: /daemon stop and attach again to run this build",
-                    daemon_build.as_deref().unwrap_or("unknown (older)"),
+                    daemon_build.as_deref().unwrap_or("unknown"),
                     crate::BUILD
                 ),
             );
@@ -1295,8 +1295,7 @@ impl AttachRunner {
     }
 
     /// Show what this client's agent was denied in turns no user started
-    /// while no client was attached (`rkat/missed`; a daemon of before it
-    /// answers nothing).
+    /// while no client was attached (`rkat/missed`).
     fn missed_notices(&self) {
         let Some(connection) = self.connection() else {
             return;
@@ -1437,10 +1436,8 @@ impl AttachRunner {
         if note.method == protocol::APPROVAL_NOTE {
             match serde_json::from_value::<protocol::ApprovalNote>(note.params.clone()) {
                 // Another agent's call (its helpers' are its session's).
-                Ok(protocol::ApprovalNote::Decision {
-                    session_id: Some(session),
-                    ..
-                }) if session != link.session => {}
+                Ok(protocol::ApprovalNote::Decision { session_id, .. })
+                    if session_id != link.session => {}
                 Ok(approval) => {
                     let (msgs, mode) = super::approvals::note_messages(approval);
                     for msg in msgs {
@@ -1457,11 +1454,7 @@ impl AttachRunner {
         if note.method == protocol::FILE_DIFF {
             match serde_json::from_value::<protocol::FileDiffNote>(note.params.clone()) {
                 // Another agent's change.
-                Ok(diff)
-                    if diff
-                        .agent
-                        .as_deref()
-                        .is_some_and(|agent| agent != link.connection.agent()) => {}
+                Ok(diff) if diff.agent != link.connection.agent() => {}
                 Ok(diff) => self.send(Msg::Diff {
                     tool_use_id: diff.tool_use_id,
                     path: diff.path,
@@ -3493,9 +3486,7 @@ pub fn classify(err: &std::io::Error) -> Probe {
 /// client's agent, leave it to them; when other clients are attached to
 /// other agents, retire this one (the daemon stays for them); as the last
 /// client, stop the daemon when this client started it and no agent was
-/// left running without a client, else ask. A daemon of before P5 (no
-/// agent list) has one agent every client shares: other clients mean
-/// leave.
+/// left running without a client, else ask.
 #[must_use]
 pub fn quit_decision(status: Option<&protocol::Status>) -> QuitDecision {
     let Some(status) = status else {
@@ -3858,18 +3849,15 @@ async fn check_shell(
     let status = super::address::status_of(endpoint).await?;
     let mine = expected.as_ref().map(describe_shell);
     match (status.shell, expected) {
-        (Some(daemon), Ok(client)) if daemon == *client => Ok(None),
-        (Some(daemon), Ok(client)) if shell_within(&daemon, client) => Ok(Some(format!(
+        (daemon, Ok(client)) if daemon == *client => Ok(None),
+        (daemon, Ok(client)) if shell_within(&daemon, client) => Ok(Some(format!(
             "the daemon's agent shell is narrower than this client's flags ask for: it runs {}, these flags give {}; /daemon stop and attach again to run it with these flags",
             describe_shell(&daemon),
             describe_shell(client)
         ))),
         (daemon, _) => Err(ClientError::ShellWider {
             pid: status.pid,
-            daemon: daemon.as_ref().map_or_else(
-                || "a confinement it does not report (an older daemon)".to_string(),
-                describe_shell,
-            ),
+            daemon: describe_shell(&daemon),
             client: mine.unwrap_or_else(|err| err.clone()),
         }),
     }
@@ -3914,15 +3902,9 @@ async fn establish(
         saved.or(from_file.as_ref())
     };
     tokio::time::timeout(CALL_TIMEOUT, async {
-        let capabilities = connection
+        connection
             .call(protocol::engine::INITIALIZE, serde_json::json!({}))
             .await?;
-        if !pushes_decisions(&capabilities) {
-            return Err(ClientError::DaemonTooOld {
-                pid: Some(endpoint.pid),
-                lacks: "it pushes no approval decisions",
-            });
-        }
         let session = remote::session_id(&connection).await?;
         let id = session.to_string();
         let resume = saved
@@ -3989,18 +3971,6 @@ async fn establish(
     })
     .await
     .map_err(|_| ClientError::Timeout("reading the agent's state"))?
-}
-
-/// Whether a daemon's `initialize` answer lists the decision methods
-/// (`decision/notice`, `decision/decide`): its approval requests reach this
-/// client only as pushed decisions.
-fn pushes_decisions(capabilities: &serde_json::Value) -> bool {
-    let methods = capabilities
-        .get("methods")
-        .and_then(serde_json::Value::as_array);
-    crate::daemon::serve::DECISION_METHODS.iter().all(|name| {
-        methods.is_some_and(|methods| methods.iter().any(|method| method.as_str() == Some(name)))
-    })
 }
 
 /// Events only a running run publishes (its start aside).
@@ -4249,10 +4219,8 @@ mod tests {
         let (connection, notifications) = Connection::attach_io(
             read,
             write,
-            protocol::AttachParams {
-                token: "t".into(),
-                ..protocol::AttachParams::default()
-            },
+            "t",
+            protocol::AttachParams::default(),
             address,
             ATTACH_TIMEOUT,
         )
@@ -4474,26 +4442,6 @@ mod tests {
         assert_eq!(switch.endpoint, "anthropic");
         assert!(model_switch("my-alias", &endpoints, None, None).is_err());
         assert!(model_switch("litellm:x", &endpoints, None, None).is_err());
-    }
-
-    #[test]
-    fn a_daemon_without_the_decision_methods_is_too_old() {
-        let current =
-            serde_json::json!({"methods": ["mob/send", "decision/notice", "decision/decide"]});
-        assert!(pushes_decisions(&current));
-        for old in [
-            serde_json::json!({"methods": ["mob/send", "approval/list", "approval/decide"]}),
-            serde_json::json!({"methods": ["decision/notice"]}),
-            serde_json::json!({}),
-        ] {
-            assert!(!pushes_decisions(&old), "{old}");
-        }
-        let err = ClientError::DaemonTooOld {
-            pid: Some(42),
-            lacks: "it pushes no approval decisions",
-        }
-        .to_string();
-        assert!(err.contains("too old") && err.contains("restart"), "{err}");
     }
 
     #[test]

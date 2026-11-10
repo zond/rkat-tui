@@ -422,7 +422,7 @@ async fn connection(
 /// The handshake of one connection: read and check the attach line, take
 /// the connection's seat in `lifecycle` (counted until the connection
 /// ends), bind it to the agent it asks for (with `agents`; a probe is bound
-/// to none, a client of before P5 to the most recent agent; a new agent is
+/// to none, any other connection must name its choice; a new agent is
 /// seated here), and only then acknowledge it, naming the agent, so a
 /// client that read `{attached: true}` is already counted for every other
 /// connection's `rkat/status`. A seat whose acknowledgement cannot be
@@ -450,12 +450,11 @@ where
     if let Some(agents) = agents
         && !pending.params.probe
     {
-        let choice = pending
-            .params
-            .agent
-            .clone()
-            .unwrap_or(protocol::AgentChoice::Recent);
-        match agents.bind(&choice).await {
+        let bind = match pending.params.agent.clone() {
+            Some(choice) => agents.bind(&choice).await,
+            None => Err(super::agents::BindError::Unnamed),
+        };
+        match bind {
             Ok((binding, agent)) => {
                 seat.bind(binding);
                 bound = Some(agent);
@@ -924,9 +923,11 @@ pub async fn answer<L: LocalMethods + ?Sized>(
 mod tests {
     use super::*;
 
-    /// A writer that fails every write after recording the client count
-    /// the lifecycle had when the acknowledgement was written.
+    /// The daemon's side of a connection: writes go to the client, and the
+    /// acknowledgement's write records the client count the lifecycle had
+    /// then (and fails, with `fail`).
     struct Recording {
+        inner: tokio::io::WriteHalf<tokio::io::DuplexStream>,
         lifecycle: Arc<super::super::lifecycle::Lifecycle>,
         seen: Option<usize>,
         fail: bool,
@@ -935,31 +936,81 @@ mod tests {
     impl tokio::io::AsyncWrite for Recording {
         fn poll_write(
             mut self: std::pin::Pin<&mut Self>,
-            _cx: &mut std::task::Context<'_>,
+            cx: &mut std::task::Context<'_>,
             buf: &[u8],
         ) -> std::task::Poll<std::io::Result<usize>> {
-            self.seen = Some(self.lifecycle.clients());
-            if self.fail {
-                std::task::Poll::Ready(Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe)))
-            } else {
-                std::task::Poll::Ready(Ok(buf.len()))
+            if String::from_utf8_lossy(buf).contains("\"attached\"") {
+                self.seen = Some(self.lifecycle.clients());
+                if self.fail {
+                    return std::task::Poll::Ready(Err(std::io::Error::from(
+                        std::io::ErrorKind::BrokenPipe,
+                    )));
+                }
             }
+            std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
         }
         fn poll_flush(
-            self: std::pin::Pin<&mut Self>,
-            _cx: &mut std::task::Context<'_>,
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
         ) -> std::task::Poll<std::io::Result<()>> {
-            std::task::Poll::Ready(Ok(()))
+            std::pin::Pin::new(&mut self.inner).poll_flush(cx)
         }
         fn poll_shutdown(
-            self: std::pin::Pin<&mut Self>,
-            _cx: &mut std::task::Context<'_>,
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
         ) -> std::task::Poll<std::io::Result<()>> {
-            std::task::Poll::Ready(Ok(()))
+            std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
         }
     }
 
-    const ATTACH_LINE: &[u8] = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"rkat/attach\",\"params\":{\"token\":\"t\",\"start_token\":\"start\"}}\n";
+    /// Admit one client holding the token `t` and presenting the start
+    /// token `start` through the mutual handshake, the daemon writing
+    /// through a [`Recording`] (`fail`: its acknowledgement fails): the
+    /// admission and the client count the acknowledgement saw.
+    async fn admit_one(
+        lifecycle: &Arc<super::super::lifecycle::Lifecycle>,
+        fail: bool,
+    ) -> (
+        Result<super::super::lifecycle::Seat, handshake::HandshakeError>,
+        Option<usize>,
+    ) {
+        use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let (sr, sw) = tokio::io::split(server);
+        let client_side = tokio::spawn(async move {
+            let (cr, mut cw) = tokio::io::split(client);
+            let mut cr = tokio::io::BufReader::new(cr);
+            let nonce = "0123456789abcdef0123456789abcdef";
+            let hello = json!({"jsonrpc": "2.0", "id": 1, "method": "rkat/attach",
+                "params": {"nonce": nonce, "start_token": "start", "agent": {"choice": "recent"}}});
+            cw.write_all(format!("{hello}\n").as_bytes()).await.unwrap();
+            let mut line = String::new();
+            cr.read_line(&mut line).await.unwrap();
+            let challenge: Value = serde_json::from_str(&line).unwrap();
+            let daemon_nonce = challenge["result"]["challenge"]["nonce"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            let proof = json!({"jsonrpc": "2.0", "id": 2, "method": "rkat/attach",
+                "params": {"proof": handshake::client_proof("t", nonce, &daemon_nonce)}});
+            cw.write_all(format!("{proof}\n").as_bytes()).await.unwrap();
+            let mut ack = String::new();
+            let _ = cr.read_line(&mut ack).await;
+        });
+        let mut reader = tokio::io::BufReader::new(sr);
+        let mut writer = Recording {
+            inner: sw,
+            lifecycle: Arc::clone(lifecycle),
+            seen: None,
+            fail,
+        };
+        let admitted = admit(&mut reader, &mut writer, "t", lifecycle, None).await;
+        let seen = writer.seen;
+        drop(writer);
+        drop(reader);
+        let _ = client_side.await;
+        (admitted, seen)
+    }
 
     /// The CI failure this guards: the acknowledgement was written before
     /// the connection's seat was taken, so a client that had attached could
@@ -973,16 +1024,9 @@ mod tests {
             "now".into(),
             Some("start".into()),
         );
-        let mut reader = tokio::io::BufReader::new(ATTACH_LINE);
-        let mut writer = Recording {
-            lifecycle: Arc::clone(&lifecycle),
-            seen: None,
-            fail: false,
-        };
-        let seat = admit(&mut reader, &mut writer, "t", &lifecycle, None)
-            .await
-            .unwrap();
-        assert_eq!(writer.seen, Some(1), "counted when the answer was written");
+        let (admitted, seen) = admit_one(&lifecycle, false).await;
+        let seat = admitted.unwrap();
+        assert_eq!(seen, Some(1), "counted when the answer was written");
         assert!(seat.caller().owner);
         drop(seat);
         assert_eq!(lifecycle.clients(), 0);
@@ -998,15 +1042,9 @@ mod tests {
             "now".into(),
             Some("start".into()),
         );
-        let mut reader = tokio::io::BufReader::new(ATTACH_LINE);
-        let mut writer = Recording {
-            lifecycle: Arc::clone(&lifecycle),
-            seen: None,
-            fail: true,
-        };
-        let refused = admit(&mut reader, &mut writer, "t", &lifecycle, None).await;
+        let (refused, seen) = admit_one(&lifecycle, true).await;
         assert!(refused.is_err());
-        assert_eq!(writer.seen, Some(1), "the seat was taken before the write");
+        assert_eq!(seen, Some(1), "the seat was taken before the write");
         assert_eq!(lifecycle.clients(), 0, "and given up after it failed");
     }
 

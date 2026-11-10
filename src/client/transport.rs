@@ -27,7 +27,7 @@ use tokio::task::JoinHandle;
 
 use super::ClientError;
 use crate::daemon::endpoint::Endpoint;
-use crate::daemon::handshake::{self, ATTACH_METHOD, UNAUTHORIZED};
+use crate::daemon::handshake::{self, ATTACH_METHOD};
 use crate::daemon::protocol::{AttachParams, Challenged};
 
 /// How long connecting and the attach handshake may take.
@@ -72,12 +72,11 @@ impl Drop for Forget<'_> {
 /// One attached connection to the daemon.
 pub struct Connection {
     address: SocketAddr,
-    /// The agent the daemon bound the connection to (`None`: a probe, or
-    /// a daemon of before P5, whose one agent is `main`).
+    /// The agent the daemon bound the connection to (`None`: a probe).
     agent: Option<String>,
     /// The daemon seated the agent for this connection.
     seated: bool,
-    /// The daemon's build (`None`: a daemon of before it said).
+    /// The daemon's build.
     daemon_build: Option<String>,
     outgoing: mpsc::UnboundedSender<String>,
     pending: Pending,
@@ -110,8 +109,7 @@ impl Connection {
     /// [`ClientError::Connect`] when nothing accepts, [`ClientError::Timeout`]
     /// when connecting or the handshake takes longer than `timeout`,
     /// [`ClientError::Unproven`] when the process there does not prove it
-    /// holds the token, [`ClientError::DaemonTooOld`] for a daemon that
-    /// asks for the token itself, [`ClientError::Refused`] when the daemon
+    /// holds the token, [`ClientError::Refused`] when the daemon
     /// refuses the attach, and [`ClientError::Protocol`] for an answer that
     /// is not the handshake's.
     #[cfg(any(test, feature = "test-support"))]
@@ -124,7 +122,8 @@ impl Connection {
 
     /// [`Connection::attach`], presenting this client's start token (the
     /// daemon counts the client that started it as its owner) or as a
-    /// probe that only reads the status (not counted as a client).
+    /// probe that only reads the status (not counted as a client). A
+    /// connection that is no probe works with the most recent agent.
     ///
     /// # Errors
     ///
@@ -135,7 +134,8 @@ impl Connection {
         start_token: Option<&str>,
         probe: bool,
     ) -> Result<(Self, mpsc::UnboundedReceiver<Notification>), ClientError> {
-        Self::attach_to(endpoint, timeout, start_token, probe, None).await
+        let agent = (!probe).then_some(crate::daemon::protocol::AgentChoice::Recent);
+        Self::attach_to(endpoint, timeout, start_token, probe, agent).await
     }
 
     /// [`Connection::attach_as`], asking to work with the agent `agent`
@@ -163,25 +163,24 @@ impl Connection {
         let _ = stream.set_nodelay(true);
         let (read, write) = stream.into_split();
         let params = AttachParams {
-            token: endpoint.token.clone(),
             start_token: start_token.map(str::to_string),
             probe,
             agent,
             ..AttachParams::default()
         };
-        Self::attach_io(read, write, params, endpoint.address, timeout)
-            .await
-            .map_err(|err| match err {
-                ClientError::DaemonTooOld { pid: None, lacks } => ClientError::DaemonTooOld {
-                    pid: Some(endpoint.pid),
-                    lacks,
-                },
-                err => err,
-            })
+        Self::attach_io(
+            read,
+            write,
+            &endpoint.token,
+            params,
+            endpoint.address,
+            timeout,
+        )
+        .await
     }
 
     /// Attach over an already open byte stream (`address` is what
-    /// [`Connection::address`] reports). `params.token` is the secret the
+    /// [`Connection::address`] reports). `token` is the secret the
     /// proofs are keyed with and is never written to the stream
     /// ([`crate::daemon::handshake`]): the daemon proves it holds the token
     /// first, and only then does this client prove it does.
@@ -192,6 +191,7 @@ impl Connection {
     pub async fn attach_io<R, W>(
         read: R,
         mut write: W,
+        token: &str,
         params: AttachParams,
         address: SocketAddr,
         timeout: Duration,
@@ -202,7 +202,6 @@ impl Connection {
     {
         let mut reader = BufReader::new(read);
         let mut params = params;
-        let token = std::mem::take(&mut params.token);
         let client_nonce = handshake::new_nonce().map_err(ClientError::Io)?;
         params.nonce = Some(client_nonce.clone());
         let handshake = async {
@@ -214,13 +213,13 @@ impl Connection {
             });
             write_line(&mut write, &hello).await?;
             let line = read_reply(&mut reader).await?;
-            let daemon_nonce = check_challenge(&line, &token, &client_nonce, address)?;
+            let daemon_nonce = check_challenge(&line, token, &client_nonce, address)?;
             let proof = json!({
                 "jsonrpc": "2.0",
                 "id": PROOF_ID,
                 "method": ATTACH_METHOD,
                 "params": AttachParams {
-                    proof: Some(handshake::client_proof(&token, &client_nonce, &daemon_nonce)),
+                    proof: Some(handshake::client_proof(token, &client_nonce, &daemon_nonce)),
                     ..AttachParams::default()
                 },
             });
@@ -261,11 +260,11 @@ impl Connection {
         ))
     }
 
-    /// The agent the daemon bound this connection to; a daemon of before
-    /// P5 names none, and its one agent is `main`.
+    /// The agent the daemon bound this connection to (empty for a probe,
+    /// which is bound to none).
     #[must_use]
     pub fn agent(&self) -> &str {
-        self.agent.as_deref().unwrap_or(crate::daemon::ORCHESTRATOR)
+        self.agent.as_deref().unwrap_or_default()
     }
 
     /// Whether the daemon seated the agent for this connection.
@@ -354,8 +353,7 @@ async fn read_reply<R: AsyncBufRead + Unpin>(reader: &mut R) -> Result<String, C
 /// The daemon's nonce from its answer to the first attach request, once
 /// its proof checks out for `token`. Nothing else is trusted: an answer
 /// without a valid proof is [`ClientError::Unproven`] (the token is not
-/// sent), and the refusal a daemon of before the mutual handshake gives an
-/// attach without a token is [`ClientError::DaemonTooOld`].
+/// sent), and a refusal is [`ClientError::Refused`].
 fn check_challenge(
     line: &str,
     token: &str,
@@ -371,13 +369,6 @@ fn check_challenge(
     if let Some(error) = reply.get("error") {
         let code = error.get("code").and_then(Value::as_i64);
         let message = error.get("message").and_then(Value::as_str);
-        // What a daemon of before the mutual handshake answers.
-        if code == Some(i64::from(UNAUTHORIZED)) && message == Some("wrong or missing token") {
-            return Err(ClientError::DaemonTooOld {
-                pid: None,
-                lacks: "it does not prove that it holds the token before asking for it",
-            });
-        }
         return Err(ClientError::Refused {
             code: code.and_then(|code| i32::try_from(code).ok()).unwrap_or(0),
             message: message.unwrap_or_default().to_string(),
@@ -573,7 +564,7 @@ mod tests {
     /// A client and a server over a duplex, the client's attach not
     /// started yet.
     fn raw(
-        params: AttachParams,
+        token: &'static str,
     ) -> (
         Server,
         impl std::future::Future<
@@ -588,13 +579,19 @@ mod tests {
                 reader: BufReader::new(sr),
                 writer: sw,
             },
-            Connection::attach_io(cr, cw, params, ADDR.parse().unwrap(), ATTACH_TIMEOUT),
+            Connection::attach_io(
+                cr,
+                cw,
+                token,
+                AttachParams::default(),
+                ADDR.parse().unwrap(),
+                ATTACH_TIMEOUT,
+            ),
         )
     }
 
     /// D1 of the security review: a process on the daemon's port that
-    /// does not know the token never receives it, whatever it answers; a
-    /// daemon of before the mutual handshake is reported as too old.
+    /// does not know the token never receives it, whatever it answers.
     #[tokio::test]
     async fn a_squatter_that_does_not_know_the_token_never_receives_it() {
         let answers = [
@@ -604,7 +601,7 @@ mod tests {
             json!({"jsonrpc": "2.0", "id": 9, "result": {}}),
         ];
         for answer in answers {
-            let (mut server, attach) = raw(token("secret"));
+            let (mut server, attach) = raw("secret");
             let squatter = async {
                 let hello = server.line().await.unwrap();
                 assert_eq!(hello["method"], ATTACH_METHOD);
@@ -619,18 +616,6 @@ mod tests {
             let rest = server.rest().await;
             assert!(!rest.contains("secret"), "{answer}: {rest}");
         }
-        // The refusal an old daemon gives an attach without a token.
-        let (mut server, attach) = raw(token("secret"));
-        let old = async {
-            let hello = server.line().await.unwrap();
-            server.send(json!({"jsonrpc": "2.0", "id": hello["id"], "error": {"code": UNAUTHORIZED, "message": "wrong or missing token"}})).await;
-        };
-        let (attached, ()) = tokio::join!(attach, old);
-        assert!(
-            matches!(attached, Err(ClientError::DaemonTooOld { .. })),
-            "{attached:?}"
-        );
-        assert!(!server.rest().await.contains("secret"));
     }
 
     /// The daemon's side: a client proof that does not match (one keyed by
@@ -674,13 +659,6 @@ mod tests {
         }
     }
 
-    fn token(token: &str) -> AttachParams {
-        AttachParams {
-            token: token.to_string(),
-            ..AttachParams::default()
-        }
-    }
-
     fn pair() -> (
         Server,
         impl std::future::Future<
@@ -693,7 +671,8 @@ mod tests {
         let attach = Connection::attach_io(
             cr,
             cw,
-            token("secret"),
+            "secret",
+            AttachParams::default(),
             ADDR.parse().unwrap(),
             ATTACH_TIMEOUT,
         );
@@ -806,7 +785,7 @@ mod tests {
     async fn a_wrong_token_or_another_answer_is_refused() {
         // A client with another token cannot check the daemon's proof:
         // to it, that daemon is unproven.
-        let (mut server, attach) = raw(token("wrong"));
+        let (mut server, attach) = raw("wrong");
         let (attached, ()) = tokio::join!(attach, server.accept("secret"));
         assert!(
             matches!(attached, Err(ClientError::Unproven { .. })),
@@ -834,7 +813,8 @@ mod tests {
         let attached = Connection::attach_io(
             cr,
             cw,
-            token("t"),
+            "t",
+            AttachParams::default(),
             ADDR.parse().unwrap(),
             Duration::from_secs(1),
         )

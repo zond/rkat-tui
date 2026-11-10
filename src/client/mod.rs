@@ -12,8 +12,7 @@
 //! - [`catchup`]: the stream cursor `{epoch, seq}` the client reattaches
 //!   with, the once-only rule, and the per-workspace cursor file.
 //! - [`approvals`]: the approval dialogs: the daemon's pushed decisions
-//!   (`decision/notice`, `decision/decide`); a daemon without them is
-//!   refused at attach ([`ClientError::DaemonTooOld`]).
+//!   (`decision/notice`, `decision/decide`).
 //! - [`runner`]: the loop between the UI and the daemon over the UI's
 //!   [`Effect`]/[`Msg`] contract: approval dialogs, permission modes and `/rules` act on the
 //!   daemon's gate (`rkat/*` methods, see [`crate::daemon::local`]); the
@@ -58,18 +57,6 @@ use crate::ui::{Effect, Msg, StatusInfo, StatusUpdate, UiChannels};
 use crate::workbench::{AppSetup, app};
 
 pub use runner::{AttachConfig, AttachRunner, SpawnPlan};
-
-/// [`ClientError::DaemonTooOld`]'s message.
-fn too_old(pid: Option<u32>, lacks: &str) -> String {
-    match pid {
-        Some(pid) => format!(
-            "the workspace's rkat-tui-mob (pid {pid}) is too old for this client: {lacks}; restart it (send SIGTERM to pid {pid}, then attach again and the current daemon starts)"
-        ),
-        None => format!(
-            "the workspace's rkat-tui-mob is too old for this client: {lacks}; restart it (stop it, then attach again and the current daemon starts)"
-        ),
-    }
-}
 
 /// Why attach mode cannot reach or use the daemon.
 #[derive(Debug, thiserror::Error)]
@@ -121,18 +108,6 @@ pub enum ClientError {
         /// The serde error.
         #[source]
         source: serde_json::Error,
-    },
-    /// The daemon predates something this client requires: pushed
-    /// decisions (its `initialize` does not list `decision/notice` and
-    /// `decision/decide`, so its approval requests would never show here)
-    /// or the mutual attach handshake (it asked for the token itself, which
-    /// was not sent).
-    #[error("{}", too_old(*pid, lacks))]
-    DaemonTooOld {
-        /// The daemon's process id (`None`: not known where it was found).
-        pid: Option<u32>,
-        /// What it lacks.
-        lacks: &'static str,
     },
     /// The process at the daemon's address did not prove it holds the
     /// workspace's token: it may not be the daemon at all (one that took

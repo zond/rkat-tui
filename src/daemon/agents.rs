@@ -4,9 +4,7 @@
 //!
 //! An agent is named `main-<id>` ([`new_name`], a short random id; stable
 //! for the member's life, shown in the status bar, `--list`, `/agents` and
-//! `rkat/status`). A daemon whose mob still has the single orchestrator
-//! of before P5, `main`, keeps it as one agent among the others
-//! ([`is_agent`]).
+//! `rkat/status`; [`is_agent`]).
 //!
 //! Each connection is bound to one agent when it attaches
 //! ([`super::protocol::AgentChoice`]: a new agent, the most recently
@@ -50,17 +48,16 @@ pub const ID_CHARS: usize = 4;
 const ID_ALPHABET: &[u8] = b"abcdefghijkmnpqrstuvwxyz23456789";
 
 /// Whether `name` is an agent's member identity: `main-<id>` (lower-case
-/// letters and digits), or the bare `main` of a daemon from before P5.
+/// letters and digits).
 #[must_use]
 pub fn is_agent(name: &str) -> bool {
-    name == ORCHESTRATOR
-        || name.strip_prefix(NAME_PREFIX).is_some_and(|id| {
-            !id.is_empty()
-                && id.len() <= 16
-                && id
-                    .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
-        })
+    name.strip_prefix(NAME_PREFIX).is_some_and(|id| {
+        !id.is_empty()
+            && id.len() <= 16
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+    })
 }
 
 /// A fresh agent name no `taken` name has.
@@ -135,6 +132,9 @@ pub enum BindError {
     /// The named agent is not live.
     #[error("no agent `{0}` works in this workspace (rkat-tui --list shows the agents)")]
     NoSuchAgent(String),
+    /// A connection that is no probe named no agent choice.
+    #[error("an attach that is no probe names the agent it works with")]
+    Unnamed,
     /// Seating the agent failed.
     #[error("cannot seat the agent: {0}")]
     Seat(#[from] SwitchError),
@@ -345,8 +345,8 @@ impl Agents {
             self.conversations.seed(&self.engine, session).await;
         }
         let names: Vec<String> = restored.iter().map(|(name, _)| name.clone()).collect();
-        // The mob keeps its wiring across a restart; an edge missing (an
-        // agent seated by a daemon of before P5) is made now.
+        // The mob keeps its wiring across a restart; an edge it lost is
+        // made again now.
         self.rewire(&names).await;
         let Some((name, session)) = restored.pop() else {
             return Err(super::DaemonError::NoSession(ORCHESTRATOR.to_string()));
@@ -987,7 +987,7 @@ mod tests {
             assert!(is_agent(&name), "{name}");
             assert_eq!(name.len(), NAME_PREFIX.len() + ID_CHARS, "{name}");
         }
-        assert!(is_agent("main"), "the orchestrator of before P5");
+        assert!(!is_agent("main"), "the profile, not an agent");
         for not in [
             "", "main-", "main-AB", "main-a b", "mainx", "helper", "main-a/b",
         ] {
