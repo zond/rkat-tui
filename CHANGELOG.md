@@ -9,6 +9,12 @@ design.
 
 ### Security
 
+- The manual's "Security decisions" says what rkat-tui does where the
+  review asked for a choice: the network stays on by default
+  (`--confinement=strict` turns it off), detached agents have no idle
+  timeout, peer-started turns are unattended, and where the audit log is.
+  A managed policy file and `cargo-vet` are deliberately not provided
+  until asked.
 - The sandbox's claims are pinned by tests on Linux: a confined command
   does not see `~/.ssh` or the Cargo home's credentials, and `strict`
   has no network. It can still write `.rkat/` and `.git/` inside the

@@ -11,7 +11,7 @@ the test protocol for working on rkat-tui itself.
 - [First run](#first-run)
 - [Sessions](#sessions)
 - [How approval works](#how-approval-works) ([Permission modes](#permission-modes))
-- [Confinement](#confinement)
+- [Confinement](#confinement) ([Security decisions](#security-decisions))
 - [Helpers](#helpers)
 - [Rules](#rules) ([Configuration reference](#configuration-reference-tuitoml))
 - [Models, endpoints and cost](#models-endpoints-and-cost)
@@ -430,6 +430,37 @@ macOS uses Seatbelt; other platforms have no sandbox. To run without
 confinement: `--no-confinement` (or `--confinement=off`), unless a realm
 `[confinement]` requires it, in which case the message points at the realm
 config instead.
+
+### Security decisions
+
+What rkat-tui does by default where a security review asked for a choice
+(the user's decisions of 2026-11-10):
+
+- **The network is on by default.** The default `workspace` confinement
+  lets the agent's shell reach the network (package registries, `git
+  fetch`, `curl`). Turn it off with `--confinement=strict` when you
+  start rkat-tui (the daemon it starts takes the flag): the shell then
+  gets the same files and no IP network at all. In auto mode a command that
+  reaches the network is still reviewed by the classifier like any other.
+- **No idle timeout.** A detached agent (`/detach`, a closed terminal)
+  keeps running until its turn ends, or until you stop it (`/quit` from a
+  TUI attached to it, `/daemon stop`, or SIGTERM to the daemon). It does
+  not stop by itself after a while.
+- **Unattended turns.** A turn another agent's message started on your
+  agent, while no TUI is attached to it, cannot run anything that needs
+  review: the action is denied, the agent is told it needs you, and the
+  next TUI that attaches to the agent shows what it wanted to do (see
+  [Several agents](#several-agents)). A turn you started stays reviewed
+  as usual after you detach.
+- **The audit log** records every approval decision and who made it, and
+  every change of mode, rules and trust, in `audit.jsonl` outside the
+  workspace, beside the daemon's endpoint file (see
+  [Where things live](#where-things-live)); `/audit` and `rkat-tui
+  --audit` show it.
+
+Not provided, deliberately, until someone asks: a machine-wide managed
+policy file that pins these choices for every user of a host, and
+`cargo-vet` audits of the dependencies (CI runs `cargo deny`).
 
 ## Helpers
 

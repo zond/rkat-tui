@@ -238,6 +238,22 @@ messages seed the classifier on resume, the approval and custody stores)
 have no such guard, and `.git/hooks` run unconfined by git later: both
 wait on the read-only bind.
 
+Deliberate non-goals for now (the user's decision of 2026-11-10; each
+comes back only when someone asks for it explicitly):
+
+- A machine-wide managed policy file (recommendation 9 of the security
+  review, e.g. `/etc/rkat-tui/managed.toml` pinning confinement,
+  permission mode, endpoints and trust): rkat-tui is used by one person
+  per host so far, and the per-user layers already decide all of these;
+  a managed layer would add a precedence level to every setting.
+- `cargo-vet` (recommendation 10's other half): CI runs `cargo deny`
+  (advisories, licences, sources); auditing every crate of the engine's
+  graph by hand is a cost nobody has asked to pay.
+- An idle timeout for detached agents (D2): a detached agent runs until
+  it stops or is stopped; peer-woken turns are unattended instead (A6).
+- Network off by default (S4): `workspace` keeps the network,
+  `--confinement=strict` is the opt-in.
+
 On the approval side: the classifier sees the action it reviews whole or
 does not decide it (over 48 KiB the human is asked, "too large to
 review"), and records as the user's words only what was typed: an `@`

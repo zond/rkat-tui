@@ -4957,3 +4957,19 @@ convention where the backend is unavailable; each ran on this host):
   and asserts both succeed, with a message saying to turn the test into
   the claim once the engine binds them read only. What rkat-tui reads back
   from `.rkat/` stays trusted only by digest (see "1(e)").
+
+### S4, D2, recommendations 9 and 10: the decisions, written down
+
+The user's decisions of 2026-11-10 need no code: S4 (network on by
+default) and D2 (no idle timeout) stay as they are, recommendation 9
+(a managed policy file) and `cargo-vet` are non-goals until asked.
+Verified against the code that the manual states what it does: the
+default confinement is `workspace` with the network allowed
+(`confinement::lower`, the manual's Confinement table) and `strict` denies
+it (pinned by `strict_mode_denies_the_network_and_workspace_mode_allows_it`);
+nothing in the daemon stops a detached agent on a timer (`Agents::release`
+only marks it detached). The manual's new "Security decisions" section
+(under Confinement) states the four decisions (network on and how to turn
+it off, no idle timeout, unattended turns, the audit log and where), and
+`docs/mob-split.md`'s "Wire and security" lists the non-goals with the
+reason for each.
