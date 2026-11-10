@@ -371,36 +371,80 @@ pub fn new_token() -> Result<String, DaemonError> {
         }))
 }
 
-/// Refuse when the endpoint file at `path` names a daemon that still
-/// accepts; a stale or unreadable file is left for [`Endpoint::write`] to
-/// replace.
+/// Refuse unless the endpoint file at `path` is absent or proven stale:
+/// only a refused connect proves that no daemon serves at its address
+/// anymore (then [`Endpoint::write`] replaces it). A connect that times
+/// out or fails otherwise, and a file that cannot be read, prove nothing,
+/// and the start is refused rather than risking a second daemon beside a
+/// live one.
 ///
 /// # Errors
 ///
-/// [`DaemonError::AlreadyRunning`].
+/// [`DaemonError::AlreadyRunning`] when something accepts at the
+/// address, [`DaemonError::EndpointUndecided`] when it cannot be told.
 pub async fn check_stale(path: &Path) -> Result<(), DaemonError> {
-    let Ok(endpoint) = Endpoint::read(path) else {
-        return Ok(());
+    let undecided = |why: String| DaemonError::EndpointUndecided {
+        file: path.to_path_buf(),
+        why,
     };
-    if answers(&endpoint).await {
-        return Err(DaemonError::AlreadyRunning {
+    match path.try_exists() {
+        Ok(false) => return Ok(()),
+        Ok(true) => {}
+        Err(err) => return Err(undecided(format!("cannot look at it: {err}"))),
+    }
+    let endpoint = Endpoint::read(path).map_err(|err| undecided(err.to_string()))?;
+    match reach(&endpoint).await {
+        Reach::Accepts => Err(DaemonError::AlreadyRunning {
             address: endpoint.address,
             pid: endpoint.pid,
             file: path.to_path_buf(),
-        });
+        }),
+        Reach::Refused => {
+            tracing::info!(file = %path.display(), address = %endpoint.address, "replacing a stale endpoint file");
+            Ok(())
+        }
+        Reach::Unknown(why) => Err(undecided(format!(
+            "its address {}: {why}",
+            endpoint.address
+        ))),
     }
-    tracing::info!(file = %path.display(), address = %endpoint.address, "replacing a stale endpoint file");
-    Ok(())
 }
 
-/// Whether something accepts at `endpoint`'s address (within 2 s).
-pub async fn answers(endpoint: &Endpoint) -> bool {
-    let probe = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
+/// How long [`reach`] waits for a connect.
+pub const REACH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// What a connect to an endpoint's address found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reach {
+    /// Something accepts there.
+    Accepts,
+    /// The connect was refused: nothing listens (the daemon is gone).
+    Refused,
+    /// Neither could be told (a timeout, an unreachable network, …): why.
+    Unknown(String),
+}
+
+/// Connect to `endpoint`'s address (within [`REACH_TIMEOUT`]); only a
+/// refused (or reset) connect counts as [`Reach::Refused`].
+pub async fn reach(endpoint: &Endpoint) -> Reach {
+    match tokio::time::timeout(
+        REACH_TIMEOUT,
         tokio::net::TcpStream::connect(endpoint.address),
     )
-    .await;
-    matches!(probe, Ok(Ok(_)))
+    .await
+    {
+        Ok(Ok(_)) => Reach::Accepts,
+        Ok(Err(err))
+            if matches!(
+                err.kind(),
+                std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::ConnectionReset
+            ) =>
+        {
+            Reach::Refused
+        }
+        Ok(Err(err)) => Reach::Unknown(err.to_string()),
+        Err(_) => Reach::Unknown(format!("no answer within {}s", REACH_TIMEOUT.as_secs())),
+    }
 }
 
 #[cfg(test)]
@@ -572,5 +616,36 @@ mod tests {
         ));
         drop(listener);
         check_stale(&path).await.unwrap();
+    }
+
+    /// The finding this guards (second review, item 9): a probe that timed
+    /// out, or a file that could not be read, was taken as stale, so a
+    /// daemon could start beside a live one that was slow to accept.
+    #[tokio::test]
+    async fn only_a_refused_connect_proves_a_file_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mob.endpoint");
+        // An address nothing answers at in time (or that is unreachable):
+        // not proven stale.
+        let silent = Endpoint {
+            address: "10.255.255.1:9".parse().unwrap(),
+            token: "t".into(),
+            pid: 1,
+            workspace: None,
+            started_at: None,
+            realm: None,
+        };
+        silent.write(&path).unwrap();
+        let refused = check_stale(&path).await;
+        assert!(
+            matches!(&refused, Err(DaemonError::EndpointUndecided { file, .. }) if file == &path),
+            "{refused:?}"
+        );
+        // A file that cannot be read is no proof either.
+        std::fs::write(&path, "not an endpoint").unwrap();
+        assert!(matches!(
+            check_stale(&path).await,
+            Err(DaemonError::EndpointUndecided { .. })
+        ));
     }
 }

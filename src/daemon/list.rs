@@ -5,9 +5,10 @@
 //! ([`super::endpoint::search_dirs`]: `<state>/rkat-tui/*/mob.endpoint`,
 //! then the runtime-dir fallback), or the one `--endpoint-file` names. Each
 //! is probed: connect, `rkat/attach` with its token as a probe (not
-//! counted as a client), then `rkat/status`. A file nothing answers at is
-//! `stale`; it is removed when its pid is gone. The token is never
-//! printed.
+//! counted as a client), then `rkat/status`. A file whose address refuses
+//! the connect is `stale`; it is removed when its pid is gone. One whose
+//! connect times out (or fails otherwise) is `unknown (<why>)` and kept:
+//! that proves nothing. The token is never printed.
 //!
 //! A line is tab-separated, in a fixed order: workspace (followed by
 //! `(realm <root>)` or `(realm memory)` when the daemon serves another
@@ -34,11 +35,15 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 pub enum Found {
     /// It answered; its status, when it could say.
     Live(Option<Status>),
-    /// Nothing answered; whether the file was removed (its pid is gone).
+    /// The connect was refused; whether the file was removed (its pid is
+    /// gone).
     Stale {
         /// The file was removed.
         removed: bool,
     },
+    /// Whether anything serves there could not be told (the connect timed
+    /// out, the network is unreachable): never removed.
+    Unknown(String),
 }
 
 /// One listed daemon.
@@ -75,7 +80,7 @@ pub fn files_in(dirs: &[PathBuf]) -> Vec<PathBuf> {
 }
 
 /// Probe the daemon `endpoint` names.
-pub async fn probe(endpoint: &Endpoint) -> Option<Option<Status>> {
+pub async fn probe(endpoint: &Endpoint) -> Found {
     let attached = tokio::time::timeout(
         PROBE_TIMEOUT,
         crate::client::transport::Connection::attach_as(endpoint, PROBE_TIMEOUT, None, true),
@@ -84,7 +89,11 @@ pub async fn probe(endpoint: &Endpoint) -> Option<Option<Status>> {
     let Ok(Ok((connection, _notes))) = attached else {
         // Something may accept but refuse (another program on the port):
         // only a refused connect is stale.
-        return endpoint::answers(endpoint).await.then_some(None);
+        return match endpoint::reach(endpoint).await {
+            endpoint::Reach::Accepts => Found::Live(None),
+            endpoint::Reach::Refused => Found::Stale { removed: false },
+            endpoint::Reach::Unknown(why) => Found::Unknown(why),
+        };
     };
     let status = tokio::time::timeout(
         PROBE_TIMEOUT,
@@ -95,7 +104,7 @@ pub async fn probe(endpoint: &Endpoint) -> Option<Option<Status>> {
         ),
     )
     .await;
-    Some(status.ok().and_then(Result::ok))
+    Found::Live(status.ok().and_then(Result::ok))
 }
 
 /// Whether process `pid` is gone.
@@ -125,11 +134,11 @@ pub async fn list(explicit: Option<&Path>) -> Vec<Listed> {
             continue;
         };
         let found = match probe(&endpoint).await {
-            Some(status) => Found::Live(status),
-            None => {
+            Found::Stale { .. } => {
                 let removed = pid_gone(endpoint.pid) && std::fs::remove_file(&file).is_ok();
                 Found::Stale { removed }
             }
+            found => found,
         };
         listed.push(Listed { endpoint, found });
     }
@@ -159,7 +168,7 @@ pub fn line(listed: &Listed, now: chrono::DateTime<chrono::Utc>) -> String {
     let endpoint = &listed.endpoint;
     let status = match &listed.found {
         Found::Live(status) => status.as_ref(),
-        Found::Stale { .. } => None,
+        Found::Stale { .. } | Found::Unknown(_) => None,
     };
     let mut workspace = status
         .map(|status| status.workspace.clone())
@@ -198,6 +207,7 @@ pub fn line(listed: &Listed, now: chrono::DateTime<chrono::Utc>) -> String {
             fields.push(if status.running { "running" } else { "idle" }.to_string());
         }
         (Found::Live(_), None) => fields.push("live (no status: an older daemon)".to_string()),
+        (Found::Unknown(why), _) => fields.push(format!("unknown ({why})")),
         (Found::Stale { removed }, _) => fields.push(
             if *removed {
                 "stale (file removed)"
@@ -372,6 +382,15 @@ mod tests {
                 // Unknown is not idle.
                 "\tmain-cd34\tunknown\tno conversation\t0 clients\tdetached".to_string(),
             ]
+        );
+        // A connect that timed out proves nothing: unknown, not stale.
+        let silent = Listed {
+            endpoint: endpoint.clone(),
+            found: Found::Unknown("no answer within 2s".into()),
+        };
+        assert_eq!(
+            line(&silent, now),
+            "/w\t127.0.0.1:4000\tpid 9\tup 1h30m\tunknown (no answer within 2s)"
         );
         // Another realm than the workspace's own is named after it.
         let isolated = Listed {

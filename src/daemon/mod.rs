@@ -176,6 +176,18 @@ pub enum DaemonError {
         /// Its endpoint file.
         file: PathBuf,
     },
+    /// An endpoint file names a daemon nobody can say is gone (its
+    /// address did not answer in time, or the file cannot be read).
+    #[error(
+        "cannot tell whether a daemon still serves this workspace (endpoint file {}: {why}); if none does, remove the file and start again",
+        file.display()
+    )]
+    EndpointUndecided {
+        /// The endpoint file.
+        file: PathBuf,
+        /// What the check found.
+        why: String,
+    },
     /// The endpoint file would be readable by the agent's confined shell.
     #[error(
         "refusing to write the endpoint file {}: the agent's confined shell is granted {} and could read the attach token; choose another place with --endpoint-file or XDG_STATE_HOME",
@@ -489,8 +501,10 @@ impl Daemon {
                 files
             }
         };
-        // Refuse before taking the realm: a live daemon keeps its endpoint
-        // (at either place).
+        // Refuse before taking the realm unless every place is free or
+        // proven stale (a refused connect): a live daemon keeps its
+        // endpoint, at either place, and a slow one must not be mistaken
+        // for a dead one.
         for file in &files {
             endpoint::check_stale(file).await?;
         }

@@ -1040,8 +1040,11 @@ address, `pid N`, `up <uptime>`, then the attached clients and the
 number of agents; under it, indented by a tab, one line per agent: its
 name, `running`, `idle` or `unknown` (the daemon could not read its
 state), its conversation, its clients and `detached`
-when it runs without one. A file nothing answers at is
-`stale`, and is removed when its process is gone (`stale (file removed)`).
+when it runs without one. A file whose address refuses the connection is
+`stale`, and is removed when its process is gone (`stale (file removed)`);
+one whose address does not answer in time is `unknown (<why>)` and kept,
+since a slow daemon is not a dead one. A daemon does not start beside such
+a file either: it says so, and if no daemon runs, remove the file.
 A daemon of another realm than the workspace's own shows it after the
 workspace: `(realm <root>)` or `(realm memory)`.
 Listing attaches to each daemon with its token as a probe, which is not

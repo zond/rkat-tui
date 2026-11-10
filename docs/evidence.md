@@ -4272,3 +4272,25 @@ unknown state is the failed read, not the normal one. Pinned by
 `the_start_up_notice_names_the_other_agents` and
 `daemon::list`'s line test.
 
+### Only a refused connect proves an endpoint file stale (the daemon side)
+
+The client was fixed out of this inference earlier ("Only a refused
+connect proves a stopped daemon"); the daemon's start kept it.
+`endpoint::check_stale` replaced a file whose address did not accept
+within 2 s, and one it could not read, as stale, and `--list` called a
+timed-out probe stale. Now `endpoint::reach` answers `Accepts`, `Refused`
+(a refused or reset connect) or `Unknown(why)` (a timeout, an
+unreachable network, any other error). `check_stale` lets the start go on
+only for an absent file or a `Refused` one; `Accepts` is
+`DaemonError::AlreadyRunning` as before, and `Unknown` or an unreadable
+file is the new `DaemonError::EndpointUndecided`, which names the file and
+says to remove it if no daemon runs. The realm lease would probably stop a
+second daemon anyway, but that is not why the old code was safe, and its
+comment said otherwise; the comment is fixed. `--list` shows
+`unknown (<why>)` (`list::Found::Unknown`) and never removes such a file.
+The client's own start-on-demand probe (`launch::probe`) still reads a
+timeout as stale; a daemon it then starts refuses now, with the reason.
+Pinned by `only_a_refused_connect_proves_a_file_stale` (a non-routable
+address and an unparsable file both refuse) and `daemon::list`'s line
+test.
+

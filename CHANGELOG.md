@@ -181,6 +181,10 @@ design.
 
 ### Fixed
 
+- Only a refused connection proves an endpoint file stale. A daemon no
+  longer starts beside a file whose address did not answer within 2 s or
+  that cannot be read (it says so and names the file), and `--list` shows
+  such a file as `unknown (…)` and keeps it, instead of `stale`.
 - An agent whose state the daemon cannot read is shown as `unknown` in
   `/agents` and `--list`, not `idle`, and retiring it cancels its turn
   anyway. Before, a failed status read retired a running agent without
