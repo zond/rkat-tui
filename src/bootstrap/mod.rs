@@ -174,27 +174,53 @@ pub async fn guarded_config(scope: &RuntimeScope, args: &Args, mut config: Confi
 ///
 /// [`TuiError`] when the layered `tui.toml` cannot be read or the
 /// confinement cannot be planned.
+#[cfg(any(test, feature = "test-support"))]
 pub fn user_shell(
     layers: &Layers,
     config: &Config,
     args: &Args,
     host_paths: &HostPaths,
 ) -> Result<crate::user_shell::UserShell, TuiError> {
+    Ok(user_shell_with(
+        layers,
+        &shell_plan(layers, config, args, host_paths)?,
+    ))
+}
+
+/// The agent shell's confinement plan `args` and the `tui.toml` layers
+/// give over `config` on this host: what a daemon started with them
+/// installs, and what the client compares a running daemon's with.
+///
+/// # Errors
+///
+/// [`TuiError`] when the confinement cannot be planned.
+pub fn shell_plan(
+    layers: &Layers,
+    config: &Config,
+    args: &Args,
+    host_paths: &HostPaths,
+) -> Result<ConfinementPlan, TuiError> {
     let Layers { scope, layered, .. } = layers;
-    let plan = confinement::plan(
+    Ok(confinement::plan(
         args.effective_confinement(),
         scope.project_root.as_path(),
         config,
         host_paths,
         &extra_grants(args, layered),
-    )?;
-    Ok(crate::user_shell::UserShell::new(
+    )?)
+}
+
+/// [`user_shell`] from a [`shell_plan`].
+#[must_use]
+pub fn user_shell_with(layers: &Layers, plan: &ConfinementPlan) -> crate::user_shell::UserShell {
+    let Layers { scope, layered, .. } = layers;
+    crate::user_shell::UserShell::new(
         approval::resolved_shell_program(),
         scope.project_root.as_path(),
         &plan.shell,
         plan.shell_env.as_ref(),
         std::time::Duration::from_secs(layered.shell.user_timeout_secs),
-    ))
+    )
 }
 
 /// The workspace and its layered `tui.toml`, read once at start and handed

@@ -4651,3 +4651,35 @@ goes to the classifier) and `the_endpoint_file_is_sealed_for_the_file_tools`
 (`tests/attach_approvals.rs`: through the daemon the read is refused
 without a classifier question, and an allowed grep above the state
 directory ran and does not show the token or the file).
+
+### D4: a client is told when the daemon's agent shell differs from its flags
+
+Verified: the agent's shell is the daemon's, planned once from the
+daemon's own command line (`bootstrap::assemble`), and a client attaching
+later with other `--confinement` flags used them only for its `!` shell;
+`rkat/status` and `rkat/report` named the mode at most, so a user who
+started the TUI with `--confinement=strict` beside a daemon started
+unconfined was not told.
+
+`rkat/status` now carries `shell`, the engine's `ShellConfinement` the
+daemon installed. Before every attach (first and reconnect) the client
+probes the status (a probe seats no agent) and compares with the plan its
+own flags and layers give (`bootstrap::shell_plan`, which also builds the
+`!` shell): equal attaches; inside (`confinement::shell_within`: every
+read, write and socket grant inside one of the client's, every exclusion
+of the client's kept, the network no wider, a trusted host inside only a
+trusted host) attaches with a warning naming both; anything else, a
+daemon that does not report its shell, or a client that cannot plan its
+own (no sandbox on the host), is `ClientError::ShellWider`, not retried.
+A daemon reached on another machine (`--attach=HOST:PORT`, remote) is not
+compared: its paths are not this host's. The brief's "warn if the request
+is narrower" was read as: warn when the daemon is the narrower one, refuse
+when it is wider, the direction that cannot loosen the user's request.
+
+Tests: `a_shell_is_within_another_only_when_it_can_do_no_more`
+(confinement: strict inside workspace, not the reverse, unconfined only
+inside unconfined, one more write grant is wider) and
+`a_client_whose_flags_confine_more_than_the_daemon_is_refused`
+(`tests/attach_lifecycle.rs`: an unconfined daemon, a client with
+`--confinement=workspace`: refused naming the daemon's shell, not
+retried, no agent seated).

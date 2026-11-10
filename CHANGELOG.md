@@ -9,6 +9,11 @@ design.
 
 ### Security
 
+- A TUI no longer attaches to a daemon whose agent shell may do more than
+  the TUI's own flags allow (started unconfined, or with network, or with
+  more directories): it names both and says how to restart the daemon. A
+  daemon whose shell may do less is attached with a warning. Before, a
+  later TUI's `--confinement` flags were silently ignored.
 - The agent's file tools can no longer read the daemon's attach token:
   the endpoint directories are sealed for `read_file`, `grep` and `glob`
   (tier 0, never a question for the classifier), and a search above them

@@ -145,6 +145,20 @@ pub enum ClientError {
         /// What it answered.
         reason: String,
     },
+    /// The workspace's daemon runs the agent's shell under a confinement
+    /// that may do more than this client's flags give it (or one that
+    /// cannot be compared): the client does not attach.
+    #[error(
+        "the workspace's rkat-tui-mob (pid {pid}) runs the agent's shell wider than this client's flags allow: the daemon's is {daemon}; these flags give {client}. Stop it (/daemon stop from a client with its flags, or SIGTERM to pid {pid}) and attach again to start it with these flags, or attach with the flags it was started with"
+    )]
+    ShellWider {
+        /// The daemon's process id.
+        pid: u32,
+        /// The daemon's agent shell, in words.
+        daemon: String,
+        /// What this client's flags give, in words (or why it cannot say).
+        client: String,
+    },
     /// The orchestrator has no session.
     #[error("the daemon's orchestrator has no session")]
     NoSession,
@@ -313,15 +327,21 @@ pub async fn configure_with(
         crate::bootstrap::load_config(&layers.scope).await?,
     )
     .await;
-    // The `!` shell, from the layers' confinement grants and timeout.
-    let user_shell = crate::bootstrap::user_shell(
+    // The `!` shell, from the layers' confinement grants and timeout; the
+    // same plan is what a running daemon's agent shell is compared with.
+    let plan = crate::bootstrap::shell_plan(
         &layers,
         &config,
         args,
         &crate::bootstrap::HostPaths::detect(),
-    )
-    .map(std::sync::Arc::new)
-    .map_err(|err| format!("the ! shell is unavailable: {err}"));
+    );
+    let user_shell = plan
+        .as_ref()
+        .map(|plan| std::sync::Arc::new(crate::bootstrap::user_shell_with(&layers, plan)))
+        .map_err(|err| format!("the ! shell is unavailable: {err}"));
+    let shell = Some(std::sync::Arc::new(plan.map(|plan| plan.shell).map_err(
+        |err| format!("this client cannot plan the shell's confinement: {err}"),
+    )));
     // The layers this process reads for its display and endpoints:
     // the picker lists this process's endpoints, and a switch to a
     // configured one carries its auth binding.
@@ -374,6 +394,7 @@ pub async fn configure_with(
         config: Some(config),
         spawn,
         user_shell,
+        shell,
         endpoints,
         lister: crate::models::live_lister(),
         ui: layered.ui,

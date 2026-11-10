@@ -310,8 +310,23 @@ impl Client {
         }
         config.lister = lister;
         config.endpoint_files = vec![endpoint_file.to_path_buf()];
+        // The daemon of the rig plans its shell over these host paths (the
+        // default ones without), so the client compares with the same.
+        let (layers, realm_config) = rkat_tui::bootstrap::prepare(args).await.unwrap();
+        let realm_config =
+            rkat_tui::bootstrap::guarded_config(&layers.scope, args, realm_config).await;
+        let plan = rkat_tui::bootstrap::shell_plan(
+            &layers,
+            &realm_config,
+            args,
+            &host_paths.cloned().unwrap_or_default(),
+        );
+        config.shell = Some(Arc::new(
+            plan.as_ref()
+                .map(|plan| plan.shell.clone())
+                .map_err(ToString::to_string),
+        ));
         if let Some(host_paths) = host_paths {
-            let (layers, realm_config) = rkat_tui::bootstrap::prepare(args).await.unwrap();
             config.user_shell =
                 rkat_tui::bootstrap::user_shell(&layers, &realm_config, args, host_paths)
                     .map(Arc::new)

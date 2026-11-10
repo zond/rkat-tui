@@ -449,6 +449,10 @@ pub struct Status {
     /// P5).
     #[serde(default)]
     pub agents: Vec<AgentRow>,
+    /// The agent shell's confinement the daemon installed (`None`: a
+    /// daemon of before it said).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell: Option<meerkat_tools::builtin::shell::ShellConfinement>,
 }
 
 /// [`SHUTDOWN`]'s parameters.

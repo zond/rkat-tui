@@ -333,6 +333,7 @@ mod tests {
                 running: true,
                 agent: None,
                 agents: Vec::new(),
+                shell: None,
             })),
         };
         let shown = line(&live, now);
@@ -372,6 +373,7 @@ mod tests {
                         detached: true,
                     },
                 ],
+                shell: None,
             })),
         };
         assert_eq!(

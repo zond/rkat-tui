@@ -27,6 +27,7 @@ use std::time::Duration;
 
 use meerkat_core::lifecycle::RunId;
 use meerkat_core::{AgentErrorClass, AgentEvent, EventEnvelope, Message, SessionId};
+use meerkat_tools::builtin::shell::ShellConfinement;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
@@ -170,6 +171,11 @@ pub struct AttachConfig {
     /// The user's `!` shell (this process's own), or why
     /// there is none.
     pub user_shell: Result<Arc<UserShell>, String>,
+    /// The agent shell's confinement this client's flags and `tui.toml`
+    /// layers give (or why it cannot be planned): a daemon whose agent
+    /// shell may do more is refused ([`ClientError::ShellWider`]). `None`:
+    /// not compared (a daemon on another machine).
+    pub shell: Option<Arc<Result<ShellConfinement, String>>>,
     /// This process's LLM endpoints (the model picker, `/model`).
     pub endpoints: crate::endpoints::EndpointRegistry,
     /// Fetches the endpoints' model lists (tests list nothing).
@@ -235,6 +241,9 @@ struct Established {
     /// The context of the session's last model call when the replay holds
     /// no turn end (the gauge's seed), read from the events before the mark.
     context: Option<u64>,
+    /// The daemon's agent shell is narrower than this client's flags ask
+    /// for ([`check_shell`]).
+    shell_notice: Option<String>,
 }
 
 /// A background task's channel back to the runner: every report carries
@@ -759,6 +768,7 @@ impl AttachRunner {
             },
             cursor: (!self.agent_switch).then(|| self.config.cursor.clone()),
             start_token: start_token.clone(),
+            shell: self.config.shell.clone(),
         };
         let task = if let Some(endpoint) = self.config.address.clone() {
             // Reached by address: the same address again, with backoff.
@@ -861,6 +871,7 @@ impl AttachRunner {
             usage,
             queued,
             context,
+            shell_notice,
         } = established;
         let address = link.endpoint.address;
         let agent = link.connection.agent().to_string();
@@ -917,6 +928,9 @@ impl AttachRunner {
         }
         if fresh {
             self.load_cost(&link.session);
+        }
+        if let Some(text) = shell_notice {
+            self.notice(NoticeLevel::Warn, text);
         }
         let daemon_build = link.connection.daemon_build().map(str::to_string);
         if new_daemon && daemon_build.as_deref() != Some(crate::BUILD) {
@@ -3464,6 +3478,9 @@ struct Attach {
     agent: AgentChoice,
     cursor: Option<CursorFile>,
     start_token: Option<String>,
+    /// What this client's flags give the agent shell (`None`: not
+    /// compared), see [`AttachConfig::shell`].
+    shell: Option<Arc<Result<ShellConfinement, String>>>,
 }
 
 /// What the status bar says of a failed connect: the reason and the
@@ -3486,6 +3503,43 @@ fn failure(err: &ClientError) -> (String, Option<PathBuf>) {
 /// this client to its agent (it is no longer live).
 fn gone(err: &ClientError) -> bool {
     matches!(err, ClientError::Refused { code, .. } if *code == protocol::NO_AGENT)
+        || matches!(err, ClientError::ShellWider { .. })
+}
+
+/// Compare the agent shell's confinement `endpoint`'s daemon reports with
+/// what this client's flags give (`expected`), before attaching (a probe,
+/// so no agent is seated for a client that is refused): a daemon whose
+/// shell may do more is refused, one whose shell may do less is attached
+/// with a warning (the returned text), the same one silently.
+///
+/// # Errors
+///
+/// [`ClientError::ShellWider`] for a wider or uncomparable shell (a
+/// daemon that does not report it, or a client that cannot plan its
+/// own), and the probe's errors.
+async fn check_shell(
+    endpoint: &Endpoint,
+    expected: &Result<ShellConfinement, String>,
+) -> Result<Option<String>, ClientError> {
+    use crate::bootstrap::confinement::{describe_shell, shell_within};
+    let status = super::address::status_of(endpoint).await?;
+    let mine = expected.as_ref().map(describe_shell);
+    match (status.shell, expected) {
+        (Some(daemon), Ok(client)) if daemon == *client => Ok(None),
+        (Some(daemon), Ok(client)) if shell_within(&daemon, client) => Ok(Some(format!(
+            "the daemon's agent shell is narrower than this client's flags ask for: it runs {}, these flags give {}; /daemon stop and attach again to run it with these flags",
+            describe_shell(&daemon),
+            describe_shell(client)
+        ))),
+        (daemon, _) => Err(ClientError::ShellWider {
+            pid: status.pid,
+            daemon: daemon.as_ref().map_or_else(
+                || "a confinement it does not report (an older daemon)".to_string(),
+                describe_shell,
+            ),
+            client: mine.unwrap_or_else(|err| err.clone()),
+        }),
+    }
 }
 
 /// Attach (bound to the agent `attach` asks for), find the agent's
@@ -3498,6 +3552,10 @@ async fn establish(
     saved: Option<&Cursor>,
     attach: &Attach,
 ) -> Result<Established, ClientError> {
+    let shell_notice = match &attach.shell {
+        Some(expected) => check_shell(&endpoint, expected).await?,
+        None => None,
+    };
     let (connection, mut notifications) = Connection::attach_to(
         &endpoint,
         ATTACH_TIMEOUT,
@@ -3593,6 +3651,7 @@ async fn establish(
             usage,
             queued,
             context,
+            shell_notice,
         })
     })
     .await
@@ -3812,6 +3871,7 @@ mod tests {
             agent: AgentChoice::Recent,
             start_token: None,
             user_shell: Err("none".into()),
+            shell: None,
             endpoints: EndpointRegistry::from_endpoints(Vec::new()),
             lister: crate::models::live_lister(),
             ui: crate::config::UiSettings::default(),

@@ -46,6 +46,8 @@ impl Reached {
     pub fn apply(self, config: &mut super::AttachConfig) {
         if self.remote.is_some() {
             config.endpoint_files.clear();
+            // Its paths are another machine's: nothing to compare.
+            config.shell = None;
         }
         config.address = Some(self.endpoint);
         config.remote = self.remote;
@@ -299,6 +301,7 @@ mod tests {
             running: false,
             agent: None,
             agents: Vec::new(),
+            shell: None,
         }
     }
 

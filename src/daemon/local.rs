@@ -208,6 +208,8 @@ pub struct ReportParts {
     pub confinement: String,
     /// `[helpers] max_depth`.
     pub helper_depth: u8,
+    /// The agent shell's confinement (`rkat/status`).
+    pub shell: meerkat_tools::builtin::shell::ShellConfinement,
 }
 
 /// A trust state in words.
@@ -325,6 +327,7 @@ impl Local {
             running: row.is_some_and(|row| row.running != Some(false)),
             agent: caller.agent.clone(),
             agents,
+            shell: Some(self.report.shell.clone()),
         }
     }
 
@@ -479,6 +482,7 @@ impl Local {
             realm_id,
             confinement,
             helper_depth,
+            ..
         } = self.report.clone();
         let rules = realm.join(crate::config::RULES_FILE_NAME);
         let realm_rules = TrustedFile {

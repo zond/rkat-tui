@@ -1140,6 +1140,20 @@ adds `· daemon build <version>+<commit>` to the attached segment and says
 so once in the transcript (`/daemon stop` and attach again runs the new
 build).
 
+**A daemon started with other confinement flags.** The agent's shell
+runs in the daemon, under the confinement the daemon was started with.
+Before attaching, the TUI compares it with what its own flags and
+`tui.toml` layers give (`--confinement`, `--no-confinement`,
+`--confinement-read`/`--confinement-write`): a daemon whose shell may do
+more (unconfined against a confined request, network allowed against
+`strict`, a directory more) is not attached, and the TUI names both
+shells; stop that daemon (`/daemon stop` from a TUI with its flags, or
+SIGTERM to its pid) and attach again to start one with yours, or attach
+with the flags it was started with. A daemon whose shell may do less is
+attached with a warning that names both. A daemon reached with
+`--attach=HOST:PORT` on another machine is not compared (its paths are
+that machine's).
+
 **When the attach fails.** The segment says why, when the TUI tries
 again, and where the daemon's output is, for example `daemon exited (exit
 status: 3) · retry 2s · log ~/.rkat/logs/rkat-tui-mob.log`. A failed first
