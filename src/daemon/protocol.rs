@@ -964,6 +964,10 @@ pub struct ContextReport {
     /// the agent is idle).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<super::context::FamilySize>>,
+    /// The tool definitions its requests leave out until a search reveals
+    /// them, by family, the largest first (`super::deferral`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hidden: Vec<super::context::FamilySize>,
 }
 
 /// [`method::Usage`]'s result.

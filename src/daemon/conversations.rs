@@ -346,6 +346,9 @@ pub struct Conversations {
     /// client switches it).
     model: String,
     auth_binding: Option<meerkat_core::AuthBindingRef>,
+    /// Seats under its gate, so no router reinstalls the engine's default
+    /// mob tools meanwhile ([`super::deferral::Deferral`]).
+    deferral: Option<Arc<super::deferral::Deferral>>,
     /// Tests: how many of the next spawns fail ([`Self::spawn`]).
     #[cfg(any(test, feature = "test-support"))]
     spawn_faults: Option<Arc<std::sync::atomic::AtomicUsize>>,
@@ -390,9 +393,17 @@ impl Conversations {
             seated_tx: tokio::sync::watch::channel(0).0,
             model,
             auth_binding,
+            deferral: None,
             #[cfg(any(test, feature = "test-support"))]
             spawn_faults: None,
         })
+    }
+
+    /// Seat the agents under `deferral`'s gate.
+    #[must_use]
+    pub fn with_deferral(mut self, deferral: Arc<super::deferral::Deferral>) -> Self {
+        self.deferral = Some(deferral);
+        self
     }
 
     /// Fail as many of the next spawns as `faults` holds (each failure
@@ -978,6 +989,10 @@ impl Conversations {
                 resume_from_role: None,
             };
         }
+        let _building = match &self.deferral {
+            Some(deferral) => Some(deferral.building().await),
+            None => None,
+        };
         self.state
             .mob_spawn_spec(mob, spec)
             .await

@@ -20,7 +20,7 @@ the test protocol for working on rkat-tui itself.
 - [Where things live](#where-things-live)
 - [The workspace daemon](#the-workspace-daemon)
 - [Several agents](#several-agents)
-- [Timers and watches](#timers-and-watches) ([Schedules](#schedules), [File watches](#file-watches))
+- [Timers and watches](#timers-and-watches) ([Schedules](#schedules), [Tools an agent reveals](#tools-an-agent-reveals), [File watches](#file-watches))
 
 ## Overview
 
@@ -885,8 +885,10 @@ and whether either is an estimate), the policy `/compact status` prints, and
 what the context holds as the daemon reports it: the system prompt's size,
 the message counts and the tool definitions every model request carries,
 in bytes and tokens per family (the engine's built-in, comms, memory, mob
-and schedule tools, rkat-tui's file, note and watch tools, each MCP
-server's); then the instruction files on disk (`SYSTEM.md`, the workspace
+and schedule tools, rkat-tui's file, note and watch tools and its
+`tool_search` under `catalog`, each MCP server's), and the tools still
+hidden until a search reveals them ([Tools an agent
+reveals](#tools-an-agent-reveals)); then the instruction files on disk (`SYSTEM.md`, the workspace
 and parent `AGENTS.md`, `AGENTS.local.md`). The daemon reads a
 conversation's tool definitions while its agent is idle, so a brand-new
 conversation says "not read yet" until its first turn ends. Sizes in
@@ -1603,7 +1605,9 @@ boundary:
 
 An agent can set itself a timer: the engine's schedule tools
 (`meerkat_schedule_create`, `_get`, `_list`, `_update`, `_pause`,
-`_resume`, `_delete`, `_occurrences`) are among its tools. A schedule is
+`_resume`, `_delete`, `_occurrences`) are among its tools, hidden until it
+searches for them ([Tools an agent reveals](#tools-an-agent-reveals)): its
+persona tells it to search the tool catalog for `schedule`. A schedule is
 one-shot (`"once"`, at a time) or recurring (`"interval"`, every N
 seconds; `"calendar"`, cron-like fields in a time zone), and its target
 is the agent's own session (`"type": "current_session"`) with a prompt.
@@ -1656,20 +1660,55 @@ engine's default misfire policy); a schedule created with
 `"misfire_policy": {"type": "catch_up_within", "window_seconds": N}`
 fires an occurrence that is at most N seconds late instead.
 
-**Limits.** The schedule tools' definitions travel with every model
-request: about 38 KB (roughly 9k tokens; `meerkat_schedule_create`
-and `_update` are 15 KB each), which a model with a small context window
-feels. In all, an agent's request carries about 120 KB of tool
-definitions (roughly 30k tokens: schedule and mob tools about a third
-each, the engine's comms tools a fifth, rkat-tui's own file, note and
-watch tools under 10 KB); a helper's about 40 KB. The engine's deferred
-tool catalog, which would keep rarely used tools out of the request until
-the model searches for them, does not engage for the daemon's agents on
-Meerkat 0.9.13 (`docs/evidence.md`, "Deferrable tools"). The engine's schedules are the workspace realm's: an agent's
+**Limits.** Once revealed, the schedule tools' definitions travel with
+every model request of that conversation: about 38 KB (roughly 9k
+tokens; `meerkat_schedule_create` and `_update` are 15 KB each), which a
+model with a small context window feels; a search for one tool by its
+name reveals just that one. The engine's schedules are the workspace realm's: an agent's
 `meerkat_schedule_list` shows every agent's schedules, and an agent can
 target another agent's session; those calls are reviewed like any other
 schedule change. `/schedules` shows only schedules whose target is your
 agent.
+
+### Tools an agent reveals
+
+Every tool definition an agent declares rides on every model request. So
+two families stay out of a conversation's requests until the agent asks
+for them: the eight schedule tools (38.5 KB) and the engine's agent mob
+tools other than `delegate` (`council`, `fork_off`, `mob_create`,
+`mob_spawn_member`, the `mob_profile_*` tools and the rest, 18 tools,
+29 KB). Every tool stays enabled; what changes is only which ones a
+request declares. A fresh conversation's request carries about 55 KB of
+tool definitions instead of 122 KB (roughly 14k tokens instead of 30k).
+
+`tool_search` finds them: free text (every word must appear in a tool's
+name or description; exact tool names find just those) and/or a family
+(`schedule` or `mob`). It answers each match's name and one-line summary
+and reveals exactly those tools for the conversation: from the agent's
+next step on they are declared with their full schemas and it calls them
+directly. Tools nobody searched for cost nothing. The agent's persona
+names both capabilities in a line each, so a model knows to search.
+`tool_search` is tier 1 in every mode, plan mode included (it only changes
+what the next request declares); a revealed tool's calls pass the gate as
+that tool, exactly as if it had always been declared, and the audit log
+and the transcript name the tool itself.
+
+A conversation keeps what it revealed across a daemon restart, a `/model`
+switch, a compaction and `/resume` (the daemon keeps it in the
+workspace's state, `tui_tools.json`); `/new` starts with nothing revealed.
+Each agent's conversations are their own: what one agent reveals, another
+does not see. A model that calls a hidden tool by name without searching
+gets the engine's "tool not found" (the search tool's description says
+so); it searches and calls again. Helpers get neither hidden family nor
+`tool_search`: a `delegate` helper has no schedule or mob tools at all,
+and a helper allowed to nest keeps the engine's mob tools as they are.
+`/context` lists what the requests carry and, separately, what is hidden,
+by family.
+
+This is rkat-tui's own stand-in for the engine's deferred tool catalog
+(`tool_catalog_search` / `tool_catalog_load`), which does not engage for
+the daemon's agents on Meerkat 0.9.13 (lukacf/meerkat#2180); when it
+does, rkat-tui moves to it (`docs/evidence.md`, "Search and reveal").
 
 ### File watches
 

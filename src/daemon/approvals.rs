@@ -331,6 +331,9 @@ pub struct DaemonToolOrigins {
     /// The TUI's own tools, and the engine-native tools of every catalog
     /// read: what a session not read yet is judged by.
     known: RwLock<ToolCatalog>,
+    /// The deferrable tools an agent may reveal mid-run: judged as what
+    /// they are before the catalog read at the run's end names them.
+    deferrable: Arc<super::deferral::Deferrable>,
 }
 
 impl std::fmt::Debug for DaemonToolOrigins {
@@ -344,8 +347,13 @@ impl std::fmt::Debug for DaemonToolOrigins {
 impl DaemonToolOrigins {
     /// Origins over `service`; `own` are the TUI's tools every session of
     /// the daemon is given (their definitions name their source).
+    /// `deferrable` are the tools an agent may reveal mid-run.
     #[must_use]
-    pub fn new(service: Arc<dyn MobSessionService>, own: &[Arc<dyn AgentToolDispatcher>]) -> Self {
+    pub fn new(
+        service: Arc<dyn MobSessionService>,
+        own: &[Arc<dyn AgentToolDispatcher>],
+        deferrable: Arc<super::deferral::Deferrable>,
+    ) -> Self {
         let defs: Vec<_> = own
             .iter()
             .flat_map(|dispatcher| {
@@ -361,6 +369,7 @@ impl DaemonToolOrigins {
             cache: RwLock::new(indexmap::IndexMap::new()),
             sizes: RwLock::new(indexmap::IndexMap::new()),
             known: RwLock::new(ToolCatalog::from_defs(&defs)),
+            deferrable,
         }
     }
 
@@ -442,23 +451,30 @@ impl DaemonToolOrigins {
         session: &SessionId,
         name: &str,
     ) -> Option<crate::approval::catalog::ToolOrigin> {
-        match self.cache.read().get(session) {
+        let known = match self.cache.read().get(session) {
             Some(catalog) => catalog.get(name).cloned(),
             None => self.known.read().get(name).cloned(),
-        }
+        };
+        known.or_else(|| {
+            let mut deferrable = ToolCatalog::default();
+            deferrable.add_missing(self.deferrable.all().iter().map(AsRef::as_ref));
+            deferrable.get(name).cloned()
+        })
     }
 }
 
 #[async_trait]
 impl ToolOrigins for DaemonToolOrigins {
     async fn catalog(&self, session_id: &SessionId) -> Option<ToolCatalog> {
-        Some(
-            self.cache
-                .read()
-                .get(session_id)
-                .cloned()
-                .unwrap_or_else(|| self.known.read().clone()),
-        )
+        let mut catalog = self
+            .cache
+            .read()
+            .get(session_id)
+            .cloned()
+            .unwrap_or_else(|| self.known.read().clone());
+        // A tool revealed in this run is in no catalog read yet.
+        catalog.add_missing(self.deferrable.all().iter().map(AsRef::as_ref));
+        Some(catalog)
     }
 }
 

@@ -32,6 +32,7 @@ pub mod audit;
 pub mod context;
 pub mod conversations;
 pub mod decisions;
+pub mod deferral;
 pub mod endpoint;
 pub mod engine;
 pub mod handshake;
@@ -561,7 +562,8 @@ impl Daemon {
             &composed.scope.realm_root(),
             composed.root.model.clone(),
             composed.root.auth_binding.clone(),
-        )?;
+        )?
+        .with_deferral(Arc::clone(&composed.deferral));
         #[cfg(any(test, feature = "test-support"))]
         let conversations = conversations.with_spawn_faults(options.spawn_faults.clone());
         let conversations = Arc::new(conversations);
@@ -669,6 +671,7 @@ impl Daemon {
             agents: Arc::clone(&agents),
             registry: Arc::clone(&composed.root.registry),
             origins: Arc::clone(&composed.origins),
+            deferral: Arc::clone(&composed.deferral),
             desk: Arc::clone(&composed.desk),
             thinking: composed.thinking.clone(),
             project: composed.project_inputs.clone(),
@@ -776,6 +779,7 @@ impl Daemon {
         testing::EngineSide {
             runtime: Arc::downgrade(&self.runtime),
             config_store: Arc::downgrade(&self.config_store),
+            deferral: Arc::downgrade(self.local.deferral()),
         }
     }
 
@@ -931,6 +935,7 @@ pub mod testing {
     pub struct EngineSide {
         pub(super) runtime: Weak<SessionRuntime>,
         pub(super) config_store: Weak<dyn ConfigStore>,
+        pub(super) deferral: Weak<super::deferral::Deferral>,
     }
 
     impl EngineSide {
@@ -942,17 +947,23 @@ pub mod testing {
         /// The engine's error, or why the call could not be made (the
         /// daemon stopped).
         pub async fn call(&self, method: &str, params: Value) -> Result<Value, String> {
-            let (Some(runtime), Some(config_store)) =
-                (self.runtime.upgrade(), self.config_store.upgrade())
-            else {
+            let (Some(runtime), Some(config_store), Some(deferral)) = (
+                self.runtime.upgrade(),
+                self.config_store.upgrade(),
+                self.deferral.upgrade(),
+            ) else {
                 return Err("the daemon stopped".to_string());
             };
-            let router = meerkat_rpc::router::MethodRouter::new(
-                Arc::clone(&runtime),
-                config_store,
-                meerkat_rpc::router::NotificationSink::noop(),
-            )
-            .map_err(|err| err.to_string())?;
+            let router = deferral
+                .with_router(&runtime, || {
+                    meerkat_rpc::router::MethodRouter::new(
+                        Arc::clone(&runtime),
+                        config_store,
+                        meerkat_rpc::router::NotificationSink::noop(),
+                    )
+                })
+                .await
+                .map_err(|err| err.to_string())?;
             let request = serde_json::from_value(serde_json::json!({
                 "jsonrpc": "2.0", "id": 1, "method": method, "params": params,
             }))

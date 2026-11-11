@@ -27,6 +27,7 @@ use meerkat_core::{
     ToolSourceKind,
 };
 
+use crate::daemon::deferral::reveal::{TOOL_SEARCH, TOOL_SEARCH_SOURCE};
 use crate::memory::{NOTE_FORGET, NOTE_LIST, NOTE_READ, NOTE_SAVE, NOTES_SOURCE};
 use crate::tools::{
     EDIT_FILE, FILE_TOOLS_SOURCE, GLOB, GREP, READ_FILE, UNWATCH, WATCH_PATHS, WATCH_TOOLS_SOURCE,
@@ -117,7 +118,8 @@ impl ToolOrigin {
             | ToolSourceKind::Mob => ToolFamily::Native,
             ToolSourceKind::Callback
                 if provenance.source_id.as_str() == FILE_TOOLS_SOURCE
-                    || provenance.source_id.as_str() == WATCH_TOOLS_SOURCE =>
+                    || provenance.source_id.as_str() == WATCH_TOOLS_SOURCE
+                    || provenance.source_id.as_str() == TOOL_SEARCH_SOURCE =>
             {
                 ToolFamily::Files
             }
@@ -134,7 +136,7 @@ impl ToolOrigin {
 /// The mutation class the TUI declares for its own tools.
 fn tui_mutation(name: &str) -> ToolMutationClass {
     match name {
-        READ_FILE | GLOB | GREP | NOTE_LIST | NOTE_READ | WATCH_PATHS | UNWATCH => {
+        READ_FILE | GLOB | GREP | NOTE_LIST | NOTE_READ | WATCH_PATHS | UNWATCH | TOOL_SEARCH => {
             ToolMutationClass::ReadOnly
         }
         WRITE_FILE | EDIT_FILE | NOTE_SAVE | NOTE_FORGET => ToolMutationClass::Mutating,
@@ -182,6 +184,17 @@ impl ToolCatalog {
             }
             let origin = ToolOrigin::declared(&name, Some(provenance.clone()));
             self.tools.insert(name, origin);
+        }
+    }
+
+    /// Add every one of `defs` this catalog does not name yet, with the
+    /// owner its definition declares (the deferrable tools a session may
+    /// reveal mid-run, `crate::daemon::deferral`).
+    pub fn add_missing<'a>(&mut self, defs: impl IntoIterator<Item = &'a ToolDef>) {
+        for def in defs {
+            let name = def.name.to_string();
+            let origin = ToolOrigin::declared(&name, def.provenance.clone());
+            self.tools.entry(name).or_insert(origin);
         }
     }
 

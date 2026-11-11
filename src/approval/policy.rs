@@ -407,6 +407,14 @@ impl<'a> Action<'a> {
             {
                 ActionKind::ReadOnlyBuiltin
             }
+            // A search of the hidden tools only changes which tools the
+            // agent's next request declares; each revealed tool's calls
+            // pass this gate as that tool (`crate::daemon::deferral`).
+            (ToolFamily::Files, crate::daemon::deferral::reveal::TOOL_SEARCH)
+                if !declared_mutating =>
+            {
+                ActionKind::ReadOnlyBuiltin
+            }
             (ToolFamily::Files, READ_FILE) if !declared_mutating => typed::<PathArgs>(args)
                 .map_or(ActionKind::Other, |a| ActionKind::FileRead { path: a.path }),
             (ToolFamily::Files, GLOB | GREP) if !declared_mutating => typed::<SearchArgs>(args)

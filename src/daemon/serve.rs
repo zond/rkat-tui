@@ -391,15 +391,23 @@ async fn connection(
     let (server_read, server_write) = tokio::io::split(engine_side);
     // Aborted with this task (a shutdown aborts the connections), so the
     // client sees its socket close.
+    let deferral = Arc::clone(local.deferral());
     let _proxied = AbortOnDrop(tokio::spawn(proxy(
         reader, write, proxy_side, local, caller,
     )));
-    let mut server = match RpcServer::new(
-        BufReader::new(server_read),
-        server_write,
-        runtime,
-        config_store,
-    ) {
+    // Its router installs the engine's default mob tools factory; the
+    // agents' is installed again before any agent is built.
+    let made = deferral
+        .with_router(&Arc::clone(&runtime), move || {
+            RpcServer::new(
+                BufReader::new(server_read),
+                server_write,
+                runtime,
+                config_store,
+            )
+        })
+        .await;
+    let mut server = match made {
         Ok(server) => server,
         Err(err) => {
             tracing::warn!(%peer, error = %err, "cannot serve the client");

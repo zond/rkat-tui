@@ -147,6 +147,25 @@ impl Running {
         }
     }
 
+    /// The agents' hidden tools and their reveals.
+    #[allow(dead_code)]
+    pub fn deferral(&self) -> Arc<rkat_tui::daemon::deferral::Deferral> {
+        Arc::clone(self.local.upgrade().expect("the daemon runs").deferral())
+    }
+
+    /// Reveal `names` for `session` as a `tool_search` would (tests about
+    /// the revealed tools themselves, not about finding them:
+    /// `tests/deferral.rs` covers the search).
+    #[allow(dead_code)]
+    pub async fn reveal(&self, session: &meerkat_core::SessionId, names: &[&str]) {
+        let names: Vec<String> = names.iter().map(ToString::to_string).collect();
+        self.deferral()
+            .reveals
+            .reveal(session, &names)
+            .await
+            .expect("the reveal is written");
+    }
+
     /// How many `method` requests the clients sent the engine through the
     /// daemon's proxy so far.
     pub fn forwarded(&self, method: &str) -> usize {

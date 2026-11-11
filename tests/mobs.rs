@@ -596,6 +596,9 @@ async fn a_read_only_profile_with_comms_gets_the_agent_a_note() {
         Step::Text("next"),
     ]);
     let mut rig = Attached::start(&ws.root, &llm).await;
+    // Revealed as a `tool_search` would (`tests/deferral.rs`).
+    let session = rig.current_session().await;
+    rig.daemon.reveal(&session, &["mob_profile_create"]).await;
     rig.send(Effect::StartTurn("make a reviewer profile".into()));
     rig.turn_finished().await;
     rig.send(Effect::StartTurn("go on".into()));

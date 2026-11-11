@@ -59,6 +59,15 @@ fn script() -> Arc<ScriptedLlmClient> {
     ScriptedLlmClient::new(vec![step; 40])
 }
 
+/// Reveal the mob tools the script calls (`tests/deferral.rs` covers
+/// finding them).
+async fn reveal(rig: &Attached) {
+    let session = rig.current_session().await;
+    rig.daemon
+        .reveal(&session, &["mob_create", "mob_spawn_member", "mob_destroy"])
+        .await;
+}
+
 /// The mob `team`'s database.
 fn database(ws: &Workspace) -> PathBuf {
     rkat_tui::bootstrap::resolve_scope(&common::args_with(&ws.root, &[]))
@@ -91,6 +100,7 @@ async fn the_agent_destroys_a_mob_it_made_and_its_database_goes() {
     let ws = Workspace::new();
     let llm = script();
     let mut rig = Attached::start(&ws.root, &llm).await;
+    reveal(&rig).await;
     rig.send(Effect::StartTurn("make".into()));
     assert_eq!(rig.turn_finished().await.result.unwrap().text, "made");
     assert!(database(&ws).exists());
@@ -107,6 +117,7 @@ async fn a_mob_restored_by_a_later_daemon_is_destroyed_with_its_database() {
     let ws = Workspace::new();
     let llm = script();
     let mut rig = Attached::start(&ws.root, &llm).await;
+    reveal(&rig).await;
     rig.send(Effect::StartTurn("make".into()));
     assert_eq!(rig.turn_finished().await.result.unwrap().text, "made");
     // The member's first turn ended before the daemon stops.
@@ -121,6 +132,7 @@ async fn a_mob_restored_by_a_later_daemon_is_destroyed_with_its_database() {
 
     let llm = script();
     let mut rig = Attached::start(&ws.root, &llm).await;
+    reveal(&rig).await;
     rig.send(Effect::StartTurn("destroy".into()));
     assert_eq!(rig.turn_finished().await.result.unwrap().text, "gone");
     let answer = destroyed(&llm);

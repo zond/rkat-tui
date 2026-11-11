@@ -62,6 +62,17 @@ fn at_call(id: &'static str, name: &'static str, in_secs: i64, prompt: &'static 
     }))
 }
 
+/// Reveal the schedule tools for `session` as a `tool_search` would
+/// (`tests/deferral.rs` covers finding them).
+async fn reveal(daemon: &Running, session: &meerkat_core::SessionId) {
+    daemon
+        .reveal(
+            session,
+            &["meerkat_schedule_create", "meerkat_schedule_list"],
+        )
+        .await;
+}
+
 /// Whether `m` says the run was fired by schedule `name`.
 fn fired_by(m: &Msg, name: &str) -> bool {
     matches!(m, Msg::Triggered { label, .. } if label == &format!("scheduled: {name}"))
@@ -91,6 +102,7 @@ async fn a_schedule_the_agent_creates_fires_its_turn() {
         Step::Text("checked"),
     ]);
     let mut rig = Attached::start(&ws.root, &llm).await;
+    reveal(&rig.daemon, &rig.current_session().await).await;
     rig.send(Effect::StartTurn("remind me".into()));
     let outcome = rig.turn_finished().await;
     assert_eq!(outcome.result.unwrap().text, "scheduled");
@@ -156,6 +168,7 @@ async fn creating_a_schedule_asks_in_manual_mode() {
         Step::Text("not scheduled"),
     ]);
     let mut rig = Attached::start(&ws.root, &llm).await;
+    reveal(&rig.daemon, &rig.current_session().await).await;
     rig.set_mode(PermissionMode::Manual).await;
     rig.send(Effect::StartTurn("schedule the nightly checks".into()));
     let (prompt, id) = rig.escalation().await;
@@ -211,6 +224,7 @@ async fn a_fired_schedule_is_unattended_while_nobody_is_attached() {
     let setup = rig::Setup::default().classifier(Arc::clone(&classifier) as _);
     let args = setup.command_line(&ws.root);
     let daemon = Running::start_with(&args, setup.options(&ws.root, &llm)).await;
+    reveal(&daemon, &daemon.session).await;
     let mut a = rig::Client::attach(&ws.root).await;
     let agent = a.agent().await;
     a.send(Effect::StartTurn("schedule a fetch".into()));
@@ -279,6 +293,8 @@ async fn a_retiring_agent_s_schedules_are_deleted_and_never_fire() {
     let daemon = Running::start(&ws.root, &llm).await;
     let mut a = rig::Client::attach(&ws.root).await;
     let mut b = rig::Client::attach_agent(&ws.root, AgentChoice::New).await;
+    let b_session = daemon.session_of(&b.agent().await).await;
+    reveal(&daemon, &b_session).await;
     b.send(Effect::StartTurn("wake me later".into()));
     assert_eq!(b.turn_finished().await.result.unwrap().text, "scheduled");
     // Created during that turn: due no earlier than 8 s from its start.

@@ -67,10 +67,27 @@ async fn every_offered_builtin_is_classified_and_memory_search_is_tier_one() {
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![Step::Text("ok")]);
     let mut rig = Attached::start(&ws.root, &llm).await;
+    // Every hidden tool revealed, so the request offers every tool.
+    let session = rig.current_session().await;
+    let hidden: Vec<String> = rig
+        .daemon
+        .deferral()
+        .deferrable
+        .all()
+        .iter()
+        .map(|def| def.name.to_string())
+        .collect();
+    assert!(hidden.len() >= 26, "{hidden:?}");
+    let hidden: Vec<&str> = hidden.iter().map(String::as_str).collect();
+    rig.daemon.reveal(&session, &hidden).await;
     rig.send(Effect::StartTurn("hi".into()));
     rig.turn_finished().await;
     let tools = llm.recorded()[0].tools.clone();
     assert!(tools.iter().any(|t| t == "memory_search"), "{tools:?}");
+    assert!(
+        tools.iter().any(|t| t == "meerkat_schedule_create"),
+        "{tools:?}"
+    );
 
     let root = ProjectRoot::new(&ws.root).unwrap();
     let ctx = PolicyContext {
@@ -87,6 +104,7 @@ async fn every_offered_builtin_is_classified_and_memory_search_is_tier_one() {
             || FILE_TOOLS.contains(&name.as_str())
             || NOTE_TOOL_NAMES.contains(&name.as_str())
             || [rkat_tui::tools::WATCH_PATHS, rkat_tui::tools::UNWATCH].contains(&name.as_str())
+            || name == rkat_tui::daemon::deferral::reveal::TOOL_SEARCH
             // Mutating mob tools (the read-only ones are listed).
             || name.starts_with("mob_");
         if !known {
@@ -99,6 +117,18 @@ async fn every_offered_builtin_is_classified_and_memory_search_is_tier_one() {
             assert_eq!(tier, Tier::AlwaysAllow, "{name}");
         }
     }
+    // The search is tier 1, judged with rkat-tui's own tools.
+    let args = serde_json::value::RawValue::from_string("{}".to_string()).unwrap();
+    let origin = ToolOrigin::tui(
+        rkat_tui::daemon::deferral::reveal::TOOL_SEARCH_SOURCE,
+        rkat_tui::daemon::deferral::reveal::TOOL_SEARCH,
+    );
+    let action = Action::parse(
+        rkat_tui::daemon::deferral::reveal::TOOL_SEARCH,
+        &args,
+        Some(&origin),
+    );
+    assert_eq!(classify_tier(&action, &rules, &ctx).tier, Tier::AlwaysAllow);
     assert!(
         unclassified.is_empty(),
         "classify these offered tools in READ_ONLY_BUILTINS or REVIEWED_BUILTINS: {unclassified:?}"

@@ -109,6 +109,12 @@ async fn a_two_member_council_completes_with_its_participants_as_helpers() {
     let classifier = ScriptedClassifier::allowing(Vec::new());
     let setup = Setup::default().classifier(Arc::clone(&classifier) as _);
     let mut rig = Attached::start_with(&ws.root, &llm, setup).await;
+    // The mob tools the script calls (`tests/deferral.rs` covers finding
+    // them).
+    let session = rig.current_session().await;
+    rig.daemon
+        .reveal(&session, &["mob_create", "mob_spawn_member", "council"])
+        .await;
     rig.send(Effect::StartTurn("convene".into()));
     rig.turn_finished().await;
 

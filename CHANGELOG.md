@@ -30,6 +30,23 @@
   remote such as `https://user:token@host/x.git` reaches it (and the
   realm's manifest) without the user information, query or fragment.
 
+### Added
+
+- `tool_search`: an agent's requests leave out the eight schedule tools
+  and every agent mob tool but `delegate` (`council`, `fork_off`,
+  `mob_create`, `mob_spawn_member`, the `mob_profile_*` tools, …) until
+  the agent searches for them; a search reveals exactly its matches for
+  that conversation, declared with their full schemas from the next step
+  on. A fresh conversation's requests carry about 55 KB of tool
+  definitions instead of 122 KB (roughly 14k tokens instead of 30k). The
+  persona names both capabilities in a line each; the search is tier 1
+  in every mode, and a revealed tool passes the gate as itself. A
+  conversation keeps its reveals across restarts, `/model`, compaction
+  and `/resume` (`tui_tools.json` in the workspace's state); `/new`
+  starts with none. `/context` lists the hidden tools by family. Helpers
+  get neither the hidden tools nor the search. Schedule tools stay on for
+  every agent.
+
 ### Removed
 
 - The shared-realm flags `--realm`, `--state-root`, `--realm-backend` and

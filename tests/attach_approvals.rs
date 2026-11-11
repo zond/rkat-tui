@@ -1185,6 +1185,8 @@ async fn a_fork_off_child_runs_behind_the_gate() {
     }));
     let llm = ScriptedLlmClient::new(vec![step.clone(), step.clone(), step.clone(), step]);
     let daemon = start(&ws.root, &llm, &Setup::default()).await;
+    // Revealed as a `tool_search` would (`tests/deferral.rs`).
+    daemon.reveal(&daemon.session, &["fork_off"]).await;
     let mut client = attach(&ws.root).await;
     client.set_mode(PermissionMode::Manual).await;
     client.send(Effect::StartTurn("fork a child".into()));

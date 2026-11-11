@@ -269,9 +269,11 @@ fn shape_root(
         spec.external_tools = Some((root.tools)(&key.member));
     }
     inherit_shell_env(spec, shell_env);
-    // The schedule tools: also for an agent whose mob was created before
-    // its profile named them (the mob keeps its creation definition).
-    spec.tool_category_overrides.schedule = meerkat_core::ToolCategoryOverride::Enable;
+    // The engine's schedule category stays off, also for an agent whose
+    // mob was created when its profile named it (the mob keeps its creation
+    // definition): an agent's schedule tools come with its mob tools
+    // (`crate::daemon::deferral::AgentTools`).
+    spec.tool_category_overrides.schedule = meerkat_core::ToolCategoryOverride::Disable;
     if fresh {
         spec.additional_instructions
             .get_or_insert_with(Vec::new)
@@ -476,20 +478,12 @@ fn shape(
 /// fork child is a helper one level deeper).
 fn deny_tools(spec: &mut SpawnMemberSpec, also: &[&str], gated_fork_off: bool) {
     use meerkat_core::ops::{ToolAccessConstraint, ToolAccessPolicy};
-    let ToolAccessPolicy::DenyList(mut denied) = tool_access_policy() else {
+    let Some(denied) = denied_names(also, gated_fork_off) else {
         // The TUI policy is a deny list; anything else is a programming
         // error that must not widen a helper's tools.
         spec.tool_access_policy = Some(tool_access_policy());
         return;
     };
-    for name in also {
-        denied.insert((*name).to_string());
-    }
-    if gated_fork_off && also.is_empty() {
-        for name in DENIED_SPAWN_TOOLS {
-            denied.remove(name);
-        }
-    }
     spec.tool_access_policy = Some(match spec.tool_access_policy.take() {
         None | Some(ToolAccessPolicy::Inherit) => ToolAccessPolicy::DenyList(denied),
         Some(ToolAccessPolicy::DenyList(mut names)) => {
@@ -512,6 +506,34 @@ fn deny_tools(spec: &mut SpawnMemberSpec, also: &[&str], gated_fork_off: bool) {
             ToolAccessPolicy::Constraints(constraints)
         }
     });
+}
+
+/// The names [`deny_tools`] denies (`None`: [`tool_access_policy`] is not a
+/// deny list).
+fn denied_names(also: &[&str], gated_fork_off: bool) -> Option<meerkat_core::ToolNameSet> {
+    let meerkat_core::ops::ToolAccessPolicy::DenyList(mut denied) = tool_access_policy() else {
+        return None;
+    };
+    for name in also {
+        denied.insert((*name).to_string());
+    }
+    if gated_fork_off && also.is_empty() {
+        for name in DENIED_SPAWN_TOOLS {
+            denied.remove(name);
+        }
+    }
+    Some(denied)
+}
+
+/// The tool access policy the daemon's agents are built with
+/// ([`shape_root`] with `fork_off` gated): what a scheduled helper target
+/// one of them creates inherits.
+#[must_use]
+pub fn agent_tool_access_policy() -> meerkat_core::ops::ToolAccessPolicy {
+    denied_names(&[], true).map_or_else(
+        tool_access_policy,
+        meerkat_core::ops::ToolAccessPolicy::DenyList,
+    )
 }
 
 /// Keep the mob tools out of a helper's tool list: the deny list refuses

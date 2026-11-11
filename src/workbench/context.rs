@@ -124,7 +124,7 @@ pub fn context_breakdown(
         };
         let _ = write!(out, "\n  {}: {} — {size}", file.label, file.path.display());
     }
-    match report.map(|report| report.tools.as_deref()) {
+    match report.as_ref().map(|report| report.tools.as_deref()) {
         Ok(Some(families)) => {
             let bytes: usize = families.iter().map(|family| family.bytes).sum();
             let tools: usize = families.iter().map(|family| family.tools).sum();
@@ -149,6 +149,28 @@ pub fn context_breakdown(
             "\ntool definitions: not read yet (the daemon reads them while the agent is idle)",
         ),
         Err(_) => out.push_str("\ntool definitions: unknown"),
+    }
+    if let Ok(report) = report
+        && !report.hidden.is_empty()
+    {
+        let bytes: usize = report.hidden.iter().map(|family| family.bytes).sum();
+        let tools: usize = report.hidden.iter().map(|family| family.tools).sum();
+        let _ = write!(
+            out,
+            "\nhidden until tool_search reveals them (no request carries them): {bytes} bytes ({}) in {tools} tools",
+            approx_tokens(bytes)
+        );
+        for family in &report.hidden {
+            let _ = write!(
+                out,
+                "\n  {}: {} tool{}, {} bytes ({})",
+                family.family.name(),
+                family.tools,
+                if family.tools == 1 { "" } else { "s" },
+                family.bytes,
+                approx_tokens(family.bytes)
+            );
+        }
     }
     out
 }
@@ -182,6 +204,11 @@ mod tests {
                     bytes: 400,
                 },
             ]),
+            hidden: vec![FamilySize {
+                family: ToolFamily::Mob,
+                tools: 18,
+                bytes: 29_000,
+            }],
         };
         let files = [
             InstructionFile {
@@ -227,8 +254,13 @@ mod tests {
             text.contains("files: 1 tool, 400 bytes (~100 tokens)"),
             "{text}"
         );
+        assert!(
+            text.contains("hidden until tool_search reveals them (no request carries them): 29000 bytes (~7.2k tokens) in 18 tools\n  mob: 18 tools, 29000 bytes"),
+            "{text}"
+        );
         let unread = ContextReport {
             tools: None,
+            hidden: Vec::new(),
             ..report
         };
         let text = context_breakdown("h", Ok(&unread), &[]);

@@ -90,6 +90,7 @@ pub struct Local {
     agents: Arc<Agents>,
     registry: Arc<HelperRegistry>,
     origins: Arc<DaemonToolOrigins>,
+    deferral: Arc<super::deferral::Deferral>,
     desk: Arc<Desk>,
     thinking: ThinkingTable,
     /// Which agents were told plan mode is on (an agent missing was told
@@ -141,6 +142,8 @@ pub struct LocalParts {
     pub registry: Arc<HelperRegistry>,
     /// The members' tool catalogs the gate reads.
     pub origins: Arc<DaemonToolOrigins>,
+    /// The agents' hidden tools and their reveals.
+    pub deferral: Arc<super::deferral::Deferral>,
     /// The daemon's approval desk.
     pub desk: Arc<Desk>,
     /// The `[thinking]` settings a model switch carries.
@@ -214,6 +217,7 @@ impl Local {
             agents,
             registry,
             origins,
+            deferral,
             desk,
             thinking,
             project,
@@ -243,6 +247,7 @@ impl Local {
             agents,
             registry,
             origins,
+            deferral,
             desk,
             thinking,
             plan_noted: tokio::sync::Mutex::new(noted),
@@ -307,6 +312,12 @@ impl Local {
     #[must_use]
     pub fn registry(&self) -> &Arc<HelperRegistry> {
         &self.registry
+    }
+
+    /// The agents' hidden tools and their reveals.
+    #[must_use]
+    pub fn deferral(&self) -> &Arc<super::deferral::Deferral> {
+        &self.deferral
     }
 
     /// The live agents.
@@ -489,6 +500,7 @@ impl Local {
                 Ok(protocol::ContextReport {
                     messages: super::context::MessageCounts::of(&messages),
                     tools: self.origins.sizes(&session_id),
+                    hidden: self.deferral.hidden(&session_id),
                     session_id,
                 })
             };

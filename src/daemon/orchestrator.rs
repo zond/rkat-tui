@@ -77,7 +77,10 @@ pub fn main_profile(plan: &RootPlan) -> Option<meerkat_mob::Profile> {
             profile.tools.shell = true;
             profile.tools.comms = true;
             profile.tools.mob = true;
-            profile.tools.schedule = true;
+            // The schedule tools come with the mob tools, per session
+            // (`super::deferral::AgentTools`): the engine's category would
+            // compose them from the runtime's slot every agent shares.
+            profile.tools.schedule = false;
             profile.tools.memory = plan.memory;
             profile.tools.mcp_servers.clone_from(&plan.mcp_servers);
             // The `[thinking]` of the start-up model; a rebuild re-applies

@@ -100,6 +100,9 @@ pub struct Composed {
     pub ledger: Arc<super::usage::Ledger>,
     /// The members' tool catalogs.
     pub origins: Arc<DaemonToolOrigins>,
+    /// The tools the agents' requests leave out until searched for, and
+    /// each conversation's reveals.
+    pub deferral: Arc<super::deferral::Deferral>,
     /// The agents' file watches.
     pub watches: Arc<super::watches::Watches>,
     /// Their batches of changes, to deliver to the agents.
@@ -227,9 +230,19 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     // the same ones).
     let catalog = agent_tools(&scope, &notes, None, None)?;
     let engine = Arc::clone(&approval.engine);
+    // The tools an agent's requests leave out until it searches for them,
+    // and each conversation's reveals.
+    let deferrable = Arc::new(super::deferral::Deferrable::new());
+    let reveals = Arc::new(super::deferral::reveal::Reveals::new(&realm_root));
+    let search = Arc::new(super::deferral::reveal::SearchTool::new(
+        meerkat_core::SessionId::new(),
+        Arc::clone(&reveals),
+        Arc::clone(&deferrable),
+    ));
     let origins = Arc::new(DaemonToolOrigins::new(
         runtime.session_service(),
-        &[catalog],
+        &[catalog, search],
+        Arc::clone(&deferrable),
     ));
     engine.set_tool_origins(Arc::clone(&origins) as Arc<dyn crate::approval::ToolOrigins>);
     // A forgotten session's catalog goes with it.
@@ -333,6 +346,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
             let mut sections = vec![
                 CODING_PERSONA.to_string(),
                 crate::bootstrap::persona::agents_persona(identity.as_str()),
+                super::deferral::PERSONA.to_string(),
             ];
             sections.extend(instructions.render());
             sections.extend(prompt_index(
@@ -426,9 +440,14 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     // it on the first connection, which is after the orchestrator's spawn:
     // without this its build mounts only the operator family
     // (`spawn_member`, …) and no `delegate`.
-    runtime.set_mob_tools(Arc::new(meerkat_mob_mcp::AgentMobToolSurfaceFactory::new(
-        Arc::clone(&state),
-    )));
+    //
+    // The daemon's factory: an agent's build also gets its schedule tools
+    // there, and both families are hidden until its conversation reveals
+    // them ([`super::deferral`]). Every router installs the engine's
+    // default factory, so the host's own router is made first and the
+    // daemon's installed after it (and after every connection's, see
+    // `Deferral::with_router`).
+    //
     // The host's own router: the one entry a client's `decision/decide`
     // reaches the decision owner through (`dispatch_with_decision_event`,
     // which plain dispatch has no route for). Built after the mob state, so
@@ -438,6 +457,15 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         Arc::clone(&config_store),
         NotificationSink::noop(),
     )?;
+    let deferral = Arc::new(super::deferral::Deferral::new(
+        Arc::new(meerkat_mob_mcp::AgentMobToolSurfaceFactory::new(
+            Arc::clone(&state),
+        )),
+        runtime.schedule_service(),
+        deferrable,
+        reveals,
+    ));
+    deferral.install(&runtime);
     let decisions = Decisions::new(decision_service, principal, Some(Arc::new(router)))
         .map_err(DaemonError::Approval)?;
     let decisions_task = decisions.follow();
@@ -526,6 +554,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         destroyed_task,
         ledger,
         origins,
+        deferral,
         watches,
         watch_batches,
         thinking,

@@ -7179,3 +7179,115 @@ from the same single subscription per helper. Tests:
 binding), with `mobs::a_helpers_owner_survives_a_restart_until_it_retires`,
 `pushes::a_delegate_helper_is_followed_from_its_first_event_without_listing_mobs`
 and the councils' and helpers' rig tests unchanged.
+
+## Search and reveal (batch 4 of senior review 3, 2026-11-11)
+
+The owner's design after the probe above: rkat-tui defers tools itself
+until the engine's native deferral engages (lukacf/meerkat#2180). Every
+tool stays enabled; a request declares the direct tools plus one search
+tool, `tool_search`, and a search reveals exactly its matches for the
+conversation from its next model request on.
+
+**What was established first, on the rig.** The engine reads a
+dispatcher's `tools()` at every model-call boundary
+(`apply_calling_llm_tool_scope` in `meerkat-core` `agent/state.rs`
+projects `self.tools.tools()` each time; `DynamicToolComposite` and
+`ToolGateway` ask their children every time), so a list that grows
+mid-session is declared at the next request, for both families:
+`deferral::a_search_reveals_its_matches_and_the_schedule_fires` asserts
+the request after a search carries exactly the revealed
+`meerkat_schedule_create` and, in a later turn, `council`. The variant
+that shipped is therefore the growing list, not the proxy pair (search +
+call-by-name), and the gate needs no unwrapping: a revealed tool is
+called and judged as itself.
+
+**Per conversation, not per daemon.** The runtime's schedule slot
+(`SessionRuntime::builder_schedule_tools_slot`) is shared by every agent
+of the daemon and its dispatcher's `tools()` has no session to key on
+(the engine's per-session `CurrentSessionScheduleToolDispatcher` above it
+derives its list from the inner catalog, again without a session). The
+mob tools factory, though, is called once per session build with the
+session (`MobToolsBuildArgs::session_id`) and the member's comms name
+(`tui/main/main-<id>`). So the agents' profile turns the engine's
+schedule category off (`main_profile`, and `ToolCategoryOverride::Disable`
+in `shape_root` for a mob whose stored definition still names it) and
+the daemon's factory (`daemon::deferral::AgentTools`) composes, for an
+agent's session only, the agent mob surface and the schedule tools the
+engine would have composed (`CurrentSessionScheduleToolDispatcher` over
+`ScheduleToolDispatcher::new(runtime.schedule_service())` with
+`MobMemberCurrentSessionScheduleResolver` for the member's binding and
+the agents' tool access policy as the creator's), each behind `Hiding`
+(its tools but the direct ones listed only when the session revealed
+them), plus the search tool. Schedules keep firing, survive a restart and
+`/new` (a schedule targets the member's resumable identity, as before);
+helpers and every other member get `inner`'s surface unchanged, so a
+`delegate` helper still has no schedule or mob tools and no search.
+
+**The engine's routers overwrite the factory.** Every `MethodRouter`
+(`new`, `new_on_connection`, `new_with_mob_state`, so every
+`RpcServer::new`, one per client connection) calls `set_mob_tools` with
+the engine's default `AgentMobToolSurfaceFactory`. The first rig run
+showed it: the factory installed at composition was never called, the
+host's own decision router had replaced it. A build reads the slot when
+it starts (`FactoryAgentBuilder`, `default_mob_tools`), so an agent seated
+right after a connection would have had every mob tool, no schedule tools
+and no search. `Deferral::with_router` makes each router and installs the
+daemon's factory again under a write lock; `Conversations::spawn` (the one
+place the daemon seats an agent) holds the read side. Engine-internal
+rebuilds of an agent outside the daemon's seats are not covered; none is
+known in this composition.
+
+**What a guessed name gets.** The engine refuses a call to a tool the
+request did not declare before any dispatcher or the gate sees it
+(`precheck_visible_tool_call`: not visible, and with an inexact catalog
+not known by `tools()`, so `ToolError::NotFound`, "Tool not found:
+<name>"). A host cannot run it or answer differently there (only a
+`PreToolExecution` hook could, and rkat-tui installs none). So the search
+tool's description says that a hidden tool called without searching is
+not found, and nothing is revealed by the refusal:
+`deferral::a_guessed_hidden_tool_is_not_found_until_searched`.
+
+**The reveal state.** By session in `<realm>/tui_tools.json`
+(`reveal::Reveals`, written atomically before the search answers, read
+once per daemon off the async loop). A daemon restart, a reseat, a
+compaction and `/resume` keep the session id, so they keep its reveals;
+`/new` is a new session with none. The gate's forget hook is not used for
+it: it fires when an agent leaves a conversation, which stays resumable
+(the first version lost the reveal on `/new` then `/resume`).
+
+**The gate, `/context`, the persona.** `tool_search` is a callback tool
+of rkat-tui's own source, judged with the file family as read-only
+(`ActionKind::ReadOnlyBuiltin`, tier 1 in every mode, plan mode
+included). The catalog the gate reads at a run's end lacks a tool
+revealed during that run, so `DaemonToolOrigins::catalog` adds every
+deferrable tool's declared provenance (`Deferrable`, noted at each agent
+build) to what it answers: a revealed tool is judged by its family,
+rules and tiers as when inline (the schedule tests' manual-mode
+escalation names `meerkat_schedule_create`). `rkat/context` carries the
+hidden tools by family. The persona's two lines and the search tool cost
+1,020 bytes against 67,601 hidden.
+
+**Measured** (`tool_costs::an_agent_s_request_carries_every_tool_definition`):
+a fresh conversation's request 55,398 bytes (122,298 before): builtin
+8,572, catalog (the search tool) 701, comms 26,943, files 5,046, memory
+780, mob 8,842 (`delegate` and the 12 operator tools, which the engine
+mounts and a host cannot hide), notes 3,442, watch 1,072. Hidden: schedule
+8 tools, mob 18 tools, 67,601 bytes in all. A `delegate` helper's request:
+41,341 bytes, unchanged. After a search for `meerkat_schedule_create`
+alone the request grows by that tool's 15,457 bytes.
+
+**Structure for the engine's deferral.** `src/daemon/deferral/mod.rs` is
+what stays (which tools are deferrable and which direct, the factory and
+`Hiding`, what the gate and `/context` know, the persona lines);
+`src/daemon/deferral/reveal.rs` is what goes when #2180 ships (the search
+tool, the reveals and their file, the gate's line for `tool_search`).
+`tool_costs` still fails on purpose the day the engine reports an exact
+catalog for the daemon's members.
+
+Tests: `deferral::*` (four rig tests: search, reveal, call, fire and plan
+mode; another agent; restart, `/new` and `/resume`; a guessed name),
+`daemon::deferral::tests::*`, `daemon::deferral::reveal::tests::*`,
+`tool_costs`, `workbench::context::tests::*`. Tests that call hidden tools
+directly for another purpose (schedules, councils, `mob_destroy`,
+`mob_profile_create`, `fork_off`) reveal them first through the daemon's
+reveal store (`Running::reveal`), which is what a search writes.

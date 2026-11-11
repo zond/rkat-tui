@@ -35,7 +35,8 @@ pub enum ToolFamily {
     Mcp,
     /// A Rust tool bundle's.
     Bundle,
-    /// The engine's deferred-catalog control tools.
+    /// The deferred-catalog control tools: the engine's, and rkat-tui's
+    /// own search (`super::deferral::reveal`).
     Catalog,
     /// No provenance.
     Other,
@@ -68,7 +69,7 @@ impl ToolFamily {
     pub fn of(def: &ToolDef) -> Self {
         if matches!(
             def.name.as_str(),
-            "tool_catalog_search" | "tool_catalog_load"
+            "tool_catalog_search" | "tool_catalog_load" | super::deferral::reveal::TOOL_SEARCH
         ) {
             return Self::Catalog;
         }
