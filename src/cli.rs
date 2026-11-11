@@ -184,10 +184,11 @@ pub struct Args {
     #[arg(long, value_name = "PATH")]
     pub attach_token_file: Option<PathBuf>,
 
-    /// Let `--attach=HOST:PORT` reach a non-loopback address. The attach
-    /// token then crosses the network in clear text to whatever answers
-    /// there; forward the daemon's port with `ssh -L` instead, which
-    /// gives a loopback address.
+    /// Let `--attach=HOST:PORT` reach a non-loopback address. The token
+    /// never crosses the wire (both sides prove they hold it), but the
+    /// session itself does, unencrypted: prompts, the agent's output, the
+    /// approvals. Forward the daemon's port with `ssh -L` instead, which
+    /// gives a loopback address and an encrypted tunnel.
     #[arg(long)]
     pub attach_insecure: bool,
 

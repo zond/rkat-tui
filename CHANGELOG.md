@@ -67,6 +67,11 @@
 
 ### Fixed
 
+- `--attach-insecure`'s help and the refusal of a non-loopback
+  `--attach=HOST:PORT` no longer say the attach token crosses the
+  network in clear text: with the mutual HMAC handshake it never does.
+  What crosses such a link unencrypted is the session itself (prompts,
+  the agent's output, the approvals), and that is what they say now.
 - A long-lived daemon no longer grows without bound: tool catalogs (at
   most 256 sessions, a retired session's dropped), the file tools'
   read-before-write records (at most 4096), scheduled runs' attribution

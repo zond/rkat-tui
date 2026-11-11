@@ -4368,7 +4368,7 @@ visible where the address is typed. `--attach=DIRECTORY` and the
 workspace's own daemon (always loopback, the daemon refuses another
 listen address) are unaffected; the daemon refuses `--attach-insecure` as
 it does the other client-only flags. Pinned by
-`only_a_loopback_address_gets_the_token_unless_insecure` and
+`only_a_loopback_address_is_attached_to_unless_insecure` and
 `reach_refuses_a_non_loopback_address_before_the_token`; the loopback
 path keeps its tests in `tests/attach.rs`.
 

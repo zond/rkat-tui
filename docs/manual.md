@@ -1236,7 +1236,7 @@ HMAC over two fresh nonces), and only then does the TUI prove it does the
 same way, so a program listening on a port the daemon left behind gets
 nothing it could attach with, and the TUI says the process there did not
 prove it is the daemon. What follows the attach (your prompts, the
-agent's output) travels in clear text, so `--attach=HOST:PORT` accepts a
+agent's output, the approvals) travels unencrypted, so `--attach=HOST:PORT` accepts a
 loopback address only (`127.0.0.1`, `::1`, or a name resolving to one),
 which is what the `ssh -L` recipe above gives: the network sees only the
 encrypted tunnel. Any other address is refused with that recipe before

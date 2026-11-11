@@ -191,9 +191,11 @@ pub async fn reach(
 }
 
 /// Refuse `socket` unless it is a loopback address or `insecure` allows
-/// another: the attach token is sent in clear text, and the documented
-/// way to reach a daemon elsewhere (`ssh -L`) always gives a loopback
-/// address, so anything else is a typo or a host that should not get it.
+/// another: the token never crosses the wire (the mutual HMAC handshake,
+/// [`crate::daemon::handshake`]), but the session after it does,
+/// unencrypted, and the documented way to reach a daemon elsewhere
+/// (`ssh -L`) always gives a loopback address and an encrypted tunnel, so
+/// anything else is a typo or a link that should not carry the session.
 ///
 /// # Errors
 ///
@@ -203,7 +205,7 @@ pub fn check_loopback(socket: SocketAddr, insecure: bool) -> Result<(), String> 
         return Ok(());
     }
     Err(format!(
-        "{} is not a loopback address, and the attach token would cross the network in clear text to whatever answers there; forward the daemon's port instead (ssh -N -L 127.0.0.1:4100:127.0.0.1:<daemon port> <host>, then --attach=127.0.0.1:4100), or pass --attach-insecure to send it anyway",
+        "{} is not a loopback address: the session (your prompts, the agent's output, the approvals) would cross that network unencrypted (the token itself never does); forward the daemon's port instead (ssh -N -L 127.0.0.1:4100:127.0.0.1:<daemon port> <host>, then --attach=127.0.0.1:4100), or pass --attach-insecure to attach anyway",
         socket.ip()
     ))
 }
@@ -237,12 +239,15 @@ pub async fn status_of(endpoint: &Endpoint) -> Result<Status, ClientError> {
 mod tests {
     use super::*;
 
-    /// The finding this guards (second review, security): any host named
-    /// in `--attach=HOST:PORT` received the token in clear text.
+    /// Any host named in `--attach=HOST:PORT` would carry the session
+    /// unencrypted: only a loopback address (an `ssh -L` tunnel) is
+    /// attached to unless `--attach-insecure`.
     #[test]
-    fn only_a_loopback_address_gets_the_token_unless_insecure() {
+    fn only_a_loopback_address_is_attached_to_unless_insecure() {
         let remote: SocketAddr = "192.0.2.7:4100".parse().unwrap();
         let refused = check_loopback(remote, false).unwrap_err();
+        assert!(refused.contains("unencrypted"), "{refused}");
+        assert!(refused.contains("the token itself never does"), "{refused}");
         assert!(refused.contains("ssh -N -L"), "{refused}");
         assert!(refused.contains("--attach-insecure"), "{refused}");
         assert_eq!(check_loopback(remote, true), Ok(()));
