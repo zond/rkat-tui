@@ -262,14 +262,29 @@ async fn an_unanswered_escalation_times_out_as_a_denial() {
     setup.escalation_timeout = Some(Duration::from_millis(200));
     let mut rig = Attached::start_with(&ws.root, &llm, setup).await;
     rig.send(Effect::StartTurn("write it".into()));
-    let Msg::Escalation(_, id) = rig.wait_for(|msg| matches!(msg, Msg::Escalation(..))).await
-    else {
-        unreachable!()
-    };
-    // Nobody answers: the dialog closes and the model is told why.
-    rig.wait_for(|msg| matches!(msg, Msg::EscalationResolved(resolved) if *resolved == id))
+    // Nobody answers: the dialog closes and the model is told why. On a
+    // slow host the turn may end before the dialog shows (the request
+    // timed out first), so each is looked for among what was seen too.
+    rig.saw(|msg| matches!(msg, Msg::Escalation(..))).await;
+    let id = rig
+        .seen
+        .iter()
+        .find_map(|msg| match msg {
+            Msg::Escalation(_, id) => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    rig.saw(|msg| matches!(msg, Msg::EscalationResolved(resolved) if *resolved == id))
         .await;
-    let outcome = rig.turn_finished().await;
+    rig.saw(|msg| matches!(msg, Msg::TurnFinished(_))).await;
+    let outcome = rig
+        .seen
+        .iter()
+        .find_map(|msg| match msg {
+            Msg::TurnFinished(outcome) => Some(outcome.clone()),
+            _ => None,
+        })
+        .unwrap();
     assert_eq!(outcome.result.expect("the run continues").text, "gave up");
     assert!(!marker.exists());
     let text = tool_result(&llm.requests()[1], "w1").text_content();
