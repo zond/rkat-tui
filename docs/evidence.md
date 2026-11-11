@@ -6029,3 +6029,31 @@ tools) was applied: withholding them on a guess would hide tools the
 engine may well run. Next step: a probe that reads the member's
 `JobManager` state (its `Debug` shows `durable` and
 `exports_canonical_async_ops`) through the engine's session introspection.
+
+### Items 17 and 18: not done in P6
+
+Item 17 (councils from the daemon's agent): not attempted beyond reading.
+The refusal "neither a session of this TUI nor a helper" is
+`HelperRegistry`'s (`UnknownSession`) for a session it has no owner for;
+a council's participants are forked sessions the engine seats in a
+temporary council mob, which the customizer would have to recognise and
+bind to the agent that convened the council. That needs a probe of how
+the engine reports a council participant's spawn to the customizer
+(`SpawnSource`, the spawner identity it carries) before anything is
+registered; registering on a guess would put unknown sessions behind an
+owner's gate. Left open.
+
+Item 18 (`mob_destroy` leaves its database): read, not fixed. The refusal
+is `SqliteMobObserverDrainRefused::OtherOwners` (meerkat-mob
+`store/sqlite.rs`): `Arc::strong_count` of the database's observer owner
+less one, counting every store, storage bundle, handle or runtime still
+open on the path in this process, and store operations still running.
+The daemon's candidates, from the code, not yet proven one by one: the
+helper follower's event subscriptions on the child mob's members
+(`mobs/follow.rs`, `subscribe_agent_events_from`), the per-agent event
+watcher's resubscribe loop (`daemon/approvals.rs`, which follows the
+`tui` mob only), the helper cancellation's handle (`mobs/mod.rs`), and
+the helper catalog reads (`DaemonToolOrigins::refresh`). The fix the
+brief asks for (release each when a destroy is requested) needs each
+holder identified by a test that counts the owners as they are dropped;
+left open with the count of five as the starting point.
