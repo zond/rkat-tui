@@ -828,23 +828,25 @@ impl Local {
     /// runtime cannot list them.
     async fn active_inputs(&self, caller: &Caller) -> Result<protocol::UnfinishedInputs, Refusal> {
         use meerkat_runtime::SessionServiceRuntimeExt as _;
-        let session = caller
-            .agent
-            .as_deref()
-            .and_then(|agent| self.conversations.current(agent))
-            .ok_or_else(|| {
-                Refusal::new(
-                    protocol::NO_AGENT,
-                    "rkat/active_inputs answers for the agent this connection works with",
-                )
-            })?;
+        let refused = || {
+            Refusal::new(
+                protocol::NO_AGENT,
+                "rkat/active_inputs answers for the agent this connection works with",
+            )
+        };
+        let agent = caller.agent.as_deref().ok_or_else(refused)?;
+        let session = self.conversations.current(agent).ok_or_else(refused)?;
         let active = self
             .machine
             .list_active_inputs(&session)
             .await
             .map_err(|err| Refusal::new(protocol::INTERNAL_ERROR, err.to_string()))?;
+        // A run still closing is unfinished too (or a state that cannot be
+        // read): an append made before it closed lands only after its turn.
+        let running =
+            self.conversations.running(agent).await != super::conversations::RunState::Idle;
         Ok(protocol::UnfinishedInputs {
-            count: active.len(),
+            count: active.len() + usize::from(running),
         })
     }
 

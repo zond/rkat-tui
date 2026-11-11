@@ -6689,3 +6689,14 @@ Test: `compact::a_changed_compaction_policy_reaches_an_existing_realms_agent`
 second start of the same realm and conversation in `auto` at 5%: the
 next turn compacts first). It failed before the change (the second
 start answered with the summary text: no compaction).
+
+A later full gate failed `attach_approvals::auto_mode_needs_no_dialog_and_plan_mode_refuses_writes`
+once (not reproduced in eight runs, alone and with its binaries in
+parallel): the plan-mode note was missing from the next turn's first
+request. The note is appended with `mob_append_system_context`, which the
+engine applies to a member whose run is still closing only when that
+turn ends. With the turn-end rule above a client could end its turn as
+soon as no input was unfinished, possibly while the runtime was still
+closing the run, so a `/mode` right after a turn could land a turn late.
+`rkat/active_inputs` now also counts a run still open (or a state it
+cannot read) as unfinished: a client's turn ends when the agent is idle.

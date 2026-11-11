@@ -182,10 +182,12 @@ methods! {
     /// queued is abandoned, leaving the running turn alone; one that
     /// already joined a run is reported reached and left.
     Recall = "rkat/recall" (RecallParams) -> Recalled;
-    /// How many inputs of the caller's agent's current conversation the
-    /// runtime still holds unfinished (queued, staged or applied and not
-    /// consumed: a steer that will run as a follow-up run, whoever sent
-    /// it). A client ends its turn when its runs ended and this is zero.
+    /// How much of the caller's agent's current conversation is
+    /// unfinished: the inputs the runtime still holds (queued, staged or
+    /// applied and not consumed: a steer that will run as a follow-up run,
+    /// whoever sent it), plus one while its run is still open (or its
+    /// state cannot be read). A client ends its turn when its runs ended
+    /// and this is zero: the agent is idle then.
     ActiveInputs = "rkat/active_inputs" (Empty) -> UnfinishedInputs;
 }
 
