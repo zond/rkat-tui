@@ -32,6 +32,12 @@
 
 ### Fixed
 
+- Another agent's approval question is shown at once: escalations were
+  serialized for the whole daemon while a client shows only its own
+  agent's dialogs, so with agent A's dialog open agent B's question
+  waited unseen and was denied as "the user did not answer". Each agent
+  (with its helpers) now has its own queue, and a question's time limit
+  runs only while it is shown.
 - `grep` matches line by line in its default `files_with_matches` mode
   too: `^fn main` or `foo$` found only files starting or ending with it
   there, while `content` and `count` found every such line.

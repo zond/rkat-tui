@@ -6624,3 +6624,35 @@ runner while that caught-up turn was open, which a UI never does (it
 queues), so either turn's end could come first. The test now waits for
 the caught-up turn's end ("fetched a") and checks it was shown as a
 turn, then starts its own.
+
+## Escalations are serialized per session (A1 of senior review 3, 2026-11-11)
+
+`EscalationBroker` held one async mutex for every escalation of the
+daemon, and each escalation's budget (the 10-minute escalation timeout)
+started when it entered that queue. The desk offers every held decision
+to every client (`decisions.rs` `offer_all`), but a client shows a dialog
+only for its own agent's session (`client/approvals.rs` `notice`). With
+two agents, B's question waited behind A's open dialog without being
+held as a decision (the desk holds one only once the lock is taken), so
+no terminal showed it, and it was denied "the user did not answer" when
+its budget ran out in the queue.
+
+The broker now keeps one lock per session (a helper's call already
+carries its owner's session, `admission.rs`), dropped once nobody holds
+or waits for it. A call's budget runs while its dialog is shown. To keep
+a walked-away human from costing N budgets for N parallel calls of one
+agent, a lock remembers when its last dialog went unanswered for its
+whole budget, and a call that queued before that is denied as timed out
+without being shown (so `parallel_escalations_share_one_timeout_including_the_queue`
+holds unchanged: five unanswered calls end after about one budget, one
+shown). A call queued behind an answered dialog gets its own whole budget.
+
+Tests: `approval::escalation::tests::another_sessions_ask_is_not_held_by_an_open_dialog`,
+`approval::engine::tests::another_sessions_escalation_is_not_held_by_an_open_dialog`,
+`approval::engine::tests::a_queued_escalation_s_budget_runs_from_when_it_is_shown`
+(paused clock: shown after 0.9 of a budget in the queue, answered half a
+budget later, allowed) and, on the rig,
+`attach_agents::each_agents_question_is_shown_on_its_client_while_another_is_open`
+(A's dialog left open on A's client, B's shown on B's and answered, then
+A's). With the lock made daemon-wide again the three "another session"
+tests fail (checked).

@@ -230,7 +230,12 @@ for the call's first subject to the realm `tui.toml`: for a file write the
 project-relative path (`write_file` `.env.local`), which matches that file
 only, and only when every target of the call matches it. `/auto resume` resumes; `/auto` shows the
 mode and counters. Every escalation is recorded as the daemon's durable
-decision; when it cannot be recorded the action is denied.
+decision; when it cannot be recorded the action is denied. Each agent's
+questions are shown on its own clients, one dialog at a time per agent
+(its helpers' included); another agent's open dialog never holds them
+up. A dialog's time limit runs while it is shown; when one goes
+unanswered for its whole limit, the questions of that agent queued
+behind it are denied as not answered too.
 
 ### Permission modes
 

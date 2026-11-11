@@ -727,6 +727,60 @@ async fn a_message_to_another_agent_is_tier_one_and_any_other_send_asks() {
     daemon.stop().await;
 }
 
+/// Each agent's question is shown on its own client at once: with agent
+/// A's dialog left open on A's client, agent B's call is put to B's client
+/// and answered there, while A's still waits. The broker once serialized
+/// every escalation of the daemon, so B's question waited unseen behind
+/// A's (a client shows its own agent's dialogs only) until its budget ran
+/// out as "the user did not answer".
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn each_agents_question_is_shown_on_its_client_while_another_is_open() {
+    use rkat_tui::approval::mode::PermissionMode;
+    use rkat_tui::daemon::protocol::AgentChoice;
+    use rkat_tui::ui::{Effect, EscalationAnswer};
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Tool {
+            id: "a1",
+            name: "shell",
+            args: json!({"command": "curl -s http://127.0.0.1:9/a"}),
+        },
+        Step::Tool {
+            id: "b1",
+            name: "shell",
+            args: json!({"command": "curl -s http://127.0.0.1:9/b"}),
+        },
+        Step::Text("b done"),
+        Step::Text("a done"),
+    ]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let mut a = rig::Client::attach(&ws.root).await;
+    let mut b = rig::Client::attach_agent(&ws.root, AgentChoice::New).await;
+    a.set_mode(PermissionMode::Manual).await;
+    a.send(Effect::StartTurn("fetch a".into()));
+    let (shown_a, id_a) = a.escalation().await;
+    assert!(shown_a.args_preview.contains("/a"), "{shown_a:?}");
+    // A's dialog stays open; B's agent asks next.
+    b.send(Effect::StartTurn("fetch b".into()));
+    let (shown_b, id_b) = b.escalation().await;
+    assert!(shown_b.args_preview.contains("/b"), "{shown_b:?}");
+    b.send(Effect::RespondEscalation(
+        id_b,
+        EscalationAnswer::Deny { comment: None },
+    ));
+    assert_eq!(b.turn_finished().await.result.unwrap().text, "b done");
+    // A's question was shown on A only, B's on B only, and A's still waits.
+    assert_eq!((a.escalations(), b.escalations()), (1, 1));
+    a.send(Effect::RespondEscalation(
+        id_a,
+        EscalationAnswer::Deny { comment: None },
+    ));
+    assert_eq!(a.turn_finished().await.result.unwrap().text, "a done");
+    a.quit().await;
+    b.quit().await;
+    daemon.stop().await;
+}
+
 /// `rkat/recall` acts on the caller's own agent only: agent B naming agent
 /// A's queued steer (and an id that names no input at all) gets both back
 /// as foreign, nothing is cancelled, and A's steer reaches A's model. A

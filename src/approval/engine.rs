@@ -1109,15 +1109,21 @@ impl ApprovalEngine {
         result
     }
 
-    /// Put a call to the human. Waiting for the serial lock and for the
-    /// answer share one escalation timeout; after the lock is acquired the
-    /// Stop, the rules, the permission mode and the pause are checked again
-    /// (they may have changed while other dialogs were open): a call the
-    /// new mode decides is settled without asking, and one whose pause has
-    /// ended meanwhile gets the classifier's `fallback` verdict instead. A
-    /// policy or mode question ([`Asking::Policy`], [`Asking::Mode`]) leaves
-    /// the denial counters alone. The human's allow is an allow: nothing
-    /// after the answer turns it into a denial.
+    /// Put a call to the human. The call waits for its session's serial
+    /// lock while an earlier dialog of the same session is open; another
+    /// session's dialog never holds it up (a client shows its own agent's
+    /// dialogs only). Its budget, the escalation timeout, runs while its
+    /// dialog is shown, not while it waits unseen; when the dialog ahead
+    /// of it went unanswered for its whole budget, nobody is at that
+    /// terminal and the queued call is denied as timed out without being
+    /// shown. After the lock is acquired the Stop, the rules, the
+    /// permission mode and the pause are checked again (they may have
+    /// changed while other dialogs were open): a call the new mode decides
+    /// is settled without asking, and one whose pause has ended meanwhile
+    /// gets the classifier's `fallback` verdict instead. A policy or mode
+    /// question ([`Asking::Policy`], [`Asking::Mode`]) leaves the denial
+    /// counters alone. The human's allow is an allow: nothing after the
+    /// answer turns it into a denial.
     async fn escalate(
         &self,
         session_id: &SessionId,
@@ -1142,70 +1148,65 @@ impl ApprovalEngine {
             id,
             settled: false,
         };
-        // One budget per call, from its entry: a call whose budget ran out
-        // while it queued behind another dialog is denied before it is put
-        // to the human (the timeout alone would only be checked after the
-        // prompt was sent, on the next poll).
-        let deadline = tokio::time::Instant::now() + self.escalation_timeout;
-        let asked = tokio::time::timeout_at(deadline, async {
-            let guard = broker.serial().await;
-            if tokio::time::Instant::now() >= deadline {
-                return Asked::Settled(deny_at(tier, DenyReason::EscalationTimedOut));
-            }
-            if self.stopped(session_id) {
-                return Asked::Settled(deny_at(tier, DenyReason::Stopped));
-            }
-            match self.route(facts, self.tier_of(facts), self.mode()) {
-                Route::Settled(verdict) => return Asked::Settled(verdict),
-                // The human is asked either way.
-                Route::Ask(_) => {}
-                Route::Review => {
-                    let escalating = self.auto.lock().escalating();
-                    if !escalating && let Some(verdict) = fallback.clone() {
-                        return Asked::Settled(self.apply_classifier(session_id, verdict, None));
-                    }
-                }
-            }
-            let (classifier_hint, policy_reason) = match &asking {
-                Asking::Classifier(hint) => (Some(hint.clone()), None),
-                Asking::Policy(reason) | Asking::Mode { reason, .. } => {
-                    (None, Some(reason.clone()))
-                }
-            };
-            let prompt = EscalationPrompt {
-                id,
-                session_id: session_id.clone(),
-                shown: RecordedPrompt {
-                    tool: facts.action.name.to_string(),
-                    agent: agent.map(str::to_string),
-                    args_preview: args_preview(&facts.action),
-                    args_full: args_full(&facts.action),
-                    subjects: facts.subjects.clone(),
-                    classifier_hint,
-                    policy_reason,
-                },
-            };
-            let answer = broker.ask_locked(&guard, prompt).await;
-            // A Stop applies before the serial lock is released, so an
-            // escalation queued behind this one sees it.
-            if matches!(answer, HumanDecision::Stop) {
-                self.stop(session_id);
-            }
-            Asked::Answered(answer)
-        })
-        .await;
-        let decision = match asked {
-            Err(_) => {
-                self.answerers.lock().remove(&id);
-                pending.withdraw();
-                return deny_at(tier, DenyReason::EscalationTimedOut);
-            }
-            Ok(Asked::Settled(verdict)) => {
+        let entered = tokio::time::Instant::now();
+        let mut guard = broker.serial(session_id).await;
+        if guard.unanswered_at.is_some_and(|at| at >= entered) {
+            pending.settled = true;
+            return deny_at(tier, DenyReason::EscalationTimedOut);
+        }
+        if self.stopped(session_id) {
+            pending.settled = true;
+            return deny_at(tier, DenyReason::Stopped);
+        }
+        match self.route(facts, self.tier_of(facts), self.mode()) {
+            Route::Settled(verdict) => {
                 pending.settled = true;
                 return verdict;
             }
-            Ok(Asked::Answered(decision)) => decision,
+            // The human is asked either way.
+            Route::Ask(_) => {}
+            Route::Review => {
+                let escalating = self.auto.lock().escalating();
+                if !escalating && let Some(verdict) = fallback {
+                    pending.settled = true;
+                    return self.apply_classifier(session_id, verdict, None);
+                }
+            }
+        }
+        let (classifier_hint, policy_reason) = match &asking {
+            Asking::Classifier(hint) => (Some(hint.clone()), None),
+            Asking::Policy(reason) | Asking::Mode { reason, .. } => (None, Some(reason.clone())),
         };
+        let prompt = EscalationPrompt {
+            id,
+            session_id: session_id.clone(),
+            shown: RecordedPrompt {
+                tool: facts.action.name.to_string(),
+                agent: agent.map(str::to_string),
+                args_preview: args_preview(&facts.action),
+                args_full: args_full(&facts.action),
+                subjects: facts.subjects.clone(),
+                classifier_hint,
+                policy_reason,
+            },
+        };
+        let asked =
+            tokio::time::timeout(self.escalation_timeout, broker.ask_locked(&guard, prompt)).await;
+        let Ok(decision) = asked else {
+            // Nobody answered: the calls queued behind it are not shown
+            // to nobody in turn.
+            guard.unanswered_at = Some(tokio::time::Instant::now());
+            drop(guard);
+            self.answerers.lock().remove(&id);
+            pending.withdraw();
+            return deny_at(tier, DenyReason::EscalationTimedOut);
+        };
+        // A Stop applies before the serial lock is released, so an
+        // escalation queued behind this one sees it.
+        if matches!(decision, HumanDecision::Stop) {
+            self.stop(session_id);
+        }
+        drop(guard);
         *facts.answerer.lock() = self.answerers.lock().remove(&id);
         pending.settled = true;
         match decision {
@@ -1362,14 +1363,6 @@ impl Payload {
             (Some(script), Some(build)) => Some(format!("{script}\n{build}")),
         }
     }
-}
-
-/// Outcome of the locked part of an escalation.
-enum Asked {
-    /// Decided without asking (re-checks after the lock).
-    Settled(Verdict),
-    /// The human answered.
-    Answered(HumanDecision),
 }
 
 /// Read at most `cap` bytes of a regular file (FIFOs, devices and
@@ -2372,9 +2365,11 @@ mod tests {
     // the one this test pins).
     #[tokio::test(start_paused = true)]
     async fn parallel_escalations_share_one_timeout_including_the_queue() {
-        // Five calls escalate at once; the human answers none. Each call
-        // waits for the serial lock and the answer inside one timeout, so
-        // all of them are denied after about one timeout, not five.
+        // Five calls of one session escalate at once; the human answers
+        // none. The first dialog's budget runs out unanswered, so nobody
+        // is at that terminal and the four queued behind it are denied
+        // without being shown: all are denied after about one timeout,
+        // not five.
         let timeout = Duration::from_millis(300);
         let mut rig = rig_with(
             (0..5).map(|_| Err(ClassifierError::Timeout)).collect(),
@@ -2408,6 +2403,72 @@ mod tests {
             delivered += 1;
         }
         assert_eq!(delivered, 1);
+    }
+
+    /// A call queued behind an answered dialog of its session gets a whole
+    /// budget of its own once shown: the time it waited unseen is not
+    /// spent.
+    #[tokio::test(start_paused = true)]
+    async fn a_queued_escalation_s_budget_runs_from_when_it_is_shown() {
+        let timeout = Duration::from_millis(300);
+        let mut rig = rig_with(
+            (0..2).map(|_| Err(ClassifierError::Timeout)).collect(),
+            timeout,
+        );
+        let first = spawn_decide(&rig, "q1", json!({"command": "rm -rf /a"}));
+        let request = rig.escalations.recv().await.unwrap();
+        let second = spawn_decide(&rig, "q2", json!({"command": "rm -rf /b"}));
+        // The first dialog stays open for most of its budget.
+        tokio::time::sleep(timeout * 9 / 10).await;
+        request.respond.send(HumanDecision::AllowOnce).unwrap();
+        assert!(first.await.unwrap().is_allowed());
+        let request = rig.escalations.recv().await.unwrap();
+        let shown = tokio::time::Instant::now();
+        // Past the second's budget counted from its entry, short of it
+        // counted from when it was shown.
+        tokio::time::sleep(timeout / 2).await;
+        assert!(shown.elapsed() < timeout);
+        request.respond.send(HumanDecision::AllowOnce).unwrap();
+        assert!(second.await.unwrap().is_allowed());
+    }
+
+    /// Two sessions' questions do not queue behind each other: the second
+    /// session's dialog is delivered while the first's is open, and is
+    /// answered on its own.
+    #[tokio::test]
+    async fn another_sessions_escalation_is_not_held_by_an_open_dialog() {
+        let mut rig = rig(
+            vec![Err(ClassifierError::Timeout), Err(ClassifierError::Timeout)],
+            DEFAULT_ESCALATION_TIMEOUT,
+        );
+        let first = spawn_decide(&rig, "s1", json!({"command": "rm -rf /a"}));
+        let open = rig.escalations.recv().await.unwrap();
+        let other = SessionId::new();
+        let second = {
+            let engine = Arc::clone(&rig.engine);
+            let other = other.clone();
+            tokio::spawn(async move {
+                call_as(
+                    &engine,
+                    &other,
+                    "s2",
+                    "shell",
+                    &json!({"command": "rm -rf /b"}),
+                )
+                .await
+            })
+        };
+        let shown = tokio::time::timeout(Duration::from_secs(5), rig.escalations.recv())
+            .await
+            .expect("the other session's question waited behind the open dialog")
+            .unwrap();
+        assert_eq!(shown.prompt.session_id, other);
+        shown.respond.send(HumanDecision::AllowOnce).unwrap();
+        assert!(second.await.unwrap().is_allowed());
+        open.respond
+            .send(HumanDecision::Deny { comment: None })
+            .unwrap();
+        assert!(!first.await.unwrap().is_allowed());
     }
 
     #[tokio::test]
