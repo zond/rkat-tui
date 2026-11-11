@@ -3097,6 +3097,46 @@ mod tests {
         assert!(rig.engine.agent_written(&rig.session).is_empty());
     }
 
+    /// The deferred catalog's `tool_catalog_search` and `tool_catalog_load`
+    /// only read the catalog and stage a tool's visibility: tier 1 in every
+    /// mode, plan mode included, with nobody asked and no review.
+    #[tokio::test]
+    async fn catalog_searches_and_loads_pass_in_every_mode() {
+        let mut rig = rig(vec![], DEFAULT_ESCALATION_TIMEOUT);
+        let calls = [
+            (
+                meerkat_core::tool_catalog::TOOL_CATALOG_SEARCH_NAME,
+                json!({"query": "schedule"}),
+            ),
+            (
+                meerkat_core::tool_catalog::TOOL_CATALOG_LOAD_NAME,
+                json!({"names": ["meerkat_schedule_create"]}),
+            ),
+        ];
+        for mode in [
+            PermissionMode::Plan,
+            PermissionMode::Manual,
+            PermissionMode::AcceptEdits,
+            PermissionMode::Auto,
+        ] {
+            rig.engine.set_mode(mode);
+            for (name, args) in &calls {
+                assert!(
+                    matches!(
+                        call(&rig, "c1", name, args).await,
+                        Verdict::Allow {
+                            tier: Tier::AlwaysAllow,
+                            ..
+                        }
+                    ),
+                    "{name} in {mode}"
+                );
+            }
+        }
+        assert!(rig.escalations.try_recv().is_err(), "nobody is asked");
+        assert_eq!(rig.classifier.calls(), 0);
+    }
+
     /// Helpers act under the session's mode: their calls are judged by the
     /// same engine.
     #[tokio::test]

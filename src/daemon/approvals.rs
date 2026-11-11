@@ -363,7 +363,15 @@ impl DaemonToolOrigins {
             tokio::time::timeout(CATALOG_READ, self.service.live_visible_tool_defs(session)).await;
         match read {
             Ok(Ok(Some(defs))) => {
-                let catalog = ToolCatalog::from_defs(&defs);
+                let mut catalog = ToolCatalog::from_defs(&defs);
+                // The tools kept behind the deferred catalog, which the
+                // visible definitions leave out until they are loaded.
+                if let Ok(Ok(Some(view))) =
+                    tokio::time::timeout(CATALOG_READ, self.service.tool_catalog_view(session))
+                        .await
+                {
+                    catalog.add_deferred(&view);
+                }
                 self.known.write().add_missing_natives(&catalog);
                 self.keep(session.clone(), catalog);
                 true
@@ -395,6 +403,13 @@ impl DaemonToolOrigins {
     #[must_use]
     pub fn has(&self, session: &SessionId) -> bool {
         self.cache.read().contains_key(session)
+    }
+
+    /// How `session`'s next model request projects its tool catalog
+    /// (tests: which tools are deferred).
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn view(&self, session: &SessionId) -> Option<meerkat_core::ToolCatalogView> {
+        self.service.tool_catalog_view(session).await.ok().flatten()
     }
 
     /// The origin of `name` for `session` (diagnostics and tests).

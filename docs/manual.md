@@ -1691,9 +1691,15 @@ engine's default misfire policy); a schedule created with
 fires an occurrence that is at most N seconds late instead.
 
 **Limits.** The schedule tools' definitions travel with every model
-request: about 37 KB of schemas (roughly 9k tokens; `meerkat_schedule_create`
+request: about 38 KB (roughly 9k tokens; `meerkat_schedule_create`
 and `_update` are 15 KB each), which a model with a small context window
-feels. The engine's schedules are the workspace realm's: an agent's
+feels. In all, an agent's request carries about 120 KB of tool
+definitions (roughly 30k tokens: schedule and mob tools about a third
+each, the engine's comms tools a fifth, rkat-tui's own file, note and
+watch tools under 10 KB); a helper's about 40 KB. The engine's deferred
+tool catalog, which would keep rarely used tools out of the request until
+the model searches for them, does not engage for the daemon's agents on
+Meerkat 0.9.12 (`docs/evidence.md`, "Deferrable tools"). The engine's schedules are the workspace realm's: an agent's
 `meerkat_schedule_list` shows every agent's schedules, and an agent can
 target another agent's session; those calls are reviewed like any other
 schedule change. `/schedules` shows only schedules whose target is your

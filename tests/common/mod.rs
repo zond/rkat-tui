@@ -137,10 +137,77 @@ pub struct Recorded {
     pub provider_params: Option<ProviderTag>,
     pub tools: Vec<String>,
     pub schemas: Vec<Value>,
+    /// The request's tool definitions in full.
+    pub defs: Vec<Arc<meerkat_core::ToolDef>>,
     pub messages: Vec<Message>,
 }
 
+/// The family a tool definition is counted under in [`Recorded::tool_bytes`].
+pub fn tool_family(def: &meerkat_core::ToolDef) -> &'static str {
+    use meerkat_core::ToolSourceKind;
+    if matches!(
+        def.name.as_str(),
+        "tool_catalog_search" | "tool_catalog_load"
+    ) {
+        return "catalog";
+    }
+    let Some(provenance) = &def.provenance else {
+        return "other";
+    };
+    match provenance.kind {
+        ToolSourceKind::Callback => match provenance.source_id.as_str() {
+            rkat_tui::tools::FILE_TOOLS_SOURCE => "files",
+            rkat_tui::memory::NOTES_SOURCE => "notes",
+            rkat_tui::tools::WATCH_TOOLS_SOURCE => "watch",
+            _ => "callback",
+        },
+        ToolSourceKind::Builtin | ToolSourceKind::Shell => "builtin",
+        ToolSourceKind::Memory => "memory",
+        ToolSourceKind::Comms => "comms",
+        ToolSourceKind::Schedule => "schedule",
+        ToolSourceKind::WorkGraph => "workgraph",
+        ToolSourceKind::Mob => "mob",
+        ToolSourceKind::Mcp => "mcp",
+        ToolSourceKind::RustBundle => "bundle",
+    }
+}
+
+/// The bytes one tool definition costs a request: its name, description and
+/// input schema as JSON (what a provider is sent for it).
+pub fn tool_def_bytes(def: &meerkat_core::ToolDef) -> usize {
+    serde_json::json!({
+        "name": def.name.as_str(),
+        "description": def.description,
+        "input_schema": def.input_schema,
+    })
+    .to_string()
+    .len()
+}
+
 impl Recorded {
+    /// The tool-definition bytes of this request by [`tool_family`].
+    pub fn tool_bytes(&self) -> std::collections::BTreeMap<&'static str, usize> {
+        let mut out = std::collections::BTreeMap::new();
+        for def in &self.defs {
+            *out.entry(tool_family(def)).or_insert(0) += tool_def_bytes(def);
+        }
+        out
+    }
+
+    /// The names of this request's tools of `family`.
+    pub fn tools_of(&self, family: &str) -> Vec<String> {
+        self.defs
+            .iter()
+            .filter(|def| tool_family(def) == family)
+            .map(|def| def.name.to_string())
+            .collect()
+    }
+
+    /// The tool-definition bytes of this request in all.
+    pub fn total_tool_bytes(&self) -> usize {
+        self.defs.iter().map(|def| tool_def_bytes(def)).sum()
+    }
+
     /// Concatenated system text.
     pub fn system(&self) -> String {
         self.messages
@@ -232,6 +299,7 @@ impl LlmClient for ScriptedLlmClient {
                 .iter()
                 .map(|t| t.input_schema.clone())
                 .collect(),
+            defs: request.tools.clone(),
             messages: request.messages.clone(),
         });
         let _ = self.calls.send(index);

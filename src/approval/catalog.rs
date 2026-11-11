@@ -21,7 +21,11 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use meerkat_core::{SessionId, ToolDef, ToolMutationClass, ToolProvenance, ToolSourceKind};
+use meerkat_core::ToolCatalogDeferredEligibility::DeferredEligible;
+use meerkat_core::{
+    SessionId, ToolCatalogView, ToolCatalogVisibility, ToolDef, ToolMutationClass, ToolProvenance,
+    ToolSourceKind,
+};
 
 use crate::memory::{NOTE_FORGET, NOTE_LIST, NOTE_READ, NOTE_SAVE, NOTES_SOURCE};
 use crate::tools::{
@@ -83,6 +87,20 @@ impl ToolOrigin {
         }
     }
 
+    /// The origin of the tool `name` whose definition declares
+    /// `provenance`: the TUI's own tools get the mutation class the TUI
+    /// declares for them, every other tool `Unknown`.
+    fn declared(name: &str, provenance: Option<ToolProvenance>) -> Self {
+        let mut origin = Self {
+            provenance,
+            mutation: ToolMutationClass::Unknown,
+        };
+        if matches!(origin.family(), ToolFamily::Files | ToolFamily::Notes) {
+            origin.mutation = tui_mutation(name);
+        }
+        origin
+    }
+
     /// The family this origin puts its tool in.
     #[must_use]
     pub fn family(&self) -> ToolFamily {
@@ -138,17 +156,33 @@ impl ToolCatalog {
             .into_iter()
             .map(|def| {
                 let name = def.name.to_string();
-                let mut origin = ToolOrigin {
-                    provenance: def.provenance.clone(),
-                    mutation: ToolMutationClass::Unknown,
-                };
-                if matches!(origin.family(), ToolFamily::Files | ToolFamily::Notes) {
-                    origin.mutation = tui_mutation(&name);
-                }
+                let origin = ToolOrigin::declared(&name, def.provenance.clone());
                 (name, origin)
             })
             .collect();
         Self { tools }
+    }
+
+    /// Add every tool `view` keeps deferred (behind the deferred catalog's
+    /// `tool_catalog_search` and `tool_catalog_load`) that this catalog does
+    /// not name yet, with the owner its entry declares: the visible
+    /// definitions leave such a tool out until the session loads it, and
+    /// its first call, in the run that loads it, is judged by what it is
+    /// rather than as a foreign tool.
+    pub fn add_deferred(&mut self, view: &ToolCatalogView) {
+        for entry in &view.entries {
+            let (ToolCatalogVisibility::Deferred, DeferredEligible { provenance }) =
+                (entry.visibility, &entry.deferred_eligibility)
+            else {
+                continue;
+            };
+            let name = entry.name.to_string();
+            if self.tools.contains_key(&name) {
+                continue;
+            }
+            let origin = ToolOrigin::declared(&name, Some(provenance.clone()));
+            self.tools.insert(name, origin);
+        }
     }
 
     /// Add or replace one tool.
@@ -232,6 +266,71 @@ impl ToolOrigins for StaticToolOrigins {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// A tool the session keeps deferred is named with the owner its catalog
+    /// entry declares; one the visible definitions name, a hidden one and
+    /// one that may not be deferred are not touched.
+    #[test]
+    fn deferred_tools_are_named_by_their_declared_owner() {
+        use meerkat_core::{
+            ToolCallability, ToolCatalogMode, ToolCatalogViewEntry, ToolPlaneClass,
+        };
+        let schedule = ToolProvenance::new(ToolSourceKind::Schedule, "schedule");
+        let entry =
+            |name: &str, visibility, eligible: Option<&ToolProvenance>| ToolCatalogViewEntry {
+                name: name.into(),
+                plane: ToolPlaneClass::Session,
+                deferred_eligibility: eligible.map_or(
+                    meerkat_core::ToolCatalogDeferredEligibility::InlineOnly,
+                    |provenance| DeferredEligible {
+                        provenance: provenance.clone(),
+                    },
+                ),
+                callability: ToolCallability::Callable,
+                visibility,
+            };
+        let view = ToolCatalogView {
+            mode: ToolCatalogMode::Deferred,
+            exact_catalog: true,
+            pending_sources: Vec::new(),
+            staged_changes_pending: false,
+            entries: vec![
+                entry(
+                    "meerkat_schedule_get",
+                    ToolCatalogVisibility::Deferred,
+                    Some(&schedule),
+                ),
+                entry(
+                    NOTE_SAVE,
+                    ToolCatalogVisibility::Deferred,
+                    Some(&crate::tools::provenance(NOTES_SOURCE)),
+                ),
+                // Visible already: the definition's owner stands.
+                entry(
+                    "shell",
+                    ToolCatalogVisibility::Deferred,
+                    Some(&ToolProvenance::new(ToolSourceKind::Mcp, "evil")),
+                ),
+                entry("hidden", ToolCatalogVisibility::Hidden, Some(&schedule)),
+                entry("inline", ToolCatalogVisibility::Visible, None),
+            ],
+        };
+        let defs = [ToolDef::new("shell", "", json!({}))
+            .with_provenance(ToolProvenance::new(ToolSourceKind::Shell, "shell"))];
+        let mut catalog = ToolCatalog::from_defs(&defs);
+        catalog.add_deferred(&view);
+        assert_eq!(catalog.len(), 3);
+        let family = |n: &str| catalog.get(n).map(ToolOrigin::family);
+        assert_eq!(family("meerkat_schedule_get"), Some(ToolFamily::Native));
+        assert_eq!(family(NOTE_SAVE), Some(ToolFamily::Notes));
+        assert_eq!(
+            catalog.get(NOTE_SAVE).map(|o| o.mutation),
+            Some(ToolMutationClass::Mutating)
+        );
+        assert_eq!(family("shell"), Some(ToolFamily::Native));
+        assert_eq!(family("hidden"), None);
+        assert_eq!(family("inline"), None);
+    }
 
     #[test]
     fn families_follow_provenance_not_names() {

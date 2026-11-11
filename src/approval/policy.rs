@@ -194,6 +194,11 @@ pub const READ_ONLY_BUILTINS: &[&str] = &[
     "meerkat_schedule_get",
     "meerkat_schedule_list",
     "meerkat_schedule_occurrences",
+    // The deferred tool catalog's control plane: a search reads the
+    // catalog, a load makes a tool visible from the next model call. The
+    // loaded tool's own calls pass this gate as that tool.
+    meerkat_core::tool_catalog::TOOL_CATALOG_SEARCH_NAME,
+    meerkat_core::tool_catalog::TOOL_CATALOG_LOAD_NAME,
 ];
 
 /// Upstream builtins that act (or read outside the project) and so pass the
@@ -1085,6 +1090,10 @@ mod tests {
             BRAIN_SWAP_TOOL_NAMES,
             meerkat_tools::builtin::image_generation::TOOL_NAMES,
             meerkat_schedule::schedule_tool_names(),
+            &[
+                meerkat_core::tool_catalog::TOOL_CATALOG_SEARCH_NAME,
+                meerkat_core::tool_catalog::TOOL_CATALOG_LOAD_NAME,
+            ],
         ];
         for name in upstream.into_iter().flatten() {
             let lists = [

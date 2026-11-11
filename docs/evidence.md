@@ -6756,3 +6756,207 @@ estimate: milliseconds to tens of milliseconds per fsync).
   (`a_council_entry_is_not_taken_over_and_goes_when_its_call_failed`;
   the `Convening` glue that calls it on `record_dispatch_outcome` is not
   covered by a test of its own).
+
+## Deferrable tools (probe, 2026-11-11)
+
+Question (owner): can rkat-tui decide which engine tools are
+deferred-eligible, so the engine keeps them out of the model request until
+the model finds them with `tool_catalog_search` and loads them with
+`tool_catalog_load`, and which tools should be direct?
+
+**Answer: not on Meerkat 0.9.12.** A host can relabel the schedule tools
+and the agent mob tools (both work, proven below), but the engine never
+selects the deferred mode for a daemon member: deferral needs an exact
+catalog on every composed dispatcher (`select_catalog_mode_from_snapshot`,
+`DynamicToolComposite::tool_catalog_capabilities` is the AND of its
+children), and two engine dispatchers every member has declare none (the
+trait default, `exact_catalog: false`): `MobOperatorToolDispatcher`
+(`meerkat-mob` `runtime/tools.rs`, mounted into the member's external
+tools by `compose_external_tools_for_profile` with the same mob authority
+that mounts `delegate`) and `meerkat_memory::MemorySearchDispatcher`
+(composed in `AgentFactory::build_agent` step 12b whenever semantic memory
+is on, which it is for every file-backed realm). Helpers carry
+`memory_search` too. So **no session of rkat-tui is ever in deferred mode
+today, MCP servers or not** (the brief's premise that two MCP tools engage
+it holds for engine sessions with exact catalogs, not for daemon members).
+Nothing of the relabelling was committed; the schedule tools stay as they
+are (inline, on by default, no opt-in setting added). The draft upstream
+ask is `.handover/upstream-deferral-ask.md`; the probe code is kept
+untracked in `.handover/deferral-probe.patch` and
+`.handover/deferral-probe-tests.rs`.
+
+### Measurements
+
+Bytes per family of one main agent's request on the rig (name +
+description + input schema as JSON, `tests/common/mod.rs`
+`Recorded::tool_bytes`); tokens approximated at 4 bytes each (JSON
+schemas tokenize denser, so the real count is likely somewhat higher):
+
+| Family | Tools | Bytes | ~Tokens |
+|---|---|---:|---:|
+| schedule | 8 `meerkat_schedule_*` (`_create` 15,457, `_update` 15,555, `_occurrences` 3,410) | 38,544 | 9.6k |
+| mob, agent surface | `delegate` 3,972; the other 18 (`council` 5,378, `mob_spawn_member` 3,786, `mob_profile_create` 2,956, `fork_off` 2,584, ...) 29,057 | 33,029 | 8.3k |
+| mob, operator | `spawn_member`, `spawn_many_members`, `list_members`, `member_status`, wiring, flows, ... (12) | 4,870 | 1.2k |
+| comms | `send_request` 7,806, `send_response` 7,603, `send_message` 5,441, `reply_to_peer` 5,288, `peers` 805 | 26,943 | 6.7k |
+| builtin | `shell` 1,018, `task_*` 5,151, `blob_*` 1,705, `view_image`, `datetime` | 8,572 | 2.1k |
+| files (ours) | `read_file`, `write_file`, `edit_file`, `glob`, `grep` | 5,046 | 1.3k |
+| notes (ours) | `note_list`, `note_read`, `note_save`, `note_forget` | 3,442 | 0.9k |
+| watch (ours) | `watch_paths`, `unwatch` | 1,072 | 0.3k |
+| memory | `memory_search` | 780 | 0.2k |
+| **total** | 71 tools | **122,298** | **~30k** |
+
+A `delegate` helper's request: 41,341 bytes (builtin, comms, files,
+memory; no schedule or mob tools). Under prompt caching the repeated tool
+block is billed at the cache-read rate, but it still occupies the context
+window every request (the compaction threshold, a small-window model).
+
+Probe runs, with the relabelling wired in (schedule slot + mob factory
+wrapper, below) and, for the probe only, the orchestrator profile's
+`tools.mob` and `tools.memory` switched off by an environment variable so
+that the two blocking dispatchers are absent:
+
+- relabelling only, mob and memory on: the view reports `exact_catalog:
+  false`, mode `Inline`, every entry `InlineOnly` (an inexact composite
+  projects the trait's default mirror), request 122,298 bytes, unchanged;
+- mob off, memory on: the schedule entries are now `DeferredEligible`
+  with their `Schedule`/`schedule` provenance, but the view is still
+  inexact (`memory_search`), request 84,399 bytes;
+- mob and memory off: `mode: Deferred, exact: true`; the request is
+  45,923 bytes: the 38,544 bytes of schedule tools are gone, the two
+  catalog control tools add 848.
+
+Projection from these numbers for a main agent once the engine reports
+exact catalogs for the three dispatchers (the ask), with rkat-tui
+relabelling the schedule tools and the agent mob tools except `delegate`:
+122,298 - 38,544 - 29,057 + 848 = **55,545 bytes (-55%, ~16.7k tokens
+saved per request)**; with the operator tools deferred as well, 50,675;
+with `send_request`/`send_response` too, 35,266.
+
+### What a host can relabel, and what not
+
+- **Schedule tools: yes.** `SessionRuntime::builder_schedule_tools_slot` is
+  a public field (the runtime fills it in `new_with_config_store` and
+  nothing writes it again; `MethodRouter::new` does not touch it). Writing
+  `Some(wrapper(ScheduleToolDispatcher::new(runtime.schedule_service())))`
+  after construction reaches every build; the factory wraps the slot's
+  dispatcher in `CurrentSessionScheduleToolDispatcher`, which forwards
+  `tool_catalog_capabilities` and rewrites only each entry's tool, so the
+  relabelled eligibility survives.
+- **Agent mob tools (`delegate`, `mob_*`, `fork_off`, `council`, ...): yes,
+  per tool.** `runtime.set_mob_tools` takes any `MobToolsFactory`; a
+  factory that wraps `AgentMobToolSurfaceFactory`'s surface can label each
+  entry separately and must also assert the exact catalog the surface does
+  not declare (its `tool_catalog` is built from a tool list fixed at
+  construction, so it is exact). `bind_ops_lifecycle` must unwrap the
+  wrapper's sole `Arc` and rebind the inner surface (it refuses shared
+  ownership).
+- **Mob operator tools (`spawn_member`, `list_members`, ...): no.** Mounted
+  by meerkat-mob from the profile's `tools.mob` into the member's external
+  tools; the spawn customizer only supplies the per-spawn part
+  (`SpawnMemberSpec::external_tools`). The only later hook is the member's
+  `CreateSessionRequest` inside a session service, i.e. a host decorator of
+  `MobSessionService` (about 120 trait methods, many with defaulted
+  bodies a decorator would silently drop): not a contained workaround.
+- **`memory_search`: no.** Composed inside `build_agent`; turning the
+  engine's memory off to supply it ourselves would also drop the memory
+  store the agent indexes compaction into.
+- **comms, builtins: no slot**; both declare exact catalogs already, so
+  they do not block deferral, but their tools cannot be relabelled.
+
+The wrapper (`Deferring` in the probe patch) forwards every trait method
+the engine's own wrappers forward (`CurrentSessionScheduleToolDispatcher`,
+`MemberSessionAuthorityReceiver`: `tools`, `resolve_tool_application`,
+`tool_mutation_class`, `live_bridge_effect_kind`, `review_entry_support`,
+`execution_binding_epoch`, `resolve_execution_plan`,
+`validate_resolved_execution_plan`, `pending_catalog_sources`,
+`adjudicates_tool_grants`, the three dispatch methods, the binds,
+`completion_enrichment`, `observes_bindings_only`), relabels each named
+session-plane entry with `ToolCatalogEntry::session_deferred_with_callability`
+keeping the tool's own provenance and execution contract, reports
+`may_require_catalog_control_plane: true`, and fingerprints its entries
+with the inner binding as a dependency.
+
+End to end on the rig under the probe switch (the probe test
+`probe_end_to_end`, untracked): the first request carries
+`tool_catalog_search` and `tool_catalog_load` and no schedule tool; the
+scripted model's `tool_catalog_search {"query": "schedule"}` returns the
+eight schedule tools (names and descriptions, `visibility_status:
+"deferred"`, no schemas); `tool_catalog_load {"names":
+["meerkat_schedule_create"]}` is accepted; the next request carries
+`meerkat_schedule_create` (+15,457 bytes) and the call creates a
+`current_session` schedule (stored as the agent's `resumable_identity`
+target), which fires two seconds later and runs the agent's turn. A
+loaded tool stays in every later request of the session (the fired turn's
+request still has it). Not verified, because the mode never engages in
+the real composition: deferral after a daemon restart, after `/new`,
+whether a load survives compaction.
+
+### The gate and the catalog control plane
+
+Before this change, a `tool_catalog_search` or `tool_catalog_load` call
+was an engine builtin (`Builtin` provenance, source
+`tool_catalog_control`) in none of the policy's lists, so `Other`, tier 3:
+auto mode sent every search to the classifier, manual mode asked, and
+plan mode denied it (the probe's plan-mode search was refused with the
+plan error). Both are now in `READ_ONLY_BUILTINS` (tier 1 in every mode,
+plan mode included), and `upstream_builtins_are_all_classified` lists them
+with the upstream builtins. A tool kept deferred is absent from the
+visible tool definitions `DaemonToolOrigins` reads at each run end, so in
+the run that loads it its first call would have been judged as a foreign
+tool; `refresh` now also reads the session's `tool_catalog_view` and adds
+every `Deferred` entry with the provenance it declares
+(`ToolCatalog::add_deferred`), so a loaded tool is judged by its family,
+rules and tiers exactly as when inline. Both are latent today (no session
+is deferred) and ready for the engine change. Tests:
+`approval::engine::tests::catalog_searches_and_loads_pass_in_every_mode`,
+`approval::catalog::tests::deferred_tools_are_named_by_their_declared_owner`,
+`approval::policy::tests::upstream_builtins_are_all_classified`.
+
+The measurement is a rig test that asserts the per-family bounds and pins
+the inexact catalog: `tool_costs::an_agent_s_request_carries_every_tool_definition`
+(it fails, saying so, the day the engine reports an exact catalog for the
+daemon's members; then the relabelling of the probe patch is the next step).
+
+### What the model is told
+
+When the factory composes the control plane it appends this to the
+session's tool usage instructions (`factory.rs`
+`deferred_catalog_guidance`): "Additional tools may be available in a
+deferred catalog. Use `tool_catalog_search` to discover deferred tools
+and `tool_catalog_load` to stage the ones you need." It names no
+capability, so a model that was never shown a schedule tool has no reason
+to search for one. When deferral lands, the persona should name each
+deferred capability in one line, for example: "You can schedule yourself
+(reminders, recurring checks, follow-ups): search the tool catalog for
+`schedule`." and "Teams, councils, forks and mob profiles beyond
+`delegate`: search the tool catalog for `mob`." These two lines are 202
+bytes (~50 tokens) against ~16.7k tokens saved per request. Not added:
+the mechanism does not engage.
+
+### Recommendation: which tools are direct
+
+Principle: a tool is **direct** when most turns use it, when the agent
+needs it to start work or to react at once (a peer's message needs its
+reply tool), or when it is so small that the search and load round trips
+(two extra model calls, each re-sending the context) cost more than
+carrying it. A tool is **deferrable** when it is large and rarely used, a
+wrong guess only costs one search, and a one-line persona hint makes it
+discoverable. Visibility is not a safety control: every call, loaded or
+inline, passes the same gate, so no tool has to stay direct for the gate's
+sake.
+
+| Family | Direct | Deferrable | Why | Who can label |
+|---|---|---|---|---|
+| files (ours) | all 5 | - | every turn; needed to start work | rkat-tui |
+| `shell`, `task_*`, `datetime` | all | - | shell every turn; the checklist most turns; tiny | engine (builtins) |
+| `blob_*`, `view_image` | - | candidates (~2.1 KB) | rare; small saving | engine |
+| notes (ours) | all 4 | - | 3.4 KB; the note index in the prompt points at them; `/remember` flows | rkat-tui |
+| watch (ours) | both | - | 1.1 KB: less than one search round trip | rkat-tui |
+| `memory_search` | yes | - | 780 B; the engine's memory skill expects it | engine |
+| comms: `peers`, `send_message`, `reply_to_peer` | yes | - | the agents' peer messages must be answerable at once | engine (no host slot) |
+| comms: `send_request`, `send_response` | - | yes (15.4 KB) | the request/response protocol is rare between rkat-tui agents | engine (no host slot) |
+| schedule (8) | - | all (38.5 KB) | the user asks for a schedule; then one search | rkat-tui (slot), once the mode engages |
+| `delegate` | yes | - | used constantly | - |
+| agent mob tools, the other 18 | - | all (29 KB) | teams, councils, forks, profiles: occasional | rkat-tui (mob factory), once the mode engages |
+| mob operator (12) | - | all (4.9 KB) | rare for a main agent | engine only |
+| `tool_catalog_search` / `_load` | always | - | the control plane itself | engine |
