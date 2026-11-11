@@ -147,6 +147,8 @@ pub struct Workbench {
     pending_set: Option<String>,
     /// Messages the UI still held when the user quit.
     held_unsent: Vec<(Option<PendingId>, String)>,
+    /// The cost records, written off the client's loop.
+    costs: Arc<cost::CostWriter>,
 }
 
 impl Workbench {
@@ -178,6 +180,7 @@ impl Workbench {
             picker_waiting: false,
             pending_set: None,
             held_unsent: Vec::new(),
+            costs: Arc::default(),
         }
     }
 

@@ -32,6 +32,13 @@
 
 ### Fixed
 
+- No blocking file or network I/O on the async loops any more: the
+  daemon records a prompt's conversation (a write with an fsync per
+  prompt and steer) from a blocking task, writes rules, the mode, the
+  checklist view and scheduled runs' costs off its connection and event
+  loops, and the TUI writes its cost record (one per model call) off the
+  loop that must take Esc and probes a stopping daemon with an async
+  connect.
 - File watches (`watch_paths`): the recursive watch of the workspace is
   dropped when the last watch goes; a change no watch matches neither
   delays a batch nor is kept, so a watch on `src/**` is delivered within

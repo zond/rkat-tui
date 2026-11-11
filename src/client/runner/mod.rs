@@ -1881,6 +1881,16 @@ mod tests {
         assert!(orphans.take("b").is_empty());
     }
 
+    /// The probe is async: a listener accepts, a closed port refuses.
+    #[tokio::test]
+    async fn the_address_probe_tells_a_listener_from_a_closed_port() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let open = listener.local_addr().unwrap();
+        assert_eq!(super::link::probe_address(open).await, Probe::Accepts);
+        drop(listener);
+        assert_eq!(super::link::probe_address(open).await, Probe::Refused);
+    }
+
     /// Only a refusal proves a stop: a connect that timed out or failed
     /// otherwise leaves the question to the pid and the endpoint file.
     #[test]

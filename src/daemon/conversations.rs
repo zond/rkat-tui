@@ -62,24 +62,17 @@ pub struct LogError {
     pub why: String,
 }
 
-/// The conversation log cannot be written.
-#[derive(Debug, thiserror::Error)]
-pub enum SaveError {
-    /// It could not be serialized; nothing was written.
-    #[error("cannot serialize the conversation log: {0}")]
-    Serialize(#[from] serde_json::Error),
-    /// The file could not be written.
-    #[error(transparent)]
-    Write(#[from] crate::paths::AtomicWriteError),
-}
-
-/// Write `value` to `path` as pretty JSON (0600, by rename). A value that
-/// does not serialize writes nothing: the file is never replaced by an
-/// empty one.
-fn save_json<T: serde::Serialize>(value: &T, path: &Path) -> Result<(), SaveError> {
-    let bytes = serde_json::to_vec_pretty(value)?;
-    crate::paths::write_atomic(path, &bytes, crate::paths::FileMode::Private, None)?;
-    Ok(())
+/// `value` as the log file's bytes (pretty JSON), or `None`, logged, when
+/// it does not serialize: then nothing is written, never an empty log
+/// that the strict reader refuses at the next start.
+fn log_bytes<T: serde::Serialize>(value: &T) -> Option<Vec<u8>> {
+    match serde_json::to_vec_pretty(value) {
+        Ok(bytes) => Some(bytes),
+        Err(err) => {
+            tracing::warn!(error = %err, "cannot serialize the conversation log; it is not written");
+            None
+        }
+    }
 }
 
 /// Whether `messages` hold a user turn.
@@ -149,14 +142,12 @@ impl Log {
             })
     }
 
-    /// Write the log to `path` (0600, by rename).
-    ///
-    /// # Errors
-    ///
-    /// [`SaveError`]: the log could not be serialized (the file is left
-    /// as it was) or written.
-    pub fn save(&self, path: &Path) -> Result<(), SaveError> {
-        save_json(self, path)
+    /// Write the log to `path` (0600, by rename; tests).
+    #[cfg(test)]
+    fn save(&self, path: &Path) -> Result<(), String> {
+        let bytes = log_bytes(self).ok_or("the log does not serialize")?;
+        crate::paths::write_atomic(path, &bytes, crate::paths::FileMode::Private, None)
+            .map_err(|err| err.to_string())
     }
 
     /// `session` is `agent`'s current one now, or was just used: recorded
@@ -303,12 +294,45 @@ pub enum Target {
     Resume(SessionId),
 }
 
+/// The conversation log's writer: every write carries the order in which
+/// its log was serialized (under the log's lock), and a write older than
+/// the last one written is dropped, so writes that land out of order
+/// (one off the async loop, one inline) never put an older log back.
+#[derive(Debug)]
+struct LogWriter {
+    file: PathBuf,
+    next: std::sync::atomic::AtomicU64,
+    /// The order of the last log written.
+    written: parking_lot::Mutex<u64>,
+}
+
+impl LogWriter {
+    /// The next order number (taken under the log's lock).
+    fn order(&self) -> u64 {
+        self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
+    }
+
+    /// Write `bytes`, the log of order `order`, unless a newer one was
+    /// written already.
+    fn write(&self, order: u64, bytes: &[u8]) {
+        let mut written = self.written.lock();
+        if order <= *written {
+            return;
+        }
+        match crate::paths::write_atomic(&self.file, bytes, crate::paths::FileMode::Private, None) {
+            Ok(()) => *written = order,
+            Err(err) => tracing::warn!(error = %err, "cannot record the conversation"),
+        }
+    }
+}
+
 /// The agents' conversations.
 pub struct Conversations {
     state: Arc<MobMcpState>,
     registry: Arc<HelperRegistry>,
     log_file: PathBuf,
     log: parking_lot::Mutex<Log>,
+    writer: Arc<LogWriter>,
     /// One switch at a time per agent.
     switching: parking_lot::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// The start-up model and binding (a fresh conversation's, until the
@@ -347,6 +371,11 @@ impl Conversations {
         Ok(Self {
             state,
             registry,
+            writer: Arc::new(LogWriter {
+                file: log_file.clone(),
+                next: std::sync::atomic::AtomicU64::new(0),
+                written: parking_lot::Mutex::new(0),
+            }),
             log_file,
             log: parking_lot::Mutex::new(log),
             switching: parking_lot::Mutex::default(),
@@ -398,34 +427,58 @@ impl Conversations {
         self.log.lock().newest_first()
     }
 
-    /// Record `session` as `agent`'s current conversation.
+    /// Record `session` as `agent`'s current conversation. Called for
+    /// every prompt and steer from the proxy's line loop: the log changes
+    /// in memory here and is written by a blocking task (on a runtime), so
+    /// the loop never waits for a file system sync.
     pub fn touch(&self, session: &SessionId, agent: &str) {
-        let mut log = self.log.lock();
-        log.touch(session, agent);
-        if let Err(err) = log.save(&self.log_file) {
-            tracing::warn!(error = %err, "cannot record the conversation");
+        let Some((order, bytes)) = self.changed(|log| log.touch(session, agent)) else {
+            return;
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => {
+                let writer = Arc::clone(&self.writer);
+                drop(runtime.spawn_blocking(move || writer.write(order, &bytes)));
+            }
+            Err(_) => self.writer.write(order, &bytes),
         }
     }
 
     /// Record `session` as `agent`'s when the log does not have it yet.
     pub fn record(&self, session: &SessionId, agent: &str) {
-        let mut log = self.log.lock();
-        if log.has(session) {
-            return;
-        }
-        log.record(session, agent);
-        if let Err(err) = log.save(&self.log_file) {
-            tracing::warn!(error = %err, "cannot record the conversation");
+        let changed = self.changed(|log| {
+            if !log.has(session) {
+                log.record(session, agent);
+            }
+        });
+        if let Some((order, bytes)) = changed {
+            self.writer.write(order, &bytes);
         }
     }
 
     /// Drop `session` from the log.
     pub fn forget(&self, session: &SessionId) {
-        let mut log = self.log.lock();
-        log.forget(session);
-        if let Err(err) = log.save(&self.log_file) {
-            tracing::warn!(error = %err, "cannot record the conversation");
+        if let Some((order, bytes)) = self.changed(|log| log.forget(session)) {
+            self.writer.write(order, &bytes);
         }
+    }
+
+    /// Write the log as it is now (the daemon's stop: a write still on its
+    /// way is then older and dropped).
+    pub fn flush(&self) {
+        if let Some((order, bytes)) = self.changed(|_| {}) {
+            self.writer.write(order, &bytes);
+        }
+    }
+
+    /// Change the log with `change` and serialize it, under its lock: the
+    /// order number and bytes to write (`None`, logged, when it does not
+    /// serialize: nothing is written).
+    fn changed(&self, change: impl FnOnce(&mut Log)) -> Option<(u64, Vec<u8>)> {
+        let mut log = self.log.lock();
+        change(&mut log);
+        let bytes = log_bytes(&*log)?;
+        Some((self.writer.order(), bytes))
     }
 
     /// Whether `agent`'s run is open now: [`RunState::Unknown`] when its
@@ -1086,6 +1139,26 @@ mod tests {
 
     use super::*;
 
+    /// Writes that land out of order never put an older log back, and a
+    /// flush writes the log as it is.
+    #[test]
+    fn an_older_log_write_never_replaces_a_newer_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("log.json");
+        let writer = LogWriter {
+            file: file.clone(),
+            next: std::sync::atomic::AtomicU64::new(0),
+            written: parking_lot::Mutex::new(0),
+        };
+        let (one, two) = (writer.order(), writer.order());
+        writer.write(two, b"two");
+        writer.write(one, b"one");
+        assert_eq!(std::fs::read(&file).unwrap(), b"two");
+        let three = writer.order();
+        writer.write(three, b"three");
+        assert_eq!(std::fs::read(&file).unwrap(), b"three");
+    }
+
     /// Fail closed: a log that does not serialize is an error and leaves
     /// the file as it was, never an empty log the next start refuses.
     #[test]
@@ -1102,10 +1175,8 @@ mod tests {
         log.touch(&SessionId::new(), "main-a");
         log.save(&file).unwrap();
         let before = std::fs::read(&file).unwrap();
-        assert!(matches!(
-            save_json(&Unserializable, &file),
-            Err(SaveError::Serialize(_))
-        ));
+        // The writer is handed bytes only when there are some.
+        assert!(log_bytes(&Unserializable).is_none());
         assert_eq!(std::fs::read(&file).unwrap(), before);
         assert_eq!(Log::read(&file).unwrap(), Some(log));
     }

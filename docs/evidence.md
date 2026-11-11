@@ -6700,3 +6700,34 @@ soon as no input was unfinished, possibly while the runtime was still
 closing the run, so a `/mode` right after a turn could land a turn late.
 `rkat/active_inputs` now also counts a run still open (or a state it
 cannot read) as unfinished: a client's turn ends when the agent is idle.
+
+## Blocking I/O off the async loops (A7 of senior review 3, 2026-11-11)
+
+- `Conversations::touch` (every prompt and steer, from the proxy's line
+  loop) changes the log in memory and hands the serialized log to a
+  blocking task. Every write carries the order in which its log was
+  serialized under the log's lock, and `LogWriter` drops a write older
+  than the last one written, so an inline write (`record`, `forget`) and
+  a late blocking one cannot put an older log back. The daemon's stop
+  writes the log as it is (`flush_conversations`), so the next start
+  reads the last order. Test:
+  `daemon::conversations::tests::an_older_log_write_never_replaces_a_newer_one`.
+- `rkat/rules`, `rkat/set_mode`'s save and `rkat/checklist_view` run their
+  realm-file read-modify-write in `spawn_blocking` (the realm file's lock
+  from the previous change serializes them).
+- A scheduled run's cost is counted in memory on the event watcher and
+  its record written behind by one blocking writer at a time, each of the
+  latest count; `/schedules` reads the count, so it never shows a stale
+  file.
+- The TUI's cost record (one write with an fsync per model call, on the
+  runner's loop): the newest snapshot of each record waits in
+  `CostWriter` until a blocking task writes it, and a read meanwhile is
+  answered from it. Test:
+  `workbench::cost::tests::the_newest_snapshot_is_read_back_and_written`.
+- `link::probe_address`, polled every 100 ms by `daemon_ended`, used the
+  blocking `std::net::TcpStream::connect_timeout` (up to 1 s) on the
+  runtime thread; it is a `tokio` connect under a 1 s timeout now. Test:
+  `client::runner::tests::the_address_probe_tells_a_listener_from_a_closed_port`.
+
+Not measured: how long each of these blocked before (the review's
+estimate: milliseconds to tens of milliseconds per fsync).

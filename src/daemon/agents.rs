@@ -504,7 +504,15 @@ impl Agents {
     /// A turn of `run` used `usage` on `model`: counted to the schedule
     /// that fired the run, if one did.
     pub fn run_usage(&self, run: &meerkat_core::RunId, model: &str, usage: &meerkat_core::Usage) {
-        self.schedules.record_usage(run, model, usage);
+        let Some(schedule) = self.schedules.schedule_of(run) else {
+            return;
+        };
+        self.schedules.count_cost(&schedule, model, usage);
+        // The record is file I/O: written off the event loop.
+        let schedules = Arc::clone(&self.schedules);
+        drop(tokio::task::spawn_blocking(move || {
+            schedules.write_cost(&schedule);
+        }));
     }
 
     /// The agents' schedules.

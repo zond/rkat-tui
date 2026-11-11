@@ -886,6 +886,9 @@ impl Daemon {
         if self.local.lifecycle().retires_all() {
             self.local.retire_all().await;
         }
+        // The conversation log as it is now; a write still on its way is
+        // older and dropped.
+        self.local.flush_conversations();
         self.local.audit(audit::Line::event(
             "daemon_stop",
             format!("pid {}", std::process::id()),

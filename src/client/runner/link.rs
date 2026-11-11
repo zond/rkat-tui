@@ -971,11 +971,17 @@ pub enum Probe {
 }
 
 /// Probe the loopback `address` now (a connect there is refused at once
-/// when nothing listens).
-pub(super) fn probe_address(address: std::net::SocketAddr) -> Probe {
-    match std::net::TcpStream::connect_timeout(&address, Duration::from_secs(1)) {
-        Ok(_) => Probe::Accepts,
-        Err(err) => classify(&err),
+/// when nothing listens), within a second, without blocking the loop.
+pub(super) async fn probe_address(address: std::net::SocketAddr) -> Probe {
+    match tokio::time::timeout(
+        Duration::from_secs(1),
+        tokio::net::TcpStream::connect(address),
+    )
+    .await
+    {
+        Ok(Ok(_)) => Probe::Accepts,
+        Ok(Err(err)) => classify(&err),
+        Err(_) => Probe::Unknown,
     }
 }
 

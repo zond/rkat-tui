@@ -19,7 +19,7 @@
 //!   of the agent's schedules, dispatched since the daemon started, not
 //!   attributed before, whose prompt is the run's input;
 //! - keeps what each schedule's runs cost in the realm's cost records,
-//!   under the key `schedule-<id>` ([`Schedules::record_usage`]).
+//!   under the key `schedule-<id>` ([`Schedules::count_cost`], written behind by [`Schedules::write_cost`]).
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -158,6 +158,11 @@ pub struct Schedules {
     attributed: parking_lot::Mutex<HashSet<OccurrenceId>>,
     /// The runs attributed to a schedule.
     runs: parking_lot::Mutex<HashMap<RunId, ScheduleId>>,
+    /// What each schedule's runs cost as counted (its record read on
+    /// first use); the record is written behind ([`Self::write_cost`]).
+    costs: parking_lot::Mutex<HashMap<ScheduleId, crate::ui::SessionCost>>,
+    /// One record write at a time.
+    writing: parking_lot::Mutex<()>,
 }
 
 impl std::fmt::Debug for Schedules {
@@ -179,6 +184,8 @@ impl Schedules {
             started: Utc::now(),
             attributed: parking_lot::Mutex::new(HashSet::new()),
             runs: parking_lot::Mutex::new(HashMap::new()),
+            costs: parking_lot::Mutex::new(HashMap::new()),
+            writing: parking_lot::Mutex::new(()),
         }
     }
 
@@ -238,10 +245,7 @@ impl Schedules {
                 next: next.map(stamp),
                 state: phase_word(schedule.phase).to_string(),
                 fired,
-                cost: crate::workbench::cost_store::load_cost(
-                    &self.realm,
-                    &cost_key(&schedule.schedule_id),
-                ),
+                cost: self.cost_of(&schedule.schedule_id),
             });
         }
         Ok(rows)
@@ -369,19 +373,43 @@ impl Schedules {
         None
     }
 
-    /// Count `usage` on `model` to the schedule that fired `run`, if one
-    /// did.
-    pub fn record_usage(&self, run: &RunId, model: &str, usage: &Usage) {
-        let Some(schedule) = self.runs.lock().get(run).cloned() else {
+    /// The schedule that fired `run`, if one did.
+    #[must_use]
+    pub fn schedule_of(&self, run: &RunId) -> Option<ScheduleId> {
+        self.runs.lock().get(run).cloned()
+    }
+
+    /// Count `usage` on `model` to `schedule`, in memory (its record is
+    /// read once, on first use); [`Self::write_cost`] writes it.
+    pub fn count_cost(&self, schedule: &ScheduleId, model: &str, usage: &Usage) {
+        let mut costs = self.costs.lock();
+        let cost = costs.entry(schedule.clone()).or_insert_with(|| {
+            crate::workbench::cost_store::load_cost(&self.realm, &cost_key(schedule))
+                .unwrap_or_default()
+        });
+        cost.record(model, usage);
+    }
+
+    /// Write `schedule`'s cost record as counted now (blocking file I/O;
+    /// one write at a time, each of the latest count).
+    pub fn write_cost(&self, schedule: &ScheduleId) {
+        let _one = self.writing.lock();
+        let Some(cost) = self.costs.lock().get(schedule).cloned() else {
             return;
         };
-        let key = cost_key(&schedule);
-        let mut cost =
-            crate::workbench::cost_store::load_cost(&self.realm, &key).unwrap_or_default();
-        cost.record(model, usage);
-        if let Err(err) = crate::workbench::cost_store::save_cost(&self.realm, &key, &cost) {
+        if let Err(err) =
+            crate::workbench::cost_store::save_cost(&self.realm, &cost_key(schedule), &cost)
+        {
             tracing::warn!(%schedule, error = %err, "a scheduled run's cost was not recorded");
         }
+    }
+
+    /// `schedule`'s cost as counted, else as recorded.
+    fn cost_of(&self, schedule: &ScheduleId) -> Option<crate::ui::SessionCost> {
+        if let Some(cost) = self.costs.lock().get(schedule) {
+            return Some(cost.clone());
+        }
+        crate::workbench::cost_store::load_cost(&self.realm, &cost_key(schedule))
     }
 }
 

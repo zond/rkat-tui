@@ -436,7 +436,14 @@ impl Local {
                 })?;
                 Ok(self.set_mode(mode).await)
             };
-            method::Rules, command => Ok(run_rule_command(&self.engine, &command));
+            method::Rules, command => {
+                // A rule written to the realm file: blocking I/O, off the
+                // connection's loop.
+                let engine = Arc::clone(&self.engine);
+                tokio::task::spawn_blocking(move || run_rule_command(&engine, &command))
+                    .await
+                    .map_err(|err| Refusal::new(protocol::INTERNAL_ERROR, err.to_string()))
+            };
             method::Conversations, Empty {} => {
                 let agent = self.agent_of(&caller).ok();
                 Ok(ConversationList {
@@ -501,8 +508,10 @@ impl Local {
             };
             method::SetModel, params => self.set_model(&self.agent_of(&caller)?, params).await;
             method::ChecklistView, protocol::ChecklistViewParams { view } => {
-                if let Some(file) = &self.realm_file {
-                    file.write_checklist(view)
+                if let Some(file) = self.realm_file.clone() {
+                    tokio::task::spawn_blocking(move || file.write_checklist(view))
+                        .await
+                        .map_err(|err| Refusal::new(protocol::INTERNAL_ERROR, err.to_string()))?
                         .map_err(|err| Refusal::new(protocol::INTERNAL_ERROR, err.to_string()))?;
                 }
                 Ok(Empty {})
@@ -819,6 +828,11 @@ impl Local {
         Ok(answer)
     }
 
+    /// Write the conversation log as it is now (the daemon's stop).
+    pub fn flush_conversations(&self) {
+        self.conversations.flush();
+    }
+
     /// [`protocol::method::ActiveInputs`] for the caller's agent.
     ///
     /// # Errors
@@ -1006,7 +1020,12 @@ impl Local {
     async fn set_mode(&self, mode: PermissionMode) -> ModeSet {
         self.engine.set_mode(mode);
         let mut warnings = Vec::new();
-        if let Err(err) = self.engine.persist_mode() {
+        let engine = Arc::clone(&self.engine);
+        let persisted = tokio::task::spawn_blocking(move || engine.persist_mode())
+            .await
+            .map_err(|err| err.to_string())
+            .and_then(|written| written.map_err(|err| err.to_string()));
+        if let Err(err) = persisted {
             warnings.push(format!(
                 "the mode applies to this run but was not saved: {err}"
             ));
