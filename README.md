@@ -96,6 +96,10 @@ agents").
 
 - [`docs/manual.md`](docs/manual.md): the user manual, starting with
   "First run".
+- [Security model and its limits](docs/manual.md#security-model-and-its-limits):
+  what the sandbox covers and what it does not (the file tools, `!`,
+  shared `/tmp` and `~/.cache`, git's repository configuration, user
+  notes, `@` attachments, remote attach), and how to tighten each.
 - [`docs/ux-parity.md`](docs/ux-parity.md): the Claude Code parity audit.
 - [`CHANGELOG.md`](CHANGELOG.md).
 - Working on rkat-tui itself: [`docs/testing.md`](docs/testing.md) (the

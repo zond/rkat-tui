@@ -11,7 +11,7 @@ the test protocol for working on rkat-tui itself.
 - [First run](#first-run)
 - [Sessions](#sessions)
 - [How approval works](#how-approval-works) ([Permission modes](#permission-modes))
-- [Confinement](#confinement) ([Security decisions](#security-decisions))
+- [Confinement](#confinement) ([Security decisions](#security-decisions), [Security model and its limits](#security-model-and-its-limits))
 - [Helpers](#helpers)
 - [Rules](#rules) ([Configuration reference](#configuration-reference-tuitoml))
 - [Models, endpoints and cost](#models-endpoints-and-cost)
@@ -466,6 +466,90 @@ What rkat-tui does by default where a security review asked for a choice
 Not provided, deliberately, until someone asks: a machine-wide managed
 policy file that pins these choices for every user of a host, and
 `cargo-vet` audits of the dependencies (CI runs `cargo deny`).
+
+### Security model and its limits
+
+What protects you, and where it stops. Each limit below is a deliberate
+choice; after it, what a cautious user can do about it.
+
+- **The agent's shell is sandboxed; its file tools are not.** Commands
+  the agent runs with `shell` run under the confinement described above.
+  The file tools (`read_file`, `write_file`, `edit_file`, `grep`, `glob`)
+  run in the daemon as you: nothing at the operating-system level stops
+  them. Inside the project, reads are allowed and edits follow the
+  permission mode. A read, search or write outside the project is a
+  reviewed action: in auto mode the classifier decides it, in manual and
+  accept-edits mode you are asked, plan mode refuses it. Only the
+  workspace's state directory, the attach token's directory (never read)
+  and the sealed paths (`~/.rkat/tui`, the project's `.rkat/` and `.git/`,
+  never written) are refused outright. *To tighten:* deny what must never
+  be touched, for every file tool: a rule's subject is the path relative
+  to the project, or absolute outside it, so `[[deny]] tool = "read_file"
+  arg = "/*"` refuses every read outside the project (the same for
+  `grep`, `glob`, `write_file`, `edit_file`); or work in manual mode (`--no-auto`, `[auto] mode =
+  "default"`).
+- **A secret inside the project is readable.** `read_file .env` in the
+  workspace is allowed without asking (only writes to `.env`, `build.rs`,
+  `AGENTS.md` and the like ask), and `@.env` attaches it. *To tighten:*
+  `[[deny]] tool = "read_file" arg = "**/.env*"` (and for `grep`).
+- **An allow rule for a file tool without an argument allows everything
+  it can reach.** `allow write_file` with no `arg` (or `arg = "*"`)
+  matches every path, protected files and paths outside the project
+  included, and an allow rule answers what would otherwise be asked or
+  classified. Such a rule is not flagged as broad. Deny rules, the sealed
+  and secret paths and plan mode still win, and a project's `tui.toml`
+  cannot add allow rules. *To tighten:* give every allow rule for a file
+  tool an `arg` pattern inside the project (`arg = "src/**"`), and review
+  `/permissions` now and then.
+- **The sandbox shares `/tmp` and `~/.cache` with you.** The temp
+  directory and your whole cache directory are granted read and write
+  (with the workspace, and the Cargo home's `registry/` and `git/`): the
+  agent's shell can read and change what other programs keep there. It
+  cannot connect to Unix sockets found there (the sandbox admits only IP
+  sockets), but TCP, loopback included, stays open in the default mode.
+  *To tighten:* `--confinement=strict` removes the network; nothing
+  removes the two shared directories today, so keep secrets out of them.
+- **"Safe" git commands run what the repository configures.** `git
+  status`, `diff`, `log`, `show`, `blame` and the other read-only git
+  commands run without review, and git runs the programs `.git/config`
+  names (`core.fsmonitor`, diff `textconv` drivers, `diff.external`).
+  They run inside the sandbox, but the sandbox can write `.git/` (an
+  engine limit), and with `--no-confinement` they run as you. A cloned
+  repository brings no `.git/config` of its own; a copied directory or an
+  unpacked archive does. *To tighten:* keep confinement on, and with an
+  untrusted checkout deny git: `[[deny]] tool = "shell" arg = "git *"`.
+- **A user-scope note reaches every workspace.** A note saved with
+  `scope = user` (the agent's `note_save`, which in auto mode the
+  classifier reviews and in manual mode asks about) is listed, name and
+  first line, in the system prompt of agents in every workspace, marked
+  untrusted and stripped of headings and fences. It is the one way an
+  agent in one workspace writes into another's prompt. *To tighten:*
+  `[[deny]] tool = "note_save" arg = "user/*"`, and read
+  `~/.rkat/tui/notes/` now and then.
+- **`!` runs as you, with no sandbox.** A `!` command is yours: it runs
+  in your shell with your whole environment and files, unreviewed, and
+  its output becomes part of the agent's context. *To tighten:* treat a
+  `!` line as typing in your own terminal; do not paste commands from the
+  agent into it unread.
+- **A file attached with `@` is as trusted as one the agent read.** Its
+  contents go into your message to the agent verbatim; a file that tells
+  the agent what to do can be obeyed like any file it reads itself. The
+  classifier sees only that files were attached, not their contents.
+  Sealed paths are never attached. *To tighten:* attach only files you
+  would let the agent read; `[auto] classifier_tools = false` additionally
+  keeps file contents away from the classifier.
+- **A non-loopback `--attach` carries the session unencrypted.**
+  `--attach=HOST:PORT` to another machine needs `--attach-insecure`; the
+  attach token never crosses the network (a challenge and response
+  proves it), but the session after it does, readable and alterable by
+  anyone on the path, approvals included. *To tighten:* never use
+  `--attach-insecure`; forward the port over SSH (`ssh -N -L
+  127.0.0.1:4100:127.0.0.1:<port> <host>`, then `--attach=127.0.0.1:4100`).
+- **The attach token is the daemon's whole access control.** Whoever can
+  read the endpoint file can attach, answer approvals and change the
+  mode and rules. With confinement on, the agent's shell cannot read it
+  and the file tools refuse it; with `--no-confinement` the shell can.
+  *To tighten:* keep confinement on.
 
 ## Helpers
 

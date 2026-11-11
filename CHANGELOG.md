@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- The manual has a "Security model and its limits" section (linked from
+  the README): what the sandbox covers and what it does not, and the rule
+  or setting that tightens each limit.
+
 ## [0.0.1] - 2026-11-11
 
 The first release on crates.io, opening the 0.0.x line: the maintainer's
