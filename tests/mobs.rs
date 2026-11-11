@@ -358,6 +358,52 @@ async fn a_helper_no_open_session_owns_is_refused() {
     daemon.stop().await;
 }
 
+/// The daemon follows a seated helper until the mob's own `MemberRetired`
+/// says it left: while it idles it stays live (nothing else ends the
+/// follow), and its retirement drops it and its binding.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_followed_helper_stays_live_until_its_member_retired_arrives() {
+    use rkat_tui::mobs::HelperKey;
+
+    let ws = Workspace::new();
+    let mob = meerkat_mob::MobId::from("team");
+    let key = HelperKey::new(mob.clone(), meerkat_mob::AgentIdentity::from("worker"));
+    let llm = ScriptedLlmClient::new(vec![Step::Text("idle")]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let owner = daemon.session.clone();
+    within(
+        daemon
+            .state()
+            .mob_create_definition_with_owner_bridge_session(
+                team("team"),
+                owner.clone(),
+                false,
+                false,
+            ),
+    )
+    .await
+    .unwrap();
+    let handle = within(daemon.state().handle_for(&mob)).await.unwrap();
+    let mut spec = meerkat_mob::SpawnMemberSpec::new("delegate", "worker");
+    spec.initial_message = Some("start".into());
+    within(handle.spawn_spec(spec)).await.unwrap();
+    llm.wait_call(0).await;
+    let registry = daemon.registry();
+    // Idle after its turn: still followed, still live.
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    assert_eq!(registry.live_for(&owner), vec![key.clone()]);
+    within(handle.retire(key.member.clone())).await.unwrap();
+    within(async {
+        while !registry.live_for(&owner).is_empty() || registry.owner_for_resume(&key).is_ok() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    drop(handle);
+    drop(registry);
+    daemon.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_helpers_owner_survives_a_restart_until_it_retires() {
     use rkat_tui::mobs::HelperKey;

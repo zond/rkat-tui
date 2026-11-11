@@ -75,10 +75,15 @@ the `##` section named after it):
   The second senior review's fixes: "After the second senior review
   (2026-11-10)".
   `docs/mob-split.md` has the plan and the status.
+- **The third senior review's batches:** "One realm per workspace, `!` as
+  the user" (batch 2); "The daemon does it once, the client shows it"
+  (batch 3: usage counted in the daemon, `/context` from the daemon,
+  pushes instead of polls, the gauge's seed, the helper follower).
 - **Upstream asks and the engine pin:** "Open asks" below; "The pin moves
   to upstream `main`"; "The pin moves to the 0.9.11 integration"; "P3b and
   the 0.9.11 adoption"; "The engine moves to crates.io 0.9.11"; "The
-  engine moves to crates.io 0.9.12"; "Steers are attributed by input id".
+  engine moves to crates.io 0.9.12"; "The engine moves to crates.io
+  0.9.13"; "Steers are attributed by input id".
 
 ## Open asks
 
@@ -91,8 +96,13 @@ the mob split are numbered in `docs/mob-split.md`, "Open engine asks"):
 - The model registry refreshed on reconfigure, so a model switch that needs
   a new profile does not rebuild the session: "Phase 4 (models, endpoints,
   cost)".
-- End a retired member's event subscription, so the helper follower need
-  not poll the roster: "P5 — Mobs", gap 4.
+- End a retired member's event subscription: no longer needed for the
+  roster poll (the follower takes the mob's own `MemberRetired` since
+  batch 3), still the cleaner contract: "P5 — Mobs", gap 4.
+- An after-create hook (or a structural event a host can wait on before
+  it holds a handle) saying a mob is managed, so the helper follower need
+  not retry `MobMcpState::handle_for` for up to 2 s: "The daemon does it
+  once, the client shows it (batch 3)".
 - A live compaction-trigger update, and the per-build trigger kept across
   `session_recovery`: "P6", gap 2, and "Runtime, endpoints and structure: first review fixes" (Z-H5).
 - Tool provenance and mutation class in `ToolDispatchContext`: "P6", gap 5,
@@ -7146,3 +7156,26 @@ switch, B shows A's `/new`) and
 (one `mob/list` at attach, none for the turn; the helper's `RunStarted`
 and its text are shown, the backfill path covering what came before the
 client's stream opened).
+
+**The daemon-side helper follower, reduced.** `mobs::follow` ran a task
+per helper that retried the subscribe up to 400 times 5 ms apart, called
+`list_members` on the helper's mob every 200 ms for the helper's whole
+life to notice it left, and forwarded every helper event over an
+unbounded channel whose one consumer wanted run ends. Now (item 1 already
+replaced the channel with `HelperWatch`'s turn and run end) it is driven
+by the mob's structural events (`MobHandle::events().subscribe()`, taken
+before the member's stream): a helper not yet a member is subscribed at
+its `MemberSpawned` (within 10 s; a spawn refused after the customizer
+saw it never joins), and its `MemberRetired`, or the mob's destroy, reset
+or completion, ends the follow. One `list_members` remains, once, when a
+helper's stream ends with neither, to tell a retirement from a stopping
+mob. What stays a retry: reaching the mob itself (`handle_for`, at most
+2 s in 20 ms steps), because the engine's create hook runs before the mob
+exists and it has no after-create hook or event a host can wait on before
+it holds a handle; recorded under "Open asks". The usage of item 1 comes
+from the same single subscription per helper. Tests:
+`mobs::a_followed_helper_stays_live_until_its_member_retired_arrives`
+(idle for a second it stays live, its retirement drops it and its
+binding), with `mobs::a_helpers_owner_survives_a_restart_until_it_retires`,
+`pushes::a_delegate_helper_is_followed_from_its_first_event_without_listing_mobs`
+and the councils' and helpers' rig tests unchanged.

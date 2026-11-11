@@ -389,8 +389,8 @@ in `<realm>/attach.cursor` and reattaches with
 mark. A first attach, a cursor of another daemon (the cursor records a
 digest of the daemon's token) or without an epoch, or a truncated stream
 renders the conversation from its start: the committed messages from
-`rkat/transcript`, the session's last sequence and gauge from
-`events/list_since`, then the live stream. A reconnect retries with backoff
+`rkat/transcript`, the session's last sequence from `events/snapshot`,
+its gauge from `rkat/usage`, then the live stream. A reconnect retries with backoff
 and, in auto mode, restarts a dead daemon (at most every 30 s).
 
 **Helpers and `fork_off`.** The daemon fills the builder's mob-tools slot
@@ -399,8 +399,10 @@ agent mob tools (`delegate`, `mob_*`, `council`) beside the operator family
 (`spawn_member`, …). `fork_off` is allowed to the daemon's members (not at
 the depth limit): the child is seated under the source's admission (#2112),
 asks the customizer, and is a gated, followed helper of the orchestrator's
-session. The client lists the mobs (`mob/list`) and opens a mob-wide
-`mob/stream_open {mob_id}` on each (`tui` and every `implicit-<session>`),
+session. The client lists the mobs once per attach and per conversation
+(`mob/list`), learns of each later one that hosts a helper from the
+daemon's `rkat/mob` push, and opens a mob-wide
+`mob/stream_open {mob_id}` on each of its agent's (`tui` and every `implicit-<session>`),
 mapping events to the UI's `Msg::Scoped`; a helper first seen is
 backfilled from `events/list_since`, its model from `events/snapshot`. The
 client never calls `mob/fork_helper` or `mob/spawn_helper` itself.
@@ -413,7 +415,8 @@ sessions. `/new` retires the member (the engine archives its session) and
 spawns it fresh; `/resume` retires it and spawns it with `launch_mode =
 resume` on an earlier session of its own. The identity, gate, `rkat/*`
 methods and every client's addressing stay; only `current_session_id`
-moves, which every client on that agent polls (1 s) and follows. The
+moves, which the daemon pushes to every client (`rkat/switched`) and
+each client on that agent follows. The
 daemon keeps the list in `<realm>/conversations.json`, each
 entry naming its agent (the engine keeps no list of a member's earlier
 sessions). A session belongs to the identity that ran it: the engine
