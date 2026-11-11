@@ -1070,6 +1070,28 @@ async fn a_reconnect_restarts_a_daemon_that_died() {
         }
     })
     .await;
+    // Without a connection there is no one to ask: `/daemon stop` says
+    // so and names the way to stop a daemon by hand; nothing is signalled.
+    let attached = |client: &Client| {
+        client.seen.iter().rev().find_map(|msg| match msg {
+            Msg::Status(rkat_tui::ui::StatusUpdate::Connection(state)) => {
+                Some(matches!(state, rkat_tui::ui::Connection::Attached { .. }))
+            }
+            _ => None,
+        }) == Some(true)
+    };
+    while attached(&client) {
+        client
+            .wait_for(|m| matches!(m, Msg::Status(rkat_tui::ui::StatusUpdate::Connection(_))))
+            .await;
+    }
+    client.send(Effect::DaemonStop);
+    client
+        .wait_for(|m| {
+            matches!(m, Msg::Notice { text, .. }
+                if text.contains("cannot be asked to stop") && text.contains("kill <pid>"))
+        })
+        .await;
     client.quit().await;
 }
 

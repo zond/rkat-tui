@@ -54,6 +54,11 @@
   is wider than its own flags (the "runs the agent's shell wider than
   this client's flags allow" error) and no longer probes the daemon's
   status before every attach.
+- A client stops a daemon one way: it asks it (`rkat/shutdown`).
+  `/daemon stop` no longer sends SIGTERM to the pid in the endpoint file,
+  and the quit dialog's "terminate" no longer falls back to SIGTERM when
+  the request fails; without a connection `/daemon stop` says it cannot
+  ask and names `rkat-tui --list` and `kill <pid>`.
 - The engine is Meerkat 0.9.12 (from 0.9.11): the engine's own file tools
   (`apply_patch`, `blob_save_file`) refuse every path in a `.rkat`
   directory of the workspace, the realm's SQLite is 3.54.1 (the bundled

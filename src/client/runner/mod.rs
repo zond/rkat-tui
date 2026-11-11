@@ -1266,7 +1266,6 @@ async fn sleep_until(deadline: Option<Instant>) {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::commands::{agent_lines, others_notice, report_lines, schedules_text};
-    use super::depart::stop_target;
     use super::link::{Probe, classify};
     use super::turn::model_switch;
     use super::*;
@@ -1821,22 +1820,6 @@ mod tests {
         assert_eq!(switch.endpoint, "anthropic");
         assert!(model_switch("my-alias", &endpoints, None, None).is_err());
         assert!(model_switch("litellm:x", &endpoints, None, None).is_err());
-    }
-
-    #[test]
-    fn daemon_stop_signals_only_the_daemon_this_client_is_attached_to() {
-        let at: std::net::SocketAddr = "127.0.0.1:4000".parse().unwrap();
-        let live = launch::Liveness::Live(Endpoint {
-            address: at,
-            token: "t".into(),
-            pid: 42,
-            workspace: None,
-            started_at: None,
-        });
-        assert_eq!(stop_target(&live, Some(at)), Ok(42));
-        assert!(stop_target(&live, Some("127.0.0.1:4001".parse().unwrap())).is_err());
-        assert!(stop_target(&live, None).is_err());
-        assert!(stop_target(&launch::Liveness::Absent, Some(at)).is_err());
     }
 
     #[test]

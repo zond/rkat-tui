@@ -448,7 +448,7 @@ What rkat-tui does by default where a security review asked for a choice
   reaches the network is still reviewed by the classifier like any other.
 - **No idle timeout.** A detached agent (`/detach`, a closed terminal)
   keeps running until its turn ends, or until you stop it (`/quit` from a
-  TUI attached to it, `/daemon stop`, or SIGTERM to the daemon). It does
+  TUI attached to it, `/daemon stop`, or `kill <pid>` from a shell). It does
   not stop by itself after a while.
 - **Unattended turns.** A turn another agent's message started on your
   agent, while no TUI is attached to it, cannot run anything that needs
@@ -1229,8 +1229,7 @@ or write local files are refused with the reason: `!` commands, `@`
 mentions (sent as typed), `/remember`, `/memory` and `/export` to a path
 (`/export` alone writes into this machine's own workspace state). Prompts,
 approvals, modes, rules, `/model`, `/new`, `/resume`, `/cost`, `/context`
-and the pickers work as usual. `/daemon stop` asks such a daemon to shut
-down instead of signalling a pid that may be another machine's.
+and the pickers work as usual.
 
 The token itself never travels: the daemon first proves it holds it (an
 HMAC over two fresh nonces), and only then does the TUI prove it does the
@@ -1378,10 +1377,12 @@ table above) with `rkat/shutdown`; the choice "terminate" does the same.
 When the daemon does not confirm (the connection dropped), the TUI reports
 it stopped only once its endpoint file is gone, and otherwise says it may
 still be running (check with `--list`). `/daemon stop` stops it from any
-attached TUI: it sends SIGTERM to the pid in the endpoint file, after
-checking that the file still names the daemon this TUI is attached to.
-Either way the daemon removes its endpoint file and shuts down; its
-sessions stay in the realm. After `/daemon stop` (or SIGTERM) the next
+attached TUI, also with `rkat/shutdown` (keeping its agents): a client
+always asks the daemon and never signals a process. A TUI that is not
+attached cannot ask, and says so: `rkat-tui --list` shows the daemon and
+its pid, and `kill <pid>` (SIGTERM) stops it by hand. Either way the
+daemon removes its endpoint file and shuts down; its sessions stay in the
+realm. After `/daemon stop` (or SIGTERM) the next
 start restores the agents, marked detached; after a terminate they were
 retired, and the next start seats a fresh first agent.
 
