@@ -6252,3 +6252,38 @@ Tests: `tests/attach_lifecycle.rs::two_clients_quitting_at_once_get_one_decision
 `tests/schedules.rs` (a quit retires the agent and deletes its schedule),
 `daemon::local::tests::quitting_names_the_agents_schedules`,
 `ui::tests::dispatch::an_attached_quit_asks_the_runner_and_follows_its_decision`.
+
+### The client never awaits the wire in its loop (R2 item 4)
+
+`AttachRunner::handle_effect` awaited `start_turn`, `steer`, `set_mode`,
+`status_report`, the rule and trust commands, `/agents` (list and
+switch), `/audit`, `/schedules`, `/daemon stop`, `/quit`, the departure,
+`/rehome`, `/remember` and an edited `/memory` inline, each bounded only
+by its call's timeout (15 s), and the `select!` loop took no other
+effect meanwhile: the Esc behind a slow `mob/member_send` waited for it.
+Every one of them now does its synchronous part in the loop and makes
+its call from a task of its own, which tells the UI itself (a notice) or
+reports back (`Report::Sent`, `AgentsRead`, `StopAsked`, `QuitDecided`,
+`RehomeStopped`, `Rehomed`, with the link epoch, as the switches already
+did). Two orderings the inline awaits gave for free are kept explicitly:
+prompts and steers go through one task in the order they were made
+(`AttachRunner::outbound`: a steer must not reach the agent before its
+prompt), and a steer is expected at the agent's next boundary from the
+moment it is sent (`Turn::steers`; taken back when the send fails),
+since the stream may deliver it before the send's answer arrives. A
+prompt's send failure ends only the turn it was sent for (`Turn::id`).
+The departure (`/detach`, terminate after the dialog) is done once the
+loop ends, where nothing waits behind it. A re-home runs in two halves
+and marks the runner `rehoming`, so the end of the daemon it stopped is
+not taken for a lost connection. `Interrupt` stays synchronous; its
+stop or cancel was already a task.
+
+Not done here: the `RecallQueued` round trip (Up on an empty input
+answers `RECALL_UNAVAILABLE`) stays as it is; it gets wired to a daemon
+`rkat/recall` when Meerkat 0.9.12 is adopted
+(`.handover/release-adoption-brief.md` 3.2).
+
+Test: `client::runner::tests::no_effect_waits_on_a_daemon_that_does_not_answer`
+(a daemon that answers nothing after the attach: every effect returns
+within 2 s, the prompt's turn runs and Esc interrupts it, the steer is
+expected; before, the first prompt held the loop for the call's 15 s).

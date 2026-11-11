@@ -59,7 +59,7 @@ use crate::workbench::{AgentContext, SavedUnsent, Workbench, WorkbenchParts};
 use crate::workbench::{context, tasks};
 
 /// What is sent in place of a prompt that repeats the one a failed turn
-/// already committed ([`AttachRunner::retry_input`]).
+/// already committed ([`send_outbound`]).
 const RETRY_INPUT: &str = "(retrying the request above)";
 
 /// How many times a failed first connect is retried by itself (each
@@ -337,6 +337,69 @@ enum Report {
     /// conversations could not be listed, the reference resolved to none
     /// or to the current one): why. Ends the switch.
     SwitchRefused(NoticeLevel, String),
+    /// A prompt (`steer` `None`) of turn `turn`, or a steer, was sent, or
+    /// why not ([`Outbound`]).
+    Sent {
+        turn: u64,
+        steer: Option<PendingId>,
+        result: Result<(), String>,
+    },
+    /// `/agents <name>`: the daemon's agents as read for it.
+    AgentsRead {
+        name: String,
+        status: Option<protocol::Status>,
+    },
+    /// `/daemon stop` asked the daemon to stop (the notice), or did not.
+    StopAsked(Result<String, String>),
+    /// `/quit`'s decision, and whether the daemon is stopping.
+    QuitDecided {
+        decision: QuitDecision,
+        stopping: bool,
+    },
+    /// A re-home's first half: the daemon stopped, or why not (the re-home
+    /// did not start).
+    RehomeStopped(Result<Box<RehomeStopped>, String>),
+    /// A re-home's second half: how it ended.
+    Rehomed(Box<Rehomed>),
+}
+
+/// The re-home's state between its halves ([`Report::RehomeStopped`]).
+struct RehomeStopped {
+    plan: super::rehome::Plan,
+    endpoint: Endpoint,
+    reroot: Reroot,
+    agent: AgentChoice,
+}
+
+/// How a re-home ended ([`Report::Rehomed`]).
+enum Rehomed {
+    /// It moved; this client works on `config` from now on.
+    Moved {
+        config: AttachConfig,
+        reroot: Reroot,
+        agent: AgentChoice,
+    },
+    /// It moved, but this client cannot run there.
+    Stranded,
+    /// Nothing moved: the workspace's daemon starts again.
+    Failed,
+}
+
+/// A prompt or a steer for the agent, sent by [`AttachRunner::outbound`]'s task
+/// in the order they were made.
+struct Outbound {
+    connection: Arc<Connection>,
+    text: String,
+    /// `Some`: a steer.
+    steer: Option<PendingId>,
+    /// The conversation of the turn that just failed with this prompt: it
+    /// is sent as [`RETRY_INPUT`] when that prompt is still its last
+    /// message.
+    retry: Option<SessionId>,
+    /// The turn it belongs to.
+    turn: u64,
+    reports: Reporter,
+    ui_tx: mpsc::UnboundedSender<Msg>,
 }
 
 /// Why the current conversation is read again from its start.
@@ -388,6 +451,9 @@ struct Turn {
     prompt: Option<String>,
     /// A steer of this client joined it.
     steered: bool,
+    /// Which of the UI's turns it is (`AttachRunner::turns`; 0: another
+    /// client's run).
+    id: u64,
 }
 
 impl Turn {
@@ -426,6 +492,85 @@ async fn bounded<T>(
         .await
         .map_err(|_| CallFailure::TimedOut)?
         .map_err(CallFailure::Failed)
+}
+
+/// The daemon's `rkat/status` (`None`: no answer).
+async fn daemon_status(connection: &Connection) -> Option<protocol::Status> {
+    bounded(
+        LEAVE_TIMEOUT,
+        remote::call::<protocol::method::Status>(connection, &protocol::Empty {}),
+    )
+    .await
+    .map_err(|err| tracing::info!(error = %err, "the daemon's status is unknown"))
+    .ok()
+}
+
+/// SIGTERM to the daemon the endpoint `files` name, when its address is
+/// `connected` (the one this client is attached to).
+async fn sigterm(
+    files: &[PathBuf],
+    connected: Option<std::net::SocketAddr>,
+) -> Result<u32, String> {
+    let liveness = launch::probe_any(files).await;
+    let pid = stop_target(&liveness, connected)?;
+    terminate(pid).map_err(|err| format!("cannot stop the daemon: {err}"))?;
+    Ok(pid)
+}
+
+/// Send one prompt or steer ([`Outbound`]) and report how it went. A
+/// prompt that repeats the failed turn's is sent as [`RETRY_INPUT`] when
+/// that prompt is still its conversation's last message (a failed run
+/// keeps it committed, so the text again would be in the transcript
+/// twice).
+async fn send_outbound(outbound: Outbound) {
+    let Outbound {
+        connection,
+        text,
+        steer,
+        retry,
+        turn,
+        reports,
+        ui_tx,
+    } = outbound;
+    let mut sent: &str = &text;
+    if let Some(session) = retry
+        && repeats_the_last_prompt(&connection, &session, &text).await
+    {
+        let _ = ui_tx.send(Msg::Notice {
+            level: NoticeLevel::Info,
+            text: "your message is already in the transcript from the failed turn; retrying it"
+                .to_string(),
+        });
+        sent = RETRY_INPUT;
+    }
+    let result = bounded(
+        CALL_TIMEOUT,
+        remote::send(&connection, sent, steer.is_some()),
+    )
+    .await
+    .map_err(|err| err.to_string());
+    reports.send(Report::Sent {
+        turn,
+        steer,
+        result,
+    });
+}
+
+/// Whether `text` is the last message of `session` as the user's prompt.
+async fn repeats_the_last_prompt(connection: &Connection, session: &SessionId, text: &str) -> bool {
+    let Ok(messages) = bounded(CALL_TIMEOUT, remote::transcript(connection, session)).await else {
+        return false;
+    };
+    let last = messages
+        .iter()
+        .rev()
+        .find(|message| !matches!(message, Message::System(_) | Message::SystemNotice(_)));
+    matches!(
+        last,
+        Some(Message::User(user))
+            if user.transcript_role == meerkat_core::TranscriptUserRole::Conversational
+                && user.text_content().trim() == text.trim()
+    )
 }
 
 /// Events of streams opened but not registered yet, by stream id, at most
@@ -554,6 +699,39 @@ pub struct AttachRunner {
     retries: u32,
     /// The prompt of the turn that just failed, in its conversation.
     failed_prompt: Option<(SessionId, String)>,
+    /// Numbers the UI's turns: a prompt's send failure ends the turn it was
+    /// sent for, not a later one.
+    turns: u64,
+    /// The prompts and steers on their way, sent in order by one task
+    /// ([`Self::outbound`]).
+    outbound: Option<mpsc::UnboundedSender<Outbound>>,
+    /// How the UI leaves the daemon, done once the loop ends
+    /// ([`Self::depart`]).
+    departure: Option<Departure>,
+    /// A re-home runs: the daemon it stopped is no lost connection.
+    rehoming: bool,
+}
+
+/// What a background task says to the UI ([`AttachRunner::say`]).
+#[derive(Clone)]
+struct Say {
+    ui_tx: mpsc::UnboundedSender<Msg>,
+    farewells: Farewells,
+}
+
+impl Say {
+    fn notice(&self, level: NoticeLevel, text: impl Into<String>) {
+        let _ = self.ui_tx.send(Msg::Notice {
+            level,
+            text: text.into(),
+        });
+    }
+
+    /// Say `text` now and again on the terminal after the UI closed.
+    fn farewell(&self, level: NoticeLevel, text: String) {
+        self.notice(level, text.clone());
+        self.farewells.lock().push(text);
+    }
 }
 
 /// Lines for the terminal after the UI closed ([`AttachRunner::farewells`]).
@@ -614,6 +792,10 @@ impl AttachRunner {
             retry_at: None,
             retries: 0,
             failed_prompt: None,
+            turns: 0,
+            outbound: None,
+            departure: None,
+            rehoming: false,
         }
     }
 
@@ -630,7 +812,7 @@ impl AttachRunner {
     /// reattach ([`AttachRunner::reroot`]).
     ///
     /// [`realm_home::read_reference`]: crate::bootstrap::realm_home::read_reference
-    async fn rehome(&mut self, argument: Option<String>) {
+    fn rehome(&mut self, argument: Option<String>) {
         use super::rehome::{self as rh, Side};
         use crate::bootstrap::realm_home::{self, Reading};
         let scope = &self.config.scope;
@@ -727,81 +909,134 @@ impl AttachRunner {
                 AgentChoice::Recent,
             ),
         };
-        let plan = match rh::prepare(
-            &root,
-            adopt,
-            destination,
-            replace,
-            &reroot.endpoint_files,
-            Some((&connection, side)),
-        )
-        .await
-        {
-            Ok(plan) => plan,
-            Err(err) => {
-                self.notice(NoticeLevel::Warn, err.to_string());
-                return;
-            }
-        };
-        self.notice(
-            NoticeLevel::Info,
-            format!(
-                "re-homing realm {} to {}: stopping the daemon",
-                plan.adopt().id,
-                plan.workspace().display()
-            ),
-        );
-        // This client's daemon stops first; the link is dropped here, so
-        // its end is not taken for a lost connection.
-        if let Err(why) = rh::stop(&connection).await {
-            self.notice(
-                NoticeLevel::Warn,
-                format!("the re-home did not start: the daemon was not stopped ({why})"),
-            );
-            return;
-        }
-        self.unlink();
-        self.show(LinkState::Starting);
-        drop(connection);
-        daemon_ended(&self.config.endpoint_files, &endpoint, true, rh::STOP_WAIT).await;
-        let done = match rh::carry_out(plan, rh::STOP_WAIT).await {
-            Ok(done) => done,
-            Err(err) => {
-                // Nothing moved: this workspace's daemon starts again.
-                self.notice(
-                    NoticeLevel::Error,
-                    format!("the re-home failed: {err}; restarting this workspace's daemon"),
-                );
-                self.first_connect = true;
-                self.connect();
-                return;
-            }
-        };
-        let mut args = reroot.args.clone();
-        args.context_root = Some(done.home.manifest.path.clone());
-        let config = match (reroot.configure)(args.clone()).await {
-            Ok(config) => config,
-            Err(err) => {
-                self.notice(
-                    NoticeLevel::Error,
+        let say = self.say();
+        let reports = self.reporter();
+        self.rehoming = true;
+        tokio::spawn(async move {
+            let stopped = async {
+                let plan = rh::prepare(
+                    &root,
+                    adopt,
+                    destination,
+                    replace,
+                    &reroot.endpoint_files,
+                    Some((&connection, side)),
+                )
+                .await
+                .map_err(|err| err.to_string())?;
+                say.notice(
+                    NoticeLevel::Info,
                     format!(
-                        "{done}, but this rkat-tui cannot run there: {err}; start rkat-tui in {}",
-                        done.home.manifest.path.display()
+                        "re-homing realm {} to {}: stopping the daemon",
+                        plan.adopt().id,
+                        plan.workspace().display()
                     ),
                 );
-                self.show(LinkState::Stopped);
-                self.stopping = true;
+                rh::stop(&connection).await.map_err(|why| {
+                    format!("the re-home did not start: the daemon was not stopped ({why})")
+                })?;
+                Ok(Box::new(RehomeStopped {
+                    plan,
+                    endpoint,
+                    reroot,
+                    agent,
+                }))
+            }
+            .await;
+            reports.send(Report::RehomeStopped(stopped));
+        });
+    }
+
+    /// The re-home's daemon stopped (or the re-home did not start): carry
+    /// it out, then work on the workspace it serves now
+    /// ([`Report::Rehomed`]).
+    fn rehome_stopped(&mut self, stopped: Result<Box<RehomeStopped>, String>) {
+        let stopped = match stopped {
+            Ok(stopped) => stopped,
+            Err(why) => {
+                self.rehoming = false;
+                self.notice(NoticeLevel::Warn, why);
                 return;
             }
         };
-        self.notice(
-            NoticeLevel::Info,
-            format!(
-                "{done}; this rkat-tui works in {} now, starting its daemon there",
-                done.home.manifest.path.display()
-            ),
-        );
-        self.reroot(config, Reroot { args, ..reroot }, agent);
+        let RehomeStopped {
+            plan,
+            endpoint,
+            reroot,
+            agent,
+        } = *stopped;
+        // This client's daemon stopped; the link is dropped here, so its
+        // end is not taken for a lost connection.
+        self.unlink();
+        self.show(LinkState::Starting);
+        let files = self.config.endpoint_files.clone();
+        let say = self.say();
+        let reports = self.reporter();
+        tokio::spawn(async move {
+            use super::rehome as rh;
+            daemon_ended(&files, &endpoint, true, rh::STOP_WAIT).await;
+            let rehomed = match rh::carry_out(plan, rh::STOP_WAIT).await {
+                // Nothing moved: this workspace's daemon starts again.
+                Err(err) => {
+                    say.notice(
+                        NoticeLevel::Error,
+                        format!("the re-home failed: {err}; restarting this workspace's daemon"),
+                    );
+                    Rehomed::Failed
+                }
+                Ok(done) => {
+                    let mut args = reroot.args.clone();
+                    args.context_root = Some(done.home.manifest.path.clone());
+                    match (reroot.configure)(args.clone()).await {
+                        Ok(config) => {
+                            say.notice(
+                                NoticeLevel::Info,
+                                format!(
+                                    "{done}; this rkat-tui works in {} now, starting its daemon there",
+                                    done.home.manifest.path.display()
+                                ),
+                            );
+                            Rehomed::Moved {
+                                config,
+                                reroot: Reroot { args, ..reroot },
+                                agent,
+                            }
+                        }
+                        Err(err) => {
+                            say.notice(
+                                NoticeLevel::Error,
+                                format!(
+                                    "{done}, but this rkat-tui cannot run there: {err}; start rkat-tui in {}",
+                                    done.home.manifest.path.display()
+                                ),
+                            );
+                            Rehomed::Stranded
+                        }
+                    }
+                }
+            };
+            reports.send(Report::Rehomed(Box::new(rehomed)));
+        });
+    }
+
+    /// How the re-home ended ([`Self::rehome_stopped`]).
+    fn rehomed(&mut self, rehomed: Rehomed) {
+        self.rehoming = false;
+        match rehomed {
+            Rehomed::Failed => {
+                self.first_connect = true;
+                self.connect();
+            }
+            Rehomed::Stranded => {
+                self.show(LinkState::Stopped);
+                self.stopping = true;
+            }
+            Rehomed::Moved {
+                config,
+                reroot,
+                agent,
+            } => self.reroot(config, reroot, agent),
+        }
     }
 
     /// Drop the link and everything shown from it (a re-home or an agent
@@ -854,8 +1089,15 @@ impl AttachRunner {
 
     /// Say `text` now and again on the terminal after the UI closed.
     fn farewell(&self, level: NoticeLevel, text: String) {
-        self.notice(level, text.clone());
-        self.farewells.lock().push(text);
+        self.say().farewell(level, text);
+    }
+
+    /// What a task says to the UI, and on the terminal after it closed.
+    fn say(&self) -> Say {
+        Say {
+            ui_tx: self.ui_tx.clone(),
+            farewells: Arc::clone(&self.farewells),
+        }
     }
 
     /// Serve effects until the UI quits, then detach (the daemon and any
@@ -900,6 +1142,9 @@ impl AttachRunner {
                 () = sleep_until(self.session_check_at) => self.check_session(),
                 joined = self.bench.background() => self.model_lists(joined),
             }
+        }
+        if let Some(departure) = self.departure.take() {
+            self.depart(departure).await;
         }
         self.save_cursor();
         self.bench.cancel_shell();
@@ -1382,6 +1627,10 @@ impl AttachRunner {
         // What is still pending shows again after the reattach.
         for id in self.approvals.clear() {
             self.send(Msg::EscalationResolved(id));
+        }
+        if self.rehoming {
+            // The re-home stopped this daemon; it reattaches when done.
+            return;
         }
         if self.stopping {
             self.show(LinkState::Stopped);
@@ -1900,6 +2149,23 @@ impl AttachRunner {
             }
         }
         match report {
+            Report::Sent {
+                turn,
+                steer,
+                result,
+            } => self.sent(turn, steer, result),
+            Report::AgentsRead { name, status } => self.agents_read(name, status),
+            Report::StopAsked(Ok(text)) => {
+                self.stopping = true;
+                self.notice(NoticeLevel::Info, text);
+            }
+            Report::StopAsked(Err(why)) => self.notice(NoticeLevel::Warn, why),
+            Report::QuitDecided { decision, stopping } => {
+                self.stopping |= stopping;
+                self.send(Msg::QuitDecided(decision));
+            }
+            Report::RehomeStopped(stopped) => self.rehome_stopped(stopped),
+            Report::Rehomed(rehomed) => self.rehomed(*rehomed),
             Report::ModelSet { switch, result } => match result {
                 Ok(set) => {
                     if self
@@ -2167,10 +2433,14 @@ impl AttachRunner {
         self.link.as_ref().map(|link| Arc::clone(&link.connection))
     }
 
+    /// Act on one effect of the UI. Nothing here waits on the daemon:
+    /// every call is made by a task of its own, which reports back (a
+    /// [`Report`]) or tells the UI itself, so the loop always takes the
+    /// next effect, Esc included.
     async fn handle_effect(&mut self, effect: Effect) {
         match effect {
-            Effect::StartTurn(text) => self.start_turn(&text).await,
-            Effect::Steer { id, text } => self.steer(id, &text).await,
+            Effect::StartTurn(text) => self.start_turn(&text),
+            Effect::Steer { id, text } => self.steer(id, &text),
             Effect::Interrupt => self.interrupt(),
             Effect::RecallQueued => self.send(Msg::Recalled {
                 recalled: Vec::new(),
@@ -2188,7 +2458,7 @@ impl AttachRunner {
             Effect::CancelShell => self.bench.cancel_shell(),
             Effect::SetModel(reference) => self.set_model(&reference),
             Effect::CompactNow => self.compact_now(),
-            Effect::StatusReport => self.status_report().await,
+            Effect::StatusReport => self.status_report(),
             Effect::ContextReport(header) => self.context_report(header),
             Effect::Export { path: Some(_), .. } if self.local_refused("/export to a path") => {}
             Effect::Remember(_) if self.local_refused("/remember") => {}
@@ -2201,15 +2471,16 @@ impl AttachRunner {
                     .unwrap_or_default();
                 self.bench.export(path.as_deref(), &text, &session);
             }
-            Effect::DaemonStop => self.daemon_stop().await,
-            Effect::Rehome(reference) => self.rehome(reference).await,
+            Effect::DaemonStop => self.daemon_stop(),
+            Effect::Rehome(reference) => self.rehome(reference),
             Effect::DaemonStart => self.daemon_start(),
-            Effect::Agents(None) => self.list_agents().await,
-            Effect::Audit(lines) => self.show_audit(lines).await,
-            Effect::Schedules(action) => self.schedules(action).await,
-            Effect::Agents(Some(name)) => self.switch_agent(name).await,
-            Effect::DecideQuit => self.decide_quit().await,
-            Effect::Leave(departure) => self.depart(departure).await,
+            Effect::Agents(None) => self.list_agents(),
+            Effect::Audit(lines) => self.show_audit(lines),
+            Effect::Schedules(action) => self.schedules(action),
+            Effect::Agents(Some(name)) => self.switch_agent(name),
+            Effect::DecideQuit => self.decide_quit(),
+            // Done once the loop ends: [`Effect::Quit`] follows.
+            Effect::Leave(departure) => self.departure = Some(departure),
             Effect::NewSession => self.switch_conversation(None),
             Effect::ResumeSession(reference) => self.resume_session(reference),
             Effect::RequestResumePicker => self.show_resume_picker(),
@@ -2220,11 +2491,11 @@ impl AttachRunner {
                 let current = current(self.current_endpoint.as_deref(), self.model.as_ref());
                 self.bench.request_model_picker(refresh, current);
             }
-            Effect::Remember(text) => self.bench.remember(&text, &self.linked()).await,
+            Effect::Remember(text) => self.bench.remember(&text, &self.linked()),
             Effect::OpenMemory(target) => self.bench.open_memory(target),
             Effect::MemoryEdited { target, path } => {
                 let linked = self.linked();
-                self.bench.memory_edited(target, &path, &linked).await;
+                self.bench.memory_edited(target, &path, &linked);
             }
             Effect::CostSnapshot(snapshot) => {
                 if let Some(link) = &self.link {
@@ -2232,10 +2503,9 @@ impl AttachRunner {
                 }
             }
             Effect::RespondEscalation(id, answer) => self.respond_escalation(id, &answer),
-            Effect::SetMode(mode) => self.set_mode(mode.name()).await,
+            Effect::SetMode(mode) => self.set_mode(mode.name()),
             Effect::ResumeAutoMode => {
-                self.set_mode(crate::approval::mode::PermissionMode::Auto.name())
-                    .await;
+                self.set_mode(crate::approval::mode::PermissionMode::Auto.name());
             }
             Effect::AddRule {
                 effect,
@@ -2247,31 +2517,26 @@ impl AttachRunner {
                     tool,
                     pattern,
                 };
-                self.outcome_command::<protocol::method::Rules>(&command, "/permissions")
-                    .await;
+                self.outcome_command::<protocol::method::Rules>(command, "/permissions");
             }
             Effect::RemoveRule(n) => {
                 self.outcome_command::<protocol::method::Rules>(
-                    &RuleCommand::Remove { n },
+                    RuleCommand::Remove { n },
                     "/permissions",
-                )
-                    .await;
+                );
             }
             Effect::ListRules => {
-                self.outcome_command::<protocol::method::Rules>(&RuleCommand::List, "/permissions")
-                    .await;
+                self.outcome_command::<protocol::method::Rules>(RuleCommand::List, "/permissions");
             }
             Effect::TrustRealmRules => {
                 let params = TrustParams { op: TrustOp::Rules };
-                self.outcome_command::<protocol::method::Trust>(&params, "/permissions trust")
-                    .await;
+                self.outcome_command::<protocol::method::Trust>(params, "/permissions trust");
             }
             Effect::TrustProject => {
                 let params = TrustParams {
                     op: TrustOp::Project,
                 };
-                self.outcome_command::<protocol::method::Trust>(&params, "/trust")
-                    .await;
+                self.outcome_command::<protocol::method::Trust>(params, "/trust");
             }
             Effect::SaveUnsent(held) => self.bench.hold_unsent(held),
             Effect::SetChecklistView(view) => self.set_checklist_view(view),
@@ -2366,58 +2631,66 @@ impl AttachRunner {
     }
 
     /// Shift+Tab, `/mode`, `/auto resume`: switch the daemon's mode.
-    async fn set_mode(&mut self, mode: &str) {
+    fn set_mode(&mut self, mode: &str) {
         let params = SetModeParams {
             mode: mode.to_string(),
         };
-        match self.call_local::<protocol::method::SetMode>(&params).await {
-            Ok(set) => {
-                self.push_mode(set.status);
-                if let Some(warning) = set.warning {
-                    self.notice(NoticeLevel::Warn, warning);
+        let Some(connection) = self.connection() else {
+            self.notice(NoticeLevel::Warn, "not attached: the mode was not changed");
+            return;
+        };
+        let reports = self.reporter();
+        let ui_tx = self.ui_tx.clone();
+        tokio::spawn(async move {
+            let said = |level, text: String| {
+                let _ = ui_tx.send(Msg::Notice { level, text });
+            };
+            match bounded(
+                CALL_TIMEOUT,
+                remote::call::<protocol::method::SetMode>(&connection, &params),
+            )
+            .await
+            {
+                Ok(set) => {
+                    reports.send(Report::Mode(set.status));
+                    if let Some(warning) = set.warning {
+                        said(NoticeLevel::Warn, warning);
+                    }
+                    said(NoticeLevel::Info, set.notice);
                 }
-                self.notice(NoticeLevel::Info, set.notice);
+                Err(err) => said(NoticeLevel::Error, format!("mode not changed: {err}")),
             }
-            Err(CallFailure::NotAttached) => {
-                self.notice(NoticeLevel::Warn, "not attached: the mode was not changed");
-            }
-            Err(err) => self.notice(NoticeLevel::Error, format!("mode not changed: {err}")),
-        }
+        });
     }
 
     /// A command whose answer is a [`RuleOutcome`] (`/permissions …` on the
     /// daemon's engine, `/trust` and `/permissions trust` on its trust record),
     /// named `name` in what goes wrong.
-    async fn outcome_command<M: protocol::Method<Result = RuleOutcome>>(
+    fn outcome_command<M: protocol::Method<Result = RuleOutcome>>(
         &self,
-        params: &M::Params,
+        params: M::Params,
         name: &str,
-    ) {
-        match self.call_local::<M>(params).await {
-            Ok(outcome) => {
-                let level = if outcome.ok {
-                    NoticeLevel::Info
-                } else {
-                    NoticeLevel::Error
-                };
-                self.notice(level, outcome.text);
-            }
-            Err(CallFailure::NotAttached) => self.notice(
+    ) where
+        M::Params: 'static,
+    {
+        let Some(connection) = self.connection() else {
+            self.notice(
                 NoticeLevel::Warn,
                 format!("not attached: {name} needs the daemon"),
-            ),
-            Err(err) => self.notice(NoticeLevel::Error, format!("{name} failed: {err}")),
-        }
-    }
-
-    /// Call the daemon's own method `M` with `params`, bounded by
-    /// [`CALL_TIMEOUT`].
-    async fn call_local<M: protocol::Method>(
-        &self,
-        params: &M::Params,
-    ) -> Result<M::Result, CallFailure> {
-        let connection = self.connection().ok_or(CallFailure::NotAttached)?;
-        bounded(CALL_TIMEOUT, remote::call::<M>(&connection, params)).await
+            );
+            return;
+        };
+        let name = name.to_string();
+        let ui_tx = self.ui_tx.clone();
+        tokio::spawn(async move {
+            let (level, text) =
+                match bounded(CALL_TIMEOUT, remote::call::<M>(&connection, &params)).await {
+                    Ok(outcome) if outcome.ok => (NoticeLevel::Info, outcome.text),
+                    Ok(outcome) => (NoticeLevel::Error, outcome.text),
+                    Err(err) => (NoticeLevel::Error, format!("{name} failed: {err}")),
+                };
+            let _ = ui_tx.send(Msg::Notice { level, text });
+        });
     }
 
     /// The orchestrator as the workbench reaches it, over this connection.
@@ -2425,7 +2698,7 @@ impl AttachRunner {
         AgentContext::new(self.connection())
     }
 
-    async fn start_turn(&mut self, text: &str) {
+    fn start_turn(&mut self, text: &str) {
         let Some(connection) = self.connection() else {
             self.send(Msg::TurnFinished(TurnOutcome::plain(Err(
                 TurnFailure::Failed(
@@ -2435,62 +2708,36 @@ impl AttachRunner {
             return;
         };
         let text = self.expand_mentions(text);
-        let retry = self.retry_input(&connection, &text).await;
+        // The prompt of the turn that just failed, typed again in its
+        // conversation: the task checks whether it is still the last
+        // message there.
+        let retry = self.failed_prompt.take().and_then(|(session, failed)| {
+            (self
+                .link
+                .as_ref()
+                .is_some_and(|link| link.session == session)
+                && failed.trim() == text.trim())
+            .then_some(session)
+        });
+        self.turns += 1;
         self.turn = Turn {
             active: true,
             prompt: Some(text.clone()),
+            id: self.turns,
             ..Turn::default()
         };
-        let sent = retry.unwrap_or(&text);
-        let Err(failure) = bounded(CALL_TIMEOUT, remote::send(&connection, sent, false)).await
-        else {
-            return;
-        };
-        self.turn.record(Err(TurnFailure::Failed(format!(
-            "the prompt was not sent: {failure}"
-        ))));
-        self.finish_turn();
+        self.outbound(Outbound {
+            connection,
+            text,
+            steer: None,
+            retry,
+            turn: self.turns,
+            reports: self.reporter(),
+            ui_tx: self.ui_tx.clone(),
+        });
     }
 
-    /// What to send for the prompt `text`: [`RETRY_INPUT`] when it repeats
-    /// the prompt of the turn that just failed and that prompt is still the
-    /// conversation's last message (a failed run keeps it committed, so
-    /// the text again would be in the transcript twice); `None` sends
-    /// `text`. Applies once.
-    async fn retry_input(&mut self, connection: &Connection, text: &str) -> Option<&'static str> {
-        let (session, failed) = self.failed_prompt.take()?;
-        if self
-            .link
-            .as_ref()
-            .is_none_or(|link| link.session != session)
-            || failed.trim() != text.trim()
-        {
-            return None;
-        }
-        let messages = bounded(CALL_TIMEOUT, remote::transcript(connection, &session))
-            .await
-            .ok()?;
-        let last = messages
-            .iter()
-            .rev()
-            .find(|message| !matches!(message, Message::System(_) | Message::SystemNotice(_)));
-        let repeated = matches!(
-            last,
-            Some(Message::User(user))
-                if user.transcript_role == meerkat_core::TranscriptUserRole::Conversational
-                    && user.text_content().trim() == text.trim()
-        );
-        if !repeated {
-            return None;
-        }
-        self.notice(
-            NoticeLevel::Info,
-            "your message is already in the transcript from the failed turn; retrying it",
-        );
-        Some(RETRY_INPUT)
-    }
-
-    async fn steer(&mut self, id: PendingId, text: &str) {
+    fn steer(&mut self, id: PendingId, text: &str) {
         if !self.turn.active {
             self.send(Msg::SteerAck {
                 id,
@@ -2506,16 +2753,76 @@ impl AttachRunner {
             return;
         };
         let text = self.expand_mentions(text);
-        let result = match bounded(CALL_TIMEOUT, remote::send(&connection, &text, true)).await {
-            Ok(()) => {
-                self.turn.steered = true;
-                self.turn.steers.push_back(id);
+        // Expected at the agent's next boundary from now on (the stream may
+        // deliver it before the send's answer); taken back if the send
+        // fails.
+        self.turn.steers.push_back(id);
+        self.outbound(Outbound {
+            connection,
+            text,
+            steer: Some(id),
+            retry: None,
+            turn: self.turn.id,
+            reports: self.reporter(),
+            ui_tx: self.ui_tx.clone(),
+        });
+    }
+
+    /// A prompt or a steer of turn `turn` was sent (`result`): a steer is
+    /// acknowledged (taken back from the turn when it failed); a prompt
+    /// that failed ends its turn, if that turn is still the UI's.
+    fn sent(&mut self, turn: u64, steer: Option<PendingId>, result: Result<(), String>) {
+        let current = self.turn.active && self.turn.id == turn;
+        match (steer, result) {
+            (Some(id), Ok(())) => {
+                if current {
+                    self.turn.steered = true;
+                }
                 self.admitted.push(id);
-                Ok(())
+                self.send(Msg::SteerAck { id, result: Ok(()) });
             }
-            Err(err) => Err(SteerFailure::Rejected(err.to_string())),
-        };
-        self.send(Msg::SteerAck { id, result });
+            (Some(id), Err(why)) => {
+                self.turn.steers.retain(|steer| *steer != id);
+                self.send(Msg::SteerAck {
+                    id,
+                    result: Err(SteerFailure::Rejected(why)),
+                });
+            }
+            (None, Ok(())) => {}
+            (None, Err(why)) if current => {
+                self.turn.record(Err(TurnFailure::Failed(format!(
+                    "the prompt was not sent: {why}"
+                ))));
+                self.finish_turn();
+            }
+            (None, Err(why)) => {
+                tracing::info!(%why, "a prompt of an earlier turn was not sent");
+            }
+        }
+    }
+
+    /// Hand `outbound` to the task that sends the prompts and steers, one
+    /// after another in the order they were made (a steer must not reach
+    /// the agent before the prompt it follows); the task is started on
+    /// first use.
+    fn outbound(&mut self, outbound: Outbound) {
+        let sender = self.outbound.get_or_insert_with(|| {
+            let (tx, mut rx) = mpsc::unbounded_channel::<Outbound>();
+            tokio::spawn(async move {
+                while let Some(outbound) = rx.recv().await {
+                    send_outbound(outbound).await;
+                }
+            });
+            tx
+        });
+        if let Err(mpsc::error::SendError(outbound)) = sender.send(outbound) {
+            // The task is gone (it never ends while the sender lives).
+            outbound.reports.send(Report::Sent {
+                turn: outbound.turn,
+                steer: outbound.steer,
+                result: Err("the client could not send it".to_string()),
+            });
+        }
     }
 
     /// Esc: stop the run the stream reported; a second Esc after
@@ -2878,7 +3185,7 @@ impl AttachRunner {
         self.send(Msg::Status(StatusUpdate::CostTotals(cost)));
     }
 
-    async fn status_report(&self) {
+    fn status_report(&self) {
         let mut lines = vec![format!(
             "rkat-tui {} (attached to the workspace daemon)",
             crate::BUILD
@@ -2925,32 +3232,28 @@ impl AttachRunner {
             "approval gate: in the daemon (requests show here; /permissions and Shift+Tab act on the daemon)"
                 .to_string(),
         );
-        match self
-            .call_local::<protocol::method::Report>(&protocol::Empty {})
+        let say = self.say();
+        let Some(connection) = self.connection() else {
+            say.notice(NoticeLevel::Info, lines.join("\n"));
+            return;
+        };
+        tokio::spawn(async move {
+            match bounded(
+                CALL_TIMEOUT,
+                remote::call::<protocol::method::Report>(&connection, &protocol::Empty {}),
+            )
             .await
-        {
-            Ok(report) => lines.extend(report_lines(&report)),
-            Err(CallFailure::NotAttached) => {}
-            Err(err) => lines.push(format!("the daemon's side is unknown: {err}")),
-        }
-        self.notice(NoticeLevel::Info, lines.join("\n"));
-    }
-
-    /// The daemon's `rkat/status` (`None`: not attached, or no answer).
-    async fn daemon_status(&self) -> Option<protocol::Status> {
-        let connection = self.connection()?;
-        bounded(
-            LEAVE_TIMEOUT,
-            remote::call::<protocol::method::Status>(&connection, &protocol::Empty {}),
-        )
-        .await
-        .map_err(|err| tracing::info!(error = %err, "the daemon's status is unknown"))
-        .ok()
+            {
+                Ok(report) => lines.extend(report_lines(&report)),
+                Err(err) => lines.push(format!("the daemon's side is unknown: {err}")),
+            }
+            say.notice(NoticeLevel::Info, lines.join("\n"));
+        });
     }
 
     /// `/audit [n]`: the audit log's last lines for this agent
     /// (`rkat/audit`).
-    async fn show_audit(&self, lines: Option<usize>) {
+    fn show_audit(&self, lines: Option<usize>) {
         let Some(connection) = self.connection() else {
             self.notice(
                 NoticeLevel::Warn,
@@ -2958,36 +3261,42 @@ impl AttachRunner {
             );
             return;
         };
-        let read = bounded(
-            CALL_TIMEOUT,
-            remote::call::<protocol::method::Audit>(&connection, &protocol::AuditParams { lines }),
-        )
-        .await;
-        match read {
-            Ok(tail) if tail.lines.is_empty() => self.notice(
-                NoticeLevel::Info,
-                format!(
-                    "the audit log {} has nothing for this agent yet",
-                    tail.path.display()
+        let say = self.say();
+        tokio::spawn(async move {
+            let read = bounded(
+                CALL_TIMEOUT,
+                remote::call::<protocol::method::Audit>(
+                    &connection,
+                    &protocol::AuditParams { lines },
                 ),
-            ),
-            Ok(tail) => self.notice(
-                NoticeLevel::Info,
-                format!(
-                    "audit log {} (last {} lines for this agent):\n{}",
-                    tail.path.display(),
-                    tail.lines.len(),
-                    tail.lines.join("\n")
+            )
+            .await;
+            match read {
+                Ok(tail) if tail.lines.is_empty() => say.notice(
+                    NoticeLevel::Info,
+                    format!(
+                        "the audit log {} has nothing for this agent yet",
+                        tail.path.display()
+                    ),
                 ),
-            ),
-            Err(err) => self.notice(NoticeLevel::Warn, format!("no audit log: {err}")),
-        }
+                Ok(tail) => say.notice(
+                    NoticeLevel::Info,
+                    format!(
+                        "audit log {} (last {} lines for this agent):\n{}",
+                        tail.path.display(),
+                        tail.lines.len(),
+                        tail.lines.join("\n")
+                    ),
+                ),
+                Err(err) => say.notice(NoticeLevel::Warn, format!("no audit log: {err}")),
+            }
+        });
     }
 
     /// `/schedules`: this agent's schedules (`rkat/schedules`), each with
     /// what its runs cost at the readout's prices; or the user's own
     /// pause, resume or delete of one.
-    async fn schedules(&self, action: Option<(protocol::ScheduleOp, String)>) {
+    fn schedules(&self, action: Option<(protocol::ScheduleOp, String)>) {
         let Some(connection) = self.connection() else {
             self.notice(
                 NoticeLevel::Warn,
@@ -2995,63 +3304,77 @@ impl AttachRunner {
             );
             return;
         };
-        if let Some((op, schedule)) = action {
-            let params = protocol::ScheduleAction { op, schedule };
-            let done = bounded(
+        let say = self.say();
+        let prices = self.bench.prices().clone();
+        tokio::spawn(async move {
+            if let Some((op, schedule)) = action {
+                let params = protocol::ScheduleAction { op, schedule };
+                let done = bounded(
+                    CALL_TIMEOUT,
+                    remote::call::<protocol::method::Schedule>(&connection, &params),
+                )
+                .await;
+                match done {
+                    Ok(outcome) if outcome.ok => say.notice(NoticeLevel::Info, outcome.text),
+                    Ok(outcome) => say.notice(NoticeLevel::Warn, outcome.text),
+                    Err(err) => {
+                        say.notice(NoticeLevel::Warn, format!("schedule not changed: {err}"));
+                    }
+                }
+                return;
+            }
+            let listed = bounded(
                 CALL_TIMEOUT,
-                remote::call::<protocol::method::Schedule>(&connection, &params),
+                remote::call::<protocol::method::Schedules>(&connection, &protocol::Empty {}),
             )
             .await;
-            match done {
-                Ok(outcome) if outcome.ok => self.notice(NoticeLevel::Info, outcome.text),
-                Ok(outcome) => self.notice(NoticeLevel::Warn, outcome.text),
-                Err(err) => self.notice(NoticeLevel::Warn, format!("schedule not changed: {err}")),
-            }
-            return;
-        }
-        let listed = bounded(
-            CALL_TIMEOUT,
-            remote::call::<protocol::method::Schedules>(&connection, &protocol::Empty {}),
-        )
-        .await;
-        match listed {
-            Ok(list) if list.schedules.is_empty() => self.notice(
+            match listed {
+            Ok(list) if list.schedules.is_empty() => say.notice(
                 NoticeLevel::Info,
                 "this agent has no schedules (the agent sets them with meerkat_schedule_create)",
             ),
-            Ok(list) => self.notice(
+            Ok(list) => say.notice(
                 NoticeLevel::Info,
-                schedules_text(&list.schedules, self.bench.prices()),
+                schedules_text(&list.schedules, &prices),
             ),
-            Err(err) => self.notice(
+            Err(err) => say.notice(
                 NoticeLevel::Warn,
                 format!("cannot list the schedules: {err}"),
             ),
         }
+        });
     }
 
     /// `/agents`: the workspace's agents, from the daemon's `rkat/status`.
-    async fn list_agents(&self) {
-        match self.daemon_status().await {
-            Some(status) => {
-                let mine = status.agent.as_deref().or(self.agent.as_deref());
-                self.notice(
-                    NoticeLevel::Info,
-                    agent_lines(&status.agents, mine).join("\n"),
-                );
-            }
-            None => self.notice(
+    fn list_agents(&self) {
+        let say = self.say();
+        let Some(connection) = self.connection() else {
+            say.notice(
                 NoticeLevel::Warn,
                 "not attached to the daemon (see the status bar)",
-            ),
-        }
+            );
+            return;
+        };
+        let bound = self.agent.clone();
+        tokio::spawn(async move {
+            match daemon_status(&connection).await {
+                Some(status) => {
+                    let mine = status.agent.as_deref().or(bound.as_deref());
+                    say.notice(
+                        NoticeLevel::Info,
+                        agent_lines(&status.agents, mine).join("\n"),
+                    );
+                }
+                None => say.notice(NoticeLevel::Warn, "the daemon did not list its agents"),
+            }
+        });
     }
 
     /// `/agents <name>`: work with the agent `name` from now on. The agent
     /// left keeps running (detached when this was its last client); this
     /// client attaches again, bound to `name`, and shows its conversation
     /// from the start.
-    async fn switch_agent(&mut self, name: String) {
+    fn switch_agent(&mut self, name: String) {
         if self.agent.as_deref() == Some(name.as_str()) {
             self.notice(
                 NoticeLevel::Info,
@@ -3066,10 +3389,27 @@ impl AttachRunner {
             );
             return;
         }
-        let Some(status) = self.daemon_status().await else {
+        let Some(connection) = self.connection() else {
             self.notice(
                 NoticeLevel::Warn,
                 "not attached to the daemon (see the status bar)",
+            );
+            return;
+        };
+        let reports = self.reporter();
+        tokio::spawn(async move {
+            let status = daemon_status(&connection).await;
+            reports.send(Report::AgentsRead { name, status });
+        });
+    }
+
+    /// The agents as read for `/agents <name>`: switch to `name` when it
+    /// works here and nothing runs now.
+    fn agents_read(&mut self, name: String, status: Option<protocol::Status>) {
+        let Some(status) = status else {
+            self.notice(
+                NoticeLevel::Warn,
+                "the daemon did not list its agents; the agent was not switched",
             );
             return;
         };
@@ -3081,6 +3421,10 @@ impl AttachRunner {
             );
             return;
         }
+        if self.turn.active || self.switching || self.agent.as_deref() == Some(name.as_str()) {
+            // Something started meanwhile; the user asks again.
+            return;
+        }
         self.unlink();
         self.mark = None;
         self.agent = Some(name);
@@ -3090,41 +3434,41 @@ impl AttachRunner {
     }
 
     /// `/daemon stop`: SIGTERM to the pid the endpoint file names, once the
-    /// file still names the daemon this client is attached to.
-    async fn daemon_stop(&mut self) {
+    /// file still names the daemon this client is attached to; a daemon
+    /// reached by address (its pid may be another machine's) is asked.
+    fn daemon_stop(&mut self) {
+        let reports = self.reporter();
         if self.config.address.is_some() {
-            // Its pid may be another machine's: ask it.
             let Some(connection) = self.connection() else {
                 self.notice(NoticeLevel::Warn, "not attached to the daemon");
                 return;
             };
-            let asked = bounded(
-                LEAVE_TIMEOUT,
-                remote::call::<protocol::method::Shutdown>(
-                    &connection,
-                    &protocol::ShutdownParams::default(),
-                ),
-            )
-            .await;
-            match asked {
-                Ok(_) | Err(CallFailure::Failed(ClientError::Disconnected)) => {
-                    self.stopping = true;
-                    self.notice(NoticeLevel::Info, "asked the daemon to shut down");
-                }
-                Err(err) => self.notice(
-                    NoticeLevel::Warn,
-                    format!("the daemon was not stopped: {err}"),
-                ),
-            }
+            tokio::spawn(async move {
+                let asked = bounded(
+                    LEAVE_TIMEOUT,
+                    remote::call::<protocol::method::Shutdown>(
+                        &connection,
+                        &protocol::ShutdownParams::default(),
+                    ),
+                )
+                .await;
+                reports.send(Report::StopAsked(match asked {
+                    Ok(_) | Err(CallFailure::Failed(ClientError::Disconnected)) => {
+                        Ok("asked the daemon to shut down".to_string())
+                    }
+                    Err(err) => Err(format!("the daemon was not stopped: {err}")),
+                }));
+            });
             return;
         }
-        match self.sigterm_attached().await {
-            Ok(pid) => self.notice(
-                NoticeLevel::Info,
-                format!("asked the daemon (pid {pid}) to shut down"),
-            ),
-            Err(why) => self.notice(NoticeLevel::Warn, why),
-        }
+        let files = self.config.endpoint_files.clone();
+        let connected = self.link.as_ref().map(|link| link.endpoint.address);
+        tokio::spawn(async move {
+            let signalled = sigterm(&files, connected)
+                .await
+                .map(|pid| format!("asked the daemon (pid {pid}) to shut down"));
+            reports.send(Report::StopAsked(signalled));
+        });
     }
 
     /// SIGTERM to the daemon this client is attached to (the endpoint
@@ -3136,9 +3480,7 @@ impl AttachRunner {
             );
         }
         let connected = self.link.as_ref().map(|link| link.endpoint.address);
-        let liveness = launch::probe_any(&self.config.endpoint_files).await;
-        let pid = stop_target(&liveness, connected)?;
-        terminate(pid).map_err(|err| format!("cannot stop the daemon: {err}"))?;
+        let pid = sigterm(&self.config.endpoint_files, connected).await?;
         self.stopping = true;
         Ok(pid)
     }
@@ -3147,7 +3489,7 @@ impl AttachRunner {
     /// (`rkat/quit`); answered with [`Msg::QuitDecided`]. What it did is
     /// said now and again on the terminal; when it asks, the UI's dialog
     /// answers with [`Effect::Leave`].
-    async fn decide_quit(&mut self) {
+    fn decide_quit(&mut self) {
         // The daemon is gone already (`/daemon stop`): just leave.
         let connection = match (self.stopping, self.connection()) {
             (true, _) => {
@@ -3166,14 +3508,20 @@ impl AttachRunner {
         let endpoint = self.link.as_ref().map(|link| link.endpoint.clone());
         let pid = endpoint.as_ref().map_or(0, |endpoint| endpoint.pid);
         let agent = connection.agent().to_string();
-        let decided = bounded(
-            CALL_TIMEOUT,
-            remote::call::<protocol::method::Quit>(&connection, &protocol::Empty {}),
-        )
-        .await;
-        let decision = match decided {
-            Ok(protocol::QuitOutcome::Left { others }) => {
-                self.farewell(
+        let files = self.config.endpoint_files.clone();
+        let here = self.config.address.is_none();
+        let say = self.say();
+        let reports = self.reporter();
+        tokio::spawn(async move {
+            let mut stopping = false;
+            let decided = bounded(
+                CALL_TIMEOUT,
+                remote::call::<protocol::method::Quit>(&connection, &protocol::Empty {}),
+            )
+            .await;
+            let decision = match decided {
+                Ok(protocol::QuitOutcome::Left { others }) => {
+                    say.farewell(
                     NoticeLevel::Info,
                     format!(
                         "{others} other client{} attached to this agent: left; the agent and the daemon (pid {pid}) keep running for {}",
@@ -3181,70 +3529,65 @@ impl AttachRunner {
                         if others == 1 { "it" } else { "them" },
                     ),
                 );
-                QuitDecision::Leave
-            }
-            Ok(protocol::QuitOutcome::Retired { retired }) => {
-                let schedules = if retired.schedules_deleted.is_empty() {
-                    String::new()
-                } else {
-                    format!(
-                        "; its schedules were deleted: {}",
-                        retired.schedules_deleted.join(", ")
-                    )
-                };
-                self.farewell(
+                    QuitDecision::Leave
+                }
+                Ok(protocol::QuitOutcome::Retired { retired }) => {
+                    let schedules = if retired.schedules_deleted.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            "; its schedules were deleted: {}",
+                            retired.schedules_deleted.join(", ")
+                        )
+                    };
+                    say.farewell(
                     NoticeLevel::Info,
                     format!(
                         "agent {agent} retired; its conversation stays (rkat-tui --resume lists it){schedules}; the daemon (pid {pid}) keeps running for the other clients"
                     ),
                 );
-                QuitDecision::Retire
-            }
-            Ok(protocol::QuitOutcome::Terminated) => {
-                self.stopping = true;
-                self.farewell(
+                    QuitDecision::Retire
+                }
+                Ok(protocol::QuitOutcome::Terminated) => {
+                    stopping = true;
+                    say.farewell(
                     NoticeLevel::Info,
                     format!(
                         "stopped the daemon (pid {pid}); its agents retired, their conversations stay"
                     ),
                 );
-                QuitDecision::Terminate
-            }
-            Ok(protocol::QuitOutcome::Ask { reason, running }) => {
-                QuitDecision::Ask { reason, running }
-            }
-            // The connection dropped before the answer: a stop the daemon
-            // decided ends it, and only its endpoint file going proves that.
-            Err(err @ (CallFailure::TimedOut | CallFailure::Failed(ClientError::Disconnected))) => {
-                let ended = match &endpoint {
-                    Some(endpoint) => {
-                        daemon_ended(
-                            &self.config.endpoint_files,
-                            endpoint,
-                            self.config.address.is_none(),
-                            STOP_VERIFY,
-                        )
-                        .await
-                    }
-                    None => false,
-                };
-                if ended {
-                    self.stopping = true;
-                    self.farewell(NoticeLevel::Info, format!("stopped the daemon (pid {pid})"));
                     QuitDecision::Terminate
-                } else {
-                    QuitDecision::Ask {
-                        reason: format!("it did not say how to leave ({err})"),
-                        running: false,
+                }
+                Ok(protocol::QuitOutcome::Ask { reason, running }) => {
+                    QuitDecision::Ask { reason, running }
+                }
+                // The connection dropped before the answer: a stop the daemon
+                // decided ends it, and only its endpoint file going proves that.
+                Err(
+                    err @ (CallFailure::TimedOut | CallFailure::Failed(ClientError::Disconnected)),
+                ) => {
+                    let ended = match &endpoint {
+                        Some(endpoint) => daemon_ended(&files, endpoint, here, STOP_VERIFY).await,
+                        None => false,
+                    };
+                    if ended {
+                        stopping = true;
+                        say.farewell(NoticeLevel::Info, format!("stopped the daemon (pid {pid})"));
+                        QuitDecision::Terminate
+                    } else {
+                        QuitDecision::Ask {
+                            reason: format!("it did not say how to leave ({err})"),
+                            running: false,
+                        }
                     }
                 }
-            }
-            Err(err) => QuitDecision::Ask {
-                reason: format!("it did not say how to leave ({err})"),
-                running: false,
-            },
-        };
-        self.send(Msg::QuitDecided(decision));
+                Err(err) => QuitDecision::Ask {
+                    reason: format!("it did not say how to leave ({err})"),
+                    running: false,
+                },
+            };
+            reports.send(Report::QuitDecided { decision, stopping });
+        });
     }
 
     /// Leave the daemon as the UI decided: record a detach, or stop it.
@@ -4483,6 +4826,52 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(said.contains("stopped the daemon"), "{said}");
+    }
+
+    /// The finding this guards: the loop awaited the daemon's answer to a
+    /// prompt (and to `/status`, `/agents`, …) inline, so an Esc behind a
+    /// slow call waited up to its 15 s bound. Against a daemon that
+    /// answers nothing after the attach, every effect returns at once and
+    /// Esc interrupts the turn the unanswered prompt started.
+    #[tokio::test]
+    async fn no_effect_waits_on_a_daemon_that_does_not_answer() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut runner, mut ui_rx) = runner(dir.path());
+        runner.link = Some(link("live", SessionId::new()).await);
+        let quick = Duration::from_secs(2);
+        for effect in [
+            Effect::StartTurn("hello".into()),
+            Effect::Steer {
+                id: PendingId(1),
+                text: "and this".into(),
+            },
+            Effect::StatusReport,
+            Effect::Agents(None),
+            Effect::Audit(None),
+            Effect::Schedules(None),
+            Effect::ListRules,
+            Effect::SetMode(crate::approval::mode::PermissionMode::Plan),
+            Effect::DecideQuit,
+            Effect::Interrupt,
+        ] {
+            let name = format!("{effect:?}");
+            let done = tokio::time::timeout(quick, runner.handle_effect(effect)).await;
+            assert!(done.is_ok(), "{name} waited on the daemon");
+        }
+        assert!(runner.turn.active, "the unanswered prompt's turn runs");
+        assert!(
+            runner.turn.interrupted_at.is_some(),
+            "Esc interrupted it at once"
+        );
+        // The steer is expected at the next boundary while its send runs.
+        assert_eq!(runner.turn.steers, [PendingId(1)]);
+        // Nothing was answered: no turn end, no acknowledgement yet.
+        while let Ok(msg) = ui_rx.try_recv() {
+            assert!(
+                !matches!(msg, Msg::TurnFinished(_) | Msg::SteerAck { .. }),
+                "{msg:?}"
+            );
+        }
     }
 
     /// A refused `/resume` ends the switch; nothing else that reports a

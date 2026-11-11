@@ -439,6 +439,12 @@ design.
 
 ### Fixed
 
+- The TUI never waits for the daemon between keys: a prompt, a steer,
+  `/status`, `/agents`, `/audit`, `/schedules`, `/permissions`, a mode
+  switch, `/quit`, `/daemon stop`, `/rehome`, `/remember` and an edited
+  `/memory` are sent by tasks of their own, so Esc interrupts at once
+  even while the daemon is slow to answer (it waited up to 15 s).
+
 - `/quit` is decided by the daemon, which acts on it at once: two
   clients of one agent quitting together no longer both leave it to the
   other (one leaves, the other decides; the owner then stops the

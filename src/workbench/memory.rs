@@ -25,8 +25,9 @@ use crate::ui::{MemoryTarget, Msg, NoticeLevel};
 
 impl Workbench {
     /// [`crate::ui::Effect::Remember`]: write the line to `AGENTS.md` and
-    /// hand it to `agent`.
-    pub async fn remember(&self, text: &str, agent: &AgentContext) {
+    /// hand it to `agent` (by a task of its own: the daemon's answer is
+    /// waited for there, and the notice says how it went).
+    pub fn remember(&self, text: &str, agent: &AgentContext) {
         let Some(line) = remember_line(text) else {
             self.notice(NoticeLevel::Warn, "nothing to remember");
             return;
@@ -40,25 +41,30 @@ impl Workbench {
             return;
         }
         let key = remember_key(&line);
-        match agent
-            .append_system_context(remembered_context(&line), key)
-            .await
-        {
-            Ok(()) => self.notice(
-                NoticeLevel::Info,
-                format!(
-                    "remembered in {}: the agent reads it from its next model call; it is fully applied (as part of AGENTS.md) from the next session",
-                    path.display()
+        let agent = agent.clone();
+        let ui_tx = self.ui_tx.clone();
+        tokio::spawn(async move {
+            let (level, text) = match agent
+                .append_system_context(remembered_context(&line), key)
+                .await
+            {
+                Ok(()) => (
+                    NoticeLevel::Info,
+                    format!(
+                        "remembered in {}: the agent reads it from its next model call; it is fully applied (as part of AGENTS.md) from the next session",
+                        path.display()
+                    ),
                 ),
-            ),
-            Err(err) => self.notice(
-                NoticeLevel::Warn,
-                format!(
-                    "remembered in {}, but the agent could not take it now ({err}); it applies from the next session",
-                    path.display()
+                Err(err) => (
+                    NoticeLevel::Warn,
+                    format!(
+                        "remembered in {}, but the agent could not take it now ({err}); it applies from the next session",
+                        path.display()
+                    ),
                 ),
-            ),
-        }
+            };
+            let _ = ui_tx.send(Msg::Notice { level, text });
+        });
     }
 
     /// [`crate::ui::Effect::OpenMemory`]: resolve the file (a missing
@@ -88,7 +94,7 @@ impl Workbench {
     /// `agent` the way `/remember` does (its new content as durable system
     /// context, idempotent per path and content); `SYSTEM.md`, an emptied
     /// file and anything the agent cannot take apply from the next session.
-    pub async fn memory_edited(&mut self, target: MemoryTarget, path: &Path, agent: &AgentContext) {
+    pub fn memory_edited(&mut self, target: MemoryTarget, path: &Path, agent: &AgentContext) {
         let before = match self.memory_before.take() {
             Some((p, before)) if p == path => before,
             _ => None,
@@ -117,19 +123,25 @@ impl Workbench {
             return;
         };
         let key = memory_key(&context);
-        match agent.append_system_context(context, key).await {
-            Ok(()) => self.notice(
-                NoticeLevel::Info,
-                format!(
-                    "saved {}: the agent reads the new content from its next model call; new sessions load it as usual",
-                    path.display()
+        let agent = agent.clone();
+        let ui_tx = self.ui_tx.clone();
+        let path = path.to_path_buf();
+        tokio::spawn(async move {
+            let (level, text) = match agent.append_system_context(context, key).await {
+                Ok(()) => (
+                    NoticeLevel::Info,
+                    format!(
+                        "saved {}: the agent reads the new content from its next model call; new sessions load it as usual",
+                        path.display()
+                    ),
                 ),
-            ),
-            Err(err) => self.notice(
-                NoticeLevel::Warn,
-                format!("{next} (the agent could not take it now: {err})"),
-            ),
-        }
+                Err(err) => (
+                    NoticeLevel::Warn,
+                    format!("{next} (the agent could not take it now: {err})"),
+                ),
+            };
+            let _ = ui_tx.send(Msg::Notice { level, text });
+        });
     }
 }
 
