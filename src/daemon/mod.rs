@@ -504,19 +504,11 @@ impl Daemon {
         let started_at = endpoint::timestamp(std::time::SystemTime::now());
         let workspace = std::fs::canonicalize(&layers.scope.context_root)
             .unwrap_or_else(|_| layers.scope.context_root.clone());
-        let files = match (options.endpoint_file, options.state_home) {
-            (Some(file), _) => vec![file],
-            (None, Some(state_home)) => {
-                vec![endpoint::file_in(&state_home, &layers.scope.context_root)]
-            }
-            (None, None) => {
-                let mut files = endpoint::candidates(&layers.scope.context_root);
-                if files.is_empty() {
-                    files.push(endpoint_file(&layers.scope.context_root)?);
-                }
-                files
-            }
-        };
+        let files = endpoint_files(
+            options.endpoint_file,
+            options.state_home,
+            &layers.scope.context_root,
+        )?;
         // Refuse before taking the realm unless every place is free or
         // proven stale (a refused connect): a live daemon keeps its
         // endpoint, at either place, and a slow one must not be mistaken
@@ -574,36 +566,10 @@ impl Daemon {
             options.start_token,
             options.build.unwrap_or_else(|| crate::BUILD.to_string()),
         );
-        let activity = activity::Activity::new(
-            {
-                let conversations = Arc::clone(&conversations);
-                let machine = composed.runtime.runtime_adapter();
-                Box::new(move |agent: String| {
-                    let conversations = Arc::clone(&conversations);
-                    let machine = Arc::clone(&machine);
-                    Box::pin(async move {
-                        use meerkat_runtime::SessionServiceRuntimeExt as _;
-                        let session = conversations.current(&agent)?;
-                        // One that cannot be read is not finished.
-                        let unfinished = machine
-                            .list_active_inputs(&session)
-                            .await
-                            .map_or(1, |inputs| inputs.len());
-                        let run = conversations.running(&agent).await;
-                        Some(activity::Probed {
-                            session,
-                            unfinished,
-                            run,
-                        })
-                    })
-                })
-            },
-            {
-                let decisions = Arc::clone(&composed.decisions);
-                Box::new(move |note: &protocol::IdleNote| {
-                    decisions.broadcast(protocol::IDLE, note);
-                })
-            },
+        let activity = idle_activity(
+            &conversations,
+            composed.runtime.runtime_adapter(),
+            &composed.decisions,
         );
         let agents = agents::Agents::new(agents::AgentsParts {
             activity,
@@ -621,61 +587,18 @@ impl Daemon {
             watches: Arc::clone(&composed.watches),
             ledger: Arc::clone(&composed.ledger),
         });
-        // Before any agent runs: a turn no user started is unattended
-        // unless a client is with its agent.
-        // Each is installed once; a second composition over one engine is
-        // refused rather than left on the first one's agents.
-        if !composed
-            .engine
-            .set_attendance(Arc::new(agents::AgentAttendance::new(&agents)))
-        {
-            return Err(DaemonError::Approval(
-                "the approval engine already knows who is with its agents".to_string(),
-            ));
-        }
-        // A message to another agent of the workspace is tier 1.
-        if !composed
-            .engine
-            .set_agent_peers(Arc::new(agents::AgentAttendance::new(&agents)))
-        {
-            return Err(DaemonError::Approval(
-                "the approval engine already knows the workspace's agents".to_string(),
-            ));
-        }
-        if let Some(log) = &audit {
-            composed
-                .engine
-                .set_audit(Arc::new(audit::DaemonAudit::new(Arc::clone(log), &agents)));
-            log.write(&audit::Line::event(
-                "daemon_start",
-                format!(
-                    "pid {} on {}, mode {}",
-                    std::process::id(),
-                    workspace.display(),
-                    composed.engine.mode()
-                ),
-            ));
-        }
+        attach_engine(&composed.engine, &agents, audit.as_ref(), &workspace)?;
         composed.desk.report_to(&composed.engine);
         // Restored (their classifier seeded with what the user asked so
         // far), else one seated for the first client.
         let (first, session, created) = agents.start().await?;
-        // The agents' file watches: each batch reaches its agent.
-        let watch_task = {
-            let agents = Arc::downgrade(&agents);
-            let mut batches = std::mem::replace(
+        let watch_task = deliver_watches(
+            &agents,
+            std::mem::replace(
                 &mut composed.watch_batches,
                 tokio::sync::mpsc::unbounded_channel().1,
-            );
-            tokio::spawn(async move {
-                while let Some(batch) = batches.recv().await {
-                    let Some(agents) = agents.upgrade() else {
-                        return;
-                    };
-                    agents.watch_event(batch).await;
-                }
-            })
-        };
+            ),
+        );
         // Schedules fire while the daemon runs, from its start: the
         // runtime arms its firing host on a session's creation only, and a
         // restored agent creates none.
@@ -1023,6 +946,117 @@ const STORE_SETTLE: std::time::Duration = std::time::Duration::from_secs(3);
 /// shared memory), as `/proc/self/fd` shows. Past the bound the outcome is
 /// logged as unknown; where the process's descriptors cannot be listed
 /// (not Linux) nothing is waited for and nothing is claimed.
+/// The endpoint files the daemon may write: the one named, the one in a
+/// state home, else the workspace's candidates (the state directory's,
+/// then the runtime directory's fallback).
+fn endpoint_files(
+    named: Option<PathBuf>,
+    state_home: Option<PathBuf>,
+    workspace: &Path,
+) -> Result<Vec<PathBuf>, DaemonError> {
+    Ok(match (named, state_home) {
+        (Some(file), _) => vec![file],
+        (None, Some(state_home)) => vec![endpoint::file_in(&state_home, workspace)],
+        (None, None) => {
+            let mut files = endpoint::candidates(workspace);
+            if files.is_empty() {
+                files.push(endpoint_file(workspace)?);
+            }
+            files
+        }
+    })
+}
+
+/// When the agents are idle ([`activity`]): the runtime is asked for a
+/// conversation's unfinished inputs (one that cannot be read counts) and
+/// the agent's run state; every client is told.
+fn idle_activity(
+    conversations: &Arc<conversations::Conversations>,
+    machine: Arc<meerkat_runtime::MeerkatMachine>,
+    decisions: &Arc<decisions::Decisions>,
+) -> Arc<activity::Activity> {
+    let probe = {
+        let conversations = Arc::clone(conversations);
+        Box::new(move |agent: String| {
+            let conversations = Arc::clone(&conversations);
+            let machine = Arc::clone(&machine);
+            Box::pin(async move {
+                use meerkat_runtime::SessionServiceRuntimeExt as _;
+                let session = conversations.current(&agent)?;
+                let unfinished = machine
+                    .list_active_inputs(&session)
+                    .await
+                    .map_or(1, |inputs| inputs.len());
+                let run = conversations.running(&agent).await;
+                Some(activity::Probed {
+                    session,
+                    unfinished,
+                    run,
+                })
+            }) as futures::future::BoxFuture<'static, Option<activity::Probed>>
+        })
+    };
+    let decisions = Arc::clone(decisions);
+    activity::Activity::new(
+        probe,
+        Box::new(move |note: &protocol::IdleNote| {
+            decisions.broadcast(protocol::IDLE, note);
+        }),
+    )
+}
+
+/// What the approval engine learns of the agents before any runs: who is
+/// with each (a turn no user started is unattended unless a client is),
+/// which peers are the workspace's agents (a message to one is tier 1),
+/// and the audit log. Each is installed once: a second composition over
+/// one engine is refused rather than left on the first one's agents.
+fn attach_engine(
+    engine: &Arc<crate::approval::ApprovalEngine>,
+    agents: &Arc<agents::Agents>,
+    audit: Option<&Arc<audit::AuditLog>>,
+    workspace: &Path,
+) -> Result<(), DaemonError> {
+    if !engine.set_attendance(Arc::new(agents::AgentAttendance::new(agents))) {
+        return Err(DaemonError::Approval(
+            "the approval engine already knows who is with its agents".to_string(),
+        ));
+    }
+    if !engine.set_agent_peers(Arc::new(agents::AgentAttendance::new(agents))) {
+        return Err(DaemonError::Approval(
+            "the approval engine already knows the workspace's agents".to_string(),
+        ));
+    }
+    if let Some(log) = audit {
+        engine.set_audit(Arc::new(audit::DaemonAudit::new(Arc::clone(log), agents)));
+        log.write(&audit::Line::event(
+            "daemon_start",
+            format!(
+                "pid {} on {}, mode {}",
+                std::process::id(),
+                workspace.display(),
+                engine.mode()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// The agents' file watches: each batch reaches its agent.
+fn deliver_watches(
+    agents: &Arc<agents::Agents>,
+    mut batches: tokio::sync::mpsc::UnboundedReceiver<watches::Batch>,
+) -> tokio::task::JoinHandle<()> {
+    let agents = Arc::downgrade(agents);
+    tokio::spawn(async move {
+        while let Some(batch) = batches.recv().await {
+            let Some(agents) = agents.upgrade() else {
+                return;
+            };
+            agents.watch_event(batch).await;
+        }
+    })
+}
+
 async fn settle_stores(realm_root: &Path, bound: std::time::Duration) {
     let deadline = tokio::time::Instant::now() + bound;
     loop {

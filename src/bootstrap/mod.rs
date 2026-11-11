@@ -321,6 +321,87 @@ impl Assembled {
 /// [`TuiError::PersistenceOpen`] / [`TuiError::RealmLease`] when the realm
 /// cannot be opened, and [`TuiError::Overlay`] / [`TuiError::Approval`]
 /// when the approval rules cannot be loaded.
+/// Make the start-up model known to the realm config before a session is
+/// built on it. Every fact of a self-hosted endpoint's models is its own:
+/// the start-up model, the classifier's and every model it lists get an
+/// alias, so a switch or a helper finds its model in the registry the
+/// session was built with. Anywhere else only a model the engine's catalog
+/// knows runs.
+async fn register_start_model(
+    realm_config: &RealmConfigStore,
+    endpoints: &EndpointRegistry,
+    choice: &ModelChoice,
+    models: Option<&ModelCache>,
+    settings: &crate::config::AutoSettings,
+) -> Result<(), TuiError> {
+    let listed = models.and_then(|cache| cache.entry(choice.endpoint.as_str(), &choice.model));
+    match endpoints.get(choice.endpoint.as_str()) {
+        Some(endpoint) if endpoint.is_self_hosted() => {
+            let classifier = approval::classifier_model(settings, choice.provider);
+            let mut wanted: Vec<(&str, Option<&crate::models::ModelEntry>)> =
+                vec![(choice.model.as_str(), listed)];
+            if let Some(classifier) = classifier.as_deref()
+                && classifier != choice.model
+            {
+                let entry = models.and_then(|cache| cache.entry(&endpoint.name, classifier));
+                wanted.push((classifier, entry));
+            }
+            if let Some(Ok(list)) = models.and_then(|cache| cache.get(&endpoint.name)) {
+                for entry in list {
+                    if !wanted.iter().any(|(id, _)| *id == entry.id) {
+                        wanted.push((entry.id.as_str(), Some(entry)));
+                    }
+                }
+            }
+            ensure_aliases(realm_config.runtime(), endpoint, &wanted).await?;
+        }
+        Some(endpoint) => {
+            let config = realm_config
+                .get()
+                .await
+                .map_err(EndpointError::ConfigRead)?;
+            check_catalogued(&config, endpoint, &choice.model)?;
+        }
+        None => {}
+    }
+    Ok(())
+}
+
+/// Open the workspace realm's persistence and take its lease (one daemon
+/// per realm).
+async fn open_realm(
+    scope: &RuntimeScope,
+    lease_surface: &str,
+) -> Result<
+    (
+        meerkat_store::RealmManifest,
+        meerkat::PersistenceBundle,
+        RealmLeaseGuard,
+    ),
+    TuiError,
+> {
+    let realm_root = realm_paths_in(&scope.realms_root, &scope.realm_id).root;
+    let (manifest, persistence) = meerkat::open_realm_persistence_in(
+        &scope.realms_root,
+        &scope.realm_id,
+        None,
+        Some(RealmOrigin::Workspace),
+    )
+    .await
+    .map_err(|source| TuiError::PersistenceOpen {
+        realm_root,
+        source: Box::new(source),
+    })?;
+    let lease = start_realm_lease_in(&scope.realms_root, &scope.realm_id, None, lease_surface)
+        .await
+        .map_err(|source| TuiError::RealmLease {
+            realm_id: scope.realm_id.clone(),
+            lease_dir: realm_lease_dir(&realm_paths_in(&scope.realms_root, &scope.realm_id)),
+            source: Box::new(source),
+        })?;
+    Ok((manifest, persistence, lease))
+}
+
 pub async fn assemble(
     layers: Layers,
     config: Config,
@@ -368,43 +449,14 @@ pub async fn assemble(
     let listed = models
         .as_ref()
         .and_then(|cache| cache.entry(choice.endpoint.as_str(), &choice.model));
-    let endpoint = endpoints.get(choice.endpoint.as_str());
-    match endpoint {
-        Some(endpoint) if endpoint.is_self_hosted() => {
-            // Every fact of a self-hosted endpoint's models is its own:
-            // the start-up model, the classifier's and every model it
-            // lists get an alias, so a switch or a helper finds its model
-            // in the registry the session was built with.
-            let classifier = approval::classifier_model(&layered.settings, choice.provider);
-            let mut wanted: Vec<(&str, Option<&crate::models::ModelEntry>)> =
-                vec![(choice.model.as_str(), listed)];
-            if let Some(classifier) = classifier.as_deref()
-                && classifier != choice.model
-            {
-                let entry = models
-                    .as_ref()
-                    .and_then(|cache| cache.entry(&endpoint.name, classifier));
-                wanted.push((classifier, entry));
-            }
-            if let Some(Ok(list)) = models.as_ref().and_then(|cache| cache.get(&endpoint.name)) {
-                for entry in list {
-                    if !wanted.iter().any(|(id, _)| *id == entry.id) {
-                        wanted.push((entry.id.as_str(), Some(entry)));
-                    }
-                }
-            }
-            ensure_aliases(realm_config.runtime(), endpoint, &wanted).await?;
-        }
-        Some(endpoint) => {
-            // Anywhere else only a model the engine's catalog knows runs.
-            let config = realm_config
-                .get()
-                .await
-                .map_err(EndpointError::ConfigRead)?;
-            check_catalogued(&config, endpoint, &choice.model)?;
-        }
-        None => {}
-    }
+    register_start_model(
+        &realm_config,
+        &endpoints,
+        &choice,
+        models.as_ref(),
+        &layered.settings,
+    )
+    .await?;
     let effective = realm_config
         .get()
         .await
@@ -422,25 +474,7 @@ pub async fn assemble(
 
     let realm_root = realm_paths_in(&scope.realms_root, &scope.realm_id).root;
     check_realm_private(&confinement, &realm_root)?;
-    let (manifest, persistence) = meerkat::open_realm_persistence_in(
-        &scope.realms_root,
-        &scope.realm_id,
-        None,
-        Some(RealmOrigin::Workspace),
-    )
-    .await
-    .map_err(|source| TuiError::PersistenceOpen {
-        realm_root: realm_root.clone(),
-        source: Box::new(source),
-    })?;
-    let realm_lease =
-        start_realm_lease_in(&scope.realms_root, &scope.realm_id, None, lease_surface)
-            .await
-            .map_err(|source| TuiError::RealmLease {
-                realm_id: scope.realm_id.clone(),
-                lease_dir: realm_lease_dir(&realm_paths_in(&scope.realms_root, &scope.realm_id)),
-                source: Box::new(source),
-            })?;
+    let (manifest, persistence, realm_lease) = open_realm(&scope, lease_surface).await?;
     let store_path = persistence
         .store_path()
         .map_or_else(|| realm_root.clone(), PathBuf::from);
@@ -483,6 +517,7 @@ pub async fn assemble(
     .await?;
     let mcp = mcp::load(&scope, &config, &project_inputs).await?;
     let mut refused = mcp.refused;
+    // What the project's inputs would add that is not trusted.
     for item in project_inputs.guard(&mut config.clone()).await {
         if !refused.contains(&item) {
             refused.push(item);

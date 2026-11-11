@@ -161,27 +161,7 @@ impl Runner {
             self.mark = Some(mark);
         }
         self.send(Msg::Status(StatusUpdate::Session(session.clone())));
-        if switched_agent {
-            self.notice(
-                NoticeLevel::Info,
-                format!("switched to agent {agent}; the agent you left keeps running"),
-            );
-        } else if fresh {
-            self.notice(NoticeLevel::Info, ATTACH_NOTICE);
-            self.notice(
-                NoticeLevel::Info,
-                if seated {
-                    format!("working with agent {agent} (seated for this rkat-tui)")
-                } else {
-                    format!("working with agent {agent}")
-                },
-            );
-        } else {
-            self.notice(
-                NoticeLevel::Info,
-                format!("reattached to the daemon at {address}"),
-            );
-        }
+        self.say_attached(&agent, address, seated, fresh, switched_agent);
         if let Some(identity) = identity {
             self.followers.set_default_model(&identity.model);
             self.show_model(
@@ -221,6 +201,57 @@ impl Runner {
         if let Some(blocks) = reset {
             self.send(Msg::ResetTranscript(blocks));
         }
+        self.seed_usage(usage, queued);
+        // The mobs there are now; the daemon pushes the ones to come.
+        self.list_mobs();
+        self.refresh_tasks();
+        if new_daemon {
+            self.startup_notices();
+        }
+        // Every attach: what the agent was denied while nobody was with it.
+        self.missed_notices();
+        if fresh && !switched_agent {
+            self.other_agents();
+            self.start_at(&session);
+        }
+    }
+
+    /// Say what the attach did: switched agents, the first attach (what
+    /// the daemon is, which agent), or a reattach.
+    fn say_attached(
+        &self,
+        agent: &str,
+        address: std::net::SocketAddr,
+        seated: bool,
+        fresh: bool,
+        switched_agent: bool,
+    ) {
+        if switched_agent {
+            self.notice(
+                NoticeLevel::Info,
+                format!("switched to agent {agent}; the agent you left keeps running"),
+            );
+        } else if fresh {
+            self.notice(NoticeLevel::Info, ATTACH_NOTICE);
+            self.notice(
+                NoticeLevel::Info,
+                if seated {
+                    format!("working with agent {agent} (seated for this rkat-tui)")
+                } else {
+                    format!("working with agent {agent}")
+                },
+            );
+        } else {
+            self.notice(
+                NoticeLevel::Info,
+                format!("reattached to the daemon at {address}"),
+            );
+        }
+    }
+
+    /// The gauge and the counters as the attach read them, around the live
+    /// notifications `queued` before the usage answer.
+    fn seed_usage(&mut self, usage: Option<protocol::Usage>, queued: Vec<Notification>) {
         // The gauge, as a switch seeds it: the daemon's reading of the last
         // model call (the replay since the cursor may hold no turn end).
         if let Some(context) = usage.as_ref().and_then(|usage| usage.context) {
@@ -245,26 +276,18 @@ impl Runner {
             }));
             self.send(Msg::Status(StatusUpdate::CostTotals(usage.cost)));
         }
-        // The mobs there are now; the daemon pushes the ones to come.
-        self.list_mobs();
-        self.refresh_tasks();
-        if new_daemon {
-            self.startup_notices();
-        }
-        // Every attach: what the agent was denied while nobody was with it.
-        self.missed_notices();
-        if fresh && !switched_agent {
-            self.other_agents();
-            match std::mem::replace(&mut self.config.start, super::super::StartAt::Current) {
-                super::super::StartAt::Current => {}
-                super::super::StartAt::Pick => self.show_resume_picker(),
-                // The daemon bound this client to the agent that owns the
-                // conversation (seated again on it when it had quit): a
-                // switch is needed only when that agent moved on since.
-                super::super::StartAt::Resume(reference)
-                    if session.starts_with(reference.trim()) => {}
-                super::super::StartAt::Resume(reference) => self.resume_session(reference),
-            }
+    }
+
+    /// The first attach's `-c`, `--resume` or picker.
+    fn start_at(&mut self, session: &str) {
+        match std::mem::replace(&mut self.config.start, super::super::StartAt::Current) {
+            super::super::StartAt::Current => {}
+            super::super::StartAt::Pick => self.show_resume_picker(),
+            // The daemon bound this client to the agent that owns the
+            // conversation (seated again on it when it had quit): a
+            // switch is needed only when that agent moved on since.
+            super::super::StartAt::Resume(reference) if session.starts_with(reference.trim()) => {}
+            super::super::StartAt::Resume(reference) => self.resume_session(reference),
         }
     }
 

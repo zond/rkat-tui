@@ -478,25 +478,6 @@ impl ToolOrigins for DaemonToolOrigins {
     }
 }
 
-/// Count the model call `envelope` reports, if it does, while the daemon
-/// stops ([`watch`] draining its stream): the usage is all that matters
-/// then, and the ledger is flushed after every watcher ended.
-async fn count_drained(
-    envelope: &meerkat_core::event::EventEnvelope<AgentEvent>,
-    following: Option<&SessionId>,
-    current: &super::conversations::Conversations,
-    ledger: &super::usage::Ledger,
-) {
-    if let AgentEvent::TurnCompleted {
-        usage: Some(usage), ..
-    } = &envelope.payload
-        && let Some(session) = event_session(&envelope.source, following)
-    {
-        let model = model_of(usage, current, &session);
-        ledger.turn(&session, &model, usage).await;
-    }
-}
-
 /// What [`watch`] follows an agent with.
 pub struct Watched {
     /// The mob host.
@@ -526,238 +507,378 @@ pub struct Watched {
 /// goes to the engine (it lifts a Stop given to an earlier run) and makes
 /// the agent the most recently active one (`agents`), every run end
 /// refreshes the session's tool catalog, every model call and compaction
-/// is counted ([`super::usage`]). When the agent is seated again (a
-/// conversation switch, a reseat: [`super::conversations::Conversations::seatings`])
-/// it subscribes again, from the new incarnation's first event: the
-/// member's old stream does not end by itself, and the new one's events
-/// were seen by nobody yet. A stream that ends otherwise is resumed after
-/// the last event read.
+/// is counted ([`super::usage`]), and each run's start and end tell
+/// [`super::activity`] when the agent is idle. When the agent is seated
+/// again (a conversation switch, a reseat:
+/// [`super::conversations::Conversations::seatings`]) it subscribes again,
+/// from the new incarnation's first event: the member's old stream does
+/// not end by itself, and the new one's events were seen by nobody yet. A
+/// stream that ends otherwise is resumed after the last event read.
 pub fn watch(watched: Watched) -> tokio::task::JoinHandle<()> {
-    use futures::StreamExt as _;
-    let Watched {
-        state,
-        mob,
-        identity,
-        engine,
-        origins,
-        current,
-        ledger,
-        agents,
-        activity,
-        mut draining,
-    } = watched;
-    tokio::spawn(async move {
-        use meerkat_core::comms::SessionEventCursor;
-        let name = identity.to_string();
-        let mut seatings = current.seatings();
-        // The incarnation last followed, and where its stream was read to.
-        let mut read_to: Option<(u64, Option<meerkat_core::comms::SessionEventEpoch>, u64)> = None;
+    let watcher = Watcher {
+        name: watched.identity.to_string(),
+        seatings: watched.current.seatings(),
+        read_to: None,
+        watched,
+    };
+    tokio::spawn(watcher.run())
+}
+
+/// Where a watcher read an agent's stream to.
+#[derive(Debug, Clone, Copy)]
+struct Position {
+    /// The agent's incarnation ([`super::conversations::Conversations::seat_of`]).
+    seat: u64,
+    /// The stream's sequence space (`None`: unknown, or refused).
+    epoch: Option<meerkat_core::comms::SessionEventEpoch>,
+    /// The last event read.
+    seq: u64,
+}
+
+/// How following one subscription ended.
+enum Ended {
+    /// The daemon stops.
+    Stop,
+    /// The agent was seated again: subscribe to the new incarnation now.
+    Reseated,
+    /// The stream ended: resume it after a pause.
+    Closed,
+}
+
+/// What one subscription's events carry over from one to the next.
+#[derive(Default)]
+struct Following {
+    /// The session subscribed to (an event that names none is its).
+    session: Option<SessionId>,
+    /// The run the events belong to now.
+    run: Option<meerkat_core::RunId>,
+    /// A compaction's history estimate, until it completes.
+    compacting: Option<u64>,
+}
+
+/// One agent's event watcher ([`watch`]).
+struct Watcher {
+    name: String,
+    watched: Watched,
+    seatings: tokio::sync::watch::Receiver<u64>,
+    /// Where the stream was read to.
+    read_to: Option<Position>,
+}
+
+impl Watcher {
+    async fn run(mut self) {
         loop {
-            if *draining.borrow() {
+            if *self.watched.draining.borrow() {
                 return;
             }
-            let seat = current.seat_of(&name);
-            let following = current.current(&name);
-            // A new incarnation (a switch, a reseat) is read from its
-            // first event; the same one again from where it was left.
-            let cursor = match &read_to {
-                Some((seen, Some(epoch), seq)) if *seen == seat => SessionEventCursor::After {
-                    epoch: *epoch,
-                    seq: *seq,
-                },
-                Some((seen, None, _)) if *seen == seat => SessionEventCursor::Live,
-                _ => SessionEventCursor::Earliest,
+            let seat = self.watched.current.seat_of(&self.name);
+            let Some(subscription) = self.subscribe(seat).await else {
+                tokio::time::sleep(RESUBSCRIBE).await;
+                continue;
             };
-            if matches!(cursor, SessionEventCursor::Earliest) {
-                // A new incarnation: the old one's open runs never end.
-                activity.changed(&name, true);
+            match self.follow(subscription, seat).await {
+                Ended::Stop => return,
+                Ended::Reseated => {}
+                Ended::Closed => tokio::time::sleep(RESUBSCRIBE).await,
             }
-            let subscribed = match state.handle_for(&mob).await {
-                Ok(handle) => handle.subscribe_agent_events_from(&identity, cursor).await,
-                Err(err) => Err(err),
-            };
-            let subscription = match subscribed {
-                Ok(subscription) => subscription,
-                Err(err) => {
-                    tracing::debug!(error = %err, agent = %name, "cannot follow the agent's events yet");
-                    // A cursor the stream refuses is not tried again.
-                    if let Some((seen, epoch, _)) = &mut read_to
-                        && *seen == seat
-                    {
-                        *epoch = None;
+        }
+    }
+
+    /// Where to read incarnation `seat` from: a new incarnation (a switch,
+    /// a reseat) from its first event, the same one again from where it
+    /// was left.
+    fn cursor(&self, seat: u64) -> meerkat_core::comms::SessionEventCursor {
+        use meerkat_core::comms::SessionEventCursor;
+        match self.read_to {
+            Some(Position {
+                seat: seen,
+                epoch: Some(epoch),
+                seq,
+            }) if seen == seat => SessionEventCursor::After { epoch, seq },
+            Some(Position {
+                seat: seen,
+                epoch: None,
+                ..
+            }) if seen == seat => SessionEventCursor::Live,
+            _ => SessionEventCursor::Earliest,
+        }
+    }
+
+    /// Subscribe to incarnation `seat`'s events; `None` (logged) when the
+    /// stream cannot be opened yet (a cursor it refuses is not tried
+    /// again).
+    async fn subscribe(&mut self, seat: u64) -> Option<meerkat_mob::AgentEventSubscription> {
+        let cursor = self.cursor(seat);
+        if matches!(cursor, meerkat_core::comms::SessionEventCursor::Earliest) {
+            // A new incarnation: the old one's open runs never end.
+            self.watched.activity.changed(&self.name, true);
+        }
+        let Watched {
+            state,
+            mob,
+            identity,
+            ..
+        } = &self.watched;
+        let subscribed = match state.handle_for(mob).await {
+            Ok(handle) => handle.subscribe_agent_events_from(identity, cursor).await,
+            Err(err) => Err(err),
+        };
+        match subscribed {
+            Ok(subscription) => Some(subscription),
+            Err(err) => {
+                tracing::debug!(error = %err, agent = %self.name, "cannot follow the agent's events yet");
+                if let Some(position) = &mut self.read_to
+                    && position.seat == seat
+                {
+                    position.epoch = None;
+                }
+                None
+            }
+        }
+    }
+
+    /// Read `subscription` (incarnation `seat`) until it ends, the agent
+    /// is seated again or the daemon stops.
+    async fn follow(
+        &mut self,
+        subscription: meerkat_mob::AgentEventSubscription,
+        seat: u64,
+    ) -> Ended {
+        use futures::StreamExt as _;
+        let epoch = subscription.epoch;
+        let attached = subscription.attached_epoch.clone();
+        let mut stream = subscription.stream;
+        let mut following = Following {
+            session: self.watched.current.current(&self.name),
+            ..Following::default()
+        };
+        loop {
+            if *self.watched.draining.borrow() {
+                Self::drain(&mut stream, &following, &self.watched).await;
+                return Ended::Stop;
+            }
+            let envelope = tokio::select! {
+                envelope = stream.next() => match envelope {
+                    Some(envelope) => envelope,
+                    None => return Ended::Closed,
+                },
+                changed = self.watched.draining.changed() => {
+                    if changed.is_err() {
+                        return Ended::Stop;
                     }
-                    tokio::time::sleep(RESUBSCRIBE).await;
+                    continue;
+                }
+                changed = self.seatings.changed() => {
+                    if changed.is_err() {
+                        return Ended::Stop;
+                    }
+                    // The member was seated again: its old stream does not
+                    // end by itself.
+                    if self.watched.current.seat_of(&self.name) != seat {
+                        return Ended::Reseated;
+                    }
                     continue;
                 }
             };
-            let epoch = subscription.epoch;
-            let attached = subscription.attached_epoch.clone();
-            let mut stream = subscription.stream;
-            // The run the events belong to now.
-            let mut run: Option<meerkat_core::RunId> = None;
-            // A compaction's history estimate, until it completes.
-            let mut compacting: Option<u64> = None;
-            let mut reseated = false;
-            loop {
-                // Stopping: what the stream holds already, then the end.
-                if *draining.borrow() {
-                    use futures::FutureExt as _;
-                    match stream.next().now_or_never() {
-                        Some(Some(envelope)) => {
-                            count_drained(&envelope, following.as_ref(), &current, &ledger).await;
-                            continue;
-                        }
-                        _ => return,
-                    }
-                }
-                let envelope = tokio::select! {
-                    envelope = stream.next() => match envelope {
-                        Some(envelope) => envelope,
-                        None => break,
-                    },
-                    changed = draining.changed() => {
-                        if changed.is_err() {
-                            return;
-                        }
-                        continue;
-                    }
-                    changed = seatings.changed() => {
-                        if changed.is_err() {
-                            return;
-                        }
-                        // The member was seated again: its old stream
-                        // does not end by itself.
-                        if current.seat_of(&name) != seat {
-                            reseated = true;
-                            break;
-                        }
-                        continue;
-                    }
-                };
-                let epoch = epoch.or_else(|| {
+            self.read_to = Some(Position {
+                seat,
+                epoch: epoch.or_else(|| {
                     attached
                         .as_ref()
                         .and_then(|attached| attached.get().copied().flatten())
-                });
-                read_to = Some((seat, epoch, envelope.seq));
-                match &envelope.payload {
-                    AgentEvent::RunStarted {
-                        session_id,
-                        identity,
-                        input,
-                        ..
-                    } => {
-                        engine.run_started(session_id, identity.run_id.as_ref());
-                        activity.run_started(&name, identity.run_id.as_ref());
-                        run.clone_from(&identity.run_id);
-                        if let Some(agents) = agents.upgrade() {
-                            agents.touch(&name);
-                            // A run no client's input started: a schedule
-                            // (or a watch) may have fired it.
-                            if let (Some(run), Some(prompt)) =
-                                (&identity.run_id, input.prompt_text())
-                                && !engine.human_run(session_id, run)
-                            {
-                                agents.unprompted_run(&name, session_id, run, &prompt).await;
-                            }
-                        }
-                    }
-                    AgentEvent::ToolCallRequested {
-                        name: tool, args, ..
-                    } => {
-                        if let Some(agents) = agents.upgrade() {
-                            agents.tool_requested(&name, tool, args.as_value());
-                        }
-                    }
-                    AgentEvent::TurnCompleted {
-                        usage: Some(usage), ..
-                    } => {
-                        let Some(session) = event_session(&envelope.source, following.as_ref())
-                        else {
-                            continue;
-                        };
-                        let model = model_of(usage, &current, &session);
-                        ledger.turn(&session, &model, usage).await;
-                        let fired = run.as_ref().and_then(|run| {
-                            agents
-                                .upgrade()
-                                .and_then(|agents| agents.schedules().schedule_of(run))
-                        });
-                        if let Some(schedule) = fired {
-                            ledger.scheduled(&schedule, &model, usage).await;
-                        }
-                    }
-                    AgentEvent::CompactionStarted {
-                        estimated_history_tokens,
-                        ..
-                    } => compacting = Some(*estimated_history_tokens),
-                    AgentEvent::CompactionCompleted {
-                        summary_tokens,
-                        estimated_history_tokens_after,
-                        summary_source,
-                        ..
-                    } => {
-                        let Some(session) = event_session(&envelope.source, following.as_ref())
-                        else {
-                            continue;
-                        };
-                        let input = compacting.take().unwrap_or(0);
-                        // Only a provider call costs anything; its input
-                        // is the history estimate, its output the summary.
-                        let summarized = summary_source
-                            .as_ref()
-                            .is_none_or(|source| {
-                                matches!(
-                                    source,
-                                    meerkat_core::CompactionSummarySource::ProviderCall { .. }
-                                )
-                            })
-                            .then_some(super::usage::Summarized {
-                                input,
-                                output: *summary_tokens,
-                            });
-                        let model = current.model_of(&session).unwrap_or_default();
-                        ledger
-                            .compaction(
-                                &session,
-                                &model,
-                                summarized,
-                                estimated_history_tokens_after.unwrap_or(*summary_tokens),
-                            )
-                            .await;
-                    }
-                    AgentEvent::RunCompleted {
-                        session_id,
-                        identity,
-                        ..
-                    }
-                    | AgentEvent::RunFailed {
-                        session_id,
-                        identity,
-                        ..
-                    } => {
-                        activity.run_ended(&name, identity.run_id.as_ref());
-                        if let Some(agents) = agents.upgrade() {
-                            agents.run_ended(&name);
-                            if let Some(run) = &identity.run_id {
-                                agents.schedules().run_ended(run);
-                            }
-                        }
-                        ledger.persist();
-                        let origins = Arc::clone(&origins);
-                        let session = session_id.clone();
-                        tokio::spawn(async move {
-                            origins.refresh(&session).await;
-                        });
-                    }
-                    _ => {}
-                }
-            }
-            if !reseated {
-                tokio::time::sleep(RESUBSCRIBE).await;
+                }),
+                seq: envelope.seq,
+            });
+            self.on_event(&envelope, &mut following).await;
+        }
+    }
+
+    /// Stopping: count the model calls the stream holds already, without
+    /// waiting for more; the ledger is flushed after every watcher ended.
+    async fn drain(
+        stream: &mut meerkat_core::EventStream,
+        following: &Following,
+        watched: &Watched,
+    ) {
+        use futures::{FutureExt as _, StreamExt as _};
+        while let Some(Some(envelope)) = stream.next().now_or_never() {
+            if let AgentEvent::TurnCompleted {
+                usage: Some(usage), ..
+            } = &envelope.payload
+                && let Some(session) = event_session(&envelope.source, following.session.as_ref())
+            {
+                let model = model_of(usage, &watched.current, &session);
+                watched.ledger.turn(&session, &model, usage).await;
             }
         }
-    })
+    }
+
+    /// What one event of the agent means for the daemon.
+    async fn on_event(
+        &self,
+        envelope: &meerkat_core::event::EventEnvelope<AgentEvent>,
+        following: &mut Following,
+    ) {
+        let session = || event_session(&envelope.source, following.session.as_ref());
+        match &envelope.payload {
+            AgentEvent::RunStarted {
+                session_id,
+                identity,
+                input,
+                ..
+            } => {
+                following.run.clone_from(&identity.run_id);
+                self.run_started(session_id, identity.run_id.as_ref(), input.prompt_text())
+                    .await;
+            }
+            AgentEvent::ToolCallRequested {
+                name: tool, args, ..
+            } => {
+                if let Some(agents) = self.watched.agents.upgrade() {
+                    agents.tool_requested(&self.name, tool, args.as_value());
+                }
+            }
+            AgentEvent::TurnCompleted {
+                usage: Some(usage), ..
+            } => {
+                if let Some(session) = session() {
+                    self.model_call(&session, following.run.as_ref(), usage)
+                        .await;
+                }
+            }
+            AgentEvent::CompactionStarted {
+                estimated_history_tokens,
+                ..
+            } => following.compacting = Some(*estimated_history_tokens),
+            AgentEvent::CompactionCompleted {
+                summary_tokens,
+                estimated_history_tokens_after,
+                summary_source,
+                ..
+            } => {
+                let estimate = following.compacting.take();
+                if let Some(session) = session() {
+                    // Only a provider call costs anything; its input is
+                    // the history estimate, its output the summary.
+                    let summarized = summary_source
+                        .as_ref()
+                        .is_none_or(|source| {
+                            matches!(
+                                source,
+                                meerkat_core::CompactionSummarySource::ProviderCall { .. }
+                            )
+                        })
+                        .then_some(super::usage::Summarized {
+                            input: estimate.unwrap_or(0),
+                            output: *summary_tokens,
+                        });
+                    let model = self.watched.current.model_of(&session).unwrap_or_default();
+                    self.watched
+                        .ledger
+                        .compaction(
+                            &session,
+                            &model,
+                            summarized,
+                            estimated_history_tokens_after.unwrap_or(*summary_tokens),
+                        )
+                        .await;
+                }
+            }
+            AgentEvent::RunCompleted {
+                session_id,
+                identity,
+                ..
+            }
+            | AgentEvent::RunFailed {
+                session_id,
+                identity,
+                ..
+            } => self.run_ended(session_id, identity.run_id.as_ref()),
+            _ => {}
+        }
+    }
+
+    /// A run started: the engine lifts a Stop given to an earlier run,
+    /// the agent is busy and the most recently active one, and a run no
+    /// client's input started (a schedule's, a watch's) is attributed.
+    async fn run_started(
+        &self,
+        session: &SessionId,
+        run: Option<&meerkat_core::RunId>,
+        prompt: Option<String>,
+    ) {
+        let Watched {
+            engine,
+            activity,
+            agents,
+            ..
+        } = &self.watched;
+        engine.run_started(session, run);
+        activity.run_started(&self.name, run);
+        let Some(agents) = agents.upgrade() else {
+            return;
+        };
+        agents.touch(&self.name);
+        if let (Some(run), Some(prompt)) = (run, prompt)
+            && !engine.human_run(session, run)
+        {
+            agents
+                .unprompted_run(&self.name, session, run, &prompt)
+                .await;
+        }
+    }
+
+    /// A model call of `session` in `run`: counted to the conversation, and
+    /// to the schedule that fired the run.
+    async fn model_call(
+        &self,
+        session: &SessionId,
+        run: Option<&meerkat_core::RunId>,
+        usage: &meerkat_core::TurnUsage,
+    ) {
+        let Watched {
+            current,
+            ledger,
+            agents,
+            ..
+        } = &self.watched;
+        let model = model_of(usage, current, session);
+        ledger.turn(session, &model, usage).await;
+        let fired = run.and_then(|run| {
+            agents
+                .upgrade()
+                .and_then(|agents| agents.schedules().schedule_of(run))
+        });
+        if let Some(schedule) = fired {
+            ledger.scheduled(&schedule, &model, usage).await;
+        }
+    }
+
+    /// A run ended: the agent may be idle, its turn's watches and the
+    /// run's schedule bookkeeping end, the counts are written behind and
+    /// the session's tool catalog is read again.
+    fn run_ended(&self, session: &SessionId, run: Option<&meerkat_core::RunId>) {
+        let Watched {
+            activity,
+            agents,
+            ledger,
+            origins,
+            ..
+        } = &self.watched;
+        activity.run_ended(&self.name, run);
+        if let Some(agents) = agents.upgrade() {
+            agents.run_ended(&self.name);
+            if let Some(run) = run {
+                agents.schedules().run_ended(run);
+            }
+        }
+        ledger.persist();
+        let origins = Arc::clone(origins);
+        let session = session.clone();
+        tokio::spawn(async move {
+            origins.refresh(&session).await;
+        });
+    }
 }
 
 /// The session an event of an agent belongs to: its source's, else the

@@ -170,101 +170,38 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     // the start-up model's window (a configured endpoint's own listing
     // first; unknown: the policy's fallback).
     let compact_threshold = compaction.trigger(context_window).threshold_override();
-    // What a client shows when it first attaches (`rkat/notices`): the confinement's observations, then the rules'
-    // and the bootstrap's warnings.
-    let startup_notices: Vec<StartupNotice> = confinement
-        .notices
-        .iter()
-        .map(|text| StartupNotice::info(text.clone()))
-        .chain(
-            approval
-                .notices
-                .drain(..)
-                .chain(notices)
-                .map(StartupNotice::warn),
-        )
-        .collect();
+    let startup_notices =
+        startup_notices(&confinement.notices, approval.notices.drain(..), notices);
     // The engine's decision events go to every attached client
     // (`rkat/approval_note`, forwarded once the consent surface exists).
     let approval_events = approval.events.take();
-    persistence.require_hosting_mode(effective.storage.hosting_mode())?;
     let config_store = Arc::clone(&realm_config) as Arc<dyn ConfigStore>;
-    let runtime = SessionRuntime::new_with_config_store(
+    let runtime = session_runtime(RuntimeParts {
         factory,
-        effective.clone(),
-        Arc::clone(&config_store),
-        effective.max_sessions(),
+        effective: &effective,
         persistence,
-        NotificationSink::noop(),
-    )?;
-    runtime.set_realm_context(
-        meerkat_core::connection::RealmId::parse(scope.realm_id.clone()).ok(),
-        None,
-        Some(backend.as_str().to_string()),
-    );
-    runtime.set_config_runtime(Arc::new(ConfigRuntime::new(
-        Arc::clone(&config_store),
-        realm_config.state_path().to_path_buf(),
-    )));
-    runtime.set_default_llm_client(llm_override);
-    let runtime = Arc::new(runtime);
+        realm_config: &realm_config,
+        realm_id: &scope.realm_id,
+        backend: backend.as_str(),
+        llm_override,
+    })?;
 
     let realm_root = scope.realm_root();
-    let registry = Arc::new(HelperRegistry::persistent(&realm_root));
-    // A forgotten session's helper bookkeeping goes with it.
-    let forget = Arc::downgrade(&registry);
-    approval
-        .engine
-        .add_forget_hook(Arc::new(move |session: &meerkat_core::SessionId| {
-            if let Some(registry) = forget.upgrade() {
-                registry.forget_session(session);
-            }
-        }));
+    let registry = helper_registry(&realm_root, &approval.engine);
     let (diff_tx, diff_rx) = tokio::sync::mpsc::unbounded_channel();
     let notes = Arc::new(note_tools(&scope));
     // The agents' file watches: the daemon's process watches the
     // workspace (`watch_paths`), never the agent's shell.
     let (watches, watch_batches) =
         super::watches::Watches::new(scope.project_root.as_path().to_path_buf());
-    // The tools' names, for the gate's provenance (every agent's set has
-    // the same ones).
-    let catalog = agent_tools(&scope, &notes, None, None)?;
     let engine = Arc::clone(&approval.engine);
-    // The tools an agent's requests leave out until it searches for them,
-    // and each conversation's reveals.
-    let deferrable = Arc::new(super::deferral::Deferrable::new());
-    let reveals = Arc::new(super::deferral::reveal::Reveals::new(&realm_root));
-    let search = Arc::new(super::deferral::reveal::SearchTool::new(
-        meerkat_core::SessionId::new(),
-        Arc::clone(&reveals),
-        Arc::clone(&deferrable),
-    ));
-    let origins = Arc::new(DaemonToolOrigins::new(
-        runtime.session_service(),
-        &[catalog, search],
-        Arc::clone(&deferrable),
-    ));
-    engine.set_tool_origins(Arc::clone(&origins) as Arc<dyn crate::approval::ToolOrigins>);
-    // A forgotten session's catalog goes with it.
-    let forget = Arc::downgrade(&origins);
-    engine.add_forget_hook(Arc::new(move |session: &meerkat_core::SessionId| {
-        if let Some(origins) = forget.upgrade() {
-            origins.forget(session);
-        }
-    }));
+    let (origins, deferrable, reveals) = tool_origins(&runtime, &engine, &scope, &notes)?;
     let Some(escalations) = approval.escalations.take() else {
         return Err(DaemonError::Approval(
             "the approval engine has no escalation channel".to_string(),
         ));
     };
-    let principal = Principal::from_config(daemon_principal.as_deref())
-        .map_err(|err| DaemonError::Approval(format!("[daemon] principal: {err}")))?;
-    let decision_service = runtime.decision_service();
-    if !decision_service.is_available() {
-        return Err(DaemonError::Approval(
-            "the realm keeps no durable decisions (an ephemeral persistence); approval requests could not reach a client".to_string(),
-        ));
-    }
+    let (principal, decision_service) = consent(&runtime, daemon_principal.as_deref())?;
     let helper_endpoints = endpoints.as_slice().to_vec();
     let daemon_endpoints = endpoints.clone();
     let host = Arc::new(AgentHost {
@@ -319,60 +256,24 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     .with_root(root)
     .with_endpoints(helper_endpoints)
     .with_gated_fork_off();
-    let registry_for_policy = if policy.without_registry {
-        None
-    } else {
-        Some(
-            super::policy::registry(&engine)
-                .map_err(|err| DaemonError::Approval(err.to_string()))?,
-        )
-    };
+    // The members' tool policy from the engine's deny rules (tests may
+    // leave it out).
+    let registry_for_policy = (!policy.without_registry)
+        .then(|| super::policy::registry(&engine))
+        .transpose()
+        .map_err(|err| DaemonError::Approval(err.to_string()))?;
     let customizer = match registry_for_policy {
         Some(_) => customizer.with_application_tool_policy(super::policy::binding()),
         None => customizer,
     };
 
-    let llm_provider: Arc<dyn Fn() -> Option<Arc<dyn meerkat::LlmClient>> + Send + Sync> =
-        Arc::new({
-            let runtime = Arc::downgrade(&runtime);
-            move || runtime.upgrade()?.default_llm_client()
-        });
-    let workgraph = (runtime.workgraph_store().kind() != meerkat::WorkGraphStoreKind::Disabled)
-        .then(|| {
-            runtime
-                .workgraph_service()
-                .unwrap_or_else(|_| meerkat::WorkGraphService::new(runtime.workgraph_store()))
-        });
-    let state = MobMcpState::new_with_runtime_adapter(
-        runtime.session_service(),
-        Some(runtime.runtime_adapter()),
-        meerkat_mob::MobControlPrincipal::Owner,
+    let state = mob_state(
+        &runtime,
+        customizer,
+        registry_for_policy,
+        &realm_root,
+        &registry,
     )?;
-    let state = match registry_for_policy {
-        Some(registry) => state
-            .with_tool_consequence_policy_registry(registry)
-            .with_child_application_tool_policy(super::policy::binding()),
-        None => state,
-    };
-    let state = state
-        .with_persistent_storage_root(Some(realm_root.clone()))
-        .with_workgraph_service(workgraph)
-        .with_default_llm_client_provider(Some(llm_provider))
-        .with_detached_owner_host(Arc::new(
-            meerkat_rpc::detached_owner::RpcDetachedOwnerHost::new(&runtime),
-        ))
-        .with_child_spawn_member_customizer(Arc::new(customizer))
-        .into_shared();
-    crate::mobs::install_mob_hooks(&state, &registry);
-    if let Err(error) = state.bind_continuations(
-        runtime.runtime_delivery_inbox(),
-        runtime.continuation_bindings(),
-    ) {
-        tracing::warn!(%error, "fork_off and council run in the turn: continuation owner not bound");
-    }
-    state.start_workgraph_flow_reconciler();
-    // Before any `MethodRouter::new`, which would compose a default one.
-    runtime.set_mob_state(Arc::clone(&state));
     // The agent-facing mob tools (`delegate`, `mob_*`, …) reach a session
     // build through the builder's mob-tools slot. `MethodRouter::new` fills
     // it on the first connection, which is after the agent's spawn:
@@ -408,65 +309,15 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         .map_err(DaemonError::Approval)?;
     let decisions_task = decisions.follow();
     let diffs_task = Decisions::forward_diffs(&decisions, diff_rx);
-    // Every model call of every agent, helper and classifier is counted
-    // here; a conversation's new totals go to every client.
-    let ledger = super::usage::Ledger::new(&realm_root, {
-        let decisions = Arc::downgrade(&decisions);
-        move |session: &meerkat_core::SessionId, record: &super::usage::Record| {
-            if let Some(decisions) = decisions.upgrade() {
-                decisions.broadcast(
-                    super::protocol::COST,
-                    &super::protocol::CostNote {
-                        session_id: session.clone(),
-                        cost: record.cost.clone(),
-                        context: record.context,
-                    },
-                );
-            }
-        }
-    });
-    // The daemon follows its helpers once each: their usage, their run
-    // ends (the tool catalog is read then) and their sessions (for
-    // nesting). Clients see the helpers' events on the mobs' own streams.
-    // The clients open a mob's stream once the daemon follows a helper in
-    // it (`rkat/mob`), instead of listing the mobs again and again.
-    let helper_events = Arc::new(super::approvals::HelperEvents::new(
-        super::approvals::CatalogReads::of(&origins),
-        Arc::clone(&ledger),
-        {
-            let decisions = Arc::downgrade(&decisions);
-            move |mob: &meerkat_mob::MobId, change| {
-                if let Some(decisions) = decisions.upgrade() {
-                    decisions.broadcast(
-                        super::protocol::MOB,
-                        &super::protocol::MobNote {
-                            mob_id: mob.clone(),
-                            change,
-                        },
-                    );
-                }
-            }
-        },
-    ));
-    let mut destroyed = registry.destroyed_mobs();
-    let destroyed_task = tokio::spawn({
-        let helper_events = Arc::clone(&helper_events);
-        async move {
-            loop {
-                match destroyed.recv().await {
-                    Ok(mob) => helper_events.mob_destroyed(&mob),
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                }
-            }
-        }
-    });
-    let follower = tokio::spawn(crate::mobs::follow::watch(
-        Arc::downgrade(&state),
-        Arc::clone(&registry),
-        helper_events,
+    let ledger = ledger(&decisions, &realm_root);
+    let (follower, destroyed_task) = follow_helpers(
+        &state,
+        &registry,
+        &origins,
+        &ledger,
+        &decisions,
         spawning_rx,
-    ));
+    );
     let notes_task = forward_approval_notes(&decisions, &ledger, &engine, approval_events);
     let (desk, desk_task) = Desk::spawn(
         Arc::clone(&decisions),
@@ -504,6 +355,272 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         startup_notices,
         helper_max_depth,
     })
+}
+
+/// What a client shows when it first attaches (`rkat/notices`): the
+/// confinement's observations, then the rules' and the bootstrap's
+/// warnings.
+fn startup_notices(
+    confinement: &[String],
+    rules: impl Iterator<Item = String>,
+    bootstrap: Vec<String>,
+) -> Vec<StartupNotice> {
+    confinement
+        .iter()
+        .map(|text| StartupNotice::info(text.clone()))
+        .chain(rules.chain(bootstrap).map(StartupNotice::warn))
+        .collect()
+}
+
+/// What [`session_runtime`] is made of.
+struct RuntimeParts<'a> {
+    factory: meerkat::AgentFactory,
+    effective: &'a meerkat_core::Config,
+    persistence: meerkat::PersistenceBundle,
+    realm_config: &'a Arc<crate::bootstrap::RealmConfigStore>,
+    realm_id: &'a str,
+    backend: &'a str,
+    llm_override: Option<Arc<dyn meerkat::LlmClient>>,
+}
+
+/// The session runtime over the realm, as `rkat-rpc` composes it.
+fn session_runtime(parts: RuntimeParts<'_>) -> Result<Arc<SessionRuntime>, DaemonError> {
+    let RuntimeParts {
+        factory,
+        effective,
+        persistence,
+        realm_config,
+        realm_id,
+        backend,
+        llm_override,
+    } = parts;
+    persistence.require_hosting_mode(effective.storage.hosting_mode())?;
+    let config_store = Arc::clone(realm_config) as Arc<dyn ConfigStore>;
+    let runtime = SessionRuntime::new_with_config_store(
+        factory,
+        effective.clone(),
+        Arc::clone(&config_store),
+        effective.max_sessions(),
+        persistence,
+        NotificationSink::noop(),
+    )?;
+    runtime.set_realm_context(
+        meerkat_core::connection::RealmId::parse(realm_id.to_string()).ok(),
+        None,
+        Some(backend.to_string()),
+    );
+    runtime.set_config_runtime(Arc::new(ConfigRuntime::new(
+        config_store,
+        realm_config.state_path().to_path_buf(),
+    )));
+    runtime.set_default_llm_client(llm_override);
+    Ok(Arc::new(runtime))
+}
+
+/// The helpers the agents start, kept in the realm; a forgotten
+/// session's helper bookkeeping goes with it.
+fn helper_registry(
+    realm_root: &std::path::Path,
+    engine: &Arc<ApprovalEngine>,
+) -> Arc<HelperRegistry> {
+    let registry = Arc::new(HelperRegistry::persistent(realm_root));
+    let forget = Arc::downgrade(&registry);
+    engine.add_forget_hook(Arc::new(move |session: &meerkat_core::SessionId| {
+        if let Some(registry) = forget.upgrade() {
+            registry.forget_session(session);
+        }
+    }));
+    registry
+}
+
+/// The principal the daemon decides as (`[daemon] principal`) and the
+/// runtime's durable decisions, which the realm must keep: approval
+/// requests reach the clients as decisions.
+fn consent(
+    runtime: &SessionRuntime,
+    principal: Option<&str>,
+) -> Result<(Principal, meerkat_runtime::decision::DurableDecisionService), DaemonError> {
+    let principal = Principal::from_config(principal)
+        .map_err(|err| DaemonError::Approval(format!("[daemon] principal: {err}")))?;
+    let service = runtime.decision_service();
+    if !service.is_available() {
+        return Err(DaemonError::Approval(
+            "the realm keeps no durable decisions (an ephemeral persistence); approval requests could not reach a client".to_string(),
+        ));
+    }
+    Ok((principal, service))
+}
+
+/// The members' tool catalogs the gate judges calls by, with the tools an
+/// agent's requests leave out until it searches for them and each
+/// conversation's reveals. The tools' names come from one agent's set
+/// (every agent's has the same ones); a forgotten session's catalog goes
+/// with it.
+fn tool_origins(
+    runtime: &Arc<SessionRuntime>,
+    engine: &Arc<ApprovalEngine>,
+    scope: &RuntimeScope,
+    notes: &Arc<NoteToolDispatcher>,
+) -> Result<
+    (
+        Arc<DaemonToolOrigins>,
+        Arc<super::deferral::Deferrable>,
+        Arc<super::deferral::reveal::Reveals>,
+    ),
+    DaemonError,
+> {
+    let catalog = agent_tools(scope, notes, None, None)?;
+    let deferrable = Arc::new(super::deferral::Deferrable::new());
+    let reveals = Arc::new(super::deferral::reveal::Reveals::new(&scope.realm_root()));
+    let search = Arc::new(super::deferral::reveal::SearchTool::new(
+        meerkat_core::SessionId::new(),
+        Arc::clone(&reveals),
+        Arc::clone(&deferrable),
+    ));
+    let origins = Arc::new(DaemonToolOrigins::new(
+        runtime.session_service(),
+        &[catalog, search],
+        Arc::clone(&deferrable),
+    ));
+    engine.set_tool_origins(Arc::clone(&origins) as Arc<dyn crate::approval::ToolOrigins>);
+    let forget = Arc::downgrade(&origins);
+    engine.add_forget_hook(Arc::new(move |session: &meerkat_core::SessionId| {
+        if let Some(origins) = forget.upgrade() {
+            origins.forget(session);
+        }
+    }));
+    Ok((origins, deferrable, reveals))
+}
+
+/// The mob host: the runtime's sessions, the members' tool policy (unless
+/// the policy registry is left out), the realm's storage, the work graph,
+/// the default LLM client, detached owners and the helpers' spawn
+/// customizer; set as the runtime's mob state before any
+/// `MethodRouter::new`, which would compose a default one.
+fn mob_state(
+    runtime: &Arc<SessionRuntime>,
+    customizer: HelperCustomizer,
+    registry_for_policy: Option<Arc<meerkat_core::ToolConsequencePolicyRegistry>>,
+    realm_root: &std::path::Path,
+    registry: &Arc<HelperRegistry>,
+) -> Result<Arc<MobMcpState>, DaemonError> {
+    let llm_provider: Arc<dyn Fn() -> Option<Arc<dyn meerkat::LlmClient>> + Send + Sync> =
+        Arc::new({
+            let runtime = Arc::downgrade(runtime);
+            move || runtime.upgrade()?.default_llm_client()
+        });
+    let workgraph = (runtime.workgraph_store().kind() != meerkat::WorkGraphStoreKind::Disabled)
+        .then(|| {
+            runtime
+                .workgraph_service()
+                .unwrap_or_else(|_| meerkat::WorkGraphService::new(runtime.workgraph_store()))
+        });
+    let state = MobMcpState::new_with_runtime_adapter(
+        runtime.session_service(),
+        Some(runtime.runtime_adapter()),
+        meerkat_mob::MobControlPrincipal::Owner,
+    )?;
+    let state = match registry_for_policy {
+        Some(registry) => state
+            .with_tool_consequence_policy_registry(registry)
+            .with_child_application_tool_policy(super::policy::binding()),
+        None => state,
+    };
+    let state = state
+        .with_persistent_storage_root(Some(realm_root.to_path_buf()))
+        .with_workgraph_service(workgraph)
+        .with_default_llm_client_provider(Some(llm_provider))
+        .with_detached_owner_host(Arc::new(
+            meerkat_rpc::detached_owner::RpcDetachedOwnerHost::new(runtime),
+        ))
+        .with_child_spawn_member_customizer(Arc::new(customizer))
+        .into_shared();
+    crate::mobs::install_mob_hooks(&state, registry);
+    if let Err(error) = state.bind_continuations(
+        runtime.runtime_delivery_inbox(),
+        runtime.continuation_bindings(),
+    ) {
+        tracing::warn!(%error, "fork_off and council run in the turn: continuation owner not bound");
+    }
+    state.start_workgraph_flow_reconciler();
+    runtime.set_mob_state(Arc::clone(&state));
+    Ok(state)
+}
+
+/// Every model call of every agent, helper and classifier is counted
+/// here; a conversation's new record (its totals and the gauge) goes to
+/// every client.
+fn ledger(decisions: &Arc<Decisions>, realm_root: &std::path::Path) -> Arc<super::usage::Ledger> {
+    let decisions = Arc::downgrade(decisions);
+    super::usage::Ledger::new(
+        realm_root,
+        move |session: &meerkat_core::SessionId, record: &super::usage::Record| {
+            if let Some(decisions) = decisions.upgrade() {
+                decisions.broadcast(
+                    super::protocol::COST,
+                    &super::protocol::CostNote {
+                        session_id: session.clone(),
+                        cost: record.cost.clone(),
+                        context: record.context,
+                    },
+                );
+            }
+        },
+    )
+}
+
+/// The daemon follows its helpers once each: their usage, their run ends
+/// (the tool catalog is read then) and their sessions (for nesting).
+/// Clients see the helpers' events on the mobs' own streams, and open a
+/// mob's stream once the daemon follows a helper in it (`rkat/mob`)
+/// instead of listing the mobs again and again. Returns the follower's
+/// task and the one that tells the clients of destroyed mobs.
+fn follow_helpers(
+    state: &Arc<MobMcpState>,
+    registry: &Arc<HelperRegistry>,
+    origins: &Arc<DaemonToolOrigins>,
+    ledger: &Arc<super::usage::Ledger>,
+    decisions: &Arc<Decisions>,
+    spawning: mpsc::UnboundedReceiver<crate::mobs::customizer::Spawning>,
+) -> (tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>) {
+    let helper_events = Arc::new(super::approvals::HelperEvents::new(
+        super::approvals::CatalogReads::of(origins),
+        Arc::clone(ledger),
+        {
+            let decisions = Arc::downgrade(decisions);
+            move |mob: &meerkat_mob::MobId, change| {
+                if let Some(decisions) = decisions.upgrade() {
+                    decisions.broadcast(
+                        super::protocol::MOB,
+                        &super::protocol::MobNote {
+                            mob_id: mob.clone(),
+                            change,
+                        },
+                    );
+                }
+            }
+        },
+    ));
+    let mut destroyed = registry.destroyed_mobs();
+    let destroyed_task = tokio::spawn({
+        let helper_events = Arc::clone(&helper_events);
+        async move {
+            loop {
+                match destroyed.recv().await {
+                    Ok(mob) => helper_events.mob_destroyed(&mob),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        }
+    });
+    let follower = tokio::spawn(crate::mobs::follow::watch(
+        Arc::downgrade(state),
+        Arc::clone(registry),
+        helper_events,
+        spawning,
+    ));
+    (follower, destroyed_task)
 }
 
 /// The note tools every agent shares (one store per scope).
