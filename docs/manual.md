@@ -529,7 +529,11 @@ by its tool access policy), and a deeper spawn is refused.
 
 The agent forks itself with the engine's `fork_off`: the child starts
 from the conversation so far, works on the task it is given, runs behind
-the same gate as every helper and shows as one (see [The workspace daemon](#the-workspace-daemon)). The
+the same gate as every helper and shows as one (see [The workspace daemon](#the-workspace-daemon)).
+A fork is turn-driven and not wired to the agent that forked it, by the
+engine's design: it does its task and ends, its result reaches the
+parent as the tool's outcome, and it cannot message the parent or be
+messaged while it runs. The
 TUI's own `fork` tool, which rendered the conversation into a helper's
 prompt for the in-process runner, is gone with that runner.
 

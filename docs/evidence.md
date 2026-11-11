@@ -112,9 +112,14 @@ the mob split are numbered in `docs/mob-split.md`, "Open engine asks"):
   attribute a steer's delivery: "The attach client and daemon after the
   senior review", and `docs/mob-split.md` ask 6.
 - Same-identity `/rewind` of a mob member (lukacf/meerkat#2126: the design
-  is merged, db8547a532; the implementation is not scheduled) and the
-  governed realm (#2122): "P4: helpers, conversations and detach in attach mode", "P3b and
-  the 0.9.11 adoption", and `docs/mob-split.md`.
+  is merged, db8547a532; the implementation is not scheduled): "P4:
+  helpers, conversations and detach in attach mode", "P3b and the 0.9.11
+  adoption", and `docs/mob-split.md`.
+
+Withdrawn 2026-11-10, kept in their sections as a record: the governed
+realm (#2122; one daemon per workspace, one owner, a tunnel for remote
+use) and ask 7, seating a member on a session made outside the mob (no
+realm holds one since the realm moved out of the workspace).
 
 ## Phase 0 (P0a skeleton) — partial
 
@@ -5903,3 +5908,36 @@ reported as one message the next request carries, announced to the TUI,
 a turn labelled and audited as the watch's, gone after it); unit:
 `daemon::watches::tests` (batching, the cap, other agents, once and turn
 lifetimes, retire, own writes, transient files).
+
+### Engine observations from the agent living in the harness (items 21, 22)
+
+Recorded, not ours to fix; each is a candidate for a small test-only
+report upstream if the user wants one.
+
+- `mob_wire` right after `spawn_member` answers "member not found" and
+  succeeds on a retry: a visibility race between the spawn's admission
+  and the wire's roster read.
+- `peer_connectivity` reports 0 reachable peers after messages to those
+  peers went through.
+- `list_members` leaves out the caller's own seat.
+- `fork_off` children are turn-driven and not wired to their parent, by
+  design: written into the manual (Helpers).
+- The shell tool's default timeout killed a `sleep 30`: the engine's
+  default (`DEFAULT_SHELL_TIMEOUT_SECS`, 30 s, meerkat-core `config.rs`)
+  applies when the call names none, and the agent can pass
+  `timeout_secs`. Decided: rkat-tui keeps the engine's default. A longer
+  default makes every hung command hold a turn longer, a model that knows
+  a command is slow can say so per call, and background jobs (item 9) are
+  the way for long builds.
+- `memory_search` (meerkat-memory `HnswMemoryStore`, hashed bag-of-words
+  embeddings): it returns `limit` entries for any query, unrelated ones at
+  a score of 0.5, with no relevance cutoff. Read from the source: the
+  score is `1 - cosine_distance / 2`, and with non-negative embeddings the
+  cosine distance is at most 1, so 0.5 is the mapping's floor (no shared
+  word), not a default. A draft test-only report is in
+  `.handover/p6-memory-report.md`, outside the repository, for the user
+  to decide on.
+- Facts inside long entries are diluted (one vector per entry); only user
+  and assistant text is indexed, not tool output; compacted content
+  becomes searchable only after the turn ends. The agent persona's memory
+  paragraph says how to read results (item 22(a)).

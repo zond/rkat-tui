@@ -35,9 +35,14 @@ What remains, in order of priority:
 |---|---|
 | Steer correlation (ask 6): which client's steer a boundary delivered when several steer one turn | The upstream fix is in progress ("Upstream follow-up: ask 6" below); the client attributes first in, first out until a release carries it |
 | `/rewind` on the engine's implementation (ask 1) | The same-identity rewind design is merged upstream (lukacf/meerkat#2126, db8547a532); its implementation is not scheduled. `/rewind` explains why it is not available |
-| Seating a member on a non-member session (ask 7) | No longer needed by rkat-tui: realms live outside the workspace since 2026-11-10 and hold no session of the removed in-process runner; the view-only listing went |
 | MCP servers added or trusted after the daemon's mob was created | They do not reach the agent until the mob is made again (the manual's limits) |
-| The governed realm (ask 2, #2122) | Lower priority now that remote attach goes through a tunnel to a loopback daemon (`--attach=HOST:PORT`) rather than a governed connection |
+
+Withdrawn 2026-11-10 (kept below as a record): seating a member on a
+non-member session (ask 7: no realm holds such a session since the realm
+moved out of the workspace, and the view-only listing went), and the
+governed realm (ask 2, #2122: one daemon per workspace, one owner, a
+tunnel to a loopback daemon for remote use, so no governed connection is
+wanted).
 
 ## Direction (decided 2026-11-09): every session runs in the daemon
 
@@ -470,10 +475,11 @@ list of what the daemon and its client do not do yet.
    for a mob-owned session and member forks give the copy a new identity.
    The design (a `mob/rewind_member`) is merged as db8547a532; the
    implementation is not scheduled.
-2. The governed connection (#2122): mob methods on a governed connection, a
-   governed connection on a shared runtime, and consent scoped beyond one
-   pipe. These make the engine's own review contract usable from a
-   detachable client (P5).
+2. Withdrawn 2026-11-10. The governed connection (#2122): mob methods on
+   a governed connection, a governed connection on a shared runtime, and
+   consent scoped beyond one pipe. These would have made the engine's own
+   review contract usable from a detachable client (P5). Not wanted: one
+   daemon per workspace, one owner, a tunnel for remote use.
 3. A notification sink that survives `RpcServer::new` per connection;
    `serve_tcp_connection` now exists upstream and is not adopted yet.
 4. `delegate` naming the helper's session in its result.
@@ -485,7 +491,7 @@ list of what the daemon and its client do not do yet.
    `input_id` and tell its own steer's delivery from another client's: the
    attach runner marks its steers delivered first in, first out. An
    upstream fix is in progress (below).
-7. Adopting a session created outside the mob: a way to seat a mob member
+7. Withdrawn 2026-11-10. Adopting a session created outside the mob: a way to seat a mob member
    on an existing non-member session, or to write the durable
    `comms_name` (and member binding) when seating one, so a consumer can
    bring sessions created outside the mob (rkat-tui's former in-process
@@ -555,4 +561,4 @@ Upstream PRs:
 - #2117: `mob/fork_member` as an operator method (rewind deferred).
 - #2124: the 0.9.11 release integration, `bffcd8f98a`, released on crates.io as 0.9.11.
 - #2126: the same-identity rewind design (merged as db8547a532; implementation not scheduled).
-- #2122: the map of the governed-realm gaps (open).
+- #2122: the map of the governed-realm gaps (withdrawn 2026-11-10: one daemon per workspace, one owner, a tunnel for remote use).
