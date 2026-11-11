@@ -227,6 +227,8 @@ pub fn read_only_with_comms(args: &serde_json::Value) -> bool {
 
 /// The live agents.
 pub struct Agents {
+    /// When the agents are idle.
+    activity: Arc<super::activity::Activity>,
     state: Arc<MobMcpState>,
     conversations: Arc<Conversations>,
     engine: Arc<ApprovalEngine>,
@@ -265,6 +267,8 @@ impl std::fmt::Debug for Agents {
 
 /// What [`Agents`] is made of.
 pub struct AgentsParts {
+    /// When the agents are idle.
+    pub activity: Arc<super::activity::Activity>,
     /// The mob host.
     pub state: Arc<MobMcpState>,
     /// The agents' conversations.
@@ -292,6 +296,7 @@ impl Agents {
     #[must_use]
     pub fn new(parts: AgentsParts) -> Arc<Self> {
         let AgentsParts {
+            activity,
             state,
             conversations,
             engine,
@@ -304,6 +309,7 @@ impl Agents {
             ledger,
         } = parts;
         Arc::new(Self {
+            activity,
             state,
             conversations,
             engine,
@@ -472,6 +478,7 @@ impl Agents {
         }
         let text = batch.text();
         self.watch_sent.lock().insert(name.clone(), text.clone());
+        let _sending = self.activity.sending(&name);
         let sent = self
             .state
             .mob_member_send(
@@ -499,6 +506,12 @@ impl Agents {
                 prompt: text,
             },
         );
+    }
+
+    /// When the agents are idle.
+    #[must_use]
+    pub fn activity(&self) -> &Arc<super::activity::Activity> {
+        &self.activity
     }
 
     /// `name`'s run ended: its watches that live for a turn go.
@@ -642,6 +655,7 @@ impl Agents {
             current: Arc::clone(&self.conversations),
             ledger: Arc::clone(&self.ledger),
             agents: Arc::downgrade(self),
+            activity: Arc::clone(&self.activity),
             draining: self.draining.subscribe(),
         });
         let active = self.tick();
@@ -1121,6 +1135,7 @@ impl Agents {
         }
         let session = self.conversations.retire(name).await?;
         self.table.lock().remove(name);
+        self.activity.forget(name);
         self.watches.forget(name);
         self.watch_sent.lock().remove(name);
         if let Some(session) = &session {

@@ -28,6 +28,8 @@ pub enum Push {
     Switched(protocol::SwitchedNote),
     /// A mob hosts helpers now, or was destroyed ([`protocol::MOB`]).
     Mob(protocol::MobNote),
+    /// An agent is idle ([`protocol::IDLE`]).
+    Idle(protocol::IdleNote),
     /// An event of the stream `stream` (the conversation's own, or a mob's;
     /// which one decides how `event` reads).
     Stream {
@@ -57,6 +59,7 @@ impl Push {
             protocol::COST => Self::Cost(read(note)?),
             protocol::SWITCHED => Self::Switched(read(note)?),
             protocol::MOB => Self::Mob(read(note)?),
+            protocol::IDLE => Self::Idle(read(note)?),
             STREAM_EVENT => Self::Stream {
                 stream: params.get("stream_id")?.as_str()?.to_string(),
                 event: params.get("event")?.clone(),

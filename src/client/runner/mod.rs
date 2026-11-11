@@ -5,12 +5,15 @@
 //!
 //! A turn, as the UI sees it, starts with [`Effect::StartTurn`] (or with a
 //! run this UI did not start: another client's, or one the catch-up found,
-//! announced with [`Msg::RemoteTurn`]) and ends once every run it saw
-//! ended and the daemon reports no unfinished input of the conversation
-//! (`rkat/active_inputs`): a steer that missed the boundary, whichever
-//! client sent it, runs as a follow-up run of the same turn. The wait is
-//! bounded by [`FOLLOW_UP_WAIT`]; without a daemon to ask the turn ends
-//! [`RUN_GRACE`] after its last run. Its result is the runs' terminal
+//! announced with [`Msg::RemoteTurn`]) and ends when the daemon says the
+//! agent is idle after a run the turn saw end ([`protocol::IDLE`],
+//! decided in [`crate::daemon::activity`]): a steer that missed the
+//! boundary, whichever client sent it, runs as a follow-up run of the
+//! same turn first. A turn ends without that only when the daemon stops,
+//! or an interrupt it never confirms passes [`INTERRUPT_DEADLINE`]; a
+//! lost connection leaves it running, and the reattach (the daemon tells
+//! a client whether its agent is idle as it attaches) settles it. Its
+//! result is the runs' terminal
 //! events: `run_completed` (the text and usage), `run_failed` (an
 //! interruption when this client interrupted it or the class is
 //! `cancelled`, else the failure).
@@ -91,22 +94,6 @@ const ORPHANS_MAX: usize = 2_000;
 
 /// The notice shown on the first attach: what the daemon is.
 pub const ATTACH_NOTICE: &str = "the agent runs in this workspace's rkat-tui-mob daemon, which keeps working when you /detach and stops on /quit when this rkat-tui started it (its approval requests show in every attached client; the first answer counts).";
-
-/// How long a turn whose runs all ended waits for a follow-up run.
-pub const RUN_GRACE: Duration = Duration::from_millis(300);
-
-/// The longest a turn whose runs all ended stays open while the runtime
-/// still holds unfinished input of the conversation (`rkat/active_inputs`:
-/// a steer, this client's or another's, that runs as a follow-up run) or
-/// a steer of this client is not written into a run yet. The follow-up
-/// run's start delivers such a steer, so the turn does not end (and a new
-/// one start with the steer's own text) before it. Past the bound the
-/// turn ends with a notice; the runtime owns what it holds.
-pub const FOLLOW_UP_WAIT: Duration = Duration::from_secs(10);
-
-/// How soon a turn whose runs ended asks the daemon again while it still
-/// holds unfinished input.
-pub const INPUT_RECHECK: Duration = Duration::from_millis(100);
 
 /// How long after the first interrupt a second one force-cancels.
 pub const STOP_GRACE: Duration = Duration::from_secs(1);
@@ -376,12 +363,6 @@ enum Report {
     },
     /// `rkat/recall` answered (or failed, in words).
     Recalled(Result<protocol::Recalled, String>),
-    /// `rkat/active_inputs` answered question `check` of the turn (or
-    /// failed, in words).
-    ActiveInputs {
-        check: u64,
-        result: Result<usize, String>,
-    },
     /// `/agents <name>`: the daemon's agents as read for it.
     AgentsRead {
         name: String,
@@ -475,22 +456,12 @@ struct Turn {
     current_run: Option<RunId>,
     /// A run of this turn started.
     saw_run: bool,
-    /// Steers sent or admitted and not yet delivered, by the input the
-    /// runtime admitted each as.
-    steers: Steers,
+    /// The runs that ended in it: the daemon's idle notice names the run
+    /// it follows ([`protocol::IdleNote::last_run`]).
+    ended: HashSet<RunId>,
     result: Option<Result<TurnSummary, TurnFailure>>,
     interrupted_at: Option<Instant>,
     force_cancelled: bool,
-    /// Every run ended: the turn ends then unless another starts.
-    finish_by: Option<Instant>,
-    /// Every run ended and the runtime still held unfinished input: ask
-    /// the daemon again then ([`INPUT_RECHECK`]).
-    recheck_at: Option<Instant>,
-    /// The `rkat/active_inputs` question this turn waits for (answers of
-    /// an older one are dropped).
-    settle: u64,
-    /// The last answer named unfinished input.
-    held_input: bool,
     /// An interrupt the daemon has not confirmed ends the turn then.
     give_up_at: Option<Instant>,
     /// The prompt that started it, as sent (`None`: another client's run).
@@ -508,10 +479,7 @@ impl Turn {
     }
 
     fn deadline(&self) -> Option<Instant> {
-        [self.finish_by, self.give_up_at, self.recheck_at]
-            .into_iter()
-            .flatten()
-            .min()
+        self.give_up_at
     }
 }
 
@@ -607,6 +575,11 @@ pub struct Runner {
     link_epoch: u64,
     mark: Option<Mark>,
     turn: Turn,
+    /// This client's steers on their way to the agent, followed across
+    /// turns by the inputs the runtime admitted them as.
+    steers: Steers,
+    /// What the daemon said last of this agent's being idle.
+    idle: Option<protocol::IdleNote>,
     /// The model and endpoint as last read or switched to.
     model: Option<ShownModel>,
     /// The daemon the events shown came from (the cursor names it, see
@@ -716,6 +689,8 @@ impl Runner {
             link_epoch: 0,
             mark: None,
             turn: Turn::default(),
+            steers: Steers::default(),
+            idle: None,
             model: None,
             daemon_id_seen: None,
             approvals: Approvals::default(),
@@ -868,7 +843,6 @@ impl Runner {
                 result,
             } => self.sent(turn, steer, result),
             Report::Recalled(result) => self.recalled(result),
-            Report::ActiveInputs { check, result } => self.active_inputs(check, result),
             Report::AgentsRead { name, status } => self.agents_read(name, status),
             Report::StopAsked(Ok(text)) => {
                 self.stopped();
@@ -1687,7 +1661,7 @@ mod tests {
             "Esc interrupted it at once"
         );
         // The steer is expected at the next boundary while its send runs.
-        assert!(runner.turn.steers.holds(PendingId(1)));
+        assert!(runner.steers.holds(PendingId(1)));
         // Nothing was answered: no turn end, no acknowledgement yet.
         while let Ok(msg) = ui_rx.try_recv() {
             assert!(
@@ -1740,10 +1714,10 @@ mod tests {
         };
         let early = InputId::new();
         for id in 1..=3 {
-            runner.turn.steers.sending(PendingId(id));
+            runner.steers.sending(PendingId(id));
         }
         // 2's input joined the run before its send answered.
-        assert_eq!(runner.turn.steers.applied(&early), None);
+        assert_eq!(runner.steers.applied(&early), None);
         runner.sent(1, Some(PendingId(1)), Ok(Some(InputId::new())));
         runner.sent(1, Some(PendingId(2)), Ok(Some(early)));
         runner.sent(1, Some(PendingId(3)), Ok(None));
@@ -1770,8 +1744,8 @@ mod tests {
             3
         );
         // 1 waits for its own input; 3 is not followed any more.
-        assert!(runner.turn.steers.holds(PendingId(1)));
-        assert!(!runner.turn.steers.holds(PendingId(3)));
+        assert!(runner.steers.holds(PendingId(1)));
+        assert!(!runner.steers.holds(PendingId(3)));
     }
 
     #[test]
@@ -1809,70 +1783,177 @@ mod tests {
         assert!(orphans.take("b").is_empty());
     }
 
-    /// A steer of this client the runtime still holds when the turn's
-    /// runs completed runs as a follow-up run: the turn waits for that run
-    /// (however late it starts) and marks the steer delivered at its
-    /// start, never ending first. Without a held steer the short grace
-    /// applies.
+    /// Events and idle notices fed to a runner without a connection.
+    struct Feed {
+        session: SessionId,
+        seq: u64,
+    }
+
+    impl Feed {
+        fn envelope(&mut self, payload: AgentEvent) -> EventEnvelope<AgentEvent> {
+            self.seq += 1;
+            EventEnvelope::new("test", self.seq, None, payload)
+        }
+
+        fn started(&mut self, run: &RunId) -> EventEnvelope<AgentEvent> {
+            use meerkat_core::types::{ContentInput, RunInput, TranscriptMessageIdentity};
+            self.envelope(AgentEvent::RunStarted {
+                session_id: self.session.clone(),
+                identity: TranscriptMessageIdentity {
+                    run_id: Some(run.clone()),
+                    ..TranscriptMessageIdentity::default()
+                },
+                input: RunInput::Content {
+                    content: ContentInput::Text("x".into()),
+                },
+                request_reasoning: None,
+            })
+        }
+
+        fn completed(&mut self, run: &RunId) -> EventEnvelope<AgentEvent> {
+            use meerkat_core::types::TranscriptMessageIdentity;
+            self.envelope(AgentEvent::RunCompleted {
+                session_id: self.session.clone(),
+                identity: TranscriptMessageIdentity {
+                    run_id: Some(run.clone()),
+                    ..TranscriptMessageIdentity::default()
+                },
+                result: "done".into(),
+                structured_output: None,
+                extraction_required: false,
+                usage: meerkat_core::types::CumulativeUsage::default(),
+                terminal_cause_kind: None,
+                assistant_message_id: None,
+            })
+        }
+
+        fn applied(&mut self, input: &InputId) -> EventEnvelope<AgentEvent> {
+            self.envelope(AgentEvent::BoundaryAppendApplied {
+                run_id: RunId::new(),
+                input_id: input.clone(),
+                content: meerkat_core::types::ContentInput::Text("steer".into()),
+                append_count: 1,
+                notices: Vec::new(),
+                transcript_start: None,
+            })
+        }
+
+        fn idle(&self, last_run: &RunId, held: usize) -> protocol::IdleNote {
+            protocol::IdleNote {
+                agent: "a".into(),
+                session_id: self.session.clone(),
+                last_run: Some(last_run.clone()),
+                held,
+            }
+        }
+    }
+
+    fn drain(rx: &mut mpsc::UnboundedReceiver<Msg>) -> Vec<Msg> {
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    fn turn_ends(msgs: &[Msg]) -> usize {
+        msgs.iter()
+            .filter(|m| matches!(m, Msg::TurnFinished(_)))
+            .count()
+    }
+
+    /// A turn ends on the daemon's idle notice naming a run it saw end,
+    /// in either order of the notice and the run's end; a notice of an
+    /// earlier run ends nothing, and neither does a run's end alone.
     #[tokio::test]
-    async fn a_held_steer_keeps_the_turn_open_for_its_follow_up_run() {
-        use crate::ui::delivery::PendingId;
-        use meerkat_core::types::{ContentInput, RunInput, TranscriptMessageIdentity};
+    async fn a_turn_ends_on_the_idle_notice_after_a_run_it_saw_end() {
         let dir = tempfile::tempdir().unwrap();
         let (mut runner, mut rx) = runner(dir.path());
-        let session = SessionId::new();
-        let envelope = |seq, payload| EventEnvelope::new("test", seq, None, payload);
-        let started = |run: &RunId| AgentEvent::RunStarted {
-            session_id: session.clone(),
-            identity: TranscriptMessageIdentity {
-                run_id: Some(run.clone()),
-                ..TranscriptMessageIdentity::default()
-            },
-            input: RunInput::Content {
-                content: ContentInput::Text("x".into()),
-            },
-            request_reasoning: None,
+        let mut feed = Feed {
+            session: SessionId::new(),
+            seq: 0,
         };
-        let completed = |run: &RunId| AgentEvent::RunCompleted {
-            session_id: session.clone(),
-            identity: TranscriptMessageIdentity {
-                run_id: Some(run.clone()),
-                ..TranscriptMessageIdentity::default()
-            },
-            result: "done".into(),
-            structured_output: None,
-            extraction_required: false,
-            usage: meerkat_core::types::CumulativeUsage::default(),
-            terminal_cause_kind: None,
-            assistant_message_id: None,
-        };
+        let (earlier, first, follow_up) = (RunId::new(), RunId::new(), RunId::new());
+        runner.idle_reported(feed.idle(&earlier, 0));
         runner.turn = Turn {
             active: true,
             ..Turn::default()
         };
-        let (first, follow_up) = (RunId::new(), RunId::new());
-        runner.on_event(envelope(1, started(&first)), None);
-        runner.turn.steers.sending(PendingId(2));
-        runner.turn.steers.admitted(PendingId(2), InputId::new());
-        runner.on_event(envelope(2, completed(&first)), None);
-        let wait = runner.turn.finish_by.unwrap() - Instant::now();
-        assert!(wait > RUN_GRACE * 2, "{wait:?}");
-        // Past the run grace the turn is still open.
-        runner.turn.finish_by = runner.turn.finish_by.map(|at| at.max(Instant::now()));
-        runner.on_deadline();
+        runner.on_event(feed.started(&first), None);
+        runner.on_event(feed.completed(&first), None);
+        assert!(runner.turn.active, "the stale notice ends nothing");
+        // Another client's steer runs as a follow-up run: still the turn.
+        runner.on_event(feed.started(&follow_up), None);
+        runner.idle_reported(feed.idle(&first, 0));
+        assert!(runner.turn.active, "a run is open");
+        // The notice may come before the run's end shows here.
+        runner.idle_reported(feed.idle(&follow_up, 0));
         assert!(runner.turn.active);
-        while rx.try_recv().is_ok() {}
-        runner.on_event(envelope(3, started(&follow_up)), None);
-        assert!(matches!(
-            rx.try_recv(),
-            Ok(Msg::SteerDelivered(PendingId(2)))
-        ));
-        assert!(matches!(rx.try_recv(),
-            Ok(Msg::Agent(env)) if matches!(env.payload, AgentEvent::RunStarted { .. })));
-        assert!(rx.try_recv().is_err(), "the turn did not end");
-        runner.on_event(envelope(4, completed(&follow_up)), None);
-        let wait = runner.turn.finish_by.unwrap() - Instant::now();
-        assert!(wait <= RUN_GRACE, "nothing held: the short grace {wait:?}");
+        assert_eq!(turn_ends(&drain(&mut rx)), 0);
+        runner.on_event(feed.completed(&follow_up), None);
+        assert!(!runner.turn.active);
+        assert_eq!(turn_ends(&drain(&mut rx)), 1);
+    }
+
+    /// A steer whose send is unanswered keeps the turn open past the idle
+    /// notice (it may start a run of its own); a steer the agent still
+    /// holds at the turn's end is not shown delivered then, and is marked
+    /// when the run carrying it starts, or its own boundary event comes,
+    /// in a later turn. Both orders.
+    #[tokio::test]
+    async fn a_steer_the_agent_has_not_read_stays_followed_across_turns() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut runner, mut rx) = runner(dir.path());
+        let mut feed = Feed {
+            session: SessionId::new(),
+            seq: 0,
+        };
+        for by_boundary in [false, true] {
+            let (run, later) = (RunId::new(), RunId::new());
+            let input = InputId::new();
+            runner.turn = Turn {
+                active: true,
+                ..Turn::default()
+            };
+            runner.on_event(feed.started(&run), None);
+            runner.steers.sending(PendingId(7));
+            runner.on_event(feed.completed(&run), None);
+            runner.idle_reported(feed.idle(&run, 0));
+            assert!(runner.turn.active, "its send is unanswered");
+            runner.sent(0, Some(PendingId(7)), Ok(Some(input.clone())));
+            // The daemon decided before the steer arrived; it holds it now.
+            assert!(!runner.turn.active, "nothing on its way any more");
+            let msgs = drain(&mut rx);
+            assert_eq!(turn_ends(&msgs), 1);
+            assert!(
+                !msgs.iter().any(|m| matches!(m, Msg::SteerDelivered(_))),
+                "not read yet: {msgs:?}"
+            );
+            assert!(runner.steers.holds(PendingId(7)));
+            if by_boundary {
+                // A turn of another client's runs; the steer joins it at a
+                // boundary.
+                runner.on_event(feed.applied(&input), None);
+            } else {
+                // The agent runs it as a run of its own.
+                runner.on_event(feed.started(&later), None);
+            }
+            let msgs = drain(&mut rx);
+            assert_eq!(
+                msgs.iter()
+                    .filter(|m| matches!(m, Msg::SteerDelivered(PendingId(7))))
+                    .count(),
+                1,
+                "{msgs:?}"
+            );
+            if !by_boundary {
+                // Its own run shows no second copy of its text.
+                assert!(
+                    msgs.iter()
+                        .any(|m| matches!(m, Msg::RemoteTurn { prompt: None })),
+                    "{msgs:?}"
+                );
+            }
+            assert!(!runner.steers.holds(PendingId(7)));
+            runner.finish_turn();
+            drain(&mut rx);
+        }
     }
 
     #[test]

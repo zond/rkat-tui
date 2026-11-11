@@ -26,6 +26,7 @@
 //! the deny rules are the members' durable application tool policy
 //! ([`policy`]).
 
+pub mod activity;
 pub mod agents;
 pub mod approvals;
 pub mod audit;
@@ -573,7 +574,39 @@ impl Daemon {
             options.start_token,
             options.build.unwrap_or_else(|| crate::BUILD.to_string()),
         );
+        let activity = activity::Activity::new(
+            {
+                let conversations = Arc::clone(&conversations);
+                let machine = composed.runtime.runtime_adapter();
+                Box::new(move |agent: String| {
+                    let conversations = Arc::clone(&conversations);
+                    let machine = Arc::clone(&machine);
+                    Box::pin(async move {
+                        use meerkat_runtime::SessionServiceRuntimeExt as _;
+                        let session = conversations.current(&agent)?;
+                        // One that cannot be read is not finished.
+                        let unfinished = machine
+                            .list_active_inputs(&session)
+                            .await
+                            .map_or(1, |inputs| inputs.len());
+                        let run = conversations.running(&agent).await;
+                        Some(activity::Probed {
+                            session,
+                            unfinished,
+                            run,
+                        })
+                    })
+                })
+            },
+            {
+                let decisions = Arc::clone(&composed.decisions);
+                Box::new(move |note: &protocol::IdleNote| {
+                    decisions.broadcast(protocol::IDLE, note);
+                })
+            },
+        );
         let agents = agents::Agents::new(agents::AgentsParts {
+            activity,
             state: Arc::clone(&composed.state),
             conversations: Arc::clone(&conversations),
             engine: Arc::clone(&composed.engine),

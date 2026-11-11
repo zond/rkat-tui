@@ -298,13 +298,13 @@ impl PendingQueue {
         }
     }
 
-    /// After a turn: every item the turn did not deliver, oldest first:
-    /// items the UI held, and admitted items the runtime never reported
-    /// delivered. Items still waiting for their admission ack stay: the
-    /// ack decides. The settled items are forgotten.
+    /// After a turn: the items the UI held, oldest first. Admitted items
+    /// stay: the agent has them and has not read them yet (the runtime
+    /// runs them later, or a recall takes them back); items still waiting
+    /// for their admission ack stay too: the ack decides. The settled
+    /// items are forgotten.
     pub fn take_unsent(&mut self) -> Vec<Pending> {
-        let mut unsent: Vec<Pending> =
-            self.take_where(|p| matches!(p.state, PendingState::Deferred | PendingState::Admitted));
+        let mut unsent: Vec<Pending> = self.take_where(|p| p.state == PendingState::Deferred);
         self.clear_settled();
         unsent.sort_by_key(|p| p.id);
         unsent
@@ -363,8 +363,10 @@ mod tests {
             transcript.block(block),
             Some(&Block::User { text: "hi".into() })
         );
-        // A message the turn's end left undelivered is held again.
-        let again = q.add(&mut transcript, "again".into(), PendingState::Admitted);
+        // A held message the turn's end did not send is held again; an
+        // admitted one stays with the agent.
+        let with_agent = q.add(&mut transcript, "kept".into(), PendingState::Admitted);
+        let again = q.add(&mut transcript, "again".into(), PendingState::Deferred);
         let again_block = q.get(again).unwrap().block;
         let label = |t: &Transcript| match t.block(again_block) {
             Some(Block::Queued { label, .. }) => Some(*label),
@@ -372,6 +374,10 @@ mod tests {
         };
         let unsent = q.take_unsent();
         assert_eq!(unsent.iter().map(|p| p.id).collect::<Vec<_>>(), [again]);
+        assert_eq!(
+            q.get(with_agent).map(|p| p.state),
+            Some(PendingState::Admitted)
+        );
         q.hold_again(&mut transcript, unsent.into_iter().next().unwrap());
         assert_eq!(label(&transcript), Some(QueuedLabel::Deferred));
         assert_eq!(q.send_now(&mut transcript, again).as_deref(), Some("again"));

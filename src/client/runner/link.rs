@@ -465,7 +465,12 @@ impl Runner {
                     self.adopt_switch(moved.session_id, None, None);
                 }
             }
-            Push::Triggered(_) | Push::Cost(_) | Push::Switched(_) => {}
+            Push::Idle(note)
+                if note.agent == link.connection.agent() && note.session_id == link.session =>
+            {
+                self.idle_reported(note);
+            }
+            Push::Triggered(_) | Push::Cost(_) | Push::Switched(_) | Push::Idle(_) => {}
             Push::Mob(protocol::MobNote {
                 mob_id,
                 change: protocol::MobChange::Hosts,

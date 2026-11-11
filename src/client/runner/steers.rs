@@ -1,4 +1,8 @@
-//! The steers of the UI's turn, matched to the runtime's inputs by id.
+//! This client's steers on their way to the agent, matched to the
+//! runtime's inputs by id. They are followed across turns: a steer the
+//! runtime still holds when a turn ends (it started no run for it in
+//! time) stays with the agent until its own boundary event, or the run
+//! that carries it, arrives.
 //!
 //! `mob/member_send` answers the input the member's runtime admitted for a
 //! steer (`admission.input_id`, Meerkat 0.9.12); the agent's
@@ -8,7 +12,7 @@
 //! before the send's answer (the stream is not ordered with the call): an
 //! applied input no steer is known for yet is kept, and the answer that
 //! names it delivers at once. Another client's input is kept the same way
-//! and never matches.
+//! and never matches; it is kept only while a send is unanswered.
 
 use std::collections::HashSet;
 
@@ -16,7 +20,7 @@ use meerkat_core::lifecycle::InputId;
 
 use crate::ui::delivery::PendingId;
 
-/// The turn's steers on their way to the agent.
+/// This client's steers on their way to the agent.
 #[derive(Debug, Default)]
 pub(super) struct Steers {
     /// Sent, the daemon's answer not in yet (oldest first).
@@ -24,9 +28,9 @@ pub(super) struct Steers {
     /// Admitted under the input the runtime named, not applied yet
     /// (oldest first).
     admitted: Vec<(InputId, PendingId)>,
-    /// Inputs applied in this turn that no admitted steer was known for
-    /// when the event came: this client's, answered later, or another
-    /// client's.
+    /// Inputs applied while a send was unanswered that no admitted steer
+    /// was known for when the event came: this client's, answered later,
+    /// or another client's (forgotten once no send is unanswered).
     applied: HashSet<InputId>,
 }
 
@@ -45,11 +49,12 @@ impl Steers {
             return false;
         };
         self.sending.remove(at);
-        if self.applied.remove(&input) {
-            return true;
+        let applied = self.applied.remove(&input);
+        if !applied {
+            self.admitted.push((input, id));
         }
-        self.admitted.push((input, id));
-        false
+        self.forget_applied();
+        applied
     }
 
     /// The send of `id` failed, or was answered without an input: it is
@@ -57,6 +62,15 @@ impl Steers {
     pub(super) fn forget(&mut self, id: PendingId) {
         self.sending.retain(|sent| *sent != id);
         self.admitted.retain(|(_, steer)| *steer != id);
+        self.forget_applied();
+    }
+
+    /// No send is unanswered: no answer can name an applied input any
+    /// more.
+    fn forget_applied(&mut self) {
+        if self.sending.is_empty() {
+            self.applied.clear();
+        }
     }
 
     /// The runtime wrote `input` into the running turn: the steer it
@@ -69,7 +83,9 @@ impl Steers {
         {
             Some(at) => Some(self.admitted.remove(at).1),
             None => {
-                self.applied.insert(input.clone());
+                if !self.sending.is_empty() {
+                    self.applied.insert(input.clone());
+                }
                 None
             }
         }
@@ -98,20 +114,20 @@ impl Steers {
         taken
     }
 
-    /// Every steer still followed, oldest first, taken: a follow-up run
-    /// carries the ones that missed the boundary, and at the turn's end the
-    /// runtime owns them.
+    /// Every steer still followed, oldest first, taken: the run after a
+    /// turn's first carries the ones that missed the boundary.
     pub(super) fn take_all(&mut self) -> Vec<PendingId> {
         let mut all: Vec<PendingId> = self.admitted.drain(..).map(|(_, id)| id).collect();
         all.append(&mut self.sending);
         all.sort();
+        self.applied.clear();
         all
     }
 
-    /// Whether a steer is still followed: sent or admitted and not
-    /// written into a run yet.
-    pub(super) fn following(&self) -> bool {
-        !self.sending.is_empty() || !self.admitted.is_empty()
+    /// Whether a steer's send is still unanswered (it may start a run of
+    /// its own: the turn waits for it).
+    pub(super) fn sending_any(&self) -> bool {
+        !self.sending.is_empty()
     }
 
     /// Whether `id` is still followed.
@@ -182,6 +198,22 @@ mod tests {
         // 3's answer after the sweep files nothing.
         assert!(!steers.admitted(PendingId(3), input()));
         assert!(steers.take_all().is_empty());
+    }
+
+    /// Other clients' inputs are kept only while a send is unanswered.
+    #[test]
+    fn applied_inputs_are_kept_only_while_a_send_is_unanswered() {
+        let mut steers = Steers::default();
+        assert_eq!(steers.applied(&input()), None);
+        assert!(steers.applied.is_empty());
+        steers.sending(PendingId(1));
+        assert!(steers.sending_any());
+        assert_eq!(steers.applied(&input()), None);
+        assert_eq!(steers.applied.len(), 1);
+        steers.admitted(PendingId(1), input());
+        assert!(steers.applied.is_empty());
+        assert!(!steers.sending_any());
+        assert!(steers.holds(PendingId(1)));
     }
 
     #[test]

@@ -55,18 +55,18 @@ fn commands_typed_during_a_turn_run_after_it_before_the_queued_messages() {
     let mut app = running_app();
     assert!(submit(&mut app, "!echo a").is_empty());
     assert_eq!(submit(&mut app, "two"), vec![steer(2, "two")]);
-    app.update(ack(2, Ok(())));
+    app.update(ack(2, Err(SteerFailure::NotRunning)));
     assert!(submit(&mut app, "!echo b").is_empty());
     assert_eq!(
         app.transcript.blocks(),
         &[
             user("one"),
             queued_block(1, "$ echo a", QueuedLabel::Shell),
-            queued_block(2, "two", QueuedLabel::Delivering),
+            queued_block(2, "two", QueuedLabel::Deferred),
             queued_block(3, "$ echo b", QueuedLabel::Shell),
         ]
     );
-    // The turn ends with "two" undelivered: the commands run first, in
+    // The turn ends with "two" held: the commands run first, in
     // order, each in place of its placeholder.
     assert_eq!(
         app.update(finished(Ok(summary()))),

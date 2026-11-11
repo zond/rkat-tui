@@ -59,6 +59,7 @@ use super::protocol::{
     ModelSet, Notices, Refusal, Report, Retired, SWITCH_BUSY, SWITCH_FAILED, SetModelParams,
     StartupNotice, Status, Switched, Tasks, TrustedFile, Usage, engine, method,
 };
+use super::serve::Observed;
 
 /// `reason` for asking at `/quit`, with what detaching or terminating does
 /// to the caller's agent's schedules, when it has any.
@@ -419,9 +420,13 @@ impl Local {
             method::Retire, Empty {} => self.retire(&self.agent_of(&caller)?, None).await;
             method::Quit, Empty {} => self.quit(&caller).await;
             method::Recall, protocol::RecallParams { input_ids } => {
-                self.recall(&caller, &input_ids).await
+                let recalled = self.recall(&caller, &input_ids).await;
+                // What was taken back may leave the agent idle.
+                if let Some(agent) = &caller.agent {
+                    self.agents.activity().changed(agent, false);
+                }
+                recalled
             };
-            method::ActiveInputs, Empty {} => self.active_inputs(&caller).await;
             method::Schedules, Empty {} => {
                 let agent = self.agent_of(&caller)?;
                 Ok(protocol::ScheduleList {
@@ -864,37 +869,6 @@ impl Local {
         self.conversations.flush();
     }
 
-    /// [`protocol::method::ActiveInputs`] for the caller's agent.
-    ///
-    /// # Errors
-    ///
-    /// [`protocol::NO_AGENT`] when the connection is bound to no agent or
-    /// its agent has no conversation; [`protocol::INTERNAL_ERROR`] when the
-    /// runtime cannot list them.
-    async fn active_inputs(&self, caller: &Caller) -> Result<protocol::UnfinishedInputs, Refusal> {
-        use meerkat_runtime::SessionServiceRuntimeExt as _;
-        let refused = || {
-            Refusal::new(
-                protocol::NO_AGENT,
-                "rkat/active_inputs answers for the agent this connection works with",
-            )
-        };
-        let agent = caller.agent.as_deref().ok_or_else(refused)?;
-        let session = self.conversations.current(agent).ok_or_else(refused)?;
-        let active = self
-            .machine
-            .list_active_inputs(&session)
-            .await
-            .map_err(|err| Refusal::new(protocol::INTERNAL_ERROR, err.to_string()))?;
-        // A run still closing is unfinished too (or a state that cannot be
-        // read): an append made before it closed lands only after its turn.
-        let running =
-            self.conversations.running(agent).await != super::conversations::RunState::Idle;
-        Ok(protocol::UnfinishedInputs {
-            count: active.len() + usize::from(running),
-        })
-    }
-
     async fn set_model(&self, agent: &str, params: SetModelParams) -> Result<ModelSet, Refusal> {
         use meerkat_runtime::SessionServiceRuntimeExt as _;
 
@@ -1139,7 +1113,7 @@ impl Local {
     ///
     /// [`protocol::NOT_YOURS`] for a request [`Self::admit`] refuses: it is
     /// answered to the client and never forwarded.
-    pub fn observe(&self, caller: &Caller, mut request: Value) -> Result<Value, Refusal> {
+    pub fn observe(&self, caller: &Caller, mut request: Value) -> Result<Observed, Refusal> {
         let method = request
             .get("method")
             .and_then(Value::as_str)
@@ -1151,15 +1125,16 @@ impl Local {
             *self.forwarded.lock().entry(method.clone()).or_insert(0) += 1;
         }
         let Some(params) = request.get_mut("params") else {
-            return Ok(request);
+            return Ok(Observed::plain(request));
         };
         let agent = match (
             params.get("mob_id").and_then(Value::as_str),
             params.get("agent_identity").and_then(Value::as_str),
         ) {
             (Some(MOB_ID), Some(agent)) if self.agents.is_live(agent) => agent.to_string(),
-            _ => return Ok(request),
+            _ => return Ok(Observed::plain(request)),
         };
+        let mut input = None;
         match method.as_str() {
             engine::MEMBER_SEND | engine::TURN_START => {
                 let field = if method == engine::MEMBER_SEND {
@@ -1168,6 +1143,9 @@ impl Local {
                     "prompt"
                 };
                 self.agents.touch(&agent);
+                // On its way until the engine answers: the agent is not
+                // idle meanwhile.
+                input = Some(self.agents.activity().sending(&agent));
                 // The user's input: the run that takes it is attended, and
                 // its conversation is the one used last (`-c` after a
                 // restart continues it).
@@ -1202,7 +1180,7 @@ impl Local {
             }
             _ => {}
         }
-        Ok(request)
+        Ok(Observed { request, input })
     }
 
     /// Whether `caller` may send the engine request `method` with

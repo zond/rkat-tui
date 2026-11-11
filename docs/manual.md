@@ -118,10 +118,16 @@ the agent already took stays, the transcript says so, and only Esc stops
 the turn. Typing alone never interrupts: a message sent while a
 tool runs waits for that tool's result and joins the turn after it.
 
-**How a turn ends.** A turn ends when the daemon's event stream reports the
-agent's runs ended, and the UI says how: completed, failed (the first
-failure wins) or interrupted. A steered message counts as delivered only
-when the stream shows it written at a boundary or the turn ends.
+**How a turn ends.** A turn ends when the daemon reports the agent idle:
+no run of it open, no message on its way to it, and nothing its runtime
+still holds for the conversation (a message steered too late for the
+running step runs as a follow-up run of the same turn first). The UI says
+how it ended: completed, failed (the first failure wins) or interrupted.
+A steered message counts as delivered only when the stream shows it
+written at a boundary or the run that carries it starts. One the agent
+has not read when the turn ends (the runtime started no run for it within
+10 s; a notice says so) stays shown as *delivering…*, is marked when the
+agent reads it, and ↑ can still take it back.
 
 **Rewind.** There is no rewind (no `/rewind`, and Esc twice on an empty
 editor does nothing): the daemon cannot continue a conversation from

@@ -21,10 +21,10 @@ impl App {
     }
 
     /// Whether ↑ on an empty editor takes queued messages back: one the UI
-    /// holds, one the runtime holds while the turn runs (recalled through
-    /// the runner), or a recall already on its way.
+    /// holds, one the runtime holds and the agent has not read (recalled
+    /// through the runner), or a recall already on its way.
     pub fn can_take_back(&self) -> bool {
-        self.has_recallable() || self.recalling || (self.running && self.has_admitted_recallable())
+        self.has_recallable() || self.recalling || self.has_admitted_recallable()
     }
 
     pub(super) fn submit(&mut self, now: Instant, fx: &mut Vec<Effect>) {
@@ -316,16 +316,17 @@ impl App {
         self.scroll.bottom();
     }
 
-    /// ↑ on an empty editor with queued messages: while a turn runs and the
-    /// runtime holds messages no recall has found with the agent, ask the
-    /// runner to take them back (the answer also brings back the held ones,
-    /// so the editor keeps their order); otherwise pull back the newest held
-    /// one. While a recall is on its way, wait for it.
+    /// ↑ on an empty editor with queued messages: while the runtime holds
+    /// messages no recall has found with the agent (during a turn, or
+    /// after one that ended before the agent read them), ask the runner to
+    /// take them back (the answer also brings back the held ones, so the
+    /// editor keeps their order); otherwise pull back the newest held one.
+    /// While a recall is on its way, wait for it.
     pub(super) fn take_back_queued(&mut self, fx: &mut Vec<Effect>) {
         if self.recalling {
             return;
         }
-        if self.running && self.has_admitted_recallable() {
+        if self.has_admitted_recallable() {
             self.recalling = true;
             fx.push(Effect::RecallQueued);
         } else {

@@ -116,6 +116,11 @@ the mob split are numbered in `docs/mob-split.md`, "Open engine asks"):
   review fixes".
 - An atomic "stop this run and abandon these queued inputs": "Typing during
   a slow tool".
+- The runtime's input lifecycle (`Consumed`, `Abandoned`) and its return
+  to idle after a run's terminal event, published to a host (on the
+  member's event stream or a runtime subscription), so the daemon need
+  not re-ask `list_active_inputs` after a run's end: "The daemon says when
+  a turn is over".
 - Instruction-guided compaction (`/compact <instructions>`): "Esc, queued messages and commands to match
   Claude Code".
 - Same-identity `/rewind` of a mob member (lukacf/meerkat#2126: the design
@@ -7358,3 +7363,70 @@ failure.
 the code (dirs, realm home, config layers, daemon modules, client
 workbench) and checked against it; the formats there are the contract
 from the first release on.
+
+## The daemon says when a turn is over (senior review 4, 2026-11-12)
+
+The client used to decide a turn's end itself: once every run it saw
+ended it asked the daemon `rkat/active_inputs` every 100 ms, for up to
+10 s, with a 300 ms grace when it could not ask, three deadlines and a
+question counter on the turn. The daemon's event watcher sees the same
+runtime, so the decision moved there (`daemon::activity::Activity`):
+an agent is idle when no run of it is open (the watcher's `RunStarted`
+/ `RunCompleted` / `RunFailed`), no input to it is on its way (the proxy
+holds a `Sending` guard per forwarded `mob/member_send` or
+`session/turn_start` until the engine's answer has been queued to the
+client, the daemon one around its own watch-event send) and the runtime
+holds no unfinished input of its conversation (`list_active_inputs`)
+while the member's status says its run is closed. It is decided after
+each of those events, never on a timer of its own: after a run's end, an
+input's answer, a recall, a new incarnation of the agent. The daemon
+pushes `rkat/idle { agent, session_id, last_run, held }` when the agent
+becomes idle, and to a client as it registers for pushes (so a change
+between the attach answer and the registration is not lost; it is a
+push, not a field of the attach answer, for that reason). A client ends
+its turn when the notice names a run that turn saw end, no run of it is
+open and no steer of its own is unanswered: a stale notice (of an
+earlier run) ends nothing, and the order of the notice and the run's end
+on the wire does not matter. A change during a question to the runtime
+has it asked again before anything is told.
+
+One bounded re-check remains, in the daemon: the agent's event stream
+says nothing when an input reaches a terminal state (consumed or
+abandoned without a run) or when the runtime is idle again after a run's
+terminal event (a run still closing: `mob_member_status` can say running
+right after `RunCompleted`). An answer that still names unfinished input
+is asked again after 50 ms, doubling up to 1 s, until a run starts or
+10 s (`SETTLE_WAIT`) have passed; then the agent is reported idle with
+`held` set and the client says the agent still holds a message. Engine
+ask (added to "Open asks"): the runtime's own `InputLifecycleEvent`s
+(`Consumed`, `Abandoned`) and `RuntimeStateChange` to idle, which
+`meerkat-runtime` produces (`drain_events`) but publishes to no host
+subscription, on the member's event stream or a runtime subscription.
+
+A steer is "delivered" only when it was. The runner's steers moved from
+the turn to the runner and are followed across turns; the turn's end no
+longer sweeps the steers still followed as delivered (it showed a
+message the agent had not taken as read, also right after the notice
+saying the agent still held it). Such a steer stays *delivering…* until
+its own `BoundaryAppendApplied`, or a run that carries it starts (the run
+after a turn's first, or the first run of a turn that starts while
+steers of this client are still followed); ↑ recalls it after the turn
+too. The UI no longer takes an admitted message as unsent at a turn's
+end (it would have sent it a second time). Applied inputs of other
+clients are kept only while a send of this client is unanswered.
+
+The tests that pinned the old behaviour wait on the push now, with no
+change to their assertions: `client::each_client_marks_only_its_own_steer_delivered`
+(one turn end per client, after its mark; the other client's follow-up
+steer shown inside the turn), the helper-running attach test and the
+schedule tests. New: `daemon::activity::tests::*` (idle after the run
+that ended last, a run open or an input on its way tells nothing, held
+input waits for its follow-up run and stops the questions, the bound
+reports `held`, a change during a question asks again),
+`client::runner::tests::{a_turn_ends_on_the_idle_notice_after_a_run_it_saw_end,
+a_steer_the_agent_has_not_read_stays_followed_across_turns}` (both
+orders: the boundary event and the carrying run) and
+`ui::tests::turns::a_message_the_agent_has_not_read_stays_with_it_after_the_turn`.
+UI tests that sent an admitted message again at a turn's end now hold
+the message in the UI instead (`*_held_messages*`): the resend of an
+admitted message was the defect.

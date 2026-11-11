@@ -439,10 +439,7 @@ impl Decisions {
     /// Push the notification `method` with `params` to every attached
     /// client (the approval engine's notes, [`protocol::APPROVAL_NOTE`]).
     pub fn broadcast(&self, method: &str, params: &impl serde::Serialize) {
-        let line = format!(
-            "{}\n",
-            json!({"jsonrpc": "2.0", "method": method, "params": params})
-        );
+        let line = protocol::notification_line(method, params);
         for client in self.clients.lock().values() {
             if client.open.load(Ordering::Relaxed) {
                 let _ = client.out.send(super::serve::Outgoing::line(line.clone()));

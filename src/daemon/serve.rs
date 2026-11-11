@@ -512,6 +512,26 @@ impl Drop for AbortOnDrop {
     }
 }
 
+/// An engine request as [`LocalMethods::observe`] lets it through.
+#[derive(Debug)]
+pub struct Observed {
+    /// The request as forwarded.
+    pub request: Value,
+    /// An input for an agent: on its way until the engine answers it.
+    pub input: Option<super::activity::Sending>,
+}
+
+impl Observed {
+    /// `request`, forwarded as it is.
+    #[must_use]
+    pub fn plain(request: Value) -> Self {
+        Self {
+            request,
+            input: None,
+        }
+    }
+}
+
 /// What [`proxy`] answers itself and what it learns from the rest
 /// ([`Local`]; tests substitute their own).
 #[async_trait::async_trait]
@@ -525,10 +545,10 @@ pub trait LocalMethods: Send + Sync {
     /// # Errors
     ///
     /// The refusal, answered to the client; the request is not forwarded.
-    fn observe(&self, caller: &Caller, request: Value) -> Result<Value, Refusal>;
-    /// A client attached: the daemon's consent surface offers it decisions
-    /// through `out` until the guard is dropped.
-    fn connect(&self, out: ClientOut) -> ClientGuard;
+    fn observe(&self, caller: &Caller, request: Value) -> Result<Observed, Refusal>;
+    /// `caller` attached: the daemon's consent surface offers it decisions
+    /// and the other pushes through `out` until the guard is dropped.
+    fn connect(&self, caller: &Caller, out: ClientOut) -> ClientGuard;
     /// The client `client`'s `decision/decide`: its answer line.
     async fn decide(&self, client: u64, id: Option<RpcId>, params: Value) -> String;
     /// The mobs destroyed from now on: the proxy closes the client's
@@ -544,12 +564,25 @@ impl LocalMethods for Local {
         Local::call(self, caller, method, params).await
     }
 
-    fn observe(&self, caller: &Caller, request: Value) -> Result<Value, Refusal> {
+    fn observe(&self, caller: &Caller, request: Value) -> Result<Observed, Refusal> {
         Local::observe(self, caller, request)
     }
 
-    fn connect(&self, out: ClientOut) -> ClientGuard {
-        self.decisions().connect(out)
+    fn connect(&self, caller: &Caller, out: ClientOut) -> ClientGuard {
+        let guard = self.decisions().connect(out.clone());
+        // Registered first: a later change is pushed to it; whether its
+        // agent is idle now is told here (once more, at worst).
+        if let Some(note) = caller
+            .agent
+            .as_deref()
+            .and_then(|agent| self.agents().activity().idle(agent))
+        {
+            let _ = out.send(Outgoing::line(protocol::notification_line(
+                protocol::IDLE,
+                &note,
+            )));
+        }
+        guard
     }
 
     async fn decide(&self, client: u64, id: Option<RpcId>, params: Value) -> String {
@@ -631,17 +664,20 @@ async fn proxy_with<R, W, E, L>(
     }));
     // The client's registration with the consent surface: dropped (and the
     // client's decide eligibility with it) when the client leaves.
-    let decisions = local.connect(out_tx.clone());
+    let decisions = local.connect(&caller, out_tx.clone());
     let client_id = decisions.id();
     // `initialize` requests whose answers get the decision methods.
     let initializing: Arc<parking_lot::Mutex<HashSet<String>>> = Arc::default();
     // The client's mob-wide streams, closed when their mob is destroyed.
     let streams: Arc<parking_lot::Mutex<MobStreams>> = Arc::default();
+    // The inputs forwarded and not answered yet, by request id.
+    let inputs: Arc<parking_lot::Mutex<Inputs>> = Arc::default();
     let mut destroyed = local.destroyed_mobs();
     let mut from_engine = AbortOnDrop(tokio::spawn({
         let out_tx = out_tx.clone();
         let initializing = Arc::clone(&initializing);
         let streams = Arc::clone(&streams);
+        let inputs = Arc::clone(&inputs);
         async move {
             let mut lines = BufReader::new(engine_read);
             let mut line = String::new();
@@ -651,6 +687,9 @@ async fn proxy_with<R, W, E, L>(
                     Ok(0) | Err(_) => break,
                     Ok(_) => {
                         let mut forward = std::mem::take(&mut line);
+                        // Released once the answer is on its way to the
+                        // client, so an idle push cannot overtake it.
+                        let answered = inputs.lock().answered(&forward);
                         if !streams.lock().answered(&forward) {
                             // The answer to a close of the daemon's own.
                             continue;
@@ -658,11 +697,11 @@ async fn proxy_with<R, W, E, L>(
                         if !initializing.lock().is_empty() {
                             forward = with_decision_methods(forward, &initializing);
                         }
-                        if out_tx
+                        let sent = out_tx
                             .send_waiting(Outgoing::line(forward), limits.stall)
-                            .await
-                            .is_err()
-                        {
+                            .await;
+                        drop(answered);
+                        if sent.is_err() {
                             break;
                         }
                     }
@@ -751,10 +790,14 @@ async fn proxy_with<R, W, E, L>(
                     let _ = out_tx.send(Outgoing::line(answer));
                 }
             }
-            Routed::Forward(forward) => {
+            Routed::Forward {
+                line: forward,
+                input,
+            } => {
                 if let Some(id) = initialize_id(&forward) {
                     initializing.lock().insert(id);
                 }
+                inputs.lock().sending(&forward, input);
                 streams.lock().opening(&forward);
                 if engine_write.write_all(forward.as_bytes()).await.is_err() {
                     break;
@@ -788,6 +831,43 @@ async fn next_destroyed(
             Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
             Err(tokio::sync::broadcast::error::RecvError::Closed) => *destroyed = None,
         }
+    }
+}
+
+/// One client's inputs to agents forwarded to the engine and not answered
+/// yet: each holds its agent busy ([`super::activity::Sending`]) until the
+/// engine's answer to it passes (or the connection ends).
+#[derive(Debug, Default)]
+struct Inputs {
+    /// Request id (as JSON text) → the input's guard.
+    pending: HashMap<String, super::activity::Sending>,
+}
+
+impl Inputs {
+    /// The client sends the request `line`, carrying `input`.
+    fn sending(&mut self, line: &str, input: Option<super::activity::Sending>) {
+        let Some(input) = input else {
+            return;
+        };
+        // A notification gets no answer: nothing to wait for.
+        if let Some(id) = serde_json::from_str::<Value>(line.trim_end())
+            .ok()
+            .and_then(|request| request.get("id").map(Value::to_string))
+        {
+            self.pending.insert(id, input);
+        }
+    }
+
+    /// The engine sends `line`: the guard of the input it answers.
+    fn answered(&mut self, line: &str) -> Option<super::activity::Sending> {
+        if self.pending.is_empty() {
+            return None;
+        }
+        let answer = serde_json::from_str::<Value>(line.trim_end()).ok()?;
+        if answer.get("method").is_some() {
+            return None;
+        }
+        self.pending.remove(&answer.get("id")?.to_string())
     }
 }
 
@@ -924,7 +1004,7 @@ fn with_decision_methods(line: String, waiting: &parking_lot::Mutex<HashSet<Stri
 }
 
 /// Where one client line goes.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum Routed {
     /// A `decision/decide`, for the daemon's consent surface.
     Decide {
@@ -952,8 +1032,14 @@ pub enum Routed {
         refusal: Refusal,
     },
     /// The line for the engine (newline included): the proxy's own
-    /// serialization of the request it parsed, never the client's bytes.
-    Forward(String),
+    /// serialization of the request it parsed, never the client's bytes;
+    /// with the input it carries to an agent, if it does.
+    Forward {
+        /// The line.
+        line: String,
+        /// The input on its way ([`Observed::input`]).
+        input: Option<super::activity::Sending>,
+    },
     /// A line that is not a JSON-RPC request the proxy accepts (unparsable,
     /// not an object, no `method`, a bad `jsonrpc` or `id`): never
     /// forwarded; `answer` is the error line for the client, `None` for a
@@ -1025,7 +1111,10 @@ pub fn route<L: LocalMethods + ?Sized>(line: &str, local: &L, caller: &Caller) -
         _ => {
             let id = id();
             match local.observe(caller, request) {
-                Ok(observed) => Routed::Forward(format!("{observed}\n")),
+                Ok(Observed { request, input }) => Routed::Forward {
+                    line: format!("{request}\n"),
+                    input,
+                },
                 Err(refusal) => Routed::Denied { id, refusal },
             }
         }
@@ -1250,11 +1339,11 @@ mod tests {
             Ok(json!({"method": method}))
         }
 
-        fn observe(&self, _caller: &Caller, request: Value) -> Result<Value, Refusal> {
-            Ok(request)
+        fn observe(&self, _caller: &Caller, request: Value) -> Result<Observed, Refusal> {
+            Ok(Observed::plain(request))
         }
 
-        fn connect(&self, out: ClientOut) -> ClientGuard {
+        fn connect(&self, _caller: &Caller, out: ClientOut) -> ClientGuard {
             self.decisions.connect(out)
         }
 

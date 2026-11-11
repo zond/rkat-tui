@@ -444,15 +444,15 @@ fn successful_turn_sends_held_messages_as_the_next_turn() {
     );
 }
 
-// An interrupted turn used to return undelivered messages to the
-// editor; now they start the next turn at once, shown in place.
+// An interrupted turn's held messages start the next turn at once,
+// shown in place.
 #[test]
-fn interrupted_turn_sends_undelivered_messages_next() {
+fn interrupted_turn_sends_held_messages_next() {
     let mut app = running_app();
     submit(&mut app, "two");
     submit(&mut app, "three");
     app.update(ack(1, Ok(())));
-    app.update(ack(2, Ok(())));
+    app.update(ack(2, Err(SteerFailure::NotRunning)));
     app.update(Msg::SteerDelivered(PendingId(1)));
     assert_eq!(app.update(key(KeyCode::Esc)), vec![Effect::Interrupt]);
     assert_eq!(app.status.queued, 1);
@@ -489,11 +489,35 @@ fn interrupted_turn_without_queued_messages_starts_nothing() {
     assert!(!app.is_running());
 }
 
+/// A message the agent has (admitted) but has not read when its turn ends
+/// is neither sent again nor returned: it stays shown as on its way, ↑
+/// can still take it back, and its delivery marks it later.
 #[test]
-fn failed_turn_returns_undelivered_with_a_notice() {
+fn a_message_the_agent_has_not_read_stays_with_it_after_the_turn() {
     let mut app = running_app();
     submit(&mut app, "two");
     app.update(ack(1, Ok(())));
+    assert!(app.update(finished(Ok(summary()))).is_empty());
+    assert!(!app.is_running());
+    assert_eq!(
+        app.transcript.blocks()[1],
+        queued_block(1, "two", QueuedLabel::Delivering)
+    );
+    assert_eq!(app.update(key(KeyCode::Up)), vec![Effect::RecallQueued]);
+    app.update(Msg::Recalled {
+        recalled: Vec::new(),
+        errors: Vec::new(),
+    });
+    app.update(Msg::SteerDelivered(PendingId(1)));
+    assert_eq!(app.transcript.blocks()[1], user("two"));
+    assert!(app.pending.is_empty());
+}
+
+#[test]
+fn failed_turn_returns_held_messages_with_a_notice() {
+    let mut app = running_app();
+    submit(&mut app, "two");
+    app.update(ack(1, Err(SteerFailure::NotRunning)));
     assert!(
         app.update(finished(Err(TurnFailure::Failed("boom".into()))))
             .is_empty()
@@ -506,11 +530,11 @@ fn failed_turn_returns_undelivered_with_a_notice() {
 }
 
 #[test]
-fn send_next_takes_priority_over_undelivered() {
+fn send_next_takes_priority_over_held_messages() {
     let mut app = running_app();
     let t0 = Instant::now();
     submit(&mut app, "two");
-    app.update(ack(1, Ok(())));
+    app.update(ack(1, Err(SteerFailure::NotRunning)));
     type_str(&mut app, "urgent");
     app.update_at(ctrl('x'), t0);
     assert_eq!(app.update_at(ctrl('s'), t0), vec![Effect::Interrupt]);

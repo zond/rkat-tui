@@ -515,6 +515,8 @@ pub struct Watched {
     pub ledger: Arc<super::usage::Ledger>,
     /// The live agents.
     pub agents: std::sync::Weak<super::agents::Agents>,
+    /// When the agent is idle (told each run's start and end).
+    pub activity: Arc<super::activity::Activity>,
     /// Set when the daemon stops: the watcher counts the events its
     /// stream already holds, then ends.
     pub draining: tokio::sync::watch::Receiver<bool>,
@@ -541,6 +543,7 @@ pub fn watch(watched: Watched) -> tokio::task::JoinHandle<()> {
         current,
         ledger,
         agents,
+        activity,
         mut draining,
     } = watched;
     tokio::spawn(async move {
@@ -565,6 +568,10 @@ pub fn watch(watched: Watched) -> tokio::task::JoinHandle<()> {
                 Some((seen, None, _)) if *seen == seat => SessionEventCursor::Live,
                 _ => SessionEventCursor::Earliest,
             };
+            if matches!(cursor, SessionEventCursor::Earliest) {
+                // A new incarnation: the old one's open runs never end.
+                activity.changed(&name, true);
+            }
             let subscribed = match state.handle_for(&mob).await {
                 Ok(handle) => handle.subscribe_agent_events_from(&identity, cursor).await,
                 Err(err) => Err(err),
@@ -641,6 +648,7 @@ pub fn watch(watched: Watched) -> tokio::task::JoinHandle<()> {
                         ..
                     } => {
                         engine.run_started(session_id, identity.run_id.as_ref());
+                        activity.run_started(&name, identity.run_id.as_ref());
                         run.clone_from(&identity.run_id);
                         if let Some(agents) = agents.upgrade() {
                             agents.touch(&name);
@@ -725,6 +733,7 @@ pub fn watch(watched: Watched) -> tokio::task::JoinHandle<()> {
                         identity,
                         ..
                     } => {
+                        activity.run_ended(&name, identity.run_id.as_ref());
                         if let Some(agents) = agents.upgrade() {
                             agents.run_ended(&name);
                             if let Some(run) = &identity.run_id {

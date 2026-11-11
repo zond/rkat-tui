@@ -49,6 +49,11 @@ pub const SWITCHED: &str = "rkat/switched";
 /// The notification that a mob hosts helpers or was destroyed:
 /// [`MobNote`].
 pub const MOB: &str = "rkat/mob";
+/// The notification that an agent is idle ([`IdleNote`],
+/// [`super::activity`]): a client's turn ends on it. Pushed when the
+/// agent becomes idle, and to a client as it attaches when it is idle
+/// then.
+pub const IDLE: &str = "rkat/idle";
 
 /// One of the daemon's own `rkat/*` methods: its name, and what it takes
 /// and answers. The daemon dispatches on [`Method::NAME`] and answers with
@@ -199,13 +204,6 @@ methods! {
     /// queued is abandoned, leaving the running turn alone; one that
     /// already joined a run is reported reached and left.
     Recall = "rkat/recall" (RecallParams) -> Recalled;
-    /// How much of the caller's agent's current conversation is
-    /// unfinished: the inputs the runtime still holds (queued, staged or
-    /// applied and not consumed: a steer that will run as a follow-up run,
-    /// whoever sent it), plus one while its run is still open (or its
-    /// state cannot be read). A client ends its turn when its runs ended
-    /// and this is zero: the agent is idle then.
-    ActiveInputs = "rkat/active_inputs" (Empty) -> UnfinishedInputs;
 }
 
 /// [`method::Status`]'s result.
@@ -392,6 +390,15 @@ pub fn request_id(id: &Value) -> Option<RpcId> {
 #[must_use]
 pub fn result_line(id: Option<RpcId>, result: impl Serialize) -> String {
     response_line(&RpcResponse::success(id, result))
+}
+
+/// The notification line (newline included) of `method` with `params`.
+#[must_use]
+pub fn notification_line(method: &str, params: &impl Serialize) -> String {
+    format!(
+        "{}\n",
+        serde_json::json!({"jsonrpc": "2.0", "method": method, "params": params})
+    )
 }
 
 /// The answer line (newline included) of the request `id`: a refusal.
@@ -620,13 +627,6 @@ pub struct Recalled {
     pub errors: Vec<String>,
 }
 
-/// [`method::ActiveInputs`]'s result.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UnfinishedInputs {
-    /// The unfinished inputs.
-    pub count: usize,
-}
-
 /// [`method::Retire`]'s result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Retired {
@@ -737,6 +737,28 @@ pub struct SwitchedNote {
     pub agent: String,
     /// The conversation it runs as now.
     pub session_id: SessionId,
+}
+
+/// [`IDLE`]'s parameters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdleNote {
+    /// The agent.
+    pub agent: String,
+    /// The conversation it runs as.
+    pub session_id: SessionId,
+    /// The run of it that ended last (`None`: none since the daemon
+    /// started following it): a client ends a turn in which it saw that
+    /// run end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_run: Option<meerkat_core::RunId>,
+    /// The inputs it still holds: not zero only when the runtime started
+    /// no run for them within [`super::activity::SETTLE_WAIT`].
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub held: usize,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 /// What [`MOB`] says of a mob.
