@@ -1535,10 +1535,6 @@ alone joins the agent active last and opens the picker.
   reviewed as foreign tools until then. A helper is judged by those and the
   engine's own tools until its first run has ended, and by its own tools
   after that (a `delegate` helper has only the one run).
-- When two TUIs steer the same turn, each marks its own messages delivered
-  in the order the agent takes steers, not by which message the agent
-  took: the engine does not tell a TUI which input its message became, so
-  one TUI's message can show delivered when the other's was.
 
 ## Several agents
 

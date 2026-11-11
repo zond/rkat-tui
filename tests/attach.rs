@@ -846,6 +846,148 @@ async fn two_clients_steer_in_turn_and_both_see_the_whole_conversation() {
     daemon.stop().await;
 }
 
+/// Whether `msg` is the agent's `boundary_append_applied` carrying `text`.
+fn applies(msg: &Msg, text: &str) -> bool {
+    matches!(msg, Msg::Agent(env) if matches!(&env.payload,
+        AgentEvent::BoundaryAppendApplied { content, .. } if content.text_content().contains(text)))
+}
+
+/// Two clients steer one running turn (lukacf/meerkat#2155): each marks
+/// its own steer delivered at the boundary event of the input its send
+/// admitted (or, when the runtime runs it as a follow-up run, at that
+/// run's start), and never at the other's. The runner sends a steer's
+/// `SteerDelivered` just before the event that delivered it. The engine
+/// applies A's steer (admitted first) at the tool boundary and runs B's
+/// as a follow-up run, so a first-in-first-out client would have B mark
+/// its own steer at A's boundary event: the negative case.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn each_client_marks_only_its_own_steer_delivered() {
+    use rkat_tui::ui::delivery::PendingId;
+    let ws = Workspace::new();
+    std::fs::write(ws.root.join("notes.txt"), "the answer is 42\n").unwrap();
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Gated(
+            Arc::clone(&gate),
+            Box::new(Step::Tool {
+                id: "call-1",
+                name: "read_file",
+                args: serde_json::json!({ "path": "notes.txt" }),
+            }),
+        ),
+        Step::Text("done"),
+        Step::Text("follow-up"),
+    ]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let mut a = Client::attach(&ws.root).await;
+    let mut b = Client::attach(&ws.root).await;
+    a.send(Effect::StartTurn("read the notes".into()));
+    llm.wait_call(0).await;
+    b.wait_for(|m| matches!(m, Msg::RemoteTurn { prompt: Some(p) } if p == "read the notes"))
+        .await;
+    for (client, id, text) in [(&mut a, 1, "steer from A"), (&mut b, 2, "steer from B")] {
+        client.send(Effect::Steer {
+            id: PendingId(id),
+            text: text.into(),
+        });
+        let ack = client.wait_for(|m| matches!(m, Msg::SteerAck { .. })).await;
+        assert!(
+            matches!(ack, Msg::SteerAck { id: acked, result: Ok(()) } if acked == PendingId(id)),
+            "{ack:?}"
+        );
+    }
+    gate.notify_one();
+    // The positive barrier: each saw its own delivery and the work's end
+    // (both steers reached the model).
+    a.wait_for(|m| matches!(m, Msg::SteerDelivered(PendingId(1))))
+        .await;
+    b.wait_for(|m| matches!(m, Msg::SteerDelivered(PendingId(2))))
+        .await;
+    llm.wait_call(2).await;
+    for client in [&mut a, &mut b] {
+        client
+            .wait_for(|m| {
+                matches!(m, Msg::Agent(env) if matches!(&env.payload,
+                AgentEvent::TextComplete { content, .. } if content == "follow-up"))
+            })
+            .await;
+        client.turn_finished().await.result.unwrap();
+    }
+    let last = common::user_texts(&llm.recorded()[2].messages);
+    assert!(
+        ["steer from A", "steer from B"]
+            .iter()
+            .all(|text| last.iter().any(|t| t == text)),
+        "{last:?}"
+    );
+    let mut negative_seen = false;
+    for (client, own, mine, theirs) in [
+        (&a, PendingId(1), "steer from A", "steer from B"),
+        (&b, PendingId(2), "steer from B", "steer from A"),
+    ] {
+        let seen = &client.seen;
+        let marks: Vec<usize> = seen
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| matches!(m, Msg::SteerDelivered(_)))
+            .map(|(at, _)| at)
+            .collect();
+        assert_eq!(marks.len(), 1, "one mark, its own: {seen:#?}");
+        let at = marks[0];
+        assert!(matches!(seen[at], Msg::SteerDelivered(id) if id == own));
+        let follow_up = matches!(&seen[at + 1], Msg::Agent(env)
+            if matches!(env.payload, AgentEvent::RunStarted { .. }));
+        assert!(
+            applies(&seen[at + 1], mine) || follow_up,
+            "marked at its own input's event or its follow-up run: {seen:#?}"
+        );
+        if let Some(theirs_at) = seen.iter().position(|m| applies(m, theirs)) {
+            negative_seen = true;
+            assert!(
+                !matches!(seen[theirs_at - 1], Msg::SteerDelivered(_)),
+                "nothing marked at the other client's input: {seen:#?}"
+            );
+        }
+    }
+    assert!(
+        negative_seen,
+        "a client saw the other's steer applied at a boundary"
+    );
+    a.quit().await;
+    b.quit().await;
+    daemon.stop().await;
+}
+
+/// The daemon names the input it admitted for a prompt into an idle agent
+/// and for a steer into a running turn (`admission.input_id`): the client
+/// attributes steers by it, so an engine that stopped naming it must fail
+/// here rather than mis-mark steers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn member_send_names_the_admitted_input() {
+    let ws = Workspace::new();
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Gated(Arc::clone(&gate), Box::new(Step::Text("first answer"))),
+        Step::Text("second answer"),
+    ]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let connection = daemon.connect_bound().await;
+    let prompt = rkat_tui::client::remote::send(&connection, "hello", false)
+        .await
+        .unwrap();
+    assert!(prompt.is_some(), "a prompt into an idle agent is named");
+    llm.wait_call(0).await;
+    let steer = rkat_tui::client::remote::send(&connection, "and this", true)
+        .await
+        .unwrap();
+    assert!(steer.is_some(), "a steer into a running turn is named");
+    assert_ne!(prompt, steer);
+    gate.notify_one();
+    llm.wait_call(1).await;
+    drop(connection);
+    daemon.stop().await;
+}
+
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_reconnect_restarts_a_daemon_that_died() {

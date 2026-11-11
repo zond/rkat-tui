@@ -78,8 +78,7 @@ the `##` section named after it):
 - **Upstream asks and the engine pin:** "Open asks" below; "The pin moves
   to upstream `main`"; "The pin moves to the 0.9.11 integration"; "P3b and
   the 0.9.11 adoption"; "The engine moves to crates.io 0.9.11"; "The
-  engine moves to crates.io 0.9.12"; "Steer
-  delivery is attributed first in, first out (an engine ask)".
+  engine moves to crates.io 0.9.12"; "Steers are attributed by input id".
 
 ## Open asks
 
@@ -109,9 +108,6 @@ the mob split are numbered in `docs/mob-split.md`, "Open engine asks"):
   a slow tool".
 - Instruction-guided compaction (`/compact <instructions>`): "Esc, queued messages and commands to match
   Claude Code".
-- `mob/member_send` answering the input id it admitted, so a client can
-  attribute a steer's delivery: "The attach client and daemon after the
-  senior review", and `docs/mob-split.md` ask 6.
 - Same-identity `/rewind` of a mob member (lukacf/meerkat#2126: the design
   is merged, db8547a532; the implementation is not scheduled): "P4:
   helpers, conversations and detach in attach mode", "P3b and the 0.9.11
@@ -2829,6 +2825,9 @@ Tests: the attach suites (`attach_sessions::the_token_counter_and_gauge_follow_t
 `attach::the_client_reconnects_to_a_restarted_daemon`) unchanged.
 
 ### Steer delivery is attributed first in, first out (an engine ask)
+
+**Superseded 2026-11-11** by "Steers are attributed by input id" (Meerkat
+0.9.12 answers the admitted input).
 
 The attach runner keeps the steers the daemon admitted in order and marks
 the oldest delivered at each `BoundaryAppendApplied` (and the rest at a
@@ -6418,3 +6417,48 @@ ask 6 shipped; 1 (same-identity rewind), 4 (`delegate` naming the
 helper's session), 5 (`host_root` on `mob/spawn`) and 8 (Linux
 `deny_write`) are not in 0.9.12; 3 needs no engine change; 2 and 7 stay
 withdrawn. None of the evidence index's other open asks shipped.
+
+## Steers are attributed by input id (2026-11-11)
+
+Engine ask 6, shipped in Meerkat 0.9.12 (lukacf/meerkat#2155): an unkeyed
+`mob/member_send` answers `admission { session_id, input_id }`, the id the
+member's runtime admitted, which `BoundaryAppendApplied.input_id` names
+when the input joins the run. `client::remote::send` now decodes the answer
+as `MobMemberSendResult` and returns that id; the runner files each steer
+under it (`client::runner::steers::Steers`) and marks it delivered only at
+its own input's event. The stream is not ordered with the call, so an
+event that names an input no steer is filed under yet is kept, and the
+answer that names it delivers at once; another client's input is kept the
+same way and never matches. The follow-up-run and turn-end sweeps stay: a
+steer that misses the boundary rides the next run, whose start names no
+input.
+
+Observed on the rig with two clients steering one gated turn: the engine
+applied A's steer (admitted first) at the tool boundary and ran B's as a
+follow-up run of its own. B's client used to mark its steer at A's event;
+now it marks it at the follow-up run's start.
+
+Decisions:
+
+- An answer without `admission` is not matched first in, first out (no
+  compatibility code: no older daemon is supported). The runtime has the
+  message, so the steer is acknowledged and shown delivered at once with a
+  warning (`turn::UNNAMED_INPUT`) rather than returned to the editor, which
+  would send it twice. The orchestrator is always runtime-backed, so the
+  daemon always names it; `attach::member_send_names_the_admitted_input`
+  fails if an engine change stops that, for a prompt into an idle agent
+  and a steer into a running turn.
+- `BoundaryAppendsDiscarded` changes no mark. The engine's contract
+  (`meerkat-core` `event.rs`) is that a discarded application is redelivered
+  in exactly one follow-up turn, so "not delivered, back in the editor"
+  would put the text in twice; the transcript keeps the notice it already
+  showed ("taken back out of the stopped step; the runtime delivers them
+  again").
+
+Tests: `attach::each_client_marks_only_its_own_steer_delivered` (each
+client's one mark sits right before its own input's event or its
+follow-up run, and nothing is marked at the other client's event; a
+first-in-first-out `Steers` fails it, checked by mutating the match),
+`attach::member_send_names_the_admitted_input`,
+`client::runner::tests::a_steers_answer_files_it_under_its_input` and the
+`client::runner::steers` unit tests.

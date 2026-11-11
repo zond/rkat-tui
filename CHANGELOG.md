@@ -10,6 +10,13 @@
   SQLite of RUSTSEC-2026-0459 is gone), and Claude Fable 5.2
   (`claude-fable-5-2`) is in the model catalog.
 
+### Fixed
+
+- With two TUIs steering the same turn, each marks only its own message
+  delivered, at the moment the agent takes that message: the daemon now
+  names the input each message became (Meerkat 0.9.12), where before the
+  oldest steer was marked at any steer's delivery.
+
 ## [0.0.1] - 2026-11-10
 
 The first release on crates.io, opening the 0.0.x line: the maintainer's

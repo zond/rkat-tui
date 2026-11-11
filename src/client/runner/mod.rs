@@ -20,12 +20,12 @@
 //! picker, unsent messages) is the [`Workbench`]'s; it reaches the
 //! orchestrator through its [`AgentContext`] (`mob/append_system_context`).
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use meerkat_core::lifecycle::RunId;
+use meerkat_core::lifecycle::{InputId, RunId};
 use meerkat_core::{AgentErrorClass, AgentEvent, EventEnvelope, Message, SessionId};
 use meerkat_tools::builtin::shell::ShellConfinement;
 use tokio::sync::mpsc;
@@ -63,10 +63,12 @@ use crate::workbench::{
 mod commands;
 mod depart;
 mod link;
+mod steers;
 mod switch;
 mod turn;
 
 use link::next_notification;
+use steers::Steers;
 
 /// What is sent in place of a prompt that repeats the one a failed turn
 /// already committed ([`turn::send_outbound`]).
@@ -352,7 +354,7 @@ enum Report {
     Sent {
         turn: u64,
         steer: Option<PendingId>,
-        result: Result<(), String>,
+        result: Result<Option<InputId>, String>,
     },
     /// `/agents <name>`: the daemon's agents as read for it.
     AgentsRead {
@@ -448,8 +450,9 @@ struct Turn {
     current_run: Option<RunId>,
     /// A run of this turn started.
     saw_run: bool,
-    /// Steers admitted and not yet delivered, oldest first.
-    steers: VecDeque<PendingId>,
+    /// Steers sent or admitted and not yet delivered, by the input the
+    /// runtime admitted each as.
+    steers: Steers,
     result: Option<Result<TurnSummary, TurnFailure>>,
     interrupted_at: Option<Instant>,
     force_cancelled: bool,
@@ -1711,7 +1714,7 @@ mod tests {
             "Esc interrupted it at once"
         );
         // The steer is expected at the next boundary while its send runs.
-        assert_eq!(runner.turn.steers, [PendingId(1)]);
+        assert!(runner.turn.steers.holds(PendingId(1)));
         // Nothing was answered: no turn end, no acknowledgement yet.
         while let Ok(msg) = ui_rx.try_recv() {
             assert!(
@@ -1747,6 +1750,55 @@ mod tests {
             .filter(|msg| matches!(msg, Msg::Notice { text, .. } if text == "already in this conversation"))
             .count();
         assert_eq!(notices, 2);
+    }
+
+    /// A steer's answer: the input it names is matched against the
+    /// boundary events (one applied before the answer delivers on it); an
+    /// answer that names none is acknowledged and shown delivered with a
+    /// notice, never matched to another input.
+    #[tokio::test]
+    async fn a_steers_answer_files_it_under_its_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut runner, mut ui_rx) = runner(dir.path());
+        runner.turn = Turn {
+            active: true,
+            id: 1,
+            ..Turn::default()
+        };
+        let early = InputId::new();
+        for id in 1..=3 {
+            runner.turn.steers.sending(PendingId(id));
+        }
+        // 2's input joined the run before its send answered.
+        assert_eq!(runner.turn.steers.applied(&early), None);
+        runner.sent(1, Some(PendingId(1)), Ok(Some(InputId::new())));
+        runner.sent(1, Some(PendingId(2)), Ok(Some(early)));
+        runner.sent(1, Some(PendingId(3)), Ok(None));
+        let mut seen = Vec::new();
+        while let Ok(msg) = ui_rx.try_recv() {
+            seen.push(msg);
+        }
+        let delivered: Vec<PendingId> = seen
+            .iter()
+            .filter_map(|m| match m {
+                Msg::SteerDelivered(id) => Some(*id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(delivered, [PendingId(2), PendingId(3)], "{seen:?}");
+        assert!(
+            seen.iter()
+                .any(|m| matches!(m, Msg::Notice { text, .. } if text == turn::UNNAMED_INPUT))
+        );
+        assert_eq!(
+            seen.iter()
+                .filter(|m| matches!(m, Msg::SteerAck { result: Ok(()), .. }))
+                .count(),
+            3
+        );
+        // 1 waits for its own input; 3 is not followed any more.
+        assert!(runner.turn.steers.holds(PendingId(1)));
+        assert!(!runner.turn.steers.holds(PendingId(3)));
     }
 
     #[test]

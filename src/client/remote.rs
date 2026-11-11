@@ -15,7 +15,9 @@
 
 use meerkat_contracts::{
     EventReplayScope, EventsListSinceResult, EventsSnapshotBody, EventsSnapshotResult,
+    MobMemberSendResult,
 };
+use meerkat_core::lifecycle::InputId;
 use meerkat_core::{AgentEvent, EventEnvelope, SessionId};
 use serde_json::{Value, json};
 
@@ -214,13 +216,23 @@ pub async fn replay(
     Ok((events, page.has_more))
 }
 
-/// Hand `text` to the orchestrator (`handling_mode` `queue` or `steer`).
+/// Hand `text` to the orchestrator (`handling_mode` `queue` or `steer`):
+/// the input its runtime admitted (`admission.input_id`), which the
+/// agent's `boundary_append_applied` names when a steer joins the run.
+/// `None` when the daemon named none (a member not served by a local
+/// runtime: the orchestrator always is).
 ///
 /// # Errors
 ///
-/// The call's error.
-pub async fn send(connection: &Connection, text: &str, steer: bool) -> Result<(), ClientError> {
-    connection
+/// The call's error, [`ClientError::Decode`] for an answer that is not a
+/// `MobMemberSendResult`, or [`ClientError::Protocol`] for an input id
+/// that is not one.
+pub async fn send(
+    connection: &Connection,
+    text: &str,
+    steer: bool,
+) -> Result<Option<InputId>, ClientError> {
+    let answer = connection
         .call(
             engine::MEMBER_SEND,
             with_member(
@@ -231,8 +243,21 @@ pub async fn send(connection: &Connection, text: &str, steer: bool) -> Result<()
                 }),
             ),
         )
-        .await
-        .map(drop)
+        .await?;
+    let answer: MobMemberSendResult = decode("mob/member_send", answer)?;
+    answer
+        .admission
+        .map(|admission| {
+            uuid::Uuid::parse_str(&admission.input_id)
+                .map(InputId::from_uuid)
+                .map_err(|_| {
+                    ClientError::Protocol(format!(
+                        "mob/member_send named the input `{}`, which is not an input id",
+                        admission.input_id
+                    ))
+                })
+        })
+        .transpose()
 }
 
 /// A model switch: the model, its provider and the endpoint's auth binding

@@ -61,7 +61,7 @@ impl Runner {
         // Expected at the agent's next boundary from now on (the stream may
         // deliver it before the send's answer); taken back if the send
         // fails.
-        self.turn.steers.push_back(id);
+        self.turn.steers.sending(id);
         self.outbound(Outbound {
             connection,
             text,
@@ -76,24 +76,46 @@ impl Runner {
     /// A prompt or a steer of turn `turn` was sent (`result`): a steer is
     /// acknowledged (taken back from the turn when it failed); a prompt
     /// that failed ends its turn, if that turn is still the UI's.
-    pub(super) fn sent(&mut self, turn: u64, steer: Option<PendingId>, result: Result<(), String>) {
+    ///
+    /// A steer's answer names the input the runtime admitted it as, which
+    /// the agent's `boundary_append_applied` names when it joins the run
+    /// ([`Steers`]). An answer that names none ([`UNNAMED_INPUT`]) is
+    /// acknowledged (the runtime has the message) and shown delivered at
+    /// once with a notice: no other client's delivery is taken for it.
+    pub(super) fn sent(
+        &mut self,
+        turn: u64,
+        steer: Option<PendingId>,
+        result: Result<Option<InputId>, String>,
+    ) {
         let current = self.turn.active && self.turn.id == turn;
         match (steer, result) {
-            (Some(id), Ok(())) => {
+            (Some(id), Ok(input)) => {
                 if current {
                     self.turn.steered = true;
                 }
                 self.admitted.push(id);
                 self.send(Msg::SteerAck { id, result: Ok(()) });
+                let delivered = match input {
+                    Some(input) => self.turn.steers.admitted(id, input),
+                    None => {
+                        self.turn.steers.forget(id);
+                        self.notice(NoticeLevel::Warn, UNNAMED_INPUT);
+                        true
+                    }
+                };
+                if delivered {
+                    self.send(Msg::SteerDelivered(id));
+                }
             }
             (Some(id), Err(why)) => {
-                self.turn.steers.retain(|steer| *steer != id);
+                self.turn.steers.forget(id);
                 self.send(Msg::SteerAck {
                     id,
                     result: Err(SteerFailure::Rejected(why)),
                 });
             }
-            (None, Ok(())) => {}
+            (None, Ok(_)) => {}
             (None, Err(why)) if current => {
                 self.turn.record(Err(TurnFailure::Failed(format!(
                     "the prompt was not sent: {why}"
@@ -253,7 +275,7 @@ impl Runner {
                 } else if self.turn.saw_run {
                     // A follow-up run: it carries the steers that missed
                     // the boundary.
-                    for id in std::mem::take(&mut self.turn.steers) {
+                    for id in self.turn.steers.take_all() {
                         self.send(Msg::SteerDelivered(id));
                     }
                 }
@@ -275,12 +297,10 @@ impl Runner {
             {
                 self.refresh_tasks();
             }
-            AgentEvent::BoundaryAppendApplied { .. } => {
-                // First in, first out: `mob/member_send` answered no input
-                // id to match this event's with, so with two clients
-                // steering one turn this can mark the other's steer (an
-                // ask, docs/mob-split.md ask 6).
-                if let Some(id) = self.turn.steers.pop_front() {
+            AgentEvent::BoundaryAppendApplied { input_id, .. } => {
+                // This client's steer only: another client's input marks
+                // nothing here.
+                if let Some(id) = self.turn.steers.applied(input_id) {
                     self.send(Msg::SteerDelivered(id));
                 }
             }
@@ -357,7 +377,8 @@ impl Runner {
             _ => None,
         };
         // Steers still held went to the runtime; it owns them now.
-        for id in turn.steers {
+        let mut steers = turn.steers;
+        for id in steers.take_all() {
             self.send(Msg::SteerDelivered(id));
         }
         self.send(Msg::TurnFinished(TurnOutcome::plain(
@@ -531,6 +552,10 @@ impl Runner {
         });
     }
 }
+
+/// What the UI is told when the daemon's answer to a steer names no
+/// input: its delivery cannot be told from another client's.
+pub const UNNAMED_INPUT: &str = "the daemon did not name the input your message became, so this client cannot tell when the agent reads it; the agent has it and gets it at its next step";
 
 /// Send one prompt or steer ([`Outbound`]) and report how it went. A
 /// prompt that repeats the failed turn's is sent as [`RETRY_INPUT`] when

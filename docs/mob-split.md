@@ -33,7 +33,6 @@ What remains, in order of priority:
 
 | Item | State |
 |---|---|
-| Steer correlation (ask 6): which client's steer a boundary delivered when several steer one turn | The upstream fix is in progress ("Upstream follow-up: ask 6" below); the client attributes first in, first out until a release carries it |
 | `/rewind` on the engine's implementation (ask 1) | The same-identity rewind design is merged upstream (lukacf/meerkat#2126, db8547a532); its implementation is not scheduled. `/rewind` explains why it is not available |
 | MCP servers added or trusted after the daemon's mob was created | They do not reach the agent until the mob is made again (the manual's limits) |
 
@@ -75,7 +74,7 @@ the end state.
 - The agent's fork: the TUI's `fork` tool is built on the in-process session service; in the daemon the agent has the engine's `fork_off`, already gated and followed. Decide per feature: `src/fork/` is deleted with the in-process runner, and the manual stops promising the TUI fork tool. Check nothing in-process-only remains in the agent's tool set (compare `session::tool_set` with the daemon's policy).
 - Ctrl+T task checklist: a `rkat/tasks` local method reads the session task store (`tasks.db`) in the daemon; the client renders it as today.
 - History ↑ recall: client-local history file; make it work in attach mode.
-- Anything else the manual's attach section lists as a limit, except multi-client steer attribution (engine gap, ask 6, stays documented).
+- Anything else the manual's attach section lists as a limit (multi-client steer attribution, ask 6, was closed by Meerkat 0.9.12 on 2026-11-11).
 - Quit-confirm and other texts that assume in-process.
 
 #### P2 Lifecycle (done 2026-11-09)
@@ -108,6 +107,7 @@ the end state.
 - Batch G: the test-doubles dedupe between the two rigs is moot (one rig survives P4); the docs work is done after P4 so it describes the end state. The adoption test for the #2102 fix moves onto the daemon rig.
 
 ### Upstream follow-up: ask 6 (steer correlation), 2026-11-09 13:46 UTC
+**Closed 2026-11-11:** shipped in Meerkat 0.9.12 (lukacf/meerkat#2155) and adopted the same day, without the FIFO fallback (no older daemon is supported); `docs/evidence.md`, "Steers are attributed by input id".
 The Core maintainer rated it P2 and started an additive fix: an optional `admission { session_id, input_id }` on `MobMemberSendResult` for an unkeyed send a runtime-backed member admitted (absent before admission, for non-runtime or peer-only members, keyed sends and older servers). When it ships in a release, the client keys its steer acknowledgement on `input_id` matched against `boundary_append_applied.input_id` instead of first-in-first-out, falling back to FIFO when `admission` is absent (older daemon). Belongs in P2 or as soon as the release exists; drop ask 6 from the limits then.
 
 ## Decision
@@ -489,8 +489,8 @@ list of what the daemon and its client do not do yet.
    send answers a delivery id, `WireContinuationReceipt`, not the input
    id), so a client can match it to `boundary_append_applied`'s
    `input_id` and tell its own steer's delivery from another client's: the
-   attach runner marks its steers delivered first in, first out. An
-   upstream fix is in progress (below).
+   attach runner marked its steers delivered first in, first out.
+   **Shipped in 0.9.12 (lukacf/meerkat#2155), adopted 2026-11-11.**
 7. Withdrawn 2026-11-10. Adopting a session created outside the mob: a way to seat a mob member
    on an existing non-member session, or to write the durable
    `comms_name` (and member binding) when seating one, so a consumer can
