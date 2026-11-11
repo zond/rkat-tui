@@ -41,9 +41,6 @@ pub enum TuiError {
         #[source]
         source: meerkat_core::ConfigRuntimeError,
     },
-    /// The realm persistence backend could not be opened.
-    #[error("failed to open realm persistence: {0}")]
-    Persistence(#[from] meerkat::PersistenceError),
     /// The workspace's state directory could not be opened at start-up:
     /// the message names the directory and, when another `rkat-tui` version
     /// may have written it (a schema, ledger or manifest it does not
@@ -73,29 +70,6 @@ pub enum TuiError {
         #[source]
         source: Box<meerkat_store::StoreError>,
     },
-    /// A session store operation failed.
-    #[error("session store error: {0}")]
-    Store(#[from] meerkat_store::StoreError),
-    /// Listing or reading the realm's sessions failed.
-    #[error("session store error: {0}")]
-    SessionStore(#[from] meerkat::SessionStoreError),
-    /// The LLM client could not be constructed.
-    #[error("failed to build LLM client: {0}")]
-    LlmClient(#[from] meerkat_llm_core::FactoryError),
-    /// A session service operation failed.
-    #[error("session error: {0}")]
-    Session(#[from] meerkat_core::service::SessionError),
-    /// A session control operation (system-context append) failed.
-    #[error("session control error: {0}")]
-    SessionControl(#[from] meerkat_core::service::SessionControlError),
-    /// A session reference (`last`, `~N`, id, or prefix) did not resolve.
-    #[error("cannot resolve session `{reference}`: {reason}")]
-    SessionRef {
-        /// The reference supplied by the user.
-        reference: String,
-        /// Why it did not resolve.
-        reason: String,
-    },
     /// The effective MCP set (realm servers, project and user `mcp.toml`)
     /// could not be composed: a file cannot be read or parsed, or a realm
     /// server and a file server share a name with different definitions.
@@ -110,25 +84,8 @@ pub enum TuiError {
     #[error("cannot compose the file and note tools: {0}")]
     ToolGateway(#[source] meerkat_core::error::ToolError),
     /// stdin or stdout is not a terminal; the TUI needs one.
-    #[error(
-        "stdin and stdout must be a terminal; rkat-tui is interactive (use `rkat run` for scripts)"
-    )]
+    #[error("stdin and stdout must be a terminal; rkat-tui is interactive")]
     NotATerminal,
-    /// The runtime-backed session service could not be composed.
-    #[error("failed to compose the session runtime: {0}")]
-    Composition(#[from] meerkat::surface::RuntimeBackedCompositionError),
-    /// A session could not be made live on the runtime.
-    #[error("failed to open the session on the runtime: {0}")]
-    Materialize(#[from] meerkat::surface::SurfaceRuntimeMaterializeError),
-    /// The session runtime refused or failed an operation.
-    #[error("session runtime error: {0}")]
-    Runtime(#[from] meerkat_runtime::RuntimeDriverError),
-    /// The session's event stream could not be opened.
-    #[error("cannot follow the session's events: {0}")]
-    EventStream(#[from] meerkat_core::comms::StreamError),
-    /// The runtime refused an input.
-    #[error(transparent)]
-    Admission(#[from] AdmissionError),
     /// The terminal UI failed.
     #[error(transparent)]
     Ui(#[from] crate::ui::UiError),
@@ -202,7 +159,6 @@ impl TuiError {
             Self::ProjectRoot { .. }
             | Self::Config { .. }
             | Self::ConfigRuntime { .. }
-            | Self::SessionRef { .. }
             | Self::Endpoint(_)
             | Self::McpConfig(_)
             | Self::Overlay(_)
@@ -215,20 +171,9 @@ impl TuiError {
             | Self::AttachAddress { .. }
             | Self::NotATerminal => 2,
             Self::Io { .. }
-            | Self::Persistence(_)
             | Self::PersistenceOpen { .. }
             | Self::RealmLease { .. }
-            | Self::Store(_)
-            | Self::SessionStore(_)
-            | Self::LlmClient(_)
-            | Self::Session(_)
-            | Self::SessionControl(_)
             | Self::ToolGateway(_)
-            | Self::Composition(_)
-            | Self::Materialize(_)
-            | Self::Runtime(_)
-            | Self::EventStream(_)
-            | Self::Admission(_)
             | Self::Daemon(_)
             | Self::Ui(_) => 1,
         }
@@ -371,19 +316,4 @@ mod tests {
             "{text}"
         );
     }
-}
-
-/// The runtime refused an input.
-#[derive(Debug, thiserror::Error)]
-pub enum AdmissionError {
-    /// The runtime rejected the input.
-    #[error("the runtime refused the input: {0}")]
-    Rejected(meerkat_runtime::RejectReason),
-    /// The caller idempotency key is not valid key text.
-    #[error("invalid idempotency key: {0}")]
-    Key(#[source] meerkat_runtime::CanonicalKeyTextError),
-    /// An admission outcome this version does not know (the runtime's
-    /// outcome type is non-exhaustive).
-    #[error("unexpected admission outcome: {0}")]
-    Unexpected(String),
 }

@@ -12,7 +12,6 @@ mod rig;
 
 use common::{ScriptedLlmClient, Step, Workspace, user_texts};
 use rig::{Client, Running};
-use rkat_tui::client::sessions::REWIND_UNAVAILABLE;
 use rkat_tui::ui::{Block, Effect, Msg};
 use serde_json::json;
 
@@ -121,20 +120,16 @@ async fn new_starts_fresh_and_resume_brings_the_old_conversation_back() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn rewind_says_why_it_is_not_offered() {
+/// There is no rewind (`/help` says so), and the reason holds: the
+/// engine refuses a transcript fork of the member's session (asked past
+/// the proxy, which serves no `session/fork_at` to clients at all).
+async fn the_engine_refuses_rewinding_a_members_session() {
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![Step::Text("one")]);
     let daemon = Running::start(&ws.root, &llm).await;
     let mut client = Client::attach(&ws.root).await;
     client.send(Effect::StartTurn("first".into()));
     client.turn_finished().await.result.unwrap();
-    client.send(Effect::RequestRewindMenu);
-    client
-        .wait_for(|m| matches!(m, Msg::Notice { text, .. } if text == REWIND_UNAVAILABLE))
-        .await;
-    // The reason holds: the engine refuses a transcript fork of the
-    // member's session (asked past the proxy, which serves no
-    // `session/fork_at` to clients at all).
     let refused = daemon
         .engine_side
         .call(

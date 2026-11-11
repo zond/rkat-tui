@@ -7,9 +7,12 @@ use super::*;
 impl Runner {
     pub(super) fn start_turn(&mut self, text: &str) {
         let Some(connection) = self.connection() else {
-            self.send(Msg::TurnFinished(TurnOutcome::plain(Err(
-                TurnFailure::Failed(format!("{}; try again once it is", self.unattached())),
-            ))));
+            self.send(Msg::TurnFinished(TurnOutcome {
+                result: Err(TurnFailure::Failed(format!(
+                    "{}; try again once it is",
+                    self.unattached()
+                ))),
+            }));
             return;
         };
         let text = self.expand_mentions(text);
@@ -511,9 +514,9 @@ impl Runner {
         for id in steers.take_all() {
             self.send(Msg::SteerDelivered(id));
         }
-        self.send(Msg::TurnFinished(TurnOutcome::plain(
-            turn.result.unwrap_or_else(|| Ok(TurnSummary::default())),
-        )));
+        self.send(Msg::TurnFinished(TurnOutcome {
+            result: turn.result.unwrap_or_else(|| Ok(TurnSummary::default())),
+        }));
         self.save_cursor();
         // The denial counters may have moved.
         self.refresh_mode();

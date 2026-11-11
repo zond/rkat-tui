@@ -136,16 +136,12 @@ fn esc_esc_clears_the_draft_into_history() {
     app.update_at(key(KeyCode::Esc), late);
     assert_eq!(app.input.text(), "a draft");
     assert!(app.take_submitted().is_empty());
-    // An empty input: Esc Esc asks for /rewind (and saves
-    // nothing to history).
+    // An empty input: Esc Esc does nothing (there is no rewind), arms
+    // nothing and saves nothing to history.
     let mut app = App::new(StatusInfo::default());
     assert!(app.update_at(key(KeyCode::Esc), t0).is_empty());
-    assert!(app.esc_clear_armed(t0));
-    assert_eq!(
-        app.update_at(key(KeyCode::Esc), t0),
-        vec![Effect::RequestRewindMenu]
-    );
     assert!(!app.esc_clear_armed(t0));
+    assert!(app.update_at(key(KeyCode::Esc), t0).is_empty());
     assert!(app.take_submitted().is_empty());
 }
 
@@ -963,7 +959,7 @@ fn take_local_drains_every_loop_effect_once() {
     assert!(app.take_local().is_empty());
     submit(&mut app, "hi");
     app.update(Msg::Focus(false));
-    app.update(finished(Ok(summary()), &[]));
+    app.update(finished(Ok(summary())));
     app.update(ctrl('l'));
     let local = app.take_local();
     assert_eq!(
@@ -1097,12 +1093,12 @@ fn hash_input_remembers_and_escapes_do_not() {
         submit(&mut app, "## heading"),
         vec![Effect::StartTurn("## heading".into())]
     );
-    app.update(finished(Ok(summary()), &[]));
+    app.update(finished(Ok(summary())));
     assert_eq!(
         submit(&mut app, "\\#tag"),
         vec![Effect::StartTurn("#tag".into())]
     );
-    app.update(finished(Ok(summary()), &[]));
+    app.update(finished(Ok(summary())));
     type_str(&mut app, "#a");
     app.update(Msg::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)));
     assert_eq!(

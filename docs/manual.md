@@ -123,11 +123,12 @@ agent's runs ended, and the UI says how: completed, failed (the first
 failure wins) or interrupted. A steered message counts as delivered only
 when the stream shows it written at a boundary or the turn ends.
 
-**Rewind.** `/rewind` (also `/checkpoint`, `/undo`), or Esc twice on an
-empty idle editor, is not available yet: the daemon cannot rewind a
-conversation (the engine refuses a transcript fork of a mob member's
-session; a same-identity rewind is designed upstream, lukacf/meerkat#2126,
-but not yet implemented), and it says so. `/new` starts over.
+**Rewind.** There is no rewind (no `/rewind`, and Esc twice on an empty
+editor does nothing): the daemon cannot continue a conversation from
+before an earlier message (the engine refuses a transcript fork of a mob
+member's session; a same-identity rewind is designed upstream,
+lukacf/meerkat#2126, but not yet implemented). `/help` says so. `/new`
+starts over.
 
 Ctrl-D on an empty editor quits on a second press within 3 s (the editor
 title asks for it); `/quit` quits at once when idle (whether the daemon
@@ -901,7 +902,7 @@ behind these controls (its Status column is the current state).
 
 
 `/help` (alias `/?`), `/quit` (aliases `/exit`, `/q`), `/detach`, `/agents [name]`, `/audit [n]`, `/daemon stop`, `/daemon start`, `/clear` (alias `/new`), `/resume [ref]`,
-`/rewind` (aliases `/checkpoint`, `/undo`), `/permissions [list|add allow|deny <tool> [pattern]|rm <n>]` (`remove` for `rm`),
+`/permissions [list|add allow|deny <tool> [pattern]|rm <n>]` (`remove` for `rm`),
 `/mode [default|accept-edits|plan|auto]`, `/auto [on|off|resume]`, `/model [[endpoint:]id|refresh]`,
 `/remember <text>`, `/memory [user|system]`, `/init`, `/compact [now|status|<instructions>]`, `/context`, `/status`, `/export [file]`, `/usage` (aliases `/cost`, `/stats`), `/copy [N]`, `/trust`,
 `/helpers [expand|fold <label>|all]` (alias `/tasks`). `/status` prints the
@@ -921,7 +922,7 @@ fixed prompt as an ordinary turn, shown in the transcript: inspect the
 project and write or update the workspace `AGENTS.md` with the build and
 test commands, the layout and the conventions, under 200 lines. The agent
 writes it with its file tools, so the usual approval, protected-path and
-sealed-path rules apply. `/clear`, `/resume`, `/rewind`, `/model` and `/compact` work only while
+sealed-path rules apply. `/clear`, `/resume`, `/model` and `/compact` work only while
 idle; the transcript is replaced only once the new session is live.
 
 Typing `/` at the start of a one-line input opens a menu of the commands
@@ -996,7 +997,6 @@ in `src/ui/commands.rs`, pinned to the keymap by a test):
 | Ctrl-C | Interrupt the turn (as Esc), else clear the input, else press twice to quit |
 | Esc | Interrupt the turn; queued messages are sent next. The first Esc or Ctrl-C after a mouse selection only clears it |
 | Esc Esc (idle, with text) | Clear the input and save it to the prompt history (↑ recalls it) |
-| Esc Esc (idle, empty input) | `/rewind`, which is not available yet and says why |
 | Up (empty input) | Take queued messages back into the editor |
 | Ctrl-D | On an empty input, quit on a second press within 3 s (see [Sessions](#sessions) and [Detach and reattach](#the-workspace-daemon)); with text, delete forward |
 | Ctrl-O | Show or hide detail: the last reasoning block and the output of the last tool call (a click toggles one tool) |
@@ -1303,7 +1303,7 @@ then stop it too; bash and zsh do not), stdin closed, its output appended to
 `<realm>/logs/rkat-tui-mob.stderr.log`. The status bar shows `daemon
 starting` until the endpoint file appears (up to 60 s); a daemon that exits
 first, or never comes up, is reported with the log's path. You can also run
-it yourself: `rkat-tui-mob --foreground -w . --model …`.
+it yourself: `rkat-tui-mob -w . --model …`.
 
 **Start-up notices.** What the daemon's start had to say (its shell's
 confinement, rules it could not load, ignored project settings, semantic
@@ -1480,7 +1480,7 @@ alone joins the agent active last and opens the picker.
 
 **Limits for now:**
 
-- `/rewind` is not offered: the engine refuses a transcript fork of a mob
+- There is no rewind: the engine refuses a transcript fork of a mob
   member's session, and its member forks seat the copy under a new
   identity; the design of a same-identity rewind is merged upstream
   (lukacf/meerkat#2126), its implementation not scheduled yet.

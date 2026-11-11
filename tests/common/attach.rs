@@ -745,7 +745,7 @@ impl Running {
 pub async fn stored_session(root: &Path, id: &meerkat_core::SessionId) -> meerkat_core::Session {
     let scope = rkat_tui::bootstrap::resolve_scope(&args_for(root)).unwrap();
     let (_manifest, persistence) =
-        meerkat::open_realm_persistence_in(&scope.state_root, &scope.realm_id, None, None)
+        meerkat::open_realm_persistence_in(&scope.realms_root, &scope.realm_id, None, None)
             .await
             .unwrap();
     persistence

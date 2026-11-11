@@ -43,6 +43,9 @@
   `.rkat/mcp.toml` and `.rkat/config.toml` only), the refusal of a config
   directory that collides with a realm directory, and `--list`'s
   `(realm <root>)` / `(realm memory)` decorations.
+- `/rewind` (`/checkpoint`, `/undo`) and Esc Esc on an empty input,
+  which only said that rewinding is not available: `/help` says so once.
+- The daemon's dead `--foreground` flag (it was the only mode).
 - The realm `config.toml`'s `[confinement]` as a floor under the
   command line: the agent shell's confinement is `--confinement` and the
   extra grants alone (`--confinement=off` and the grants are no longer

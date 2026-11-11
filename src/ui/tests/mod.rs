@@ -104,11 +104,8 @@ fn submit(app: &mut App, s: &str) -> Vec<Effect> {
     app.update(key(KeyCode::Enter))
 }
 
-fn finished(result: Result<TurnSummary, TurnFailure>, undelivered: &[u64]) -> Msg {
-    Msg::TurnFinished(TurnOutcome {
-        result,
-        undelivered: undelivered.iter().copied().map(PendingId).collect(),
-    })
+fn finished(result: Result<TurnSummary, TurnFailure>) -> Msg {
+    Msg::TurnFinished(TurnOutcome { result })
 }
 
 fn ack(id: u64, result: Result<(), SteerFailure>) -> Msg {
@@ -268,11 +265,13 @@ fn app_with_moved_model_picker() -> (App, Modal) {
 }
 
 fn answered(text: &str) -> Msg {
-    Msg::TurnFinished(TurnOutcome::plain(Ok(TurnSummary {
-        text: text.into(),
-        input_tokens: 1,
-        output_tokens: 1,
-    })))
+    Msg::TurnFinished(TurnOutcome {
+        result: Ok(TurnSummary {
+            text: text.into(),
+            input_tokens: 1,
+            output_tokens: 1,
+        }),
+    })
 }
 
 /// The loop's own requests among [`App::take_local`] (frames, bells,
@@ -316,7 +315,7 @@ fn turn_at(app: &mut App, used: u64) -> Vec<Effect> {
         }),
         assistant_message_id: None,
     }));
-    app.update(finished(Ok(summary()), &[]))
+    app.update(finished(Ok(summary())))
 }
 
 fn warn_count(app: &App) -> usize {

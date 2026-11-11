@@ -128,7 +128,7 @@ pub fn daemon_program() -> PathBuf {
 /// mouse, attach) are left out.
 #[must_use]
 pub fn daemon_argv(args: &Args, workspace: &Path) -> Vec<OsString> {
-    let mut argv: Vec<OsString> = vec!["--foreground".into(), "-w".into(), workspace.into()];
+    let mut argv: Vec<OsString> = vec!["-w".into(), workspace.into()];
     let mut value = |flag: &str, v: Option<&OsString>| {
         if let Some(v) = v {
             argv.push(flag.into());
@@ -478,7 +478,6 @@ mod tests {
         ));
         let daemon = crate::daemon::DaemonCli::try_parse_from(argv).unwrap();
         daemon.check().unwrap();
-        assert!(daemon.foreground);
         // The daemon writes its endpoint where the client waits for it.
         assert_eq!(
             daemon.endpoint_file.as_deref(),

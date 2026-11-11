@@ -224,12 +224,6 @@ impl PendingQueue {
         self.settled.last()
     }
 
-    /// Remove and return a settled item.
-    pub fn take_settled(&mut self, id: PendingId) -> Option<Pending> {
-        let idx = self.settled.iter().position(|p| p.id == id)?;
-        Some(self.settled.remove(idx))
-    }
-
     /// Forget every settled item (the turn ended).
     pub fn clear_settled(&mut self) {
         self.settled.clear();
@@ -313,20 +307,13 @@ impl PendingQueue {
         }
     }
 
-    /// After a turn: every item the turn did not deliver, oldest first.
-    /// Undelivered steers (queued or already shown as delivered), items the
-    /// UI held, and (defensively) admitted items the runtime never reported
-    /// on. Items still waiting for their admission ack stay: the ack
-    /// decides. The settled items are forgotten.
-    pub fn take_unsent(&mut self, undelivered: &[PendingId]) -> Vec<Pending> {
-        let mut unsent: Vec<Pending> = undelivered
-            .iter()
-            .filter_map(|id| self.take_settled(*id))
-            .collect();
-        unsent.extend(self.take_where(|p| {
-            undelivered.contains(&p.id)
-                || matches!(p.state, PendingState::Deferred | PendingState::Admitted)
-        }));
+    /// After a turn: every item the turn did not deliver, oldest first:
+    /// items the UI held, and admitted items the runtime never reported
+    /// delivered. Items still waiting for their admission ack stay: the
+    /// ack decides. The settled items are forgotten.
+    pub fn take_unsent(&mut self) -> Vec<Pending> {
+        let mut unsent: Vec<Pending> =
+            self.take_where(|p| matches!(p.state, PendingState::Deferred | PendingState::Admitted));
         self.clear_settled();
         unsent.sort_by_key(|p| p.id);
         unsent
@@ -392,7 +379,7 @@ mod tests {
             Some(Block::Queued { label, .. }) => Some(*label),
             _ => None,
         };
-        let unsent = q.take_unsent(&[]);
+        let unsent = q.take_unsent();
         assert_eq!(unsent.iter().map(|p| p.id).collect::<Vec<_>>(), [again]);
         q.hold_again(&mut transcript, unsent.into_iter().next().unwrap());
         assert_eq!(label(&transcript), Some(QueuedLabel::Deferred));
@@ -478,9 +465,10 @@ mod tests {
         assert_eq!(q.settle(b).map(|p| p.text.as_str()), Some("b"));
         assert!(q.is_empty());
         q.block_removed(BlockId(0));
-        let settled = q.take_settled(b).unwrap();
-        assert_eq!(settled.block, BlockId(3));
-        assert!(q.take_settled(b).is_none());
+        assert_eq!(
+            q.all().find(|p| p.id == b).map(|p| p.block),
+            Some(BlockId(3))
+        );
     }
 
     #[test]

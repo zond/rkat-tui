@@ -1158,15 +1158,15 @@ fn the_checklist_comes_before_the_helper_panel() {
 }
 
 #[test]
-fn rewind_hint_snapshot() {
+fn an_esc_on_an_empty_input_names_nothing_in_the_title() {
     use ratatui::crossterm::event::{KeyCode, KeyEvent};
     let mut app = App::new(StatusInfo::default());
     let now = Instant::now();
-    // One Esc on an empty idle input: the editor title names the second.
+    // There is no rewind: one Esc on an empty idle input arms nothing.
     app.update_at(Msg::Key(KeyEvent::from(KeyCode::Esc)), now);
-    let armed = render(&mut app, now);
+    let rows = render(&mut app, now);
     assert!(
-        armed[H as usize - 3].starts_with(" Esc again for /rewind "),
-        "{armed:?}"
+        !rows.iter().any(|row| row.contains("Esc again")),
+        "{rows:?}"
     );
 }

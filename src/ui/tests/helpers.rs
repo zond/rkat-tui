@@ -27,7 +27,6 @@ fn the_panel_lists_running_helpers_newest_first_and_drops_finished_ones_at_the_n
     assert_eq!(app.helper_panel(), vec![fork]);
     app.update(Msg::TurnFinished(TurnOutcome {
         result: Ok(summary()),
-        undelivered: Vec::new(),
     }));
     type_str(&mut app, "again");
     app.update(key(KeyCode::Enter));

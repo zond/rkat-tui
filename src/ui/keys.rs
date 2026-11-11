@@ -34,8 +34,8 @@ impl App {
             .is_some_and(|t| now.saturating_duration_since(t) < DOUBLE_CTRL_C_WINDOW)
     }
 
-    /// Whether a second Esc at `now` would clear the input, or open the
-    /// `/rewind` on an empty one (used for the input hint).
+    /// Whether a second Esc at `now` would clear the input (used for the
+    /// input hint).
     pub fn esc_clear_armed(&self, now: Instant) -> bool {
         self.last_esc
             .is_some_and(|t| now.saturating_duration_since(t) < DOUBLE_ESC_WINDOW)
@@ -497,17 +497,15 @@ impl App {
     ///
     /// Idle, Esc twice within [`DOUBLE_ESC_WINDOW`] on an input with text
     /// clears it and saves it to the prompt history (`esc_armed`: the
-    /// previous key was such an Esc); on an empty input it asks for
-    /// `/rewind`. One Esc only arms it.
+    /// previous key was such an Esc); on an empty input it does nothing.
+    /// One Esc only arms it.
     pub(super) fn escape(&mut self, esc_armed: bool, now: Instant, fx: &mut Vec<Effect>) {
         if self.running {
             self.interrupt(fx);
         } else if self.shell_run.is_some() {
             fx.push(Effect::CancelShell);
-        } else if self.input.is_empty() && esc_armed {
-            self.request_rewind(fx);
         } else if self.input.is_empty() {
-            self.last_esc = Some(now);
+            // Nothing to clear.
         } else if esc_armed {
             let text = self.input.take();
             if !text.trim().is_empty() {
@@ -537,7 +535,8 @@ impl App {
     }
 
     /// Interrupt the running turn. The runner also cancels every steered
-    /// message not yet delivered; [`TurnOutcome::undelivered`](crate::ui::TurnOutcome::undelivered) lists them
+    /// message not yet delivered; at the turn's end the UI takes them back
+    /// ([`PendingQueue::take_unsent`](super::delivery::PendingQueue::take_unsent))
     /// and they start the next turn.
     pub(super) fn interrupt(&mut self, fx: &mut Vec<Effect>) {
         fx.push(Effect::Interrupt);

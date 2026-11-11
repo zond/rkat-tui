@@ -270,15 +270,6 @@ impl App {
         }
     }
 
-    /// `/rewind` or Esc Esc on an empty input: ask the runner (which says
-    /// why the daemon cannot rewind) when the session is idle with nothing
-    /// queued, else say what is in the way.
-    pub(super) fn request_rewind(&mut self, fx: &mut Vec<Effect>) {
-        if self.idle_or_notice() {
-            fx.push(Effect::RequestRewindMenu);
-        }
-    }
-
     /// Messages handed to the runner (admitted, or not acknowledged yet)
     /// that no recall has found with the agent.
     pub(super) fn has_admitted_recallable(&self) -> bool {
@@ -368,10 +359,7 @@ impl App {
         now: Instant,
         fx: &mut Vec<Effect>,
     ) {
-        let TurnOutcome {
-            result,
-            undelivered,
-        } = outcome;
+        let TurnOutcome { result } = outcome;
         self.running = false;
         self.recalling = false;
         self.reached.clear();
@@ -396,7 +384,7 @@ impl App {
             }
         }
         self.streamed_text = false;
-        let unsent = self.pending.take_unsent(&undelivered);
+        let unsent = self.pending.take_unsent();
         // `!` commands typed during the turn run first; what would start the
         // next turn waits for them (a failed turn's messages still go back
         // to the editor).

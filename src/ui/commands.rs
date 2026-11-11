@@ -119,9 +119,6 @@ pub enum Command {
     Clear,
     /// `/resume [ref]`.
     Resume(Option<String>),
-    /// `/rewind` (`/checkpoint`, `/undo`): pick one of the session's
-    /// messages and continue from just before it.
-    Rewind,
     /// `/permissions ...`.
     Rules(RulesCommand),
     /// `/auto [on|off|resume]`.
@@ -369,17 +366,6 @@ pub static COMMANDS: &[CommandSpec] = &[
             "resume a session (last, ~N, or id prefix); no ref opens a picker\n(so does rkat-tui --resume without a ref; archived sessions\nare not offered)",
         )],
         parse: parse_resume,
-    },
-    CommandSpec {
-        name: "rewind",
-        aliases: &["checkpoint", "undo"],
-        usage: "",
-        summary: "continue from before one of your messages (not available yet)",
-        help: &[(
-            "/rewind, /checkpoint, /undo",
-            "continue from before one of your messages: not available yet,\nthe daemon cannot rewind a conversation (an engine ask); says\nwhy. Esc Esc on an empty input asks too. /new starts over",
-        )],
-        parse: |rest| arg_free(rest, Command::Rewind),
     },
     CommandSpec {
         name: "permissions",
@@ -757,7 +743,6 @@ Keys:
   Ctrl-C                         interrupt the turn (as Esc) · clear the input · press twice to quit
   Esc                            interrupt the turn; queued messages are sent next
   Esc Esc (idle, with text)      clear the input and save it to the prompt history (↑ recalls it)
-  Esc Esc (idle, empty input)    /rewind (not available yet: says why)
   Up (empty input)               take queued messages back into the editor
   Ctrl-D                         quit on an empty input: press again within 3 s (while a turn
                                  runs or messages are queued the turn is then interrupted and
@@ -814,7 +799,9 @@ Approval prompt:
   s                              stop the turn (Ctrl-C stops every open prompt)";
 
 /// The line that ends `/help`.
-const HELP_FOOTER: &str = "Start a prompt with // to send a literal leading slash.";
+const HELP_FOOTER: &str = "Start a prompt with // to send a literal leading slash.\n\
+There is no rewind: the agent's conversation cannot continue from before an earlier message yet\n\
+(the engine cannot rewind a mob member's session in place); /new starts over.";
 
 /// Help text shown by `/help`: every slash command (from [`COMMANDS`]) and
 /// key binding.
@@ -961,10 +948,6 @@ mod tests {
             Some("[last | ~N | id-prefix]")
         );
         assert_eq!(usage_of("/copy 0"), "/copy [N]");
-        assert_eq!(
-            parse("/rewind 2").map(|r| r.map_err(|e| e.to_string())),
-            Some(Err("usage: /rewind".to_string()))
-        );
     }
 
     #[test]
@@ -1023,9 +1006,6 @@ mod tests {
             "tasks",
             "remember",
             "mode",
-            "rewind",
-            "checkpoint",
-            "undo",
             "detach",
             "agents",
             "audit",
@@ -1034,7 +1014,7 @@ mod tests {
         ] {
             assert!(super::spec(name).is_some(), "/{name} has no spec");
         }
-        assert_eq!(seen.len(), 35);
+        assert_eq!(seen.len(), 32);
         // `/help`'s "Commands:" rows come from the specs, in their order.
         let commands = help_text().split_once("Keys:").unwrap().0;
         let mut at = 0;
@@ -1080,10 +1060,11 @@ mod tests {
         }
         assert_eq!(ok("/resume"), Command::Resume(None));
         assert_eq!(ok("/resume ~2"), Command::Resume(Some("~2".into())));
-        assert_eq!(ok("/rewind"), Command::Rewind);
-        assert_eq!(ok("/checkpoint"), Command::Rewind);
-        assert_eq!(ok("/undo"), Command::Rewind);
-        assert_eq!(usage_of("/rewind 2"), "/rewind");
+        // There is no rewind command: the help says so once.
+        for gone in ["/rewind", "/checkpoint", "/undo"] {
+            assert!(matches!(parse(gone), Some(Err(_))), "{gone}");
+        }
+        assert!(super::help_text().contains("There is no rewind"));
         assert_eq!(
             ok("/model gpt-5.4"),
             Command::Model(ModelCommand::Set("gpt-5.4".into()))
@@ -1424,11 +1405,7 @@ mod tests {
             Action::SendNow => &["Ctrl+Enter"],
             Action::CtrlC => &["Ctrl-C"],
             Action::CtrlD => &["Ctrl-D"],
-            Action::Escape => &[
-                "Esc",
-                "Esc Esc (idle, with text)",
-                "Esc Esc (idle, empty input)",
-            ],
+            Action::Escape => &["Esc", "Esc Esc (idle, with text)"],
             Action::ToggleDetail => &["Ctrl-O"],
             Action::ToggleChecklist => &["Ctrl-T"],
             Action::HistorySearch => &["Ctrl-R"],

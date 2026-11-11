@@ -471,15 +471,9 @@ fn shape(
 /// `also` adds names to deny (a helper at the depth limit gets
 /// [`NESTING_TOOLS`]); with any, `ReadOnly` becomes a read-only constraint
 /// beside the deny constraint, so the names are denied whatever read-only
-/// admits.
-#[cfg(test)]
-fn deny_ungated_tools(spec: &mut SpawnMemberSpec, also: &[&str]) {
-    deny_tools(spec, also, false);
-}
-
-/// `deny_ungated_tools` (a test helper), keeping `fork_off` when `gated_fork_off` and
-/// nothing else is denied (`also` is empty: a member at the depth limit
-/// may not fork either, as a fork child is a helper one level deeper).
+/// admits. `gated_fork_off` keeps `fork_off` when nothing else is denied
+/// (`also` is empty: a member at the depth limit may not fork either, as a
+/// fork child is a helper one level deeper).
 fn deny_tools(spec: &mut SpawnMemberSpec, also: &[&str], gated_fork_off: bool) {
     use meerkat_core::ops::{ToolAccessConstraint, ToolAccessPolicy};
     let ToolAccessPolicy::DenyList(mut denied) = tool_access_policy() else {
@@ -861,7 +855,7 @@ mod tests {
         for policy in [None, Some(ToolAccessPolicy::Inherit)] {
             let mut spec = SpawnMemberSpec::new("delegate", "worker");
             spec.tool_access_policy = policy;
-            deny_ungated_tools(&mut spec, &[]);
+            deny_tools(&mut spec, &[], false);
             assert_eq!(spec.tool_access_policy, Some(tool_access_policy()));
         }
     }
@@ -873,7 +867,7 @@ mod tests {
         spec.tool_access_policy = Some(ToolAccessPolicy::DenyList(
             ["web_fetch"].into_iter().collect(),
         ));
-        deny_ungated_tools(&mut spec, &[]);
+        deny_tools(&mut spec, &[], false);
         let Some(ToolAccessPolicy::DenyList(names)) = &spec.tool_access_policy else {
             panic!("{:?}", spec.tool_access_policy);
         };
@@ -890,7 +884,7 @@ mod tests {
         spec.tool_access_policy = Some(ToolAccessPolicy::AllowList(
             ["read_file", "fork_off"].into_iter().collect(),
         ));
-        deny_ungated_tools(&mut spec, &[]);
+        deny_tools(&mut spec, &[], false);
         let Some(ToolAccessPolicy::AllowList(names)) = &spec.tool_access_policy else {
             panic!("{:?}", spec.tool_access_policy);
         };
@@ -905,14 +899,14 @@ mod tests {
         use meerkat_core::ops::{ToolAccessConstraint, ToolAccessPolicy};
         let mut spec = SpawnMemberSpec::new("delegate", "worker");
         spec.tool_access_policy = Some(ToolAccessPolicy::ReadOnly);
-        deny_ungated_tools(&mut spec, &[]);
+        deny_tools(&mut spec, &[], false);
         assert_eq!(spec.tool_access_policy, Some(ToolAccessPolicy::ReadOnly));
 
         let mut spec = SpawnMemberSpec::new("delegate", "worker");
         spec.tool_access_policy = Some(ToolAccessPolicy::Constraints(vec![
             ToolAccessConstraint::ReadOnly,
         ]));
-        deny_ungated_tools(&mut spec, &[]);
+        deny_tools(&mut spec, &[], false);
         let Some(ToolAccessPolicy::Constraints(constraints)) = &spec.tool_access_policy else {
             panic!("{:?}", spec.tool_access_policy);
         };
@@ -938,7 +932,7 @@ mod tests {
         let depth = Depth::admit("scout", 1, 1, true).unwrap();
         assert_eq!(depth, Depth::Last);
         let mut spec = SpawnMemberSpec::new("delegate", "scout");
-        deny_ungated_tools(&mut spec, &NESTING_TOOLS);
+        deny_tools(&mut spec, &NESTING_TOOLS, false);
         let names = denied_names(&spec);
         for name in ["delegate", "mob_create", "mob_spawn_member", "council"] {
             assert!(names.contains(name), "{name}: {names:?}");
@@ -947,7 +941,7 @@ mod tests {
         // A read-only helper keeps read-only and loses them too.
         let mut spec = SpawnMemberSpec::new("delegate", "scout");
         spec.tool_access_policy = Some(meerkat_core::ops::ToolAccessPolicy::ReadOnly);
-        deny_ungated_tools(&mut spec, &NESTING_TOOLS);
+        deny_tools(&mut spec, &NESTING_TOOLS, false);
         let Some(meerkat_core::ops::ToolAccessPolicy::Constraints(constraints)) =
             &spec.tool_access_policy
         else {
@@ -978,7 +972,7 @@ mod tests {
         let depth = Depth::admit("scout", 1, 2, true).unwrap();
         assert_eq!(depth, Depth::MayNest);
         let mut spec = SpawnMemberSpec::new("delegate", "scout");
-        deny_ungated_tools(&mut spec, &[]);
+        deny_tools(&mut spec, &[], false);
         let names = denied_names(&spec);
         for name in NESTING_TOOLS {
             assert!(!names.contains(name), "{name}: {names:?}");

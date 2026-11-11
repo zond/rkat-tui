@@ -58,7 +58,6 @@ async fn creates_a_session_and_completes_a_turn() {
     rig.send(Effect::StartTurn("hi".into()));
     let outcome = rig.turn_finished().await;
     assert_eq!(outcome.result.expect("turn succeeds").text, "hello there");
-    assert!(outcome.undelivered.is_empty());
 
     let session = rig.messages().await;
     assert_eq!(user_texts(&session), vec!["hi".to_string()]);
@@ -180,7 +179,6 @@ async fn a_steered_message_is_applied_at_the_next_tool_boundary() {
         .await;
     let outcome = rig.turn_finished().await;
     assert_eq!(outcome.result.expect("turn succeeds").text, "done");
-    assert!(outcome.undelivered.is_empty());
 
     // One run: the steer joined it at the tool boundary, after the tool
     // result (the file tool ran end to end) and before the next request.
@@ -566,7 +564,6 @@ async fn a_message_typed_while_a_slow_tool_runs_reaches_the_model_after_its_resu
         .await;
     let outcome = rig.turn_finished().await;
     assert_eq!(outcome.result.expect("turn succeeds").text, "finished");
-    assert!(outcome.undelivered.is_empty());
     // One run: the shell ran to its end, its result reached the model, and
     // the typed message followed it in the same request.
     let requests = llm.requests();
@@ -633,7 +630,6 @@ async fn recalling_a_message_typed_during_a_slow_tool_leaves_the_run_alone() {
 
     let outcome = rig.turn_finished().await;
     assert_eq!(outcome.result.expect("turn succeeds").text, "finished");
-    assert!(outcome.undelivered.is_empty(), "already back in the editor");
     let requests = llm.requests();
     assert_eq!(requests.len(), 2, "no follow-up turn");
     assert!(
@@ -693,7 +689,6 @@ async fn recalling_a_steer_that_already_joined_the_run_leaves_it_delivered() {
 
     let outcome = rig.turn_finished().await;
     assert_eq!(outcome.result.expect("turn succeeds").text, "finished");
-    assert!(outcome.undelivered.is_empty());
     let requests = llm.requests();
     assert_eq!(requests.len(), 2, "no follow-up turn");
     assert!(user_texts(&requests[1]).contains(&"typed while it sleeps".to_string()));

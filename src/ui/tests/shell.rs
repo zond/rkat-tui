@@ -69,7 +69,7 @@ fn commands_typed_during_a_turn_run_after_it_before_the_queued_messages() {
     // The turn ends with "two" undelivered: the commands run first, in
     // order, each in place of its placeholder.
     assert_eq!(
-        app.update(finished(Ok(summary()), &[2])),
+        app.update(finished(Ok(summary()))),
         vec![run_shell(1, "echo a")]
     );
     assert!(!app.is_running());
@@ -106,5 +106,5 @@ fn up_takes_a_held_command_back() {
     assert_eq!(app.transcript.blocks(), &[user("one")]);
     // Nothing is left to run after the turn.
     app.input.clear();
-    assert!(app.update(finished(Ok(summary()), &[])).is_empty());
+    assert!(app.update(finished(Ok(summary()))).is_empty());
 }

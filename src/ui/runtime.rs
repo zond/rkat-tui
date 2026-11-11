@@ -10,7 +10,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use futures::StreamExt;
-use meerkat_core::{AgentEvent, EventEnvelope};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{
@@ -243,40 +242,22 @@ pub fn install_panic_hook() {
 /// Receivers feeding the UI loop.
 #[derive(Debug)]
 pub struct UiChannels {
-    /// Primary agent stream events.
-    pub agent_rx: mpsc::Receiver<EventEnvelope<AgentEvent>>,
-    /// Integrator messages: escalations, diffs, approvals, turn completion, status, notices.
+    /// The runner's messages, in order: the agent's events, escalations,
+    /// diffs, approvals, turn completion, status, notices.
     pub ui_rx: mpsc::UnboundedReceiver<Msg>,
-}
-
-/// `msg` (from the integrator) preceded by every agent event already
-/// buffered (helpers' scoped events arrive as integrator messages, in
-/// order). The runner sends `TurnFinished`, `SteerAck`,
-/// `SteerDelivered` and `SteerRequeued` after the events that led to them,
-/// but on a different channel;
-/// applying the buffered events first keeps a turn's text from landing after
-/// its summary (or in the next turn).
-pub fn after_buffered_events(msg: Msg, channels: &mut UiChannels) -> Vec<Msg> {
-    let mut batch = Vec::new();
-    while let Ok(env) = channels.agent_rx.try_recv() {
-        batch.push(Msg::Agent(env));
-    }
-    batch.push(msg);
-    batch
 }
 
 /// The most messages applied before a frame is drawn.
 pub const MAX_BATCH: usize = 256;
 
-/// Append to `batch` what the runner has already queued (each message
-/// after the agent events buffered before it), up to [`MAX_BATCH`]
+/// Append to `batch` what the runner has already queued, up to [`MAX_BATCH`]
 /// messages, so a burst of stream events costs one frame rather than one
 /// per event. Terminal input is not read here: it is drawn with the next
 /// frame, at most one batch later.
 pub fn drain_queued(batch: &mut Vec<Msg>, channels: &mut UiChannels) {
     while batch.len() < MAX_BATCH {
         match channels.ui_rx.try_recv() {
-            Ok(msg) => batch.extend(after_buffered_events(msg, channels)),
+            Ok(msg) => batch.push(msg),
             Err(_) => return,
         }
     }
@@ -388,17 +369,10 @@ pub async fn run_ui(
             // A notice produces no effects.
             let _ = app.update(Msg::Notice { level, text });
         }
-        // Agent events first: integrator messages refer to events sent
-        // before them (see `after_buffered_events`).
         let batch = tokio::select! {
             biased;
-            Some(env) = channels.agent_rx.recv() => {
-                let mut batch = vec![Msg::Agent(env)];
-                drain_queued(&mut batch, &mut channels);
-                batch
-            }
             Some(msg) = channels.ui_rx.recv() => {
-                let mut batch = after_buffered_events(msg, &mut channels);
+                let mut batch = vec![msg];
                 drain_queued(&mut batch, &mut channels);
                 batch
             }
@@ -527,7 +501,8 @@ fn reroot(app: &mut App, histories: &mut [History], realm: &std::path::Path) {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::ui::{Block, StatusInfo, TurnOutcome, TurnSummary};
+    use crate::ui::StatusInfo;
+    use meerkat_core::{AgentEvent, EventEnvelope};
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventState, KeyModifiers};
 
     /// A burst of queued stream events is one batch, so one frame: the
@@ -535,9 +510,8 @@ mod tests {
     /// [`MAX_BATCH`] is split, so input still draws within a batch.
     #[tokio::test]
     async fn queued_deltas_are_applied_as_one_batch() {
-        let (_agent_tx, agent_rx) = mpsc::channel(16);
         let (ui_tx, ui_rx) = mpsc::unbounded_channel();
-        let mut channels = UiChannels { agent_rx, ui_rx };
+        let mut channels = UiChannels { ui_rx };
         let delta = |seq| {
             Msg::Agent(EventEnvelope::new(
                 "s",
@@ -553,7 +527,7 @@ mod tests {
             ui_tx.send(delta(seq)).unwrap();
         }
         let first = channels.ui_rx.recv().await.unwrap();
-        let mut batch = after_buffered_events(first, &mut channels);
+        let mut batch = vec![first];
         drain_queued(&mut batch, &mut channels);
         assert_eq!(batch.len(), 100);
         assert!(channels.ui_rx.try_recv().is_err());
@@ -561,64 +535,12 @@ mod tests {
             ui_tx.send(delta(seq)).unwrap();
         }
         let first = channels.ui_rx.recv().await.unwrap();
-        let mut batch = after_buffered_events(first, &mut channels);
+        let mut batch = vec![first];
         drain_queued(&mut batch, &mut channels);
         assert_eq!(batch.len(), MAX_BATCH);
         let mut rest = Vec::new();
         drain_queued(&mut rest, &mut channels);
         assert_eq!(rest.len(), 10);
-    }
-
-    #[tokio::test]
-    async fn turn_finished_waits_for_buffered_agent_events() {
-        let (agent_tx, agent_rx) = mpsc::channel(16);
-        let (ui_tx, ui_rx) = mpsc::unbounded_channel();
-        let mut channels = UiChannels { agent_rx, ui_rx };
-        let mut app = App::new(StatusInfo::default());
-        for c in "hi".chars() {
-            app.update(Msg::Key(KeyEvent::new(
-                KeyCode::Char(c),
-                KeyModifiers::NONE,
-            )));
-        }
-        app.update(Msg::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
-        // The turn's text is still buffered when its result arrives.
-        for (seq, delta) in [(1, "Hel"), (2, "lo")] {
-            agent_tx
-                .send(EventEnvelope::new(
-                    "s",
-                    seq,
-                    None,
-                    AgentEvent::TextDelta {
-                        delta: delta.into(),
-                        assistant_message_id: None,
-                    },
-                ))
-                .await
-                .unwrap();
-        }
-        ui_tx
-            .send(Msg::TurnFinished(TurnOutcome::plain(Ok(TurnSummary {
-                text: "Hello".into(),
-                input_tokens: 0,
-                output_tokens: 0,
-            }))))
-            .unwrap();
-        let msg = channels.ui_rx.recv().await.unwrap();
-        let batch = after_buffered_events(msg, &mut channels);
-        assert_eq!(batch.len(), 3);
-        assert!(matches!(batch.last(), Some(Msg::TurnFinished(_))));
-        for msg in batch {
-            app.update(msg);
-        }
-        let assistant: Vec<&Block> = app
-            .transcript
-            .blocks()
-            .iter()
-            .filter(|b| matches!(b, Block::Assistant { .. }))
-            .collect();
-        assert_eq!(assistant, vec![&Block::Assistant { md: "Hello".into() }]);
-        assert!(!app.is_running());
     }
 
     #[test]

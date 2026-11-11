@@ -21,13 +21,11 @@
 //!   the [`crate::workbench`] (the new context reaches the orchestrator
 //!   with `mob/append_system_context`);
 //!   `/trust` acts on the daemon's trust record (`rkat/trust`); `/compact now` asks the daemon's
-//!   engine (`mob/compact_member`). What the daemon cannot do (`/rewind`)
-//!   says why.
+//!   engine (`mob/compact_member`).
 //! - [`helpers`]: the follower view of the orchestrator's helpers, from the
 //!   mobs' own event streams.
 //! - [`sessions`]: `/new`, `/resume` (the daemon's `rkat/new`,
-//!   `rkat/resume`, `rkat/conversations`, `rkat/transcript`) and why
-//!   `/rewind` is not offered.
+//!   `rkat/resume`, `rkat/conversations`, `rkat/transcript`).
 //!
 //! What runs on this side of the wire is the [`crate::workbench`] and the
 //! UI it starts ([`crate::workbench::app::build_app`]).
@@ -464,9 +462,6 @@ pub async fn run(
         endpoint_files: rehome::default_endpoint_files(),
     });
     app::init_logging(&config.scope.realm_root())?;
-    // The runner sends every event on the integrator channel (in order with
-    // the turn messages); the agent channel stays idle.
-    let (_agent_tx, agent_rx) = mpsc::channel(1);
     let (ui_tx, ui_rx) = mpsc::unbounded_channel::<Msg>();
     let (effect_tx, effect_rx) = mpsc::unbounded_channel::<Effect>();
     let mut status = StatusInfo::default();
@@ -495,7 +490,7 @@ pub async fn run(
     // messages.
     let driven = app::drive(
         opened,
-        UiChannels { agent_rx, ui_rx },
+        UiChannels { ui_rx },
         effect_tx,
         args.mouse_capture(),
         tokio::spawn(runner.run()),

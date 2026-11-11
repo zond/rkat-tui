@@ -6,7 +6,7 @@ use super::*;
 fn clear_is_refused_while_messages_are_pending() {
     let mut app = running_app();
     submit(&mut app, "two");
-    app.update(finished(Ok(summary()), &[]));
+    app.update(finished(Ok(summary())));
     assert_eq!(app.status.queued, 1);
     assert!(submit(&mut app, "/clear").is_empty());
     assert!(matches!(
@@ -104,7 +104,7 @@ fn slash_commands_map_to_effects() {
 fn model_is_refused_while_messages_are_pending() {
     let mut app = running_app();
     submit(&mut app, "two");
-    app.update(finished(Ok(summary()), &[]));
+    app.update(finished(Ok(summary())));
     assert!(!app.is_running());
     assert_eq!(app.status.queued, 1);
     assert!(submit(&mut app, "/model gpt-5.2").is_empty());
@@ -281,7 +281,7 @@ fn compact_now_refused_while_running_or_pending() {
         Some((NoticeLevel::Warn, Busy::Turn.to_string()))
     );
     submit(&mut app, "two");
-    app.update(finished(Ok(summary()), &[]));
+    app.update(finished(Ok(summary())));
     assert!(!app.is_running());
     assert_eq!(app.status.queued, 1);
     assert!(submit(&mut app, "/compact now").is_empty());
@@ -297,7 +297,6 @@ fn compact_now_refused_while_running_or_pending() {
 #[test]
 fn session_commands_share_one_idle_guard() {
     let commands = [
-        "/rewind",
         "/clear",
         "/resume",
         "/resume last",
@@ -316,8 +315,7 @@ fn session_commands_share_one_idle_guard() {
             assert!(
                 !fx.iter().any(|e| matches!(
                     e,
-                    Effect::RequestRewindMenu
-                        | Effect::NewSession
+                    Effect::NewSession
                         | Effect::RequestResumePicker
                         | Effect::ResumeSession(_)
                         | Effect::RequestModelPicker { .. }

@@ -21,7 +21,9 @@ fn a_remote_turn_shows_its_prompt_and_keeps_the_ui_busy_until_it_ends() {
     assert_eq!(app.transcript.blocks().len(), 1);
     // Esc interrupts it like a turn this UI started.
     assert_eq!(app.update(key(KeyCode::Esc)), vec![Effect::Interrupt]);
-    app.update(Msg::TurnFinished(TurnOutcome::plain(Ok(summary()))));
+    app.update(Msg::TurnFinished(TurnOutcome {
+        result: Ok(summary()),
+    }));
     assert!(!app.is_running());
     // `/daemon stop` is handed to the integrator.
     type_str(&mut app, "/daemon stop");
@@ -91,7 +93,9 @@ fn submit_starts_turn_and_streams_into_one_block() {
         ]
     );
     assert_eq!((app.status.input_tokens, app.status.output_tokens), (10, 4));
-    app.update(Msg::TurnFinished(TurnOutcome::plain(Ok(summary()))));
+    app.update(Msg::TurnFinished(TurnOutcome {
+        result: Ok(summary()),
+    }));
     assert!(!app.is_running());
     assert!(app.status.running_since.is_none());
 }
@@ -101,10 +105,12 @@ fn turn_summary_text_used_when_nothing_streamed() {
     let mut app = App::new(StatusInfo::default());
     type_str(&mut app, "q");
     app.update(key(KeyCode::Enter));
-    app.update(Msg::TurnFinished(TurnOutcome::plain(Ok(TurnSummary {
-        text: "answer".into(),
-        ..summary()
-    }))));
+    app.update(Msg::TurnFinished(TurnOutcome {
+        result: Ok(TurnSummary {
+            text: "answer".into(),
+            ..summary()
+        }),
+    }));
     assert_eq!(
         app.transcript.blocks().last(),
         Some(&Block::Assistant {
@@ -258,7 +264,7 @@ fn admitted_then_delivered_in_place() {
             Block::Assistant { md: "b".into() },
         ]
     );
-    let fx = app.update(finished(Ok(summary()), &[]));
+    let fx = app.update(finished(Ok(summary())));
     assert!(fx.is_empty());
     assert!(!app.is_running());
 }
@@ -273,16 +279,16 @@ fn ack_not_running_defers_or_starts_turn() {
         app.transcript.block(BlockId(1)),
         Some(&queued_block(1, "two", QueuedLabel::Deferred))
     );
-    let fx = app.update(finished(Ok(summary()), &[]));
+    let fx = app.update(finished(Ok(summary())));
     assert_eq!(fx, vec![Effect::StartTurn("two".into())]);
     assert_eq!(app.transcript.blocks(), &[user("one"), user("two")]);
-    app.update(finished(Ok(summary()), &[]));
+    app.update(finished(Ok(summary())));
 
     // Already idle when the refusal arrives: send it as a prompt,
     // converting the placeholder in place.
     let mut app = running_app();
     submit(&mut app, "two");
-    app.update(finished(Ok(summary()), &[]));
+    app.update(finished(Ok(summary())));
     assert!(!app.is_running());
     assert_eq!(app.status.queued, 1);
     assert_eq!(
@@ -396,32 +402,6 @@ fn up_when_the_messages_already_reached_the_agent_notices_then_recalls_history()
 }
 
 #[test]
-fn rewind_asks_for_the_menu_only_when_idle_with_nothing_queued() {
-    let mut app = App::new(StatusInfo::default());
-    assert_eq!(submit(&mut app, "/rewind"), vec![Effect::RequestRewindMenu]);
-    assert_eq!(
-        submit(&mut app, "/checkpoint"),
-        vec![Effect::RequestRewindMenu]
-    );
-    // While a turn runs: a notice, and Esc interrupts as always.
-    let mut app = running_app();
-    assert!(submit(&mut app, "/rewind").is_empty());
-    assert!(matches!(
-        app.transcript.blocks().last(),
-        Some(Block::Notice { level: NoticeLevel::Warn, text }) if text.contains("interrupt it first")
-    ));
-    // A message typed while it ran is still held: refused too.
-    submit(&mut app, "queued");
-    assert!(!app.pending.is_empty());
-    assert!(submit(&mut app, "/rewind").is_empty());
-    // Esc Esc on an empty input interrupts, never rewinds, meanwhile.
-    assert!(
-        !app.update(key(KeyCode::Esc))
-            .contains(&Effect::RequestRewindMenu)
-    );
-}
-
-#[test]
 fn esc_with_nothing_pending_interrupts() {
     let mut app = running_app();
     assert_eq!(app.update(key(KeyCode::Esc)), vec![Effect::Interrupt]);
@@ -456,7 +436,7 @@ fn successful_turn_sends_held_messages_as_the_next_turn() {
     submit(&mut app, "three");
     app.update(ack(1, Err(SteerFailure::NotRunning)));
     app.update(ack(2, Err(SteerFailure::NotRunning)));
-    let fx = app.update(finished(Ok(summary()), &[]));
+    let fx = app.update(finished(Ok(summary())));
     assert_eq!(fx, vec![Effect::StartTurn("two\n\nthree".into())]);
     assert_eq!(
         app.transcript.blocks(),
@@ -477,7 +457,7 @@ fn interrupted_turn_sends_undelivered_messages_next() {
     assert_eq!(app.update(key(KeyCode::Esc)), vec![Effect::Interrupt]);
     assert_eq!(app.status.queued, 1);
     type_str(&mut app, "draft");
-    let fx = app.update(finished(Err(TurnFailure::Interrupted), &[2]));
+    let fx = app.update(finished(Err(TurnFailure::Interrupted)));
     assert_eq!(fx, vec![Effect::StartTurn("three".into())]);
     assert!(app.is_running());
     // The draft stays in the editor.
@@ -503,28 +483,10 @@ fn interrupted_turn_without_queued_messages_starts_nothing() {
     let mut app = running_app();
     assert_eq!(app.update(key(KeyCode::Esc)), vec![Effect::Interrupt]);
     assert!(
-        app.update(finished(Err(TurnFailure::Interrupted), &[]))
+        app.update(finished(Err(TurnFailure::Interrupted)))
             .is_empty()
     );
     assert!(!app.is_running());
-}
-
-#[test]
-fn discarded_delivery_of_a_stopped_turn_is_sent_again() {
-    let mut app = running_app();
-    submit(&mut app, "two");
-    app.update(ack(1, Ok(())));
-    app.update(Msg::SteerDelivered(PendingId(1)));
-    let fx = app.update(finished(Err(TurnFailure::Interrupted), &[1]));
-    assert_eq!(fx, vec![Effect::StartTurn("two".into())]);
-    assert!(app.input.is_empty());
-    let twos = app
-        .transcript
-        .blocks()
-        .iter()
-        .filter(|b| matches!(b, Block::User { text } if text == "two"))
-        .count();
-    assert_eq!(twos, 1);
 }
 
 #[test]
@@ -533,7 +495,7 @@ fn failed_turn_returns_undelivered_with_a_notice() {
     submit(&mut app, "two");
     app.update(ack(1, Ok(())));
     assert!(
-        app.update(finished(Err(TurnFailure::Failed("boom".into())), &[1]))
+        app.update(finished(Err(TurnFailure::Failed("boom".into()))))
             .is_empty()
     );
     assert_eq!(app.input.text(), "two");
@@ -555,7 +517,7 @@ fn send_next_takes_priority_over_undelivered() {
     assert_eq!(app.send_next.as_deref(), Some("urgent"));
     // The queued message stays in place until the turn ends.
     assert_eq!(app.status.queued, 1);
-    let fx = app.update(finished(Err(TurnFailure::Interrupted), &[1]));
+    let fx = app.update(finished(Err(TurnFailure::Interrupted)));
     assert_eq!(fx, vec![Effect::StartTurn("two\n\nurgent".into())]);
     assert!(app.send_next.is_none());
     assert!(app.is_running());
@@ -673,10 +635,12 @@ fn summary_text_is_not_repeated_after_streamed_text() {
         level: NoticeLevel::Info,
         text: "x".into(),
     });
-    app.update(Msg::TurnFinished(TurnOutcome::plain(Ok(TurnSummary {
-        text: "streamed".into(),
-        ..summary()
-    }))));
+    app.update(Msg::TurnFinished(TurnOutcome {
+        result: Ok(TurnSummary {
+            text: "streamed".into(),
+            ..summary()
+        }),
+    }));
     let assistant = app
         .transcript
         .blocks()
@@ -690,12 +654,12 @@ fn summary_text_is_not_repeated_after_streamed_text() {
 fn the_bell_rings_only_while_unfocused_and_enabled() {
     let mut app = running_app();
     // Focused: no bell.
-    app.update(finished(Ok(summary()), &[]));
+    app.update(finished(Ok(summary())));
     assert!(!app.take_bell());
     // Unfocused: a finished turn and an escalation ring.
     app.update(Msg::Focus(false));
     submit(&mut app, "two");
-    app.update(finished(Ok(summary()), &[]));
+    app.update(finished(Ok(summary())));
     assert!(app.take_bell());
     assert!(!app.take_bell(), "taken once");
     app.update(Msg::Escalation(shell_prompt(), EscalationId(1)));
@@ -705,12 +669,12 @@ fn the_bell_rings_only_while_unfocused_and_enabled() {
     app.update(Msg::Focus(false));
     submit(&mut app, "two");
     app.update(ack(1, Err(SteerFailure::NotRunning)));
-    app.update(finished(Ok(summary()), &[]));
+    app.update(finished(Ok(summary())));
     assert!(app.is_running());
     assert!(!app.take_bell());
     // Focus back: quiet again.
     app.update(Msg::Focus(true));
-    app.update(finished(Ok(summary()), &[]));
+    app.update(finished(Ok(summary())));
     assert!(!app.take_bell());
     // Disabled.
     let mut app = App::new(StatusInfo::default()).with_bell(false);

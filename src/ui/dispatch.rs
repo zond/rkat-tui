@@ -123,7 +123,6 @@ impl App {
                     fx.push(reference.map_or(Effect::RequestResumePicker, Effect::ResumeSession));
                 }
             }
-            Command::Rewind => self.request_rewind(fx),
             Command::Remember(text) => {
                 self.transcript
                     .push_notice(NoticeLevel::Info, format!("remembering: {text}"));

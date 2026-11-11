@@ -1,16 +1,14 @@
-//! `/new`, `/resume` and `/rewind`.
+//! `/new` and `/resume`.
 //!
 //! A conversation is a session the daemon's orchestrator runs as
 //! ([`crate::daemon::conversations`]): `/new` and `/resume` ask the daemon
 //! to switch (`rkat/new`, `rkat/resume`), every attached client notices the
 //! orchestrator's new `current_session_id` and shows it (a resumed one from
-//! its committed messages, `rkat/transcript`). `/rewind` has no engine route for a member's session (see
-//! [`REWIND_UNAVAILABLE`]).
+//! its committed messages, `rkat/transcript`). There is no rewind: the
+//! engine refuses `session/fork_at` for a mob member's session
+//! (lukacf/meerkat#2126).
 
 use crate::daemon::conversations::Listed;
-
-/// Why `/rewind` is not offered.
-pub const REWIND_UNAVAILABLE: &str = "/rewind is not available yet: the agent runs in the workspace's daemon, and the engine refuses session/fork_at for a mob member's session, while its member forks (mob/fork_member, mob/fork_helper) seat the copy under a new identity rather than rewinding the conversation in place; a same-identity rewind is with the engine's maintainers as a design note (lukacf/meerkat#2126). /new starts over";
 
 /// How long ago `at` (Unix seconds) was, roughly.
 fn age(at: u64) -> String {

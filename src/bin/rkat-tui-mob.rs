@@ -1,4 +1,4 @@
-//! `rkat-tui-mob` binary entry point (experimental): the workspace's mob
+//! `rkat-tui-mob` binary entry point: the workspace's mob
 //! daemon, serving Meerkat's JSON-RPC methods over loopback TCP.
 
 use clap::Parser;

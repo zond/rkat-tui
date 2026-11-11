@@ -1155,9 +1155,6 @@ impl Runner {
             Effect::NewSession => self.switch_conversation(None),
             Effect::ResumeSession(reference) => self.resume_session(reference),
             Effect::RequestResumePicker => self.show_resume_picker(),
-            Effect::RequestRewindMenu => {
-                self.notice(NoticeLevel::Warn, sessions::REWIND_UNAVAILABLE);
-            }
             Effect::RequestModelPicker { refresh } => {
                 let current = current(self.current_endpoint.as_deref(), self.model.as_ref());
                 self.bench.request_model_picker(refresh, current);

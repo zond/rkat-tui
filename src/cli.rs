@@ -119,7 +119,8 @@ pub struct Args {
     #[arg(long, value_name = "DIR")]
     pub confinement_write: Vec<PathBuf>,
 
-    /// Disable auto mode: every tier-3 action is denied instead of classified.
+    /// Start in manual mode instead of auto (`[auto] enabled = false`):
+    /// every action the classifier would judge is asked of you instead.
     #[arg(long)]
     pub no_auto: bool,
 
@@ -203,9 +204,9 @@ pub struct Args {
 
     /// Re-home the state of a workspace that moved: the state REF names
     /// (its id, or the path the workspace had; `--list` shows both) serves
-    /// this workspace from now on, and the state this workspace had is set
-    /// aside (kept; `--rehome <its id>` brings it back). Refused while a
-    /// daemon may hold either. Then exit.
+    /// this workspace from now on. State this workspace already has is
+    /// replaced only when it holds no conversation; an idle daemon of
+    /// either is stopped first (a busy one refuses). Then exit.
     #[arg(long, value_name = "REF")]
     pub rehome: Option<String>,
 

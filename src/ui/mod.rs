@@ -183,27 +183,12 @@ pub fn merge_turn_end(
 }
 
 /// Result of a turn (the started prompt and every follow-up run the runtime
-/// added for steered messages) plus the steered messages it never delivered.
+/// added for steered messages). The messages it did not deliver are the
+/// UI's own to find ([`delivery::PendingQueue::take_unsent`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TurnOutcome {
     /// The turn's result: completed, or how it ended without one.
     pub result: Result<TurnSummary, TurnFailure>,
-    /// Steered messages the runtime ended without writing them into the
-    /// conversation (the turn was interrupted or failed), oldest first. A
-    /// message already shown as delivered can be listed here when its run
-    /// was discarded.
-    pub undelivered: Vec<PendingId>,
-}
-
-impl TurnOutcome {
-    /// An outcome with nothing undelivered.
-    #[must_use]
-    pub fn plain(result: Result<TurnSummary, TurnFailure>) -> Self {
-        Self {
-            result,
-            undelivered: Vec::new(),
-        }
-    }
 }
 
 /// An approval decision to show in the transcript.
@@ -578,8 +563,8 @@ pub enum Effect {
     /// [`Msg::Recalled`].
     RecallQueued,
     /// Steer a message into the running turn (a durable `Steer` input);
-    /// answered with [`Msg::SteerAck`], then [`Msg::SteerDelivered`] or the
-    /// turn's [`TurnOutcome::undelivered`].
+    /// answered with [`Msg::SteerAck`], then [`Msg::SteerDelivered`], or
+    /// taken back at the turn's end when it was never delivered.
     Steer {
         /// Queue id allocated by the UI.
         id: PendingId,
@@ -606,9 +591,6 @@ pub enum Effect {
     ResumeSession(String),
     /// Load session list; answer with [`Msg::ShowResumePicker`].
     RequestResumePicker,
-    /// `/rewind` (Esc Esc on an empty idle input): the client says why the
-    /// daemon cannot rewind a conversation (an engine ask).
-    RequestRewindMenu,
     /// Answer an escalation.
     RespondEscalation(EscalationId, EscalationAnswer),
     /// Persist an approval rule.

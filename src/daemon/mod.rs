@@ -1,5 +1,4 @@
-//! `rkat-tui-mob`: the workspace's mob daemon (experimental, P1 of
-//! `docs/mob-split.md`).
+//! `rkat-tui-mob`: the workspace's mob daemon (`docs/mob-split.md`).
 //!
 //! The daemon embeds the engine through the shared bootstrap
 //! ([`crate::bootstrap::assemble`]: realm, config layers, endpoints,
@@ -99,10 +98,6 @@ pub struct DaemonCli {
     /// path the agent's confined shell could read.
     #[arg(long, value_name = "PATH")]
     pub endpoint_file: Option<PathBuf>,
-
-    /// Stay in the foreground (the only mode in this version).
-    #[arg(long)]
-    pub foreground: bool,
 
     /// The engine flags shared with `rkat-tui`.
     #[command(flatten)]
@@ -1176,7 +1171,6 @@ mod tests {
             "/tmp/ws",
             "--listen",
             "127.0.0.1:7777",
-            "--foreground",
             "--model",
             "claude-sonnet-4-6",
             "--no-confinement",
@@ -1187,7 +1181,8 @@ mod tests {
             DaemonCli::try_parse_from(["rkat-tui-mob"]).unwrap().listen,
             DEFAULT_LISTEN.parse().unwrap()
         );
-        assert!(cli.foreground);
+        // `--foreground` was the only mode and is gone as a flag.
+        assert!(DaemonCli::try_parse_from(["rkat-tui-mob", "--foreground"]).is_err());
         assert_eq!(cli.tui.model.as_deref(), Some("claude-sonnet-4-6"));
         assert!(cli.check().is_ok());
         for argv in [

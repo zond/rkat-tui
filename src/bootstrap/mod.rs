@@ -427,10 +427,10 @@ pub async fn assemble(
         &extra_grants(args, &layered),
     )?;
 
-    let realm_root = realm_paths_in(&scope.state_root, &scope.realm_id).root;
+    let realm_root = realm_paths_in(&scope.realms_root, &scope.realm_id).root;
     check_realm_private(&confinement, &realm_root)?;
     let (manifest, persistence) = meerkat::open_realm_persistence_in(
-        &scope.state_root,
+        &scope.realms_root,
         &scope.realm_id,
         None,
         Some(RealmOrigin::Workspace),
@@ -440,13 +440,14 @@ pub async fn assemble(
         realm_root: realm_root.clone(),
         source: Box::new(source),
     })?;
-    let realm_lease = start_realm_lease_in(&scope.state_root, &scope.realm_id, None, lease_surface)
-        .await
-        .map_err(|source| TuiError::RealmLease {
-            realm_id: scope.realm_id.clone(),
-            lease_dir: realm_lease_dir(&realm_paths_in(&scope.state_root, &scope.realm_id)),
-            source: Box::new(source),
-        })?;
+    let realm_lease =
+        start_realm_lease_in(&scope.realms_root, &scope.realm_id, None, lease_surface)
+            .await
+            .map_err(|source| TuiError::RealmLease {
+                realm_id: scope.realm_id.clone(),
+                lease_dir: realm_lease_dir(&realm_paths_in(&scope.realms_root, &scope.realm_id)),
+                source: Box::new(source),
+            })?;
     let store_path = persistence
         .store_path()
         .map_or_else(|| realm_root.clone(), PathBuf::from);
@@ -692,7 +693,7 @@ fn protect_host_inputs(
         .user_config_root
         .as_ref()
         .map(|root| root.join(".rkat").join("config.toml"));
-    let mut inputs = HostConfinement::host_inputs(&scope.state_root, user_document.as_deref());
+    let mut inputs = HostConfinement::host_inputs(&scope.realms_root, user_document.as_deref());
     inputs.push((HostInput::RealmState, scope.realm_root()));
     inputs.push((HostInput::RealmState, scope.global.config.clone()));
     if token_store {

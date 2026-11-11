@@ -41,7 +41,7 @@ pub struct RuntimeScope {
     pub realm_id: String,
     /// Directory containing the realm directories
     /// (`<config dir>/workspaces/`).
-    pub state_root: PathBuf,
+    pub realms_root: PathBuf,
     /// The workspace's realm and its manifest.
     pub home: Home,
     /// The offer of realms whose workspace is gone, when this resolve made
@@ -50,16 +50,16 @@ pub struct RuntimeScope {
 }
 
 impl RuntimeScope {
-    /// Root directory of the active realm (`<state_root>/<realm_id>`).
+    /// Root directory of the active realm (`<realms_root>/<realm_id>`).
     #[must_use]
     pub fn realm_root(&self) -> PathBuf {
-        realm_paths_in(&self.state_root, &self.realm_id).root
+        realm_paths_in(&self.realms_root, &self.realm_id).root
     }
 
     /// Path of the realm's `config.toml`.
     #[must_use]
     pub fn config_path(&self) -> PathBuf {
-        realm_paths_in(&self.state_root, &self.realm_id).config_path
+        realm_paths_in(&self.realms_root, &self.realm_id).config_path
     }
 
     /// Path of the realm config's generation sidecar
@@ -108,7 +108,7 @@ pub fn resolve_scope(args: &Args) -> Result<RuntimeScope, TuiError> {
         user_config_root,
         global,
         realm_id: opened.home.id.clone(),
-        state_root: root,
+        realms_root: root,
         home: opened.home,
         offer,
     })
@@ -283,7 +283,7 @@ fn project_root_from(path: &Path) -> Result<ProjectRoot, TuiError> {
     })
 }
 
-/// Load the realm config (`<state_root>/<realm>/config.toml`) and apply
+/// Load the realm config (`<realms_root>/<realm>/config.toml`) and apply
 /// environment overrides: read through the realm's config runtime, under
 /// its reader lock.
 ///
@@ -357,7 +357,7 @@ mod tests {
         let scope = resolve(&ws, &cfg, &[]).unwrap();
         let home = scope.home.clone();
         assert_eq!(scope.realm_id, home.id);
-        assert_eq!(scope.state_root, cfg.join(realm_home::WORKSPACES_DIR));
+        assert_eq!(scope.realms_root, cfg.join(realm_home::WORKSPACES_DIR));
         assert_eq!(scope.realm_root(), cfg.join("workspaces").join(&home.id));
         assert_eq!(home.manifest.path, ws);
         // Nothing is written into the workspace.

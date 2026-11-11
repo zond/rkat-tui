@@ -16,7 +16,6 @@ use meerkat_core::AgentEvent;
 use rig::{Client, Running};
 use rkat_tui::cli::AttachTarget;
 use rkat_tui::client::catchup::CursorFile;
-use rkat_tui::client::sessions::REWIND_UNAVAILABLE;
 use rkat_tui::client::testing::spawn_attach_runner;
 use rkat_tui::ui::{Effect, Msg, StatusInfo, StatusUpdate, TurnFailure};
 use rkat_tui::workbench::build_app;
@@ -494,10 +493,6 @@ async fn what_the_daemon_cannot_do_yet_says_so() {
     client.send(Effect::RecallQueued);
     client
         .wait_for(|msg| matches!(msg, Msg::Recalled { recalled, errors } if recalled.is_empty() && errors.is_empty()))
-        .await;
-    client.send(Effect::RequestRewindMenu);
-    client
-        .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text == REWIND_UNAVAILABLE))
         .await;
     client.send(Effect::StatusReport);
     client
