@@ -13,7 +13,7 @@
 //! event). A change to a conversation's totals is pushed to the clients
 //! ([`super::protocol::COST`]); a client prices and renders them.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -75,13 +75,30 @@ pub struct Record {
     pub cost: SessionCost,
 }
 
+/// Whether a record in memory matches its file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stored {
+    /// As written (or read).
+    Clean,
+    /// Changed since it was last written.
+    Dirty,
+    /// Its file exists but could not be read: it is counted in memory
+    /// only and the file is left alone.
+    Unread,
+}
+
+/// One account's record and whether its file has it.
+#[derive(Debug)]
+struct Entry {
+    record: Record,
+    stored: Stored,
+}
+
 /// The daemon's usage records.
 pub struct Ledger {
     realm_root: PathBuf,
     /// The records read or counted so far.
-    records: parking_lot::Mutex<HashMap<Account, Record>>,
-    /// Changed since they were last written.
-    dirty: parking_lot::Mutex<HashSet<Account>>,
+    records: parking_lot::Mutex<HashMap<Account, Entry>>,
     /// One write round at a time (each writes the newest counts).
     writing: parking_lot::Mutex<()>,
     /// Tells the clients a conversation's totals changed.
@@ -107,7 +124,6 @@ impl Ledger {
         Arc::new(Self {
             realm_root: realm_root.to_path_buf(),
             records: parking_lot::Mutex::new(HashMap::new()),
-            dirty: parking_lot::Mutex::new(HashSet::new()),
             writing: parking_lot::Mutex::new(()),
             notify: Box::new(notify),
         })
@@ -120,7 +136,7 @@ impl Ledger {
         self.records
             .lock()
             .get(account)
-            .cloned()
+            .map(|entry| entry.record.clone())
             .unwrap_or_default()
     }
 
@@ -130,10 +146,26 @@ impl Ledger {
             return;
         }
         let path = account.path(&self.realm_root);
-        let read = tokio::task::spawn_blocking(move || read_record(&path))
-            .await
-            .unwrap_or_default();
-        self.records.lock().entry(account.clone()).or_insert(read);
+        let read = {
+            let path = path.clone();
+            tokio::task::spawn_blocking(move || load_record(&path))
+                .await
+                .unwrap_or_else(|err| Err(std::io::Error::other(err)))
+        };
+        let entry = match read {
+            Ok(record) => Entry {
+                record,
+                stored: Stored::Clean,
+            },
+            Err(err) => {
+                tracing::warn!(error = %err, path = %path.display(), "a usage record cannot be read; its counts are kept in memory only this run and the file is left alone");
+                Entry {
+                    record: Record::default(),
+                    stored: Stored::Unread,
+                }
+            }
+        };
+        self.records.lock().entry(account.clone()).or_insert(entry);
     }
 
     /// Change `account`'s record with `change` (read first), and tell the
@@ -142,16 +174,22 @@ impl Ledger {
         self.load(&account).await;
         let changed = {
             let mut records = self.records.lock();
-            let record = records.entry(account.clone()).or_default();
-            let before = record.clone();
-            change(record);
-            (*record != before).then(|| record.cost.clone())
-        };
-        if let Some(cost) = changed {
-            self.dirty.lock().insert(account.clone());
-            if let Account::Session(session) = &account {
-                (self.notify)(session, &cost);
+            let entry = records.entry(account.clone()).or_insert(Entry {
+                record: Record::default(),
+                stored: Stored::Clean,
+            });
+            let before = entry.record.clone();
+            change(&mut entry.record);
+            let changed = entry.record != before;
+            if changed && entry.stored == Stored::Clean {
+                entry.stored = Stored::Dirty;
             }
+            changed.then(|| entry.record.cost.clone())
+        };
+        if let Some(cost) = changed
+            && let Account::Session(session) = &account
+        {
+            (self.notify)(session, &cost);
         }
     }
 
@@ -226,19 +264,28 @@ impl Ledger {
         self.write_dirty();
     }
 
-    /// Write every changed record as counted now.
+    /// Write every changed record as counted now (one whose file could
+    /// not be read is never written).
     fn write_dirty(&self) {
         let _one = self.writing.lock();
-        let accounts: Vec<Account> = self.dirty.lock().drain().collect();
-        for account in accounts {
-            let Some(record) = self.records.lock().get(&account).cloned() else {
-                continue;
-            };
+        let changed: Vec<(Account, Record)> = self
+            .records
+            .lock()
+            .iter_mut()
+            .filter(|(_, entry)| entry.stored == Stored::Dirty)
+            .map(|(account, entry)| {
+                entry.stored = Stored::Clean;
+                (account.clone(), entry.record.clone())
+            })
+            .collect();
+        for (account, record) in changed {
             let path = account.path(&self.realm_root);
             if let Err(err) = write_record(&path, &record) {
                 tracing::warn!(error = %err, path = %path.display(), "a usage record was not written");
                 // Tried again at the next write.
-                self.dirty.lock().insert(account);
+                if let Some(entry) = self.records.lock().get_mut(&account) {
+                    entry.stored = Stored::Dirty;
+                }
             }
         }
     }
@@ -259,24 +306,38 @@ fn write_record(path: &Path, record: &Record) -> Result<(), WriteError> {
     Ok(())
 }
 
-/// The record at `path`; none (or an unreadable one, moved aside as
+/// The record at `path`; none (or one that does not parse, moved aside as
 /// `<name>.corrupt-<unix seconds>` so the next write does not destroy it)
-/// is an empty one.
+/// is an empty one, and so is one that cannot be read
+/// ([`load_record`] tells that apart).
 #[must_use]
+#[cfg(any(test, feature = "test-support"))]
 pub fn read_record(path: &Path) -> Record {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return Record::default();
+    load_record(path).unwrap_or_default()
+}
+
+/// The record at `path`, as [`read_record`] reads it.
+///
+/// # Errors
+///
+/// The file exists but cannot be read (anything but not found): the
+/// caller must not write over it.
+fn load_record(path: &Path) -> std::io::Result<Record> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Record::default()),
+        Err(err) => return Err(err),
     };
-    match toml::from_str(&text) {
+    Ok(match toml::from_str(&text) {
         Ok(record) => record,
         Err(err) => {
             let mut aside = path.as_os_str().to_os_string();
             aside.push(format!(".corrupt-{}", crate::pricing::unix_now()));
             let moved = std::fs::rename(path, &aside);
-            tracing::warn!(error = %err, path = %path.display(), moved = moved.is_ok(), "unreadable usage record moved aside");
+            tracing::warn!(error = %err, path = %path.display(), moved = moved.is_ok(), "unparsable usage record moved aside");
             Record::default()
         }
-    }
+    })
 }
 
 #[cfg(test)]
@@ -375,10 +436,34 @@ mod tests {
         assert_eq!(record.cost.per_model["m"].output, 300);
     }
 
-    /// An unreadable record is moved aside, never overwritten, and counts
-    /// start from nothing.
+    /// A record that exists but cannot be read (here: a directory in its
+    /// place, which every reader refuses, root or not) is never written
+    /// over: its account is counted in memory only, the file stays as it
+    /// was, and the other accounts are written as usual.
     #[tokio::test]
-    async fn an_unreadable_record_is_moved_aside() {
+    async fn a_record_that_cannot_be_read_is_never_written_over() {
+        let realm = tempfile::tempdir().unwrap();
+        let (kept, other) = (SessionId::new(), SessionId::new());
+        let path = Account::Session(kept.clone()).path(realm.path());
+        std::fs::create_dir_all(path.join("inside")).unwrap();
+        assert!(load_record(&path).is_err());
+        let ledger = Ledger::new(realm.path(), |_: &SessionId, _: &SessionCost| {});
+        ledger.turn(&kept, "m", &usage(1, 1)).await;
+        ledger.turn(&other, "m", &usage(2, 2)).await;
+        ledger.flush();
+        ledger.turn(&kept, "m", &usage(1, 1)).await;
+        ledger.flush();
+        assert!(path.join("inside").is_dir(), "left alone");
+        let counted = ledger.get(&Account::Session(kept)).await;
+        assert_eq!(counted.cost.per_model["m"].input, 2, "counted in memory");
+        let written = read_record(&Account::Session(other).path(realm.path()));
+        assert_eq!(written.cost.per_model["m"].input, 2);
+    }
+
+    /// A record that does not parse is moved aside, never overwritten, and
+    /// counts start from nothing.
+    #[tokio::test]
+    async fn an_unparsable_record_is_moved_aside() {
         let realm = tempfile::tempdir().unwrap();
         let session = SessionId::new();
         let path = Account::Session(session.clone()).path(realm.path());
