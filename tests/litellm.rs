@@ -102,7 +102,7 @@ fn setup(fake: &FakeEndpoint, model: &str, extra: &[&str]) -> Setup {
 }
 
 fn is_model(msg: &Msg, endpoint: &str, model: &str) -> bool {
-    matches!(msg, Msg::Status(StatusUpdate::Model { provider, model: m }) if provider == endpoint && m == model)
+    matches!(msg, Msg::Status(StatusUpdate::Model { endpoint: shown, model: m }) if shown == endpoint && m == model)
 }
 
 /// The realm's config document as another surface reads it.

@@ -906,7 +906,12 @@ fn shift_tab_cycles_the_permission_mode() {
         app.status.apply(StatusUpdate::Mode {
             mode: now,
             paused: false,
-            denials: (0, 3, 0, 20),
+            denials: crate::approval::desk::Denials {
+                consecutive: 0,
+                consecutive_limit: 3,
+                total: 0,
+                total_limit: 20,
+            },
         });
         assert_eq!(
             app.update(back_tab()),
@@ -918,7 +923,12 @@ fn shift_tab_cycles_the_permission_mode() {
     app.status.apply(StatusUpdate::Mode {
         mode: PermissionMode::Auto,
         paused: true,
-        denials: (3, 3, 3, 20),
+        denials: crate::approval::desk::Denials {
+            consecutive: 3,
+            consecutive_limit: 3,
+            total: 3,
+            total_limit: 20,
+        },
     });
     assert_eq!(
         app.update(back_tab()),
@@ -930,7 +940,12 @@ fn shift_tab_cycles_the_permission_mode() {
     app.status.apply(StatusUpdate::Mode {
         mode: PermissionMode::Plan,
         paused: false,
-        denials: (0, 3, 0, 20),
+        denials: crate::approval::desk::Denials {
+            consecutive: 0,
+            consecutive_limit: 3,
+            total: 0,
+            total_limit: 20,
+        },
     });
     assert_eq!(
         app.update(back_tab()),

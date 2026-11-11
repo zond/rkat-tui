@@ -206,10 +206,10 @@ pub struct ApprovalNotice {
 /// Status-bar update pushed by the integrator.
 #[derive(Debug, Clone, PartialEq)]
 pub enum StatusUpdate {
-    /// Provider and model changed.
+    /// The endpoint and model changed.
     Model {
-        /// Provider name.
-        provider: String,
+        /// The endpoint's name.
+        endpoint: String,
         /// Model id.
         model: String,
     },
@@ -229,7 +229,7 @@ pub enum StatusUpdate {
         /// Whether auto mode is paused after too many classifier blocks.
         paused: bool,
         /// `(consecutive, consecutive_limit, total, total_limit)`.
-        denials: (u32, u32, u32, u32),
+        denials: crate::approval::desk::Denials,
     },
     /// Whether the classifier is currently running.
     Classifying(bool),
@@ -713,8 +713,8 @@ pub enum LocalEffect {
 /// Everything the status bar shows.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct StatusInfo {
-    /// Provider name.
-    provider: String,
+    /// The endpoint's name.
+    endpoint: String,
     /// Model id.
     model: String,
     /// Short session id.
@@ -728,8 +728,8 @@ pub struct StatusInfo {
     mode: Option<PermissionMode>,
     /// Whether auto mode is paused after too many classifier blocks.
     auto_paused: bool,
-    /// `(consecutive, consecutive_limit, total, total_limit)` denials.
-    denials: (u32, u32, u32, u32),
+    /// The classifier's blocks and their limits.
+    denials: crate::approval::desk::Denials,
     /// When the running turn started.
     running_since: Option<Instant>,
     /// Number of messages typed mid-turn that have not been delivered yet.
@@ -803,12 +803,12 @@ impl StatusInfo {
     /// The mode as `/auto` and `/mode` describe it.
     #[must_use]
     pub fn mode_text(&self) -> String {
-        let (c, cm, t, tm) = self.denials;
         match self.mode {
             None => "unknown".to_string(),
             Some(PermissionMode::Auto) => format!(
-                "auto{} (consecutive denials {c}/{cm}, total {t}/{tm})",
-                if self.auto_paused { ", PAUSED" } else { "" }
+                "auto{} ({})",
+                if self.auto_paused { ", PAUSED" } else { "" },
+                self.denials.describe()
             ),
             Some(mode) => mode.label().to_string(),
         }
@@ -817,8 +817,8 @@ impl StatusInfo {
     /// Apply an integrator update: the only way in from outside the UI.
     pub fn apply(&mut self, update: StatusUpdate) {
         match update {
-            StatusUpdate::Model { provider, model } => {
-                self.provider = provider;
+            StatusUpdate::Model { endpoint, model } => {
+                self.endpoint = endpoint;
                 self.model = model;
             }
             StatusUpdate::Session(id) => {

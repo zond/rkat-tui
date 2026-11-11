@@ -423,7 +423,7 @@ impl App {
                 ModalKey::Close => self.modal = None,
                 ModalKey::Choose(model) => {
                     self.modal = None;
-                    let current = format!("{}:{}", self.status.provider, self.status.model);
+                    let current = format!("{}:{}", self.status.endpoint, self.status.model);
                     if model != current {
                         self.switch_model(model, fx);
                     }

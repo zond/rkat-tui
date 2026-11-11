@@ -22,7 +22,7 @@ use meerkat_core::{AgentEvent, EventEnvelope, SessionId};
 use serde_json::{Value, json};
 
 use super::ClientError;
-use super::transport::{Connection, Notification};
+use super::transport::Connection;
 use crate::daemon::MOB_ID;
 use crate::daemon::protocol::{Empty, Method, SessionParams, engine, method};
 
@@ -140,33 +140,6 @@ pub async fn open_stream(
         connection.call(engine::STREAM_OPEN, params).await?,
     )?;
     Ok(opened.stream_id)
-}
-
-/// The event a `mob/stream_event` notification of `stream` carries, and
-/// the sequence space (`epoch`) of its `seq`.
-#[must_use]
-pub fn stream_event(
-    notification: &Notification,
-    stream: &str,
-) -> Option<(EventEnvelope<AgentEvent>, Option<String>)> {
-    if notification.method != STREAM_EVENT
-        || notification.params.get("stream_id").and_then(Value::as_str) != Some(stream)
-    {
-        return None;
-    }
-    let event = notification.params.get("event")?.clone();
-    let epoch = notification
-        .params
-        .get("epoch")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    match serde_json::from_value(event) {
-        Ok(envelope) => Some((envelope, epoch)),
-        Err(err) => {
-            tracing::warn!(error = %err, "a stream event this version cannot read");
-            None
-        }
-    }
 }
 
 /// One page of the session's durable events after `after` (a sequence; 0:
@@ -452,34 +425,6 @@ pub async fn member_session(
         .and_then(Value::as_str)
         .and_then(|id| SessionId::parse(id).ok())
         .ok_or(ClientError::NoSession)
-}
-
-/// The attributed event a mob-wide stream's notification carries, and the
-/// stream's id.
-#[must_use]
-pub fn attributed_event(
-    notification: &Notification,
-) -> Option<(String, meerkat_mob::AttributedEvent)> {
-    if notification.method != STREAM_EVENT {
-        return None;
-    }
-    let stream = notification.params.get("stream_id")?.as_str()?.to_string();
-    let event = notification.params.get("event")?.clone();
-    match serde_json::from_value(event) {
-        Ok(event) => Some((stream, event)),
-        Err(err) => {
-            tracing::debug!(error = %err, "not an attributed event");
-            None
-        }
-    }
-}
-
-/// The stream a `mob/stream_end` notification ends.
-#[must_use]
-pub fn stream_end(notification: &Notification) -> Option<&str> {
-    (notification.method == STREAM_END)
-        .then(|| notification.params.get("stream_id")?.as_str())
-        .flatten()
 }
 
 /// The orchestrator's conversations (`rkat/conversations`).

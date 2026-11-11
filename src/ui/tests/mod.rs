@@ -239,7 +239,7 @@ fn picker_models_warning(warning: Option<&str>) -> Vec<ModelGroup> {
 fn app_on_sonnet() -> App {
     let mut status = StatusInfo::default();
     status.apply(StatusUpdate::Model {
-        provider: "anthropic".into(),
+        endpoint: "anthropic".into(),
         model: "claude-sonnet-4-6".into(),
     });
     App::new(status)

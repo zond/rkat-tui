@@ -5,13 +5,67 @@
 
 use super::*;
 
+/// The notices a daemon command's answer makes.
+pub(super) type Notices = Vec<(NoticeLevel, String)>;
+
 impl Runner {
+    /// Ask the daemon `M` with `params` in a task of its own, bounded by
+    /// [`CALL_TIMEOUT`], and show the notices `render` makes of the
+    /// answer. Unattached, nothing is asked and the user is told that
+    /// `what` did not happen and why.
+    pub(super) fn ask<M: protocol::Method>(
+        &self,
+        params: M::Params,
+        what: &str,
+        render: impl FnOnce(Result<M::Result, CallFailure>) -> Notices + Send + 'static,
+    ) where
+        M::Params: 'static,
+        M::Result: Send,
+    {
+        if let Some(connection) = self.link_or_say(what) {
+            self.spawn_ask::<M>(connection, params, render);
+        }
+    }
+
+    /// [`Self::ask`] when attached; unattached, nothing (a start-up read
+    /// the next attach makes again).
+    pub(super) fn ask_if_attached<M: protocol::Method>(
+        &self,
+        params: M::Params,
+        render: impl FnOnce(Result<M::Result, CallFailure>) -> Notices + Send + 'static,
+    ) where
+        M::Params: 'static,
+        M::Result: Send,
+    {
+        if let Some(connection) = self.connection() {
+            self.spawn_ask::<M>(connection, params, render);
+        }
+    }
+
+    fn spawn_ask<M: protocol::Method>(
+        &self,
+        connection: Arc<Connection>,
+        params: M::Params,
+        render: impl FnOnce(Result<M::Result, CallFailure>) -> Notices + Send + 'static,
+    ) where
+        M::Params: 'static,
+        M::Result: Send,
+    {
+        let say = self.say();
+        tokio::spawn(async move {
+            let answer = bounded(CALL_TIMEOUT, remote::call::<M>(&connection, &params)).await;
+            for (level, text) in render(answer) {
+                say.notice(level, text);
+            }
+        });
+    }
+
     pub(super) fn status_report(&self) {
         let mut lines = vec![format!(
             "rkat-tui {} (attached to the workspace daemon)",
             crate::BUILD
         )];
-        match &self.link {
+        match self.conn.link() {
             Some(link) => {
                 lines.push(format!(
                     "daemon: {} (pid {}), mob `{}`, agent `{}`",
@@ -24,8 +78,8 @@ impl Runner {
             }
             None => lines.push("daemon: not attached".to_string()),
         }
-        if let Some((provider, model)) = &self.model {
-            lines.push(format!("model: {provider}/{model}"));
+        if let Some(ShownModel { endpoint, model }) = &self.model {
+            lines.push(format!("model: {endpoint}/{model}"));
         }
         match (&self.config.remote, &self.config.address) {
             (Some(why), _) => lines.push(format!(
@@ -75,87 +129,70 @@ impl Runner {
     /// `/audit [n]`: the audit log's last lines for this agent
     /// (`rkat/audit`).
     pub(super) fn show_audit(&self, lines: Option<usize>) {
-        let Some(connection) = self.link_or_say("the audit log was not read") else {
-            return;
-        };
-        let say = self.say();
-        tokio::spawn(async move {
-            let read = bounded(
-                CALL_TIMEOUT,
-                remote::call::<protocol::method::Audit>(
-                    &connection,
-                    &protocol::AuditParams { lines },
-                ),
-            )
-            .await;
-            match read {
-                Ok(tail) if tail.lines.is_empty() => say.notice(
-                    NoticeLevel::Info,
-                    format!(
-                        "the audit log {} has nothing for this agent yet",
-                        tail.path.display()
+        self.ask::<protocol::method::Audit>(
+            protocol::AuditParams { lines },
+            "the audit log was not read",
+            |read| {
+                vec![match read {
+                    Ok(tail) if tail.lines.is_empty() => (
+                        NoticeLevel::Info,
+                        format!(
+                            "the audit log {} has nothing for this agent yet",
+                            tail.path.display()
+                        ),
                     ),
-                ),
-                Ok(tail) => say.notice(
-                    NoticeLevel::Info,
-                    format!(
-                        "audit log {} (last {} lines for this agent):\n{}",
-                        tail.path.display(),
-                        tail.lines.len(),
-                        tail.lines.join("\n")
+                    Ok(tail) => (
+                        NoticeLevel::Info,
+                        format!(
+                            "audit log {} (last {} lines for this agent):\n{}",
+                            tail.path.display(),
+                            tail.lines.len(),
+                            tail.lines.join("\n")
+                        ),
                     ),
-                ),
-                Err(err) => say.notice(NoticeLevel::Warn, format!("no audit log: {err}")),
-            }
-        });
+                    Err(err) => (NoticeLevel::Warn, format!("no audit log: {err}")),
+                }]
+            },
+        );
     }
 
     /// `/schedules`: this agent's schedules (`rkat/schedules`), each with
     /// what its runs cost at the readout's prices; or the user's own
     /// pause, resume or delete of one.
     pub(super) fn schedules(&self, action: Option<(protocol::ScheduleOp, String)>) {
-        let Some(connection) = self.link_or_say("the schedules were not read") else {
+        if let Some((op, schedule)) = action {
+            self.ask::<protocol::method::Schedule>(
+                protocol::ScheduleAction { op, schedule },
+                "the schedule was not changed",
+                |done| {
+                    vec![match done {
+                        Ok(outcome) if outcome.ok => (NoticeLevel::Info, outcome.text),
+                        Ok(outcome) => (NoticeLevel::Warn, outcome.text),
+                        Err(err) => (NoticeLevel::Warn, format!("schedule not changed: {err}")),
+                    }]
+                },
+            );
             return;
-        };
-        let say = self.say();
-        let prices = self.bench.prices().clone();
-        tokio::spawn(async move {
-            if let Some((op, schedule)) = action {
-                let params = protocol::ScheduleAction { op, schedule };
-                let done = bounded(
-                    CALL_TIMEOUT,
-                    remote::call::<protocol::method::Schedule>(&connection, &params),
-                )
-                .await;
-                match done {
-                    Ok(outcome) if outcome.ok => say.notice(NoticeLevel::Info, outcome.text),
-                    Ok(outcome) => say.notice(NoticeLevel::Warn, outcome.text),
-                    Err(err) => {
-                        say.notice(NoticeLevel::Warn, format!("schedule not changed: {err}"));
-                    }
-                }
-                return;
-            }
-            let listed = bounded(
-                CALL_TIMEOUT,
-                remote::call::<protocol::method::Schedules>(&connection, &protocol::Empty {}),
-            )
-            .await;
-            match listed {
-            Ok(list) if list.schedules.is_empty() => say.notice(
-                NoticeLevel::Info,
-                "this agent has no schedules (the agent sets them with meerkat_schedule_create)",
-            ),
-            Ok(list) => say.notice(
-                NoticeLevel::Info,
-                schedules_text(&list.schedules, &prices),
-            ),
-            Err(err) => say.notice(
-                NoticeLevel::Warn,
-                format!("cannot list the schedules: {err}"),
-            ),
         }
-        });
+        let prices = self.bench.prices().clone();
+        self.ask::<protocol::method::Schedules>(
+            protocol::Empty {},
+            "the schedules were not read",
+            move |listed| {
+                vec![match listed {
+                    Ok(list) if list.schedules.is_empty() => (
+                        NoticeLevel::Info,
+                        "this agent has no schedules (the agent sets them with meerkat_schedule_create)"
+                            .to_string(),
+                    ),
+                    Ok(list) => (NoticeLevel::Info, schedules_text(&list.schedules, &prices)),
+                    Err(err) => (
+                        NoticeLevel::Warn,
+                        format!("cannot list the schedules: {err}"),
+                    ),
+                }]
+            },
+        );
     }
 
     /// `/agents`: the workspace's agents, from the daemon's `rkat/status`.
@@ -184,29 +221,20 @@ impl Runner {
         let params = SetModeParams {
             mode: mode.to_string(),
         };
-        let Some(connection) = self.link_or_say("the mode was not changed") else {
-            return;
-        };
         let reports = self.reporter();
-        let ui_tx = self.ui_tx.clone();
-        tokio::spawn(async move {
-            let said = |level, text: String| {
-                let _ = ui_tx.send(Msg::Notice { level, text });
-            };
-            match bounded(
-                CALL_TIMEOUT,
-                remote::call::<protocol::method::SetMode>(&connection, &params),
-            )
-            .await
-            {
+        self.ask::<protocol::method::SetMode>(params, "the mode was not changed", move |set| {
+            match set {
                 Ok(set) => {
                     reports.send(Report::Mode(set.status));
-                    if let Some(warning) = set.warning {
-                        said(NoticeLevel::Warn, warning);
-                    }
-                    said(NoticeLevel::Info, set.notice);
+                    let mut notices: Notices = set
+                        .warning
+                        .map(|warning| (NoticeLevel::Warn, warning))
+                        .into_iter()
+                        .collect();
+                    notices.push((NoticeLevel::Info, set.notice));
+                    notices
                 }
-                Err(err) => said(NoticeLevel::Error, format!("mode not changed: {err}")),
+                Err(err) => vec![(NoticeLevel::Error, format!("mode not changed: {err}"))],
             }
         });
     }
@@ -221,19 +249,13 @@ impl Runner {
     ) where
         M::Params: 'static,
     {
-        let Some(connection) = self.link_or_say(&format!("{name} needs it")) else {
-            return;
-        };
-        let name = name.to_string();
-        let ui_tx = self.ui_tx.clone();
-        tokio::spawn(async move {
-            let (level, text) =
-                match bounded(CALL_TIMEOUT, remote::call::<M>(&connection, &params)).await {
-                    Ok(outcome) if outcome.ok => (NoticeLevel::Info, outcome.text),
-                    Ok(outcome) => (NoticeLevel::Error, outcome.text),
-                    Err(err) => (NoticeLevel::Error, format!("{name} failed: {err}")),
-                };
-            let _ = ui_tx.send(Msg::Notice { level, text });
+        let failed = format!("{name} failed");
+        self.ask::<M>(params, &format!("{name} needs it"), move |answer| {
+            vec![match answer {
+                Ok(outcome) if outcome.ok => (NoticeLevel::Info, outcome.text),
+                Ok(outcome) => (NoticeLevel::Error, outcome.text),
+                Err(err) => (NoticeLevel::Error, format!("{failed}: {err}")),
+            }]
         });
     }
 
@@ -294,7 +316,7 @@ impl Runner {
     /// instruction files the daemon's session builds read (this
     /// workspace's, found here).
     pub(super) fn context_report(&self, header: String) {
-        let link = self.link.as_ref().map(|link| Arc::clone(&link.connection));
+        let link = self.conn.link().map(|link| Arc::clone(&link.connection));
         let scope = self.config.scope.clone();
         let ui_tx = self.ui_tx.clone();
         let unattached = self.unattached();
@@ -322,7 +344,7 @@ impl Runner {
     /// Read the conversation's tasks from the daemon (`rkat/tasks`) for the
     /// Ctrl+T checklist.
     pub(super) fn refresh_tasks(&self) {
-        let Some(link) = &self.link else {
+        let Some(link) = self.conn.link() else {
             return;
         };
         let connection = Arc::clone(&link.connection);
@@ -347,24 +369,14 @@ impl Runner {
     /// (the realm file and its trust record are the daemon's).
     pub(super) fn set_checklist_view(&self, view: ChecklistView) {
         const UNSAVED: &str = "the checklist view applies to this run but was not saved";
-        let Some(connection) = self.link_or_say(UNSAVED) else {
-            return;
-        };
-        let ui_tx = self.ui_tx.clone();
-        tokio::spawn(async move {
-            let params = protocol::ChecklistViewParams { view };
-            let saved = bounded(
-                CALL_TIMEOUT,
-                remote::call::<protocol::method::ChecklistView>(&connection, &params),
-            )
-            .await;
-            if let Err(err) = saved {
-                let _ = ui_tx.send(Msg::Notice {
-                    level: NoticeLevel::Warn,
-                    text: format!("{UNSAVED}: {err}"),
-                });
-            }
-        });
+        self.ask::<protocol::method::ChecklistView>(
+            protocol::ChecklistViewParams { view },
+            UNSAVED,
+            |saved| match saved {
+                Ok(_) => Vec::new(),
+                Err(err) => vec![(NoticeLevel::Warn, format!("{UNSAVED}: {err}"))],
+            },
+        );
     }
 }
 
@@ -441,13 +453,13 @@ pub(super) fn report_lines(report: &protocol::Report) -> Vec<String> {
         format!("shell confinement: {}", report.confinement),
     ];
     let mode = &report.mode;
-    let (c, cm, t, tm) = mode.denials;
     lines.push(format!(
         "permission mode: {}",
         match mode.mode {
             PermissionMode::Auto => format!(
-                "auto{} (consecutive denials {c}/{cm}, total {t}/{tm})",
-                if mode.paused { ", PAUSED" } else { "" }
+                "auto{} ({})",
+                if mode.paused { ", PAUSED" } else { "" },
+                mode.denials.describe()
             ),
             other => other.label().to_string(),
         }

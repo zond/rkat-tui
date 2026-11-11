@@ -313,7 +313,12 @@ fn plan_ready_dialog() {
     app.status.apply(StatusUpdate::Mode {
         mode: PermissionMode::Plan,
         paused: false,
-        denials: (0, 3, 0, 20),
+        denials: crate::approval::desk::Denials {
+            consecutive: 0,
+            consecutive_limit: 3,
+            total: 0,
+            total_limit: 20,
+        },
     });
     submit(&mut app, "plan the refactor");
     app.update(answered("1. Split the module\n2. Move the tests"));
@@ -366,7 +371,12 @@ fn plan_ready_dialog() {
     app.status.apply(StatusUpdate::Mode {
         mode: PermissionMode::AcceptEdits,
         paused: false,
-        denials: (0, 3, 0, 20),
+        denials: crate::approval::desk::Denials {
+            consecutive: 0,
+            consecutive_limit: 3,
+            total: 0,
+            total_limit: 20,
+        },
     });
     submit(&mut app, "y");
     app.update(answered("done"));

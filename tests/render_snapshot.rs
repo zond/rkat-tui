@@ -36,7 +36,7 @@ fn agent(ev: AgentEvent) -> Msg {
 fn sample_app() -> App {
     let mut status = StatusInfo::default();
     status.apply(StatusUpdate::Model {
-        provider: "anthropic".into(),
+        endpoint: "anthropic".into(),
         model: "claude-sonnet-4-6".into(),
     });
     status.apply(StatusUpdate::Session("abc123ef-0000".into()));
@@ -601,7 +601,7 @@ fn model_picker_snapshot() {
     };
     let mut status = StatusInfo::default();
     status.apply(StatusUpdate::Model {
-        provider: "anthropic".into(),
+        endpoint: "anthropic".into(),
         model: "claude-sonnet-4-6".into(),
     });
     let mut app = App::new(status);

@@ -31,7 +31,6 @@ use std::time::Duration;
 use meerkat_core::lifecycle::{InputId, RunId};
 use meerkat_core::{AgentErrorClass, AgentEvent, EventEnvelope, Message, SessionId};
 use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use super::ClientError;
@@ -39,6 +38,7 @@ use super::approvals::{Approvals, decision_params};
 use super::catchup::{Cursor, CursorFile, Mark};
 use super::helpers::{Action as FollowerAction, Followers, HelperId};
 use super::launch::{self, Decision};
+use super::push::Push;
 use super::remote::{self, ModelSwitch};
 use super::sessions;
 use super::transport::{ATTACH_TIMEOUT, Connection, Notification};
@@ -63,13 +63,14 @@ use crate::workbench::{
 };
 
 mod commands;
+mod conn;
 mod depart;
 mod link;
 mod steers;
 mod switch;
 mod turn;
 
-use link::next_notification;
+use conn::{Conn, ConnEvent, Leaving};
 use steers::Steers;
 
 /// What is sent in place of a prompt that repeats the one a failed turn
@@ -250,8 +251,37 @@ impl ClientConfig {
     }
 }
 
+/// The model a session runs on, as the engine names it, and the
+/// configured endpoint its binding names (none: a built-in provider).
+#[derive(Debug, Clone)]
+pub(super) struct SessionModel {
+    /// The model id.
+    model: String,
+    /// The engine's provider.
+    provider: String,
+    /// The configured endpoint.
+    endpoint: Option<String>,
+}
+
+impl SessionModel {
+    /// The endpoint the status bar names: the configured one, else the
+    /// provider (a built-in endpoint is named after it).
+    fn endpoint_name(&self) -> &str {
+        self.endpoint.as_deref().unwrap_or(&self.provider)
+    }
+}
+
+/// The model the status bar shows, on the endpoint it names.
+#[derive(Debug, Clone)]
+pub(super) struct ShownModel {
+    /// The endpoint's name.
+    endpoint: String,
+    /// The model id.
+    model: String,
+}
+
 /// One attached connection with the orchestrator's stream open.
-struct Link {
+pub(super) struct Link {
     connection: Arc<Connection>,
     notifications: mpsc::UnboundedReceiver<Notification>,
     stream: String,
@@ -260,15 +290,15 @@ struct Link {
 }
 
 /// A link and what the catch-up read on it.
-struct Established {
+pub(super) struct Established {
     link: Link,
     /// Where the stream resumes (or the render from the start ended).
     mark: Mark,
     /// The conversation rendered from its start, when the stream could not
     /// resume from the saved cursor.
     reset: Option<Vec<Block>>,
-    /// Model, provider and the configured endpoint its binding names.
-    identity: Option<(String, String, Option<String>)>,
+    /// The model the session runs on.
+    identity: Option<SessionModel>,
     /// The session's total usage, its totals by model and the context of
     /// its last model call (the gauge's seed), read after the replay.
     usage: Option<protocol::Usage>,
@@ -428,8 +458,8 @@ struct Adopted {
     blocks: Vec<Block>,
     /// The last durable sequence of the session (shown as the transcript).
     last_seq: u64,
-    /// Model, provider and the configured endpoint its binding names.
-    identity: Option<(String, String, Option<String>)>,
+    /// The model the session runs on.
+    identity: Option<SessionModel>,
     /// The session's total usage, its totals by model and the context of
     /// its last model call (the gauge).
     usage: Option<protocol::Usage>,
@@ -567,10 +597,8 @@ pub struct Runner {
     agent_switch: bool,
     ui_tx: mpsc::UnboundedSender<Msg>,
     effect_rx: mpsc::UnboundedReceiver<Effect>,
-    link: Option<Link>,
-    connecting: Option<JoinHandle<Result<Established, ClientError>>>,
-    /// The daemon may still be started (only the first connect does).
-    first_connect: bool,
+    /// The connection's lifecycle.
+    conn: Conn,
     reports_tx: mpsc::UnboundedSender<(u64, Report)>,
     reports_rx: mpsc::UnboundedReceiver<(u64, Report)>,
     /// Counts the links made: a report started on an earlier link (a
@@ -579,10 +607,8 @@ pub struct Runner {
     link_epoch: u64,
     mark: Option<Mark>,
     turn: Turn,
-    /// `(provider, model)` as last read or switched to.
-    model: Option<(String, String)>,
-    /// `/daemon stop` was sent: a lost connection is not re-made.
-    stopping: bool,
+    /// The model and endpoint as last read or switched to.
+    model: Option<ShownModel>,
     /// The daemon the events shown came from (the cursor names it, see
     /// [`super::catchup::daemon_id`]: a restarted daemon numbers its events
     /// in a new space).
@@ -606,8 +632,6 @@ pub struct Runner {
     switching: bool,
     /// The last `/model` switch (carried to a `/new` conversation).
     last_switch: Option<ModelSwitch>,
-    /// The endpoint the status bar names.
-    current_endpoint: Option<String>,
     /// The dialect of the current model's provider.
     current_dialect: Option<WireDialect>,
     /// `!` shell mode, `/remember`, `/memory`, `/export`, prices, the
@@ -624,14 +648,6 @@ pub struct Runner {
     /// runs: held until the link is up and no switch runs, or the first
     /// connect failed; `None` once released.
     held: Option<Vec<Effect>>,
-    /// The first connect failed for good (held prompts then fail as not
-    /// attached).
-    first_failed: bool,
-    /// When a failed connect is tried again by itself.
-    retry_at: Option<Instant>,
-    /// The automatic retries of the failed connect so far
-    /// ([`START_RETRIES`]).
-    retries: u32,
     /// The prompt of the turn that just failed, in its conversation.
     failed_prompt: Option<(SessionId, String)>,
     /// Numbers the UI's turns: a prompt's send failure ends the turn it was
@@ -643,8 +659,6 @@ pub struct Runner {
     /// How the UI leaves the daemon, done once the loop ends
     /// ([`Self::depart`]).
     departure: Option<Departure>,
-    /// A re-home runs: the daemon it stopped is no lost connection.
-    rehoming: bool,
 }
 
 /// What a background task says to the UI ([`Runner::say`]).
@@ -696,16 +710,13 @@ impl Runner {
             agent_switch: false,
             ui_tx,
             effect_rx,
-            link: None,
-            connecting: None,
-            first_connect: true,
+            conn: Conn::Idle,
             reports_tx,
             reports_rx,
             link_epoch: 0,
             mark: None,
             turn: Turn::default(),
             model: None,
-            stopping: false,
             daemon_id_seen: None,
             approvals: Approvals::default(),
             followers: Followers::default(),
@@ -714,20 +725,15 @@ impl Runner {
             pushed_session: None,
             switching: false,
             last_switch: None,
-            current_endpoint: None,
             current_dialect: None,
             bench,
             admitted: Vec::new(),
             farewells: Farewells::default(),
             held: Some(Vec::new()),
-            first_failed: false,
-            retry_at: None,
-            retries: 0,
             failed_prompt: None,
             turns: 0,
             outbound: None,
             departure: None,
-            rehoming: false,
         }
     }
 
@@ -763,10 +769,10 @@ impl Runner {
             self.notice(NoticeLevel::Info, offer);
         }
         self.show(LinkState::Connecting);
-        self.connect();
+        self.connect(true, 0);
         loop {
             for effect in self.releasable() {
-                self.handle_effect(effect).await;
+                self.handle_effect(effect);
             }
             tokio::select! {
                 effect = self.effect_rx.recv() => match effect {
@@ -776,19 +782,16 @@ impl Runner {
                     Some(effect @ Effect::StartTurn(_)) if self.held.is_some() || self.switching => {
                         self.held.get_or_insert_with(Vec::new).push(effect);
                     }
-                    Some(effect) => self.handle_effect(effect).await,
+                    Some(effect) => self.handle_effect(effect),
                 },
-                note = next_notification(&mut self.link) => match note {
-                    Some(note) => self.on_notification(&note),
-                    None => self.lost(),
+                event = self.conn.next() => match event {
+                    ConnEvent::Note(note) => self.on_notification(&note),
+                    ConnEvent::Lost => self.lost(),
+                    ConnEvent::Connected(joined) => self.connected(joined),
+                    ConnEvent::RetryDue => self.retry(),
                 },
-                joined = join(&mut self.connecting) => {
-                    self.connecting = None;
-                    self.connected(joined);
-                }
                 Some((epoch, report)) = self.reports_rx.recv() => self.on_report(epoch, report),
                 () = sleep_until(self.turn.deadline()) => self.on_deadline(),
-                () = sleep_until(self.retry_at) => self.retry(),
                 joined = self.bench.background() => self.model_lists(joined),
             }
         }
@@ -797,7 +800,7 @@ impl Runner {
         }
         self.save_cursor();
         self.bench.cancel_shell();
-        if let Some(task) = self.connecting.take() {
+        if let Conn::Connecting { task, .. } = &self.conn {
             task.abort();
         }
         self.bench.save_unsent(&self.admitted)
@@ -810,7 +813,8 @@ impl Runner {
     /// The held prompts, once they may go: the first link is up and no
     /// start-up switch runs, or the first connect failed.
     fn releasable(&mut self) -> Vec<Effect> {
-        let ready = self.first_failed || (self.link.is_some() && !self.switching);
+        let ready =
+            matches!(self.conn, Conn::Failed) || (self.conn.link().is_some() && !self.switching);
         if ready {
             self.held.take().unwrap_or_default()
         } else {
@@ -867,12 +871,14 @@ impl Runner {
             Report::ActiveInputs { check, result } => self.active_inputs(check, result),
             Report::AgentsRead { name, status } => self.agents_read(name, status),
             Report::StopAsked(Ok(text)) => {
-                self.stopping = true;
+                self.stopped();
                 self.notice(NoticeLevel::Info, text);
             }
             Report::StopAsked(Err(why)) => self.notice(NoticeLevel::Warn, why),
             Report::QuitDecided { decision, stopping } => {
-                self.stopping |= stopping;
+                if stopping {
+                    self.stopped();
+                }
                 self.send(Msg::QuitDecided(decision));
             }
             Report::RehomeStopped(stopped) => self.rehome_stopped(stopped),
@@ -880,8 +886,8 @@ impl Runner {
             Report::ModelSet { switch, result } => match result {
                 Ok(set) => {
                     if self
-                        .link
-                        .as_ref()
+                        .conn
+                        .link()
                         .is_some_and(|link| link.session == set.session_id)
                     {
                         let dialect = WireDialect::parse(&set.provider);
@@ -909,7 +915,7 @@ impl Runner {
             }
             Report::MobOpened { mob, opened } => match opened {
                 Ok((stream, members)) => {
-                    if self.link.is_none() {
+                    if self.conn.link().is_none() {
                         return;
                     }
                     self.followers.opened(stream.clone(), &mob);
@@ -985,11 +991,7 @@ impl Runner {
             }
             Report::Tasks { session, tasks } => {
                 // A list read for a conversation left since is not shown.
-                if self
-                    .link
-                    .as_ref()
-                    .is_none_or(|link| link.session != session)
-                {
+                if self.conn.link().is_none_or(|link| link.session != session) {
                     return;
                 }
                 self.send(match tasks {
@@ -1038,18 +1040,21 @@ impl Runner {
 
     /// Why this client has no connection now, as a notice says it.
     fn unattached(&self) -> String {
-        let why = if self.stopping {
-            "the daemon was stopped; /daemon start starts it again"
-        } else if self.connecting.is_some() {
-            "connecting to it"
-        } else if self.first_failed {
-            "the connect failed; /daemon start tries again"
-        } else if self.retry_at.is_some() {
-            "the connect is tried again shortly"
-        } else {
-            "reconnecting"
-        };
-        format!("not attached to the daemon ({why})")
+        format!("not attached to the daemon ({})", self.conn.unattached())
+    }
+
+    /// The daemon stopped, or confirmed it stops: attached, the coming
+    /// loss of the link is not a lost connection; otherwise a connect
+    /// under way is given up.
+    fn stopped(&mut self) {
+        match &mut self.conn {
+            Conn::Up { leaving, .. } => *leaving = Some(Leaving::Stop),
+            Conn::Connecting { task, .. } => {
+                task.abort();
+                self.conn = Conn::Stopped;
+            }
+            _ => self.conn = Conn::Stopped,
+        }
     }
 
     /// The connection, or (none now) a warning that `what` did not happen
@@ -1063,14 +1068,14 @@ impl Runner {
     }
 
     fn connection(&self) -> Option<Arc<Connection>> {
-        self.link.as_ref().map(|link| Arc::clone(&link.connection))
+        self.conn.link().map(|link| Arc::clone(&link.connection))
     }
 
-    /// Act on one effect of the UI. Nothing here waits on the daemon:
-    /// every call is made by a task of its own, which reports back (a
-    /// [`Report`]) or tells the UI itself, so the loop always takes the
-    /// next effect, Esc included.
-    async fn handle_effect(&mut self, effect: Effect) {
+    /// Act on one effect of the UI. Nothing here waits on the daemon (it
+    /// is not `async`): every call is made by a task of its own, which
+    /// reports back (a [`Report`]) or tells the UI itself, so the loop
+    /// always takes the next effect, Esc included.
+    fn handle_effect(&mut self, effect: Effect) {
         match effect {
             Effect::StartTurn(text) => self.start_turn(&text),
             Effect::Steer { id, text } => self.steer(id, &text),
@@ -1094,9 +1099,7 @@ impl Runner {
             Effect::Remember(_) if self.local_refused("/remember") => {}
             Effect::OpenMemory(_) if self.local_refused("/memory") => {}
             Effect::Export { path, text } => {
-                let session = self
-                    .link
-                    .as_ref()
+                let session = self.conn.link()
                     .map(|link| link.session.to_string())
                     .unwrap_or_default();
                 self.bench.export(path.as_deref(), &text, &session);
@@ -1115,7 +1118,7 @@ impl Runner {
             Effect::ResumeSession(reference) => self.resume_session(reference),
             Effect::RequestResumePicker => self.show_resume_picker(),
             Effect::RequestModelPicker { refresh } => {
-                let current = current(self.current_endpoint.as_deref(), self.model.as_ref());
+                let current = current(self.model.as_ref());
                 self.bench.request_model_picker(refresh, current);
             }
             Effect::Remember(text) => self.bench.remember(&text, &self.linked()),
@@ -1192,17 +1195,10 @@ impl ContextSink for Linked {
 
 /// The endpoint and model the status bar names, as the picker lists them
 /// first.
-fn current<'a>(endpoint: Option<&'a str>, model: Option<&'a (String, String)>) -> Current<'a> {
+fn current(shown: Option<&ShownModel>) -> Current<'_> {
     Current {
-        endpoint: endpoint.unwrap_or(""),
-        model: model.map_or("", |(_, model)| model.as_str()),
-    }
-}
-
-async fn join<T>(task: &mut Option<JoinHandle<T>>) -> Result<T, tokio::task::JoinError> {
-    match task {
-        Some(handle) => handle.await,
-        None => std::future::pending().await,
+        endpoint: shown.map_or("", |shown| shown.endpoint.as_str()),
+        model: shown.map_or("", |shown| shown.model.as_str()),
     }
 }
 
@@ -1219,6 +1215,14 @@ mod tests {
     use super::commands::{agent_lines, others_notice, report_lines, schedules_text};
     use super::turn::model_switch;
     use super::*;
+
+    /// Attached on `link`.
+    fn up(link: Link) -> Conn {
+        Conn::Up {
+            link,
+            leaving: None,
+        }
+    }
 
     /// The `/quit` dialog says what terminating does to the agent's
     /// schedules; `/schedules` prices each schedule's runs.
@@ -1334,7 +1338,12 @@ mod tests {
             mode: ModeStatus {
                 mode: PermissionMode::Auto,
                 paused: true,
-                denials: (1, 3, 2, 20),
+                denials: crate::approval::desk::Denials {
+                    consecutive: 1,
+                    consecutive_limit: 3,
+                    total: 2,
+                    total_limit: 20,
+                },
             },
             realm_rules: PathBuf::from("/w/.rkat/tui/tui.toml"),
             project_inputs: vec![protocol::TrustedFile {
@@ -1360,7 +1369,12 @@ mod tests {
             mode: ModeStatus {
                 mode: PermissionMode::Plan,
                 paused: false,
-                denials: (0, 3, 0, 20),
+                denials: crate::approval::desk::Denials {
+                    consecutive: 0,
+                    consecutive_limit: 3,
+                    total: 0,
+                    total_limit: 20,
+                },
             },
             ..report
         };
@@ -1505,12 +1519,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (mut runner, mut ui_rx) = runner(dir.path());
         let live = SessionId::new();
-        runner.link = Some(link("live", live.clone()).await);
+        runner.conn = up(link("live", live.clone()).await);
         runner.link_epoch = 2;
         let other = SessionId::new();
         runner.switching = true;
         runner.on_report(1, switched(&other, "dead"));
-        let link_now = runner.link.as_ref().unwrap();
+        let link_now = runner.conn.link().unwrap();
         assert_eq!(link_now.stream, "live");
         assert_eq!(link_now.session, live);
         assert!(runner.switching, "a switch started since still runs");
@@ -1519,7 +1533,7 @@ mod tests {
         }
         // The same report of the current link is shown.
         runner.on_report(2, switched(&other, "next"));
-        let link_now = runner.link.as_ref().unwrap();
+        let link_now = runner.conn.link().unwrap();
         assert_eq!(link_now.stream, "next");
         assert_eq!(link_now.session, other);
         assert!(!runner.switching);
@@ -1563,7 +1577,7 @@ mod tests {
                 c if c.starts_with("malformed") => std::fs::write(&file, "{not json").unwrap(),
                 _ => {}
             }
-            runner.link = Some(link);
+            runner.conn = up(link);
             runner.depart(Departure::Terminate).await;
             let mut notices = Vec::new();
             while let Ok(msg) = ui_rx.try_recv() {
@@ -1578,7 +1592,7 @@ mod tests {
                 ended,
                 "{case}: {said}"
             );
-            assert_eq!(runner.stopping, ended, "{case}");
+            assert_eq!(runner.conn.stopping(), ended, "{case}");
         }
     }
 
@@ -1608,7 +1622,7 @@ mod tests {
                     .unwrap();
             }
             runner.config.address = Some(link.endpoint.clone());
-            runner.link = Some(link);
+            runner.conn = up(link);
             runner.depart(Departure::Terminate).await;
             let said = std::iter::from_fn(|| ui_rx.try_recv().ok())
                 .filter_map(|msg| match msg {
@@ -1619,7 +1633,7 @@ mod tests {
                 .join("\n");
             assert!(said.contains("may still be running"), "{remote}: {said}");
             assert!(!said.contains("stopped the daemon"), "{remote}: {said}");
-            assert!(!runner.stopping, "{remote}");
+            assert!(!runner.conn.stopping(), "{remote}");
         }
         // Its endpoint file gone is the daemon's own evidence, by address too.
         let (mut runner, mut ui_rx) = runner(dir.path());
@@ -1627,7 +1641,7 @@ mod tests {
         link.endpoint.address = closed_address;
         std::fs::remove_file(dir.path().join("mob.endpoint")).unwrap();
         runner.config.address = Some(link.endpoint.clone());
-        runner.link = Some(link);
+        runner.conn = up(link);
         runner.depart(Departure::Terminate).await;
         let said = std::iter::from_fn(|| ui_rx.try_recv().ok())
             .filter_map(|msg| match msg {
@@ -1648,8 +1662,7 @@ mod tests {
     async fn no_effect_waits_on_a_daemon_that_does_not_answer() {
         let dir = tempfile::tempdir().unwrap();
         let (mut runner, mut ui_rx) = runner(dir.path());
-        runner.link = Some(link("live", SessionId::new()).await);
-        let quick = Duration::from_secs(2);
+        runner.conn = up(link("live", SessionId::new()).await);
         for effect in [
             Effect::StartTurn("hello".into()),
             Effect::Steer {
@@ -1665,9 +1678,8 @@ mod tests {
             Effect::DecideQuit,
             Effect::Interrupt,
         ] {
-            let name = format!("{effect:?}");
-            let done = tokio::time::timeout(quick, runner.handle_effect(effect)).await;
-            assert!(done.is_ok(), "{name} waited on the daemon");
+            // Not `async`: it cannot wait on the daemon.
+            runner.handle_effect(effect);
         }
         assert!(runner.turn.active, "the unanswered prompt's turn runs");
         assert!(
@@ -1691,7 +1703,7 @@ mod tests {
     async fn only_a_refused_switch_ends_the_switch() {
         let dir = tempfile::tempdir().unwrap();
         let (mut runner, mut ui_rx) = runner(dir.path());
-        runner.link = Some(link("live", SessionId::new()).await);
+        runner.conn = up(link("live", SessionId::new()).await);
         runner.switching = true;
         runner.on_report(0, Report::Interrupt("x".into()));
         assert!(runner.switching);

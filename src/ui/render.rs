@@ -533,7 +533,12 @@ fn spinner_frame(since: Option<Instant>, now: Instant) -> char {
 /// `auto (deny c/cm, t/tm)` (`auto: PAUSED (…)` on yellow while paused).
 fn mode_segment(status: &StatusInfo) -> Option<Span<'static>> {
     let mode = status.mode?;
-    let (c, cm, t, tm) = status.denials;
+    let crate::approval::desk::Denials {
+        consecutive: c,
+        consecutive_limit: cm,
+        total: t,
+        total_limit: tm,
+    } = status.denials;
     Some(match mode {
         PermissionMode::Auto if status.auto_paused => Span::styled(
             format!("auto: PAUSED (deny {c}/{cm}, {t}/{tm})"),
@@ -563,8 +568,8 @@ pub fn status_bar(status: &StatusInfo, now: Instant) -> Line<'static> {
     if let Some(agent) = &status.agent {
         segs.push(Span::raw(format!("agent {agent}")));
     }
-    if !status.provider.is_empty() || !status.model.is_empty() {
-        segs.push(Span::raw(format!("{}/{}", status.provider, status.model)));
+    if !status.endpoint.is_empty() || !status.model.is_empty() {
+        segs.push(Span::raw(format!("{}/{}", status.endpoint, status.model)));
     }
     if !status.session_short.is_empty() {
         segs.push(Span::raw(format!("session {}", status.session_short)));
@@ -986,7 +991,7 @@ mod tests {
         let now = Instant::now();
         let mut s = StatusInfo::default();
         s.apply(StatusUpdate::Model {
-            provider: "anthropic".into(),
+            endpoint: "anthropic".into(),
             model: "claude-sonnet-4-6".into(),
         });
         s.apply(StatusUpdate::Session("abc12345-ffff".into()));
@@ -997,7 +1002,12 @@ mod tests {
         s.apply(StatusUpdate::Mode {
             mode: PermissionMode::Auto,
             paused: false,
-            denials: (1, 3, 4, 20),
+            denials: crate::approval::desk::Denials {
+                consecutive: 1,
+                consecutive_limit: 3,
+                total: 4,
+                total_limit: 20,
+            },
         });
         s.running_since = Some(now);
         s.queued = 2;
@@ -1013,7 +1023,7 @@ mod tests {
         let now = Instant::now();
         let mut s = StatusInfo::default();
         s.apply(StatusUpdate::Model {
-            provider: "anthropic".into(),
+            endpoint: "anthropic".into(),
             model: "claude-sonnet-4-6".into(),
         });
         s.apply(crate::ui::StatusUpdate::Connection(
@@ -1219,7 +1229,12 @@ mod tests {
         s.apply(StatusUpdate::Mode {
             mode: PermissionMode::Auto,
             paused: true,
-            denials: (3, 3, 5, 20),
+            denials: crate::approval::desk::Denials {
+                consecutive: 3,
+                consecutive_limit: 3,
+                total: 5,
+                total_limit: 20,
+            },
         });
         s.apply(StatusUpdate::Classifying(true));
         let bar = status_bar(&s, now);
@@ -1235,7 +1250,12 @@ mod tests {
             s.apply(StatusUpdate::Mode {
                 mode,
                 paused: false,
-                denials: (0, 3, 0, 20),
+                denials: crate::approval::desk::Denials {
+                    consecutive: 0,
+                    consecutive_limit: 3,
+                    total: 0,
+                    total_limit: 20,
+                },
             });
             let line = status_line(&s, now);
             assert!(line.ends_with(shown), "{mode:?}: {line}");
@@ -1243,7 +1263,12 @@ mod tests {
         s.apply(StatusUpdate::Mode {
             mode: PermissionMode::Plan,
             paused: false,
-            denials: (0, 3, 0, 20),
+            denials: crate::approval::desk::Denials {
+                consecutive: 0,
+                consecutive_limit: 3,
+                total: 0,
+                total_limit: 20,
+            },
         });
         assert!(
             seg_style(&status_bar(&s, now), "plan")

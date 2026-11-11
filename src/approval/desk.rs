@@ -168,8 +168,33 @@ pub struct ModeStatus {
     pub mode: PermissionMode,
     /// Auto mode is paused by classifier blocks.
     pub paused: bool,
-    /// Consecutive blocks, their limit, total blocks, their limit.
-    pub denials: (u32, u32, u32, u32),
+    /// The classifier's blocks and their limits.
+    pub denials: Denials,
+}
+
+/// The classifier's blocks against the limits that pause auto mode.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Denials {
+    /// Blocks in a row.
+    pub consecutive: u32,
+    /// The limit of blocks in a row.
+    pub consecutive_limit: u32,
+    /// Blocks in all.
+    pub total: u32,
+    /// The limit of blocks in all.
+    pub total_limit: u32,
+}
+
+impl Denials {
+    /// `consecutive denials c/cm, total t/tm`, as `/auto` and `/status`
+    /// say it.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        format!(
+            "consecutive denials {}/{}, total {}/{}",
+            self.consecutive, self.consecutive_limit, self.total, self.total_limit
+        )
+    }
 }
 
 impl ModeStatus {
@@ -180,12 +205,12 @@ impl ModeStatus {
         Self {
             mode: engine.mode(),
             paused: paused.is_some(),
-            denials: (
-                counters.consecutive,
-                MAX_CONSECUTIVE_DENIALS,
-                counters.total,
-                MAX_TOTAL_DENIALS,
-            ),
+            denials: Denials {
+                consecutive: counters.consecutive,
+                consecutive_limit: MAX_CONSECUTIVE_DENIALS,
+                total: counters.total,
+                total_limit: MAX_TOTAL_DENIALS,
+            },
         }
     }
 }
@@ -450,7 +475,12 @@ mod tests {
         let status = ModeStatus {
             mode: PermissionMode::Plan,
             paused: false,
-            denials: (1, 3, 2, 20),
+            denials: Denials {
+                consecutive: 1,
+                consecutive_limit: 3,
+                total: 2,
+                total_limit: 20,
+            },
         };
         let wire = serde_json::to_value(status).unwrap();
         assert_eq!(wire["mode"], "plan");

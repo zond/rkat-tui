@@ -615,7 +615,10 @@ async fn the_local_methods_answer_before_the_engine() {
     let connection = daemon.connect().await;
     let status = connection.call("rkat/get_mode", json!({})).await.unwrap();
     assert_eq!(status["mode"], "auto", "{status}");
-    assert_eq!(status["denials"], json!([0, 3, 0, 20]));
+    assert_eq!(
+        status["denials"],
+        json!({"consecutive": 0, "consecutive_limit": 3, "total": 0, "total_limit": 20})
+    );
     let switched = connection
         .call("rkat/set_mode", json!({"mode": "accept-edits"}))
         .await

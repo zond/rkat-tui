@@ -11,7 +11,7 @@ impl Runner {
     /// answers with [`Effect::Leave`].
     pub(super) fn decide_quit(&mut self) {
         // The daemon is gone already (`/daemon stop`): just leave.
-        let connection = match (self.stopping, self.connection()) {
+        let connection = match (self.conn.stopping(), self.connection()) {
             (true, _) => {
                 self.send(Msg::QuitDecided(QuitDecision::Leave));
                 return;
@@ -25,7 +25,7 @@ impl Runner {
             }
             (false, Some(connection)) => connection,
         };
-        let endpoint = self.link.as_ref().map(|link| link.endpoint.clone());
+        let endpoint = self.conn.link().map(|link| link.endpoint.clone());
         let pid = endpoint.as_ref().map_or(0, |endpoint| endpoint.pid);
         let agent = connection.agent().to_string();
         let files = self.config.endpoint_files.clone();
@@ -107,7 +107,7 @@ impl Runner {
     /// Leave the daemon as the UI decided: record a detach, or stop it.
     pub(super) async fn depart(&mut self, departure: Departure) {
         let Some(connection) = self.connection() else {
-            if departure == Departure::Terminate && !self.stopping {
+            if departure == Departure::Terminate && !self.conn.stopping() {
                 self.farewell(
                     NoticeLevel::Warn,
                     format!(
@@ -119,7 +119,7 @@ impl Runner {
             }
             return;
         };
-        let endpoint = self.link.as_ref().map(|link| link.endpoint.clone());
+        let endpoint = self.conn.link().map(|link| link.endpoint.clone());
         let pid = endpoint.as_ref().map_or(0, |endpoint| endpoint.pid);
         let empty = protocol::Empty {};
         let answered = match departure {
@@ -150,7 +150,7 @@ impl Runner {
                 format!("detached; the daemon (pid {pid}) was not told ({err}) and keeps running"),
             ),
             (Departure::Terminate, Ok(())) => {
-                self.stopping = true;
+                self.stopped();
                 self.farewell(
                     NoticeLevel::Info,
                     format!("stopped the daemon (pid {pid}); its agents retired, their conversations stay"),
@@ -164,7 +164,7 @@ impl Runner {
                 let files = self.config.endpoint_files.clone();
                 let here = self.config.address.is_none();
                 if stopped_unconfirmed(&files, endpoint.as_ref(), here).await {
-                    self.stopping = true;
+                    self.stopped();
                     self.farewell(NoticeLevel::Info, format!("stopped the daemon (pid {pid})"));
                 } else {
                     self.farewell(
@@ -201,7 +201,7 @@ impl Runner {
             );
             return;
         };
-        let pid = self.link.as_ref().map(|link| link.endpoint.pid);
+        let pid = self.conn.link().map(|link| link.endpoint.pid);
         let reports = self.reporter();
         tokio::spawn(async move {
             let asked = bounded(

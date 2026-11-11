@@ -46,7 +46,12 @@ fn slash_commands_map_to_effects() {
     app.status.apply(StatusUpdate::Mode {
         mode: PermissionMode::AcceptEdits,
         paused: false,
-        denials: (0, 3, 0, 20),
+        denials: crate::approval::desk::Denials {
+            consecutive: 0,
+            consecutive_limit: 3,
+            total: 0,
+            total_limit: 20,
+        },
     });
     assert!(run(&mut app, "/mode").is_empty());
     assert!(
@@ -510,7 +515,7 @@ fn cost_command_prints_the_breakdown() {
     let (_, text) = last_notice(&app).unwrap();
     assert!(text.contains("no tokens used"), "{text}");
     app.status.apply(StatusUpdate::Model {
-        provider: "anthropic".into(),
+        endpoint: "anthropic".into(),
         model: "a".into(),
     });
     app.update(Msg::Status(StatusUpdate::Prices(priced(&[(

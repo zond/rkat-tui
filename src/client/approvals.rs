@@ -16,7 +16,6 @@ use std::collections::HashMap;
 
 use meerkat_contracts::WireDecisionPhase;
 use meerkat_core::SessionId;
-use serde_json::Value;
 
 use crate::approval::escalation::RecordedPrompt;
 use crate::daemon::decisions::{DialogRendering, KIND};
@@ -178,9 +177,11 @@ impl Approvals {
 
     /// A `decision/notice` (its params) the daemon pushed: the dialog to
     /// show, when it is a gate decision of `session` not shown yet.
-    pub fn notice(&mut self, session: &SessionId, params: &Value) -> Option<Change> {
-        let notice: meerkat_contracts::WireDecisionNotice =
-            serde_json::from_value(params.clone()).ok()?;
+    pub fn notice(
+        &mut self,
+        session: &SessionId,
+        notice: meerkat_contracts::WireDecisionNotice,
+    ) -> Option<Change> {
         if notice.kind != KIND
             || notice.phase != meerkat_contracts::WireDecisionPhase::Open
             || self.decisions.contains_key(&notice.decision_id)
@@ -204,8 +205,7 @@ impl Approvals {
 
     /// The daemon's `rkat/decision_ended` (its params): close the dialog
     /// this client did not answer, saying how it ended.
-    pub fn decision_ended(&mut self, params: &Value) -> Option<Change> {
-        let ended: DecisionEnded = serde_json::from_value(params.clone()).ok()?;
+    pub fn decision_ended(&mut self, ended: &DecisionEnded) -> Option<Change> {
         let (local, _) = self.decisions.remove(&ended.decision_id)?;
         self.decision_by_local.remove(&local);
         let text = match ended.phase {
@@ -287,7 +287,7 @@ mod tests {
         assert!(!note.contains('\n'));
     }
     use serde_json::json;
-    fn notice(decision: &str, session: &SessionId) -> Value {
+    fn notice(decision: &str, session: &SessionId) -> meerkat_contracts::WireDecisionNotice {
         let rendering = serde_json::to_string(&DialogRendering {
             session_id: session.clone(),
             prompt: RecordedPrompt {
@@ -297,7 +297,7 @@ mod tests {
             },
         })
         .unwrap();
-        json!({
+        serde_json::from_value(json!({
             "notice_id": "n1",
             "decision_id": decision,
             "kind": KIND,
@@ -311,7 +311,12 @@ mod tests {
                 "subject_digest": "sha256:abc",
                 "parts": [],
             },
-        })
+        }))
+        .unwrap()
+    }
+
+    fn ended(decision: &str, phase: &str) -> DecisionEnded {
+        serde_json::from_value(json!({"decision_id": decision, "phase": phase})).unwrap()
     }
 
     #[test]
@@ -321,39 +326,33 @@ mod tests {
         // Another conversation's request is not shown here.
         assert!(
             approvals
-                .notice(&SessionId::new(), &notice("d1", &session))
+                .notice(&SessionId::new(), notice("d1", &session))
                 .is_none()
         );
-        let Some(Change::Show(prompt, id)) = approvals.notice(&session, &notice("d1", &session))
+        let Some(Change::Show(prompt, id)) = approvals.notice(&session, notice("d1", &session))
         else {
             unreachable!("a dialog");
         };
         assert_eq!(prompt.rule().as_deref(), Some("write_file a.txt"));
         assert!(
-            approvals
-                .notice(&session, &notice("d1", &session))
-                .is_none(),
+            approvals.notice(&session, notice("d1", &session)).is_none(),
             "once"
         );
-        let closed = approvals.decision_ended(&json!({"decision_id": "d1", "phase": "rejected"}));
+        let closed = approvals.decision_ended(&ended("d1", "rejected"));
         assert!(
             matches!(&closed, Some(Change::Resolve(closed, Some(text))) if *closed == id && text.contains("denied from another client")),
             "{closed:?}"
         );
         assert!(approvals.is_empty());
         // Answered here: the decision and the digest shown, closed for good.
-        let Some(Change::Show(_, id)) = approvals.notice(&session, &notice("d2", &session)) else {
+        let Some(Change::Show(_, id)) = approvals.notice(&session, notice("d2", &session)) else {
             unreachable!("a dialog");
         };
         assert_eq!(
             approvals.answer_decision(id),
             Some(("d2".to_string(), "sha256:abc".to_string()))
         );
-        assert!(
-            approvals
-                .decision_ended(&json!({"decision_id": "d2", "phase": "approved"}))
-                .is_none()
-        );
+        assert!(approvals.decision_ended(&ended("d2", "approved")).is_none());
         let params = decision_params(
             "d2",
             "sha256:abc",

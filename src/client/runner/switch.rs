@@ -13,7 +13,7 @@ impl Runner {
         if !self.may_switch() {
             return;
         }
-        let Some(link) = &self.link else {
+        let Some(link) = self.conn.link() else {
             return;
         };
         self.switching = true;
@@ -56,7 +56,7 @@ impl Runner {
         own: Option<bool>,
         warning: Option<String>,
     ) {
-        let Some(link) = &self.link else {
+        let Some(link) = self.conn.link() else {
             return;
         };
         self.switching = true;
@@ -76,7 +76,7 @@ impl Runner {
     /// Show the conversation `session` from its start again (`again`
     /// says why): the stream reopened live, the committed transcript.
     pub(super) fn rerender(&mut self, session: SessionId, again: Again) {
-        let Some(link) = &self.link else {
+        let Some(link) = self.conn.link() else {
             return;
         };
         self.switching = true;
@@ -106,7 +106,7 @@ impl Runner {
             identity,
             usage,
         } = adopted;
-        let Some(link) = &mut self.link else {
+        let Some(link) = self.conn.link_mut() else {
             return;
         };
         link.session = session.clone();
@@ -141,11 +141,12 @@ impl Runner {
         }));
         self.send(Msg::Status(StatusUpdate::CostTotals(usage.cost)));
         self.refresh_tasks();
-        if let Some((model, provider, endpoint)) = identity {
+        if let Some(identity) = identity {
+            let model = identity.model.clone();
             self.followers.set_default_model(&model);
             self.show_model(
-                endpoint.as_deref().unwrap_or(&provider),
-                WireDialect::parse(&provider),
+                identity.endpoint_name(),
+                WireDialect::parse(&identity.provider),
                 &model,
             );
             // A fresh conversation starts on the daemon's start-up model:
@@ -184,7 +185,7 @@ impl Runner {
         if !self.may_switch() {
             return;
         }
-        let Some(link) = &self.link else {
+        let Some(link) = self.conn.link() else {
             return;
         };
         self.switching = true;
@@ -294,7 +295,7 @@ impl Runner {
         self.agent = Some(name);
         self.agent_switch = true;
         self.show(LinkState::Reconnecting);
-        self.connect();
+        self.connect(false, 0);
     }
 
     /// `/rehome`: without an argument, what this workspace could adopt;
@@ -330,7 +331,7 @@ impl Runner {
             self.notice(NoticeLevel::Warn, why);
             return;
         }
-        let (Some(link), Some(reroot)) = (&self.link, self.config.reroot.clone()) else {
+        let (Some(link), Some(reroot)) = (self.conn.link(), self.config.reroot.clone()) else {
             self.notice(
                 NoticeLevel::Warn,
                 format!("{}: /rehome needs it", self.unattached()),
@@ -391,7 +392,9 @@ impl Runner {
         };
         let say = self.say();
         let reports = self.reporter();
-        self.rehoming = true;
+        if let Conn::Up { leaving, .. } = &mut self.conn {
+            *leaving = Some(Leaving::Rehome);
+        }
         tokio::spawn(async move {
             let stopped = async {
                 let plan = rh::prepare(
@@ -434,7 +437,11 @@ impl Runner {
         let stopped = match stopped {
             Ok(stopped) => stopped,
             Err(why) => {
-                self.rehoming = false;
+                match &mut self.conn {
+                    Conn::Up { leaving, .. } => *leaving = None,
+                    Conn::Rehoming => self.conn = Conn::Idle,
+                    _ => {}
+                }
                 self.notice(NoticeLevel::Warn, why);
                 return;
             }
@@ -448,6 +455,7 @@ impl Runner {
         // This client's daemon stopped; the link is dropped here, so its
         // end is not taken for a lost connection.
         self.unlink();
+        self.conn = Conn::Rehoming;
         self.show(LinkState::Starting);
         let files = self.config.endpoint_files.clone();
         let say = self.say();
@@ -501,15 +509,12 @@ impl Runner {
 
     /// How the re-home ended ([`Self::rehome_stopped`]).
     pub(super) fn rehomed(&mut self, rehomed: Rehomed) {
-        self.rehoming = false;
+        self.conn = Conn::Idle;
         match rehomed {
-            Rehomed::Failed => {
-                self.first_connect = true;
-                self.connect();
-            }
+            Rehomed::Failed => self.connect(true, 0),
             Rehomed::Stranded => {
                 self.show(LinkState::Stopped);
-                self.stopping = true;
+                self.conn = Conn::Stopped;
             }
             Rehomed::Moved {
                 config,
@@ -545,11 +550,8 @@ impl Runner {
         self.agent = None;
         self.mark = None;
         self.daemon_id_seen = None;
-        self.stopping = false;
-        self.retries = 0;
-        self.first_connect = true;
         self.show(LinkState::Connecting);
-        self.connect();
+        self.connect(true, 0);
     }
 }
 
@@ -614,7 +616,11 @@ pub(super) async fn adopt(
             session,
             stream,
             last_seq: snapshot.latest,
-            identity: Some((snapshot.model, snapshot.provider, endpoint)),
+            identity: Some(SessionModel {
+                model: snapshot.model,
+                provider: snapshot.provider,
+                endpoint,
+            }),
             usage,
         })
     })

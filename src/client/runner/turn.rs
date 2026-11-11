@@ -20,10 +20,7 @@ impl Runner {
         // conversation: the task checks whether it is still the last
         // message there.
         let retry = self.failed_prompt.take().and_then(|(session, failed)| {
-            (self
-                .link
-                .as_ref()
-                .is_some_and(|link| link.session == session)
+            (self.conn.link().is_some_and(|link| link.session == session)
                 && failed.trim() == text.trim())
             .then_some(session)
         });
@@ -257,7 +254,7 @@ impl Runner {
     /// from the conversation's start.
     pub(super) fn on_event(&mut self, envelope: EventEnvelope<AgentEvent>, epoch: Option<&str>) {
         if matches!(envelope.payload, AgentEvent::StreamTruncated { .. }) {
-            if let Some(link) = &self.link
+            if let Some(link) = self.conn.link()
                 && !self.switching
             {
                 let session = link.session.clone();
@@ -494,7 +491,7 @@ impl Runner {
         }
         // A failed turn's prompt stays committed: the same text typed again
         // is a retry, not a second copy ([`Runner::retry_input`]).
-        self.failed_prompt = match (&turn.result, &turn.prompt, &self.link) {
+        self.failed_prompt = match (&turn.result, &turn.prompt, self.conn.link()) {
             (Some(Err(TurnFailure::Failed(_))), Some(prompt), Some(link)) if !turn.steered => {
                 Some((link.session.clone(), prompt.clone()))
             }
@@ -515,10 +512,12 @@ impl Runner {
 
     /// The status bar names `model` on `endpoint` (of `dialect`).
     pub(super) fn show_model(&mut self, endpoint: &str, dialect: Option<WireDialect>, model: &str) {
-        self.model = Some((endpoint.to_string(), model.to_string()));
-        self.current_endpoint = Some(endpoint.to_string());
+        self.model = Some(ShownModel {
+            endpoint: endpoint.to_string(),
+            model: model.to_string(),
+        });
         self.send(Msg::Status(StatusUpdate::Model {
-            provider: endpoint.to_string(),
+            endpoint: endpoint.to_string(),
             model: model.to_string(),
         }));
         self.current_dialect = dialect;
@@ -537,7 +536,7 @@ impl Runner {
     /// other way round (the listing then covers a model only an endpoint
     /// knows, whose profile the daemon wrote since).
     pub(super) fn send_context_window(&self) {
-        let Some((endpoint, model)) = &self.model else {
+        let Some(ShownModel { endpoint, model }) = &self.model else {
             return;
         };
         let registry = || {
@@ -579,7 +578,7 @@ impl Runner {
             reference,
             &self.config.endpoints,
             self.bench.models(),
-            self.current_endpoint.as_deref(),
+            self.model.as_ref().map(|shown| shown.endpoint.as_str()),
         ) {
             Ok(switch) => self.switch_model(switch),
             Err(err) => {
@@ -628,13 +627,13 @@ impl Runner {
     /// The model lists arrived ([`Workbench::background`]): a `/model
     /// <ref>` that waited for them switches now.
     pub(super) fn model_lists(&mut self, joined: Result<FetchResults, tokio::task::JoinError>) {
-        let current = current(self.current_endpoint.as_deref(), self.model.as_ref());
+        let current = current(self.model.as_ref());
         let reference = self.bench.lists_arrived(joined, current);
         // A configured endpoint's window is its listing's.
         if self
-            .current_endpoint
-            .as_deref()
-            .is_some_and(|endpoint| self.bench.is_configured_endpoint(endpoint))
+            .model
+            .as_ref()
+            .is_some_and(|shown| self.bench.is_configured_endpoint(&shown.endpoint))
         {
             self.send_context_window();
         }
@@ -650,7 +649,7 @@ impl Runner {
     /// its first run) is asked again through its session
     /// (`session/compact`), which refuses the same way when it is not live.
     pub(super) fn compact_now(&self) {
-        let Some(link) = &self.link else {
+        let Some(link) = self.conn.link() else {
             self.send(Msg::CompactRequested(Err(CompactFailure::Request(
                 self.unattached(),
             ))));

@@ -91,7 +91,7 @@ fn options() -> Setup {
 }
 
 fn is_model(msg: &Msg, endpoint: &str, model: &str) -> bool {
-    matches!(msg, Msg::Status(StatusUpdate::Model { provider, model: m }) if provider == endpoint && m == model)
+    matches!(msg, Msg::Status(StatusUpdate::Model { endpoint: shown, model: m }) if shown == endpoint && m == model)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

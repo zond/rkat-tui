@@ -692,7 +692,12 @@ fn status_updates_and_dirty_tracking() {
     app.update(Msg::Status(StatusUpdate::Mode {
         mode: PermissionMode::Auto,
         paused: true,
-        denials: (3, 3, 5, 20),
+        denials: crate::approval::desk::Denials {
+            consecutive: 3,
+            consecutive_limit: 3,
+            total: 5,
+            total_limit: 20,
+        },
     }));
     assert!(app.take_dirty());
     assert_eq!(app.status.mode, Some(PermissionMode::Auto));
@@ -866,7 +871,7 @@ fn a_native_compaction_rearms_the_warning() {
 fn the_footer_and_cost_price_the_daemons_totals() {
     let mut app = App::new(StatusInfo::default());
     app.status.apply(StatusUpdate::Model {
-        provider: "anthropic".into(),
+        endpoint: "anthropic".into(),
         model: "main".into(),
     });
     assert!(app.update(completed_by("main", 1_000_000, 0)).is_empty());
@@ -915,7 +920,7 @@ fn resume_replaces_the_cost_totals() {
         "a", 1.0, 1.0,
     )]))));
     app.status.apply(StatusUpdate::Model {
-        provider: "anthropic".into(),
+        endpoint: "anthropic".into(),
         model: "a".into(),
     });
     // Resuming a session with recorded totals.
