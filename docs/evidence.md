@@ -31,7 +31,7 @@ the `##` section named after it):
 - **Confinement:** "Phase 3 (confinement + custody)"; "Confinement refusal,
   sandbox grants, config dir and env-only endpoint keys"; "Sealing, the fork
   prompt and the model switch"; "Shell mode"; "Engine-property tests left
-  upstream".
+  upstream"; "One realm per workspace, `!` as the user".
 - **Compaction and memory:** "P6 — Context, memory, compaction policy,
   docs"; "Runtime, endpoints and structure: first review fixes"; "Esc,
   queued messages and commands to match Claude Code" (`/compact`); "P3b and
@@ -112,6 +112,11 @@ the mob split are numbered in `docs/mob-split.md`, "Open engine asks"):
   is merged, db8547a532; the implementation is not scheduled): "P4:
   helpers, conversations and detach in attach mode", "P3b and the 0.9.11
   adoption", and `docs/mob-split.md`.
+
+- The engine cannot update a stored mob definition after creation
+  (`MobStorage::update_definition` is not exposed through `MobMcpState`);
+  rkat-tui overrides each agent's profile at start instead (c7b0d54):
+  "The agents follow each start's profile (A8 of senior review 3)".
 
 Withdrawn 2026-11-10, kept in their sections as a record: the governed
 realm (#2122; one daemon per workspace, one owner, a tunnel for remote
@@ -6960,3 +6965,59 @@ sake.
 | agent mob tools, the other 18 | - | all (29 KB) | teams, councils, forks, profiles: occasional | rkat-tui (mob factory), once the mode engages |
 | mob operator (12) | - | all (4.9 KB) | rare for a main agent | engine only |
 | `tool_catalog_search` / `_load` | always | - | the control plane itself | engine |
+
+## One realm per workspace, `!` as the user (batch 2 of senior review 3, 2026-11-11)
+
+The owner's decisions C1, C3 and C7 of `.handover/senior-review-3.md`,
+done before the first release (no compatibility of any kind: an old flag
+simply no longer parses).
+
+**One realm per workspace.** `--realm`, `--state-root`, `--realm-backend`
+and `--isolated` opted into the realm model `rkat` uses; rkat-tui does not
+ship `rkat`, and every configuration that starts already keeps the
+workspace's realm out of the agent's reach (a confined start refuses a
+plan that reaches it, `TuiError::RealmExposed`; an unconfined shell could
+write `~/.rkat` as well). So the digest trust of a realm file placed
+inside the workspace protected nothing in any configuration that starts.
+Removed with the flags: realm-file trust (`RealmTrust`, the deny-only
+layer, `write_trusted`, `/permissions trust`, `rkat/trust`'s `rules` op),
+the realm config as a project input (its connection stripping, the
+endpoint projection record, `RealmDocument`), `ConfigDirCollision`, the
+endpoint key's realm salt (`RealmKey`) and `--list`'s realm decorations,
+and the realm `config.toml` `[confinement]` floor under the command line.
+`rkat/trust` takes no parameters and `Empty` refuses unknown fields, so a
+client still sending `{"op":"rules"}` is refused rather than read as
+`/trust` (`trust_from_the_client_records_the_project_hooks_across_a_restart`).
+The negative case of the floor is pinned:
+`the_realm_confinement_table_does_not_decide_the_shell` (a daemon starts
+with `--confinement=off` under such a table).
+
+**`!` as the user.** The user's `!` command ran under the agent's sandbox
+and curated environment, so `!git push` or `!cargo publish` failed for
+the machine's owner, and the client had to re-derive the daemon's
+confinement plan to build that sandbox and to refuse a daemon whose shell
+was wider (`ShellWider`, a `rkat/status` probe before every attach). Now
+`!` runs the user's shell (`$SHELL` when absolute, else `/bin/sh`) in the
+workspace with the whole environment; capture, timeout and the
+process-group kill are as before, and the output still joins the context.
+The client plans no confinement at all; `/status` shows the agent shell's
+from the daemon's `rkat/report`. Proof both ways on a host with the
+sandbox: `a_bang_command_runs_as_the_user_unlike_the_agents_shell` (the
+agent's confined `shell` call can neither read a file in Cargo's target
+dir nor see a sentinel variable; the same command as `!` sees both and
+writes outside the workspace) and
+`a_clients_confinement_flags_do_not_refuse_a_running_daemon`.
+
+**One way to stop a daemon.** An attached client asks with
+`rkat/shutdown`; the client never signals a pid it read from a file. A
+client without a connection says it cannot ask and names `rkat-tui
+--list` and `kill <pid>` (`a_reconnect_restarts_a_daemon_that_died`'s
+tail in `tests/attach.rs`).
+
+**The seal on case-insensitive volumes.** `paths::folds_case` asks the
+workspace's file system whether a name with its case flipped is the same
+file (device and inode); only then are the sealed and protected patterns,
+the sealed roots and the root prefix matched ignoring case
+(`a_case_insensitive_volume_seals_every_spelling`, with the answer
+injected; `a_case_sensitive_directory_does_not_fold_case` on Linux). Not
+run: a real case-insensitive volume (macOS, or a casefold ext4 directory).

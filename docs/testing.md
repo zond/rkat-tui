@@ -55,7 +55,7 @@ Scope the run to what changed, then run the full gate once at the end:
 ```bash
 cargo nextest run --all-features --lib                 # unit tests only
 cargo nextest run --all-features --test integrator     # one integration binary
-cargo nextest run --all-features -E 'test(rewind)'     # tests whose name contains "rewind"
+cargo nextest run --all-features -E 'test(resume)'     # tests whose name contains "resume"
 cargo nextest run --all-features --no-fail-fast        # see every failure at once
 ```
 
@@ -215,8 +215,9 @@ the workspace's daemon and attaches to it):
 4. Shift+Tab cycles manual, accept edits, plan, auto in the status bar.
 5. Ctrl+T shows the task checklist; Ctrl+O toggles the latest tool output;
    `?` opens the key reference; Ctrl+R searches history.
-6. `/rewind` (or Esc Esc on an empty input) says why rewinding is not
-   available yet; `/resume` lists the workspace's conversations.
+6. `/help` says there is no rewind; `/resume` lists the workspace's
+   conversations. A `!` command runs as you (`!echo $HOME` shows your
+   home, `!git status` works with your git config).
 7. `/detach` leaves with the daemon running; `rkat-tui -c` reattaches
    to the same agent and conversation. `/quit` then asks whether to
    detach or stop the daemon (it stops without asking when this

@@ -33,7 +33,7 @@ What remains, in order of priority:
 
 | Item | State |
 |---|---|
-| `/rewind` on the engine's implementation (ask 1) | The same-identity rewind design is merged upstream (lukacf/meerkat#2126, db8547a532); its implementation is not scheduled. `/rewind` explains why it is not available |
+| `/rewind` on the engine's implementation (ask 1) | The same-identity rewind design is merged upstream (lukacf/meerkat#2126, db8547a532); its implementation is not scheduled. There is no `/rewind`; `/help` says why |
 | MCP servers added or trusted after the daemon's mob was created | They do not reach the agent until the mob is made again (the manual's limits) |
 
 Withdrawn 2026-11-10 (kept below as a record): seating a member on a
