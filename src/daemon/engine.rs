@@ -275,13 +275,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
                 identity.auth_binding.as_ref(),
                 &endpoints,
             );
-            thinking.resolve(
-                endpoint
-                    .as_ref()
-                    .map(crate::endpoints::EndpointName::as_str),
-                identity.provider,
-                &identity.model,
-            )
+            thinking.resolve(endpoint.as_deref(), identity.provider, &identity.model)
         }
     });
     let notes_for_index = Arc::clone(&notes);

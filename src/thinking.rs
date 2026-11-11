@@ -288,16 +288,15 @@ mod tests {
     use crate::endpoints::SecretString;
 
     fn ep(name: &str, dialect: WireDialect) -> Endpoint {
-        Endpoint {
-            name: name.to_string(),
+        Endpoint::configured(
+            name,
             dialect,
-            base_url: Some("http://127.0.0.1:4000".to_string()),
-            api_key: SecretString::new("k"),
-            key_env: Some("PATH".to_string()),
-            builtin: false,
-            priority: 0,
-            api_style: crate::endpoints::ApiStyle::default(),
-        }
+            Some("http://127.0.0.1:4000".to_string()),
+            SecretString::new("k"),
+            "PATH",
+            0,
+            crate::endpoints::ApiStyle::default(),
+        )
     }
 
     #[derive(Debug, Deserialize, Serialize, PartialEq)]

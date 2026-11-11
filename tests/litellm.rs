@@ -71,7 +71,8 @@ fn models() -> Vec<FakeModel> {
 fn configured_lister() -> ModelLister {
     Arc::new(|endpoints: Vec<Endpoint>| {
         Box::pin(async move {
-            let configured: Vec<Endpoint> = endpoints.into_iter().filter(|e| !e.builtin).collect();
+            let configured: Vec<Endpoint> =
+                endpoints.into_iter().filter(|e| !e.is_builtin()).collect();
             rkat_tui::models::list_all_endpoints(&configured, Duration::from_secs(10)).await
         })
     })
@@ -477,16 +478,15 @@ async fn both_api_styles_stream_text_reasoning_and_tool_calls() {
             ],
         )
         .await;
-        let endpoint = Endpoint {
-            name: "litellm".into(),
-            dialect: WireDialect::OpenAi,
-            base_url: Some(fake.base_url.clone()),
-            api_key: SecretString::new(key()),
-            key_env: Some(KEY_ENV.into()),
-            builtin: false,
-            priority: 0,
-            api_style: style,
-        };
+        let endpoint = Endpoint::configured(
+            "litellm",
+            WireDialect::OpenAi,
+            Some(fake.base_url.clone()),
+            SecretString::new(key()),
+            KEY_ENV,
+            0,
+            style,
+        );
         let projection = EndpointProjection::of(std::slice::from_ref(&endpoint)).unwrap();
         let mut config = meerkat_core::Config::default();
         config

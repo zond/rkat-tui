@@ -57,9 +57,8 @@ use meerkat_tools::builtin::shell::ShellConfinement;
 
 use crate::cli::Args;
 use crate::endpoints::{
-    EndpointError, EndpointName, EndpointRef, EndpointRegistry, ModelRefError, StartupPlan,
-    StartupRequest, check_catalogued, ensure_aliases, needs_lookup, plan_startup,
-    project_endpoints,
+    EndpointError, EndpointRef, EndpointRegistry, ModelRefError, StartupPlan, StartupRequest,
+    check_catalogued, ensure_aliases, needs_lookup, plan_startup, project_endpoints,
 };
 use crate::error::TuiError;
 use crate::models::{ModelCache, ModelLister, live_lister};
@@ -78,7 +77,7 @@ pub use scope::{RuntimeScope, load_config, resolve_scope};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelChoice {
     /// Endpoint name (`anthropic`, `litellm`, …).
-    pub endpoint: EndpointName,
+    pub endpoint: String,
     /// Model id as the endpoint knows it.
     pub model: String,
     /// The provider whose client speaks the endpoint's dialect.
@@ -129,7 +128,7 @@ fn choice_for(
         })
     })?;
     Ok(ModelChoice {
-        endpoint: EndpointName::new(endpoint.name.clone()),
+        endpoint: endpoint.name.clone(),
         model: reference.model.clone(),
         provider: endpoint.provider(),
         auth_binding: endpoint.binding(),
@@ -351,7 +350,7 @@ pub async fn assemble(
     if models.is_none()
         && let Some(endpoint) = endpoints
             .get(choice.endpoint.as_str())
-            .filter(|e| !e.builtin && e.has_key())
+            .filter(|e| !e.is_builtin() && e.has_key())
     {
         models = Some(ModelCache::from_results(lister(vec![endpoint.clone()]).await).0);
     }
@@ -538,7 +537,7 @@ pub fn model_window(
     let listed = || listed.and_then(|entry| entry.context_window);
     if endpoints
         .get(choice.endpoint.as_str())
-        .is_some_and(|e| !e.builtin)
+        .is_some_and(|e| !e.is_builtin())
     {
         listed().or_else(registry)
     } else {
@@ -863,16 +862,21 @@ mod tests {
     }
 
     fn ep(name: &str, dialect: WireDialect, builtin: bool) -> Endpoint {
-        Endpoint {
-            name: name.to_string(),
-            dialect,
-            base_url: (!builtin).then(|| "http://127.0.0.1:4000".to_string()),
-            api_key: SecretString::new("k"),
-            key_env: None,
-            builtin,
-            priority: 0,
-            api_style: crate::endpoints::ApiStyle::default(),
-        }
+        let mut endpoint = if builtin {
+            Endpoint::builtin(dialect, None, SecretString::new("k"))
+        } else {
+            Endpoint::configured(
+                name,
+                dialect,
+                Some("http://127.0.0.1:4000".to_string()),
+                SecretString::new("k"),
+                "KEY",
+                0,
+                crate::endpoints::ApiStyle::default(),
+            )
+        };
+        endpoint.name = name.to_string();
+        endpoint
     }
 
     fn entry(id: &str) -> ModelEntry {

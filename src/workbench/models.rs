@@ -49,7 +49,9 @@ impl Workbench {
     /// process: its own listing decides its models' facts.
     #[must_use]
     pub fn is_configured_endpoint(&self, endpoint: &str) -> bool {
-        self.endpoints.get(endpoint).is_some_and(|e| !e.builtin)
+        self.endpoints
+            .get(endpoint)
+            .is_some_and(|e| !e.is_builtin())
     }
 
     /// Start the background fetch unless one is running.

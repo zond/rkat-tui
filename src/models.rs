@@ -212,7 +212,7 @@ pub async fn list_endpoint(
     }
     let creds = endpoint.credentials();
     let mut models = list_models(&creds, timeout).await?;
-    if endpoint.builtin && endpoint.dialect == WireDialect::OpenAi {
+    if endpoint.is_builtin() && endpoint.dialect == WireDialect::OpenAi {
         models = openai_chat_only(models);
     }
     let mut listing = EndpointListing {
@@ -1035,16 +1035,15 @@ mod tests {
         ]}"#;
         // The list, then LiteLLM's `/model/info` (not LiteLLM: 404).
         let (base, server) = stub_server(vec![(200, body), (404, "{}")]).await;
-        let endpoint = crate::endpoints::Endpoint {
-            name: "proxy".into(),
-            dialect: WireDialect::OpenAi,
-            base_url: Some(base),
-            api_key: SecretString::new("k"),
-            key_env: Some("PROXY_KEY".into()),
-            builtin: false,
-            priority: 0,
-            api_style: crate::endpoints::ApiStyle::default(),
-        };
+        let endpoint = crate::endpoints::Endpoint::configured(
+            "proxy",
+            WireDialect::OpenAi,
+            Some(base),
+            SecretString::new("k"),
+            "PROXY_KEY",
+            0,
+            crate::endpoints::ApiStyle::default(),
+        );
         let listing = list_endpoint(&endpoint, Duration::from_secs(5))
             .await
             .unwrap();
@@ -1105,16 +1104,15 @@ mod tests {
             ),
         ])
         .await;
-        let endpoint = Endpoint {
-            name: "litellm".into(),
-            dialect: WireDialect::OpenAi,
-            base_url: Some(base.trim_end_matches('/').to_string()),
-            api_key: SecretString::new("sk-proxy"),
-            key_env: Some("PROXY_KEY".into()),
-            builtin: false,
-            priority: 0,
-            api_style: crate::endpoints::ApiStyle::default(),
-        };
+        let endpoint = Endpoint::configured(
+            "litellm",
+            WireDialect::OpenAi,
+            Some(base.trim_end_matches('/').to_string()),
+            SecretString::new("sk-proxy"),
+            "PROXY_KEY",
+            0,
+            crate::endpoints::ApiStyle::default(),
+        );
         let listing = list_endpoint(&endpoint, Duration::from_secs(5))
             .await
             .unwrap();

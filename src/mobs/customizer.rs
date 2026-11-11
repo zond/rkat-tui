@@ -374,13 +374,13 @@ fn helper_binding(
     };
     let own = endpoints
         .iter()
-        .find(|endpoint| endpoint.binding() == owner.auth_binding && !endpoint.builtin)
+        .find(|endpoint| endpoint.binding() == owner.auth_binding && !endpoint.is_builtin())
         .or_else(|| {
             // A built-in endpoint (no binding): the one of the owner's
             // model's dialect.
             owner.auth_binding.is_none().then(|| {
                 endpoints.iter().find(|endpoint| {
-                    endpoint.builtin
+                    endpoint.is_builtin()
                         && Some(endpoint.dialect) == WireDialect::of_catalog_model(&owner.model)
                 })
             })?
@@ -763,15 +763,22 @@ mod tests {
     #[test]
     fn a_helper_runs_through_its_owners_endpoint_or_is_refused() {
         use crate::endpoints::{Endpoint, SecretString, WireDialect};
-        let ep = |name: &str, dialect, builtin: bool| Endpoint {
-            name: name.to_string(),
-            dialect,
-            base_url: (!builtin).then(|| "http://localhost:4000".to_string()),
-            api_key: SecretString::new("k"),
-            key_env: None,
-            builtin,
-            priority: 0,
-            api_style: crate::endpoints::ApiStyle::default(),
+        let ep = |name: &str, dialect, builtin: bool| {
+            let mut endpoint = if builtin {
+                Endpoint::builtin(dialect, None, SecretString::new("k"))
+            } else {
+                Endpoint::configured(
+                    name,
+                    dialect,
+                    Some("http://localhost:4000".to_string()),
+                    SecretString::new("k"),
+                    "KEY",
+                    0,
+                    crate::endpoints::ApiStyle::default(),
+                )
+            };
+            endpoint.name = name.to_string();
+            endpoint
         };
         let gateway = ep("gateway", WireDialect::Anthropic, false);
         let other = ep("oai-proxy", WireDialect::OpenAi, false);
@@ -823,16 +830,15 @@ mod tests {
     #[test]
     fn a_helper_of_a_self_hosted_owner_asks_for_the_endpoint_s_alias() {
         use crate::endpoints::{Endpoint, SecretString, WireDialect};
-        let proxy = Endpoint {
-            name: "litellm".to_string(),
-            dialect: WireDialect::OpenAi,
-            base_url: Some("http://localhost:4000".to_string()),
-            api_key: SecretString::new("k"),
-            key_env: Some("KEY".to_string()),
-            builtin: false,
-            priority: 0,
-            api_style: crate::endpoints::ApiStyle::default(),
-        };
+        let proxy = Endpoint::configured(
+            "litellm",
+            WireDialect::OpenAi,
+            Some("http://localhost:4000".to_string()),
+            SecretString::new("k"),
+            "KEY",
+            0,
+            crate::endpoints::ApiStyle::default(),
+        );
         let endpoints = vec![proxy.clone()];
         let owner = Owner {
             session: SessionId::new(),
