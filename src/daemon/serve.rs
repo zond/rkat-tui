@@ -1164,7 +1164,7 @@ mod tests {
                 .unwrap()
                 .to_string();
             let proof = json!({"jsonrpc": "2.0", "id": 2, "method": "rkat/attach",
-                "params": {"proof": handshake::client_proof("t", nonce, &daemon_nonce)}});
+                "params": {"proof": handshake::client_proof("t", nonce, &daemon_nonce).unwrap()}});
             cw.write_all(format!("{proof}\n").as_bytes()).await.unwrap();
             let mut ack = String::new();
             let _ = cr.read_line(&mut ack).await;

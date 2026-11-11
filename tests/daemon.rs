@@ -82,9 +82,11 @@ impl Client {
         assert_eq!(
             challenge["result"]["challenge"]["proof"],
             rkat_tui::daemon::handshake::daemon_proof(&endpoint.token, nonce, &daemon_nonce)
+                .unwrap()
         );
         let proof =
-            rkat_tui::daemon::handshake::client_proof(&endpoint.token, nonce, &daemon_nonce);
+            rkat_tui::daemon::handshake::client_proof(&endpoint.token, nonce, &daemon_nonce)
+                .unwrap();
         let attached = client.call("rkat/attach", json!({"proof": proof})).await;
         // An attach that asks for the most recent agent is bound to it,
         // which the answer names.

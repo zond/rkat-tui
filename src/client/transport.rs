@@ -214,12 +214,14 @@ impl Connection {
             write_line(&mut write, &hello).await?;
             let line = read_reply(&mut reader).await?;
             let daemon_nonce = check_challenge(&line, token, &client_nonce, address)?;
+            let own_proof = handshake::client_proof(token, &client_nonce, &daemon_nonce)
+                .map_err(|err| ClientError::Protocol(err.to_string()))?;
             let proof = json!({
                 "jsonrpc": "2.0",
                 "id": PROOF_ID,
                 "method": ATTACH_METHOD,
                 "params": AttachParams {
-                    proof: Some(handshake::client_proof(token, &client_nonce, &daemon_nonce)),
+                    proof: Some(own_proof),
                     ..AttachParams::default()
                 },
             });
@@ -381,10 +383,9 @@ fn check_challenge(
     else {
         return Err(unproven("it answered without a proof".into()));
     };
-    let expected = handshake::daemon_proof(token, client_nonce, &challenge.nonce);
     if challenge.nonce.is_empty()
         || challenge.nonce == client_nonce
-        || !handshake::same(challenge.proof.as_bytes(), expected.as_bytes())
+        || !handshake::is_daemon_proof(token, client_nonce, &challenge.nonce, &challenge.proof)
     {
         return Err(unproven("its proof does not match the token".into()));
     }
@@ -597,7 +598,7 @@ mod tests {
         let answers = [
             json!({"jsonrpc": "2.0", "id": 1, "result": {"attached": true}}),
             json!({"jsonrpc": "2.0", "id": 1, "result": {"challenge": {"nonce": "ab".repeat(32), "proof": "00".repeat(32)}}}),
-            json!({"jsonrpc": "2.0", "id": 1, "result": {"challenge": {"nonce": "ab".repeat(32), "proof": handshake::daemon_proof("guess", "x", &"ab".repeat(32))}}}),
+            json!({"jsonrpc": "2.0", "id": 1, "result": {"challenge": {"nonce": "ab".repeat(32), "proof": handshake::daemon_proof("guess", "x", &"ab".repeat(32)).unwrap()}}}),
             json!({"jsonrpc": "2.0", "id": 9, "result": {}}),
         ];
         for answer in answers {
@@ -624,8 +625,8 @@ mod tests {
     async fn a_client_without_the_token_cannot_prove_it() {
         let nonce = "cd".repeat(32);
         for forge in [
-            |_: &str, dn: &str| handshake::client_proof("guess", &"cd".repeat(32), dn),
-            |_: &str, dn: &str| handshake::daemon_proof("secret", &"cd".repeat(32), dn),
+            |_: &str, dn: &str| handshake::client_proof("guess", &"cd".repeat(32), dn).unwrap(),
+            |_: &str, dn: &str| handshake::daemon_proof("secret", &"cd".repeat(32), dn).unwrap(),
             |proof: &str, _: &str| proof.to_string(),
         ] {
             let (client, server) = tokio::io::duplex(64 * 1024);

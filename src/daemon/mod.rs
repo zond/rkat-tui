@@ -596,13 +596,25 @@ impl Daemon {
         });
         // Before any agent runs: a turn no user started is unattended
         // unless a client is with its agent.
-        composed
+        // Each is installed once; a second composition over one engine is
+        // refused rather than left on the first one's agents.
+        if !composed
             .engine
-            .set_attendance(Arc::new(agents::AgentAttendance::new(&agents)));
+            .set_attendance(Arc::new(agents::AgentAttendance::new(&agents)))
+        {
+            return Err(DaemonError::Approval(
+                "the approval engine already knows who is with its agents".to_string(),
+            ));
+        }
         // A message to another agent of the workspace is tier 1.
-        composed
+        if !composed
             .engine
-            .set_agent_peers(Arc::new(agents::AgentAttendance::new(&agents)));
+            .set_agent_peers(Arc::new(agents::AgentAttendance::new(&agents)))
+        {
+            return Err(DaemonError::Approval(
+                "the approval engine already knows the workspace's agents".to_string(),
+            ));
+        }
         if let Some(log) = &audit {
             composed
                 .engine

@@ -11,6 +11,13 @@
   engine never writes them. A `.rkat` directory at any depth of the
   workspace is now a sealed path for the approval gate, as it already
   was for the engine.
+- Three checks fail closed now: an approval engine that was never told
+  who is attached counts nobody as attached (only the user's own runs
+  are reviewed; a turn nobody started is unattended), an attach proof
+  that cannot be computed matches nothing (it was an empty string, which
+  an empty proof would have matched), and a conversation log that does
+  not serialize is an error that leaves the file as it was (it would
+  have replaced it with an empty one).
 - The classifier is no longer sent the `origin` remote's credentials: a
   remote such as `https://user:token@host/x.git` reaches it (and the
   realm's manifest) without the user information, query or fragment.

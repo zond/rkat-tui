@@ -62,6 +62,26 @@ pub struct LogError {
     pub why: String,
 }
 
+/// The conversation log cannot be written.
+#[derive(Debug, thiserror::Error)]
+pub enum SaveError {
+    /// It could not be serialized; nothing was written.
+    #[error("cannot serialize the conversation log: {0}")]
+    Serialize(#[from] serde_json::Error),
+    /// The file could not be written.
+    #[error(transparent)]
+    Write(#[from] crate::paths::AtomicWriteError),
+}
+
+/// Write `value` to `path` as pretty JSON (0600, by rename). A value that
+/// does not serialize writes nothing: the file is never replaced by an
+/// empty one.
+fn save_json<T: serde::Serialize>(value: &T, path: &Path) -> Result<(), SaveError> {
+    let bytes = serde_json::to_vec_pretty(value)?;
+    crate::paths::write_atomic(path, &bytes, crate::paths::FileMode::Private, None)?;
+    Ok(())
+}
+
 /// Whether `messages` hold a user turn.
 #[must_use]
 pub fn has_user_turn(messages: &[Message]) -> bool {
@@ -133,10 +153,10 @@ impl Log {
     ///
     /// # Errors
     ///
-    /// The write's error.
-    pub fn save(&self, path: &Path) -> Result<(), crate::paths::AtomicWriteError> {
-        let bytes = serde_json::to_vec_pretty(self).unwrap_or_default();
-        crate::paths::write_atomic(path, &bytes, crate::paths::FileMode::Private, None)
+    /// [`SaveError`]: the log could not be serialized (the file is left
+    /// as it was) or written.
+    pub fn save(&self, path: &Path) -> Result<(), SaveError> {
+        save_json(self, path)
     }
 
     /// `session` is `agent`'s current one now, or was just used: recorded
@@ -1065,6 +1085,30 @@ mod tests {
     }
 
     use super::*;
+
+    /// Fail closed: a log that does not serialize is an error and leaves
+    /// the file as it was, never an empty log the next start refuses.
+    #[test]
+    fn a_log_that_does_not_serialize_writes_nothing() {
+        struct Unserializable;
+        impl serde::Serialize for Unserializable {
+            fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+                Err(serde::ser::Error::custom("refused"))
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let file = Log::path(dir.path());
+        let mut log = Log::default();
+        log.touch(&SessionId::new(), "main-a");
+        log.save(&file).unwrap();
+        let before = std::fs::read(&file).unwrap();
+        assert!(matches!(
+            save_json(&Unserializable, &file),
+            Err(SaveError::Serialize(_))
+        ));
+        assert_eq!(std::fs::read(&file).unwrap(), before);
+        assert_eq!(Log::read(&file).unwrap(), Some(log));
+    }
 
     #[test]
     fn the_log_records_each_session_once_and_lists_the_last_used_first() {

@@ -269,8 +269,8 @@ pub struct ApprovalEngine {
     events: mpsc::UnboundedSender<ApprovalEvent>,
     realm_file: Option<config::RealmFile>,
     origins: OnceLock<Arc<dyn ToolOrigins>>,
-    /// Who is with each agent ([`super::attendance`]); unset: every call is
-    /// attended.
+    /// Who is with each agent ([`super::attendance`]); unset: nobody is
+    /// attached, and only a run a client's input started is attended.
     attendance: OnceLock<Arc<dyn Attendance>>,
     /// The workspace's agents as peers (a message to one is tier 1).
     agent_peers: OnceLock<Arc<dyn super::attendance::AgentPeers>>,
@@ -457,11 +457,14 @@ impl ApprovalEngine {
 
     /// Whether a call of `session_id` in `run` (`None`: the session's
     /// current run) is attended ([`super::attendance`]).
+    /// Without an [`Attendance`] nobody counts as attached: only positive
+    /// evidence makes a call attended.
     fn attended(&self, session_id: &SessionId, run: Option<&RunId>) -> bool {
-        let Some(attendance) = self.attendance.get() else {
-            return true;
-        };
-        if attendance.attached(session_id) {
+        if self
+            .attendance
+            .get()
+            .is_some_and(|attendance| attendance.attached(session_id))
+        {
             return true;
         }
         let sessions = self.sessions.lock();
@@ -1764,9 +1767,31 @@ mod tests {
         escalations: mpsc::Receiver<EscalationRequest>,
         events: mpsc::UnboundedReceiver<ApprovalEvent>,
         session: SessionId,
+        /// Who is with the agent: a client is attached until a test says
+        /// otherwise.
+        present: Arc<Present>,
+    }
+
+    /// `engine` with a client attached to every agent (see [`Present`]).
+    fn attended(engine: &ApprovalEngine) -> Arc<Present> {
+        let present = Arc::new(Present::default());
+        present.attached.store(true, Ordering::SeqCst);
+        assert!(engine.set_attendance(Arc::clone(&present) as _));
+        present
     }
 
     fn rig_with(
+        verdicts: Vec<Result<ClassifierVerdict, ClassifierError>>,
+        timeout: Duration,
+    ) -> Rig {
+        let mut rig = bare_rig(verdicts, timeout);
+        rig.present = attended(&rig.engine);
+        rig
+    }
+
+    /// A rig whose engine was never told who is with its agents
+    /// (`present` is not installed).
+    fn bare_rig(
         verdicts: Vec<Result<ClassifierVerdict, ClassifierError>>,
         timeout: Duration,
     ) -> Rig {
@@ -1795,6 +1820,7 @@ mod tests {
             escalations,
             events,
             session: SessionId::new(),
+            present: Arc::new(Present::default()),
         }
     }
 
@@ -1934,11 +1960,45 @@ mod tests {
     /// a run that started after a client's input stays reviewed with
     /// nobody attached, and so does a call whose run is not seen yet while
     /// that input waits.
+    /// Fail closed: an engine nobody told who is with its agents treats
+    /// no agent as attended. A run no client's input started is
+    /// unattended, so what needs review is denied without a classifier
+    /// request or a question; the user's own run is still reviewed.
+    #[tokio::test]
+    async fn without_attendance_nobody_counts_as_attached() {
+        let mut rig = bare_rig(
+            vec![Ok(ClassifierVerdict::allow("fine"))],
+            DEFAULT_ESCALATION_TIMEOUT,
+        );
+        let peer_run = RunId::new();
+        rig.engine.run_started(&rig.session, Some(&peer_run));
+        let curl = json!({"command": "curl https://example.com/x"});
+        assert_eq!(
+            call_in(&rig, Some(&peer_run), "u1", "shell", &curl).await,
+            Verdict::Deny {
+                tier: Tier::Classifier,
+                reason: DenyReason::Unattended
+            }
+        );
+        assert_eq!(rig.classifier.calls(), 0, "no classifier request");
+        assert!(rig.escalations.try_recv().is_err(), "no human was asked");
+        // The user's input started this run: it is reviewed.
+        rig.engine.human_input(&rig.session);
+        let user_run = RunId::new();
+        rig.engine.run_started(&rig.session, Some(&user_run));
+        assert!(
+            call_in(&rig, Some(&user_run), "u2", "shell", &curl)
+                .await
+                .is_allowed()
+        );
+        assert_eq!(rig.classifier.calls(), 1);
+    }
+
     #[tokio::test]
     async fn an_unattended_turn_is_denied_what_needs_review() {
         let mut rig = rig(vec![], DEFAULT_ESCALATION_TIMEOUT);
-        let present = Arc::new(Present::default());
-        assert!(rig.engine.set_attendance(Arc::clone(&present) as _));
+        let present = Arc::clone(&rig.present);
+        present.attached.store(false, Ordering::SeqCst);
         let peer_run = RunId::new();
         rig.engine.run_started(&rig.session, Some(&peer_run));
         let curl = json!({"command": "curl https://example.com/x"});
@@ -2416,6 +2476,7 @@ mod tests {
             events: tx,
             realm_file: Some(config::RealmFile::new(blocker.join("tui.toml"), None)),
         });
+        attended(&engine);
         let session = SessionId::new();
         let ask = |id: &'static str| {
             let engine = Arc::clone(&engine);
@@ -3066,6 +3127,7 @@ mod tests {
             events: tx,
             realm_file: Some(config::RealmFile::new(path.clone(), None)),
         });
+        attended(&engine);
         engine.set_mode(PermissionMode::Plan);
         engine.persist_mode().unwrap();
         let file = config::RulesFile::load(&path).unwrap();
@@ -3184,6 +3246,7 @@ mod tests {
             events: tx,
             realm_file: None,
         });
+        attended(&engine);
         let verdict = call_as(
             &engine,
             &SessionId::new(),

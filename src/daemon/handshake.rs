@@ -63,29 +63,71 @@ const CLIENT_LABEL: &[u8] = b"rkat-tui attach: client proof\0";
 /// Random bytes in a nonce.
 const NONCE_BYTES: usize = 32;
 
+/// The attach token could not key a proof. Unreachable with HMAC (it
+/// takes a key of any length), and still a failure: a proof that could
+/// not be computed never matches anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("the attach token cannot key a proof")]
+pub struct ProofKeyError;
+
 /// `HMAC-SHA256(token, label ‖ client_nonce ‖ "\0" ‖ daemon_nonce)`, hex.
-fn proof(token: &str, label: &[u8], client_nonce: &str, daemon_nonce: &str) -> String {
-    // HMAC takes a key of any length.
-    let Ok(mut mac) = Hmac::<Sha256>::new_from_slice(token.as_bytes()) else {
-        return String::new();
-    };
+fn proof(
+    token: &str,
+    label: &[u8],
+    client_nonce: &str,
+    daemon_nonce: &str,
+) -> Result<String, ProofKeyError> {
+    let mut mac = Hmac::<Sha256>::new_from_slice(token.as_bytes()).map_err(|_| ProofKeyError)?;
     mac.update(label);
     mac.update(client_nonce.as_bytes());
     mac.update(b"\0");
     mac.update(daemon_nonce.as_bytes());
-    hex(&mac.finalize().into_bytes())
+    Ok(hex(&mac.finalize().into_bytes()))
+}
+
+/// Whether `given` is the `expected` proof: never when the proof could not
+/// be computed, never for an empty one.
+fn proves(expected: Result<String, ProofKeyError>, given: &str) -> bool {
+    expected
+        .is_ok_and(|expected| !expected.is_empty() && same(given.as_bytes(), expected.as_bytes()))
 }
 
 /// The daemon's proof that it holds `token`, for the two nonces.
-#[must_use]
-pub fn daemon_proof(token: &str, client_nonce: &str, daemon_nonce: &str) -> String {
+///
+/// # Errors
+///
+/// [`ProofKeyError`] when the token cannot key one.
+pub fn daemon_proof(
+    token: &str,
+    client_nonce: &str,
+    daemon_nonce: &str,
+) -> Result<String, ProofKeyError> {
     proof(token, DAEMON_LABEL, client_nonce, daemon_nonce)
 }
 
 /// The client's proof that it holds `token`, for the two nonces.
-#[must_use]
-pub fn client_proof(token: &str, client_nonce: &str, daemon_nonce: &str) -> String {
+///
+/// # Errors
+///
+/// [`ProofKeyError`] when the token cannot key one.
+pub fn client_proof(
+    token: &str,
+    client_nonce: &str,
+    daemon_nonce: &str,
+) -> Result<String, ProofKeyError> {
     proof(token, CLIENT_LABEL, client_nonce, daemon_nonce)
+}
+
+/// Whether `given` is the daemon's proof for `token` and the two nonces.
+#[must_use]
+pub fn is_daemon_proof(token: &str, client_nonce: &str, daemon_nonce: &str, given: &str) -> bool {
+    proves(daemon_proof(token, client_nonce, daemon_nonce), given)
+}
+
+/// Whether `given` is the client's proof for `token` and the two nonces.
+#[must_use]
+pub fn is_client_proof(token: &str, client_nonce: &str, daemon_nonce: &str, given: &str) -> bool {
+    proves(client_proof(token, client_nonce, daemon_nonce), given)
 }
 
 /// A fresh nonce: [`NONCE_BYTES`] from the OS, hex-encoded.
@@ -135,6 +177,9 @@ pub enum HandshakeError {
     /// The connection could not be bound to the agent it asked for.
     #[error("no agent: {0}")]
     NoAgent(String),
+    /// The daemon could not compute its own proof: nobody is let in.
+    #[error("{0}")]
+    Proof(ProofKeyError),
     /// Reading or writing the connection failed.
     #[error("connection error: {0}")]
     Io(#[from] std::io::Error),
@@ -264,11 +309,13 @@ where
         ));
     }
     let daemon_nonce = new_nonce().map_err(|err| (Some(id.clone()), HandshakeError::Io(err)))?;
+    let proof = daemon_proof(token, client_nonce, &daemon_nonce)
+        .map_err(|err| (Some(id.clone()), HandshakeError::Proof(err)))?;
     let reply = protocol::result_line(
         Some(id),
         Challenged {
             challenge: AttachChallenge {
-                proof: daemon_proof(token, client_nonce, &daemon_nonce),
+                proof,
                 nonce: daemon_nonce.clone(),
             },
         },
@@ -281,9 +328,8 @@ where
         .await
         .map_err(|err| (None, err))?;
     let (id, answer) = check(&line)?;
-    let expected = client_proof(token, client_nonce, &daemon_nonce);
     match answer.proof {
-        Some(given) if same(given.as_bytes(), expected.as_bytes()) => {
+        Some(given) if is_client_proof(token, client_nonce, &daemon_nonce, &given) => {
             params.nonce = None;
             Ok((id, params))
         }
@@ -426,9 +472,9 @@ mod tests {
             .to_string();
         assert_eq!(
             challenge["result"]["challenge"]["proof"],
-            daemon_proof("secret", NONCE, &daemon_nonce)
+            daemon_proof("secret", NONCE, &daemon_nonce).unwrap()
         );
-        let proof = json!({"jsonrpc": "2.0", "id": 8, "method": "rkat/attach", "params": {"proof": client_proof(token, NONCE, &daemon_nonce)}});
+        let proof = json!({"jsonrpc": "2.0", "id": 8, "method": "rkat/attach", "params": {"proof": client_proof(token, NONCE, &daemon_nonce).unwrap()}});
         write_line(&mut cw, &format!("{proof}\n{then}"))
             .await
             .unwrap();
@@ -550,12 +596,31 @@ mod tests {
     /// The two proofs are keyed by the token and labelled apart.
     #[test]
     fn the_proofs_depend_on_the_token_both_nonces_and_the_side() {
-        let p = daemon_proof("t", "a", "b");
+        let p = daemon_proof("t", "a", "b").unwrap();
         assert_eq!(p.len(), 64);
-        assert_ne!(p, client_proof("t", "a", "b"));
-        assert_ne!(p, daemon_proof("u", "a", "b"));
-        assert_ne!(p, daemon_proof("t", "b", "a"));
-        assert_ne!(daemon_proof("t", "ab", "c"), daemon_proof("t", "a", "bc"));
+        assert_ne!(p, client_proof("t", "a", "b").unwrap());
+        assert_ne!(p, daemon_proof("u", "a", "b").unwrap());
+        assert_ne!(p, daemon_proof("t", "b", "a").unwrap());
+        assert_ne!(
+            daemon_proof("t", "ab", "c").unwrap(),
+            daemon_proof("t", "a", "bc").unwrap()
+        );
+        assert!(is_daemon_proof("t", "a", "b", &p));
+        assert!(!is_client_proof("t", "a", "b", &p));
+    }
+
+    /// Fail closed: a proof that could not be computed matches nothing,
+    /// not even an empty proof (two empty strings compare equal), and an
+    /// empty proof never proves anything.
+    #[test]
+    fn a_proof_that_could_not_be_computed_proves_nothing() {
+        assert!(!proves(Err(ProofKeyError), ""));
+        assert!(!proves(Err(ProofKeyError), "00"));
+        assert!(!proves(Ok(String::new()), ""));
+        assert!(!is_client_proof("t", "a", "b", ""));
+        assert!(!is_daemon_proof("t", "a", "b", ""));
+        let p = client_proof("t", "a", "b").unwrap();
+        assert!(proves(Ok(p.clone()), &p));
     }
 
     #[tokio::test]

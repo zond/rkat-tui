@@ -25,9 +25,10 @@
 //!   known to have started yet (the event watcher has not seen it): that
 //!   run is the user's.
 //!
-//! The engine asks only when the daemon installed an [`Attendance`]
-//! ([`super::ApprovalEngine::set_attendance`]); a host without one has no
-//! peers to wake its agent.
+//! The daemon installs an [`Attendance`]
+//! ([`super::ApprovalEngine::set_attendance`]) before any agent runs; an
+//! engine without one counts nobody as attached (fail closed), so only the
+//! user's own runs are reviewed there.
 
 use meerkat_core::SessionId;
 
