@@ -1,43 +1,31 @@
-//! `!` shell mode: a command the user typed runs under the agent shell's
-//! own confinement, and its output joins the session's context.
+//! `!` shell mode: a command the user typed runs as the user, and its
+//! output joins the session's context.
 //!
-//! The engine runs the agent's shell only as its `shell` tool
-//! (`meerkat_tools::builtin::shell::ShellTool`, behind the dispatcher and
-//! the approval gate); its launch path (`custody_spawn`) is private to the
-//! crate, so there is no host-callable confined runner to reuse. A user
-//! command is therefore launched here through the sandbox crate directly,
-//! with exactly what the bootstrap gives the shell tool:
+//! The command is the user's own, typed at their terminal: it runs like any
+//! other terminal program, with no sandbox and no approval gate.
 //!
-//! - the same requirement ([`crate::bootstrap::ConfinementPlan::shell`]):
-//!   [`ShellConfinement::Required`] compiles it with
-//!   [`meerkat_sandbox::CompiledConfinement`] and binds one
-//!   [`meerkat_sandbox::ProcessLaunchSpec`] per run; under
-//!   [`ShellConfinement::TrustedHost`] (`--no-confinement`) the command runs
-//!   plain, as the agent's then does. Nothing runs unconfined when the
-//!   session is confined: a requirement the backend refuses refuses the run;
-//! - the same program (the tool's resolved shell,
-//!   [`crate::bootstrap::approval::resolved_shell_program`]) with `-c`;
-//! - the same working directory (the canonical workspace) and environment:
-//!   `PWD` plus the curated set ([`crate::bootstrap::ConfinementPlan::shell_env`])
-//!   when confined, the whole environment of rkat-tui when not;
-//! - stdin `/dev/null`.
+//! - the program is the user's login shell (`$SHELL` when it names an
+//!   absolute path, else `/bin/sh`) with `-c`;
+//! - the working directory is the canonical workspace;
+//! - the environment is rkat-tui's whole environment (with `PWD` set to
+//!   the workspace);
+//! - stdin is `/dev/null`.
 //!
-//! There is no approval gate: the user typed the command. It runs for at
-//! most `[shell] user_timeout_secs` (default
+//! It runs for at most `[shell] user_timeout_secs` (default
 //! [`DEFAULT_USER_TIMEOUT_SECS`]); stdout and stderr are captured together
 //! in arrival order, up to [`MAX_OUTPUT_BYTES`] with a truncation marker.
 //! On a timeout, a cancel (the run's future dropped) or the command's exit,
-//! its processes are killed: the process group of a plain run, the PID
-//! namespace of a confined one on Linux (the namespace dies with its first
-//! process), the direct child on macOS.
+//! its process group is killed.
+//!
+//! The agent's shell is a different thing: the daemon runs it under the
+//! engine's confinement (`--confinement`), with a curated environment.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use meerkat_tools::builtin::shell::ShellConfinement;
 use parking_lot::Mutex;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
@@ -111,100 +99,50 @@ pub fn context_text(command: &str, run: &ShellRun) -> String {
     text
 }
 
-/// What runs a user's command: the shell tool's program, workspace,
-/// confinement and environment, and the timeout.
-#[derive(Clone)]
+/// What runs a user's command: the user's shell in the workspace, and
+/// the timeout.
+#[derive(Debug, Clone)]
 pub struct UserShell {
-    program: Option<PathBuf>,
+    program: PathBuf,
     workspace: PathBuf,
-    launch: Launch,
     timeout: Duration,
 }
 
-impl std::fmt::Debug for UserShell {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("UserShell")
-            .field("program", &self.program)
-            .field("workspace", &self.workspace)
-            .field("confined", &self.confined())
-            .field("timeout", &self.timeout)
-            .finish_non_exhaustive()
-    }
-}
-
-/// How a run is launched.
-#[derive(Clone)]
-enum Launch {
-    /// Plain, inheriting rkat-tui's environment.
-    Trusted,
-    /// Under the compiled requirement (or the backend's refusal of it),
-    /// with exactly `env`.
-    Confined {
-        compiled:
-            Result<Arc<meerkat_sandbox::CompiledConfinement>, meerkat_sandbox::ConfinementRefusal>,
-        env: HashMap<String, String>,
-    },
-}
-
 impl UserShell {
-    /// The runner for `shell` (the agent shell's requirement) over
-    /// `workspace`, with `shell_env` (the curated environment of a confined
-    /// shell) and `timeout`. `program` is the shell to run (`None`: none was
-    /// found; every run then fails).
+    /// The runner of `program` over `workspace` with `timeout`.
     #[must_use]
-    pub fn new(
-        program: Option<PathBuf>,
-        workspace: &Path,
-        shell: &ShellConfinement,
-        shell_env: Option<&HashMap<String, String>>,
-        timeout: Duration,
-    ) -> Self {
-        let launch = match shell {
-            ShellConfinement::TrustedHost => Launch::Trusted,
-            ShellConfinement::Required { requirement } => Launch::Confined {
-                compiled: meerkat_sandbox::CompiledConfinement::compile(requirement).map(Arc::new),
-                env: shell_env.cloned().unwrap_or_default(),
-            },
-        };
+    pub fn new(program: PathBuf, workspace: &Path, timeout: Duration) -> Self {
         Self {
             program,
             workspace: std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf()),
-            launch,
             timeout,
         }
     }
 
-    /// Whether runs are confined.
+    /// The user's shell over `workspace` with `timeout`
+    /// ([`users_shell`]).
     #[must_use]
-    pub fn confined(&self) -> bool {
-        matches!(self.launch, Launch::Confined { .. })
+    pub fn of_user(workspace: &Path, timeout: Duration) -> Self {
+        Self::new(users_shell(std::env::var_os("SHELL")), workspace, timeout)
     }
 
     /// Run `command` to its end (or the timeout).
     ///
     /// # Errors
     ///
-    /// [`UserShellError`] when it cannot start (no shell, a refused
-    /// confinement, a failed spawn) or cannot be waited for.
+    /// [`UserShellError`] when it cannot start or cannot be waited for.
     pub async fn run(&self, command: &str) -> Result<ShellRun, UserShellError> {
-        let program = self.program.as_ref().ok_or(UserShellError::NoShell)?;
         let started = Instant::now();
-        let args = [OsString::from("-c"), OsString::from(command)];
-        let mut child = match &self.launch {
-            Launch::Trusted => self.spawn_trusted(program, &args)?,
-            Launch::Confined { compiled, env } => {
-                self.spawn_confined(compiled, env, program, &args)?
-            }
-        };
+        let mut child = self.spawn(command)?;
         let captured = Arc::new(Mutex::new(Captured::default()));
         let mut pumps = tokio::task::JoinSet::new();
-        if let Some(out) = child.stdout() {
+        if let Some(out) = child.child.stdout.take() {
             pumps.spawn(pump(out, Arc::clone(&captured)));
         }
-        if let Some(err) = child.stderr() {
+        if let Some(err) = child.child.stderr.take() {
             pumps.spawn(pump(err, Arc::clone(&captured)));
         }
-        let exit = match tokio::time::timeout(self.timeout, child.wait()).await {
+        let exit = match tokio::time::timeout(self.timeout, child.child.wait()).await {
             Ok(Ok(status)) => exit_of(status),
             Ok(Err(err)) => {
                 child.kill();
@@ -212,8 +150,7 @@ impl UserShell {
             }
             Err(_) => ShellExit::TimedOut(self.timeout.as_secs()),
         };
-        // Whatever the command left running dies with it, as the agent's
-        // shell calls do.
+        // Whatever the command left running dies with it.
         child.kill();
         let _ = tokio::time::timeout(DRAIN_GRACE, async {
             while pumps.join_next().await.is_some() {}
@@ -228,85 +165,43 @@ impl UserShell {
         })
     }
 
-    fn environment(&self, env: Option<&HashMap<String, String>>) -> BTreeMap<OsString, OsString> {
-        let mut out =
-            BTreeMap::from([(OsString::from("PWD"), self.workspace.as_os_str().to_owned())]);
-        out.extend(
-            env.into_iter()
-                .flatten()
-                .map(|(k, v)| (OsString::from(k), OsString::from(v))),
-        );
-        out
-    }
-
-    fn spawn_trusted(&self, program: &Path, args: &[OsString]) -> Result<Child, UserShellError> {
-        let mut command = tokio::process::Command::new(program);
-        command
-            .args(args)
+    fn spawn(&self, command: &str) -> Result<Child, UserShellError> {
+        let mut process = tokio::process::Command::new(&self.program);
+        process
+            .args([OsString::from("-c"), OsString::from(command)])
             .current_dir(&self.workspace)
-            .envs(self.environment(None))
+            .envs(BTreeMap::from([(
+                OsString::from("PWD"),
+                self.workspace.as_os_str().to_owned(),
+            )]))
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
         #[cfg(unix)]
-        command.process_group(0);
-        let child = command.spawn().map_err(|source| UserShellError::Start {
-            program: program.to_path_buf(),
+        process.process_group(0);
+        let child = process.spawn().map_err(|source| UserShellError::Start {
+            program: self.program.clone(),
             source,
         })?;
-        Ok(Child::trusted(child))
+        let group = child.id().map(GroupKill);
+        Ok(Child { child, group })
     }
+}
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    fn spawn_confined(
-        &self,
-        compiled: &Result<
-            Arc<meerkat_sandbox::CompiledConfinement>,
-            meerkat_sandbox::ConfinementRefusal,
-        >,
-        env: &HashMap<String, String>,
-        program: &Path,
-        args: &[OsString],
-    ) -> Result<Child, UserShellError> {
-        let refused = UserShellError::Refused;
-        let compiled = compiled.as_ref().map_err(|r| refused(*r))?;
-        let launch = meerkat_sandbox::ProcessLaunchSpec::new(
-            program.to_path_buf(),
-            args.to_vec(),
-            self.workspace.clone(),
-            self.environment(Some(env)),
-        )
-        .map_err(refused)?;
-        let prepared = compiled.bind_launch(launch).map_err(refused)?;
-        let child = prepared.spawn().map_err(UserShellError::StartConfined)?;
-        Ok(Child::Confined(child))
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    fn spawn_confined(
-        &self,
-        _compiled: &Result<
-            Arc<meerkat_sandbox::CompiledConfinement>,
-            meerkat_sandbox::ConfinementRefusal,
-        >,
-        _env: &HashMap<String, String>,
-        _program: &Path,
-        _args: &[OsString],
-    ) -> Result<Child, UserShellError> {
-        Err(UserShellError::NoBackend)
-    }
+/// The user's shell: `shell` (the value of `$SHELL`) when it names an
+/// absolute path, else `/bin/sh`.
+#[must_use]
+pub fn users_shell(shell: Option<OsString>) -> PathBuf {
+    shell
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .unwrap_or_else(|| PathBuf::from("/bin/sh"))
 }
 
 /// Why a `!` command could not run.
 #[derive(Debug, thiserror::Error)]
 pub enum UserShellError {
-    /// No shell program was found.
-    #[error("no shell found (nu, $SHELL, bash, zsh or sh)")]
-    NoShell,
-    /// The sandbox refuses the launch.
-    #[error("the sandbox refuses the command: {0}")]
-    Refused(meerkat_sandbox::ConfinementRefusal),
     /// The shell could not be started.
     #[error("could not start {}: {source}", program.display())]
     Start {
@@ -315,78 +210,29 @@ pub enum UserShellError {
         /// Why.
         source: std::io::Error,
     },
-    /// The confined shell could not be started.
-    #[error("could not start the confined command: {0}")]
-    StartConfined(std::io::Error),
     /// The command's exit could not be read.
     #[error("could not wait for the command: {0}")]
     Wait(std::io::Error),
-    /// Confinement is required and this platform has no sandbox backend.
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    #[error("this platform has no sandbox backend")]
-    NoBackend,
 }
 
-/// A running command.
-enum Child {
-    Trusted {
-        child: tokio::process::Child,
-        /// Its process group, killed on drop.
-        group: Option<GroupKill>,
-    },
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    Confined(meerkat_sandbox::NativeChild),
+/// A running command and its process group.
+struct Child {
+    child: tokio::process::Child,
+    /// Its process group, killed on drop.
+    group: Option<GroupKill>,
 }
 
 impl Child {
-    fn trusted(child: tokio::process::Child) -> Self {
-        let group = child.id().map(GroupKill);
-        Self::Trusted { child, group }
-    }
-
-    fn stdout(&mut self) -> Option<tokio::process::ChildStdout> {
-        match self {
-            Self::Trusted { child, .. } => child.stdout.take(),
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            Self::Confined(child) => child.stdout.take(),
-        }
-    }
-
-    fn stderr(&mut self) -> Option<tokio::process::ChildStderr> {
-        match self {
-            Self::Trusted { child, .. } => child.stderr.take(),
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            Self::Confined(child) => child.stderr.take(),
-        }
-    }
-
-    async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
-        match self {
-            Self::Trusted { child, .. } => child.wait().await,
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            Self::Confined(child) => child.wait().await,
-        }
-    }
-
-    /// Kill what is left: the process group (plain) or the direct child
-    /// (confined; on Linux its PID namespace goes with it).
+    /// Kill what is left: the process group, then the shell itself.
     fn kill(&mut self) {
-        match self {
-            Self::Trusted { child, group } => {
-                if let Some(group) = group {
-                    group.kill();
-                }
-                let _ = child.start_kill();
-            }
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            Self::Confined(child) => {
-                let _ = child.start_kill_without_reap();
-            }
+        if let Some(group) = &self.group {
+            group.kill();
         }
+        let _ = self.child.start_kill();
     }
 }
 
-/// A plain run's process group (its leader's pid), killed when dropped.
+/// A run's process group (its leader's pid), killed when dropped.
 struct GroupKill(u32);
 
 impl GroupKill {
@@ -508,13 +354,39 @@ mod tests {
     }
 
     fn plain(timeout: Duration) -> UserShell {
-        UserShell::new(
-            Some(PathBuf::from("/bin/sh")),
-            &std::env::temp_dir(),
-            &ShellConfinement::TrustedHost,
-            None,
-            timeout,
-        )
+        UserShell::new(PathBuf::from("/bin/sh"), &std::env::temp_dir(), timeout)
+    }
+
+    #[test]
+    fn the_users_shell_is_shell_when_absolute_else_bin_sh() {
+        assert_eq!(
+            users_shell(Some("/usr/bin/zsh".into())),
+            PathBuf::from("/usr/bin/zsh")
+        );
+        assert_eq!(users_shell(Some("zsh".into())), PathBuf::from("/bin/sh"));
+        assert_eq!(users_shell(None), PathBuf::from("/bin/sh"));
+    }
+
+    /// A `!` command inherits rkat-tui's whole environment and runs in the
+    /// workspace.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_run_has_the_users_environment_and_the_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = std::fs::canonicalize(dir.path()).unwrap();
+        let Some(home) = std::env::var_os("HOME") else {
+            return;
+        };
+        let run = UserShell::new(PathBuf::from("/bin/sh"), &ws, Duration::from_secs(30))
+            .run("echo \"HOME=[$HOME]\"; pwd")
+            .await
+            .unwrap();
+        assert!(
+            run.output
+                .contains(&format!("HOME=[{}]", home.to_string_lossy())),
+            "{run:?}"
+        );
+        assert!(run.output.contains(&ws.display().to_string()), "{run:?}");
     }
 
     #[cfg(unix)]

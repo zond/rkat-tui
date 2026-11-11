@@ -218,16 +218,10 @@ project root, sealed at tier 0 for reads, searches and writes
 the trusted host and can read the file like any other process of the
 user.
 
-A client on the daemon's own machine compares the agent shell's
-confinement the daemon reports (`rkat/status` `shell`) with what its own
-flags give before attaching, and refuses a daemon whose shell may do more
-(`ClientError::ShellWider`). The comparison is local only: a daemon
-reached on another machine (`--attach=HOST:PORT` to a remote workspace)
-is not compared at all, because its grants name that machine's paths
-(`Reached::apply` clears the client's expected shell for a remote target,
-and `establish` skips `check_shell` without one). Such an attachment
-gives no assurance about the remote agent shell's confinement; it is the
-remote daemon's command line that decides it.
+The agent shell's confinement is the daemon's alone: its command line
+decides it, `/status` shows it from the daemon's `rkat/report`, and a
+client neither plans nor compares one (the user's `!` shell runs
+unconfined in the client, see below).
 
 The realm (the sessions database, whose human-authored messages seed the
 classifier on resume, the approval and custody stores, the rules, the
@@ -235,8 +229,8 @@ realm config, the helper bindings, the audit log) is outside every grant
 of the confined shell: it lives in `<config dir>/workspaces/<id>/`, the
 daemon refuses to start when its shell's plan reaches it
 (`TuiError::RealmExposed`: a workspace that holds the config directory,
-as `-w ~` with the default one, or an extra grant of it), the client does
-the same for its `!` shell, and it is a secret root for the file tools.
+as `-w ~` with the default one, or an extra grant of it), and it is a
+secret root for the file tools.
 What the confined shell can still write, until engine ask 8 lands: on
 Linux the whole workspace, `.rkat/` and `.git/` included. Nothing
 rkat-tui reads back from the project's `.rkat/` is trusted on sight (its
@@ -455,9 +449,9 @@ When the engine serves mob methods on a governed connection with a
 host-installed consent surface, the same classifier moves behind
 `OperationReviewer` and the TUI answers `approval/consent_decide`.
 
-**The `!` shell.** It runs in the client, under the confinement plan the
-client builds from the same flags and `tui.toml` layers as the daemon's
-shell; its output, like `/remember` and `/memory` edits,
+**The `!` shell.** It runs in the client as the user, with no sandbox
+(the user's shell, the whole environment, the workspace as working
+directory); its output, like `/remember` and `/memory` edits,
 reaches the orchestrator with `mob/append_system_context`.
 
 **Compaction.** `/compact` (or `/compact now`) sends `mob/compact_member` (fallback

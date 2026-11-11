@@ -135,10 +135,11 @@ without it), and a seccomp filter. Inside it the command is pid 2 under a
 small init, host processes are invisible, and `/etc/alternatives` and `/usr/libexec` are granted so a
 Rust toolchain can link. `--no-confinement` runs the shell as the trusted
 host. The curated environment passes no provider keys into the sandbox.
-The agent's shell is the daemon's; a `!` command runs in the client under
-the confinement plan it builds from the same flags and `tui.toml` layers.
-The daemon refuses an endpoint file its confined shell could read, and
-both refuse a confinement plan that reaches the workspace's realm, which
+The agent's shell is the daemon's; a `!` command is the user's own and
+runs in the client as the user, with no sandbox, the user's shell and
+whole environment (`src/user_shell.rs`); the client plans no confinement.
+The daemon refuses an endpoint file its confined shell could read, and a
+confinement plan that reaches the workspace's realm, which
 lives outside the workspace in `<config dir>/workspaces/<id>/`
 (`src/bootstrap/realm_home.rs`: a `workspace.toml` manifest per realm is
 the only authority for which workspace owns it; re-homing is explicit).

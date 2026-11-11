@@ -1035,90 +1035,6 @@ pub fn plan(
     })
 }
 
-/// Whether a shell confined by `inner` can do nothing `outer` would not
-/// let it: every read, write and socket grant of `inner` lies inside one
-/// of `outer`'s, every exclusion of `outer` is one of `inner`'s, and its
-/// network is no wider. A trusted host is inside only a trusted host; a
-/// trusted host contains everything.
-#[must_use]
-pub fn shell_within(inner: &ShellConfinement, outer: &ShellConfinement) -> bool {
-    let (inner, outer) = match (inner, outer) {
-        (_, ShellConfinement::TrustedHost) => return true,
-        (ShellConfinement::TrustedHost, ShellConfinement::Required { .. }) => return false,
-        (
-            ShellConfinement::Required { requirement: inner },
-            ShellConfinement::Required { requirement: outer },
-        ) => (inner.specification(), outer.specification()),
-    };
-    inner.baseline == outer.baseline
-        && files_within(&inner.read, &outer.read)
-        && files_within(&inner.write, &outer.write)
-        && accesses_within(&inner.unix_connect, &outer.unix_connect)
-        && accesses_within(&outer.deny_read, &inner.deny_read)
-        && accesses_within(&outer.deny_write, &inner.deny_write)
-        && network_within(&inner.network, &outer.network)
-        && (inner.require_descendant_termination || !outer.require_descendant_termination)
-}
-
-fn files_within(inner: &FilesystemAccess, outer: &FilesystemAccess) -> bool {
-    match (inner, outer) {
-        (_, FilesystemAccess::Unrestricted) => true,
-        (FilesystemAccess::Unrestricted, FilesystemAccess::Paths(_)) => false,
-        (FilesystemAccess::Paths(inner), FilesystemAccess::Paths(outer)) => {
-            accesses_within(inner, outer)
-        }
-    }
-}
-
-/// Every access of `inner` lies inside one of `outer`.
-fn accesses_within(inner: &[PathAccess], outer: &[PathAccess]) -> bool {
-    inner.iter().all(|access| {
-        outer.iter().any(|grant| match (grant, access) {
-            (PathAccess::Subtree(dir), access) => access.path().starts_with(dir),
-            (PathAccess::Literal(file), PathAccess::Literal(path)) => file == path,
-            (PathAccess::Literal(_), PathAccess::Subtree(_)) => false,
-        })
-    })
-}
-
-fn network_within(inner: &IpNetworkAccess, outer: &IpNetworkAccess) -> bool {
-    match (inner, outer) {
-        (IpNetworkAccess::Denied, _) | (_, IpNetworkAccess::Unrestricted) => true,
-        (IpNetworkAccess::Connect(inner), IpNetworkAccess::Connect(outer)) => {
-            inner.iter().all(|address| outer.contains(address))
-        }
-        _ => false,
-    }
-}
-
-/// `shell` in a line: unconfined, or the network and the directories it
-/// may write and read.
-#[must_use]
-pub fn describe_shell(shell: &ShellConfinement) -> String {
-    let ShellConfinement::Required { requirement } = shell else {
-        return "unconfined (trusted host)".to_string();
-    };
-    let spec = requirement.specification();
-    let paths = |access: &FilesystemAccess| match access {
-        FilesystemAccess::Unrestricted => "everything".to_string(),
-        FilesystemAccess::Paths(paths) => paths
-            .iter()
-            .map(|path| path.path().display().to_string())
-            .collect::<Vec<_>>()
-            .join(", "),
-    };
-    format!(
-        "confined, network {}; writes {}; reads {}",
-        match &spec.network {
-            IpNetworkAccess::Denied => "denied".to_string(),
-            IpNetworkAccess::Unrestricted => "allowed".to_string(),
-            IpNetworkAccess::Connect(to) => format!("to {} address(es)", to.len()),
-        },
-        paths(&spec.write),
-        paths(&spec.read)
-    )
-}
-
 fn mode_name(mode: ConfinementArg) -> &'static str {
     match mode {
         ConfinementArg::Workspace => "workspace",
@@ -1170,40 +1086,6 @@ mod tests {
             file,
             host,
         }
-    }
-
-    /// D4 of the security review: what a client may attach to. A daemon
-    /// shell inside the client's is attached (strict inside workspace, the
-    /// same inside itself); a wider one is not (workspace against strict,
-    /// unconfined against confined, an extra write grant).
-    #[test]
-    fn a_shell_is_within_another_only_when_it_can_do_no_more() {
-        let f = fixture();
-        let shell = |mode, host: &HostPaths| match lower(mode, &f.ws, host).unwrap() {
-            Some(requirement) => ShellConfinement::Required { requirement },
-            None => ShellConfinement::TrustedHost,
-        };
-        let workspace = shell(ConfinementArg::Workspace, &f.host);
-        let strict = shell(ConfinementArg::Strict, &f.host);
-        let off = shell(ConfinementArg::Off, &f.host);
-        assert!(shell_within(&workspace, &workspace));
-        assert!(shell_within(&strict, &workspace));
-        assert!(!shell_within(&workspace, &strict));
-        assert!(shell_within(&workspace, &off));
-        assert!(!shell_within(&off, &workspace));
-        assert!(!shell_within(&off, &strict));
-        // One more writable directory is wider.
-        let mut wider_host = f.host.clone();
-        wider_host.write.push(f.tools.clone());
-        let wider = shell(ConfinementArg::Workspace, &wider_host);
-        assert!(!shell_within(&wider, &workspace));
-        assert!(shell_within(&workspace, &wider));
-        assert!(describe_shell(&off).contains("unconfined"));
-        let words = describe_shell(&strict);
-        assert!(
-            words.contains("network denied") && words.contains(&f.ws.display().to_string()),
-            "{words}"
-        );
     }
 
     /// S3 of the security review: of the Cargo home only `registry/` and

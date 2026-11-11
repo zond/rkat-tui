@@ -792,7 +792,7 @@ Keys:
   / (one-line input)             a menu of the matching commands opens above the input:
                                  ↑/↓ choose, Tab completes, Enter completes a partial name
                                  (a full one sends), Esc closes it
-  ! (first character)            shell mode: the rest runs as a command in the agent's sandbox
+  ! (first character)            shell mode: the rest runs as a command, as you (no sandbox)
                                  (no approval: you typed it; [shell] user_timeout_secs, 120 s);
                                  its output shows here and joins the context without a turn.
                                  While the agent works it waits for the turn to end and runs

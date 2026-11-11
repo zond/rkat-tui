@@ -250,7 +250,6 @@ impl Client {
             None,
             no_lists(),
             &endpoint_file_for(root),
-            None,
             Some(choice),
         )
         .await
@@ -272,20 +271,17 @@ impl Client {
         start_token: Option<&str>,
         lister: rkat_tui::models::ModelLister,
     ) -> Self {
-        Self::attach_setup(args, start_token, lister, &endpoint_file_for(root), None).await
+        Self::attach_setup(args, start_token, lister, &endpoint_file_for(root)).await
     }
 
-    /// Attach through `endpoint_file`; with `host_paths`, the `!` shell is
-    /// confined with those instead of this host's (the daemon's shell gets
-    /// [`Setup::host_paths`] too).
+    /// Attach through `endpoint_file`.
     pub async fn attach_setup(
         args: &rkat_tui::Args,
         start_token: Option<&str>,
         lister: rkat_tui::models::ModelLister,
         endpoint_file: &Path,
-        host_paths: Option<&HostPaths>,
     ) -> Self {
-        Self::attach_config(args, start_token, lister, endpoint_file, host_paths, None).await
+        Self::attach_config(args, start_token, lister, endpoint_file, None).await
     }
 
     /// [`Self::attach_setup`], asking for the agent `agent` names. `None`:
@@ -299,11 +295,9 @@ impl Client {
         start_token: Option<&str>,
         lister: rkat_tui::models::ModelLister,
         endpoint_file: &Path,
-        host_paths: Option<&HostPaths>,
         agent: Option<rkat_tui::daemon::protocol::AgentChoice>,
     ) -> Self {
-        let config =
-            client_config(args, start_token, lister, endpoint_file, host_paths, agent).await;
+        let config = client_config(args, start_token, lister, endpoint_file, agent).await;
         Self::attach_with_config(config).await
     }
 
@@ -454,7 +448,6 @@ pub async fn client_config(
     start_token: Option<&str>,
     lister: rkat_tui::models::ModelLister,
     endpoint_file: &Path,
-    host_paths: Option<&HostPaths>,
     agent: Option<rkat_tui::daemon::protocol::AgentChoice>,
 ) -> rkat_tui::client::ClientConfig {
     let mut config = rkat_tui::client::configure(args, AttachTarget::Existing)
@@ -470,27 +463,6 @@ pub async fn client_config(
     }
     config.lister = lister;
     config.endpoint_files = vec![endpoint_file.to_path_buf()];
-    // The daemon of the rig plans its shell over these host paths (the
-    // default ones without), so the client compares with the same.
-    let (layers, realm_config) = rkat_tui::bootstrap::prepare(args).await.unwrap();
-    let realm_config = rkat_tui::bootstrap::guarded_config(&layers.scope, args, realm_config).await;
-    let plan = rkat_tui::bootstrap::shell_plan(
-        &layers,
-        &realm_config,
-        args,
-        &host_paths.cloned().unwrap_or_default(),
-    );
-    config.shell = Some(Arc::new(
-        plan.as_ref()
-            .map(|plan| plan.shell.clone())
-            .map_err(ToString::to_string),
-    ));
-    if let Some(host_paths) = host_paths {
-        config.user_shell =
-            rkat_tui::bootstrap::user_shell(&layers, &realm_config, args, host_paths)
-                .map(Arc::new)
-                .map_err(|err| format!("the ! shell is unavailable: {err}"));
-    }
     config
 }
 
@@ -531,7 +503,7 @@ pub fn reroot(
                 let options = Running::options(&workspace, &llm).with_endpoint_file(file.clone());
                 let daemon = Running::start_with(&daemon_args, options).await;
                 restarted.lock().push(daemon);
-                Ok(client_config(&daemon_args, None, no_lists(), &file, None, None).await)
+                Ok(client_config(&daemon_args, None, no_lists(), &file, None).await)
             })
                 as std::pin::Pin<
                     Box<
@@ -660,14 +632,8 @@ impl Attached {
         client_args.extend(setup.client_args.iter().cloned());
         let client_args: Vec<&str> = client_args.iter().map(String::as_str).collect();
         let client_args = crate::common::args_with(root, &client_args);
-        let client = Client::attach_setup(
-            &client_args,
-            None,
-            lister,
-            &setup.endpoint_file(root),
-            setup.host_paths.as_ref(),
-        )
-        .await;
+        let client =
+            Client::attach_setup(&client_args, None, lister, &setup.endpoint_file(root)).await;
         Ok(Self { daemon, client })
     }
 

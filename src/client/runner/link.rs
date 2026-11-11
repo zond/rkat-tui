@@ -86,7 +86,6 @@ impl Runner {
             },
             cursor: (!self.agent_switch).then(|| self.config.cursor.clone()),
             start_token: start_token.clone(),
-            shell: self.config.shell.clone(),
         };
         let task = if let Some(endpoint) = self.config.address.clone() {
             // Reached by address: the same address again, with backoff.
@@ -189,7 +188,6 @@ impl Runner {
             usage,
             queued,
             context,
-            shell_notice,
         } = established;
         let address = link.endpoint.address;
         let agent = link.connection.agent().to_string();
@@ -246,9 +244,6 @@ impl Runner {
         }
         if fresh {
             self.load_cost(&link.session);
-        }
-        if let Some(text) = shell_notice {
-            self.notice(NoticeLevel::Warn, text);
         }
         let daemon_build = link.connection.daemon_build().map(str::to_string);
         if new_daemon && daemon_build.as_deref() != Some(crate::BUILD) {
@@ -787,9 +782,6 @@ pub(super) struct Attach {
     agent: AgentChoice,
     cursor: Option<CursorFile>,
     start_token: Option<String>,
-    /// What this client's flags give the agent shell (`None`: not
-    /// compared), see [`ClientConfig::shell`].
-    shell: Option<Arc<Result<ShellConfinement, String>>>,
 }
 
 /// What the status bar says of a failed connect: the reason and the
@@ -812,40 +804,6 @@ pub(super) fn failure(err: &ClientError) -> (String, Option<PathBuf>) {
 /// this client to its agent (it is no longer live).
 pub(super) fn gone(err: &ClientError) -> bool {
     matches!(err, ClientError::Refused { code, .. } if *code == protocol::NO_AGENT)
-        || matches!(err, ClientError::ShellWider { .. })
-}
-
-/// Compare the agent shell's confinement `endpoint`'s daemon reports with
-/// what this client's flags give (`expected`), before attaching (a probe,
-/// so no agent is seated for a client that is refused): a daemon whose
-/// shell may do more is refused, one whose shell may do less is attached
-/// with a warning (the returned text), the same one silently.
-///
-/// # Errors
-///
-/// [`ClientError::ShellWider`] for a wider or uncomparable shell (a
-/// daemon that does not report it, or a client that cannot plan its
-/// own), and the probe's errors.
-pub(super) async fn check_shell(
-    endpoint: &Endpoint,
-    expected: &Result<ShellConfinement, String>,
-) -> Result<Option<String>, ClientError> {
-    use crate::bootstrap::confinement::{describe_shell, shell_within};
-    let status = super::super::address::status_of(endpoint).await?;
-    let mine = expected.as_ref().map(describe_shell);
-    match (status.shell, expected) {
-        (daemon, Ok(client)) if daemon == *client => Ok(None),
-        (daemon, Ok(client)) if shell_within(&daemon, client) => Ok(Some(format!(
-            "the daemon's agent shell is narrower than this client's flags ask for: it runs {}, these flags give {}; /daemon stop and attach again to run it with these flags",
-            describe_shell(&daemon),
-            describe_shell(client)
-        ))),
-        (daemon, _) => Err(ClientError::ShellWider {
-            pid: status.pid,
-            daemon: describe_shell(&daemon),
-            client: mine.unwrap_or_else(|err| err.clone()),
-        }),
-    }
 }
 
 /// Attach (bound to the agent `attach` asks for), find the agent's
@@ -858,10 +816,6 @@ pub(super) async fn establish(
     saved: Option<&Cursor>,
     attach: &Attach,
 ) -> Result<Established, ClientError> {
-    let shell_notice = match &attach.shell {
-        Some(expected) => check_shell(&endpoint, expected).await?,
-        None => None,
-    };
     let (connection, mut notifications) = Connection::attach_to(
         &endpoint,
         ATTACH_TIMEOUT,
@@ -952,7 +906,6 @@ pub(super) async fn establish(
             usage,
             queued,
             context,
-            shell_notice,
         })
     })
     .await

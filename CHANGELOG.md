@@ -43,6 +43,17 @@
 
 ### Changed
 
+- `!` commands run as you, with no sandbox: your shell (`$SHELL`, else
+  `/bin/sh`), your whole environment and the workspace as working
+  directory, like anything typed in a terminal (`!git push` and `!cargo
+  publish` work with your credentials). The timeout, the output capture,
+  the kill of what the command left running and the output joining the
+  agent's context are as before. The agent's shell is unchanged: the
+  daemon still confines it. With this the client no longer plans the
+  agent shell's confinement: it no longer refuses a daemon whose shell
+  is wider than its own flags (the "runs the agent's shell wider than
+  this client's flags allow" error) and no longer probes the daemon's
+  status before every attach.
 - The engine is Meerkat 0.9.12 (from 0.9.11): the engine's own file tools
   (`apply_patch`, `blob_save_file`) refuse every path in a `.rkat`
   directory of the workspace, the realm's SQLite is 3.54.1 (the bundled

@@ -410,7 +410,6 @@ async fn attach_as_typed(root: &std::path::Path, extra: &[&str]) -> Client {
         None,
         common::no_lists(),
         &common::endpoint_file_for(root),
-        None,
         Some(choice),
     )
     .await

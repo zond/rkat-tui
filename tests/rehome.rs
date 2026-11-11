@@ -73,7 +73,7 @@ async fn client_as(
     args.user_config_root = Some(user_root.to_path_buf());
     let (reroot, restarted) = rig::reroot(args, llm, file);
     let mut config =
-        rig::client_config(&args_for(root), None, no_lists(), &file(root), None, agent).await;
+        rig::client_config(&args_for(root), None, no_lists(), &file(root), agent).await;
     config.reroot = Some(reroot);
     (Client::attach_with_config(config).await, restarted)
 }
@@ -233,7 +233,6 @@ async fn a_push_moves_the_session_to_the_new_workspace_without_a_restart() {
         None,
         no_lists(),
         &file(&new),
-        None,
         None,
     )
     .await;
@@ -497,7 +496,6 @@ async fn after_a_shell_rehome_continue_resumes_the_latest_conversation_in_the_ne
         None,
         no_lists(),
         &file(&moved),
-        None,
         None,
     )
     .await;

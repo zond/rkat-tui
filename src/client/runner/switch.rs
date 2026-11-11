@@ -547,7 +547,6 @@ impl Runner {
         self.send(Msg::Rerooted {
             workspace: config.scope.project_root.clone(),
             realm,
-            shell_confined: super::super::app_setup(&config).shell_confined,
         });
         self.config = config;
         self.agent = None;

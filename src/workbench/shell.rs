@@ -28,16 +28,7 @@ impl Workbench {
     /// `agent`.
     pub fn run_shell(&mut self, id: ShellRunId, command: String, agent: AgentContext) {
         self.cancel_shell();
-        let shell = match &self.user_shell {
-            Ok(shell) => Arc::clone(shell),
-            Err(why) => {
-                self.send(Msg::ShellFinished {
-                    id,
-                    outcome: ShellOutcome::Failed(why.clone()),
-                });
-                return;
-            }
-        };
+        let shell = Arc::clone(&self.user_shell);
         let tx = self.ui_tx.clone();
         let task = tokio::spawn(async move {
             let outcome = match shell.run(&command).await {

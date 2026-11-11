@@ -171,60 +171,6 @@ fn extra_grants(args: &Args, layered: &crate::config::Layered) -> confinement::E
     extra
 }
 
-/// The realm `config` of `scope` with the hooks of an untrusted project
-/// `.rkat/config.toml` shadowed ([`project_trust::ProjectInputs::guard`]).
-pub async fn guarded_config(scope: &RuntimeScope, args: &Args, mut config: Config) -> Config {
-    let trust = Arc::new(parking_lot::Mutex::new(approval::trust_record(scope)));
-    project_trust::ProjectInputs::new(scope, trust, args.trust_project)
-        .guard(&mut config)
-        .await;
-    config
-}
-
-/// The user's `!` shell of `scope`, built from the agent shell's
-/// confinement plan, curated environment and the `[shell]` timeout, for
-/// the client, which runs no engine of its own.
-///
-/// # Errors
-///
-/// [`TuiError`] when the layered `tui.toml` cannot be read or the
-/// confinement cannot be planned.
-#[cfg(any(test, feature = "test-support"))]
-pub fn user_shell(
-    layers: &Layers,
-    config: &Config,
-    args: &Args,
-    host_paths: &HostPaths,
-) -> Result<crate::user_shell::UserShell, TuiError> {
-    Ok(user_shell_with(
-        layers,
-        &shell_plan(layers, config, args, host_paths)?,
-    ))
-}
-
-/// The agent shell's confinement plan `args` and the `tui.toml` layers
-/// give over `config` on this host: what a daemon started with them
-/// installs, and what the client compares a running daemon's with.
-///
-/// # Errors
-///
-/// [`TuiError`] when the confinement cannot be planned.
-pub fn shell_plan(
-    layers: &Layers,
-    config: &Config,
-    args: &Args,
-    host_paths: &HostPaths,
-) -> Result<ConfinementPlan, TuiError> {
-    let Layers { scope, layered, .. } = layers;
-    Ok(confinement::plan(
-        args.effective_confinement(),
-        scope.project_root.as_path(),
-        config,
-        host_paths,
-        &extra_grants(args, layered),
-    )?)
-}
-
 /// Refuse a shell confinement `plan` that reaches the realm directory
 /// `realm` ([`realm_home::exposing_grant`]): the confined shell must not
 /// read or rewrite the sessions, approvals, rules or the audit log. An
@@ -246,15 +192,13 @@ pub fn check_realm_private(
     }
 }
 
-/// [`user_shell`] from a [`shell_plan`].
+/// The user's `!` shell of `layers`: the user's shell in the workspace,
+/// with the `[shell]` timeout (see [`crate::user_shell`]).
 #[must_use]
-pub fn user_shell_with(layers: &Layers, plan: &ConfinementPlan) -> crate::user_shell::UserShell {
+pub fn user_shell(layers: &Layers) -> crate::user_shell::UserShell {
     let Layers { scope, layered, .. } = layers;
-    crate::user_shell::UserShell::new(
-        approval::resolved_shell_program(),
+    crate::user_shell::UserShell::of_user(
         scope.project_root.as_path(),
-        &plan.shell,
-        plan.shell_env.as_ref(),
         std::time::Duration::from_secs(layered.shell.user_timeout_secs),
     )
 }

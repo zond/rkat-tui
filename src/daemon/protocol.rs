@@ -556,8 +556,6 @@ pub struct Status {
     pub agent: Option<String>,
     /// Every live agent, names in order.
     pub agents: Vec<AgentRow>,
-    /// The agent shell's confinement the daemon installed.
-    pub shell: meerkat_tools::builtin::shell::ShellConfinement,
 }
 
 /// [`method::Holds`]'s result.

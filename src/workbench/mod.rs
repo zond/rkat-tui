@@ -106,8 +106,8 @@ pub struct WorkbenchParts {
     pub ui_tx: mpsc::UnboundedSender<Msg>,
     /// The workspace and realm.
     pub scope: RuntimeScope,
-    /// The user's `!` shell, or why there is none.
-    pub user_shell: Result<Arc<UserShell>, String>,
+    /// The user's `!` shell.
+    pub user_shell: Arc<UserShell>,
     /// The cost readout's prices at start and how to refresh them.
     pub pricing: PricingSetup,
     /// This process's LLM endpoints (the picker, `/model`).
@@ -122,8 +122,8 @@ pub struct WorkbenchParts {
 pub struct Workbench {
     ui_tx: mpsc::UnboundedSender<Msg>,
     scope: RuntimeScope,
-    /// What runs `!` commands, or why nothing does.
-    user_shell: Result<Arc<UserShell>, String>,
+    /// What runs `!` commands.
+    user_shell: Arc<UserShell>,
     /// The `!` command running now.
     shell_task: Option<shell::ShellTask>,
     /// `/memory`: the file being edited and its bytes before (`None`:
@@ -230,7 +230,7 @@ impl Workbench {
     pub fn reroot(
         &mut self,
         scope: RuntimeScope,
-        user_shell: Result<Arc<UserShell>, String>,
+        user_shell: Arc<UserShell>,
         endpoints: EndpointRegistry,
     ) {
         self.scope = scope;

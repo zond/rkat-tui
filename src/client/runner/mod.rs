@@ -30,7 +30,6 @@ use std::time::Duration;
 
 use meerkat_core::lifecycle::{InputId, RunId};
 use meerkat_core::{AgentErrorClass, AgentEvent, EventEnvelope, Message, SessionId};
-use meerkat_tools::builtin::shell::ShellConfinement;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
@@ -193,14 +192,8 @@ pub struct ClientConfig {
     /// on every attach: the daemon counts the client that started it as
     /// its owner (`/quit` then stops a daemon nobody detached from).
     pub start_token: Option<String>,
-    /// The user's `!` shell (this process's own), or why
-    /// there is none.
-    pub user_shell: Result<Arc<UserShell>, String>,
-    /// The agent shell's confinement this client's flags and `tui.toml`
-    /// layers give (or why it cannot be planned): a daemon whose agent
-    /// shell may do more is refused ([`ClientError::ShellWider`]). `None`:
-    /// not compared (a daemon on another machine).
-    pub shell: Option<Arc<Result<ShellConfinement, String>>>,
+    /// The user's `!` shell (this process's own: it runs as the user).
+    pub user_shell: Arc<UserShell>,
     /// This process's LLM endpoints (the model picker, `/model`).
     pub endpoints: crate::endpoints::EndpointRegistry,
     /// Fetches the endpoints' model lists (tests list nothing).
@@ -295,9 +288,6 @@ struct Established {
     /// The context of the session's last model call when the replay holds
     /// no turn end (the gauge's seed), read from the events before the mark.
     context: Option<u64>,
-    /// The daemon's agent shell is narrower than this client's flags ask
-    /// for ([`link::check_shell`]).
-    shell_notice: Option<String>,
 }
 
 /// A background task's channel back to the runner: every report carries
@@ -1469,8 +1459,7 @@ mod tests {
             start: super::super::StartAt::Current,
             agent: AgentChoice::Recent,
             start_token: None,
-            user_shell: Err("none".into()),
-            shell: None,
+            user_shell: Arc::new(UserShell::of_user(dir, Duration::from_secs(1))),
             endpoints: EndpointRegistry::from_endpoints(Vec::new()),
             lister: crate::models::live_lister(),
             ui: crate::config::UiSettings::default(),

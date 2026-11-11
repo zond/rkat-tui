@@ -555,7 +555,6 @@ fn rehome_asks_the_runner_and_a_reroot_moves_the_ui() {
         app.update(Msg::Rerooted {
             workspace,
             realm: tmp.path().join("realm"),
-            shell_confined: false,
         }),
         Vec::new()
     );

@@ -692,7 +692,6 @@ impl Daemon {
                         |value| value.get_name().to_string(),
                     ),
                 helper_depth: composed.helper_max_depth,
-                shell: composed.shell.clone(),
             },
         }));
         // The decisions an earlier daemon left open held dispatches that

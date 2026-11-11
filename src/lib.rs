@@ -31,7 +31,7 @@
 //! - `bootstrap` — realm/config/factory/service construction, provider credentials
 //! - `mobs` — helpers (sub-agents) as mob members: approval gate, model binding, observation
 //! - `mentions` — `@path` mentions: the workspace path index and the attachment of mentioned files
-//! - `user_shell` — `!` shell mode: the user's commands under the agent shell's confinement
+//! - `user_shell` — `!` shell mode: the user's commands, run as the user with no sandbox
 //! - `ui` — ratatui application
 //! - `daemon` — the `rkat-tui-mob` daemon: the engine's JSON-RPC router over loopback TCP
 //! - `client` — the TUI against the workspace's daemon (attach, start on demand)

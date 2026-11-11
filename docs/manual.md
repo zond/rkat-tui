@@ -962,12 +962,13 @@ an instruction planted in a mentioned file cannot pass for your consent.
 **Shell mode.** An input whose first line starts with `!` is a shell
 command: `!ls -la` (or `! ls -la`; the rest of the input, later lines
 included, is the command). The editor title says so while you type it.
-Enter runs it with the agent's own shell setup: the same program (the
-shell the `shell` tool resolves), the workspace as working directory, the
-same confinement (`--confinement`, the realm floor, the extra grants) and
-the same curated environment, so provider keys stay outside; under
-`--no-confinement` it runs plain, as the agent's commands then do. There is
-no approval prompt, since you typed it. It may run for `[shell]
+Enter runs it **as you, with no sandbox**: your shell (`$SHELL`, else
+`/bin/sh`), the workspace as working directory and your whole
+environment, as any program you start from your terminal would run, so
+`!git push` or `!cargo publish` work with your credentials. It is not
+the agent's shell: `--confinement` and the curated environment apply to
+the agent's commands only. There is no approval prompt, since you typed
+it. It may run for `[shell]
 user_timeout_secs` (default 120; `--set shell.user_timeout_secs=N`; a
 project file may only lower it), and Esc or Ctrl-C cancels it; whatever it
 started is killed when it ends. Its output, stdout and stderr together in
@@ -1140,8 +1141,8 @@ home directory requires an explicit `--workspace`. A workspace has exactly
 one state directory, its own.
 
 The agent's confined shell must not reach the state directory: the daemon
-refuses to start, and the TUI too for its `!` shell, when the confinement
-would grant it or a directory holding it. `-w ~` with the default config
+refuses to start when the confinement would grant it or a directory
+holding it. `-w ~` with the default config
 directory is such a case (the workspace holds `~/.rkat/tui`), and so is a
 `--confinement-write` (or `[confinement] extra_write`) of `~/.rkat`; pass
 `--config-dir <dir outside the workspace>`, or drop the grant.
@@ -1319,21 +1320,10 @@ so once in the transcript (`/daemon stop` and attach again runs the new
 build).
 
 **A daemon started with other confinement flags.** The agent's shell
-runs in the daemon, under the confinement the daemon was started with.
-Before attaching, the TUI compares it with what its own flags and
-`tui.toml` layers give (`--confinement`, `--no-confinement`,
-`--confinement-read`/`--confinement-write`): a daemon whose shell may do
-more (unconfined against a confined request, network allowed against
-`strict`, a directory more) is not attached, and the TUI names both
-shells; stop that daemon (`/daemon stop` from a TUI with its flags, or
-SIGTERM to its pid) and attach again to start one with yours, or attach
-with the flags it was started with. A daemon whose shell may do less is
-attached with a warning that names both. The comparison is made
-only for a daemon on this machine: a daemon reached with
-`--attach=HOST:PORT` on another machine is not compared at all (its paths
-are that machine's), so attaching to it says nothing about how its agent
-shell is confined; that is decided by the flags the remote daemon was
-started with.
+runs in the daemon, under the confinement the daemon was started with
+(`/status` shows it); a TUI attaching with other `--confinement` flags
+does not change it. To run the agent's shell with other flags, stop the
+daemon (`/daemon stop`) and attach again with them.
 
 **When the attach fails.** The segment says why, when the TUI tries
 again, and where the daemon's output is, for example `daemon exited (exit
@@ -1468,8 +1458,8 @@ daemon's rules and are saved in the realm rules file. Deny
 rules (and writes into `.git/` or `.rkat/`) are also the agent's recorded
 application tool policy: the daemon refuses to rebuild the agent without it.
 
-**`!` commands** run in this TUI's process, confined as the agent's shell
-is, and their output goes to the agent's context.
+**`!` commands** run in this TUI's process as you, with no sandbox (see
+"Shell mode"), and their output goes to the agent's context.
 
 **Leaving mid-turn.** When the TUI leaves and the daemon keeps running
 (`/detach`, or a `/quit` that detaches), the agent's turn goes on in the

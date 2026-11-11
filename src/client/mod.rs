@@ -121,20 +121,6 @@ pub enum ClientError {
         /// What it answered.
         reason: String,
     },
-    /// The workspace's daemon runs the agent's shell under a confinement
-    /// that may do more than this client's flags give it (or one that
-    /// cannot be compared): the client does not attach.
-    #[error(
-        "the workspace's rkat-tui-mob (pid {pid}) runs the agent's shell wider than this client's flags allow: the daemon's is {daemon}; these flags give {client}. Stop it (/daemon stop from a client with its flags, or SIGTERM to pid {pid}) and attach again to start it with these flags, or attach with the flags it was started with"
-    )]
-    ShellWider {
-        /// The daemon's process id.
-        pid: u32,
-        /// The daemon's agent shell, in words.
-        daemon: String,
-        /// What this client's flags give, in words (or why it cannot say).
-        client: String,
-    },
     /// The orchestrator has no session.
     #[error("the daemon's orchestrator has no session")]
     NoSession,
@@ -175,10 +161,7 @@ pub enum ClientError {
 }
 
 /// [`configure_with`] for `target` on the layers of the workspace it
-/// names, read now, its shells planned over [`HostPaths::default`]
-/// (nothing outside the workspace granted: the tests' host).
-///
-/// [`HostPaths::default`]: crate::bootstrap::HostPaths
+/// names, read now.
 ///
 /// # Errors
 ///
@@ -203,13 +186,7 @@ pub async fn configure_at(
     local_files: &[std::path::PathBuf],
 ) -> Result<ClientConfig, TuiError> {
     let (args, layers, reached) = retarget(args.clone(), &target, None, local_files).await?;
-    let mut config = configure_with(
-        layers,
-        &args,
-        target.mode(),
-        &crate::bootstrap::HostPaths::default(),
-    )
-    .await?;
+    let mut config = configure_with(layers, &args, target.mode()).await?;
     if let Some(reached) = reached {
         reached.apply(&mut config);
     }
@@ -300,10 +277,8 @@ pub fn directory_args(args: &Args, dir: &std::path::Path) -> Result<Args, TuiErr
 
 /// Resolve what the client needs from `args` and the `tui.toml` `layers`
 /// read at start: the workspace, the endpoint and cursor files, the realm
-/// config (context windows) and how a missing daemon is started. The `!`
-/// shell is planned over `host_paths` (this host's: [`HostPaths::detect`]).
-///
-/// [`HostPaths::detect`]: crate::bootstrap::HostPaths::detect
+/// config (context windows), how a missing daemon is started and the `!`
+/// shell (the user's own, see [`crate::user_shell`]).
 ///
 /// # Errors
 ///
@@ -312,29 +287,11 @@ pub async fn configure_with(
     layers: crate::bootstrap::Layers,
     args: &Args,
     mode: AttachMode,
-    host_paths: &crate::bootstrap::HostPaths,
 ) -> Result<ClientConfig, TuiError> {
-    let config = crate::bootstrap::guarded_config(
-        &layers.scope,
-        args,
-        crate::bootstrap::load_config(&layers.scope).await?,
-    )
-    .await;
-    // The `!` shell, from the layers' confinement grants and timeout; the
-    // same plan is what a running daemon's agent shell is compared with.
-    let plan = crate::bootstrap::shell_plan(&layers, &config, args, host_paths);
-    // Fail closed, as the daemon does: a `!` shell that could reach the
-    // realm refuses the start.
-    if let Ok(plan) = &plan {
-        crate::bootstrap::check_realm_private(plan, &layers.scope.realm_root())?;
-    }
-    let user_shell = plan
-        .as_ref()
-        .map(|plan| std::sync::Arc::new(crate::bootstrap::user_shell_with(&layers, plan)))
-        .map_err(|err| format!("the ! shell is unavailable: {err}"));
-    let shell = Some(std::sync::Arc::new(plan.map(|plan| plan.shell).map_err(
-        |err| format!("this client cannot plan the shell's confinement: {err}"),
-    )));
+    let config = crate::bootstrap::load_config(&layers.scope).await?;
+    // The `!` shell runs as the user (no sandbox): the client plans no
+    // confinement and never re-derives the daemon's.
+    let user_shell = std::sync::Arc::new(crate::bootstrap::user_shell(&layers));
     // The layers this process reads for its display and endpoints:
     // the picker lists this process's endpoints, and a switch to a
     // configured one carries its auth binding.
@@ -383,7 +340,6 @@ pub async fn configure_with(
         config: Some(config),
         spawn,
         user_shell,
-        shell,
         endpoints,
         lister: crate::models::live_lister(),
         ui: layered.ui,
@@ -453,11 +409,6 @@ pub fn app_setup(config: &ClientConfig) -> AppSetup {
     AppSetup {
         compaction: config.compaction.normalized().0,
         ui: config.ui,
-        // Without a `!` shell nothing runs; the title says the sandbox then.
-        shell_confined: match &config.user_shell {
-            Ok(shell) => shell.confined(),
-            Err(_) => true,
-        },
         workspace: config.scope.project_root.clone(),
     }
 }
@@ -497,13 +448,7 @@ pub async fn run(
         &crate::client::list::files(None),
     )
     .await?;
-    let mut config = configure_with(
-        layers,
-        &args,
-        target.mode(),
-        &crate::bootstrap::HostPaths::detect(),
-    )
-    .await?;
+    let mut config = configure_with(layers, &args, target.mode()).await?;
     if let Some(reached) = reached {
         reached.apply(&mut config);
     }
@@ -513,7 +458,7 @@ pub async fn run(
         configure: std::sync::Arc::new(move |args: Args| {
             Box::pin(async move {
                 let layers = crate::bootstrap::read_layers(&args)?;
-                configure_with(layers, &args, mode, &crate::bootstrap::HostPaths::detect()).await
+                configure_with(layers, &args, mode).await
             })
         }),
         endpoint_files: rehome::default_endpoint_files(),

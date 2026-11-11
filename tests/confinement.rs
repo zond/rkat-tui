@@ -3,7 +3,7 @@
 //! command write the workspace but not outside it and keeps the network;
 //! the strict mode denies IP network access. An interrupted shell call runs
 //! in durable process custody and leaves no process behind. A `!` command
-//! runs in the attached client under the same confinement. The security
+//! runs in the attached client as the user, unconfined. The security
 //! review's sandbox claims (recommendation 12): no `~/.ssh`, no Cargo
 //! credentials, no network in strict; `.rkat/` and `.git/` are still
 //! writable (engine ask 8), pinned as the gap it is.
@@ -464,25 +464,71 @@ async fn the_realm_confinement_table_does_not_decide_the_shell() {
     rig.quit().await;
 }
 
-/// A `!` command runs under the shell's own confinement: it writes the
-/// workspace, not outside it, and gets the curated environment.
+/// A `!` command runs as the user, unconfined, while the agent's shell
+/// stays confined: with the daemon under `--confinement=workspace`, the
+/// agent's `shell` call can neither read a file outside its grants nor
+/// see a variable outside the curated environment, and the same command
+/// typed as `!` sees both (and writes outside the workspace).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_bang_command_runs_under_the_shells_confinement() {
+#[allow(clippy::disallowed_methods)] // test-only process launch: this test rerun
+async fn a_bang_command_runs_as_the_user_unlike_the_agents_shell() {
     use rkat_tui::ui::{Msg, ShellOutcome, ShellRunId};
 
+    // The test process cannot set a variable on itself (`set_var` is
+    // unsafe, and the crate denies unsafe code), so it reruns itself with
+    // the sentinel set.
+    if std::env::var_os(BANG_VAR).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "a_bang_command_runs_as_the_user_unlike_the_agents_shell",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(BANG_VAR, "users-own-value")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+        assert!(stdout.contains("1 passed"), "{stdout}\n{stderr}");
+        return;
+    }
     let ws = Workspace::new();
-    let outside = ws.sibling("outside");
-    std::fs::create_dir_all(&outside).unwrap();
-    let llm = ScriptedLlmClient::new(vec![]);
+    // Outside every grant of the agent's shell (the rig grants it nothing
+    // outside the workspace and the temp dir; this is Cargo's target dir).
+    let outside = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let secret = outside.path().join("users-file.txt");
+    std::fs::write(&secret, "only-the-user-reads-this\n").unwrap();
+    let written = outside.path().join("written-by-bang.txt");
+    let command = leak(format!(
+        "cat {}; echo \"VAR=[${{{BANG_VAR}:-unset}}]\"; echo END",
+        secret.display()
+    ));
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Tool {
+            id: "sh",
+            name: "shell",
+            args: json!({ "command": command }),
+        },
+        Step::Text("done"),
+    ]);
     let Some(mut rig) = confined_rig(&ws, &llm, "workspace").await else {
         return;
     };
+    // The agent's shell: confined, curated environment.
+    rig.send(Effect::StartTurn("run it".into()));
+    rig.turn_finished().await;
+    let agent = tool_text(&llm.requests()[1], "sh");
+    assert!(agent.contains("END"), "{agent}");
+    assert!(!agent.contains("only-the-user-reads-this"), "{agent}");
+    assert!(agent.contains("VAR=[unset]"), "{agent}");
+
+    // The same command as `!`: the user's file, the user's environment,
+    // and a write outside the workspace.
     rig.send(Effect::RunShell {
         id: ShellRunId(1),
-        command: format!(
-            "echo in > inside.txt; echo out > {}/outside.txt; echo \"KEY=[${{ANTHROPIC_API_KEY:-unset}}]\"; echo END",
-            outside.display()
-        ),
+        command: format!("{command}; echo w > {}", written.display()),
     });
     let msg = rig
         .wait_for(|msg| matches!(msg, Msg::ShellFinished { .. }))
@@ -494,16 +540,15 @@ async fn a_bang_command_runs_under_the_shells_confinement() {
     else {
         panic!("{msg:?}");
     };
-    assert!(run.output.contains("END"), "{run:?}");
-    assert!(run.output.contains("KEY=[unset]"), "{run:?}");
-    assert!(ws.root.join("inside.txt").exists(), "{run:?}");
-    assert!(
-        !outside.join("outside.txt").exists(),
-        "a confined ! command wrote outside the workspace: {run:?}"
-    );
+    assert!(run.output.contains("only-the-user-reads-this"), "{run:?}");
+    assert!(run.output.contains("VAR=[users-own-value]"), "{run:?}");
+    assert!(written.exists(), "{run:?}");
     assert_eq!(context, Ok(()));
     rig.quit().await;
 }
+
+/// Set (in a rerun of the test) to a value only the user's `!` shell sees.
+const BANG_VAR: &str = "RKAT_TUI_TEST_BANG";
 
 /// S3 of the security review: the Cargo home is granted entry by entry.
 /// Under workspace confinement with this host's real paths, `cargo build`
@@ -789,8 +834,7 @@ async fn the_realm_is_out_of_reach_and_git_stays_writable_until_engine_ask_8() {
 }
 
 /// Decision 5 of the realm move: a confinement plan that reaches the realm
-/// refuses the start, in the daemon and for the client's `!` shell alike:
-/// a workspace that holds the config directory (`-w` at an ancestor of
+/// refuses the daemon's start: a workspace that holds the config directory (`-w` at an ancestor of
 /// the realm, as `-w ~` with the default `~/.rkat/tui`), and an extra
 /// write grant of the config directory.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -836,19 +880,5 @@ async fn a_shell_that_could_reach_the_realm_refuses_the_start() {
         };
         assert!(realm.starts_with(&cfg), "{realm:?}");
         assert!(realm.starts_with(grant), "{grant:?}");
-        // The client's `!` shell is planned from the same flags: refused too.
-        let layers = rkat_tui::bootstrap::read_layers(&args).unwrap();
-        let client = rkat_tui::client::configure_with(
-            layers,
-            &args,
-            rkat_tui::cli::AttachMode::Existing,
-            &HostPaths::default(),
-        )
-        .await;
-        assert!(
-            matches!(client, Err(TuiError::RealmExposed { .. })),
-            "{:?}",
-            client.err()
-        );
     }
 }

@@ -117,8 +117,6 @@ pub struct Composed {
     pub startup_notices: Vec<StartupNotice>,
     /// `[helpers] max_depth` (`rkat/report`).
     pub helper_max_depth: u8,
-    /// The agent shell's confinement (`rkat/status` reports it).
-    pub shell: meerkat_tools::builtin::shell::ShellConfinement,
 }
 
 /// How the daemon composes its approval side (tests vary it).
@@ -361,7 +359,6 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     // session bound for the helpers it delegates to in turn. Clients see
     // the helpers' events on the mobs' own streams.
     let (spawning, spawning_rx) = mpsc::unbounded_channel();
-    let shell = confinement.shell.clone();
     let customizer = HelperCustomizer::new(
         Arc::clone(&registry),
         Arc::clone(&approval.engine),
@@ -487,7 +484,6 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         realm_file: approval.realm_file.take(),
         startup_notices,
         helper_max_depth,
-        shell,
     })
 }
 

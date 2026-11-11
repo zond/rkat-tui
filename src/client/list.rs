@@ -358,7 +358,6 @@ mod tests {
                 running: true,
                 agent: None,
                 agents: Vec::new(),
-                shell: meerkat_tools::builtin::shell::ShellConfinement::TrustedHost,
             })),
         };
         let shown = line(&live, now);
@@ -400,7 +399,6 @@ mod tests {
                         schedules: 0,
                     },
                 ],
-                shell: meerkat_tools::builtin::shell::ShellConfinement::TrustedHost,
             })),
         };
         assert_eq!(

@@ -9,14 +9,6 @@ use super::{
 };
 
 impl App {
-    /// Whether `!` commands run in the sandbox (default) or plain
-    /// (`--no-confinement`); only the editor title uses it.
-    #[must_use]
-    pub fn with_shell_confined(mut self, confined: bool) -> Self {
-        self.shell_confined = confined;
-        self
-    }
-
     /// Whether the input is a `!` command (shell mode).
     pub fn shell_mode(&self) -> bool {
         !self.input.is_empty() && commands::parse_shell(&self.input.text()).is_some()
@@ -26,10 +18,8 @@ impl App {
     pub fn shell_mode_hint(&self) -> &'static str {
         if self.running || self.shell_busy() {
             " shell mode: Enter runs it after the current work · output joins the context "
-        } else if self.shell_confined {
-            " shell mode: Enter runs it in the sandbox · output joins the context "
         } else {
-            " shell mode: Enter runs it (unconfined) · output joins the context "
+            " shell mode: Enter runs it as you, no sandbox · output joins the context "
         }
     }
 

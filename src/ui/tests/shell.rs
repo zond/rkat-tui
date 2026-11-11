@@ -44,10 +44,7 @@ fn shell_mode_shows_in_the_editor_title() {
     let mut app = App::new(StatusInfo::default());
     type_str(&mut app, "!ls");
     assert!(app.shell_mode());
-    assert!(app.shell_mode_hint().contains("in the sandbox"));
-    let mut plain = App::new(StatusInfo::default()).with_shell_confined(false);
-    type_str(&mut plain, "!ls");
-    assert!(plain.shell_mode_hint().contains("unconfined"));
+    assert!(app.shell_mode_hint().contains("as you, no sandbox"));
     let mut app = App::new(StatusInfo::default());
     type_str(&mut app, "!!ls");
     assert!(!app.shell_mode());

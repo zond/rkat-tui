@@ -1076,7 +1076,7 @@ async fn a_reconnect_restarts_a_daemon_that_died() {
 /// The findings this guards: attach mode never pushed prices (`/cost`
 /// showed `$?`) and its `!` hint said "sandbox" under `--no-confinement`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn attach_mode_prices_the_cost_readout_and_names_an_unconfined_shell() {
+async fn attach_mode_prices_the_cost_readout_and_says_the_shell_runs_as_you() {
     let ws = Workspace::new();
     // The rig runs unconfined (`--no-confinement`).
     let args = common::args_with(
@@ -1099,7 +1099,7 @@ async fn attach_mode_prices_the_cost_readout_and_names_an_unconfined_shell() {
         &[],
         &[],
     );
-    assert!(app.shell_mode_hint().contains("unconfined"));
+    assert!(app.shell_mode_hint().contains("as you, no sandbox"));
     let mut harness = spawn_attach_runner(config);
     let priced = within(async {
         loop {
@@ -1147,10 +1147,9 @@ async fn the_client_builds_its_app_from_the_config() {
         (setup.compaction.warn_percent, setup.compaction.auto_percent),
         (60, 60)
     );
-    assert!(!setup.shell_confined, "the rig runs --no-confinement");
     let app = build_app(&setup, StatusInfo::default(), &[], &[]);
     assert_eq!(app.compaction_policy(), setup.compaction);
-    assert!(app.shell_mode_hint().contains("unconfined"));
+    assert!(app.shell_mode_hint().contains("as you, no sandbox"));
 }
 
 /// The finding this guards: attach mode dropped the messages the UI still

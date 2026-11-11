@@ -78,10 +78,11 @@ agents").
   in-project edits outside protected paths run, everything else goes to
   the classifier; after 3 consecutive or 20 total blocks you are asked.
   Shift+Tab cycles manual → accept edits → plan → auto, as in Claude Code.
-- **Sandboxed shell.** The agent's shell (and your own `!` commands) sees
-  only the workspace and a few granted directories, with an environment
-  that keeps provider keys out; `--confinement=strict` also denies the
-  network.
+- **Sandboxed shell.** The agent's shell sees only the workspace and a
+  few granted directories, with an environment that keeps provider keys
+  out; `--confinement=strict` also denies the network. Your own `!`
+  commands run as you, with no sandbox, like anything else you type in a
+  terminal.
 - **Helpers.** The agent can `delegate` subtasks to helper agents or fork
   itself; their calls pass the same gate, and a panel shows what they do.
 - **Any endpoint.** `anthropic`, `openai` (also OpenAI-compatible proxies)

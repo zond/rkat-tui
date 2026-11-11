@@ -2732,7 +2732,7 @@ start; `client::check_args` refuses `--resume`/`-c` with
 and workbench of both runners is the next step (review batch D).
 
 Tests: `attach::{resume_and_continue_are_refused_in_attach_mode,
-attach_mode_prices_the_cost_readout_and_names_an_unconfined_shell,
+attach_mode_prices_the_cost_readout_and_says_the_shell_runs_as_you,
 unsent_messages_are_saved_at_quit_and_announced_at_the_next_attach}`.
 
 ### The daemon's local surface has its project and decisions

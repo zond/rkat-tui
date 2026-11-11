@@ -507,7 +507,6 @@ fn the_quit_decision_follows_the_rules() {
                 schedules: 0,
             })
             .collect(),
-        shell: meerkat_tools::builtin::shell::ShellConfinement::TrustedHost,
     };
     let mine = [("main-aaaa", 1)];
     assert_eq!(
@@ -762,18 +761,15 @@ async fn a_daemon_of_another_build_is_announced() {
     daemon.stop().await;
 }
 
-/// D4 of the security review: a client whose flags confine the agent's
-/// shell more than the running daemon does is not attached. The daemon
-/// runs unconfined; a client asking for `--confinement=workspace` is
-/// refused with both shells named (on a host without the sandbox the
-/// client cannot plan its own, and that refuses too), is not retried, and
-/// seats no agent.
+/// The client plans no agent-shell confinement of its own: a client
+/// started with `--confinement=workspace` attaches to a daemon that runs
+/// the agent's shell unconfined (the daemon's command line decides the
+/// agent's shell; it used to refuse the attach as "wider").
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_client_whose_flags_confine_more_than_the_daemon_is_refused() {
+async fn a_clients_confinement_flags_do_not_refuse_a_running_daemon() {
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![]);
     let daemon = Running::start_with(&args_for(&ws.root), Running::options(&ws.root, &llm)).await;
-    let before = daemon.status().await.agents.len();
     let args = common::args_with(&ws.root, &["--confinement=workspace"]);
     let mut config = rkat_tui::client::configure(&args, rkat_tui::cli::AttachTarget::Existing)
         .await
@@ -784,27 +780,7 @@ async fn a_client_whose_flags_confine_more_than_the_daemon_is_refused() {
         harness: rkat_tui::client::testing::spawn_attach_runner(config),
         seen: Vec::new(),
     };
-    client
-        .wait_for(|msg| {
-            matches!(
-                msg,
-                Msg::Status(rkat_tui::ui::StatusUpdate::Connection(
-                    rkat_tui::ui::Connection::Failed { retry_at: None, .. }
-                ))
-            )
-        })
-        .await;
-    let Some(rkat_tui::ui::Connection::Failed { reason, .. }) = connection_state(&client) else {
-        panic!("{:?}", connection_state(&client));
-    };
-    assert!(
-        reason.contains("runs the agent's shell wider") && reason.contains("unconfined"),
-        "{reason}"
-    );
-    assert_eq!(
-        daemon.status().await.agents.len(),
-        before,
-        "no agent seated"
-    );
+    client.attached().await;
+    client.quit().await;
     daemon.stop().await;
 }

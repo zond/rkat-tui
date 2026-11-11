@@ -479,15 +479,13 @@ pub enum Msg {
     /// The runner's answer to [`Effect::DecideQuit`].
     QuitDecided(QuitDecision),
     /// A re-home moved this client to another workspace (`/rehome`): `@`
-    /// mentions complete there, the `!` shell's confinement may differ,
-    /// and the input history and drafts are the realm's at `realm`.
+    /// mentions complete there, and the input history and drafts are the
+    /// realm's at `realm`.
     Rerooted {
         /// The workspace.
         workspace: ProjectRoot,
         /// Its realm directory.
         realm: std::path::PathBuf,
-        /// Whether the `!` shell runs confined there.
-        shell_confined: bool,
     },
     /// The terminal hung up (SIGHUP): leave at once, as a detach (the
     /// daemon keeps running; unsent messages are saved).
@@ -1146,8 +1144,6 @@ pub struct App {
     shell_run: Option<RunningShell>,
     /// The last allocated [`ShellRunId`].
     last_shell_id: u64,
-    /// Whether `!` commands run confined (the editor title says so).
-    shell_confined: bool,
     /// The current session's tasks (the panel under the input, Ctrl+T).
     checklist: Checklist,
     /// Whether the checklist panel shows (`[ui] checklist`).
@@ -1221,7 +1217,6 @@ impl App {
             menu_lookups: 0,
             shell_run: None,
             last_shell_id: 0,
-            shell_confined: true,
             checklist: Checklist::default(),
             checklist_view: ChecklistView::default(),
             checklist_note: None,
@@ -1487,15 +1482,10 @@ impl App {
             Msg::SteerDelivered(id) => self.pending.show_delivered(&mut self.transcript, id),
             Msg::Recalled { recalled, errors } => self.recalled(&recalled, &errors),
             Msg::QuitDecided(decision) => self.quit_decided(decision, &mut fx),
-            Msg::Rerooted {
-                workspace,
-                realm,
-                shell_confined,
-            } => {
+            Msg::Rerooted { workspace, realm } => {
                 self.workspace = Some(workspace);
                 self.path_index = PathIndex::Dropped;
                 self.path_index_generation += 1;
-                self.shell_confined = shell_confined;
                 self.local.push(LocalEffect::Reroot(realm));
             }
             Msg::Hangup => self.leave(None, &mut fx),

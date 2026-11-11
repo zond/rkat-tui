@@ -24,8 +24,6 @@ pub struct AppSetup {
     pub compaction: CompactionPolicy,
     /// The `[ui]` settings of the `tui.toml` layers.
     pub ui: UiSettings,
-    /// Whether the `!` shell runs confined (the title says the sandbox).
-    pub shell_confined: bool,
     /// The workspace (`@` completion).
     pub workspace: ProjectRoot,
 }
@@ -43,7 +41,6 @@ pub fn build_app(
         .with_helper_view(setup.ui.helpers)
         .with_checklist_view(setup.ui.checklist)
         .with_bell(setup.ui.bell)
-        .with_shell_confined(setup.shell_confined)
         .with_workspace(setup.workspace.clone())
         .with_history(history.to_vec())
         .with_global_history(global_history.to_vec())
