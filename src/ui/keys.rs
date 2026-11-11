@@ -567,10 +567,7 @@ impl App {
                 what.push("a turn is running".to_string());
             }
             if queued > 0 {
-                what.push(format!(
-                    "{queued} message{} queued",
-                    if queued == 1 { "" } else { "s" }
-                ));
+                what.push(format!("{} queued", crate::text::count(queued, "message")));
             }
             // The daemon decides next whether the agent retires and the
             // daemon stops.

@@ -10,10 +10,7 @@
 //! in the editor; an edited `AGENTS.md` reaches the agent the way
 //! `/remember` does, `SYSTEM.md` applies from the next session.
 
-use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-
-use sha2::{Digest, Sha256};
 
 use super::{AgentContext, Workbench};
 use crate::bootstrap::dirs::GlobalDirs;
@@ -181,26 +178,14 @@ fn prepare_memory_file(target: MemoryTarget, path: &Path) -> std::io::Result<()>
 /// The idempotency key of an edited instruction file's system context (a
 /// SHA-256 digest of it, which names the path).
 fn memory_key(context: &str) -> String {
-    let digest = Sha256::digest(context.as_bytes());
-    let mut key = String::with_capacity(16 + 64);
-    key.push_str("rkat-tui:memory:");
-    for byte in digest {
-        let _ = write!(key, "{byte:02x}");
-    }
-    key
+    format!("rkat-tui:memory:{}", crate::hex::sha256(context.as_bytes()))
 }
 
 /// The idempotency key of a remembered line (per session: the same line
 /// twice is one system message). A SHA-256 digest of the line, so the key
 /// is the same across processes, builds and toolchains.
 fn remember_key(line: &str) -> String {
-    let digest = Sha256::digest(line.as_bytes());
-    let mut key = String::with_capacity(18 + 64);
-    key.push_str("rkat-tui:remember:");
-    for byte in digest {
-        let _ = write!(key, "{byte:02x}");
-    }
-    key
+    format!("rkat-tui:remember:{}", crate::hex::sha256(line.as_bytes()))
 }
 
 #[cfg(test)]

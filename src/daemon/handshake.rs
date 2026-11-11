@@ -82,7 +82,7 @@ fn proof(
     mac.update(client_nonce.as_bytes());
     mac.update(b"\0");
     mac.update(daemon_nonce.as_bytes());
-    Ok(hex(&mac.finalize().into_bytes()))
+    Ok(crate::hex::encode(&mac.finalize().into_bytes()))
 }
 
 /// Whether `given` is the `expected` proof: never when the proof could not
@@ -136,25 +136,12 @@ pub fn is_client_proof(token: &str, client_nonce: &str, daemon_nonce: &str, give
 ///
 /// When the OS randomness cannot be read.
 pub fn new_nonce() -> std::io::Result<String> {
-    use std::io::Read as _;
-    let mut bytes = [0u8; NONCE_BYTES];
-    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
-    Ok(hex(&bytes))
+    crate::hex::random::<NONCE_BYTES>()
 }
 
 /// Whether `nonce` is one a client may send: 32 to 128 hex digits.
 fn valid_nonce(nonce: &str) -> bool {
     (32..=128).contains(&nonce.len()) && nonce.bytes().all(|b| b.is_ascii_hexdigit())
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .fold(String::with_capacity(bytes.len() * 2), |mut out, byte| {
-            use std::fmt::Write as _;
-            let _ = write!(out, "{byte:02x}");
-            out
-        })
 }
 
 pub use super::protocol::{INVALID_REQUEST, UNAUTHORIZED};

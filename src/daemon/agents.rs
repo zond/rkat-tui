@@ -75,11 +75,9 @@ pub fn new_name(taken: impl Fn(&str) -> bool) -> String {
 /// source (else from the clock and a counter: a name only needs to differ
 /// from the taken ones, which [`new_name`] checks).
 fn random_id() -> String {
-    use std::io::Read as _;
     static FALLBACK: AtomicU64 = AtomicU64::new(0);
-    let mut bytes = [0u8; ID_CHARS];
-    let read =
-        std::fs::File::open("/dev/urandom").and_then(|mut random| random.read_exact(&mut bytes));
+    let read = crate::hex::random_bytes::<ID_CHARS>();
+    let mut bytes = read.as_ref().copied().unwrap_or([0; ID_CHARS]);
     if read.is_err() {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

@@ -637,6 +637,20 @@ pub enum AtomicWriteError {
     },
 }
 
+/// Create `dir` and its missing parents with mode 0700 (an existing
+/// directory is left as it is).
+///
+/// # Errors
+///
+/// When it cannot be created.
+pub fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(dir)
+}
+
 impl AtomicWriteError {
     fn io(op: &'static str, path: &Path, source: std::io::Error) -> Self {
         Self::Io {

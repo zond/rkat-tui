@@ -90,7 +90,7 @@ pub fn context_breakdown(
                 m.system_bytes,
                 approx_tokens(m.system_bytes),
                 m.system,
-                if m.system == 1 { "" } else { "s" }
+                crate::text::plural(m.system)
             );
             let _ = write!(
                 out,
@@ -139,7 +139,7 @@ pub fn context_breakdown(
                     "\n  {}: {} tool{}, {} bytes ({})",
                     family.family.name(),
                     family.tools,
-                    if family.tools == 1 { "" } else { "s" },
+                    crate::text::plural(family.tools),
                     family.bytes,
                     approx_tokens(family.bytes)
                 );
@@ -166,7 +166,7 @@ pub fn context_breakdown(
                 "\n  {}: {} tool{}, {} bytes ({})",
                 family.family.name(),
                 family.tools,
-                if family.tools == 1 { "" } else { "s" },
+                crate::text::plural(family.tools),
                 family.bytes,
                 approx_tokens(family.bytes)
             );

@@ -594,11 +594,7 @@ pub fn status_bar(status: &StatusInfo, now: Instant) -> Line<'static> {
     }
     if status.helpers > 0 {
         segs.push(Span::styled(
-            format!(
-                "{} helper{}",
-                status.helpers,
-                if status.helpers == 1 { "" } else { "s" }
-            ),
+            crate::text::count(status.helpers, "helper"),
             Style::default().fg(Color::Magenta),
         ));
     }
@@ -927,7 +923,7 @@ fn tool_toggle_hint(collapsed: bool, preview: Option<&Preview>, diff: Option<&Di
     let mut parts = Vec::new();
     if let Some(preview) = preview {
         let n = preview.line_count();
-        parts.push(format!("{n} line{}", if n == 1 { "" } else { "s" }));
+        parts.push(crate::text::count(n, "line"));
     }
     if let Some(d) = diff {
         parts.push(format!("+{} -{}", d.added, d.removed));

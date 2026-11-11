@@ -34,7 +34,7 @@ refused.
 | `notes/<slug>.md` | Markdown, one user-scope note each (`memory::NoteStore`) | daemon (`note_save`, `note_forget`), the user | user data |
 | `notes/MEMORY.md` | Markdown index of the notes | daemon, atomic | nothing (rebuilt on every note write) |
 | `history` | text, one escaped prompt per line, at most 1000 (`ui::history`) | client: appends (0600), rewrites atomically | prompt history |
-| `trust/<key>.toml` | TOML, `bootstrap::trust::RecordFile { workspace, files: path → sha256 }`; `<key>` = first 32 hex digits of SHA-256 of `realm\0<id>` | daemon (`/trust`), atomic Private | project trust (`/trust` again) |
+| `trust/<key>.toml` | TOML, `bootstrap::trust::RecordFile { workspace, files: path → sha256 }`; `<key>` = first 32 hex digits of the SHA-256 of the SHA-256 digest of `realm\0<id>` | daemon (`/trust`), atomic Private | project trust (`/trust` again) |
 | `workspaces/` | one realm per workspace (below) | both | everything below |
 | `workspaces/.lock` | empty file, exclusive `flock` while realms are created or re-homed | both | nothing |
 

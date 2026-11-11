@@ -24,7 +24,7 @@ use std::time::Duration;
 use crate::bootstrap::GlobalDirs;
 use crate::bootstrap::realm_home::{self, Home};
 use crate::daemon::endpoint::{self, Endpoint};
-use crate::daemon::protocol::{self, Status};
+use crate::daemon::protocol::Status;
 
 /// How long one daemon may take to answer.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -80,26 +80,16 @@ pub fn files_in(dirs: &[PathBuf]) -> Vec<PathBuf> {
 
 /// Probe the daemon `endpoint` names.
 pub async fn probe(endpoint: &Endpoint) -> Found {
-    let attached = tokio::time::timeout(
-        PROBE_TIMEOUT,
-        super::transport::Connection::attach_as(endpoint, PROBE_TIMEOUT, None, true),
-    )
-    .await;
-    let Ok(Ok((connection, _notes))) = attached else {
-        // Something may accept but refuse (another program on the port):
-        // only a refused connect is stale.
-        return match endpoint::reach(endpoint).await {
-            endpoint::Reach::Accepts => Found::Live(None),
-            endpoint::Reach::Refused => Found::Stale { removed: false },
-            endpoint::Reach::Unknown(why) => Found::Unknown(why),
-        };
-    };
-    let status = tokio::time::timeout(
-        PROBE_TIMEOUT,
-        super::remote::call::<protocol::method::Status>(&connection, &protocol::Empty {}),
-    )
-    .await;
-    Found::Live(status.ok().and_then(Result::ok))
+    if let Ok(status) = super::address::status_of(endpoint, PROBE_TIMEOUT).await {
+        return Found::Live(Some(status));
+    }
+    // Something may accept but not answer (a busy daemon, another program
+    // on the port): only a refused connect is stale.
+    match endpoint::reach(endpoint.address, endpoint::REACH_TIMEOUT).await {
+        endpoint::Reach::Accepts => Found::Live(None),
+        endpoint::Reach::Refused => Found::Stale { removed: false },
+        endpoint::Reach::Unknown(why) => Found::Unknown(why),
+    }
 }
 
 /// Whether process `pid` is gone.
@@ -143,18 +133,7 @@ pub async fn list(explicit: Option<&Path>) -> Vec<Listed> {
 /// `seconds` as `1d2h`, `3h4m`, `5m6s` or `7s`.
 #[must_use]
 pub fn uptime(seconds: u64) -> String {
-    let (d, h, m, s) = (
-        seconds / 86_400,
-        seconds / 3_600 % 24,
-        seconds / 60 % 60,
-        seconds % 60,
-    );
-    match (d, h, m) {
-        (0, 0, 0) => format!("{s}s"),
-        (0, 0, _) => format!("{m}m{s}s"),
-        (0, _, _) => format!("{h}h{m}m"),
-        _ => format!("{d}d{h}h"),
-    }
+    crate::text::span(seconds, 2)
 }
 
 /// One line for `listed`, its uptime counted to `now`.
@@ -198,10 +177,7 @@ pub fn line(listed: &Listed, now: chrono::DateTime<chrono::Utc>) -> String {
     fields.join("\t")
 }
 
-/// `n` things, singular or plural.
-fn count(n: usize, thing: &str) -> String {
-    format!("{n} {thing}{}", if n == 1 { "" } else { "s" })
-}
+use crate::text::count;
 
 /// The lines for `listed`: the daemon's ([`line()`]), then one per agent of
 /// a live one, indented by a tab.

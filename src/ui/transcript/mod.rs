@@ -171,8 +171,7 @@ impl HelperFold {
             out.push(' ');
         }
         out.push_str(self.state.text());
-        let plural = if self.calls == 1 { "" } else { "s" };
-        let _ = write!(out, " · {} tool call{plural}", self.calls);
+        let _ = write!(out, " · {}", crate::text::count(self.calls, "tool call"));
         if self.state.is_running() {
             match &self.last {
                 HelperLast::Nothing => {}

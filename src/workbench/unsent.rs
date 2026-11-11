@@ -88,7 +88,7 @@ pub(super) fn unsent_notice(realm_root: &Path) -> Option<String> {
         0 => None,
         n => Some(format!(
             "{n} unsent message{} from an earlier run saved in {} (delete the file once handled)",
-            if n == 1 { "" } else { "s" },
+            crate::text::plural(n),
             path.display()
         )),
     }

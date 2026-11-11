@@ -1,8 +1,8 @@
 //! Leaving the daemon: `/quit` (decided by the daemon), the departure the
 //! UI chose, and `/daemon stop`.
 
-use super::link::{Probe, probe_address};
 use super::*;
+use crate::daemon::endpoint::{Reach, reach};
 
 impl Runner {
     /// `/quit`: the daemon decides how this client leaves and does it
@@ -258,15 +258,18 @@ async fn stopped_unconfirmed(files: &[PathBuf], endpoint: Option<&Endpoint>, dir
 /// Whether the daemon `endpoint` names ended within `wait`. Evidence that
 /// it did: no endpoint file at `files` names it any more (each is gone,
 /// or names another daemon), its process is gone, or a connect to its
-/// address is refused outright ([`Probe::Refused`]). A file that cannot
+/// address is refused outright ([`Reach::Refused`]). A file that cannot
 /// be read or parsed is no evidence either way, and neither is a connect
-/// that timed out or failed otherwise ([`Probe::Unknown`]: a loaded host
+/// that timed out or failed otherwise ([`Reach::Unknown`]: a loaded host
 /// or a local socket error says nothing about the daemon). `direct`: the
 /// daemon was reached at its own endpoint, not by address
 /// (`--attach=HOST:PORT`). Through a tunnel neither its pid (perhaps
 /// another machine's) nor the local port (the forward may have exited
 /// while the daemon runs on) says anything about the daemon, so only the
 /// endpoint files count there. No files is no evidence.
+/// How long [`daemon_ended`] waits for one connect to its address.
+const PROBE_WAIT: Duration = Duration::from_secs(1);
+
 pub(crate) async fn daemon_ended(
     files: &[PathBuf],
     endpoint: &Endpoint,
@@ -278,7 +281,7 @@ pub(crate) async fn daemon_ended(
         if no_file_names(files, &endpoint.token)
             || (direct
                 && (crate::client::list::pid_gone(endpoint.pid)
-                    || probe_address(endpoint.address).await == Probe::Refused))
+                    || reach(endpoint.address, PROBE_WAIT).await == Reach::Refused))
         {
             return true;
         }

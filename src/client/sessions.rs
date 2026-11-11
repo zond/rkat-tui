@@ -15,16 +15,7 @@ fn age(at: u64) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs());
-    let secs = now.saturating_sub(at);
-    if secs < 60 {
-        format!("{secs}s")
-    } else if secs < 3600 {
-        format!("{}m", secs / 60)
-    } else if secs < 86_400 {
-        format!("{}h", secs / 3600)
-    } else {
-        format!("{}d", secs / 86_400)
-    }
+    crate::text::span(now.saturating_sub(at), 1)
 }
 
 /// The resume picker's rows: `(session id, label)`, last used first.

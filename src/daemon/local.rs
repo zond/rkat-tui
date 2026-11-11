@@ -73,7 +73,7 @@ fn with_schedules(reason: String, status: &Status) -> String {
     }
     format!(
         "{reason}\nThis agent has {count} schedule{}: detaching keeps {} firing; terminating deletes {}.",
-        if count == 1 { "" } else { "s" },
+        crate::text::plural(count),
         if count == 1 { "it" } else { "them" },
         if count == 1 { "it" } else { "them" },
     )

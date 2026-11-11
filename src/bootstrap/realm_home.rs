@@ -311,29 +311,14 @@ fn clean_remote(url: &str) -> String {
 
 /// A fresh realm id: [`ID_BYTES`] from the OS, hex-encoded.
 fn new_id() -> Result<String, HomeError> {
-    use std::io::Read as _;
-    let mut bytes = [0u8; ID_BYTES];
-    std::fs::File::open("/dev/urandom")
-        .and_then(|mut random| random.read_exact(&mut bytes))
-        .map_err(|err| HomeError::io("draw a realm id from", Path::new("/dev/urandom"), err))?;
-    Ok(bytes
-        .iter()
-        .fold(String::with_capacity(ID_BYTES * 2), |mut hex, byte| {
-            use std::fmt::Write as _;
-            let _ = write!(hex, "{byte:02x}");
-            hex
-        }))
+    crate::hex::random::<ID_BYTES>()
+        .map_err(|err| HomeError::io("draw a realm id from", Path::new("/dev/urandom"), err))
 }
 
 /// Create `dir` (and missing parents) with mode 0700; an existing
 /// directory is left as it is.
 fn create_private_dir(dir: &Path) -> Result<(), HomeError> {
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-    builder
-        .create(dir)
+    crate::paths::create_private_dir(dir)
         .map_err(|err| HomeError::io("create the realm directory", dir, err))
 }
 

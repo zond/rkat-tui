@@ -51,12 +51,12 @@ pub async fn probe(file: &Path) -> Liveness {
     let Ok(endpoint) = Endpoint::read(file) else {
         return Liveness::Absent;
     };
-    let accepted = tokio::time::timeout(
-        PROBE_TIMEOUT,
-        tokio::net::TcpStream::connect(endpoint.address),
-    )
-    .await;
-    if matches!(accepted, Ok(Ok(_))) {
+    // Anything but an accepting address counts as stale here: a start
+    // over a file whose daemon may still live is refused by that start's
+    // own check (`endpoint::check_stale`).
+    if crate::daemon::endpoint::reach(endpoint.address, PROBE_TIMEOUT).await
+        == crate::daemon::endpoint::Reach::Accepts
+    {
         Liveness::Live(endpoint)
     } else {
         Liveness::Stale(endpoint)

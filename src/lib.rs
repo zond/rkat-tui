@@ -81,6 +81,10 @@ pub mod error;
 #[cfg(not(feature = "test-support"))]
 pub(crate) mod error;
 #[cfg(feature = "test-support")]
+pub mod hex;
+#[cfg(not(feature = "test-support"))]
+pub(crate) mod hex;
+#[cfg(feature = "test-support")]
 pub mod http;
 #[cfg(not(feature = "test-support"))]
 pub(crate) mod http;
@@ -112,6 +116,10 @@ pub(crate) mod paths;
 pub mod pricing;
 #[cfg(not(feature = "test-support"))]
 pub(crate) mod pricing;
+#[cfg(feature = "test-support")]
+pub mod text;
+#[cfg(not(feature = "test-support"))]
+pub(crate) mod text;
 #[cfg(feature = "test-support")]
 pub mod thinking;
 #[cfg(not(feature = "test-support"))]

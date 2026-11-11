@@ -221,13 +221,13 @@ impl HostTrustRecord {
         };
         match self.record.files.get(&self.key(file)) {
             None => TrustStatus::Untrusted(Untrusted::NotRecorded),
-            Some(digest) if *digest == hex_digest(&bytes) => TrustStatus::Trusted,
+            Some(digest) if *digest == crate::hex::sha256(&bytes) => TrustStatus::Trusted,
             Some(_) => TrustStatus::Untrusted(Untrusted::Changed),
         }
     }
 
     /// Whether the digest recorded for `file` is `hex_sha256` (lower-case
-    /// hex, as [`hex_digest`] writes it): a judgment over content someone
+    /// hex, as [`crate::hex::sha256`] writes it): a judgment over content someone
     /// else read, without reading the file again.
     #[must_use]
     pub fn holds_digest(&self, file: &Path, hex_sha256: &str) -> bool {
@@ -249,7 +249,7 @@ impl HostTrustRecord {
         let key = self.key(file);
         match self.inspect(file) {
             Ok(Some(bytes)) => {
-                self.record.files.insert(key, hex_digest(&bytes));
+                self.record.files.insert(key, crate::hex::sha256(&bytes));
             }
             Ok(None) => {
                 self.record.files.remove(&key);
@@ -280,25 +280,17 @@ impl HostTrustRecord {
     }
 }
 
-/// Lower-case hex SHA-256 of `bytes`.
-#[must_use]
-pub fn hex_digest(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    Sha256::digest(bytes)
-        .iter()
-        .fold(String::with_capacity(64), |mut out, b| {
-            let _ = write!(out, "{b:02x}");
-            out
-        })
-}
-
 /// The record file name of a workspace's realm: a digest of its id, so the
 /// name reveals nothing.
 fn realm_key(realm_id: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"realm\0");
     hasher.update(realm_id.as_bytes());
-    hex_digest(&hasher.finalize()).chars().take(32).collect()
+    // The SHA-256 of the digest (stored names depend on it, see
+    // docs/state.md): the first 32 hex digits of that.
+    let mut key = crate::hex::sha256(&hasher.finalize());
+    key.truncate(32);
+    key
 }
 
 #[cfg(test)]

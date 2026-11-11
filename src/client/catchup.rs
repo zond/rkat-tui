@@ -211,14 +211,7 @@ impl Mark {
 #[must_use]
 pub fn daemon_id(token: &str) -> String {
     use sha2::Digest as _;
-    sha2::Sha256::digest(token.as_bytes()).iter().take(8).fold(
-        String::with_capacity(16),
-        |mut hex, byte| {
-            use std::fmt::Write as _;
-            let _ = write!(hex, "{byte:02x}");
-            hex
-        },
-    )
+    crate::hex::encode(&sha2::Sha256::digest(token.as_bytes())[..8])
 }
 
 #[cfg(test)]

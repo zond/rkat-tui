@@ -72,7 +72,7 @@ impl App {
     /// sealed path it mentioned, which was never read.
     pub(super) fn note_mentions(&mut self, attached: &[String], sealed: &[String]) {
         if !attached.is_empty() {
-            let plural = if attached.len() == 1 { "" } else { "s" };
+            let plural = crate::text::plural(attached.len());
             self.transcript.push_notice(
                 NoticeLevel::Info,
                 format!(
@@ -309,7 +309,7 @@ impl App {
                 format!("could not recall: {}", errors.join("; ")),
             );
         }
-        let plural = |n: usize| if n == 1 { "" } else { "s" };
+        let plural = crate::text::plural::<usize>;
         let text = match (returned, reached) {
             (0, 0) => return,
             (0, _) if self.running => {

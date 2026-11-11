@@ -944,45 +944,6 @@ pub(super) async fn establish(
     .map_err(|_| ClientError::Timeout("reading the agent's state"))?
 }
 
-/// What a connect to a daemon's address says about it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Probe {
-    /// Something accepted.
-    Accepts,
-    /// Refused outright (nothing listens): evidence the daemon stopped.
-    Refused,
-    /// Timed out or failed otherwise: no evidence either way.
-    Unknown,
-}
-
-/// Probe the loopback `address` now (a connect there is refused at once
-/// when nothing listens), within a second, without blocking the loop.
-pub(super) async fn probe_address(address: std::net::SocketAddr) -> Probe {
-    match tokio::time::timeout(
-        Duration::from_secs(1),
-        tokio::net::TcpStream::connect(address),
-    )
-    .await
-    {
-        Ok(Ok(_)) => Probe::Accepts,
-        Ok(Err(err)) => classify(&err),
-        Err(_) => Probe::Unknown,
-    }
-}
-
-/// A failed connect: a refusal (or a reset, which a loopback connect to a
-/// port nobody listens on can report) is evidence of a stop; anything
-/// else (a timeout, a local socket error) is not.
-#[must_use]
-pub fn classify(err: &std::io::Error) -> Probe {
-    match err.kind() {
-        std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::ConnectionReset => {
-            Probe::Refused
-        }
-        _ => Probe::Unknown,
-    }
-}
-
 pub(super) async fn next_notification(link: &mut Option<Link>) -> Option<Notification> {
     match link {
         Some(link) => link.notifications.recv().await,

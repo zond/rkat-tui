@@ -93,13 +93,7 @@ pub fn workspace_key(workspace: &Path) -> String {
     let canonical = std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
     let mut hasher = sha2::Sha256::new();
     hasher.update(canonical.as_os_str().as_encoded_bytes());
-    let digest = hasher.finalize();
-    let mut hex = String::with_capacity(KEY_DIGITS);
-    for byte in digest.iter().take(KEY_DIGITS / 2) {
-        use std::fmt::Write as _;
-        let _ = write!(hex, "{byte:02x}");
-    }
-    hex
+    crate::hex::encode(&hasher.finalize()[..KEY_DIGITS / 2])
 }
 
 /// The endpoint file of `workspace` under the state directory
@@ -136,12 +130,7 @@ pub fn default_file(workspace: &Path) -> Result<PathBuf, std::io::Error> {
 ///
 /// [`DaemonError::Io`] when it cannot be created.
 pub fn create_private_dir(dir: &Path) -> Result<(), DaemonError> {
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-    builder
-        .create(dir)
+    crate::paths::create_private_dir(dir)
         .map_err(|err| DaemonError::io("create endpoint directory", dir, err))
 }
 
@@ -234,41 +223,20 @@ impl Endpoint {
     ///
     /// [`DaemonError::Io`] when the directory or the file cannot be written.
     pub fn write(&self, path: &Path) -> Result<(), DaemonError> {
-        use std::io::Write as _;
-        #[cfg(unix)]
-        use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
-
         let dir = path.parent().unwrap_or_else(|| Path::new("."));
         create_private_dir(dir)?;
-        let tmp = temp_path(path);
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        options.mode(0o600);
-        let written = options.open(&tmp).and_then(|mut file| {
-            #[cfg(unix)]
-            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-            let mut line = serde_json::to_string(self).map_err(std::io::Error::other)?;
-            line.push('\n');
-            file.write_all(line.as_bytes())?;
-            file.sync_all()
-        });
-        written
-            .and_then(|()| std::fs::rename(&tmp, path))
-            .map_err(|err| {
-                let _ = std::fs::remove_file(&tmp);
-                DaemonError::io("write endpoint file", path, err)
-            })
+        let mut line = serde_json::to_string(self).map_err(|err| {
+            DaemonError::io("write endpoint file", path, std::io::Error::other(err))
+        })?;
+        line.push('\n');
+        crate::paths::write_atomic(
+            path,
+            line.as_bytes(),
+            crate::paths::FileMode::Private,
+            Some(dir),
+        )
+        .map_err(|err| DaemonError::io("write endpoint file", path, std::io::Error::other(err)))
     }
-}
-
-fn temp_path(path: &Path) -> PathBuf {
-    let mut name = path
-        .file_name()
-        .map(std::ffi::OsStr::to_os_string)
-        .unwrap_or_default();
-    name.push(format!(".{}.tmp", std::process::id()));
-    path.with_file_name(name)
 }
 
 /// A fresh random token: [`TOKEN_BYTES`] from the OS, hex-encoded.
@@ -277,18 +245,7 @@ fn temp_path(path: &Path) -> PathBuf {
 ///
 /// [`DaemonError::Token`] when the OS randomness cannot be read.
 pub fn new_token() -> Result<String, DaemonError> {
-    use std::io::Read as _;
-    let mut bytes = [0u8; TOKEN_BYTES];
-    std::fs::File::open("/dev/urandom")
-        .and_then(|mut random| random.read_exact(&mut bytes))
-        .map_err(DaemonError::Token)?;
-    Ok(bytes
-        .iter()
-        .fold(String::with_capacity(TOKEN_BYTES * 2), |mut hex, byte| {
-            use std::fmt::Write as _;
-            let _ = write!(hex, "{byte:02x}");
-            hex
-        }))
+    crate::hex::random::<TOKEN_BYTES>().map_err(DaemonError::Token)
 }
 
 /// Refuse unless the endpoint file at `path` is absent or proven stale:
@@ -313,7 +270,7 @@ pub async fn check_stale(path: &Path) -> Result<(), DaemonError> {
         Err(err) => return Err(undecided(format!("cannot look at it: {err}"))),
     }
     let endpoint = Endpoint::read(path).map_err(|err| undecided(err.to_string()))?;
-    match reach(&endpoint).await {
+    match reach(endpoint.address, REACH_TIMEOUT).await {
         Reach::Accepts => Err(DaemonError::AlreadyRunning {
             address: endpoint.address,
             pid: endpoint.pid,
@@ -344,26 +301,29 @@ pub enum Reach {
     Unknown(String),
 }
 
-/// Connect to `endpoint`'s address (within [`REACH_TIMEOUT`]); only a
-/// refused (or reset) connect counts as [`Reach::Refused`].
-pub async fn reach(endpoint: &Endpoint) -> Reach {
-    match tokio::time::timeout(
-        REACH_TIMEOUT,
-        tokio::net::TcpStream::connect(endpoint.address),
-    )
-    .await
-    {
+/// Connect to a daemon's `address` within `wait`: the one liveness probe
+/// of the daemon and its clients (a start, `--list`, a reconnect, a
+/// leave). Only a refused (or reset) connect counts as [`Reach::Refused`],
+/// the evidence that nothing listens; a timeout or another failure proves
+/// nothing ([`Reach::Unknown`]).
+pub async fn reach(address: std::net::SocketAddr, wait: std::time::Duration) -> Reach {
+    match tokio::time::timeout(wait, tokio::net::TcpStream::connect(address)).await {
         Ok(Ok(_)) => Reach::Accepts,
-        Ok(Err(err))
-            if matches!(
-                err.kind(),
-                std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::ConnectionReset
-            ) =>
-        {
+        Ok(Err(err)) => classify(&err),
+        Err(_) => Reach::Unknown(format!("no answer within {}s", wait.as_secs())),
+    }
+}
+
+/// What a failed connect says: a refusal (or a reset, which a loopback
+/// connect to a port nobody listens on can report) is evidence of a stop;
+/// anything else (a timeout, a local socket error) is not.
+#[must_use]
+pub fn classify(err: &std::io::Error) -> Reach {
+    match err.kind() {
+        std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::ConnectionReset => {
             Reach::Refused
         }
-        Ok(Err(err)) => Reach::Unknown(err.to_string()),
-        Err(_) => Reach::Unknown(format!("no answer within {}s", REACH_TIMEOUT.as_secs())),
+        _ => Reach::Unknown(err.to_string()),
     }
 }
 
@@ -371,6 +331,44 @@ pub async fn reach(endpoint: &Endpoint) -> Reach {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// The probe is async: a listener accepts, a closed port refuses.
+    #[tokio::test]
+    async fn the_probe_tells_a_listener_from_a_closed_port() {
+        let wait = std::time::Duration::from_secs(1);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let open = listener.local_addr().unwrap();
+        assert_eq!(reach(open, wait).await, Reach::Accepts);
+        drop(listener);
+        assert_eq!(reach(open, wait).await, Reach::Refused);
+    }
+
+    /// Only a refusal proves a stop: a connect that timed out or failed
+    /// otherwise leaves the question open.
+    #[test]
+    fn only_a_refused_connect_counts_as_a_stopped_daemon() {
+        use std::io::{Error, ErrorKind};
+        assert_eq!(
+            classify(&Error::from(ErrorKind::ConnectionRefused)),
+            Reach::Refused
+        );
+        assert_eq!(
+            classify(&Error::from(ErrorKind::ConnectionReset)),
+            Reach::Refused
+        );
+        for kind in [
+            ErrorKind::TimedOut,
+            ErrorKind::WouldBlock,
+            ErrorKind::PermissionDenied,
+            ErrorKind::AddrNotAvailable,
+            ErrorKind::Other,
+        ] {
+            assert!(
+                matches!(classify(&Error::from(kind)), Reach::Unknown(_)),
+                "{kind:?}"
+            );
+        }
+    }
 
     #[test]
     fn the_file_is_one_private_json_line() {

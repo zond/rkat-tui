@@ -169,7 +169,7 @@ pub async fn reach(
         workspace: None,
         started_at: None,
     };
-    let status = status_of(&probe)
+    let status = status_of(&probe, PROBE_TIMEOUT)
         .await
         .map_err(|err| fail(format!("no daemon answered with that token: {err}")))?;
     let remote = remote_reason(
@@ -219,15 +219,16 @@ async fn resolve(address: &str) -> Result<SocketAddr, String> {
         .ok_or_else(|| "it resolves to no address".to_string())
 }
 
-/// Attach to `endpoint` as a probe and read its `rkat/status`.
+/// Attach to `endpoint` as a probe and read its `rkat/status`, all within
+/// `wait`.
 ///
 /// # Errors
 ///
 /// The connect, the attach or the call's error.
-pub async fn status_of(endpoint: &Endpoint) -> Result<Status, ClientError> {
-    tokio::time::timeout(PROBE_TIMEOUT, async {
+pub async fn status_of(endpoint: &Endpoint, wait: Duration) -> Result<Status, ClientError> {
+    tokio::time::timeout(wait, async {
         let (connection, _notes) =
-            Connection::attach_as(endpoint, ATTACH_TIMEOUT, None, true).await?;
+            Connection::attach_as(endpoint, ATTACH_TIMEOUT.min(wait), None, true).await?;
         super::remote::call::<protocol::method::Status>(&connection, &protocol::Empty {}).await
     })
     .await

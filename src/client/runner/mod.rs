@@ -1217,7 +1217,6 @@ async fn sleep_until(deadline: Option<Instant>) {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::commands::{agent_lines, others_notice, report_lines, schedules_text};
-    use super::link::{Probe, classify};
     use super::turn::model_switch;
     use super::*;
 
@@ -1796,40 +1795,6 @@ mod tests {
         orphans.clear();
         assert_eq!((orphans.held, orphans.warned), (0, false));
         assert!(orphans.take("b").is_empty());
-    }
-
-    /// The probe is async: a listener accepts, a closed port refuses.
-    #[tokio::test]
-    async fn the_address_probe_tells_a_listener_from_a_closed_port() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let open = listener.local_addr().unwrap();
-        assert_eq!(super::link::probe_address(open).await, Probe::Accepts);
-        drop(listener);
-        assert_eq!(super::link::probe_address(open).await, Probe::Refused);
-    }
-
-    /// Only a refusal proves a stop: a connect that timed out or failed
-    /// otherwise leaves the question to the pid and the endpoint file.
-    #[test]
-    fn only_a_refused_connect_counts_as_a_stopped_daemon() {
-        use std::io::{Error, ErrorKind};
-        assert_eq!(
-            classify(&Error::from(ErrorKind::ConnectionRefused)),
-            Probe::Refused
-        );
-        assert_eq!(
-            classify(&Error::from(ErrorKind::ConnectionReset)),
-            Probe::Refused
-        );
-        for kind in [
-            ErrorKind::TimedOut,
-            ErrorKind::WouldBlock,
-            ErrorKind::PermissionDenied,
-            ErrorKind::AddrNotAvailable,
-            ErrorKind::Other,
-        ] {
-            assert_eq!(classify(&Error::from(kind)), Probe::Unknown, "{kind:?}");
-        }
     }
 
     /// A steer of this client the runtime still holds when the turn's

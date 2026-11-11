@@ -138,14 +138,7 @@ pub async fn list_models(
             .trim_end_matches('/')
             .to_string()
     };
-    let mut builder = reqwest::Client::builder()
-        .timeout(timeout)
-        .connect_timeout(timeout);
-    // Like `meerkat-client`: never send loopback endpoints through a proxy.
-    if creds.base_url.as_deref().is_some_and(is_loopback_url) {
-        builder = builder.no_proxy();
-    }
-    let client = builder.build()?;
+    let client = crate::http::client(creds.base_url.as_deref(), timeout)?;
     match creds.provider {
         Provider::Anthropic => {
             list_anthropic(
@@ -309,26 +302,20 @@ struct LiteLlmModelInfo {
     max_input_tokens: Option<u64>,
     #[serde(default)]
     max_output_tokens: Option<u64>,
-    #[serde(default, deserialize_with = "crate::pricing::lenient_f64")]
+    #[serde(default, deserialize_with = "crate::http::lenient")]
     input_cost_per_token: Option<f64>,
-    #[serde(default, deserialize_with = "crate::pricing::lenient_f64")]
+    #[serde(default, deserialize_with = "crate::http::lenient")]
     output_cost_per_token: Option<f64>,
-    #[serde(default, deserialize_with = "crate::pricing::lenient_f64")]
+    #[serde(default, deserialize_with = "crate::http::lenient")]
     cache_read_input_token_cost: Option<f64>,
-    #[serde(default, deserialize_with = "crate::pricing::lenient_f64")]
+    #[serde(default, deserialize_with = "crate::http::lenient")]
     cache_creation_input_token_cost: Option<f64>,
-    #[serde(default, deserialize_with = "lenient_bool")]
+    #[serde(default, deserialize_with = "crate::http::lenient")]
     supports_reasoning: Option<bool>,
-    #[serde(default, deserialize_with = "lenient_bool")]
+    #[serde(default, deserialize_with = "crate::http::lenient")]
     supports_vision: Option<bool>,
-    #[serde(default, deserialize_with = "lenient_bool")]
+    #[serde(default, deserialize_with = "crate::http::lenient")]
     supports_function_calling: Option<bool>,
-}
-
-/// A LiteLLM flag: a boolean, else nothing (`null` or any other shape is
-/// "not reported", never a refusal of the whole page).
-fn lenient_bool<'de, D: serde::Deserializer<'de>>(de: D) -> Result<Option<bool>, D::Error> {
-    Ok(serde_json::Value::deserialize(de)?.as_bool())
 }
 
 impl LiteLlmModelInfo {
@@ -357,13 +344,7 @@ async fn litellm_model_info(
     api_key: &SecretString,
     timeout: Duration,
 ) -> Result<LiteLlmInfoPage, ListModelsError> {
-    let mut builder = reqwest::Client::builder()
-        .timeout(timeout)
-        .connect_timeout(timeout);
-    if is_loopback_url(base) {
-        builder = builder.no_proxy();
-    }
-    let client = builder.build()?;
+    let client = crate::http::client(Some(base), timeout)?;
     let url = format!("{}/model/info", base.trim_end_matches('/'));
     fetch_json(client.get(url).bearer_auth(api_key.expose())).await
 }
@@ -423,21 +404,6 @@ async fn fetch_json<T: DeserializeOwned>(
         });
     }
     decode(&body)
-}
-
-/// Whether `url` points at this machine (`localhost`, `127.0.0.0/8`, `::1`).
-pub(crate) fn is_loopback_url(url: &str) -> bool {
-    let Ok(url) = reqwest::Url::parse(url) else {
-        return false;
-    };
-    let Some(host) = url.host_str() else {
-        return false;
-    };
-    let host = host.trim_matches(|c| c == '[' || c == ']');
-    host.eq_ignore_ascii_case("localhost")
-        || host
-            .parse::<std::net::IpAddr>()
-            .is_ok_and(|ip| ip.is_loopback())
 }
 
 fn decode<T: DeserializeOwned>(body: &str) -> Result<T, ListModelsError> {
@@ -1001,15 +967,6 @@ mod tests {
         let merged = with_current("", vec![entry("a", ModelSource::Provider)]);
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].source, ModelSource::Provider);
-    }
-
-    #[test]
-    fn loopback_detection() {
-        assert!(is_loopback_url("http://127.0.0.1:8080/"));
-        assert!(is_loopback_url("http://localhost:1"));
-        assert!(is_loopback_url("http://[::1]:1"));
-        assert!(!is_loopback_url("https://api.anthropic.com"));
-        assert!(!is_loopback_url("not a url"));
     }
 
     #[test]

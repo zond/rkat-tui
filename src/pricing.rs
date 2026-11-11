@@ -320,34 +320,14 @@ enum CommunityEntry {
 /// The fields of a community entry the cost readout uses; the rest is ignored.
 #[derive(Deserialize)]
 struct CommunityModel {
-    #[serde(default, deserialize_with = "lenient_f64")]
+    #[serde(default, deserialize_with = "crate::http::lenient")]
     input_cost_per_token: Option<f64>,
-    #[serde(default, deserialize_with = "lenient_f64")]
+    #[serde(default, deserialize_with = "crate::http::lenient")]
     output_cost_per_token: Option<f64>,
-    #[serde(default, deserialize_with = "lenient_f64")]
+    #[serde(default, deserialize_with = "crate::http::lenient")]
     cache_read_input_token_cost: Option<f64>,
-    #[serde(default, deserialize_with = "lenient_f64")]
+    #[serde(default, deserialize_with = "crate::http::lenient")]
     cache_creation_input_token_cost: Option<f64>,
-}
-
-/// A number, or a value of another type (treated as missing).
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum Lenient {
-    Number(f64),
-    Other(IgnoredAny),
-}
-
-/// Deserialize a number; `null` and values of other types become `None`
-/// instead of failing the whole document.
-pub(crate) fn lenient_f64<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Ok(match Option::<Lenient>::deserialize(deserializer)? {
-        Some(Lenient::Number(n)) => Some(n),
-        Some(Lenient::Other(_)) | None => None,
-    })
 }
 
 impl CommunityEntry {
@@ -495,14 +475,8 @@ pub async fn fetch_community(
     url: &str,
     timeout: Duration,
 ) -> Result<IndexMap<String, ModelPrice>, PricingError> {
-    let mut builder = reqwest::Client::builder()
-        .timeout(timeout)
-        .connect_timeout(timeout);
-    if crate::models::is_loopback_url(url) {
-        builder = builder.no_proxy();
-    }
     let read = |err: reqwest::Error| PricingError::Read(err.into());
-    let client = builder.build().map_err(read)?;
+    let client = crate::http::client(Some(url), timeout).map_err(read)?;
     let response = client.get(url).send().await.map_err(read)?;
     let status = response.status();
     if !status.is_success() {

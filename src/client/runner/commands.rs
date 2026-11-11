@@ -403,9 +403,8 @@ pub fn others_notice(agents: &[protocol::AgentRow], mine: &str) -> Option<String
 #[must_use]
 pub fn agent_lines(agents: &[protocol::AgentRow], mine: Option<&str>) -> Vec<String> {
     let mut lines = vec![format!(
-        "{} agent{} in this workspace:",
-        agents.len(),
-        if agents.len() == 1 { "" } else { "s" }
+        "{} in this workspace:",
+        crate::text::count(agents.len(), "agent")
     )];
     for row in agents {
         let session = row.session_id.as_ref().map_or_else(
@@ -420,7 +419,7 @@ pub fn agent_lines(agents: &[protocol::AgentRow], mine: Option<&str>) -> Vec<Str
             row.name,
             row.run_label(),
             row.clients,
-            if row.clients == 1 { "" } else { "s" }
+            crate::text::plural(row.clients)
         );
         if row.detached && row.clients == 0 {
             line.push_str(" (detached)");
@@ -475,9 +474,8 @@ pub(super) fn schedules_text(
     prices: &crate::pricing::PriceTable,
 ) -> String {
     let mut text = format!(
-        "{} schedule{} of this agent:",
-        rows.len(),
-        if rows.len() == 1 { "" } else { "s" }
+        "{} of this agent:",
+        crate::text::count(rows.len(), "schedule")
     );
     for row in rows {
         let cost = match &row.cost {
