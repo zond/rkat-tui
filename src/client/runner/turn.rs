@@ -272,6 +272,7 @@ impl Runner {
         }
         self.followers.convening(&envelope.payload, None);
         let mut terminal = false;
+        let mut completed = false;
         // A run already going when this client attached (its start was shown
         // before it detached): the UI is busy until its end.
         if !self.turn.active && joins_a_run(&envelope.payload) {
@@ -368,6 +369,7 @@ impl Runner {
                     output_tokens: usage.output_tokens,
                 }));
                 terminal = true;
+                completed = true;
             }
             AgentEvent::RunFailed {
                 identity,
@@ -392,7 +394,15 @@ impl Runner {
         if terminal {
             self.save_cursor();
             if self.turn.active && self.turn.open_runs.is_empty() {
-                self.turn.finish_by = Some(Instant::now() + RUN_GRACE);
+                // A steer of this client the runtime still holds after a
+                // completed run runs as a follow-up run, which delivers it:
+                // the turn waits for that run instead of ending first.
+                let wait = if completed && self.turn.steers.following() {
+                    FOLLOW_UP_WAIT
+                } else {
+                    RUN_GRACE
+                };
+                self.turn.finish_by = Some(Instant::now() + wait);
             }
         }
     }

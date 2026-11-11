@@ -7,7 +7,9 @@
 //! run this UI did not start: another client's, or one the catch-up found,
 //! announced with [`Msg::RemoteTurn`]) and ends [`RUN_GRACE`] after the last
 //! run it saw ended without another starting (a steer that missed the
-//! boundary runs as a follow-up run). Its result is the runs' terminal
+//! boundary runs as a follow-up run; while one of this client's steers
+//! waits for it after a completed run, the turn waits up to
+//! [`FOLLOW_UP_WAIT`]). Its result is the runs' terminal
 //! events: `run_completed` (the text and usage), `run_failed` (an
 //! interruption when this client interrupted it or the class is
 //! `cancelled`, else the failure).
@@ -101,6 +103,14 @@ pub const ATTACH_NOTICE: &str = "the agent runs in this workspace's rkat-tui-mob
 
 /// How long a turn whose runs all ended waits for a follow-up run.
 pub const RUN_GRACE: Duration = Duration::from_millis(300);
+
+/// How long a turn whose runs all completed waits for the follow-up run
+/// that carries this client's steers still with the runtime (sent or
+/// admitted, not written into a run yet): those are delivered at that
+/// run's start, not at the turn's end, so the turn does not end (and a
+/// new one start with the steer's own text) between them. Past the bound
+/// the runtime is taken to own them, as at any turn's end.
+pub const FOLLOW_UP_WAIT: Duration = Duration::from_secs(10);
 
 /// How long after the first interrupt a second one force-cancels.
 pub const STOP_GRACE: Duration = Duration::from_secs(1);
@@ -1872,6 +1882,72 @@ mod tests {
         ] {
             assert_eq!(classify(&Error::from(kind)), Probe::Unknown, "{kind:?}");
         }
+    }
+
+    /// A steer of this client the runtime still holds when the turn's
+    /// runs completed runs as a follow-up run: the turn waits for that run
+    /// (however late it starts) and marks the steer delivered at its
+    /// start, never ending first. Without a held steer the short grace
+    /// applies.
+    #[tokio::test]
+    async fn a_held_steer_keeps_the_turn_open_for_its_follow_up_run() {
+        use crate::ui::delivery::PendingId;
+        use meerkat_core::types::{ContentInput, RunInput, TranscriptMessageIdentity};
+        let dir = tempfile::tempdir().unwrap();
+        let (mut runner, mut rx) = runner(dir.path());
+        let session = SessionId::new();
+        let envelope = |seq, payload| EventEnvelope::new("test", seq, None, payload);
+        let started = |run: &RunId| AgentEvent::RunStarted {
+            session_id: session.clone(),
+            identity: TranscriptMessageIdentity {
+                run_id: Some(run.clone()),
+                ..TranscriptMessageIdentity::default()
+            },
+            input: RunInput::Content {
+                content: ContentInput::Text("x".into()),
+            },
+            request_reasoning: None,
+        };
+        let completed = |run: &RunId| AgentEvent::RunCompleted {
+            session_id: session.clone(),
+            identity: TranscriptMessageIdentity {
+                run_id: Some(run.clone()),
+                ..TranscriptMessageIdentity::default()
+            },
+            result: "done".into(),
+            structured_output: None,
+            extraction_required: false,
+            usage: meerkat_core::types::CumulativeUsage::default(),
+            terminal_cause_kind: None,
+            assistant_message_id: None,
+        };
+        runner.turn = Turn {
+            active: true,
+            ..Turn::default()
+        };
+        let (first, follow_up) = (RunId::new(), RunId::new());
+        runner.on_event(envelope(1, started(&first)), None);
+        runner.turn.steers.sending(PendingId(2));
+        runner.turn.steers.admitted(PendingId(2), InputId::new());
+        runner.on_event(envelope(2, completed(&first)), None);
+        let wait = runner.turn.finish_by.unwrap() - Instant::now();
+        assert!(wait > RUN_GRACE * 2, "{wait:?}");
+        // Past the run grace the turn is still open.
+        runner.turn.finish_by = runner.turn.finish_by.map(|at| at.max(Instant::now()));
+        runner.on_deadline();
+        assert!(runner.turn.active);
+        while rx.try_recv().is_ok() {}
+        runner.on_event(envelope(3, started(&follow_up)), None);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Msg::SteerDelivered(PendingId(2)))
+        ));
+        assert!(matches!(rx.try_recv(),
+            Ok(Msg::Agent(env)) if matches!(env.payload, AgentEvent::RunStarted { .. })));
+        assert!(rx.try_recv().is_err(), "the turn did not end");
+        runner.on_event(envelope(4, completed(&follow_up)), None);
+        let wait = runner.turn.finish_by.unwrap() - Instant::now();
+        assert!(wait <= RUN_GRACE, "nothing held: the short grace {wait:?}");
     }
 
     #[test]

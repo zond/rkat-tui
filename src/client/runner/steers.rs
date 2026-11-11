@@ -108,6 +108,12 @@ impl Steers {
         all
     }
 
+    /// Whether a steer is still followed: sent or admitted and not
+    /// written into a run yet.
+    pub(super) fn following(&self) -> bool {
+        !self.sending.is_empty() || !self.admitted.is_empty()
+    }
+
     /// Whether `id` is still followed.
     #[cfg(test)]
     pub(super) fn holds(&self, id: PendingId) -> bool {

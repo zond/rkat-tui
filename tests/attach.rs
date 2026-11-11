@@ -861,6 +861,13 @@ fn applies(msg: &Msg, text: &str) -> bool {
 /// applies A's steer (admitted first) at the tool boundary and runs B's
 /// as a follow-up run, so a first-in-first-out client would have B mark
 /// its own steer at A's boundary event: the negative case.
+///
+/// The follow-up run is part of the turn: after a completed run the turn
+/// waits for the run that carries a steer of its client still with the
+/// runtime (`FOLLOW_UP_WAIT`), however late it starts, so each client sees
+/// one turn end, after its mark. A slow host once let the short run grace
+/// end the turn first, which swept B's steer "delivered", ended the turn
+/// and started a new one with B's own text.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn each_client_marks_only_its_own_steer_delivered() {
     use rkat_tui::ui::delivery::PendingId;
@@ -942,6 +949,14 @@ async fn each_client_marks_only_its_own_steer_delivered() {
             applies(&seen[at + 1], mine) || follow_up,
             "marked at its own input's event or its follow-up run: {seen:#?}"
         );
+        let ends: Vec<usize> = seen
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| matches!(m, Msg::TurnFinished(_)))
+            .map(|(at, _)| at)
+            .collect();
+        assert_eq!(ends.len(), 1, "one turn, ended once: {seen:#?}");
+        assert!(ends[0] > at, "the turn ends after the mark: {seen:#?}");
         if let Some(theirs_at) = seen.iter().position(|m| applies(m, theirs)) {
             negative_seen = true;
             assert!(

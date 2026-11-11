@@ -31,7 +31,10 @@
 - With two TUIs steering the same turn, each marks only its own message
   delivered, at the moment the agent takes that message: the daemon now
   names the input each message became (Meerkat 0.9.12), where before the
-  oldest steer was marked at any steer's delivery.
+  oldest steer was marked at any steer's delivery. A steer the agent
+  runs after the turn's last run (a follow-up run) is marked when that
+  run starts: on a slow host the turn could end first, marking it
+  delivered and then starting a new turn with its text.
 - ↑ on an empty editor takes back a message sent while the agent works
   again, as long as the agent has not read it (it waits behind a running
   tool): the daemon abandons it and it returns to the editor, while the

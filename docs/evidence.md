@@ -6552,3 +6552,35 @@ and `sub/.rkat/mcp.toml` refused, `src/x.rs` written; without the
 declaration the first two are written, checked by mutation) and
 `paths::tests::sealed_paths_are_the_gate_state_and_vcs_internals_and_imply_protected`
 (`a/b/.rkat/mcp.toml` sealed, `a/.rkatx/b` not).
+
+## A steer run as a follow-up run is delivered at that run's start (2026-11-11)
+
+Hosted CI failed `each_client_marks_only_its_own_steer_delivered` from
+7e446af on: client B saw `SteerDelivered(2)`, `TurnFinished`, a status
+line, `RemoteTurn` and only then the follow-up `RunStarted` that carried
+B's steer. The engine applies the first steer at the tool boundary and
+runs the second as a follow-up run after the first run completes; the
+client ended a turn [`RUN_GRACE`] (300 ms) after its last run ended, and
+on the slower runner the follow-up run started later than that. The
+turn-end sweep then marked B's steer delivered (the runtime owns what is
+left at a turn's end; leaving it unmarked would have the UI send it again
+as a new prompt), the turn ended, and a new remote turn started with B's
+own text. That is a delivery defect, not a test artefact: the mark
+belongs to the run that carries the steer.
+
+`RunStarted` names no input id (0.9.12), so the follow-up run cannot be
+matched to its input; what the client knows is whether it still follows a
+steer of its own (sent, or admitted and not applied at a boundary). After
+a completed run with such a steer the turn now waits up to
+`FOLLOW_UP_WAIT` (10 s) instead of `RUN_GRACE`; the follow-up
+`RunStarted` takes the steers and marks them just before it is forwarded,
+as before. Past the bound (a runtime that dropped the input) the turn-end
+sweep applies as before. A failed or interrupted run keeps the short
+grace.
+
+Tests: `client::runner::tests::a_held_steer_keeps_the_turn_open_for_its_follow_up_run`
+(events fed to the runner: the long wait with a held steer, no turn end
+past the run grace, the mark right before the follow-up `RunStarted`, the
+short grace once nothing is held; fails on the old rule) and
+`attach::each_client_marks_only_its_own_steer_delivered` (now also: each
+client sees one `TurnFinished`, after its mark).
