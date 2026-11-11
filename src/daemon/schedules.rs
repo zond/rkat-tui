@@ -319,6 +319,12 @@ impl Schedules {
     /// positive evidence (see the module docs); `None` when no occurrence
     /// proves it. Tried for about a second while nothing matches.
     pub async fn attribute(&self, agent: &str, run: &RunId, prompt: &str) -> Option<Fired> {
+        // An agent with no schedule (most runs nobody typed are a peer's)
+        // costs one read, not a second of the event watcher's time.
+        let any = self.service.list().await.ok()?;
+        if !any.iter().any(|s| agent_of(s).as_deref() == Some(agent)) {
+            return None;
+        }
         for attempt in 0..ATTRIBUTE_TRIES {
             if attempt > 0 {
                 tokio::time::sleep(ATTRIBUTE_PAUSE).await;
