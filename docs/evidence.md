@@ -6364,6 +6364,22 @@ start` to try again, or stopped) and what did not happen. The
   `agents.rs`, `peer.rs`, `persona.rs`, `settings.rs`, `tasks.rs` and
   `list.rs` where they live now.
 
+## The engine moves to crates.io 0.9.13 (2026-11-11)
+
+Every `meerkat-*` line names `version = "0.9.13"`; `cargo update -p
+meerkat` moved the engine crates of the lock together and nothing else.
+Upstream calls the release packaging-only, and the published sources
+agree: against 0.9.12, every engine crate rkat-tui compiles differs only
+in `Cargo.toml`, `Cargo.lock`, `BUILD.bazel` and `.cargo_vcs_info.json`,
+apart from an embedded skill text in the facade and the version strings
+in `meerkat-contracts`' generated schema. API drift: none (`cargo check
+--all-targets --all-features` compiled unchanged). `rmcp` is still 1.8.0,
+so the RUSTSEC-2026-0462 ignore still matches (`cargo deny check` passes
+with `unused-ignored-advisory = "deny"`); its reason names 0.9.13 now.
+`tool_costs::an_agent_s_request_carries_every_tool_definition` still
+passes: the members' catalog is still inexact (lukacf/meerkat#2180 is
+not in this release).
+
 ## The engine moves to crates.io 0.9.12 (2026-11-11)
 
 Every `meerkat-*` dependency names `version = "0.9.12"` from crates.io;

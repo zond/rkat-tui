@@ -1658,7 +1658,7 @@ each, the engine's comms tools a fifth, rkat-tui's own file, note and
 watch tools under 10 KB); a helper's about 40 KB. The engine's deferred
 tool catalog, which would keep rarely used tools out of the request until
 the model searches for them, does not engage for the daemon's agents on
-Meerkat 0.9.12 (`docs/evidence.md`, "Deferrable tools"). The engine's schedules are the workspace realm's: an agent's
+Meerkat 0.9.13 (`docs/evidence.md`, "Deferrable tools"). The engine's schedules are the workspace realm's: an agent's
 `meerkat_schedule_list` shows every agent's schedules, and an agent can
 target another agent's session; those calls are reviewed like any other
 schedule change. `/schedules` shows only schedules whose target is your

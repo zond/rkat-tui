@@ -18,13 +18,13 @@ unused-ignored-advisory = "deny"
 # dated and says what lifts it.
 ignore = [
     # rmcp 1.8 buffers an MCP HTTP server's response body without a limit;
-    # the fix is rmcp 3.9, outside meerkat-mcp 0.9.12's `rmcp = "1.4"`.
-    # Meerkat 0.9.12 no longer compiles rmcp's reqwest Streamable HTTP
+    # the fix is rmcp 3.9, outside meerkat-mcp 0.9.13's `rmcp = "1.4"`.
+    # Meerkat 0.9.12 and 0.9.13 no longer compiles rmcp's reqwest Streamable HTTP
     # client (meerkat-mcp's own client bounds bodies and SSE events at
     # 64 MiB), so the affected code is not in this graph; cargo-deny matches
     # the advisory by rmcp's version alone. Ignored 2026-11-10, reason
-    # rewritten 2026-11-11; lifts when a Meerkat release takes rmcp >= 3.9.
-    { id = "RUSTSEC-2026-0462", reason = "not affected: rmcp's reqwest Streamable HTTP client is not compiled from Meerkat 0.9.12 (meerkat-mcp's own client bounds bodies and SSE events at 64 MiB); cargo-deny matches the rmcp version alone; remove with the Meerkat release that moves to rmcp >= 3.9" },
+    # rewritten 2026-11-11 (still current at 0.9.13); lifts when a Meerkat release takes rmcp >= 3.9.
+    { id = "RUSTSEC-2026-0462", reason = "not affected: rmcp's reqwest Streamable HTTP client is not compiled from Meerkat 0.9.13 (meerkat-mcp's own client bounds bodies and SSE events at 64 MiB); cargo-deny matches the rmcp version alone; remove with the Meerkat release that moves to rmcp >= 3.9" },
 ]
 
 [licenses]

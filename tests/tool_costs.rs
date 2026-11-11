@@ -1,7 +1,7 @@
 //! What an agent's model requests pay for tool definitions, by family
 //! (`docs/evidence.md`, "Deferrable tools"): every definition rides on every
 //! request, because the engine's deferred tool catalog never engages for
-//! the daemon's members (Meerkat 0.9.12: the mob operator tools and
+//! the daemon's members (Meerkat 0.9.12 and 0.9.13: the mob operator tools and
 //! `memory_search` report no exact catalog, so the session's catalog is
 //! inexact and stays inline). The measurements are asserted as bounds, so a
 //! family that grows, and the engine change that would let tools be

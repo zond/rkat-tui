@@ -74,7 +74,9 @@
   (`apply_patch`, `blob_save_file`) refuse every path in a `.rkat`
   directory of the workspace, the realm's SQLite is 3.54.1 (the bundled
   SQLite of RUSTSEC-2026-0459 is gone), and Claude Fable 5.2
-  (`claude-fable-5-2`) is in the model catalog.
+  (`claude-fable-5-2`) is in the model catalog. Then Meerkat 0.9.13, a
+  packaging-only release (no source change in any engine crate
+  rkat-tui builds).
 
 ### Fixed
 

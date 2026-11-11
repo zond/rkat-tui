@@ -537,8 +537,9 @@ list of what the daemon and its client do not do yet.
 The phase records are the evidence sections in the status table, plus "The
 pin moves to upstream `main`" (2026-11-08) and "The pin moves to the 0.9.11
 integration" (2026-11-09); the engine was the crates.io 0.9.11 release
-("The engine moves to crates.io 0.9.11", 2026-11-09) and is now 0.9.12
-("The engine moves to crates.io 0.9.12", 2026-11-11). Two asks of the first list are done: the stream
+("The engine moves to crates.io 0.9.11", 2026-11-09) then 0.9.12
+("The engine moves to crates.io 0.9.12", 2026-11-11) and is now 0.9.13
+("The engine moves to crates.io 0.9.13", 2026-11-11). Two asks of the first list are done: the stream
 cursor (#2114) and pushed consent, delivered through durable decisions
 rather than plain approval records (#2115).
 
