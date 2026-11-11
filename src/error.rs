@@ -23,9 +23,6 @@ pub enum TuiError {
         #[source]
         source: std::io::Error,
     },
-    /// Realm selection flags were invalid (e.g. `--realm` with `--isolated`).
-    #[error("invalid realm selection: {0}")]
-    Realm(#[from] meerkat_core::RuntimeBootstrapError),
     /// The realm config could not be loaded or env overrides were invalid.
     #[error("{context}: {source}")]
     Config {
@@ -47,23 +44,16 @@ pub enum TuiError {
     /// The realm persistence backend could not be opened.
     #[error("failed to open realm persistence: {0}")]
     Persistence(#[from] meerkat::PersistenceError),
-    /// The workspace's (or realm's) state directory could not be opened at
-    /// start-up: the message names the directory and, when another `rkat-tui`
-    /// or `rkat` version may have written it (a schema, ledger or manifest it
-    /// does not understand; see [`suggests_move_aside`]), how to start fresh
-    /// or carry its sessions forward. Other failures (a realm another process
-    /// holds, contention, permissions) get the plain error.
-    #[error(
-        "{}",
-        persistence_open_message(realm_root, state_root, realm_id, source)
-    )]
+    /// The workspace's state directory could not be opened at start-up:
+    /// the message names the directory and, when another `rkat-tui` version
+    /// may have written it (a schema, ledger or manifest it does not
+    /// understand; see [`suggests_move_aside`]), how to start fresh. Other
+    /// failures (a realm another process holds, contention, permissions) get
+    /// the plain error.
+    #[error("{}", persistence_open_message(realm_root, source))]
     PersistenceOpen {
-        /// The realm's directory (`<state_root>/<realm_id>`).
+        /// The realm's directory.
         realm_root: PathBuf,
-        /// The realms root `rkat --state-root` takes.
-        state_root: PathBuf,
-        /// The realm id `rkat --realm` takes.
-        realm_id: String,
         /// Underlying persistence error (boxed: the variant must not widen the
         /// error type).
         #[source]
@@ -119,22 +109,6 @@ pub enum TuiError {
     /// composed into one gateway.
     #[error("cannot compose the file and note tools: {0}")]
     ToolGateway(#[source] meerkat_core::error::ToolError),
-    /// The user-global config directory and a shared realm's directory
-    /// (`--realm`, `--state-root`) are the same directory, or one holds the
-    /// other: their `tui.toml`, trust records and notes would collide.
-    #[error(
-        "the config dir {} and the realm dir {} {relation}; their tui.toml, trust records and notes would collide; pass --config-dir <other dir> to keep the user-global files elsewhere",
-        .config.display(),
-        .realm.display()
-    )]
-    ConfigDirCollision {
-        /// The resolved user-global config directory.
-        config: PathBuf,
-        /// The realm directory.
-        realm: PathBuf,
-        /// How they collide (`are the same directory`, …).
-        relation: &'static str,
-    },
     /// stdin or stdout is not a terminal; the TUI needs one.
     #[error(
         "stdin and stdout must be a terminal; rkat-tui is interactive (use `rkat run` for scripts)"
@@ -226,7 +200,6 @@ impl TuiError {
     pub fn exit_code(&self) -> u8 {
         match self {
             Self::ProjectRoot { .. }
-            | Self::Realm(_)
             | Self::Config { .. }
             | Self::ConfigRuntime { .. }
             | Self::SessionRef { .. }
@@ -235,7 +208,6 @@ impl TuiError {
             | Self::Overlay(_)
             | Self::Approval(_)
             | Self::Confinement(_)
-            | Self::ConfigDirCollision { .. }
             | Self::RealmHome(_)
             | Self::Rehome(_)
             | Self::RealmExposed { .. }
@@ -305,8 +277,6 @@ pub fn suggests_move_aside(err: &meerkat::PersistenceError) -> bool {
 
 fn persistence_open_message(
     realm_root: &std::path::Path,
-    state_root: &std::path::Path,
-    realm_id: &str,
     source: &meerkat::PersistenceError,
 ) -> String {
     let mut out = format!(
@@ -322,13 +292,10 @@ fn persistence_open_message(
                 .unwrap_or_default()
         ));
         out.push_str(&format!(
-            "\n\nIf another rkat-tui or rkat version wrote it and you do not need its sessions, \
-             move it aside and start fresh:\n  mv {} {}\nTo keep them, follow the message above \
-             with `--state-root {} --realm {}`.",
+            "\n\nIf another rkat-tui version wrote it and you do not need its sessions, \
+             move it aside and start fresh:\n  mv {} {}",
             shell_quote(realm_root),
             shell_quote(&old),
-            shell_quote(state_root),
-            shell_quote(std::path::Path::new(realm_id)),
         ));
     }
     out
@@ -339,15 +306,9 @@ mod tests {
     use super::TuiError;
     use std::path::PathBuf;
 
-    fn open_error(
-        realm_root: &str,
-        state_root: &str,
-        source: meerkat::PersistenceError,
-    ) -> TuiError {
+    fn open_error(realm_root: &str, source: meerkat::PersistenceError) -> TuiError {
         TuiError::PersistenceOpen {
             realm_root: PathBuf::from(realm_root),
-            state_root: PathBuf::from(state_root),
-            realm_id: "tui".to_string(),
             source: Box::new(source),
         }
     }
@@ -361,8 +322,8 @@ mod tests {
     }
 
     #[test]
-    fn a_state_dir_from_another_version_names_both_ways_out() {
-        let err = open_error("/work/.rkat/tui", "/work/.rkat", from_another_version());
+    fn a_state_dir_from_another_version_names_the_way_out() {
+        let err = open_error("/work/.rkat/tui", from_another_version());
         let text = err.to_string();
         assert!(
             text.starts_with("failed to open the state directory /work/.rkat/tui: "),
@@ -370,10 +331,6 @@ mod tests {
         );
         assert!(
             text.contains("mv '/work/.rkat/tui' '/work/.rkat/tui.old'"),
-            "{text}"
-        );
-        assert!(
-            text.contains("`--state-root '/work/.rkat' --realm 'tui'`"),
             "{text}"
         );
         assert_eq!(err.exit_code(), 1);
@@ -392,13 +349,12 @@ mod tests {
                 std::io::ErrorKind::PermissionDenied,
             ))),
         ] {
-            let text = open_error("/work/.rkat/tui", "/work/.rkat", source).to_string();
+            let text = open_error("/work/.rkat/tui", source).to_string();
             assert!(
                 text.starts_with("failed to open the state directory /work/.rkat/tui: "),
                 "{text}"
             );
             assert!(!text.contains("mv "), "{text}");
-            assert!(!text.contains("--state-root"), "{text}");
         }
     }
 
@@ -408,13 +364,12 @@ mod tests {
             super::shell_quote(std::path::Path::new("/it's here")),
             "'/it'\\''s here'"
         );
-        let err = open_error("/w/it's/.rkat/tui", "/w/it's/.rkat", from_another_version());
+        let err = open_error("/w/it's/.rkat/tui", from_another_version());
         let text = err.to_string();
         assert!(
             text.contains("mv '/w/it'\\''s/.rkat/tui' '/w/it'\\''s/.rkat/tui.old'"),
             "{text}"
         );
-        assert!(text.contains("--state-root '/w/it'\\''s/.rkat'"), "{text}");
     }
 }
 

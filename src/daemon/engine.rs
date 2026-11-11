@@ -494,10 +494,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
 /// The note tools every agent shares (one store per scope).
 fn note_tools(scope: &RuntimeScope) -> NoteToolDispatcher {
     NoteToolDispatcher::new(
-        scope
-            .global
-            .as_ref()
-            .map(|global| NoteStore::open(global.notes_dir(), Scope::User)),
+        Some(NoteStore::open(scope.global.notes_dir(), Scope::User)),
         NoteStore::open(
             crate::memory::workspace_notes_dir(&scope.realm_root()),
             Scope::Workspace,

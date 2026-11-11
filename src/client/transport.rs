@@ -837,7 +837,6 @@ mod tests {
             pid: 1,
             workspace: None,
             started_at: None,
-            realm: None,
         };
         let attached = Connection::attach(&endpoint, ATTACH_TIMEOUT).await;
         assert!(

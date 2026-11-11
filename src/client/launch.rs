@@ -123,7 +123,7 @@ pub fn daemon_program() -> PathBuf {
 }
 
 /// The daemon's arguments for the TUI's `args`: every engine flag the two
-/// binaries share (realm, model, endpoints, confinement, trust, `--set`),
+/// binaries share (model, endpoints, confinement, trust, `--set`),
 /// with the workspace made explicit; the UI-only ones (prompt, resume,
 /// mouse, attach) are left out.
 #[must_use]
@@ -145,15 +145,6 @@ pub fn daemon_argv(args: &Args, workspace: &Path) -> Vec<OsString> {
     value(
         "--config-dir",
         args.config_dir.as_ref().map(OsString::from).as_ref(),
-    );
-    value("--realm", args.realm.as_ref().map(os).as_ref());
-    value(
-        "--state-root",
-        args.state_root.as_ref().map(OsString::from).as_ref(),
-    );
-    value(
-        "--realm-backend",
-        args.realm_backend.and_then(value_name).as_ref(),
     );
     value(
         "--classifier-model",
@@ -186,7 +177,6 @@ pub fn daemon_argv(args: &Args, workspace: &Path) -> Vec<OsString> {
     let switches = [
         (args.trust_project_builds, "--trust-project-builds"),
         (args.no_trust_project_builds, "--no-trust-project-builds"),
-        (args.isolated, "--isolated"),
         (args.no_confinement, "--no-confinement"),
         (args.no_auto, "--no-auto"),
         (args.trust_project, "--trust-project"),
@@ -202,22 +192,6 @@ pub fn daemon_argv(args: &Args, workspace: &Path) -> Vec<OsString> {
             .map(|(_, flag)| OsString::from(flag)),
     );
     argv
-}
-
-/// `args` with an `--isolated` realm pinned to the one `scope` minted:
-/// `--realm <id> --state-root <root>` in its place, so the daemon this
-/// client starts opens the realm the client derived its endpoint key from
-/// (a second `--isolated` would mint another). Other arguments are
-/// returned as they are.
-#[must_use]
-pub fn pin_realm(args: &Args, scope: &crate::bootstrap::RuntimeScope) -> Args {
-    let mut args = args.clone();
-    if args.isolated {
-        args.isolated = false;
-        args.realm = Some(scope.realm_id.clone());
-        args.state_root = Some(scope.state_root.clone());
-    }
-    args
 }
 
 /// The command-line name clap gives `value` (a `ValueEnum`), so the
@@ -400,37 +374,6 @@ mod tests {
     use super::*;
     use clap::Parser as _;
 
-    /// A client started with `--isolated` hands its daemon the realm it
-    /// minted, not `--isolated` again (which would mint another and leave
-    /// the client waiting at the wrong endpoint file).
-    #[test]
-    fn an_isolated_client_pins_its_realm_for_the_daemon() {
-        let dir = tempfile::tempdir().unwrap();
-        let state = tempfile::tempdir().unwrap();
-        let argv = [
-            "rkat-tui",
-            "-w",
-            dir.path().to_str().unwrap(),
-            "--isolated",
-            "--state-root",
-            state.path().to_str().unwrap(),
-        ];
-        let args = crate::cli::Args::try_parse_from(argv).unwrap();
-        let minted = crate::bootstrap::resolve_scope(&args).unwrap();
-        let pinned = pin_realm(&args, &minted);
-        assert!(!pinned.isolated);
-        let daemon = crate::bootstrap::resolve_scope(&pinned).unwrap();
-        assert_eq!(daemon.realm_root(), minted.realm_root());
-        assert_eq!(
-            crate::daemon::endpoint::RealmKey::of(&daemon),
-            crate::daemon::endpoint::RealmKey::of(&minted)
-        );
-        // Anything else goes as it is.
-        let plain = crate::cli::Args::try_parse_from(&argv[..3]).unwrap();
-        let pinned = pin_realm(&plain, &minted);
-        assert_eq!(format!("{pinned:?}"), format!("{plain:?}"));
-    }
-
     fn endpoint(address: std::net::SocketAddr) -> Endpoint {
         Endpoint {
             address,
@@ -438,7 +381,6 @@ mod tests {
             pid: 1,
             workspace: None,
             started_at: None,
-            realm: None,
         }
     }
 
@@ -515,8 +457,6 @@ mod tests {
             "strict",
             "--confinement-read",
             "/r",
-            "--realm-backend",
-            "jsonl",
             "--config-dir",
             "/cfg",
             "--user-config-root",

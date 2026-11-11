@@ -5,7 +5,6 @@ use super::*;
 use crate::approval::mode::PermissionMode;
 use crate::approval::rules::{ArgPattern, Rule, RuleKind, RuleOrigin, RuleSet, RulesError};
 use crate::bootstrap::confinement::ConfinementSection;
-use crate::bootstrap::trust::Untrusted;
 use crate::thinking::ThinkingSetting;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -136,13 +135,8 @@ fn layered_loading() {
         "[auto]\ntrust_project_builds = true\nenabled = false\n[[allow]]\ntool = \"shell\"\n[[deny]]\ntool = \"agent_spawn\"\n",
     )
     .unwrap();
-    let (rules, settings, notices) = load_layered(
-        &realm,
-        Some(&home.join(RULES_FILE_NAME)),
-        &project,
-        RealmTrust::Owned,
-    )
-    .unwrap();
+    let (rules, settings, notices) =
+        load_layered(&realm, Some(&home.join(RULES_FILE_NAME)), &project).unwrap();
     assert_eq!(rules.allow().len(), 1);
     assert_eq!(rules.allow().next().unwrap().1.origin, RuleOrigin::Realm);
     assert_eq!(rules.deny().len(), 2);
@@ -155,14 +149,8 @@ fn layered_loading() {
             .any(|n| matches!(n, Notice::ProjectAllowIgnored { count: 1, .. }))
     );
     // The project's `enabled = false` turns the classifier off.
-    let layered = load_layered_with(
-        &realm,
-        Some(&home.join(RULES_FILE_NAME)),
-        &project,
-        RealmTrust::Owned,
-        None,
-    )
-    .unwrap();
+    let layered =
+        load_layered_with(&realm, Some(&home.join(RULES_FILE_NAME)), &project, None).unwrap();
     assert_eq!(layered.mode, PermissionMode::Manual);
 }
 
@@ -176,13 +164,8 @@ fn global_rules_come_from_the_file_path() {
         "[[allow]]\ntool = \"shell\"\narg = \"make test\"\n[[deny]]\ntool = \"shell\"\narg = \"rm *\"\n",
     )
     .unwrap();
-    let (rules, _, notices) = load_layered(
-        &tmp.path().join("realm"),
-        Some(&global),
-        tmp.path(),
-        RealmTrust::Owned,
-    )
-    .unwrap();
+    let (rules, _, notices) =
+        load_layered(&tmp.path().join("realm"), Some(&global), tmp.path()).unwrap();
     assert_eq!(rules.allow().len(), 1);
     assert_eq!(rules.allow().next().unwrap().1.origin, RuleOrigin::Global);
     assert_eq!(rules.deny().len(), 1);
@@ -193,7 +176,6 @@ fn global_rules_come_from_the_file_path() {
         &tmp.path().join("realm"),
         Some(&tmp.path().join("missing.toml")),
         tmp.path(),
-        RealmTrust::Owned,
     )
     .unwrap();
     assert_eq!(rules, RuleSet::default());
@@ -202,13 +184,8 @@ fn global_rules_come_from_the_file_path() {
 #[test]
 fn missing_files_give_defaults() {
     let tmp = tempfile::tempdir().unwrap();
-    let (rules, settings, notices) = load_layered(
-        tmp.path(),
-        None,
-        &tmp.path().join("nope"),
-        RealmTrust::Owned,
-    )
-    .unwrap();
+    let (rules, settings, notices) =
+        load_layered(tmp.path(), None, &tmp.path().join("nope")).unwrap();
     assert_eq!(rules, RuleSet::default());
     assert_eq!(settings, AutoSettings::default());
     assert!(notices.is_empty());
@@ -223,12 +200,12 @@ fn invalid_file_is_an_error() {
     )
     .unwrap();
     assert!(matches!(
-        load_layered(tmp.path(), None, tmp.path(), RealmTrust::Owned),
+        load_layered(tmp.path(), None, tmp.path()),
         Err(RulesError::Pattern { .. })
     ));
     std::fs::write(tmp.path().join(RULES_FILE_NAME), "not toml [").unwrap();
     assert!(matches!(
-        load_layered(tmp.path(), None, tmp.path(), RealmTrust::Owned),
+        load_layered(tmp.path(), None, tmp.path()),
         Err(RulesError::Parse { .. })
     ));
 }
@@ -283,8 +260,7 @@ fn compaction_settings_default_layer_and_clamp() {
     let project = tmp.path().join("project");
     std::fs::create_dir_all(&realm).unwrap();
     std::fs::create_dir_all(&project).unwrap();
-    let (_, settings, notices) =
-        load_layered(&realm, Some(&global), &project, RealmTrust::Owned).unwrap();
+    let (_, settings, notices) = load_layered(&realm, Some(&global), &project).unwrap();
     assert_eq!(settings, defaults);
     assert!(notices.is_empty());
 
@@ -303,8 +279,7 @@ fn compaction_settings_default_layer_and_clamp() {
         "[auto]\ncompact = \"warn\"\n",
     )
     .unwrap();
-    let (_, settings, notices) =
-        load_layered(&realm, Some(&global), &project, RealmTrust::Owned).unwrap();
+    let (_, settings, notices) = load_layered(&realm, Some(&global), &project).unwrap();
     assert!(notices.is_empty(), "{notices:?}");
     assert_eq!(
         settings.compact,
@@ -330,8 +305,7 @@ fn compaction_settings_default_layer_and_clamp() {
         "[auto]\ncompact_warn_percent = 95\ncompact_auto_percent = 80\n",
     )
     .unwrap();
-    let (_, settings, notices) =
-        load_layered(&realm, Some(&global), &project, RealmTrust::Owned).unwrap();
+    let (_, settings, notices) = load_layered(&realm, Some(&global), &project).unwrap();
     assert_eq!(
         (settings.compact_warn_percent, settings.compact_auto_percent),
         (95, 95)
@@ -349,14 +323,14 @@ fn compaction_settings_default_layer_and_clamp() {
         "[auto]\ncompact = \"always\"\n",
     )
     .unwrap();
-    assert!(load_layered(&realm, Some(&global), &project, RealmTrust::Owned).is_err());
+    assert!(load_layered(&realm, Some(&global), &project).is_err());
     std::fs::write(
         project.join(RULES_FILE_NAME),
         "[auto]\ncompact_warn_percent = 300\n",
     )
     .unwrap();
     assert!(
-        load_layered(&realm, Some(&global), &project, RealmTrust::Owned).is_err(),
+        load_layered(&realm, Some(&global), &project).is_err(),
         "u8 overflow is a parse error"
     );
 }
@@ -374,7 +348,7 @@ fn trust_defaults_off_and_project_can_only_lower_it() {
         "[auto]\ntrust_project_builds = true\n",
     )
     .unwrap();
-    let (_, settings, notices) = load_layered(&realm, None, &project, RealmTrust::Owned).unwrap();
+    let (_, settings, notices) = load_layered(&realm, None, &project).unwrap();
     assert!(!settings.trust_project_builds);
     assert!(matches!(notices[..], [Notice::ProjectTrustIgnored { .. }]));
 
@@ -388,10 +362,10 @@ fn trust_defaults_off_and_project_can_only_lower_it() {
         "[auto]\ntrust_project_builds = false\n",
     )
     .unwrap();
-    let (_, settings, _) = load_layered(&realm, None, &project, RealmTrust::Owned).unwrap();
+    let (_, settings, _) = load_layered(&realm, None, &project).unwrap();
     assert!(!settings.trust_project_builds, "project lowers trust");
     std::fs::remove_file(project.join(RULES_FILE_NAME)).unwrap();
-    let (_, settings, _) = load_layered(&realm, None, &project, RealmTrust::Owned).unwrap();
+    let (_, settings, _) = load_layered(&realm, None, &project).unwrap();
     assert!(
         settings.trust_project_builds,
         "the user's realm may raise it"
@@ -406,7 +380,7 @@ fn a_project_file_cannot_pick_the_classifier_model() {
     let (realm, project) = (tmp.path().join("realm"), tmp.path().join("p"));
     write(&realm, "");
     write(&project, "[auto]\nclassifier_model = \"tiny-model\"\n");
-    let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+    let layered = load_layered_with(&realm, None, &project, None).unwrap();
     assert_eq!(layered.settings.classifier_model, None);
     assert!(
         matches!(&layered.notices[..], [Notice::ProjectClassifierModelIgnored { model, .. }] if model == "tiny-model"),
@@ -415,7 +389,7 @@ fn a_project_file_cannot_pick_the_classifier_model() {
     );
     assert!(layered.notices[0].to_string().contains("classifier_model"));
     write(&realm, "[auto]\nclassifier_model = \"realm-model\"\n");
-    let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+    let layered = load_layered_with(&realm, None, &project, None).unwrap();
     assert_eq!(
         layered.settings.classifier_model.as_deref(),
         Some("realm-model")
@@ -431,14 +405,14 @@ fn pricing_fetch_is_a_user_setting_the_project_can_only_turn_off() {
     let (realm, project) = (tmp.path().join("realm"), tmp.path().join("p"));
     write(&realm, "");
     write(&project, "");
-    let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+    let layered = load_layered_with(&realm, None, &project, None).unwrap();
     assert!(layered.pricing_fetch, "fetched by default");
     write(
         &realm,
         "[pricing]\nfetch = false\n[pricing.\"m\"]\ninput = 1.0\n",
     );
     write(&project, "[pricing]\nfetch = true\n");
-    let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+    let layered = load_layered_with(&realm, None, &project, None).unwrap();
     assert!(!layered.pricing_fetch, "the project cannot turn it back on");
     assert_eq!(layered.pricing["m"].input, Some(1.0));
     assert!(
@@ -451,40 +425,8 @@ fn pricing_fetch_is_a_user_setting_the_project_can_only_turn_off() {
     );
     write(&realm, "");
     write(&project, "[pricing]\nfetch = false\n");
-    let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+    let layered = load_layered_with(&realm, None, &project, None).unwrap();
     assert!(!layered.pricing_fetch, "the project may turn it off");
-}
-
-#[test]
-fn untrusted_realm_contributes_only_deny_rules() {
-    let tmp = tempfile::tempdir().unwrap();
-    let realm = tmp.path().join("realm");
-    std::fs::create_dir_all(&realm).unwrap();
-    std::fs::write(
-        realm.join(RULES_FILE_NAME),
-        "[auto]\ntrust_project_builds = true\nenabled = true\n[[allow]]\ntool = \"shell\"\narg = \"make lint\"\n[[deny]]\ntool = \"shell\"\narg = \"rm *\"\n",
-    )
-    .unwrap();
-    let (rules, settings, notices) = load_layered(
-        &realm,
-        None,
-        &tmp.path().join("p"),
-        RealmTrust::DenyOnly(Untrusted::NotRecorded),
-    )
-    .unwrap();
-    assert_eq!(rules.allow().len(), 0);
-    assert_eq!(rules.deny().len(), 1);
-    assert!(!settings.trust_project_builds);
-    assert_eq!(notices.len(), 1, "{notices:?}");
-    assert!(notices.iter().any(|n| matches!(
-        n,
-        Notice::UntrustedRealmDenyOnly {
-            allow: 1,
-            auto: true,
-            ..
-        }
-    )));
-    assert!(notices[0].to_string().contains("/permissions trust"));
 }
 
 fn write(dir: &Path, text: &str) {
@@ -506,19 +448,17 @@ fn classifier_tools_default_on_and_project_can_only_turn_them_off() {
     write(&realm, "");
     write(&project, "[auto]\nclassifier_tools = false\n");
     let overlay = cli("[auto]\nclassifier_tools = true\n");
-    let layered =
-        load_layered_with(&realm, None, &project, RealmTrust::Owned, Some(&overlay)).unwrap();
+    let layered = load_layered_with(&realm, None, &project, Some(&overlay)).unwrap();
     assert!(!layered.settings.classifier_tools);
     // ...but never back on once a user layer turned them off.
     write(&realm, "[auto]\nclassifier_tools = false\n");
     write(&project, "[auto]\nclassifier_tools = true\n");
-    let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+    let layered = load_layered_with(&realm, None, &project, None).unwrap();
     assert!(!layered.settings.classifier_tools);
     // The command line may turn them off.
     write(&realm, "");
     let overlay = cli("[auto]\nclassifier_tools = false\n");
-    let layered =
-        load_layered_with(&realm, None, &project, RealmTrust::Owned, Some(&overlay)).unwrap();
+    let layered = load_layered_with(&realm, None, &project, Some(&overlay)).unwrap();
     assert!(!layered.settings.classifier_tools);
 }
 
@@ -528,24 +468,23 @@ fn helper_depth_defaults_to_one_layers_and_the_project_only_lowers_it() {
     let (realm, project) = (tmp.path().join("realm"), tmp.path().join("p"));
     write(&realm, "");
     write(&project, "");
-    let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+    let layered = load_layered_with(&realm, None, &project, None).unwrap();
     assert_eq!(layered.helpers.max_depth, DEFAULT_HELPER_MAX_DEPTH);
     assert_eq!(DEFAULT_HELPER_MAX_DEPTH, 1);
     // The realm sets it, the command line beats the realm.
     write(&realm, "[helpers]\nmax_depth = 3\n");
-    let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+    let layered = load_layered_with(&realm, None, &project, None).unwrap();
     assert_eq!(layered.helpers.max_depth, 3);
     let overlay = cli("[helpers]\nmax_depth = 2\n");
-    let layered =
-        load_layered_with(&realm, None, &project, RealmTrust::Owned, Some(&overlay)).unwrap();
+    let layered = load_layered_with(&realm, None, &project, Some(&overlay)).unwrap();
     assert_eq!(layered.helpers.max_depth, 2);
     // The project may lower it, never raise it.
     write(&project, "[helpers]\nmax_depth = 1\n");
-    let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+    let layered = load_layered_with(&realm, None, &project, None).unwrap();
     assert_eq!(layered.helpers.max_depth, 1);
     write(&realm, "");
     write(&project, "[helpers]\nmax_depth = 5\n");
-    let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+    let layered = load_layered_with(&realm, None, &project, None).unwrap();
     assert_eq!(layered.helpers.max_depth, 1);
 }
 
@@ -555,20 +494,20 @@ fn the_user_shell_timeout_layers_and_the_project_only_lowers_it() {
     let (realm, project) = (tmp.path().join("realm"), tmp.path().join("p"));
     write(&realm, "");
     write(&project, "");
-    let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+    let layered = load_layered_with(&realm, None, &project, None).unwrap();
     assert_eq!(layered.shell.user_timeout_secs, 120);
     write(&realm, "[shell]\nuser_timeout_secs = 600\n");
-    let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+    let layered = load_layered_with(&realm, None, &project, None).unwrap();
     assert_eq!(layered.shell.user_timeout_secs, 600);
     write(&project, "[shell]\nuser_timeout_secs = 30\n");
-    let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+    let layered = load_layered_with(&realm, None, &project, None).unwrap();
     assert_eq!(layered.shell.user_timeout_secs, 30);
     write(&project, "[shell]\nuser_timeout_secs = 6000\n");
-    let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+    let layered = load_layered_with(&realm, None, &project, None).unwrap();
     assert_eq!(layered.shell.user_timeout_secs, 600);
     write(&realm, "[shell]\nuser_timeout_secs = 0\n");
     write(&project, "");
-    let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+    let layered = load_layered_with(&realm, None, &project, None).unwrap();
     assert_eq!(layered.shell.user_timeout_secs, 1);
 }
 
@@ -578,14 +517,13 @@ fn ui_bell_defaults_to_on_and_layers() {
     let (realm, project) = (tmp.path().join("realm"), tmp.path().join("p"));
     write(&realm, "");
     write(&project, "");
-    let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+    let layered = load_layered_with(&realm, None, &project, None).unwrap();
     assert!(layered.ui.bell);
     write(&realm, "[ui]\nbell = false\n");
-    let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+    let layered = load_layered_with(&realm, None, &project, None).unwrap();
     assert!(!layered.ui.bell);
     let overlay = cli("[ui]\nbell = true\n");
-    let layered =
-        load_layered_with(&realm, None, &project, RealmTrust::Owned, Some(&overlay)).unwrap();
+    let layered = load_layered_with(&realm, None, &project, Some(&overlay)).unwrap();
     assert!(layered.ui.bell);
 }
 
@@ -595,18 +533,17 @@ fn ui_helpers_defaults_to_folded_and_layers() {
     let (realm, project) = (tmp.path().join("realm"), tmp.path().join("p"));
     write(&realm, "");
     write(&project, "");
-    let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+    let layered = load_layered_with(&realm, None, &project, None).unwrap();
     assert_eq!(layered.ui.helpers, HelperView::Folded);
     write(&realm, "[ui]\nhelpers = \"expanded\"\n");
-    let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+    let layered = load_layered_with(&realm, None, &project, None).unwrap();
     assert_eq!(layered.ui.helpers, HelperView::Expanded);
     // The project's preference applies unless the command line set one.
     write(&project, "[ui]\nhelpers = \"folded\"\n");
-    let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+    let layered = load_layered_with(&realm, None, &project, None).unwrap();
     assert_eq!(layered.ui.helpers, HelperView::Folded);
     let overlay = cli("[ui]\nhelpers = \"expanded\"\n");
-    let layered =
-        load_layered_with(&realm, None, &project, RealmTrust::Owned, Some(&overlay)).unwrap();
+    let layered = load_layered_with(&realm, None, &project, Some(&overlay)).unwrap();
     assert_eq!(layered.ui.helpers, HelperView::Expanded);
 }
 
@@ -616,27 +553,26 @@ fn ui_checklist_defaults_to_hidden_layers_and_persists() {
     let (realm, project) = (tmp.path().join("realm"), tmp.path().join("p"));
     write(&realm, "[auto]\nmode = \"plan\"\n[ui]\nbell = false\n");
     write(&project, "");
-    let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+    let layered = load_layered_with(&realm, None, &project, None).unwrap();
     assert_eq!(layered.ui.checklist, ChecklistView::Hidden);
     let realm_file = realm.join(RULES_FILE_NAME);
     persist_realm_checklist(&realm_file, ChecklistView::Shown).unwrap();
     let text = std::fs::read_to_string(&realm_file).unwrap();
     assert!(text.contains("checklist = \"shown\""), "{text}");
-    let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+    let layered = load_layered_with(&realm, None, &project, None).unwrap();
     assert_eq!(layered.ui.checklist, ChecklistView::Shown);
     // The rest of the file stays.
     assert!(!layered.ui.bell);
     assert_eq!(layered.mode, PermissionMode::Plan);
     // The project's preference applies unless the command line set one.
     write(&project, "[ui]\nchecklist = \"hidden\"\n");
-    let layered = load_layered_with(&realm, None, &project, RealmTrust::Owned, None).unwrap();
+    let layered = load_layered_with(&realm, None, &project, None).unwrap();
     assert_eq!(layered.ui.checklist, ChecklistView::Hidden);
     let overlay = cli("[ui]\nchecklist = \"shown\"\n");
-    let layered =
-        load_layered_with(&realm, None, &project, RealmTrust::Owned, Some(&overlay)).unwrap();
+    let layered = load_layered_with(&realm, None, &project, Some(&overlay)).unwrap();
     assert_eq!(layered.ui.checklist, ChecklistView::Shown);
     write(&project, "[ui]\nchecklist = \"open\"\n");
-    assert!(load_layered_with(&realm, None, &project, RealmTrust::Owned, None).is_err());
+    assert!(load_layered_with(&realm, None, &project, None).is_err());
 }
 
 /// The realm's `[auto] mode` (what `/mode` records) sets the start
@@ -650,7 +586,7 @@ fn the_permission_mode_layers() {
         write(&realm, realm_text);
         write(&project, project_text);
         let overlay = overlay.map(cli);
-        load_layered_with(&realm, None, &project, RealmTrust::Owned, overlay.as_ref())
+        load_layered_with(&realm, None, &project, overlay.as_ref())
             .unwrap()
             .mode
     };
@@ -729,8 +665,7 @@ fn cli_layer_beats_realm_but_project_deny_and_lowering_still_apply() {
     let overlay = cli(
         "[auto]\nenabled = false\ncompact = \"auto\"\ntrust_project_builds = true\n[[allow]]\ntool = \"shell\"\narg = \"cargo nextest run*\"\n[[deny]]\ntool = \"shell\"\narg = \"git push*\"\n",
     );
-    let layered =
-        load_layered_with(&realm, None, &project, RealmTrust::Owned, Some(&overlay)).unwrap();
+    let layered = load_layered_with(&realm, None, &project, Some(&overlay)).unwrap();
     let s = &layered.settings;
     assert_eq!(layered.mode, PermissionMode::Manual, "cli beats realm");
     assert_eq!(s.compact, CompactMode::Auto, "cli beats project");
@@ -762,7 +697,6 @@ fn cli_layer_beats_realm_but_project_deny_and_lowering_still_apply() {
         &realm,
         None,
         &project,
-        RealmTrust::Owned,
         Some(&cli("[[allow]]\ntool = \"shell\"\narg = \"git push*\"\n")),
     )
     .unwrap();
@@ -793,14 +727,7 @@ fn pricing_layers_merge_by_field_and_only_user_layers_count() {
     );
     write(&project, "[pricing.\"gpt-5.4\"]\ninput = 0\noutput = 0\n");
     let overlay = cli("[pricing.\"claude-opus-4-6\"]\ninput = 15\n");
-    let layered = load_layered_with(
-        &realm,
-        Some(&global),
-        &project,
-        RealmTrust::Owned,
-        Some(&overlay),
-    )
-    .unwrap();
+    let layered = load_layered_with(&realm, Some(&global), &project, Some(&overlay)).unwrap();
     assert_eq!(
         layered.pricing.get("claude-opus-4-6"),
         Some(&PricingSection {
@@ -829,16 +756,6 @@ fn pricing_layers_merge_by_field_and_only_user_layers_count() {
         texts.iter().any(|t| t.contains("`input` must be")),
         "{texts:?}"
     );
-    // An untrusted realm file's prices are ignored too.
-    let layered = load_layered_with(
-        &realm,
-        None,
-        &project,
-        RealmTrust::DenyOnly(Untrusted::Changed),
-        None,
-    )
-    .unwrap();
-    assert!(layered.pricing.is_empty());
 }
 
 #[test]
@@ -853,14 +770,7 @@ fn thinking_layers_replace_by_key_and_only_user_layers_count() {
     write(&realm, "[thinking]\n\"b\" = \"default\"\n");
     write(&project, "[thinking]\n\"c\" = \"adaptive\"\n");
     let overlay = cli("[thinking]\n\"a\" = { enabled = 2048 }\n");
-    let layered = load_layered_with(
-        &realm,
-        Some(&global),
-        &project,
-        RealmTrust::Owned,
-        Some(&overlay),
-    )
-    .unwrap();
+    let layered = load_layered_with(&realm, Some(&global), &project, Some(&overlay)).unwrap();
     assert_eq!(
         layered.thinking,
         BTreeMap::from([
@@ -880,22 +790,6 @@ fn thinking_layers_replace_by_key_and_only_user_layers_count() {
             .iter()
             .any(|t| t.contains("ignored 1 [thinking] setting(s)")),
         "{texts:?}"
-    );
-    // An untrusted realm file's settings are ignored too, and counted.
-    let layered = load_layered_with(
-        &realm,
-        None,
-        &project,
-        RealmTrust::DenyOnly(Untrusted::Changed),
-        None,
-    )
-    .unwrap();
-    assert!(layered.thinking.is_empty());
-    assert!(
-        layered
-            .notices
-            .iter()
-            .any(|n| matches!(n, Notice::UntrustedRealmDenyOnly { thinking: 1, .. }))
     );
 }
 
@@ -932,14 +826,7 @@ fn endpoints_layer_by_name() {
         "[endpoints.litellm]\nbase_url = \"http://evil\"\n[endpoints.team]\ndialect = \"anthropic\"\napi_key = \"k\"\n",
     );
     let overlay = cli("[endpoints.litellm]\nbase_url = \"http://cli\"\n");
-    let layered = load_layered_with(
-        &realm,
-        Some(&global),
-        &project,
-        RealmTrust::Owned,
-        Some(&overlay),
-    )
-    .unwrap();
+    let layered = load_layered_with(&realm, Some(&global), &project, Some(&overlay)).unwrap();
     let litellm = &layered.endpoints["litellm"];
     assert_eq!(litellm.origin, RuleOrigin::Global);
     assert_eq!(litellm.section.dialect.as_deref(), Some("openai"));
@@ -957,24 +844,6 @@ fn endpoints_layer_by_name() {
             "{name}"
         );
     }
-
-    // An untrusted realm contributes no endpoints, and the project's
-    // do not fill in.
-    let layered = load_layered_with(
-        &realm,
-        None,
-        &project,
-        RealmTrust::DenyOnly(Untrusted::NotRecorded),
-        None,
-    )
-    .unwrap();
-    assert!(layered.endpoints.is_empty());
-    assert!(
-        layered
-            .notices
-            .iter()
-            .any(|n| matches!(n, Notice::UntrustedRealmDenyOnly { endpoints: 1, .. }))
-    );
 }
 
 #[test]
@@ -992,15 +861,8 @@ fn confinement_grants_come_from_user_layers_only() {
         "[confinement]\nextra_read = [\"/p/a\"]\nextra_write = [\"/p/b\"]\n",
     );
     let overlay = cli("[confinement]\nextra_write = [\"/c/write\"]\n");
-    let layered = load_layered_with(
-        &realm,
-        Some(&global),
-        &project,
-        RealmTrust::Owned,
-        Some(&overlay),
-    )
-    .unwrap();
-    // Global, owned realm and command-line overlay accumulate in order;
+    let layered = load_layered_with(&realm, Some(&global), &project, Some(&overlay)).unwrap();
+    // Global, realm and command-line overlay accumulate in order;
     // the project's are ignored with a notice.
     assert_eq!(
         layered.confinement,
@@ -1023,30 +885,7 @@ fn confinement_grants_come_from_user_layers_only() {
         "{texts:?}"
     );
 
-    // An untrusted realm file's grants are ignored with its notice.
-    let layered = load_layered_with(
-        &realm,
-        Some(&global),
-        &project,
-        RealmTrust::DenyOnly(Untrusted::Changed),
-        None,
-    )
-    .unwrap();
-    assert_eq!(
-        layered.confinement.extra_read,
-        vec![PathBuf::from("/g/read")]
-    );
-    let notice = layered
-        .notices
-        .iter()
-        .find(|n| matches!(n, Notice::UntrustedRealmDenyOnly { confinement: 1, .. }))
-        .unwrap();
-    assert!(
-        notice.to_string().contains("1 [confinement] grant(s)"),
-        "{notice}"
-    );
-
     // Unknown keys in the table are a parse error.
     write(&realm, "[confinement]\nextra = [\"/x\"]\n");
-    assert!(load_layered_with(&realm, None, &project, RealmTrust::Owned, None).is_err());
+    assert!(load_layered_with(&realm, None, &project, None).is_err());
 }

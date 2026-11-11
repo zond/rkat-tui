@@ -1,12 +1,11 @@
 //! The host's record of workspace files it trusts.
 //!
 //! A file inside a workspace may have arrived with the repository (a cloned
-//! `.rkat/` directory, a checked-out realm). rkat-tui therefore trusts such a
-//! file only when it is byte-for-byte what rkat-tui itself last wrote there,
-//! or what the user explicitly trusted after seeing a summary of it
-//! (`/permissions trust`). The digests live outside the workspace, in the user's
-//! config directory: `<config>/trust/<workspace key>.toml`, one record per
-//! workspace and realm. Nothing in the workspace can write that record.
+//! `.rkat/` directory). rkat-tui therefore runs what such a file defines
+//! only when it is byte-for-byte what the user explicitly trusted (`/trust`).
+//! The digests live outside the workspace, in the user's config directory:
+//! `<config>/trust/<realm key>.toml`, one record per workspace realm.
+//! Nothing in the workspace can write that record.
 //!
 //! A file is trusted when
 //!
@@ -14,8 +13,9 @@
 //!   below the workspace root is checked with `symlink_metadata`), and
 //! - its SHA-256 equals the recorded digest for its workspace-relative path.
 //!
-//! The record is generic over workspace-relative files: the realm rules file
-//! (`tui.toml`) and the project MCP config (`.rkat/mcp.toml`) both use it.
+//! The record is generic over workspace-relative files: the project MCP
+//! config (`.rkat/mcp.toml`) and the project `.rkat/config.toml` (hooks)
+//! use it.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -118,23 +118,14 @@ pub struct HostTrustRecord {
 }
 
 impl HostTrustRecord {
-    /// The record of `workspace` (and `realm_id`) under `config_dir`. A
+    /// The record of the workspace realm `realm_id` (one under the config
+    /// directory, [`super::realm_home`]), at `workspace`: keyed by the realm
+    /// id alone, which never changes, so the record follows the realm
+    /// through a re-home (the files in it are workspace-relative). A
     /// missing or unreadable record is empty: nothing is trusted.
     #[must_use]
     pub fn open(config_dir: &Path, workspace: &Path, realm_id: &str) -> Self {
-        Self::open_keyed(config_dir, workspace, &workspace_key(workspace, realm_id))
-    }
-
-    /// The record of the workspace's own realm `realm_id` (one under the
-    /// config directory, [`super::realm_home`]), at `workspace`: keyed by
-    /// the realm id alone, which never changes, so the record follows the
-    /// realm through a re-home (the files in it are workspace-relative).
-    #[must_use]
-    pub fn open_for_realm(config_dir: &Path, workspace: &Path, realm_id: &str) -> Self {
-        Self::open_keyed(config_dir, workspace, &realm_key(realm_id))
-    }
-
-    fn open_keyed(config_dir: &Path, workspace: &Path, key: &str) -> Self {
+        let key = realm_key(realm_id);
         let path = config_dir.join(TRUST_DIR).join(format!("{key}.toml"));
         let record = std::fs::read_to_string(&path)
             .ok()
@@ -150,6 +141,7 @@ impl HostTrustRecord {
 
     /// A record kept in memory only (no config directory).
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn in_memory(workspace: &Path) -> Self {
         Self {
             path: None,
@@ -300,24 +292,13 @@ pub fn hex_digest(bytes: &[u8]) -> String {
         })
 }
 
-/// The record file name of a workspace's own realm: a digest of its id
-/// (distinct from every [`workspace_key`] by its prefix).
+/// The record file name of a workspace's realm: a digest of its id, so the
+/// name reveals nothing.
 fn realm_key(realm_id: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"realm\0");
     hasher.update(realm_id.as_bytes());
     hex_digest(&hasher.finalize()).chars().take(32).collect()
-}
-
-/// The record file name of a workspace and realm: a digest of both, so the
-/// name reveals nothing and cannot collide across workspaces.
-fn workspace_key(workspace: &Path, realm_id: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(workspace.to_string_lossy().as_bytes());
-    hasher.update([0]);
-    hasher.update(realm_id.as_bytes());
-    let digest = hasher.finalize();
-    hex_digest(&digest).chars().take(32).collect()
 }
 
 #[cfg(test)]

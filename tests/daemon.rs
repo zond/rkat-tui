@@ -620,11 +620,7 @@ async fn the_orchestrator_shell_runs_confined() {
     // to its default place under a state directory of the test's own in
     // Cargo's target dir, which no grant covers (never the user's).
     let state = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
-    let default = rkat_tui::daemon::endpoint::file_in(
-        state.path(),
-        &ws.root,
-        &rkat_tui::daemon::endpoint::RealmKey::Default,
-    );
+    let default = rkat_tui::daemon::endpoint::file_in(state.path(), &ws.root);
     // The config directory, and the realm under it, out of the temp dir
     // too: a realm the shell could reach refuses the start.
     let cfg = state.path().join("cfg");

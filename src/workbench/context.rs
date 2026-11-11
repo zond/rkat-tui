@@ -26,15 +26,13 @@ pub fn instruction_files(
             .map(|m| usize::try_from(m.len()).unwrap_or(usize::MAX))
     };
     let mut files = Vec::new();
-    if let Some(global) = &scope.global {
-        let path = global.system_md();
-        files.push(InstructionFile {
-            label: "SYSTEM.md (replaces the base prompt)".into(),
-            bytes: size(&path),
-            path,
-            truncated: false,
-        });
-    }
+    let path = scope.global.system_md();
+    files.push(InstructionFile {
+        label: "SYSTEM.md (replaces the base prompt)".into(),
+        bytes: size(&path),
+        path,
+        truncated: false,
+    });
     let agents = remember_target(&scope.context_root);
     files.push(InstructionFile {
         label: "workspace AGENTS.md".into(),

@@ -212,7 +212,7 @@ impl Runner {
     }
 
     /// A command whose answer is a [`RuleOutcome`] (`/permissions …` on the
-    /// daemon's engine, `/trust` and `/permissions trust` on its trust record),
+    /// daemon's engine, `/trust` on its trust record),
     /// named `name` in what goes wrong.
     pub(super) fn outcome_command<M: protocol::Method<Result = RuleOutcome>>(
         &self,
@@ -458,11 +458,7 @@ pub(super) fn report_lines(report: &protocol::Report) -> Vec<String> {
             other => other.label().to_string(),
         }
     ));
-    lines.push(format!(
-        "realm {}: {}",
-        report.realm_rules.path.display(),
-        report.realm_rules.trust
-    ));
+    lines.push(format!("realm rules: {}", report.realm_rules.display()));
     for input in &report.project_inputs {
         lines.push(format!("project {}: {}", input.path.display(), input.trust));
     }

@@ -6,10 +6,9 @@
 //! (per-workspace, the default write target) and `<project>/.rkat/tui.toml`
 //! (committed with the repository, therefore untrusted: it may only add deny
 //! rules and `[auto]` settings, may not loosen `trust_project_builds`, and
-//! its endpoints are ignored). The realm file is fully applied only when
-//! the host trust record says rkat-tui wrote it or the user trusted it
-//! ([`crate::bootstrap::trust`]); otherwise only its deny rules apply. The
-//! command-line overlay ([`crate::overlay`]) is a fourth layer between the
+//! its endpoints are ignored). The realm file lives under the config
+//! directory, out of the agent's shell's and a clone's reach: it is the
+//! user's and applies in full. The command-line overlay ([`crate::overlay`]) is a fourth layer between the
 //! realm and project files.
 //!
 //! Besides the approval rules (`[[allow]]`/`[[deny]]`, see
@@ -26,7 +25,7 @@
 //! - [`file`](mod@file): the schema ([`RulesFile`] and its sections, the settings
 //!   after layering);
 //! - [`layers`](mod@layers): [`load_layered_with`] and its [`Notice`]s;
-//! - [`persist`](mod@persist): the realm file's writes, recorded in the host trust record.
+//! - [`persist`](mod@persist): the realm file's writes.
 
 pub mod file;
 pub mod layers;

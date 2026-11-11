@@ -114,7 +114,7 @@ impl InstructionSources {
     pub fn of(scope: &super::RuntimeScope) -> Self {
         Self {
             workspace: scope.context_root.clone(),
-            global: scope.global.clone(),
+            global: Some(scope.global.clone()),
             home: super::dirs_home(),
         }
     }

@@ -879,7 +879,7 @@ async fn status_report_names_the_session_and_the_workspace() {
     assert!(text.contains("attached to the workspace daemon"), "{text}");
     assert!(text.contains("approval gate: in the daemon"), "{text}");
     // The daemon's side (`rkat/report`): the realm, the shell's
-    // confinement, the permission mode, the realm rules' trust and the
+    // confinement, the permission mode, the realm rules file and the
     // helpers' depth limit.
     let realm = rkat_tui::bootstrap::resolve_scope(&common::args_for(&ws.root))
         .unwrap()
@@ -892,7 +892,7 @@ async fn status_report_names_the_session_and_the_workspace() {
     assert!(text.contains("permission mode: auto"), "{text}");
     assert!(
         text.contains(&format!(
-            "realm {}: absent",
+            "realm rules: {}",
             realm.join("tui.toml").display()
         )),
         "{text}"

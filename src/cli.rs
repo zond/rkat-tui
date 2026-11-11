@@ -94,33 +94,11 @@ pub struct Args {
     #[arg(long)]
     pub config_dir: Option<PathBuf>,
 
-    /// Join a shared realm by ID instead of using the workspace's own state
-    /// directory (the realm model `rkat` uses).
-    #[arg(long)]
-    pub realm: Option<String>,
-
-    /// Start in an isolated, throwaway realm.
-    #[arg(long)]
-    pub isolated: bool,
-
-    /// Backend when creating a new realm or workspace state directory
-    /// (default: sqlite). An existing realm keeps the backend it was created
-    /// with; naming a different one is an error.
-    #[arg(long, value_enum)]
-    pub realm_backend: Option<RealmBackendArg>,
-
-    /// Store state in a realm under this realms root instead of the
-    /// workspace's own state directory.
-    #[arg(long)]
-    pub state_root: Option<PathBuf>,
-
     /// OS process confinement of the shell commands the session runs:
     /// `workspace` lets them write only the workspace, the temp dir, the
     /// Cargo home and the cache dir (network allowed), `strict` additionally
     /// denies IP network access, `off` runs them unconfined. A mode this host
     /// cannot enforce (e.g. no unprivileged user namespaces) refuses to start.
-    /// A realm `[confinement]` for the shell is a floor: `workspace` installs
-    /// it, `strict` narrows its network, `off` refuses to start.
     #[arg(long, value_enum, value_name = "MODE", default_value_t = ConfinementArg::Workspace)]
     pub confinement: ConfinementArg,
 
@@ -156,9 +134,8 @@ pub struct Args {
     pub no_mouse: bool,
 
     /// Trust the project inputs (`.rkat/mcp.toml`, `.rkat/config.toml`'s
-    /// hooks, the workspace realm's `config.toml`) for this run even though
-    /// they are not in the host trust record (`/trust` records them for
-    /// later runs).
+    /// hooks) for this run even though they are not in the host trust
+    /// record (`/trust` records them for later runs).
     #[arg(long)]
     pub trust_project: bool,
     /// Block until every configured MCP server has finished connecting before
@@ -342,17 +319,6 @@ pub enum ConfinementArg {
     Off,
 }
 
-/// Session store backend for a newly created realm.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-pub enum RealmBackendArg {
-    /// Append-only JSONL files.
-    Jsonl,
-    /// SQLite database (the default for the workspace-local realm).
-    Sqlite,
-    /// Held in memory: nothing survives the daemon process (throwaway sessions).
-    Memory,
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -390,7 +356,6 @@ mod tests {
                 .no_pricing_fetch
         );
         assert!(!args.no_auto);
-        assert!(!args.isolated);
     }
 
     #[test]
@@ -402,8 +367,6 @@ mod tests {
             "--resume",
             "last",
             "--no-auto",
-            "--realm-backend",
-            "sqlite",
             "fix the tests",
         ])
         .unwrap();
@@ -411,7 +374,6 @@ mod tests {
         assert_eq!(args.model.as_deref(), Some("claude-sonnet-4-6"));
         assert_eq!(args.resume, Some(Some("last".to_string())));
         assert!(args.no_auto);
-        assert_eq!(args.realm_backend, Some(RealmBackendArg::Sqlite));
     }
 
     #[test]
@@ -424,13 +386,21 @@ mod tests {
             args.context_root.as_deref(),
             Some(std::path::Path::new("/tmp/x"))
         );
-        // The old names are gone.
-        for old in ["--context-root", "--provider", "--allow-project-mcp"] {
+        // The old names are gone, and so are the shared-realm flags.
+        for old in [
+            "--context-root",
+            "--provider",
+            "--allow-project-mcp",
+            "--realm",
+            "--state-root",
+            "--realm-backend",
+        ] {
             assert!(
                 Args::try_parse_from(["rkat-tui", old, "x"]).is_err(),
                 "{old}"
             );
         }
+        assert!(Args::try_parse_from(["rkat-tui", "--isolated"]).is_err());
     }
 
     #[test]

@@ -11,9 +11,7 @@
 //! connect times out (or fails otherwise) is `unknown (<why>)` and kept:
 //! that proves nothing. The token is never printed.
 //!
-//! A line is tab-separated, in a fixed order: workspace (followed by
-//! `(realm <root>)` or `(realm memory)` when the daemon serves another
-//! realm than the workspace's own), address, `pid N`,
+//! A line is tab-separated, in a fixed order: workspace, address, `pid N`,
 //! `up <uptime>`, then for a live daemon `<n> client(s)` and `<m>
 //! agent(s)`, for a stale one `stale` and whether its file was removed.
 //! Under a live daemon's line, one line per agent, indented by a tab: its
@@ -167,13 +165,10 @@ pub fn line(listed: &Listed, now: chrono::DateTime<chrono::Utc>) -> String {
         Found::Live(status) => status.as_ref(),
         Found::Stale { .. } | Found::Unknown(_) => None,
     };
-    let mut workspace = status
+    let workspace = status
         .map(|status| status.workspace.clone())
         .or_else(|| endpoint.workspace.clone())
         .map_or_else(|| "?".to_string(), |w| w.display().to_string());
-    if let Some(realm) = &endpoint.realm {
-        workspace.push_str(&format!(" (realm {realm})"));
-    }
     let up = endpoint
         .started()
         .and_then(|started| u64::try_from((now - started).num_seconds()).ok())
@@ -238,14 +233,13 @@ pub fn lines(listed: &Listed, now: chrono::DateTime<chrono::Utc>) -> Vec<String>
 }
 
 /// What `--list` says of the daemon of `home` among `listed`: the daemon
-/// of its workspace's own realm, by the workspace path its endpoint file
-/// names.
+/// of its workspace, by the workspace path its endpoint file names.
 #[must_use]
 pub fn daemon_of(home: &Home, listed: &[Listed]) -> String {
     let path = &home.manifest.path;
-    let daemon = listed.iter().find(|listed| {
-        listed.endpoint.realm.is_none() && listed.endpoint.workspace.as_ref() == Some(path)
-    });
+    let daemon = listed
+        .iter()
+        .find(|listed| listed.endpoint.workspace.as_ref() == Some(path));
     match daemon {
         None => "no daemon".to_string(),
         Some(listed) => match &listed.found {
@@ -338,7 +332,6 @@ mod tests {
             pid: 9,
             workspace: Some("/w".into()),
             started_at: Some("2026-11-09T10:00:00Z".into()),
-            realm: None,
         };
         let now = chrono::DateTime::parse_from_rfc3339("2026-11-09T11:30:00Z")
             .unwrap()
@@ -421,24 +414,12 @@ mod tests {
         );
         // A connect that timed out proves nothing: unknown, not stale.
         let silent = Listed {
-            endpoint: endpoint.clone(),
+            endpoint,
             found: Found::Unknown("no answer within 2s".into()),
         };
         assert_eq!(
             line(&silent, now),
             "/w\t127.0.0.1:4000\tpid 9\tup 1h30m\tunknown (no answer within 2s)"
-        );
-        // Another realm than the workspace's own is named after it.
-        let isolated = Listed {
-            endpoint: Endpoint {
-                realm: Some("/realms/x1".into()),
-                ..endpoint
-            },
-            found: Found::Stale { removed: false },
-        };
-        assert_eq!(
-            line(&isolated, now),
-            "/w (realm /realms/x1)\t127.0.0.1:4000\tpid 9\tup 1h30m\tstale"
         );
     }
 }

@@ -314,26 +314,15 @@ impl Runner {
         use super::super::rehome::{self as rh, Side};
         use crate::bootstrap::realm_home::{self, Reading};
         let scope = &self.config.scope;
-        let Some(global) = &scope.global else {
-            self.notice(
-                NoticeLevel::Warn,
-                realm_home::HomeError::NoConfigDir.to_string(),
-            );
-            return;
-        };
-        let root = realm_home::root(global);
+        let root = realm_home::root(&scope.global);
         let Some(argument) = argument else {
-            match realm_home::adoptable(&root, scope.home.as_ref()) {
+            match realm_home::adoptable(&root, Some(&scope.home)) {
                 Ok(text) => self.notice(NoticeLevel::Info, text),
                 Err(err) => self.notice(NoticeLevel::Warn, err.to_string()),
             }
             return;
         };
-        let refused = if scope.home.is_none() {
-            Some(
-                "this client runs on a shared realm (--realm, --isolated, --state-root): /rehome moves a workspace's own state only",
-            )
-        } else if self.config.address.is_some() {
+        let refused = if self.config.address.is_some() {
             Some("/rehome works on this machine's workspace only; run it there")
         } else if self.config.reroot.is_none() {
             Some("this client cannot be re-rooted; use rkat-tui --rehome from the shell")

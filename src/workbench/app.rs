@@ -56,10 +56,7 @@ pub fn build_app(
 #[must_use]
 pub fn load_histories(scope: &RuntimeScope) -> (History, Option<History>) {
     let history = History::load(scope.realm_root().join(crate::ui::runtime::HISTORY));
-    let global_history = scope
-        .global
-        .as_ref()
-        .map(|global| History::load(global.history_file()));
+    let global_history = Some(History::load(scope.global.history_file()));
     (history, global_history)
 }
 

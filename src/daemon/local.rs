@@ -57,7 +57,7 @@ use super::lifecycle::{Caller, Lifecycle};
 use super::protocol::{
     self, AUDIT_LINES, AuditTail, ConversationList, Empty, METHOD_NOT_FOUND, Method, ModeSet,
     ModelSet, Notices, Refusal, Report, Retired, SWITCH_BUSY, SWITCH_FAILED, SetModelParams,
-    StartupNotice, Status, Switched, Tasks, TrustOp, TrustedFile, Usage, engine, method,
+    StartupNotice, Status, Switched, Tasks, TrustedFile, Usage, engine, method,
 };
 
 /// `reason` for asking at `/quit`, with what detaching or terminating does
@@ -516,19 +516,7 @@ impl Local {
                 }
                 Ok(Empty {})
             };
-            method::Trust, protocol::TrustParams { op } => Ok(match op {
-                TrustOp::Project => self.trust_project(),
-                TrustOp::Rules => match self.engine.trust_realm_rules() {
-                    Ok(summary) => RuleOutcome {
-                        ok: true,
-                        text: summary,
-                    },
-                    Err(err) => RuleOutcome {
-                        ok: false,
-                        text: format!("not trusted: {err}"),
-                    },
-                },
-            });
+            method::Trust, Empty {} => Ok(self.trust_project());
         }
         Err(Refusal::new(
             METHOD_NOT_FOUND,
@@ -546,11 +534,7 @@ impl Local {
             helper_depth,
             ..
         } = self.report.clone();
-        let rules = realm.join(crate::config::RULES_FILE_NAME);
-        let realm_rules = TrustedFile {
-            trust: trust_words(&self.project.status(&rules)),
-            path: rules,
-        };
+        let realm_rules = realm.join(crate::config::RULES_FILE_NAME);
         let project_inputs = self
             .project
             .files()

@@ -225,20 +225,6 @@ impl Default for SessionState {
     }
 }
 
-/// Why `/permissions trust` failed.
-#[derive(Debug, thiserror::Error)]
-pub enum TrustRulesError {
-    /// This run keeps no realm rules file.
-    #[error("there is no realm rules file to trust")]
-    NoRealmFile,
-    /// The file cannot be read or parsed.
-    #[error(transparent)]
-    Rules(#[from] RulesError),
-    /// The file cannot be trusted or the record not saved.
-    #[error(transparent)]
-    Trust(#[from] crate::bootstrap::trust::TrustError),
-}
-
 /// Why rules could not be persisted off the executor.
 #[derive(Debug, thiserror::Error)]
 pub enum PersistError {
@@ -615,45 +601,6 @@ impl ApprovalEngine {
             rule.origin = RuleOrigin::Realm;
         }
         self.rules.write().push(rule);
-    }
-
-    /// `/permissions trust`: trust the realm rules file as it is now. Records its
-    /// digest in the host trust record and applies its allow rules from now
-    /// on (its `[auto]`, endpoints and prices apply from the next start).
-    /// Returns a summary of what was trusted, for the human to see.
-    ///
-    /// # Errors
-    ///
-    /// [`TrustRulesError`] when there is no realm rules file, it cannot be
-    /// read, or it cannot be trusted (symlinked, not a regular file).
-    pub fn trust_realm_rules(&self) -> Result<String, TrustRulesError> {
-        let Some((path, trust)) = self
-            .realm_file
-            .as_ref()
-            .and_then(|file| Some((file.path(), file.trust()?)))
-        else {
-            return Err(TrustRulesError::NoRealmFile);
-        };
-        let file = config::RulesFile::load(path)?;
-        trust.lock().record_file(path)?;
-        let summary = config::summarize(path, &file);
-        let mut added = 0;
-        {
-            let mut set = self.rules.write();
-            for rule in file.rules(RuleOrigin::Realm)? {
-                if rule.kind == super::rules::RuleKind::Allow && rule.broad_reason().is_none() {
-                    set.push(rule);
-                    added += 1;
-                }
-            }
-        }
-        self.audit_event(
-            "rules_trusted",
-            format!("{}: {added} allow rule(s) applied", path.display()),
-        );
-        Ok(format!(
-            "{summary}\ntrusted; {added} allow rule(s) apply now, its [auto] settings, endpoints and prices from the next start"
-        ))
     }
 
     /// Remove a rule (global and project rules are removed for this process only).
@@ -2533,7 +2480,7 @@ mod tests {
             environment: Environment::basic(root.as_path(), root.as_path()),
             posix_shell: true,
             events: tx,
-            realm_file: Some(config::RealmFile::new(blocker.join("tui.toml"), None)),
+            realm_file: Some(config::RealmFile::new(blocker.join("tui.toml"))),
         });
         attended(&engine);
         let session = SessionId::new();
@@ -3222,7 +3169,7 @@ mod tests {
             environment: Environment::basic(root.as_path(), root.as_path()),
             posix_shell: true,
             events: tx,
-            realm_file: Some(config::RealmFile::new(path.clone(), None)),
+            realm_file: Some(config::RealmFile::new(path.clone())),
         });
         const N: usize = 40;
         let rules = {
@@ -3284,7 +3231,7 @@ mod tests {
             environment: Environment::basic(root.as_path(), root.as_path()),
             posix_shell: true,
             events: tx,
-            realm_file: Some(config::RealmFile::new(path.clone(), None)),
+            realm_file: Some(config::RealmFile::new(path.clone())),
         });
         attended(&engine);
         engine.set_mode(PermissionMode::Plan);

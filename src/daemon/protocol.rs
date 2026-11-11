@@ -55,8 +55,9 @@ pub trait Method {
 }
 
 /// `{}`: the parameters of a method that takes none, the result of one
-/// that answers nothing.
+/// that answers nothing. A field is refused, not ignored.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Empty {}
 
 /// Declares each method type of [`method`] and [`METHODS`].
@@ -115,11 +116,9 @@ methods! {
     /// The configured endpoint a conversation's durable auth binding names
     /// (the status bar shows it).
     Endpoint = "rkat/endpoint" (SessionParams) -> SessionEndpoint;
-    /// The project trust record the daemon owns: `project` is `/trust`
-    /// (every present input recorded as it is now, read on every session
-    /// build), `rules` is `/permissions trust` (the realm rules file's
-    /// summary, then its digest recorded and its allow rules applied).
-    Trust = "rkat/trust" (TrustParams) -> crate::approval::desk::RuleOutcome;
+    /// `/trust`: every present project input recorded in the trust record
+    /// the daemon owns, as it is now (read on every session build).
+    Trust = "rkat/trust" (Empty) -> crate::approval::desk::RuleOutcome;
     /// A conversation's tasks in the engine's task store (the Ctrl+T
     /// checklist; read on attach, after a switch and after each of the
     /// agent's `task_create` and `task_update` calls).
@@ -731,8 +730,8 @@ pub struct Report {
     pub confinement: String,
     /// The permission mode and the denial counters.
     pub mode: crate::approval::desk::ModeStatus,
-    /// The realm rules file and its trust.
-    pub realm_rules: TrustedFile,
+    /// The realm rules file (`<realm>/tui.toml`).
+    pub realm_rules: std::path::PathBuf,
     /// Each project input (`/trust`) and its trust.
     pub project_inputs: Vec<TrustedFile>,
     /// `[helpers] max_depth`.
@@ -978,23 +977,6 @@ pub struct ModelSet {
     pub reseated: bool,
 }
 
-/// What [`method::Trust`] acts on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TrustOp {
-    /// `/trust`: the project inputs.
-    Project,
-    /// `/permissions trust`: the realm rules file.
-    Rules,
-}
-
-/// [`method::Trust`]'s parameters.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct TrustParams {
-    /// What to trust.
-    pub op: TrustOp,
-}
-
 /// `decision/decide` as a client of the daemon sends it: the engine's
 /// closed request, and the dialog's answer (stripped before dispatch).
 /// Closed: a field that names who decided (`actor`, `approver`, …) is
@@ -1136,9 +1118,7 @@ mod tests {
     fn a_decide_naming_who_decided_is_refused_and_no_params_read_as_empty() {
         assert!(params::<DecideParams>(json!({"decision_id": "d", "approve": true, "presented_digest": "x", "actor": "mallory"})).is_err());
         assert!(params::<SetModeParams>(Value::Null).is_err());
-        let trust = params::<TrustParams>(json!({"op": "rules"})).unwrap();
-        assert_eq!(trust.op, TrustOp::Rules);
-        let refused = params::<TrustParams>(json!({})).unwrap_err();
+        let refused = params::<DecideParams>(json!({})).unwrap_err();
         assert_eq!(refused.code, INVALID_PARAMS);
     }
 }

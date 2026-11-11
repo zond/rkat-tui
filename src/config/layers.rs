@@ -5,7 +5,6 @@ use super::settings::CompactionPolicy;
 use crate::approval::mode::PermissionMode;
 use crate::approval::rules::{Rule, RuleKind, RuleOrigin, RuleSet, RulesError};
 use crate::bootstrap::confinement::ConfinementSection;
-use crate::bootstrap::trust::{TrustStatus, Untrusted};
 use crate::thinking::ThinkingSetting;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -34,26 +33,6 @@ pub enum Notice {
         path: PathBuf,
         /// The model it named.
         model: String,
-    },
-    /// The realm rules file is not trusted (see [`crate::bootstrap::trust`]):
-    /// only its deny rules apply.
-    UntrustedRealmDenyOnly {
-        /// Realm rules file.
-        path: PathBuf,
-        /// Why it is not trusted.
-        reason: Untrusted,
-        /// Ignored allow rules.
-        allow: usize,
-        /// Whether a non-empty `[auto]` section was ignored.
-        auto: bool,
-        /// Ignored endpoints.
-        endpoints: usize,
-        /// Ignored price overrides.
-        pricing: usize,
-        /// Ignored `[thinking]` entries.
-        thinking: usize,
-        /// Ignored `[confinement]` grants (directories).
-        confinement: usize,
     },
     /// A configured endpoint is invalid and was skipped.
     EndpointSkipped {
@@ -137,26 +116,6 @@ impl fmt::Display for Notice {
                 "ignored classifier_model={model:?} in {}: only your own configuration picks the classifier",
                 path.display()
             ),
-            Self::UntrustedRealmDenyOnly {
-                path,
-                reason,
-                allow,
-                auto,
-                endpoints,
-                pricing,
-                thinking,
-                confinement,
-            } => {
-                write!(
-                    f,
-                    "{} is not trusted ({reason}); only its deny rules apply (ignored {allow} allow rule(s), {endpoints} endpoint(s), {pricing} price override(s), {thinking} [thinking] setting(s), {confinement} [confinement] grant(s)",
-                    path.display()
-                )?;
-                if *auto {
-                    f.write_str(" and its [auto] settings")?;
-                }
-                f.write_str("); review it and run /permissions trust to use all of it")
-            }
             Self::EndpointSkipped { name, reason } => {
                 write!(f, "endpoint `{name}` skipped: {reason}")
             }
@@ -201,27 +160,6 @@ impl fmt::Display for Notice {
     }
 }
 
-/// How far the realm rules file (`<realm>/tui.toml`) is trusted (decided
-/// from the host trust record, see [`crate::bootstrap::trust`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RealmTrust {
-    /// The file is what rkat-tui wrote or the user trusted: all of it applies.
-    Owned,
-    /// The file is not trusted: only its deny rules apply.
-    DenyOnly(Untrusted),
-}
-
-impl RealmTrust {
-    /// The trust a [`TrustStatus`] gives the realm rules file.
-    #[must_use]
-    pub fn from_status(status: TrustStatus) -> Self {
-        match status {
-            TrustStatus::Missing | TrustStatus::Trusted => Self::Owned,
-            TrustStatus::Untrusted(reason) => Self::DenyOnly(reason),
-        }
-    }
-}
-
 /// Everything `tui.toml` configures, after layering.
 #[derive(Debug, Clone, Default)]
 pub struct Layered {
@@ -244,8 +182,8 @@ pub struct Layered {
     /// Merged `[thinking]` settings of the user layers (not yet validated,
     /// see [`crate::thinking::ThinkingTable::validate`]).
     pub thinking: BTreeMap<String, ThinkingSetting>,
-    /// Merged `[confinement]` grants of the user layers (global, an owned
-    /// realm file, the command-line overlay), in layer order; not yet
+    /// Merged `[confinement]` grants of the user layers (global, the realm
+    /// file, the command-line overlay), in layer order; not yet
     /// validated (see [`crate::bootstrap::confinement::grants_with`]).
     pub confinement: ConfinementSection,
     /// Merged `[helpers]` settings.
@@ -273,15 +211,8 @@ pub fn load_layered(
     realm_dir: &Path,
     global_rules_file: Option<&Path>,
     project_rkat_dir: &Path,
-    realm_trust: RealmTrust,
 ) -> Result<(RuleSet, AutoSettings, Vec<Notice>), RulesError> {
-    let layered = load_layered_with(
-        realm_dir,
-        global_rules_file,
-        project_rkat_dir,
-        realm_trust,
-        None,
-    )?;
+    let layered = load_layered_with(realm_dir, global_rules_file, project_rkat_dir, None)?;
     Ok((layered.rules, layered.settings, layered.notices))
 }
 
@@ -295,8 +226,6 @@ pub fn load_layered(
 /// User layers (global → realm → cli): rules accumulate, `[auto]` fields and
 /// endpoint fields replace those of earlier layers, endpoints merge by name.
 /// `[confinement]` grants accumulate.
-/// A [`RealmTrust::DenyOnly`] realm file contributes only deny rules (no allow
-/// rules, `[auto]` settings, endpoints, prices or `[confinement]` grants).
 /// The project layer contributes deny rules and `[auto]` settings the
 /// command line did not set; its endpoints and `[confinement]` grants are
 /// ignored with a notice; it can never turn
@@ -310,7 +239,6 @@ pub fn load_layered_with(
     realm_dir: &Path,
     global_rules_file: Option<&Path>,
     project_rkat_dir: &Path,
-    realm_trust: RealmTrust,
     cli: Option<&RulesFile>,
 ) -> Result<Layered, RulesError> {
     let mut rules = RuleSet::default();
@@ -327,60 +255,21 @@ pub fn load_layered_with(
     let mut ui = UiSettings::default();
     let mut daemon_principal = None;
 
-    let mut user_layers: Vec<(Option<PathBuf>, RuleOrigin, RulesFile)> = Vec::new();
+    let mut user_layers: Vec<(RuleOrigin, RulesFile)> = Vec::new();
     if let Some(global) = global_rules_file {
-        user_layers.push((
-            Some(global.to_path_buf()),
-            RuleOrigin::Global,
-            RulesFile::load(global)?,
-        ));
+        user_layers.push((RuleOrigin::Global, RulesFile::load(global)?));
     }
-    let realm_path = realm_dir.join(RULES_FILE_NAME);
-    let realm_file = RulesFile::load(&realm_path)?;
-    user_layers.push((Some(realm_path), RuleOrigin::Realm, realm_file));
+    user_layers.push((
+        RuleOrigin::Realm,
+        RulesFile::load(&realm_dir.join(RULES_FILE_NAME))?,
+    ));
     if let Some(cli) = cli {
-        user_layers.push((None, RuleOrigin::Cli, cli.clone()));
+        user_layers.push((RuleOrigin::Cli, cli.clone()));
     }
 
-    for (path, origin, file) in user_layers {
-        let untrusted = match (&realm_trust, origin) {
-            (RealmTrust::DenyOnly(reason), RuleOrigin::Realm) => Some(reason.clone()),
-            _ => None,
-        };
-        let path = path.unwrap_or_default();
-        let mut ignored_allow = 0;
+    for (origin, file) in user_layers {
         for rule in file.rules(origin)? {
-            if untrusted.is_some() && rule.kind == RuleKind::Allow {
-                ignored_allow += 1;
-            } else {
-                rules.push(rule);
-            }
-        }
-        if let Some(reason) = untrusted {
-            let auto = file
-                .auto
-                .as_ref()
-                .is_some_and(|auto| *auto != AutoSection::default());
-            let grants = file.confinement.as_ref().map_or(0, ConfinementSection::len);
-            if ignored_allow > 0
-                || auto
-                || !file.endpoints.is_empty()
-                || !file.pricing.is_empty()
-                || !file.thinking.is_empty()
-                || grants > 0
-            {
-                notices.push(Notice::UntrustedRealmDenyOnly {
-                    path,
-                    reason,
-                    allow: ignored_allow,
-                    auto,
-                    endpoints: file.endpoints.len(),
-                    pricing: file.pricing.len(),
-                    thinking: file.thinking.len(),
-                    confinement: grants,
-                });
-            }
-            continue;
+            rules.push(rule);
         }
         if let Some(section) = &file.confinement {
             confinement.extend_from(section);

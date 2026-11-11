@@ -184,7 +184,6 @@ impl App {
                 pattern,
             }),
             Command::Rules(RulesCommand::Remove(n)) => fx.push(Effect::RemoveRule(n)),
-            Command::Rules(RulesCommand::Trust) => fx.push(Effect::TrustRealmRules),
             Command::TrustProject => fx.push(Effect::TrustProject),
             Command::Helpers(cmd) => self.helpers_command(cmd),
         }

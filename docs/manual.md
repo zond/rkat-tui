@@ -146,7 +146,7 @@ resumed sessions and helpers carry it too. First match wins:
 
 | Tier | What | Review |
 |---|---|---|
-| 0 | A user **deny** rule matches, or `write_file` / `edit_file` / the engine's `blob_save_file` (or any target of a patch) is a **sealed** path: the project's `.rkat/` (its `tui.toml`, `mcp.toml`, hooks), every `.rkat` and every `.git` inside it, and, wherever they lie, the git directories governing the project (an enclosing repository's `.git` when the workspace is a subdirectory, a worktree's git dir and the common dir its `commondir` names, with the hooks), the realm directory (the workspace's state directory, or a `--realm`/`--state-root` realm: `config.toml`, approvals, `tui.toml`, sessions, the audit log) and the user config directory (`~/.rkat/tui`: global rules, trust records). Neither the classifier nor an allow rule opens a sealed path, and reading one is not sealed (except the daemon's endpoint directories, below); a shell command that writes there is still judged by the classifier. The engine's own file tools refuse the same state again by themselves (Meerkat 0.9.12): any `.rkat` in the workspace, and the realm, the config directory, the user config document and the credential store when the command line puts them inside the workspace. The directories that hold the daemon's endpoint file and its attach token (`$XDG_STATE_HOME/rkat-tui/`, else `~/.local/state/rkat-tui/`, and `$XDG_RUNTIME_DIR/rkat-tui/`) are sealed for reads and searches too: `read_file`, `grep` and `glob` never open them, and a search above them skips them; so is the realm directory | denied |
+| 0 | A user **deny** rule matches, or `write_file` / `edit_file` / the engine's `blob_save_file` (or any target of a patch) is a **sealed** path: the project's `.rkat/` (its `tui.toml`, `mcp.toml`, hooks), every `.rkat` and every `.git` inside it, and, wherever they lie, the git directories governing the project (an enclosing repository's `.git` when the workspace is a subdirectory, a worktree's git dir and the common dir its `commondir` names, with the hooks), the realm directory (the workspace's state directory: `config.toml`, approvals, `tui.toml`, sessions, the audit log) and the user config directory (`~/.rkat/tui`: global rules, trust records). Neither the classifier nor an allow rule opens a sealed path, and reading one is not sealed (except the daemon's endpoint directories, below); a shell command that writes there is still judged by the classifier. The engine's own file tools refuse the same state again by themselves (Meerkat 0.9.12): any `.rkat` in the workspace, and the realm, the config directory, the user config document and the credential store when the command line puts them inside the workspace. The directories that hold the daemon's endpoint file and its attach token (`$XDG_STATE_HOME/rkat-tui/`, else `~/.local/state/rkat-tui/`, and `$XDG_RUNTIME_DIR/rkat-tui/`) are sealed for reads and searches too: `read_file`, `grep` and `glob` never open them, and a search above them skips them; so is the realm directory | denied |
 | 1 | Read-only tools (`read_file`, `glob`, `grep` inside the project, task tools, `memory_search`, `note_list`/`note_read`, `blob_inspect`, skill browsing, read-only `mob_*` queries, `delegate`, `fork`), read-only shell commands (`cat`, `ls`, `rg`, `git status/diff/log`, `cargo check/test` when builds are trusted, …), narrow user **allow** rules | allowed |
 | 2 | `write_file` / `edit_file` / `blob_save_file` where every target is inside the project and not protected (`.rkat/`, `.git/` and any `.git` file, `.env*`, …); workspace notes | allowed (manual mode asks you) |
 | ask | `write_file` / `edit_file` / `blob_save_file` (or any target of a patch) is a **protected** path in the project: `.env*`, `.envrc`, `build.rs`, `.cargo/`, `rust-toolchain*`, `AGENTS.md`, `.claude/`, `.gitmodules`, `.gitattributes`, `tui.toml`, `.vscode/`, `.idea/`. Never the classifier, whatever auto mode's state: the dialog names each path and what it is (`protected path: .env.local (secrets); the policy always asks for these`). A user allow rule for the path (what the dialog's "allow and add a rule" adds) allows it, a deny rule denies it | asks you, every time |
@@ -278,20 +278,16 @@ to manual.
 **What runs as the host and when it is trusted.** The gate and the sandbox
 cover the agent's tool calls. Local MCP stdio servers and command hooks are
 not tool calls: rkat-tui starts them itself, with your privileges and
-outside the shell's confinement. Three workspace files can define them: the
-project's `.rkat/mcp.toml` (MCP servers), the project's `.rkat/config.toml`
-(`[hooks]`, which Meerkat discovers at the workspace) and, only for a realm
-you placed inside the workspace with `--state-root`, that realm's
-`config.toml` (`[[tools.mcp_servers]]` and `[hooks]`; the workspace's own
-realm lives outside it and is yours). Any of them may have come with a
-cloned repository, and on Linux a confined shell can write `.rkat/`, so
-each runs nothing until you trust it: `/trust`
-records the SHA-256 of every one of them, as it is now, in the host trust
-record under `~/.rkat/tui/trust/` (outside the workspace), and
-`--trust-project` trusts them for one run
-without recording. A file that is absent, or whose digest matches, is
-trusted; rkat-tui's own writes into the realm config (endpoints, model
-profiles) keep it trusted, but only when it was trusted before the write.
+outside the shell's confinement. Two workspace files can define them: the
+project's `.rkat/mcp.toml` (MCP servers) and the project's
+`.rkat/config.toml` (`[hooks]`, which Meerkat discovers at the workspace).
+The workspace's state directory (its `config.toml` included) lives outside
+the workspace and is yours. Either file may have come with a cloned
+repository, and on Linux a confined shell can write `.rkat/`, so each runs
+nothing until you trust it: `/trust` records the SHA-256 of both, as they
+are now, in the host trust record under `~/.rkat/tui/trust/` (outside the
+workspace), and `--trust-project` trusts them for one run without
+recording. A file that is absent, or whose digest matches, is trusted.
 Until then its MCP servers are not started and its hooks do not run (each
 project hook is overridden by a disabled entry of its id, for helpers too),
 and a start-up notice names each file, why it is not trusted (never
@@ -556,20 +552,9 @@ only add deny rules and `[auto]` settings; its `[endpoints]`, `[pricing]`,
 yours to pick). Broad allow rules (blanket shell, interpreters, package-manager run
 commands) are dropped when auto mode starts.
 
-**Trusting the realm file.** The workspace's own realm `tui.toml` lives in
-its state directory under the config directory, out of the agent's and a
-repository's reach: it is yours, and a hand edit applies. A realm placed
-inside the workspace with `--state-root` could have arrived with a
-repository, so its file is trusted by digest. rkat-tui keeps a **host trust record**
-outside the workspace (`<config-dir>/trust/<workspace key>.toml`) with the
-SHA-256 of each workspace file it wrote itself or you trusted. The realm
-`tui.toml` of such a realm counts as yours only when it is a regular file reached through no
-symbolic link and its digest matches the record; otherwise it can only deny,
-its `[endpoints]`, `[pricing]`, `[thinking]`, `[confinement]` and `[auto]` are ignored,
-and a notice says why. `/permissions add` and the escalation dialog update the record; `/permissions
-trust` shows a summary of the file as it is now and records its digest.
-The record of the workspace's own realm is keyed by the realm's id, so a
-re-home keeps it.
+**The realm file.** The workspace's realm `tui.toml` lives in its state
+directory under the config directory, out of the agent's and a
+repository's reach: it is yours, and a hand edit applies.
 
 ```toml
 [auto]
@@ -624,8 +609,7 @@ are never written to a file.
 
 Other flags: `--model`/`-m <[endpoint:]id>`, `--endpoint <name>`,
 `--resume [ref]`, `-c`/`--continue`,
-`-w`/`--workspace`, `--config-dir`, `--user-config-root`, `--realm`,
-`--isolated`, `--realm-backend`, `--state-root`, `--confinement`,
+`-w`/`--workspace`, `--config-dir`, `--user-config-root`, `--confinement`,
 `--confinement-read`, `--confinement-write`, `--no-confinement`, `--no-mouse`, `--wait-for-mcp`, `--trust-project`,
 `--no-pricing-fetch`.
 
@@ -923,15 +907,15 @@ behind these controls (its Status column is the current state).
 
 
 `/help` (alias `/?`), `/quit` (aliases `/exit`, `/q`), `/detach`, `/agents [name]`, `/audit [n]`, `/daemon stop`, `/daemon start`, `/clear` (alias `/new`), `/resume [ref]`,
-`/rewind` (aliases `/checkpoint`, `/undo`), `/permissions [list|add allow|deny <tool> [pattern]|rm <n>|trust]` (`remove` for `rm`),
+`/rewind` (aliases `/checkpoint`, `/undo`), `/permissions [list|add allow|deny <tool> [pattern]|rm <n>]` (`remove` for `rm`),
 `/mode [default|accept-edits|plan|auto]`, `/auto [on|off|resume]`, `/model [[endpoint:]id|refresh]`,
 `/remember <text>`, `/memory [user|system]`, `/init`, `/compact [now|status|<instructions>]`, `/context`, `/status`, `/export [file]`, `/usage` (aliases `/cost`, `/stats`), `/copy [N]`, `/trust`,
 `/helpers [expand|fold <label>|all]` (alias `/tasks`). `/status` prints the
 rkat-tui version, the model and its endpoint, the session id, the workspace
-and realm directories, the shell confinement, the permission mode, whether
-the realm `tui.toml` is trusted, the trust state of each project input
-`/trust` covers (`.rkat/mcp.toml`, `.rkat/config.toml`, the workspace
-realm's `config.toml`; "trusted for this run" under `--trust-project`), and
+and realm directories, the shell confinement, the permission mode, the
+realm `tui.toml`, the trust state of each project input `/trust` covers
+(`.rkat/mcp.toml`, `.rkat/config.toml`; "trusted for this run" under
+`--trust-project`), and
 the helper depth limit. `/export [file]` writes the transcript as plain text
 (a `## user`, `## assistant`, `## tool …`, `## notice` header per block;
 folded reasoning and collapsed tool output keep only their headers, as on
@@ -1158,8 +1142,8 @@ or the agent's shell writes marks nothing).
 The workspace is `--workspace <dir>` (`-w`), else the nearest ancestor of the
 current directory that has state (the search stops at the git root and never
 picks your home directory), else the current directory. Running from your
-home directory requires an explicit `--workspace`. `--realm`, `--isolated`
-and `--state-root` opt into the shared realm model that `rkat` uses instead.
+home directory requires an explicit `--workspace`. A workspace has exactly
+one state directory, its own.
 
 The agent's confined shell must not reach the state directory: the daemon
 refuses to start, and the TUI too for its `!` shell, when the confinement
@@ -1172,9 +1156,7 @@ User-global files live in one config directory: `--config-dir <dir>`, else
 `~/.rkat/tui` (under Meerkat's own user config root `~/.rkat`;
 `<--user-config-root>/.rkat/tui` when that flag is given). It holds
 `tui.toml`, `AGENTS.md`, `SYSTEM.md`, `notes/`, `history` and the host trust
-records (`trust/`). `$XDG_CONFIG_HOME` does not decide it. With `--realm` or `--state-root`, rkat-tui refuses to start
-(exit 2) when the config directory and that realm's directory are the same
-or one holds the other, naming both. The price-list cache lives
+records (`trust/`). `$XDG_CONFIG_HOME` does not decide it. The price-list cache lives
 in the user cache directory (`<config-dir>/cache` when `--config-dir` is
 given).
 
@@ -1184,7 +1166,7 @@ approval decision (time, agent, helper, session, run, tool, the deciding
 argument whole, tier, `allow` or `deny`, who decided: `rule:<id>`,
 `classifier`, `human:<connection>`, `mode`, `policy`, `unattended`,
 `timeout`, and for a denial why) and one per change of authority (mode
-switch, rule added or removed, `/trust`, `/permissions trust`, an agent
+switch, rule added or removed, `/trust`, an agent
 retired, daemon start and stop). It is out of the agent's reach: its
 confined shell is never granted the directory (the daemon refuses to
 start otherwise) and its file tools refuse to read it.
@@ -1282,8 +1264,6 @@ when it runs without one. A file whose address refuses the connection is
 one whose address does not answer in time is `unknown (<why>)` and kept,
 since a slow daemon is not a dead one. A daemon does not start beside such
 a file either: it says so, and if no daemon runs, remove the file.
-A daemon of another realm than the workspace's own shows it after the
-workspace: `(realm <root>)` or `(realm memory)`.
 Listing attaches to each daemon with its token as a probe, which is not
 counted as a client; the token is never printed. `rkat-tui-mob --list
 --endpoint-file <path>` lists only that file.
@@ -1293,13 +1273,7 @@ address, a per-daemon token, its pid, the workspace and when it started) to
 `$XDG_STATE_HOME/rkat-tui/<key>/mob.endpoint`, or
 `~/.local/state/rkat-tui/<key>/mob.endpoint` when `XDG_STATE_HOME` is not
 set; `<key>` is the first 32 hex digits of the SHA-256 of the workspace's
-canonical path, and for a daemon of another realm than the workspace's
-own (`--realm`, `--state-root`, `--isolated`, `--realm-backend memory`)
-of that path and the realm's identity (its root directory, or a memory
-marker). So an `--isolated` or in-memory daemon never takes the
-workspace's ordinary endpoint file, and a plain `rkat-tui` in that
-workspace never attaches to a throwaway realm; `--list` names the realm
-after the workspace when it is not the workspace's own. The directory is created with mode 0700, the file with
+canonical path. The directory is created with mode 0700, the file with
 0600, and the file is removed when the daemon shuts down. The TUI reads
 it, connects, and attaches with `rkat/attach` before anything else (the
 daemon proves it holds the token first, then the TUI does; the token
@@ -1441,7 +1415,7 @@ conversation), `/copy`, `/context` (the conversation read from the daemon), `/co
 ✓ compacted notice and the gauge confirm it) and `/compact status` (the
 policy), `/remember` and `/memory` (the files are edited here; the agent
 reads the new content from its next model call), the Ctrl-T task checklist, approvals, the permission
-modes, `/permissions`, `/trust`, `/permissions trust` and `!` commands. The token
+modes, `/permissions`, `/trust` and `!` commands. The token
 counter shows the conversation's totals on attach and after `/new` or
 `/resume`.
 

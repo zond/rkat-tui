@@ -782,8 +782,7 @@ async fn plan_mode_survives_a_restart_and_leaving_it_is_announced() {
     daemon.stop().await;
 }
 
-/// `/trust` and `/permissions trust` in attach mode act on the daemon's trust
-/// record: a project hook file nobody trusted is refused (its hook does not
+/// `/trust` in attach mode acts on the daemon's trust record: a project hook file nobody trusted is refused (its hook does not
 /// run), `/trust` from the client records it, and a restarted daemon keeps
 /// it trusted (the hook runs on the rebuilt agent's next call).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -824,8 +823,9 @@ args = ["-c", "printf entered > \"$1\"; cat >/dev/null; printf '{{}}'", "hook-pr
     };
     let daemon = start(&ws.root, &llm, &setup).await;
     let connection = daemon.connect().await;
-    // `rkat/trust` names its op; there is no list form.
-    for params in [json!({}), json!({"op": "list"})] {
+    // `rkat/trust` takes no parameters: the removed `rules` op (and any
+    // other) is refused, never read as `/trust`.
+    for params in [json!({"op": "rules"}), json!({"op": "list"})] {
         let refused = connection.call("rkat/trust", params.clone()).await;
         assert!(
             matches!(&refused, Err(rkat_tui::client::ClientError::Rpc { code, .. }) if *code == rkat_tui::daemon::protocol::INVALID_PARAMS),
@@ -842,20 +842,6 @@ args = ["-c", "printf entered > \"$1\"; cat >/dev/null; printf '{{}}'", "hook-pr
         .wait_for(|msg| {
             matches!(msg, Msg::Notice { text, .. } if text.starts_with("trusted ") && text.contains(".rkat/config.toml"))
         })
-        .await;
-    // `/permissions trust` reaches the daemon too: the realm rules file a rule
-    // created is summarised and trusted.
-    client.send(Effect::AddRule {
-        effect: RuleEffect::Allow,
-        tool: "grep".into(),
-        pattern: None,
-    });
-    client
-        .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text == "rule added"))
-        .await;
-    client.send(Effect::TrustRealmRules);
-    client
-        .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text.contains("trusted; 1 allow rule(s) apply now")))
         .await;
     client.quit().await;
     drop(connection);

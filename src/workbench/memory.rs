@@ -72,7 +72,7 @@ impl Workbench {
     /// bytes, and ask the UI to open it ([`Msg::EditFile`]).
     pub fn open_memory(&mut self, target: MemoryTarget) {
         let scope = &self.scope;
-        let path = match memory_path(target, &scope.context_root, scope.global.as_ref()) {
+        let path = match memory_path(target, &scope.context_root, Some(&scope.global)) {
             Ok(path) => path,
             Err(why) => {
                 self.notice(NoticeLevel::Warn, why);

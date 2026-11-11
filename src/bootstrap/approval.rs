@@ -1,9 +1,7 @@
 //! The approval engine every session's gate shares.
 //!
 //! [`load_layers`] layers `tui.toml` (global → realm → command line →
-//! project; a realm placed inside the workspace, with `--state-root`, is
-//! fully applied only when the host trust record says rkat-tui wrote it or
-//! the user trusted it, see [`crate::bootstrap::trust`]). [`build`] reads the environment facts,
+//! project). [`build`] reads the environment facts,
 //! builds the classifier and opens the escalation broker, and returns the
 //! engine with the channels the runner serves.
 
@@ -23,7 +21,7 @@ use crate::approval::escalation::{EscalationBroker, EscalationRequest};
 use crate::approval::{ApprovalConfig, ApprovalEngine, ApprovalEvent};
 use crate::bootstrap::trust::HostTrustRecord;
 use crate::cli::Args;
-use crate::config::{self, AutoSettings, RULES_FILE_NAME, RealmTrust};
+use crate::config::{self, AutoSettings, RULES_FILE_NAME};
 use crate::error::TuiError;
 use crate::overlay::ConfigOverlay;
 use crate::paths::ProjectRoot;
@@ -100,24 +98,14 @@ pub(crate) fn load_layers(
 ) -> Result<(config::Layered, Vec<String>), TuiError> {
     let cli_layer = ConfigOverlay::from_args(args)?.rules_file()?;
     let realm_dir = scope.realm_root();
-    let realm_rules = realm_dir.join(RULES_FILE_NAME);
     let mut notices = Vec::new();
-    // A realm outside the workspace (the workspace's own, under the config
-    // directory, or a `--state-root` elsewhere) is the user's: neither the
-    // agent's confined shell (the start refuses a plan that reaches it) nor
-    // a clone can write it. Only a realm placed inside the workspace is
-    // trusted by digest.
-    let realm_trust = if realm_dir.starts_with(&scope.context_root) {
-        RealmTrust::from_status(trust_record(scope).check(&realm_rules))
-    } else {
-        RealmTrust::Owned
-    };
-    let global_rules = scope.global.as_ref().map(super::GlobalDirs::rules_file);
+    // The realm lives under the config directory, out of the agent's
+    // confined shell's reach (the start refuses a plan that reaches it) and
+    // a clone's: its `tui.toml` is the user's.
     let layered = config::load_layered_with(
         &realm_dir,
-        global_rules.as_deref(),
+        Some(&scope.global.rules_file()),
         &scope.context_root.join(".rkat"),
-        realm_trust,
         cli_layer.as_ref(),
     )
     .map_err(crate::approval::ApprovalError::from)?;
@@ -125,21 +113,11 @@ pub(crate) fn load_layers(
     Ok((layered, notices))
 }
 
-/// The host trust record of `scope`'s workspace and realm (in memory when
-/// there is no user config directory: nothing is trusted across runs).
+/// The host trust record of `scope`'s workspace: keyed by its realm, so
+/// the record follows the realm through a re-home.
 #[must_use]
 pub fn trust_record(scope: &RuntimeScope) -> HostTrustRecord {
-    match (&scope.global, &scope.home) {
-        // The workspace's own realm: the record follows it through a
-        // re-home.
-        (Some(global), Some(home)) => {
-            HostTrustRecord::open_for_realm(&global.config, &scope.context_root, &home.id)
-        }
-        (Some(global), None) => {
-            HostTrustRecord::open(&global.config, &scope.context_root, &scope.realm_id)
-        }
-        (None, _) => HostTrustRecord::in_memory(&scope.context_root),
-    }
+    HostTrustRecord::open(&scope.global.config, &scope.context_root, &scope.home.id)
 }
 
 /// Build the approval engine for `scope` from the loaded `layered` rules.
@@ -153,10 +131,9 @@ pub(crate) async fn build(
     mut notices: Vec<String>,
     source: ClassifierSource<'_>,
     overrides: &ApprovalOverrides,
-    trust: Arc<parking_lot::Mutex<HostTrustRecord>>,
 ) -> Result<ApprovalParts, TuiError> {
     let realm_dir = scope.realm_root();
-    let realm_file = config::RealmFile::new(realm_dir.join(RULES_FILE_NAME), Some(trust));
+    let realm_file = config::RealmFile::new(realm_dir.join(RULES_FILE_NAME));
     let (events_tx, events_rx) = mpsc::unbounded_channel();
     let (broker, escalations) = EscalationBroker::new(ESCALATION_CAPACITY);
     let cwd = std::env::current_dir().map_err(|e| TuiError::io("read current directory", e))?;

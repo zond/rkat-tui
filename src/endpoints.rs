@@ -1043,16 +1043,6 @@ impl EndpointProjection {
             servers: self_hosted_servers(endpoints),
         })
     }
-
-    /// The projected connections of the realm section `realm`.
-    #[must_use]
-    pub fn section_of(&self, realm: &str) -> Option<&RealmConfigSection> {
-        match realm {
-            ENDPOINT_REALM => Some(&self.section),
-            SELF_HOSTED_REALM => Some(&self.self_hosted),
-            _ => None,
-        }
-    }
 }
 
 /// The `self_hosted.servers` entry of each self-hosted endpoint of

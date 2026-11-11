@@ -271,13 +271,9 @@ pub fn tail(path: &Path, n: usize, keep: impl Fn(&Line) -> bool) -> std::io::Res
 ///
 /// The workspace or its realm cannot be resolved.
 pub fn files(args: &crate::Args) -> Result<Vec<PathBuf>, crate::TuiError> {
-    let dir = if args.realm.is_some() || args.isolated || args.state_root.is_some() {
-        Some(crate::bootstrap::resolve_scope(args)?.realm_root())
-    } else {
-        crate::bootstrap::scope::lookup(args)?
-            .2
-            .map(|home| home.dir)
-    };
+    let dir = crate::bootstrap::scope::lookup(args)?
+        .2
+        .map(|home| home.dir);
     Ok(dir
         .into_iter()
         .flat_map(|dir| [dir.join(ROTATED_FILE), dir.join(AUDIT_FILE)])

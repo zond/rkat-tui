@@ -14,7 +14,7 @@ use std::sync::Arc;
 use common::{ScriptedLlmClient, Step, Workspace, args_for, endpoint_file_for, no_lists, within};
 use meerkat_core::AgentEvent;
 use rig::{Client, Running};
-use rkat_tui::cli::{AttachMode, AttachTarget};
+use rkat_tui::cli::AttachTarget;
 use rkat_tui::client::catchup::CursorFile;
 use rkat_tui::client::sessions::REWIND_UNAVAILABLE;
 use rkat_tui::client::testing::spawn_attach_runner;
@@ -1178,39 +1178,6 @@ async fn unsent_messages_are_saved_at_quit_and_announced_at_the_next_attach() {
         .await;
     assert!(again.quit().await.is_none());
     daemon.stop().await;
-}
-
-/// The finding this guards: the workspace and its `tui.toml` layers were
-/// read once to pick attach mode and again by the runner; with
-/// `--isolated` the two reads minted two realms. The runner is configured
-/// from the layers read at start.
-#[tokio::test]
-async fn attach_mode_runs_on_the_layers_read_at_start() {
-    let ws = Workspace::new();
-    let realms = ws.sibling("realms");
-    let args = common::args_with(
-        &ws.root,
-        &["--isolated", "--state-root", realms.to_str().unwrap()],
-    );
-    let layers = rkat_tui::bootstrap::read_layers(&args).unwrap();
-    let realm = layers.scope.realm_id.clone();
-    let config = rkat_tui::client::configure_with(
-        layers,
-        &args,
-        AttachMode::Existing,
-        &rkat_tui::bootstrap::HostPaths::default(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(config.scope.realm_id, realm);
-    assert_ne!(
-        rkat_tui::bootstrap::read_layers(&args)
-            .unwrap()
-            .scope
-            .realm_id,
-        realm,
-        "a second read mints another isolated realm"
-    );
 }
 
 /// ↑/↓ recall and Ctrl+R search in attach mode: the attach runner's UI

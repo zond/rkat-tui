@@ -8,21 +8,17 @@
 //! authority for which workspace owns it; nothing in the workspace is read
 //! for it. A workspace that moves needs one explicit re-home
 //! (`/rehome`, `rkat-tui --rehome`). A `.rkat/tui/` in the workspace is
-//! never read.
-//!
-//! `--realm`, `--isolated` and `--state-root` opt back into the shared realm
-//! model `rkat` uses (`resolve_runtime_scope` / `load_config` in
-//! `meerkat-cli/src/main.rs`).
+//! never read. A workspace has exactly one realm, its own.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use meerkat_core::{Config, ConfigRuntime, FileConfigStore, RealmConfig, RealmSelection};
-use meerkat_store::{RealmBackend, RealmOrigin, realm_paths_in};
+use meerkat_core::{Config, ConfigRuntime, FileConfigStore};
+use meerkat_store::realm_paths_in;
 
 use super::dirs::GlobalDirs;
 use super::realm_home::{self, Home};
-use crate::cli::{Args, RealmBackendArg};
+use crate::cli::Args;
 use crate::error::TuiError;
 use crate::paths::{PathError, ProjectRoot};
 
@@ -38,21 +34,16 @@ pub struct RuntimeScope {
     /// directory). `None` when neither is available.
     pub user_config_root: Option<PathBuf>,
     /// User-global `rkat-tui` directories (`--config-dir`, else
-    /// `<user config root>/.rkat/tui`; see [`GlobalDirs`]). `None` when nothing resolves.
-    pub global: Option<GlobalDirs>,
-    /// Realm the sessions and config are stored in.
+    /// `<user config root>/.rkat/tui`; see [`GlobalDirs`]).
+    pub global: GlobalDirs,
+    /// The workspace's realm: the id of its directory under
+    /// `<config dir>/workspaces/`.
     pub realm_id: String,
-    /// Directory containing realm directories.
+    /// Directory containing the realm directories
+    /// (`<config dir>/workspaces/`).
     pub state_root: PathBuf,
-    /// Backend for a *new* realm (`None`: the store default, SQLite);
-    /// existing realms keep their pinned backend, and naming another one
-    /// fails the open.
-    pub backend_hint: Option<RealmBackend>,
-    /// How the realm was selected (recorded in a new realm's manifest).
-    pub origin: RealmOrigin,
-    /// The workspace's own realm under the config directory, when that is
-    /// the realm (`None` for `--realm`, `--isolated`, `--state-root`).
-    pub home: Option<Home>,
+    /// The workspace's realm and its manifest.
+    pub home: Home,
     /// The offer of realms whose workspace is gone, when this resolve made
     /// the workspace a new realm (shown by the process that made it).
     pub offer: Option<String>,
@@ -81,16 +72,6 @@ impl RuntimeScope {
     }
 }
 
-impl From<RealmBackendArg> for RealmBackend {
-    fn from(value: RealmBackendArg) -> Self {
-        match value {
-            RealmBackendArg::Jsonl => Self::Jsonl,
-            RealmBackendArg::Sqlite => Self::Sqlite,
-            RealmBackendArg::Memory => Self::Memory,
-        }
-    }
-}
-
 /// Resolve the workspace, conventions roots and realm from the arguments.
 ///
 /// The workspace is `--workspace`, else the nearest ancestor of the working
@@ -98,100 +79,43 @@ impl From<RealmBackendArg> for RealmBackend {
 /// than the git top-level, and never the home directory or above it), else
 /// the working directory. The home directory itself (or an ancestor of it)
 /// is used only when passed explicitly with `--workspace`. State lives in
-/// the workspace's realm under the config directory (made on its first
-/// start, see [`realm_home`]) unless `--realm`, `--isolated` or
-/// `--state-root` select the shared realm model.
+/// the workspace's realm under the config directory, made on its first
+/// start (see [`realm_home`]).
 ///
 /// # Errors
 ///
-/// Returns [`TuiError::Realm`] for conflicting/invalid realm flags,
 /// [`TuiError::ProjectRoot`] when the root cannot be canonicalized or the
 /// working directory is the home directory, [`TuiError::RealmHome`] when
 /// the realms cannot be read or the workspace's made (two manifests naming
-/// it, an unreadable one, no config directory), and
-/// [`TuiError::ConfigDirCollision`] when the user-global config directory
-/// and a shared realm's directory are the same or nested (see
-/// [`check_config_dir_collision`]).
+/// it, an unreadable one, no config directory).
 pub fn resolve_scope(args: &Args) -> Result<RuntimeScope, TuiError> {
-    let global = GlobalDirs::resolve(args.config_dir.as_deref(), args.user_config_root.as_deref());
-    let uses_shared_realm = args.realm.is_some() || args.isolated || args.state_root.is_some();
-    let homes_root = global.as_ref().map(realm_home::root);
-    let project_root = project_root_from(&workspace_of(args, homes_root.as_deref())?)?;
+    let global = GlobalDirs::resolve(args.config_dir.as_deref(), args.user_config_root.as_deref())
+        .ok_or(realm_home::HomeError::NoConfigDir)?;
+    let root = realm_home::root(&global);
+    let project_root = project_root_from(&workspace_of(args, Some(&root))?)?;
     let context_root = project_root.as_path().to_path_buf();
     let user_config_root = args.user_config_root.clone().or_else(dirs::home_dir);
-
-    if !uses_shared_realm {
-        let root = homes_root.ok_or(realm_home::HomeError::NoConfigDir)?;
-        let opened = realm_home::open_or_create(&root, &context_root)?;
-        let offer = if opened.created {
-            realm_home::offer(&opened.orphans)
-        } else {
-            None
-        };
-        let project_root = seal(project_root, &opened.home.dir, global.as_ref());
-        return Ok(RuntimeScope {
-            project_root,
-            context_root,
-            user_config_root,
-            global,
-            realm_id: opened.home.id.clone(),
-            state_root: root,
-            backend_hint: args.realm_backend.map(Into::into),
-            origin: RealmOrigin::Workspace,
-            home: Some(opened.home),
-            offer,
-        });
-    }
-
-    let selection = RealmConfig::selection_from_inputs(
-        args.realm.clone(),
-        args.isolated,
-        RealmSelection::WorkspaceDerived {
-            root: context_root.clone(),
-        },
-    )?;
-    let origin = match &selection {
-        RealmSelection::Explicit { .. } => RealmOrigin::Explicit,
-        RealmSelection::Isolated => RealmOrigin::Generated,
-        RealmSelection::WorkspaceDerived { .. } => RealmOrigin::Workspace,
+    let opened = realm_home::open_or_create(&root, &context_root)?;
+    let offer = if opened.created {
+        realm_home::offer(&opened.orphans)
+    } else {
+        None
     };
-    let backend_hint: Option<RealmBackend> = args.realm_backend.map(Into::into);
-    let realm_cfg = RealmConfig {
-        selection,
-        instance_id: None,
-        backend_hint: backend_hint.map(|b| b.as_str().to_string()),
-        state_root: args.state_root.clone(),
-    };
-    let locator = realm_cfg.resolve_locator()?;
-    check_config_dir_collision(
-        global.as_ref(),
-        &realm_paths_in(&locator.state_root, locator.realm.as_str()).root,
-    )?;
-
-    let project_root = seal(
-        project_root,
-        &realm_paths_in(&locator.state_root, locator.realm.as_str()).root,
-        global.as_ref(),
-    );
+    let project_root = seal(project_root, &opened.home.dir, &global);
     Ok(RuntimeScope {
         project_root,
         context_root,
         user_config_root,
         global,
-        realm_id: locator.realm.as_str().to_string(),
-        state_root: locator.state_root,
-        // Only an explicit request pins a backend; existing realms are opened
-        // with the backend recorded in their manifest.
-        backend_hint,
-        origin,
-        home: None,
-        offer: None,
+        realm_id: opened.home.id.clone(),
+        state_root: root,
+        home: opened.home,
+        offer,
     })
 }
 
 /// The workspace `args` name (canonical) and the realm its manifest gives
-/// it, without making one: what `--audit` and `--rehome` look at. Shared
-/// realm flags are not looked at here.
+/// it, without making one: what `--audit` and `--rehome` look at.
 ///
 /// # Errors
 ///
@@ -231,40 +155,6 @@ pub fn workspace_of(args: &Args, homes_root: Option<&Path>) -> Result<PathBuf, T
         None => Vec::new(),
     };
     default_workspace(&cwd, dirs::home_dir().as_deref(), &homes)
-}
-
-/// Refuse a user-global config directory that is the realm directory, or
-/// holds it, or lies inside it: with `--workspace ~` the realm directory
-/// `~/.rkat/tui` is the default config directory, and the realm's
-/// `tui.toml` would be the global one (the trust records and notes would
-/// mix too). Paths are compared canonicalized as far as they exist.
-///
-/// # Errors
-///
-/// [`TuiError::ConfigDirCollision`] naming both paths.
-pub fn check_config_dir_collision(
-    global: Option<&GlobalDirs>,
-    realm_dir: &Path,
-) -> Result<(), TuiError> {
-    let Some(global) = global else {
-        return Ok(());
-    };
-    let config = canonical_prefix(&global.config);
-    let realm = canonical_prefix(realm_dir);
-    let relation = if config == realm {
-        "are the same directory"
-    } else if realm.starts_with(&config) {
-        "overlap (the realm dir is inside the config dir)"
-    } else if config.starts_with(&realm) {
-        "overlap (the config dir is inside the realm dir)"
-    } else {
-        return Ok(());
-    };
-    Err(TuiError::ConfigDirCollision {
-        config: global.config.clone(),
-        realm: realm_dir.to_path_buf(),
-        relation,
-    })
 }
 
 /// `path` with its longest existing ancestor canonicalized and the rest
@@ -373,10 +263,13 @@ fn find_workspace_above(
 /// directory (its `config.toml`, rules, approvals, `tui.toml`, sessions,
 /// the audit log) from the file tools altogether, reads included: it is a
 /// secret root.
-fn seal(project_root: ProjectRoot, realm_root: &Path, global: Option<&GlobalDirs>) -> ProjectRoot {
+fn seal(project_root: ProjectRoot, realm_root: &Path, global: &GlobalDirs) -> ProjectRoot {
     let git = crate::paths::git_dirs(project_root.as_path());
     project_root
-        .with_sealed_roots(git.into_iter().chain(global.map(|g| g.config.clone())))
+        .with_sealed_roots(
+            git.into_iter()
+                .chain(std::iter::once(global.config.clone())),
+        )
         .with_secret_roots(std::iter::once(realm_root.to_path_buf()))
 }
 
@@ -391,8 +284,8 @@ fn project_root_from(path: &Path) -> Result<ProjectRoot, TuiError> {
 }
 
 /// Load the realm config (`<state_root>/<realm>/config.toml`) and apply
-/// environment overrides, exactly like `rkat`: read through the realm's
-/// config runtime, under its reader lock (`rkat config get` reads so too).
+/// environment overrides: read through the realm's config runtime, under
+/// its reader lock.
 ///
 /// # Errors
 ///
@@ -462,11 +355,10 @@ mod tests {
     fn default_state_lives_in_a_realm_under_the_config_dir() {
         let (_dir, ws, cfg) = fixture();
         let scope = resolve(&ws, &cfg, &[]).unwrap();
-        let home = scope.home.clone().unwrap();
+        let home = scope.home.clone();
         assert_eq!(scope.realm_id, home.id);
         assert_eq!(scope.state_root, cfg.join(realm_home::WORKSPACES_DIR));
         assert_eq!(scope.realm_root(), cfg.join("workspaces").join(&home.id));
-        assert_eq!(scope.origin, RealmOrigin::Workspace);
         assert_eq!(home.manifest.path, ws);
         // Nothing is written into the workspace.
         assert_eq!(std::fs::read_dir(&ws).unwrap().count(), 0);
@@ -584,101 +476,22 @@ mod tests {
     }
 
     #[test]
-    fn realm_flags_opt_into_shared_state() {
-        let (_dir, ws, cfg) = fixture();
-        let state = tempfile::tempdir().unwrap();
-        let scope = resolve(
-            &ws,
-            &cfg,
-            &["--isolated", "--state-root", state.path().to_str().unwrap()],
-        )
-        .unwrap();
-        assert!(scope.home.is_none());
-        assert_eq!(scope.state_root, state.path());
-        assert!(!cfg.join("workspaces").exists());
-    }
-
-    #[test]
     fn global_dirs_follow_flags() {
         let (_dir, ws, cfg) = fixture();
         let ws_arg = ws.to_str().unwrap();
         let scope = resolve(&ws, &cfg, &["--user-config-root", ws_arg]).unwrap();
         assert_eq!(
             scope.global,
-            Some(GlobalDirs {
+            GlobalDirs {
                 cache: cfg.join("cache"),
                 config: cfg,
-            })
+            }
         );
 
         let user = tempfile::tempdir().unwrap();
         let user_root = user.path().to_str().unwrap();
         let scope = resolve_scope(&args(&["-w", ws_arg, "--user-config-root", user_root])).unwrap();
-        assert_eq!(
-            scope.global.clone().map(|g| g.config),
-            Some(user.path().join(".rkat").join("tui"))
-        );
+        assert_eq!(scope.global.config, user.path().join(".rkat").join("tui"));
         assert!(scope.realm_root().starts_with(user.path()));
-    }
-
-    #[test]
-    fn a_config_dir_colliding_with_a_shared_realm_dir_is_refused() {
-        let (_dir, ws, _) = fixture();
-        let state = ws.join("state");
-        let realm = state.join("r1");
-        let shared = |cfg: &Path| {
-            resolve(
-                &ws,
-                cfg,
-                &["--realm", "r1", "--state-root", state.to_str().unwrap()],
-            )
-        };
-        let err = shared(&realm).unwrap_err();
-        let shown = err.to_string();
-        assert!(
-            matches!(err, TuiError::ConfigDirCollision { .. }),
-            "{shown}"
-        );
-        assert_eq!(err.exit_code(), 2);
-        assert!(shown.contains("are the same directory"), "{shown}");
-        assert!(shown.contains(realm.to_str().unwrap()), "{shown}");
-        assert!(shown.contains("--config-dir <other dir>"), "{shown}");
-        assert!(
-            shared(&realm.join("cfg"))
-                .unwrap_err()
-                .to_string()
-                .contains("config dir is inside the realm dir")
-        );
-        assert!(
-            shared(&state)
-                .unwrap_err()
-                .to_string()
-                .contains("realm dir is inside the config dir")
-        );
-        assert!(shared(&ws.join("cfg")).is_ok());
-    }
-
-    #[test]
-    fn collision_check_compares_both_directions() {
-        let dirs = |config: &str| GlobalDirs {
-            config: PathBuf::from(config),
-            cache: PathBuf::from("/k"),
-        };
-        let realm = Path::new("/nonexistent-rkat/ws/.rkat/tui");
-        assert!(check_config_dir_collision(None, realm).is_ok());
-        assert!(check_config_dir_collision(Some(&dirs("/nonexistent-rkat/cfg")), realm).is_ok());
-        for config in [
-            "/nonexistent-rkat/ws/.rkat/tui",
-            "/nonexistent-rkat/ws/.rkat",
-            "/nonexistent-rkat/ws/.rkat/tui/sub",
-        ] {
-            assert!(
-                matches!(
-                    check_config_dir_collision(Some(&dirs(config)), realm),
-                    Err(TuiError::ConfigDirCollision { .. })
-                ),
-                "{config}"
-            );
-        }
     }
 }

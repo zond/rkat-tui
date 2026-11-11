@@ -43,9 +43,7 @@ pub type EndpointFiles = Arc<dyn Fn(&Path) -> Vec<PathBuf> + Send + Sync>;
 /// The endpoint files of a workspace's own realm's daemon.
 #[must_use]
 pub fn default_endpoint_files() -> EndpointFiles {
-    Arc::new(|workspace: &Path| {
-        crate::daemon::endpoint::candidates(workspace, &crate::daemon::endpoint::RealmKey::Default)
-    })
+    Arc::new(|workspace: &Path| crate::daemon::endpoint::candidates(workspace))
 }
 
 /// Why a re-home was refused or failed.

@@ -20,8 +20,7 @@
 //!   `/remember`, `/memory`, `/export` and the cost readout run here, in
 //!   the [`crate::workbench`] (the new context reaches the orchestrator
 //!   with `mob/append_system_context`);
-//!   `/trust` and `/permissions trust` act on the
-//!   daemon's trust record (`rkat/trust`); `/compact now` asks the daemon's
+//!   `/trust` acts on the daemon's trust record (`rkat/trust`); `/compact now` asks the daemon's
 //!   engine (`mob/compact_member`). What the daemon cannot do (`/rewind`)
 //!   says why.
 //! - [`helpers`]: the follower view of the orchestrator's helpers, from the
@@ -289,12 +288,11 @@ pub fn directory_args(args: &Args, dir: &std::path::Path) -> Result<Args, TuiErr
     )
     .map(|global| crate::bootstrap::realm_home::root(&global));
     let resolved = crate::bootstrap::scope::workspace_at(&dir, homes.as_deref());
-    let reported =
-        crate::daemon::endpoint::candidates(&resolved, &crate::daemon::endpoint::RealmKey::Default)
-            .iter()
-            .find_map(|file| crate::daemon::endpoint::Endpoint::read(file).ok())
-            .and_then(|endpoint| endpoint.workspace)
-            .filter(|workspace| workspace.is_dir());
+    let reported = crate::daemon::endpoint::candidates(&resolved)
+        .iter()
+        .find_map(|file| crate::daemon::endpoint::Endpoint::read(file).ok())
+        .and_then(|endpoint| endpoint.workspace)
+        .filter(|workspace| workspace.is_dir());
     let mut args = args.clone();
     args.context_root = Some(reported.unwrap_or(resolved));
     Ok(args)
@@ -352,17 +350,14 @@ pub async fn configure_with(
     let spawn = match mode {
         AttachMode::Auto => Some(SpawnPlan {
             program: launch::daemon_program(),
-            argv: launch::daemon_argv(&launch::pin_realm(args, &scope), &scope.context_root),
+            argv: launch::daemon_argv(args, &scope.context_root),
             log: launch::daemon_log(&scope.realm_root()),
         }),
         AttachMode::Existing => None,
     };
     let pricing = crate::pricing::PricingSetup::load(
         std::mem::take(&mut layered.pricing),
-        scope
-            .global
-            .as_ref()
-            .map(crate::bootstrap::GlobalDirs::pricing_cache),
+        Some(scope.global.pricing_cache()),
         !args.no_pricing_fetch && layered.pricing_fetch,
     );
     // Drawn only when this client may start the daemon.
@@ -377,10 +372,9 @@ pub async fn configure_with(
         agent: agent_choice(args),
         start_token,
         endpoint_files: {
-            let realm = crate::daemon::endpoint::RealmKey::of(&scope);
-            let files = crate::daemon::endpoint::candidates(&scope.context_root, &realm);
+            let files = crate::daemon::endpoint::candidates(&scope.context_root);
             if files.is_empty() {
-                vec![crate::daemon::endpoint_file(&scope.context_root, &realm)?]
+                vec![crate::daemon::endpoint_file(&scope.context_root)?]
             } else {
                 files
             }
@@ -489,12 +483,9 @@ pub async fn run(
         // Before anything is written there: a directory no daemon serves
         // is refused here, not after the UI opened.
         let workspace = directory_args(&args, dir)?.context_root.unwrap_or_default();
-        if !crate::daemon::endpoint::candidates(
-            &workspace,
-            &crate::daemon::endpoint::RealmKey::Default,
-        )
-        .iter()
-        .any(|file| file.is_file())
+        if !crate::daemon::endpoint::candidates(&workspace)
+            .iter()
+            .any(|file| file.is_file())
         {
             return Err(TuiError::NoDaemonAt { workspace });
         }

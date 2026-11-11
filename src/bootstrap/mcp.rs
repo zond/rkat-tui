@@ -17,17 +17,16 @@
 //! unless a user rule allows or denies it by name.
 //!
 //! Local stdio servers run as the trusted host (see
-//! [`super::confinement`]). The project `mcp.toml` and, when the realm lives
-//! in the workspace, the realm config are project inputs
-//! ([`super::project_trust`]): they may have come with the repository, and a
-//! confined shell can write them on Linux. Their servers therefore start
-//! only when the file is trusted: `--trust-project` for this run, or the
-//! host trust record holding the file's digest after `/trust`. Otherwise
+//! [`super::confinement`]). The project `mcp.toml` is a project input
+//! ([`super::project_trust`]): it may have come with the repository, and a
+//! confined shell can write it on Linux. Its servers therefore start only
+//! when the file is trusted: `--trust-project` for this run, or the host
+//! trust record holding the file's digest after `/trust`. Otherwise
 //! upstream's trusting loader
 //! ([`McpConfig::effective_servers_from_roots_trusting`]) refuses each
 //! server of an untrusted `mcp.toml` (unless a trusted source states the
-//! same definition), an untrusted realm config's servers are left out, and
-//! [`LoadedMcp::refused`] lists them for the start-up notice.
+//! same definition), and [`LoadedMcp::refused`] lists them for the
+//! start-up notice.
 
 use std::path::Path;
 
@@ -50,8 +49,7 @@ pub struct LoadedMcp {
 }
 
 /// Load the effective MCP set for `scope` (see the module docs): the
-/// project inputs' servers only when `inputs` trusts their file. Without
-/// the `mcp` feature the set is empty and a configured server is reported.
+/// project's servers only when `inputs` trusts its file.
 ///
 /// # Errors
 ///
@@ -63,24 +61,10 @@ pub async fn load(
     inputs: &ProjectInputs,
 ) -> Result<LoadedMcp, TuiError> {
     let mut refused = Vec::new();
-    let realm_servers: &[McpServerConfig] = if inputs.realm_config_trusted() {
-        &config.tools.mcp_servers
-    } else {
-        if let Some(file) = inputs.realm_config_file() {
-            refused.extend(
-                config
-                    .tools
-                    .mcp_servers
-                    .iter()
-                    .map(|server| Refused::mcp_server(file, &server.name)),
-            );
-        }
-        &[]
-    };
     let mcp_trusted = inputs.mcp_trusted();
     let untrusted = |path: &Path| !mcp_trusted && path == inputs.mcp_file();
     let effective = McpConfig::effective_servers_from_roots_trusting(
-        realm_servers,
+        &config.tools.mcp_servers,
         Some(scope.context_root.as_path()),
         scope.user_config_root.as_deref(),
         &untrusted,
@@ -144,17 +128,9 @@ mod tests {
             home.to_str().unwrap(),
             "--config-dir",
             base.join("cfg").to_str().unwrap(),
-            // A realm inside the workspace (`--state-root`), where its
-            // config is a project input: the workspace's own realm lives
-            // under the config directory and is the user's.
-            "--realm",
-            "tui",
-            "--state-root",
-            ws.join(".rkat").to_str().unwrap(),
         ])
         .unwrap();
         let scope = super::super::resolve_scope(&args).unwrap();
-        std::fs::create_dir_all(scope.realm_root()).unwrap();
         (dir, ws, scope)
     }
 
@@ -210,49 +186,5 @@ mod tests {
             load(&scope, &Config::default(), &flagged).await,
             Err(TuiError::McpConfig(_))
         ));
-    }
-
-    /// A server defined only in the workspace realm's `config.toml` does not
-    /// start before the file is trusted.
-    #[tokio::test]
-    async fn a_realm_config_server_waits_for_trust() {
-        let (_dir, ws, scope) = fixture();
-        let realm_config = ws.join(".rkat/tui/config.toml");
-        std::fs::write(
-            &realm_config,
-            "[[tools.mcp_servers]]\nname = \"realm\"\ncommand = \"realm-server\"\n",
-        )
-        .unwrap();
-        let config = super::super::load_config(&scope).await.unwrap();
-        assert_eq!(config.tools.mcp_servers.len(), 1);
-        let inputs = inputs(
-            &scope,
-            HostTrustRecord::in_memory(&scope.context_root),
-            false,
-        );
-        let loaded = load(&scope, &config, &inputs).await.unwrap();
-        assert_eq!(
-            loaded.refused,
-            [Refused::mcp_server(&realm_config, "realm")]
-        );
-        assert!(!names(&loaded).contains(&"realm".to_string()));
-
-        inputs.trust_all().unwrap();
-        let loaded = load(&scope, &config, &inputs).await.unwrap();
-        assert!(loaded.refused.is_empty());
-        assert_eq!(names(&loaded), ["realm", "usr"]);
-
-        // Changed after trust: refused again.
-        std::fs::write(
-            &realm_config,
-            "[[tools.mcp_servers]]\nname = \"realm\"\ncommand = \"other\"\n",
-        )
-        .unwrap();
-        let config = super::super::load_config(&scope).await.unwrap();
-        let loaded = load(&scope, &config, &inputs).await.unwrap();
-        assert_eq!(
-            loaded.refused,
-            [Refused::mcp_server(&realm_config, "realm")]
-        );
     }
 }

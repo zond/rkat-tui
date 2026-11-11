@@ -29,9 +29,6 @@ pub enum RulesCommand {
     },
     /// Remove rule number `n` (as shown by `/permissions list`).
     Remove(usize),
-    /// Trust the realm `tui.toml` as it is now (its summary is shown and its
-    /// digest recorded in the host trust record).
-    Trust,
 }
 
 /// `/auto` subcommands.
@@ -387,7 +384,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "permissions",
         aliases: &[],
-        usage: "[list | add allow|deny <tool> [pattern] | rm <n> | trust]",
+        usage: "[list | add allow|deny <tool> [pattern] | rm <n>]",
         summary: "list or edit the approval rules",
         help: &[
             ("/permissions [list]", "list approval rules"),
@@ -396,10 +393,6 @@ pub static COMMANDS: &[CommandSpec] = &[
                 "add an approval rule",
             ),
             ("/permissions rm <n>", "remove rule n (rm or remove)"),
-            (
-                "/permissions trust",
-                "show the realm tui.toml and trust it as it is now",
-            ),
         ],
         parse: |rest| parse_rules(&words(rest)).map(Command::Rules),
     },
@@ -934,7 +927,6 @@ fn parse_rules(args: &[&str]) -> Option<RulesCommand> {
                 pattern,
             })
         }
-        ["trust"] => Some(RulesCommand::Trust),
         ["rm" | "remove", n] => n.parse::<usize>().ok().map(RulesCommand::Remove),
         _ => None,
     }
@@ -1255,10 +1247,7 @@ mod tests {
             ok("/permissions rm 3"),
             Command::Rules(RulesCommand::Remove(3))
         );
-        assert_eq!(
-            ok("/permissions trust"),
-            Command::Rules(RulesCommand::Trust)
-        );
+        assert!(parse("/permissions trust").is_some_and(|r| r.is_err()));
         assert_eq!(ok("/trust"), Command::TrustProject);
         assert!(parse("/trust all").is_some_and(|r| r.is_err()));
         // The old names are gone.
@@ -1381,7 +1370,7 @@ mod tests {
         }
         assert_eq!(
             usage_of("/permissions rm x"),
-            "/permissions [list | add allow|deny <tool> [pattern] | rm <n> | trust]"
+            "/permissions [list | add allow|deny <tool> [pattern] | rm <n>]"
         );
     }
 

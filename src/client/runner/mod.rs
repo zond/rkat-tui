@@ -47,7 +47,7 @@ use crate::approval::desk::{ModeStatus, RuleCommand, RuleOutcome};
 use crate::bootstrap::RuntimeScope;
 use crate::cli::AttachMode;
 use crate::daemon::endpoint::Endpoint;
-use crate::daemon::protocol::{self, AgentChoice, SetModeParams, TrustOp, TrustParams};
+use crate::daemon::protocol::{self, AgentChoice, SetModeParams};
 use crate::endpoints::{EndpointRegistry, ModelRefError, WireDialect, parse_model_ref};
 use crate::models::{FetchResults, ModelCache};
 use crate::ui::delivery::{PendingId, SteerFailure};
@@ -1209,15 +1209,8 @@ impl Runner {
             Effect::ListRules => {
                 self.outcome_command::<protocol::method::Rules>(RuleCommand::List, "/permissions");
             }
-            Effect::TrustRealmRules => {
-                let params = TrustParams { op: TrustOp::Rules };
-                self.outcome_command::<protocol::method::Trust>(params, "/permissions trust");
-            }
             Effect::TrustProject => {
-                let params = TrustParams {
-                    op: TrustOp::Project,
-                };
-                self.outcome_command::<protocol::method::Trust>(params, "/trust");
+                self.outcome_command::<protocol::method::Trust>(protocol::Empty {}, "/trust");
             }
             Effect::SaveUnsent(held) => self.bench.hold_unsent(held),
             Effect::SetChecklistView(view) => self.set_checklist_view(view),
@@ -1404,10 +1397,7 @@ mod tests {
                 paused: true,
                 denials: (1, 3, 2, 20),
             },
-            realm_rules: protocol::TrustedFile {
-                path: PathBuf::from("/w/.rkat/tui/tui.toml"),
-                trust: "absent".into(),
-            },
+            realm_rules: PathBuf::from("/w/.rkat/tui/tui.toml"),
             project_inputs: vec![protocol::TrustedFile {
                 path: PathBuf::from("/w/.rkat/mcp.toml"),
                 trust: "not trusted: it changed".into(),
@@ -1421,7 +1411,7 @@ mod tests {
                 "realm: /w/.rkat/tui (id tui)",
                 "shell confinement: workspace",
                 "permission mode: auto, PAUSED (consecutive denials 1/3, total 2/20)",
-                "realm /w/.rkat/tui/tui.toml: absent",
+                "realm rules: /w/.rkat/tui/tui.toml",
                 "project /w/.rkat/mcp.toml: not trusted: it changed",
                 "helpers: depth limit on (max_depth 1: the agent's helpers start none of their own)",
             ]
@@ -1543,7 +1533,6 @@ mod tests {
                 pid: 1,
                 workspace: None,
                 started_at: None,
-                realm: None,
             },
         }
     }
@@ -1854,7 +1843,6 @@ mod tests {
             pid: 42,
             workspace: None,
             started_at: None,
-            realm: None,
         });
         assert_eq!(stop_target(&live, Some(at)), Ok(42));
         assert!(stop_target(&live, Some("127.0.0.1:4001".parse().unwrap())).is_err());

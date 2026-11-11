@@ -5,8 +5,8 @@
 ### Security
 
 - The engine's own file tools refuse rkat-tui's state too: when
-  `--state-root`, `--config-dir` or `--user-config-root` put the realm,
-  the config directory or the user config document inside the workspace
+  `--config-dir` or `--user-config-root` put the realm, the config
+  directory or the user config document inside the workspace
   (allowed under `--no-confinement`), the daemon declares them and the
   engine never writes them. A `.rkat` directory at any depth of the
   workspace is now a sealed path for the approval gate, as it already
@@ -21,6 +21,20 @@
 - The classifier is no longer sent the `origin` remote's credentials: a
   remote such as `https://user:token@host/x.git` reaches it (and the
   realm's manifest) without the user information, query or fragment.
+
+### Removed
+
+- The shared-realm flags `--realm`, `--state-root`, `--realm-backend` and
+  `--isolated` (both binaries). A workspace has exactly one realm, its
+  own, under `<config dir>/workspaces/<id>/` (SQLite). With them went
+  everything that existed only because a realm could be shared or placed
+  inside the workspace: `/permissions trust` and the "only its deny rules
+  apply" treatment of a realm `tui.toml` (the realm file is the user's
+  and applies in full), the trust record's entries for the realm's
+  `tui.toml` and `config.toml` (`/trust` covers the project's
+  `.rkat/mcp.toml` and `.rkat/config.toml` only), the refusal of a config
+  directory that collides with a realm directory, and `--list`'s
+  `(realm <root>)` / `(realm memory)` decorations.
 
 ### Changed
 

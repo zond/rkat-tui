@@ -440,47 +440,6 @@ fn walk(dir: &Path) -> Vec<std::path::PathBuf> {
     out
 }
 
-/// A realm of the user's own (`--state-root`, outside the workspace) whose
-/// `[confinement]` requires the shell confined is the floor: `off` is a
-/// typed start-up error.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn no_confinement_below_a_realm_policy_is_a_typed_startup_error() {
-    let ws = Workspace::new();
-    let state = ws.sibling("realms");
-    let state_arg = leak(format!("--state-root={}", state.display()));
-    let realm = rkat_tui::bootstrap::resolve_scope(&common::args_with(&ws.root, &[state_arg]))
-        .unwrap()
-        .realm_root();
-    std::fs::create_dir_all(&realm).unwrap();
-    std::fs::write(
-        realm.join("config.toml"),
-        "[confinement.shell]\nmode = \"workspace\"\nnetwork = \"unrestricted\"\n",
-    )
-    .unwrap();
-    let llm = ScriptedLlmClient::new(Vec::new());
-    // `--confinement=off`, the same as `--no-confinement`.
-    let Err(err) = Attached::try_start_with(
-        &ws.root,
-        &llm,
-        allow_shell(&["--confinement=off", state_arg]),
-    )
-    .await
-    else {
-        panic!("--no-confinement started below the realm's policy");
-    };
-    let DaemonError::Bootstrap(err) = err else {
-        panic!("not a bootstrap error: {err}");
-    };
-    assert!(
-        matches!(
-            &*err,
-            TuiError::Confinement(rkat_tui::ConfinementError::BelowRealmFloor { policy, .. })
-                if policy.contains("workspace preset")
-        ),
-        "{err}"
-    );
-}
-
 /// The workspace realm's `config.toml` is the user's own now that the
 /// realm lives under the config directory, out of the agent's shell's and a
 /// clone's reach: its `[confinement]` is the floor, as a `--state-root`

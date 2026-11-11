@@ -209,8 +209,7 @@ pub struct Listener {
 
 impl Listener {
     /// Bind `listen` (loopback) and write the endpoint file at `file`,
-    /// naming `workspace` (canonical), the start time `started_at` and the
-    /// `realm` when it is not the workspace's own.
+    /// naming `workspace` (canonical) and the start time `started_at`.
     ///
     /// # Errors
     ///
@@ -221,7 +220,6 @@ impl Listener {
         file: &Path,
         workspace: &Path,
         started_at: &str,
-        realm: Option<String>,
     ) -> Result<Self, DaemonError> {
         let token: Arc<str> = endpoint::new_token()?.into();
         let tcp = TcpListener::bind(listen)
@@ -236,7 +234,6 @@ impl Listener {
             pid: std::process::id(),
             workspace: Some(workspace.to_path_buf()),
             started_at: Some(started_at.to_string()),
-            realm,
         }
         .write(file)?;
         Ok(Self {

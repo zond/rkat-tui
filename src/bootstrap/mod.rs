@@ -3,8 +3,7 @@
 //! view of the workspace.
 //!
 //! 1. [`read_layers`] resolves the [`RuntimeScope`] and reads the layered
-//!    `tui.toml` once ([`Layers`]; for `--isolated` this mints a fresh
-//!    realm id, so call it once); [`prepare`] adds the realm [`Config`].
+//!    `tui.toml` once ([`Layers`]); [`prepare`] adds the realm [`Config`].
 //! 2. [`assemble`] picks the start-up model ([`plan_model`]) on the
 //!    discovered endpoints ([`crate::endpoints`]), lowers `--confinement`
 //!    into the shell's OS confinement ([`confinement::plan`], installed
@@ -50,14 +49,15 @@ use meerkat::{AgentFactory, LlmClient};
 use meerkat_core::connection::RealmId;
 use meerkat_core::{AuthBindingRef, Config, ConfigStore, McpServerConfig, Provider};
 use meerkat_store::{
-    RealmBackend, RealmLeaseGuard, realm_lease_dir, realm_paths_in, start_realm_lease_in,
+    RealmBackend, RealmLeaseGuard, RealmOrigin, realm_lease_dir, realm_paths_in,
+    start_realm_lease_in,
 };
 use meerkat_tools::builtin::shell::ShellConfinement;
 
 use crate::cli::Args;
 use crate::endpoints::{
-    EndpointError, EndpointName, EndpointProjection, EndpointRef, EndpointRegistry, ModelRefError,
-    StartupPlan, StartupRequest, ensure_aliases, ensure_model_profile, needs_lookup, plan_startup,
+    EndpointError, EndpointName, EndpointRef, EndpointRegistry, ModelRefError, StartupPlan,
+    StartupRequest, ensure_aliases, ensure_model_profile, needs_lookup, plan_startup,
     project_endpoints,
 };
 use crate::error::TuiError;
@@ -171,10 +171,8 @@ fn extra_grants(args: &Args, layered: &crate::config::Layered) -> confinement::E
     extra
 }
 
-/// The realm `config` of `scope` as a process may read it: a workspace
-/// realm config sets no confinement, and an untrusted one names no
-/// endpoint, key source or skill source and starts no MCP server or hook
-/// ([`project_trust::ProjectInputs::guard`]).
+/// The realm `config` of `scope` with the hooks of an untrusted project
+/// `.rkat/config.toml` shadowed ([`project_trust::ProjectInputs::guard`]).
 pub async fn guarded_config(scope: &RuntimeScope, args: &Args, mut config: Config) -> Config {
     let trust = Arc::new(parking_lot::Mutex::new(approval::trust_record(scope)));
     project_trust::ProjectInputs::new(scope, trust, args.trust_project)
@@ -393,15 +391,7 @@ pub async fn assemble(
     } = layers;
     let realm = RealmId::parse(scope.realm_id.clone()).ok();
     let trust = Arc::new(parking_lot::Mutex::new(approval::trust_record(&scope)));
-    let project_inputs =
-        project_trust::ProjectInputs::new(&scope, Arc::clone(&trust), args.trust_project);
-    // Everything below reads the realm config as the guard leaves it: a
-    // workspace realm config sets no confinement, and an untrusted one
-    // names no endpoint, key source or skill source. `raw` is the document
-    // as read, for the notices.
-    let raw = config;
-    let mut config = raw.clone();
-    project_inputs.guard(&mut config).await;
+    let project_inputs = project_trust::ProjectInputs::new(&scope, trust, args.trust_project);
     let (mut endpoints, endpoint_notices) =
         EndpointRegistry::discover(&config, realm.as_ref(), &layered.endpoints)?;
     if options.llm_override.is_some() {
@@ -422,12 +412,11 @@ pub async fn assemble(
     }
     let choice = choice.with_thinking(&thinking);
 
-    project_inputs.set_endpoint_projection(EndpointProjection::of(endpoints.as_slice())?);
     let realm_config = Arc::new(
         RealmConfigStore::new(
             &scope.config_path(),
             scope.config_state_path(),
-            scope.global.clone(),
+            Some(scope.global.clone()),
         )
         .with_inputs(project_inputs.clone()),
     );
@@ -499,14 +488,12 @@ pub async fn assemble(
     let (manifest, persistence) = meerkat::open_realm_persistence_in(
         &scope.state_root,
         &scope.realm_id,
-        scope.backend_hint,
-        Some(scope.origin),
+        None,
+        Some(RealmOrigin::Workspace),
     )
     .await
     .map_err(|source| TuiError::PersistenceOpen {
         realm_root: realm_root.clone(),
-        state_root: scope.state_root.clone(),
-        realm_id: scope.realm_id.clone(),
         source: Box::new(source),
     })?;
     let realm_lease = start_realm_lease_in(&scope.state_root, &scope.realm_id, None, lease_surface)
@@ -555,18 +542,16 @@ pub async fn assemble(
             llm_override: options.llm_override.clone(),
         },
         &options.approval,
-        trust,
     )
     .await?;
-    let mcp = mcp::load(&scope, &raw, &project_inputs).await?;
+    let mcp = mcp::load(&scope, &config, &project_inputs).await?;
     let mut refused = mcp.refused;
-    for item in project_inputs.guard(&mut raw.clone()).await {
+    for item in project_inputs.guard(&mut config.clone()).await {
         if !refused.contains(&item) {
             refused.push(item);
         }
     }
     notices.extend(project_inputs.notice(&refused));
-    notices.extend(project_inputs.ignored_confinement(&raw));
     notices.extend(mcp.notices);
     Ok(Assembled {
         scope,
@@ -750,8 +735,8 @@ fn build_factory(
 /// with `token_store`, the credential store. The engine applies only the
 /// paths strictly inside a dispatcher's project root, so with the default
 /// layout (the realm under `~/.rkat/tui/workspaces/`) this matters when
-/// `--state-root`, `--config-dir` or `--user-config-root` put state inside
-/// the workspace (`--no-confinement` allows that).
+/// `--config-dir` or `--user-config-root` put state inside the workspace
+/// (`--no-confinement` allows that).
 fn protect_host_inputs(
     factory: AgentFactory,
     scope: &RuntimeScope,
@@ -765,9 +750,7 @@ fn protect_host_inputs(
         .map(|root| root.join(".rkat").join("config.toml"));
     let mut inputs = HostConfinement::host_inputs(&scope.state_root, user_document.as_deref());
     inputs.push((HostInput::RealmState, scope.realm_root()));
-    if let Some(global) = &scope.global {
-        inputs.push((HostInput::RealmState, global.config.clone()));
-    }
+    inputs.push((HostInput::RealmState, scope.global.config.clone()));
     if token_store {
         inputs.extend(
             meerkat::TokenStoreBackend::default_auto()
@@ -869,7 +852,7 @@ mod tests {
         let root = dir.path().canonicalize().unwrap();
         std::fs::create_dir_all(root.join("src")).unwrap();
         let at = |name: &str| root.join(name).to_str().unwrap().to_string();
-        let (workspace, cfg, state) = (at(""), at("cfg"), at("state"));
+        let (workspace, cfg) = (at(""), at("cfg"));
         let scope = resolve_scope(&args(&[
             "-w",
             &workspace,
@@ -877,10 +860,15 @@ mod tests {
             &workspace,
             "--config-dir",
             &cfg,
-            "--state-root",
-            &state,
         ]))
         .unwrap();
+        let realm_notes = scope
+            .realm_root()
+            .strip_prefix(&root)
+            .unwrap()
+            .join("notes.toml")
+            .display()
+            .to_string();
         let factory = protect_host_inputs(
             AgentFactory::new(root.join("store")).project_root(root.as_path()),
             &scope,
@@ -899,7 +887,7 @@ mod tests {
             .await
             .unwrap();
         for (target, refused) in [
-            ("state/notes.toml", true),
+            (realm_notes.as_str(), true),
             ("cfg/tui.toml", true),
             (".rkat/tui.toml", true),
             ("sub/.rkat/mcp.toml", true),
