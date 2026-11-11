@@ -265,6 +265,23 @@ pub fn after_buffered_events(msg: Msg, channels: &mut UiChannels) -> Vec<Msg> {
     batch
 }
 
+/// The most messages applied before a frame is drawn.
+pub const MAX_BATCH: usize = 256;
+
+/// Append to `batch` what the runner has already queued (each message
+/// after the agent events buffered before it), up to [`MAX_BATCH`]
+/// messages, so a burst of stream events costs one frame rather than one
+/// per event. Terminal input is not read here: it is drawn with the next
+/// frame, at most one batch later.
+pub fn drain_queued(batch: &mut Vec<Msg>, channels: &mut UiChannels) {
+    while batch.len() < MAX_BATCH {
+        match channels.ui_rx.try_recv() {
+            Ok(msg) => batch.extend(after_buffered_events(msg, channels)),
+            Err(_) => return,
+        }
+    }
+}
+
 fn translate(event: Event, mouse: bool) -> Option<Msg> {
     if let Event::Key(key) = &event {
         // `RUST_LOG=rkat_tui::ui::runtime=trace` shows every key event
@@ -375,8 +392,16 @@ pub async fn run_ui(
         // before them (see `after_buffered_events`).
         let batch = tokio::select! {
             biased;
-            Some(env) = channels.agent_rx.recv() => vec![Msg::Agent(env)],
-            Some(msg) = channels.ui_rx.recv() => after_buffered_events(msg, &mut channels),
+            Some(env) = channels.agent_rx.recv() => {
+                let mut batch = vec![Msg::Agent(env)];
+                drain_queued(&mut batch, &mut channels);
+                batch
+            }
+            Some(msg) = channels.ui_rx.recv() => {
+                let mut batch = after_buffered_events(msg, &mut channels);
+                drain_queued(&mut batch, &mut channels);
+                batch
+            }
             Some(msg) = index_rx.recv() => vec![msg],
             maybe = events.next() => match maybe {
                 Some(Ok(event)) => match translate(event, mouse) {
@@ -504,6 +529,45 @@ mod tests {
     use super::*;
     use crate::ui::{Block, StatusInfo, TurnOutcome, TurnSummary};
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventState, KeyModifiers};
+
+    /// A burst of queued stream events is one batch, so one frame: the
+    /// loop draws once per batch, not once per event. A burst larger than
+    /// [`MAX_BATCH`] is split, so input still draws within a batch.
+    #[tokio::test]
+    async fn queued_deltas_are_applied_as_one_batch() {
+        let (_agent_tx, agent_rx) = mpsc::channel(16);
+        let (ui_tx, ui_rx) = mpsc::unbounded_channel();
+        let mut channels = UiChannels { agent_rx, ui_rx };
+        let delta = |seq| {
+            Msg::Agent(EventEnvelope::new(
+                "s",
+                seq,
+                None,
+                AgentEvent::TextDelta {
+                    delta: "x".into(),
+                    assistant_message_id: None,
+                },
+            ))
+        };
+        for seq in 0..100 {
+            ui_tx.send(delta(seq)).unwrap();
+        }
+        let first = channels.ui_rx.recv().await.unwrap();
+        let mut batch = after_buffered_events(first, &mut channels);
+        drain_queued(&mut batch, &mut channels);
+        assert_eq!(batch.len(), 100);
+        assert!(channels.ui_rx.try_recv().is_err());
+        for seq in 0..(MAX_BATCH as u64 + 10) {
+            ui_tx.send(delta(seq)).unwrap();
+        }
+        let first = channels.ui_rx.recv().await.unwrap();
+        let mut batch = after_buffered_events(first, &mut channels);
+        drain_queued(&mut batch, &mut channels);
+        assert_eq!(batch.len(), MAX_BATCH);
+        let mut rest = Vec::new();
+        drain_queued(&mut rest, &mut channels);
+        assert_eq!(rest.len(), 10);
+    }
 
     #[tokio::test]
     async fn turn_finished_waits_for_buffered_agent_events() {

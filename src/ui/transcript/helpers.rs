@@ -319,6 +319,7 @@ impl Transcript {
             return false;
         }
         self.update_fold(id, |fold| fold.expanded = expanded);
+        self.touch(id.0);
         // Every block inside the helper appears or disappears.
         for i in 0..self.blocks.len() {
             if self.owned_by(BlockId(i), id)
@@ -375,6 +376,11 @@ impl Transcript {
     pub(super) fn set_owner(&mut self, id: BlockId, owner: Option<BlockId>) {
         if let Some(slot) = self.owner.get_mut(id.0) {
             *slot = owner;
+        }
+        // Whether it is hidden may have changed.
+        self.touch(id.0);
+        if let Some(slot) = self.layout.get_mut(id.0) {
+            *slot = None;
         }
     }
 

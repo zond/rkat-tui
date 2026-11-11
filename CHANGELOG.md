@@ -32,6 +32,11 @@
 
 ### Fixed
 
+- Streaming is cheaper to draw: the UI applies every message already
+  queued (up to 256) before drawing a frame, instead of drawing one per
+  stream event, and a frame lays out only the blocks that changed and
+  visits only the blocks it shows, where it walked the whole transcript
+  three times.
 - An `@word` that matches no path no longer rescans the path index on
   every tick and stream event while the cursor sits after it, and
   matching a fragment allocates nothing per indexed path (each path is

@@ -347,6 +347,22 @@ pub struct Transcript {
     /// Per block, its layout at one width as a helper's full view draws it
     /// (folded helpers do not hide it there).
     view_layout: Vec<Option<CachedLayout>>,
+    /// `prefix[i]`: the laid-out lines of blocks `[0, i)`, valid for
+    /// `i <= clean` ([`Self::ensure_layout`]): a frame finds its first
+    /// visible block by binary search instead of walking the transcript.
+    prefix: Vec<usize>,
+    /// Blocks `[0, clean)` have a layout at `laid_width` that `prefix`
+    /// sums; any change to a block lowers it to that block
+    /// ([`Self::touch`]).
+    clean: usize,
+    /// The width the clean blocks were laid out at.
+    laid_width: u16,
+    /// Blocks laid out so far (tests).
+    #[cfg(test)]
+    laid_out: usize,
+    /// Blocks visited to find and copy visible lines (tests).
+    #[cfg(test)]
+    walked: std::cell::Cell<usize>,
 }
 
 /// One agent's streaming state (the session's or a helper's): the prose
@@ -605,8 +621,15 @@ impl Transcript {
         }
     }
 
+    /// Block `index` (or one before it) changed: the clean prefix ends
+    /// there.
+    pub(super) fn touch(&mut self, index: usize) {
+        self.clean = self.clean.min(index);
+    }
+
     /// Mutable access to a block; invalidates its layout.
     pub fn block_mut(&mut self, id: BlockId) -> Option<&mut Block> {
+        self.touch(id.0);
         if let Some(slot) = self.layout.get_mut(id.0) {
             *slot = None;
         }
@@ -656,6 +679,7 @@ impl Transcript {
             return None;
         }
         let block = self.blocks.remove(id.0);
+        self.touch(id.0);
         if matches!(block, Block::Helper(_)) {
             self.helper_count = self.helper_count.saturating_sub(1);
         }
@@ -701,6 +725,7 @@ impl Transcript {
 
     /// Drop every cached layout (e.g. on resize).
     pub fn invalidate_all(&mut self) {
+        self.clean = 0;
         for slot in self.layout.iter_mut().chain(self.view_layout.iter_mut()) {
             *slot = None;
         }
@@ -854,10 +879,20 @@ impl Transcript {
     }
 
     /// Ensure every block has a layout at `width`; returns the total line
-    /// count. Blocks inside a folded helper lay out to no lines.
+    /// count. Blocks inside a folded helper lay out to no lines. Only the
+    /// blocks from the first one changed since the last call are visited
+    /// (all of them when the width changed).
     pub fn ensure_layout(&mut self, width: u16) -> usize {
-        let mut total = 0;
-        for i in 0..self.blocks.len() {
+        if width != self.laid_width {
+            self.laid_width = width;
+            self.clean = 0;
+        }
+        let start = self.clean.min(self.blocks.len());
+        self.prefix.truncate(start + 1);
+        if self.prefix.is_empty() {
+            self.prefix.push(0);
+        }
+        for i in start..self.blocks.len() {
             let stale = self
                 .layout
                 .get(i)
@@ -868,58 +903,120 @@ impl Transcript {
                     Some(block) => block_lines(block, width),
                     None => Vec::new(),
                 };
+                #[cfg(test)]
+                {
+                    self.laid_out += 1;
+                }
                 if let Some(slot) = self.layout.get_mut(i) {
                     *slot = Some(CachedLayout { width, lines });
                 }
             }
-            total += self
-                .layout
-                .get(i)
-                .and_then(Option::as_ref)
-                .map_or(0, |c| c.lines.len());
+            let base = self.prefix.get(i).copied().unwrap_or(0);
+            self.prefix.push(base + self.lines_of(i));
         }
-        total
+        self.clean = self.blocks.len();
+        self.prefix.get(self.clean).copied().unwrap_or(0)
+    }
+
+    /// The cached line count of block `index` (0 when not laid out).
+    fn lines_of(&self, index: usize) -> usize {
+        self.layout
+            .get(index)
+            .and_then(Option::as_ref)
+            .map_or(0, |c| c.lines.len())
+    }
+
+    /// The block holding laid-out line `idx` and the line's offset in it,
+    /// as of the last [`Self::ensure_layout`]: a binary search over the
+    /// clean prefix, then a walk over the blocks changed since.
+    fn locate(&self, idx: usize) -> Option<(usize, usize)> {
+        let known = self
+            .clean
+            .min(self.prefix.len().saturating_sub(1))
+            .min(self.layout.len());
+        let known_lines = self.prefix.get(known).copied().unwrap_or(0);
+        let (mut block, mut base) = if idx < known_lines {
+            let at = self.prefix[..=known]
+                .partition_point(|&lines| lines <= idx)
+                .saturating_sub(1);
+            (at, self.prefix.get(at).copied().unwrap_or(0))
+        } else {
+            (known, known_lines)
+        };
+        while block < self.layout.len() {
+            #[cfg(test)]
+            self.walked.set(self.walked.get() + 1);
+            let n = self.lines_of(block);
+            if idx < base + n {
+                return Some((block, idx - base));
+            }
+            base += n;
+            block += 1;
+        }
+        None
+    }
+
+    /// The laid-out lines `[start, start + len)` with the block each is
+    /// in, from the first one's block on.
+    fn visible(&self, start: usize, len: usize) -> Vec<(BlockId, &Line<'static>)> {
+        let mut out = Vec::with_capacity(len);
+        let Some((mut block, mut skip)) = self.locate(start) else {
+            return out;
+        };
+        while out.len() < len && block < self.layout.len() {
+            #[cfg(test)]
+            self.walked.set(self.walked.get() + 1);
+            if let Some(Some(cached)) = self.layout.get(block) {
+                let room = len - out.len();
+                out.extend(
+                    cached
+                        .lines
+                        .iter()
+                        .skip(skip)
+                        .take(room)
+                        .map(|line| (BlockId(block), line)),
+                );
+            }
+            skip = 0;
+            block += 1;
+        }
+        out
     }
 
     /// Lines `[start, start + len)` of the laid-out transcript. Call [`Self::ensure_layout`] first.
     pub fn visible_lines(&self, start: usize, len: usize) -> Vec<Line<'static>> {
-        self.layout
-            .iter()
-            .flatten()
-            .flat_map(|c| c.lines.iter())
-            .skip(start)
-            .take(len)
-            .cloned()
+        self.visible(start, len)
+            .into_iter()
+            .map(|(_, line)| line.clone())
             .collect()
     }
 
     /// Laid-out line `idx` of the whole transcript, as of the last
     /// [`Self::ensure_layout`] (`None` past the end or for stale blocks).
     pub fn line(&self, idx: usize) -> Option<&Line<'static>> {
-        self.layout
-            .iter()
-            .flatten()
-            .flat_map(|c| c.lines.iter())
-            .nth(idx)
+        let (block, offset) = self.locate(idx)?;
+        self.layout.get(block)?.as_ref()?.lines.get(offset)
     }
 
     /// Number of laid-out lines as of the last [`Self::ensure_layout`].
     pub fn line_count(&self) -> usize {
-        self.layout.iter().flatten().map(|c| c.lines.len()).sum()
+        let known = self
+            .clean
+            .min(self.prefix.len().saturating_sub(1))
+            .min(self.layout.len());
+        let known_lines = self.prefix.get(known).copied().unwrap_or(0);
+        known_lines
+            + (known..self.layout.len())
+                .map(|i| self.lines_of(i))
+                .sum::<usize>()
     }
 
     /// The block drawn on each of the lines `[start, start + len)`, matching
     /// [`Self::visible_lines`]. Call [`Self::ensure_layout`] first.
     pub fn visible_blocks(&self, start: usize, len: usize) -> Vec<BlockId> {
-        self.layout
-            .iter()
-            .enumerate()
-            .flat_map(|(i, slot)| {
-                let n = slot.as_ref().map_or(0, |c| c.lines.len());
-                std::iter::repeat_n(BlockId(i), n)
-            })
-            .skip(start)
-            .take(len)
+        self.visible(start, len)
+            .into_iter()
+            .map(|(block, _)| block)
             .collect()
     }
 
@@ -2238,6 +2335,55 @@ mod tests {
         assert_eq!(t.tool_block("t1"), Some(BlockId(1)));
         assert!(t.remove_block(BlockId(5)).is_none());
         assert_eq!(t.ensure_layout(40), t.visible_lines(0, 100).len());
+    }
+
+    /// A long transcript lays out only what changed, and a frame touches
+    /// the blocks it shows, not the whole transcript: one streamed delta
+    /// into the last of 10 000 blocks lays out that block alone, and
+    /// drawing the last 40 lines visits a handful of blocks.
+    #[test]
+    fn a_large_transcript_lays_out_what_changed_and_walks_the_viewport() {
+        let mut t = Transcript::new();
+        for i in 0..10_000 {
+            t.push(Block::User {
+                text: format!("message {i}"),
+            });
+        }
+        let total = t.ensure_layout(80);
+        assert_eq!(t.laid_out, 10_000);
+        assert_eq!(total, t.line_count());
+        let last = BlockId(t.len() - 1);
+        if let Some(Block::User { text }) = t.block_mut(last) {
+            text.push_str("\nmore");
+        }
+        let laid = t.laid_out;
+        let grown = t.ensure_layout(80);
+        assert_eq!(t.laid_out, laid + 1, "only the changed block");
+        assert_eq!(grown, total + 1);
+        t.walked.set(0);
+        let lines = t.visible_lines(grown - 40, 40);
+        let blocks = t.visible_blocks(grown - 40, 40);
+        assert_eq!(lines.len(), 40);
+        assert_eq!(blocks.len(), 40);
+        assert_eq!(blocks.last(), Some(&last));
+        assert!(t.walked.get() < 100, "walked {} blocks", t.walked.get());
+        // The lines are the same as a walk over everything gives.
+        let all: Vec<String> = (0..grown)
+            .map(|i| t.line(i).map(ToString::to_string).unwrap_or_default())
+            .collect();
+        let shown: Vec<String> = lines.iter().map(ToString::to_string).collect();
+        assert_eq!(shown, all[grown - 40..]);
+        // A change in the middle re-sums from there; a new width lays out
+        // everything again.
+        if let Some(Block::User { text }) = t.block_mut(BlockId(5_000)) {
+            text.push_str("\nmid");
+        }
+        let laid = t.laid_out;
+        assert_eq!(t.ensure_layout(80), grown + 1);
+        assert_eq!(t.laid_out, laid + 1);
+        assert_eq!(t.visible_lines(0, grown + 1).len(), grown + 1);
+        t.ensure_layout(60);
+        assert_eq!(t.laid_out, laid + 1 + 10_000);
     }
 
     #[test]
