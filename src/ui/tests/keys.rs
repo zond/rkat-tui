@@ -258,6 +258,33 @@ fn the_path_listing_is_asked_for_once_and_a_stale_answer_is_dropped() {
     );
 }
 
+/// A `@word` that matches nothing is looked up once per word and index:
+/// the messages that follow (ticks, stream events) do not scan the path
+/// index again, a new word or the index arriving does.
+#[test]
+fn a_word_with_no_match_is_not_looked_up_again_on_every_message() {
+    let (_dir, mut app) = mention_app();
+    type_str(&mut app, "see @nosuchfile");
+    answer_index(&mut app);
+    assert!(app.menu().is_none());
+    let after_index = app.menu_lookups;
+    for _ in 0..50 {
+        app.update(Msg::Tick);
+    }
+    assert_eq!(app.menu_lookups, after_index, "ticks scanned the index");
+    // Another word is looked up.
+    type_str(&mut app, "x");
+    assert_eq!(app.menu_lookups, after_index + 1);
+    app.update(Msg::Tick);
+    assert_eq!(app.menu_lookups, after_index + 1);
+    // A word that matches opens its menu again.
+    for _ in 0.."nosuchfilex".len() {
+        app.update(key(KeyCode::Backspace));
+    }
+    type_str(&mut app, "src");
+    assert!(!menu_rows(&app).is_empty());
+}
+
 #[test]
 fn the_at_menu_completes_paths_and_stays_open_for_directories() {
     let (_dir, mut app) = mention_app();

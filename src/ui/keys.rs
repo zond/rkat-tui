@@ -92,6 +92,15 @@ impl App {
         if self.menu.as_ref().is_some_and(|menu| menu.word == word) {
             return;
         }
+        // The same word in the same index found nothing a moment ago.
+        if self.menu.is_none()
+            && self
+                .menu_missed
+                .as_ref()
+                .is_some_and(|(missed, index)| *missed == word && *index == self.index_key())
+        {
+            return;
+        }
         let paths: &[crate::mentions::PathEntry] = match (&word.kind, &self.workspace) {
             (complete::CompletionKind::Path, Some(root)) => match &self.path_index {
                 PathIndex::Ready(paths) => paths,
@@ -110,7 +119,25 @@ impl App {
             _ => &[],
         };
         let items = complete::candidates(&word, paths);
+        #[cfg(test)]
+        {
+            self.menu_lookups += 1;
+        }
+        self.menu_missed = None;
+        let missed = word.clone();
         self.menu = complete::Menu::open(word, items);
+        if self.menu.is_none() {
+            self.menu_missed = Some((missed, self.index_key()));
+        }
+    }
+
+    /// Which path index a lookup ran against: its generation and whether
+    /// its paths had arrived.
+    fn index_key(&self) -> (u64, bool) {
+        (
+            self.path_index_generation,
+            matches!(self.path_index, PathIndex::Ready(_)),
+        )
     }
 
     /// A key while the completion menu is open: ↑/↓ move the highlight, Tab

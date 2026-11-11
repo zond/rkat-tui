@@ -32,6 +32,10 @@
 
 ### Fixed
 
+- An `@word` that matches no path no longer rescans the path index on
+  every tick and stream event while the cursor sits after it, and
+  matching a fragment allocates nothing per indexed path (each path is
+  lowercased once, when it is indexed).
 - Another agent's approval question is shown at once: escalations were
   serialized for the whole daemon while a client shows only its own
   agent's dialogs, so with agent A's dialog open agent B's question

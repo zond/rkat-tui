@@ -242,7 +242,7 @@ mod tests {
     fn path_candidates_keep_the_menu_open_for_directories() {
         let index: Vec<PathEntry> = ["src/", "src/main.rs", "src/ui/"]
             .into_iter()
-            .map(|path| PathEntry { path: path.into() })
+            .map(|path| PathEntry::new(path.into()))
             .collect();
         let word = word_at(&line("@src/"), (0, 5)).unwrap();
         let mut menu = Menu::open(word.clone(), candidates(&word, &index)).unwrap();

@@ -1138,6 +1138,13 @@ pub struct App {
     path_index: PathIndex,
     /// The last [`LocalEffect::IndexPaths`] generation.
     path_index_generation: u64,
+    /// The word last looked up that opened no menu, with the path index
+    /// it was looked up in ([`Self::index_key`]): the next refresh for the
+    /// same word and index does not scan the index again.
+    menu_missed: Option<(complete::Word, (u64, bool))>,
+    /// How many times the completion candidates were computed (tests).
+    #[cfg(test)]
+    menu_lookups: usize,
     /// The `!` command running now, if any.
     shell_run: Option<RunningShell>,
     /// The last allocated [`ShellRunId`].
@@ -1212,6 +1219,9 @@ impl App {
             workspace: None,
             path_index: PathIndex::Dropped,
             path_index_generation: 0,
+            menu_missed: None,
+            #[cfg(test)]
+            menu_lookups: 0,
             shell_run: None,
             last_shell_id: 0,
             shell_confined: true,

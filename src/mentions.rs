@@ -30,20 +30,31 @@ pub const MAX_INDEX_PATHS: usize = 100_000;
 pub struct PathEntry {
     /// The path as inserted after the `@`.
     pub path: String,
+    /// The path lowercased once, at index time: matching a fragment
+    /// allocates nothing per entry.
+    lower: String,
 }
 
 impl PathEntry {
+    /// The entry for `path` (relative, `/`-separated, a directory with a
+    /// trailing `/`).
+    #[must_use]
+    pub fn new(path: String) -> Self {
+        let lower = path.to_lowercase();
+        Self { path, lower }
+    }
+
+    /// The last component of the lowercased path, a directory's without
+    /// its `/` (lowercasing adds no `/`).
+    fn lower_name(&self) -> &str {
+        let path = self.lower.trim_end_matches('/');
+        path.rsplit('/').next().unwrap_or(path)
+    }
+
     /// Whether the entry is a directory.
     #[must_use]
     pub fn is_dir(&self) -> bool {
         self.path.ends_with('/')
-    }
-
-    /// The last component (a directory's without its `/`).
-    #[must_use]
-    pub fn name(&self) -> &str {
-        let path = self.path.trim_end_matches('/');
-        path.rsplit('/').next().unwrap_or(path)
     }
 
     fn depth(&self) -> usize {
@@ -77,7 +88,7 @@ pub fn workspace_paths(root: &ProjectRoot) -> Vec<PathEntry> {
                 if found.len() >= MAX_INDEX_PATHS {
                     return ignore::WalkState::Quit;
                 }
-                found.push(PathEntry { path });
+                found.push(PathEntry::new(path));
                 ignore::WalkState::Continue
             })
         });
@@ -114,8 +125,7 @@ pub fn match_paths<'a>(index: &'a [PathEntry], fragment: &str, limit: usize) -> 
     let mut out: Vec<&PathEntry> = index
         .iter()
         .filter(|entry| {
-            !(entry.is_dir() && entry.path == fragment)
-                && entry.path.to_lowercase().starts_with(&needle)
+            !(entry.is_dir() && entry.path == fragment) && entry.lower.starts_with(&needle)
         })
         .take(limit)
         .collect();
@@ -123,7 +133,7 @@ pub fn match_paths<'a>(index: &'a [PathEntry], fragment: &str, limit: usize) -> 
         let more: Vec<&PathEntry> = index
             .iter()
             .filter(|entry| {
-                entry.name().to_lowercase().contains(&needle)
+                entry.lower_name().contains(&needle)
                     && !out.iter().any(|seen| std::ptr::eq(*seen, *entry))
             })
             .take(limit - out.len())
@@ -131,6 +141,31 @@ pub fn match_paths<'a>(index: &'a [PathEntry], fragment: &str, limit: usize) -> 
         out.extend(more);
     }
     out
+}
+
+#[cfg(test)]
+mod match_tests {
+    use super::*;
+
+    /// Matching folds case through the stored lowercase path: prefix
+    /// first, then name, a directory the fragment names left out.
+    #[test]
+    fn matching_folds_case_by_prefix_then_name() {
+        let index: Vec<PathEntry> = ["Src/", "Src/Main.rs", "docs/MAIN.md", "README.md"]
+            .into_iter()
+            .map(|p| PathEntry::new(p.to_string()))
+            .collect();
+        let hits = |fragment: &str| -> Vec<&str> {
+            match_paths(&index, fragment, 10)
+                .into_iter()
+                .map(|e| e.path.as_str())
+                .collect()
+        };
+        assert_eq!(hits("src/"), ["Src/", "Src/Main.rs"]);
+        assert_eq!(hits("Src/"), ["Src/Main.rs"]);
+        assert_eq!(hits("main"), ["Src/Main.rs", "docs/MAIN.md"]);
+        assert_eq!(hits("READ"), ["README.md"]);
+    }
 }
 
 /// What a mention names.
