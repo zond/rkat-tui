@@ -339,6 +339,12 @@ impl Local {
         &self.lifecycle
     }
 
+    /// The helpers the agents started.
+    #[must_use]
+    pub fn registry(&self) -> &Arc<HelperRegistry> {
+        &self.registry
+    }
+
     /// The live agents.
     #[must_use]
     pub fn agents(&self) -> &Arc<Agents> {

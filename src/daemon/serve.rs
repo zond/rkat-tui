@@ -31,7 +31,7 @@ use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::DaemonError;
 use super::decisions::ClientGuard;
@@ -521,6 +521,11 @@ pub trait LocalMethods: Send + Sync {
     fn connect(&self, out: ClientOut) -> ClientGuard;
     /// The client `client`'s `decision/decide`: its answer line.
     async fn decide(&self, client: u64, id: Option<RpcId>, params: Value) -> String;
+    /// The mobs destroyed from now on: the proxy closes the client's
+    /// mob-wide streams on each (`None`: none are reported).
+    fn destroyed_mobs(&self) -> Option<tokio::sync::broadcast::Receiver<meerkat_mob::MobId>> {
+        None
+    }
 }
 
 #[async_trait::async_trait]
@@ -539,6 +544,10 @@ impl LocalMethods for Local {
 
     async fn decide(&self, client: u64, id: Option<RpcId>, params: Value) -> String {
         self.decisions().decide(client, id, params).await
+    }
+
+    fn destroyed_mobs(&self) -> Option<tokio::sync::broadcast::Receiver<meerkat_mob::MobId>> {
+        Some(self.registry().destroyed_mobs())
     }
 }
 
@@ -616,9 +625,13 @@ async fn proxy_with<R, W, E, L>(
     let client_id = decisions.id();
     // `initialize` requests whose answers get the decision methods.
     let initializing: Arc<parking_lot::Mutex<HashSet<String>>> = Arc::default();
+    // The client's mob-wide streams, closed when their mob is destroyed.
+    let streams: Arc<parking_lot::Mutex<MobStreams>> = Arc::default();
+    let mut destroyed = local.destroyed_mobs();
     let mut from_engine = AbortOnDrop(tokio::spawn({
         let out_tx = out_tx.clone();
         let initializing = Arc::clone(&initializing);
+        let streams = Arc::clone(&streams);
         async move {
             let mut lines = BufReader::new(engine_read);
             let mut line = String::new();
@@ -628,6 +641,10 @@ async fn proxy_with<R, W, E, L>(
                     Ok(0) | Err(_) => break,
                     Ok(_) => {
                         let mut forward = std::mem::take(&mut line);
+                        if !streams.lock().answered(&forward) {
+                            // The answer to a close of the daemon's own.
+                            continue;
+                        }
                         if !initializing.lock().is_empty() {
                             forward = with_decision_methods(forward, &initializing);
                         }
@@ -643,16 +660,25 @@ async fn proxy_with<R, W, E, L>(
             }
         }
     }));
-    let mut lines = client_read;
-    let mut line = String::new();
+    // `next_line` may lose nothing when another branch wins (a destroyed
+    // mob's streams are closed between two client lines).
+    let mut lines = client_read.lines();
     let mut overflowed = false;
     loop {
-        line.clear();
-        tokio::select! {
-            read = lines.read_line(&mut line) => match read {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {}
+        let line = tokio::select! {
+            read = lines.next_line() => match read {
+                Ok(Some(line)) => line,
+                Ok(None) | Err(_) => break,
             },
+            mob = next_destroyed(&mut destroyed) => {
+                let closes = streams.lock().close(mob.as_str());
+                for close in closes {
+                    if engine_write.write_all(close.as_bytes()).await.is_err() {
+                        break;
+                    }
+                }
+                continue;
+            }
             () = out_tx.overflowed() => {
                 tracing::warn!(
                     agent = ?caller.agent,
@@ -662,7 +688,7 @@ async fn proxy_with<R, W, E, L>(
                 overflowed = true;
                 break;
             }
-        }
+        };
         match route(&line, &*local, &caller) {
             Routed::Local { id, method, params } => {
                 let local = Arc::clone(&local);
@@ -719,6 +745,7 @@ async fn proxy_with<R, W, E, L>(
                 if let Some(id) = initialize_id(&forward) {
                     initializing.lock().insert(id);
                 }
+                streams.lock().opening(&forward);
                 if engine_write.write_all(forward.as_bytes()).await.is_err() {
                     break;
                 }
@@ -735,6 +762,117 @@ async fn proxy_with<R, W, E, L>(
     }
     let _ = (&mut from_engine.0).await;
     let _ = (&mut writer.0).await;
+}
+
+/// The next mob `destroyed` reports; never, without a report.
+async fn next_destroyed(
+    destroyed: &mut Option<tokio::sync::broadcast::Receiver<meerkat_mob::MobId>>,
+) -> meerkat_mob::MobId {
+    loop {
+        let Some(receiver) = destroyed.as_mut() else {
+            return std::future::pending().await;
+        };
+        match receiver.recv().await {
+            Ok(mob) => return mob,
+            // A report missed: the next one still closes what is open.
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => *destroyed = None,
+        }
+    }
+}
+
+/// One client's mob-wide streams (`mob/stream_open` with a `mob_id` and no
+/// `agent_identity`), by mob: the engine's subscription behind an open one
+/// is an owner of the mob's database, so a destroy's storage cleanup is
+/// refused while the client keeps it open (it closes a stream only when
+/// the stream ends, which the engine waits with until the cleanup is
+/// done). When the mob is destroyed the proxy closes them on the client's
+/// behalf; the engine then ends each with `mob/stream_end`, as for a close
+/// of the client's own.
+#[derive(Debug, Default)]
+struct MobStreams {
+    /// Open requests not answered yet: request id (as JSON text) → mob.
+    pending: HashMap<String, String>,
+    /// Open streams: mob → stream ids.
+    open: HashMap<String, Vec<String>>,
+    /// The ids of the daemon's own close requests, whose answers are not
+    /// the client's.
+    closing: HashSet<String>,
+    /// Numbers the daemon's own requests.
+    next: u64,
+}
+
+impl MobStreams {
+    /// The client sends `line`: note a mob-wide stream open.
+    fn opening(&mut self, line: &str) {
+        if !line.contains(protocol::engine::STREAM_OPEN) {
+            return;
+        }
+        let Ok(request) = serde_json::from_str::<Value>(line.trim_end()) else {
+            return;
+        };
+        let params = request.get("params");
+        if request.get("method").and_then(Value::as_str) != Some(protocol::engine::STREAM_OPEN)
+            || params.and_then(|p| p.get("agent_identity")).is_some()
+        {
+            return;
+        }
+        if let (Some(id), Some(mob)) = (
+            request.get("id").map(Value::to_string),
+            params.and_then(|p| p.get("mob_id")).and_then(Value::as_str),
+        ) {
+            self.pending.insert(id, mob.to_string());
+        }
+    }
+
+    /// The engine sends `line`: note the stream an open answered with.
+    /// `false`: the line answers a close of the daemon's own and does not
+    /// go to the client.
+    fn answered(&mut self, line: &str) -> bool {
+        if self.pending.is_empty() && self.closing.is_empty() {
+            return true;
+        }
+        let Ok(answer) = serde_json::from_str::<Value>(line.trim_end()) else {
+            return true;
+        };
+        if answer.get("method").is_some() {
+            return true;
+        }
+        let Some(id) = answer.get("id").map(Value::to_string) else {
+            return true;
+        };
+        if self.closing.remove(&id) {
+            return false;
+        }
+        if let Some(mob) = self.pending.remove(&id)
+            && let Some(stream) = answer.pointer("/result/stream_id").and_then(Value::as_str)
+        {
+            self.open.entry(mob).or_default().push(stream.to_string());
+        }
+        true
+    }
+
+    /// `mob` was destroyed: the close requests for its open streams.
+    fn close(&mut self, mob: &str) -> Vec<String> {
+        let streams = self.open.remove(mob).unwrap_or_default();
+        streams
+            .into_iter()
+            .map(|stream| {
+                self.next += 1;
+                let id = format!("rkat-close-{}", self.next);
+                self.closing.insert(Value::String(id.clone()).to_string());
+                format!(
+                    "{}\n",
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "method": protocol::engine::STREAM_CLOSE,
+                        "params": {"stream_id": stream},
+                    })
+                )
+            })
+            .collect()
+    }
 }
 
 /// The id (as JSON text) of an `initialize` request `line`.
@@ -922,6 +1060,40 @@ pub async fn answer<L: LocalMethods + ?Sized>(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    /// A destroyed mob's open mob-wide streams are closed, once, and the
+    /// answers to those closes are the daemon's; a member stream and
+    /// another mob's are left alone.
+    #[test]
+    fn a_destroyed_mobs_streams_are_closed_for_the_client() {
+        let mut streams = MobStreams::default();
+        streams.opening(r#"{"jsonrpc":"2.0","id":1,"method":"mob/stream_open","params":{"mob_id":"council--x"}}"#);
+        streams.opening(r#"{"jsonrpc":"2.0","id":2,"method":"mob/stream_open","params":{"mob_id":"council--x","agent_identity":"p0"}}"#);
+        streams.opening(
+            r#"{"jsonrpc":"2.0","id":3,"method":"mob/stream_open","params":{"mob_id":"tui"}}"#,
+        );
+        for answer in [
+            r#"{"jsonrpc":"2.0","id":1,"result":{"stream_id":"s1"}}"#,
+            r#"{"jsonrpc":"2.0","id":2,"result":{"stream_id":"s2"}}"#,
+            r#"{"jsonrpc":"2.0","id":3,"result":{"stream_id":"s3"}}"#,
+        ] {
+            assert!(streams.answered(answer));
+        }
+        let closes = streams.close("council--x");
+        assert_eq!(closes.len(), 1, "{closes:?}");
+        let close: Value = serde_json::from_str(closes[0].trim_end()).unwrap();
+        assert_eq!(close["method"], protocol::engine::STREAM_CLOSE);
+        assert_eq!(close["params"]["stream_id"], "s1");
+        // Its answer stays with the daemon; the engine's stream end goes on.
+        let answer = json!({"jsonrpc": "2.0", "id": close["id"], "result": {"closed": true}});
+        assert!(!streams.answered(&answer.to_string()));
+        assert!(streams.answered(
+            r#"{"jsonrpc":"2.0","method":"mob/stream_end","params":{"stream_id":"s1"}}"#
+        ));
+        // Once: the hook reports the destroy again before each retry.
+        assert!(streams.close("council--x").is_empty());
+        assert_eq!(streams.close("tui").len(), 1);
+    }
 
     /// The daemon's side of a connection: writes go to the client, and the
     /// acknowledgement's write records the client count the lifecycle had

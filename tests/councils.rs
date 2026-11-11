@@ -129,6 +129,11 @@ async fn a_two_member_council_completes_with_its_participants_as_helpers() {
     assert!(!notice.contains("(failed)"), "{notice}");
     assert!(!notice.contains("helper refused"), "{notice}");
     assert!(notice.contains("my view"), "{notice}");
+    // It cleaned up after itself: its temporary mob is destroyed.
+    assert!(
+        notice.contains("\"temporary_mob_destroyed\":true"),
+        "{notice}"
+    );
 
     // The participants' reviewed call went through the agent's gate (the
     // classifier reviewed it against the agent's transcript, whose user

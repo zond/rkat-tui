@@ -439,6 +439,12 @@ design.
 
 ### Fixed
 
+- Destroying a mob a client follows (the agent's `delegate` mobs, its
+  councils) removes its database: the client's open stream on the mob
+  kept it open ("the observer drain refused: 5 owner handle(s)"), so the
+  storage stayed behind; the daemon now closes those streams when the
+  mob is destroyed.
+
 - A council the agent convenes runs: its participants were refused as
   working for no session ("neither a session of this TUI nor a helper"),
   because the engine creates a council's mob for a session of its own.

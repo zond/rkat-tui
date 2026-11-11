@@ -6134,19 +6134,55 @@ scoped to them; a drift of the derived id fails it),
 `mobs::registry::tests::a_council_works_for_the_session_that_convened_it_and_no_other`,
 `client::helpers::tests::a_council_the_agent_convenes_is_followed`.
 
-### Item 18: not done in P6
+### `mob_destroy` (item 18): a client's open mob stream held the database
 
-Item 18 (`mob_destroy` leaves its database): read, not fixed. The refusal
-is `SqliteMobObserverDrainRefused::OtherOwners` (meerkat-mob
-`store/sqlite.rs`): `Arc::strong_count` of the database's observer owner
-less one, counting every store, storage bundle, handle or runtime still
-open on the path in this process, and store operations still running.
-The daemon's candidates, from the code, not yet proven one by one: the
-helper follower's event subscriptions on the child mob's members
-(`mobs/follow.rs`, `subscribe_agent_events_from`), the per-agent event
-watcher's resubscribe loop (`daemon/approvals.rs`, which follows the
-`tui` mob only), the helper cancellation's handle (`mobs/mod.rs`), and
-the helper catalog reads (`DaemonToolOrigins::refresh`). The fix the
-brief asks for (release each when a destroy is requested) needs each
-holder identified by a test that counts the owners as they are dropped;
-left open with the count of five as the starting point.
+The in-harness agent reported every `mob_destroy` failing with "the
+observer drain refused: 5 owner handle(s) still observe this mob
+database" (`SqliteMobObserverDrainRefused::OtherOwners`, meerkat-mob
+`store/sqlite.rs`). The engine's storage cleanup (`MobMcpState`'s
+`settle_owed_storage_cleanup`) waits for the mob's actor to end, then
+retries the drain ten times 100 ms apart, running the host's
+after-destroy hook before each retry, and removes the database only once
+no owner is left in the process.
+
+Probed on the rig. The agent's own `mob_create`, `mob_spawn_member` and
+`mob_destroy` (a member with an initial message, so the daemon's
+follower subscribed to it and the gate's catalog read ran) destroyed the
+mob and removed `mob--team.db` in every variant tried: no member, an idle
+member, the destroy while the member's first turn ran, two members, a
+later turn, and the mob restored by a later daemon. Counted with
+`SqliteMobStores::drain_observers` while the mob runs (a refusal changes
+nothing): six to eight owners, the mob's own runtime, stores and member
+handles plus the daemon's follower, all gone within the retry window.
+
+It reproduced with a council (item 17): the council's own cleanup
+destroys its temporary mob, and the cleanup reported "destroy failed: …
+the observer drain refused: 5 owner handle(s)", the same five, leaving
+`temporary_mob_destroyed: false`. One holder at a time, by switching it
+off in a probe build: without the daemon's follower of the participants
+(`mobs/follow.rs`) still five; without the client following the council's
+mob (no mob-wide `mob/stream_open` on it) none, and the cleanup
+succeeded. So all five are the engine's subscription behind one client
+connection's mob-wide stream (its forwarder and the handle and stores it
+holds). The client closes a stream only when the stream ends, and the
+engine ends it only after the cleanup, which refuses while it is open:
+the client follows the agent's implicit mobs and, now, its councils,
+which is why the agent saw it on every destroy of those.
+
+Fixed on our side: `HelperRegistry::mob_destroyed` (the after-destroy
+hook) reports each destroyed mob (`destroyed_mobs`), and each
+connection's proxy (`daemon::serve`, `MobStreams`) remembers the client's
+mob-wide stream opens and their stream ids and, on the report, closes
+that mob's streams on the client's behalf (`mob/stream_close`, its
+answer kept from the client; the engine then sends the client the
+stream's `mob/stream_end` as for a close of its own). The hook runs
+again before each retry, so a stream opened late is closed too. The
+client's read loop reads with `next_line`, which loses nothing when the
+report wins the `select!`. None of the five is left to the engine.
+
+Tests: `tests/councils.rs::a_two_member_council_completes_with_its_participants_as_helpers`
+(the council's report says `temporary_mob_destroyed: true`; it said
+false before this, with the client following the mob),
+`tests/mob_destroy.rs::the_agent_destroys_a_mob_it_made_and_its_database_goes`,
+`a_mob_restored_by_a_later_daemon_is_destroyed_with_its_database`;
+unit: `daemon::serve::tests::a_destroyed_mobs_streams_are_closed_for_the_client`.

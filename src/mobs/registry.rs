@@ -159,6 +159,9 @@ pub enum OwnerError {
     UnknownMember(HelperKey),
 }
 
+/// How many destroyed mobs a slow listener may fall behind by.
+const DESTROYED_QUEUE: usize = 64;
+
 /// A TUI session's model, as helpers inherit it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SessionModel {
@@ -184,6 +187,10 @@ pub struct HelperRegistry {
     /// by the temporary mob the engine creates for it
     /// ([`super::council`]).
     councils: Mutex<HashMap<MobId, SessionId>>,
+    /// Each destroyed mob, as the host's after-destroy hook reports it
+    /// (again before each retry of its storage cleanup): what still
+    /// observes the mob lets go ([`Self::destroyed_mobs`]).
+    destroyed: tokio::sync::broadcast::Sender<MobId>,
     updates: mpsc::UnboundedSender<HelperUpdate>,
 }
 
@@ -212,6 +219,7 @@ impl HelperRegistry {
                 bindings,
                 live: Mutex::new(IndexMap::new()),
                 councils: Mutex::new(HashMap::new()),
+                destroyed: tokio::sync::broadcast::channel(DESTROYED_QUEUE).0,
                 updates,
             },
             rx,
@@ -434,9 +442,19 @@ impl HelperRegistry {
     pub fn mob_destroyed(&self, mob: &MobId) {
         self.live.lock().retain(|key, _| &key.mob != mob);
         self.councils.lock().remove(mob);
+        let _ = self.destroyed.send(mob.clone());
         if let Err(err) = self.bindings.remove_mob(mob) {
             tracing::warn!(mob = %mob, error = %err, "cannot drop the mob's bindings");
         }
+    }
+
+    /// The mobs destroyed from now on ([`Self::mob_destroyed`]): a client
+    /// connection's mob-wide streams on one are closed, since an open
+    /// stream observes the mob's database and its storage cleanup refuses
+    /// while anything does (`docs/evidence.md`, "`mob_destroy`").
+    #[must_use]
+    pub fn destroyed_mobs(&self) -> tokio::sync::broadcast::Receiver<MobId> {
+        self.destroyed.subscribe()
     }
 
     /// The session the running helper `key` works for.
