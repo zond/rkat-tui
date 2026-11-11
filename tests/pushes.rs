@@ -88,7 +88,7 @@ async fn a_delegate_helper_is_followed_from_its_first_event_without_listing_mobs
     let listed = rig.daemon.forwarded(LIST);
     assert_eq!(listed, 1);
     rig.send(Effect::StartTurn("delegate it".into()));
-    assert_eq!(rig.turn_finished().await.result.unwrap().text, "ok");
+    assert_eq!(rig.turn_finished().await.unwrap().text, "ok");
     /// The event of the helper `h1` that `m` shows, if any.
     fn of_helper(m: &Msg) -> Option<&AgentEvent> {
         match m {

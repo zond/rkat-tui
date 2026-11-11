@@ -59,7 +59,8 @@ impl PermissionMode {
 
     /// The name `/mode` and `tui.toml` (`[auto] mode`) take.
     #[must_use]
-    pub fn name(self) -> &'static str {
+    #[cfg(test)]
+    fn name(self) -> &'static str {
         match self {
             Self::Manual => "default",
             Self::AcceptEdits => "accept-edits",
@@ -79,7 +80,7 @@ impl PermissionMode {
         }
     }
 
-    /// Parse a mode name: [`Self::name`], or the aliases `manual`,
+    /// Parse a mode name (`default`, `accept-edits`, `plan`, `auto`), or the aliases `manual`,
     /// `acceptEdits` and `accept_edits` (case-insensitive).
     #[must_use]
     pub fn parse(text: &str) -> Option<Self> {

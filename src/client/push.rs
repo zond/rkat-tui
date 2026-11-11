@@ -29,6 +29,8 @@ pub enum Push {
     Switched(protocol::SwitchedNote),
     /// A mob hosts helpers now, or was destroyed ([`protocol::MOB`]).
     Mob(protocol::MobNote),
+    /// The permission mode and the denial counters ([`protocol::MODE`]).
+    Mode(crate::approval::desk::ModeStatus),
     /// An agent is idle ([`protocol::IDLE`]).
     Idle(protocol::IdleNote),
     /// An event of the stream `stream` (the conversation's own, or a mob's;
@@ -75,6 +77,7 @@ impl Push {
             protocol::SWITCHED => Self::Switched(read(note)?),
             protocol::MOB => Self::Mob(read(note)?),
             protocol::IDLE => Self::Idle(read(note)?),
+            protocol::MODE => Self::Mode(read(note)?),
             STREAM_EVENT => {
                 let StreamEvent {
                     stream_id,

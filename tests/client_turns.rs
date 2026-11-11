@@ -57,7 +57,7 @@ async fn creates_a_session_and_completes_a_turn() {
 
     rig.send(Effect::StartTurn("hi".into()));
     let outcome = rig.turn_finished().await;
-    assert_eq!(outcome.result.expect("turn succeeds").text, "hello there");
+    assert_eq!(outcome.expect("turn succeeds").text, "hello there");
 
     let session = rig.messages().await;
     assert_eq!(user_texts(&session), vec!["hi".to_string()]);
@@ -81,7 +81,7 @@ async fn an_at_mention_attaches_the_file_the_session_receives() {
     rig.send(Effect::StartTurn(
         "what does @notes.txt say? (not @.rkat/config.toml or @nothing.txt)".into(),
     ));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     // The UI hears what was attached as it was sent, not what it guessed.
     assert!(rig.seen.iter().any(|msg| matches!(
         msg,
@@ -117,14 +117,10 @@ async fn a_prompt_queued_behind_a_running_turn_runs_next() {
     // The second prompt's send races the gate's release: it joins the
     // running turn or runs right after it; either way it is answered next.
     let mut outcome = rig.turn_finished().await;
-    if outcome
-        .result
-        .as_ref()
-        .is_ok_and(|s| s.text == "first answer")
-    {
+    if outcome.as_ref().is_ok_and(|s| s.text == "first answer") {
         outcome = rig.turn_finished().await;
     }
-    assert_eq!(outcome.result.expect("turn succeeds").text, "second answer");
+    assert_eq!(outcome.expect("turn succeeds").text, "second answer");
     let requests = llm.requests();
     assert_eq!(requests.len(), 2);
     assert_eq!(
@@ -178,7 +174,7 @@ async fn a_steered_message_is_applied_at_the_next_tool_boundary() {
     rig.wait_for(|msg| matches!(msg, Msg::SteerDelivered(PendingId(1))))
         .await;
     let outcome = rig.turn_finished().await;
-    assert_eq!(outcome.result.expect("turn succeeds").text, "done");
+    assert_eq!(outcome.expect("turn succeeds").text, "done");
 
     // One run: the steer joined it at the tool boundary, after the tool
     // result (the file tool ran end to end) and before the next request.
@@ -222,7 +218,7 @@ async fn continue_and_resume_by_id_across_lifetimes() {
     let mut rig = Attached::start(&ws.root, &llm).await;
     let first = rig.current_session().await;
     rig.send(Effect::StartTurn("remember me".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     rig.quit().await;
 
     // `-c` with a restarted daemon: the conversation it restored, with its
@@ -249,7 +245,7 @@ async fn continue_and_resume_by_id_across_lifetimes() {
         ]
     );
     rig.send(Effect::StartTurn("still there?".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     assert_eq!(
         user_texts(&llm.requests()[0]),
         vec!["remember me".to_string(), "still there?".to_string()]
@@ -282,7 +278,7 @@ async fn resume_without_a_reference_opens_the_picker_at_start() {
     let mut rig = Attached::start(&ws.root, &llm).await;
     let first = rig.current_session().await;
     rig.send(Effect::StartTurn("pick me later".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     // Another conversation is the current one when the picker opens.
     rig.send(Effect::NewSession);
     rig.wait_for(|m| matches!(m, Msg::ResetTranscript(blocks) if blocks.is_empty()))
@@ -355,7 +351,7 @@ async fn one_conversation(ws: &Workspace, prompt: &str) -> meerkat_core::Session
     let mut rig = Attached::start(&ws.root, &llm).await;
     let first = rig.current_session().await;
     rig.send(Effect::StartTurn(prompt.into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     rig.quit().await;
     first
 }
@@ -431,7 +427,7 @@ async fn the_builtins_the_tui_owns_are_denied_by_the_tool_policy() {
     ]);
     let mut rig = Attached::start(&ws.root, &llm).await;
     rig.send(Effect::StartTurn("try them".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     let requests = llm.requests();
     let result_of = |id: &str| {
         requests
@@ -467,9 +463,8 @@ async fn the_same_prompt_after_a_failed_turn_is_not_added_twice() {
     rig.send(Effect::StartTurn("fix the build".into()));
     let outcome = rig.turn_finished().await;
     assert!(
-        matches!(outcome.result, Err(TurnFailure::Failed(_))),
-        "{:?}",
-        outcome.result
+        matches!(outcome, Err(TurnFailure::Failed(_))),
+        "{outcome:?}"
     );
     // The failed run committed the prompt.
     let session = rig.messages().await;
@@ -482,7 +477,7 @@ async fn the_same_prompt_after_a_failed_turn_is_not_added_twice() {
     )
     .await;
     let outcome = rig.turn_finished().await;
-    assert_eq!(outcome.result.expect("retry succeeds").text, "fixed");
+    assert_eq!(outcome.expect("retry succeeds").text, "fixed");
     let expected = vec![
         "fix the build".to_string(),
         "(retrying the request above)".to_string(),
@@ -503,19 +498,13 @@ async fn a_different_prompt_after_a_failed_turn_is_sent_as_written() {
     ]);
     let mut rig = Attached::start(&ws.root, &llm).await;
     rig.send(Effect::StartTurn("fix the build".into()));
-    assert!(rig.turn_finished().await.result.is_err());
+    assert!(rig.turn_finished().await.is_err());
 
     rig.send(Effect::StartTurn("run the tests instead".into()));
-    assert_eq!(
-        rig.turn_finished().await.result.expect("turn").text,
-        "first"
-    );
+    assert_eq!(rig.turn_finished().await.expect("turn").text, "first");
     // Only right after the failure: a repeat after a success is a message.
     rig.send(Effect::StartTurn("run the tests instead".into()));
-    assert_eq!(
-        rig.turn_finished().await.result.expect("turn").text,
-        "second"
-    );
+    assert_eq!(rig.turn_finished().await.expect("turn").text, "second");
     let session = rig.messages().await;
     assert_eq!(
         user_texts(&session),
@@ -563,7 +552,7 @@ async fn a_message_typed_while_a_slow_tool_runs_reaches_the_model_after_its_resu
     rig.wait_for(|msg| matches!(msg, Msg::SteerDelivered(PendingId(1))))
         .await;
     let outcome = rig.turn_finished().await;
-    assert_eq!(outcome.result.expect("turn succeeds").text, "finished");
+    assert_eq!(outcome.expect("turn succeeds").text, "finished");
     // One run: the shell ran to its end, its result reached the model, and
     // the typed message followed it in the same request.
     let requests = llm.requests();
@@ -629,7 +618,7 @@ async fn recalling_a_message_typed_during_a_slow_tool_leaves_the_run_alone() {
     );
 
     let outcome = rig.turn_finished().await;
-    assert_eq!(outcome.result.expect("turn succeeds").text, "finished");
+    assert_eq!(outcome.expect("turn succeeds").text, "finished");
     let requests = llm.requests();
     assert_eq!(requests.len(), 2, "no follow-up turn");
     assert!(
@@ -688,7 +677,7 @@ async fn recalling_a_steer_that_already_joined_the_run_leaves_it_delivered() {
     gate.notify_one();
 
     let outcome = rig.turn_finished().await;
-    assert_eq!(outcome.result.expect("turn succeeds").text, "finished");
+    assert_eq!(outcome.expect("turn succeeds").text, "finished");
     let requests = llm.requests();
     assert_eq!(requests.len(), 2, "no follow-up turn");
     assert!(user_texts(&requests[1]).contains(&"typed while it sleeps".to_string()));
@@ -730,10 +719,7 @@ async fn a_classifier_allowed_call_gets_a_note_and_a_tier1_call_does_not() {
         text,
         "allowed by classifier: removes an in-project scratch file the user asked to clean up"
     );
-    assert_eq!(
-        rig.turn_finished().await.result.expect("turn").text,
-        "cleaned up"
-    );
+    assert_eq!(rig.turn_finished().await.expect("turn").text, "cleaned up");
     assert!(
         !ws.root.join("scratch.txt").exists(),
         "the reviewed call ran"
@@ -778,10 +764,7 @@ async fn a_protected_write_is_put_to_the_user_and_runs_when_allowed() {
         "{prompt:?}"
     );
     rig.send(Effect::RespondEscalation(id, EscalationAnswer::AllowOnce));
-    assert_eq!(
-        rig.turn_finished().await.result.expect("turn").text,
-        "configured"
-    );
+    assert_eq!(rig.turn_finished().await.expect("turn").text, "configured");
     assert_eq!(
         std::fs::read_to_string(ws.root.join(".env.test")).unwrap(),
         "API_URL=http://localhost\n"
@@ -832,7 +815,7 @@ async fn context_report_describes_the_session() {
     let llm = ScriptedLlmClient::new(vec![Step::Text("hello")]);
     let mut rig = Attached::start(&ws.root, &llm).await;
     rig.send(Effect::StartTurn("hi".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     // The daemon reads the tool definitions once the agent is idle.
     let session = rig.current_session().await;
     common::within(async {
@@ -1034,7 +1017,7 @@ async fn a_bang_command_runs_and_joins_the_context_without_a_turn() {
     assert!(llm.recorded().is_empty());
 
     rig.send(Effect::StartTurn("what did it say?".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     let system = llm.recorded()[0].system();
     assert!(
         system.contains("[shell run by the user] $ echo hi; pwd\nhi\n"),
@@ -1072,7 +1055,7 @@ async fn plan_mode_refuses_a_write_and_the_model_reads_why() {
     rig.wait_for(mode_is(PermissionMode::Plan)).await;
     rig.send(Effect::StartTurn("plan a new module".into()));
     assert_eq!(
-        rig.turn_finished().await.result.expect("turn").text,
+        rig.turn_finished().await.expect("turn").text,
         "1. Add src/new.rs with f()"
     );
     assert!(!ws.root.join("src/new.rs").exists());
@@ -1107,7 +1090,7 @@ async fn plan_mode_refuses_a_write_and_the_model_reads_why() {
     rig.send(Effect::SetMode(PermissionMode::AcceptEdits));
     rig.wait_for(mode_is(PermissionMode::AcceptEdits)).await;
     rig.send(Effect::StartTurn("go".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     let system = llm.recorded().last().unwrap().system();
     assert!(system.contains("# Plan mode is off"), "{system}");
     let realm_rules = std::fs::read_to_string(common::realm_of(&ws.root).join("tui.toml")).unwrap();
@@ -1158,7 +1141,7 @@ async fn the_task_tools_fill_the_checklist_and_resume_restores_it() {
             && list.items().iter().any(|i| i.state == ItemState::Done))
     };
     pump(&mut rig, &mut app, done_and_in_progress).await;
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     let ctrl_t = Msg::Key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL));
     let fx = app.update(ctrl_t.clone());
     assert!(fx.contains(&Effect::SetChecklistView(ChecklistView::Shown)));

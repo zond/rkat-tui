@@ -106,7 +106,7 @@ async fn the_picker_switches_the_live_model_and_the_next_turn_uses_it() {
     rig.saw(|m| is_model(m, "anthropic", common::MODEL)).await;
 
     rig.send(Effect::StartTurn("first".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     assert_eq!(llm.recorded()[0].model, common::MODEL);
 
     // The picker: the current endpoint first, its current model first; the
@@ -137,7 +137,7 @@ async fn the_picker_switches_the_live_model_and_the_next_turn_uses_it() {
     rig.wait_for(|m| matches!(m, Msg::Status(StatusUpdate::ContextWindow(Some(50_000)))))
         .await;
     rig.send(Effect::StartTurn("second".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     assert_eq!(llm.recorded()[1].model, LISTED);
 
     // The identity is the session's: model and the proxy's binding.
@@ -195,7 +195,7 @@ async fn the_picker_switches_the_live_model_and_the_next_turn_uses_it() {
     rig.saw(|m| matches!(m, Msg::Status(StatusUpdate::CostTotals(totals)) if *totals == cost))
         .await;
     rig.send(Effect::StartTurn("third".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     assert_eq!(llm.recorded()[0].model, LISTED);
 
     // Back to a built-in endpoint: the explicit binding is cleared.
@@ -203,7 +203,7 @@ async fn the_picker_switches_the_live_model_and_the_next_turn_uses_it() {
     rig.wait_for(|m| is_model(m, "anthropic", "claude-opus-4-8"))
         .await;
     rig.send(Effect::StartTurn("fourth".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     assert_eq!(llm.recorded()[1].model, "claude-opus-4-8");
     let meta = stored_session(&ws.root, &id)
         .await
@@ -229,7 +229,7 @@ async fn unresolvable_references_leave_the_model_alone() {
         "{msg:?}"
     );
     rig.send(Effect::StartTurn("still here".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     assert_eq!(llm.recorded()[0].model, common::MODEL);
     rig.quit().await;
 }
@@ -272,11 +272,11 @@ fn thinking_options(settings: &[&str]) -> Setup {
 async fn turn_switch_turn(rig: &mut Attached) {
     rig.saw(|m| is_model(m, "anthropic", common::MODEL)).await;
     rig.send(Effect::StartTurn("first".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     rig.send(Effect::SetModel(format!("proxy:{LISTED}")));
     rig.wait_for(|m| is_model(m, "proxy", LISTED)).await;
     rig.send(Effect::StartTurn("second".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -338,7 +338,7 @@ async fn configured_thinking_reaches_the_request_on_create_and_after_a_switch() 
     .await;
     rig.saw(|m| is_model(m, "proxy", LISTED)).await;
     rig.send(Effect::StartTurn("again".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     assert_eq!(
         thinking_of(&after.recorded()[0]),
         Some(AnthropicThinkingConfig::Adaptive)
@@ -347,7 +347,7 @@ async fn configured_thinking_reaches_the_request_on_create_and_after_a_switch() 
     rig.wait_for(|m| is_model(m, "anthropic", "claude-opus-4-8"))
         .await;
     rig.send(Effect::StartTurn("third".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     let third = &after.recorded()[1];
     assert_eq!(third.model, "claude-opus-4-8");
     assert_eq!(thinking_of(third), None, "{:?}", third.provider_params);
@@ -384,7 +384,7 @@ async fn a_resume_follows_the_thinking_configured_now() {
     let llm = ScriptedLlmClient::new(vec![Step::Text("one")]);
     let mut rig = Attached::start_with(&ws.root, &llm, options()).await;
     rig.send(Effect::StartTurn("first".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     rig.quit().await;
     assert_eq!(thinking_of(&llm.recorded()[0]), None);
 
@@ -397,7 +397,7 @@ async fn a_resume_follows_the_thinking_configured_now() {
     )
     .await;
     rig.send(Effect::StartTurn("second".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     assert_eq!(
         thinking_of(&llm.recorded()[0]),
         Some(AnthropicThinkingConfig::Adaptive)
@@ -408,7 +408,7 @@ async fn a_resume_follows_the_thinking_configured_now() {
     let llm = ScriptedLlmClient::new(vec![Step::Text("three")]);
     let mut rig = Attached::start_with(&ws.root, &llm, options()).await;
     rig.send(Effect::StartTurn("third".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     assert_eq!(thinking_of(&llm.recorded()[0]), None);
     rig.quit().await;
 }
@@ -538,7 +538,7 @@ async fn a_restored_agent_switches_models_before_its_first_turn() {
     let mut rig = Attached::start_with(&ws.root, &llm, options()).await;
     let id = rig.current_session().await;
     rig.send(Effect::StartTurn("first".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     rig.quit().await;
 
     let llm = ScriptedLlmClient::new(vec![Step::Text("two")]);
@@ -554,7 +554,7 @@ async fn a_restored_agent_switches_models_before_its_first_turn() {
         .await;
     assert!(is_model(&msg, "anthropic", "claude-opus-4-8"), "{msg:?}");
     rig.send(Effect::StartTurn("second".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     assert_eq!(llm.recorded()[0].model, "claude-opus-4-8");
     rig.quit().await;
 }

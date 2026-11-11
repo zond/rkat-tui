@@ -94,7 +94,7 @@ async fn a_delegated_helper_is_followed_with_its_result_and_cost() {
     client.saw(one_helper("scout")).await;
     gate.notify_one();
     let outcome = client.turn_finished().await;
-    assert_eq!(outcome.result.unwrap().text, "parent done");
+    assert_eq!(outcome.unwrap().text, "parent done");
     client.saw(no_helpers).await;
     client
         .saw(|m| matches!(m, Msg::Scoped(ev) if matches!(&ev.event, AgentEvent::TextComplete { content, .. } if content == "HELPER-DONE")))
@@ -167,7 +167,7 @@ async fn esc_during_a_helper_stops_the_agent_and_the_helper() {
     client.saw(one_helper("slow")).await;
     client.send(Effect::Interrupt);
     let outcome = client.turn_finished().await;
-    assert_eq!(outcome.result, Err(TurnFailure::Interrupted), "{outcome:?}");
+    assert_eq!(outcome, Err(TurnFailure::Interrupted), "{outcome:?}");
     client.saw(no_helpers).await;
     // The daemon retired the helper with its parent's run.
     let connection = daemon.connect().await;
@@ -187,7 +187,7 @@ async fn esc_during_a_helper_stops_the_agent_and_the_helper() {
     .await;
     // The agent serves the next prompt.
     client.send(Effect::StartTurn("again".into()));
-    assert_eq!(client.turn_finished().await.result.unwrap().text, "after");
+    assert_eq!(client.turn_finished().await.unwrap().text, "after");
     client.quit().await;
     daemon.stop().await;
 }
@@ -209,7 +209,7 @@ async fn a_helper_delegated_after_a_model_switch_runs_on_the_new_model() {
     let daemon = Running::start(&ws.root, &llm).await;
     let mut client = Client::attach(&ws.root).await;
     client.send(Effect::StartTurn("first".into()));
-    client.turn_finished().await.result.unwrap();
+    client.turn_finished().await.unwrap();
     client.send(Effect::SetModel(format!("anthropic:{SWITCHED}")));
     client
         .wait_for(
@@ -217,7 +217,7 @@ async fn a_helper_delegated_after_a_model_switch_runs_on_the_new_model() {
         )
         .await;
     client.send(Effect::StartTurn("delegate".into()));
-    assert_eq!(client.turn_finished().await.result.unwrap().text, "done");
+    assert_eq!(client.turn_finished().await.unwrap().text, "done");
     let recorded = llm.recorded();
     assert_eq!(recorded[0].model, MODEL);
     assert_eq!(recorded[1].model, SWITCHED);

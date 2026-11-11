@@ -64,7 +64,7 @@ async fn rig(
 async fn turns(rig: &mut Attached, n: usize, prefix: &str) {
     for i in 0..n {
         rig.send(Effect::StartTurn(format!("{prefix} {i}")));
-        rig.turn_finished().await.result.expect("turn succeeds");
+        rig.turn_finished().await.expect("turn succeeds");
     }
 }
 
@@ -128,7 +128,7 @@ async fn auto_mode_compacts_natively_at_the_threshold() {
 
     rig.send(Effect::StartTurn("next".into()));
     let outcome = rig.turn_finished().await;
-    assert_eq!(outcome.result.expect("turn succeeds").text, "after");
+    assert_eq!(outcome.expect("turn succeeds").text, "after");
     assert_eq!(started(&rig), 1);
     let requests = llm.recorded();
     assert_eq!(
@@ -147,7 +147,7 @@ async fn auto_mode_compacts_natively_at_the_threshold() {
 
     // The completion is published when the session runs again.
     rig.send(Effect::StartTurn("again".into()));
-    rig.turn_finished().await.result.expect("turn succeeds");
+    rig.turn_finished().await.expect("turn succeeds");
     completed(&mut rig).await;
     let left = compactions(&rig)
         .iter()
@@ -214,11 +214,7 @@ async fn warn_mode_warns_and_compacts_only_on_compact() {
     assert!(matches!(msg, Msg::CompactRequested(Ok(()))), "{msg:?}");
     rig.send(Effect::StartTurn("compact first".into()));
     assert_eq!(
-        rig.turn_finished()
-            .await
-            .result
-            .expect("turn succeeds")
-            .text,
+        rig.turn_finished().await.expect("turn succeeds").text,
         "compacted"
     );
     assert_eq!(started(&rig), 1);
@@ -231,11 +227,7 @@ async fn warn_mode_warns_and_compacts_only_on_compact() {
 
     rig.send(Effect::StartTurn("one more".into()));
     assert_eq!(
-        rig.turn_finished()
-            .await
-            .result
-            .expect("turn succeeds")
-            .text,
+        rig.turn_finished().await.expect("turn succeeds").text,
         "whole again"
     );
     assert_eq!(started(&rig), 1, "the request was consumed");
@@ -286,7 +278,7 @@ async fn a_changed_compaction_policy_reaches_an_existing_realms_agent() {
     assert_eq!(second.current_session().await, session);
     second.send(Effect::StartTurn("next".into()));
     let outcome = second.turn_finished().await;
-    assert_eq!(outcome.result.expect("turn succeeds").text, "after");
+    assert_eq!(outcome.expect("turn succeeds").text, "after");
     assert_eq!(started(&second), 1, "the new policy compacted");
     let requests = llm.recorded();
     assert_eq!(requests.len(), 2, "one extra call: the summary");

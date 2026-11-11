@@ -116,7 +116,7 @@ async fn a_two_member_council_completes_with_its_participants_as_helpers() {
         .reveal(&session, &["mob_create", "mob_spawn_member", "council"])
         .await;
     rig.send(Effect::StartTurn("convene".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
 
     // The council's end reaches the agent, and it did not fail.
     let notice = within(async {

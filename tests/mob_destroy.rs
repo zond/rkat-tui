@@ -102,10 +102,10 @@ async fn the_agent_destroys_a_mob_it_made_and_its_database_goes() {
     let mut rig = Attached::start(&ws.root, &llm).await;
     reveal(&rig).await;
     rig.send(Effect::StartTurn("make".into()));
-    assert_eq!(rig.turn_finished().await.result.unwrap().text, "made");
+    assert_eq!(rig.turn_finished().await.unwrap().text, "made");
     assert!(database(&ws).exists());
     rig.send(Effect::StartTurn("destroy".into()));
-    assert_eq!(rig.turn_finished().await.result.unwrap().text, "gone");
+    assert_eq!(rig.turn_finished().await.unwrap().text, "gone");
     let answer = destroyed(&llm);
     assert_eq!(answer["ok"], true, "{answer}");
     assert!(!database(&ws).exists());
@@ -119,7 +119,7 @@ async fn a_mob_restored_by_a_later_daemon_is_destroyed_with_its_database() {
     let mut rig = Attached::start(&ws.root, &llm).await;
     reveal(&rig).await;
     rig.send(Effect::StartTurn("make".into()));
-    assert_eq!(rig.turn_finished().await.result.unwrap().text, "made");
+    assert_eq!(rig.turn_finished().await.unwrap().text, "made");
     // The member's first turn ended before the daemon stops.
     common::within(async {
         while !llm.recorded().iter().any(|r| r.user().contains("hello")) {
@@ -134,7 +134,7 @@ async fn a_mob_restored_by_a_later_daemon_is_destroyed_with_its_database() {
     let mut rig = Attached::start(&ws.root, &llm).await;
     reveal(&rig).await;
     rig.send(Effect::StartTurn("destroy".into()));
-    assert_eq!(rig.turn_finished().await.result.unwrap().text, "gone");
+    assert_eq!(rig.turn_finished().await.unwrap().text, "gone");
     let answer = destroyed(&llm);
     assert_eq!(answer["ok"], true, "{answer}");
     assert!(!database(&ws).exists());

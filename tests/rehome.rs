@@ -85,7 +85,7 @@ async fn one_conversation(root: &Path, prompt: &str) -> meerkat_core::SessionId 
     let running = daemon(root, &llm).await;
     let (mut client, _) = client(root, &llm, None).await;
     client.send(Effect::StartTurn(prompt.into()));
-    client.turn_finished().await;
+    let _ = client.turn_finished().await;
     let session = running.current_session().await;
     client.quit().await;
     running.stop().await;
@@ -160,7 +160,7 @@ async fn a_push_moves_the_session_to_the_new_workspace_without_a_restart() {
     let (mut issuer, restarted) = client(&ws.root, &llm, None).await;
     let (mut other, _) = client(&ws.root, &llm, Some(AgentChoice::New)).await;
     issuer.send(Effect::StartTurn("before the move".into()));
-    issuer.turn_finished().await;
+    let _ = issuer.turn_finished().await;
     let session = old_daemon.current_session().await;
     assert_eq!(shown_session(&issuer), Some(session.to_string()));
 
@@ -182,7 +182,7 @@ async fn a_push_moves_the_session_to_the_new_workspace_without_a_restart() {
     assert_eq!(common::realm_of(&new), realm.dir);
     assert_eq!(realm_home::find(&realms(&ws.root), &ws.root).unwrap(), None);
     issuer.send(Effect::StartTurn("where are you".into()));
-    assert_eq!(issuer.turn_finished().await.result.unwrap().text, "after");
+    assert_eq!(issuer.turn_finished().await.unwrap().text, "after");
     let requests = llm.requests();
     let pwd = tool_result(requests.last().unwrap(), "p1");
     assert!(pwd.contains(&new.display().to_string()), "{pwd}");
@@ -295,7 +295,7 @@ async fn a_push_while_a_turn_runs_is_refused() {
     assert!(restarted.lock().is_empty());
     assert!(running.serving());
     gate.notify_one();
-    other.turn_finished().await;
+    let _ = other.turn_finished().await;
     other.quit().await;
     issuer.quit().await;
     running.stop().await;
@@ -323,7 +323,7 @@ async fn a_rehome_into_a_realm_that_holds_a_conversation_is_refused() {
     let running = daemon(&ws.root, &llm).await;
     let (mut issuer, restarted) = client(&ws.root, &llm, None).await;
     issuer.send(Effect::StartTurn("here too".into()));
-    issuer.turn_finished().await;
+    let _ = issuer.turn_finished().await;
     // Push: the destination's realm holds "mine" (its path reads both
     // ways, so `to` says which).
     issuer.send(Effect::Rehome(Some(format!("to {}", taken.display()))));
@@ -396,10 +396,7 @@ async fn a_pull_from_a_fresh_start_in_the_moved_directory_adopts_the_old_realm()
     assert!(!fresh.dir.exists(), "the empty realm is removed");
     assert_eq!(common::realm_of(&moved), old.dir);
     issuer.send(Effect::StartTurn("and now".into()));
-    assert_eq!(
-        issuer.turn_finished().await.result.unwrap().text,
-        "still here"
-    );
+    assert_eq!(issuer.turn_finished().await.unwrap().text, "still here");
     issuer.quit().await;
     let daemon = restarted.lock().pop().unwrap();
     daemon.stop().await;

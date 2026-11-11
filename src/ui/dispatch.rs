@@ -168,10 +168,12 @@ impl App {
                 );
                 self.transcript.push_notice(NoticeLevel::Info, text);
             }
-            Command::Auto(AutoCommand::On) => fx.push(Effect::SetMode(PermissionMode::Auto)),
+            // Setting auto mode resumes it after a denial-limit pause.
+            Command::Auto(AutoCommand::On | AutoCommand::Resume) => {
+                fx.push(Effect::SetMode(PermissionMode::Auto));
+            }
             Command::Auto(AutoCommand::Off) => fx.push(Effect::SetMode(PermissionMode::Manual)),
             Command::Mode(Some(mode)) => fx.push(Effect::SetMode(mode)),
-            Command::Auto(AutoCommand::Resume) => fx.push(Effect::ResumeAutoMode),
             Command::Rules(RulesCommand::List) => fx.push(Effect::ListRules),
             Command::Rules(RulesCommand::Add {
                 effect,

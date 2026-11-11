@@ -180,15 +180,6 @@ pub fn merge_turn_end(
     }
 }
 
-/// Result of a turn (the started prompt and every follow-up run the runtime
-/// added for steered messages). The messages it did not deliver are the
-/// UI's own to find ([`delivery::PendingQueue::take_unsent`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TurnOutcome {
-    /// The turn's result: completed, or how it ended without one.
-    pub result: Result<TurnSummary, TurnFailure>,
-}
-
 /// An approval decision to show in the transcript.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalNotice {
@@ -311,8 +302,11 @@ pub enum Msg {
     Agent(EventEnvelope<AgentEvent>),
     /// Scoped (sub-agent) stream event.
     Scoped(ScopedAgentEvent),
-    /// The turn started by [`Effect::StartTurn`] finished.
-    TurnFinished(TurnOutcome),
+    /// The turn started by [`Effect::StartTurn`] finished (with every
+    /// follow-up run the runtime added for steered messages): completed,
+    /// or how it ended without a result. The messages it did not deliver
+    /// are the UI's own to find ([`delivery::PendingQueue::take_unsent`]).
+    TurnFinished(Result<TurnSummary, TurnFailure>),
     /// The runner's answer to [`Effect::Steer`].
     SteerAck {
         /// The queued message.
@@ -603,8 +597,6 @@ pub enum Effect {
     TrustProject,
     /// Switch the permission mode (`Shift+Tab`, `/mode`, `/auto on|off`).
     SetMode(PermissionMode),
-    /// Resume auto mode after a denial-limit pause.
-    ResumeAutoMode,
     /// Record the checklist panel's view (Ctrl+T) as `[ui] checklist` in
     /// the realm `tui.toml`.
     SetChecklistView(ChecklistView),
@@ -1328,27 +1320,9 @@ impl App {
                     AgentEvent::TextComplete { content, .. } if !content.is_empty() => {
                         self.streamed_text = true;
                     }
-                    // A turn without provider accounting advances no counter.
-                    // Its usage counts for the model the provider accounted
-                    // it to (the session's model unless it names none).
-                    AgentEvent::TurnCompleted {
-                        usage: Some(usage), ..
-                    } => {
-                        self.status.context_used = Some(crate::cost::context_tokens(usage));
-                        self.status.context_approx = false;
-                    }
-                    AgentEvent::CompactionCompleted {
-                        summary_tokens,
-                        estimated_history_tokens_after,
-                        ..
-                    } => {
-                        // The history estimate the rewrite left (the
-                        // summary alone for a completion that reports none).
-                        self.status.context_used =
-                            Some(estimated_history_tokens_after.unwrap_or(*summary_tokens));
-                        self.status.context_approx = true;
-                        self.gauge.compacted();
-                    }
+                    // The gauge's reading is the daemon's (`rkat/cost`); a
+                    // compaction re-arms its warning.
+                    AgentEvent::CompactionCompleted { .. } => self.gauge.compacted(),
                     _ => {}
                 }
                 if let Some(usage) = self.transcript.apply_agent_event_at(&env.payload, now) {

@@ -7,12 +7,10 @@ use super::*;
 impl Runner {
     pub(super) fn start_turn(&mut self, text: &str) {
         let Some(connection) = self.connection() else {
-            self.send(Msg::TurnFinished(TurnOutcome {
-                result: Err(TurnFailure::Failed(format!(
-                    "{}; try again once it is",
-                    self.unattached()
-                ))),
-            }));
+            self.send(Msg::TurnFinished(Err(TurnFailure::Failed(format!(
+                "{}; try again once it is",
+                self.unattached()
+            )))));
             return;
         };
         let text = self.expand_mentions(text);
@@ -261,7 +259,7 @@ impl Runner {
                 && !self.switching
             {
                 let session = link.session.clone();
-                self.rerender(session, Again::LostEvents);
+                self.rerender(session, Shown::LostEvents);
             }
             return;
         }
@@ -464,12 +462,10 @@ impl Runner {
         };
         // A steer still followed stays with the agent: it is marked when
         // its own boundary event or the run carrying it arrives.
-        self.send(Msg::TurnFinished(TurnOutcome {
-            result: turn.result.unwrap_or_else(|| Ok(TurnSummary::default())),
-        }));
+        self.send(Msg::TurnFinished(
+            turn.result.unwrap_or_else(|| Ok(TurnSummary::default())),
+        ));
         self.save_cursor();
-        // The denial counters may have moved.
-        self.refresh_mode();
     }
 
     /// The status bar names `model` on `endpoint` (of `dialect`).

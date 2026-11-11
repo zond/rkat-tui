@@ -217,15 +217,12 @@ impl Runner {
     }
 
     /// Shift+Tab, `/mode`, `/auto resume`: switch the daemon's mode.
-    pub(super) fn set_mode(&mut self, mode: &str) {
-        let params = SetModeParams {
-            mode: mode.to_string(),
-        };
-        let reports = self.reporter();
+    pub(super) fn set_mode(&mut self, mode: crate::approval::mode::PermissionMode) {
+        let params = SetModeParams { mode };
         self.ask::<protocol::method::SetMode>(params, "the mode was not changed", move |set| {
             match set {
                 Ok(set) => {
-                    reports.send(Report::Mode(set.status));
+                    // The mode itself comes as every client's push.
                     let mut notices: Notices = set
                         .warning
                         .map(|warning| (NoticeLevel::Warn, warning))

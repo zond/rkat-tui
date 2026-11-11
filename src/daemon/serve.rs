@@ -570,8 +570,13 @@ impl LocalMethods for Local {
 
     fn connect(&self, caller: &Caller, out: ClientOut) -> ClientGuard {
         let guard = self.decisions().connect(out.clone());
-        // Registered first: a later change is pushed to it; whether its
-        // agent is idle now is told here (once more, at worst).
+        // Registered first: a later change is pushed to it; the mode and
+        // whether its agent is idle now are told here (once more, at
+        // worst).
+        let _ = out.send(Outgoing::line(protocol::notification_line(
+            protocol::MODE,
+            &self.mode(),
+        )));
         if let Some(note) = caller
             .agent
             .as_deref()

@@ -108,9 +108,9 @@ async fn two_clients_show_the_same_totals() {
     let mut a = Attached::start(&ws.root, &llm).await;
     let mut b = Client::attach(&ws.root).await;
     a.send(Effect::StartTurn("first".into()));
-    a.turn_finished().await;
+    let _ = a.turn_finished().await;
     b.send(Effect::StartTurn("second".into()));
-    b.turn_finished().await;
+    let _ = b.turn_finished().await;
     a.saw(|m| totals_of(m, (20, 10))).await;
     b.saw(|m| totals_of(m, (20, 10))).await;
     assert_eq!(shown(&a), shown(&b));
@@ -140,7 +140,7 @@ async fn the_classifier_s_calls_are_counted_under_its_model() {
     };
     let mut rig = Attached::start_with(&ws.root, &llm, setup).await;
     rig.send(Effect::StartTurn("fetch the notes".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     assert_eq!(llm.recorded()[1].model, JUDGE, "the classifier's call");
     rig.saw(|m| {
         matches!(m, Msg::Status(StatusUpdate::CostTotals(cost))
@@ -162,10 +162,7 @@ async fn a_call_completed_just_before_the_stop_is_recorded() {
     let session = daemon.session.clone();
     let mut client = Client::attach(&ws.root).await;
     client.send(Effect::StartTurn("one more".into()));
-    assert_eq!(
-        client.turn_finished().await.result.unwrap().text,
-        "last words"
-    );
+    assert_eq!(client.turn_finished().await.unwrap().text, "last words");
     client.send(Effect::Leave(Departure::Detach));
     client.quit().await;
     daemon.stop().await;

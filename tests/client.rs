@@ -39,7 +39,7 @@ async fn a_prompt_sent_before_the_attach_finished_is_held_until_it_did() {
     };
     client.send(Effect::StartTurn("from the command line".into()));
     let outcome = client.turn_finished().await;
-    assert_eq!(outcome.result.expect("completed").text, "answered");
+    assert_eq!(outcome.expect("completed").text, "answered");
     assert!(llm.recorded()[0].user().contains("from the command line"));
     client.quit().await;
     daemon.stop().await;
@@ -58,7 +58,7 @@ async fn a_prompt_is_answered_and_rendered() {
     );
     client.send(Effect::StartTurn("say hello".into()));
     let outcome = client.turn_finished().await;
-    let summary = outcome.result.expect("completed");
+    let summary = outcome.expect("completed");
     assert_eq!(summary.text, "hello from the daemon");
     assert_eq!(client.texts("hello from the daemon"), 1);
     assert!(llm.recorded()[0].user().contains("say hello"));
@@ -86,15 +86,10 @@ async fn esc_interrupts_a_hanging_turn() {
     llm.wait_call(0).await;
     client.send(Effect::Interrupt);
     let outcome = client.turn_finished().await;
-    assert_eq!(
-        outcome.result,
-        Err(TurnFailure::Interrupted),
-        "{:#?}",
-        client.seen
-    );
+    assert_eq!(outcome, Err(TurnFailure::Interrupted), "{:#?}", client.seen);
     // The member serves the next prompt.
     client.send(Effect::StartTurn("again".into()));
-    assert_eq!(client.turn_finished().await.result.unwrap().text, "after");
+    assert_eq!(client.turn_finished().await.unwrap().text, "after");
     client.quit().await;
     daemon.stop().await;
 }
@@ -115,7 +110,7 @@ async fn model_switches_in_place_and_stays() {
     let daemon = Running::start(&ws.root, &llm).await;
     let mut client = Client::attach(&ws.root).await;
     client.send(Effect::StartTurn("first".into()));
-    client.turn_finished().await.result.unwrap();
+    client.turn_finished().await.unwrap();
     client.send(Effect::SetModel("anthropic:claude-opus-4-8".into()));
     client
         .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text.starts_with("switched to claude-opus-4-8")))
@@ -136,9 +131,9 @@ async fn model_switches_in_place_and_stays() {
         .saw(|msg| matches!(msg, Msg::Status(StatusUpdate::Model { model, .. }) if model == "claude-opus-4-8"))
         .await;
     other.send(Effect::StartTurn("second".into()));
-    assert_eq!(other.turn_finished().await.result.unwrap().text, "two");
+    assert_eq!(other.turn_finished().await.unwrap().text, "two");
     other.send(Effect::StartTurn("third".into()));
-    assert_eq!(other.turn_finished().await.result.unwrap().text, "three");
+    assert_eq!(other.turn_finished().await.unwrap().text, "three");
     let models: Vec<String> = llm.recorded().into_iter().map(|r| r.model).collect();
     assert_eq!(
         models,
@@ -162,7 +157,7 @@ async fn a_model_switch_waits_for_the_turn() {
         .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text.contains("a turn is running; switch models once it ends")))
         .await;
     client.send(Effect::Interrupt);
-    client.turn_finished().await;
+    let _ = client.turn_finished().await;
     client.quit().await;
     daemon.stop().await;
 }
@@ -181,7 +176,7 @@ async fn a_client_that_left_mid_turn_sees_the_turn_once_on_reattach() {
     let daemon = Running::start(&ws.root, &llm).await;
     let mut client = Client::attach(&ws.root).await;
     client.send(Effect::StartTurn("warm up".into()));
-    client.turn_finished().await.result.unwrap();
+    client.turn_finished().await.unwrap();
     client.send(Effect::StartTurn("long work".into()));
     client
         .wait_for(|msg| matches!(msg, Msg::Agent(env) if matches!(&env.payload, AgentEvent::RunStarted { input, .. } if input.prompt_text().as_deref() == Some("long work"))))
@@ -202,7 +197,7 @@ async fn a_client_that_left_mid_turn_sees_the_turn_once_on_reattach() {
 
     let mut client = Client::attach(&ws.root).await;
     let outcome = client.turn_finished().await;
-    assert_eq!(outcome.result.unwrap().text, "finished without you");
+    assert_eq!(outcome.unwrap().text, "finished without you");
     // Only what the first client had not shown is replayed: the earlier
     // turn is not shown again and the completed one exactly once.
     assert_eq!(client.texts("finished without you"), 1);
@@ -241,10 +236,7 @@ async fn the_client_reconnects_to_a_restarted_daemon() {
     let daemon = Running::start(&ws.root, &llm).await;
     let mut client = Client::attach(&ws.root).await;
     client.send(Effect::StartTurn("one".into()));
-    assert_eq!(
-        client.turn_finished().await.result.unwrap().text,
-        "first life"
-    );
+    assert_eq!(client.turn_finished().await.unwrap().text, "first life");
     daemon.stop().await;
     client
         .wait_for(|msg| {
@@ -275,10 +267,7 @@ async fn the_client_reconnects_to_a_restarted_daemon() {
     let cursor = CursorFile::of_realm(&common::realm_of(&ws.root)).for_agent(&daemon.agent);
     let before = cursor.load().unwrap();
     client.send(Effect::StartTurn("two".into()));
-    assert_eq!(
-        client.turn_finished().await.result.unwrap().text,
-        "second life"
-    );
+    assert_eq!(client.turn_finished().await.unwrap().text, "second life");
     assert_eq!(
         client.texts("first life"),
         1,
@@ -321,7 +310,7 @@ async fn the_task_tools_fill_the_checklist_over_the_daemon() {
     let daemon = Running::start(&ws.root, &llm).await;
     let mut client = Client::attach(&ws.root).await;
     client.send(Effect::StartTurn("fix the parser".into()));
-    client.turn_finished().await.result.unwrap();
+    client.turn_finished().await.unwrap();
     let want = vec![
         ("write the fix".to_string(), ItemState::Pending),
         ("read the parser".to_string(), ItemState::Done),
@@ -397,7 +386,7 @@ async fn context_reports_the_daemons_conversation() {
     let daemon = Running::start(&ws.root, &llm).await;
     let mut client = Client::attach(&ws.root).await;
     client.send(Effect::StartTurn("hello".into()));
-    client.turn_finished().await.result.unwrap();
+    client.turn_finished().await.unwrap();
     // The daemon reads the tool definitions once the agent is idle.
     let session = daemon.current_session().await;
     common::within(async {
@@ -462,7 +451,7 @@ async fn the_agents_file_changes_show_as_diffs() {
     let mut other = Client::attach(&ws.root).await;
     client.set_mode(PermissionMode::AcceptEdits).await;
     client.send(Effect::StartTurn("edit the notes".into()));
-    client.turn_finished().await.result.unwrap();
+    client.turn_finished().await.unwrap();
     for seen in [&mut client, &mut other] {
         let is_diff = |msg: &Msg| matches!(msg, Msg::Diff { .. });
         seen.saw(is_diff).await;
@@ -544,7 +533,7 @@ async fn a_bang_command_runs_in_this_process_and_joins_the_agents_context() {
     assert!(run.output.contains("bang-42"), "{}", run.output);
     context.expect("the output joined the agent's context");
     client.send(Effect::StartTurn("what did I run?".into()));
-    client.turn_finished().await.result.unwrap();
+    client.turn_finished().await.unwrap();
     let request = format!("{:?}", llm.requests()[0]);
     assert!(request.contains("bang-42"), "the agent read the output");
     client.quit().await;
@@ -598,7 +587,7 @@ async fn attach_to_a_directory_resolves_locally_against_its_workspace() {
     };
     assert_eq!(run.output.trim(), canonical.display().to_string());
     client.send(Effect::StartTurn("look at @only-here.txt".into()));
-    client.turn_finished().await.result.unwrap();
+    client.turn_finished().await.unwrap();
     let request = format!("{:?}", llm.requests()[0]);
     assert!(
         request.contains("alpha-content"),
@@ -663,7 +652,7 @@ async fn attach_by_address_with_a_token_file() {
     };
     client.attached().await;
     client.send(Effect::StartTurn("hello by address".into()));
-    assert_eq!(client.turn_finished().await.result.unwrap().text, "local");
+    assert_eq!(client.turn_finished().await.unwrap().text, "local");
     client.quit().await;
 
     // The same host name and an existing path, but no endpoint file here
@@ -709,7 +698,7 @@ async fn attach_by_address_with_a_token_file() {
         )
         .await;
     client.send(Effect::StartTurn("look at @a.txt".into()));
-    assert_eq!(client.turn_finished().await.result.unwrap().text, "remote");
+    assert_eq!(client.turn_finished().await.unwrap().text, "remote");
     assert!(client.notices().contains("@ mentions were sent as typed"));
     let request = format!("{:?}", llm.requests()[1]);
     assert!(request.contains("@a.txt") && !request.contains("alpha-content"));
@@ -847,10 +836,10 @@ async fn two_clients_steer_in_turn_and_both_see_the_whole_conversation() {
     })
     .await;
     b.send(Effect::StartTurn("from B".into()));
-    assert_eq!(b.turn_finished().await.result.unwrap().text, "third answer");
+    assert_eq!(b.turn_finished().await.unwrap().text, "third answer");
     a.wait_for(|m| matches!(m, Msg::RemoteTurn { prompt: Some(p) } if p == "from B"))
         .await;
-    a.turn_finished().await.result.unwrap();
+    a.turn_finished().await.unwrap();
     for client in [&a, &b] {
         for text in ["first answer", "second answer", "third answer"] {
             assert_eq!(client.texts(text), 1, "{text}");
@@ -936,7 +925,7 @@ async fn each_client_marks_only_its_own_steer_delivered() {
                 AgentEvent::TextComplete { content, .. } if content == "follow-up"))
             })
             .await;
-        client.turn_finished().await.result.unwrap();
+        client.turn_finished().await.unwrap();
     }
     let last = common::user_texts(&llm.recorded()[2].messages);
     assert!(

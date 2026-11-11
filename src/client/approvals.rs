@@ -48,14 +48,13 @@ pub fn classifier_allow_note(reason: Option<&str>) -> String {
 }
 
 /// What the UI shows for an approval note the daemon pushed
-/// ([`crate::daemon::protocol::APPROVAL_NOTE`]) from the engine's events,
-/// and whether the permission-mode status
-/// should be read again (a decision moves the denial counters; a pause or
-/// resume changes the mode). Tier-1/2 allows are routine and show
+/// ([`crate::daemon::protocol::APPROVAL_NOTE`]) from the engine's events
+/// (the mode and denial counters they move come as a push of their own,
+/// [`crate::daemon::protocol::MODE`]). Tier-1/2 allows are routine and show
 /// nothing; a classifier allow is one dim line under its tool block; other
 /// reviewed or denied actions get a line of their own.
 #[must_use]
-pub fn note_messages(note: ApprovalNote) -> (Vec<Msg>, bool) {
+pub fn note_messages(note: ApprovalNote) -> Vec<Msg> {
     use crate::approval::policy::{Decider, Tier, VerdictSummary};
     match note {
         ApprovalNote::Decision {
@@ -74,7 +73,7 @@ pub fn note_messages(note: ApprovalNote) -> (Vec<Msg>, bool) {
                 VerdictSummary::Allowed { tier, by } => (tier, by, true),
                 VerdictSummary::Denied { tier, by } => (tier, by, false),
             };
-            let msgs = if allowed && decider == Decider::Classifier {
+            if allowed && decider == Decider::Classifier {
                 vec![Msg::ToolNote {
                     tool_use_id,
                     text: classifier_allow_note(reason.as_deref()),
@@ -91,40 +90,30 @@ pub fn note_messages(note: ApprovalNote) -> (Vec<Msg>, bool) {
                 })]
             } else {
                 Vec::new()
-            };
-            (msgs, true)
+            }
         }
-        ApprovalNote::Paused { cause } => (
-            vec![Msg::Notice {
-                level: NoticeLevel::Warn,
-                text: format!(
-                    "auto mode paused ({cause}): reviewed actions now ask you; /auto resume to continue"
-                ),
-            }],
-            true,
-        ),
-        ApprovalNote::Resumed => (Vec::new(), true),
-        ApprovalNote::RulesDropped { rules } => (
-            vec![Msg::Notice {
-                level: NoticeLevel::Warn,
-                text: format!(
-                    "auto mode dropped {} broad allow rule(s): {}",
-                    rules.len(),
-                    rules.join(", ")
-                ),
-            }],
-            false,
-        ),
+        ApprovalNote::Paused { cause } => vec![Msg::Notice {
+            level: NoticeLevel::Warn,
+            text: format!(
+                "auto mode paused ({cause}): reviewed actions now ask you; /auto resume to continue"
+            ),
+        }],
+        ApprovalNote::Resumed => Vec::new(),
+        ApprovalNote::RulesDropped { rules } => vec![Msg::Notice {
+            level: NoticeLevel::Warn,
+            text: format!(
+                "auto mode dropped {} broad allow rule(s): {}",
+                rules.len(),
+                rules.join(", ")
+            ),
+        }],
         ApprovalNote::Classifying { running } => {
-            (vec![Msg::Status(StatusUpdate::Classifying(running))], false)
+            vec![Msg::Status(StatusUpdate::Classifying(running))]
         }
-        ApprovalNote::Notice { text } => (
-            vec![Msg::Notice {
-                level: NoticeLevel::Warn,
-                text,
-            }],
-            false,
-        ),
+        ApprovalNote::Notice { text } => vec![Msg::Notice {
+            level: NoticeLevel::Warn,
+            text,
+        }],
     }
 }
 

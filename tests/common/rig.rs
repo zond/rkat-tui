@@ -26,7 +26,7 @@ use rkat_tui::client::transport::{Connection, Notification};
 use rkat_tui::daemon::approvals::DaemonToolOrigins;
 use rkat_tui::daemon::endpoint::Endpoint;
 use rkat_tui::daemon::{Daemon, DaemonError, DaemonOptions};
-use rkat_tui::ui::{Effect, EscalationId, Msg, StatusUpdate, TurnOutcome};
+use rkat_tui::ui::{Effect, EscalationId, Msg, StatusUpdate, TurnFailure, TurnSummary};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::common::{ScriptedLlmClient, TIMEOUT, args_for, endpoint_file_for, no_lists, within};
@@ -400,7 +400,7 @@ impl Client {
         shown(&msg).unwrap()
     }
 
-    pub async fn turn_finished(&mut self) -> TurnOutcome {
+    pub async fn turn_finished(&mut self) -> Result<TurnSummary, TurnFailure> {
         match self
             .wait_for(|msg| matches!(msg, Msg::TurnFinished(_)))
             .await

@@ -90,7 +90,7 @@ async fn a_watched_change_reaches_the_agent_in_its_turn() {
     std::fs::write(ws.root.join("src/theirs.rs"), "fn theirs() {}\n").unwrap();
     rig.wait_for(|m| changed(m, "src/theirs.rs")).await;
     gate.notify_one();
-    assert_eq!(rig.turn_finished().await.result.unwrap().text, "saw it");
+    assert_eq!(rig.turn_finished().await.unwrap().text, "saw it");
     let seen = user_texts(&llm.requests()[3]);
     assert!(
         seen.iter()
@@ -123,7 +123,7 @@ async fn a_once_watch_wakes_the_agent_once() {
     ]);
     let mut rig = Attached::start(&ws.root, &llm).await;
     rig.send(Effect::StartTurn("wake me when out.txt appears".into()));
-    assert_eq!(rig.turn_finished().await.result.unwrap().text, "waiting");
+    assert_eq!(rig.turn_finished().await.unwrap().text, "waiting");
     // It outlived the turn.
     assert_eq!(
         watches_line(&mut rig).await.as_deref(),
@@ -131,7 +131,7 @@ async fn a_once_watch_wakes_the_agent_once() {
     );
     std::fs::write(ws.root.join("out.txt"), "done\n").unwrap();
     rig.wait_for(|m| changed(m, "out.txt")).await;
-    assert_eq!(rig.turn_finished().await.result.unwrap().text, "noticed");
+    assert_eq!(rig.turn_finished().await.unwrap().text, "noticed");
     assert_eq!(
         user_texts(&llm.requests()[2]).last().map(String::as_str),
         Some("files changed: out.txt")

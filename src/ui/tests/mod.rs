@@ -106,7 +106,7 @@ fn submit(app: &mut App, s: &str) -> Vec<Effect> {
 }
 
 fn finished(result: Result<TurnSummary, TurnFailure>) -> Msg {
-    Msg::TurnFinished(TurnOutcome { result })
+    Msg::TurnFinished(result)
 }
 
 fn ack(id: u64, result: Result<(), SteerFailure>) -> Msg {
@@ -266,13 +266,11 @@ fn app_with_moved_model_picker() -> (App, Modal) {
 }
 
 fn answered(text: &str) -> Msg {
-    Msg::TurnFinished(TurnOutcome {
-        result: Ok(TurnSummary {
-            text: text.into(),
-            input_tokens: 1,
-            output_tokens: 1,
-        }),
-    })
+    Msg::TurnFinished(Ok(TurnSummary {
+        text: text.into(),
+        input_tokens: 1,
+        output_tokens: 1,
+    }))
 }
 
 /// The loop's own requests among [`App::take_local`] (frames, bells,
@@ -308,13 +306,10 @@ fn gauge_app(mode: CompactMode) -> App {
 /// Run one turn that ends with `used` context tokens.
 fn turn_at(app: &mut App, used: u64) -> Vec<Effect> {
     assert_eq!(submit(app, "go"), vec![Effect::StartTurn("go".into())]);
-    app.update(agent(AgentEvent::TurnCompleted {
-        stop_reason: StopReason::EndTurn,
-        usage: test_usage(Usage {
-            input_tokens: used,
-            ..Usage::default()
-        }),
-        assistant_message_id: None,
+    // The daemon's reading of the turn's model call (`rkat/cost`).
+    app.update(Msg::Status(StatusUpdate::Context {
+        used: Some(used),
+        approx: false,
     }));
     app.update(finished(Ok(summary())))
 }

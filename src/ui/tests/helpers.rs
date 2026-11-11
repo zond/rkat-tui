@@ -25,9 +25,7 @@ fn the_panel_lists_running_helpers_newest_first_and_drops_finished_ones_at_the_n
     // empty and hidden.
     app.update(live(&[]));
     assert_eq!(app.helper_panel(), vec![fork]);
-    app.update(Msg::TurnFinished(TurnOutcome {
-        result: Ok(summary()),
-    }));
+    app.update(Msg::TurnFinished(Ok(summary())));
     type_str(&mut app, "again");
     app.update(key(KeyCode::Enter));
     assert!(app.helper_panel().is_empty());

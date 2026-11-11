@@ -101,8 +101,8 @@ pub struct Ledger {
     records: parking_lot::Mutex<HashMap<Account, Entry>>,
     /// One write round at a time (each writes the newest counts).
     writing: parking_lot::Mutex<()>,
-    /// Tells the clients a conversation's totals changed.
-    notify: Box<dyn Fn(&SessionId, &SessionCost) + Send + Sync>,
+    /// Tells the clients a conversation's record changed.
+    notify: Box<dyn Fn(&SessionId, &Record) + Send + Sync>,
 }
 
 impl std::fmt::Debug for Ledger {
@@ -115,11 +115,11 @@ impl std::fmt::Debug for Ledger {
 
 impl Ledger {
     /// The records of the realm at `realm_root`; `notify` is told every
-    /// change of a conversation's totals.
+    /// change of a conversation's record (its totals and the gauge).
     #[must_use]
     pub fn new(
         realm_root: &Path,
-        notify: impl Fn(&SessionId, &SessionCost) + Send + Sync + 'static,
+        notify: impl Fn(&SessionId, &Record) + Send + Sync + 'static,
     ) -> Arc<Self> {
         Arc::new(Self {
             realm_root: realm_root.to_path_buf(),
@@ -183,12 +183,12 @@ impl Ledger {
             if changed && entry.stored == Stored::Clean {
                 entry.stored = Stored::Dirty;
             }
-            changed.then(|| entry.record.cost.clone())
+            changed.then(|| entry.record.clone())
         };
-        if let Some(cost) = changed
+        if let Some(record) = changed
             && let Account::Session(session) = &account
         {
-            (self.notify)(session, &cost);
+            (self.notify)(session, &record);
         }
     }
 
@@ -411,8 +411,8 @@ mod tests {
         let told = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let ledger = Ledger::new(realm.path(), {
             let told = Arc::clone(&told);
-            move |session: &SessionId, cost: &SessionCost| {
-                told.lock().push((session.clone(), cost.clone()));
+            move |session: &SessionId, record: &Record| {
+                told.lock().push((session.clone(), record.clone()));
             }
         });
         let session = SessionId::new();
@@ -434,6 +434,14 @@ mod tests {
             3,
             "the schedule's count is not a conversation's"
         );
+        // What is told carries the gauge: the context of the last call.
+        assert_eq!(
+            told.lock()[0].1.context,
+            Some(ContextReading {
+                tokens: crate::cost::context_tokens(&usage(10, 5)),
+                approx: false
+            })
+        );
         ledger.flush();
         let record = read_record(&path);
         assert_eq!(record.cost.per_model["m"].input, 10);
@@ -450,7 +458,7 @@ mod tests {
             let mode = std::fs::metadata(&path).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
-        let again = Ledger::new(realm.path(), |_: &SessionId, _: &SessionCost| {});
+        let again = Ledger::new(realm.path(), |_: &SessionId, _: &Record| {});
         assert_eq!(again.get(&Account::Session(session.clone())).await, record);
         let scheduled = again.get(&Account::Schedule(schedule)).await;
         assert_eq!(scheduled.cost.per_model["m"].output, 5);
@@ -465,7 +473,7 @@ mod tests {
     #[tokio::test]
     async fn a_forgotten_schedules_record_is_removed() {
         let realm = tempfile::tempdir().unwrap();
-        let ledger = Ledger::new(realm.path(), |_: &SessionId, _: &SessionCost| {});
+        let ledger = Ledger::new(realm.path(), |_: &SessionId, _: &Record| {});
         let (schedule, session) = (ScheduleId::new(), SessionId::new());
         ledger.scheduled(&schedule, "m", &usage(1, 1)).await;
         ledger.turn(&session, "m", &usage(1, 1)).await;
@@ -489,7 +497,7 @@ mod tests {
     #[tokio::test]
     async fn a_compaction_counts_its_summary_call_and_estimates_the_context() {
         let realm = tempfile::tempdir().unwrap();
-        let ledger = Ledger::new(realm.path(), |_: &SessionId, _: &SessionCost| {});
+        let ledger = Ledger::new(realm.path(), |_: &SessionId, _: &Record| {});
         let session = SessionId::new();
         let account = Account::Session(session.clone());
         ledger.compaction(&session, "m", None, 900).await;
@@ -529,7 +537,7 @@ mod tests {
         let path = Account::Session(kept.clone()).path(realm.path());
         std::fs::create_dir_all(path.join("inside")).unwrap();
         assert!(load_record(&path).is_err());
-        let ledger = Ledger::new(realm.path(), |_: &SessionId, _: &SessionCost| {});
+        let ledger = Ledger::new(realm.path(), |_: &SessionId, _: &Record| {});
         ledger.turn(&kept, "m", &usage(1, 1)).await;
         ledger.turn(&other, "m", &usage(2, 2)).await;
         ledger.flush();
@@ -551,7 +559,7 @@ mod tests {
         let path = Account::Session(session.clone()).path(realm.path());
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "not = [toml").unwrap();
-        let ledger = Ledger::new(realm.path(), |_: &SessionId, _: &SessionCost| {});
+        let ledger = Ledger::new(realm.path(), |_: &SessionId, _: &Record| {});
         ledger.turn(&session, "m", &usage(1, 1)).await;
         ledger.flush();
         assert_eq!(read_record(&path).cost.per_model["m"].input, 1);

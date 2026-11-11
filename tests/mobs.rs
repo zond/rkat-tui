@@ -110,7 +110,7 @@ async fn a_delegated_helper_runs_behind_the_sessions_gate() {
     let id = rig.current_session().await;
     rig.send(Effect::StartTurn("USER-ASK look into the notes".into()));
     let outcome = rig.turn_finished().await;
-    assert_eq!(outcome.result.expect("turn succeeds").text, "parent done");
+    assert_eq!(outcome.expect("turn succeeds").text, "parent done");
 
     let recorded = llm.recorded();
     assert_eq!(recorded.len(), 4, "parent, helper ×2, parent");
@@ -276,7 +276,7 @@ async fn delegate_on_the_proxy(model: &'static str) -> meerkat_core::SessionMeta
     ]);
     let mut rig = Attached::start_with(&ws.root, &llm, proxy_setup(model)).await;
     rig.send(Effect::StartTurn("delegate".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     let recorded = llm.recorded();
     assert_eq!(recorded[0].model, model);
     assert_eq!(
@@ -505,7 +505,7 @@ async fn a_helper_at_the_default_depth_cannot_delegate() {
     let mut rig = Attached::start(&ws.root, &llm).await;
     rig.send(Effect::StartTurn("USER-ASK delegate it".into()));
     let outcome = rig.turn_finished().await;
-    assert_eq!(outcome.result.expect("turn succeeds").text, "parent done");
+    assert_eq!(outcome.expect("turn succeeds").text, "parent done");
     let recorded = llm.recorded();
     assert_eq!(
         recorded.len(),
@@ -551,7 +551,7 @@ async fn a_helper_below_a_raised_depth_limit_delegates_once_more() {
     let mut rig = Attached::start_with(&ws.root, &llm, setup).await;
     rig.send(Effect::StartTurn("USER-ASK delegate it twice".into()));
     let outcome = rig.turn_finished().await;
-    assert_eq!(outcome.result.expect("turn succeeds").text, "parent done");
+    assert_eq!(outcome.expect("turn succeeds").text, "parent done");
     let recorded = llm.recorded();
     assert_eq!(recorded.len(), 5, "parent, helper, nested, helper, parent");
     assert!(recorded[1].tools.iter().any(|t| t == "delegate"));
@@ -591,9 +591,9 @@ async fn a_read_only_profile_with_comms_gets_the_agent_a_note() {
     let session = rig.current_session().await;
     rig.daemon.reveal(&session, &["mob_profile_create"]).await;
     rig.send(Effect::StartTurn("make a reviewer profile".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     rig.send(Effect::StartTurn("go on".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     let seen = format!("{:?}", llm.requests()[2]);
     assert!(
         seen.contains("cannot send any (`read_only` blocks every mutating tool"),

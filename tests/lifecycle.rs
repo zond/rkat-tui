@@ -338,7 +338,7 @@ async fn quitting_one_of_two_agents_retires_it_and_the_last_quit_stops_the_daemo
         "the first client took the start's agent"
     );
     b.send(Effect::StartTurn("b's work".into()));
-    assert_eq!(b.turn_finished().await.result.unwrap().text, "from b");
+    assert_eq!(b.turn_finished().await.unwrap().text, "from b");
     let b_session = daemon.session_of(&b_name).await;
     // B quits: other clients (A) are attached, so B's agent retires.
     assert_eq!(decide(&mut b).await, QuitDecision::Retire);
@@ -368,7 +368,7 @@ async fn quitting_one_of_two_agents_retires_it_and_the_last_quit_stops_the_daemo
     assert_eq!(row["agent"], json!(b_name));
     // A still works.
     a.send(Effect::StartTurn("a's work".into()));
-    assert_eq!(a.turn_finished().await.result.unwrap().text, "still here");
+    assert_eq!(a.turn_finished().await.unwrap().text, "still here");
     // The last client, the owner, nobody detached: /quit stops the daemon.
     assert_eq!(decide(&mut a).await, QuitDecision::Terminate);
     leave(a, None).await;
@@ -729,7 +729,7 @@ async fn a_daemon_that_exits_at_start_is_retried_reported_and_started_by_hand() 
     client.send(Effect::DaemonStart);
     client.attached().await;
     client.send(Effect::StartTurn("hello".into()));
-    assert_eq!(client.turn_finished().await.result.unwrap().text, "served");
+    assert_eq!(client.turn_finished().await.unwrap().text, "served");
     client.quit().await;
     daemon.stop().await;
 }

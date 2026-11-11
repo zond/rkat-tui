@@ -105,7 +105,7 @@ async fn a_schedule_the_agent_creates_fires_its_turn() {
     reveal(&rig.daemon, &rig.current_session().await).await;
     rig.send(Effect::StartTurn("remind me".into()));
     let outcome = rig.turn_finished().await;
-    assert_eq!(outcome.result.unwrap().text, "scheduled");
+    assert_eq!(outcome.unwrap().text, "scheduled");
     let created = tool_result(&llm.requests()[1], "s1");
     assert!(created.contains("schedule_id"), "{created}");
     // Fired: the prompt, labelled with the schedule, and the turn.
@@ -115,7 +115,7 @@ async fn a_schedule_the_agent_creates_fires_its_turn() {
         "{fired:?}"
     );
     let outcome = rig.turn_finished().await;
-    assert_eq!(outcome.result.unwrap().text, "checked");
+    assert_eq!(outcome.unwrap().text, "checked");
     let last = llm.requests()[2].last().cloned().unwrap();
     assert!(
         matches!(&last, meerkat_core::Message::User(user) if user.text_content() == "check the build"),
@@ -185,7 +185,7 @@ async fn creating_a_schedule_asks_in_manual_mode() {
         id,
         rkat_tui::ui::EscalationAnswer::Deny { comment: None },
     ));
-    rig.turn_finished().await.result.unwrap();
+    rig.turn_finished().await.unwrap();
     rig.send(Effect::Schedules(None));
     rig.wait_for(|m| matches!(m, Msg::Notice { text, .. } if text.starts_with("this agent has no schedules")))
         .await;
@@ -228,7 +228,7 @@ async fn a_fired_schedule_is_unattended_while_nobody_is_attached() {
     let mut a = rig::Client::attach(&ws.root).await;
     let agent = a.agent().await;
     a.send(Effect::StartTurn("schedule a fetch".into()));
-    assert_eq!(a.turn_finished().await.result.unwrap().text, "scheduled");
+    assert_eq!(a.turn_finished().await.unwrap().text, "scheduled");
     a.send(Effect::Leave(Departure::Detach));
     a.quit().await;
     // fetch-a's run: its curl is denied unattended, no classifier asked.
@@ -256,7 +256,7 @@ async fn a_fired_schedule_is_unattended_while_nobody_is_attached() {
     // turn that ends (a UI starts nothing while it runs).
     let fetched_a = |m: &Msg| {
         matches!(m, Msg::TurnFinished(outcome)
-            if outcome.result.as_ref().is_ok_and(|summary| summary.text == "fetched a"))
+            if outcome.as_ref().is_ok_and(|summary| summary.text == "fetched a"))
     };
     if !b.seen.iter().any(fetched_a) {
         b.wait_for(fetched_a).await;
@@ -268,9 +268,9 @@ async fn a_fired_schedule_is_unattended_while_nobody_is_attached() {
         "the missed run was caught up as a turn"
     );
     b.send(Effect::StartTurn("schedule another".into()));
-    assert_eq!(b.turn_finished().await.result.unwrap().text, "scheduled b");
+    assert_eq!(b.turn_finished().await.unwrap().text, "scheduled b");
     b.wait_for(|m| fired_by(m, "fetch-b")).await;
-    assert_eq!(b.turn_finished().await.result.unwrap().text, "fetched b");
+    assert_eq!(b.turn_finished().await.unwrap().text, "fetched b");
     assert_eq!(curls(), 1, "attached, the fired run's curl was reviewed");
     let result = tool_result(&llm.requests()[7], "b1");
     assert!(!result.contains("needs a user attached"), "{result}");
@@ -296,7 +296,7 @@ async fn a_retiring_agent_s_schedules_are_deleted_and_never_fire() {
     let b_session = daemon.session_of(&b.agent().await).await;
     reveal(&daemon, &b_session).await;
     b.send(Effect::StartTurn("wake me later".into()));
-    assert_eq!(b.turn_finished().await.result.unwrap().text, "scheduled");
+    assert_eq!(b.turn_finished().await.unwrap().text, "scheduled");
     // Created during that turn: due no earlier than 8 s from its start.
     let due = chrono::Utc::now() + chrono::Duration::seconds(8);
     let status = daemon.status().await;
@@ -330,7 +330,7 @@ async fn a_retiring_agent_s_schedules_are_deleted_and_never_fire() {
     })
     .await;
     a.send(Effect::StartTurn("sentinel".into()));
-    assert_eq!(a.turn_finished().await.result.unwrap().text, "sentinel");
+    assert_eq!(a.turn_finished().await.unwrap().text, "sentinel");
     let prompts: Vec<String> = llm
         .requests()
         .iter()

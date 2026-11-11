@@ -49,7 +49,7 @@ async fn a_background_shell_is_refused_and_the_job_tools_are_withheld() {
     ]);
     let mut rig = Attached::start(&ws.root, &llm).await;
     rig.send(Effect::StartTurn("run it in the background".into()));
-    assert_eq!(rig.turn_finished().await.result.unwrap().text, "done");
+    assert_eq!(rig.turn_finished().await.unwrap().text, "done");
     let seen = llm.recorded();
 
     // The job tools are not offered; the shell is, and its own schema still
@@ -108,7 +108,7 @@ async fn a_helpers_background_shell_is_refused_by_the_gate() {
     ]);
     let mut rig = Attached::start(&ws.root, &llm).await;
     rig.send(Effect::StartTurn("delegate a build".into()));
-    assert_eq!(rig.turn_finished().await.result.unwrap().text, "done");
+    assert_eq!(rig.turn_finished().await.unwrap().text, "done");
     let seen = llm.recorded();
     for tool in SHELL_JOB_TOOLS {
         assert!(!seen[1].tools.iter().any(|t| t == tool), "{tool} offered");

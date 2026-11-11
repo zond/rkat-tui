@@ -48,14 +48,10 @@ impl Runner {
         true
     }
 
-    /// Show the conversation the agent moved to (another client
-    /// switched it).
-    pub(super) fn adopt_switch(
-        &mut self,
-        session: SessionId,
-        own: Option<bool>,
-        warning: Option<String>,
-    ) {
+    /// Show the conversation `session` from its start (`why` says why):
+    /// the agent moved to it, or the stream must be read again; the
+    /// stream reopened live, the committed transcript.
+    pub(super) fn adopt_switch(&mut self, session: SessionId, why: Shown, warning: Option<String>) {
         let Some(link) = self.conn.link() else {
             return;
         };
@@ -67,37 +63,20 @@ impl Runner {
             let result = adopt(&connection, &stream, session).await;
             reports.send(Report::Switched {
                 result,
-                own,
+                why,
                 warning,
             });
         });
     }
 
-    /// Show the conversation `session` from its start again (`again`
-    /// says why): the stream reopened live, the committed transcript.
-    pub(super) fn rerender(&mut self, session: SessionId, again: Again) {
-        let Some(link) = self.conn.link() else {
-            return;
-        };
-        self.switching = true;
-        let connection = Arc::clone(&link.connection);
-        let stream = link.stream.clone();
-        let reports = self.reporter();
-        tokio::spawn(async move {
-            let result = adopt(&connection, &stream, session).await;
-            reports.send(Report::Rerendered(result, again));
-        });
+    /// Show the current conversation `session` from its start again.
+    pub(super) fn rerender(&mut self, session: SessionId, why: Shown) {
+        self.adopt_switch(session, why, None);
     }
 
     /// The agent runs as `adopted.session` now: follow it, and show
     /// its transcript, model and cost.
-    pub(super) fn adopted(
-        &mut self,
-        adopted: Adopted,
-        own: Option<bool>,
-        warning: Option<String>,
-        again: Option<Again>,
-    ) {
+    pub(super) fn adopted(&mut self, adopted: Adopted, why: Shown, warning: Option<String>) {
         let Adopted {
             session,
             stream,
@@ -113,7 +92,7 @@ impl Runner {
         link.stream = stream;
         // The old conversation's turn and dialogs are over (the same
         // conversation, seated again, keeps them).
-        if again != Some(Again::Reseated) {
+        if why != Shown::Reseated {
             if self.turn.active {
                 self.turn.record(Err(TurnFailure::Interrupted));
                 self.finish_turn();
@@ -151,7 +130,7 @@ impl Runner {
             );
             // A fresh conversation starts on the daemon's start-up model:
             // this client's last `/model` carries over.
-            if own == Some(true)
+            if why == Shown::New
                 && let Some(switch) = self.last_switch.clone()
                 && switch.model != model
             {
@@ -159,18 +138,20 @@ impl Runner {
             }
         }
         let short = id.get(..8).unwrap_or(&id).to_string();
-        let text = match own {
-            _ if again == Some(Again::LostEvents) => format!(
+        let text = match why {
+            Shown::LostEvents => format!(
                 "the stream lost events the daemon no longer keeps; conversation {short} is shown from its start"
             ),
-            _ if again == Some(Again::Reseated) => format!(
+            Shown::Reseated => format!(
                 "the daemon rebuilt the agent on conversation {short} (a model it had no profile for); it is shown from its start"
             ),
-            Some(true) => {
+            Shown::New => {
                 format!("a new conversation ({short}); the previous one stays in /resume")
             }
-            Some(false) => format!("resumed conversation {short}"),
-            None => format!("another client switched the agent to conversation {short}"),
+            Shown::Resumed => format!("resumed conversation {short}"),
+            Shown::Others => {
+                format!("another client switched the agent to conversation {short}")
+            }
         };
         self.notice(NoticeLevel::Info, text);
         if let Some(warning) = warning {
@@ -589,7 +570,7 @@ pub(super) async fn switch_and_adopt(
     };
     Report::Switched {
         result,
-        own: Some(fresh),
+        why: if fresh { Shown::New } else { Shown::Resumed },
         warning,
     }
 }

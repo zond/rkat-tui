@@ -247,7 +247,6 @@ impl Runner {
         }
         // The mobs there are now; the daemon pushes the ones to come.
         self.list_mobs();
-        self.refresh_mode();
         self.refresh_tasks();
         if new_daemon {
             self.startup_notices();
@@ -319,17 +318,6 @@ impl Runner {
                 tracing::debug!(error = %err, "cannot read the daemon's start-up notices");
                 Vec::new()
             }
-        });
-    }
-
-    /// Read the daemon's permission mode into the status bar.
-    pub(super) fn refresh_mode(&self) {
-        let reports = self.reporter();
-        self.ask_if_attached::<protocol::method::GetMode>(protocol::Empty {}, move |read| {
-            if let Ok(status) = read {
-                reports.send(Report::Mode(status));
-            }
-            Vec::new()
         });
     }
 
@@ -427,12 +415,8 @@ impl Runner {
             Push::Approval(protocol::ApprovalNote::Decision { session_id, .. })
                 if session_id != link.session => {}
             Push::Approval(approval) => {
-                let (msgs, mode) = super::super::approvals::note_messages(approval);
-                for msg in msgs {
+                for msg in super::super::approvals::note_messages(approval) {
                     self.send(msg);
-                }
-                if mode {
-                    self.refresh_mode();
                 }
             }
             // Another agent's change.
@@ -454,6 +438,14 @@ impl Runner {
             }
             Push::Cost(totals) if totals.session_id == link.session => {
                 self.send(Msg::Status(StatusUpdate::CostTotals(totals.cost)));
+                // The gauge is the daemon's reading of the last model call
+                // (after a compaction its estimate).
+                if let Some(context) = totals.context {
+                    self.send(Msg::Status(StatusUpdate::Context {
+                        used: Some(context.tokens),
+                        approx: context.approx,
+                    }));
+                }
             }
             Push::Switched(moved) if moved.agent == link.connection.agent() => {
                 if moved.session_id == link.session {
@@ -462,9 +454,10 @@ impl Runner {
                     // Shown once the switch under way ends.
                     self.pushed_session = Some(moved.session_id);
                 } else {
-                    self.adopt_switch(moved.session_id, None, None);
+                    self.adopt_switch(moved.session_id, Shown::Others, None);
                 }
             }
+            Push::Mode(status) => self.push_mode(status),
             Push::Idle(note)
                 if note.agent == link.connection.agent() && note.session_id == link.session =>
             {
@@ -500,7 +493,7 @@ impl Runner {
             // again on it (a model switch rebuilt its agent).
             Push::StreamEnd(stream) if stream == link.stream && !self.switching => {
                 let session = link.session.clone();
-                self.rerender(session, Again::Reseated);
+                self.rerender(session, Shown::Reseated);
             }
             Push::StreamEnd(stream) => self.followers.ended(&stream),
         }
@@ -599,7 +592,7 @@ impl Runner {
             return;
         };
         if self.conn.link().is_some_and(|link| link.session != session) {
-            self.adopt_switch(session, None, None);
+            self.adopt_switch(session, Shown::Others, None);
         }
     }
 

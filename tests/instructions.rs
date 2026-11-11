@@ -52,7 +52,7 @@ async fn instruction_files_reach_the_prompt_in_order() {
     let llm = ScriptedLlmClient::new(vec![Step::Text("ok")]);
     let mut rig = Attached::start(&ws.root, &llm).await;
     rig.send(Effect::StartTurn("hi".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
 
     let system = llm.recorded()[0].system();
     let order = [
@@ -101,7 +101,7 @@ async fn remember_reaches_this_session_and_the_next() {
     );
 
     rig.send(Effect::StartTurn("hi".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     let system = llm.recorded()[0].system();
     assert_eq!(
         system
@@ -117,7 +117,7 @@ async fn remember_reaches_this_session_and_the_next() {
     rig.wait_for(|msg| matches!(msg, Msg::Status(StatusUpdate::Session(id)) if *id != first))
         .await;
     rig.send(Effect::StartTurn("again".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     let system = llm.recorded()[1].system();
     assert!(system.contains("- prefer tabs over spaces"), "{system}");
     assert!(!system.contains("# Remembered instruction\n\n"), "{system}");
@@ -135,7 +135,7 @@ async fn a_resumed_session_keeps_its_instructions_and_the_persona_once() {
     let mut rig = Attached::start(&ws.root, &llm).await;
     let id = rig.current_session().await;
     rig.send(Effect::StartTurn("hi".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     let system = llm.recorded()[0].system();
     assert!(system.contains("FIRST-RULES"), "{system}");
     rig.quit().await;
@@ -146,7 +146,7 @@ async fn a_resumed_session_keeps_its_instructions_and_the_persona_once() {
     let mut rig = Attached::start(&ws.root, &llm).await;
     assert_eq!(rig.current_session().await, id);
     rig.send(Effect::StartTurn("again".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     let system = llm.recorded()[0].system();
     assert_eq!(
         system.matches("interactive coding agent").count(),
@@ -162,7 +162,7 @@ async fn a_resumed_session_keeps_its_instructions_and_the_persona_once() {
     rig.wait_for(|msg| matches!(msg, Msg::Status(StatusUpdate::Session(s)) if *s != first))
         .await;
     rig.send(Effect::StartTurn("fresh".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     let system = llm.recorded()[1].system();
     assert!(system.contains("SECOND-RULES"), "{system}");
     rig.quit().await;

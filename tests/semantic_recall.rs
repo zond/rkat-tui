@@ -81,7 +81,7 @@ async fn every_offered_builtin_is_classified_and_memory_search_is_tier_one() {
     let hidden: Vec<&str> = hidden.iter().map(String::as_str).collect();
     rig.daemon.reveal(&session, &hidden).await;
     rig.send(Effect::StartTurn("hi".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     let tools = llm.recorded()[0].tools.clone();
     assert!(tools.iter().any(|t| t == "memory_search"), "{tools:?}");
     assert!(
@@ -156,17 +156,17 @@ async fn a_compacted_fact_is_found_with_memory_search() {
     let mut rig = auto_rig(&ws, &llm).await;
 
     rig.send(Effect::StartTurn(format!("remember this: {SECRET}")));
-    rig.turn_finished().await.result.expect("turn succeeds");
+    rig.turn_finished().await.expect("turn succeeds");
     for i in 0..5 {
         rig.send(Effect::StartTurn(format!("turn {i}")));
-        rig.turn_finished().await.result.expect("turn succeeds");
+        rig.turn_finished().await.expect("turn succeeds");
     }
     rig.send(Effect::StartTurn("compact".into()));
-    rig.turn_finished().await.result.expect("turn succeeds");
+    rig.turn_finished().await.expect("turn succeeds");
 
     rig.send(Effect::StartTurn("what was the recipe?".into()));
     let outcome = rig.turn_finished().await;
-    assert_eq!(outcome.result.expect("turn succeeds").text, "saffron");
+    assert_eq!(outcome.expect("turn succeeds").text, "saffron");
     let answer = llm.recorded().last().unwrap().clone();
     let found = tool_results(&answer.messages);
     assert!(found.contains("saffron"), "memory_search found: {found}");

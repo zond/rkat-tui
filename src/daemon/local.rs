@@ -453,15 +453,7 @@ impl Local {
             };
             method::GetMode, Empty {} => Ok(ModeStatus::of(&self.engine));
             method::Report, Empty {} => Ok(self.report(self.agent_of(&caller).ok().as_deref()));
-            method::SetMode, protocol::SetModeParams { mode } => {
-                let mode = PermissionMode::parse(&mode).ok_or_else(|| {
-                    Refusal::new(
-                        protocol::INVALID_PARAMS,
-                        "`mode` must be one of default, accept-edits, plan, auto",
-                    )
-                })?;
-                Ok(self.set_mode(mode).await)
-            };
+            method::SetMode, protocol::SetModeParams { mode } => Ok(self.set_mode(mode).await);
             method::Rules, command => {
                 // A rule written to the realm file: blocking I/O, off the
                 // connection's loop.
@@ -1006,8 +998,17 @@ impl Local {
         })
     }
 
+    /// The permission mode and the denial counters now.
+    #[must_use]
+    pub fn mode(&self) -> ModeStatus {
+        ModeStatus::of(&self.engine)
+    }
+
     async fn set_mode(&self, mode: PermissionMode) -> ModeSet {
         self.engine.set_mode(mode);
+        // Every client shows it.
+        self.decisions
+            .broadcast(protocol::MODE, &ModeStatus::of(&self.engine));
         let mut warnings = Vec::new();
         let engine = Arc::clone(&self.engine);
         let persisted = tokio::task::spawn_blocking(move || engine.persist_mode())

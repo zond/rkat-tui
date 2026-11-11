@@ -412,13 +412,14 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     // here; a conversation's new totals go to every client.
     let ledger = super::usage::Ledger::new(&realm_root, {
         let decisions = Arc::downgrade(&decisions);
-        move |session: &meerkat_core::SessionId, cost: &crate::cost::SessionCost| {
+        move |session: &meerkat_core::SessionId, record: &super::usage::Record| {
             if let Some(decisions) = decisions.upgrade() {
                 decisions.broadcast(
                     super::protocol::COST,
                     &super::protocol::CostNote {
                         session_id: session.clone(),
-                        cost: cost.clone(),
+                        cost: record.cost.clone(),
+                        context: record.context,
                     },
                 );
             }
@@ -466,7 +467,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         helper_events,
         spawning_rx,
     ));
-    let notes_task = forward_approval_notes(&decisions, &ledger, approval_events);
+    let notes_task = forward_approval_notes(&decisions, &ledger, &engine, approval_events);
     let (desk, desk_task) = Desk::spawn(
         Arc::clone(&decisions),
         engine.escalation_timeout(),
@@ -669,10 +670,12 @@ fn tagged_diffs(
 fn forward_approval_notes(
     decisions: &Arc<Decisions>,
     ledger: &Arc<super::usage::Ledger>,
+    engine: &Arc<ApprovalEngine>,
     events: Option<tokio::sync::mpsc::UnboundedReceiver<crate::approval::ApprovalEvent>>,
 ) -> tokio::task::JoinHandle<()> {
     let decisions = Arc::clone(decisions);
     let ledger = Arc::clone(ledger);
+    let engine = Arc::clone(engine);
     tokio::spawn(async move {
         let Some(mut events) = events else {
             return;
@@ -689,6 +692,19 @@ fn forward_approval_notes(
             }
             if let Some(note) = super::protocol::ApprovalNote::of(event) {
                 decisions.broadcast(super::protocol::APPROVAL_NOTE, &note);
+                // A decision moves the denial counters; a pause or a
+                // resume the mode.
+                if matches!(
+                    note,
+                    super::protocol::ApprovalNote::Decision { .. }
+                        | super::protocol::ApprovalNote::Paused { .. }
+                        | super::protocol::ApprovalNote::Resumed
+                ) {
+                    decisions.broadcast(
+                        super::protocol::MODE,
+                        &crate::approval::desk::ModeStatus::of(&engine),
+                    );
+                }
             }
         }
     })

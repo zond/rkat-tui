@@ -55,7 +55,7 @@ use crate::models::{FetchResults, ModelCache};
 use crate::ui::delivery::{PendingId, SteerFailure};
 use crate::ui::{
     Block, Checklist, ChecklistView, CompactFailure, Effect, EscalationAnswer, EscalationId, Msg,
-    NoticeLevel, RuleEffect, StatusUpdate, TurnFailure, TurnOutcome, TurnSummary,
+    NoticeLevel, RuleEffect, StatusUpdate, TurnFailure, TurnSummary,
 };
 use crate::ui::{Connection as LinkState, Departure, QuitDecision};
 use crate::user_shell::UserShell;
@@ -317,8 +317,6 @@ enum Report {
     },
     /// A stop or a cancel failed.
     Interrupt(String),
-    /// The daemon's permission mode.
-    Mode(ModeStatus),
     /// The mobs the daemon hosts (listed once per attach and per
     /// conversation; later ones are pushed, [`protocol::MOB`]).
     Mobs(Vec<String>),
@@ -334,15 +332,13 @@ enum Report {
     },
     /// A helper's model.
     HelperModel { helper: HelperId, model: String },
-    /// A conversation switch (this client's, `fresh` for `/new`; `None`:
-    /// another client's) and what the new conversation shows.
+    /// A conversation read from its start (`why` says why) and what it
+    /// shows.
     Switched {
         result: Result<Adopted, String>,
-        own: Option<bool>,
+        why: Shown,
         warning: Option<String>,
     },
-    /// The conversation read again from its start ([`Runner::rerender`]).
-    Rerendered(Result<Adopted, String>, Again),
     /// The resume picker's rows.
     Picker(Result<Vec<(String, String)>, String>),
     /// The tasks of `session` (`rkat/tasks`), or why they were not read.
@@ -421,14 +417,28 @@ struct Outbound {
     ui_tx: mpsc::UnboundedSender<Msg>,
 }
 
-/// Why the current conversation is read again from its start.
+/// Why a conversation is shown from its start.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Again {
-    /// The stream lost events the daemon no longer keeps.
+enum Shown {
+    /// This client's `/new`.
+    New,
+    /// This client's `/resume`.
+    Resumed,
+    /// Another client switched the agent's conversation.
+    Others,
+    /// The stream lost events the daemon no longer keeps (the same
+    /// conversation).
     LostEvents,
     /// The daemon ended the conversation's stream: it seated the agent
     /// again (a model switch to a model it had no profile for).
     Reseated,
+}
+
+impl Shown {
+    /// This client asked for it.
+    fn own(self) -> bool {
+        matches!(self, Self::New | Self::Resumed)
+    }
 }
 
 /// What a client shows of the conversation it switched to.
@@ -824,7 +834,7 @@ impl Runner {
     fn on_report(&mut self, epoch: u64, report: Report) {
         if epoch != self.link_epoch {
             match report {
-                Report::Switched { .. } | Report::Rerendered(..) | Report::MobOpened { .. } => {
+                Report::Switched { .. } | Report::MobOpened { .. } => {
                     tracing::debug!("dropped a report of a connection lost since");
                     return;
                 }
@@ -868,7 +878,7 @@ impl Runner {
                         self.show_model(&switch.endpoint, dialect, &set.model);
                         // The agent was seated again: its stream is new.
                         if set.reseated {
-                            self.rerender(set.session_id.clone(), Again::Reseated);
+                            self.rerender(set.session_id.clone(), Shown::Reseated);
                         }
                     }
                     self.notice(
@@ -882,7 +892,6 @@ impl Runner {
             Report::Interrupt(err) => {
                 self.notice(NoticeLevel::Error, format!("interrupt incomplete: {err}"));
             }
-            Report::Mode(status) => self.push_mode(status),
             Report::Mobs(mobs) => {
                 self.known_mobs.extend(mobs);
                 self.open_known_mobs();
@@ -919,33 +928,24 @@ impl Runner {
             }
             Report::Switched {
                 result,
-                own,
+                why: shown,
                 warning,
             } => {
                 self.switching = false;
                 match result {
                     Ok(adopted) => {
-                        self.adopted(adopted, own, warning, None);
+                        self.adopted(adopted, shown, warning);
                         self.follow_pushed_session();
                     }
-                    Err(why) if own.is_some() => {
+                    Err(why) if shown.own() => {
                         self.notice(
                             NoticeLevel::Error,
                             format!("could not switch conversations: {why}"),
                         );
                         self.follow_pushed_session();
                     }
-                    Err(why) => {
+                    Err(why) if shown == Shown::Others => {
                         tracing::warn!(%why, "cannot show the agent's new conversation");
-                    }
-                }
-            }
-            Report::Rerendered(result, again) => {
-                self.switching = false;
-                match result {
-                    Ok(adopted) => {
-                        self.adopted(adopted, None, None, Some(again));
-                        self.follow_pushed_session();
                     }
                     Err(why) => self.notice(
                         NoticeLevel::Warn,
@@ -1102,10 +1102,7 @@ impl Runner {
                 self.bench.memory_edited(target, &path, &linked);
             }
             Effect::RespondEscalation(id, answer) => self.respond_escalation(id, &answer),
-            Effect::SetMode(mode) => self.set_mode(mode.name()),
-            Effect::ResumeAutoMode => {
-                self.set_mode(crate::approval::mode::PermissionMode::Auto.name());
-            }
+            Effect::SetMode(mode) => self.set_mode(mode),
             Effect::AddRule {
                 effect,
                 tool,
@@ -1480,7 +1477,7 @@ mod tests {
                 identity: None,
                 usage: None,
             }),
-            own: None,
+            why: Shown::Others,
             warning: None,
         }
     }

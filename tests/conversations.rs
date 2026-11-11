@@ -35,7 +35,7 @@ async fn new_starts_fresh_and_resume_brings_the_old_conversation_back() {
     let mut client = Client::attach(&ws.root).await;
     let mut other = Client::attach(&ws.root).await;
     client.send(Effect::StartTurn("first".into()));
-    assert_eq!(client.turn_finished().await.result.unwrap().text, "one");
+    assert_eq!(client.turn_finished().await.unwrap().text, "one");
     let gate_saw = |session: &str| {
         daemon
             .engine()
@@ -57,7 +57,7 @@ async fn new_starts_fresh_and_resume_brings_the_old_conversation_back() {
         .await;
     assert_eq!(gate_saw(&first), None);
     client.send(Effect::StartTurn("second".into()));
-    assert_eq!(client.turn_finished().await.result.unwrap().text, "two");
+    assert_eq!(client.turn_finished().await.unwrap().text, "two");
     assert_eq!(user_texts(&llm.recorded()[1].messages), ["second"]);
     // The other client followed the switch.
     other
@@ -104,7 +104,7 @@ async fn new_starts_fresh_and_resume_brings_the_old_conversation_back() {
         .saw(|m| matches!(m, Msg::Notice { text, .. } if text.starts_with("resumed conversation")))
         .await;
     client.send(Effect::StartTurn("third".into()));
-    assert_eq!(client.turn_finished().await.result.unwrap().text, "three");
+    assert_eq!(client.turn_finished().await.unwrap().text, "three");
     assert_eq!(user_texts(&llm.recorded()[2].messages), ["first", "third"]);
     // Resuming the current one is a no-op (`last` names the most recent
     // other one).
@@ -129,7 +129,7 @@ async fn the_engine_refuses_rewinding_a_members_session() {
     let daemon = Running::start(&ws.root, &llm).await;
     let mut client = Client::attach(&ws.root).await;
     client.send(Effect::StartTurn("first".into()));
-    client.turn_finished().await.result.unwrap();
+    client.turn_finished().await.unwrap();
     let refused = daemon
         .engine_side
         .call(
@@ -229,7 +229,7 @@ async fn the_token_counter_and_gauge_follow_the_conversation() {
     let first = daemon.session.to_string();
     let mut client = Client::attach(&ws.root).await;
     client.send(Effect::StartTurn("first".into()));
-    client.turn_finished().await.result.unwrap();
+    client.turn_finished().await.unwrap();
 
     client.send(Effect::NewSession);
     client.wait_for(|m| reset(m).is_some()).await;
@@ -242,7 +242,7 @@ async fn the_token_counter_and_gauge_follow_the_conversation() {
         Some(None)
     );
     client.send(Effect::StartTurn("second".into()));
-    client.turn_finished().await.result.unwrap();
+    client.turn_finished().await.unwrap();
 
     client.send(Effect::ResumeSession(first));
     client
@@ -284,7 +284,7 @@ async fn compact_now_compacts_at_the_next_turn() {
     let mut client = Client::attach(&ws.root).await;
     for i in 0..4 {
         client.send(Effect::StartTurn(format!("turn {i}")));
-        client.turn_finished().await.result.unwrap();
+        client.turn_finished().await.unwrap();
     }
     client.send(Effect::CompactNow);
     let asked = client
@@ -292,7 +292,7 @@ async fn compact_now_compacts_at_the_next_turn() {
         .await;
     assert!(matches!(asked, Msg::CompactRequested(Ok(()))), "{asked:?}");
     client.send(Effect::StartTurn("next".into()));
-    assert_eq!(client.turn_finished().await.result.unwrap().text, "after");
+    assert_eq!(client.turn_finished().await.unwrap().text, "after");
     client
         .saw(|m| {
             matches!(
@@ -323,11 +323,11 @@ async fn resume_and_continue_choose_the_conversation_at_attach() {
     let first = daemon.session.to_string();
     let mut client = Client::attach(&ws.root).await;
     client.send(Effect::StartTurn("first".into()));
-    client.turn_finished().await.result.unwrap();
+    client.turn_finished().await.unwrap();
     client.send(Effect::NewSession);
     client.wait_for(|m| reset(m).is_some()).await;
     client.send(Effect::StartTurn("second".into()));
-    client.turn_finished().await.result.unwrap();
+    client.turn_finished().await.unwrap();
     client.quit().await;
 
     // -c: the current (second) conversation, no switch.
@@ -376,7 +376,7 @@ async fn resume_and_continue_choose_the_conversation_at_attach() {
     resumed
         .saw(|m| matches!(m, Msg::Notice { text, .. } if text.starts_with("resumed conversation")))
         .await;
-    assert_eq!(resumed.turn_finished().await.result.unwrap().text, "three");
+    assert_eq!(resumed.turn_finished().await.unwrap().text, "three");
     assert_eq!(user_texts(&llm.recorded()[2].messages), ["first", "third"]);
     resumed.quit().await;
 
@@ -440,9 +440,9 @@ async fn a_second_rkat_tui_starts_a_new_agent_and_c_joins_the_most_recent() {
     })
     .await;
     b.send(Effect::StartTurn("b's work".into()));
-    assert_eq!(b.turn_finished().await.result.unwrap().text, "from b");
+    assert_eq!(b.turn_finished().await.unwrap().text, "from b");
     a.send(Effect::StartTurn("a's work".into()));
-    assert_eq!(a.turn_finished().await.result.unwrap().text, "from a");
+    assert_eq!(a.turn_finished().await.unwrap().text, "from a");
     // A ran last: `-c` joins it.
     let mut c = attach_as_typed(&ws.root, &["-c"]).await;
     assert_eq!(c.agent().await, a_name);
@@ -466,7 +466,7 @@ async fn resume_of_a_quit_agents_conversation_seats_it_again() {
     let name = quitter.agent().await;
     assert_ne!(other.agent().await, name);
     quitter.send(Effect::StartTurn("remember the first".into()));
-    assert_eq!(quitter.turn_finished().await.result.unwrap().text, "one");
+    assert_eq!(quitter.turn_finished().await.unwrap().text, "one");
     let session = daemon.session_of(&name).await;
     quitter.send(Effect::DecideQuit);
     quitter
@@ -490,7 +490,7 @@ async fn resume_of_a_quit_agents_conversation_seats_it_again() {
     })
     .await;
     back.send(Effect::StartTurn("and go on".into()));
-    assert_eq!(back.turn_finished().await.result.unwrap().text, "two");
+    assert_eq!(back.turn_finished().await.unwrap().text, "two");
     assert_eq!(daemon.session_of(&name).await, session);
     assert!(
         user_texts(&llm.requests()[1])

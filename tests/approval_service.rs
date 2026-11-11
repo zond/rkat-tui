@@ -61,7 +61,7 @@ async fn a_tier_one_read_runs_without_review() {
     let mut rig = Attached::start_with(&ws.root, &llm, setup(&classifier)).await;
     rig.send(Effect::StartTurn("read notes.txt".into()));
     let outcome = rig.turn_finished().await;
-    assert_eq!(outcome.result.expect("turn succeeds").text, "read it");
+    assert_eq!(outcome.expect("turn succeeds").text, "read it");
     let result = tool_result(&llm.requests()[1], "r1");
     assert!(!result.is_error, "{}", result.text_content());
     assert!(result.text_content().contains("READ-ME-CONTENT"));
@@ -108,7 +108,7 @@ async fn a_classifier_block_reaches_the_model_and_the_run_continues() {
 
     let outcome = rig.turn_finished().await;
     assert_eq!(
-        outcome.result.expect("the run continues").text,
+        outcome.expect("the run continues").text,
         "understood, I will not do that"
     );
     assert!(!marker.exists(), "the denied command never ran");
@@ -158,7 +158,7 @@ async fn a_classifier_allow_runs_the_call() {
     let mut rig = Attached::start_with(&ws.root, &llm, setup(&classifier)).await;
     rig.send(Effect::StartTurn("write the file outside".into()));
     let outcome = rig.turn_finished().await;
-    assert_eq!(outcome.result.expect("turn succeeds").text, "written");
+    assert_eq!(outcome.expect("turn succeeds").text, "written");
     assert_eq!(
         classifier.seen().len(),
         1,
@@ -193,7 +193,7 @@ async fn the_file_tools_cannot_write_the_projects_rkat_inputs() {
     let llm = ScriptedLlmClient::new(vec![Step::Tools(calls), Step::Text("tried")]);
     let mut rig = Attached::start_with(&ws.root, &llm, setup(&classifier)).await;
     rig.send(Effect::StartTurn("configure yourself".into()));
-    assert_eq!(rig.turn_finished().await.result.unwrap().text, "tried");
+    assert_eq!(rig.turn_finished().await.unwrap().text, "tried");
     let request = &llm.requests()[1];
     for (path, id) in targets.iter().zip(["w0", "w1", "w2", "w3"]) {
         let result = tool_result(request, id);
@@ -238,7 +238,7 @@ async fn an_escalation_is_answered_through_the_runner() {
     rig.wait_for(|msg| matches!(msg, Msg::EscalationResolved(resolved) if *resolved == id))
         .await;
     let outcome = rig.turn_finished().await;
-    assert_eq!(outcome.result.expect("turn succeeds").text, "done");
+    assert_eq!(outcome.expect("turn succeeds").text, "done");
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "HUMAN-OK\n");
 
     rig.quit().await;
@@ -285,7 +285,7 @@ async fn an_unanswered_escalation_times_out_as_a_denial() {
             _ => None,
         })
         .unwrap();
-    assert_eq!(outcome.result.expect("the run continues").text, "gave up");
+    assert_eq!(outcome.expect("the run continues").text, "gave up");
     assert!(!marker.exists());
     let text = tool_result(&llm.requests()[1], "w1").text_content();
     assert!(
@@ -321,10 +321,7 @@ async fn a_deny_comment_reaches_the_model_as_the_tool_error() {
             comment: Some("put it in .env.example instead".into()),
         },
     ));
-    assert_eq!(
-        rig.turn_finished().await.result.expect("turn").text,
-        "understood"
-    );
+    assert_eq!(rig.turn_finished().await.expect("turn").text, "understood");
     assert!(!ws.root.join(".env.local").exists());
     let result = tool_result(&llm.requests()[1], "w1");
     assert!(result.is_error);
@@ -343,7 +340,7 @@ async fn a_resumed_session_reseeds_the_classifier_transcript() {
     let first = ScriptedLlmClient::new(vec![Step::Text("noted")]);
     let mut rig = Attached::start(&ws.root, &first).await;
     rig.send(Effect::StartTurn("USER-EARLIER remember the plan".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     let id = rig.current_session().await;
     rig.quit().await;
 
@@ -367,7 +364,7 @@ async fn a_resumed_session_reseeds_the_classifier_transcript() {
     let mut rig = Attached::start_with(&ws.root, &second, setup(&classifier)).await;
     assert_eq!(rig.current_session().await, id);
     rig.send(Effect::StartTurn("USER-NOW go on".into()));
-    within(rig.turn_finished()).await;
+    let _ = within(rig.turn_finished()).await;
     let seen = classifier.seen();
     assert_eq!(seen.len(), 1);
     let seeded = &seen[0].2;
@@ -442,10 +439,7 @@ async fn a_protected_write_asks_the_user_and_allow_always_stops_the_prompts() {
         unreachable!()
     };
     assert_eq!(notice.tier, "ask the user · human");
-    assert_eq!(
-        rig.turn_finished().await.result.expect("turn").text,
-        "denied"
-    );
+    assert_eq!(rig.turn_finished().await.expect("turn").text, "denied");
     assert!(!target.exists());
 
     rig.send(Effect::StartTurn("set it after all".into()));
@@ -457,10 +451,7 @@ async fn a_protected_write_asks_the_user_and_allow_always_stops_the_prompts() {
         id,
         EscalationAnswer::AllowAndAddRule,
     ));
-    assert_eq!(
-        rig.turn_finished().await.result.expect("turn").text,
-        "first"
-    );
+    assert_eq!(rig.turn_finished().await.expect("turn").text, "first");
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "FIRST=1\n");
     let listed = rig
         .daemon
@@ -475,10 +466,7 @@ async fn a_protected_write_asks_the_user_and_allow_always_stops_the_prompts() {
     assert!(added[0].contains("allow write_file .env.local"), "{listed}");
 
     rig.send(Effect::StartTurn("change it".into()));
-    assert_eq!(
-        rig.turn_finished().await.result.expect("turn").text,
-        "second"
-    );
+    assert_eq!(rig.turn_finished().await.expect("turn").text, "second");
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "SECOND=1\n");
     let escalations = rig
         .seen

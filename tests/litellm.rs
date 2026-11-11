@@ -170,7 +170,7 @@ async fn a_litellm_endpoint_runs_a_catalogued_claude_id_on_its_own_facts() {
 
     rig.send(Effect::StartTurn("hi".into()));
     let outcome = rig.turn_finished().await;
-    assert_eq!(outcome.result.unwrap().text, "hello from the proxy");
+    assert_eq!(outcome.unwrap().text, "hello from the proxy");
     assert!(llm.recorded().is_empty(), "the engine's own client ran");
     let turns = fake.turns();
     assert_eq!(turns.len(), 1);
@@ -276,7 +276,7 @@ async fn the_built_in_endpoint_keeps_the_catalog_row() {
     rig.saw(|m| matches!(m, Msg::Status(StatusUpdate::ContextWindow(Some(w))) if *w == catalog))
         .await;
     rig.send(Effect::StartTurn("hi".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     assert_eq!(llm.recorded()[0].model, CLAUDE);
     let id = rig.current_session().await;
     rig.quit().await;
@@ -332,17 +332,17 @@ provider_default = true
     let mut rig = Attached::start_with(&ws.root, &llm, setup(&fake, LOCAL, &[])).await;
     rig.saw(|m| is_model(m, "litellm", LOCAL)).await;
     rig.send(Effect::StartTurn("one".into()));
-    rig.turn_finished().await.result.unwrap();
+    rig.turn_finished().await.unwrap();
 
     rig.send(Effect::SetModel("openai:gpt-5.5".into()));
     rig.wait_for(|m| is_model(m, "openai", "gpt-5.5")).await;
     rig.send(Effect::StartTurn("two".into()));
-    rig.turn_finished().await.result.unwrap();
+    rig.turn_finished().await.unwrap();
 
     rig.send(Effect::SetModel(format!("litellm:{CLAUDE}")));
     rig.wait_for(|m| is_model(m, "litellm", CLAUDE)).await;
     rig.send(Effect::StartTurn("three".into()));
-    rig.turn_finished().await.result.unwrap();
+    rig.turn_finished().await.unwrap();
 
     let models: Vec<String> = fake
         .turns()
@@ -364,7 +364,7 @@ provider_default = true
     assert_eq!(rig.current_session().await, id);
     rig.saw(|m| is_model(m, "litellm", CLAUDE)).await;
     rig.send(Effect::StartTurn("four".into()));
-    rig.turn_finished().await.result.unwrap();
+    rig.turn_finished().await.unwrap();
     let last = fake.turns().pop().unwrap();
     assert_eq!(last.body["model"], CLAUDE);
     rig.quit().await;
@@ -398,7 +398,7 @@ async fn a_helper_inherits_the_alias_through_the_owner_s_endpoint() {
     let mut rig = Attached::start_with(&ws.root, &llm, setup(&fake, CLAUDE, &[])).await;
     rig.send(Effect::StartTurn("delegate".into()));
     let outcome = rig.turn_finished().await;
-    assert_eq!(outcome.result.unwrap().text, "done");
+    assert_eq!(outcome.unwrap().text, "done");
     let turns = fake.turns();
     assert_eq!(turns.len(), 3, "{turns:#?}");
     for turn in &turns {
@@ -573,7 +573,7 @@ async fn the_api_style_setting_picks_the_wire_end_to_end() {
         rig.saw(|m| is_model(m, "litellm", CLAUDE)).await;
         rig.send(Effect::StartTurn("read the notes".into()));
         let outcome = rig.turn_finished().await;
-        assert_eq!(outcome.result.unwrap().text, "the notes say hi", "{style}");
+        assert_eq!(outcome.unwrap().text, "the notes say hi", "{style}");
         assert!(
             llm.recorded().is_empty(),
             "{style}: the engine's own client ran"

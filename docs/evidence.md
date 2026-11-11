@@ -7430,3 +7430,27 @@ orders: the boundary event and the carrying run) and
 UI tests that sent an admitted message again at a turn's end now hold
 the message in the UI instead (`*_held_messages*`): the resend of an
 admitted message was the defect.
+
+## One source for the mode and the gauge (senior review 4, 2026-11-12)
+
+The client asked the daemon for the permission mode (`rkat/get_mode`)
+after every turn and after every approval note, "because the denial
+counters may have moved". The daemon now pushes `rkat/mode` (the mode
+and the counters) whenever they may have moved: after a decision, a
+pause or a resume note, after a mode switch (to every client, so a
+switch made in another client shows at once), and to a client as it
+registers for pushes. The counters travel as their own push rather than
+as fields of each approval note so that a mode switch, which is no
+approval note, uses the same path; `rkat/get_mode` stays for the raw
+wire tests and probes. The permission mode travels as its enum
+(`SetModeParams { mode: PermissionMode }`, the serde names the wire
+already used); `/auto resume` is `SetMode(Auto)`.
+
+The context gauge had two sources: the daemon's ledger (the reading of
+each conversation's last model call, after a compaction its estimate)
+and the UI's own copy of that rule over live events. `rkat/cost` now
+carries the ledger's reading with the totals and the UI shows what it is
+told; a compaction still re-arms the UI's warning. The rule is tested
+where it lives: `daemon::usage::tests::{counts_are_told_written_on_flush_and_read_back,
+a_compaction_counts_its_summary_call_and_estimates_the_context}`; the UI
+test became `context_gauge_shows_the_daemons_reading_and_clears`.

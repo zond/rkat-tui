@@ -102,7 +102,7 @@ async fn a_search_reveals_its_matches_and_the_schedule_fires() {
     ]);
     let mut rig = Attached::start(&ws.root, &llm).await;
     rig.send(Effect::StartTurn("remind me".into()));
-    assert_eq!(rig.turn_finished().await.result.unwrap().text, "scheduled");
+    assert_eq!(rig.turn_finished().await.unwrap().text, "scheduled");
     let recorded = llm.recorded();
     let first = &recorded[0];
     assert!(
@@ -145,7 +145,7 @@ async fn a_search_reveals_its_matches_and_the_schedule_fires() {
     assert!(created.contains("schedule_id"), "{created}");
     rig.wait_for(|m| matches!(m, Msg::Triggered { label, .. } if label == "scheduled: check"))
         .await;
-    assert_eq!(rig.turn_finished().await.result.unwrap().text, "checked");
+    assert_eq!(rig.turn_finished().await.unwrap().text, "checked");
     assert_eq!(
         hidden_in(&rig.daemon, &llm.recorded()[3]),
         ["meerkat_schedule_create"]
@@ -153,7 +153,7 @@ async fn a_search_reveals_its_matches_and_the_schedule_fires() {
     // Plan mode: the search is read-only.
     rig.set_mode(PermissionMode::Plan).await;
     rig.send(Effect::StartTurn("plan a team".into()));
-    assert_eq!(rig.turn_finished().await.result.unwrap().text, "planned");
+    assert_eq!(rig.turn_finished().await.unwrap().text, "planned");
     let recorded = llm.recorded();
     let found = tool_result(&recorded[5].messages, "q2");
     assert!(
@@ -180,13 +180,13 @@ async fn another_agent_reveals_nothing() {
     let daemon = Running::start(&ws.root, &llm).await;
     let mut a = Client::attach(&ws.root).await;
     a.send(Effect::StartTurn("find it".into()));
-    assert_eq!(a.turn_finished().await.result.unwrap().text, "a1");
+    assert_eq!(a.turn_finished().await.unwrap().text, "a1");
     let mut b = Client::attach_agent(&ws.root, AgentChoice::New).await;
     assert_ne!(a.agent().await, b.agent().await);
     b.send(Effect::StartTurn("hello".into()));
-    assert_eq!(b.turn_finished().await.result.unwrap().text, "b1");
+    assert_eq!(b.turn_finished().await.unwrap().text, "b1");
     a.send(Effect::StartTurn("again".into()));
-    assert_eq!(a.turn_finished().await.result.unwrap().text, "a2");
+    assert_eq!(a.turn_finished().await.unwrap().text, "a2");
     let recorded = llm.recorded();
     assert_eq!(
         hidden_in(&daemon, &recorded[1]),
@@ -224,7 +224,7 @@ async fn a_reveal_survives_a_restart_and_new_clears_it() {
     let daemon = Running::start(&ws.root, &llm).await;
     let mut client = Client::attach(&ws.root).await;
     client.send(Effect::StartTurn("find it".into()));
-    assert_eq!(client.turn_finished().await.result.unwrap().text, "found");
+    assert_eq!(client.turn_finished().await.unwrap().text, "found");
     client.quit().await;
     daemon.stop().await;
     let stored = std::fs::read_to_string(
@@ -237,10 +237,7 @@ async fn a_reveal_survives_a_restart_and_new_clears_it() {
     assert!(!daemon.created);
     let mut client = Client::attach(&ws.root).await;
     client.send(Effect::StartTurn("still there?".into()));
-    assert_eq!(
-        client.turn_finished().await.result.unwrap().text,
-        "restored"
-    );
+    assert_eq!(client.turn_finished().await.unwrap().text, "restored");
     assert_eq!(
         hidden_in(&daemon, &llm.recorded()[2]),
         ["meerkat_schedule_create"]
@@ -250,7 +247,7 @@ async fn a_reveal_survives_a_restart_and_new_clears_it() {
         .saw(|m| matches!(m, Msg::Notice { text, .. } if text.starts_with("a new conversation")))
         .await;
     client.send(Effect::StartTurn("fresh start".into()));
-    assert_eq!(client.turn_finished().await.result.unwrap().text, "fresh");
+    assert_eq!(client.turn_finished().await.unwrap().text, "fresh");
     let fresh = &llm.recorded()[3];
     assert!(hidden_in(&daemon, fresh).is_empty(), "{:?}", fresh.tools);
     assert!(fresh.tools.iter().any(|t| t == TOOL_SEARCH));
@@ -259,7 +256,7 @@ async fn a_reveal_survives_a_restart_and_new_clears_it() {
         .saw(|m| matches!(m, Msg::Notice { text, .. } if text.starts_with("resumed conversation")))
         .await;
     client.send(Effect::StartTurn("back again".into()));
-    assert_eq!(client.turn_finished().await.result.unwrap().text, "resumed");
+    assert_eq!(client.turn_finished().await.unwrap().text, "resumed");
     assert_eq!(
         hidden_in(&daemon, &llm.recorded()[4]),
         ["meerkat_schedule_create"]
@@ -295,7 +292,7 @@ async fn a_guessed_hidden_tool_is_not_found_until_searched() {
     ]);
     let mut rig = Attached::start(&ws.root, &llm).await;
     rig.send(Effect::StartTurn("list my schedules".into()));
-    assert_eq!(rig.turn_finished().await.result.unwrap().text, "listed");
+    assert_eq!(rig.turn_finished().await.unwrap().text, "listed");
     let recorded = llm.recorded();
     let guessed = tool_result(&recorded[1].messages, "g1");
     assert!(guessed.contains("not found"), "{guessed}");

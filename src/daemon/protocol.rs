@@ -54,6 +54,10 @@ pub const MOB: &str = "rkat/mob";
 /// agent becomes idle, and to a client as it attaches when it is idle
 /// then.
 pub const IDLE: &str = "rkat/idle";
+/// The notification of the permission mode and the denial counters
+/// ([`ModeStatus`]): pushed when a mode switch, a decision, a pause or a
+/// resume may have moved them, and to a client as it attaches.
+pub const MODE: &str = "rkat/mode";
 
 /// One of the daemon's own `rkat/*` methods: its name, and what it takes
 /// and answers. The daemon dispatches on [`Method::NAME`] and answers with
@@ -787,6 +791,10 @@ pub struct CostNote {
     pub session_id: SessionId,
     /// Its totals now.
     pub cost: crate::cost::SessionCost,
+    /// The context of its last model call (the gauge), as the daemon's
+    /// ledger keeps it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<super::usage::ContextReading>,
 }
 
 /// A file and its trust in words (`absent`, `trusted`, `not trusted: …`).
@@ -823,8 +831,8 @@ pub struct Report {
 /// [`method::SetMode`]'s parameters.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SetModeParams {
-    /// `default`, `accept-edits`, `plan` or `auto` (case-insensitive).
-    pub mode: String,
+    /// The mode.
+    pub mode: crate::approval::mode::PermissionMode,
 }
 
 /// [`method::SetMode`]'s result.

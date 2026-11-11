@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use super::{
     App, Block, BlockId, COMPACT_REQUESTED, Command, CompactFailure, Effect, NoticeLevel, Pending,
-    PendingId, PendingState, SteerFailure, TurnFailure, TurnOutcome, commands, quote_short,
+    PendingId, PendingState, SteerFailure, TurnFailure, TurnSummary, commands, quote_short,
 };
 
 impl App {
@@ -345,11 +345,10 @@ impl App {
 
     pub(super) fn turn_finished(
         &mut self,
-        outcome: TurnOutcome,
+        result: Result<TurnSummary, TurnFailure>,
         now: Instant,
         fx: &mut Vec<Effect>,
     ) {
-        let TurnOutcome { result } = outcome;
         self.running = false;
         self.recalling = false;
         self.reached.clear();

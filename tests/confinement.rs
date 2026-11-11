@@ -165,7 +165,7 @@ async fn run_confined(ws: &Workspace, mode: &str, command: &'static str) -> Opti
     ]);
     let mut rig = confined_rig(ws, &llm, mode).await?;
     rig.send(Effect::StartTurn("run it".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     let text = tool_text(&llm.requests()[1], "sh");
     rig.quit().await;
     Some(text)
@@ -271,7 +271,7 @@ async fn workspace_mode_resolves_localhost() {
         .await
         .unwrap_or_else(|err| panic!("daemon start: {err}"));
     rig.send(Effect::StartTurn("resolve".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     let output = tool_text(&llm.requests()[1], "sh");
     rig.quit().await;
     assert!(output.contains("END"), "{output}");
@@ -354,7 +354,7 @@ async fn workspace_mode_runs_the_rust_toolchain() {
         .await
         .unwrap_or_else(|err| panic!("daemon start: {err}"));
     rig.send(Effect::StartTurn("build it".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     let output = tool_text(&llm.requests()[1], "sh");
     rig.quit().await;
     assert!(output.contains("END"), "{output}");
@@ -401,7 +401,7 @@ async fn an_interrupted_shell_call_leaves_custody_records_and_no_process() {
     assert!(alive(&pid), "the shell process {pid} should be running");
     rig.send(Effect::Interrupt);
     let outcome = rig.turn_finished().await;
-    assert!(outcome.result.is_err(), "{outcome:?}");
+    assert!(outcome.is_err(), "{outcome:?}");
     within(async {
         while alive(&pid) {
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -518,7 +518,7 @@ async fn a_bang_command_runs_as_the_user_unlike_the_agents_shell() {
     };
     // The agent's shell: confined, curated environment.
     rig.send(Effect::StartTurn("run it".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     let agent = tool_text(&llm.requests()[1], "sh");
     assert!(agent.contains("END"), "{agent}");
     assert!(!agent.contains("only-the-user-reads-this"), "{agent}");
@@ -606,7 +606,7 @@ async fn cargo_builds_under_the_narrowed_cargo_home_grant() {
         .await
         .unwrap_or_else(|err| panic!("daemon start: {err}"));
     rig.send(Effect::StartTurn("build it".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     let output = tool_text(&llm.requests()[1], "sh");
     rig.quit().await;
     assert!(output.contains("END"), "{output}");
@@ -655,7 +655,7 @@ async fn the_confined_shell_cannot_read_or_write_the_audit_log() {
         .await
         .unwrap_or_else(|err| panic!("daemon start: {err}"));
     rig.send(Effect::StartTurn("look".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     let output = tool_text(&llm.requests()[1], "sh");
     rig.quit().await;
     assert!(output.contains("END"), "{output}");
@@ -709,7 +709,7 @@ async fn the_confined_shell_does_not_see_the_users_ssh_directory() {
         .await
         .unwrap_or_else(|err| panic!("daemon start: {err}"));
     rig.send(Effect::StartTurn("look".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     let output = tool_text(&llm.requests()[1], "sh");
     rig.quit().await;
     assert!(output.contains("END"), "{output}");
@@ -767,7 +767,7 @@ async fn the_confined_shell_cannot_read_the_cargo_credentials() {
         .await
         .unwrap_or_else(|err| panic!("daemon start: {err}"));
     rig.send(Effect::StartTurn("look".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     let output = tool_text(&llm.requests()[1], "sh");
     rig.quit().await;
     assert!(output.contains("END"), "{output}");
@@ -820,7 +820,7 @@ async fn the_realm_is_out_of_reach_and_git_stays_writable_until_engine_ask_8() {
         .await
         .unwrap_or_else(|err| panic!("daemon start: {err}"));
     rig.send(Effect::StartTurn("probe".into()));
-    rig.turn_finished().await;
+    let _ = rig.turn_finished().await;
     let output = tool_text(&llm.requests()[1], "sh");
     rig.quit().await;
     assert!(output.contains("END"), "{output}");

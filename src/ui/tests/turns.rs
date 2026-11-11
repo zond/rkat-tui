@@ -21,9 +21,7 @@ fn a_remote_turn_shows_its_prompt_and_keeps_the_ui_busy_until_it_ends() {
     assert_eq!(app.transcript.blocks().len(), 1);
     // Esc interrupts it like a turn this UI started.
     assert_eq!(app.update(key(KeyCode::Esc)), vec![Effect::Interrupt]);
-    app.update(Msg::TurnFinished(TurnOutcome {
-        result: Ok(summary()),
-    }));
+    app.update(Msg::TurnFinished(Ok(summary())));
     assert!(!app.is_running());
     // `/daemon stop` is handed to the client runner.
     type_str(&mut app, "/daemon stop");
@@ -93,9 +91,7 @@ fn submit_starts_turn_and_streams_into_one_block() {
         ]
     );
     assert_eq!((app.status.input_tokens, app.status.output_tokens), (10, 4));
-    app.update(Msg::TurnFinished(TurnOutcome {
-        result: Ok(summary()),
-    }));
+    app.update(Msg::TurnFinished(Ok(summary())));
     assert!(!app.is_running());
     assert!(app.status.running_since.is_none());
 }
@@ -105,12 +101,10 @@ fn turn_summary_text_used_when_nothing_streamed() {
     let mut app = App::new(StatusInfo::default());
     type_str(&mut app, "q");
     app.update(key(KeyCode::Enter));
-    app.update(Msg::TurnFinished(TurnOutcome {
-        result: Ok(TurnSummary {
-            text: "answer".into(),
-            ..summary()
-        }),
-    }));
+    app.update(Msg::TurnFinished(Ok(TurnSummary {
+        text: "answer".into(),
+        ..summary()
+    })));
     assert_eq!(
         app.transcript.blocks().last(),
         Some(&Block::Assistant {
@@ -659,12 +653,10 @@ fn summary_text_is_not_repeated_after_streamed_text() {
         level: NoticeLevel::Info,
         text: "x".into(),
     });
-    app.update(Msg::TurnFinished(TurnOutcome {
-        result: Ok(TurnSummary {
-            text: "streamed".into(),
-            ..summary()
-        }),
-    }));
+    app.update(Msg::TurnFinished(Ok(TurnSummary {
+        text: "streamed".into(),
+        ..summary()
+    })));
     let assistant = app
         .transcript
         .blocks()
@@ -736,43 +728,29 @@ fn status_updates_and_dirty_tracking() {
     assert_eq!(app.status.session_short, "01234567");
 }
 
+/// The gauge shows the daemon's reading (`rkat/cost`; how it is computed
+/// from a model call and a compaction is the daemon ledger's,
+/// `daemon::usage`'s tests): a model call's event changes nothing here, and
+/// a new conversation clears it.
 #[test]
-fn context_gauge_tracks_usage_compaction_and_clear() {
+fn context_gauge_shows_the_daemons_reading_and_clears() {
     let mut app = App::new(StatusInfo::default());
     app.update(Msg::Status(StatusUpdate::ContextWindow(Some(200_000))));
     app.update(agent(AgentEvent::TurnCompleted {
         stop_reason: StopReason::EndTurn,
         usage: test_usage(Usage {
             input_tokens: 1_000,
-            output_tokens: 200,
-            cache_creation_tokens: Some(30),
-            cache_read_tokens: Some(80_000),
             ..Usage::default()
         }),
         assistant_message_id: None,
     }));
-    assert_eq!(app.status.context_used, Some(81_230));
-    assert!(!app.status.context_approx);
-    app.update(agent(AgentEvent::CompactionCompleted {
-        summary_tokens: 2_500,
-        messages_before: 40,
-        messages_after: 3,
-        summary_source: None,
-        estimated_history_tokens_after: None,
+    assert_eq!(app.status.context_used, None, "not derived here");
+    app.update(Msg::Status(StatusUpdate::Context {
+        used: Some(2_500),
+        approx: true,
     }));
     assert_eq!(app.status.context_used, Some(2_500));
     assert!(app.status.context_approx);
-    app.update(agent(AgentEvent::TurnCompleted {
-        stop_reason: StopReason::EndTurn,
-        usage: test_usage(Usage {
-            input_tokens: 3_000,
-            output_tokens: 100,
-            ..Usage::default()
-        }),
-        assistant_message_id: None,
-    }));
-    assert_eq!(app.status.context_used, Some(3_100));
-    assert!(!app.status.context_approx);
     assert_eq!(submit(&mut app, "/clear"), vec![Effect::NewSession]);
     // What the client runner sends once the new session is live.
     app.update(Msg::Status(StatusUpdate::Context {
@@ -882,6 +860,10 @@ fn a_native_compaction_rearms_the_warning() {
         summary_source: None,
         estimated_history_tokens_after: Some(4_000),
     }));
+    app.update(Msg::Status(StatusUpdate::Context {
+        used: Some(4_000),
+        approx: true,
+    }));
     assert_eq!(app.status.context_used, Some(4_000));
     assert!(app.status.context_approx);
     assert!(turn_at(&mut app, 77_000).is_empty());
@@ -915,6 +897,11 @@ fn the_footer_and_cost_price_the_daemons_totals() {
     totals.record("main", &usage(1_500_000, 200_000));
     totals.record("judge", &usage(1_000_000, 100_000));
     app.update(Msg::Status(StatusUpdate::CostTotals(totals)));
+    // The gauge's reading comes with the totals (`rkat/cost`).
+    app.update(Msg::Status(StatusUpdate::Context {
+        used: Some(1_000_000),
+        approx: false,
+    }));
     let (usd, all) = app.status.cost.cost_usd(&app.status.prices);
     assert!(all);
     assert!((usd - 9.0).abs() < 1e-9, "{usd}");

@@ -109,9 +109,9 @@ async fn agents_lists_the_agents_and_switches_to_one() {
     let (a_name, b_name) = (a.agent().await, b.agent().await);
     assert_ne!(a_name, b_name);
     a.send(Effect::StartTurn("for a".into()));
-    assert_eq!(a.turn_finished().await.result.unwrap().text, "a answers");
+    assert_eq!(a.turn_finished().await.unwrap().text, "a answers");
     b.send(Effect::StartTurn("for b".into()));
-    assert_eq!(b.turn_finished().await.result.unwrap().text, "b answers");
+    assert_eq!(b.turn_finished().await.unwrap().text, "b answers");
     // Each client saw only its own agent's turn.
     assert_eq!(a.texts("b answers"), 0);
     assert_eq!(b.texts("a answers"), 0);
@@ -234,7 +234,7 @@ async fn a_peer_message_wakes_the_other_agent_and_its_client_shows_it() {
     *b_name.lock() = b.agent().await;
     let b_name = b_name.lock().clone();
     a.send(Effect::StartTurn("tell b".into()));
-    assert_eq!(a.turn_finished().await.result.unwrap().text, "told b");
+    assert_eq!(a.turn_finished().await.unwrap().text, "told b");
     // A's peers: B, and only B.
     let peers = tool_results(&llm.requests()[1]);
     assert!(peers.contains(&format!("tui/main/{b_name}")), "{peers}");
@@ -244,7 +244,7 @@ async fn a_peer_message_wakes_the_other_agent_and_its_client_shows_it() {
         matches!(m, Msg::Peer { from, text } if *from == a_name && text == "I am changing src/lib.rs")
     })
     .await;
-    assert_eq!(b.turn_finished().await.result.unwrap().text, "noted");
+    assert_eq!(b.turn_finished().await.unwrap().text, "noted");
     let seen = llm.recorded();
     let b_turn = &seen[3];
     assert!(
@@ -356,7 +356,7 @@ async fn a_peer_woken_agent_with_no_client_is_denied_what_needs_review() {
     })
     .await;
     a.send(Effect::StartTurn("tell b".into()));
-    assert_eq!(a.turn_finished().await.result.unwrap().text, "told b");
+    assert_eq!(a.turn_finished().await.unwrap().text, "told b");
     // B's third model call waits at the gate: its first two calls are
     // decided.
     llm.wait_call(5).await;
@@ -502,13 +502,13 @@ async fn a_quit_agent_is_announced_and_takes_no_more_messages() {
     *b_name.lock() = b.agent().await;
     let name = b_name.lock().clone();
     a.send(Effect::StartTurn("who is here".into()));
-    assert_eq!(a.turn_finished().await.result.unwrap().text, "listed");
+    assert_eq!(a.turn_finished().await.unwrap().text, "listed");
     b.send(Effect::DecideQuit);
     b.wait_for(|m| matches!(m, Msg::Notice { text, .. } if text.contains("retired")))
         .await;
     b.quit().await;
     a.send(Effect::StartTurn("ask b".into()));
-    assert_eq!(a.turn_finished().await.result.unwrap().text, "tried");
+    assert_eq!(a.turn_finished().await.unwrap().text, "tried");
     let seen = llm.recorded();
     let told = format!("{:?}", seen[2].messages);
     assert!(
@@ -525,10 +525,7 @@ async fn a_quit_agent_is_announced_and_takes_no_more_messages() {
     // model gets, so a run for the retired agent (which the send would
     // have started at once) would have come first.
     a.send(Effect::StartTurn("sentinel".into()));
-    assert_eq!(
-        a.turn_finished().await.result.unwrap().text,
-        "sentinel answered"
-    );
+    assert_eq!(a.turn_finished().await.unwrap().text, "sentinel answered");
     let seen = llm.recorded();
     assert_eq!(seen.len(), 5, "nothing ran for the retired agent");
     assert!(seen[4].user().contains("sentinel"), "{:?}", seen[4].user());
@@ -644,10 +641,10 @@ async fn a_new_agent_attaches_while_another_agents_helper_runs() {
     let mut b = b.unwrap_or_else(|_| panic!("the attach waited on the helper ({waited:?})"));
     let b_name = b.agent().await;
     assert_ne!(a.agent().await, b_name);
-    assert_eq!(a.turn_finished().await.result.unwrap().text, "parent done");
+    assert_eq!(a.turn_finished().await.unwrap().text, "parent done");
     // The note that B joined landed after A's turn: A's next turn reads it.
     a.send(Effect::StartTurn("again".into()));
-    assert_eq!(a.turn_finished().await.result.unwrap().text, "next");
+    assert_eq!(a.turn_finished().await.unwrap().text, "next");
     let last = llm.recorded().pop().unwrap();
     assert!(
         format!("{:?}", last.messages).contains(&format!("Agent `{b_name}` joined this workspace")),
@@ -708,9 +705,9 @@ async fn a_message_to_another_agent_is_tier_one_and_any_other_send_asks() {
     // The message to B ran without a question: B got it.
     b.wait_for(|m| matches!(m, rkat_tui::ui::Msg::Peer { .. }))
         .await;
-    assert_eq!(a.turn_finished().await.result.unwrap().text, "ok");
+    assert_eq!(a.turn_finished().await.unwrap().text, "ok");
     assert_eq!(a.escalations(), 0);
-    b.turn_finished().await;
+    let _ = b.turn_finished().await;
     // The unknown peer asks.
     a.send(Effect::StartTurn("and someone else".into()));
     let (prompt, id) = a.escalation().await;
@@ -720,7 +717,7 @@ async fn a_message_to_another_agent_is_tier_one_and_any_other_send_asks() {
         id,
         EscalationAnswer::Deny { comment: None },
     ));
-    assert_eq!(a.turn_finished().await.result.unwrap().text, "told b");
+    assert_eq!(a.turn_finished().await.unwrap().text, "told b");
     assert_eq!(a.escalations(), 1);
     a.quit().await;
     b.quit().await;
@@ -768,14 +765,14 @@ async fn each_agents_question_is_shown_on_its_client_while_another_is_open() {
         id_b,
         EscalationAnswer::Deny { comment: None },
     ));
-    assert_eq!(b.turn_finished().await.result.unwrap().text, "b done");
+    assert_eq!(b.turn_finished().await.unwrap().text, "b done");
     // A's question was shown on A only, B's on B only, and A's still waits.
     assert_eq!((a.escalations(), b.escalations()), (1, 1));
     a.send(Effect::RespondEscalation(
         id_a,
         EscalationAnswer::Deny { comment: None },
     ));
-    assert_eq!(a.turn_finished().await.result.unwrap().text, "a done");
+    assert_eq!(a.turn_finished().await.unwrap().text, "a done");
     a.quit().await;
     b.quit().await;
     daemon.stop().await;

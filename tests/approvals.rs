@@ -192,7 +192,7 @@ async fn a_tier_one_call_runs_without_a_prompt() {
     let daemon = start(&ws.root, &llm, &setup).await;
     let mut client = attach(&ws.root).await;
     client.send(Effect::StartTurn("read notes.txt".into()));
-    assert_eq!(client.turn_finished().await.result.unwrap().text, "read it");
+    assert_eq!(client.turn_finished().await.unwrap().text, "read it");
     assert!(result_text(&llm, 1, "r1").contains("TIER-ONE-CONTENT"));
     assert_eq!(client.escalations(), 0);
     assert!(
@@ -233,7 +233,7 @@ async fn a_reviewed_call_shows_the_dialog_and_runs_after_approve() {
     client
         .wait_for(|msg| matches!(msg, Msg::EscalationResolved(closed) if *closed == id))
         .await;
-    assert_eq!(client.turn_finished().await.result.unwrap().text, "written");
+    assert_eq!(client.turn_finished().await.unwrap().text, "written");
     assert_eq!(
         std::fs::read_to_string(ws.root.join("a.txt")).unwrap(),
         "APPROVED"
@@ -265,7 +265,7 @@ async fn deny_with_a_comment_refuses_and_the_comment_reaches_the_model() {
             comment: Some("write b.txt instead".into()),
         },
     ));
-    client.turn_finished().await.result.unwrap();
+    client.turn_finished().await.unwrap();
     assert!(!ws.root.join("a.txt").exists());
     let text = result_text(&llm, 1, "w1");
     assert!(
@@ -306,11 +306,11 @@ async fn allow_and_add_rule_skips_the_dialog_the_second_time() {
         id,
         EscalationAnswer::AllowAndAddRule,
     ));
-    assert_eq!(client.turn_finished().await.result.unwrap().text, "first");
+    assert_eq!(client.turn_finished().await.unwrap().text, "first");
     assert!(marker.exists());
     std::fs::remove_file(&marker).unwrap();
     client.send(Effect::StartTurn("again".into()));
-    assert_eq!(client.turn_finished().await.result.unwrap().text, "second");
+    assert_eq!(client.turn_finished().await.unwrap().text, "second");
     assert_eq!(client.escalations(), 1, "the rule answered the second call");
     assert!(marker.exists());
     client.send(Effect::ListRules);
@@ -343,7 +343,7 @@ async fn an_unanswered_request_times_out_denied_and_the_ui_recovers() {
     client
         .wait_for(|msg| matches!(msg, Msg::EscalationResolved(closed) if *closed == id))
         .await;
-    assert_eq!(client.turn_finished().await.result.unwrap().text, "gave up");
+    assert_eq!(client.turn_finished().await.unwrap().text, "gave up");
     assert!(!ws.root.join("a.txt").exists());
     let text = result_text(&llm, 1, "w1");
     assert!(
@@ -353,7 +353,7 @@ async fn an_unanswered_request_times_out_denied_and_the_ui_recovers() {
     // A late answer is a no-op; the UI serves the next prompt.
     client.send(Effect::RespondEscalation(id, EscalationAnswer::AllowOnce));
     client.send(Effect::StartTurn("next".into()));
-    assert_eq!(client.turn_finished().await.result.unwrap().text, "next");
+    assert_eq!(client.turn_finished().await.unwrap().text, "next");
     assert!(!ws.root.join("a.txt").exists());
     client.quit().await;
     daemon.stop().await;
@@ -384,7 +384,7 @@ async fn two_clients_see_the_same_request_and_the_first_answer_wins() {
         id_a,
         EscalationAnswer::Deny { comment: None },
     ));
-    assert_eq!(first.turn_finished().await.result.unwrap().text, "done");
+    assert_eq!(first.turn_finished().await.unwrap().text, "done");
     assert_eq!(
         std::fs::read_to_string(ws.root.join("a.txt")).unwrap(),
         "FIRST"
@@ -414,17 +414,14 @@ async fn auto_mode_needs_no_dialog_and_plan_mode_refuses_writes() {
     let mut client = attach(&ws.root).await;
     client.set_mode(PermissionMode::Auto).await;
     client.send(Effect::StartTurn("touch the marker".into()));
-    assert_eq!(
-        client.turn_finished().await.result.unwrap().text,
-        "auto done"
-    );
+    assert_eq!(client.turn_finished().await.unwrap().text, "auto done");
     assert!(marker.exists(), "the classifier allowed it");
     assert_eq!(setup.classifier.seen.lock().len(), 1);
     // The classifier read the user's words, recorded by the daemon.
     assert!(setup.classifier.seen.lock()[0].contains("touch the marker"));
     client.set_mode(PermissionMode::Plan).await;
     client.send(Effect::StartTurn("plan a write".into()));
-    assert_eq!(client.turn_finished().await.result.unwrap().text, "planned");
+    assert_eq!(client.turn_finished().await.unwrap().text, "planned");
     assert!(!ws.root.join("plan.txt").exists());
     assert!(result_text(&llm, 3, "w1").contains("plan mode is on"));
     // The agent was told plan mode started.
@@ -455,7 +452,7 @@ async fn a_deny_rule_added_in_attach_mode_refuses_the_next_call() {
         .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text == "rule added"))
         .await;
     client.send(Effect::StartTurn("write a.txt".into()));
-    assert_eq!(client.turn_finished().await.result.unwrap().text, "refused");
+    assert_eq!(client.turn_finished().await.unwrap().text, "refused");
     assert!(!ws.root.join("a.txt").exists());
     let text = result_text(&llm, 1, "w1");
     assert!(text.contains("deny rule"), "{text}");
@@ -552,7 +549,7 @@ async fn a_restarted_daemon_keeps_the_application_policy_binding() {
     let daemon = start(&ws.root, &llm, &setup).await;
     let mut client = attach(&ws.root).await;
     client.send(Effect::StartTurn("hello".into()));
-    client.turn_finished().await.result.unwrap();
+    client.turn_finished().await.unwrap();
     client.send(Effect::AddRule {
         effect: RuleEffect::Deny,
         tool: "write_file".into(),
@@ -581,7 +578,7 @@ async fn a_restarted_daemon_keeps_the_application_policy_binding() {
             let outcome = client.turn_finished().await;
             client.quit().await;
             running.stop().await;
-            outcome.result.err().map(|failure| format!("{failure:?}"))
+            outcome.err().map(|failure| format!("{failure:?}"))
         }
     };
     // Observed: the daemon starts (the member is rebuilt lazily) and the
@@ -599,7 +596,7 @@ async fn a_restarted_daemon_keeps_the_application_policy_binding() {
     let mut client = attach(&ws.root).await;
     client.send(Effect::StartTurn("write a.txt".into()));
     assert_eq!(
-        client.turn_finished().await.result.unwrap().text,
+        client.turn_finished().await.unwrap().text,
         "refused after restart"
     );
     assert!(!ws.root.join("a.txt").exists());
@@ -837,7 +834,7 @@ args = ["-c", "printf entered > \"$1\"; cat >/dev/null; printf '{{}}'", "hook-pr
     }
     let mut client = attach(&ws.root).await;
     client.send(Effect::StartTurn("read notes.txt".into()));
-    client.turn_finished().await.result.unwrap();
+    client.turn_finished().await.unwrap();
     assert!(!marker.exists(), "an untrusted project hook does not run");
 
     client.send(Effect::TrustProject);
@@ -854,7 +851,7 @@ args = ["-c", "printf entered > \"$1\"; cat >/dev/null; printf '{{}}'", "hook-pr
     let connection = daemon.connect().await;
     let mut client = attach(&ws.root).await;
     client.send(Effect::StartTurn("read notes.txt again".into()));
-    client.turn_finished().await.result.unwrap();
+    client.turn_finished().await.unwrap();
     assert!(marker.exists(), "the trusted hook ran on the rebuilt agent");
     client.quit().await;
     drop(connection);
@@ -1053,7 +1050,7 @@ async fn a_reviewed_call_is_pushed_as_a_decision_and_the_first_answer_wins() {
         .await
         .unwrap_err();
     assert!(late.to_string().contains("not_open"), "{late}");
-    assert_eq!(client.turn_finished().await.result.unwrap().text, "done");
+    assert_eq!(client.turn_finished().await.unwrap().text, "done");
     assert_eq!(
         std::fs::read_to_string(ws.root.join("a.txt")).unwrap(),
         "PUSHED"
@@ -1101,7 +1098,7 @@ async fn a_client_attaching_after_the_request_opened_is_shown_it() {
     first
         .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text.contains("another client")))
         .await;
-    assert_eq!(first.turn_finished().await.result.unwrap().text, "done");
+    assert_eq!(first.turn_finished().await.unwrap().text, "done");
     assert_eq!(
         std::fs::read_to_string(ws.root.join("a.txt")).unwrap(),
         "LATE"
@@ -1343,7 +1340,7 @@ async fn a_mentioned_files_instruction_is_not_the_users_words() {
     let setup = rig::Setup::default().classifier(Arc::clone(&classifier) as _);
     let mut client = rig::Attached::start_with(&ws.root, &llm, setup).await;
     client.send(Effect::StartTurn("summarise @notes.txt please".into()));
-    assert_eq!(client.turn_finished().await.result.unwrap().text, "done");
+    assert_eq!(client.turn_finished().await.unwrap().text, "done");
     // The model got the file.
     assert!(format!("{:?}", llm.recorded()[0].messages).contains("PLANTED"));
     let transcript = classifier
@@ -1391,7 +1388,7 @@ async fn the_endpoint_file_is_sealed_for_the_file_tools() {
     let mut client = rig::Attached::start_with(&ws.root, &llm, setup).await;
     let token = client.daemon.endpoint().token;
     client.send(Effect::StartTurn("look around".into()));
-    assert_eq!(client.turn_finished().await.result.unwrap().text, "done");
+    assert_eq!(client.turn_finished().await.unwrap().text, "done");
     let read = result_text(&llm, 1, "r1");
     assert!(read.contains("sealed"), "{read}");
     assert!(!read.contains(&token), "{read}");
@@ -1469,7 +1466,7 @@ async fn every_gate_decision_is_one_audit_line_naming_who_decided() {
     let (prompt, id) = client.escalation().await;
     assert_eq!(prompt.tool, "write_file");
     client.send(Effect::RespondEscalation(id, EscalationAnswer::AllowOnce));
-    assert_eq!(client.turn_finished().await.result.unwrap().text, "done");
+    assert_eq!(client.turn_finished().await.unwrap().text, "done");
     let sealed = result_text(&llm, 5, "r2");
     assert!(sealed.contains("sealed"), "{sealed}");
     assert!(!sealed.contains("\"decision\""), "{sealed}");

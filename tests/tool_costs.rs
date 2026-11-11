@@ -47,7 +47,7 @@ async fn an_agent_s_request_carries_every_tool_definition() {
     ]);
     let mut rig = Attached::start(&ws.root, &llm).await;
     rig.send(Effect::StartTurn("hello".into()));
-    assert_eq!(rig.turn_finished().await.result.unwrap().text, "ok");
+    assert_eq!(rig.turn_finished().await.unwrap().text, "ok");
     let recorded = llm.recorded();
     let main = &recorded[0];
     let bytes = main.tool_bytes();
