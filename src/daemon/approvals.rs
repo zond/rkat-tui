@@ -477,6 +477,13 @@ pub fn watch(
                             }
                         }
                     }
+                    AgentEvent::ToolCallRequested {
+                        name: tool, args, ..
+                    } => {
+                        if let Some(agents) = agents.upgrade() {
+                            agents.tool_requested(&name, tool, args.as_value());
+                        }
+                    }
                     AgentEvent::TurnCompleted {
                         usage: Some(usage), ..
                     } => {

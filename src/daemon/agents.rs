@@ -206,6 +206,23 @@ async fn append_note(state: Arc<MobMcpState>, name: String, text: String, key: S
     }
 }
 
+/// What an agent is told when it makes a profile read-only with comms.
+pub const READ_ONLY_COMMS_NOTE: &str = "A mob profile you just wrote has `read_only: true` and `comms: true`: its members can read messages, but they cannot send any (`read_only` blocks every mutating tool, `send_message` and the other comms sends included). Drop `read_only` (and narrow the tools another way) if they must answer.";
+
+/// Whether `args` hold a profile's tool settings with both `read_only`
+/// and `comms` true (anywhere: a definition's profiles, or one profile).
+#[must_use]
+pub fn read_only_with_comms(args: &serde_json::Value) -> bool {
+    match args {
+        serde_json::Value::Object(map) => {
+            let set = |key: &str| map.get(key).and_then(serde_json::Value::as_bool) == Some(true);
+            (set("read_only") && set("comms")) || map.values().any(read_only_with_comms)
+        }
+        serde_json::Value::Array(items) => items.iter().any(read_only_with_comms),
+        _ => false,
+    }
+}
+
 /// The live agents.
 pub struct Agents {
     state: Arc<MobMcpState>,
@@ -362,6 +379,55 @@ impl Agents {
                 prompt: prompt.to_string(),
             },
         );
+    }
+
+    /// `name` called `tool` with `args`: a profile made read-only with
+    /// comms on (`mob_create`, `mob_profile_create`, `mob_profile_update`)
+    /// gets the agent a note that its members cannot send messages (the
+    /// engine's `read_only` blocks every mutating tool, `send_message`
+    /// included). The note reaches it at its next turn boundary.
+    pub fn tool_requested(&self, name: &str, tool: &str, args: &serde_json::Value) {
+        if !matches!(
+            tool,
+            "mob_create" | "mob_profile_create" | "mob_profile_update"
+        ) || !read_only_with_comms(args)
+        {
+            return;
+        }
+        let key = format!("read-only-comms-{}", self.tick());
+        tokio::spawn(append_note(
+            Arc::clone(&self.state),
+            name.to_string(),
+            READ_ONLY_COMMS_NOTE.to_string(),
+            key,
+        ));
+    }
+
+    /// Whether `peer_id` is the comms peer id of a live agent other than
+    /// the one running `session` (the mob's record of each agent's
+    /// endpoint names it).
+    pub async fn is_agent_peer(&self, session: &SessionId, peer_id: &str) -> bool {
+        let caller = self.conversations.agent_of(session);
+        let names: Vec<String> = self
+            .table
+            .lock()
+            .keys()
+            .filter(|name| caller.as_deref() != Some(name.as_str()))
+            .cloned()
+            .collect();
+        let Ok(handle) = self.state.handle_for(&MobId::from(MOB_ID)).await else {
+            return false;
+        };
+        for name in names {
+            if let Ok(Some(endpoint)) = handle
+                .member_peer_endpoint(&AgentIdentity::from(name.as_str()))
+                .await
+                && endpoint.descriptor.peer_id.to_string() == peer_id
+            {
+                return true;
+            }
+        }
+        false
     }
 
     /// The audit log's `run_triggered` line for `name`'s `run`.
@@ -1095,6 +1161,16 @@ impl AgentAttendance {
     }
 }
 
+#[async_trait::async_trait]
+impl crate::approval::AgentPeers for AgentAttendance {
+    async fn is_agent_peer(&self, session: &SessionId, peer_id: &str) -> bool {
+        let Some(agents) = self.0.upgrade() else {
+            return false;
+        };
+        agents.is_agent_peer(session, peer_id).await
+    }
+}
+
 impl crate::approval::Attendance for AgentAttendance {
     fn attached(&self, session: &SessionId) -> bool {
         self.0
@@ -1144,6 +1220,20 @@ impl Drop for Binding {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_read_only_profile_with_comms_is_found_wherever_it_is() {
+        let definition = serde_json::json!({"definition": {"profiles": {
+            "worker": {"tools": {"read_only": true, "comms": true, "shell": false}},
+            "lead": {"tools": {"comms": true}}
+        }}});
+        assert!(read_only_with_comms(&definition));
+        let profile = serde_json::json!({"name": "w", "profile": {"tools": {"read_only": true, "comms": false}}});
+        assert!(!read_only_with_comms(&profile));
+        assert!(!read_only_with_comms(
+            &serde_json::json!({"tools": {"comms": true}})
+        ));
+    }
 
     #[test]
     fn the_notes_name_the_agents() {

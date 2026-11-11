@@ -158,6 +158,11 @@ pub const READ_ONLY_BUILTINS: &[&str] = &[
     "mob_profile_get",
     "mob_profile_list",
     "mob_profile_list_sources",
+    // Flow queries: the mob's flow ids, a run's status. Running and
+    // cancelling a flow (`mob_run_flow`, `mob_cancel_flow`) are reviewed
+    // with the other mutating `mob_*` tools.
+    "mob_list_flows",
+    "mob_flow_status",
     // The member-scoped mob queries a daemon member is offered (its own
     // mob's roster and a member's state).
     "list_members",
@@ -215,6 +220,11 @@ pub const REVIEWED_BUILTINS: &[&str] = &[
 /// a [`ActionKind::FileWrite`] of its destination, so the seals and the
 /// protected paths judge it exactly like `write_file` of that path.
 pub const BLOB_SAVE_FILE: &str = "blob_save_file";
+
+/// The comms sends that name their recipient (`peer_id`): to another
+/// agent of the workspace they are tier 1 (`ApprovalEngine`'s agent
+/// peers), to anything else reviewed.
+pub const AGENT_SEND_TOOLS: &[&str] = &["send_message", "send_request", "send_response"];
 
 /// Tools that hand work to a helper (a mob member, see [`crate::mobs`]).
 /// Delegating does nothing by itself: every call the helper makes passes

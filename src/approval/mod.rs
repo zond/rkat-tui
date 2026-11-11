@@ -62,7 +62,7 @@ use rules::{Rule, RuleId, RulesError};
 use std::fmt;
 
 pub use admission::ApprovalGate;
-pub use attendance::Attendance;
+pub use attendance::{AgentPeers, Attendance};
 pub use catalog::ToolOrigins;
 pub use engine::{ApprovalConfig, ApprovalEngine};
 pub use transcript::InputKey;

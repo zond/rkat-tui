@@ -530,3 +530,32 @@ async fn a_helper_below_a_raised_depth_limit_delegates_once_more() {
     assert!(result.text_content().contains("HELPER-DONE"));
     rig.quit().await;
 }
+
+/// Item 20: an agent that writes a mob profile read-only with comms on is
+/// told, by its next turn, that the profile's members cannot send
+/// messages (whatever the engine made of the call).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_read_only_profile_with_comms_gets_the_agent_a_note() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Tool {
+            id: "m1",
+            name: "mob_profile_create",
+            args: json!({"mob_id": "team", "name": "reviewer",
+                "profile": {"model": "claude-sonnet-4-6", "tools": {"read_only": true, "comms": true}}}),
+        },
+        Step::Text("made it"),
+        Step::Text("next"),
+    ]);
+    let mut rig = Attached::start(&ws.root, &llm).await;
+    rig.send(Effect::StartTurn("make a reviewer profile".into()));
+    rig.turn_finished().await;
+    rig.send(Effect::StartTurn("go on".into()));
+    rig.turn_finished().await;
+    let seen = format!("{:?}", llm.requests()[2]);
+    assert!(
+        seen.contains("cannot send any (`read_only` blocks every mutating tool"),
+        "{seen}"
+    );
+    rig.quit().await;
+}

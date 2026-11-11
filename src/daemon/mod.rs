@@ -599,6 +599,10 @@ impl Daemon {
         composed
             .engine
             .set_attendance(Arc::new(agents::AgentAttendance::new(&agents)));
+        // A message to another agent of the workspace is tier 1.
+        composed
+            .engine
+            .set_agent_peers(Arc::new(agents::AgentAttendance::new(&agents)));
         if let Some(log) = &audit {
             composed
                 .engine

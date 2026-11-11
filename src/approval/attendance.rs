@@ -41,3 +41,13 @@ pub trait Attendance: Send + Sync {
     /// agent's next attached client.
     fn missed(&self, session: &SessionId, notice: String);
 }
+
+/// The workspace's agents as comms peers: a message one agent sends
+/// another changes nothing in the tree (the recipient's own calls pass the
+/// gate), so the gate lets it through without review.
+#[async_trait::async_trait]
+pub trait AgentPeers: Send + Sync {
+    /// Whether `peer_id` (as the comms tools name a peer) is a live agent
+    /// of this workspace other than the one running `session`.
+    async fn is_agent_peer(&self, session: &SessionId, peer_id: &str) -> bool;
+}

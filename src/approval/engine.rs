@@ -276,6 +276,8 @@ pub struct ApprovalEngine {
     /// Who is with each agent ([`super::attendance`]); unset: every call is
     /// attended.
     attendance: OnceLock<Arc<dyn Attendance>>,
+    /// The workspace's agents as peers (a message to one is tier 1).
+    agent_peers: OnceLock<Arc<dyn super::attendance::AgentPeers>>,
     /// Where decisions and changes of authority are recorded
     /// ([`super::audit`]); unset: nowhere.
     audit: OnceLock<Arc<dyn AuditSink>>,
@@ -347,6 +349,7 @@ impl ApprovalEngine {
             rules_trust,
             origins: OnceLock::new(),
             attendance: OnceLock::new(),
+            agent_peers: OnceLock::new(),
             audit: OnceLock::new(),
             answerers: Mutex::new(HashMap::new()),
             forget_hooks: RwLock::new(Vec::new()),
@@ -400,6 +403,37 @@ impl ApprovalEngine {
     /// already.
     pub fn set_attendance(&self, attendance: Arc<dyn Attendance>) -> bool {
         self.attendance.set(attendance).is_ok()
+    }
+
+    /// Tell the gate which comms peers are the workspace's agents: a
+    /// message sent to one of them is tier 1. Unset, every send is
+    /// reviewed. Set once; returns whether this call set it.
+    pub fn set_agent_peers(&self, peers: Arc<dyn super::attendance::AgentPeers>) -> bool {
+        self.agent_peers.set(peers).is_ok()
+    }
+
+    /// Whether `facts` is a comms send (`send_message`, `send_request`,
+    /// `send_response`) to another agent of the workspace.
+    async fn to_agent_peer(&self, session_id: &SessionId, facts: &Facts<'_>) -> bool {
+        let Some(peers) = self.agent_peers.get() else {
+            return false;
+        };
+        if facts.action.family != super::catalog::ToolFamily::Native
+            || !super::policy::AGENT_SEND_TOOLS.contains(&facts.action.name)
+        {
+            return false;
+        }
+        let Some(peer) = serde_json::from_str::<serde_json::Value>(facts.action.args.get())
+            .ok()
+            .and_then(|args| {
+                args.get("peer_id")
+                    .and_then(|p| p.as_str())
+                    .map(str::to_string)
+            })
+        else {
+            return false;
+        };
+        peers.is_agent_peer(session_id, &peer).await
     }
 
     /// Record every decision and change of authority in `audit` from now
@@ -925,6 +959,15 @@ impl ApprovalEngine {
     ) -> Verdict {
         let decision = self.tier_of(facts);
         *facts.allow_rule.lock() = decision.allow_rule;
+        // A message to another agent of the workspace: tier 1 (a user deny
+        // rule still decides first).
+        if decision.tier == Tier::Classifier && self.to_agent_peer(session_id, facts).await {
+            return allow_at(
+                Tier::AlwaysAllow,
+                Decider::Policy,
+                "a message to another agent of this workspace",
+            );
+        }
         let mode = self.mode();
         match self.route(facts, decision, mode) {
             Route::Settled(verdict) => return verdict,

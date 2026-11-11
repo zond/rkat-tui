@@ -649,3 +649,72 @@ async fn a_new_agent_attaches_while_another_agents_helper_runs() {
     b.quit().await;
     daemon.stop().await;
 }
+
+/// Item 11: in manual mode a message to another agent of the workspace
+/// asks nothing (tier 1: the recipient's own calls still pass its gate),
+/// and a message to any other peer id is still reviewed, so manual mode
+/// asks.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_message_to_another_agent_is_tier_one_and_any_other_send_asks() {
+    use rkat_tui::approval::mode::PermissionMode;
+    use rkat_tui::daemon::protocol::AgentChoice;
+    use rkat_tui::ui::{Effect, EscalationAnswer};
+    let ws = Workspace::new();
+    let b_name = Arc::new(parking_lot::Mutex::new(String::new()));
+    let send = {
+        let b_name = Arc::clone(&b_name);
+        Step::Dynamic(Arc::new(move |messages: &[Message]| {
+            let peer = peer_id_of(messages, &b_name.lock()).unwrap_or_else(|| "none".into());
+            Step::Tool {
+                id: "m1",
+                name: "send_message",
+                args: json!({"peer_id": peer, "body": "I am changing src/lib.rs", "handling_mode": "queue"}),
+            }
+        }))
+    };
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Tool {
+            id: "p1",
+            name: "peers",
+            args: json!({}),
+        },
+        send,
+        // A's next call and B's run (woken by the message) race for
+        // these two: they are alike.
+        Step::Text("ok"),
+        Step::Text("ok"),
+        // A's second turn: a send to a peer id no agent has.
+        Step::Tool {
+            id: "m2",
+            name: "send_message",
+            args: json!({"peer_id": "6f9619ff-8b86-d011-b42d-00cf4fc964ff", "body": "hello", "handling_mode": "queue"}),
+        },
+        Step::Text("told b"),
+    ]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let mut a = rig::Client::attach(&ws.root).await;
+    let mut b = rig::Client::attach_agent(&ws.root, AgentChoice::New).await;
+    *b_name.lock() = b.agent().await;
+    a.set_mode(PermissionMode::Manual).await;
+    a.send(Effect::StartTurn("tell b".into()));
+    // The message to B ran without a question: B got it.
+    b.wait_for(|m| matches!(m, rkat_tui::ui::Msg::Peer { .. }))
+        .await;
+    assert_eq!(a.turn_finished().await.result.unwrap().text, "ok");
+    assert_eq!(a.escalations(), 0);
+    b.turn_finished().await;
+    // The unknown peer asks.
+    a.send(Effect::StartTurn("and someone else".into()));
+    let (prompt, id) = a.escalation().await;
+    assert_eq!(prompt.tool, "send_message");
+    assert!(prompt.args_preview.contains("6f9619ff"), "{prompt:?}");
+    a.send(Effect::RespondEscalation(
+        id,
+        EscalationAnswer::Deny { comment: None },
+    ));
+    assert_eq!(a.turn_finished().await.result.unwrap().text, "told b");
+    assert_eq!(a.escalations(), 1);
+    a.quit().await;
+    b.quit().await;
+    daemon.stop().await;
+}

@@ -309,6 +309,13 @@ design.
 
 ### Changed
 
+- A message to another agent of the workspace (`send_message`,
+  `send_request`, `send_response` to its peer id) is tier 1: manual mode
+  no longer asks for every message between two agents. Sends to anything
+  else are still reviewed.
+- `mob_list_flows` and `mob_flow_status` are tier 1; an agent that writes a
+  mob profile with both `read_only` and `comms` is told its members cannot
+  send messages.
 - A configured endpoint (a LiteLLM proxy, a gateway) is the authority for
   its models' facts: the context gauge, `/context` and the agent's
   compaction threshold use the window the endpoint lists, even for a

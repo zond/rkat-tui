@@ -5955,3 +5955,77 @@ alone, with the advice that follows. Tests:
 `tests/approval_service.rs::a_classifier_block_reaches_the_model_and_the_run_continues`
 (the notice has `[D1] [classifier checked 0 files]`, the tool result
 neither), and the classifier tests now read the annotation apart.
+
+### Item 11: a message to another agent is tier 1
+
+`AGENT_SEND_TOOLS` (`send_message`, `send_request`, `send_response`, the
+sends that name a `peer_id`) of the native family, whose `peer_id` is the
+comms peer id of a live agent other than the caller's, are allowed at
+tier 1 (`ApprovalEngine::set_agent_peers`, `Agents::is_agent_peer`: the
+mob's record of each agent's endpoint, `MobHandle::member_peer_endpoint`,
+whose descriptor carries the peer id). A user deny rule still decides
+first; any other send stays reviewed. `reply_to_peer` names no peer and
+stays reviewed. Test:
+`tests/attach_agents.rs::a_message_to_another_agent_is_tier_one_and_any_other_send_asks`
+(manual mode: the send to the other agent asks nothing and arrives; a
+send to an unknown peer id asks).
+
+### Item 12: `peers` during a `delegate`, and `spawn_member` helpers
+
+Probed on the daemon rig (a scripted agent delegates, the helper calls
+`peers`): the helper's `peers` lists the delegating agent
+(`tui/main/main-…`, `source: trusted`, sendable kinds message, request
+and response), so a `delegate` helper is wired to the agent that
+delegated. In the same run the agent's own `list_members` answered an
+empty list and `peers` an empty list (it was the only agent), the
+`list_members` observation of item 21. `spawn_member` helpers in the
+`tui` mob are attributed to the spawning agent already: the customizer
+resolves the owner from the spawn's `spawner_identity`
+(`HelperRegistry::owner_for_spawn`) and registers the helper under it,
+which is what the client's helper filter reads; not changed.
+
+### Item 19: flow tools
+
+Probed: the agent's catalog offers `mob_list_flows`, `mob_run_flow`,
+`mob_flow_status` and `mob_cancel_flow` (the member operator tools), and
+`mob_list_flows` answers `access_denied` ("Tool 'mob_list_flows' is not
+allowed by policy"). That refusal is the engine's (the mob tool layer's
+visibility and admission), not rkat-tui's deny list (which names only
+`brain_swap`, `apply_patch` and `fork_off`) nor the gate. Decided: the
+gate classifies `mob_list_flows` and `mob_flow_status` as tier 1 and
+leaves `mob_run_flow` and `mob_cancel_flow` reviewed with the other
+mutating `mob_*` tools; the engine's refusal stays, since flows need a
+mob definition that declares them, which the daemon's `tui` mob does not
+(its one profile is the orchestrator's). Covered by
+`upstream_builtins_are_all_classified`'s read-only tier check.
+
+### Item 20: `read_only` with `comms`
+
+The daemon's event watcher sees each `ToolCallRequested`; a
+`mob_create`, `mob_profile_create` or `mob_profile_update` whose arguments
+hold tool settings with both `read_only` and `comms` true gets the agent a
+system note (`READ_ONLY_COMMS_NOTE`) that the profile's members cannot
+send messages. The note lands at the agent's next turn boundary, as
+every appended note does. Tests:
+`daemon::agents::tests::a_read_only_profile_with_comms_is_found_wherever_it_is`,
+`tests/mobs.rs::a_read_only_profile_with_comms_gets_the_agent_a_note`.
+
+### Item 9: background shell jobs (probed, not done)
+
+Reproduced on the rig: `shell {"background": true}` answers
+"tool execution contract resolution failed: requested tool execution mode
+Detached is not supported", while `shell_jobs`, `shell_job_status` and
+`shell_job_cancel` are offered. Read in the engine: the shell offers
+`Detached` only when its job manager `exports_canonical_async_ops`
+(meerkat-tools `job_manager.rs`): an owner session bound, an ops
+lifecycle registry bound, and a durable job runtime, which the factory
+builds only when the build has a realm id, a persistent detached job
+store, a persistent blob store and a delivery projector
+(`factory.rs` around 9316; the runtime-backed composition supplies all
+four as builder defaults, `surface/runtime_backed.rs` 395-430). Which of
+these a mob member's build lacks was not established in this batch, so
+neither the fix nor the brief's fallback (withholding the three job
+tools) was applied: withholding them on a guess would hide tools the
+engine may well run. Next step: a probe that reads the member's
+`JobManager` state (its `Debug` shows `durable` and
+`exports_canonical_async_ops`) through the engine's session introspection.

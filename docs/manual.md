@@ -1573,7 +1573,9 @@ running, and the TUI shows the other's conversation from its start.
 the engine's peer tools (`peers` lists the other agents, `send_message`
 and the request and reply tools reach them; the daemon wires the agents
 only, never their helpers).
-Sending passes the approval gate like any other action. A message
+A message to another agent of the workspace is tier 1 (it changes
+nothing, and what the other agent does about it passes its own gate);
+a send to any other peer is reviewed. A message
 reaches the other agent as input: an idle agent wakes for it, a busy one
 takes it at its next step. The receiving TUI shows it as a block labelled
 with the sender (`✉ from agent main-abc`), so you always see why your
