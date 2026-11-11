@@ -392,19 +392,13 @@ They follow the same rules and fail the start the same way (the error names
 up (global, realm, then `--set 'confinement.extra_read=["/dir"]'`, whose
 array value appends); a directory listed twice is granted once with the most
 access any layer gives, and the flags win over a file grant that overlaps
-one of theirs. A project `.rkat/tui.toml` and an untrusted realm file may
-not widen the sandbox: their `[confinement]` is ignored with a notice.
+one of theirs. A project `.rkat/tui.toml` may not widen the sandbox: its
+`[confinement]` is ignored with a notice.
 
-A realm `[confinement]` that confines the shell (`shell`, else `all`) is the
-**floor**: the command line may only narrow it. `--confinement workspace`
-(the default) installs the realm's requirement as it is, `--confinement
-strict` installs it with the network denied, and `--confinement off` /
-`--no-confinement` refuses to start, naming the realm's policy; so do
-`--confinement-read`/`--confinement-write` and the `tui.toml` grants (they
-would widen it: add the
-directories to the realm's `[confinement.shell]` instead). A realm that
-states `trusted_host` (or nothing) for the shell leaves the command line in
-charge.
+The shell's confinement is the command line's alone (`--confinement`, the
+extra grants of the flags and your `tui.toml`): a `[confinement]` table in
+the realm's `config.toml` does not decide it, and a start-up notice says so
+when there is one.
 
 **When the host cannot confine.** A host that cannot enforce the mode
 refuses to start (exit 2; there is no silent fallback) and explains: what

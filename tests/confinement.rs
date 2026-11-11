@@ -440,13 +440,12 @@ fn walk(dir: &Path) -> Vec<std::path::PathBuf> {
     out
 }
 
-/// The workspace realm's `config.toml` is the user's own now that the
-/// realm lives under the config directory, out of the agent's shell's and a
-/// clone's reach: its `[confinement]` is the floor, as a `--state-root`
-/// realm's is (before the move it was ignored with a notice, S1 of the
-/// security review).
+/// The realm config's `[confinement]` table does not decide the agent
+/// shell's confinement: the command line does, so `--confinement=off`
+/// starts even when the table asks for the workspace preset (it was a
+/// floor the command line could only narrow).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_workspace_realms_confinement_table_is_a_floor() {
+async fn the_realm_confinement_table_does_not_decide_the_shell() {
     let ws = Workspace::new();
     let realm = rkat_tui::bootstrap::resolve_scope(&common::args_for(&ws.root))
         .unwrap()
@@ -457,21 +456,12 @@ async fn the_workspace_realms_confinement_table_is_a_floor() {
     )
     .unwrap();
     let llm = ScriptedLlmClient::new(Vec::new());
-    let Err(err) =
-        Attached::try_start_with(&ws.root, &llm, allow_shell(&["--confinement=off"])).await
-    else {
-        panic!("--no-confinement started below the workspace realm's policy");
-    };
-    let DaemonError::Bootstrap(err) = err else {
-        panic!("not a bootstrap error: {err}");
-    };
-    assert!(
-        matches!(
-            &*err,
-            TuiError::Confinement(rkat_tui::ConfinementError::BelowRealmFloor { .. })
-        ),
-        "{err}"
-    );
+    let rig =
+        match Attached::try_start_with(&ws.root, &llm, allow_shell(&["--confinement=off"])).await {
+            Ok(rig) => rig,
+            Err(err) => panic!("--confinement=off was refused under a realm table: {err}"),
+        };
+    rig.quit().await;
 }
 
 /// A `!` command runs under the shell's own confinement: it writes the

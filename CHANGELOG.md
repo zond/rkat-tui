@@ -35,6 +35,11 @@
   `.rkat/mcp.toml` and `.rkat/config.toml` only), the refusal of a config
   directory that collides with a realm directory, and `--list`'s
   `(realm <root>)` / `(realm memory)` decorations.
+- The realm `config.toml`'s `[confinement]` as a floor under the
+  command line: the agent shell's confinement is `--confinement` and the
+  extra grants alone (`--confinement=off` and the grants are no longer
+  refused under such a table; a start-up notice says the table does not
+  decide the shell).
 
 ### Changed
 

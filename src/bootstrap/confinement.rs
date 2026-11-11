@@ -71,21 +71,10 @@
 //! files are project inputs, trusted only by digest
 //! ([`super::project_trust`], [`super::trust`]).
 //!
-//! A realm config outside the workspace (the workspace's own realm,
-//! `--state-root`, `--realm`: the user's own) that requires confinement for
-//! the shell (`[confinement]` `shell`, else `all`) is the floor: the
-//! command line may only narrow it. A realm placed inside the workspace
-//! sets no floor (the guard of [`super::project_trust::ProjectInputs`]
-//! drops its table, with a start-up notice).
-//! The realm's requirement is lowered with upstream's
-//! [`meerkat::HostConfinement`] and installed as is under `--confinement
-//! workspace` (the default); `--confinement strict` installs it with IP
-//! network access denied; `--confinement off` / `--no-confinement` is
-//! refused at start-up with [`ConfinementError::BelowRealmFloor`], which
-//! names the realm's policy, and extra grants with
-//! [`ConfinementError::ExtraGrantsUnderRealmFloor`] (they would widen it).
-//! A realm that states `trusted_host` (or nothing) for the shell leaves the
-//! command line in charge.
+//! The shell's confinement is the command line's (`--confinement`, the
+//! extra grants of the flags and the user's `tui.toml`) alone: a realm
+//! config's `[confinement]` table does not decide it (a start-up notice
+//! says so when the table is there).
 //!
 //! **Environment.** A confined command inherits nothing of rkat-tui's
 //! environment: the backend clears it and sets only what the shell tool
@@ -107,12 +96,10 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+use meerkat_core::Config;
 use meerkat_core::confinement::{
     ConfinementRefusal, ConfinementSpec, ExecutionConfinement, FilesystemAccess, IpNetworkAccess,
     PathAccess, PlatformBaseline,
-};
-use meerkat_core::{
-    Config, ConfinementConfig, ConfinementLaunchKind, LaunchConfinement, WorkspaceNetwork,
 };
 use meerkat_tools::builtin::shell::ShellConfinement;
 use serde::{Deserialize, Serialize};
@@ -135,9 +122,6 @@ pub enum ConfinementError {
     Unenforceable {
         /// The selected mode.
         mode: &'static str,
-        /// Whether the realm's floor is what cannot be enforced (then
-        /// `--no-confinement` is no way out).
-        floor: bool,
         /// What this host's user-namespace switches say.
         status: HostUsernsStatus,
         /// The explanation (see [`unenforceable_help`]).
@@ -145,24 +129,6 @@ pub enum ConfinementError {
         /// The backend's refusal.
         #[source]
         source: ConfinementRefusal,
-    },
-    /// The command line asks for less than the realm's `[confinement]`.
-    #[error(
-        "--confinement={mode} is below the realm's [confinement] policy for the shell ({policy}); the command line may only narrow it (workspace → strict)"
-    )]
-    BelowRealmFloor {
-        /// The selected mode.
-        mode: &'static str,
-        /// The realm's policy, described.
-        policy: String,
-    },
-    /// Extra grants would widen the realm's `[confinement]` floor.
-    #[error(
-        "--confinement-read/--confinement-write (or tui.toml [confinement] extra_read/extra_write) would widen the realm's [confinement] policy for the shell ({policy}); add the directories to the realm's [confinement.shell] read/write lists instead"
-    )]
-    ExtraGrantsUnderRealmFloor {
-        /// The realm's policy, described.
-        policy: String,
     },
     /// An extra grant (`--confinement-read`/`--confinement-write`, or a
     /// `tui.toml` `[confinement] extra_read`/`extra_write` entry) is not
@@ -178,12 +144,6 @@ pub enum ConfinementError {
         /// What is wrong with it.
         problem: ExtraGrantProblem,
     },
-    /// Upstream could not lower the realm's policy.
-    #[error("the realm's [confinement] policy cannot be lowered: {0}")]
-    RealmPolicy(#[source] meerkat::HostConfinementError),
-    /// The realm's policy lowered to no requirement for the shell.
-    #[error("the realm's [confinement] policy names no shell requirement")]
-    NoRealmRequirement,
 }
 
 /// Why an extra grant is refused.
@@ -273,14 +233,12 @@ const SYSCTL_DROP_IN: &str = "/etc/sysctl.d/60-rkat-tui-userns.conf";
 
 /// The explanation of a [`ConfinementError::Unenforceable`]: what blocked
 /// the mode (`status`, else the backend's `refusal`), how to make it work,
-/// and how to run without confinement. `floor` is the realm's
-/// `[confinement]` policy when that is what cannot be enforced; `exe` is
-/// this binary (for the AppArmor profile).
+/// and how to run without confinement. `exe` is this binary (for the
+/// AppArmor profile).
 #[must_use]
 pub fn unenforceable_help(
     status: HostUsernsStatus,
     refusal: &ConfinementRefusal,
-    floor: Option<&str>,
     exe: Option<&Path>,
 ) -> String {
     let sysctl = |key: &str, value: &str, effect: &str| {
@@ -329,12 +287,7 @@ pub fn unenforceable_help(
             String::new(),
         ),
     };
-    let off = match floor {
-        None => "To run without OS confinement instead: rkat-tui --no-confinement (or --confinement=off). Commands then run as you, guarded by the approval policy only.".to_string(),
-        Some(policy) => format!(
-            "Running without confinement is not available from the command line here: the realm's [confinement] policy for the shell ({policy}) requires it, and --confinement=off is refused below it. Make the host support it (above), or remove the shell statement from the realm config's [confinement] table."
-        ),
-    };
+    let off = "To run without OS confinement instead: rkat-tui --no-confinement (or --confinement=off). Commands then run as you, guarded by the approval policy only.";
     format!("{blocked}\n\n{fix}\n{off}")
 }
 
@@ -1026,87 +979,15 @@ pub fn check(requirement: &ExecutionConfinement) -> Result<(), ConfinementRefusa
     meerkat_sandbox::CompiledConfinement::compile(requirement).map(|_| ())
 }
 
-/// The realm's shell requirement, when its `[confinement]` requires one.
-fn realm_floor(config: &Config) -> Option<&LaunchConfinement> {
-    config
-        .confinement
-        .statement(ConfinementLaunchKind::Shell)
-        .filter(|statement| statement.requires_confinement())
-}
-
-/// A one-line description of a realm policy for notices and errors.
-#[must_use]
-pub fn describe_policy(policy: &LaunchConfinement) -> String {
-    match policy {
-        LaunchConfinement::TrustedHost => "trusted_host".to_string(),
-        LaunchConfinement::Workspace(workspace) => format!(
-            "workspace preset, network {}",
-            match workspace.network {
-                WorkspaceNetwork::Denied => "denied",
-                WorkspaceNetwork::Unrestricted => "allowed",
-            }
-        ),
-        LaunchConfinement::Custom(custom) => format!(
-            "custom requirement, working directory {}",
-            custom.working_directory.display()
-        ),
-    }
-}
-
-/// `floor` narrowed by `mode`: as is for `workspace`, with IP network
-/// access denied for `strict`.
-fn narrowed(
-    floor: &LaunchConfinement,
-    mode: ConfinementArg,
-) -> Result<LaunchConfinement, ConfinementError> {
-    if mode != ConfinementArg::Strict {
-        return Ok(floor.clone());
-    }
-    Ok(match floor {
-        LaunchConfinement::Workspace(workspace) => {
-            let mut workspace = workspace.clone();
-            workspace.network = WorkspaceNetwork::Denied;
-            LaunchConfinement::Workspace(workspace)
-        }
-        LaunchConfinement::Custom(custom) => {
-            let mut custom = custom.clone();
-            let mut spec = custom.requirement.specification().clone();
-            spec.network = IpNetworkAccess::Denied;
-            custom.requirement =
-                ExecutionConfinement::try_from(spec).map_err(ConfinementError::Invalid)?;
-            LaunchConfinement::Custom(custom)
-        }
-        LaunchConfinement::TrustedHost => LaunchConfinement::TrustedHost,
-    })
-}
-
-/// The shell's requirement under the realm's `floor`, narrowed by `mode`.
-fn lower_floor(
-    floor: &LaunchConfinement,
-    mode: ConfinementArg,
-    workspace: &Path,
-) -> Result<ExecutionConfinement, ConfinementError> {
-    let selection = ConfinementConfig {
-        shell: Some(narrowed(floor, mode)?),
-        ..ConfinementConfig::default()
-    };
-    let resolved = meerkat::HostConfinement::resolve(&selection, Some(workspace))
-        .map_err(ConfinementError::RealmPolicy)?;
-    resolved
-        .requirement(ConfinementLaunchKind::Shell)
-        .cloned()
-        .ok_or(ConfinementError::NoRealmRequirement)
-}
-
-/// Lower `mode` over `workspace` (under the realm's `[confinement]` floor,
-/// see the module docs) and check it against this host's backend.
+/// Lower `mode` over `workspace` and check it against this host's
+/// backend. `config` is the realm config, whose `[confinement]` table only
+/// earns a notice (see the module docs).
 ///
 /// # Errors
 ///
-/// [`ConfinementError::BelowRealmFloor`] when `mode` is `off` against a
-/// realm policy, [`ConfinementError::Unenforceable`] when this host's
-/// backend cannot enforce the requirement, otherwise when the requirement is
-/// invalid.
+/// [`ConfinementError::Unenforceable`] when this host's backend cannot
+/// enforce the requirement, otherwise when the requirement or an extra
+/// grant is invalid.
 pub fn plan(
     mode: ConfinementArg,
     workspace: &Path,
@@ -1114,37 +995,11 @@ pub fn plan(
     host: &HostPaths,
     extra: &ExtraGrants,
 ) -> Result<ConfinementPlan, ConfinementError> {
-    let floor = realm_floor(config);
-    let requirement = match floor {
-        Some(policy) if mode == ConfinementArg::Off => {
-            return Err(ConfinementError::BelowRealmFloor {
-                mode: mode_name(mode),
-                policy: describe_policy(policy),
-            });
-        }
-        Some(policy) if !extra.is_empty() => {
-            return Err(ConfinementError::ExtraGrantsUnderRealmFloor {
-                policy: describe_policy(policy),
-            });
-        }
-        Some(policy) => Some(lower_floor(policy, mode, workspace)?),
-        None => lower_with(mode, workspace, host, extra)?,
-    };
-    let mut notices = vec![match floor {
-        Some(policy) => format!(
-            "confinement: the realm's [confinement] policy ({}){}",
-            describe_policy(policy),
-            if mode == ConfinementArg::Strict {
-                ", network denied by --confinement=strict"
-            } else {
-                ""
-            }
-        ),
-        None => describe(mode).to_string(),
-    }];
-    if floor.is_none() && !config.confinement.is_empty() {
+    let requirement = lower_with(mode, workspace, host, extra)?;
+    let mut notices = vec![describe(mode).to_string()];
+    if !config.confinement.is_empty() {
         notices.push(
-            "the realm config's [confinement] does not confine the shell; rkat-tui confines it as --confinement selects"
+            "the realm config's [confinement] does not decide the shell's confinement; rkat-tui confines it as --confinement selects"
                 .to_string(),
         );
     }
@@ -1166,12 +1021,10 @@ pub fn plan(
         let exe = std::env::current_exe()
             .ok()
             .map(|exe| std::fs::canonicalize(&exe).unwrap_or(exe));
-        let policy = floor.map(describe_policy);
         ConfinementError::Unenforceable {
             mode: mode_name(mode),
-            floor: floor.is_some(),
             status,
-            help: unenforceable_help(status, &source, policy.as_deref(), exe.as_deref()),
+            help: unenforceable_help(status, &source, exe.as_deref()),
             source,
         }
     })?;
@@ -1278,6 +1131,7 @@ fn mode_name(mode: ConfinementArg) -> &'static str {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use meerkat_core::{ConfinementConfig, LaunchConfinement, WorkspaceNetwork};
 
     fn none() -> ExtraGrants {
         ExtraGrants::default()
@@ -1679,7 +1533,7 @@ mod tests {
         }
     }
 
-    fn workspace_floor(network: WorkspaceNetwork) -> LaunchConfinement {
+    fn workspace_preset(network: WorkspaceNetwork) -> LaunchConfinement {
         LaunchConfinement::Workspace(meerkat_core::WorkspaceConfinement {
             network,
             read: Vec::new(),
@@ -1687,54 +1541,31 @@ mod tests {
         })
     }
 
+    /// A realm config's `[confinement]` does not decide the shell's
+    /// confinement: the command line does, and a notice says so.
     #[test]
-    fn a_realm_policy_is_the_floor_the_command_line_may_only_narrow() {
+    fn a_realm_confinement_table_does_not_decide_the_shell() {
         let f = fixture();
-        let config = realm_with(workspace_floor(WorkspaceNetwork::Unrestricted));
-        // `off` against the realm's policy: a typed start-up error naming it.
-        let err = plan(ConfinementArg::Off, &f.ws, &config, &f.host, &none()).unwrap_err();
-        assert!(
-            matches!(&err, ConfinementError::BelowRealmFloor { policy, .. } if policy.contains("workspace preset")),
-            "{err}"
-        );
-        assert!(err.to_string().contains("realm's [confinement]"), "{err}");
-        // `workspace` installs the realm's requirement; `strict` narrows its
-        // network. A host that cannot enforce it refuses either, with no
-        // `--no-confinement` way out.
-        for (mode, network) in [
-            (ConfinementArg::Workspace, IpNetworkAccess::Unrestricted),
-            (ConfinementArg::Strict, IpNetworkAccess::Denied),
-        ] {
-            let floor = config
-                .confinement
-                .statement(ConfinementLaunchKind::Shell)
-                .unwrap();
-            let requirement = lower_floor(floor, mode, &f.ws).unwrap();
-            assert_eq!(requirement.specification().network, network, "{mode:?}");
-            match plan(mode, &f.ws, &config, &f.host, &none()) {
-                Ok(plan) => {
-                    assert_eq!(plan.requirement(), Some(&requirement), "{mode:?}");
-                    assert!(plan.notices[0].contains("realm's [confinement]"));
-                    assert!(plan.shell_env.is_some(), "{mode:?}");
-                }
-                Err(err @ ConfinementError::Unenforceable { floor: true, .. }) => {
-                    let text = err.to_string();
-                    assert!(!text.contains("rkat-tui --no-confinement"), "{text}");
-                    assert!(text.contains("workspace preset"), "{text}");
-                }
-                Err(other) => panic!("unexpected error: {other}"),
-            }
-        }
-        // `trusted_host` in the realm leaves the command line in charge.
-        let trusted = realm_with(LaunchConfinement::TrustedHost);
-        let off = plan(ConfinementArg::Off, &f.ws, &trusted, &f.host, &none()).unwrap();
+        let config = realm_with(workspace_preset(WorkspaceNetwork::Unrestricted));
+        let off = plan(ConfinementArg::Off, &f.ws, &config, &f.host, &none()).unwrap();
         assert_eq!(off.shell, ShellConfinement::TrustedHost);
+        assert_eq!(off.shell_env, None);
         assert!(
             off.notices
                 .iter()
-                .any(|n| n.contains("does not confine the shell"))
+                .any(|n| n.contains("does not decide the shell's confinement")),
+            "{:?}",
+            off.notices
         );
-        assert_eq!(off.shell_env, None);
+        let plain = plan(
+            ConfinementArg::Off,
+            &f.ws,
+            &Config::default(),
+            &f.host,
+            &none(),
+        )
+        .unwrap();
+        assert_eq!(plain.notices.len(), 1, "{:?}", plain.notices);
     }
 
     #[test]
@@ -1820,12 +1651,8 @@ mod tests {
     fn the_refusal_explains_the_blocker_the_fix_and_the_way_out() {
         let refusal = ConfinementRefusal::BackendUnavailable;
         let exe = Path::new("/opt/bin/rkat-tui");
-        let apparmor = unenforceable_help(
-            HostUsernsStatus::AppArmorRestricted,
-            &refusal,
-            None,
-            Some(exe),
-        );
+        let apparmor =
+            unenforceable_help(HostUsernsStatus::AppArmorRestricted, &refusal, Some(exe));
         for needle in [
             "apparmor_restrict_unprivileged_userns is 1",
             "sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0",
@@ -1841,32 +1668,18 @@ mod tests {
                 "missing {needle:?} in:\n{apparmor}"
             );
         }
-        let clone = unenforceable_help(
-            HostUsernsStatus::UnprivilegedCloneDisabled,
-            &refusal,
-            None,
-            None,
-        );
+        let clone = unenforceable_help(HostUsernsStatus::UnprivilegedCloneDisabled, &refusal, None);
         assert!(
             clone.contains("sudo sysctl -w kernel.unprivileged_userns_clone=1"),
             "{clone}"
         );
-        let max = unenforceable_help(HostUsernsStatus::MaxNamespacesZero, &refusal, None, None);
+        let max = unenforceable_help(HostUsernsStatus::MaxNamespacesZero, &refusal, None);
         assert!(
             max.contains("sudo sysctl -w user.max_user_namespaces="),
             "{max}"
         );
-        let unknown = unenforceable_help(HostUsernsStatus::NoKnownBlocker, &refusal, None, None);
+        let unknown = unenforceable_help(HostUsernsStatus::NoKnownBlocker, &refusal, None);
         assert!(unknown.contains(&refusal.to_string()), "{unknown}");
-        // Under a realm floor the way out is the realm config, not a flag.
-        let floor = unenforceable_help(
-            HostUsernsStatus::AppArmorRestricted,
-            &refusal,
-            Some("workspace preset, network allowed"),
-            None,
-        );
-        assert!(floor.contains("realm config's [confinement]"), "{floor}");
-        assert!(!floor.contains("rkat-tui --no-confinement"), "{floor}");
     }
 
     #[test]
@@ -1970,19 +1783,13 @@ mod tests {
     }
 
     #[test]
-    fn extra_grants_may_not_widen_a_realm_floor() {
+    fn extra_grants_under_off_only_earn_a_notice() {
         let f = fixture();
-        let config = realm_with(workspace_floor(WorkspaceNetwork::Unrestricted));
         let extra = ExtraGrants {
             read: vec![f.tools.clone()],
             write: Vec::new(),
             ..ExtraGrants::default()
         };
-        let err = plan(ConfinementArg::Workspace, &f.ws, &config, &f.host, &extra).unwrap_err();
-        assert!(
-            matches!(err, ConfinementError::ExtraGrantsUnderRealmFloor { .. }),
-            "{err}"
-        );
         // Under `off` they only earn a notice.
         let off = plan(
             ConfinementArg::Off,
@@ -2070,7 +1877,7 @@ mod tests {
             (
                 file(vec![data.clone(), inner], Vec::new()),
                 "[confinement] extra_read",
-                ExtraGrantProblem::OverlapsGrant(data.clone()),
+                ExtraGrantProblem::OverlapsGrant(data),
             ),
             (
                 file(Vec::new(), vec![root.join("missing")]),
@@ -2100,15 +1907,5 @@ mod tests {
                 other => panic!("unexpected error: {other}"),
             }
         }
-        // They widen a realm floor just like flags.
-        let config = realm_with(workspace_floor(WorkspaceNetwork::Unrestricted));
-        let extra = ExtraGrants {
-            file: file(vec![data], Vec::new()),
-            ..ExtraGrants::default()
-        };
-        assert!(matches!(
-            plan(ConfinementArg::Workspace, &f.ws, &config, &f.host, &extra),
-            Err(ConfinementError::ExtraGrantsUnderRealmFloor { .. })
-        ));
     }
 }
