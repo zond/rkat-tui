@@ -88,6 +88,7 @@ async fn a_delegated_helper_runs_behind_the_sessions_gate() {
     let classifier = ScriptedClassifier::new(vec![Ok(ClassifierVerdict::Block {
         rule: Some("D1".into()),
         reason: "touches files outside the project".into(),
+        annotation: None,
     })]);
     let llm = ScriptedLlmClient::new(vec![
         delegate(

@@ -456,7 +456,11 @@ impl From<Stage2Verdict> for ClassifierVerdict {
     fn from(v: Stage2Verdict) -> Self {
         match v {
             Stage2Verdict::Allow { reason } => Self::Allow { reason },
-            Stage2Verdict::Block { rule, reason } => Self::Block { rule, reason },
+            Stage2Verdict::Block { rule, reason } => Self::Block {
+                rule,
+                reason,
+                annotation: None,
+            },
         }
     }
 }
@@ -511,6 +515,7 @@ pub fn stage2_or_block(text: &str) -> ClassifierVerdict {
         |_| ClassifierVerdict::Block {
             rule: None,
             reason: "the safety classifier could not reach a clear verdict".to_string(),
+            annotation: None,
         },
         ClassifierVerdict::from,
     )

@@ -147,10 +147,12 @@ pub enum DenyReason {
     },
     /// The classifier blocked the action.
     Classifier {
-        /// Block-rule id, if named.
+        /// Block-rule id, if named (the user's text only).
         rule: Option<String>,
         /// Explanation.
         explanation: String,
+        /// How the classifier checked (the user's text only).
+        annotation: Option<String>,
     },
     /// The human denied it, optionally telling the agent what to do instead.
     Human {
@@ -204,13 +206,19 @@ impl fmt::Display for DenyReason {
             Self::UserRule { id, rule } => write!(f, "the user's deny rule {id} ({rule}) matches"),
             Self::Sealed { detail } => f.write_str(detail),
             Self::Classifier {
-                rule: Some(rule),
+                rule,
                 explanation,
-            } => write!(f, "{explanation} [{rule}]"),
-            Self::Classifier {
-                rule: None,
-                explanation,
-            } => f.write_str(explanation),
+                annotation,
+            } => {
+                f.write_str(explanation)?;
+                if let Some(rule) = rule {
+                    write!(f, " [{rule}]")?;
+                }
+                if let Some(annotation) = annotation {
+                    write!(f, " {annotation}")?;
+                }
+                Ok(())
+            }
             Self::Human { comment: None } => f.write_str("the user denied this action"),
             Self::Human {
                 comment: Some(comment),
@@ -228,12 +236,27 @@ impl fmt::Display for DenyReason {
     }
 }
 
+impl DenyReason {
+    /// The reason as the agent reads it: what was denied and why, without
+    /// the user-facing tags (the classifier's block-rule id and how it
+    /// checked), which the notice and the dialog show.
+    #[must_use]
+    pub fn for_model(&self) -> String {
+        match self {
+            Self::Classifier { explanation, .. } => explanation.clone(),
+            other => other.to_string(),
+        }
+    }
+}
+
 /// Model-facing denial message.
 #[must_use]
 pub fn deny_message(reason: &DenyReason) -> String {
+    let user_reason = reason;
+    let reason = user_reason.for_model();
     if let DenyReason::Human {
         comment: Some(_), ..
-    } = reason
+    } = user_reason
     {
         // The user said what to do instead: that is the way forward, not a
         // detour around the denial.
@@ -308,14 +331,25 @@ mod tests {
 
     #[test]
     fn deny_message_wording() {
-        let msg = deny_message(&DenyReason::Classifier {
-            rule: Some("D2".into()),
+        let reason = DenyReason::Classifier {
+            rule: Some("T3".into()),
             explanation: "force push rewrites shared history".into(),
-        });
+            annotation: Some("[classifier checked 0 files]".into()),
+        };
+        let msg = deny_message(&reason);
         assert!(msg.starts_with(
-            "Blocked by auto-mode safety policy: force push rewrites shared history [D2]. Do not try"
+            "Blocked by auto-mode safety policy: force push rewrites shared history. Do not try"
         ));
         assert!(msg.ends_with("or stop and ask the user."));
+        // The tags are the user's: in the notice, never in the model's text.
+        assert!(
+            !msg.contains("[T3]") && !msg.contains("classifier checked"),
+            "{msg}"
+        );
+        assert_eq!(
+            reason.to_string(),
+            "force push rewrites shared history [T3] [classifier checked 0 files]"
+        );
     }
 
     #[test]
@@ -323,6 +357,7 @@ mod tests {
         let classifier = DenyReason::Classifier {
             rule: Some("D1".into()),
             explanation: "x".into(),
+            annotation: None,
         };
         assert_eq!(classifier.decider(), Decider::Classifier);
         assert_eq!(classifier.rule_label().as_deref(), Some("D1"));

@@ -161,6 +161,7 @@ async fn stage1_garbage_then_stage2_block_with_rule() {
         ClassifierVerdict::Block {
             rule: Some("D1".into()),
             reason: "Deletes outside the project.".into(),
+            annotation: None,
         }
     );
     assert_eq!(client.recorded().len(), 2);
@@ -352,7 +353,8 @@ async fn stage2_reads_build_rs_then_decides() {
         verdict,
         ClassifierVerdict::Block {
             rule: Some("T2".into()),
-            reason: "build.rs runs code [classifier checked 1 file]".into(),
+            reason: "build.rs runs code".into(),
+            annotation: Some("[classifier checked 1 file]".into()),
         }
     );
     let requests = client.recorded();
@@ -405,12 +407,16 @@ async fn the_tool_loop_is_bounded_and_ends_with_a_toolless_call() {
         .classify(fx.input())
         .await
         .unwrap();
-    let ClassifierVerdict::Block { reason, .. } = verdict else {
+    let ClassifierVerdict::Block {
+        reason, annotation, ..
+    } = verdict
+    else {
         panic!("expected block");
     };
+    assert_eq!(reason, "unclear");
     assert_eq!(
-        reason,
-        "unclear [classifier checked 0 files, 6 searches; tool budget exhausted]"
+        annotation.as_deref(),
+        Some("[classifier checked 0 files, 6 searches; tool budget exhausted]")
     );
     let requests = client.recorded();
     assert_eq!(requests.len(), 8);
@@ -441,7 +447,8 @@ async fn rejected_tools_fall_back_to_a_toolless_stage2() {
         verdict,
         ClassifierVerdict::Block {
             rule: Some("R1".into()),
-            reason: "pushes to main [tools unavailable]".into(),
+            reason: "pushes to main".into(),
+            annotation: Some("[tools unavailable]".into()),
         }
     );
     let requests = client.recorded();

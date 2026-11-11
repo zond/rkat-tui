@@ -201,10 +201,14 @@ pub enum ClassifierVerdict {
     },
     /// Block the action.
     Block {
-        /// Block-rule id (e.g. `D1`), if the classifier named one.
+        /// Block-rule id (e.g. `D1`), if the classifier named one. Shown
+        /// to the user, not passed to the agent.
         rule: Option<String>,
         /// Explanation passed back to the agent.
         reason: String,
+        /// What the user sees beside the reason (how the classifier
+        /// checked: `[classifier checked 2 files]`), never the agent.
+        annotation: Option<String>,
     },
 }
 
@@ -229,8 +233,11 @@ impl fmt::Display for ClassifierVerdict {
             Self::Block {
                 rule: Some(rule),
                 reason,
+                ..
             } => write!(f, "BLOCK [{rule}]: {reason}"),
-            Self::Block { rule: None, reason } => write!(f, "BLOCK: {reason}"),
+            Self::Block {
+                rule: None, reason, ..
+            } => write!(f, "BLOCK: {reason}"),
         }
     }
 }
@@ -526,12 +533,10 @@ impl LlmClassifier {
         };
         tracing::debug!(model = %self.model, tool = input.tool, ?run, "classifier stage 2 mode");
         let verdict = match stage2_or_block(&text) {
-            ClassifierVerdict::Block { rule, reason } => ClassifierVerdict::Block {
+            ClassifierVerdict::Block { rule, reason, .. } => ClassifierVerdict::Block {
                 rule,
-                reason: match run.suffix() {
-                    Some(suffix) => format!("{reason} {suffix}"),
-                    None => reason,
-                },
+                reason,
+                annotation: run.suffix(),
             },
             allow @ ClassifierVerdict::Allow { .. } => allow,
         };
@@ -994,6 +999,7 @@ mod tests {
         let v = ClassifierVerdict::Block {
             rule: Some("D1".into()),
             reason: "force push".into(),
+            annotation: None,
         };
         assert_eq!(v.to_string(), "BLOCK [D1]: force push");
         assert_eq!(

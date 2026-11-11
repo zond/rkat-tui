@@ -1036,7 +1036,11 @@ impl ApprovalEngine {
                 self.auto.lock().record_allow();
                 allow3(Decider::Classifier, reason)
             }
-            ClassifierVerdict::Block { rule, reason } => {
+            ClassifierVerdict::Block {
+                rule,
+                reason,
+                annotation,
+            } => {
                 let paused = self.auto.lock().record_classifier_deny();
                 if let Some(cause) = paused {
                     self.emit(ApprovalEvent::Paused(cause));
@@ -1044,6 +1048,7 @@ impl ApprovalEngine {
                 deny3(DenyReason::Classifier {
                     rule,
                     explanation: reason,
+                    annotation,
                 })
             }
         }
@@ -1724,6 +1729,7 @@ mod tests {
         Ok(ClassifierVerdict::Block {
             rule: Some(rule.into()),
             reason: format!("blocked by {rule}"),
+            annotation: None,
         })
     }
 

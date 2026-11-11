@@ -5941,3 +5941,17 @@ report upstream if the user wants one.
   and assistant text is indexed, not tool output; compacted content
   becomes searchable only after the turn ends. The agent persona's memory
   paragraph says how to read results (item 22(a)).
+
+### Item 10: the denial the model reads carries no user-facing tags
+
+`ClassifierVerdict::Block` carries `annotation` (how stage 2 checked,
+`Stage2Run::suffix`) beside `reason` instead of appending it, and
+`DenyReason::Classifier` carries the annotation and the block-rule id
+(`T3`, `D1`: the prompts' rule ids). The user's text (`Display`: the
+notice, the dialog, the audit reason) shows both; the model's text
+(`DenyReason::for_model`, used by `deny_message`) is the explanation
+alone, with the advice that follows. Tests:
+`approval::tests::deny_message_wording`,
+`tests/approval_service.rs::a_classifier_block_reaches_the_model_and_the_run_continues`
+(the notice has `[D1] [classifier checked 0 files]`, the tool result
+neither), and the classifier tests now read the annotation apart.

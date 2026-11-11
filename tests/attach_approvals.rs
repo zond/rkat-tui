@@ -1469,6 +1469,7 @@ async fn every_gate_decision_is_one_audit_line_naming_who_decided() {
         ClassifierVerdict::Block {
             rule: Some("T1".into()),
             reason: "not that one".into(),
+            annotation: None,
         },
     ]);
     let setup = rig::Setup::default().classifier(Arc::clone(&classifier) as _);

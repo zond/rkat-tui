@@ -425,6 +425,10 @@ design.
 
 ### Fixed
 
+- A classifier denial no longer hands the agent the user's annotations:
+  the block-rule tag (`[T3]`) and how the classifier checked
+  (`[classifier checked 0 files]`) stay in the notice and the dialog; the
+  agent reads what was denied and why.
 - `/model` before a restored agent's first turn switches the model
   instead of failing with "Runtime not ready: destroyed".
 - `-c` after the daemon restarted (a re-home, a stop) continues the

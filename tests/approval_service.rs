@@ -77,6 +77,7 @@ async fn a_classifier_block_reaches_the_model_and_the_run_continues() {
     let classifier = ScriptedClassifier::new(vec![Ok(ClassifierVerdict::Block {
         rule: Some("D1".into()),
         reason: "touches files outside the project".into(),
+        annotation: Some("[classifier checked 0 files]".into()),
     })]);
     let llm = ScriptedLlmClient::new(vec![
         Step::Tool {
@@ -100,7 +101,8 @@ async fn a_classifier_block_reaches_the_model_and_the_run_continues() {
         notice
             .reason
             .as_deref()
-            .is_some_and(|r| r.contains("touches files outside the project")),
+            .is_some_and(|r| r
+                .contains("touches files outside the project [D1] [classifier checked 0 files]")),
         "{notice:?}"
     );
 
@@ -120,7 +122,13 @@ async fn a_classifier_block_reaches_the_model_and_the_run_continues() {
     let text = result.text_content();
     assert!(text.contains("policy_denied"), "{text}");
     assert!(
-        text.contains("Blocked by auto-mode safety policy: touches files outside the project [D1]"),
+        text.contains("Blocked by auto-mode safety policy: touches files outside the project."),
+        "{text}"
+    );
+    // The rule tag and how the classifier checked are the user's: the
+    // notice shows them (above), the model's text carries neither.
+    assert!(
+        !text.contains("[D1]") && !text.contains("classifier checked"),
         "{text}"
     );
     // The classifier saw the user's words and the call, nothing else.
@@ -331,6 +339,7 @@ async fn a_resumed_session_reseeds_the_classifier_transcript() {
     let classifier = ScriptedClassifier::new(vec![Ok(ClassifierVerdict::Block {
         rule: None,
         reason: "no".into(),
+        annotation: None,
     })]);
     let second = ScriptedLlmClient::new(vec![
         Step::Tool {
