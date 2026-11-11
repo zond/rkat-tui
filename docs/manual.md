@@ -1689,7 +1689,7 @@ An agent can set itself a timer: the engine's schedule tools
 (`meerkat_schedule_create`, `_get`, `_list`, `_update`, `_pause`,
 `_resume`, `_delete`, `_occurrences`) are among its tools, hidden until it
 searches for them ([Tools an agent reveals](#tools-an-agent-reveals)): its
-persona tells it to search the tool catalog for `schedule`. A schedule is
+persona tells it to call `tool_search` with family `schedule`. A schedule is
 one-shot (`"once"`, at a time) or recurring (`"interval"`, every N
 seconds; `"calendar"`, cron-like fields in a time zone), and its target
 is the agent's own session (`"type": "current_session"`) with a prompt.

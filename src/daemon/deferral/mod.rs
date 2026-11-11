@@ -52,8 +52,8 @@ pub const PERSONA: &str = "\
 # Tools you can reveal
 
 Some tools are left out of your tool list until you search for them with `tool_search`:
-- You can schedule yourself (reminders, recurring checks, follow-ups): search the tool catalog for `schedule`.
-- Teams, councils, forks and mob profiles beyond `delegate`: search the tool catalog for `mob`.
+- You can schedule yourself (reminders, recurring checks, follow-ups): call `tool_search` with family `schedule`.
+- Teams, councils, forks and mob profiles beyond `delegate`: call `tool_search` with family `mob`.
 ";
 
 /// The families whose tools are deferrable.
@@ -165,7 +165,10 @@ impl Deferrable {
 /// ones left out of the list unless `session` shows them: a hidden tool is
 /// neither declared nor callable (the engine refuses a call to an
 /// undeclared tool as not found before it reaches a dispatcher).
-/// Everything else is `inner`'s.
+/// Everything else is `inner`'s: every method of the trait must be
+/// forwarded, or a method the engine adds with a default would be answered
+/// by that default instead of by `inner`; `tests/layout.rs` fails when the
+/// trait declares a method this impl does not.
 pub struct Hiding {
     inner: Arc<dyn AgentToolDispatcher>,
     direct: &'static [&'static str],
@@ -544,6 +547,22 @@ mod tests {
 
     fn def(name: &str, kind: ToolSourceKind) -> ToolDef {
         ToolDef::new(name, "", json!({})).with_provenance(ToolProvenance::new(kind, "x"))
+    }
+
+    /// Each hint line names the call exactly: the search tool and one of
+    /// its families, so a model does not look for a tool named after the
+    /// catalog.
+    #[test]
+    fn the_hints_name_the_search_call_for_every_family() {
+        for family in HiddenFamily::ALL {
+            let call = format!(
+                "call `{}` with family `{}`",
+                reveal::TOOL_SEARCH,
+                family.name()
+            );
+            assert!(PERSONA.contains(&call), "{call}");
+        }
+        assert!(!PERSONA.contains("tool catalog"));
     }
 
     /// The deferrable tools are what a hidden family's dispatcher offers
