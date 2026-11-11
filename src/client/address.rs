@@ -43,7 +43,7 @@ impl Reached {
     /// Point `config` at this daemon: its address (never the workspace's
     /// endpoint files, unless its workspace is local) and, when its
     /// workspace is not on this machine, why the local features are off.
-    pub fn apply(self, config: &mut super::AttachConfig) {
+    pub fn apply(self, config: &mut super::ClientConfig) {
         if self.remote.is_some() {
             config.endpoint_files.clear();
             // Its paths are another machine's: nothing to compare.

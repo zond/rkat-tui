@@ -546,7 +546,7 @@ impl App {
                     if queued == 1 { "" } else { "s" }
                 ));
             }
-            // Attach mode decides next whether the agent retires and the
+            // The daemon decides next whether the agent retires and the
             // daemon stops.
             let after = if self.status.reached_daemon() {
                 "quitting retires this agent and interrupts its turn unless other clients work with it, /detach keeps it running; messages the daemon has not received are saved"

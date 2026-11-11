@@ -1,4 +1,4 @@
-//! The approval dialogs of attach mode.
+//! The approval dialogs of the client.
 //!
 //! The daemon (its `initialize` lists `decision/notice`, P3b; a daemon
 //! without it is refused at attach) holds every escalation as a durable decision and pushes it to every

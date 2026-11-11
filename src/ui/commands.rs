@@ -107,7 +107,7 @@ pub enum HelpersCommand {
 pub enum Command {
     /// `/quit`, `/exit`.
     Quit,
-    /// `/detach`: leave and keep the agent running (attach mode).
+    /// `/detach`: leave and keep the agent running.
     Detach,
     /// `/agents [name]`: list the workspace's agents, or switch this
     /// rkat-tui to the agent `name`.
@@ -168,7 +168,7 @@ pub enum Command {
     TrustProject,
     /// `/helpers [expand|fold <label>|all]`.
     Helpers(HelpersCommand),
-    /// `/daemon stop`: shut the attached `rkat-tui-mob` down (attach mode).
+    /// `/daemon stop`: shut the attached `rkat-tui-mob` down.
     DaemonStop,
     /// `/daemon start`: connect again, starting the daemon when needed.
     DaemonStart,

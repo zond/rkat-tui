@@ -308,7 +308,7 @@ impl Client {
     }
 
     /// Attach a runner on `config`.
-    pub async fn attach_with_config(config: rkat_tui::client::AttachConfig) -> Self {
+    pub async fn attach_with_config(config: rkat_tui::client::ClientConfig) -> Self {
         let mut client = Self {
             harness: spawn_attach_runner(config),
             seen: Vec::new(),
@@ -456,7 +456,7 @@ pub async fn client_config(
     endpoint_file: &Path,
     host_paths: Option<&HostPaths>,
     agent: Option<rkat_tui::daemon::protocol::AgentChoice>,
-) -> rkat_tui::client::AttachConfig {
+) -> rkat_tui::client::ClientConfig {
     let mut config = rkat_tui::client::configure(args, AttachTarget::Existing)
         .await
         .unwrap();
@@ -536,7 +536,7 @@ pub fn reroot(
                 as std::pin::Pin<
                     Box<
                         dyn std::future::Future<
-                                Output = Result<rkat_tui::client::AttachConfig, rkat_tui::TuiError>,
+                                Output = Result<rkat_tui::client::ClientConfig, rkat_tui::TuiError>,
                             > + Send,
                     >,
                 >

@@ -6287,3 +6287,28 @@ Test: `client::runner::tests::no_effect_waits_on_a_daemon_that_does_not_answer`
 (a daemon that answers nothing after the attach: every effect returns
 within 2 s, the prompt's turn runs and Esc interrupts it, the steer is
 expected; before, the first prompt held the loop for the call's 15 s).
+
+### The client's runner, split by concern (R2 item 8)
+
+`client/runner.rs` (4,992 lines after item 4) is the module
+`client/runner/`: `mod.rs` keeps the types, the loop, the effect
+dispatch and the reports (1,210 lines without its tests), and the rest
+of `Runner`'s methods live by concern in `link.rs` (connecting and the
+attach's catch-up, losing and re-making the link, notifications,
+following the helper mobs; 1,000), `turn.rs` (prompts and steers, Esc,
+the agent's events, the model; 645), `switch.rs` (conversation, agent
+and workspace switches; 700), `depart.rs` (`/quit`, the departure,
+`/daemon stop`; 364) and `commands.rs` (the daemon's own commands and
+their texts; 514). The data types stay in `mod.rs`, so the modules share
+their fields; a method another module calls is `pub(super)`. Moved, not
+changed: every test's assertions are as they were (its imports name the
+modules now). `AttachRunner` is `Runner` and `AttachConfig` is
+`ClientConfig`; "attach mode" is gone from the code's comments (there is
+no other mode; `AttachMode` is still the `--attach` flag's). The
+"not attached" texts, 17 hand-written variants, come from one helper
+(`Runner::unattached`, `link_or_say`) that says why there is no
+connection (connecting, reconnecting, retrying, failed with `/daemon
+start` to try again, or stopped) and what did not happen. The
+`RecallQueued` round trip is left as it is: it gets wired to a daemon
+`rkat/recall` when Meerkat 0.9.12 is adopted
+(`.handover/release-adoption-brief.md` 3.2).

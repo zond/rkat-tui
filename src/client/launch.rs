@@ -229,7 +229,7 @@ fn value_name<T: clap::ValueEnum>(value: T) -> Option<OsString> {
 }
 
 /// The ids of the `rkat-tui` arguments [`daemon_argv`] does not forward:
-/// the UI's own (the prompt, resuming, the mouse, attach mode) and the
+/// the UI's own (the prompt, resuming, the mouse, the daemon) and the
 /// workspace, which it makes explicit. Every other argument is forwarded;
 /// `tests::every_engine_flag_reaches_the_daemon` fails for one that is not.
 #[cfg(any(test, feature = "test-support"))]

@@ -56,9 +56,9 @@ use crate::error::TuiError;
 use crate::ui::{Effect, Msg, StatusInfo, StatusUpdate, UiChannels};
 use crate::workbench::{AppSetup, app};
 
-pub use runner::{AttachConfig, AttachRunner, SpawnPlan};
+pub use runner::{ClientConfig, Runner, SpawnPlan};
 
-/// Why attach mode cannot reach or use the daemon.
+/// Why the client cannot reach or use the daemon.
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
     /// Nothing accepts at the endpoint's address.
@@ -185,7 +185,7 @@ pub enum ClientError {
 /// [`TuiError`] when the workspace, its layers or the realm config cannot
 /// be read.
 #[cfg(any(test, feature = "test-support"))]
-pub async fn configure(args: &Args, target: AttachTarget) -> Result<AttachConfig, TuiError> {
+pub async fn configure(args: &Args, target: AttachTarget) -> Result<ClientConfig, TuiError> {
     configure_at(args, target, &crate::daemon::list::files(None)).await
 }
 
@@ -201,7 +201,7 @@ pub async fn configure_at(
     args: &Args,
     target: AttachTarget,
     local_files: &[std::path::PathBuf],
-) -> Result<AttachConfig, TuiError> {
+) -> Result<ClientConfig, TuiError> {
     let (args, layers, reached) = retarget(args.clone(), &target, None, local_files).await?;
     let mut config = configure_with(
         layers,
@@ -299,7 +299,7 @@ pub fn directory_args(args: &Args, dir: &std::path::Path) -> Result<Args, TuiErr
     Ok(args)
 }
 
-/// Resolve what attach mode needs from `args` and the `tui.toml` `layers`
+/// Resolve what the client needs from `args` and the `tui.toml` `layers`
 /// read at start: the workspace, the endpoint and cursor files, the realm
 /// config (context windows) and how a missing daemon is started. The `!`
 /// shell is planned over `host_paths` (this host's: [`HostPaths::detect`]).
@@ -314,7 +314,7 @@ pub async fn configure_with(
     args: &Args,
     mode: AttachMode,
     host_paths: &crate::bootstrap::HostPaths,
-) -> Result<AttachConfig, TuiError> {
+) -> Result<ClientConfig, TuiError> {
     let config = crate::bootstrap::guarded_config(
         &layers.scope,
         args,
@@ -369,7 +369,7 @@ pub async fn configure_with(
         Some(_) => Some(crate::daemon::endpoint::new_token()?),
         None => None,
     };
-    Ok(AttachConfig {
+    Ok(ClientConfig {
         address: None,
         remote: None,
         start: StartAt::from_args(args),
@@ -454,7 +454,7 @@ pub fn agent_choice(args: &Args) -> crate::daemon::protocol::AgentChoice {
 
 /// What the client's UI takes from `config`.
 #[must_use]
-pub fn app_setup(config: &AttachConfig) -> AppSetup {
+pub fn app_setup(config: &ClientConfig) -> AppSetup {
     AppSetup {
         compaction: config.compaction.normalized().0,
         ui: config.ui,
@@ -527,7 +527,7 @@ pub async fn run(
         endpoint_files: rehome::default_endpoint_files(),
     });
     app::init_logging(&config.scope.realm_root())?;
-    // Attach mode sends every event on the integrator channel (in order with
+    // The runner sends every event on the integrator channel (in order with
     // the turn messages); the agent channel stays idle.
     let (_agent_tx, agent_rx) = mpsc::channel(1);
     let (ui_tx, ui_rx) = mpsc::unbounded_channel::<Msg>();
@@ -551,7 +551,7 @@ pub async fn run(
             None
         }
     };
-    let runner = AttachRunner::new(config, ui_tx, effect_rx);
+    let runner = Runner::new(config, ui_tx, effect_rx);
     let farewells = runner.farewells();
     // The runner leaves the daemon as `/quit` decided (stopped, or running
     // with the detach recorded), then saves the cursor and the unsent
@@ -601,7 +601,7 @@ pub mod testing {
     use tokio::sync::mpsc;
     use tokio::task::JoinHandle;
 
-    use super::{AttachConfig, AttachRunner};
+    use super::{ClientConfig, Runner};
     use crate::ui::{Effect, Msg};
 
     /// A running attach runner and the UI's ends of its channels.
@@ -617,10 +617,10 @@ pub mod testing {
 
     /// Spawn an attach runner on `config`.
     #[must_use]
-    pub fn spawn_attach_runner(config: AttachConfig) -> AttachHarness {
+    pub fn spawn_attach_runner(config: ClientConfig) -> AttachHarness {
         let (ui_tx, ui_rx) = mpsc::unbounded_channel();
         let (effects, effect_rx) = mpsc::unbounded_channel();
-        let runner = AttachRunner::new(config, ui_tx, effect_rx);
+        let runner = Runner::new(config, ui_tx, effect_rx);
         AttachHarness {
             effects,
             ui_rx,

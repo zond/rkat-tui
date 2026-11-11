@@ -265,7 +265,7 @@ pub enum StatusUpdate {
     CostTotals(SessionCostSnapshot),
     /// The daemon connection's state, shown first in the status bar.
     Connection(Connection),
-    /// Attach mode: the agent this client works with (`main-<id>`), shown
+    /// The agent this client works with (`main-<id>`), shown
     /// after the connection's state.
     Agent(Option<String>),
     /// The price table changed (start-up, fetched lists); the cost readout
@@ -401,7 +401,7 @@ pub enum Msg {
     ShowModelPicker(Vec<ModelGroup>),
     /// Replace the transcript (e.g. after resuming a session).
     ResetTranscript(Vec<Block>),
-    /// Attach mode: a turn this UI did not start runs on the daemon (another
+    /// A turn this UI did not start runs on the daemon (another
     /// client's, or one the catch-up found in progress): show `prompt` as
     /// the user's message when there is one and count the UI busy until
     /// [`Msg::TurnFinished`], as if it had started it.
@@ -409,7 +409,7 @@ pub enum Msg {
         /// The run's prompt (`None`: a continuation without one).
         prompt: Option<String>,
     },
-    /// Another agent of the workspace messaged this one (attach mode):
+    /// Another agent of the workspace messaged this one:
     /// shown as a block labelled with the sender, so the user sees why the
     /// agent woke.
     Peer {
@@ -474,7 +474,7 @@ pub enum Msg {
         /// The workspace's paths.
         paths: Vec<crate::mentions::PathEntry>,
     },
-    /// Attach mode: the runner's answer to [`Effect::DecideQuit`].
+    /// The runner's answer to [`Effect::DecideQuit`].
     QuitDecided(QuitDecision),
     /// A re-home moved this client to another workspace (`/rehome`): `@`
     /// mentions complete there, the `!` shell's confinement may differ,
@@ -588,12 +588,12 @@ pub enum Effect {
     },
     /// Leave the application. The integrator interrupts a running turn,
     /// persists the session and saves undelivered messages before exiting.
-    /// Attach mode leaves the daemon running (a hangup is a detach).
+    /// Leaves the daemon running (a hangup is a detach).
     Quit,
-    /// Attach mode, sent right before [`Effect::Quit`]: what leaving does
+    /// Sent right before [`Effect::Quit`]: what leaving does
     /// to the daemon (`rkat/detach` or `rkat/shutdown`).
     Leave(Departure),
-    /// Attach mode: `/quit` asks the runner how to leave; answered with
+    /// `/quit` asks the runner how to leave; answered with
     /// [`Msg::QuitDecided`].
     DecideQuit,
     /// Sent right before [`Effect::Quit`]: every message the UI still holds
@@ -671,7 +671,7 @@ pub enum Effect {
     /// the version, model, session, workspace, realm, confinement, auto
     /// mode, trust state and helper depth limit.
     StatusReport,
-    /// `/daemon stop`: ask the attached daemon to shut down (attach mode;
+    /// `/daemon stop`: ask the attached daemon to shut down (
     /// answered with a notice).
     DaemonStop,
     /// `/rehome`: list the state this workspace could adopt (`None`), or
@@ -788,7 +788,7 @@ pub struct StatusInfo {
     /// The daemon connection's state; `None` until the runner reports
     /// one.
     connection: Option<Connection>,
-    /// Attach mode: the agent this client works with.
+    /// The agent this client works with.
     agent: Option<String>,
 }
 
@@ -1064,7 +1064,7 @@ pub struct App {
     /// When a Ctrl-D / `/quit` was refused because work is in flight; a
     /// second one within [`QUIT_CONFIRM_WINDOW`] quits anyway.
     quit_confirm: Option<Instant>,
-    /// Attach mode: an [`Effect::DecideQuit`] waits for its
+    /// An [`Effect::DecideQuit`] waits for its
     /// [`Msg::QuitDecided`] (another `/quit` meanwhile leaves at once).
     deciding_quit: bool,
     /// Context-gauge policy: warn about a filling context (warn mode).

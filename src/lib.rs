@@ -138,7 +138,7 @@ pub mod daemon;
 #[cfg(not(feature = "test-support"))]
 pub(crate) mod daemon;
 
-// Attach mode (the default): the TUI as a client of the workspace's
+// The TUI as a client of the workspace's
 // `rkat-tui-mob` daemon. Internal like the modules above.
 #[cfg(feature = "test-support")]
 pub mod client;

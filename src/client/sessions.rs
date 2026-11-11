@@ -1,4 +1,4 @@
-//! `/new`, `/resume` and `/rewind` in attach mode.
+//! `/new`, `/resume` and `/rewind`.
 //!
 //! A conversation is a session the daemon's orchestrator runs as
 //! ([`crate::daemon::conversations`]): `/new` and `/resume` ask the daemon

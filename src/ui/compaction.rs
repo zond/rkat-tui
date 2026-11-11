@@ -232,7 +232,7 @@ pub enum CompactFailure {
     /// No turn has reported its context yet: nothing to compact.
     #[error("nothing to compact yet")]
     NothingYet,
-    /// The engine refused the compaction request (in attach mode, the
+    /// The engine refused the compaction request (the
     /// daemon's engine).
     #[error("the engine did not take the request: {0}")]
     Request(String),

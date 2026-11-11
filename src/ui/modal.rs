@@ -597,7 +597,7 @@ pub enum Modal {
     Keys,
     /// A turn ended in plan mode with an answer: proceed or keep planning.
     PlanReady(PlanDialog),
-    /// Attach mode: `/quit` asks whether to detach or stop the daemon.
+    /// `/quit` asks whether to detach or stop the daemon.
     Quit(QuitDialog),
 }
 
