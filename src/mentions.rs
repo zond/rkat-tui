@@ -108,7 +108,8 @@ fn index_path(base: &Path, entry: &ignore::DirEntry) -> Option<String> {
         .ok()
         .and_then(Path::to_str)
         .filter(|rel| !rel.is_empty())?;
-    let mut path = relative.replace('\\', "/");
+    // A backslash is a filename byte on Unix, not a separator.
+    let mut path = relative.to_string();
     if file_type.is_dir() {
         path.push('/');
     }
@@ -222,7 +223,7 @@ pub fn scan_mentions(text: &str, root: &ProjectRoot) -> Vec<Mention> {
 
 fn resolve(raw: &str, root: &ProjectRoot) -> Option<Mention> {
     let resolved = root.resolve(raw).ok()?;
-    let relative = resolved.relative.as_deref()?.to_str()?.replace('\\', "/");
+    let relative = resolved.relative.as_deref()?.to_str()?.to_string();
     if relative.is_empty() {
         return None;
     }
@@ -511,6 +512,25 @@ mod tests {
         assert_eq!(paths(&match_paths(&index, "main", 8)), ["src/main.rs"]);
         assert_eq!(match_paths(&index, "", 3).len(), 3);
         assert!(match_paths(&index, "zz", 8).is_empty());
+    }
+
+    /// A backslash is a filename byte on Unix: a file named `a\b` is
+    /// indexed and attached under its own name, not as `a/b`.
+    #[test]
+    fn a_backslash_in_a_file_name_stays_a_backslash() {
+        let (dir, root) = workspace();
+        std::fs::write(dir.path().join("a\\b.txt"), "slashed\n").unwrap();
+        let index = workspace_paths(&root);
+        assert!(
+            index.iter().any(|e| e.path == "a\\b.txt"),
+            "{:?}",
+            paths(&index.iter().collect::<Vec<_>>())
+        );
+        assert!(!index.iter().any(|e| e.path == "a/b.txt"));
+        let found = scan_mentions("see @a\\b.txt", &root);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].path, "a\\b.txt");
+        assert_eq!(found[0].kind, MentionKind::File);
     }
 
     #[test]

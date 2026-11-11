@@ -12,8 +12,8 @@ use super::checklist::{Checklist, ItemState};
 use super::markdown::{display_width, render_markdown, sanitize, truncate_to_width, wrap_text};
 use super::modal::draw_modal;
 use super::transcript::{
-    Block, BlockId, DiffView, HelperFold, HelperState, NoticeLevel, ShellState, ToolState,
-    args_preview, result_line_count,
+    Block, BlockId, DiffView, HelperFold, HelperState, NoticeLevel, Preview, ShellState, ToolState,
+    args_preview,
 };
 use super::{App, HistorySearch, StatusInfo};
 use crate::approval::mode::PermissionMode;
@@ -733,7 +733,7 @@ pub fn block_lines(block: &Block, width: u16) -> Vec<Line<'static>> {
             if has_body {
                 status.push_str(&tool_toggle_hint(
                     *collapsed,
-                    result_preview.as_deref(),
+                    result_preview.as_ref(),
                     diff.as_ref(),
                 ));
             }
@@ -819,7 +819,7 @@ pub fn block_lines(block: &Block, width: u16) -> Vec<Line<'static>> {
             state,
             output,
             collapsed,
-        } => shell_lines(command, state, output.as_deref(), *collapsed, w, &mut out),
+        } => shell_lines(command, state, output.as_ref(), *collapsed, w, &mut out),
     }
     out.push(Line::default());
     out
@@ -830,7 +830,7 @@ pub fn block_lines(block: &Block, width: u16) -> Vec<Line<'static>> {
 fn shell_lines(
     command: &str,
     state: &ShellState,
-    output: Option<&str>,
+    output: Option<&Preview>,
     collapsed: bool,
     w: usize,
     out: &mut Vec<Line<'static>>,
@@ -877,7 +877,7 @@ fn shell_lines(
         ));
     }
     if !collapsed {
-        tool_body("", output, None, w, out);
+        tool_body("", output.map(|preview| &**preview), None, w, out);
     }
 }
 
@@ -922,13 +922,13 @@ fn helper_line(fold: &HelperFold, w: usize, lead: &str, tail: &str) -> Line<'sta
 
 /// The hint after a tool header with output: `▸ 12 lines` / `▸ +3 -1` when
 /// collapsed (click or Ctrl-O to expand), `▾` when expanded.
-fn tool_toggle_hint(collapsed: bool, preview: Option<&str>, diff: Option<&DiffView>) -> String {
+fn tool_toggle_hint(collapsed: bool, preview: Option<&Preview>, diff: Option<&DiffView>) -> String {
     if !collapsed {
         return " ▾".to_string();
     }
     let mut parts = Vec::new();
     if let Some(preview) = preview {
-        let n = result_line_count(preview);
+        let n = preview.line_count();
         parts.push(format!("{n} line{}", if n == 1 { "" } else { "s" }));
     }
     if let Some(d) = diff {
@@ -1149,7 +1149,7 @@ mod tests {
             removed: 1,
         };
         assert_eq!(
-            tool_toggle_hint(true, Some("ok"), Some(&diff)),
+            tool_toggle_hint(true, Some(&Preview::from("ok")), Some(&diff)),
             " ▸ 1 line, +3 -1"
         );
         assert_eq!(tool_toggle_hint(true, None, Some(&diff)), " ▸ +3 -1");

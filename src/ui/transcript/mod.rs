@@ -245,7 +245,7 @@ pub enum Block {
         /// Lifecycle state.
         state: ToolState,
         /// Truncated result preview.
-        result_preview: Option<String>,
+        result_preview: Option<Preview>,
         /// Attached file diff, if the tool edited a file.
         diff: Option<DiffView>,
         /// One dim line under the header, shown even when collapsed (e.g.
@@ -301,10 +301,84 @@ pub enum Block {
         /// Lifecycle state.
         state: ShellState,
         /// The output preview (capped like a tool result).
-        output: Option<String>,
+        output: Option<Preview>,
         /// Whether the output is hidden behind the header.
         collapsed: bool,
     },
+}
+
+/// A tool result or a `!` command's output as its block keeps it: the
+/// capped preview, and how many lines the whole output had (counted when
+/// the preview was made, never read back out of its text).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Preview {
+    text: String,
+    lines: usize,
+}
+
+impl Preview {
+    /// The preview of `output`: its first [`MAX_TOOL_RESULT_LINES`] lines,
+    /// then `... (N more lines)` when there are more.
+    #[must_use]
+    pub fn of(output: &str) -> Self {
+        let lines = output.lines().count();
+        let mut shown: Vec<&str> = output.lines().take(MAX_TOOL_RESULT_LINES).collect();
+        let more;
+        if lines > MAX_TOOL_RESULT_LINES {
+            more = format!("... ({} more lines)", lines - MAX_TOOL_RESULT_LINES);
+            shown.push(&more);
+        }
+        Self {
+            text: shown.join("\n"),
+            lines,
+        }
+    }
+
+    /// How many lines the whole output had.
+    #[must_use]
+    pub fn line_count(&self) -> usize {
+        self.lines
+    }
+}
+
+impl std::ops::Deref for Preview {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.text
+    }
+}
+
+impl PartialEq<str> for Preview {
+    fn eq(&self, other: &str) -> bool {
+        self.text == other
+    }
+}
+
+impl PartialEq<&str> for Preview {
+    fn eq(&self, other: &&str) -> bool {
+        self.text == *other
+    }
+}
+
+impl std::fmt::Display for Preview {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.text)
+    }
+}
+
+/// A preview that is the whole output (it counts its own lines).
+impl From<&str> for Preview {
+    fn from(text: &str) -> Self {
+        Self::from(text.to_string())
+    }
+}
+
+/// A preview that is the whole output (it counts its own lines).
+impl From<String> for Preview {
+    fn from(text: String) -> Self {
+        let lines = text.lines().count();
+        Self { text, lines }
+    }
 }
 
 /// Cached wrapped lines for one block at one width.
@@ -1365,7 +1439,7 @@ impl Transcript {
                 duration_ms,
             };
             if let Some(result) = result {
-                *result_preview = Some(result).filter(|r| !r.is_empty()).map(preview_result);
+                *result_preview = Some(result).filter(|r| !r.is_empty()).map(Preview::of);
             }
         }
     }
@@ -1376,7 +1450,7 @@ impl Transcript {
             return;
         };
         if let Some(Block::Tool { result_preview, .. }) = self.block_mut(id) {
-            *result_preview = Some(result).filter(|r| !r.is_empty()).map(preview_result);
+            *result_preview = Some(result).filter(|r| !r.is_empty()).map(Preview::of);
         }
     }
 
@@ -1466,37 +1540,9 @@ pub fn shell_state_text(state: &ShellState) -> String {
 /// A `!` command's output as its block shows it: capped like a tool
 /// result, `None` when there is none.
 #[must_use]
-pub fn shell_output_preview(output: &str) -> Option<String> {
+pub fn shell_output_preview(output: &str) -> Option<Preview> {
     let output = output.trim_end_matches('\n');
-    (!output.is_empty()).then(|| preview_result(output))
-}
-
-/// Number of lines in the tool result a preview was made from (the preview
-/// itself is capped at [`MAX_TOOL_RESULT_LINES`] plus a `... (N more lines)`
-/// trailer, see [`preview_result`]).
-pub fn result_line_count(preview: &str) -> usize {
-    let shown = preview.lines().count();
-    let more = preview
-        .lines()
-        .last()
-        .and_then(|l| l.strip_prefix("... ("))
-        .and_then(|l| l.strip_suffix(" more lines)"))
-        .and_then(|n| n.parse::<usize>().ok());
-    match more {
-        Some(more) if shown == MAX_TOOL_RESULT_LINES + 1 => MAX_TOOL_RESULT_LINES + more,
-        _ => shown,
-    }
-}
-
-fn preview_result(result: &str) -> String {
-    let total = result.lines().count();
-    let mut out: Vec<&str> = result.lines().take(MAX_TOOL_RESULT_LINES).collect();
-    let more;
-    if total > MAX_TOOL_RESULT_LINES {
-        more = format!("... ({} more lines)", total - MAX_TOOL_RESULT_LINES);
-        out.push(&more);
-    }
-    out.join("\n")
+    (!output.is_empty()).then(|| Preview::of(output))
 }
 
 /// Event builders shared by the UI unit tests.
@@ -2438,20 +2484,32 @@ mod tests {
         assert_eq!(t.toggle_tool(BlockId(1)), None);
     }
 
+    /// A preview keeps the whole output's line count: a capped one names
+    /// the lines it cut, and an output whose last line looks like that
+    /// trailer is counted as it is, not read back out of its text.
     #[test]
-    fn result_line_count_reads_the_preview_trailer() {
-        assert_eq!(result_line_count("one"), 1);
-        assert_eq!(result_line_count("a\nb"), 2);
+    fn a_preview_counts_the_whole_output() {
+        assert_eq!(Preview::of("one").line_count(), 1);
+        assert_eq!(Preview::of("a\nb").line_count(), 2);
         let long = (0..57)
             .map(|i| i.to_string())
             .collect::<Vec<_>>()
             .join("\n");
-        assert_eq!(result_line_count(&preview_result(&long)), 57);
+        let capped = Preview::of(&long);
+        assert_eq!(capped.line_count(), 57);
+        assert!(capped.ends_with("... (37 more lines)"), "{capped}");
         let exact = (0..20)
             .map(|i| i.to_string())
             .collect::<Vec<_>>()
             .join("\n");
-        assert_eq!(result_line_count(&preview_result(&exact)), 20);
+        assert_eq!(Preview::of(&exact).line_count(), 20);
+        // A tool whose own output ends like the trailer.
+        let tricky = (0..20)
+            .map(|i| i.to_string())
+            .chain(std::iter::once("... (500 more lines)".to_string()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(Preview::of(&tricky).line_count(), 21);
     }
 
     #[test]

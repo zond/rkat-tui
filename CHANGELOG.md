@@ -32,6 +32,15 @@
 
 ### Fixed
 
+- The `/model` picker lists every model of an OpenAI-dialect proxy: the
+  filter that drops OpenAI's embedding, speech and image families
+  applies to the built-in `openai` endpoint only (a proxy's model named
+  `text-large` or `fast-tts-free` was hidden).
+- A file whose name holds a backslash is completed and attached under
+  its own name (it was turned into a path with a `/`).
+- A tool block's collapsed line count is the result's own: a result
+  whose last line read like the preview's `... (N more lines)` trailer
+  was miscounted.
 - Prompt history: when a file passes 1000 lines it is cut from what it
   holds then, so the lines another TUI appended meanwhile stay (the
   global file is shared by every rkat-tui), and the files are

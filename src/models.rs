@@ -218,8 +218,12 @@ pub async fn list_endpoint(
         return Err(ListModelsError::NoKey);
     }
     let creds = endpoint.credentials();
+    let mut models = list_models(&creds, timeout).await?;
+    if endpoint.builtin && endpoint.dialect == WireDialect::OpenAi {
+        models = openai_chat_only(models);
+    }
     let mut listing = EndpointListing {
-        models: list_models(&creds, timeout).await?,
+        models,
         prices: Vec::new(),
     };
     if endpoint.dialect == WireDialect::OpenAi
@@ -540,13 +544,9 @@ fn is_openai_non_chat(id: &str) -> bool {
         || PREFIXES.iter().any(|prefix| id.starts_with(prefix))
 }
 
-/// Keep chat-capable models, newest first (ties broken by id).
+/// The page's models, newest first (ties broken by id).
 fn openai_entries(page: OpenAiPage) -> Vec<ModelEntry> {
-    let mut models: Vec<OpenAiModel> = page
-        .data
-        .into_iter()
-        .filter(|model| !is_openai_non_chat(&model.id))
-        .collect();
+    let mut models: Vec<OpenAiModel> = page.data;
     models.sort_by(|a, b| b.created.cmp(&a.created).then_with(|| a.id.cmp(&b.id)));
     models
         .into_iter()
@@ -571,6 +571,15 @@ async fn list_openai(
         .bearer_auth(api_key.expose());
     let page: OpenAiPage = fetch_json(request).await?;
     Ok(openai_entries(page))
+}
+
+/// `models` without the obviously non-chat families of OpenAI's own API
+/// (embeddings, speech, images, moderation). Only for the built-in
+/// `openai` endpoint: a proxy's model ids are names its owner chose
+/// (`text-large`, `fast-tts-free`), not OpenAI's families.
+fn openai_chat_only(mut models: Vec<ModelEntry>) -> Vec<ModelEntry> {
+    models.retain(|model| !is_openai_non_chat(&model.id));
+    models
 }
 
 // ---------------------------------------------------------------------------
@@ -829,7 +838,10 @@ mod tests {
             ]
         }"#;
         let page: OpenAiPage = decode(body).unwrap();
-        let ids: Vec<String> = openai_entries(page).into_iter().map(|e| e.id).collect();
+        let ids: Vec<String> = openai_chat_only(openai_entries(page))
+            .into_iter()
+            .map(|e| e.id)
+            .collect();
         assert_eq!(ids, vec!["gpt-5.3-codex", "gpt-5.4", "gpt-5.2"]);
     }
 
@@ -1053,6 +1065,35 @@ mod tests {
             heads
         });
         (format!("http://{addr}/"), handle)
+    }
+
+    /// A proxy's own model names are never filtered as OpenAI families:
+    /// only the built-in `openai` endpoint drops embeddings, speech and the
+    /// like.
+    #[tokio::test]
+    async fn a_proxys_models_are_listed_whatever_they_are_called() {
+        let body = r#"{"object":"list","data":[
+            {"id":"text-large","object":"model","created":2,"owned_by":"me"},
+            {"id":"fast-tts-free","object":"model","created":1,"owned_by":"me"}
+        ]}"#;
+        // The list, then LiteLLM's `/model/info` (not LiteLLM: 404).
+        let (base, server) = stub_server(vec![(200, body), (404, "{}")]).await;
+        let endpoint = crate::endpoints::Endpoint {
+            name: "proxy".into(),
+            dialect: WireDialect::OpenAi,
+            base_url: Some(base),
+            api_key: SecretString::new("k"),
+            key_env: Some("PROXY_KEY".into()),
+            builtin: false,
+            priority: 0,
+            api_style: crate::endpoints::ApiStyle::default(),
+        };
+        let listing = list_endpoint(&endpoint, Duration::from_secs(5))
+            .await
+            .unwrap();
+        let ids: Vec<&str> = listing.models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["text-large", "fast-tts-free"]);
+        server.await.unwrap();
     }
 
     #[tokio::test]
