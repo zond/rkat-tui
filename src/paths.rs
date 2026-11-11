@@ -5,7 +5,7 @@
 //! into an absolute path and decides whether it is inside the project and whether
 //! it is protected.
 
-use globset::{Glob, GlobSet, GlobSetBuilder};
+use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -58,9 +58,18 @@ enum ProtectedSet {
 
 impl ProtectedSet {
     fn build(patterns: &[&str]) -> Self {
+        Self::build_with(patterns, false)
+    }
+
+    /// The patterns matched ignoring case when `fold_case` (for a project
+    /// on a case-insensitive file system).
+    fn build_with(patterns: &[&str], fold_case: bool) -> Self {
         let mut builder = GlobSetBuilder::new();
         for pattern in patterns {
-            match Glob::new(pattern) {
+            match GlobBuilder::new(pattern)
+                .case_insensitive(fold_case)
+                .build()
+            {
                 Ok(glob) => {
                     builder.add(glob);
                 }
@@ -87,9 +96,14 @@ impl ProtectedSet {
     }
 }
 
-fn protected_set() -> &'static ProtectedSet {
+fn protected_set(fold_case: bool) -> &'static ProtectedSet {
     static SET: OnceLock<ProtectedSet> = OnceLock::new();
-    SET.get_or_init(|| ProtectedSet::build(PROTECTED_PATTERNS))
+    static FOLDED: OnceLock<ProtectedSet> = OnceLock::new();
+    if fold_case {
+        FOLDED.get_or_init(|| ProtectedSet::build_with(PROTECTED_PATTERNS, true))
+    } else {
+        SET.get_or_init(|| ProtectedSet::build(PROTECTED_PATTERNS))
+    }
 }
 
 /// Root-relative glob patterns a file tool never writes, whatever the
@@ -118,16 +132,80 @@ pub const SEALED_PATTERNS: &[&str] = &[
     "**/.git/**",
 ];
 
-fn sealed_set() -> &'static ProtectedSet {
+fn sealed_set(fold_case: bool) -> &'static ProtectedSet {
     static SET: OnceLock<ProtectedSet> = OnceLock::new();
-    SET.get_or_init(|| ProtectedSet::build(SEALED_PATTERNS))
+    static FOLDED: OnceLock<ProtectedSet> = OnceLock::new();
+    if fold_case {
+        FOLDED.get_or_init(|| ProtectedSet::build_with(SEALED_PATTERNS, true))
+    } else {
+        SET.get_or_init(|| ProtectedSet::build(SEALED_PATTERNS))
+    }
 }
 
-/// Whether `relative` (a path relative to the project root) matches
-/// [`SEALED_PATTERNS`].
+/// Whether the file system holding `dir` resolves names ignoring case
+/// (macOS's default APFS and HFS+, Windows shares): a name of `dir` or of
+/// one of its ancestors with its case flipped names the same file. On such
+/// a volume `.RKAT/` is the real `.rkat`, so the sealed and protected
+/// patterns must match ignoring case there; on a case-sensitive one
+/// `.RKAT` is a different, ordinary directory. `false` when no name on the
+/// way has a letter or nothing can be read (no evidence of folding).
 #[must_use]
-pub fn is_sealed_relative(relative: &Path) -> bool {
-    sealed_set().is_match(relative)
+pub fn folds_case(dir: &Path) -> bool {
+    for path in dir.ancestors() {
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let flipped: String = name
+            .chars()
+            .map(|c| {
+                if c.is_ascii_lowercase() {
+                    c.to_ascii_uppercase()
+                } else {
+                    c.to_ascii_lowercase()
+                }
+            })
+            .collect();
+        if flipped == name {
+            continue;
+        }
+        let Some(parent) = path.parent() else {
+            continue;
+        };
+        return same_file(path, &parent.join(flipped));
+    }
+    false
+}
+
+/// Whether `a` and `b` are the same existing file (device and inode).
+#[cfg(unix)]
+fn same_file(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    match (std::fs::metadata(a), std::fs::metadata(b)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+        _ => false,
+    }
+}
+
+/// No device and inode to compare: no evidence of folding.
+#[cfg(not(unix))]
+fn same_file(_a: &Path, _b: &Path) -> bool {
+    false
+}
+
+/// Whether `path` lies at or below `dir`, comparing each name ignoring
+/// case when `fold_case`.
+fn below(path: &Path, dir: &Path, fold_case: bool) -> bool {
+    if !fold_case {
+        return path.starts_with(dir);
+    }
+    let mut path = path.components();
+    dir.components().all(|want| {
+        path.next().is_some_and(|have| {
+            let (have, want) = (have.as_os_str(), want.as_os_str());
+            have == want
+                || matches!((have.to_str(), want.to_str()), (Some(h), Some(w)) if h.to_lowercase() == w.to_lowercase())
+        })
+    })
 }
 
 /// Whether `name` is an environment file that typically holds secrets:
@@ -170,6 +248,10 @@ pub enum PathError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectRoot {
     root: PathBuf,
+    /// Whether the root's file system resolves names ignoring case
+    /// ([`folds_case`]): the patterns and the sealed roots are then matched
+    /// ignoring case.
+    fold_case: bool,
     /// Canonical (as far as they exist) sealed directories.
     sealed_roots: Vec<PathBuf>,
     /// Canonical (as far as they exist) secret directories: sealed, and
@@ -191,6 +273,7 @@ impl ProjectRoot {
             source,
         })?;
         Ok(Self {
+            fold_case: folds_case(&canonical),
             root: canonical,
             sealed_roots: Vec::new(),
             secret_roots: Vec::new(),
@@ -212,6 +295,31 @@ impl ProjectRoot {
             }
         }
         self
+    }
+
+    /// The root as if its file system did (`true`) or did not resolve
+    /// names ignoring case, whatever [`folds_case`] found: tests of the
+    /// case-insensitive matching on a case-sensitive host.
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_folded_case(mut self, fold_case: bool) -> Self {
+        self.fold_case = fold_case;
+        self
+    }
+
+    /// Whether `relative` (a path relative to the root) matches
+    /// [`SEALED_PATTERNS`], ignoring case on a case-insensitive file
+    /// system.
+    #[must_use]
+    pub fn is_sealed_relative(&self, relative: &Path) -> bool {
+        sealed_set(self.fold_case).is_match(relative)
+    }
+
+    /// Whether `path` lies at or below one of `dirs`, as this root's file
+    /// system compares names.
+    #[must_use]
+    pub fn below_any(&self, path: &Path, dirs: &[PathBuf]) -> bool {
+        dirs.iter().any(|dir| below(path, dir, self.fold_case))
     }
 
     /// The sealed roots added with [`Self::with_sealed_roots`] (the secret
@@ -273,15 +381,15 @@ impl ProjectRoot {
         }
         let joined = self.join_literal(raw)?;
         let abs = resolve_physically(&joined)?;
-        let relative = abs.strip_prefix(&self.root).ok().map(Path::to_path_buf);
+        let relative = self.relative_of(&abs);
         let protected = relative
             .as_deref()
-            .is_some_and(|rel| protected_set().is_match(rel));
+            .is_some_and(|rel| protected_set(self.fold_case).is_match(rel));
         let sealed = relative
             .as_deref()
-            .is_some_and(|rel| sealed_set().is_match(rel))
-            || self.sealed_roots.iter().any(|dir| abs.starts_with(dir));
-        let secret = self.secret_roots.iter().any(|dir| abs.starts_with(dir));
+            .is_some_and(|rel| self.is_sealed_relative(rel))
+            || self.below_any(&abs, &self.sealed_roots);
+        let secret = self.below_any(&abs, &self.secret_roots);
         Ok(ResolvedPath {
             abs,
             relative,
@@ -289,6 +397,22 @@ impl ProjectRoot {
             sealed,
             secret,
         })
+    }
+
+    /// `abs` relative to the root (its names compared ignoring case on a
+    /// case-insensitive file system), or `None` outside it.
+    fn relative_of(&self, abs: &Path) -> Option<PathBuf> {
+        if let Ok(relative) = abs.strip_prefix(&self.root) {
+            return Some(relative.to_path_buf());
+        }
+        if !below(abs, &self.root, self.fold_case) {
+            return None;
+        }
+        Some(
+            abs.components()
+                .skip(self.root.components().count())
+                .collect(),
+        )
     }
 
     /// `raw` with a leading `~` expanded and joined onto the root, *without*
@@ -979,9 +1103,67 @@ mod tests {
         assert!(!good.is_match(Path::new("README.md")));
     }
 
+    /// On a case-insensitive file system (macOS's default) `.RKAT/` is the
+    /// real `.rkat`: the seal, the protected patterns and the sealed roots
+    /// match ignoring case there. Linux file systems are case-sensitive, so
+    /// the folding answer is injected here; `folds_case` itself is pinned
+    /// to say no for a case-sensitive directory.
+    #[test]
+    fn a_case_insensitive_volume_seals_every_spelling() {
+        let (_dir, root) = root();
+        let cfg = root.as_path().join("cfg");
+        std::fs::create_dir_all(&cfg).unwrap();
+        let folded = root.clone().with_sealed_roots([cfg]).with_folded_case(true);
+        for path in [
+            ".RKAT/tui.toml",
+            ".Rkat",
+            "sub/.rKaT/mcp.toml",
+            ".GIT/config",
+        ] {
+            let resolved = folded.resolve(path).unwrap();
+            assert!(
+                resolved.sealed && resolved.protected,
+                "{path}: {resolved:?}"
+            );
+        }
+        for path in [".ENV", "AGENTS.MD", "Build.rs"] {
+            assert!(folded.resolve(path).unwrap().protected, "{path}");
+        }
+        assert!(folded.resolve("CFG/tui.toml").unwrap().sealed);
+        // An absolute spelling of the root in another case is inside it.
+        let upper = folded.as_path().to_string_lossy().to_uppercase();
+        let resolved = folded.resolve(&format!("{upper}/.rkat/x")).unwrap();
+        assert!(resolved.inside() && resolved.sealed, "{resolved:?}");
+        // On a case-sensitive volume `.RKAT` is an ordinary directory.
+        let sensitive = root.with_folded_case(false);
+        let plain = sensitive.resolve(".RKAT/tui.toml").unwrap();
+        assert!(!plain.sealed && !plain.protected, "{plain:?}");
+        assert!(sensitive.resolve(".rkat/tui.toml").unwrap().sealed);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_case_sensitive_directory_does_not_fold_case() {
+        let dir = tempfile::tempdir().unwrap();
+        let named = dir.path().join("Workspace");
+        std::fs::create_dir_all(&named).unwrap();
+        assert!(!folds_case(&named));
+        assert!(
+            !ProjectRoot::new(&named)
+                .unwrap()
+                .is_sealed_relative(Path::new(".RKAT"))
+        );
+        assert!(
+            ProjectRoot::new(&named)
+                .unwrap()
+                .is_sealed_relative(Path::new(".rkat"))
+        );
+    }
+
     #[test]
     fn all_builtin_protected_patterns_compile() {
-        assert!(matches!(protected_set(), ProtectedSet::Globs(_)));
+        assert!(matches!(protected_set(false), ProtectedSet::Globs(_)));
+        assert!(matches!(protected_set(true), ProtectedSet::Globs(_)));
     }
 
     #[cfg(unix)]

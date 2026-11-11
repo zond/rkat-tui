@@ -81,18 +81,20 @@ pub(crate) fn walker(root: &Path, hide_secrets: bool, secret: &[PathBuf]) -> Wal
 /// The walker `@` mentions use (the input's path menu and the attached
 /// directory listings): as [`walker`] from `start`, without hiding secrets
 /// (the user names the file), and it never enters a sealed path of `root`
-/// ([`crate::paths::is_sealed_relative`] or one of its sealed roots).
+/// ([`crate::paths::ProjectRoot::is_sealed_relative`] or one of its sealed
+/// roots).
 pub(crate) fn mention_walker(root: &crate::paths::ProjectRoot, start: &Path) -> WalkBuilder {
     let base = root.as_path().to_path_buf();
     let sealed = root.sealed_roots().to_vec();
     let mut builder = walker(start, false, root.secret_roots());
+    let root = root.clone();
     builder.filter_entry(move |entry| {
         let path = entry.path();
         entry.file_name() != ".git"
             && !path
                 .strip_prefix(&base)
-                .is_ok_and(crate::paths::is_sealed_relative)
-            && !sealed.iter().any(|dir| path.starts_with(dir))
+                .is_ok_and(|rel| root.is_sealed_relative(rel))
+            && !root.below_any(path, &sealed)
     });
     builder
 }

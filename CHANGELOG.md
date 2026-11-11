@@ -4,6 +4,14 @@
 
 ### Security
 
+- On a case-insensitive file system (macOS's default) the `.rkat` and
+  `.git` seal, the protected paths (`.env`, `AGENTS.md`, …) and the
+  sealed directories hold for every spelling: `.RKAT/tui.toml` was not
+  sealed although it is the real `.rkat/tui.toml` there. rkat-tui asks
+  the workspace's file system whether it folds case (a name with its
+  case flipped names the same file) and matches ignoring case only
+  then; on a case-sensitive file system `.RKAT` stays an ordinary
+  directory.
 - The engine's own file tools refuse rkat-tui's state too: when
   `--config-dir` or `--user-config-root` put the realm, the config
   directory or the user config document inside the workspace
