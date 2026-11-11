@@ -82,9 +82,6 @@ const START_RETRIES: u32 = 3;
 /// The wait before the first of those retries; each next one doubles it.
 const START_RETRY_FIRST: Duration = Duration::from_millis(500);
 
-/// Why Up on an empty input takes nothing back.
-pub const RECALL_UNAVAILABLE: &str = "a message sent to the daemon cannot be taken back: the engine's mob/member_send answers no input id to cancel it by (an engine ask, docs/mob-split.md ask 6); the agent gets it at its next step, or interrupt (Esc) to stop the turn";
-
 /// How often the orchestrator's current session is read (another client's
 /// `/new` or `/resume` moves it).
 pub const SESSION_POLL: Duration = Duration::from_secs(1);
@@ -356,6 +353,8 @@ enum Report {
         steer: Option<PendingId>,
         result: Result<Option<InputId>, String>,
     },
+    /// `rkat/recall` answered (or failed, in words).
+    Recalled(Result<protocol::Recalled, String>),
     /// `/agents <name>`: the daemon's agents as read for it.
     AgentsRead {
         name: String,
@@ -868,6 +867,7 @@ impl Runner {
                 steer,
                 result,
             } => self.sent(turn, steer, result),
+            Report::Recalled(result) => self.recalled(result),
             Report::AgentsRead { name, status } => self.agents_read(name, status),
             Report::StopAsked(Ok(text)) => {
                 self.stopping = true;
@@ -1095,10 +1095,7 @@ impl Runner {
             Effect::StartTurn(text) => self.start_turn(&text),
             Effect::Steer { id, text } => self.steer(id, &text),
             Effect::Interrupt => self.interrupt(),
-            Effect::RecallQueued => self.send(Msg::Recalled {
-                recalled: Vec::new(),
-                errors: vec![RECALL_UNAVAILABLE.to_string()],
-            }),
+            Effect::RecallQueued => self.recall(),
             Effect::RunShell { id, command } => match &self.config.remote {
                 Some(why) => self.send(Msg::ShellFinished {
                     id,

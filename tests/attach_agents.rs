@@ -722,3 +722,71 @@ async fn a_message_to_another_agent_is_tier_one_and_any_other_send_asks() {
     b.quit().await;
     daemon.stop().await;
 }
+
+/// `rkat/recall` acts on the caller's own agent only: agent B naming agent
+/// A's queued steer (and an id that names no input at all) gets both back
+/// as foreign, nothing is cancelled, and A's steer reaches A's model. A
+/// probe, bound to no agent, is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agent_cannot_recall_another_agents_input() {
+    use meerkat_core::lifecycle::InputId;
+    use rkat_tui::client::remote;
+    use rkat_tui::client::transport::Connection;
+    use rkat_tui::daemon::protocol::{self, AgentChoice, RecallParams, method};
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Tool {
+            id: "slow",
+            name: "shell",
+            args: json!({ "command": "sleep 2; echo done sleeping", "timeout_secs": 30 }),
+        },
+        Step::Text("finished"),
+    ]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let a = daemon.connect_bound().await;
+    let (b, _notes) = Connection::attach_to(
+        &daemon.endpoint(),
+        std::time::Duration::from_secs(5),
+        None,
+        false,
+        Some(AgentChoice::New),
+    )
+    .await
+    .unwrap();
+    b.call("initialize", json!({})).await.unwrap();
+    assert_ne!(b.agent(), a.agent());
+    remote::send(&a, "do something for a while", false)
+        .await
+        .unwrap();
+    llm.wait_call(0).await;
+    // Queued behind the slow shell call (it joins at the next boundary).
+    let steer = remote::send(&a, "steer of agent a", true)
+        .await
+        .unwrap()
+        .expect("the daemon names the steer's input");
+    let unknown = InputId::new();
+    let params = RecallParams {
+        input_ids: vec![steer.clone(), unknown.clone()],
+    };
+    let answer = remote::call::<method::Recall>(&b, &params).await.unwrap();
+    assert!(answer.recalled.is_empty(), "{answer:?}");
+    assert!(answer.reached.is_empty(), "{answer:?}");
+    assert!(answer.errors.is_empty(), "{answer:?}");
+    assert_eq!(answer.foreign, vec![steer, unknown]);
+    let probe = daemon.connect().await;
+    let refused = remote::call::<method::Recall>(&probe, &params)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&refused, rkat_tui::client::ClientError::Rpc { code, .. } if *code == protocol::NO_AGENT),
+        "{refused:?}"
+    );
+    llm.wait_call(1).await;
+    let steered = common::user_texts(&llm.recorded()[1].messages);
+    assert!(
+        steered.iter().any(|t| t == "steer of agent a"),
+        "the steer stayed and reached its agent: {steered:?}"
+    );
+    drop((a, b, probe));
+    daemon.stop().await;
+}

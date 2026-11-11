@@ -6462,3 +6462,42 @@ first-in-first-out `Steers` fails it, checked by mutating the match),
 `attach::member_send_names_the_admitted_input`,
 `client::runner::tests::a_steers_answer_files_it_under_its_input` and the
 `client::runner::steers` unit tests.
+
+## Taking back a sent message again (`rkat/recall`, 2026-11-11)
+
+The deleted in-process runner recalled a queued steer by its input id
+(`input_state`, then `cancel_input_if_present` only for a `Queued` input);
+the daemon client could not, because `mob/member_send` answered no id, and
+answered every recall with `RECALL_UNAVAILABLE`. With 0.9.12's
+`admission.input_id` (previous section) the client has the id, and the
+daemon serves the recall:
+
+- `rkat/recall { input_ids } -> { recalled, reached, foreign, errors }`
+  (`daemon::protocol::method::Recall`, `Local::recall`). It reads each
+  input in the **caller's bound agent's current conversation only**, so
+  another agent's input (or another conversation's, or a made-up id) is
+  `foreign` and never touched; a probe bound to no agent is refused with
+  `NO_AGENT`. A `Queued` input is abandoned with the reason
+  `rkat-tui: recalled by the user`; any other state is `reached` and
+  nothing is cancelled (`cancel_input_if_present` would interrupt that
+  input's run). An unknown id is reported, not an error for the call.
+- `session/input_status` stays outside the proxy's `SERVED` list: the
+  recall has to run in the daemon under the caller's binding anyway. Its
+  0.9.12 `by: "idempotency_key"` fix does not apply (rkat-tui's sends are
+  unkeyed).
+- The runner sends the admitted ids of the steers not applied yet
+  (`Steers::outstanding`) and answers `Msg::Recalled` with the steers the
+  daemon took back; the UI plumbing (`Effect::RecallQueued`,
+  `Msg::Recalled`) was kept for this and is unchanged. `RECALL_UNAVAILABLE`
+  is deleted. A steer whose send has not answered yet cannot be named, so
+  a recall in that instant reports it reached.
+- The remaining window is the in-process runner's: a steer staged between
+  the state read and the cancel. The ask for an atomic "abandon these
+  inputs if still queued" ("Typing during a slow tool") stays open.
+
+Tests: `integrator::recalling_a_message_typed_during_a_slow_tool_leaves_the_run_alone`
+and `integrator::recalling_a_steer_that_already_joined_the_run_leaves_it_delivered`
+(ported from the in-process runner's), `attach_agents::an_agent_cannot_recall_another_agents_input`
+(the binding, an unknown id, the probe's refusal),
+`attach::what_the_daemon_cannot_do_yet_says_so` (a recall with nothing
+outstanding is an empty answer) and `client::runner::steers::tests::a_recall_takes_only_the_named_inputs`.

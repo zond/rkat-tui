@@ -75,6 +75,29 @@ impl Steers {
         }
     }
 
+    /// The admitted steers not applied yet, oldest first (what a recall
+    /// asks the daemon to take back).
+    pub(super) fn outstanding(&self) -> Vec<(PendingId, InputId)> {
+        self.admitted
+            .iter()
+            .map(|(input, id)| (*id, input.clone()))
+            .collect()
+    }
+
+    /// `inputs` were taken back before they reached the agent: their
+    /// steers, no longer followed, in the order they were admitted.
+    pub(super) fn recalled(&mut self, inputs: &[InputId]) -> Vec<PendingId> {
+        let mut taken = Vec::new();
+        self.admitted.retain(|(input, id)| {
+            let recalled = inputs.contains(input);
+            if recalled {
+                taken.push(*id);
+            }
+            !recalled
+        });
+        taken
+    }
+
     /// Every steer still followed, oldest first, taken: a follow-up run
     /// carries the ones that missed the boundary, and at the turn's end the
     /// runtime owns them.
@@ -153,5 +176,18 @@ mod tests {
         // 3's answer after the sweep files nothing.
         assert!(!steers.admitted(PendingId(3), input()));
         assert!(steers.take_all().is_empty());
+    }
+
+    #[test]
+    fn a_recall_takes_only_the_named_inputs() {
+        let mut steers = Steers::default();
+        let (first, second) = (input(), input());
+        steers.sending(PendingId(1));
+        steers.sending(PendingId(2));
+        steers.admitted(PendingId(1), first.clone());
+        steers.admitted(PendingId(2), second);
+        assert_eq!(steers.recalled(&[first, input()]), vec![PendingId(1)]);
+        assert!(steers.holds(PendingId(2)));
+        assert!(!steers.holds(PendingId(1)));
     }
 }

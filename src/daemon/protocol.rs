@@ -177,6 +177,11 @@ methods! {
     /// to its other clients, retires it, stops the daemon, or answers what
     /// to ask the user (then `rkat/detach` or `rkat/shutdown` follows).
     Quit = "rkat/quit" (Empty) -> QuitOutcome;
+    /// Take back messages the caller's agent has not read yet: each named
+    /// input of its current conversation that the runtime still holds
+    /// queued is abandoned, leaving the running turn alone; one that
+    /// already joined a run is reported reached and left.
+    Recall = "rkat/recall" (RecallParams) -> Recalled;
 }
 
 /// [`method::Status`]'s result.
@@ -564,6 +569,29 @@ pub struct ShutdownParams {
     /// next start, as after SIGTERM).
     #[serde(default)]
     pub retire: bool,
+}
+
+/// [`method::Recall`]'s parameters: the inputs `mob/member_send` admitted
+/// (`admission.input_id`), oldest first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecallParams {
+    /// The inputs to take back.
+    pub input_ids: Vec<meerkat_core::lifecycle::InputId>,
+}
+
+/// [`method::Recall`]'s result, each list in the order asked.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Recalled {
+    /// Abandoned while queued: the agent never reads them.
+    pub recalled: Vec<meerkat_core::lifecycle::InputId>,
+    /// Already joined a run (or ended): left as they are.
+    pub reached: Vec<meerkat_core::lifecycle::InputId>,
+    /// Not inputs of the caller's agent's current conversation (another
+    /// agent's, another conversation's, or none at all): left alone.
+    pub foreign: Vec<meerkat_core::lifecycle::InputId>,
+    /// The cancels the runtime refused, in words.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<String>,
 }
 
 /// [`method::Retire`]'s result.

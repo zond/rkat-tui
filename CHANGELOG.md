@@ -16,6 +16,11 @@
   delivered, at the moment the agent takes that message: the daemon now
   names the input each message became (Meerkat 0.9.12), where before the
   oldest steer was marked at any steer's delivery.
+- ↑ on an empty editor takes back a message sent while the agent works
+  again, as long as the agent has not read it (it waits behind a running
+  tool): the daemon abandons it and it returns to the editor, while the
+  running turn goes on. A message the agent already took is reported as
+  reached and left.
 
 ## [0.0.1] - 2026-11-10
 

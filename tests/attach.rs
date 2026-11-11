@@ -16,7 +16,6 @@ use meerkat_core::AgentEvent;
 use rig::{Client, Running};
 use rkat_tui::cli::{AttachMode, AttachTarget};
 use rkat_tui::client::catchup::CursorFile;
-use rkat_tui::client::runner::RECALL_UNAVAILABLE;
 use rkat_tui::client::sessions::REWIND_UNAVAILABLE;
 use rkat_tui::client::testing::spawn_attach_runner;
 use rkat_tui::ui::{Effect, Msg, StatusInfo, StatusUpdate, TurnFailure};
@@ -490,9 +489,11 @@ async fn what_the_daemon_cannot_do_yet_says_so() {
     let llm = ScriptedLlmClient::new(vec![]);
     let daemon = Running::start(&ws.root, &llm).await;
     let mut client = Client::attach(&ws.root).await;
+    // A recall with no steer of this client outstanding takes nothing back
+    // and is no error.
     client.send(Effect::RecallQueued);
     client
-        .wait_for(|msg| matches!(msg, Msg::Recalled { errors, .. } if errors.iter().any(|e| e == RECALL_UNAVAILABLE)))
+        .wait_for(|msg| matches!(msg, Msg::Recalled { recalled, errors } if recalled.is_empty() && errors.is_empty()))
         .await;
     client.send(Effect::RequestRewindMenu);
     client

@@ -594,6 +594,112 @@ async fn a_message_typed_while_a_slow_tool_runs_reaches_the_model_after_its_resu
     rig.quit().await;
 }
 
+/// ↑ takes back a message typed during a slow tool while the runtime still
+/// holds it queued (`rkat/recall`, by the input the send admitted): it never
+/// reaches the model, and the turn runs on: the tool ends, its result
+/// reaches the model, the turn completes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn recalling_a_message_typed_during_a_slow_tool_leaves_the_run_alone() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Tool {
+            id: "slow",
+            name: "shell",
+            args: json!({ "command": "sleep 2; echo done sleeping", "timeout_secs": 30 }),
+        },
+        Step::Text("finished"),
+        Step::Text("follow-up answer"),
+    ]);
+    let mut rig = Attached::start_with(&ws.root, &llm, allow_shell()).await;
+    rig.send(Effect::StartTurn("do something for a while".into()));
+    tool_started(&mut rig, "slow").await;
+    rig.send(steer(1, "never mind"));
+    let ack = rig
+        .wait_for(|msg| matches!(msg, Msg::SteerAck { .. }))
+        .await;
+    assert!(
+        matches!(ack, Msg::SteerAck { result: Ok(()), .. }),
+        "{ack:?}"
+    );
+    rig.send(Effect::RecallQueued);
+    let recalled = rig
+        .wait_for(|msg| matches!(msg, Msg::Recalled { .. }))
+        .await;
+    assert!(
+        matches!(&recalled, Msg::Recalled { recalled, errors }
+            if recalled == &[PendingId(1)] && errors.is_empty()),
+        "{recalled:?}"
+    );
+
+    let outcome = rig.turn_finished().await;
+    assert_eq!(outcome.result.expect("turn succeeds").text, "finished");
+    assert!(outcome.undelivered.is_empty(), "already back in the editor");
+    let requests = llm.requests();
+    assert_eq!(requests.len(), 2, "no follow-up turn");
+    assert!(
+        requests[1]
+            .iter()
+            .any(|m| matches!(m, Message::ToolResults { results, .. }
+        if results.iter().any(|r| !r.is_error && r.text_content().contains("done sleeping"))))
+    );
+    for request in &requests {
+        assert!(!user_texts(request).contains(&"never mind".to_string()));
+    }
+    let session = rig.messages().await;
+    assert!(!user_texts(&session).contains(&"never mind".to_string()));
+    assert!(
+        !session
+            .iter()
+            .any(|m| matches!(m, Message::SystemNotice(_))),
+        "nothing was closed by recovery"
+    );
+    rig.quit().await;
+}
+
+/// A recall after the steer joined the run finds nothing to pull back: the
+/// daemon reports it reached, cancels nothing, and the turn runs on with
+/// the steer delivered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn recalling_a_steer_that_already_joined_the_run_leaves_it_delivered() {
+    let ws = Workspace::new();
+    let gate = Arc::new(Notify::new());
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Tool {
+            id: "slow",
+            name: "shell",
+            args: json!({ "command": "sleep 1; echo done sleeping", "timeout_secs": 30 }),
+        },
+        Step::Gated(Arc::clone(&gate), Box::new(Step::Text("finished"))),
+    ]);
+    let mut rig = Attached::start_with(&ws.root, &llm, allow_shell()).await;
+    rig.send(Effect::StartTurn("do something for a while".into()));
+    tool_started(&mut rig, "slow").await;
+    rig.send(steer(1, "typed while it sleeps"));
+    rig.wait_for(|msg| matches!(msg, Msg::SteerAck { .. }))
+        .await;
+    rig.wait_for(|msg| matches!(msg, Msg::SteerDelivered(PendingId(1))))
+        .await;
+    llm.wait_call(1).await;
+    rig.send(Effect::RecallQueued);
+    let recalled = rig
+        .wait_for(|msg| matches!(msg, Msg::Recalled { .. }))
+        .await;
+    assert!(
+        matches!(&recalled, Msg::Recalled { recalled, errors }
+            if recalled.is_empty() && errors.is_empty()),
+        "{recalled:?}"
+    );
+    gate.notify_one();
+
+    let outcome = rig.turn_finished().await;
+    assert_eq!(outcome.result.expect("turn succeeds").text, "finished");
+    assert!(outcome.undelivered.is_empty());
+    let requests = llm.requests();
+    assert_eq!(requests.len(), 2, "no follow-up turn");
+    assert!(user_texts(&requests[1]).contains(&"typed while it sleeps".to_string()));
+    rig.quit().await;
+}
+
 /// A call the classifier allowed gets a dim note under its tool block with
 /// the classifier's reason; a tier-1 call gets none.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

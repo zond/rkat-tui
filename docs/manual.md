@@ -109,11 +109,13 @@ the editor.
 the same (the first Esc or Ctrl-C after a mouse selection only clears it):
 the daemon stops the agent's run and its running helpers. A message sent to
 the daemon meanwhile is the runtime's: the agent gets it at its next step
-(see the limits under [The workspace daemon](#the-workspace-daemon)).
+unless ↑ takes it back first.
 
 *↑ on an empty editor* takes back the messages the UI still holds (not yet
-sent); a message already sent to the daemon cannot be taken back, and the
-transcript says so. Typing alone never interrupts: a message sent while a
+sent) and the ones sent to the daemon that the agent has not read yet
+(the runtime still holds them queued, as while a tool runs); a message
+the agent already took stays, the transcript says so, and only Esc stops
+the turn. Typing alone never interrupts: a message sent while a
 tool runs waits for that tool's result and joins the turn after it.
 
 **How a turn ends.** A turn ends when the daemon's event stream reports the
@@ -1517,10 +1519,6 @@ alone joins the agent active last and opens the picker.
   member's session, and its member forks seat the copy under a new
   identity; the design of a same-identity rewind is merged upstream
   (lukacf/meerkat#2126), its implementation not scheduled yet.
-- Up on an empty input does not take back a message already sent to the
-  daemon: the engine's `mob/member_send` answers no input id to cancel it
-  by (the same engine ask as the steer attribution below). The agent gets
-  it at its next step; Esc stops the turn.
 - `/compact now` acts on a running agent: right after a daemon start the
   agent's session is cold, and the engine does not wake a cold session
   for a compaction (by design), so it refuses it until the agent has run.

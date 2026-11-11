@@ -128,6 +128,54 @@ impl Runner {
         }
     }
 
+    /// ↑ on an empty editor while the agent holds this client's steers:
+    /// ask the daemon to take back the ones it still holds queued
+    /// (`rkat/recall`, by the inputs their sends admitted); answered with
+    /// [`Msg::Recalled`] when the daemon has (or with nothing to ask, at
+    /// once).
+    pub(super) fn recall(&mut self) {
+        let outstanding = self.turn.steers.outstanding();
+        if outstanding.is_empty() {
+            self.send(Msg::Recalled {
+                recalled: Vec::new(),
+                errors: Vec::new(),
+            });
+            return;
+        }
+        let Some(connection) = self.connection() else {
+            self.send(Msg::Recalled {
+                recalled: Vec::new(),
+                errors: vec![self.unattached()],
+            });
+            return;
+        };
+        let reports = self.reporter();
+        tokio::spawn(async move {
+            let params = protocol::RecallParams {
+                input_ids: outstanding.into_iter().map(|(_, input)| input).collect(),
+            };
+            let result = bounded(
+                CALL_TIMEOUT,
+                remote::call::<protocol::method::Recall>(&connection, &params),
+            )
+            .await
+            .map_err(|err| err.to_string());
+            reports.send(Report::Recalled(result));
+        });
+    }
+
+    /// The daemon's answer to [`Self::recall`]: the steers it took back
+    /// return to the editor (the UI's [`Msg::Recalled`]); the others
+    /// already reached the agent.
+    pub(super) fn recalled(&mut self, result: Result<protocol::Recalled, String>) {
+        let (recalled, errors) = match result {
+            Ok(answer) => (self.turn.steers.recalled(&answer.recalled), answer.errors),
+            Err(why) => (Vec::new(), vec![why]),
+        };
+        self.admitted.retain(|id| !recalled.contains(id));
+        self.send(Msg::Recalled { recalled, errors });
+    }
+
     /// Hand `outbound` to the task that sends the prompts and steers, one
     /// after another in the order they were made (a steer must not reach
     /// the agent before the prompt it follows); the task is started on

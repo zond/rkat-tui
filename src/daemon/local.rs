@@ -166,6 +166,9 @@ pub struct LocalParts {
     pub audit: Option<Arc<super::audit::AuditLog>>,
 }
 
+/// The reason recorded on an input `rkat/recall` abandons.
+const RECALL_REASON: &str = "rkat-tui: recalled by the user";
+
 /// The fixed part of [`protocol::method::Report`]'s answer.
 #[derive(Debug, Clone)]
 pub struct ReportParts {
@@ -394,6 +397,9 @@ impl Local {
             };
             method::Retire, Empty {} => self.retire(&self.agent_of(&caller)?, None).await;
             method::Quit, Empty {} => self.quit(&caller).await;
+            method::Recall, protocol::RecallParams { input_ids } => {
+                self.recall(&caller, &input_ids).await
+            };
             method::Schedules, Empty {} => {
                 let agent = self.agent_of(&caller)?;
                 Ok(protocol::ScheduleList {
@@ -757,6 +763,61 @@ impl Local {
     /// new model is configured with. Refused while a turn runs;
     /// the session keeps the model, and the next prompt is an
     /// ordinary `mob/member_send`, tied to no connection.
+    /// `rkat/recall` for `caller`: only its own agent's current
+    /// conversation is searched, so another agent's input is never
+    /// touched. A queued input is abandoned (`cancel_input_if_present`);
+    /// any other state means the agent has it, and nothing is cancelled
+    /// (that call would interrupt the input's run). A steer staged between
+    /// the read and the cancel is the remaining window (an engine ask: an
+    /// atomic "abandon if still queued").
+    ///
+    /// # Errors
+    ///
+    /// [`protocol::NO_AGENT`] when the connection is bound to no agent or
+    /// its agent has no conversation.
+    async fn recall(
+        &self,
+        caller: &Caller,
+        inputs: &[meerkat_core::lifecycle::InputId],
+    ) -> Result<protocol::Recalled, Refusal> {
+        use meerkat_runtime::SessionServiceRuntimeExt as _;
+        use meerkat_runtime::input_state::InputLifecycleState;
+
+        let session = caller
+            .agent
+            .as_deref()
+            .and_then(|agent| self.conversations.current(agent))
+            .ok_or_else(|| {
+                Refusal::new(
+                    protocol::NO_AGENT,
+                    "rkat/recall takes back only the messages of the agent this connection works with",
+                )
+            })?;
+        let mut answer = protocol::Recalled::default();
+        for input in inputs {
+            match self.machine.input_state(&session, input).await {
+                Ok(Some(stored)) if stored.seed.phase == InputLifecycleState::Queued => {
+                    match self
+                        .machine
+                        .cancel_input_if_present(&session, input, RECALL_REASON)
+                        .await
+                    {
+                        Ok(true) => answer.recalled.push(input.clone()),
+                        Ok(false) => answer.reached.push(input.clone()),
+                        Err(err) => answer.errors.push(format!("input {input}: {err}")),
+                    }
+                }
+                Ok(Some(_)) => answer.reached.push(input.clone()),
+                Ok(None) => answer.foreign.push(input.clone()),
+                Err(err) => answer.errors.push(format!("input {input}: {err}")),
+            }
+        }
+        if !answer.recalled.is_empty() {
+            tracing::info!(recalled = answer.recalled.len(), %session, "rkat/recall");
+        }
+        Ok(answer)
+    }
+
     async fn set_model(&self, agent: &str, params: SetModelParams) -> Result<ModelSet, Refusal> {
         use meerkat_runtime::SessionServiceRuntimeExt as _;
 
