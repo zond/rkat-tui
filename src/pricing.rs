@@ -20,6 +20,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use indexmap::IndexMap;
@@ -351,7 +352,9 @@ impl CommunityEntry {
 pub struct PriceTable {
     overrides: BTreeMap<String, PricingSection>,
     endpoint: HashMap<String, ModelPrice>,
-    community: CommunityPrices,
+    /// Shared: a few thousand entries, and the table is cloned for every
+    /// readout that prices something (`/schedules`).
+    community: Arc<CommunityPrices>,
 }
 
 impl PriceTable {
@@ -366,7 +369,7 @@ impl PriceTable {
 
     /// Replace the community list.
     pub fn set_community(&mut self, community: CommunityPrices) {
-        self.community = community;
+        self.community = Arc::new(community);
     }
 
     /// The community list.
@@ -487,7 +490,7 @@ pub async fn fetch_community(
     CommunityPrices::decode(&body)
 }
 
-/// How the integrator gets its prices: the start-up table (overrides and
+/// How the client runner gets its prices: the start-up table (overrides and
 /// the cached community list), where the cache lives and where to refresh it.
 #[derive(Debug, Clone, Default)]
 pub struct PricingSetup {
