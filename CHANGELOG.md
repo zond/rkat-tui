@@ -32,6 +32,15 @@
 
 ### Fixed
 
+- Prompt history: when a file passes 1000 lines it is cut from what it
+  holds then, so the lines another TUI appended meanwhile stay (the
+  global file is shared by every rkat-tui), and the files are
+  owner-only (they hold every prompt typed).
+- A rule added while the permission mode changes is no longer lost from
+  the realm `tui.toml`: each write is a read-modify-write under one lock
+  and writes what is current then.
+- A model profile rkat-tui writes into the realm config is recorded as
+  its own only once the write happened.
 - No blocking file or network I/O on the async loops any more: the
   daemon records a prompt's conversation (a write with an fsync per
   prompt and steer) from a blocking task, writes rules, the mode, the

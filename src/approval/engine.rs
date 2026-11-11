@@ -256,7 +256,7 @@ pub type ForgetHook = Arc<dyn Fn(&SessionId) + Send + Sync>;
 /// The approval engine, shared behind an [`Arc`] by every session's gate.
 pub struct ApprovalEngine {
     root: ProjectRoot,
-    rules: RwLock<RuleSet>,
+    rules: Arc<RwLock<RuleSet>>,
     settings: RwLock<AutoSettings>,
     sessions: Mutex<HashMap<SessionId, SessionState>>,
     auto: Mutex<AutoMode>,
@@ -329,7 +329,7 @@ impl ApprovalEngine {
         let auto = AutoMode::new(mode);
         Arc::new(Self {
             root,
-            rules: RwLock::new(rules),
+            rules: Arc::new(RwLock::new(rules)),
             settings: RwLock::new(settings),
             sessions: Mutex::new(HashMap::new()),
             auto: Mutex::new(auto),
@@ -606,17 +606,15 @@ impl ApprovalEngine {
     /// Returns [`RulesError`] when persistence fails (the rule stays active).
     pub fn add_rule(&self, rule: Rule) -> Result<(), RulesError> {
         self.audit_event("rule_added", describe_rule(&rule));
-        let snapshot = self.push_rule(rule);
-        self.persist(&snapshot)
+        self.push_rule(rule);
+        self.persist()
     }
 
-    fn push_rule(&self, mut rule: Rule) -> RuleSet {
+    fn push_rule(&self, mut rule: Rule) {
         if self.realm_file.is_some() {
             rule.origin = RuleOrigin::Realm;
         }
-        let mut rules = self.rules.write();
-        rules.push(rule);
-        rules.clone()
+        self.rules.write().push(rule);
     }
 
     /// `/permissions trust`: trust the realm rules file as it is now. Records its
@@ -664,31 +662,31 @@ impl ApprovalEngine {
     ///
     /// Returns [`RulesError`] when persistence fails.
     pub fn remove_rule(&self, id: RuleId) -> Result<Option<Rule>, RulesError> {
-        let (removed, snapshot) = {
-            let mut rules = self.rules.write();
-            let removed = rules.remove(id);
-            (removed, rules.clone())
-        };
+        let removed = self.rules.write().remove(id);
         if let Some(rule) = &removed {
             self.audit_event("rule_removed", describe_rule(rule));
-            self.persist(&snapshot)?;
+            self.persist()?;
         }
         Ok(removed)
     }
 
-    fn persist(&self, rules: &RuleSet) -> Result<(), RulesError> {
+    /// Write the rules as they are when the realm file's lock is taken
+    /// (a later change is then written by its own call, after this one).
+    fn persist(&self) -> Result<(), RulesError> {
         match &self.realm_file {
-            Some(file) => file.write_rules(rules),
+            Some(file) => file.write_rules_with(|| self.rules.read().clone()),
             None => Ok(()),
         }
     }
 
     /// [`Self::persist`] off the async executor (the escalation path).
-    async fn persist_blocking(&self, rules: RuleSet) -> Result<(), PersistError> {
+    async fn persist_blocking(&self) -> Result<(), PersistError> {
         let Some(file) = self.realm_file.clone() else {
             return Ok(());
         };
-        tokio::task::spawn_blocking(move || file.write_rules(&rules)).await??;
+        let rules = Arc::clone(&self.rules);
+        tokio::task::spawn_blocking(move || file.write_rules_with(|| rules.read().clone()))
+            .await??;
         Ok(())
     }
 
@@ -731,7 +729,7 @@ impl ApprovalEngine {
     /// Returns [`RulesError`] when the file cannot be written.
     pub fn persist_mode(&self) -> Result<(), RulesError> {
         match &self.realm_file {
-            Some(file) => file.write_mode(self.mode()),
+            Some(file) => file.write_mode_with(|| self.mode()),
             None => Ok(()),
         }
     }
@@ -1216,8 +1214,8 @@ impl ApprovalEngine {
             }
             HumanDecision::AllowAndAddRule(rule) => {
                 self.audit_event("rule_added", describe_rule(&rule));
-                let snapshot = self.push_rule(*rule);
-                if let Err(err) = self.persist_blocking(snapshot).await {
+                self.push_rule(*rule);
+                if let Err(err) = self.persist_blocking().await {
                     tracing::warn!(error = %err, "failed to persist rule");
                     self.emit(ApprovalEvent::Notice(format!(
                         "the allow rule is active for this run but was not saved: {err}"
@@ -3161,6 +3159,66 @@ mod tests {
             }
         ));
         assert!(rig.escalations.try_recv().is_err());
+    }
+
+    /// Two writers of the realm file at once (rules added while the mode
+    /// changes, from two threads) lose nothing: each read-modify-write runs
+    /// under the file's lock and writes what is current under it, so the
+    /// file ends with every rule and the last mode.
+    #[test]
+    fn concurrent_rule_and_mode_writes_lose_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tui.toml");
+        let root = ProjectRoot::new(dir.path()).unwrap();
+        let (tx, _events) = mpsc::unbounded_channel();
+        let engine = ApprovalEngine::new(ApprovalConfig {
+            root: root.clone(),
+            rules: RuleSet::default(),
+            settings: AutoSettings::default(),
+            mode: PermissionMode::Auto,
+            classifier: Scripted::new(vec![]) as Arc<dyn ActionClassifier>,
+            broker: None,
+            escalation_timeout: DEFAULT_ESCALATION_TIMEOUT,
+            environment: Environment::basic(root.as_path(), root.as_path()),
+            posix_shell: true,
+            events: tx,
+            realm_file: Some(config::RealmFile::new(path.clone(), None)),
+        });
+        const N: usize = 40;
+        let rules = {
+            let engine = Arc::clone(&engine);
+            std::thread::spawn(move || {
+                for n in 0..N {
+                    let rule = Rule::new(
+                        super::super::rules::RuleKind::Allow,
+                        "shell",
+                        Some(&format!("echo {n}")),
+                        RuleOrigin::Realm,
+                    )
+                    .unwrap();
+                    engine.add_rule(rule).unwrap();
+                }
+            })
+        };
+        let modes = {
+            let engine = Arc::clone(&engine);
+            std::thread::spawn(move || {
+                for n in 0..N {
+                    let mode = if n % 2 == 0 {
+                        PermissionMode::Plan
+                    } else {
+                        PermissionMode::Manual
+                    };
+                    engine.set_mode(mode);
+                    engine.persist_mode().unwrap();
+                }
+            })
+        };
+        rules.join().unwrap();
+        modes.join().unwrap();
+        let file = config::RulesFile::load(&path).unwrap();
+        assert_eq!(file.allow.len(), N, "every rule is in the file");
+        assert_eq!(file.auto.unwrap().mode, Some(engine.mode()));
     }
 
     /// The mode is recorded in the realm rules file and read back.

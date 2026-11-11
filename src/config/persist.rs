@@ -115,17 +115,28 @@ pub fn persist_realm_checklist(path: &Path, view: ChecklistView) -> Result<(), R
 /// start trusts what rkat-tui wrote. The daemon owns it; the approval
 /// engine is handed it for the rules and the mode, and `rkat/checklist_view`
 /// writes through it.
+///
+/// Every write is a read-modify-write of the whole file under one lock
+/// shared by every clone, and what it writes is read under that lock
+/// ([`Self::write_rules_with`], [`Self::write_mode_with`]), so two writers
+/// (a rule added while the mode changes) cannot write in the other order
+/// and drop one's change from the file.
 #[derive(Debug, Clone)]
 pub struct RealmFile {
     path: PathBuf,
     trust: Option<Arc<Mutex<HostTrustRecord>>>,
+    lock: Arc<Mutex<()>>,
 }
 
 impl RealmFile {
     /// The file at `path`, its writes recorded in `trust`.
     #[must_use]
     pub fn new(path: PathBuf, trust: Option<Arc<Mutex<HostTrustRecord>>>) -> Self {
-        Self { path, trust }
+        Self {
+            path,
+            trust,
+            lock: Arc::new(Mutex::new(())),
+        }
     }
 
     /// Where it is.
@@ -140,23 +151,29 @@ impl RealmFile {
         self.trust.as_ref()
     }
 
-    /// Write `rules` as the file's rules.
+    /// Write the rules `rules` gives as the file's rules, called under the
+    /// file's lock (so the last writer writes the newest rules).
     ///
     /// # Errors
     ///
     /// [`RulesError`] when the file cannot be read, parsed or written.
-    pub fn write_rules(&self, rules: &RuleSet) -> Result<(), RulesError> {
+    pub fn write_rules_with(&self, rules: impl FnOnce() -> RuleSet) -> Result<(), RulesError> {
+        let _one = self.lock.lock();
+        let rules = rules();
         write_trusted(&self.path, self.trust.as_deref(), |path| {
-            persist_realm_rules(path, rules)
+            persist_realm_rules(path, &rules)
         })
     }
 
-    /// Write `mode` as its `[auto] mode`.
+    /// Write the mode `mode` gives as its `[auto] mode`, called under the
+    /// file's lock.
     ///
     /// # Errors
     ///
-    /// As [`Self::write_rules`].
-    pub fn write_mode(&self, mode: PermissionMode) -> Result<(), RulesError> {
+    /// As [`Self::write_rules_with`].
+    pub fn write_mode_with(&self, mode: impl FnOnce() -> PermissionMode) -> Result<(), RulesError> {
+        let _one = self.lock.lock();
+        let mode = mode();
         write_trusted(&self.path, self.trust.as_deref(), |path| {
             persist_realm_mode(path, mode)
         })
@@ -166,8 +183,9 @@ impl RealmFile {
     ///
     /// # Errors
     ///
-    /// As [`Self::write_rules`].
+    /// As [`Self::write_rules_with`].
     pub fn write_checklist(&self, view: ChecklistView) -> Result<(), RulesError> {
+        let _one = self.lock.lock();
         write_trusted(&self.path, self.trust.as_deref(), |path| {
             persist_realm_checklist(path, view)
         })

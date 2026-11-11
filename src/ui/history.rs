@@ -3,9 +3,16 @@
 //! Entries are escaped so multi-line prompts fit on one line (`\n`, `\r` and `\\`
 //! become two-character escapes). Consecutive duplicates are dropped and the file
 //! is capped at [`MAX_ENTRIES`], rewritten when it grows past the cap.
+//!
+//! Several clients share a file (two in one workspace; the global one with
+//! every rkat-tui of the user). Each appends its own lines, and a rewrite
+//! reads the file again first, so it keeps what the others appended since
+//! this one loaded (a line appended between that read and the rename is
+//! the window left). The files hold every prompt typed: owner-only.
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
+use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 
 /// Maximum number of entries kept on disk and in memory.
@@ -93,34 +100,42 @@ impl History {
         {
             fs::create_dir_all(parent)?;
         }
-        if self.file_lines + 1 > MAX_ENTRIES {
-            self.rewrite()
-        } else {
-            let mut file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&self.path)?;
-            let sep = if self.missing_newline { "\n" } else { "" };
-            writeln!(file, "{sep}{}", escape(entry))?;
-            self.missing_newline = false;
-            self.file_lines += 1;
-            Ok(())
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(&self.path)?;
+        // A file an earlier build created with the default mode.
+        if file.metadata()?.permissions().mode() & 0o077 != 0 {
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
         }
+        let sep = if self.missing_newline { "\n" } else { "" };
+        writeln!(file, "{sep}{}", escape(entry))?;
+        self.missing_newline = false;
+        self.file_lines += 1;
+        if self.file_lines > MAX_ENTRIES {
+            self.rewrite()?;
+        }
+        Ok(())
     }
 
-    /// Replace the file with the in-memory entries (via a temp file + rename).
+    /// Cut the file to its newest [`MAX_ENTRIES`] lines, as the file holds
+    /// them now (another client's lines included), by an owner-only
+    /// atomic replace.
     fn rewrite(&mut self) -> io::Result<()> {
-        let mut body = String::new();
-        for entry in &self.entries {
-            body.push_str(&escape(entry));
-            body.push('\n');
-        }
-        let mut tmp = self.path.clone().into_os_string();
-        tmp.push(".tmp");
-        let tmp = PathBuf::from(tmp);
-        fs::write(&tmp, body)?;
-        fs::rename(&tmp, &self.path)?;
-        self.file_lines = self.entries.len();
+        let content = fs::read_to_string(&self.path)?;
+        let lines: Vec<&str> = content.lines().filter(|line| !line.is_empty()).collect();
+        let kept = &lines[lines.len().saturating_sub(MAX_ENTRIES)..];
+        let mut body = kept.join("\n");
+        body.push('\n');
+        crate::paths::write_atomic(
+            &self.path,
+            body.as_bytes(),
+            crate::paths::FileMode::Private,
+            None,
+        )
+        .map_err(io::Error::other)?;
+        self.file_lines = kept.len();
         self.missing_newline = false;
         Ok(())
     }
@@ -260,5 +275,48 @@ mod tests {
         assert_eq!(h.entries().len(), MAX_ENTRIES);
         h.append("new").unwrap();
         assert_eq!(fs::read_to_string(&p).unwrap().lines().count(), MAX_ENTRIES);
+    }
+
+    /// Two clients on one file: a rewrite keeps the lines the other
+    /// appended since this one loaded, and the file is owner-only.
+    #[test]
+    fn a_rewrite_keeps_what_another_client_appended() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = path(&dir);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let mut full = String::new();
+        for n in 0..MAX_ENTRIES {
+            full.push_str(&format!("old {n}\n"));
+        }
+        std::fs::write(&file, full).unwrap();
+        let mut a = History::load(&file);
+        let mut b = History::load(&file);
+        b.append("from b").unwrap();
+        a.append("from a").unwrap();
+        let text = std::fs::read_to_string(&file).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), MAX_ENTRIES);
+        assert_eq!(lines[MAX_ENTRIES - 2..], ["from b", "from a"]);
+        let loaded = History::load(&file);
+        assert!(loaded.entries().iter().any(|e| e == "from b"));
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = std::fs::metadata(&file).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "{mode:o}");
+    }
+
+    /// A new file is created owner-only; an existing world-readable one
+    /// becomes owner-only at the next append.
+    #[test]
+    fn history_files_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let file = path(&dir);
+        let mut h = History::load(&file);
+        h.append("first").unwrap();
+        let mode = |f: &Path| std::fs::metadata(f).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&file), 0o600);
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        h.append("second").unwrap();
+        assert_eq!(mode(&file), 0o600);
     }
 }

@@ -1429,19 +1429,30 @@ pub async fn ensure_model_profile(
     model: &str,
     listed: Option<&ModelEntry>,
 ) -> Result<bool, EndpointError> {
-    patch_document(runtime, |persisted| {
+    // Whether the delta written last adds an entry the document did not
+    // have (the closure may run once per write attempt).
+    let adds = std::sync::atomic::AtomicBool::new(false);
+    let wrote = patch_document(runtime, |persisted| {
         let Some(entry) = model_profile_entry(persisted, provider, model, listed)? else {
             return Ok(None);
         };
-        if !persisted.models.custom.contains_key(model) {
-            owned.add(model)?;
-        }
+        adds.store(
+            !persisted.models.custom.contains_key(model),
+            std::sync::atomic::Ordering::Relaxed,
+        );
         let value = serde_json::to_value(&entry).map_err(EndpointError::Encode)?;
         Ok(Some(ConfigDelta(
             serde_json::json!({ "models": { model: value } }),
         )))
     })
-    .await
+    .await?;
+    // Recorded only once the entry is in the document: a write that failed
+    // or never happened records nothing, so an entry the user writes later
+    // is never taken for rkat-tui's.
+    if wrote && adds.load(std::sync::atomic::Ordering::Relaxed) {
+        owned.add(model)?;
+    }
+    Ok(wrote)
 }
 
 /// The `[models.<id>]` entries rkat-tui wrote into a realm document (for
@@ -2512,6 +2523,36 @@ mod tests {
         assert_eq!(snapshot.generation, 8);
         assert!(snapshot.config.models.custom.contains_key("theirs"));
         assert!(snapshot.config.models.custom.contains_key("ours"));
+    }
+
+    /// The ownership record follows the document: a profile write that
+    /// never happened (here: abandoned while another surface holds the
+    /// writer lock) records nothing; once written, the entry is recorded.
+    #[tokio::test]
+    async fn an_unwritten_profile_is_not_recorded_as_rkat_tuis() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        let runtime = config_runtime(&path);
+        let owned = OwnedProfiles::in_realm(tmp.path());
+        let held = meerkat_core::config_runtime::ConfigWriterLock::acquire(
+            &path.with_file_name("config_state.lock"),
+        )
+        .await
+        .unwrap();
+        let abandoned = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            ensure_model_profile(&runtime, &owned, Provider::OpenAI, "llama3:8b", None),
+        )
+        .await;
+        assert!(abandoned.is_err(), "the write went past a held writer lock");
+        assert!(owned.load().unwrap().is_empty(), "recorded before writing");
+        drop(held);
+        assert!(
+            ensure_model_profile(&runtime, &owned, Provider::OpenAI, "llama3:8b", None)
+                .await
+                .unwrap()
+        );
+        assert!(owned.load().unwrap().contains("llama3:8b"));
     }
 
     /// rkat-tui's write waits for the writer lock another surface holds.
