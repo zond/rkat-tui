@@ -478,6 +478,25 @@ impl ToolOrigins for DaemonToolOrigins {
     }
 }
 
+/// Count the model call `envelope` reports, if it does, while the daemon
+/// stops ([`watch`] draining its stream): the usage is all that matters
+/// then, and the ledger is flushed after every watcher ended.
+async fn count_drained(
+    envelope: &meerkat_core::event::EventEnvelope<AgentEvent>,
+    following: Option<&SessionId>,
+    current: &super::conversations::Conversations,
+    ledger: &super::usage::Ledger,
+) {
+    if let AgentEvent::TurnCompleted {
+        usage: Some(usage), ..
+    } = &envelope.payload
+        && let Some(session) = event_session(&envelope.source, following)
+    {
+        let model = model_of(usage, current, &session);
+        ledger.turn(&session, &model, usage).await;
+    }
+}
+
 /// What [`watch`] follows an agent with.
 pub struct Watched {
     /// The mob host.
@@ -496,6 +515,9 @@ pub struct Watched {
     pub ledger: Arc<super::usage::Ledger>,
     /// The live agents.
     pub agents: std::sync::Weak<super::agents::Agents>,
+    /// Set when the daemon stops: the watcher counts the events its
+    /// stream already holds, then ends.
+    pub draining: tokio::sync::watch::Receiver<bool>,
 }
 
 /// Follow an agent's events until the task is aborted: every run start
@@ -519,6 +541,7 @@ pub fn watch(watched: Watched) -> tokio::task::JoinHandle<()> {
         current,
         ledger,
         agents,
+        mut draining,
     } = watched;
     tokio::spawn(async move {
         use meerkat_core::comms::SessionEventCursor;
@@ -527,6 +550,9 @@ pub fn watch(watched: Watched) -> tokio::task::JoinHandle<()> {
         // The incarnation last followed, and where its stream was read to.
         let mut read_to: Option<(u64, Option<meerkat_core::comms::SessionEventEpoch>, u64)> = None;
         loop {
+            if *draining.borrow() {
+                return;
+            }
             let seat = current.seat_of(&name);
             let following = current.current(&name);
             // A new incarnation (a switch, a reseat) is read from its
@@ -566,11 +592,28 @@ pub fn watch(watched: Watched) -> tokio::task::JoinHandle<()> {
             let mut compacting: Option<u64> = None;
             let mut reseated = false;
             loop {
+                // Stopping: what the stream holds already, then the end.
+                if *draining.borrow() {
+                    use futures::FutureExt as _;
+                    match stream.next().now_or_never() {
+                        Some(Some(envelope)) => {
+                            count_drained(&envelope, following.as_ref(), &current, &ledger).await;
+                            continue;
+                        }
+                        _ => return,
+                    }
+                }
                 let envelope = tokio::select! {
                     envelope = stream.next() => match envelope {
                         Some(envelope) => envelope,
                         None => break,
                     },
+                    changed = draining.changed() => {
+                        if changed.is_err() {
+                            return;
+                        }
+                        continue;
+                    }
                     changed = seatings.changed() => {
                         if changed.is_err() {
                             return;

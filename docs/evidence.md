@@ -7336,3 +7336,25 @@ endpoint-only model on an Anthropic gateway; delegation on a self-hosted
 alias stays covered by `litellm`), and
 `litellm::a_conversation_stored_under_the_dialect_provider_moves_onto_the_alias`
 (the compatibility the second section kept).
+
+## The usage ledger at shutdown, and the stored-state inventory (batch 4, 2026-11-11)
+
+Batch 3 left a window: `Daemon::serve_until` aborted the agents' event
+watchers (`Agents::stop_watching`) and then flushed the ledger, so a
+`TurnCompleted` already in a watcher's stream but not yet read was never
+counted. Now `stop_watching` sets a `watch` flag the watchers select on;
+a watcher that sees it reads what its stream holds without waiting
+(`now_or_never`), counts each model call (`count_drained`), and ends; the
+daemon awaits each for at most `WATCHER_DRAIN` (2 s, then it is aborted)
+and flushes after. What remains: a call that completes after the drain
+began, and a helper's call (the helper follower task is still aborted
+first). Test: `usage::a_call_completed_just_before_the_stop_is_recorded`
+(stop at once after the turn's end; the record holds the call). It
+passes with the fix; the old ordering lost the call only when the
+watcher lagged, so the test is not a deterministic reproducer of the old
+failure.
+
+`docs/state.md` lists every file rkat-tui stores, gathered by reading
+the code (dirs, realm home, config layers, daemon modules, client
+workbench) and checked against it; the formats there are the contract
+from the first release on.

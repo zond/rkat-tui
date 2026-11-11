@@ -1,6 +1,9 @@
 //! Councils: the participants of a council an agent (or a helper)
 //! convenes work for whoever convened it.
 //!
+//! The engine names no convener on a council's mob (lukacf/meerkat#2183);
+//! the derivation below stands in for it until that ships.
+//!
 //! The engine seats a council's participants (forks of the members named in
 //! the `council` call) in a temporary mob it creates for an owner session
 //! of its own, a fresh id no session of this daemon has, with

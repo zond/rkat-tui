@@ -798,7 +798,8 @@ Approval prompt:
   PgUp/PgDn, Home/End            while they are shown whole: scroll them, start, end
   s                              stop the turn (Ctrl-C stops every open prompt)";
 
-/// The line that ends `/help`.
+/// The line that ends `/help`. `/rewind` returns when the engine can rewind
+/// a session in place under the same identity (lukacf/meerkat#2126).
 const HELP_FOOTER: &str = "Start a prompt with // to send a literal leading slash.\n\
 There is no rewind: the agent's conversation cannot continue from before an earlier message yet\n\
 (the engine cannot rewind a mob member's session in place); /new starts over.";

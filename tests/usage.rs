@@ -149,3 +149,29 @@ async fn the_classifier_s_calls_are_counted_under_its_model() {
     .await;
     rig.quit().await;
 }
+
+/// A model call that completes right before the daemon stops is in the
+/// usage record it leaves: the stop lets each agent's event watcher count
+/// what its stream already holds before the ledger is flushed (it used to
+/// abort the watchers first). The stop follows the turn's end at once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_call_completed_just_before_the_stop_is_recorded() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![Step::Text("last words")]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let session = daemon.session.clone();
+    let mut client = Client::attach(&ws.root).await;
+    client.send(Effect::StartTurn("one more".into()));
+    assert_eq!(
+        client.turn_finished().await.result.unwrap().text,
+        "last words"
+    );
+    client.send(Effect::Leave(Departure::Detach));
+    client.quit().await;
+    daemon.stop().await;
+    let realm = common::realm_of(&ws.root);
+    let record = rkat_tui::daemon::usage::read_record(
+        &rkat_tui::daemon::usage::Account::Session(session).path(&realm),
+    );
+    assert_eq!(of(&record.cost, MODEL), Some((10, 5)), "{record:?}");
+}

@@ -807,8 +807,10 @@ impl Local {
     /// touched. A queued input is abandoned (`cancel_input_if_present`);
     /// any other state means the agent has it, and nothing is cancelled
     /// (that call would interrupt the input's run). A steer staged between
-    /// the read and the cancel is the remaining window (an engine ask: an
-    /// atomic "abandon if still queued").
+    /// the read and the cancel is the remaining window: an input that starts
+    /// its run in between is cancelled while it runs, interrupting it. An
+    /// atomic "abandon if still queued" is lukacf/meerkat#2182; this
+    /// lookup-then-cancel goes when it ships.
     ///
     /// # Errors
     ///

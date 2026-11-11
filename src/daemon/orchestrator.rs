@@ -51,8 +51,10 @@ fn definition(plan: &RootPlan) -> MobDefinition {
 /// realm's first start, and the engine updates a stored definition only
 /// while no handle of the mob is live
 /// (`meerkat_mob::MobStorage::update_definition`), which `MobMcpState`
-/// does not expose; so the daemon puts this profile on every agent's spawn
-/// as its override profile (`crate::mobs::RootMember::current_profile`),
+/// does not expose (lukacf/meerkat#2184 asks to update a stored mob
+/// definition; this override goes when it ships); so the daemon puts this
+/// profile on every agent's spawn as its override profile
+/// (`crate::mobs::RootMember::current_profile`),
 /// and the MCP servers, the memory tools and the compaction threshold of
 /// the current start reach the agents of an existing realm. A rebuilt
 /// agent keeps its session's model, provider and provider parameters (the

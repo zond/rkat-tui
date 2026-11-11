@@ -82,7 +82,7 @@ shell (`src/user_shell.rs`) and the client's start-on-demand of the
 | `src/endpoints.rs`, `src/models.rs`, `src/pricing.rs`, `src/cost.rs`, `src/thinking.rs` | LLM endpoints, model listing, price table, token totals by model and their price (the daemon counts them, `daemon/usage.rs`), the per-model `[thinking]` setting |
 | `src/mentions.rs`, `src/paths.rs`, `src/overlay.rs`, `src/http.rs`, `src/user_shell.rs`, `src/error.rs` | `@` mentions and the path index, path expansion, `--set` overlays, the HTTP client, the user's `!` shell, the crate's error types |
 | `tests/` | Integration tests through the `test-support` feature on the one rig: the real daemon with a scripted LLM (`tests/common/attach.rs`: `Setup`, `Attached`, `Running`, `Client`); `tests/common/mod.rs` holds the scripted LLM, the workspace and the command lines |
-| `docs/` | `testing.md` (protocol), `evidence.md` (what was built, why, with the probes and test names), `mob-split.md` (the architecture, its status and the engine asks), `ux-parity.md` (Claude Code parity audit), `spec.yaml` / `traceability.md` (the requirements and where each is implemented and tested) |
+| `docs/` | `testing.md` (protocol), `evidence.md` (what was built, why, with the probes and test names), `mob-split.md` (the architecture, its status and the engine asks), `ux-parity.md` (Claude Code parity audit), `spec.yaml` / `traceability.md` (the requirements and where each is implemented and tested), `state.md` (every stored file, its format and writer) |
 
 The README is the front page; the full user manual is `docs/manual.md`.
 
@@ -124,6 +124,32 @@ on the fork based on upstream `main`. Anything else is worked around here or
 recorded as an ask in `docs/evidence.md`. Do not fabricate engine
 capabilities the application does not have (for example mob membership for
 the main session); keep a limitation explicit and typed instead.
+
+## Upstream
+
+Meerkat Support: https://support.rkat.ai, API key in
+`~/.config/meerkat/support/rkat-tui-8e05e3.key` (never put a key in the
+repository). Open upstream issues this code waits on:
+
+- lukacf/meerkat#2180: an exact tool catalog for a mob member's
+  dispatchers. rkat-tui's own search and reveal
+  (`src/daemon/deferral/reveal.rs`) goes when it ships; `tests/tool_costs.rs`
+  fails on purpose that day.
+- #2182: an atomic "cancel if still queued" for `rkat/recall`
+  (`Local::recall`'s lookup-then-cancel leaves a window in which the
+  cancel interrupts a run that just started).
+- #2183: a council's convener named by the engine (`src/mobs/council.rs`).
+- #2184: updating a stored mob definition (the agents' override profile,
+  `src/daemon/orchestrator.rs` `main_profile`).
+- #2126: rewinding a session in place under the same identity; `/rewind`
+  returns then.
+
+## Stored state
+
+`docs/state.md` lists every file rkat-tui stores (path, format, writer,
+what losing it loses). From the first release on these formats are a
+contract: state a tagged build wrote must keep opening; a change that
+would break it needs the owner's explicit yes.
 
 ## Sandbox facts worth knowing
 

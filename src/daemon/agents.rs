@@ -181,6 +181,10 @@ impl Drop for Agent {
     }
 }
 
+/// How long [`Agents::stop_watching`] waits for a watcher to count what
+/// its stream holds.
+const WATCHER_DRAIN: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// How long a seat or retire waits for its membership note to an idle
 /// agent ([`Agents::note_others`]) before leaving it to land on its own.
 const NOTE_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
@@ -249,6 +253,8 @@ pub struct Agents {
     seating: tokio::sync::Mutex<()>,
     /// The activity count ([`Agent::active`]).
     clock: AtomicU64,
+    /// Tells the event watchers the daemon stops ([`Self::stop_watching`]).
+    draining: tokio::sync::watch::Sender<bool>,
 }
 
 impl std::fmt::Debug for Agents {
@@ -314,6 +320,7 @@ impl Agents {
             table: parking_lot::Mutex::new(BTreeMap::new()),
             seating: tokio::sync::Mutex::new(()),
             clock: AtomicU64::new(0),
+            draining: tokio::sync::watch::channel(false).0,
         })
     }
 
@@ -637,6 +644,7 @@ impl Agents {
             current: Arc::clone(&self.conversations),
             ledger: Arc::clone(&self.ledger),
             agents: Arc::downgrade(self),
+            draining: self.draining.subscribe(),
         });
         let active = self.tick();
         self.table.lock().insert(
@@ -1190,10 +1198,25 @@ impl Agents {
         }
     }
 
-    /// Abort every agent's watcher (the daemon shuts down).
-    pub fn stop_watching(&self) {
-        for agent in self.table.lock().values_mut() {
-            if let Some(watcher) = agent.watcher.take() {
+    /// End every agent's watcher (the daemon shuts down): each counts the
+    /// model calls its stream already reported, so the ledger's flush after
+    /// this has them, then ends; one that does not end within
+    /// [`WATCHER_DRAIN`] is aborted.
+    pub async fn stop_watching(&self) {
+        let _ = self.draining.send(true);
+        let watchers: Vec<_> = self
+            .table
+            .lock()
+            .values_mut()
+            .filter_map(|agent| agent.watcher.take())
+            .collect();
+        for mut watcher in watchers {
+            // Each counts what its stream holds already, then ends; one
+            // that does not within the bound is stopped.
+            if tokio::time::timeout(WATCHER_DRAIN, &mut watcher)
+                .await
+                .is_err()
+            {
                 watcher.abort();
             }
         }

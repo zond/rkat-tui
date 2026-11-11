@@ -129,6 +129,12 @@
 
 ### Fixed
 
+- A model call an agent completed right before the daemon stopped could be
+  missing from the conversation's usage record: the stop aborted the
+  agents' event watchers before writing the ledger. Each watcher now
+  counts what its stream already holds, then ends, and the ledger is
+  written after (a helper's call in that instant can still be missed).
+
 - `--attach-insecure`'s help and the refusal of a non-loopback
   `--attach=HOST:PORT` no longer say the attach token crosses the
   network in clear text: with the mutual HMAC handshake it never does.

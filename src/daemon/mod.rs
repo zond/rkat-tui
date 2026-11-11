@@ -893,7 +893,8 @@ impl Daemon {
         for task in &self.tasks {
             task.abort();
         }
-        self.local.agents().stop_watching();
+        // After the watchers counted every model call their streams hold.
+        self.local.agents().stop_watching().await;
         // Joined, so nothing they hold outlives the shutdown.
         for task in self.tasks.drain(..) {
             let _ = task.await;
