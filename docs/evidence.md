@@ -7103,3 +7103,17 @@ each family's bytes and tool count with the scripted LLM's recorded
 request; `attach::context_reports_the_daemons_conversation` and
 `integrator::context_report_describes_the_session` read them through
 `/context`; `workbench::context::tests::*` the text.
+
+**The gauge's seed from the daemon.** On every attach, switch and
+re-render the client paged backwards through the session's durable events
+in doubling windows (256 up to 4096 events, several `events/list_since`
+round trips) to find the last `TurnCompleted` usage. The daemon's ledger
+already sees every model call, so it keeps the context of each
+conversation's last one (exact after a turn, estimated after a
+compaction) in the conversation's usage record, and `rkat/usage`, which
+the attach and the switch read anyway, carries it. `last_context_before`
+and its window constants are deleted. The record is written with the
+totals, so a daemon restart keeps the seed
+(`usage::a_turn_no_client_saw_is_counted_and_survives_a_restart`);
+`attach_sessions::the_token_counter_and_gauge_follow_the_conversation`
+covers a resume and a late attach whose cursor is past the last turn.

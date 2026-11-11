@@ -279,16 +279,13 @@ struct Established {
     reset: Option<Vec<Block>>,
     /// Model, provider and the configured endpoint its binding names.
     identity: Option<(String, String, Option<String>)>,
-    /// The session's total usage and its totals by model, read after the
-    /// replay.
+    /// The session's total usage, its totals by model and the context of
+    /// its last model call (the gauge's seed), read after the replay.
     usage: Option<protocol::Usage>,
     /// The live notifications that arrived before the usage answer: their
     /// turns are in `usage` already, so they are shown before the counter
     /// is set to it.
     queued: Vec<Notification>,
-    /// The context of the session's last model call when the replay holds
-    /// no turn end (the gauge's seed), read from the events before the mark.
-    context: Option<u64>,
 }
 
 /// A background task's channel back to the runner: every report carries
@@ -446,10 +443,9 @@ struct Adopted {
     last_seq: u64,
     /// Model, provider and the configured endpoint its binding names.
     identity: Option<(String, String, Option<String>)>,
-    /// The session's total usage and its totals by model.
+    /// The session's total usage, its totals by model and the context of
+    /// its last model call (the gauge).
     usage: Option<protocol::Usage>,
-    /// The context of its last model call (the gauge).
-    context: Option<u64>,
 }
 
 /// The UI's current turn.
@@ -1527,7 +1523,6 @@ mod tests {
                 last_seq: 3,
                 identity: None,
                 usage: None,
-                context: None,
             }),
             own: None,
             warning: None,

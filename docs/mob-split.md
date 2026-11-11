@@ -311,7 +311,7 @@ methods on the wire, and `daemon::protocol` types each one for both ends:
 | `rkat/new` | `{}` | `{"session_id", "warning"?}` |
 | `rkat/resume` | `{"session_id"}` | `{"session_id", "warning"?}` |
 | `rkat/transcript` | `{"session_id"}` | `{"messages": [Message]}` |
-| `rkat/usage` | `{"session_id"}` | `{"input_tokens", "output_tokens", "cost": {"per_model": {model: {"input", "output", "cache_read", "cache_write"}}, "helpers": {label: {model: totals}}}}` (the engine's session totals, and the daemon's own count by model, `daemon::usage`) |
+| `rkat/usage` | `{"session_id"}` | `{"input_tokens", "output_tokens", "cost": {"per_model": {model: {"input", "output", "cache_read", "cache_write"}}, "helpers": {label: {model: totals}}}, "context"?: {"tokens", "approx"?}}` (the engine's session totals, the daemon's own count by model, `daemon::usage`, and the context of the last model call, which seeds the client's gauge on attach and after a switch) |
 | `rkat/context` | `{}` | `{"session_id", "messages": {"system", "system_bytes", "user", "assistant", "tool_results", "notices"}, "tools"?: [{"family", "tools", "bytes"}]}` (the caller's agent's conversation: counted from its history in the daemon; `tools`, the definitions its model requests carry by family, largest first, as last read while the agent was idle; absent before the first read) |
 | `rkat/trust` | `{"op": "project"\|"rules"}` | `{"ok", "text"}` |
 | `rkat/set_model` | `{"model", "provider"?, "auth_binding"?}` | `{"session_id", "model", "provider"}` (refused while a run is open) |

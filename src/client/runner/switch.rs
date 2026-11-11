@@ -105,7 +105,6 @@ impl Runner {
             last_seq,
             identity,
             usage,
-            context,
         } = adopted;
         let Some(link) = &mut self.link else {
             return;
@@ -136,11 +135,11 @@ impl Runner {
             input: usage.input_tokens,
             output: usage.output_tokens,
         }));
-        self.send(Msg::Status(StatusUpdate::CostTotals(usage.cost)));
         self.send(Msg::Status(StatusUpdate::Context {
-            used: context,
-            approx: false,
+            used: usage.context.map(|context| context.tokens),
+            approx: usage.context.is_some_and(|context| context.approx),
         }));
+        self.send(Msg::Status(StatusUpdate::CostTotals(usage.cost)));
         self.refresh_tasks();
         if let Some((model, provider, endpoint)) = identity {
             self.followers.set_default_model(&model);
@@ -573,61 +572,6 @@ pub(super) async fn replay_to_end(
     }
 }
 
-/// The context of the last model call `events` report (the gauge's
-/// reading), `None` when no turn reported its usage.
-pub(super) fn last_context(events: &[EventEnvelope<AgentEvent>]) -> Option<u64> {
-    events
-        .iter()
-        .rev()
-        .find_map(|envelope| match &envelope.payload {
-            AgentEvent::TurnCompleted {
-                usage: Some(usage), ..
-            } => Some(crate::ui::context_tokens(usage)),
-            _ => None,
-        })
-}
-
-/// How many events before the mark the first look for the last turn end
-/// reads, and how many it reads at most (the window doubles each time).
-pub(super) const CONTEXT_WINDOW: u64 = 256;
-
-pub(super) const CONTEXT_SEARCH_MAX: u64 = 4096;
-
-/// The context of the last model call among `session`'s events up to
-/// `before` (the gauge's seed on attach), looking back in doubling windows,
-/// [`CONTEXT_SEARCH_MAX`] events at most. `None` when there is none, or it
-/// cannot be read.
-pub(super) async fn last_context_before(
-    connection: &Connection,
-    session: &SessionId,
-    before: u64,
-) -> Option<u64> {
-    let mut end = before;
-    let mut window = CONTEXT_WINDOW;
-    let mut searched = 0;
-    while end > 0 && searched < CONTEXT_SEARCH_MAX {
-        let start = end.saturating_sub(window);
-        let mut after = start;
-        let mut events = Vec::new();
-        loop {
-            let (page, more) = remote::replay(connection, session, after).await.ok()?;
-            after = page.last().map_or(after, |envelope| envelope.seq);
-            let empty = page.is_empty();
-            events.extend(page.into_iter().filter(|envelope| envelope.seq <= end));
-            if !more || empty || after >= end {
-                break;
-            }
-        }
-        if let Some(context) = last_context(&events) {
-            return Some(context);
-        }
-        searched += end - start;
-        end = start;
-        window = window.saturating_mul(2);
-    }
-    None
-}
-
 /// This client's `/new` (`target` `None`, `fresh`) or `/resume`: ask the
 /// daemon to switch, then read the conversation it switched to.
 pub(super) async fn switch_and_adopt(
@@ -665,7 +609,6 @@ pub(super) async fn adopt(
             .await
             .ok()
             .flatten();
-        let context = last_context_before(connection, &session, snapshot.latest).await;
         Ok::<_, ClientError>(Adopted {
             blocks: crate::ui::transcript::blocks_from_messages(&messages),
             session,
@@ -673,7 +616,6 @@ pub(super) async fn adopt(
             last_seq: snapshot.latest,
             identity: Some((snapshot.model, snapshot.provider, endpoint)),
             usage,
-            context,
         })
     })
     .await

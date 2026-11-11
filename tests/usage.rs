@@ -44,7 +44,8 @@ fn totals_of(m: &Msg, tokens: (u64, u64)) -> bool {
 
 /// A turn that ran after its client detached is counted by the daemon: a
 /// client attaching later shows it, and so does one attaching to the
-/// daemon after a restart (the record was written when it stopped).
+/// daemon after a restart (the record was written when it stopped), with
+/// the context gauge seeded from the same record.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_turn_no_client_saw_is_counted_and_survives_a_restart() {
     let ws = Workspace::new();
@@ -84,6 +85,16 @@ async fn a_turn_no_client_saw_is_counted_and_survives_a_restart() {
     let daemon = Running::start_with(&args, setup.options(&ws.root, &llm)).await;
     let mut again = Client::attach(&ws.root).await;
     again.saw(|m| totals_of(m, (1_234, 5))).await;
+    // The context gauge is seeded from the daemon's record of the last
+    // model call, also after the restart.
+    // Everything sent plus the reply.
+    let context = 1_234 + 5;
+    again
+        .saw(|m| {
+            matches!(m, Msg::Status(StatusUpdate::Context { used: Some(used), approx: false })
+                if *used == context)
+        })
+        .await;
     again.quit().await;
     daemon.stop().await;
 }

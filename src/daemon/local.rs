@@ -499,6 +499,7 @@ impl Local {
                     input_tokens: usage.input_tokens,
                     output_tokens: usage.output_tokens,
                     cost: counted.cost,
+                    context: counted.context,
                 })
             };
             method::Tasks, protocol::SessionParams { session_id } => {

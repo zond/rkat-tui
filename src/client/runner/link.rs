@@ -3,7 +3,7 @@
 //! the helper mobs it follows and the agent's current session.
 
 use super::commands::others_notice;
-use super::switch::{last_context_before, replay_to_end};
+use super::switch::replay_to_end;
 use super::*;
 
 impl Runner {
@@ -187,7 +187,6 @@ impl Runner {
             identity,
             usage,
             queued,
-            context,
         } = established;
         let address = link.endpoint.address;
         let agent = link.connection.agent().to_string();
@@ -270,12 +269,12 @@ impl Runner {
         if let Some(blocks) = reset {
             self.send(Msg::ResetTranscript(blocks));
         }
-        // The gauge, as a switch seeds it: the replay since the cursor may
-        // hold no turn end although the session has a context.
-        if context.is_some() {
+        // The gauge, as a switch seeds it: the daemon's reading of the last
+        // model call (the replay since the cursor may hold no turn end).
+        if let Some(context) = usage.as_ref().and_then(|usage| usage.context) {
             self.send(Msg::Status(StatusUpdate::Context {
-                used: context,
-                approx: false,
+                used: Some(context.tokens),
+                approx: context.approx,
             }));
         }
         // What the live stream delivered before the usage answer: its turns
@@ -861,14 +860,10 @@ pub(super) async fn establish(
         let resume = saved.and_then(|cursor| {
             cursor.resumable(&id, &super::super::catchup::daemon_id(&endpoint.token))
         });
-        let (stream, mark, reset, context) = match resume {
+        let (stream, mark, reset) = match resume {
             Some((epoch, seq)) => {
                 let stream = remote::open_stream(&connection, Some((&epoch, seq))).await?;
-                let mark = Mark::resume(&id, saved);
-                // The gauge's seed: the stream replays only what came after
-                // the mark.
-                let context = last_context_before(&connection, &session, seq).await;
-                (stream, mark, None, context)
+                (stream, Mark::resume(&id, saved), None)
             }
             None => {
                 // Live first, so nothing falls between the stream and the
@@ -877,12 +872,10 @@ pub(super) async fn establish(
                 let stream = remote::open_stream(&connection, None).await?;
                 let latest = remote::snapshot(&connection, &session).await?.latest;
                 let messages = remote::transcript(&connection, &session).await?;
-                let context = last_context_before(&connection, &session, latest).await;
                 (
                     stream,
                     Mark::rendered(&id, latest),
                     Some(crate::ui::transcript::blocks_from_messages(&messages)),
-                    context,
                 )
             }
         };
@@ -917,7 +910,6 @@ pub(super) async fn establish(
             identity,
             usage,
             queued,
-            context,
         })
     })
     .await

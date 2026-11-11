@@ -262,7 +262,8 @@ async fn the_token_counter_and_gauge_follow_the_conversation() {
     let mut late = Client::attach(&ws.root).await;
     late.saw(|m| tokens(m) == Some((100, 5))).await;
     // Its cursor is past the last turn (the replay holds no turn end): the
-    // gauge is seeded from the events before it, as a switch seeds it.
+    // gauge is seeded from the daemon's reading of the last model call, as
+    // a switch seeds it.
     late.saw(|m| gauge(m) == Some(Some(105))).await;
     late.quit().await;
     client.quit().await;

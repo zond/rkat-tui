@@ -117,7 +117,8 @@ methods! {
     /// (a client seeds its token counter from it on attach and after a
     /// switch; the engine's wire reports usage only per turn), and its
     /// token totals by model as the daemon counted them
-    /// ([`crate::daemon::usage`]; [`COST`] pushes later changes).
+    /// ([`crate::daemon::usage`]; [`COST`] pushes later changes) and the
+    /// context of its last model call (the gauge's reading).
     Usage = "rkat/usage" (SessionParams) -> UsageTotals;
     /// `/context`: what the caller's agent's current conversation holds,
     /// as the daemon sees it: its messages by kind and the system
@@ -937,6 +938,10 @@ pub struct Usage {
     /// The token totals by model.
     #[serde(default)]
     pub cost: crate::cost::SessionCost,
+    /// The context of the conversation's last model call, as the daemon
+    /// saw it (the client's context gauge until its next turn ends).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<super::usage::ContextReading>,
 }
 
 /// [`method::Tasks`]'s result.
@@ -1128,6 +1133,7 @@ mod tests {
                 input_tokens: 1,
                 output_tokens: 2,
                 cost: crate::cost::SessionCost::default(),
+                context: None,
             },
         );
         let ok: Value = serde_json::from_str(ok.trim_end()).unwrap();
