@@ -882,11 +882,15 @@ publishes it once the semantic index took the discarded messages).
 
 `/context` prints the gauge (tokens used of the window, the percentage,
 and whether either is an estimate), the policy `/compact status` prints, and
-what the TUI knows of the context: the system prompt's size, the message
-counts, the instruction files on disk (`SYSTEM.md`, the workspace and parent
-`AGENTS.md`, `AGENTS.local.md`) and the number of tools rkat-tui registers
-itself. Sizes in tokens are estimates (four bytes a token); the engine's
-built-in and MCP tools are not visible to the TUI and are labelled unknown.
+what the context holds as the daemon reports it: the system prompt's size,
+the message counts and the tool definitions every model request carries,
+in bytes and tokens per family (the engine's built-in, comms, memory, mob
+and schedule tools, rkat-tui's file, note and watch tools, each MCP
+server's); then the instruction files on disk (`SYSTEM.md`, the workspace
+and parent `AGENTS.md`, `AGENTS.local.md`). The daemon reads a
+conversation's tool definitions while its agent is idle, so a brand-new
+conversation says "not read yet" until its first turn ends. Sizes in
+tokens are estimates (four bytes a token).
 
 `/compact <instructions>` compacts the same way. Claude Code uses such text
 to focus the summary; Meerkat's compaction takes no instructions yet, so
@@ -1399,7 +1403,7 @@ daemon switches the session in place, with the endpoint's
 auth binding and `[thinking]` setting; not while a turn runs; the session
 keeps the model), the context gauge,
 token counts, `/status`, `/export`, `/cost` (helpers included, kept per
-conversation), `/copy`, `/context` (the conversation read from the daemon), `/compact` (the agent's next model call compacts first; the
+conversation), `/copy`, `/context` (what the daemon reports of the conversation and its tools), `/compact` (the agent's next model call compacts first; the
 ✓ compacted notice and the gauge confirm it) and `/compact status` (the
 policy), `/remember` and `/memory` (the files are edited here; the agent
 reads the new content from its next model call), the Ctrl-T task checklist, approvals, the permission

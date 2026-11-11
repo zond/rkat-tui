@@ -833,6 +833,14 @@ async fn context_report_describes_the_session() {
     let mut rig = Attached::start(&ws.root, &llm).await;
     rig.send(Effect::StartTurn("hi".into()));
     rig.turn_finished().await;
+    // The daemon reads the tool definitions once the agent is idle.
+    let session = rig.current_session().await;
+    common::within(async {
+        while rig.daemon.origins.sizes(&session).is_none() {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
     rig.send(Effect::ContextReport("context: header".into()));
     let msg = rig
         .wait_for(
@@ -846,7 +854,19 @@ async fn context_report_describes_the_session() {
     assert!(text.contains("messages: 2 (user 1, assistant 1"), "{text}");
     assert!(text.contains("workspace AGENTS.md: "), "{text}");
     assert!(text.contains("24 bytes"), "{text}");
-    assert!(text.contains("rkat-tui's file and note tools"), "{text}");
+    assert!(
+        text.contains("tool definitions (every model request carries them): "),
+        "{text}"
+    );
+    for family in [
+        "schedule: 8 tools",
+        "mob: ",
+        "comms: ",
+        "files: ",
+        "notes: ",
+    ] {
+        assert!(text.contains(family), "{family}: {text}");
+    }
     rig.quit().await;
 }
 

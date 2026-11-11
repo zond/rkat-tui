@@ -54,6 +54,11 @@
 
 ### Changed
 
+- `/context` shows what every model request pays for tool definitions,
+  in bytes and tokens per family (the engine's schedule, mob and comms
+  tools are most of it), where it said "unknown here"; the daemon
+  reports it with the message counts, so the client no longer downloads
+  the whole transcript to count messages.
 - The session's cost is counted by the daemon, not by the client that
   happened to be attached: a turn that ran while you were detached (a
   schedule's, a file watch's, a `/detach`ed agent's) is in `/cost` and

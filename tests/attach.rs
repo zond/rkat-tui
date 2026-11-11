@@ -399,6 +399,14 @@ async fn context_reports_the_daemons_conversation() {
     let mut client = Client::attach(&ws.root).await;
     client.send(Effect::StartTurn("hello".into()));
     client.turn_finished().await.result.unwrap();
+    // The daemon reads the tool definitions once the agent is idle.
+    let session = daemon.current_session().await;
+    common::within(async {
+        while daemon.origins.sizes(&session).is_none() {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
     client.send(Effect::ContextReport("context: the gauge".into()));
     let msg = client
         .wait_for(
@@ -412,7 +420,19 @@ async fn context_reports_the_daemons_conversation() {
     assert!(text.contains("messages: 2 (user 1, assistant 1"), "{text}");
     assert!(text.contains("workspace AGENTS.md: "), "{text}");
     assert!(text.contains("9 bytes"), "{text}");
-    assert!(text.contains("in the daemon"), "{text}");
+    assert!(
+        text.contains("tool definitions (every model request carries them): "),
+        "{text}"
+    );
+    for family in [
+        "schedule: 8 tools",
+        "mob: ",
+        "comms: ",
+        "files: ",
+        "notes: ",
+    ] {
+        assert!(text.contains(family), "{family}: {text}");
+    }
     client.quit().await;
     daemon.stop().await;
 }

@@ -463,6 +463,22 @@ impl Local {
                     .map_err(|err| Refusal::new(SWITCH_FAILED, err.to_string()))?;
                 Ok(protocol::Transcript { messages })
             };
+            method::Context, Empty {} => {
+                let agent = self.agent_of(&caller)?;
+                let session_id = self.conversations.current(&agent).ok_or_else(|| {
+                    Refusal::new(SWITCH_FAILED, format!("agent {agent} runs no conversation"))
+                })?;
+                let messages = self
+                    .conversations
+                    .messages(&session_id)
+                    .await
+                    .map_err(|err| Refusal::new(SWITCH_FAILED, err.to_string()))?;
+                Ok(protocol::ContextReport {
+                    messages: super::context::MessageCounts::of(&messages),
+                    tools: self.origins.sizes(&session_id),
+                    session_id,
+                })
+            };
             method::Endpoint, protocol::SessionParams { session_id } => {
                 Ok(protocol::SessionEndpoint {
                     endpoint: self.conversations.endpoint_of(&session_id).await,

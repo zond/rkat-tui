@@ -142,46 +142,16 @@ pub struct Recorded {
     pub messages: Vec<Message>,
 }
 
-/// The family a tool definition is counted under in [`Recorded::tool_bytes`].
+/// The family a tool definition is counted under in [`Recorded::tool_bytes`]
+/// (the daemon's own grouping, which `/context` reports).
 pub fn tool_family(def: &meerkat_core::ToolDef) -> &'static str {
-    use meerkat_core::ToolSourceKind;
-    if matches!(
-        def.name.as_str(),
-        "tool_catalog_search" | "tool_catalog_load"
-    ) {
-        return "catalog";
-    }
-    let Some(provenance) = &def.provenance else {
-        return "other";
-    };
-    match provenance.kind {
-        ToolSourceKind::Callback => match provenance.source_id.as_str() {
-            rkat_tui::tools::FILE_TOOLS_SOURCE => "files",
-            rkat_tui::memory::NOTES_SOURCE => "notes",
-            rkat_tui::tools::WATCH_TOOLS_SOURCE => "watch",
-            _ => "callback",
-        },
-        ToolSourceKind::Builtin | ToolSourceKind::Shell => "builtin",
-        ToolSourceKind::Memory => "memory",
-        ToolSourceKind::Comms => "comms",
-        ToolSourceKind::Schedule => "schedule",
-        ToolSourceKind::WorkGraph => "workgraph",
-        ToolSourceKind::Mob => "mob",
-        ToolSourceKind::Mcp => "mcp",
-        ToolSourceKind::RustBundle => "bundle",
-    }
+    rkat_tui::daemon::context::ToolFamily::of(def).name()
 }
 
-/// The bytes one tool definition costs a request: its name, description and
-/// input schema as JSON (what a provider is sent for it).
+/// The bytes one tool definition costs a request (as the daemon counts
+/// them for `/context`).
 pub fn tool_def_bytes(def: &meerkat_core::ToolDef) -> usize {
-    serde_json::json!({
-        "name": def.name.as_str(),
-        "description": def.description,
-        "input_schema": def.input_schema,
-    })
-    .to_string()
-    .len()
+    rkat_tui::daemon::context::def_bytes(def)
 }
 
 impl Recorded {

@@ -29,6 +29,7 @@
 pub mod agents;
 pub mod approvals;
 pub mod audit;
+pub mod context;
 pub mod conversations;
 pub mod decisions;
 pub mod endpoint;

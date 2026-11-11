@@ -325,6 +325,9 @@ pub struct DaemonToolOrigins {
     /// By session, the one read longest ago first (at most
     /// [`MAX_CATALOGS`]; a forgotten session's goes).
     cache: RwLock<indexmap::IndexMap<SessionId, ToolCatalog>>,
+    /// The definitions' sizes by family each session's model requests
+    /// carry, as last read (`/context`; as many as [`MAX_CATALOGS`]).
+    sizes: RwLock<indexmap::IndexMap<SessionId, Vec<super::context::FamilySize>>>,
     /// The TUI's own tools, and the engine-native tools of every catalog
     /// read: what a session not read yet is judged by.
     known: RwLock<ToolCatalog>,
@@ -356,6 +359,7 @@ impl DaemonToolOrigins {
         Self {
             service,
             cache: RwLock::new(indexmap::IndexMap::new()),
+            sizes: RwLock::new(indexmap::IndexMap::new()),
             known: RwLock::new(ToolCatalog::from_defs(&defs)),
         }
     }
@@ -367,6 +371,12 @@ impl DaemonToolOrigins {
             tokio::time::timeout(CATALOG_READ, self.service.live_visible_tool_defs(session)).await;
         match read {
             Ok(Ok(Some(defs))) => {
+                crate::tools::keep_newest(
+                    &mut self.sizes.write(),
+                    session.clone(),
+                    super::context::family_sizes(&defs),
+                    MAX_CATALOGS,
+                );
                 let mut catalog = ToolCatalog::from_defs(&defs);
                 // The tools kept behind the deferred catalog, which the
                 // visible definitions leave out until they are loaded.
@@ -401,6 +411,14 @@ impl DaemonToolOrigins {
     /// `session` is gone: its catalog goes with it.
     pub fn forget(&self, session: &SessionId) {
         self.cache.write().shift_remove(session);
+        self.sizes.write().shift_remove(session);
+    }
+
+    /// The tool definitions `session`'s model requests carry, by family,
+    /// as last read (`None`: not read yet).
+    #[must_use]
+    pub fn sizes(&self, session: &SessionId) -> Option<Vec<super::context::FamilySize>> {
+        self.sizes.read().get(session).cloned()
     }
 
     /// Whether `session`'s catalog was read.

@@ -7086,3 +7086,20 @@ once, from the new incarnation's first retained event
 (`SessionEventCursor::Earliest`: none of it was seen yet, so nothing is
 counted twice), and after a stream that merely ended, from the last
 sequence it read. The one-second poll is gone.
+
+**`/context` from the daemon.** `rkat/context` answers the caller's
+agent's conversation: message counts by kind and the system prompt's size
+counted in the daemon from the session's history (the client used to
+download the whole transcript through `rkat/transcript` to count it), and
+the tool definitions its model requests carry, by family
+(`daemon::context::ToolFamily`, the grouping `tests/tool_costs.rs`
+measured with, now the library's). The sizes are computed from the same
+`live_visible_tool_defs` read `DaemonToolOrigins::refresh` makes for the
+gate at each run's end (the read answers only while the session is idle),
+kept per session beside the catalog under the same bound. Proof that they
+are what a request carries:
+`tool_costs::an_agent_s_request_carries_every_tool_definition` compares
+each family's bytes and tool count with the scripted LLM's recorded
+request; `attach::context_reports_the_daemons_conversation` and
+`integrator::context_report_describes_the_session` read them through
+`/context`; `workbench::context::tests::*` the text.

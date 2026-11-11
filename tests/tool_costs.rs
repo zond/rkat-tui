@@ -65,8 +65,33 @@ async fn an_agent_s_request_carries_every_tool_definition() {
         "{report}"
     );
     assert!(total < 130_000, "{report}");
-    // Nothing deferred: the session's catalog is inexact.
+    // `/context` reports the same sizes, by family, from the daemon's own
+    // read of the session's tool definitions.
     let session = rig.current_session().await;
+    let sizes = common::within(async {
+        loop {
+            if let Some(sizes) = rig.daemon.origins.sizes(&session) {
+                return sizes;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    for size in &sizes {
+        assert_eq!(
+            bytes.get(size.family.name()),
+            Some(&size.bytes),
+            "{:?}: {report}",
+            size.family
+        );
+        assert_eq!(
+            size.tools,
+            main.tools_of(size.family.name()).len(),
+            "{report}"
+        );
+    }
+    assert_eq!(sizes.len(), bytes.len(), "{sizes:?}: {report}");
+    // Nothing deferred: the session's catalog is inexact.
     let view = rig.daemon.origins.view(&session).await.expect("a view");
     assert!(
         !view.exact_catalog && view.mode == meerkat_core::ToolCatalogMode::Inline,

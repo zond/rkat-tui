@@ -289,34 +289,29 @@ impl Runner {
     }
 
     /// `/context`: the UI's `header` plus what the context holds
-    /// ([`crate::workbench::context`]): the conversation's
-    /// messages from the daemon (`rkat/transcript`), the instruction files
-    /// the daemon's session builds read (this workspace's, found here).
+    /// ([`crate::workbench::context`]): the conversation's messages and
+    /// tool definitions as the daemon reports them (`rkat/context`), the
+    /// instruction files the daemon's session builds read (this
+    /// workspace's, found here).
     pub(super) fn context_report(&self, header: String) {
-        let link = self
-            .link
-            .as_ref()
-            .map(|link| (Arc::clone(&link.connection), link.session.clone()));
+        let link = self.link.as_ref().map(|link| Arc::clone(&link.connection));
         let scope = self.config.scope.clone();
         let ui_tx = self.ui_tx.clone();
         let unattached = self.unattached();
         tokio::spawn(async move {
-            let messages = match link {
-                Some((connection, session)) => {
-                    bounded(CALL_TIMEOUT, remote::transcript(&connection, &session))
-                        .await
-                        .map_err(|err| err.to_string())
-                }
+            let report = match link {
+                Some(connection) => bounded(
+                    CALL_TIMEOUT,
+                    remote::call::<protocol::method::Context>(&connection, &protocol::Empty {}),
+                )
+                .await
+                .map_err(|err| err.to_string()),
                 None => Err(unattached),
             };
             let sources = crate::bootstrap::InstructionSources::of(&scope);
             let files = context::instruction_files(&scope, &sources);
-            let text = context::context_breakdown(
-                &header,
-                messages.as_deref().map_err(Clone::clone),
-                &files,
-                "rkat-tui's file and note tools, in the daemon",
-            );
+            let text =
+                context::context_breakdown(&header, report.as_ref().map_err(Clone::clone), &files);
             let _ = ui_tx.send(Msg::Notice {
                 level: NoticeLevel::Info,
                 text,

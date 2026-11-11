@@ -1,13 +1,13 @@
 //! `/context`'s breakdown: the UI's header, the session's system prompt
-//! and message counts, the instruction files on disk and what is known of
-//! the tools. The client reads the messages from the daemon
-//! (`rkat/transcript`); the instruction files are found the same way the
-//! session builds find them ([`InstructionSources::of`]).
+//! and message counts and its tool definitions by family, as the daemon
+//! reports them (`rkat/context`), and the instruction files on disk,
+//! found the same way the session builds find them
+//! ([`InstructionSources::of`]).
 
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
-use meerkat_core::Message;
+use crate::daemon::protocol::ContextReport;
 
 use crate::bootstrap::RuntimeScope;
 use crate::bootstrap::instructions::{InstructionSources, SectionKind, remember_target};
@@ -73,42 +73,33 @@ fn approx_tokens(bytes: usize) -> String {
 }
 
 /// `/context`: the UI's `header`, then the session's system prompt and
-/// message counts (`messages`, or why they could not be read), the
-/// instruction files on disk, and `tools`: what is known of the tools
-/// (rkat-tui's own; the engine's are not counted here).
+/// message counts and its tool definitions by family (`report`, or why
+/// the daemon could not say), and the instruction files on disk.
 pub fn context_breakdown(
     header: &str,
-    messages: Result<&[Message], String>,
+    report: Result<&ContextReport, String>,
     files: &[InstructionFile],
-    tools: &str,
 ) -> String {
     let mut out = header.to_string();
-    match messages {
-        Ok(messages) => {
-            let (mut system, mut system_bytes) = (0usize, 0usize);
-            let (mut user, mut assistant, mut tools, mut notices) = (0usize, 0, 0, 0);
-            for message in messages {
-                match message {
-                    Message::System(s) => {
-                        system += 1;
-                        system_bytes += s.content.len();
-                    }
-                    Message::SystemNotice(_) => notices += 1,
-                    Message::User(_) => user += 1,
-                    Message::BlockAssistant(_) => assistant += 1,
-                    Message::ToolResults { .. } => tools += 1,
-                }
-            }
+    match &report {
+        Ok(report) => {
+            let m = &report.messages;
             let _ = write!(
                 out,
-                "\nsystem prompt: {system_bytes} bytes ({}) in {system} system message{}",
-                approx_tokens(system_bytes),
-                if system == 1 { "" } else { "s" }
+                "\nsystem prompt: {} bytes ({}) in {} system message{}",
+                m.system_bytes,
+                approx_tokens(m.system_bytes),
+                m.system,
+                if m.system == 1 { "" } else { "s" }
             );
             let _ = write!(
                 out,
-                "\nmessages: {} (user {user}, assistant {assistant}, tool results {tools}, notices {notices})",
-                user + assistant + tools + notices
+                "\nmessages: {} (user {}, assistant {}, tool results {}, notices {})",
+                m.total(),
+                m.user,
+                m.assistant,
+                m.tool_results,
+                m.notices
             );
         }
         Err(err) => {
@@ -133,17 +124,41 @@ pub fn context_breakdown(
         };
         let _ = write!(out, "\n  {}: {} — {size}", file.label, file.path.display());
     }
-    let _ = write!(
-        out,
-        "\ntools: {tools}; the engine's built-in, MCP and helper tools: unknown here"
-    );
+    match report.map(|report| report.tools.as_deref()) {
+        Ok(Some(families)) => {
+            let bytes: usize = families.iter().map(|family| family.bytes).sum();
+            let tools: usize = families.iter().map(|family| family.tools).sum();
+            let _ = write!(
+                out,
+                "\ntool definitions (every model request carries them): {bytes} bytes ({}) in {tools} tools",
+                approx_tokens(bytes)
+            );
+            for family in families {
+                let _ = write!(
+                    out,
+                    "\n  {}: {} tool{}, {} bytes ({})",
+                    family.family.name(),
+                    family.tools,
+                    if family.tools == 1 { "" } else { "s" },
+                    family.bytes,
+                    approx_tokens(family.bytes)
+                );
+            }
+        }
+        Ok(None) => out.push_str(
+            "\ntool definitions: not read yet (the daemon reads them while the agent is idle)",
+        ),
+        Err(_) => out.push_str("\ntool definitions: unknown"),
+    }
     out
 }
 
 #[cfg(test)]
 mod tests {
     use super::{InstructionFile, context_breakdown};
-    use meerkat_core::{Message, SystemMessage, UserMessage};
+    use crate::daemon::context::{FamilySize, MessageCounts, ToolFamily};
+    use crate::daemon::protocol::ContextReport;
+    use meerkat_core::{Message, SessionId, SystemMessage, UserMessage};
     use std::path::PathBuf;
 
     #[test]
@@ -152,6 +167,22 @@ mod tests {
             Message::System(SystemMessage::new("x".repeat(4000))),
             Message::User(UserMessage::text("hi")),
         ];
+        let report = ContextReport {
+            session_id: SessionId::new(),
+            messages: MessageCounts::of(&messages),
+            tools: Some(vec![
+                FamilySize {
+                    family: ToolFamily::Schedule,
+                    tools: 8,
+                    bytes: 36_000,
+                },
+                FamilySize {
+                    family: ToolFamily::Files,
+                    tools: 1,
+                    bytes: 400,
+                },
+            ]),
+        };
         let files = [
             InstructionFile {
                 label: "workspace AGENTS.md".into(),
@@ -166,12 +197,7 @@ mod tests {
                 truncated: false,
             },
         ];
-        let text = context_breakdown(
-            "context: head",
-            Ok(&messages),
-            &files,
-            "9 registered by rkat-tui (file, notes, fork)",
-        );
+        let text = context_breakdown("context: head", Ok(&report), &files);
         assert!(text.starts_with("context: head\n"), "{text}");
         assert!(
             text.contains("system prompt: 4000 bytes (~1k tokens) in 1 system message"),
@@ -189,12 +215,29 @@ mod tests {
             text.contains("AGENTS.local.md: /w/AGENTS.local.md — absent"),
             "{text}"
         );
-        assert!(text.contains("tools: 9 registered by rkat-tui"), "{text}");
-        assert!(text.contains("unknown here"), "{text}");
-        let text = context_breakdown("h", Err("gone".into()), &[], "none");
+        assert!(
+            text.contains("tool definitions (every model request carries them): 36400 bytes (~9.1k tokens) in 9 tools"),
+            "{text}"
+        );
+        assert!(
+            text.contains("schedule: 8 tools, 36000 bytes (~9k tokens)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("files: 1 tool, 400 bytes (~100 tokens)"),
+            "{text}"
+        );
+        let unread = ContextReport {
+            tools: None,
+            ..report
+        };
+        let text = context_breakdown("h", Ok(&unread), &[]);
+        assert!(text.contains("tool definitions: not read yet"), "{text}");
+        let text = context_breakdown("h", Err("gone".into()), &[]);
         assert!(
             text.contains("system prompt and messages: unknown (gone)"),
             "{text}"
         );
+        assert!(text.contains("tool definitions: unknown"), "{text}");
     }
 }

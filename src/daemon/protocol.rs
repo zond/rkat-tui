@@ -119,6 +119,11 @@ methods! {
     /// token totals by model as the daemon counted them
     /// ([`crate::daemon::usage`]; [`COST`] pushes later changes).
     Usage = "rkat/usage" (SessionParams) -> UsageTotals;
+    /// `/context`: what the caller's agent's current conversation holds,
+    /// as the daemon sees it: its messages by kind and the system
+    /// prompt's size (read from its history, not sent), and the tool
+    /// definitions its model requests carry, by family.
+    Context = "rkat/context" (Empty) -> ContextReport;
     /// The configured endpoint a conversation's durable auth binding names
     /// (the status bar shows it).
     Endpoint = "rkat/endpoint" (SessionParams) -> SessionEndpoint;
@@ -906,6 +911,20 @@ pub struct SessionEndpoint {
     /// provider).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
+}
+
+/// [`method::Context`]'s result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextReport {
+    /// The conversation.
+    pub session_id: SessionId,
+    /// Its messages by kind.
+    pub messages: super::context::MessageCounts,
+    /// The tool definitions its model requests carry, by family, the
+    /// largest first (`None`: not read yet; the daemon reads them while
+    /// the agent is idle).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<super::context::FamilySize>>,
 }
 
 /// [`method::Usage`]'s result.
