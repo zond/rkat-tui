@@ -693,6 +693,43 @@ async fn grep_content_and_count_modes() {
     assert_eq!(count, "src/many.rs:3\n");
 }
 
+/// `^b` over "a\nb\n" is a match in every mode: each one tests the pattern
+/// per line, the default `files_with_matches` included (it once tested the
+/// whole file, where `^` only means the file's start). A pattern spanning a
+/// line break matches in no mode.
+#[tokio::test]
+async fn grep_matches_per_line_in_every_mode() {
+    let fx = grep_fixture();
+    fx.write("lines.txt", "a\nb\n");
+    let files = fx
+        .ok("grep", json!({"pattern": "^b", "path": "lines.txt"}))
+        .await;
+    assert_eq!(files, "lines.txt\n");
+    let content = fx
+        .ok(
+            "grep",
+            json!({"pattern": "^b", "path": "lines.txt", "output_mode": "content"}),
+        )
+        .await;
+    assert_eq!(content, "lines.txt:2:b\n");
+    let count = fx
+        .ok(
+            "grep",
+            json!({"pattern": "^b", "path": "lines.txt", "output_mode": "count"}),
+        )
+        .await;
+    assert_eq!(count, "lines.txt:1\n");
+    for mode in ["files_with_matches", "content", "count"] {
+        let across = fx
+            .ok(
+                "grep",
+                json!({"pattern": "a\\nb", "path": "lines.txt", "output_mode": mode}),
+            )
+            .await;
+        assert!(across.contains("No matches"), "{mode}: {across}");
+    }
+}
+
 #[tokio::test]
 async fn grep_head_limit_no_match_and_bad_regex() {
     let fx = grep_fixture();

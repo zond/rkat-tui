@@ -160,9 +160,11 @@ pub(crate) fn run(shared: &Shared, _call: CallMeta, args: GrepArgs) -> ToolOutco
         }
         let text = String::from_utf8_lossy(&bytes);
         let display = shared.display_abs(path);
+        // Every mode matches line by line, so `^`, `$` and `(?s).` mean the
+        // same thing whichever output was asked for.
         let keep_going = match args.output_mode {
             OutputMode::FilesWithMatches => {
-                if regex.is_match(&text) {
+                if text.lines().any(|line| regex.is_match(line)) {
                     any = true;
                     out.push(&display)
                 } else {

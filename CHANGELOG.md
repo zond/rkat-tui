@@ -22,6 +22,9 @@
 
 ### Fixed
 
+- `grep` matches line by line in its default `files_with_matches` mode
+  too: `^fn main` or `foo$` found only files starting or ending with it
+  there, while `content` and `count` found every such line.
 - With two TUIs steering the same turn, each marks only its own message
   delivered, at the moment the agent takes that message: the daemon now
   names the input each message became (Meerkat 0.9.12), where before the
