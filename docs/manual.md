@@ -622,9 +622,7 @@ the same gate as every helper and shows as one (see [The workspace daemon](#the-
 A fork is turn-driven and not wired to the agent that forked it, by the
 engine's design: it does its task and ends, its result reaches the
 parent as the tool's outcome, and it cannot message the parent or be
-messaged while it runs. The
-TUI's own `fork` tool, which rendered the conversation into a helper's
-prompt for the in-process runner, is gone with that runner.
+messaged while it runs.
 
 ## Rules
 
@@ -675,7 +673,7 @@ are never written to a file.
 | Key | Flag | Default |
 |---|---|---|
 | `auto.mode` (`"default"`/`"accept-edits"`/`"plan"`/`"auto"`; `/mode` writes it to the realm file) | `--set auto.mode=plan` | `"auto"` |
-| `auto.enabled` (the older form: `false` is `mode = "default"`) | `--no-auto` (= `false`) | `true` |
+| `auto.enabled` (`false` is `mode = "default"`) | `--no-auto` (= `false`) | `true` |
 | `auto.classifier_model` (not from a project file) | `--classifier-model <id>` | per-dialect default of the start-up endpoint |
 | `auto.trust_project_builds` | `--trust-project-builds` / `--no-trust-project-builds` | `false` |
 | `auto.compact` (`"warn"`/`"auto"`) | `--auto-compact` / `--no-auto-compact` | `"warn"` |
@@ -823,7 +821,7 @@ only for catalogued models or when thinking is set explicitly. A proxy alias
 or another id outside the Meerkat catalog therefore needs a setting here.
 The setting goes into the session's provider params when the session is
 created, on every `/model` switch (a model without one gets none), and on
-every resume and rewind (the session follows the setting as it is now). It
+every resume (the session follows the setting as it is now). It
 applies on Anthropic-dialect endpoints only: a reference to an endpoint of
 another dialect, a bare id the catalog gives another provider, and a type a
 catalogued model does not accept (an adaptive-only model with a budget, say:
@@ -994,8 +992,8 @@ agent works and Ctrl+Enter sends now, Esc interrupts, Shift+Tab switches
 the mode, `?` shows the keys, `/permissions`, `/usage`, `/context` and
 `/compact` mean what they mean there, and the approval prompt offers the
 same three numbered choices. Where rkat-tui differs or lacks a feature, and
-why, is recorded in [`docs/ux-parity.md`](ux-parity.md), the dated audit
-behind these controls (its Status column is the current state).
+why, is in [`docs/ux-parity.md`](ux-parity.md), which compares the two
+feature by feature.
 
 
 `/help` (alias `/?`), `/quit` (aliases `/exit`, `/q`), `/detach`, `/agents [name]`, `/audit [n]`, `/daemon stop`, `/daemon start`, `/clear` (alias `/new`), `/resume [ref]`,
@@ -1274,12 +1272,6 @@ one running it attaches to it. The agent lives in the daemon (a durable
 mob member: mob `tui`, member `main-<id>`), keeps working when you
 `/detach`, and any number of TUIs can attach to it. A daemon hosts one
 agent per `rkat-tui` you start beside it (see [Several agents](#several-agents)).
-
-**How it used to work.** Until P4 of the always-daemon plan (November
-2026) `rkat-tui` could also host the agent in its own process
-(`--no-attach`, or `attach = false` in a `tui.toml`). That runner is gone,
-and so are `--no-attach` and the `attach` key (a `tui.toml` that sets it
-is refused, as any unknown key is).
 
 | Flag | Meaning |
 |---|---|
@@ -1791,7 +1783,10 @@ so); it searches and calls again. Helpers get neither hidden family nor
 `tool_search`: a `delegate` helper has no schedule or mob tools at all,
 and a helper allowed to nest keeps the engine's mob tools as they are.
 `/context` lists what the requests carry and, separately, what is hidden,
-by family.
+by family. Other families cannot be hidden this way: the comms tools
+(messages to the other agents) and the engine's mob operator tools
+(`spawn_member`, `list_members` and the rest) are mounted by the engine
+with no slot a host can wrap, so their definitions ride on every request.
 
 This is rkat-tui's own stand-in for the engine's deferred tool catalog
 (`tool_catalog_search` / `tool_catalog_load`), which does not engage for

@@ -53,7 +53,9 @@ the engine needs; do not override `RUST_MIN_STACK` or `LIBSQLITE3_FLAGS`.
 The workspace lints are Meerkat's, copied verbatim: `pedantic`, `cargo` and
 `all` at warn, `-D warnings` in the gate, and hard denies on `unwrap_used`,
 `expect_used`, `panic`, `todo`, `unimplemented`, `dbg_macro`,
-`redundant_clone`, `implicit_clone`; `unsafe_code` is denied. Library code
+`redundant_clone`, `implicit_clone`; `unsafe_code` is denied (the one exception:
+the two `unsafe` calls of SQLite's start-up switch in `src/main.rs` and
+`src/bin/rkat-tui-mob.rs`, each with its SAFETY comment). Library code
 propagates errors with typed enums (`thiserror`) and `?`; a test module
 opens with `#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]`
 when it needs them. The agent's shell is launched only through the engine's
@@ -84,7 +86,7 @@ shell (`src/user_shell.rs`) and the client's start-on-demand of the
 | `src/mentions.rs`, `src/paths.rs`, `src/overlay.rs`, `src/http.rs`, `src/hex.rs`, `src/text.rs`, `src/user_shell.rs`, `src/error.rs` | `@` mentions and the path index, path expansion and the one atomic writer (`write_atomic`), `--set` overlays, the HTTP client and lenient fields, hex digests and random ids, counts and durations in messages, the user's `!` shell, the crate's error types |
 | `src/state_fixtures.rs` | The stored-state guard: opens the first release's files (`tests/fixtures/state-0.0.1/`) with this build's readers |
 | `tests/` | Integration tests through the `test-support` feature on the one rig: the real daemon with a scripted LLM (`tests/common/rig.rs`: `Setup`, `Attached`, `Running`, `Client`); `tests/common/mod.rs` holds the scripted LLM, the workspace and the command lines |
-| `docs/` | `testing.md` (protocol), `evidence.md` (what was built, why, with the probes and test names), `mob-split.md` (the architecture, its words, its status and the engine asks), `ux-parity.md` (Claude Code parity audit), `spec.yaml` / `traceability.md` (the requirements and where each is implemented and tested), `state.md` (every stored file, its format and writer) |
+| `docs/` | `testing.md` (protocol), `evidence.md` (what was built, why, with the probes and test names), `mob-split.md` (the architecture, its words, its status and the engine asks), `ux-parity.md` (Claude Code keys and behaviour compared), `state.md` (every stored file, its format and writer) |
 
 The README is the front page; the full user manual is `docs/manual.md`.
 
