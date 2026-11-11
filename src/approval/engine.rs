@@ -1041,6 +1041,7 @@ impl ApprovalEngine {
             .unwrap_or_else(|_| Value::String(action.args.get().to_string()));
         let script = payload.combined();
         let input = ClassifierInput {
+            session_id,
             environment: &self.environment,
             transcript: &transcript,
             tool: action.name,

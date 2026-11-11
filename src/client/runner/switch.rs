@@ -126,18 +126,21 @@ impl Runner {
         let id = session.to_string();
         self.mark = Some(Mark::rendered(&id, last_seq));
         self.save_cursor();
-        self.followers.reset(session.clone());
+        self.followers.reset(session);
         self.orphans.clear();
         self.send(Msg::Status(StatusUpdate::Session(id.clone())));
         self.send(Msg::ResetTranscript(blocks));
         // The conversation's own totals and gauge, read from the daemon.
-        let (input, output) = usage.unwrap_or_default();
-        self.send(Msg::Status(StatusUpdate::Tokens { input, output }));
+        let usage = usage.unwrap_or_default();
+        self.send(Msg::Status(StatusUpdate::Tokens {
+            input: usage.input_tokens,
+            output: usage.output_tokens,
+        }));
+        self.send(Msg::Status(StatusUpdate::CostTotals(usage.cost)));
         self.send(Msg::Status(StatusUpdate::Context {
             used: context,
             approx: false,
         }));
-        self.load_cost(&session);
         self.refresh_tasks();
         if let Some((model, provider, endpoint)) = identity {
             self.followers.set_default_model(&model);
@@ -234,15 +237,6 @@ impl Runner {
                 listed.map(|listed| sessions::picker_items(&listed, Some(&mine))),
             ));
         });
-    }
-
-    /// Show `session`'s stored cost totals (none: zero).
-    pub(super) fn load_cost(&self, session: &SessionId) {
-        let cost = self
-            .bench
-            .recorded_cost(&session.to_string())
-            .unwrap_or_default();
-        self.send(Msg::Status(StatusUpdate::CostTotals(cost)));
     }
 
     /// `/agents <name>`: work with the agent `name` from now on. The agent

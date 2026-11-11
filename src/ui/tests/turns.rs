@@ -859,91 +859,33 @@ fn a_native_compaction_rearms_the_warning() {
     assert_eq!(warn_count(&app), 2);
 }
 
+/// The UI counts no cost itself: a model call, a compaction or a helper's
+/// call changes nothing until the daemon's totals arrive
+/// ([`StatusUpdate::CostTotals`]), which the footer and `/cost` price.
 #[test]
-fn turn_completed_attributes_cost_to_the_accounted_model_and_snapshots() {
-    let mut app = App::new(StatusInfo::default());
-    app.update(Msg::Status(StatusUpdate::Model {
-        provider: "anthropic".into(),
-        model: "a".into(),
-    }));
-    let fx = app.update(completed_by("a", 1_000_000, 0));
-    let mut expected = SessionCost::default();
-    expected.add(
-        "a",
-        &UsageTotals {
-            input: 1_000_000,
-            ..UsageTotals::default()
-        },
-    );
-    assert_eq!(fx, vec![Effect::CostSnapshot(expected.clone())]);
-    // A model switch: later usage goes to the new model.
-    app.update(Msg::Status(StatusUpdate::Model {
-        provider: "openai".into(),
-        model: "b".into(),
-    }));
-    let fx = app.update(completed_by("b", 0, 1_000_000));
-    expected.add(
-        "b",
-        &UsageTotals {
-            output: 1_000_000,
-            ..UsageTotals::default()
-        },
-    );
-    assert_eq!(fx, vec![Effect::CostSnapshot(expected)]);
-    // Compaction summaries count as output of the current model.
-    let fx = app.update(agent(AgentEvent::CompactionCompleted {
-        summary_tokens: 500,
-        messages_before: 10,
-        messages_after: 3,
-        summary_source: None,
-        estimated_history_tokens_after: None,
-    }));
-    assert_eq!(app.status.cost.per_model["b"].output, 1_000_500);
-    assert!(matches!(fx.as_slice(), [Effect::CostSnapshot(_)]));
-    // A compaction's input is an estimate: the readout is approximate.
-    assert_eq!(app.status.cost.confidence, CostConfidence::Approximate);
-    // Nothing priced yet.
-    assert!(footer(&app).contains(" │ $? │ "), "{}", footer(&app));
-    // Prices arrive: the footer recomputes.
-    app.update(Msg::Status(StatusUpdate::Prices(priced(&[
-        ("a", 1.0, 1.0),
-        ("b", 2.0, 2.0),
-    ]))));
-    assert!(footer(&app).contains(" │ ~$3.00 │ "), "{}", footer(&app));
-    app.update(Msg::Status(StatusUpdate::Prices(priced(&[(
-        "a", 0.42, 1.0,
-    )]))));
-    assert!(footer(&app).contains(" │ ~$0.42 │ "), "{}", footer(&app));
-    // Usage the provider accounted to another model (a dated snapshot
-    // id, a fallback) counts for that model, whatever the status says.
-    app.update(completed_by("c-2026-01-01", 2_000_000, 1_000_000));
-    assert_eq!(app.status.cost.per_model["c-2026-01-01"].input, 2_000_000);
-    assert_eq!(app.status.cost.per_model["b"].input, 0);
-}
-
-#[test]
-fn session_cost_arithmetic_from_turns_and_the_classifier() {
+fn the_footer_and_cost_price_the_daemons_totals() {
     let mut app = App::new(StatusInfo::default());
     app.status.apply(StatusUpdate::Model {
         provider: "anthropic".into(),
         model: "main".into(),
     });
+    assert!(app.update(completed_by("main", 1_000_000, 0)).is_empty());
+    assert!(app.status.cost.is_empty(), "nothing counted by the UI");
     app.update(Msg::Status(StatusUpdate::Prices(priced(&[
         ("main", 3.0, 15.0),
         ("judge", 1.0, 5.0),
     ]))));
-    // 2 turns on `main`: 1.5M in / 0.2M out → 1.5×3 + 0.2×15 = $7.50.
-    app.update(completed_by("main", 1_000_000, 100_000));
-    app.update(completed_by("main", 500_000, 100_000));
-    // The classifier bucket: 1M in / 0.1M out → 1×1 + 0.1×5 = $1.50.
-    app.update(Msg::ClassifierUsage {
-        model: "judge".into(),
-        usage: Usage {
-            input_tokens: 1_000_000,
-            output_tokens: 100_000,
-            ..Usage::default()
-        },
-    });
+    // The daemon's totals: 1.5M in / 0.2M out of `main` (1.5×3 + 0.2×15 =
+    // $7.50), a classifier's 1M in / 0.1M out of `judge` ($1.50).
+    let mut totals = SessionCost::default();
+    let usage = |input, output| Usage {
+        input_tokens: input,
+        output_tokens: output,
+        ..Usage::default()
+    };
+    totals.record("main", &usage(1_500_000, 200_000));
+    totals.record("judge", &usage(1_000_000, 100_000));
+    app.update(Msg::Status(StatusUpdate::CostTotals(totals)));
     let (usd, all) = app.status.cost.cost_usd(&app.status.prices);
     assert!(all);
     assert!((usd - 9.0).abs() < 1e-9, "{usd}");
@@ -958,6 +900,12 @@ fn session_cost_arithmetic_from_turns_and_the_classifier() {
         "{breakdown}"
     );
     assert!(breakdown.contains("total: $9.00"), "{breakdown}");
+    // A model nobody priced makes the total approximate.
+    let mut unpriced = SessionCost::default();
+    unpriced.record("main", &usage(1_000_000, 0));
+    unpriced.record("mystery", &usage(1, 1));
+    app.update(Msg::Status(StatusUpdate::CostTotals(unpriced)));
+    assert!(footer(&app).contains(" │ ~$3.00 │ "), "{}", footer(&app));
 }
 
 #[test]
@@ -970,8 +918,6 @@ fn resume_replaces_the_cost_totals() {
         provider: "anthropic".into(),
         model: "a".into(),
     });
-    app.update(completed_by("a", 5_000_000, 0));
-    assert!(footer(&app).contains("$5.00"), "{}", footer(&app));
     // Resuming a session with recorded totals.
     let mut recorded = SessionCost::default();
     recorded.add(
@@ -983,14 +929,6 @@ fn resume_replaces_the_cost_totals() {
     );
     app.update(Msg::Status(StatusUpdate::CostTotals(recorded)));
     assert!(footer(&app).contains(" │ $0.42"), "{}", footer(&app));
-    // The next call adds to the resumed total.
-    app.update(completed_by("a", 580_000, 0));
-    assert!(footer(&app).contains(" │ $1.00"), "{}", footer(&app));
-    // Approximate totals (a compaction's estimate) are marked so.
-    let mut approx = SessionCost::default();
-    approx.record_compaction("a", 1_000_000, 0);
-    app.update(Msg::Status(StatusUpdate::CostTotals(approx)));
-    assert!(footer(&app).contains(" │ ~$1.00"), "{}", footer(&app));
     // A new session starts from zero: no segment.
     app.update(Msg::Status(
         StatusUpdate::CostTotals(SessionCost::default()),

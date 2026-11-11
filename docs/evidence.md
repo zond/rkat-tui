@@ -7037,3 +7037,52 @@ the sealed roots and the root prefix matched ignoring case
 (`a_case_insensitive_volume_seals_every_spelling`, with the answer
 injected; `a_case_sensitive_directory_does_not_fold_case` on Linux). Not
 run: a real case-insensitive volume (macOS, or a casefold ext4 directory).
+
+## The daemon does it once, the client shows it (batch 3 of senior review 3, 2026-11-11)
+
+**Cost attribution in the daemon.** Each client used to count the usage
+of the events it happened to see and write `<realm>/tui_cost/<session>.toml`
+from its own count (`Effect::CostSnapshot`, an fsync per model call on the
+client's loop): a turn that ran while no client was attached was in the
+engine's totals but in no model's row (`CostConfidence` papered over it),
+two clients overwrote each other, and the daemon kept a second tracker for
+schedule runs. Now `daemon::usage::Ledger` counts every model call where
+the daemon already sees it: the agent's `TurnCompleted` and compactions
+in its event watcher (`approvals::watch`; the model the provider accounted
+the call to, else the session's), each helper's in the follower's one
+subscription to it (`mobs::follow::HelperWatch`, which replaced the
+one-variant `HelperUpdate` channel whose only consumer wanted run ends),
+the classifier's from the approval engine's `ClassifierUsage` event (which
+now names the session whose call it judged; the client no longer gets it
+as an `rkat/approval_note`), and a scheduled run's calls a second time
+under its schedule (`Account::Schedule`, `/schedules`). Records are read
+on first use (`spawn_blocking`), written behind at each run's end and at
+shutdown, never per event, to `<realm>/tui_usage/`; `rkat/usage` answers
+them and `rkat/cost` pushes each change of a conversation's totals. The
+client prices and renders (`StatusUpdate::CostTotals`); it counts nothing.
+No migration of the old `tui_cost/` files (we are the only users).
+`CostConfidence` is gone: with every call counted the only estimate left
+is a compaction's input, which the manual names. `SessionCost` moved from
+`ui` to `crate::cost` (the daemon's wire named a UI type). Tests:
+`usage::a_turn_no_client_saw_is_counted_and_survives_a_restart`,
+`usage::two_clients_show_the_same_totals`,
+`usage::the_classifier_s_calls_are_counted_under_its_model` (the
+bootstrap's own model classifier on the scripted LLM, `Setup::llm_classifier`),
+`mobs::a_delegated_helper_runs_behind_the_sessions_gate` (the helper's
+share under its label, pushed and written), `daemon::usage::tests::*`.
+
+**The event watcher follows each seat.** Counting in the daemon showed a
+hole in the agent's event watcher: it noticed a conversation switch by
+polling once a second for a changed session, so a reseat on the same
+session (a `/model` switch to a model the agent had no profile for) left
+it on the retired incarnation's stream, which never ends, and every later
+event of the agent (run starts, run ends, usage) went unseen; the first
+version of the cost test lost the switched model's turn that way
+(`models::the_picker_switches_the_live_model_and_the_next_turn_uses_it`).
+`Conversations` now counts every seat of an agent (a switch, a reseat,
+the previous conversation seated back after a failed switch) and tells
+watchers (`seatings`, a `watch` channel); the watcher resubscribes at
+once, from the new incarnation's first retained event
+(`SessionEventCursor::Earliest`: none of it was seen yet, so nothing is
+counted twice), and after a stream that merely ended, from the last
+sequence it read. The one-second poll is gone.

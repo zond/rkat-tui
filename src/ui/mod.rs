@@ -9,7 +9,6 @@ pub mod commands;
 pub mod compaction;
 pub mod complete;
 pub mod connection;
-pub mod cost;
 pub mod delivery;
 mod dispatch;
 pub mod editor;
@@ -43,6 +42,9 @@ use meerkat_core::{AgentEvent, EventEnvelope, ScopedAgentEvent};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 use ratatui::layout::Rect;
 
+pub use crate::cost::SessionCost;
+#[cfg(any(test, feature = "test-support"))]
+pub use crate::cost::{CostReadout, UsageTotals};
 pub use checklist::{Checklist, ChecklistView};
 #[cfg(any(test, feature = "test-support"))]
 pub use checklist::{ChecklistItem, ItemState};
@@ -54,9 +56,6 @@ pub use commands::{
 pub use compaction::CompactMode;
 pub use compaction::{CompactFailure, CompactionGauge, CompactionPolicy};
 pub use connection::Connection;
-#[cfg(any(test, feature = "test-support"))]
-pub use cost::{CostConfidence, CostReadout, UsageTotals};
-pub use cost::{SessionCost, SessionCostSnapshot};
 pub use delivery::{Pending, PendingId, PendingQueue, PendingState, SteerFailure};
 pub use history::History;
 pub use input::{InputEditor, StashOutcome};
@@ -246,8 +245,9 @@ pub enum StatusUpdate {
     ContextWindow(Option<u64>),
     /// The helpers (mob members) running now.
     Helpers(Vec<crate::mobs::HelperStatus>),
-    /// Replace the session's cost totals (new or resumed session).
-    CostTotals(SessionCostSnapshot),
+    /// The session's token totals by model, as the daemon counted them
+    /// (on attach, after a switch, and pushed after each model call).
+    CostTotals(SessionCost),
     /// The daemon connection's state, shown first in the status bar.
     Connection(Connection),
     /// The agent this client works with (`main-<id>`), shown
@@ -360,14 +360,6 @@ pub enum Msg {
         tool_use_id: String,
         /// The note.
         text: String,
-    },
-    /// One safety-classifier model call's usage: counted in the session's
-    /// cost under the classifier model.
-    ClassifierUsage {
-        /// Classifier model id.
-        model: String,
-        /// Its usage.
-        usage: meerkat_core::Usage,
     },
     /// A notice to show in the transcript.
     Notice {
@@ -630,9 +622,6 @@ pub enum Effect {
     /// `/compact now` (idle only): ask the engine to compact at the
     /// session's next model call; answered with [`Msg::CompactRequested`].
     CompactNow,
-    /// The session's cost totals after a model call; the integrator
-    /// persists them next to the session.
-    CostSnapshot(SessionCostSnapshot),
     /// `/context`: the UI's part of the report (the gauge and the
     /// compaction policy); the integrator adds what the context holds and
     /// answers with one [`Msg::Notice`].
@@ -773,10 +762,6 @@ pub struct StatusInfo {
 
 /// The prompt the "Plan ready" dialog's proceed choices send.
 pub const PROCEED_PROMPT: &str = "Proceed with the plan";
-
-/// The model a helper's usage is counted under when neither the provider
-/// nor the helper host named one.
-const UNKNOWN_HELPER_MODEL: &str = "unknown";
 
 /// Number of session-id characters shown in the status bar.
 const SESSION_SHORT_LEN: usize = 8;
@@ -1048,9 +1033,6 @@ pub struct App {
     deciding_quit: bool,
     /// Context-gauge policy: warn about a filling context (warn mode).
     gauge: CompactionGauge,
-    /// The history estimate of a compaction that started and has not
-    /// completed: the input of its summary call, counted on completion.
-    compaction_input: Option<u64>,
     /// Whether assistant text streamed during the current turn (the turn
     /// summary is shown only when nothing did).
     streamed_text: bool,
@@ -1163,7 +1145,6 @@ impl App {
             quit_confirm: None,
             deciding_quit: false,
             gauge: CompactionGauge::default(),
-            compaction_input: None,
             streamed_text: false,
             global_history: Vec::new(),
             search_corpus: Vec::new(),
@@ -1398,25 +1379,10 @@ impl App {
                     } => {
                         self.status.context_used = Some(context_tokens(usage));
                         self.status.context_approx = false;
-                        let accounted = usage.accounting().model.trim();
-                        let model = if accounted.is_empty() {
-                            self.status.model.clone()
-                        } else {
-                            accounted.to_string()
-                        };
-                        self.status.cost.record(&model, usage);
-                        fx.push(Effect::CostSnapshot(self.status.cost.clone()));
-                    }
-                    AgentEvent::CompactionStarted {
-                        estimated_history_tokens,
-                        ..
-                    } => {
-                        self.compaction_input = Some(*estimated_history_tokens);
                     }
                     AgentEvent::CompactionCompleted {
                         summary_tokens,
                         estimated_history_tokens_after,
-                        summary_source,
                         ..
                     } => {
                         // The history estimate the rewrite left (the
@@ -1425,22 +1391,6 @@ impl App {
                             Some(estimated_history_tokens_after.unwrap_or(*summary_tokens));
                         self.status.context_approx = true;
                         self.gauge.compacted();
-                        let input = self.compaction_input.take().unwrap_or(0);
-                        // Only a provider call costs anything; its input is
-                        // the history estimate, its output the summary.
-                        if summary_source.as_ref().is_none_or(|source| {
-                            matches!(
-                                source,
-                                meerkat_core::CompactionSummarySource::ProviderCall { .. }
-                            )
-                        }) {
-                            self.status.cost.record_compaction(
-                                &self.status.model,
-                                input,
-                                *summary_tokens,
-                            );
-                            fx.push(Effect::CostSnapshot(self.status.cost.clone()));
-                        }
                     }
                     _ => {}
                 }
@@ -1450,7 +1400,6 @@ impl App {
                 }
             }
             Msg::Scoped(ev) => {
-                self.record_helper_usage(&ev, &mut fx);
                 self.transcript.apply_scoped_event_at(&ev, now);
             }
             Msg::TurnFinished(outcome) => {
@@ -1510,10 +1459,6 @@ impl App {
             }
             Msg::ToolNote { tool_use_id, text } => {
                 self.transcript.attach_note(&tool_use_id, text);
-            }
-            Msg::ClassifierUsage { model, usage } => {
-                self.status.cost.record(&model, &usage);
-                fx.push(Effect::CostSnapshot(self.status.cost.clone()));
             }
             Msg::Notice { level, text } => {
                 self.transcript.push_notice(level, text);

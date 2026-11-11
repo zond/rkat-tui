@@ -119,9 +119,6 @@ pub fn note_messages(note: ApprovalNote) -> (Vec<Msg>, bool) {
         ApprovalNote::Classifying { running } => {
             (vec![Msg::Status(StatusUpdate::Classifying(running))], false)
         }
-        ApprovalNote::ClassifierUsage { model, usage } => {
-            (vec![Msg::ClassifierUsage { model, usage }], false)
-        }
         ApprovalNote::Notice { text } => (
             vec![Msg::Notice {
                 level: NoticeLevel::Warn,

@@ -94,8 +94,8 @@ pub struct Composed {
     pub notes_task: tokio::task::JoinHandle<()>,
     /// The helper follower's task.
     pub follower_task: tokio::task::JoinHandle<()>,
-    /// The task reading helpers' tool catalogs after their runs.
-    pub helper_catalogs_task: tokio::task::JoinHandle<()>,
+    /// What every agent's and helper's model calls used.
+    pub ledger: Arc<super::usage::Ledger>,
     /// The members' tool catalogs.
     pub origins: Arc<DaemonToolOrigins>,
     /// The agents' file watches.
@@ -205,11 +205,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     let runtime = Arc::new(runtime);
 
     let realm_root = scope.realm_root();
-    // Nobody renders the registry's helper updates in the daemon (clients
-    // follow the helpers on the mobs' event streams); they tell the daemon
-    // when a helper's run ended, so its tool catalog can be read.
-    let (registry, updates) = HelperRegistry::persistent(&realm_root);
-    let registry = Arc::new(registry);
+    let registry = Arc::new(HelperRegistry::persistent(&realm_root));
     // A forgotten session's helper bookkeeping goes with it.
     let forget = Arc::downgrade(&registry);
     approval
@@ -241,7 +237,6 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
             origins.forget(session);
         }
     }));
-    let helper_catalogs = super::approvals::watch_helpers(updates, Arc::clone(&origins));
     let Some(escalations) = approval.escalations.take() else {
         return Err(DaemonError::Approval(
             "the approval engine has no escalation channel".to_string(),
@@ -406,7 +401,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         None => state,
     };
     let state = state
-        .with_persistent_storage_root(Some(realm_root))
+        .with_persistent_storage_root(Some(realm_root.clone()))
         .with_workgraph_service(workgraph)
         .with_default_llm_client_provider(Some(llm_provider))
         .with_detached_owner_host(Arc::new(
@@ -415,11 +410,6 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         .with_child_spawn_member_customizer(Arc::new(customizer))
         .into_shared();
     crate::mobs::install_mob_hooks(&state, &registry);
-    let follower = tokio::spawn(crate::mobs::follow::watch(
-        Arc::downgrade(&state),
-        Arc::clone(&registry),
-        spawning_rx,
-    ));
     if let Err(error) = state.bind_continuations(
         runtime.runtime_delivery_inbox(),
         runtime.continuation_bindings(),
@@ -450,7 +440,35 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         .map_err(DaemonError::Approval)?;
     let decisions_task = decisions.follow();
     let diffs_task = Decisions::forward_diffs(&decisions, diff_rx);
-    let notes_task = forward_approval_notes(&decisions, approval_events);
+    // Every model call of every agent, helper and classifier is counted
+    // here; a conversation's new totals go to every client.
+    let ledger = super::usage::Ledger::new(&realm_root, {
+        let decisions = Arc::downgrade(&decisions);
+        move |session: &meerkat_core::SessionId, cost: &crate::cost::SessionCost| {
+            if let Some(decisions) = decisions.upgrade() {
+                decisions.broadcast(
+                    super::protocol::COST,
+                    &super::protocol::CostNote {
+                        session_id: session.clone(),
+                        cost: cost.clone(),
+                    },
+                );
+            }
+        }
+    });
+    // The daemon follows its helpers once each: their usage, their run
+    // ends (the tool catalog is read then) and their sessions (for
+    // nesting). Clients see the helpers' events on the mobs' own streams.
+    let follower = tokio::spawn(crate::mobs::follow::watch(
+        Arc::downgrade(&state),
+        Arc::clone(&registry),
+        Arc::new(super::approvals::HelperEvents::new(
+            super::approvals::CatalogReads::of(&origins),
+            Arc::clone(&ledger),
+        )),
+        spawning_rx,
+    ));
+    let notes_task = forward_approval_notes(&decisions, &ledger, approval_events);
     let (desk, desk_task) = Desk::spawn(
         Arc::clone(&decisions),
         engine.escalation_timeout(),
@@ -473,7 +491,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         notes_task,
         diffs_task,
         follower_task: follower,
-        helper_catalogs_task: helper_catalogs,
+        ledger,
         origins,
         watches,
         watch_batches,
@@ -561,18 +579,30 @@ fn tagged_diffs(
 }
 
 /// Push every event of the approval engine's `events` to the clients as
-/// an [`ApprovalNote`](super::protocol::ApprovalNote) (classifier verdicts, pauses, the classifier's work and
-/// usage), until the engine is gone.
+/// an [`ApprovalNote`](super::protocol::ApprovalNote) (classifier verdicts, pauses, the classifier's work),
+/// and count each classifier call in `ledger` for the conversation whose
+/// call it judged, until the engine is gone.
 fn forward_approval_notes(
     decisions: &Arc<Decisions>,
+    ledger: &Arc<super::usage::Ledger>,
     events: Option<tokio::sync::mpsc::UnboundedReceiver<crate::approval::ApprovalEvent>>,
 ) -> tokio::task::JoinHandle<()> {
     let decisions = Arc::clone(decisions);
+    let ledger = Arc::clone(ledger);
     tokio::spawn(async move {
         let Some(mut events) = events else {
             return;
         };
         while let Some(event) = events.recv().await {
+            if let crate::approval::ApprovalEvent::ClassifierUsage {
+                session_id,
+                model,
+                usage,
+            } = &event
+            {
+                ledger.classifier(session_id, model, usage).await;
+                continue;
+            }
             if let Some(note) = super::protocol::ApprovalNote::of(event) {
                 decisions.broadcast(super::protocol::APPROVAL_NOTE, &note);
             }

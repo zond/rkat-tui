@@ -28,11 +28,13 @@
 //!   as a foreign tool (the classifier or the human decides it).
 //!
 //! [`watch`] follows the orchestrator's events: a run start lifts a Stop,
-//! a run end refreshes
-//! the tool catalog. [`watch_helpers`] reads a helper's catalog after its
-//! first run, from the helper events the follower forwards; a helper that
-//! stays seated (`spawn_member`) is judged by its own catalog from its
-//! second run on, one retired after its run (`delegate`) never is.
+//! a model call is counted ([`super::usage`]), a run end refreshes the
+//! tool catalog. [`HelperEvents`] does the same for the helpers, from the
+//! follower's one subscription to each ([`crate::mobs::follow`]): their
+//! model calls are counted to their owner's conversation, and a helper's
+//! catalog is read after its first run; a helper that stays seated
+//! (`spawn_member`) is judged by its own catalog from its second run on,
+//! one retired after its run (`delegate`) never is.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -62,7 +64,9 @@ use super::decisions::{Decisions, Settled};
 /// How long one read of a session's tool definitions may take.
 const CATALOG_READ: Duration = Duration::from_secs(30);
 
-/// How long the event watcher waits before subscribing again.
+/// How long the event watcher waits before subscribing again after its
+/// subscription failed or its stream ended (a new seat resubscribes at
+/// once).
 const RESUBSCRIBE: Duration = Duration::from_secs(1);
 
 /// The orchestrator's approval gate: the shared [`ApprovalGate`], for the
@@ -440,55 +444,118 @@ impl ToolOrigins for DaemonToolOrigins {
     }
 }
 
+/// What [`watch`] follows an agent with.
+pub struct Watched {
+    /// The mob host.
+    pub state: Arc<MobMcpState>,
+    /// The agent's mob.
+    pub mob: MobId,
+    /// The agent.
+    pub identity: AgentIdentity,
+    /// The approval engine (a run start lifts a Stop).
+    pub engine: Arc<ApprovalEngine>,
+    /// The tool catalogs (read at a run's end).
+    pub origins: Arc<DaemonToolOrigins>,
+    /// The agents' conversations (which one the agent runs as).
+    pub current: Arc<super::conversations::Conversations>,
+    /// Where its model calls are counted.
+    pub ledger: Arc<super::usage::Ledger>,
+    /// The live agents.
+    pub agents: std::sync::Weak<super::agents::Agents>,
+}
+
 /// Follow an agent's events until the task is aborted: every run start
 /// goes to the engine (it lifts a Stop given to an earlier run) and makes
 /// the agent the most recently active one (`agents`), every run end
-/// refreshes the session's tool catalog. After a conversation switch
-/// (`current` names another session) it subscribes again: the member's old
-/// stream does not end by itself.
-pub fn watch(
-    state: Arc<MobMcpState>,
-    mob: MobId,
-    identity: AgentIdentity,
-    engine: Arc<ApprovalEngine>,
-    origins: Arc<DaemonToolOrigins>,
-    current: Arc<super::conversations::Conversations>,
-    agents: std::sync::Weak<super::agents::Agents>,
-) -> tokio::task::JoinHandle<()> {
+/// refreshes the session's tool catalog, every model call and compaction
+/// is counted ([`super::usage`]). When the agent is seated again (a
+/// conversation switch, a reseat: [`super::conversations::Conversations::seatings`])
+/// it subscribes again, from the new incarnation's first event: the
+/// member's old stream does not end by itself, and the new one's events
+/// were seen by nobody yet. A stream that ends otherwise is resumed after
+/// the last event read.
+pub fn watch(watched: Watched) -> tokio::task::JoinHandle<()> {
     use futures::StreamExt as _;
+    let Watched {
+        state,
+        mob,
+        identity,
+        engine,
+        origins,
+        current,
+        ledger,
+        agents,
+    } = watched;
     tokio::spawn(async move {
+        use meerkat_core::comms::SessionEventCursor;
         let name = identity.to_string();
+        let mut seatings = current.seatings();
+        // The incarnation last followed, and where its stream was read to.
+        let mut read_to: Option<(u64, Option<meerkat_core::comms::SessionEventEpoch>, u64)> = None;
         loop {
+            let seat = current.seat_of(&name);
             let following = current.current(&name);
+            // A new incarnation (a switch, a reseat) is read from its
+            // first event; the same one again from where it was left.
+            let cursor = match &read_to {
+                Some((seen, Some(epoch), seq)) if *seen == seat => SessionEventCursor::After {
+                    epoch: *epoch,
+                    seq: *seq,
+                },
+                Some((seen, None, _)) if *seen == seat => SessionEventCursor::Live,
+                _ => SessionEventCursor::Earliest,
+            };
             let subscribed = match state.handle_for(&mob).await {
-                Ok(handle) => handle.subscribe_agent_events(&identity).await,
+                Ok(handle) => handle.subscribe_agent_events_from(&identity, cursor).await,
                 Err(err) => Err(err),
             };
-            let mut stream = match subscribed {
-                Ok(stream) => stream,
+            let subscription = match subscribed {
+                Ok(subscription) => subscription,
                 Err(err) => {
                     tracing::debug!(error = %err, agent = %name, "cannot follow the agent's events yet");
+                    // A cursor the stream refuses is not tried again.
+                    if let Some((seen, epoch, _)) = &mut read_to
+                        && *seen == seat
+                    {
+                        *epoch = None;
+                    }
                     tokio::time::sleep(RESUBSCRIBE).await;
                     continue;
                 }
             };
-            let mut check = tokio::time::interval(RESUBSCRIBE);
-            check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let epoch = subscription.epoch;
+            let attached = subscription.attached_epoch.clone();
+            let mut stream = subscription.stream;
             // The run the events belong to now.
             let mut run: Option<meerkat_core::RunId> = None;
+            // A compaction's history estimate, until it completes.
+            let mut compacting: Option<u64> = None;
+            let mut reseated = false;
             loop {
                 let envelope = tokio::select! {
                     envelope = stream.next() => match envelope {
                         Some(envelope) => envelope,
                         None => break,
                     },
-                    _ = check.tick() => {
-                        if current.current(&name) != following {
+                    changed = seatings.changed() => {
+                        if changed.is_err() {
+                            return;
+                        }
+                        // The member was seated again: its old stream
+                        // does not end by itself.
+                        if current.seat_of(&name) != seat {
+                            reseated = true;
                             break;
                         }
                         continue;
                     }
                 };
+                let epoch = epoch.or_else(|| {
+                    attached
+                        .as_ref()
+                        .and_then(|attached| attached.get().copied().flatten())
+                });
+                read_to = Some((seat, epoch, envelope.seq));
                 match &envelope.payload {
                     AgentEvent::RunStarted {
                         session_id,
@@ -520,9 +587,56 @@ pub fn watch(
                     AgentEvent::TurnCompleted {
                         usage: Some(usage), ..
                     } => {
-                        if let (Some(run), Some(agents)) = (&run, agents.upgrade()) {
-                            agents.run_usage(run, usage.accounting().model.trim(), usage);
+                        let Some(session) = event_session(&envelope.source, following.as_ref())
+                        else {
+                            continue;
+                        };
+                        let model = model_of(usage, &current, &session);
+                        ledger.turn(&session, &model, usage).await;
+                        let fired = run.as_ref().and_then(|run| {
+                            agents
+                                .upgrade()
+                                .and_then(|agents| agents.schedules().schedule_of(run))
+                        });
+                        if let Some(schedule) = fired {
+                            ledger.scheduled(&schedule, &model, usage).await;
                         }
+                    }
+                    AgentEvent::CompactionStarted {
+                        estimated_history_tokens,
+                        ..
+                    } => compacting = Some(*estimated_history_tokens),
+                    AgentEvent::CompactionCompleted {
+                        summary_tokens,
+                        estimated_history_tokens_after,
+                        summary_source,
+                        ..
+                    } => {
+                        let Some(session) = event_session(&envelope.source, following.as_ref())
+                        else {
+                            continue;
+                        };
+                        let input = compacting.take().unwrap_or(0);
+                        // Only a provider call costs anything; its input
+                        // is the history estimate, its output the summary.
+                        let summarized = summary_source
+                            .as_ref()
+                            .is_none_or(|source| {
+                                matches!(
+                                    source,
+                                    meerkat_core::CompactionSummarySource::ProviderCall { .. }
+                                )
+                            })
+                            .then_some((input, *summary_tokens));
+                        let model = current.model_of(&session).unwrap_or_default();
+                        ledger
+                            .compaction(
+                                &session,
+                                &model,
+                                summarized,
+                                estimated_history_tokens_after.unwrap_or(*summary_tokens),
+                            )
+                            .await;
                     }
                     AgentEvent::RunCompleted {
                         session_id,
@@ -540,6 +654,7 @@ pub fn watch(
                                 agents.schedules().run_ended(run);
                             }
                         }
+                        ledger.persist();
                         let origins = Arc::clone(&origins);
                         let session = session_id.clone();
                         tokio::spawn(async move {
@@ -549,71 +664,138 @@ pub fn watch(
                     _ => {}
                 }
             }
-            tokio::time::sleep(RESUBSCRIBE).await;
+            if !reseated {
+                tokio::time::sleep(RESUBSCRIBE).await;
+            }
         }
     })
 }
 
-/// Read a helper's tool catalog the first time its session is idle: every
-/// helper event the follower forwards (`updates`, the helper registry's
-/// channel) is looked at, and a run end of a session whose catalog is not
-/// read yet reads it (the read waits behind a run still closing). A helper
-/// that leaves its mob after its one run (`delegate`) is gone before the
-/// read answers; it stays judged by the known tools. Runs until `updates`
-/// closes.
-pub fn watch_helpers(
-    updates: tokio::sync::mpsc::UnboundedReceiver<crate::mobs::HelperUpdate>,
-    origins: Arc<DaemonToolOrigins>,
-) -> tokio::task::JoinHandle<()> {
-    let has = {
-        let origins = Arc::clone(&origins);
-        move |session: &SessionId| origins.has(session)
-    };
-    let refresh = move |session: SessionId| {
-        let origins = Arc::clone(&origins);
-        async move {
-            let read = origins.refresh(&session).await;
-            if !read {
-                tracing::debug!(%session, "a helper's tool catalog was not readable after its run; the next run end tries again");
-            }
-        }
-    };
-    tokio::spawn(follow_helper_runs(updates, has, refresh))
+/// The session an event of an agent belongs to: its source's, else the
+/// session the watcher subscribed to.
+fn event_session(
+    source: &meerkat_core::EventSourceIdentity,
+    following: Option<&SessionId>,
+) -> Option<SessionId> {
+    match source {
+        meerkat_core::EventSourceIdentity::Session { session_id } => Some(session_id.clone()),
+        _ => following.cloned(),
+    }
 }
 
-/// [`watch_helpers`]'s loop over `has` (the catalog was read) and
-/// `refresh` (read it, recording it on success). One read per session at a
-/// time; a session leaves the in-flight set when its read ends, so a read
-/// that failed (the session was busy again, the helper's next turn
-/// already running) is tried again at its next run end, and the set holds
-/// only reads still running.
-pub async fn follow_helper_runs<H, R, F>(
-    mut updates: tokio::sync::mpsc::UnboundedReceiver<crate::mobs::HelperUpdate>,
-    has: H,
-    refresh: R,
-) where
-    H: Fn(&SessionId) -> bool,
-    R: Fn(SessionId) -> F,
-    F: std::future::Future<Output = ()> + Send + 'static,
-{
-    let reading = Arc::new(parking_lot::Mutex::new(std::collections::HashSet::new()));
-    while let Some(update) = updates.recv().await {
-        let crate::mobs::HelperUpdate::Event(scoped) = update;
-        let (AgentEvent::RunCompleted { session_id, .. }
-        | AgentEvent::RunFailed { session_id, .. }) = &scoped.event
-        else {
-            continue;
-        };
-        if has(session_id) || !reading.lock().insert(session_id.clone()) {
-            continue;
+/// The model a call's usage counts for: the one the provider accounted it
+/// to, else the session's.
+fn model_of(
+    usage: &meerkat_core::TurnUsage,
+    current: &super::conversations::Conversations,
+    session: &SessionId,
+) -> String {
+    let accounted = usage.accounting().model.trim();
+    if accounted.is_empty() {
+        current.model_of(session).unwrap_or_default()
+    } else {
+        accounted.to_string()
+    }
+}
+
+/// Is a catalog read (true when `session`'s catalog was read).
+type HasCatalog = Box<dyn Fn(&SessionId) -> bool + Send + Sync>;
+/// Reads `session`'s catalog, recording it on success.
+type ReadCatalog = Box<dyn Fn(SessionId) -> futures::future::BoxFuture<'static, ()> + Send + Sync>;
+
+/// Read a helper's tool catalog the first time its session is idle: a run
+/// end of a session whose catalog is not read yet reads it (the read waits
+/// behind a run still closing). A helper that leaves its mob after its one
+/// run (`delegate`) is gone before the read answers; it stays judged by
+/// the known tools. One read per session at a time; a session leaves the
+/// in-flight set when its read ends, so a read that failed (the session
+/// was busy again, the helper's next turn already running) is tried again
+/// at its next run end, and the set holds only reads still running.
+pub struct CatalogReads {
+    has: HasCatalog,
+    read: ReadCatalog,
+    reading: Arc<Mutex<std::collections::HashSet<SessionId>>>,
+}
+
+impl CatalogReads {
+    /// Reads over `has` and `read`.
+    #[must_use]
+    pub fn new(has: HasCatalog, read: ReadCatalog) -> Self {
+        Self {
+            has,
+            read,
+            reading: Arc::default(),
         }
-        let read = refresh(session_id.clone());
-        let reading = Arc::clone(&reading);
-        let session = session_id.clone();
+    }
+
+    /// Over `origins`.
+    #[must_use]
+    pub fn of(origins: &Arc<DaemonToolOrigins>) -> Self {
+        let has = Arc::clone(origins);
+        let read = Arc::clone(origins);
+        Self::new(
+            Box::new(move |session| has.has(session)),
+            Box::new(move |session| {
+                let origins = Arc::clone(&read);
+                Box::pin(async move {
+                    if !origins.refresh(&session).await {
+                        tracing::debug!(%session, "a helper's tool catalog was not readable after its run; the next run end tries again");
+                    }
+                })
+            }),
+        )
+    }
+
+    /// A run of `session` ended.
+    pub fn run_ended(&self, session: &SessionId) {
+        if (self.has)(session) || !self.reading.lock().insert(session.clone()) {
+            return;
+        }
+        let read = (self.read)(session.clone());
+        let reading = Arc::clone(&self.reading);
+        let session = session.clone();
         tokio::spawn(async move {
             read.await;
             reading.lock().remove(&session);
         });
+    }
+}
+
+/// What the daemon does with its helpers' events
+/// ([`crate::mobs::follow::HelperWatch`]): each model call is counted to
+/// the conversation the helper works for, under the helper's label and
+/// the model the provider accounted it to (else the helper's); a run's
+/// end reads its catalog ([`CatalogReads`]) and writes the counts.
+pub struct HelperEvents {
+    catalogs: CatalogReads,
+    ledger: Arc<super::usage::Ledger>,
+}
+
+impl HelperEvents {
+    /// Over `catalogs` and `ledger`.
+    #[must_use]
+    pub fn new(catalogs: CatalogReads, ledger: Arc<super::usage::Ledger>) -> Self {
+        Self { catalogs, ledger }
+    }
+}
+
+#[async_trait]
+impl crate::mobs::follow::HelperWatch for HelperEvents {
+    async fn turn(&self, tag: &crate::mobs::HelperTag, usage: &meerkat_core::TurnUsage) {
+        let accounted = usage.accounting().model.trim();
+        let model = if accounted.is_empty() {
+            tag.model.as_str()
+        } else {
+            accounted
+        };
+        self.ledger
+            .helper_turn(&tag.owner, tag.label(), model, usage)
+            .await;
+    }
+
+    fn run_ended(&self, session: &SessionId) {
+        self.catalogs.run_ended(session);
+        self.ledger.persist();
     }
 }
 
@@ -624,21 +806,6 @@ mod tests {
     use crate::approval::desk::RemoteAnswer;
     use crate::approval::escalation::{EscalationPrompt, RecordedPrompt};
 
-    fn run_completed(session: &SessionId) -> crate::mobs::HelperUpdate {
-        let usage = serde_json::to_value(meerkat_core::CumulativeUsage::default()).unwrap();
-        let event: AgentEvent = serde_json::from_value(serde_json::json!({
-            "type": "run_completed",
-            "session_id": session,
-            "result": "done",
-            "usage": usage,
-        }))
-        .unwrap();
-        crate::mobs::HelperUpdate::Event(meerkat_core::ScopedAgentEvent::primary(
-            session.to_string(),
-            event,
-        ))
-    }
-
     /// A helper whose catalog could not be read after one run (it was
     /// busy again) is read again after a later run end, and a read session
     /// leaves the in-flight set.
@@ -648,43 +815,39 @@ mod tests {
         let session = SessionId::new();
         let read = Arc::new(Mutex::new(std::collections::HashSet::<SessionId>::new()));
         let calls = Arc::new(AtomicUsize::new(0));
-        let (tx, rx) = mpsc::unbounded_channel();
-        let task = tokio::spawn(follow_helper_runs(
-            rx,
+        let reads = CatalogReads::new(
             {
                 let read = Arc::clone(&read);
-                move |s: &SessionId| read.lock().contains(s)
+                Box::new(move |s: &SessionId| read.lock().contains(s))
             },
             {
                 let read = Arc::clone(&read);
                 let calls = Arc::clone(&calls);
-                move |s: SessionId| {
+                Box::new(move |s: SessionId| {
                     let read = Arc::clone(&read);
                     let n = calls.fetch_add(1, Ordering::SeqCst);
-                    async move {
+                    Box::pin(async move {
                         // The first read finds the session busy.
                         if n > 0 {
                             read.lock().insert(s);
                         }
-                    }
-                }
+                    })
+                })
             },
-        ));
+        );
         for _ in 0..200 {
             if read.lock().contains(&session) {
                 break;
             }
-            tx.send(run_completed(&session)).unwrap();
+            reads.run_ended(&session);
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         assert!(read.lock().contains(&session), "the catalog was read again");
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         // Once read, later run ends read nothing.
-        tx.send(run_completed(&session)).unwrap();
+        reads.run_ended(&session);
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(calls.load(Ordering::SeqCst), 2);
-        drop(tx);
-        task.await.unwrap();
     }
 
     fn desk() -> (Arc<Desk>, Arc<Decisions>, mpsc::Sender<EscalationRequest>) {

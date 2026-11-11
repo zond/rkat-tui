@@ -314,6 +314,9 @@ pub enum ApprovalEvent {
     Classifying(bool),
     /// One classifier model call's token usage.
     ClassifierUsage {
+        /// The session whose call it judged (the agent's, for its
+        /// helpers' calls too).
+        session_id: SessionId,
         /// Classifier model.
         model: String,
         /// Its usage.

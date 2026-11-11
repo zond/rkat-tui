@@ -474,9 +474,15 @@ impl Local {
                     .usage(&session_id)
                     .await
                     .map_err(|err| Refusal::new(SWITCH_FAILED, err.to_string()))?;
+                let counted = self
+                    .agents
+                    .ledger()
+                    .get(&super::usage::Account::Session(session_id))
+                    .await;
                 Ok(Usage {
                     input_tokens: usage.input_tokens,
                     output_tokens: usage.output_tokens,
+                    cost: counted.cost,
                 })
             };
             method::Tasks, protocol::SessionParams { session_id } => {

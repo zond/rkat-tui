@@ -39,6 +39,10 @@ pub const FILE_DIFF: &str = "rkat/file_diff";
 /// The notification that a run no user started was fired by a schedule
 /// (or a file watch): [`TriggeredNote`].
 pub const TRIGGERED: &str = "rkat/triggered";
+/// The notification that a conversation's token totals changed (a model
+/// call of its agent, a helper or the classifier, a compaction):
+/// [`CostNote`].
+pub const COST: &str = "rkat/cost";
 
 /// One of the daemon's own `rkat/*` methods: its name, and what it takes
 /// and answers. The daemon dispatches on [`Method::NAME`] and answers with
@@ -111,7 +115,9 @@ methods! {
     Transcript = "rkat/transcript" (SessionParams) -> MessageList;
     /// A conversation's total usage as the engine keeps it with the session
     /// (a client seeds its token counter from it on attach and after a
-    /// switch; the engine's wire reports usage only per turn).
+    /// switch; the engine's wire reports usage only per turn), and its
+    /// token totals by model as the daemon counted them
+    /// ([`crate::daemon::usage`]; [`COST`] pushes later changes).
     Usage = "rkat/usage" (SessionParams) -> UsageTotals;
     /// The configured endpoint a conversation's durable auth binding names
     /// (the status bar shows it).
@@ -683,9 +689,9 @@ pub struct ScheduleRow {
     pub state: String,
     /// How many times it fired (occurrences delivered to the agent).
     pub fired: usize,
-    /// The tokens its runs used, by model, as this daemon attributed them.
+    /// The tokens its runs used, by model, as the daemon counted them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cost: Option<crate::ui::SessionCost>,
+    pub cost: Option<crate::cost::SessionCost>,
 }
 
 /// [`method::Schedules`]'s list.
@@ -706,6 +712,15 @@ pub struct TriggeredNote {
     pub label: String,
     /// The run's input.
     pub prompt: String,
+}
+
+/// [`COST`]'s parameters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CostNote {
+    /// The conversation.
+    pub session_id: SessionId,
+    /// Its totals now.
+    pub cost: crate::cost::SessionCost,
 }
 
 /// A file and its trust in words (`absent`, `trusted`, `not trusted: …`).
@@ -791,7 +806,8 @@ pub struct Transcript {
 
 /// A notification the daemon pushes to every attached client with what the
 /// approval engine reports ([`ApprovalNote`]): the classifier's verdicts,
-/// auto mode pausing and resuming, the classifier's work and token usage.
+/// auto mode pausing and resuming, the classifier's work (its token usage
+/// is counted in the daemon, [`COST`]).
 pub const APPROVAL_NOTE: &str = "rkat/approval_note";
 
 /// What the approval engine reported, as [`APPROVAL_NOTE`] carries it (the
@@ -835,13 +851,6 @@ pub enum ApprovalNote {
         /// Whether one runs now.
         running: bool,
     },
-    /// One classifier call's token usage.
-    ClassifierUsage {
-        /// The classifier's model.
-        model: String,
-        /// Its usage.
-        usage: meerkat_core::Usage,
-    },
     /// Something the human should know about the approval machinery.
     Notice {
         /// What.
@@ -851,7 +860,8 @@ pub enum ApprovalNote {
 
 impl ApprovalNote {
     /// The note for `event` (`None`: a withdrawn escalation, which the
-    /// decision push already closes).
+    /// decision push already closes, and a classifier call's usage, which
+    /// the daemon counts).
     #[must_use]
     pub fn of(event: crate::approval::ApprovalEvent) -> Option<Self> {
         use crate::approval::ApprovalEvent;
@@ -881,11 +891,10 @@ impl ApprovalNote {
                     .collect(),
             },
             ApprovalEvent::Classifying(running) => Self::Classifying { running },
-            ApprovalEvent::ClassifierUsage { model, usage } => {
-                Self::ClassifierUsage { model, usage }
-            }
             ApprovalEvent::Notice(text) => Self::Notice { text },
-            ApprovalEvent::EscalationWithdrawn(_) => return None,
+            ApprovalEvent::EscalationWithdrawn(_) | ApprovalEvent::ClassifierUsage { .. } => {
+                return None;
+            }
         })
     }
 }
@@ -900,12 +909,15 @@ pub struct SessionEndpoint {
 }
 
 /// [`method::Usage`]'s result.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
     /// Input tokens.
     pub input_tokens: u64,
     /// Output tokens.
     pub output_tokens: u64,
+    /// The token totals by model.
+    #[serde(default)]
+    pub cost: crate::cost::SessionCost,
 }
 
 /// [`method::Tasks`]'s result.
@@ -1096,12 +1108,13 @@ mod tests {
             Usage {
                 input_tokens: 1,
                 output_tokens: 2,
+                cost: crate::cost::SessionCost::default(),
             },
         );
         let ok: Value = serde_json::from_str(ok.trim_end()).unwrap();
         assert_eq!(
             ok,
-            json!({"jsonrpc": "2.0", "id": 3, "result": {"input_tokens": 1, "output_tokens": 2}})
+            json!({"jsonrpc": "2.0", "id": 3, "result": {"input_tokens": 1, "output_tokens": 2, "cost": {}}})
         );
         let err = error_line(request_id(&json!("a")), SWITCH_BUSY, "busy");
         let err: Value = serde_json::from_str(err.trim_end()).unwrap();

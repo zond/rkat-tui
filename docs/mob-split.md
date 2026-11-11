@@ -311,7 +311,7 @@ methods on the wire, and `daemon::protocol` types each one for both ends:
 | `rkat/new` | `{}` | `{"session_id", "warning"?}` |
 | `rkat/resume` | `{"session_id"}` | `{"session_id", "warning"?}` |
 | `rkat/transcript` | `{"session_id"}` | `{"messages": [Message]}` |
-| `rkat/usage` | `{"session_id"}` | `{"input_tokens", "output_tokens"}` |
+| `rkat/usage` | `{"session_id"}` | `{"input_tokens", "output_tokens", "cost": {"per_model": {model: {"input", "output", "cache_read", "cache_write"}}, "helpers": {label: {model: totals}}}}` (the engine's session totals, and the daemon's own count by model, `daemon::usage`) |
 | `rkat/trust` | `{"op": "project"\|"rules"}` | `{"ok", "text"}` |
 | `rkat/set_model` | `{"model", "provider"?, "auth_binding"?}` | `{"session_id", "model", "provider"}` (refused while a run is open) |
 | `rkat/notices` | `{}` | `{"notices": [{"warn", "text"}]}` (the daemon's start-up notices) |
@@ -321,6 +321,7 @@ methods on the wire, and `daemon::protocol` types each one for both ends:
 | `rkat/checklist_view` | `{"view": "hidden"\|"shown"}` | `{}` (saved as `[ui] checklist`) |
 | `rkat/decision_ended` | notification, daemon to client | a decision the client was shown ended |
 | `rkat/file_diff` | notification, daemon to client | `{"tool_use_id", "path", "unified", "added", "removed"}`: a change the orchestrator's file tools made |
+| `rkat/cost` | notification, daemon to client | `{"session_id", "cost"}`: a conversation's totals by model changed (a model call of its agent, one of its helpers or the classifier, or a compaction) |
 
 The mode is the daemon's (one per daemon; it governs the orchestrator and
 its helpers), is
@@ -331,6 +332,16 @@ open. An application method namespace in the engine, or the governed
 realm's review policy, could replace these methods.
 
 ## How each concern works
+
+**Usage.** The daemon counts what every model call used, by model
+(`daemon::usage`): the agents' calls from their event watchers, the
+helpers' from the one subscription the helper follower holds to each,
+the classifier's from the approval engine's events, compactions with
+their estimated input. It keeps the totals per conversation (and per
+schedule, for `/schedules`), writes them to `<realm>/tui_usage/` behind
+the event loop at each run's end and at shutdown, answers them in
+`rkat/usage` and pushes each change as `rkat/cost`. A client prices and
+renders them; it counts nothing itself.
 
 **Consent.** The daemon runs rkat-tui's approval engine (tiers,
 layered rules, the classifier on the same endpoint and model, permission

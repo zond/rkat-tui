@@ -54,6 +54,16 @@
 
 ### Changed
 
+- The session's cost is counted by the daemon, not by the client that
+  happened to be attached: a turn that ran while you were detached (a
+  schedule's, a file watch's, a `/detach`ed agent's) is in `/cost` and
+  the footer when you attach again, every client of an agent shows the
+  same totals, the classifier's calls are counted for the conversation
+  whose call they judged, and the totals survive a daemon restart. The
+  `~` of "part of the totals is derived" and the "lower bound" note are
+  gone; `~` now means only that a model has no price or a stale one. The
+  totals live in `tui_usage/` in the workspace's state directory (the old
+  `tui_cost/` records are not read).
 - `!` commands run as you, with no sandbox: your shell (`$SHELL`, else
   `/bin/sh`), your whole environment and the workspace as working
   directory, like anything typed in a terminal (`!git push` and `!cargo

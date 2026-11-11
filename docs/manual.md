@@ -753,14 +753,17 @@ platform's; `--no-pricing-fetch`, or `fetch = false` under `[pricing]` in
 your `tui.toml`, skips the download). That list is the one request
 rkat-tui makes to a host other than your LLM endpoints:
 `https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json`,
-at most once a week. Helpers' usage and
-compactions (their estimated input plus the summary) count too. `/usage`
-prints the breakdown. The readout is an estimate, not a bill, and says how
-far it can be trusted: exact; `~` **approximate** when part of it is
-estimated (a compaction's input, or usage the session's own record has that
-the TUI did not see: the totals are reconciled with the session's
-authoritative usage on resume); `~` and a "lower bound" note in `/usage`
-when some helper usage could not be observed at all.
+at most once a week. The daemon counts the tokens, whether or not a
+client is attached: every model call of the agent under the model the
+provider accounted it to, every helper's (also listed per helper), every
+classifier call under the classifier's model, and every compaction (its
+estimated input plus the summary). A turn that ran while you were
+detached, a schedule's or a file watch's, is in the totals the next time
+you attach, every client of the agent shows the same totals, and they
+survive a daemon restart. `/usage` prints the breakdown. The readout is an
+estimate, not a bill: prices come from the sources above (`~` when a model
+has no price or the price is a stale estimate), and a compaction's input
+is the engine's estimate of the history it summarized.
 
 ## Instructions and memory
 
@@ -1080,7 +1083,7 @@ with `--config-dir`), where `<id>` is random, drawn on the workspace's first
 start. It holds the realm (sessions, config with the endpoint connections
 and model profiles, `tui.toml` written by the UI, the approval issuer's
 `approvals.json`, process custody, semantic index), the conversation log,
-the per-session cost records (`tui_cost/`, owner-only), input history,
+the per-conversation usage records the daemon writes (`tui_usage/`, owner-only), input history,
 unsent messages, workspace notes (`notes/`), the attach cursors, the
 external editor's draft files while Ctrl-G edits them (`drafts/`), logs
 (`logs/rkat-tui.log`), `/export`'s default files and the audit log. The

@@ -541,7 +541,8 @@ pub async fn transcript(
         .map(|transcript| transcript.messages)
 }
 
-/// A conversation's total token usage, `(input, output)` (`rkat/usage`).
+/// A conversation's total token usage and its totals by model
+/// (`rkat/usage`).
 ///
 /// # Errors
 ///
@@ -549,10 +550,8 @@ pub async fn transcript(
 pub async fn usage(
     connection: &Connection,
     session: &SessionId,
-) -> Result<(u64, u64), ClientError> {
-    call::<method::Usage>(connection, &session_params(session))
-        .await
-        .map(|totals| (totals.input_tokens, totals.output_tokens))
+) -> Result<crate::daemon::protocol::Usage, ClientError> {
+    call::<method::Usage>(connection, &session_params(session)).await
 }
 
 /// The configured endpoint `session`'s auth binding names (`rkat/endpoint`;

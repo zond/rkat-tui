@@ -7,9 +7,9 @@
 //!   the new content reaches the agent as system context).
 //! - [`export`]: `/export`, the transcript as plain text.
 //! - [`context`]: `/context`'s breakdown of what the context holds.
-//! - [`cost`] and [`cost_store`]: the price table (overrides, endpoint
-//!   prices, the community list refreshed in the background) and the
-//!   per-session cost record.
+//! - [`cost`]: the price table (overrides, endpoint prices, the community
+//!   list refreshed in the background); the totals it prices come from
+//!   the daemon.
 //! - [`models`]: the endpoints' model lists and the `/model` picker.
 //! - [`unsent`]: the messages the agent never got, saved on quit and
 //!   announced at the next start.
@@ -22,7 +22,6 @@
 pub mod app;
 pub mod context;
 pub mod cost;
-pub mod cost_store;
 pub mod export;
 pub mod memory;
 pub mod models;
@@ -147,8 +146,6 @@ pub struct Workbench {
     pending_set: Option<String>,
     /// Messages the UI still held when the user quit.
     held_unsent: Vec<(Option<PendingId>, String)>,
-    /// The cost records, written off the client's loop.
-    costs: Arc<cost::CostWriter>,
 }
 
 impl Workbench {
@@ -180,7 +177,6 @@ impl Workbench {
             picker_waiting: false,
             pending_set: None,
             held_unsent: Vec::new(),
-            costs: Arc::default(),
         }
     }
 

@@ -1,12 +1,10 @@
 //! Helpers (sub-agents) in the UI: the helper panel and its selection,
-//! a helper's full view, `/helpers`, and helper usage for the cost
-//! readout.
-
-use meerkat_core::{AgentEvent, ScopedAgentEvent};
+//! a helper's full view and `/helpers` (their usage is counted in the
+//! daemon).
 
 use super::{
-    App, Block, BlockId, Effect, HelperTarget, HelperView, HelpersCommand, NoticeLevel,
-    OpenHelperView, ScrollState, UNKNOWN_HELPER_MODEL,
+    App, Block, BlockId, HelperTarget, HelperView, HelpersCommand, NoticeLevel, OpenHelperView,
+    ScrollState,
 };
 
 impl App {
@@ -165,35 +163,5 @@ impl App {
             text.push_str(" none yet");
         }
         text
-    }
-
-    /// A helper's model call: count its usage for the helper (on the model
-    /// the provider accounted it to, else the helper's known model).
-    pub(super) fn record_helper_usage(&mut self, ev: &ScopedAgentEvent, fx: &mut Vec<Effect>) {
-        let AgentEvent::TurnCompleted {
-            usage: Some(usage), ..
-        } = &ev.event
-        else {
-            return;
-        };
-        let Some(label) = ev.scope_path.iter().rev().find_map(|frame| match frame {
-            meerkat_core::StreamScopeFrame::MobMember { agent_identity, .. } => {
-                Some(agent_identity.as_str())
-            }
-            _ => None,
-        }) else {
-            return;
-        };
-        let accounted = usage.accounting().model.trim();
-        let model = if accounted.is_empty() {
-            self.transcript
-                .helper_model(label)
-                .unwrap_or(UNKNOWN_HELPER_MODEL)
-                .to_string()
-        } else {
-            accounted.to_string()
-        };
-        self.status.cost.record_helper(label, &model, usage);
-        fx.push(Effect::CostSnapshot(self.status.cost.clone()));
     }
 }

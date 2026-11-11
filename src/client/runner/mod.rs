@@ -279,8 +279,9 @@ struct Established {
     reset: Option<Vec<Block>>,
     /// Model, provider and the configured endpoint its binding names.
     identity: Option<(String, String, Option<String>)>,
-    /// The session's total usage `(input, output)`, read after the replay.
-    usage: Option<(u64, u64)>,
+    /// The session's total usage and its totals by model, read after the
+    /// replay.
+    usage: Option<protocol::Usage>,
     /// The live notifications that arrived before the usage answer: their
     /// turns are in `usage` already, so they are shown before the counter
     /// is set to it.
@@ -445,8 +446,8 @@ struct Adopted {
     last_seq: u64,
     /// Model, provider and the configured endpoint its binding names.
     identity: Option<(String, String, Option<String>)>,
-    /// The session's total usage `(input, output)`.
-    usage: Option<(u64, u64)>,
+    /// The session's total usage and its totals by model.
+    usage: Option<protocol::Usage>,
     /// The context of its last model call (the gauge).
     context: Option<u64>,
 }
@@ -625,8 +626,8 @@ pub struct Runner {
     current_endpoint: Option<String>,
     /// The dialect of the current model's provider.
     current_dialect: Option<WireDialect>,
-    /// `!` shell mode, `/remember`, `/memory`, `/export`, prices and the
-    /// cost record, the model lists and unsent messages.
+    /// `!` shell mode, `/remember`, `/memory`, `/export`, prices, the
+    /// model lists and unsent messages.
     bench: Workbench,
     /// The steers the daemon admitted: the agent has them, or gets them
     /// after this client leaves, so quitting saves none of them.
@@ -1164,11 +1165,6 @@ impl Runner {
             Effect::MemoryEdited { target, path } => {
                 let linked = self.linked();
                 self.bench.memory_edited(target, &path, &linked);
-            }
-            Effect::CostSnapshot(snapshot) => {
-                if let Some(link) = &self.link {
-                    self.bench.save_cost(&link.session.to_string(), &snapshot);
-                }
             }
             Effect::RespondEscalation(id, answer) => self.respond_escalation(id, &answer),
             Effect::SetMode(mode) => self.set_mode(mode.name()),

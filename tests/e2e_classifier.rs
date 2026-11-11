@@ -57,7 +57,9 @@ async fn verdict(classifier: &LlmClassifier, command: &str) -> ClassifierVerdict
     let mut transcript = ApprovalTranscript::default();
     transcript.push_user("Fix the failing parser test and make sure the test suite passes.");
     let args = json!({ "command": command });
+    let session = meerkat_core::SessionId::new();
     let input = ClassifierInput {
+        session_id: &session,
         environment: &env,
         transcript: &transcript,
         tool: "shell",

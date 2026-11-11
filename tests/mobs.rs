@@ -26,8 +26,7 @@ use rkat_tui::approval::classifier::{ActionClassifier, ClassifierVerdict};
 use rkat_tui::bootstrap;
 use rkat_tui::endpoints::{ENDPOINT_REALM, Endpoint};
 use rkat_tui::models::{EndpointListing, ModelEntry, ModelLister, ModelSource};
-use rkat_tui::ui::{App, ApprovalNotice, Effect, Msg, StatusInfo, StatusUpdate};
-use rkat_tui::workbench::cost_store::load_cost;
+use rkat_tui::ui::{ApprovalNotice, Effect, Msg, StatusUpdate};
 use serde_json::{Value, json};
 
 fn delegate(id: &'static str, member: &str, task: &str) -> Step {
@@ -180,30 +179,33 @@ async fn a_delegated_helper_runs_behind_the_sessions_gate() {
         "no scoped helper events"
     );
 
-    // Its usage reaches the cost breakdown and the sidecar.
-    let mut app = App::new(StatusInfo::default());
-    let mut snapshots = Vec::new();
-    for msg in seen_msgs {
-        if matches!(msg, Msg::Scoped(_) | Msg::Status(StatusUpdate::Helpers(_))) {
-            snapshots.extend(
-                app.update(msg)
-                    .into_iter()
-                    .filter(|e| matches!(e, Effect::CostSnapshot(_))),
-            );
+    // The daemon counted its usage to the conversation, under its label,
+    // and pushed the totals; the breakdown names it.
+    let scout = |cost: &rkat_tui::cost::SessionCost| {
+        cost.helpers
+            .get("scout")
+            .and_then(|models| models.get(common::MODEL))
+            .map(|totals| (totals.input, totals.output))
+    };
+    let pushed = |m: &Msg| match m {
+        Msg::Status(StatusUpdate::CostTotals(cost)) if scout(cost) == Some((20, 10)) => {
+            Some(cost.clone())
         }
-    }
-    let helper = &app.status.cost().helpers["scout"][common::MODEL];
-    assert_eq!((helper.input, helper.output), (20, 10), "two helper calls");
-    let breakdown = app.status.cost().breakdown(app.status.prices());
+        _ => None,
+    };
+    rig.saw(|m| pushed(m).is_some()).await;
+    let cost = rig.seen.iter().find_map(pushed).expect("pushed");
+    let breakdown = cost.breakdown(&rkat_tui::pricing::PriceTable::default());
     assert!(
         breakdown.contains("scout (claude-sonnet-4-6): in 20"),
         "{breakdown}"
     );
-    let last = snapshots.pop().expect("a cost snapshot");
-    rig.send(last);
+    // The daemon wrote it down by the time it stopped.
     rig.quit().await;
-    let stored = load_cost(&realm, &id.to_string()).expect("sidecar");
-    assert_eq!(stored.helpers["scout"][common::MODEL].input, 20);
+    let stored = rkat_tui::daemon::usage::read_record(
+        &rkat_tui::daemon::usage::Account::Session(id.clone()).path(&realm),
+    );
+    assert_eq!(scout(&stored.cost), Some((20, 10)));
 }
 
 /// The lister of an Anthropic-dialect gateway `proxy` listing `model`.

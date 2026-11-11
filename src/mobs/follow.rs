@@ -1,9 +1,11 @@
-//! Following helpers: every helper the customizer saw spawning is
-//! subscribed through its mob (from its earliest retained event, so a fast
-//! helper's whole run is seen), its session is bound in the registry (for
-//! nesting), and its events go to the UI scoped to it until it leaves its
-//! mob. A retired member's session stream does not end by itself, so the
-//! follower also checks the mob's roster ([`ROSTER_CHECK`]).
+//! Following helpers in the daemon: every helper the customizer saw
+//! spawning is subscribed through its mob (from its earliest retained
+//! event, so a fast helper's whole run is seen), its session is bound in
+//! the registry (for nesting), and what the daemon needs of its events is
+//! handed to a [`HelperWatch`] (each model call's usage, each run's end)
+//! until it leaves its mob. A retired member's session stream does not end
+//! by itself, so the follower also checks the mob's roster
+//! ([`ROSTER_CHECK`]).
 //!
 //! A helper that left the roster of a running mob retired: it is dropped
 //! from the registry and its binding. One whose mob stopped (the TUI is
@@ -14,14 +16,36 @@ use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use futures::StreamExt;
-use meerkat_core::EventSourceIdentity;
 use meerkat_core::comms::{EventStream, SessionEventCursor};
+use meerkat_core::{AgentEvent, EventSourceIdentity, SessionId, TurnUsage};
 use meerkat_mob::{AgentIdentity, MobError, MobHandle, MobId, MobState};
 use meerkat_mob_mcp::MobMcpState;
 use tokio::sync::mpsc;
 
 use super::customizer::Spawning;
-use super::registry::HelperRegistry;
+use super::registry::{HelperRegistry, HelperTag};
+
+/// What the daemon does with a followed helper's events.
+#[async_trait::async_trait]
+pub trait HelperWatch: Send + Sync {
+    /// One model call of the helper `tag` used `usage`.
+    async fn turn(&self, tag: &HelperTag, usage: &TurnUsage);
+    /// A run of the helper running as `session` ended.
+    fn run_ended(&self, session: &SessionId);
+}
+
+/// Hand `event` of the helper `tag` to `watch`, if it wants it.
+async fn observe(watch: &dyn HelperWatch, tag: &HelperTag, event: &AgentEvent) {
+    match event {
+        AgentEvent::TurnCompleted {
+            usage: Some(usage), ..
+        } => watch.turn(tag, usage).await,
+        AgentEvent::RunCompleted { session_id, .. } | AgentEvent::RunFailed { session_id, .. } => {
+            watch.run_ended(session_id);
+        }
+        _ => {}
+    }
+}
 
 /// Attempts to subscribe to a helper that is not in its mob's roster yet.
 const SUBSCRIBE_ATTEMPTS: u32 = 400;
@@ -36,15 +60,26 @@ const ROSTER_CHECK: Duration = Duration::from_millis(200);
 pub async fn watch(
     state: Weak<MobMcpState>,
     registry: Arc<HelperRegistry>,
+    observer: Arc<dyn HelperWatch>,
     mut spawning: mpsc::UnboundedReceiver<Spawning>,
 ) {
     while let Some(helper) = spawning.recv().await {
-        tokio::spawn(follow(Weak::clone(&state), Arc::clone(&registry), helper));
+        tokio::spawn(follow(
+            Weak::clone(&state),
+            Arc::clone(&registry),
+            Arc::clone(&observer),
+            helper,
+        ));
     }
 }
 
-/// Forward one helper's events until it leaves its mob.
-async fn follow(state: Weak<MobMcpState>, registry: Arc<HelperRegistry>, helper: Spawning) {
+/// Follow one helper's events until it leaves its mob.
+async fn follow(
+    state: Weak<MobMcpState>,
+    registry: Arc<HelperRegistry>,
+    observer: Arc<dyn HelperWatch>,
+    helper: Spawning,
+) {
     let Spawning { key, tag } = helper;
     let retired = match subscribe(&state, &key.mob, &key.member).await {
         Ok((handle, mut stream, session)) => {
@@ -60,13 +95,13 @@ async fn follow(state: Weak<MobMcpState>, registry: Arc<HelperRegistry>, helper:
                         if let EventSourceIdentity::Session { session_id } = &envelope.source {
                             registry.bind_session(&key, &tag, session_id);
                         }
-                        registry.emit(&tag, envelope.payload);
+                        observe(&*observer, &tag, &envelope.payload).await;
                     }
                     _ = check.tick() => {
                         if !is_member(&handle, &key.member).await {
                             // Deliver what it published before it left.
                             while let Some(Some(envelope)) = futures::FutureExt::now_or_never(stream.next()) {
-                                registry.emit(&tag, envelope.payload);
+                                observe(&*observer, &tag, &envelope.payload).await;
                             }
                             break;
                         }

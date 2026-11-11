@@ -22,6 +22,7 @@
 //! - `config` — `tui.toml`: its schema, layering and the realm file's writes
 //! - `overlay` — the `--set`/`--allow`/… command-line layer over `tui.toml`
 //! - `pricing` — token prices for the cost readout
+//! - `cost` — token totals by model (the daemon counts them) and their price
 //! - `approval` — auto-mode approval engine (tiers, rules, shell analysis, classifier, escalation)
 //! - `tools` — in-crate file tools
 //! - `memory` — file-based notes
@@ -67,6 +68,10 @@ pub(crate) mod cli;
 pub mod config;
 #[cfg(not(feature = "test-support"))]
 pub(crate) mod config;
+#[cfg(feature = "test-support")]
+pub mod cost;
+#[cfg(not(feature = "test-support"))]
+pub(crate) mod cost;
 #[cfg(feature = "test-support")]
 pub mod endpoints;
 #[cfg(not(feature = "test-support"))]

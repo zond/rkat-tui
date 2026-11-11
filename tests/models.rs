@@ -20,14 +20,12 @@ use std::sync::Arc;
 use common::{ScriptedLlmClient, Step, Workspace, args_with};
 use meerkat_core::ConfigStore;
 use meerkat_core::ProviderTag;
-use meerkat_core::Usage;
 use meerkat_core::lifecycle::run_primitive::AnthropicThinkingConfig;
 use rig::{Attached, Setup, stored_session};
 use rkat_tui::bootstrap;
 use rkat_tui::endpoints::{ENDPOINT_REALM, Endpoint};
 use rkat_tui::models::{EndpointListing, ModelEntry, ModelLister, ModelSource};
-use rkat_tui::ui::{Effect, Msg, SessionCost, StatusUpdate};
-use rkat_tui::workbench::cost_store::load_cost;
+use rkat_tui::ui::{Effect, Msg, StatusUpdate};
 
 /// An Anthropic-dialect gateway, defined on the command line.
 fn proxy_args() -> Vec<String> {
@@ -152,19 +150,21 @@ async fn the_picker_switches_the_live_model_and_the_next_turn_uses_it() {
     let profile = &document.models.custom["my-alias"];
     assert_eq!(profile.context_window, Some(50_000));
 
-    // The UI's cost totals land in the sidecar.
-    let mut cost = SessionCost::default();
-    cost.record(
-        "my-alias",
-        &Usage {
-            input_tokens: 1_000,
-            output_tokens: 500,
-            ..Usage::default()
-        },
-    );
-    rig.send(Effect::CostSnapshot(cost.clone()));
+    // The daemon counted each turn under the model it ran on, pushed the
+    // totals and wrote them down by the time it stopped.
+    rig.saw(|m| {
+        matches!(m, Msg::Status(StatusUpdate::CostTotals(cost))
+            if cost.per_model.get("my-alias").is_some_and(|t| t.input == 10))
+    })
+    .await;
     rig.quit().await;
-    assert_eq!(load_cost(&realm, &id.to_string()), Some(cost.clone()));
+    let cost = rkat_tui::daemon::usage::read_record(
+        &rkat_tui::daemon::usage::Account::Session(id.clone()).path(&realm),
+    )
+    .cost;
+    let alias = cost.per_model.get("my-alias").expect("the alias's turn");
+    assert_eq!((alias.input, alias.output), (10, 5), "{cost:?}");
+    assert!(cost.per_model.contains_key(common::MODEL), "{cost:?}");
 
     // Restored by a restarted daemon: the proxy and its model, the exact
     // totals, and the next turn runs on it.

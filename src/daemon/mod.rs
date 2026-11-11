@@ -42,6 +42,7 @@ pub mod protocol;
 pub mod schedules;
 pub mod serve;
 pub mod tasks;
+pub mod usage;
 pub mod watches;
 
 use std::path::{Path, PathBuf};
@@ -577,11 +578,12 @@ impl Daemon {
             lifecycle: Arc::clone(&lifecycle),
             schedules: Arc::new(schedules::Schedules::new(
                 composed.runtime.schedule_service(),
-                composed.scope.realm_root(),
+                Arc::clone(&composed.ledger),
             )),
             decisions: Arc::clone(&composed.decisions),
             audit: audit.clone(),
             watches: Arc::clone(&composed.watches),
+            ledger: Arc::clone(&composed.ledger),
         });
         // Before any agent runs: a turn no user started is unattended
         // unless a client is with its agent.
@@ -739,7 +741,6 @@ impl Daemon {
                 composed.diffs_task,
                 composed.notes_task,
                 composed.follower_task,
-                composed.helper_catalogs_task,
             ],
         })
     }
@@ -884,6 +885,9 @@ impl Daemon {
         for task in self.tasks.drain(..) {
             let _ = task.await;
         }
+        // The usage counted since the last run end, off the loop.
+        let ledger = Arc::clone(self.local.agents().ledger());
+        let _ = tokio::task::spawn_blocking(move || ledger.flush()).await;
         stop_mobs(&self.state).await;
         let shutdown = self.runtime.try_shutdown().await;
         connections.abort_all();

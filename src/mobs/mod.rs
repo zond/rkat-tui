@@ -23,10 +23,12 @@
 //!   an endpoint lists (a realm `[models.<id>]` profile) delegates too.
 //! - **Tools and instructions.** The TUI's file tools and
 //!   [`crate::bootstrap::HELPER_PERSONA`].
-//! - **Observation.** [`follow`] subscribes to each helper and forwards its
-//!   events, scoped to it, as [`HelperUpdate`]s (the daemon reads a
-//!   helper's tool catalog when its run ends); clients follow the helpers
-//!   on the mobs' own event streams (`crate::client::helpers`).
+//! - **Observation.** [`follow`] subscribes to each helper once and hands
+//!   the daemon what it needs of the helper's events
+//!   ([`follow::HelperWatch`]: each model call's usage, counted to the
+//!   owner's conversation, and each run's end, when the helper's tool
+//!   catalog is read); clients follow the helpers on the mobs' own event
+//!   streams (`crate::client::helpers`).
 //! - **Ownership.** A helper works for the session its spawner works for,
 //!   or else for the bridge session that created its mob (the mob host's
 //!   create hook records it); a spawn that resolves to no session open here
@@ -52,7 +54,7 @@ use std::sync::Arc;
 use meerkat_core::SessionId;
 
 pub use registry::{HelperKey, HelperRegistry};
-pub use registry::{HelperStatus, HelperTag, HelperUpdate};
+pub use registry::{HelperStatus, HelperTag};
 
 use meerkat_mob_mcp::MobMcpState;
 

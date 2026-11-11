@@ -1,14 +1,14 @@
-//! Session cost accounting (pure): token totals per model and their price.
+//! Token totals by model and their price (pure).
 //!
-//! The UI adds every `TurnCompleted` usage to the totals of the model the
-//! provider accounted it to (the identity `TurnUsage` carries; the status
-//! bar's model when it names none), every classifier call to the classifier
-//! model, every helper's `TurnCompleted` usage to its model *and* to the
-//! helper's own totals ([`SessionCost::helpers`], the `/cost` breakdown per
-//! helper), and prices the totals with a [`PriceTable`] whenever the
-//! footer is drawn or `/cost` is asked for. Meerkat reports
-//! `input_tokens` without the prompt-cache tokens (Anthropic semantics; the
-//! other clients report no cache tokens), so the cost of one model is
+//! The daemon counts them (`crate::daemon::usage`): every model call of a
+//! conversation's agent under the model the provider accounted it to,
+//! every helper's call to its model *and* to the helper's own totals
+//! ([`SessionCost::helpers`], the `/cost` breakdown per helper), every
+//! classifier call and every compaction summary. A client prices the
+//! totals with a [`PriceTable`] whenever the footer is drawn or `/cost` is
+//! asked for. Meerkat reports `input_tokens` without the prompt-cache
+//! tokens (Anthropic semantics; the other clients report no cache
+//! tokens), so the cost of one model is
 //!
 //! ```text
 //! ( input       × price.input
@@ -16,6 +16,9 @@
 //! + cache_write × (price.cache_write  or price.input)
 //! + output      × price.output ) / 1M
 //! ```
+//!
+//! A compaction's input is the engine's estimate of the history it
+//! summarized (the provider reports no usage for the summary call).
 
 use std::fmt::Write as _;
 
@@ -85,55 +88,16 @@ impl UsageTotals {
 /// Token totals by model id, in first-use order.
 pub type ModelTotals = IndexMap<String, UsageTotals>;
 
-/// How much the totals of a [`SessionCost`] can be trusted.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CostConfidence {
-    /// Every model call was counted under the model that produced it.
-    #[default]
-    Exact,
-    /// Some totals are estimates: derived from the session's cumulative
-    /// usage (a session recorded before cost tracking, or whose authoritative
-    /// usage exceeds the recorded totals), or a compaction whose input was
-    /// only estimated. The footer shows `~`.
-    Approximate,
-    /// Some usage was not observed at all (a helper whose events could not
-    /// be followed): the totals are a lower bound. The footer shows `~`.
-    Unmeasured,
-}
-
-impl CostConfidence {
-    /// The weaker of `self` and `other`.
-    #[must_use]
-    pub fn and(self, other: Self) -> Self {
-        self.max(other)
-    }
-}
-
 /// Token totals of a session by model, in first-use order.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SessionCost {
     /// Totals by model id (the session's own calls and its helpers').
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
     pub per_model: ModelTotals,
-    /// How far the totals can be trusted.
-    #[serde(default)]
-    pub confidence: CostConfidence,
     /// The helpers' share of `per_model`, by helper label.
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
     pub helpers: IndexMap<String, ModelTotals>,
-}
-
-/// What [`crate::ui::Effect::CostSnapshot`] carries and the sidecar stores.
-pub type SessionCostSnapshot = SessionCost;
-
-impl Default for SessionCost {
-    fn default() -> Self {
-        Self {
-            per_model: IndexMap::new(),
-            confidence: CostConfidence::Exact,
-            helpers: IndexMap::new(),
-        }
-    }
 }
 
 /// The footer's view of a [`SessionCost`].
@@ -147,8 +111,7 @@ pub enum CostReadout {
     Usd {
         /// US dollars.
         usd: f64,
-        /// Some model is unpriced, the totals are derived, or a price is
-        /// a stale estimate.
+        /// Some model is unpriced, or a price is a stale estimate.
         approx: bool,
     },
 }
@@ -180,9 +143,7 @@ impl SessionCost {
     }
 
     /// Count a compaction's summary call on `model`: `input` is the history
-    /// estimate the compaction reported, `output` the summary size. The
-    /// input is an estimate, so the totals become
-    /// [`CostConfidence::Approximate`].
+    /// estimate the compaction reported, `output` the summary size.
     pub fn record_compaction(&mut self, model: &str, input: u64, output: u64) {
         let totals = UsageTotals {
             input,
@@ -193,7 +154,6 @@ impl SessionCost {
             return;
         }
         self.add(model, &totals);
-        self.confidence = self.confidence.and(CostConfidence::Approximate);
     }
 
     /// Whether no token was counted.
@@ -225,7 +185,7 @@ impl SessionCost {
         }
         let mut usd = 0.0;
         let mut priced = 0_usize;
-        let mut approx = self.confidence != CostConfidence::Exact;
+        let mut approx = false;
         for (model, totals) in self.per_model.iter().filter(|(_, t)| !t.is_zero()) {
             match prices.lookup(model) {
                 Some((price, source)) => {
@@ -275,15 +235,6 @@ impl SessionCost {
             CostReadout::Unknown | CostReadout::Unused => "$?".to_string(),
         };
         let _ = write!(out, "\n  total: {total}");
-        match self.confidence {
-            CostConfidence::Exact => {}
-            CostConfidence::Approximate => out.push_str(
-                "\n  (approximate: part of the totals is derived from the session's recorded usage or a compaction estimate)",
-            ),
-            CostConfidence::Unmeasured => out.push_str(
-                "\n  (a lower bound: some helper usage could not be observed)",
-            ),
-        }
         out
     }
 }
@@ -486,12 +437,13 @@ mod tests {
     }
 
     #[test]
-    fn a_compaction_counts_its_estimate_and_makes_the_cost_approximate() {
+    fn a_compaction_counts_its_estimate() {
         let mut compacted = SessionCost::default();
         compacted.record_compaction("a", 1_000_000, 10);
         assert_eq!(compacted.per_model["a"].input, 1_000_000);
         assert_eq!(compacted.per_model["a"].output, 10);
-        assert_eq!(compacted.confidence, CostConfidence::Approximate);
+        compacted.record_compaction("a", 0, 0);
+        assert_eq!(compacted.per_model["a"].output, 10);
     }
 
     #[test]

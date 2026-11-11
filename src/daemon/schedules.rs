@@ -18,18 +18,19 @@
 //!   positive evidence only ([`Schedules::attribute`]): an occurrence of one
 //!   of the agent's schedules, dispatched since the daemon started, not
 //!   attributed before, whose prompt is the run's input;
-//! - keeps what each schedule's runs cost in the realm's cost records,
-//!   under the key `schedule-<id>` ([`Schedules::count_cost`], written behind by [`Schedules::write_cost`]).
+//! - shows what each schedule's runs used: the event watcher counts a
+//!   scheduled run's model calls to its schedule as well as to its
+//!   conversation ([`super::usage::Account::Schedule`]).
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use meerkat::{
     Occurrence, OccurrenceId, OccurrencePhase, Schedule, ScheduleDomainError, ScheduleId,
     SchedulePhase, ScheduleService, TargetBinding, TriggerSpec,
 };
-use meerkat_core::{RunId, Usage};
+use meerkat_core::RunId;
 
 use super::MOB_ID;
 use super::protocol::{ScheduleOp, ScheduleRow};
@@ -149,8 +150,8 @@ pub struct Fired {
 /// The agents' schedules.
 pub struct Schedules {
     service: ScheduleService,
-    /// Where the cost records live (the realm).
-    realm: PathBuf,
+    /// Where each schedule's runs are counted ([`super::usage::Account::Schedule`]).
+    ledger: Arc<super::usage::Ledger>,
     /// When the daemon started: an occurrence dispatched before was not
     /// this process's to attribute.
     started: DateTime<Utc>,
@@ -160,34 +161,24 @@ pub struct Schedules {
     /// The runs attributed to a schedule, until each ends
     /// ([`Self::run_ended`]).
     runs: parking_lot::Mutex<HashMap<RunId, ScheduleId>>,
-    /// What each schedule's runs cost as counted (its record read on
-    /// first use); the record is written behind ([`Self::write_cost`]).
-    costs: parking_lot::Mutex<HashMap<ScheduleId, crate::ui::SessionCost>>,
-    /// One record write at a time.
-    writing: parking_lot::Mutex<()>,
 }
 
 impl std::fmt::Debug for Schedules {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Schedules")
-            .field("realm", &self.realm)
-            .finish_non_exhaustive()
+        f.debug_struct("Schedules").finish_non_exhaustive()
     }
 }
 
 impl Schedules {
-    /// The schedules of `service`, whose runs' costs are recorded in the
-    /// realm at `realm`.
+    /// The schedules of `service`, whose runs are counted in `ledger`.
     #[must_use]
-    pub fn new(service: ScheduleService, realm: PathBuf) -> Self {
+    pub fn new(service: ScheduleService, ledger: Arc<super::usage::Ledger>) -> Self {
         Self {
             service,
-            realm,
+            ledger,
             started: Utc::now(),
             attributed: parking_lot::Mutex::new(Attributed::default()),
             runs: parking_lot::Mutex::new(HashMap::new()),
-            costs: parking_lot::Mutex::new(HashMap::new()),
-            writing: parking_lot::Mutex::new(()),
         }
     }
 
@@ -247,7 +238,15 @@ impl Schedules {
                 next: next.map(stamp),
                 state: phase_word(schedule.phase).to_string(),
                 fired,
-                cost: self.cost_of(&schedule.schedule_id),
+                cost: Some(
+                    self.ledger
+                        .get(&super::usage::Account::Schedule(
+                            schedule.schedule_id.clone(),
+                        ))
+                        .await
+                        .cost,
+                )
+                .filter(|cost| !cost.is_empty()),
             });
         }
         Ok(rows)
@@ -391,39 +390,6 @@ impl Schedules {
     pub fn schedule_of(&self, run: &RunId) -> Option<ScheduleId> {
         self.runs.lock().get(run).cloned()
     }
-
-    /// Count `usage` on `model` to `schedule`, in memory (its record is
-    /// read once, on first use); [`Self::write_cost`] writes it.
-    pub fn count_cost(&self, schedule: &ScheduleId, model: &str, usage: &Usage) {
-        let mut costs = self.costs.lock();
-        let cost = costs.entry(schedule.clone()).or_insert_with(|| {
-            crate::workbench::cost_store::load_cost(&self.realm, &cost_key(schedule))
-                .unwrap_or_default()
-        });
-        cost.record(model, usage);
-    }
-
-    /// Write `schedule`'s cost record as counted now (blocking file I/O;
-    /// one write at a time, each of the latest count).
-    pub fn write_cost(&self, schedule: &ScheduleId) {
-        let _one = self.writing.lock();
-        let Some(cost) = self.costs.lock().get(schedule).cloned() else {
-            return;
-        };
-        if let Err(err) =
-            crate::workbench::cost_store::save_cost(&self.realm, &cost_key(schedule), &cost)
-        {
-            tracing::warn!(%schedule, error = %err, "a scheduled run's cost was not recorded");
-        }
-    }
-
-    /// `schedule`'s cost as counted, else as recorded.
-    fn cost_of(&self, schedule: &ScheduleId) -> Option<crate::ui::SessionCost> {
-        if let Some(cost) = self.costs.lock().get(schedule) {
-            return Some(cost.clone());
-        }
-        crate::workbench::cost_store::load_cost(&self.realm, &cost_key(schedule))
-    }
 }
 
 /// How many attributed occurrences are remembered.
@@ -472,11 +438,6 @@ fn delivered(occurrence: &Occurrence) -> bool {
         occurrence.phase,
         OccurrencePhase::Completed | OccurrencePhase::AwaitingCompletion
     ) && occurrence.dispatched_at_utc.is_some()
-}
-
-/// The cost record a schedule's runs are kept under.
-fn cost_key(schedule: &ScheduleId) -> String {
-    format!("schedule-{schedule}")
 }
 
 #[cfg(test)]

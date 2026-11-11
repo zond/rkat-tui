@@ -335,6 +335,13 @@ pub struct Conversations {
     writer: Arc<LogWriter>,
     /// One switch at a time per agent.
     switching: parking_lot::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// How many times each agent was seated (a switch, a reseat, a seat
+    /// restored after a failed switch): each seat is a new incarnation of
+    /// the member, whose event stream the old one's subscription never
+    /// reaches ([`Self::seat_of`]).
+    seats: parking_lot::Mutex<std::collections::HashMap<String, u64>>,
+    /// Told every seat.
+    seated_tx: tokio::sync::watch::Sender<u64>,
     /// The start-up model and binding (a fresh conversation's, until the
     /// client switches it).
     model: String,
@@ -379,6 +386,8 @@ impl Conversations {
             log_file,
             log: parking_lot::Mutex::new(log),
             switching: parking_lot::Mutex::default(),
+            seats: parking_lot::Mutex::default(),
+            seated_tx: tokio::sync::watch::channel(0).0,
             model,
             auth_binding,
             #[cfg(any(test, feature = "test-support"))]
@@ -413,6 +422,31 @@ impl Conversations {
     #[must_use]
     pub fn current(&self, agent: &str) -> Option<SessionId> {
         self.registry.root_session(&Self::key(agent))
+    }
+
+    /// How many times `agent` was seated: it changes with every new
+    /// incarnation of its member.
+    #[must_use]
+    pub fn seat_of(&self, agent: &str) -> u64 {
+        self.seats.lock().get(agent).copied().unwrap_or(0)
+    }
+
+    /// Changes whenever an agent is seated ([`Self::seat_of`] says which).
+    #[must_use]
+    pub fn seatings(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.seated_tx.subscribe()
+    }
+
+    /// `agent` was seated anew.
+    fn seat_changed(&self, agent: &str) {
+        *self.seats.lock().entry(agent.to_string()).or_insert(0) += 1;
+        self.seated_tx.send_modify(|n| *n += 1);
+    }
+
+    /// The model `session` runs on, when it is open here.
+    #[must_use]
+    pub fn model_of(&self, session: &SessionId) -> Option<String> {
+        self.registry.model_of(session)
     }
 
     /// The agent the log says ran `session`.
@@ -795,7 +829,10 @@ impl Conversations {
                     .spawn(&mob, agent, &Target::Resume(previous.clone()))
                     .await
                 {
-                    Ok(()) => true,
+                    Ok(()) => {
+                        self.seat_changed(agent);
+                        true
+                    }
                     Err(again) => {
                         tracing::error!(error = %again, "the previous conversation could not be seated again");
                         false
@@ -831,6 +868,7 @@ impl Conversations {
             .ok_or(SwitchError::NoSession)?;
         self.register(agent, &session);
         self.touch(&session, agent);
+        self.seat_changed(agent);
         Ok(session)
     }
 

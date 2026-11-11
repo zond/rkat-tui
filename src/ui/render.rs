@@ -574,7 +574,7 @@ pub fn status_bar(status: &StatusInfo, now: Instant) -> Line<'static> {
         fmt_tokens(status.input_tokens),
         fmt_tokens(status.output_tokens)
     )));
-    segs.extend(super::cost::cost_segment_text(&status.cost, &status.prices).map(Span::raw));
+    segs.extend(crate::cost::cost_segment_text(&status.cost, &status.prices).map(Span::raw));
     segs.extend(context_segment(status));
     segs.extend(mode_segment(status));
     if status.classifying {

@@ -534,6 +534,9 @@ pub struct Setup {
     /// refuses them).
     pub client_args: Vec<String>,
     pub classifier: Option<Arc<dyn ActionClassifier>>,
+    /// The bootstrap's own model classifier on the scripted LLM (its
+    /// calls take the script's next steps) instead of `classifier`.
+    pub llm_classifier: bool,
     pub escalation_timeout: Option<Duration>,
     pub lister: Option<rkat_tui::models::ModelLister>,
     pub host_paths: Option<HostPaths>,
@@ -573,11 +576,11 @@ impl Setup {
                 lister: Some(self.lister.clone().unwrap_or_else(no_lists)),
                 host_paths: Some(self.host_paths.clone().unwrap_or_default()),
                 approval: ApprovalOverrides {
-                    classifier: Some(
+                    classifier: (!self.llm_classifier).then(|| {
                         self.classifier
                             .clone()
-                            .unwrap_or_else(|| Arc::new(AllowAll) as Arc<dyn ActionClassifier>),
-                    ),
+                            .unwrap_or_else(|| Arc::new(AllowAll) as Arc<dyn ActionClassifier>)
+                    }),
                     escalation_timeout: self.escalation_timeout,
                 },
             })

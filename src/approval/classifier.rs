@@ -29,8 +29,8 @@ use meerkat_core::lifecycle::run_primitive::{
 };
 use meerkat_core::types::{AssistantBlock, BlockAssistantMessage, ToolCallView, ToolResult};
 use meerkat_core::{
-    AgentToolDispatcher, Message, Provider, ProviderTag, StopReason, SystemMessage, ToolDef, Usage,
-    UserMessage,
+    AgentToolDispatcher, Message, Provider, ProviderTag, SessionId, StopReason, SystemMessage,
+    ToolDef, Usage, UserMessage,
 };
 use meerkat_llm_core::{
     BlockAssembler, LlmClient, LlmDoneOutcome, LlmError, LlmEvent, LlmRequest, PreparedLlmRequest,
@@ -200,6 +200,9 @@ pub(crate) fn remote_without_credentials(url: &str) -> String {
 /// project files itself (see [`LlmClassifier::with_project_tools`]).
 #[derive(Debug, Clone, Copy)]
 pub struct ClassifierInput<'a> {
+    /// The session whose call is judged (the agent's, for its helpers'
+    /// calls too): the classifier's calls are its cost.
+    pub session_id: &'a SessionId,
     /// Environment and trust boundary.
     pub environment: &'a Environment,
     /// Reasoning-blind transcript (user prompts and prior tool calls).
@@ -483,12 +486,18 @@ impl LlmClassifier {
 
     /// One model call: project the request through the client's replay
     /// projection, stream it and fold the reply. Usage is reported.
-    async fn call(&self, request: LlmRequest) -> Result<BlockAssistantMessage, LlmError> {
+    /// The call judges a call of `session`, whose cost it is.
+    async fn call(
+        &self,
+        session: &SessionId,
+        request: LlmRequest,
+    ) -> Result<BlockAssistantMessage, LlmError> {
         let projection = self.client.project_replay_request(&request.messages)?;
         let prepared = PreparedLlmRequest::from_projection(request, projection);
         let reply = collect_turn(&*self.client, &prepared).await?;
         if let (Some(events), Some(usage)) = (&self.usage, reply.usage) {
             let _ = events.send(ApprovalEvent::ClassifierUsage {
+                session_id: session.clone(),
                 model: self.model.clone(),
                 usage,
             });
@@ -497,17 +506,25 @@ impl LlmClassifier {
     }
 
     /// A call whose text is all that matters.
-    async fn call_text(&self, request: LlmRequest) -> Result<String, ClassifierError> {
-        self.call(request)
+    async fn call_text(
+        &self,
+        session: &SessionId,
+        request: LlmRequest,
+    ) -> Result<String, ClassifierError> {
+        self.call(session, request)
             .await
             .map(|reply| assistant_text(&reply))
             .map_err(|err| ClassifierError::Provider(err.to_string()))
     }
 
     /// Run the stage-1 completion and return its text.
-    async fn complete_stage1(&self, request: LlmRequest) -> Result<String, ClassifierError> {
+    async fn complete_stage1(
+        &self,
+        session: &SessionId,
+        request: LlmRequest,
+    ) -> Result<String, ClassifierError> {
         let started = Instant::now();
-        let result = tokio::time::timeout(self.stage_timeout, self.call_text(request))
+        let result = tokio::time::timeout(self.stage_timeout, self.call_text(session, request))
             .await
             .unwrap_or(Err(ClassifierError::Timeout));
         tracing::debug!(
@@ -573,8 +590,11 @@ impl LlmClassifier {
     /// Tool-less stage 2 (no project tools, or the endpoint rejected them).
     async fn stage2_plain(&self, input: &ClassifierInput<'_>) -> Result<String, ClassifierError> {
         let (system, user) = render_stage2(input, Stage2Mode::NoTools);
-        self.call_text(self.request(system, user, self.stage2_max_tokens))
-            .await
+        self.call_text(
+            input.session_id,
+            self.request(system, user, self.stage2_max_tokens),
+        )
+        .await
     }
 
     /// Stage 2 as a bounded tool loop over the read-only project tools.
@@ -593,7 +613,7 @@ impl LlmClassifier {
             if stats.calls >= MAX_STAGE2_TOOL_CALLS {
                 break;
             }
-            let reply = match self.call(request.clone()).await {
+            let reply = match self.call(input.session_id, request.clone()).await {
                 Ok(reply) => reply,
                 Err(err) if round == 0 && tools_rejected(&err) => {
                     return Err(LoopError::ToolsRejected(err.to_string()));
@@ -651,7 +671,7 @@ impl LlmClassifier {
             self.stage2_max_tokens,
         );
         let text = self
-            .call_text(request)
+            .call_text(input.session_id, request)
             .await
             .map_err(LoopError::Classifier)?;
         Ok((text, stats))
@@ -899,7 +919,7 @@ impl ActionClassifier for LlmClassifier {
     ) -> Result<ClassifierVerdict, ClassifierError> {
         let (system, user) = render_stage1(&input);
         let request = self.request(system, user, self.stage1_max_tokens);
-        let answer = self.complete_stage1(request).await?;
+        let answer = self.complete_stage1(input.session_id, request).await?;
         let stage1 = parse_stage1(answer.trim());
         tracing::debug!(model = %self.model, tool = input.tool, ?stage1, "classifier stage 1 verdict");
         if stage1 == Stage1::Allow {
@@ -922,7 +942,9 @@ mod tests {
         let env = Environment::basic("/p", "/p");
         let transcript = ApprovalTranscript::default();
         let args = serde_json::json!({});
+        let session = SessionId::new();
         let input = ClassifierInput {
+            session_id: &session,
             environment: &env,
             transcript: &transcript,
             tool: "x",

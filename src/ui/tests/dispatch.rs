@@ -516,7 +516,16 @@ fn cost_command_prints_the_breakdown() {
     app.update(Msg::Status(StatusUpdate::Prices(priced(&[(
         "a", 3.0, 15.0,
     )]))));
-    app.update(completed_by("a", 2_000_000, 100_000));
+    let mut totals = crate::cost::SessionCost::default();
+    totals.record(
+        "a",
+        &meerkat_core::Usage {
+            input_tokens: 2_000_000,
+            output_tokens: 100_000,
+            ..meerkat_core::Usage::default()
+        },
+    );
+    app.update(Msg::Status(StatusUpdate::CostTotals(totals)));
     assert!(submit(&mut app, "/cost").is_empty());
     let (level, text) = last_notice(&app).unwrap();
     assert_eq!(level, NoticeLevel::Info);

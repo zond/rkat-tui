@@ -61,6 +61,7 @@ fn seeded_transcript() -> ApprovalTranscript {
 }
 
 struct Fixture {
+    session: meerkat_core::SessionId,
     env: Environment,
     transcript: ApprovalTranscript,
     args: Value,
@@ -69,6 +70,7 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         Self {
+            session: meerkat_core::SessionId::new(),
             env: Environment::basic("/proj", "/proj"),
             transcript: seeded_transcript(),
             args: json!({"command": "cargo test --workspace"}),
@@ -77,6 +79,7 @@ impl Fixture {
 
     fn input(&self) -> ClassifierInput<'_> {
         ClassifierInput {
+            session_id: &self.session,
             environment: &self.env,
             transcript: &self.transcript,
             tool: "shell",
@@ -291,9 +294,15 @@ async fn usage_of_every_call_is_reported() {
     }
     assert_eq!(reports.len(), 2);
     for report in reports {
-        let ApprovalEvent::ClassifierUsage { model, usage } = report else {
+        let ApprovalEvent::ClassifierUsage {
+            session_id,
+            model,
+            usage,
+        } = report
+        else {
             panic!("{report:?}");
         };
+        assert_eq!(session_id, fx.session, "the judged call's session");
         assert_eq!(model, "claude-sonnet-4-6");
         assert_eq!((usage.input_tokens, usage.output_tokens), (10, 5));
     }

@@ -22,7 +22,6 @@ use meerkat_core::{AgentEvent, AuthBindingRef, ScopedAgentEvent, SessionId, Stre
 use meerkat_mob::{AgentIdentity, MobId};
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
 
 use crate::mobs::bindings::{BindingsError, HelperBindings};
 
@@ -91,14 +90,6 @@ pub struct HelperStatus {
     pub model: String,
     /// Nesting depth.
     pub depth: usize,
-}
-
-/// What the follower reports of a helper (the daemon reads a helper's
-/// tool catalog when its run ends).
-#[derive(Debug, Clone)]
-pub enum HelperUpdate {
-    /// An event of a helper, scoped to it.
-    Event(ScopedAgentEvent),
 }
 
 /// A helper's key: its mob and its member identity.
@@ -191,39 +182,32 @@ pub struct HelperRegistry {
     /// (again before each retry of its storage cleanup): what still
     /// observes the mob lets go ([`Self::destroyed_mobs`]).
     destroyed: tokio::sync::broadcast::Sender<MobId>,
-    updates: mpsc::UnboundedSender<HelperUpdate>,
 }
 
 impl HelperRegistry {
-    /// An empty registry, its bindings in memory only, and the receiver
-    /// of its updates.
+    /// An empty registry, its bindings in memory only.
     #[must_use]
     #[cfg(any(test, feature = "test-support"))]
-    pub fn new() -> (Self, mpsc::UnboundedReceiver<HelperUpdate>) {
+    pub fn in_memory() -> Self {
         Self::with_bindings(HelperBindings::in_memory())
     }
 
     /// A registry whose bindings persist under `realm_root` (an
     /// unreadable bindings file is logged and replaced).
     #[must_use]
-    pub fn persistent(realm_root: &Path) -> (Self, mpsc::UnboundedReceiver<HelperUpdate>) {
+    pub fn persistent(realm_root: &Path) -> Self {
         Self::with_bindings(HelperBindings::open_or_empty(realm_root))
     }
 
-    fn with_bindings(bindings: HelperBindings) -> (Self, mpsc::UnboundedReceiver<HelperUpdate>) {
-        let (updates, rx) = mpsc::unbounded_channel();
-        (
-            Self {
-                sessions: RwLock::new(HashMap::new()),
-                roots: RwLock::new(HashMap::new()),
-                bindings,
-                live: Mutex::new(IndexMap::new()),
-                councils: Mutex::new(HashMap::new()),
-                destroyed: tokio::sync::broadcast::channel(DESTROYED_QUEUE).0,
-                updates,
-            },
-            rx,
-        )
+    fn with_bindings(bindings: HelperBindings) -> Self {
+        Self {
+            sessions: RwLock::new(HashMap::new()),
+            roots: RwLock::new(HashMap::new()),
+            bindings,
+            live: Mutex::new(IndexMap::new()),
+            councils: Mutex::new(HashMap::new()),
+            destroyed: tokio::sync::broadcast::channel(DESTROYED_QUEUE).0,
+        }
     }
 
     /// The persisted bindings (tests and diagnostics).
@@ -507,11 +491,6 @@ impl HelperRegistry {
             .collect()
     }
 
-    /// Forward a helper event to the UI.
-    pub fn emit(&self, tag: &HelperTag, event: AgentEvent) {
-        let _ = self.updates.send(HelperUpdate::Event(tag.scope(event)));
-    }
-
     /// A helper's events cannot be followed (clients follow it on its
     /// mob's own stream; the daemon reads its catalog at its next call).
     pub fn follow_failed(&self, tag: &HelperTag) {
@@ -540,7 +519,7 @@ mod tests {
     fn a_host_root_member_owns_what_it_spawns() {
         use meerkat_mob::{AgentIdentity, MobId};
 
-        let (registry, _rx) = HelperRegistry::new();
+        let registry = HelperRegistry::in_memory();
         let mob = MobId::from("tui");
         let main = AgentIdentity::from("main");
         // Before it is registered, a spawn of `main` is an unknown spawner.
@@ -570,7 +549,7 @@ mod tests {
     fn a_council_works_for_the_session_that_convened_it_and_no_other() {
         use meerkat_mob::MobId;
 
-        let (registry, _rx) = HelperRegistry::new();
+        let registry = HelperRegistry::in_memory();
         let agent = SessionId::new();
         registry.register_session(&agent, "m", None);
         // The engine creates a council's mob for a fresh session of its own.
@@ -603,7 +582,7 @@ mod tests {
     fn owners_follow_mob_creators_spawners_and_nesting() {
         use meerkat_mob::{AgentIdentity, MobId};
 
-        let (registry, _rx) = HelperRegistry::new();
+        let registry = HelperRegistry::in_memory();
         let a = SessionId::new();
         let b = SessionId::new();
         let implicit_a = MobId::from(format!("implicit-{a}"));
@@ -680,7 +659,7 @@ mod tests {
     /// (only the convener's failure removes it).
     #[test]
     fn a_council_entry_is_not_taken_over_and_goes_when_its_call_failed() {
-        let (registry, _rx) = HelperRegistry::new();
+        let registry = HelperRegistry::in_memory();
         let (first, second) = (SessionId::new(), SessionId::new());
         let mob = MobId::from("council-x");
         registry.expect_council(mob.clone(), first.clone());
@@ -696,7 +675,7 @@ mod tests {
     fn forgetting_a_session_prunes_its_helpers() {
         use meerkat_mob::{AgentIdentity, MobId};
 
-        let (registry, _rx) = HelperRegistry::new();
+        let registry = HelperRegistry::in_memory();
         let a = SessionId::new();
         let b = SessionId::new();
         registry.register_session(&a, "m", None);

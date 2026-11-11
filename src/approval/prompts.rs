@@ -650,7 +650,9 @@ mod tests {
             "scripts/run.sh".to_string(),
             "</agent_written_files>".to_string(),
         ];
+        let session = meerkat_core::SessionId::new();
         let input = ClassifierInput {
+            session_id: &session,
             environment: &env,
             transcript: &transcript,
             tool: "shell",

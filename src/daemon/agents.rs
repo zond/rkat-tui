@@ -238,6 +238,8 @@ pub struct Agents {
     audit: Option<Arc<super::audit::AuditLog>>,
     /// The agents' file watches.
     watches: Arc<super::watches::Watches>,
+    /// What every agent's and helper's model calls used.
+    ledger: Arc<super::usage::Ledger>,
     /// The last watch event sent to each agent: a run it starts is the
     /// watch's.
     watch_sent: parking_lot::Mutex<std::collections::HashMap<String, String>>,
@@ -277,6 +279,8 @@ pub struct AgentsParts {
     pub audit: Option<Arc<super::audit::AuditLog>>,
     /// The agents' file watches.
     pub watches: Arc<super::watches::Watches>,
+    /// The usage records.
+    pub ledger: Arc<super::usage::Ledger>,
 }
 
 impl Agents {
@@ -293,6 +297,7 @@ impl Agents {
             decisions,
             audit,
             watches,
+            ledger,
         } = parts;
         Arc::new(Self {
             state,
@@ -304,6 +309,7 @@ impl Agents {
             decisions,
             audit,
             watches,
+            ledger,
             watch_sent: parking_lot::Mutex::new(std::collections::HashMap::new()),
             table: parking_lot::Mutex::new(BTreeMap::new()),
             seating: tokio::sync::Mutex::new(()),
@@ -501,18 +507,10 @@ impl Agents {
         &self.watches
     }
 
-    /// A turn of `run` used `usage` on `model`: counted to the schedule
-    /// that fired the run, if one did.
-    pub fn run_usage(&self, run: &meerkat_core::RunId, model: &str, usage: &meerkat_core::Usage) {
-        let Some(schedule) = self.schedules.schedule_of(run) else {
-            return;
-        };
-        self.schedules.count_cost(&schedule, model, usage);
-        // The record is file I/O: written off the event loop.
-        let schedules = Arc::clone(&self.schedules);
-        drop(tokio::task::spawn_blocking(move || {
-            schedules.write_cost(&schedule);
-        }));
+    /// What every agent's and helper's model calls used.
+    #[must_use]
+    pub fn ledger(&self) -> &Arc<super::usage::Ledger> {
+        &self.ledger
     }
 
     /// The agents' schedules.
@@ -624,15 +622,16 @@ impl Agents {
     /// Put `name` in the table (seated now: `spare` until a client binds;
     /// restored: `detached`) and follow its events.
     fn admit(self: &Arc<Self>, name: &str, spare: bool, detached: bool) {
-        let watcher = super::approvals::watch(
-            Arc::clone(&self.state),
-            MobId::from(MOB_ID),
-            AgentIdentity::from(name),
-            Arc::clone(&self.engine),
-            Arc::clone(&self.origins),
-            Arc::clone(&self.conversations),
-            Arc::downgrade(self),
-        );
+        let watcher = super::approvals::watch(super::approvals::Watched {
+            state: Arc::clone(&self.state),
+            mob: MobId::from(MOB_ID),
+            identity: AgentIdentity::from(name),
+            engine: Arc::clone(&self.engine),
+            origins: Arc::clone(&self.origins),
+            current: Arc::clone(&self.conversations),
+            ledger: Arc::clone(&self.ledger),
+            agents: Arc::downgrade(self),
+        });
         let active = self.tick();
         self.table.lock().insert(
             name.to_string(),

@@ -242,9 +242,6 @@ impl Runner {
                 &model,
             );
         }
-        if fresh {
-            self.load_cost(&link.session);
-        }
         let daemon_build = link.connection.daemon_build().map(str::to_string);
         if new_daemon && daemon_build.as_deref() != Some(crate::BUILD) {
             self.notice(
@@ -288,9 +285,14 @@ impl Runner {
         }
         // The counters are the session's totals; after the
         // replay and the live events queued before the usage read, whose
-        // turns they already hold. Live turn ends after this add to them.
-        if let Some((input, output)) = usage {
-            self.send(Msg::Status(StatusUpdate::Tokens { input, output }));
+        // turns they already hold. Live turn ends after this add to them,
+        // and the daemon pushes its later totals by model (`rkat/cost`).
+        if let Some(usage) = usage {
+            self.send(Msg::Status(StatusUpdate::Tokens {
+                input: usage.input_tokens,
+                output: usage.output_tokens,
+            }));
+            self.send(Msg::Status(StatusUpdate::CostTotals(usage.cost)));
         }
         let now = Instant::now();
         self.discover_at = Some(now);
@@ -536,6 +538,16 @@ impl Runner {
                 }
                 Ok(_) => {}
                 Err(err) => tracing::debug!(error = %err, "unreadable trigger note"),
+            }
+            return;
+        }
+        if note.method == protocol::COST {
+            match serde_json::from_value::<protocol::CostNote>(note.params.clone()) {
+                Ok(totals) if totals.session_id == link.session => {
+                    self.send(Msg::Status(StatusUpdate::CostTotals(totals.cost)));
+                }
+                Ok(_) => {}
+                Err(err) => tracing::debug!(error = %err, "unreadable cost note"),
             }
             return;
         }
