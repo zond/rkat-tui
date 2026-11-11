@@ -6220,3 +6220,35 @@ daemon decides it on its own route, `Routed::Decide`).
 Tests: `daemon::protocol::tests::the_methods_have_distinct_local_names`;
 the wire tests in `tests/daemon.rs` and the rig's calls are unchanged in
 what they assert (they call through `remote::call` now).
+
+### `/quit` is decided in the daemon (R2 item 6)
+
+The client read `rkat/status`, ran `quit_decision` on it and then sent
+`rkat/retire` or `rkat/shutdown`, neither of which checked anything
+again: a client binding to the agent in between was retired out from
+under its user, and two clients of one agent quitting together both read
+"another client works with it" and both left it to the other.
+`rkat/quit` (`protocol::method::Quit`) decides with the same rules
+(`daemon::lifecycle::quit_decision`, moved from the client) and acts,
+under `Agents::seating` (the lock every bind, seat and retire takes):
+it leaves the agent to its other clients, retires it (its schedules
+deleted with it, as P6 made `rkat/retire` do; `Agents::retire_seated`
+does the retire under the held lock), stops the daemon with every agent
+retired, or answers what to ask (the schedules named, as before). A
+client that leaves stops counting at once (`Lifecycle::leave` and
+`Agents::left`, through the connection's `Caller::leaving` token, so its
+seat's and binding's ends count nothing again), so a `/quit` decided
+right after it sees it gone. The UI's `QuitDecision` now says what the
+daemon did; only `Ask` is followed by a departure (`rkat/detach` or
+`rkat/shutdown`); `Departure::Retire` is gone. A quit whose answer never
+came (the connection dropped) is taken as a stop only when the daemon's
+endpoint file says it ended, as the shutdown was before.
+
+Tests: `tests/attach_lifecycle.rs::two_clients_quitting_at_once_get_one_decision_for_their_agent`
+(exactly one of the two leaves; before, both did), the quit tests there
+(`quit_stops_the_daemon_this_client_started`,
+`quitting_one_of_two_agents_retires_it_and_the_last_quit_stops_the_daemon`,
+`the_quit_decision_follows_the_rules` against the daemon's function),
+`tests/schedules.rs` (a quit retires the agent and deletes its schedule),
+`daemon::local::tests::quitting_names_the_agents_schedules`,
+`ui::tests::dispatch::an_attached_quit_asks_the_runner_and_follows_its_decision`.

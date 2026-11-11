@@ -18,8 +18,8 @@ use std::time::Duration;
 use common::{ScriptedLlmClient, Step, TIMEOUT, Workspace, args_for};
 use rig::{Client, Running};
 use rkat_tui::client::remote;
-use rkat_tui::client::runner::quit_decision;
 use rkat_tui::client::transport::Connection;
+use rkat_tui::daemon::lifecycle::{QuitPlan, quit_decision};
 use rkat_tui::daemon::protocol::{self, AgentChoice, AgentRow, Status};
 use rkat_tui::ui::{Departure, Effect, Msg, QuitDecision};
 use serde_json::json;
@@ -217,11 +217,8 @@ async fn quit_stops_the_daemon_this_client_started() {
     let file = daemon.endpoint_file.clone();
     let mut client = Client::attach_with(&ws.root, Some(START)).await;
     assert_eq!(decide(&mut client).await, QuitDecision::Terminate);
-    client.send(Effect::Leave(Departure::Terminate));
     client
-        .wait_for(
-            |m| matches!(m, Msg::Notice { text, .. } if text.starts_with("stopped the daemon")),
-        )
+        .saw(|m| matches!(m, Msg::Notice { text, .. } if text.starts_with("stopped the daemon")))
         .await;
     client.quit().await;
     daemon.ended().await;
@@ -277,6 +274,52 @@ async fn quit_with_another_client_on_the_agent_leaves_it_to_that_client() {
     daemon.ended().await;
 }
 
+/// Two clients of one agent quit at once: the daemon decides one `/quit`
+/// at a time and the first to leave stops counting, so exactly one of them
+/// leaves the agent to the other and the other decides the agent's fate
+/// (the owner, as the last client, stops the daemon; the other is asked).
+/// Decided on a stale status read, both would have left it to each other.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_clients_quitting_at_once_get_one_decision_for_their_agent() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let daemon = owned_daemon(&ws, &llm).await;
+    let mut owner = Client::attach_with(&ws.root, Some(START)).await;
+    let mut other = Client::attach(&ws.root).await;
+    assert_eq!(owner.agent().await, other.agent().await);
+    owner.send(Effect::DecideQuit);
+    other.send(Effect::DecideQuit);
+    let (owner_quit, other_quit) = tokio::join!(
+        async {
+            let msg = owner.wait_for(|m| decided(m).is_some()).await;
+            decided(&msg).cloned().unwrap()
+        },
+        async {
+            let msg = other.wait_for(|m| decided(m).is_some()).await;
+            decided(&msg).cloned().unwrap()
+        },
+    );
+    let left = [&owner_quit, &other_quit]
+        .into_iter()
+        .filter(|quit| **quit == QuitDecision::Leave)
+        .count();
+    assert_eq!(left, 1, "{owner_quit:?} {other_quit:?}");
+    match (&owner_quit, &other_quit) {
+        (QuitDecision::Terminate, QuitDecision::Leave) => {
+            leave(owner, None).await;
+            leave(other, None).await;
+            daemon.ended().await;
+        }
+        (QuitDecision::Leave, QuitDecision::Ask { reason, .. }) => {
+            assert!(reason.contains("did not start"), "{reason}");
+            leave(owner, None).await;
+            leave(other, Some(Departure::Terminate)).await;
+            daemon.ended().await;
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
 /// Two clients on two agents: one quits, which retires its agent (gone
 /// from `rkat/status`, its conversation still listed and seated again on
 /// demand); the other agent still works; the last client's quit follows
@@ -300,8 +343,7 @@ async fn quitting_one_of_two_agents_retires_it_and_the_last_quit_stops_the_daemo
     let b_session = daemon.session_of(&b_name).await;
     // B quits: other clients (A) are attached, so B's agent retires.
     assert_eq!(decide(&mut b).await, QuitDecision::Retire);
-    b.send(Effect::Leave(Departure::Retire));
-    b.wait_for(|m| matches!(m, Msg::Notice { text, .. } if text.contains("retired")))
+    b.saw(|m| matches!(m, Msg::Notice { text, .. } if text.contains("retired")))
         .await;
     b.quit().await;
     let watcher = attach(&daemon, None, true).await;
@@ -330,7 +372,7 @@ async fn quitting_one_of_two_agents_retires_it_and_the_last_quit_stops_the_daemo
     assert_eq!(a.turn_finished().await.result.unwrap().text, "still here");
     // The last client, the owner, nobody detached: /quit stops the daemon.
     assert_eq!(decide(&mut a).await, QuitDecision::Terminate);
-    leave(a, Some(Departure::Terminate)).await;
+    leave(a, None).await;
     daemon.ended().await;
 }
 
@@ -469,49 +511,47 @@ fn the_quit_decision_follows_the_rules() {
     };
     let mine = [("main-aaaa", 1)];
     assert_eq!(
-        quit_decision(Some(&status(1, false, true, false, &mine))),
-        QuitDecision::Terminate
+        quit_decision(&status(1, false, true, false, &mine)),
+        QuitPlan::Terminate
     );
     // Another client on this agent: leave it to that client.
     assert_eq!(
-        quit_decision(Some(&status(2, false, true, false, &[("main-aaaa", 2)]))),
-        QuitDecision::Leave
+        quit_decision(&status(2, false, true, false, &[("main-aaaa", 2)])),
+        QuitPlan::Leave
     );
     // Other clients on another agent: this agent retires, the daemon stays.
     assert_eq!(
-        quit_decision(Some(&status(
+        quit_decision(&status(
             2,
             false,
             true,
             false,
             &[("main-aaaa", 1), ("main-bbbb", 1)]
-        ))),
-        QuitDecision::Retire
+        )),
+        QuitPlan::Retire
     );
     assert_eq!(
-        quit_decision(Some(&status(1, true, true, true, &mine))),
-        QuitDecision::Ask {
+        quit_decision(&status(1, true, true, true, &mine)),
+        QuitPlan::Ask {
             reason: "an agent runs here without a client (detached earlier)".into(),
             running: true
         }
     );
     // The last client, with another agent left running without one: ask.
     assert!(matches!(
-        quit_decision(Some(&status(
+        quit_decision(&status(
             1,
             false,
             true,
             false,
             &[("main-aaaa", 1), ("main-bbbb", 0)]
-        ))),
-        QuitDecision::Ask { .. }
+        )),
+        QuitPlan::Ask { .. }
     ));
     assert!(matches!(
-        quit_decision(Some(&status(1, false, false, false, &mine))),
-        QuitDecision::Ask { .. }
+        quit_decision(&status(1, false, false, false, &mine)),
+        QuitPlan::Ask { .. }
     ));
-    // The daemon could not say (the status failed, or it lost the owner).
-    assert!(matches!(quit_decision(None), QuitDecision::Ask { .. }));
 }
 
 // `--list`.

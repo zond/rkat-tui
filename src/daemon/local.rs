@@ -60,6 +60,25 @@ use super::protocol::{
     StartupNotice, Status, Switched, Tasks, TrustOp, TrustedFile, Usage, engine, method,
 };
 
+/// `reason` for asking at `/quit`, with what detaching or terminating does
+/// to the caller's agent's schedules, when it has any.
+fn with_schedules(reason: String, status: &Status) -> String {
+    let count = status
+        .agent
+        .as_ref()
+        .and_then(|agent| status.agents.iter().find(|row| &row.name == agent))
+        .map_or(0, |row| row.schedules);
+    if count == 0 {
+        return reason;
+    }
+    format!(
+        "{reason}\nThis agent has {count} schedule{}: detaching keeps {} firing; terminating deletes {}.",
+        if count == 1 { "" } else { "s" },
+        if count == 1 { "it" } else { "them" },
+        if count == 1 { "it" } else { "them" },
+    )
+}
+
 /// The idempotency source of the daemon's system-context notes.
 const SYSTEM_CONTEXT_SOURCE: &str = "rkat-tui";
 
@@ -368,7 +387,8 @@ impl Local {
                 }
                 Ok(Empty {})
             };
-            method::Retire, Empty {} => self.retire(&self.agent_of(&caller)?).await;
+            method::Retire, Empty {} => self.retire(&self.agent_of(&caller)?, None).await;
+            method::Quit, Empty {} => self.quit(&caller).await;
             method::Schedules, Empty {} => {
                 let agent = self.agent_of(&caller)?;
                 Ok(protocol::ScheduleList {
@@ -586,7 +606,11 @@ impl Local {
     /// ([`Agents::retire`]): its helpers stop, the engine archives its
     /// session, which stays in the conversation list and can be seated
     /// again.
-    async fn retire(&self, agent: &str) -> Result<Retired, Refusal> {
+    async fn retire(
+        &self,
+        agent: &str,
+        seated: Option<&super::agents::Seated<'_>>,
+    ) -> Result<Retired, Refusal> {
         let session = self.conversations.current(agent);
         if let Some(session) = &session {
             self.engine.stop(session);
@@ -595,11 +619,11 @@ impl Local {
         // Nothing wakes a retired agent: its schedules go first, so none
         // fires between the retire and their deletion.
         let schedules_deleted = self.agents.schedules().delete_all(agent).await;
-        let retired = self
-            .agents
-            .retire(agent)
-            .await
-            .map_err(|err| Refusal::new(SWITCH_FAILED, err.to_string()))?;
+        let retired = match seated {
+            Some(seated) => self.agents.retire_seated(agent, seated).await,
+            None => self.agents.retire(agent).await,
+        }
+        .map_err(|err| Refusal::new(SWITCH_FAILED, err.to_string()))?;
         if !schedules_deleted.is_empty() {
             self.audit(
                 super::audit::Line::event("schedules_deleted", schedules_deleted.join(", "))
@@ -623,11 +647,58 @@ impl Local {
         })
     }
 
+    /// `rkat/quit` for `caller` ([`super::lifecycle::quit_decision`]),
+    /// decided and done under the seating lock: no client binds, and no
+    /// other `/quit` is decided, between the two. A client that leaves
+    /// stops counting at once ([`Lifecycle::leave`]), so a second `/quit`
+    /// decided right after sees it gone.
+    async fn quit(&self, caller: &Caller) -> Result<protocol::QuitOutcome, Refusal> {
+        use super::lifecycle::QuitPlan;
+        use protocol::QuitOutcome;
+        let Some(agent) = caller.agent.clone() else {
+            return Err(Refusal::new(
+                protocol::NO_AGENT,
+                "this connection works with no agent: there is nothing to quit",
+            ));
+        };
+        let seated = self.agents.seating().await;
+        let status = self.status(caller).await;
+        Ok(match super::lifecycle::quit_decision(&status) {
+            QuitPlan::Leave => {
+                let others = status
+                    .agents
+                    .iter()
+                    .find(|row| row.name == agent)
+                    .map_or(status.clients, |row| row.clients)
+                    .saturating_sub(1);
+                self.lifecycle.leave(caller);
+                self.agents.left(&agent);
+                tracing::info!(%agent, others, "a client quit: the agent stays for its other clients");
+                QuitOutcome::Left { others }
+            }
+            QuitPlan::Retire => {
+                let retired = self.retire(&agent, Some(&seated)).await?;
+                self.lifecycle.leave(caller);
+                QuitOutcome::Retired { retired }
+            }
+            QuitPlan::Terminate => {
+                self.lifecycle.leave(caller);
+                tracing::info!(%agent, "the owner quit as the last client: shutting down");
+                self.lifecycle.shutdown_retiring();
+                QuitOutcome::Terminated
+            }
+            QuitPlan::Ask { reason, running } => QuitOutcome::Ask {
+                reason: with_schedules(reason, &status),
+                running,
+            },
+        })
+    }
+
     /// Retire every agent ([`Self::retire`]; the daemon is shutting down
     /// with `rkat/shutdown {"retire": true}`). A refusal is logged.
     pub async fn retire_all(&self) {
         for agent in self.agents.names() {
-            if let Err(refusal) = self.retire(&agent).await {
+            if let Err(refusal) = self.retire(&agent, None).await {
                 tracing::warn!(%agent, error = %refusal.message, "the agent did not retire");
             }
         }
@@ -1140,6 +1211,36 @@ fn content_text(content: &Value) -> Option<String> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quitting_names_the_agents_schedules() {
+        let status = |schedules| Status {
+            workspace: "/w".into(),
+            host: None,
+            pid: 1,
+            started_at: String::new(),
+            clients: 1,
+            detached: false,
+            owner: true,
+            session_id: None,
+            running: false,
+            agent: Some("main-ab12".into()),
+            agents: vec![protocol::AgentRow {
+                name: "main-ab12".into(),
+                session_id: None,
+                running: Some(false),
+                clients: 1,
+                detached: false,
+                schedules,
+            }],
+            shell: meerkat_tools::builtin::shell::ShellConfinement::TrustedHost,
+        };
+        assert_eq!(with_schedules("why".into(), &status(0)), "why");
+        assert_eq!(
+            with_schedules("why".into(), &status(2)),
+            "why\nThis agent has 2 schedules: detaching keeps them firing; terminating deletes them."
+        );
+    }
 
     #[test]
     fn content_text_reads_strings_and_text_blocks() {

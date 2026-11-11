@@ -285,7 +285,7 @@ async fn a_retiring_agent_s_schedules_are_deleted_and_never_fire() {
             if text.contains("wake-b  once at ") && text.contains("next 20") && text.contains("active  fired 0x"))
     })
     .await;
-    b.send(Effect::Leave(Departure::Retire));
+    b.send(Effect::DecideQuit);
     b.wait_for(|m| matches!(m, Msg::Notice { text, .. } if text.contains("its schedules were deleted: wake-b")))
         .await;
     b.quit().await;

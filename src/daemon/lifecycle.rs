@@ -37,6 +37,94 @@ pub struct Caller {
     /// The agent it works with (`None`: a probe, or a connection that
     /// asked for none).
     pub agent: Option<String>,
+    /// Whether its `/quit` was decided (it is leaving, and no longer
+    /// counted).
+    pub leaving: Leaving,
+}
+
+/// A connection whose `rkat/quit` the daemon decided: it is no longer
+/// counted as a client, nor as its agent's (another client's `/quit`
+/// decided after it sees it gone), and its end releases nothing again.
+#[derive(Debug, Clone, Default)]
+pub struct Leaving(Arc<AtomicBool>);
+
+impl Leaving {
+    /// Mark it left; `true` the first time.
+    fn mark(&self) -> bool {
+        !self.0.swap(true, Ordering::SeqCst)
+    }
+
+    /// Whether it left.
+    #[must_use]
+    pub fn left(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+impl PartialEq for Leaving {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for Leaving {}
+
+/// How a client's `/quit` leaves, from the daemon's state as `status`
+/// gives it ([`super::local`]'s `rkat/quit` decides it under the seating
+/// lock and does it): with other clients on this agent, leave it to them;
+/// with other clients on other agents, retire this one (the daemon stays
+/// for them); as the last client, stop the daemon when this client started
+/// it and no agent was left running without a client, else ask.
+#[must_use]
+pub fn quit_decision(status: &super::protocol::Status) -> QuitPlan {
+    let mine = status
+        .agent
+        .as_ref()
+        .and_then(|agent| status.agents.iter().find(|row| &row.name == agent));
+    if mine.is_some_and(|row| row.clients > 1) {
+        return QuitPlan::Leave;
+    }
+    if status.clients > 1 {
+        return if mine.is_some() {
+            QuitPlan::Retire
+        } else {
+            QuitPlan::Leave
+        };
+    }
+    let others = status
+        .agents
+        .iter()
+        .filter(|row| Some(&row.name) != status.agent.as_ref())
+        .count();
+    let reason = if status.detached || others > 0 {
+        "an agent runs here without a client (detached earlier)"
+    } else if status.owner {
+        return QuitPlan::Terminate;
+    } else {
+        "this rkat-tui did not start it"
+    };
+    QuitPlan::Ask {
+        reason: reason.to_string(),
+        running: status.running,
+    }
+}
+
+/// [`quit_decision`]'s answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuitPlan {
+    /// Stop the daemon, every agent retired.
+    Terminate,
+    /// Other clients work with this agent: just leave.
+    Leave,
+    /// Other clients work with other agents: this agent retires.
+    Retire,
+    /// Ask the user: detach or terminate.
+    Ask {
+        /// Why the daemon is not just stopped.
+        reason: String,
+        /// The agent's turn runs (terminating interrupts it).
+        running: bool,
+    },
 }
 
 /// The daemon's lifecycle state.
@@ -121,7 +209,11 @@ impl Lifecycle {
         }
         Seat {
             lifecycle: Arc::clone(self),
-            caller: Caller { owner, agent: None },
+            caller: Caller {
+                owner,
+                agent: None,
+                leaving: Leaving::default(),
+            },
             counted,
             binding: None,
         }
@@ -131,6 +223,14 @@ impl Lifecycle {
     #[must_use]
     pub fn clients(&self) -> usize {
         self.clients.load(Ordering::SeqCst)
+    }
+
+    /// `caller`'s `/quit` was decided: it is not counted from now on
+    /// (once; its seat's end then counts nothing).
+    pub fn leave(&self, caller: &Caller) {
+        if caller.leaving.mark() {
+            self.clients.fetch_sub(1, Ordering::SeqCst);
+        }
     }
 
     /// `rkat/shutdown {"retire": true}`: stop the daemon, every agent
@@ -192,8 +292,9 @@ impl Seat {
     }
 
     /// The connection works with the agent `binding` holds.
-    pub fn bind(&mut self, binding: super::agents::Binding) {
+    pub fn bind(&mut self, mut binding: super::agents::Binding) {
         self.caller.agent = Some(binding.name().to_string());
+        binding.leaving(self.caller.leaving.clone());
         self.binding = Some(binding);
     }
 
@@ -215,7 +316,7 @@ impl Seat {
 
 impl Drop for Seat {
     fn drop(&mut self) {
-        if self.counted {
+        if self.counted && !self.caller.leaving.left() {
             self.lifecycle.clients.fetch_sub(1, Ordering::SeqCst);
         }
     }

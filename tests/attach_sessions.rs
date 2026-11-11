@@ -462,7 +462,6 @@ async fn a_second_rkat_tui_starts_a_new_agent_and_c_joins_the_most_recent() {
 /// name) and the conversation goes on.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn resume_of_a_quit_agents_conversation_seats_it_again() {
-    use rkat_tui::ui::Departure;
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![Step::Text("one"), Step::Text("two")]);
     let daemon = Running::start(&ws.root, &llm).await;
@@ -474,7 +473,7 @@ async fn resume_of_a_quit_agents_conversation_seats_it_again() {
     quitter.send(Effect::StartTurn("remember the first".into()));
     assert_eq!(quitter.turn_finished().await.result.unwrap().text, "one");
     let session = daemon.session_of(&name).await;
-    quitter.send(Effect::Leave(Departure::Retire));
+    quitter.send(Effect::DecideQuit);
     quitter
         .wait_for(|m| matches!(m, Msg::Notice { text, .. } if text.contains("retired")))
         .await;

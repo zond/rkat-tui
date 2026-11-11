@@ -3143,48 +3143,107 @@ impl AttachRunner {
         Ok(pid)
     }
 
-    /// `/quit`: how to leave, from the daemon's `rkat/status`
-    /// ([`quit_decision`]); answered with [`Msg::QuitDecided`].
+    /// `/quit`: the daemon decides how this client leaves and does it
+    /// (`rkat/quit`); answered with [`Msg::QuitDecided`]. What it did is
+    /// said now and again on the terminal; when it asks, the UI's dialog
+    /// answers with [`Effect::Leave`].
     async fn decide_quit(&mut self) {
         // The daemon is gone already (`/daemon stop`): just leave.
-        let status = match (self.stopping, self.connection()) {
-            (false, Some(connection)) => bounded(
-                LEAVE_TIMEOUT,
-                remote::call::<protocol::method::Status>(&connection, &protocol::Empty {}),
-            )
-            .await
-            .map_err(|err| tracing::info!(error = %err, "the daemon's status is unknown at quit"))
-            .ok(),
-            _ => None,
-        };
-        let decision = if self.stopping {
-            QuitDecision::Leave
-        } else {
-            match quit_decision(status.as_ref()) {
-                QuitDecision::Ask { reason, running } => QuitDecision::Ask {
-                    reason: with_schedules(reason, status.as_ref()),
-                    running,
-                },
-                other => other,
+        let connection = match (self.stopping, self.connection()) {
+            (true, _) => {
+                self.send(Msg::QuitDecided(QuitDecision::Leave));
+                return;
             }
+            (false, None) => {
+                self.send(Msg::QuitDecided(QuitDecision::Ask {
+                    reason: "this rkat-tui is not attached to it, so it could not say".to_string(),
+                    running: false,
+                }));
+                return;
+            }
+            (false, Some(connection)) => connection,
         };
-        if let (QuitDecision::Leave, Some(status)) = (&decision, &status) {
-            let others = status
-                .agent
-                .as_ref()
-                .and_then(|agent| status.agents.iter().find(|row| &row.name == agent))
-                .map_or(status.clients, |row| row.clients)
-                .saturating_sub(1);
-            self.farewell(
-                NoticeLevel::Info,
-                format!(
-                    "{others} other client{} attached to this agent: left; the agent and the daemon (pid {}) keep running for {}",
-                    if others == 1 { " is" } else { "s are" },
-                    status.pid,
-                    if others == 1 { "it" } else { "them" },
-                ),
-            );
-        }
+        let endpoint = self.link.as_ref().map(|link| link.endpoint.clone());
+        let pid = endpoint.as_ref().map_or(0, |endpoint| endpoint.pid);
+        let agent = connection.agent().to_string();
+        let decided = bounded(
+            CALL_TIMEOUT,
+            remote::call::<protocol::method::Quit>(&connection, &protocol::Empty {}),
+        )
+        .await;
+        let decision = match decided {
+            Ok(protocol::QuitOutcome::Left { others }) => {
+                self.farewell(
+                    NoticeLevel::Info,
+                    format!(
+                        "{others} other client{} attached to this agent: left; the agent and the daemon (pid {pid}) keep running for {}",
+                        if others == 1 { " is" } else { "s are" },
+                        if others == 1 { "it" } else { "them" },
+                    ),
+                );
+                QuitDecision::Leave
+            }
+            Ok(protocol::QuitOutcome::Retired { retired }) => {
+                let schedules = if retired.schedules_deleted.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "; its schedules were deleted: {}",
+                        retired.schedules_deleted.join(", ")
+                    )
+                };
+                self.farewell(
+                    NoticeLevel::Info,
+                    format!(
+                        "agent {agent} retired; its conversation stays (rkat-tui --resume lists it){schedules}; the daemon (pid {pid}) keeps running for the other clients"
+                    ),
+                );
+                QuitDecision::Retire
+            }
+            Ok(protocol::QuitOutcome::Terminated) => {
+                self.stopping = true;
+                self.farewell(
+                    NoticeLevel::Info,
+                    format!(
+                        "stopped the daemon (pid {pid}); its agents retired, their conversations stay"
+                    ),
+                );
+                QuitDecision::Terminate
+            }
+            Ok(protocol::QuitOutcome::Ask { reason, running }) => {
+                QuitDecision::Ask { reason, running }
+            }
+            // The connection dropped before the answer: a stop the daemon
+            // decided ends it, and only its endpoint file going proves that.
+            Err(err @ (CallFailure::TimedOut | CallFailure::Failed(ClientError::Disconnected))) => {
+                let ended = match &endpoint {
+                    Some(endpoint) => {
+                        daemon_ended(
+                            &self.config.endpoint_files,
+                            endpoint,
+                            self.config.address.is_none(),
+                            STOP_VERIFY,
+                        )
+                        .await
+                    }
+                    None => false,
+                };
+                if ended {
+                    self.stopping = true;
+                    self.farewell(NoticeLevel::Info, format!("stopped the daemon (pid {pid})"));
+                    QuitDecision::Terminate
+                } else {
+                    QuitDecision::Ask {
+                        reason: format!("it did not say how to leave ({err})"),
+                        running: false,
+                    }
+                }
+            }
+            Err(err) => QuitDecision::Ask {
+                reason: format!("it did not say how to leave ({err})"),
+                running: false,
+            },
+        };
         self.send(Msg::QuitDecided(decision));
     }
 
@@ -3208,14 +3267,7 @@ impl AttachRunner {
                 remote::call::<protocol::method::Detach>(&connection, &empty),
             )
             .await
-            .map(|_| None),
-            // Retiring interrupts a running turn and stops its helpers.
-            Departure::Retire => bounded(
-                CALL_TIMEOUT,
-                remote::call::<protocol::method::Retire>(&connection, &empty),
-            )
-            .await
-            .map(Some),
+            .map(drop),
             Departure::Terminate => bounded(
                 LEAVE_TIMEOUT,
                 remote::call::<protocol::method::Shutdown>(
@@ -3224,33 +3276,11 @@ impl AttachRunner {
                 ),
             )
             .await
-            .map(|_| None),
+            .map(drop),
         };
         let agent = connection.agent().to_string();
         match (departure, answered) {
-            (Departure::Retire, Ok(answer)) => {
-                let deleted = answer
-                    .map(|retired| retired.schedules_deleted)
-                    .unwrap_or_default();
-                let schedules = if deleted.is_empty() {
-                    String::new()
-                } else {
-                    format!("; its schedules were deleted: {}", deleted.join(", "))
-                };
-                self.farewell(
-                    NoticeLevel::Info,
-                    format!(
-                        "agent {agent} retired; its conversation stays (rkat-tui --resume lists it){schedules}; the daemon (pid {pid}) keeps running for the other clients"
-                    ),
-                );
-            }
-            (Departure::Retire, Err(err)) => self.farewell(
-                NoticeLevel::Warn,
-                format!(
-                    "agent {agent} may still be running: the daemon (pid {pid}) did not confirm its retirement ({err}); rkat-tui --list shows it"
-                ),
-            ),
-            (Departure::Detach, Ok(_)) => self.farewell(
+            (Departure::Detach, Ok(())) => self.farewell(
                 NoticeLevel::Info,
                 format!("detached: agent {agent} keeps running in the daemon (pid {pid}); rkat-tui -c reattaches"),
             ),
@@ -3258,7 +3288,7 @@ impl AttachRunner {
                 NoticeLevel::Warn,
                 format!("detached; the daemon (pid {pid}) was not told ({err}) and keeps running"),
             ),
-            (Departure::Terminate, Ok(_)) => {
+            (Departure::Terminate, Ok(())) => {
                 self.stopping = true;
                 self.farewell(
                     NoticeLevel::Info,
@@ -3513,52 +3543,6 @@ pub fn classify(err: &std::io::Error) -> Probe {
             Probe::Refused
         }
         _ => Probe::Unknown,
-    }
-}
-
-/// How an attached `/quit` leaves, from the daemon's status (`None`: it
-/// could not say). With several agents: when other clients work with this
-/// client's agent, leave it to them; when other clients are attached to
-/// other agents, retire this one (the daemon stays for them); as the last
-/// client, stop the daemon when this client started it and no agent was
-/// left running without a client, else ask.
-#[must_use]
-pub fn quit_decision(status: Option<&protocol::Status>) -> QuitDecision {
-    let Some(status) = status else {
-        return QuitDecision::Ask {
-            reason: "it could not say who started it".to_string(),
-            running: false,
-        };
-    };
-    let mine = status
-        .agent
-        .as_ref()
-        .and_then(|agent| status.agents.iter().find(|row| &row.name == agent));
-    if mine.is_some_and(|row| row.clients > 1) {
-        return QuitDecision::Leave;
-    }
-    if status.clients > 1 {
-        return if mine.is_some() {
-            QuitDecision::Retire
-        } else {
-            QuitDecision::Leave
-        };
-    }
-    let others = status
-        .agents
-        .iter()
-        .filter(|row| Some(&row.name) != status.agent.as_ref())
-        .count();
-    let reason = if status.detached || others > 0 {
-        "an agent runs here without a client (detached earlier)"
-    } else if status.owner {
-        return QuitDecision::Terminate;
-    } else {
-        "this rkat-tui did not start it"
-    };
-    QuitDecision::Ask {
-        reason: reason.to_string(),
-        running: status.running,
     }
 }
 
@@ -4046,26 +4030,6 @@ async fn sleep_until(deadline: Option<Instant>) {
     }
 }
 
-/// The `/quit` dialog's `reason`, plus what terminating does to this
-/// agent's schedules (detaching keeps them firing).
-fn with_schedules(reason: String, status: Option<&protocol::Status>) -> String {
-    let count = status
-        .and_then(|status| {
-            let agent = status.agent.as_ref()?;
-            status.agents.iter().find(|row| &row.name == agent)
-        })
-        .map_or(0, |row| row.schedules);
-    if count == 0 {
-        return reason;
-    }
-    format!(
-        "{reason}\nThis agent has {count} schedule{}: detaching keeps {} firing; terminating deletes {}.",
-        if count == 1 { "" } else { "s" },
-        if count == 1 { "it" } else { "them" },
-        if count == 1 { "it" } else { "them" },
-    )
-}
-
 /// `/schedules`' text: a line per schedule.
 fn schedules_text(rows: &[protocol::ScheduleRow], prices: &crate::pricing::PriceTable) -> String {
     let mut text = format!(
@@ -4106,33 +4070,7 @@ mod tests {
     /// The `/quit` dialog says what terminating does to the agent's
     /// schedules; `/schedules` prices each schedule's runs.
     #[test]
-    fn quitting_and_listing_name_the_schedules() {
-        let status = |schedules| protocol::Status {
-            workspace: "/w".into(),
-            host: None,
-            pid: 1,
-            started_at: String::new(),
-            clients: 1,
-            detached: false,
-            owner: true,
-            session_id: None,
-            running: false,
-            agent: Some("main-ab12".into()),
-            agents: vec![protocol::AgentRow {
-                name: "main-ab12".into(),
-                session_id: None,
-                running: Some(false),
-                clients: 1,
-                detached: false,
-                schedules,
-            }],
-            shell: meerkat_tools::builtin::shell::ShellConfinement::TrustedHost,
-        };
-        assert_eq!(with_schedules("why".into(), Some(&status(0))), "why");
-        assert_eq!(
-            with_schedules("why".into(), Some(&status(2))),
-            "why\nThis agent has 2 schedules: detaching keeps them firing; terminating deletes them."
-        );
+    fn listing_names_the_schedules() {
         let row = protocol::ScheduleRow {
             id: "id".into(),
             name: "nightly".into(),

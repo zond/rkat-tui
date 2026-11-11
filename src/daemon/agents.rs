@@ -887,6 +887,7 @@ impl Agents {
                 name: bound.name.clone(),
                 fresh,
                 withdrawn: false,
+                leaving: None,
             },
             bound,
         ))
@@ -1059,7 +1060,28 @@ impl Agents {
     ///
     /// [`SwitchError`] when the engine refuses the retire.
     pub async fn retire(&self, name: &str) -> Result<Option<SessionId>, SwitchError> {
-        let _one = self.seating.lock().await;
+        let seated = self.seating().await;
+        self.retire_seated(name, &seated).await
+    }
+
+    /// The seating lock: no agent is seated, bound or retired while it is
+    /// held (`rkat/quit` decides and acts under it).
+    pub async fn seating(&self) -> Seated<'_> {
+        Seated {
+            _held: self.seating.lock().await,
+        }
+    }
+
+    /// [`Self::retire`] under the seating lock `_seated` holds.
+    ///
+    /// # Errors
+    ///
+    /// [`SwitchError`] when the engine refuses the retire.
+    pub async fn retire_seated(
+        &self,
+        name: &str,
+        _seated: &Seated<'_>,
+    ) -> Result<Option<SessionId>, SwitchError> {
         let mob = MobId::from(MOB_ID);
         let identity = AgentIdentity::from(name);
         if self.conversations.running(name).await != RunState::Idle
@@ -1131,6 +1153,12 @@ impl Agents {
         }
     }
 
+    /// A client of `name` left by its `/quit` while other clients work with
+    /// it: one client fewer, now.
+    pub fn left(&self, name: &str) {
+        self.release(name, false, false);
+    }
+
     /// `rkat/detach`: the agent `name` keeps running without its client.
     pub fn detach(&self, name: &str) {
         if let Some(agent) = self.table.lock().get_mut(name) {
@@ -1146,6 +1174,11 @@ impl Agents {
             }
         }
     }
+}
+
+/// The seating lock held ([`Agents::seating`]).
+pub struct Seated<'a> {
+    _held: tokio::sync::MutexGuard<'a, ()>,
 }
 
 /// [`crate::approval::Attendance`] over the live agents: the daemon's gate
@@ -1194,6 +1227,8 @@ pub struct Binding {
     /// The agent was seated, or taken as the spare, for this binding.
     fresh: bool,
     withdrawn: bool,
+    /// The connection's `/quit` decision, which released it already.
+    leaving: Option<super::lifecycle::Leaving>,
 }
 
 impl Binding {
@@ -1201,6 +1236,12 @@ impl Binding {
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// The connection's `/quit` decision (`leaving`) releases the binding
+    /// when it is made ([`Agents::left`]); its end then releases nothing.
+    pub fn leaving(&mut self, leaving: super::lifecycle::Leaving) {
+        self.leaving = Some(leaving);
     }
 
     /// Give the binding up before the client learned it attached: the
@@ -1212,6 +1253,13 @@ impl Binding {
 
 impl Drop for Binding {
     fn drop(&mut self) {
+        if self
+            .leaving
+            .as_ref()
+            .is_some_and(super::lifecycle::Leaving::left)
+        {
+            return;
+        }
         self.agents.release(&self.name, self.withdrawn, self.fresh);
     }
 }

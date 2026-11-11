@@ -171,6 +171,12 @@ methods! {
     /// interrupted first, its helpers stop, its schedules are deleted); its
     /// conversation stays for `/resume`, and nothing can wake it.
     Retire = "rkat/retire" (Empty) -> Retired;
+    /// `/quit`: the daemon decides how the caller leaves and does it, under
+    /// the seating lock, so no client binds or quits between the decision
+    /// and the act (`super::lifecycle::quit_decision`): it leaves the agent
+    /// to its other clients, retires it, stops the daemon, or answers what
+    /// to ask the user (then `rkat/detach` or `rkat/shutdown` follows).
+    Quit = "rkat/quit" (Empty) -> QuitOutcome;
 }
 
 /// [`method::Status`]'s result.
@@ -571,6 +577,34 @@ pub struct Retired {
     /// The schedules deleted with it (by name).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub schedules_deleted: Vec<String>,
+}
+
+/// What [`method::Quit`] did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum QuitOutcome {
+    /// Other clients work with the caller's agent: the caller left, the
+    /// agent stays for them.
+    Left {
+        /// How many other clients the agent has.
+        others: usize,
+    },
+    /// Other clients work with other agents: the caller's agent retired,
+    /// the daemon stays for them.
+    Retired {
+        /// What retired.
+        retired: Retired,
+    },
+    /// The caller started the daemon, was its last client and no agent was
+    /// left running without one: the daemon stops, every agent retired.
+    Terminated,
+    /// Nothing was done: ask the user whether to detach or terminate.
+    Ask {
+        /// Why the daemon is not just stopped.
+        reason: String,
+        /// The agent's turn runs (terminating interrupts it).
+        running: bool,
+    },
 }
 
 /// A user's action on one schedule (`/schedules pause|resume|delete`).

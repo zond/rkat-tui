@@ -593,9 +593,10 @@ impl App {
             return;
         }
         match decision {
-            QuitDecision::Terminate => self.leave(Some(Departure::Terminate), fx),
-            QuitDecision::Leave => self.leave(None, fx),
-            QuitDecision::Retire => self.leave(Some(Departure::Retire), fx),
+            // The daemon did it already (`rkat/quit`): just leave.
+            QuitDecision::Terminate | QuitDecision::Leave | QuitDecision::Retire => {
+                self.leave(None, fx);
+            }
             QuitDecision::Ask { reason, running } => {
                 if matches!(self.modal, Some(Modal::Escalation { .. })) {
                     self.transcript.push_notice(

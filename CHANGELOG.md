@@ -439,6 +439,12 @@ design.
 
 ### Fixed
 
+- `/quit` is decided by the daemon, which acts on it at once: two
+  clients of one agent quitting together no longer both leave it to the
+  other (one leaves, the other decides; the owner then stops the
+  daemon), and a client binding to the agent while another quits is not
+  retired out from under its user.
+
 - Destroying a mob a client follows (the agent's `delegate` mobs, its
   councils) removes its database: the client's open stream on the mob
   kept it open ("the observer drain refused: 5 owner handle(s)"), so the

@@ -571,7 +571,8 @@ fn an_attached_quit_asks_the_runner_and_follows_its_decision() {
     assert_eq!(submit(&mut app, "/quit"), vec![Effect::DecideQuit]);
     assert_eq!(
         app.update(Msg::QuitDecided(QuitDecision::Terminate)),
-        vec![Effect::Leave(Departure::Terminate), Effect::Quit]
+        // The daemon stopped itself (`rkat/quit`): nothing left to say.
+        vec![Effect::Quit]
     );
     // Other clients attached: just leave.
     let mut app = attached_app();
@@ -650,7 +651,7 @@ fn unsent_messages_are_saved_whichever_way_an_attached_quit_leaves() {
     assert_eq!(submit(&mut app, "/quit"), vec![Effect::DecideQuit]);
     let effects = app.update(Msg::QuitDecided(QuitDecision::Terminate));
     assert!(
-        matches!(effects.as_slice(), [Effect::SaveUnsent(held), Effect::Leave(Departure::Terminate), Effect::Quit] if held.len() == 1),
+        matches!(effects.as_slice(), [Effect::SaveUnsent(held), Effect::Quit] if held.len() == 1),
         "{effects:?}"
     );
 }

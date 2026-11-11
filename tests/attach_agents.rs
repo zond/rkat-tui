@@ -471,7 +471,7 @@ async fn a_turn_the_user_started_is_reviewed_after_its_client_detaches() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_quit_agent_is_announced_and_takes_no_more_messages() {
     use rkat_tui::daemon::protocol::AgentChoice;
-    use rkat_tui::ui::{Departure, Effect, Msg};
+    use rkat_tui::ui::{Effect, Msg};
     let ws = Workspace::new();
     let b_name = Arc::new(parking_lot::Mutex::new(String::new()));
     let send = {
@@ -503,7 +503,7 @@ async fn a_quit_agent_is_announced_and_takes_no_more_messages() {
     let name = b_name.lock().clone();
     a.send(Effect::StartTurn("who is here".into()));
     assert_eq!(a.turn_finished().await.result.unwrap().text, "listed");
-    b.send(Effect::Leave(Departure::Retire));
+    b.send(Effect::DecideQuit);
     b.wait_for(|m| matches!(m, Msg::Notice { text, .. } if text.contains("retired")))
         .await;
     b.quit().await;

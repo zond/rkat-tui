@@ -494,18 +494,19 @@ pub enum Msg {
     Tick,
 }
 
-/// How an attached `/quit` leaves ([`Msg::QuitDecided`]), decided by the
-/// runner from the daemon's `rkat/status`.
+/// How an attached `/quit` left ([`Msg::QuitDecided`]): what the daemon
+/// did (`rkat/quit` decides and does it), or that the user is asked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QuitDecision {
-    /// This client started the daemon, is the last one and no agent was
-    /// left running without a client: stop it (every agent retires).
+    /// This client started the daemon, was the last one and no agent was
+    /// left running without a client: the daemon stops (every agent
+    /// retires).
     Terminate,
-    /// Other clients work with this client's agent: leave, the agent stays
-    /// for them (the runner said so).
+    /// Other clients work with this client's agent: it left, the agent
+    /// stays for them (or the daemon was stopped already).
     Leave,
-    /// Other clients are attached to other agents: retire this client's
-    /// agent, the daemon stays for them.
+    /// Other clients are attached to other agents: this client's agent
+    /// retired, the daemon stays for them.
     Retire,
     /// Ask: detach or terminate.
     Ask {
@@ -521,9 +522,6 @@ pub enum QuitDecision {
 pub enum Departure {
     /// `/detach`: keep the agent running and record the detach.
     Detach,
-    /// `/quit`: the agent leaves the workspace (`rkat/retire`; a running
-    /// turn is interrupted), its conversation stays for `/resume`.
-    Retire,
     /// Stop the daemon and retire every agent (`rkat/shutdown`).
     Terminate,
 }
