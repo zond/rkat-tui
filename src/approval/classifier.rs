@@ -161,11 +161,38 @@ fn origin_url(config: &str) -> Option<String> {
         if let Some((key, value)) = line.split_once('=')
             && key.trim() == "url"
         {
-            let value = value.trim();
-            return (!value.is_empty()).then(|| value.to_string());
+            let value = remote_without_credentials(value.trim());
+            return (!value.is_empty()).then_some(value);
         }
     }
     None
+}
+
+/// A git remote URL as it may leave the process (to the classifier's
+/// provider, into a realm manifest): without user information
+/// (`https://user:token@host/x` → `https://host/x`, `git@host:x` →
+/// `host:x`), query or fragment, where a token could sit.
+pub(crate) fn remote_without_credentials(url: &str) -> String {
+    let url = url.split(['?', '#']).next().unwrap_or_default();
+    match url.split_once("://") {
+        Some((scheme, rest)) => {
+            let authority_end = rest.find('/').unwrap_or(rest.len());
+            match rest[..authority_end].rfind('@') {
+                Some(at) => format!("{scheme}://{}", &rest[at + 1..]),
+                None => url.to_string(),
+            }
+        }
+        // The scp-like form `[user@]host:path`: everything up to the last
+        // `@` before the first `/` goes (a path may hold `@`, the user
+        // part a `:`).
+        None => {
+            let head_end = url.find('/').unwrap_or(url.len());
+            match url[..head_end].rfind('@') {
+                Some(at) => url[at + 1..].to_string(),
+                None => url.to_string(),
+            }
+        }
+    }
 }
 
 /// Everything the classifier is given. Deliberately excludes assistant prose,
@@ -909,6 +936,37 @@ mod tests {
         ));
     }
 
+    /// What the classifier is told of the remote never carries the user
+    /// information, query or fragment a token could sit in.
+    #[test]
+    fn the_classifier_never_sees_remote_credentials() {
+        let dir = tempfile::tempdir().unwrap();
+        let git = dir.path().join(".git");
+        std::fs::create_dir_all(&git).unwrap();
+        for (url, sent) in [
+            ("https://user:token@host/x.git", "https://host/x.git"),
+            ("https://token@host:8443/x.git", "https://host:8443/x.git"),
+            ("ssh://git@host/me/x.git", "ssh://host/me/x.git"),
+            (
+                "https://host/x.git?private_token=secret#frag",
+                "https://host/x.git",
+            ),
+            ("me:secret@host:team/x.git", "host:team/x.git"),
+            ("git@host:me/x.git", "host:me/x.git"),
+            ("host:me/x@2.git", "host:me/x@2.git"),
+            ("/srv/git/x.git", "/srv/git/x.git"),
+        ] {
+            std::fs::write(
+                git.join("config"),
+                format!("[remote \"origin\"]\n\turl = {url}\n"),
+            )
+            .unwrap();
+            let facts = GitFacts::read(dir.path());
+            assert_eq!(facts.origin_url.as_deref(), Some(sent), "{url}");
+            assert!(!facts.origin_url.unwrap().contains("token"), "{url}");
+        }
+    }
+
     #[test]
     fn git_facts_from_metadata_files() {
         let dir = tempfile::tempdir().unwrap();
@@ -925,7 +983,7 @@ mod tests {
         )
         .unwrap();
         let facts = GitFacts::read(dir.path());
-        assert_eq!(facts.origin_url.as_deref(), Some("git@host:me/x.git"));
+        assert_eq!(facts.origin_url.as_deref(), Some("host:me/x.git"));
         assert_eq!(facts.default_branch.as_deref(), Some("main"));
 
         // A linked work tree points at its git dir, which points at the common dir.

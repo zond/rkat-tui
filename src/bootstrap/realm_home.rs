@@ -298,20 +298,12 @@ fn git_remote(workspace: &Path) -> Option<String> {
     None
 }
 
-/// `url` without user information (`https://user:token@host/…` →
-/// `https://host/…`) or control characters, cut to [`MAX_REMOTE`].
+/// `url` without credentials
+/// ([`remote_without_credentials`](crate::approval::classifier::remote_without_credentials))
+/// or control characters, cut to [`MAX_REMOTE`].
 fn clean_remote(url: &str) -> String {
-    let url = match url.split_once("://") {
-        Some((scheme, rest)) => {
-            let host_end = rest.find('/').unwrap_or(rest.len());
-            match rest[..host_end].rfind('@') {
-                Some(at) => format!("{scheme}://{}", &rest[at + 1..]),
-                None => url.to_string(),
-            }
-        }
-        None => url.to_string(),
-    };
-    url.chars()
+    crate::approval::classifier::remote_without_credentials(url)
+        .chars()
         .filter(|c| !c.is_control())
         .take(MAX_REMOTE)
         .collect()
@@ -1251,10 +1243,7 @@ mod tests {
             clean_remote("https://me:tok@github.com/a/b.git"),
             "https://github.com/a/b.git"
         );
-        assert_eq!(
-            clean_remote("git@github.com:a/b.git"),
-            "git@github.com:a/b.git"
-        );
+        assert_eq!(clean_remote("git@github.com:a/b.git"), "github.com:a/b.git");
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
         std::fs::write(

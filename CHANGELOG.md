@@ -11,6 +11,9 @@
   engine never writes them. A `.rkat` directory at any depth of the
   workspace is now a sealed path for the approval gate, as it already
   was for the engine.
+- The classifier is no longer sent the `origin` remote's credentials: a
+  remote such as `https://user:token@host/x.git` reaches it (and the
+  realm's manifest) without the user information, query or fragment.
 
 ### Changed
 
