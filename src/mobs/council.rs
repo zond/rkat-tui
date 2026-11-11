@@ -120,6 +120,17 @@ impl ToolDispatchAdmission for Convening {
         effect_kind: LiveBridgeEffectKind,
         outcome: LiveBridgeEffectOutcome,
     ) -> Result<(), ToolError> {
+        if call.name == COUNCIL && outcome == LiveBridgeEffectOutcome::Failed {
+            let session = context
+                .and_then(ToolDispatchContext::origin_session_id)
+                .or(self.session.as_ref());
+            let args = serde_json::from_str(call.args.get()).unwrap_or_default();
+            if let (Some(session), Some(registry)) = (session, self.registry.upgrade())
+                && let Some(mob) = council_mob(session, call.id, &args)
+            {
+                registry.council_failed(&mob, session);
+            }
+        }
         self.inner
             .record_dispatch_outcome(call, context, effect_kind, outcome)
             .await

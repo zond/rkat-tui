@@ -309,11 +309,18 @@ impl Desk {
     }
 }
 
+/// How many sessions' tool catalogs are kept; past it the one read
+/// longest ago goes (its session is judged by the known tools until its
+/// catalog is read again, at its next run end).
+pub const MAX_CATALOGS: usize = 256;
+
 /// [`ToolOrigins`] for the daemon's sessions: catalogs read while their
 /// session is idle, the TUI's own tools before that.
 pub struct DaemonToolOrigins {
     service: Arc<dyn MobSessionService>,
-    cache: RwLock<HashMap<SessionId, ToolCatalog>>,
+    /// By session, the one read longest ago first (at most
+    /// [`MAX_CATALOGS`]; a forgotten session's goes).
+    cache: RwLock<indexmap::IndexMap<SessionId, ToolCatalog>>,
     /// The TUI's own tools, and the engine-native tools of every catalog
     /// read: what a session not read yet is judged by.
     known: RwLock<ToolCatalog>,
@@ -344,7 +351,7 @@ impl DaemonToolOrigins {
             .collect();
         Self {
             service,
-            cache: RwLock::new(HashMap::new()),
+            cache: RwLock::new(indexmap::IndexMap::new()),
             known: RwLock::new(ToolCatalog::from_defs(&defs)),
         }
     }
@@ -358,7 +365,7 @@ impl DaemonToolOrigins {
             Ok(Ok(Some(defs))) => {
                 let catalog = ToolCatalog::from_defs(&defs);
                 self.known.write().add_missing_natives(&catalog);
-                self.cache.write().insert(session.clone(), catalog);
+                self.keep(session.clone(), catalog);
                 true
             }
             Ok(Ok(None)) => false,
@@ -371,6 +378,17 @@ impl DaemonToolOrigins {
                 false
             }
         }
+    }
+
+    /// Cache `catalog` as `session`'s, newest last, dropping the oldest
+    /// past [`MAX_CATALOGS`].
+    fn keep(&self, session: SessionId, catalog: ToolCatalog) {
+        crate::tools::keep_newest(&mut self.cache.write(), session, catalog, MAX_CATALOGS);
+    }
+
+    /// `session` is gone: its catalog goes with it.
+    pub fn forget(&self, session: &SessionId) {
+        self.cache.write().shift_remove(session);
     }
 
     /// Whether `session`'s catalog was read.
@@ -491,10 +509,21 @@ pub fn watch(
                             agents.run_usage(run, usage.accounting().model.trim(), usage);
                         }
                     }
-                    AgentEvent::RunCompleted { session_id, .. }
-                    | AgentEvent::RunFailed { session_id, .. } => {
+                    AgentEvent::RunCompleted {
+                        session_id,
+                        identity,
+                        ..
+                    }
+                    | AgentEvent::RunFailed {
+                        session_id,
+                        identity,
+                        ..
+                    } => {
                         if let Some(agents) = agents.upgrade() {
                             agents.run_ended(&name);
+                            if let Some(run) = &identity.run_id {
+                                agents.schedules().run_ended(run);
+                            }
                         }
                         let origins = Arc::clone(&origins);
                         let session = session_id.clone();

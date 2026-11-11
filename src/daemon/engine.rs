@@ -236,6 +236,13 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         &[catalog],
     ));
     engine.set_tool_origins(Arc::clone(&origins) as Arc<dyn crate::approval::ToolOrigins>);
+    // A forgotten session's catalog goes with it.
+    let forget = Arc::downgrade(&origins);
+    engine.add_forget_hook(Arc::new(move |session: &meerkat_core::SessionId| {
+        if let Some(origins) = forget.upgrade() {
+            origins.forget(session);
+        }
+    }));
     let helper_catalogs = super::approvals::watch_helpers(updates, Arc::clone(&origins));
     let Some(escalations) = approval.escalations.take() else {
         return Err(DaemonError::Approval(

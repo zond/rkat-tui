@@ -57,7 +57,6 @@ use meerkat_core::{
 };
 use parking_lot::Mutex;
 use serde::de::DeserializeOwned;
-use std::collections::HashMap;
 use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -95,6 +94,25 @@ pub const FILE_TOOL_NAMES: &[&str] = &[READ_FILE, WRITE_FILE, EDIT_FILE, GLOB, G
 
 /// Number of leading bytes inspected for a NUL byte when detecting binary files.
 pub(crate) const BINARY_SNIFF_BYTES: usize = 8 * 1024;
+
+/// How many read-before-write records the file tools keep, for every
+/// session together.
+pub const MAX_READ_RECORDS: usize = 4096;
+
+/// Put `key` -> `value` into `map` as its newest entry and drop the oldest
+/// past `cap` (a bounded record kept in insertion order).
+pub(crate) fn keep_newest<K: std::hash::Hash + Eq, V>(
+    map: &mut indexmap::IndexMap<K, V>,
+    key: K,
+    value: V,
+    cap: usize,
+) {
+    map.shift_remove(&key);
+    map.insert(key, value);
+    while map.len() > cap {
+        map.shift_remove_index(0);
+    }
+}
 
 /// Most bytes any file tool reads from one file. `read_file` and `grep`
 /// see at most this prefix; `write_file`/`edit_file` refuse to rewrite a
@@ -234,8 +252,10 @@ pub(crate) struct Shared {
     pub(crate) root: ProjectRoot,
     /// (session, absolute path) → mtime observed when that session last
     /// read or wrote the file. Keyed by session so one session's (or
-    /// helper's) read never satisfies another session's write check.
-    pub(crate) read_state: Mutex<HashMap<ReadKey, SystemTime>>,
+    /// helper's) read never satisfies another session's write check. At
+    /// most [`MAX_READ_RECORDS`], the oldest record dropped first (a write
+    /// after that asks for the file to be read again).
+    pub(crate) read_state: Mutex<indexmap::IndexMap<ReadKey, SystemTime>>,
     pub(crate) diff_tx: Option<mpsc::UnboundedSender<FileDiff>>,
     /// Skip environment files ([`crate::paths::is_secret_file_name`]) when
     /// walking for `glob`/`grep` (the classifier's read-only tools).
@@ -282,7 +302,12 @@ impl Shared {
     }
 
     pub(crate) fn record_read(&self, session: Option<SessionId>, abs: PathBuf, mtime: SystemTime) {
-        self.read_state.lock().insert((session, abs), mtime);
+        keep_newest(
+            &mut self.read_state.lock(),
+            (session, abs),
+            mtime,
+            MAX_READ_RECORDS,
+        );
     }
 
     /// Forward a diff to the UI. Delivery is best-effort: a closed receiver
@@ -489,7 +514,7 @@ impl FileToolDispatcher {
         Self {
             shared: Arc::new(Shared {
                 root,
-                read_state: Mutex::new(HashMap::new()),
+                read_state: Mutex::new(indexmap::IndexMap::new()),
                 diff_tx,
                 hide_secrets,
             }),
@@ -605,6 +630,21 @@ impl FileToolDispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A bounded record keeps the newest `cap` entries; touching an entry
+    /// makes it the newest.
+    #[test]
+    fn keep_newest_drops_the_oldest_past_the_cap() {
+        let mut map = indexmap::IndexMap::new();
+        for n in 0..5 {
+            keep_newest(&mut map, n, n * 10, 3);
+        }
+        assert_eq!(map.keys().copied().collect::<Vec<_>>(), [2, 3, 4]);
+        keep_newest(&mut map, 2, 21, 3);
+        keep_newest(&mut map, 5, 50, 3);
+        assert_eq!(map.keys().copied().collect::<Vec<_>>(), [4, 2, 5]);
+        assert_eq!(map.get(&2), Some(&21));
+    }
 
     #[test]
     fn truncate_line_keeps_short_lines() {

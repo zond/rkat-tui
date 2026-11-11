@@ -6731,3 +6731,28 @@ cannot read) as unfinished: a client's turn ends when the agent is idle.
 
 Not measured: how long each of these blocked before (the review's
 estimate: milliseconds to tens of milliseconds per fsync).
+
+## Bounded daemon maps (A10 of senior review 3, 2026-11-11)
+
+- `DaemonToolOrigins.cache`: a forgotten session's catalog is dropped (a
+  forget hook beside the registry's) and the cache keeps at most
+  `MAX_CATALOGS` (256), the one read longest ago going first; a session
+  whose catalog went is judged by the known tools until its next run end
+  reads it again (foreign tools reviewed: the safe direction). Helper
+  sessions are not forgotten by the engine, so the bound is what holds
+  them.
+- The file tools' `read_state`: at most `MAX_READ_RECORDS` (4096), oldest
+  first (`tools::keep_newest`, tested); a write to a file whose record
+  went asks for it to be read again.
+- `Schedules.runs`: a run's attribution goes at its `RunCompleted` or
+  `RunFailed`. `Schedules.attributed`: at most `MAX_ATTRIBUTED` (1024);
+  every occurrence dispatched no later than a forgotten one is never
+  attributed again, so a forgotten one cannot be taken for a new run's
+  (`forgotten_occurrences_are_never_attributed_again`).
+- `HelperRegistry.councils`: `expect_council` does not overwrite a live
+  entry (a second call naming the same `council_id` is refused its
+  participants instead of taking the first convener's), and a council
+  call whose dispatch outcome is `Failed` drops its entry
+  (`a_council_entry_is_not_taken_over_and_goes_when_its_call_failed`;
+  the `Convening` glue that calls it on `record_dispatch_outcome` is not
+  covered by a test of its own).

@@ -32,6 +32,12 @@
 
 ### Fixed
 
+- A long-lived daemon no longer grows without bound: tool catalogs (at
+  most 256 sessions, a retired session's dropped), the file tools'
+  read-before-write records (at most 4096), scheduled runs' attribution
+  (a run's at its end, at most 1024 occurrences) and council entries (a
+  failed council call's dropped) are bounded. A second council call
+  naming a live council's id no longer takes over its participants.
 - The `/model` picker lists every model of an OpenAI-dialect proxy: the
   filter that drops OpenAI's embedding, speech and image families
   applies to the built-in `openai` endpoint only (a proxy's model named

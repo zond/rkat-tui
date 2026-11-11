@@ -154,9 +154,11 @@ pub struct Schedules {
     /// When the daemon started: an occurrence dispatched before was not
     /// this process's to attribute.
     started: DateTime<Utc>,
-    /// The occurrences already attributed to a run.
-    attributed: parking_lot::Mutex<HashSet<OccurrenceId>>,
-    /// The runs attributed to a schedule.
+    /// The occurrences already attributed to a run, oldest first (at
+    /// most [`MAX_ATTRIBUTED`]).
+    attributed: parking_lot::Mutex<Attributed>,
+    /// The runs attributed to a schedule, until each ends
+    /// ([`Self::run_ended`]).
     runs: parking_lot::Mutex<HashMap<RunId, ScheduleId>>,
     /// What each schedule's runs cost as counted (its record read on
     /// first use); the record is written behind ([`Self::write_cost`]).
@@ -182,7 +184,7 @@ impl Schedules {
             service,
             realm,
             started: Utc::now(),
-            attributed: parking_lot::Mutex::new(HashSet::new()),
+            attributed: parking_lot::Mutex::new(Attributed::default()),
             runs: parking_lot::Mutex::new(HashMap::new()),
             costs: parking_lot::Mutex::new(HashMap::new()),
             writing: parking_lot::Mutex::new(()),
@@ -349,18 +351,24 @@ impl Schedules {
             let Ok(occurrences) = self.service.list_occurrences(&schedule.schedule_id).await else {
                 continue;
             };
+            let mut attributed = self.attributed.lock();
             let mut candidates: Vec<&Occurrence> = occurrences
                 .iter()
-                .filter(|o| o.dispatched_at_utc.is_some_and(|at| at >= self.started))
+                .filter(|o| {
+                    o.dispatched_at_utc
+                        .is_some_and(|at| at >= self.started && attributed.after_forgotten(at))
+                })
                 .filter(|o| prompt_of(&o.target_snapshot).as_deref() == Some(prompt))
                 .collect();
             candidates.sort_by_key(|o| o.dispatched_at_utc);
-            let mut attributed = self.attributed.lock();
             if let Some(occurrence) = candidates
                 .into_iter()
                 .find(|o| !attributed.contains(&o.occurrence_id))
             {
-                attributed.insert(occurrence.occurrence_id.clone());
+                attributed.insert(
+                    occurrence.occurrence_id.clone(),
+                    occurrence.dispatched_at_utc,
+                );
                 self.runs
                     .lock()
                     .insert(run.clone(), schedule.schedule_id.clone());
@@ -371,6 +379,11 @@ impl Schedules {
             }
         }
         None
+    }
+
+    /// `run` ended: its attribution is not needed any more.
+    pub fn run_ended(&self, run: &RunId) {
+        self.runs.lock().remove(run);
     }
 
     /// The schedule that fired `run`, if one did.
@@ -413,6 +426,46 @@ impl Schedules {
     }
 }
 
+/// How many attributed occurrences are remembered.
+pub const MAX_ATTRIBUTED: usize = 1024;
+
+/// The occurrences attributed to a run, oldest first. Past
+/// [`MAX_ATTRIBUTED`] the oldest are forgotten, and with them every
+/// occurrence dispatched at or before the newest forgotten one: such an
+/// occurrence is never attributed again, so a forgotten one cannot be
+/// taken for a new run's.
+#[derive(Debug, Default)]
+struct Attributed {
+    ids: HashSet<OccurrenceId>,
+    order: std::collections::VecDeque<(OccurrenceId, Option<chrono::DateTime<chrono::Utc>>)>,
+    forgotten_until: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl Attributed {
+    fn contains(&self, id: &OccurrenceId) -> bool {
+        self.ids.contains(id)
+    }
+
+    /// Whether an occurrence dispatched `at` is newer than every forgotten
+    /// one.
+    fn after_forgotten(&self, at: chrono::DateTime<chrono::Utc>) -> bool {
+        self.forgotten_until.is_none_or(|until| at > until)
+    }
+
+    fn insert(&mut self, id: OccurrenceId, at: Option<chrono::DateTime<chrono::Utc>>) {
+        if !self.ids.insert(id.clone()) {
+            return;
+        }
+        self.order.push_back((id, at));
+        while self.order.len() > MAX_ATTRIBUTED {
+            if let Some((id, at)) = self.order.pop_front() {
+                self.ids.remove(&id);
+                self.forgotten_until = self.forgotten_until.max(at);
+            }
+        }
+    }
+}
+
 /// Whether an occurrence was delivered to its target.
 fn delivered(occurrence: &Occurrence) -> bool {
     matches!(
@@ -424,6 +477,33 @@ fn delivered(occurrence: &Occurrence) -> bool {
 /// The cost record a schedule's runs are kept under.
 fn cost_key(schedule: &ScheduleId) -> String {
     format!("schedule-{schedule}")
+}
+
+#[cfg(test)]
+mod attributed_tests {
+    use super::*;
+
+    /// Past the bound the oldest attributed occurrences are forgotten, and
+    /// so is every occurrence dispatched no later than they were: none of
+    /// them can be attributed to a new run again.
+    #[test]
+    fn forgotten_occurrences_are_never_attributed_again() {
+        let mut attributed = Attributed::default();
+        let base = Utc::now();
+        let ids: Vec<OccurrenceId> = (0..MAX_ATTRIBUTED + 2)
+            .map(|_| OccurrenceId::new())
+            .collect();
+        for (n, id) in ids.iter().enumerate() {
+            let at = base + chrono::Duration::seconds(i64::try_from(n).unwrap_or(i64::MAX));
+            attributed.insert(id.clone(), Some(at));
+        }
+        assert_eq!(attributed.ids.len(), MAX_ATTRIBUTED);
+        assert!(!attributed.contains(&ids[0]));
+        assert!(!attributed.after_forgotten(base));
+        assert!(!attributed.after_forgotten(base + chrono::Duration::seconds(1)));
+        assert!(attributed.after_forgotten(base + chrono::Duration::seconds(2)));
+        assert!(attributed.contains(&ids[MAX_ATTRIBUTED + 1]));
+    }
 }
 
 #[cfg(test)]

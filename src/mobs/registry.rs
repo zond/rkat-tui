@@ -304,8 +304,26 @@ impl HelperRegistry {
 
     /// The gate admitted a council that `session` convened, for which the
     /// engine creates `mob`: its participants work for `session`.
+    /// A council already expected for `mob` keeps its convener: a second
+    /// call naming the same id is not recorded (its participants are then
+    /// refused), so it cannot take the first one's participants.
     pub fn expect_council(&self, mob: MobId, session: SessionId) {
-        self.councils.lock().insert(mob, session);
+        self.councils.lock().entry(mob).or_insert(session);
+    }
+
+    /// The council call for `mob` that `session` convened failed: no mob
+    /// comes of it, and its entry goes (a later council may use the id).
+    pub fn council_failed(&self, mob: &MobId, session: &SessionId) {
+        let mut councils = self.councils.lock();
+        if councils.get(mob) == Some(session) {
+            councils.remove(mob);
+        }
+    }
+
+    /// The session expected to convene `mob`, when one is (tests).
+    #[cfg(test)]
+    fn convener(&self, mob: &MobId) -> Option<SessionId> {
+        self.councils.lock().get(mob).cloned()
     }
 
     /// Whom a helper spawned into `mob` works for: the owner of
@@ -655,6 +673,23 @@ mod tests {
         registry.retired(&key);
         assert!(registry.owner_for_resume(&key).is_err());
         assert!(registry.owner_for_spawn(&nested_mob, None).is_err());
+    }
+
+    /// A council expected for a mob keeps its convener against a second
+    /// call naming the same id, and its entry goes when its call failed
+    /// (only the convener's failure removes it).
+    #[test]
+    fn a_council_entry_is_not_taken_over_and_goes_when_its_call_failed() {
+        let (registry, _rx) = HelperRegistry::new();
+        let (first, second) = (SessionId::new(), SessionId::new());
+        let mob = MobId::from("council-x");
+        registry.expect_council(mob.clone(), first.clone());
+        registry.expect_council(mob.clone(), second.clone());
+        assert_eq!(registry.convener(&mob), Some(first.clone()));
+        registry.council_failed(&mob, &second);
+        assert_eq!(registry.convener(&mob), Some(first.clone()));
+        registry.council_failed(&mob, &first);
+        assert_eq!(registry.convener(&mob), None);
     }
 
     #[test]
