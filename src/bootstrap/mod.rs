@@ -738,7 +738,52 @@ fn build_factory(
             }
         };
     }
-    factory
+    protect_host_inputs(factory, scope, toggles.token_store)
+}
+
+/// Declare to `factory` what the engine's own file tools (`apply_patch`,
+/// `blob_save_file`, which run in this process, outside the shell's
+/// confinement) must never write, besides the `.rkat` directories the
+/// engine always refuses: the realm state root and the realm's
+/// documents, the user config document, rkat-tui's global config
+/// directory (`tui.toml`, the trust record), the convention sources and,
+/// with `token_store`, the credential store. The engine applies only the
+/// paths strictly inside a dispatcher's project root, so with the default
+/// layout (the realm under `~/.rkat/tui/workspaces/`) this matters when
+/// `--state-root`, `--config-dir` or `--user-config-root` put state inside
+/// the workspace (`--no-confinement` allows that).
+fn protect_host_inputs(
+    factory: AgentFactory,
+    scope: &RuntimeScope,
+    token_store: bool,
+) -> AgentFactory {
+    use meerkat::{HostConfinement, HostInput};
+
+    let user_document = scope
+        .user_config_root
+        .as_ref()
+        .map(|root| root.join(".rkat").join("config.toml"));
+    let mut inputs = HostConfinement::host_inputs(&scope.state_root, user_document.as_deref());
+    inputs.push((HostInput::RealmState, scope.realm_root()));
+    if let Some(global) = &scope.global {
+        inputs.push((HostInput::RealmState, global.config.clone()));
+    }
+    if token_store {
+        inputs.extend(
+            meerkat::TokenStoreBackend::default_auto()
+                .ok()
+                .as_ref()
+                .and_then(HostConfinement::credential_store_input),
+        );
+    }
+    factory.with_protected_host_inputs(
+        &inputs,
+        &HostConfinement::realm_documents(&scope.realm_root()),
+        &HostConfinement::convention_sources(
+            Some(&scope.context_root),
+            scope.user_config_root.as_deref(),
+        ),
+    )
 }
 
 /// The model of new sessions, and the lists fetched to choose it.
@@ -811,6 +856,79 @@ mod tests {
     use crate::endpoints::{Endpoint, SecretString, WireDialect};
     use crate::models::{EndpointListing, ModelEntry, ModelSource};
     use clap::Parser;
+
+    /// The engine's own `apply_patch` (in every dispatcher the factory
+    /// builds, though the members' policy withholds it) refuses rkat-tui's
+    /// state when the command line put it inside the workspace, and any
+    /// `.rkat`; an ordinary source file is still written.
+    #[tokio::test]
+    async fn the_engines_file_tools_refuse_the_hosts_state_inside_the_workspace() {
+        use meerkat_core::ToolCallView;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let at = |name: &str| root.join(name).to_str().unwrap().to_string();
+        let (workspace, cfg, state) = (at(""), at("cfg"), at("state"));
+        let scope = resolve_scope(&args(&[
+            "-w",
+            &workspace,
+            "--user-config-root",
+            &workspace,
+            "--config-dir",
+            &cfg,
+            "--state-root",
+            &state,
+        ]))
+        .unwrap();
+        let factory = protect_host_inputs(
+            AgentFactory::new(root.join("store")).project_root(root.as_path()),
+            &scope,
+            false,
+        );
+        let dispatcher = factory
+            .build_builtin_dispatcher(
+                Arc::new(meerkat::MemoryTaskStore::new()),
+                meerkat::BuiltinToolConfig::default(),
+                Some(root.clone()),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        for (target, refused) in [
+            ("state/notes.toml", true),
+            ("cfg/tui.toml", true),
+            (".rkat/tui.toml", true),
+            ("sub/.rkat/mcp.toml", true),
+            ("src/x.rs", false),
+        ] {
+            let patch =
+                format!("*** Begin Patch\n*** Add File: {target}\n+written\n*** End Patch\n");
+            let call =
+                serde_json::value::to_raw_value(&serde_json::json!({ "patch": patch })).unwrap();
+            let outcome = dispatcher
+                .dispatch(ToolCallView {
+                    id: "call-1",
+                    name: "apply_patch",
+                    args: &call,
+                })
+                .await;
+            assert_eq!(
+                root.join(target).is_file(),
+                !refused,
+                "{target}: {outcome:?}"
+            );
+            if refused {
+                assert!(
+                    outcome.as_ref().map_or(true, |done| done.result.is_error),
+                    "{target} is refused: {outcome:?}"
+                );
+            }
+        }
+    }
 
     fn args(extra: &[&str]) -> Args {
         let mut argv = vec!["rkat-tui"];

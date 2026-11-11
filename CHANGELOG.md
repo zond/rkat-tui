@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Security
+
+- The engine's own file tools refuse rkat-tui's state too: when
+  `--state-root`, `--config-dir` or `--user-config-root` put the realm,
+  the config directory or the user config document inside the workspace
+  (allowed under `--no-confinement`), the daemon declares them and the
+  engine never writes them. A `.rkat` directory at any depth of the
+  workspace is now a sealed path for the approval gate, as it already
+  was for the engine.
+
 ### Changed
 
 - The engine is Meerkat 0.9.12 (from 0.9.11): the engine's own file tools

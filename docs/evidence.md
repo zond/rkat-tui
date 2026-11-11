@@ -6501,3 +6501,49 @@ and `integrator::recalling_a_steer_that_already_joined_the_run_leaves_it_deliver
 (the binding, an unknown id, the probe's refusal),
 `attach::what_the_daemon_cannot_do_yet_says_so` (a recall with nothing
 outstanding is an empty answer) and `client::runner::steers::tests::a_recall_takes_only_the_named_inputs`.
+
+## The engine's file tools protect the realm (2026-11-11)
+
+What 0.9.12 refuses (`meerkat-tools` `builtin/utility/protected_paths.rs`,
+`apply_patch.rs`, `blob_file.rs`): `apply_patch` and `blob_save_file`
+never write a path in a `.rkat` directory at or below their project root
+(any letter case, through `..`, absolute paths, symlinks, directories not
+created yet), nor through a symlink that leads nowhere, and they refuse
+whatever the host declared with `AgentFactory::with_protected_host_inputs`
+when it lies strictly inside the project root (applied in every
+dispatcher the factory builds). The refusal is an invalid-arguments tool
+error.
+
+What rkat-tui declares (`bootstrap::protect_host_inputs`, called by
+`build_factory`): `HostConfinement::host_inputs(state_root, user config
+document)`, the realm root and rkat-tui's global config directory as
+`HostInput::RealmState`, the credential store when the token store is on,
+`HostConfinement::realm_documents(realm_root)` and
+`HostConfinement::convention_sources(context_root, user_config_root)`.
+With the default layout the realm lives under
+`~/.rkat/tui/workspaces/<id>/`, outside the project root, so the engine
+applies none of it; the declaration matters when `--state-root`,
+`--config-dir` or `--user-config-root` put state inside the workspace,
+which only `--no-confinement` allows (a confined start refuses with
+`TuiError::RealmExposed`).
+
+3.3(b) of the adoption brief, `blob_save_file` meeting the seals at Tier 0,
+landed before the move ("`blob_save_file` passes the path seals"). For
+3.3(c) the seals now also cover a nested `.rkat` (`**/.rkat`,
+`**/.rkat/**` in `SEALED_PATTERNS` and `PROTECTED_PATTERNS`), so rkat-tui's
+own `write_file`/`edit_file` and the engine agree. A nested `.rkat` was not
+a hole before (it is read only by an `rkat-tui` started with that
+directory as its workspace, whose `mcp.toml` and hooks then need `/trust`
+by digest), but aligning the two rules costs nothing. rkat-tui's globs
+match the name case-sensitively where the engine folds case: a `.RKAT/`
+path through `write_file` is judged as an ordinary path, which on a
+case-insensitive file system (macOS) is the real `.rkat`. Left open for a
+decision (a case-folding seal match).
+
+Tests: `bootstrap::tests::the_engines_file_tools_refuse_the_hosts_state_inside_the_workspace`
+(through `build_builtin_dispatcher` and `apply_patch`: a declared
+`--state-root` and `--config-dir` inside the workspace, `.rkat/tui.toml`
+and `sub/.rkat/mcp.toml` refused, `src/x.rs` written; without the
+declaration the first two are written, checked by mutation) and
+`paths::tests::sealed_paths_are_the_gate_state_and_vcs_internals_and_imply_protected`
+(`a/b/.rkat/mcp.toml` sealed, `a/.rkatx/b` not).

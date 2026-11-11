@@ -16,6 +16,8 @@ use std::sync::OnceLock;
 pub const PROTECTED_PATTERNS: &[&str] = &[
     ".rkat",
     ".rkat/**",
+    "**/.rkat",
+    "**/.rkat/**",
     ".git",
     ".git/**",
     "**/.git",
@@ -106,6 +108,10 @@ fn protected_set() -> &'static ProtectedSet {
 pub const SEALED_PATTERNS: &[&str] = &[
     ".rkat",
     ".rkat/**",
+    // A nested `.rkat` too, as the engine's own file tools refuse one at
+    // any depth (Meerkat 0.9.12).
+    "**/.rkat",
+    "**/.rkat/**",
     ".git",
     ".git/**",
     "**/.git",
@@ -737,6 +743,8 @@ mod tests {
             ".rkat",
             ".rkat/config.toml",
             ".rkat/tui/tui.toml",
+            "a/b/.rkat",
+            "a/b/.rkat/mcp.toml",
             ".git",
             ".git/hooks/pre-commit",
             "vendor/.git/HEAD",
@@ -745,7 +753,14 @@ mod tests {
             assert!(r.sealed, "{p}");
             assert!(r.protected, "{p}");
         }
-        for p in [".env", "build.rs", "AGENTS.md", "src/main.rs"] {
+        for p in [
+            ".env",
+            "build.rs",
+            "AGENTS.md",
+            "src/main.rs",
+            "a/.rkatx/b",
+            "a/b.rkat",
+        ] {
             assert!(!root.resolve(p).unwrap().sealed, "{p}");
         }
         for pattern in SEALED_PATTERNS {

@@ -29,6 +29,14 @@
 //! project, rewriting git history, editing `.rkat/` state; protected paths
 //! keep Tier 2 off them and put file-tool writes to them to the user, and on Linux the backend has no deny lists), and
 //! everything the model does through the network in `workspace` mode.
+//!
+//! The file tools are held apart from the shell: `write_file`, `edit_file`
+//! and the engine's `blob_save_file` meet the sealed paths at Tier 0
+//! ([`crate::paths::SEALED_PATTERNS`]: every `.rkat` and `.git` in the
+//! workspace, the realm and the config directory wherever they lie), and
+//! the engine's own file tools refuse `.rkat` at any depth and the state
+//! `bootstrap` declares to the factory a second time, whatever the gate
+//! decided (Meerkat 0.9.12).
 
 use super::catalog::{ToolFamily, ToolOrigin};
 use super::rules::{RuleId, RuleSet};
