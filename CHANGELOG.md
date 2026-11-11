@@ -49,6 +49,19 @@
 
 ### Removed
 
+- Profiles for models the catalog does not know: rkat-tui no longer
+  writes `[models.<id>]` entries into the realm config for a model only
+  an Anthropic- or Gemini-dialect gateway lists, nor keeps
+  `tui_models.json` or prunes such entries. A model the catalog does not
+  know is refused on such a gateway (and on a built-in endpoint) at start
+  and at `/model`, naming the way out: configure the proxy as an
+  `openai`-dialect endpoint, where every model it lists runs as
+  `<endpoint>:<model>`. Catalogued models on gateways work as before.
+- The realm section `rkat-tui-self-hosted`: every configured endpoint's
+  connection is in `rkat-tui-endpoints`. A conversation stored on an
+  OpenAI-dialect endpoint by an earlier build does not resume (no
+  migration).
+
 - The shared-realm flags `--realm`, `--state-root`, `--realm-backend` and
   `--isolated` (both binaries). A workspace has exactly one realm, its
   own, under `<config dir>/workspaces/<id>/` (SQLite). With them went

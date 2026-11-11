@@ -909,9 +909,9 @@ impl Local {
             .filter(|binding| is_endpoint_realm(binding.realm.as_str()))
             .and_then(|binding| self.endpoints.get(binding.binding.as_str()))
             .cloned();
-        // A model only an endpoint knows needs its profile (on a
-        // self-hosted endpoint: its alias) in the realm config before the
-        // runtime accepts it.
+        // A model on a self-hosted endpoint needs its alias in the realm
+        // config before the runtime accepts it; anywhere else only a
+        // catalogued model runs (refused here, naming the way out).
         let mut reseated = false;
         if let Some(dialect) = provider.as_deref().and_then(WireDialect::parse) {
             let listed = listed.map(|listed| crate::models::ModelEntry {
@@ -926,40 +926,24 @@ impl Local {
                     function_calling: None,
                 },
             });
-            let owned = crate::endpoints::OwnedProfiles::in_realm(&self.report.realm);
-            // A profile rkat-tui wrote for a model the catalog has since
-            // added goes first (the engine refuses the document with it).
-            let pruned =
-                crate::endpoints::prune_catalogued_profiles(self.realm_config.runtime(), &owned)
-                    .await
-                    .map_err(|err| Refusal::new(SWITCH_FAILED, err.to_string()))?;
-            if !pruned.is_empty() {
-                tracing::info!(?pruned, "dropped profiles the catalog now defines");
-            }
-            let written = match &endpoint {
-                Some(endpoint) => {
+            // A built-in endpoint is named by the dialect.
+            let target = endpoint
+                .clone()
+                .or_else(|| self.endpoints.get(dialect.as_str()).cloned());
+            let written = match &target {
+                Some(target) => {
                     crate::endpoints::ensure_endpoint_model(
                         self.realm_config.runtime(),
-                        &owned,
-                        endpoint,
+                        target,
                         &model,
                         listed.as_ref(),
                     )
                     .await
                 }
-                None => {
-                    crate::endpoints::ensure_model_profile(
-                        self.realm_config.runtime(),
-                        &owned,
-                        dialect.into(),
-                        &model,
-                        listed.as_ref(),
-                    )
-                    .await
-                }
+                None => Ok(false),
             }
             .map_err(|err| Refusal::new(SWITCH_FAILED, err.to_string()))?;
-            // The live agent's model registry predates the profile: seat
+            // The live agent's model registry predates the alias: seat
             // the orchestrator again on its session, which rebuilds its
             // agent.
             if written {

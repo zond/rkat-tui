@@ -17,10 +17,11 @@
 //! The factory reads the realm's own `config.toml` through its owner
 //! ([`realm_config`]) on every build. The configured endpoints are
 //! projected into that document as realm connections
-//! ([`crate::endpoints::project_endpoints`]), and models only an endpoint
-//! knows get a `[models.<id>]` profile there
-//! ([`crate::endpoints::ensure_model_profile`]), so a session's auth binding
-//! and model resolve for `rkat`, REST and RPC on the same realm too.
+//! ([`crate::endpoints::project_endpoints`]), and a self-hosted endpoint's
+//! models become aliases there ([`crate::endpoints::ensure_aliases`]), so
+//! a session's auth binding and model resolve for `rkat`, REST and RPC on
+//! the same realm too. Anywhere else the start-up model must be one the
+//! catalog knows ([`crate::endpoints::check_catalogued`]).
 //!
 //! Context ([`instructions`], [`memory_probe`], [`mcp`]): a user-global
 //! `SYSTEM.md` becomes the config's `system_prompt_file` when the realm sets
@@ -57,7 +58,7 @@ use meerkat_tools::builtin::shell::ShellConfinement;
 use crate::cli::Args;
 use crate::endpoints::{
     EndpointError, EndpointName, EndpointRef, EndpointRegistry, ModelRefError, StartupPlan,
-    StartupRequest, ensure_aliases, ensure_model_profile, needs_lookup, plan_startup,
+    StartupRequest, check_catalogued, ensure_aliases, needs_lookup, plan_startup,
     project_endpoints,
 };
 use crate::error::TuiError;
@@ -364,12 +365,6 @@ pub async fn assemble(
         )
         .with_inputs(project_inputs.clone()),
     );
-    // Before any write: a profile rkat-tui wrote for a model the catalog
-    // has since added would make the engine refuse the document.
-    let owned_profiles = crate::endpoints::OwnedProfiles::in_realm(&scope.realm_root());
-    let pruned =
-        crate::endpoints::prune_catalogued_profiles(realm_config.runtime(), &owned_profiles)
-            .await?;
     project_endpoints(realm_config.runtime(), endpoints.as_slice()).await?;
     let listed = models
         .as_ref()
@@ -401,16 +396,15 @@ pub async fn assemble(
             }
             ensure_aliases(realm_config.runtime(), endpoint, &wanted).await?;
         }
-        _ => {
-            ensure_model_profile(
-                realm_config.runtime(),
-                &owned_profiles,
-                choice.provider,
-                &choice.model,
-                listed,
-            )
-            .await?;
+        Some(endpoint) => {
+            // Anywhere else only a model the engine's catalog knows runs.
+            let config = realm_config
+                .get()
+                .await
+                .map_err(EndpointError::ConfigRead)?;
+            check_catalogued(&config, endpoint, &choice.model)?;
         }
+        None => {}
     }
     let effective = realm_config
         .get()
@@ -453,7 +447,6 @@ pub async fn assemble(
         .map_or_else(|| realm_root.clone(), PathBuf::from);
 
     let mut notices: Vec<String> = Vec::new();
-    notices.extend(crate::endpoints::pruned_notice(&pruned));
     let memory = memory_probe(&store_path, manifest.backend, &mut notices);
     let tasks_db = tasks_db(&store_path);
     let factory = build_factory(
@@ -947,7 +940,7 @@ mod tests {
             ("litellm", "llama3:8b")
         );
         let binding = choice.auth_binding.unwrap();
-        assert_eq!(binding.realm.as_str(), crate::endpoints::SELF_HOSTED_REALM);
+        assert_eq!(binding.realm.as_str(), crate::endpoints::ENDPOINT_REALM);
         assert_eq!(binding.binding.as_str(), "litellm");
         // An OpenAI-dialect proxy runs the model as its alias.
         assert_eq!(choice.engine_model, "litellm:llama3:8b");

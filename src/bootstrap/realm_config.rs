@@ -4,7 +4,7 @@
 //! ([`super::instructions::apply_system_md`]) applied on top.
 //!
 //! Every read goes to the document, so what rkat-tui writes into it (the
-//! endpoint connections, `[models.<id>]` profiles; see
+//! endpoint connections, the self-hosted servers and aliases; see
 //! [`crate::endpoints`]) is what the next session build sees. Writes go to
 //! the document unchanged: the overrides are never persisted.
 //!

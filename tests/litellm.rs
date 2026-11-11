@@ -25,7 +25,7 @@ use fake::{FakeEndpoint, FakeModel, Reply};
 use meerkat_core::{ConfigStore, Provider};
 use rig::{Attached, Setup, stored_session};
 use rkat_tui::bootstrap;
-use rkat_tui::endpoints::{Endpoint, SELF_HOSTED_REALM};
+use rkat_tui::endpoints::{ENDPOINT_REALM, Endpoint};
 use rkat_tui::models::ModelLister;
 use rkat_tui::pricing::PriceSource;
 use rkat_tui::ui::{Effect, Msg, StatusUpdate};
@@ -252,7 +252,7 @@ async fn a_litellm_endpoint_runs_a_catalogued_claude_id_on_its_own_facts() {
         .unwrap();
     assert_eq!(meta.model, format!("litellm:{CLAUDE}"));
     let binding = meta.auth_binding.expect("the endpoint's binding");
-    assert_eq!(binding.realm.as_str(), SELF_HOSTED_REALM);
+    assert_eq!(binding.realm.as_str(), ENDPOINT_REALM);
     assert_eq!(binding.binding.as_str(), "litellm");
 }
 
@@ -491,7 +491,7 @@ async fn both_api_styles_stream_text_reasoning_and_tool_calls() {
         let mut config = meerkat_core::Config::default();
         config
             .realm
-            .insert(SELF_HOSTED_REALM.to_string(), projection.self_hosted);
+            .insert(ENDPOINT_REALM.to_string(), projection.section);
         config.self_hosted.servers = projection.servers;
         assert_eq!(
             config.self_hosted.servers["litellm"].api_style,
@@ -537,55 +537,6 @@ async fn both_api_styles_stream_text_reasoning_and_tool_calls() {
             assert!(!has_key(&turn.body, "thinking"), "{style:?}");
         }
     }
-}
-
-/// A conversation stored on the endpoint under its dialect's provider (as
-/// an earlier build stored every conversation on an OpenAI-dialect proxy)
-/// keeps resolving after the endpoint became self-hosted: its connection
-/// stays in `rkat-tui-endpoints`, which the self-hosted projection never
-/// overwrites, so the agent restores on it, and `/model` moves it onto the
-/// proxy's alias. Simulated with a gateway whose dialect changes between
-/// the starts (before, the start-up binding replaced a rebuilt agent's own,
-/// and the rebuild failed on the provider mismatch).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_conversation_stored_under_the_dialect_provider_moves_onto_the_alias() {
-    let fake = FakeEndpoint::start(models(), vec![Reply::Text("on the alias")]).await;
-    let ws = Workspace::new();
-    let llm = ScriptedLlmClient::new(Vec::new());
-    let mut earlier = setup(&fake, LOCAL, &[]);
-    for arg in &mut earlier.args {
-        if arg == "endpoints.litellm.dialect=openai" {
-            *arg = "endpoints.litellm.dialect=anthropic".to_string();
-        }
-    }
-    let rig = Attached::start_with(&ws.root, &llm, earlier).await;
-    let id = rig.current_session().await;
-    rig.quit().await;
-    let stored = stored_session(&ws.root, &id)
-        .await
-        .session_metadata()
-        .unwrap();
-    assert_eq!(stored.provider, Provider::Anthropic);
-
-    let mut rig = Attached::start_with(&ws.root, &llm, setup(&fake, LOCAL, &[])).await;
-    assert_eq!(rig.current_session().await, id, "the agent restored");
-    // It rebuilds on its own binding: its turn reaches the gateway's wire
-    // (which the fake does not speak), not a restore failure. (A `/model`
-    // before a restored agent's first turn is refused, "Runtime not ready",
-    // on any endpoint: the runtime loads the session on its first input.)
-    rig.send(Effect::StartTurn("on the gateway".into()));
-    let Err(failure) = rig.turn_finished().await.result else {
-        panic!("the fake answered the Anthropic wire");
-    };
-    let failure = format!("{failure:?}");
-    assert!(!failure.contains("restore"), "{failure}");
-    rig.send(Effect::SetModel(format!("litellm:{CLAUDE}")));
-    rig.wait_for(|m| is_model(m, "litellm", CLAUDE)).await;
-    rig.send(Effect::StartTurn("hi".into()));
-    let outcome = rig.turn_finished().await;
-    assert_eq!(outcome.result.unwrap().text, "on the alias");
-    assert_eq!(fake.turns().pop().unwrap().body["model"], CLAUDE);
-    rig.quit().await;
 }
 
 /// X2: the `api_style` setting end to end through the daemon. On the same

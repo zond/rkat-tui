@@ -20,7 +20,7 @@
 //!   so a helper of a configured endpoint's session reaches the same
 //!   endpoint. The engine names the provider route the session's build
 //!   resolved for its model in the implicit mob's profile, so a model only
-//!   an endpoint lists (a realm `[models.<id>]` profile) delegates too.
+//!   an endpoint lists (a self-hosted alias) delegates too.
 //! - **Tools and instructions.** The TUI's file tools and
 //!   [`crate::bootstrap::HELPER_PERSONA`].
 //! - **Observation.** [`follow`] subscribes to each helper once and hands

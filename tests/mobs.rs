@@ -306,17 +306,6 @@ async fn a_configured_endpoints_helper_uses_the_same_binding() {
     assert_eq!(binding.binding.as_str(), "proxy");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_session_on_an_endpoint_only_model_delegates_on_it() {
-    // A model id only the gateway lists.
-    const ENDPOINT_MODEL: &str = "my-alias";
-    let meta = delegate_on_the_proxy(ENDPOINT_MODEL).await;
-    assert_eq!(meta.model, ENDPOINT_MODEL);
-    let binding = meta.auth_binding.expect("the proxy's binding");
-    assert_eq!(binding.realm.as_str(), ENDPOINT_REALM);
-    assert_eq!(binding.binding.as_str(), "proxy");
-}
-
 /// A definition with one durable inline `delegate` profile, under `id`.
 fn team(id: &str) -> meerkat_mob::MobDefinition {
     let mut definition = meerkat_mob::MobDefinition::implicit("unused", common::MODEL);

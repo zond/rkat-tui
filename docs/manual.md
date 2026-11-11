@@ -641,7 +641,8 @@ api_key_env = "LITELLM_KEY"          # the variable holding its key
 
 (or `--endpoint-def litellm=openai=http://localhost:4000,key_env=LITELLM_KEY`).
 The engine reaches it as one of its `self_hosted` servers (its connection
-is in the realm section `rkat-tui-self-hosted`), and every
+is in the realm section `rkat-tui-endpoints`, with every configured
+endpoint's), and every
 model it serves as the alias **`litellm:<model>`**: the request names the
 model exactly as the proxy lists it, and everything the engine knows of
 the model comes from the proxy, never from Meerkat's catalog. At start the
@@ -687,16 +688,13 @@ the proxy's alias of it).
 **An Anthropic- or Gemini-dialect gateway** keeps that dialect's client and
 the catalog's request shaping for a model the catalog knows (the engine
 has no alias for these dialects); the window, the compaction threshold and
-the prices are still the gateway's (see the next paragraph). A model only the gateway
-knows gets a `[models.<id>]` profile from its listing, which rkat-tui
-records as its own (`tui_models.json` in the workspace's state
-directory). When a later Meerkat release adds that id to its catalog,
-rkat-tui removes its own profile at the next start (with a notice), so the
-realm keeps working; a `[models.<id>]` entry you wrote yourself for an id
-the catalog defines refuses the start with an error naming it, since the
-engine refuses such a config. One `[models.<id>]` profile names one
-provider, so the same unknown model id on gateways of two dialects is
-refused.
+the prices are still the gateway's (see the next paragraph). Only a model
+Meerkat's catalog knows runs there (or on a built-in endpoint): a model the
+catalog does not know is refused at start and at `/model`, with the reason
+and the way out, which is to configure the proxy as an `openai`-dialect
+endpoint, where every model it lists runs as `<endpoint>:<model>`. (A
+`[models.<id>]` entry you write into the realm's `config.toml` yourself
+still counts; rkat-tui writes none.)
 
 A configured endpoint is the authority for its own models' facts: the
 context gauge, `/context` and the agent's compaction threshold use the
@@ -848,8 +846,8 @@ Compaction is Meerkat's native auto-compaction: before a model call the
 runtime summarizes older history once the context crosses the session's
 threshold, keeps the recent turns, and indexes what it discarded into
 semantic memory. rkat-tui only chooses the threshold, from the context
-window of the model's profile (the catalog, or the realm's `[models.<id>]`
-entry the endpoint listing keeps current):
+window of the model's profile (the catalog, or the self-hosted alias the
+endpoint listing keeps current):
 
 - `compact = "native"` (the default): Meerkat's own threshold policy decides
   when to compact; rkat-tui sets no override. The gauge is advisory: it warns

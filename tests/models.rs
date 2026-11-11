@@ -43,7 +43,11 @@ fn proxy_args() -> Vec<String> {
     .to_vec()
 }
 
-/// The proxy lists `my-alias` (a model only it knows) with a 50k window.
+/// The catalogued model the proxy also lists.
+const LISTED: &str = "claude-opus-4-8";
+
+/// The proxy lists `my-alias` (a model only it knows) and a catalogued
+/// Claude model, each with a 50k window.
 fn lister() -> ModelLister {
     Arc::new(|endpoints: Vec<Endpoint>| {
         Box::pin(async move {
@@ -51,14 +55,17 @@ fn lister() -> ModelLister {
                 .into_iter()
                 .map(|e| {
                     let models = if e.name == "proxy" {
-                        vec![ModelEntry {
-                            id: "my-alias".into(),
-                            display_name: Some("My Alias".into()),
-                            source: ModelSource::Provider,
-                            context_window: Some(50_000),
-                            max_output_tokens: Some(4_096),
-                            capabilities: Default::default(),
-                        }]
+                        ["my-alias", LISTED]
+                            .into_iter()
+                            .map(|id| ModelEntry {
+                                id: id.into(),
+                                display_name: None,
+                                source: ModelSource::Provider,
+                                context_window: Some(50_000),
+                                max_output_tokens: Some(4_096),
+                                capabilities: Default::default(),
+                            })
+                            .collect()
                     } else {
                         Vec::new()
                     };
@@ -115,21 +122,30 @@ async fn the_picker_switches_the_live_model_and_the_next_turn_uses_it() {
     let proxy = groups.iter().find(|g| g.endpoint == "proxy").unwrap();
     assert_eq!(proxy.models[0].id, "my-alias");
 
-    // A bare id only the proxy lists resolves to the proxy.
+    // A bare id only the proxy lists resolves to the proxy, which speaks
+    // the Anthropic dialect: a model the catalog does not know is refused
+    // there, naming the way out.
     rig.send(Effect::SetModel("my-alias".into()));
-    rig.wait_for(|m| is_model(m, "proxy", "my-alias")).await;
+    rig.wait_for(|m| {
+        matches!(m, Msg::Notice { text, .. }
+            if text.starts_with("model not changed") && text.contains("`openai`-dialect endpoint"))
+    })
+    .await;
+    // A catalogued model on the proxy runs, with the proxy's window.
+    rig.send(Effect::SetModel(format!("proxy:{LISTED}")));
+    rig.wait_for(|m| is_model(m, "proxy", LISTED)).await;
     rig.wait_for(|m| matches!(m, Msg::Status(StatusUpdate::ContextWindow(Some(50_000)))))
         .await;
     rig.send(Effect::StartTurn("second".into()));
     rig.turn_finished().await;
-    assert_eq!(llm.recorded()[1].model, "my-alias");
+    assert_eq!(llm.recorded()[1].model, LISTED);
 
     // The identity is the session's: model and the proxy's binding.
     let meta = stored_session(&ws.root, &id)
         .await
         .session_metadata()
         .unwrap();
-    assert_eq!(meta.model, "my-alias");
+    assert_eq!(meta.model, LISTED);
     let binding = meta.auth_binding.expect("the proxy's binding");
     assert_eq!(binding.realm.as_str(), ENDPOINT_REALM);
     assert_eq!(binding.binding.as_str(), "proxy");
@@ -147,14 +163,18 @@ async fn the_picker_switches_the_live_model_and_the_next_turn_uses_it() {
         target.backend.base_url.as_deref(),
         Some("http://127.0.0.1:9")
     );
-    let profile = &document.models.custom["my-alias"];
-    assert_eq!(profile.context_window, Some(50_000));
+    // rkat-tui writes no `[models.<id>]` profile.
+    assert!(
+        document.models.custom.is_empty(),
+        "{:?}",
+        document.models.custom
+    );
 
     // The daemon counted each turn under the model it ran on, pushed the
     // totals and wrote them down by the time it stopped.
     rig.saw(|m| {
         matches!(m, Msg::Status(StatusUpdate::CostTotals(cost))
-            if cost.per_model.get("my-alias").is_some_and(|t| t.input == 10))
+            if cost.per_model.get(LISTED).is_some_and(|t| t.input == 10))
     })
     .await;
     rig.quit().await;
@@ -162,7 +182,7 @@ async fn the_picker_switches_the_live_model_and_the_next_turn_uses_it() {
         &rkat_tui::daemon::usage::Account::Session(id.clone()).path(&realm),
     )
     .cost;
-    let alias = cost.per_model.get("my-alias").expect("the alias's turn");
+    let alias = cost.per_model.get(LISTED).expect("the proxy's turn");
     assert_eq!((alias.input, alias.output), (10, 5), "{cost:?}");
     assert!(cost.per_model.contains_key(common::MODEL), "{cost:?}");
 
@@ -171,12 +191,12 @@ async fn the_picker_switches_the_live_model_and_the_next_turn_uses_it() {
     let llm = ScriptedLlmClient::new(vec![Step::Text("three"), Step::Text("four")]);
     let mut rig = Attached::start_with(&ws.root, &llm, options()).await;
     assert_eq!(rig.current_session().await, id);
-    rig.saw(|m| is_model(m, "proxy", "my-alias")).await;
+    rig.saw(|m| is_model(m, "proxy", LISTED)).await;
     rig.saw(|m| matches!(m, Msg::Status(StatusUpdate::CostTotals(totals)) if *totals == cost))
         .await;
     rig.send(Effect::StartTurn("third".into()));
     rig.turn_finished().await;
-    assert_eq!(llm.recorded()[0].model, "my-alias");
+    assert_eq!(llm.recorded()[0].model, LISTED);
 
     // Back to a built-in endpoint: the explicit binding is cleared.
     rig.send(Effect::SetModel("anthropic:claude-opus-4-8".into()));
@@ -253,8 +273,8 @@ async fn turn_switch_turn(rig: &mut Attached) {
     rig.saw(|m| is_model(m, "anthropic", common::MODEL)).await;
     rig.send(Effect::StartTurn("first".into()));
     rig.turn_finished().await;
-    rig.send(Effect::SetModel("proxy:my-alias".into()));
-    rig.wait_for(|m| is_model(m, "proxy", "my-alias")).await;
+    rig.send(Effect::SetModel(format!("proxy:{LISTED}")));
+    rig.wait_for(|m| is_model(m, "proxy", LISTED)).await;
     rig.send(Effect::StartTurn("second".into()));
     rig.turn_finished().await;
 }
@@ -270,7 +290,7 @@ async fn configured_thinking_reaches_the_request_on_create_and_after_a_switch() 
         &llm,
         thinking_options(&[
             &format!("thinking.\"{}\".enabled=4096", common::MODEL),
-            "thinking.\"proxy:my-alias\"=adaptive",
+            &format!("thinking.\"proxy:{LISTED}\"=adaptive"),
         ]),
     )
     .await;
@@ -283,7 +303,7 @@ async fn configured_thinking_reaches_the_request_on_create_and_after_a_switch() 
             budget_tokens: 4096
         })
     );
-    assert_eq!(recorded[1].model, "my-alias");
+    assert_eq!(recorded[1].model, LISTED);
     assert_eq!(
         thinking_of(&recorded[1]),
         Some(AnthropicThinkingConfig::Adaptive)
@@ -312,11 +332,11 @@ async fn configured_thinking_reaches_the_request_on_create_and_after_a_switch() 
         &after,
         thinking_options(&[
             &format!("thinking.\"{}\".enabled=4096", common::MODEL),
-            "thinking.\"proxy:my-alias\"=adaptive",
+            &format!("thinking.\"proxy:{LISTED}\"=adaptive"),
         ]),
     )
     .await;
-    rig.saw(|m| is_model(m, "proxy", "my-alias")).await;
+    rig.saw(|m| is_model(m, "proxy", LISTED)).await;
     rig.send(Effect::StartTurn("again".into()));
     rig.turn_finished().await;
     assert_eq!(
@@ -340,7 +360,7 @@ async fn configured_thinking_reaches_the_request_on_create_and_after_a_switch() 
     turn_switch_turn(&mut rig).await;
     rig.quit().await;
     let plain = plain.recorded();
-    assert_eq!(plain[1].model, "my-alias");
+    assert_eq!(plain[1].model, LISTED);
     assert_eq!(
         thinking_of(&plain[0]),
         None,
@@ -476,54 +496,36 @@ async fn a_configured_endpoint_s_listing_decides_the_window_and_the_threshold() 
     rig.quit().await;
 }
 
-/// Section 8 item 4 on the rig: a realm config that profiles a model the
-/// catalog defines (a catalog addition since rkat-tui wrote it) starts.
-/// rkat-tui's own entry (recorded in the realm's `tui_models.json`) is
-/// dropped with a notice; the same entry the user wrote refuses the start
-/// with a typed error naming it, instead of a daemon that cannot write its
-/// realm config for an opaque reason.
+/// A start on a model the catalog does not know, on an Anthropic-dialect
+/// gateway, is refused with the reason and the way out (an
+/// `openai`-dialect endpoint), and the realm config gains no profile.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_profile_the_catalog_now_defines_is_dropped_or_named() {
+async fn an_uncatalogued_model_on_a_gateway_is_refused_at_start() {
     let ws = Workspace::new();
     let realm = bootstrap::resolve_scope(&args_with(&ws.root, &[]))
         .unwrap()
         .realm_root();
-    std::fs::create_dir_all(&realm).unwrap();
-    let shadowing = format!(
-        "[models.\"{}\"]\nprovider = \"anthropic\"\ncontext_window = 50000\n",
-        common::MODEL
-    );
-    std::fs::write(realm.join("config.toml"), &shadowing).unwrap();
     let llm = ScriptedLlmClient::new(vec![Step::Text("ok")]);
-    let refused = Attached::try_start_with(&ws.root, &llm, Setup::default()).await;
+    let mut args = proxy_args();
+    args.extend(["--model".to_string(), "proxy:my-alias".to_string()]);
+    let setup = Setup {
+        args,
+        lister: Some(lister()),
+        ..Setup::default()
+    };
+    let refused = Attached::try_start_with(&ws.root, &llm, setup).await;
     let Err(err) = refused else {
-        panic!("a user's entry shadowing the catalog was dropped");
+        panic!("an uncatalogued model started on an Anthropic-dialect gateway");
     };
     let message = err.to_string();
     assert!(
-        message.contains(&format!("[models.\"{}\"]", common::MODEL)),
+        message.contains("`my-alias` is not in Meerkat's model catalog"),
         "{message}"
     );
-    assert_eq!(
-        std::fs::read_to_string(realm.join("config.toml")).unwrap(),
-        shadowing
-    );
-
-    // rkat-tui wrote it: dropped, and the agent runs.
-    std::fs::write(
-        realm.join(rkat_tui::endpoints::OWNED_PROFILES_FILE),
-        format!("{{\"profiles\": [\"{}\"]}}", common::MODEL),
-    )
-    .unwrap();
-    let mut rig = Attached::start_with(&ws.root, &llm, Setup::default()).await;
-    let entry = format!("[models.\"{}\"]", common::MODEL);
-    rig.saw(|m| matches!(m, Msg::Notice { text, .. } if text.contains(&entry)))
-        .await;
-    rig.send(Effect::StartTurn("hi".into()));
-    rig.turn_finished().await;
-    rig.quit().await;
-    let document = std::fs::read_to_string(realm.join("config.toml")).unwrap();
+    assert!(message.contains("`openai`-dialect endpoint"), "{message}");
+    let document = std::fs::read_to_string(realm.join("config.toml")).unwrap_or_default();
     assert!(!document.contains("[models."), "{document}");
+    assert!(llm.recorded().is_empty());
 }
 
 /// `/model` before a restored agent's first turn switches it (the daemon

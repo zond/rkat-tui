@@ -31,8 +31,8 @@
 //!   session's binding too. No session's realm chain names the sections, so
 //!   they never change the default resolution of the built-in providers.
 //! - **An OpenAI-dialect proxy is the engine's self-hosted server**
-//!   ([`Endpoint::is_self_hosted`]): its connection lives in
-//!   [`SELF_HOSTED_REALM`] with a `self_hosted` backend naming the server,
+//!   ([`Endpoint::is_self_hosted`]): its connection has a `self_hosted`
+//!   backend naming the server,
 //!   the server is `self_hosted.servers.<endpoint>` (OpenAI-compatible,
 //!   the Responses API), and every model it serves is the alias
 //!   `<endpoint>:<model>` ([`Endpoint::engine_model`]) in
@@ -43,17 +43,16 @@
 //!   catalog's row. rkat-tui names such a session's model as the endpoint
 //!   lists it ([`from_engine`]).
 //! - **Anthropic- and Gemini-dialect gateways** keep their dialect's client
-//!   and connection in [`ENDPOINT_REALM`] (the engine has no alias for
-//!   them): the provider's own client talks to the endpoint's URL with its
-//!   key, and a catalogued model keeps the catalog's request shaping. A
-//!   model no capability profile covers (a proxy alias, a model newer than
-//!   the catalog) gets a `[models.<id>]` entry ([`ensure_model_profile`])
-//!   built from what the endpoint reported (context window, output
-//!   limit), recorded as rkat-tui's own ([`OwnedProfiles`]) and dropped
-//!   again once the catalog defines the id ([`prune_catalogued_profiles`]).
-//!   One `[models.<id>]` entry names one provider, so the same unknown
-//!   model id on endpoints of different dialects is refused
-//!   ([`EndpointError::DialectConflict`]).
+//!   (the engine has no alias for them): the provider's own client talks to
+//!   the endpoint's URL with its key, and a catalogued model keeps the
+//!   catalog's request shaping. Only a model the engine's catalog knows runs
+//!   there; any other is refused at start and at `/model`
+//!   ([`EndpointError::Uncatalogued`]), naming the way out: configure the
+//!   proxy as an `openai`-dialect endpoint, where every model it serves is
+//!   an alias. The same holds for the built-in endpoints.
+//!
+//! Every configured endpoint's connection lives in one realm section,
+//! [`ENDPOINT_REALM`] (an endpoint's name is unique).
 //!
 //! Which endpoint a session runs on is derived from its persisted identity
 //! ([`endpoint_of`]): the binding names a configured endpoint, else the
@@ -64,8 +63,8 @@ use std::fmt;
 
 use meerkat_core::auth::{AuthConstraints, AuthMetadataDefaults};
 use meerkat_core::config::{
-    ConfigError, CustomModelConfig, SelfHostedApiStyle, SelfHostedModelConfig,
-    SelfHostedServerConfig, SelfHostedTransport,
+    ConfigError, SelfHostedApiStyle, SelfHostedModelConfig, SelfHostedServerConfig,
+    SelfHostedTransport,
 };
 use meerkat_core::connection::{
     CredentialSourceSpec, IdentityError, RealmConfigSection, RealmConnectionSet, RealmId,
@@ -88,18 +87,11 @@ pub const BUILTIN_NAMES: [&str; 3] = ["anthropic", "openai", "gemini"];
 /// the module docs), written into the realm's own config document.
 pub const ENDPOINT_REALM: &str = "rkat-tui-endpoints";
 
-/// The realm section holding the connection of each self-hosted endpoint
-/// ([`Endpoint::is_self_hosted`]): apart from [`ENDPOINT_REALM`], whose
-/// entry of the same name a conversation stored by an earlier build may
-/// still name with the endpoint's dialect provider (an entry is never
-/// removed, so such a conversation keeps resolving as it was made).
-pub const SELF_HOSTED_REALM: &str = "rkat-tui-self-hosted";
-
-/// Whether `realm` is one of the sections rkat-tui projects its configured
+/// Whether `realm` is the section rkat-tui projects its configured
 /// endpoints into: a binding there names a configured endpoint.
 #[must_use]
 pub fn is_endpoint_realm(realm: &str) -> bool {
-    realm == ENDPOINT_REALM || realm == SELF_HOSTED_REALM
+    realm == ENDPOINT_REALM
 }
 
 /// The wire protocol an endpoint speaks: which of Meerkat's LLM clients
@@ -324,7 +316,28 @@ pub struct Endpoint {
     pub api_style: ApiStyle,
 }
 
+/// What an endpoint is to the engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    /// A built-in provider endpoint: default resolution, catalog models.
+    Builtin,
+    /// A configured Anthropic- or Gemini-dialect gateway: its dialect's
+    /// client on its URL, catalog models.
+    Gateway,
+    /// A configured OpenAI-dialect endpoint: the engine's self-hosted
+    /// server, every model an alias.
+    SelfHosted,
+}
+
 impl Endpoint {
+    fn kind(&self) -> Kind {
+        match (self.builtin, self.dialect) {
+            (true, _) => Kind::Builtin,
+            (false, WireDialect::OpenAi) => Kind::SelfHosted,
+            (false, _) => Kind::Gateway,
+        }
+    }
+
     /// Credentials for the list-models request.
     #[must_use]
     pub fn credentials(&self) -> ProviderCredentials {
@@ -347,17 +360,16 @@ impl Endpoint {
     /// ([`Self::engine_model`]) whose facts all come from the endpoint.
     #[must_use]
     pub fn is_self_hosted(&self) -> bool {
-        !self.builtin && self.dialect == WireDialect::OpenAi
+        self.kind() == Kind::SelfHosted
     }
 
     /// The engine's model id of `model` on this endpoint: the alias
     /// `<endpoint>:<model>` on a self-hosted endpoint, else `model`.
     #[must_use]
     pub fn engine_model(&self, model: &str) -> String {
-        if self.is_self_hosted() {
-            EndpointRef::new(self.name.as_str(), model).to_string()
-        } else {
-            model.to_string()
+        match self.kind() {
+            Kind::SelfHosted => EndpointRef::new(self.name.as_str(), model).to_string(),
+            Kind::Builtin | Kind::Gateway => model.to_string(),
         }
     }
 
@@ -366,17 +378,19 @@ impl Endpoint {
     /// dialect's provider.
     #[must_use]
     pub fn engine_provider(&self) -> Provider {
-        if self.is_self_hosted() {
-            Provider::SelfHosted
-        } else {
-            self.provider()
+        match self.kind() {
+            Kind::SelfHosted => Provider::SelfHosted,
+            Kind::Builtin | Kind::Gateway => self.provider(),
         }
     }
 
     /// The engine's self-hosted server of this endpoint's sessions.
     #[must_use]
     pub fn self_hosted_server(&self) -> Option<String> {
-        self.is_self_hosted().then(|| self.name.clone())
+        match self.kind() {
+            Kind::SelfHosted => Some(self.name.clone()),
+            Kind::Builtin | Kind::Gateway => None,
+        }
     }
 
     /// The explicit auth binding a session on this endpoint carries: `None`
@@ -384,16 +398,12 @@ impl Endpoint {
     /// connection in [`ENDPOINT_REALM`] otherwise.
     #[must_use]
     pub fn binding(&self) -> Option<AuthBindingRef> {
-        if self.builtin {
-            return None;
+        match self.kind() {
+            Kind::Builtin => return None,
+            Kind::Gateway | Kind::SelfHosted => {}
         }
-        let realm = if self.is_self_hosted() {
-            SELF_HOSTED_REALM
-        } else {
-            ENDPOINT_REALM
-        };
         Some(AuthBindingRef {
-            realm: RealmId::parse(realm).ok()?,
+            realm: RealmId::parse(ENDPOINT_REALM).ok()?,
             binding: BindingId::parse(self.name.clone()).ok()?,
             profile: None,
             origin: BindingOrigin::Configured,
@@ -550,37 +560,18 @@ pub enum EndpointError {
         /// The endpoint.
         name: String,
     },
-    /// One `[models.<id>]` profile names one provider: the same unknown
-    /// model id cannot be served in two dialects.
+    /// A model the engine's catalog does not know, on an endpoint that is
+    /// not a self-hosted (OpenAI-dialect) one.
     #[error(
-        "model `{model}` is already registered for the {} dialect ([models.\"{model}\"] in the realm config); one profile cannot also describe it for {}: use the endpoint's own alias for one of them",
-        .existing.as_str(),
-        .requested.as_str()
+        "model `{model}` is not in Meerkat's model catalog, and {where_} runs only catalogued models ({dialect} dialect); to use any model a proxy serves, configure it as an `openai`-dialect endpoint ([endpoints.<name>] dialect = \"openai\" with its OpenAI-compatible base_url), where every model it lists runs as `<name>:<model>`"
     )]
-    DialectConflict {
-        /// The model id.
+    Uncatalogued {
+        /// The model.
         model: String,
-        /// The provider its profile names.
-        existing: Provider,
-        /// The provider the new endpoint needs.
-        requested: Provider,
-    },
-    /// A `[models.<id>]` entry rkat-tui did not write profiles a model the
-    /// engine's catalog defines: the engine refuses the realm's config.
-    #[error(
-        "the realm config's [models.\"{model}\"] profiles a model Meerkat's catalog now defines, so the engine refuses the config; remove that entry from the realm's config.toml (rkat-tui did not write it, so it does not remove it)"
-    )]
-    ProfileShadowsCatalog {
-        /// The model id.
-        model: String,
-    },
-    /// The record of the profiles rkat-tui wrote cannot be read or written.
-    #[error("{}: {why}", .file.display())]
-    OwnedProfiles {
-        /// The record.
-        file: std::path::PathBuf,
-        /// Why.
-        why: String,
+        /// `the built-in endpoint `x`` or `endpoint `x``.
+        where_: String,
+        /// The endpoint's dialect.
+        dialect: WireDialect,
     },
     /// The effective model registry could not be built.
     #[error("model registry: {0}")]
@@ -1024,8 +1015,6 @@ const SELF_HOSTED_AUTH: &str = "api_key";
 pub struct EndpointProjection {
     /// The [`ENDPOINT_REALM`] connections ([`endpoint_section`]).
     pub section: RealmConfigSection,
-    /// The [`SELF_HOSTED_REALM`] connections ([`self_hosted_section`]).
-    pub self_hosted: RealmConfigSection,
     /// The servers ([`self_hosted_servers`]).
     pub servers: BTreeMap<String, SelfHostedServerConfig>,
 }
@@ -1039,7 +1028,6 @@ impl EndpointProjection {
     pub fn of(endpoints: &[Endpoint]) -> Result<Self, EndpointError> {
         Ok(Self {
             section: endpoint_section(endpoints)?,
-            self_hosted: self_hosted_section(endpoints)?,
             servers: self_hosted_servers(endpoints),
         })
     }
@@ -1094,35 +1082,14 @@ pub fn server_base_url(base_url: &str, style: ApiStyle) -> String {
     }
 }
 
-/// The [`SELF_HOSTED_REALM`] section entries of the self-hosted endpoints
-/// of `endpoints`.
-///
-/// # Errors
-///
-/// As [`endpoint_section`].
-pub fn self_hosted_section(endpoints: &[Endpoint]) -> Result<RealmConfigSection, EndpointError> {
-    let self_hosted: Vec<Endpoint> = endpoints
-        .iter()
-        .filter(|e| e.is_self_hosted())
-        .cloned()
-        .collect();
-    connections(&self_hosted)
-}
-
 /// The [`ENDPOINT_REALM`] section entries of the configured endpoints of
-/// `endpoints` that are not self-hosted (built-in endpoints add nothing;
-/// the self-hosted ones are [`self_hosted_section`]'s).
+/// `endpoints` (built-in endpoints add nothing).
 ///
 /// # Errors
 ///
 /// As [`connections`].
 pub fn endpoint_section(endpoints: &[Endpoint]) -> Result<RealmConfigSection, EndpointError> {
-    let dialect: Vec<Endpoint> = endpoints
-        .iter()
-        .filter(|e| !e.is_self_hosted())
-        .cloned()
-        .collect();
-    connections(&dialect)
+    connections(endpoints)
 }
 
 /// One connection (backend, auth profile, binding, each named after the
@@ -1229,10 +1196,7 @@ pub fn endpoint_patch(
     projection: &EndpointProjection,
 ) -> Result<Option<ConfigDelta>, EndpointError> {
     let mut realms = serde_json::Map::new();
-    for (realm, section) in [
-        (ENDPOINT_REALM, &projection.section),
-        (SELF_HOSTED_REALM, &projection.self_hosted),
-    ] {
+    for (realm, section) in [(ENDPOINT_REALM, &projection.section)] {
         let existing = config.realm.get(realm);
         let backend = changed(&section.backend, existing.map(|s| &s.backend))?;
         let auth = changed(&section.auth, existing.map(|s| &s.auth))?;
@@ -1332,259 +1296,10 @@ pub async fn project_endpoints(
     endpoints: &[Endpoint],
 ) -> Result<bool, EndpointError> {
     let projection = EndpointProjection::of(endpoints)?;
-    if projection.section.binding.is_empty() && projection.self_hosted.binding.is_empty() {
+    if projection.section.binding.is_empty() {
         return Ok(false);
     }
     patch_document(runtime, |persisted| endpoint_patch(persisted, &projection)).await
-}
-
-/// The `[models.<id>]` entry `model` on `provider` needs, or `None` when
-/// the catalog or the realm config already profiles it the same way. A
-/// custom entry is refreshed when the endpoint now reports a window or an
-/// output limit it lacked or that changed.
-///
-/// # Errors
-///
-/// [`EndpointError::Registry`] when the config's model registry is invalid,
-/// [`EndpointError::DialectConflict`] when the id is already registered for
-/// another provider.
-pub fn model_profile_entry(
-    config: &Config,
-    provider: Provider,
-    model: &str,
-    listed: Option<&ModelEntry>,
-) -> Result<Option<CustomModelConfig>, EndpointError> {
-    let clamp = |value: Option<u64>| value.and_then(|v| u32::try_from(v).ok());
-    if let Some(existing) = config.models.custom.get(model) {
-        if existing.provider != provider {
-            return Err(EndpointError::DialectConflict {
-                model: model.to_string(),
-                existing: existing.provider,
-                requested: provider,
-            });
-        }
-        let Some(listed) = listed else {
-            return Ok(None);
-        };
-        let mut refreshed = existing.clone();
-        if let Some(window) = clamp(listed.context_window) {
-            refreshed.context_window = Some(window);
-        }
-        if let Some(output) = clamp(listed.max_output_tokens) {
-            refreshed.max_output_tokens = Some(output);
-        }
-        return Ok((&refreshed != existing).then_some(refreshed));
-    }
-    let registry = config
-        .model_registry(meerkat_models::canonical())
-        .map_err(EndpointError::Registry)?;
-    if registry.profile_for_provider(provider, model).is_some() {
-        return Ok(None);
-    }
-    if let Some(other) = meerkat_models::infer_provider(model)
-        && other != provider
-    {
-        return Err(EndpointError::DialectConflict {
-            model: model.to_string(),
-            existing: other,
-            requested: provider,
-        });
-    }
-    Ok(Some(CustomModelConfig {
-        provider,
-        display_name: listed.and_then(|entry| entry.display_name.clone()),
-        context_window: clamp(listed.and_then(|entry| entry.context_window)),
-        max_input_tokens: None,
-        max_output_tokens: clamp(listed.and_then(|entry| entry.max_output_tokens)),
-        vision: None,
-        web_search: None,
-        call_timeout_secs: None,
-    }))
-}
-
-/// Make sure the realm document profiles `model` on `provider`
-/// ([`model_profile_entry`]), writing the `[models.<id>]` entry through its
-/// config `runtime`. An entry it creates is recorded in `owned` first, so
-/// that [`prune_catalogued_profiles`] may drop it once the catalog defines
-/// the id. Returns whether the document changed.
-///
-/// # Errors
-///
-/// As [`model_profile_entry`] and [`patch_document`], and
-/// [`EndpointError::OwnedProfiles`] when the record cannot be written.
-pub async fn ensure_model_profile(
-    runtime: &ConfigRuntime,
-    owned: &OwnedProfiles,
-    provider: Provider,
-    model: &str,
-    listed: Option<&ModelEntry>,
-) -> Result<bool, EndpointError> {
-    // Whether the delta written last adds an entry the document did not
-    // have (the closure may run once per write attempt).
-    let adds = std::sync::atomic::AtomicBool::new(false);
-    let wrote = patch_document(runtime, |persisted| {
-        let Some(entry) = model_profile_entry(persisted, provider, model, listed)? else {
-            return Ok(None);
-        };
-        adds.store(
-            !persisted.models.custom.contains_key(model),
-            std::sync::atomic::Ordering::Relaxed,
-        );
-        let value = serde_json::to_value(&entry).map_err(EndpointError::Encode)?;
-        Ok(Some(ConfigDelta(
-            serde_json::json!({ "models": { model: value } }),
-        )))
-    })
-    .await?;
-    // Recorded only once the entry is in the document: a write that failed
-    // or never happened records nothing, so an entry the user writes later
-    // is never taken for rkat-tui's.
-    if wrote && adds.load(std::sync::atomic::Ordering::Relaxed) {
-        owned.add(model)?;
-    }
-    Ok(wrote)
-}
-
-/// The `[models.<id>]` entries rkat-tui wrote into a realm document (for
-/// models only an endpoint knew), recorded in the realm's
-/// [`OWNED_PROFILES_FILE`]. An entry not recorded there is the user's.
-#[derive(Debug, Clone)]
-pub struct OwnedProfiles {
-    file: std::path::PathBuf,
-}
-
-/// The file in a realm's directory that names the `[models.<id>]` entries
-/// rkat-tui wrote ([`OwnedProfiles`]).
-pub const OWNED_PROFILES_FILE: &str = "tui_models.json";
-
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct OwnedProfilesRecord {
-    profiles: std::collections::BTreeSet<String>,
-}
-
-impl OwnedProfiles {
-    /// The record of the realm at `realm_root`.
-    #[must_use]
-    pub fn in_realm(realm_root: &std::path::Path) -> Self {
-        Self {
-            file: realm_root.join(OWNED_PROFILES_FILE),
-        }
-    }
-
-    /// The ids recorded (none without a record).
-    ///
-    /// # Errors
-    ///
-    /// [`EndpointError::OwnedProfiles`] when the record cannot be read.
-    pub fn load(&self) -> Result<std::collections::BTreeSet<String>, EndpointError> {
-        let text = match std::fs::read_to_string(&self.file) {
-            Ok(text) => text,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(std::collections::BTreeSet::new());
-            }
-            Err(err) => return Err(self.error(err.to_string())),
-        };
-        serde_json::from_str::<OwnedProfilesRecord>(&text)
-            .map(|record| record.profiles)
-            .map_err(|err| self.error(err.to_string()))
-    }
-
-    fn add(&self, model: &str) -> Result<(), EndpointError> {
-        let mut profiles = self.load()?;
-        if profiles.insert(model.to_string()) {
-            self.save(profiles)?;
-        }
-        Ok(())
-    }
-
-    fn remove(&self, models: &[String]) -> Result<(), EndpointError> {
-        let mut profiles = self.load()?;
-        let before = profiles.len();
-        profiles.retain(|id| !models.contains(id));
-        if profiles.len() != before {
-            self.save(profiles)?;
-        }
-        Ok(())
-    }
-
-    fn save(&self, profiles: std::collections::BTreeSet<String>) -> Result<(), EndpointError> {
-        let text = serde_json::to_string_pretty(&OwnedProfilesRecord { profiles })
-            .map_err(EndpointError::Encode)?;
-        let partial = self.file.with_extension("json.partial");
-        std::fs::write(&partial, text)
-            .and_then(|()| std::fs::rename(&partial, &self.file))
-            .map_err(|err| self.error(err.to_string()))
-    }
-
-    fn error(&self, why: String) -> EndpointError {
-        EndpointError::OwnedProfiles {
-            file: self.file.clone(),
-            why,
-        }
-    }
-}
-
-/// Drop from the realm document every `[models.<id>]` entry rkat-tui wrote
-/// ([`OwnedProfiles`]) whose id the engine's catalog now defines: the
-/// engine refuses a document that profiles a catalogued id again, so a
-/// catalog addition would otherwise stop every write and every session
-/// build in the realm. Returns the ids dropped.
-///
-/// # Errors
-///
-/// [`EndpointError::ProfileShadowsCatalog`] for such an entry the user
-/// wrote (it is never dropped silently), [`EndpointError::OwnedProfiles`]
-/// when the record cannot be read or written, and as [`patch_document`].
-pub async fn prune_catalogued_profiles(
-    runtime: &ConfigRuntime,
-    owned: &OwnedProfiles,
-) -> Result<Vec<String>, EndpointError> {
-    let dropped = parking_lot::Mutex::new(Vec::new());
-    patch_document(runtime, |persisted| {
-        let catalogued: Vec<String> = persisted
-            .models
-            .custom
-            .keys()
-            .filter(|id| meerkat_models::infer_provider(id).is_some())
-            .cloned()
-            .collect();
-        if catalogued.is_empty() {
-            return Ok(None);
-        }
-        let mine = owned.load()?;
-        if let Some(theirs) = catalogued.iter().find(|id| !mine.contains(*id)) {
-            return Err(EndpointError::ProfileShadowsCatalog {
-                model: theirs.clone(),
-            });
-        }
-        let nulls: serde_json::Map<String, serde_json::Value> = catalogued
-            .iter()
-            .map(|id| (id.clone(), serde_json::Value::Null))
-            .collect();
-        dropped.lock().clone_from(&catalogued);
-        Ok(Some(ConfigDelta(serde_json::json!({ "models": nulls }))))
-    })
-    .await?;
-    let dropped = dropped.into_inner();
-    owned.remove(&dropped)?;
-    Ok(dropped)
-}
-
-/// The start-up notice for the profiles [`prune_catalogued_profiles`]
-/// dropped, `None` when it dropped none.
-#[must_use]
-pub fn pruned_notice(dropped: &[String]) -> Option<String> {
-    (!dropped.is_empty()).then(|| {
-        let names: Vec<String> = dropped
-            .iter()
-            .map(|id| format!("[models.\"{id}\"]"))
-            .collect();
-        format!(
-            "removed {} from the realm config: rkat-tui wrote it for a model only an endpoint knew, and Meerkat's model catalog now defines that model",
-            names.join(", ")
-        )
-    })
 }
 
 /// The `self_hosted.models` entry of `model` on the self-hosted `endpoint`
@@ -1690,25 +1405,61 @@ pub async fn ensure_aliases(
 }
 
 /// Make sure the engine can run `model` on `endpoint`: its self-hosted
-/// alias ([`ensure_aliases`]) on a self-hosted endpoint, else its
-/// `[models.<id>]` profile when it needs one ([`ensure_model_profile`]).
-/// Returns whether the document changed.
+/// alias ([`ensure_aliases`]) on a self-hosted endpoint; anywhere else the
+/// model must be one the engine's model registry knows on the endpoint's
+/// provider ([`check_catalogued`]). Returns whether the document changed.
 ///
 /// # Errors
 ///
-/// As [`ensure_aliases`] and [`ensure_model_profile`].
+/// As [`ensure_aliases`] and [`check_catalogued`].
 pub async fn ensure_endpoint_model(
     runtime: &ConfigRuntime,
-    owned: &OwnedProfiles,
     endpoint: &Endpoint,
     model: &str,
     listed: Option<&ModelEntry>,
 ) -> Result<bool, EndpointError> {
     if endpoint.is_self_hosted() {
-        ensure_aliases(runtime, endpoint, &[(model, listed)]).await
-    } else {
-        ensure_model_profile(runtime, owned, endpoint.provider(), model, listed).await
+        return ensure_aliases(runtime, endpoint, &[(model, listed)]).await;
     }
+    let snapshot = runtime.get().await.map_err(EndpointError::ConfigSnapshot)?;
+    check_catalogued(&snapshot.config, endpoint, model)?;
+    Ok(false)
+}
+
+/// Refuse `model` on `endpoint` when it is not self-hosted and the engine's
+/// model registry (the catalog, and any `[models.<id>]` entry the realm
+/// config holds) does not know it on the endpoint's provider: the engine
+/// would refuse the build, and rkat-tui no longer writes profiles for
+/// models only an endpoint knows.
+///
+/// # Errors
+///
+/// [`EndpointError::Uncatalogued`] naming the way out,
+/// [`EndpointError::Registry`] when the registry cannot be built.
+pub fn check_catalogued(
+    config: &Config,
+    endpoint: &Endpoint,
+    model: &str,
+) -> Result<(), EndpointError> {
+    let where_ = match endpoint.kind() {
+        Kind::SelfHosted => return Ok(()),
+        Kind::Builtin => format!("the built-in endpoint `{}`", endpoint.name),
+        Kind::Gateway => format!("endpoint `{}`", endpoint.name),
+    };
+    let registry = config
+        .model_registry(meerkat_models::canonical())
+        .map_err(EndpointError::Registry)?;
+    if registry
+        .profile_for_provider(endpoint.provider(), model)
+        .is_some()
+    {
+        return Ok(());
+    }
+    Err(EndpointError::Uncatalogued {
+        model: model.to_string(),
+        where_,
+        dialect: endpoint.dialect,
+    })
 }
 
 /// The context window the engine's model registry knows for `model` on
@@ -1839,8 +1590,8 @@ fn builtin_default(endpoint: &Endpoint, config_model: &str) -> EndpointRef {
 }
 
 /// The endpoint a session runs on, derived from its persisted provider and
-/// auth binding: a binding into [`ENDPOINT_REALM`] or [`SELF_HOSTED_REALM`]
-/// names a configured endpoint; no binding means default resolution, the provider's built-in
+/// auth binding: a binding into [`ENDPOINT_REALM`] names a configured
+/// endpoint; no binding means default resolution, the provider's built-in
 /// endpoint. `None` when that endpoint is not configured in this process (a
 /// session created by another surface, or an endpoint since removed).
 #[must_use]
@@ -2413,10 +2164,6 @@ mod tests {
             ENDPOINT_REALM.to_string(),
             endpoint_section(&endpoints).unwrap(),
         );
-        config.realm.insert(
-            SELF_HOSTED_REALM.to_string(),
-            self_hosted_section(&endpoints).unwrap(),
-        );
         assert!(
             endpoints[0].binding().is_none(),
             "built-ins resolve by default"
@@ -2515,36 +2262,6 @@ mod tests {
         assert!(snapshot.config.models.custom.contains_key("ours"));
     }
 
-    /// The ownership record follows the document: a profile write that
-    /// never happened (here: abandoned while another surface holds the
-    /// writer lock) records nothing; once written, the entry is recorded.
-    #[tokio::test]
-    async fn an_unwritten_profile_is_not_recorded_as_rkat_tuis() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("config.toml");
-        let runtime = config_runtime(&path);
-        let owned = OwnedProfiles::in_realm(tmp.path());
-        let held = meerkat_core::config_runtime::ConfigWriterLock::acquire(
-            &path.with_file_name("config_state.lock"),
-        )
-        .await
-        .unwrap();
-        let abandoned = tokio::time::timeout(
-            std::time::Duration::from_millis(200),
-            ensure_model_profile(&runtime, &owned, Provider::OpenAI, "llama3:8b", None),
-        )
-        .await;
-        assert!(abandoned.is_err(), "the write went past a held writer lock");
-        assert!(owned.load().unwrap().is_empty(), "recorded before writing");
-        drop(held);
-        assert!(
-            ensure_model_profile(&runtime, &owned, Provider::OpenAI, "llama3:8b", None)
-                .await
-                .unwrap()
-        );
-        assert!(owned.load().unwrap().contains("llama3:8b"));
-    }
-
     /// rkat-tui's write waits for the writer lock another surface holds.
     #[tokio::test]
     async fn a_write_waits_for_the_writer_lock() {
@@ -2556,8 +2273,8 @@ mod tests {
         )
         .await
         .unwrap();
-        let owned = OwnedProfiles::in_realm(tmp.path());
-        let write = ensure_model_profile(&runtime, &owned, Provider::OpenAI, "llama3:8b", None);
+        let proxy = configured("litellm", WireDialect::OpenAi, Some("LITELLM_KEY"));
+        let write = project_endpoints(&runtime, std::slice::from_ref(&proxy));
         tokio::pin!(write);
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(200), &mut write)
@@ -2571,7 +2288,7 @@ mod tests {
         assert!(
             std::fs::read_to_string(&path)
                 .unwrap()
-                .contains("llama3:8b")
+                .contains("LITELLM_KEY")
         );
     }
 
@@ -2624,9 +2341,16 @@ mod tests {
         // Each write was one generation of the realm's config runtime.
         assert_eq!(reread.generation, 2);
         assert!(
-            reread.config.realm[SELF_HOSTED_REALM]
+            reread.config.realm[ENDPOINT_REALM]
                 .binding
                 .contains_key("litellm")
+        );
+        // One section for every configured endpoint.
+        assert_eq!(
+            reread.config.realm.len(),
+            1,
+            "{:?}",
+            reread.config.realm.keys()
         );
         assert!(
             reread.config.realm[ENDPOINT_REALM]
@@ -2645,7 +2369,6 @@ mod tests {
     async fn a_proxy_s_models_become_aliases_with_its_facts() {
         let tmp = tempfile::tempdir().unwrap();
         let store = config_runtime(&tmp.path().join("config.toml"));
-        let owned = OwnedProfiles::in_realm(tmp.path());
         let proxy = configured("litellm", WireDialect::OpenAi, Some("LITELLM_KEY"));
         assert!(
             project_endpoints(&store, std::slice::from_ref(&proxy))
@@ -2717,7 +2440,7 @@ mod tests {
         );
         let bigger = listed(ANTHROPIC_MODEL, 60_000);
         assert!(
-            ensure_endpoint_model(&store, &owned, &proxy, ANTHROPIC_MODEL, Some(&bigger))
+            ensure_endpoint_model(&store, &proxy, ANTHROPIC_MODEL, Some(&bigger))
                 .await
                 .unwrap()
         );
@@ -2772,24 +2495,21 @@ mod tests {
             config
                 .realm
                 .insert(ENDPOINT_REALM.to_string(), projection.section);
-            config
-                .realm
-                .insert(SELF_HOSTED_REALM.to_string(), projection.self_hosted);
             config.self_hosted.servers = projection.servers;
-            let model = "served-only-here";
-            // An OpenAI-dialect proxy's model is its self-hosted alias; the
-            // others get a `[models.<id>]` profile.
-            if endpoint.is_self_hosted() {
+            // An OpenAI-dialect proxy runs any model as its self-hosted
+            // alias; the others run catalogued models.
+            let model = if endpoint.is_self_hosted() {
+                let model = "served-only-here";
                 config.self_hosted.models.insert(
                     endpoint.engine_model(model),
                     alias_entry(&endpoint, model, None),
                 );
+                model
+            } else if endpoint.dialect == WireDialect::Anthropic {
+                ANTHROPIC_MODEL
             } else {
-                let entry = model_profile_entry(&config, endpoint.provider(), model, None)
-                    .unwrap()
-                    .unwrap();
-                config.models.custom.insert(model.to_string(), entry);
-            }
+                "gemini-3.5-flash"
+            };
             let identity = meerkat_core::SessionLlmIdentity {
                 model: endpoint.engine_model(model),
                 provider: endpoint.engine_provider(),
@@ -2810,175 +2530,63 @@ mod tests {
         }
     }
 
-    /// A catalog addition never stops the realm: a `[models.<id>]` entry
-    /// rkat-tui wrote (recorded in its realm state) for an id the catalog
-    /// now defines is dropped before any write, with a notice; the same
-    /// entry the user wrote is a typed error naming it, and the document
-    /// is left alone; an entry for an uncatalogued id is kept.
+    /// Only a self-hosted endpoint runs a model the catalog does not know:
+    /// on a gateway or a built-in endpoint such a model is refused, naming
+    /// the openai-dialect way out; a catalogued one, or one the realm
+    /// config's own `[models.<id>]` profiles, passes.
     #[tokio::test]
-    async fn profiles_the_catalog_now_defines_are_pruned_or_refused() {
+    async fn an_uncatalogued_model_runs_only_on_a_self_hosted_endpoint() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("config.toml");
-        // A catalogued id stands in for a future catalog addition: the
-        // document is written as an earlier release would have.
-        let shadowing = format!(
-            "[models.\"{ANTHROPIC_MODEL}\"]\nprovider = \"anthropic\"\ncontext_window = 50000\n\n[models.\"proxy-alias\"]\nprovider = \"anthropic\"\n"
-        );
-        std::fs::write(&path, &shadowing).unwrap();
         let store = config_runtime(&path);
-        let owned = OwnedProfiles::in_realm(tmp.path());
-
-        // The user's entry: a typed error, nothing written.
-        let err = prune_catalogued_profiles(&store, &owned).await.unwrap_err();
+        let gateway = configured("gateway", WireDialect::Anthropic, Some("GATEWAY_KEY"));
+        let builtin = ep("openai", WireDialect::OpenAi, true);
+        let proxy = configured("litellm", WireDialect::OpenAi, Some("LITELLM_KEY"));
         assert!(
-            matches!(&err, EndpointError::ProfileShadowsCatalog { model } if model == ANTHROPIC_MODEL),
-            "{err}"
-        );
-        assert!(
-            err.to_string()
-                .contains(&format!("[models.\"{ANTHROPIC_MODEL}\"]"))
-        );
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), shadowing);
-
-        // rkat-tui's own: dropped, the record forgets it, the alias stays.
-        owned.add(ANTHROPIC_MODEL).unwrap();
-        owned.add("proxy-alias").unwrap();
-        let dropped = prune_catalogued_profiles(&store, &owned).await.unwrap();
-        assert_eq!(dropped, [ANTHROPIC_MODEL]);
-        let config = store.get().await.unwrap().config;
-        assert!(!config.models.custom.contains_key(ANTHROPIC_MODEL));
-        assert!(config.models.custom.contains_key("proxy-alias"));
-        assert!(config.model_registry(meerkat_models::canonical()).is_ok());
-        assert_eq!(
-            owned.load().unwrap(),
-            std::collections::BTreeSet::from(["proxy-alias".to_string()])
-        );
-        let notice = pruned_notice(&dropped).unwrap();
-        assert!(
-            notice.contains(&format!("[models.\"{ANTHROPIC_MODEL}\"]")),
-            "{notice}"
-        );
-        assert_eq!(pruned_notice(&[]), None);
-        // Nothing left to drop.
-        assert!(
-            prune_catalogued_profiles(&store, &owned)
-                .await
-                .unwrap()
-                .is_empty()
-        );
-    }
-
-    /// The profiles rkat-tui writes are recorded as its own; a profile the
-    /// user wrote that it only refreshes is not.
-    #[tokio::test]
-    async fn written_profiles_are_recorded_as_rkat_tui_s() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("config.toml");
-        std::fs::write(&path, "[models.\"theirs\"]\nprovider = \"openai\"\n").unwrap();
-        let store = config_runtime(&path);
-        let owned = OwnedProfiles::in_realm(tmp.path());
-        let listed = |id: &str| ModelEntry {
-            id: id.into(),
-            display_name: None,
-            source: crate::models::ModelSource::Provider,
-            context_window: Some(8_192),
-            max_output_tokens: None,
-            capabilities: crate::models::ModelCapabilities::default(),
-        };
-        for model in ["mine", "theirs"] {
-            assert!(
-                ensure_model_profile(
-                    &store,
-                    &owned,
-                    Provider::OpenAI,
-                    model,
-                    Some(&listed(model))
-                )
-                .await
-                .unwrap(),
-                "{model}"
-            );
-        }
-        assert_eq!(
-            owned.load().unwrap(),
-            std::collections::BTreeSet::from(["mine".to_string()])
-        );
-        // An unreadable record is an error naming it.
-        std::fs::write(tmp.path().join(OWNED_PROFILES_FILE), "not json").unwrap();
-        let err = owned.load().unwrap_err();
-        assert!(err.to_string().contains(OWNED_PROFILES_FILE), "{err}");
-    }
-
-    #[tokio::test]
-    async fn profiles_are_written_for_unknown_models_and_refused_across_dialects() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = config_runtime(&tmp.path().join("config.toml"));
-        let owned = OwnedProfiles::in_realm(tmp.path());
-        assert!(
-            !ensure_model_profile(&store, &owned, Provider::Anthropic, ANTHROPIC_MODEL, None)
+            project_endpoints(&store, std::slice::from_ref(&proxy))
                 .await
                 .unwrap()
         );
-        let listed = ModelEntry {
-            id: "llama3:8b".into(),
-            display_name: Some("Llama 3".into()),
-            source: crate::models::ModelSource::Provider,
-            context_window: Some(8_192),
-            max_output_tokens: Some(2_048),
-            capabilities: Default::default(),
-        };
-        assert!(
-            ensure_model_profile(&store, &owned, Provider::OpenAI, "llama3:8b", Some(&listed))
-                .await
-                .unwrap()
-        );
-        assert!(
-            !ensure_model_profile(&store, &owned, Provider::OpenAI, "llama3:8b", None)
-                .await
-                .unwrap()
-        );
-        // A later listing with a larger window refreshes the profile.
-        let bigger = ModelEntry {
-            context_window: Some(16_384),
-            ..listed.clone()
-        };
-        assert!(
-            ensure_model_profile(&store, &owned, Provider::OpenAI, "llama3:8b", Some(&bigger))
-                .await
-                .unwrap()
-        );
-        let config = store.get().await.unwrap().config;
-        let custom = &config.models.custom["llama3:8b"];
-        assert_eq!(custom.provider, Provider::OpenAI);
-        assert_eq!(custom.context_window, Some(16_384));
-        assert_eq!(custom.max_output_tokens, Some(2_048));
-        assert_eq!(
-            registry_context_window(&config, Provider::OpenAI, "llama3:8b"),
-            Some(16_384)
-        );
-        assert!(registry_context_window(&config, Provider::OpenAI, "unknown").is_none());
-        // The same id on an endpoint of another dialect is refused, as is a
-        // catalogued id claimed for another provider.
-        let err = ensure_model_profile(&store, &owned, Provider::Anthropic, "llama3:8b", None)
+        let err = ensure_endpoint_model(&store, &gateway, "llama3:8b", None)
             .await
             .unwrap_err();
         assert!(
-            matches!(
-                err,
-                EndpointError::DialectConflict {
-                    existing: Provider::OpenAI,
-                    requested: Provider::Anthropic,
-                    ..
-                }
-            ),
+            matches!(&err, EndpointError::Uncatalogued { model, dialect: WireDialect::Anthropic, .. } if model == "llama3:8b"),
             "{err}"
         );
-        let err = ensure_model_profile(&store, &owned, Provider::Gemini, OPENAI_MODEL, None)
+        let text = err.to_string();
+        assert!(text.contains("endpoint `gateway`"), "{text}");
+        assert!(text.contains("`openai`-dialect endpoint"), "{text}");
+        let err = ensure_endpoint_model(&store, &builtin, "gpt-not-yet", None)
             .await
             .unwrap_err();
         assert!(
-            matches!(err, EndpointError::DialectConflict { .. }),
+            err.to_string().contains("the built-in endpoint `openai`"),
             "{err}"
+        );
+        // A catalogued model of the dialect runs; nothing is written.
+        assert!(
+            !ensure_endpoint_model(&store, &gateway, ANTHROPIC_MODEL, None)
+                .await
+                .unwrap()
+        );
+        // Another dialect's catalogued model is not this endpoint's.
+        assert!(matches!(
+            ensure_endpoint_model(&store, &gateway, OPENAI_MODEL, None).await,
+            Err(EndpointError::Uncatalogued { .. })
+        ));
+        // The self-hosted endpoint runs it as its alias.
+        assert!(
+            ensure_endpoint_model(&store, &proxy, "llama3:8b", None)
+                .await
+                .unwrap()
+        );
+        // The user's own profile counts.
+        std::fs::write(&path, "[models.\"llama3:8b\"]\nprovider = \"anthropic\"\n").unwrap();
+        assert!(
+            !ensure_endpoint_model(&store, &gateway, "llama3:8b", None)
+                .await
+                .unwrap()
         );
     }
 }

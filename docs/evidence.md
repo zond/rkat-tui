@@ -7291,3 +7291,48 @@ mode; another agent; restart, `/new` and `/resume`; a guessed name),
 directly for another purpose (schedules, councils, `mob_destroy`,
 `mob_profile_create`, `fork_off`) reveal them first through the daemon's
 reveal store (`Running::reveal`), which is what a search writes.
+
+## One mechanism for models the catalog does not know (batch 4, 2026-11-11)
+
+Decision C6 of senior review 3. Two mechanisms ran models the engine's
+catalog does not know: an OpenAI-dialect endpoint's self-hosted aliases
+(`<endpoint>:<model>`, every fact from the listing) and, on Anthropic- and
+Gemini-dialect gateways, `[models.<id>]` profiles rkat-tui wrote into the
+realm config, with an ownership record (`tui_models.json`), pruning once
+the catalog defined the id, and two error variants for the collisions
+that made possible. The second is gone: `ensure_model_profile`,
+`model_profile_entry`, `OwnedProfiles`, `prune_catalogued_profiles`,
+`pruned_notice`, `EndpointError::DialectConflict`,
+`EndpointError::ProfileShadowsCatalog`, `EndpointError::OwnedProfiles`. A
+model on a non-self-hosted endpoint must be one the engine's model
+registry knows on the endpoint's provider (the catalog, or a
+`[models.<id>]` entry the user wrote): `endpoints::check_catalogued`, at
+start (bootstrap) and at `/model` (`Local::set_model`), refused with
+`EndpointError::Uncatalogued`, whose text names the way out (an
+`openai`-dialect endpoint). The connections of every configured endpoint
+are in one realm section, `rkat-tui-endpoints` (an endpoint's name is
+unique across dialects); `rkat-tui-self-hosted` existed only so that
+conversations stored before the self-hosted move kept resolving, and
+those are not migrated. `Endpoint` answers `engine_model`,
+`engine_provider`, `self_hosted_server` and `binding` with one match each
+over a private `Kind` (built-in, gateway, self-hosted) derived from
+`builtin` and the dialect; making it the public field would have touched
+every construction site in the crate, so that is left to batch 5.
+
+Tests: `endpoints::tests::an_uncatalogued_model_runs_only_on_a_self_hosted_endpoint`,
+`models::an_uncatalogued_model_on_a_gateway_is_refused_at_start`,
+`models::the_picker_switches_the_live_model_and_the_next_turn_uses_it`
+(the gateway-only model refused at `/model`, a catalogued one on the
+gateway runs on its binding, no `[models]` entry written),
+`endpoints::tests::endpoints_are_projected_into_the_realm_document_once`
+(one section). Deleted with the mechanism:
+`endpoints::tests::{an_unwritten_profile_is_not_recorded_as_rkat_tuis,
+profiles_the_catalog_now_defines_are_pruned_or_refused,
+written_profiles_are_recorded_as_rkat_tui_s,
+profiles_are_written_for_unknown_models_and_refused_across_dialects}`,
+`models::a_profile_the_catalog_now_defines_is_dropped_or_named`,
+`mobs::a_session_on_an_endpoint_only_model_delegates_on_it` (an
+endpoint-only model on an Anthropic gateway; delegation on a self-hosted
+alias stays covered by `litellm`), and
+`litellm::a_conversation_stored_under_the_dialect_provider_moves_onto_the_alias`
+(the compatibility the second section kept).

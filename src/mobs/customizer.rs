@@ -1061,7 +1061,7 @@ mod tests {
         let mut resumed = SpawnMemberSpec::host_root("main", "main");
         let on_proxy = RootMember {
             auth_binding: Some(meerkat_core::AuthBindingRef {
-                realm: meerkat_core::RealmId::parse(crate::endpoints::SELF_HOSTED_REALM).unwrap(),
+                realm: meerkat_core::RealmId::parse(crate::endpoints::ENDPOINT_REALM).unwrap(),
                 binding: meerkat_core::BindingId::parse("litellm").unwrap(),
                 profile: None,
                 origin: meerkat_core::BindingOrigin::Configured,
