@@ -31,6 +31,23 @@ pub(crate) use glob::mention_walker;
 pub use read_only::ReadOnlyProjectTools;
 pub use watch::{UNWATCH, WATCH_PATHS, WATCH_TOOLS_SOURCE, WatchHost, WatchToolDispatcher};
 
+/// The catalog support of a dispatcher whose tool list is fixed when it is
+/// built: its `tool_catalog` (the default, mirroring `tools`) is exact.
+///
+/// A gateway's catalog is exact only when every dispatcher in it says so,
+/// and an inexact one is rebuilt from the tool definitions alone, without
+/// each tool's execution contract. Composed beside the engine's builtins,
+/// a dispatcher that left this at the default took the shell's `Detached`
+/// mode out of the agent's catalog, and every `shell` with `background`
+/// was refused (`tests/shell_jobs.rs`).
+#[must_use]
+pub fn fixed_catalog() -> meerkat_core::ToolCatalogCapabilities {
+    meerkat_core::ToolCatalogCapabilities {
+        exact_catalog: true,
+        may_require_catalog_control_plane: false,
+    }
+}
+
 use crate::paths::{PathError, ProjectRoot, ResolvedPath};
 use async_trait::async_trait;
 use meerkat_core::ops::ToolDispatchOutcome;
@@ -533,6 +550,10 @@ impl std::fmt::Debug for FileToolDispatcher {
 impl AgentToolDispatcher for FileToolDispatcher {
     fn tools(&self) -> Arc<[Arc<ToolDef>]> {
         Arc::clone(&self.tools)
+    }
+
+    fn tool_catalog_capabilities(&self) -> meerkat_core::ToolCatalogCapabilities {
+        crate::tools::fixed_catalog()
     }
 
     fn tool_mutation_class(&self, tool_name: &str) -> ToolMutationClass {

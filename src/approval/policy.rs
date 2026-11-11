@@ -55,6 +55,10 @@ pub enum Tier {
     /// every session's tool policy withholds ([`TUI_OWNED_BUILTINS`]);
     /// denied before any rule or classifier.
     Sealed,
+    /// Tier 0: what the engine offers but cannot run for a daemon member
+    /// ([`SHELL_JOB_TOOLS`], `shell` with `background`), refused with what
+    /// to do instead before any rule or classifier.
+    Unavailable,
     /// Tier 1: read-only builtin, in-project read, allowlisted shell, or narrow allow rule.
     AlwaysAllow,
     /// Tier 2: write/edit/patch where every target is inside the project and unprotected.
@@ -73,6 +77,7 @@ impl fmt::Display for Tier {
         f.write_str(match self {
             Self::UserDeny(_) => "user deny rule",
             Self::Sealed => "sealed",
+            Self::Unavailable => "unavailable",
             Self::AlwaysAllow => "always allow",
             Self::InProjectEdit => "in-project edit",
             Self::AskUser => "ask the user",
@@ -125,6 +130,17 @@ impl VerdictSummary {
 /// diff-reporting file tools, gated by the approval policy).
 pub const TUI_OWNED_BUILTINS: [&str; 2] = ["brain_swap", "apply_patch"];
 
+/// The shell's job controls, withheld from every member and helper through
+/// its tool access policy like [`TUI_OWNED_BUILTINS`]: a daemon member's
+/// shell cannot start a background job ([`BACKGROUND_SHELL_UNAVAILABLE`]),
+/// so there is no job to list, read or cancel. A call that reaches the
+/// gate anyway is [`Tier::Unavailable`].
+pub const SHELL_JOB_TOOLS: [&str; 3] = ["shell_jobs", "shell_job_status", "shell_job_cancel"];
+
+/// Why `shell` with `background` and the [`SHELL_JOB_TOOLS`] are refused:
+/// what the agent reads, with what to do instead.
+pub const BACKGROUND_SHELL_UNAVAILABLE: &str = "background shell jobs are not available here: the engine this build runs on (meerkat 0.9.11) drops the shell's background mode from the tool catalog of an agent that has the mob tools, so every background job would be refused (docs/evidence.md, \"Background shell jobs\"); run the command in the foreground instead, with `timeout_secs` for a long one";
+
 /// Builtins that only read state or manage the agent's own bookkeeping.
 ///
 /// Every upstream builtin is here, in [`REVIEWED_BUILTINS`] or in
@@ -145,8 +161,6 @@ pub const READ_ONLY_BUILTINS: &[&str] = &[
     "load_skill",
     "skill_list_resources",
     "skill_read_resource",
-    "shell_jobs",
-    "shell_job_status",
     "peers",
     // Native semantic memory (`AgentFactory::memory`): searches the
     // session's own compacted history.
@@ -184,7 +198,6 @@ pub const READ_ONLY_BUILTINS: &[&str] = &[
 #[cfg(any(test, feature = "test-support"))]
 pub const REVIEWED_BUILTINS: &[&str] = &[
     "shell",
-    "shell_job_cancel",
     "monitor_start",
     "blob_save_file",
     "blob_load_file",
@@ -272,6 +285,8 @@ pub enum ActionKind {
     /// A builtin from [`TUI_OWNED_BUILTINS`]: every session's tool access
     /// policy withholds it, so a call that reaches the gate anyway is sealed.
     Withheld,
+    /// A tool from [`SHELL_JOB_TOOLS`]: withheld too, and unavailable.
+    ShellJob,
     /// A tool from [`DELEGATION_TOOLS`].
     Delegation,
     /// `note_list` / `note_read`.
@@ -360,6 +375,7 @@ impl<'a> Action<'a> {
                 })
             }
             (ToolFamily::Native, n) if TUI_OWNED_BUILTINS.contains(&n) => ActionKind::Withheld,
+            (ToolFamily::Native, n) if SHELL_JOB_TOOLS.contains(&n) => ActionKind::ShellJob,
             (ToolFamily::Native, n) if READ_ONLY_BUILTINS.contains(&n) && !declared_mutating => {
                 ActionKind::ReadOnlyBuiltin
             }
@@ -424,6 +440,7 @@ impl<'a> Action<'a> {
             }
             ActionKind::ReadOnlyBuiltin
             | ActionKind::Withheld
+            | ActionKind::ShellJob
             | ActionKind::Delegation
             | ActionKind::NoteRead
             | ActionKind::Other => vec![pretty_args(self.args)],
@@ -592,6 +609,10 @@ fn builtin_tier(action: &Action<'_>, ctx: &PolicyContext<'_>) -> Result<TierDeci
                 action.name
             ),
         )),
+        ActionKind::ShellJob => Ok(TierDecision::new(
+            Tier::Unavailable,
+            BACKGROUND_SHELL_UNAVAILABLE,
+        )),
         ActionKind::Delegation => Ok(TierDecision::new(
             Tier::AlwaysAllow,
             "delegation (the helper's own calls pass this gate)",
@@ -697,7 +718,10 @@ fn builtin_tier(action: &Action<'_>, ctx: &PolicyContext<'_>) -> Result<TierDeci
             background,
         } => {
             if *background {
-                return Err("background shell command".to_string());
+                return Ok(TierDecision::new(
+                    Tier::Unavailable,
+                    BACKGROUND_SHELL_UNAVAILABLE,
+                ));
             }
             shell::allowlisted_in(command, working_dir.as_deref(), ctx).map_err(|e| e.0)?;
             Ok(TierDecision::new(
@@ -1059,11 +1083,12 @@ mod tests {
                 READ_ONLY_BUILTINS.contains(name),
                 REVIEWED_BUILTINS.contains(name),
                 TUI_OWNED_BUILTINS.contains(name),
+                SHELL_JOB_TOOLS.contains(name),
             ];
             assert!(
                 lists.into_iter().filter(|listed| *listed).count() == 1,
                 "upstream builtin `{name}` must be in exactly one of READ_ONLY_BUILTINS, \
-                 REVIEWED_BUILTINS and TUI_OWNED_BUILTINS"
+                 REVIEWED_BUILTINS, TUI_OWNED_BUILTINS and SHELL_JOB_TOOLS"
             );
         }
         let (_dir, root) = project();
@@ -1110,7 +1135,7 @@ mod tests {
                 "shell_job_status",
                 json!({"job_id": "1"}),
                 true,
-                Tier::AlwaysAllow,
+                Tier::Unavailable,
             ),
             (
                 "read_file",
@@ -1241,7 +1266,7 @@ mod tests {
                 "shell",
                 json!({"command": "ls", "background": true}),
                 true,
-                Tier::Classifier,
+                Tier::Unavailable,
             ),
             (
                 "shell",

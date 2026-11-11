@@ -915,7 +915,7 @@ impl ApprovalEngine {
     fn route(&self, facts: &Facts<'_>, decision: TierDecision, mode: PermissionMode) -> Route {
         let tier = decision.tier;
         if mode == PermissionMode::Plan
-            && !matches!(tier, Tier::UserDeny(_) | Tier::Sealed)
+            && !matches!(tier, Tier::UserDeny(_) | Tier::Sealed | Tier::Unavailable)
             && plan_forbids(&facts.action, &decision)
         {
             return Route::Settled(deny_at(tier, DenyReason::PlanMode));
@@ -941,6 +941,12 @@ impl ApprovalEngine {
             (Tier::Sealed, _) => Route::Settled(deny_at(
                 tier,
                 DenyReason::Sealed {
+                    detail: decision.detail,
+                },
+            )),
+            (Tier::Unavailable, _) => Route::Settled(deny_at(
+                tier,
+                DenyReason::Unavailable {
                     detail: decision.detail,
                 },
             )),
@@ -1563,9 +1569,9 @@ fn decider_label(verdict: &Verdict, facts: &Facts<'_>) -> String {
             DenyReason::EscalationTimedOut => "timeout".to_string(),
             DenyReason::PlanMode => "mode".to_string(),
             DenyReason::Unattended => "unattended".to_string(),
-            DenyReason::Sealed { .. } | DenyReason::ClassifierUnavailable(_) => {
-                "policy".to_string()
-            }
+            DenyReason::Sealed { .. }
+            | DenyReason::Unavailable { .. }
+            | DenyReason::ClassifierUnavailable(_) => "policy".to_string(),
         },
     }
 }

@@ -17,6 +17,9 @@ You are an interactive coding agent operating in the user's project directory.
 - Prefer the dedicated file, search and note tools over shell commands that do the same.
 - Read a file before editing it, and make the smallest edit that solves the problem.
 - After changing code, verify it: build it and run the relevant tests.
+- Shell commands run in the foreground only: the shell's `background` option and \
+the shell job tools are not available here (the call is refused); give a long \
+command a `timeout_secs` instead.
 - Some tool calls are reviewed by an approval policy. If a call is blocked \
 (`policy_denied`), do not try to achieve the same effect another way. Tell the user \
 what was blocked and why, and choose a safer approach or ask how to proceed.
@@ -42,6 +45,9 @@ project directory. Your final message is returned to it as your result, so end \
 with a complete, self-contained answer.
 
 - Prefer the dedicated file and search tools over shell commands that do the same.
+- Shell commands run in the foreground only: the shell's `background` option and \
+the shell job tools are not available here (the call is refused); give a long \
+command a `timeout_secs` instead.
 - Your tool calls pass the same approval policy and the user's rules as the agent \
 that delegated to you. If a call is blocked (`policy_denied`), do not try to \
 achieve the same effect another way: report what was blocked and why in your result.
@@ -118,6 +124,11 @@ mod tests {
         assert!(CODING_PERSONA.contains("policy_denied"));
         assert!(CODING_PERSONA.contains("a score near 0.5 is no match"));
         assert!(CODING_PERSONA.contains("untrusted notes"));
+        // The shell's own schema offers `background`, which no member can
+        // run (`approval::policy::BACKGROUND_SHELL_UNAVAILABLE`).
+        for persona in [CODING_PERSONA, HELPER_PERSONA] {
+            assert!(persona.contains("in the foreground only"));
+        }
         assert!(HELPER_PERSONA.contains("policy_denied"));
         assert!(!HELPER_PERSONA.contains("read_file"));
         assert!(HELPER_PERSONA.contains("cannot delegate further"));

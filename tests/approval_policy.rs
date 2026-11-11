@@ -24,11 +24,11 @@
 
 use meerkat_core::ToolSourceKind;
 use rkat_tui::approval::catalog::ToolOrigin;
-use rkat_tui::approval::policy::TUI_OWNED_BUILTINS;
 use rkat_tui::approval::policy::{
     Action, DELEGATION_TOOLS, PolicyContext, READ_ONLY_BUILTINS, REVIEWED_BUILTINS, Tier,
     TierDecision, classify_tier,
 };
+use rkat_tui::approval::policy::{SHELL_JOB_TOOLS, TUI_OWNED_BUILTINS};
 use rkat_tui::approval::rules::{Rule, RuleKind, RuleOrigin, RuleSet};
 use rkat_tui::memory::{NOTE_TOOL_NAMES, NOTES_SOURCE};
 use rkat_tui::paths::ProjectRoot;
@@ -107,6 +107,7 @@ fn origin(name: &str) -> ToolOrigin {
     } else if READ_ONLY_BUILTINS.contains(&name)
         || REVIEWED_BUILTINS.contains(&name)
         || TUI_OWNED_BUILTINS.contains(&name)
+        || SHELL_JOB_TOOLS.contains(&name)
         || DELEGATION_TOOLS.contains(&name)
         || name.starts_with("mob_")
     {

@@ -119,6 +119,10 @@ impl AgentToolDispatcher for WatchToolDispatcher {
         Arc::clone(&self.tools)
     }
 
+    fn tool_catalog_capabilities(&self) -> meerkat_core::ToolCatalogCapabilities {
+        crate::tools::fixed_catalog()
+    }
+
     fn tool_mutation_class(&self, tool_name: &str) -> ToolMutationClass {
         match tool_name {
             WATCH_PATHS | UNWATCH => ToolMutationClass::ReadOnly,

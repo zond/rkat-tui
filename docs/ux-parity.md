@@ -140,7 +140,7 @@ As proposed on 2026-11-06; the Status column says which exist now.
 10. **`Ctrl+V` image paste** (M–L). Read the clipboard image (`arboard` or `wl-paste`/`xclip`), attach multimodal content to the prompt, and show an `[Image #N]` chip. Meerkat supports multimodal content; `Effect::StartTurn(String)` would need a content type.
 11. **`Ctrl+L` redraw** (S). `terminal.clear()` in ui/runtime.rs.
 12. **`/context` command** (S). Prints the gauge with a breakdown (system prompt, AGENTS.md, tools, history) and the policy, absorbing `/compact`'s current output.
-13. **`Ctrl+B` background tasks and `/tasks`** (L). Detach a running shell or helper call. Builds on Meerkat's shell jobs (`shell_jobs` is already tiered in approval) and on the helper panel.
+13. **`Ctrl+B` background tasks and `/tasks`** (L). Detach a running shell or helper call. Builds on Meerkat's shell jobs, which the engine cannot run for a daemon member yet (`docs/evidence.md`, "Background shell jobs"), and on the helper panel.
 14. **`Alt+T` thinking toggle and `/effort`** (S–M). A model-parameter override on the session build (`/model` switch path, mod `switch_model`).
 15. **`Alt+P` model switch** (S). Opens the `/model` picker without clearing the input.
 16. **`?` shortcut panel on an empty input** (S). Render HELP_TEXT's "Keys" section as an overlay.

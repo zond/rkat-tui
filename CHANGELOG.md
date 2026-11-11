@@ -429,6 +429,13 @@ design.
   `~/.rkat/tui` is missing, and the notices about it, about the old global
   rules file `~/.rkat/tui.toml` and about an old `<workspace>/.rkat/tui/`
   are gone (that directory is still never read).
+- The shell's job tools (`shell_jobs`, `shell_job_status`,
+  `shell_job_cancel`) are no longer offered, and `shell` with
+  `background` is refused with what to do instead: the engine drops the
+  background mode from the catalog of every agent that has the mob tools,
+  so every background job failed with "requested tool execution mode
+  Detached is not supported". The agents' instructions say the shell runs
+  in the foreground only.
 
 ### Fixed
 

@@ -145,6 +145,12 @@ pub enum DenyReason {
         /// Which path, and why it is sealed.
         detail: String,
     },
+    /// The call asks for what the engine offers but cannot run here
+    /// ([`policy::Tier::Unavailable`]); `detail` says what to do instead.
+    Unavailable {
+        /// What is unavailable, why, and what to do instead.
+        detail: String,
+    },
     /// The classifier blocked the action.
     Classifier {
         /// Block-rule id, if named (the user's text only).
@@ -180,6 +186,7 @@ impl DenyReason {
         match self {
             Self::UserRule { .. }
             | Self::Sealed { .. }
+            | Self::Unavailable { .. }
             | Self::PlanMode
             | Self::Unattended
             | Self::ClassifierUnavailable(_) => Decider::Policy,
@@ -204,7 +211,7 @@ impl fmt::Display for DenyReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UserRule { id, rule } => write!(f, "the user's deny rule {id} ({rule}) matches"),
-            Self::Sealed { detail } => f.write_str(detail),
+            Self::Sealed { detail } | Self::Unavailable { detail } => f.write_str(detail),
             Self::Classifier {
                 rule,
                 explanation,
@@ -254,6 +261,10 @@ impl DenyReason {
 pub fn deny_message(reason: &DenyReason) -> String {
     let user_reason = reason;
     let reason = user_reason.for_model();
+    if let DenyReason::Unavailable { .. } = user_reason {
+        // Not a judgement of the action: nothing here can run it.
+        return format!("Not available: {reason}.");
+    }
     if let DenyReason::Human {
         comment: Some(_), ..
     } = user_reason

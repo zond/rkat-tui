@@ -37,12 +37,15 @@ pub const NESTING_TOOLS: [&str; 4] = ["delegate", "mob_create", "mob_spawn_membe
 pub const DENIED_SPAWN_TOOLS: [&str; 1] = ["fork_off"];
 
 /// The tool access policy every member's is merged with:
-/// [`crate::approval::policy::TUI_OWNED_BUILTINS`] and [`DENIED_SPAWN_TOOLS`] denied.
+/// [`crate::approval::policy::TUI_OWNED_BUILTINS`], the shell's job controls
+/// ([`crate::approval::policy::SHELL_JOB_TOOLS`]) and [`DENIED_SPAWN_TOOLS`]
+/// denied.
 #[must_use]
 pub fn tool_access_policy() -> meerkat_core::ops::ToolAccessPolicy {
     meerkat_core::ops::ToolAccessPolicy::DenyList(
         crate::approval::policy::TUI_OWNED_BUILTINS
             .into_iter()
+            .chain(crate::approval::policy::SHELL_JOB_TOOLS)
             .chain(DENIED_SPAWN_TOOLS)
             .collect::<meerkat_core::ToolNameSet>(),
     )
@@ -710,7 +713,11 @@ mod tests {
         let ToolAccessPolicy::DenyList(names) = tool_access_policy() else {
             unreachable!("a deny list");
         };
-        for name in TUI_OWNED_BUILTINS.into_iter().chain(DENIED_SPAWN_TOOLS) {
+        for name in TUI_OWNED_BUILTINS
+            .into_iter()
+            .chain(crate::approval::policy::SHELL_JOB_TOOLS)
+            .chain(DENIED_SPAWN_TOOLS)
+        {
             assert!(names.0.iter().any(|n| n.as_str() == name), "{name}");
         }
         assert!(names.0.iter().any(|n| n.as_str() == "fork_off"));

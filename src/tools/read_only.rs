@@ -91,6 +91,10 @@ impl AgentToolDispatcher for ReadOnlyProjectTools {
         Arc::clone(&self.tools)
     }
 
+    fn tool_catalog_capabilities(&self) -> meerkat_core::ToolCatalogCapabilities {
+        crate::tools::fixed_catalog()
+    }
+
     fn tool_mutation_class(&self, tool_name: &str) -> ToolMutationClass {
         if READ_ONLY_TOOL_NAMES.contains(&tool_name) {
             ToolMutationClass::ReadOnly

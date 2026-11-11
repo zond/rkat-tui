@@ -242,6 +242,10 @@ impl AgentToolDispatcher for NoteToolDispatcher {
         Arc::clone(&self.tools)
     }
 
+    fn tool_catalog_capabilities(&self) -> meerkat_core::ToolCatalogCapabilities {
+        crate::tools::fixed_catalog()
+    }
+
     fn tool_mutation_class(&self, tool_name: &str) -> ToolMutationClass {
         match tool_name {
             NOTE_READ | NOTE_LIST => ToolMutationClass::ReadOnly,

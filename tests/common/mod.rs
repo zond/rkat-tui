@@ -136,6 +136,7 @@ pub struct Recorded {
     pub temperature: Option<f32>,
     pub provider_params: Option<ProviderTag>,
     pub tools: Vec<String>,
+    pub schemas: Vec<Value>,
     pub messages: Vec<Message>,
 }
 
@@ -226,6 +227,11 @@ impl LlmClient for ScriptedLlmClient {
             temperature: request.temperature,
             provider_params: request.provider_params.clone(),
             tools: request.tools.iter().map(|t| t.name.to_string()).collect(),
+            schemas: request
+                .tools
+                .iter()
+                .map(|t| t.input_schema.clone())
+                .collect(),
             messages: request.messages.clone(),
         });
         let _ = self.calls.send(index);

@@ -6010,25 +6010,77 @@ every appended note does. Tests:
 `daemon::agents::tests::a_read_only_profile_with_comms_is_found_wherever_it_is`,
 `tests/mobs.rs::a_read_only_profile_with_comms_gets_the_agent_a_note`.
 
-### Item 9: background shell jobs (probed, not done)
+### Background shell jobs (item 9): withheld, the engine ask recorded
 
-Reproduced on the rig: `shell {"background": true}` answers
-"tool execution contract resolution failed: requested tool execution mode
-Detached is not supported", while `shell_jobs`, `shell_job_status` and
-`shell_job_cancel` are offered. Read in the engine: the shell offers
-`Detached` only when its job manager `exports_canonical_async_ops`
-(meerkat-tools `job_manager.rs`): an owner session bound, an ops
-lifecycle registry bound, and a durable job runtime, which the factory
-builds only when the build has a realm id, a persistent detached job
-store, a persistent blob store and a delivery projector
-(`factory.rs` around 9316; the runtime-backed composition supplies all
-four as builder defaults, `surface/runtime_backed.rs` 395-430). Which of
-these a mob member's build lacks was not established in this batch, so
-neither the fix nor the brief's fallback (withholding the three job
-tools) was applied: withholding them on a guess would hide tools the
-engine may well run. Next step: a probe that reads the member's
-`JobManager` state (its `Debug` shows `durable` and
-`exports_canonical_async_ops`) through the engine's session introspection.
+Reproduced on the rig: `shell {"background": true}` answers "tool
+execution contract resolution failed: requested tool execution mode
+Detached is not supported" while the shell's own schema offers
+`background`. The schema is the tell: the shell lists `background` only
+while its job manager `exports_canonical_async_ops` (meerkat-tools
+`builtin/shell/tool.rs`), so the member's job manager has its durable job
+runtime (realm id, a persistent job store, a persistent blob store, the
+delivery projector) and its ops binding; the probe
+`bootstrap::assemble` → `PersistenceBundle` confirmed the first four are
+there (manifest realm, `producer_job_store().is_persistent()`,
+`blob_store().is_persistent()`). The refusal is not the shell's: the
+agent validates every resolved plan against the root dispatcher's catalog
+(`AgentToolDispatcher::validate_resolved_execution_plan`, meerkat-core
+`agent.rs`), and a composite (`ToolGateway`, `DynamicToolComposite`)
+or a filter rebuilds each part's entries from the bare tool definitions,
+without their execution contracts, when that part does not declare its
+catalog exact (`tool_catalog_capabilities().exact_catalog`, default
+`false`). One inexact part anywhere below makes every ancestor inexact,
+so the shell's `Detached` contract was gone by the root.
+
+Which parts, found by switching them off one at a time on the rig (a
+probe build of the customizer, not kept): with the mob category disabled
+(`ToolCategoryOverrides::mob`) the same call is accepted ("Durable shell
+job submitted with ID: job_…", restart class `non_resumable`); disabling
+memory, schedules, the work graph, the tool access policy, the
+application tool policy, the dispatch admission or our external tools
+changes nothing while the mob tools are on. With the mob tools off but
+this crate's own external dispatchers left at the default, it fails
+again: those were ours (`FileToolDispatcher`, `NoteToolDispatcher`,
+`WatchToolDispatcher`, `ReadOnlyProjectTools`), and they now declare
+their fixed catalogs exact (`tools::fixed_catalog`). The engine's two are
+`meerkat_mob_mcp::AgentMobToolSurface` (`delegate`, `mob_*`, `council`,
+`fork_off`) and `meerkat_mob`'s `MobOperatorToolDispatcher` (the member
+operator family, `spawn_member` …), which the mob mounts into every
+member's external tools (`compose_external_tools_for_profile`); neither
+overrides `tool_catalog_capabilities`. A wrapper over the mob tools
+factory declaring the surface exact was tried and does not help: the
+operator dispatcher sits inside the external tools, where nothing of
+ours reaches it. (The same loss drops the tool-owned deadlines
+`AgentMobToolSurface::tool_catalog` gives `fork_off` and `council`.)
+
+So the engine cannot run a detached shell for a daemon agent (every agent
+has the mob tools). Landed: the three job tools are withheld from every
+member and helper through the tool access policy
+(`approval::policy::SHELL_JOB_TOOLS`, beside `TUI_OWNED_BUILTINS`), and
+the gate refuses `shell` with `background` and any job tool that reaches
+it as `Tier::Unavailable` with `DenyReason::Unavailable`
+(`BACKGROUND_SHELL_UNAVAILABLE`: what is unavailable and to run the
+command in the foreground with `timeout_secs`), never a safety verdict.
+For an agent the engine's own refusal comes first (plan resolution runs
+before the dispatch admission, and no host hook reaches a member's
+build); a helper without the mob tools resolves the background plan and
+meets the gate's refusal. The personas say the shell runs in the
+foreground only, since the shell's schema still offers `background`.
+
+Engine ask: `AgentMobToolSurface` and `MobOperatorToolDispatcher` declare
+`exact_catalog: true` (both build their catalog from a fixed tool set),
+or the composites keep each entry's contract when rebuilding an inexact
+part. Then lift the gate's refusal and the withholding, and prove the
+rest of the brief (the job's end reaches the agent and the TUI, jobs die
+with retirement and with daemon stop).
+
+Tests: `tests/shell_jobs.rs::a_background_shell_is_refused_and_the_job_tools_are_withheld`
+(the job tools are not offered, the shell's schema offers `background`,
+the engine's refusal, nothing ran, the foreground call after it ran;
+pins the engine state),
+`a_helpers_background_shell_is_refused_by_the_gate`;
+`approval::policy::tests::tier_table`, `upstream_builtins_are_all_classified`,
+`bootstrap::persona::tests::the_persona_restates_no_tool_contract`.
 
 ### Items 17 and 18: not done in P6
 
