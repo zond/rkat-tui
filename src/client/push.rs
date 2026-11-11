@@ -2,6 +2,7 @@
 //! method the runner acts on is one [`Push`] variant with its typed
 //! parameters, as each request is one [`crate::daemon::protocol::Method`].
 
+use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
@@ -44,12 +45,26 @@ pub enum Push {
     StreamEnd(String),
 }
 
+/// The parameters of a stream's event (`mob/stream_event`).
+#[derive(Deserialize)]
+struct StreamEvent {
+    stream_id: String,
+    event: Value,
+    #[serde(default)]
+    epoch: Option<String>,
+}
+
+/// The parameters of a stream's end (`mob/stream_end`).
+#[derive(Deserialize)]
+struct StreamEnded {
+    stream_id: String,
+}
+
 impl Push {
     /// The push `note` carries; `None` for a method the client does not act
     /// on, or parameters it cannot read (logged).
     #[must_use]
-    pub fn decode(note: &Notification) -> Option<Self> {
-        let params = &note.params;
+    pub fn decode(note: Notification) -> Option<Self> {
         let push = match note.method.as_str() {
             protocol::DECISION_NOTICE => Self::Decision(Box::new(read(note)?)),
             protocol::DECISION_ENDED => Self::DecisionEnded(read(note)?),
@@ -60,15 +75,19 @@ impl Push {
             protocol::SWITCHED => Self::Switched(read(note)?),
             protocol::MOB => Self::Mob(read(note)?),
             protocol::IDLE => Self::Idle(read(note)?),
-            STREAM_EVENT => Self::Stream {
-                stream: params.get("stream_id")?.as_str()?.to_string(),
-                event: params.get("event")?.clone(),
-                epoch: params
-                    .get("epoch")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-            },
-            STREAM_END => Self::StreamEnd(params.get("stream_id")?.as_str()?.to_string()),
+            STREAM_EVENT => {
+                let StreamEvent {
+                    stream_id,
+                    event,
+                    epoch,
+                } = read(note)?;
+                Self::Stream {
+                    stream: stream_id,
+                    event,
+                    epoch,
+                }
+            }
+            STREAM_END => Self::StreamEnd(read::<StreamEnded>(note)?.stream_id),
             _ => return None,
         };
         Some(push)
@@ -76,11 +95,10 @@ impl Push {
 }
 
 /// `note`'s parameters as `T`; `None` (logged) when they do not read.
-fn read<T: DeserializeOwned>(note: &Notification) -> Option<T> {
-    serde_json::from_value(note.params.clone())
-        .map_err(
-            |err| tracing::debug!(error = %err, method = %note.method, "unreadable notification"),
-        )
+fn read<T: DeserializeOwned>(note: Notification) -> Option<T> {
+    let Notification { method, params } = note;
+    serde_json::from_value(params)
+        .map_err(|err| tracing::debug!(error = %err, %method, "unreadable notification"))
         .ok()
 }
 
@@ -99,22 +117,22 @@ mod tests {
 
     #[test]
     fn each_method_decodes_to_its_push_and_nothing_else_does() {
-        let ended = Push::decode(&note(
+        let ended = Push::decode(note(
             protocol::DECISION_ENDED,
             json!({"decision_id": "d1", "phase": "rejected"}),
         ));
         assert!(matches!(ended, Some(Push::DecisionEnded(e)) if e.decision_id == "d1"));
-        let event = Push::decode(&note(
+        let event = Push::decode(note(
             STREAM_EVENT,
             json!({"stream_id": "s1", "event": {"x": 1}, "epoch": "e1"}),
         ));
         assert!(
             matches!(event, Some(Push::Stream { stream, epoch: Some(epoch), .. }) if stream == "s1" && epoch == "e1")
         );
-        let end = Push::decode(&note(STREAM_END, json!({"stream_id": "s1"})));
+        let end = Push::decode(note(STREAM_END, json!({"stream_id": "s1"})));
         assert!(matches!(end, Some(Push::StreamEnd(stream)) if stream == "s1"));
         // Unreadable parameters and unknown methods are not acted on.
-        assert!(Push::decode(&note(protocol::COST, json!({"nope": true}))).is_none());
-        assert!(Push::decode(&note("rkat/unknown", json!({}))).is_none());
+        assert!(Push::decode(note(protocol::COST, json!({"nope": true}))).is_none());
+        assert!(Push::decode(note("rkat/unknown", json!({}))).is_none());
     }
 }

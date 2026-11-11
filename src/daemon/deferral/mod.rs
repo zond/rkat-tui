@@ -112,6 +112,8 @@ pub trait Shown: Send + Sync {
 #[derive(Debug, Default)]
 pub struct Deferrable {
     defs: RwLock<BTreeMap<String, Arc<ToolDef>>>,
+    /// The same tools as the gate knows them, built when one is noted.
+    catalog: RwLock<crate::approval::catalog::ToolCatalog>,
 }
 
 impl Deferrable {
@@ -125,14 +127,27 @@ impl Deferrable {
     /// `direct` ones as deferrable.
     pub fn note(&self, defs: &[Arc<ToolDef>], direct: &[&str]) {
         let mut known = self.defs.write();
+        let mut added = false;
         for def in defs
             .iter()
             .filter(|def| !direct.contains(&def.name.as_str()) && HiddenFamily::of(def).is_some())
         {
-            known
-                .entry(def.name.to_string())
-                .or_insert_with(|| Arc::clone(def));
+            known.entry(def.name.to_string()).or_insert_with(|| {
+                added = true;
+                Arc::clone(def)
+            });
         }
+        if added {
+            self.catalog
+                .write()
+                .add_missing(known.values().map(AsRef::as_ref));
+        }
+    }
+
+    /// Add the deferrable tools `catalog` does not name yet (a tool
+    /// revealed in a run is in no catalog read before it).
+    pub fn add_to(&self, catalog: &mut crate::approval::catalog::ToolCatalog) {
+        catalog.add_missing_from(&self.catalog.read());
     }
 
     /// Every deferrable tool noted, by name.

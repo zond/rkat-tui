@@ -457,7 +457,7 @@ impl DaemonToolOrigins {
         };
         known.or_else(|| {
             let mut deferrable = ToolCatalog::default();
-            deferrable.add_missing(self.deferrable.all().iter().map(AsRef::as_ref));
+            self.deferrable.add_to(&mut deferrable);
             deferrable.get(name).cloned()
         })
     }
@@ -473,7 +473,7 @@ impl ToolOrigins for DaemonToolOrigins {
             .cloned()
             .unwrap_or_else(|| self.known.read().clone());
         // A tool revealed in this run is in no catalog read yet.
-        catalog.add_missing(self.deferrable.all().iter().map(AsRef::as_ref));
+        self.deferrable.add_to(&mut catalog);
         Some(catalog)
     }
 }
@@ -712,7 +712,10 @@ pub fn watch(watched: Watched) -> tokio::task::JoinHandle<()> {
                                     meerkat_core::CompactionSummarySource::ProviderCall { .. }
                                 )
                             })
-                            .then_some((input, *summary_tokens));
+                            .then_some(super::usage::Summarized {
+                                input,
+                                output: *summary_tokens,
+                            });
                         let model = current.model_of(&session).unwrap_or_default();
                         ledger
                             .compaction(

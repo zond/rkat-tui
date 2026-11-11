@@ -284,6 +284,16 @@ fn source_label(source: PriceSource) -> String {
     format!("price: {source}")
 }
 
+/// Tokens in the context after a model call: everything sent plus the reply.
+#[must_use]
+pub fn context_tokens(usage: &Usage) -> u64 {
+    usage
+        .input_tokens
+        .saturating_add(usage.output_tokens)
+        .saturating_add(usage.cache_creation_tokens.unwrap_or(0))
+        .saturating_add(usage.cache_read_tokens.unwrap_or(0))
+}
+
 /// Dollars with two decimals; `$12.3k` from 10 000 on.
 #[must_use]
 pub fn fmt_usd(usd: f64) -> String {

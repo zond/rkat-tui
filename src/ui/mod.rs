@@ -867,15 +867,6 @@ fn quote_short(text: &str) -> String {
     format!("“{out}”")
 }
 
-/// Tokens in the context after a model call: everything sent plus the reply.
-pub(crate) fn context_tokens(usage: &meerkat_core::Usage) -> u64 {
-    usage
-        .input_tokens
-        .saturating_add(usage.output_tokens)
-        .saturating_add(usage.cache_creation_tokens.unwrap_or(0))
-        .saturating_add(usage.cache_read_tokens.unwrap_or(0))
-}
-
 /// An open helper full view: the helper's header and the view's own
 /// scroll position (it follows new output while at the bottom).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1343,7 +1334,7 @@ impl App {
                     AgentEvent::TurnCompleted {
                         usage: Some(usage), ..
                     } => {
-                        self.status.context_used = Some(context_tokens(usage));
+                        self.status.context_used = Some(crate::cost::context_tokens(usage));
                         self.status.context_approx = false;
                     }
                     AgentEvent::CompactionCompleted {

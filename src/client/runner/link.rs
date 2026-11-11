@@ -232,7 +232,7 @@ impl Runner {
         // What the live stream delivered before the usage answer: its turns
         // are in the totals.
         for note in queued {
-            self.on_notification(&note);
+            self.on_notification(note);
         }
         // The counters are the session's totals; after the
         // replay and the live events queued before the usage read, whose
@@ -394,7 +394,7 @@ impl Runner {
         }
     }
 
-    pub(super) fn on_notification(&mut self, note: &Notification) {
+    pub(super) fn on_notification(&mut self, note: Notification) {
         if self.conn.link().is_none() {
             return;
         }

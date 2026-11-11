@@ -43,7 +43,27 @@ pub enum ToolFamily {
 }
 
 impl ToolFamily {
-    /// Its name as `/context` prints it.
+    /// Every family.
+    #[cfg(test)]
+    const ALL: [Self; 14] = [
+        Self::Builtin,
+        Self::Comms,
+        Self::Files,
+        Self::Memory,
+        Self::Mob,
+        Self::Notes,
+        Self::Schedule,
+        Self::Watch,
+        Self::Callback,
+        Self::Workgraph,
+        Self::Mcp,
+        Self::Bundle,
+        Self::Catalog,
+        Self::Other,
+    ];
+
+    /// Its name as `/context` prints it: the wire name (a test pins them
+    /// equal).
     #[must_use]
     pub fn name(self) -> &'static str {
         match self {
@@ -69,7 +89,9 @@ impl ToolFamily {
     pub fn of(def: &ToolDef) -> Self {
         if matches!(
             def.name.as_str(),
-            "tool_catalog_search" | "tool_catalog_load" | super::deferral::reveal::TOOL_SEARCH
+            meerkat_core::tool_catalog::TOOL_CATALOG_SEARCH_NAME
+                | meerkat_core::tool_catalog::TOOL_CATALOG_LOAD_NAME
+                | super::deferral::reveal::TOOL_SEARCH
         ) {
             return Self::Catalog;
         }
@@ -180,5 +202,22 @@ impl MessageCounts {
     #[must_use]
     pub fn total(&self) -> usize {
         self.user + self.assistant + self.tool_results + self.notices
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    /// `/context` prints each family under its wire name: one vocabulary.
+    #[test]
+    fn each_family_is_printed_under_its_wire_name() {
+        for family in ToolFamily::ALL {
+            assert_eq!(
+                serde_json::to_value(family).unwrap(),
+                serde_json::Value::String(family.name().to_string())
+            );
+        }
     }
 }

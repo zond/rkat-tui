@@ -198,6 +198,15 @@ impl ToolCatalog {
         }
     }
 
+    /// Add every tool of `other` this catalog does not name yet.
+    pub fn add_missing_from(&mut self, other: &Self) {
+        for (name, origin) in &other.tools {
+            self.tools
+                .entry(name.clone())
+                .or_insert_with(|| origin.clone());
+        }
+    }
+
     /// Add or replace one tool.
     #[must_use]
     #[cfg(any(test, feature = "test-support"))]

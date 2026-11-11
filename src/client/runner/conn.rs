@@ -125,7 +125,8 @@ impl Conn {
             Self::Connecting { .. } => "connecting to it",
             Self::Failed => "the connect failed; /daemon start tries again",
             Self::Retrying { .. } => "the connect is tried again shortly",
-            Self::Idle | Self::Up { .. } | Self::Stopped | Self::Rehoming => "reconnecting",
+            Self::Rehoming => "re-homing; it attaches again when that ends",
+            Self::Idle | Self::Up { .. } | Self::Stopped => "reconnecting",
         }
     }
 }

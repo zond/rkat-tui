@@ -168,9 +168,10 @@ impl Ledger {
         self.records.lock().entry(account.clone()).or_insert(entry);
     }
 
-    /// Change `account`'s record with `change` (read first), and tell the
-    /// clients when a conversation's totals changed.
-    async fn change(&self, account: Account, change: impl FnOnce(&mut Record)) {
+    /// Change `account`'s record with `change` (read first; it says
+    /// whether it changed anything), and tell the clients when a
+    /// conversation's totals changed.
+    async fn change(&self, account: Account, change: impl FnOnce(&mut Record) -> bool) {
         self.load(&account).await;
         let changed = {
             let mut records = self.records.lock();
@@ -178,9 +179,7 @@ impl Ledger {
                 record: Record::default(),
                 stored: Stored::Clean,
             });
-            let before = entry.record.clone();
-            change(&mut entry.record);
-            let changed = entry.record != before;
+            let changed = change(&mut entry.record);
             if changed && entry.stored == Stored::Clean {
                 entry.stored = Stored::Dirty;
             }
@@ -195,13 +194,15 @@ impl Ledger {
 
     /// One model call of the agent running as `session`, on `model`.
     pub async fn turn(&self, session: &SessionId, model: &str, usage: &Usage) {
-        let tokens = crate::ui::context_tokens(usage);
+        let context = Some(ContextReading {
+            tokens: crate::cost::context_tokens(usage),
+            approx: false,
+        });
         self.change(Account::Session(session.clone()), |record| {
-            record.cost.record(model, usage);
-            record.context = Some(ContextReading {
-                tokens,
-                approx: false,
-            });
+            let counted = count(record, |cost| cost.record(model, usage), usage);
+            let moved = record.context != context;
+            record.context = context;
+            counted || moved
         })
         .await;
     }
@@ -209,7 +210,7 @@ impl Ledger {
     /// One model call of a scheduled run, counted to its schedule too.
     pub async fn scheduled(&self, schedule: &ScheduleId, model: &str, usage: &Usage) {
         self.change(Account::Schedule(schedule.clone()), |record| {
-            record.cost.record(model, usage);
+            count(record, |cost| cost.record(model, usage), usage)
         })
         .await;
     }
@@ -218,7 +219,11 @@ impl Ledger {
     /// `owner`.
     pub async fn helper_turn(&self, owner: &SessionId, label: &str, model: &str, usage: &Usage) {
         self.change(Account::Session(owner.clone()), |record| {
-            record.cost.record_helper(label, model, usage);
+            count(
+                record,
+                |cost| cost.record_helper(label, model, usage),
+                usage,
+            )
         })
         .await;
     }
@@ -226,31 +231,53 @@ impl Ledger {
     /// One classifier call judging a call of `session` (or of its helpers).
     pub async fn classifier(&self, session: &SessionId, model: &str, usage: &Usage) {
         self.change(Account::Session(session.clone()), |record| {
-            record.cost.record(model, usage);
+            count(record, |cost| cost.record(model, usage), usage)
         })
         .await;
     }
 
-    /// A compaction of `session` on `model`: `input` is the history
-    /// estimate it summarized, `output` the summary (`summarized`: a
-    /// provider call made it, which costs), `after` the estimate it left.
+    /// A compaction of `session` on `model`: `summarized` when a provider
+    /// call made the summary (which costs), `after` the history estimate
+    /// it left.
     pub async fn compaction(
         &self,
         session: &SessionId,
         model: &str,
-        summarized: Option<(u64, u64)>,
+        summarized: Option<Summarized>,
         after: u64,
     ) {
+        let context = Some(ContextReading {
+            tokens: after,
+            approx: true,
+        });
         self.change(Account::Session(session.clone()), |record| {
-            if let Some((input, output)) = summarized {
+            if let Some(Summarized { input, output }) = summarized {
                 record.cost.record_compaction(model, input, output);
             }
-            record.context = Some(ContextReading {
-                tokens: after,
-                approx: true,
-            });
+            let moved = record.context != context;
+            record.context = context;
+            summarized.is_some() || moved
         })
         .await;
+    }
+
+    /// `account` is gone (a deleted schedule): its record goes, in memory
+    /// and on disk (off the async loop, after a write round under way).
+    pub async fn forget(self: &Arc<Self>, account: &Account) {
+        self.records.lock().remove(account);
+        let path = account.path(&self.realm_root);
+        let ledger = Arc::clone(self);
+        let removed = tokio::task::spawn_blocking(move || {
+            let _one = ledger.writing.lock();
+            match std::fs::remove_file(&path) {
+                Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err((path, err)),
+                _ => Ok(()),
+            }
+        })
+        .await;
+        if let Ok(Err((path, err))) = removed {
+            tracing::warn!(error = %err, path = %path.display(), "a usage record was not removed");
+        }
     }
 
     /// Write what changed, off the async loop.
@@ -289,6 +316,29 @@ impl Ledger {
             }
         }
     }
+}
+
+/// A provider call's summary of a compaction: the history estimate it
+/// read and the summary it wrote, in tokens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Summarized {
+    /// The history estimate summarized.
+    pub input: u64,
+    /// The summary.
+    pub output: u64,
+}
+
+/// Count `usage` into `record` with `add` when it holds any tokens;
+/// whether it did.
+fn count(record: &mut Record, add: impl FnOnce(&mut SessionCost), usage: &Usage) -> bool {
+    let any = usage.input_tokens > 0
+        || usage.output_tokens > 0
+        || usage.cache_creation_tokens.unwrap_or(0) > 0
+        || usage.cache_read_tokens.unwrap_or(0) > 0;
+    if any {
+        add(&mut record.cost);
+    }
+    any
 }
 
 /// A record could not be written.
@@ -392,7 +442,7 @@ mod tests {
         assert_eq!(record.cost.per_model["judge"].output, 2);
         assert_eq!(
             record.context.map(|c| c.tokens),
-            Some(crate::ui::context_tokens(&usage(10, 5)))
+            Some(crate::cost::context_tokens(&usage(10, 5)))
         );
         #[cfg(unix)]
         {
@@ -408,6 +458,30 @@ mod tests {
         again.turn(&session, "m", &usage(1, 1)).await;
         again.flush();
         assert_eq!(read_record(&path).cost.per_model["m"].input, 11);
+    }
+
+    /// A deleted schedule's record goes, from memory and from disk; a
+    /// conversation's stays.
+    #[tokio::test]
+    async fn a_forgotten_schedules_record_is_removed() {
+        let realm = tempfile::tempdir().unwrap();
+        let ledger = Ledger::new(realm.path(), |_: &SessionId, _: &SessionCost| {});
+        let (schedule, session) = (ScheduleId::new(), SessionId::new());
+        ledger.scheduled(&schedule, "m", &usage(1, 1)).await;
+        ledger.turn(&session, "m", &usage(1, 1)).await;
+        ledger.flush();
+        let path = Account::Schedule(schedule.clone()).path(realm.path());
+        assert!(path.exists());
+        ledger.forget(&Account::Schedule(schedule.clone())).await;
+        assert!(!path.exists());
+        assert!(
+            ledger
+                .get(&Account::Schedule(schedule))
+                .await
+                .cost
+                .is_empty()
+        );
+        assert!(Account::Session(session).path(realm.path()).exists());
     }
 
     /// A compaction counts its estimate when a provider call made the
@@ -429,7 +503,15 @@ mod tests {
             })
         );
         ledger
-            .compaction(&session, "m", Some((5_000, 300)), 400)
+            .compaction(
+                &session,
+                "m",
+                Some(Summarized {
+                    input: 5_000,
+                    output: 300,
+                }),
+                400,
+            )
             .await;
         let record = ledger.get(&account).await;
         assert_eq!(record.cost.per_model["m"].input, 5_000);

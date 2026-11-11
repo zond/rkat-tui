@@ -278,6 +278,9 @@ impl Schedules {
             }
             ScheduleOp::Delete => {
                 self.service.delete(id).await?;
+                self.ledger
+                    .forget(&super::usage::Account::Schedule(id.clone()))
+                    .await;
                 Ok(format!("deleted schedule {label}"))
             }
         }
@@ -311,7 +314,14 @@ impl Schedules {
         let mut deleted = Vec::new();
         for schedule in schedules {
             match self.service.delete(&schedule.schedule_id).await {
-                Ok(_) => deleted.push(name_of(&schedule)),
+                Ok(_) => {
+                    self.ledger
+                        .forget(&super::usage::Account::Schedule(
+                            schedule.schedule_id.clone(),
+                        ))
+                        .await;
+                    deleted.push(name_of(&schedule));
+                }
                 Err(err) => {
                     tracing::warn!(%agent, schedule = %schedule.schedule_id, error = %err, "a retiring agent's schedule was not deleted");
                 }

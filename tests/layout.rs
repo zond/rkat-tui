@@ -200,3 +200,29 @@ fn forwarding_wrappers_override_every_method_of_their_engine_trait() {
         );
     }
 }
+
+/// The daemon does not depend on the UI: what both need lives in a
+/// module of its own (`crate::cost`, ...). Its tests may use the UI.
+#[test]
+fn the_daemon_does_not_depend_on_the_ui() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut dirs = vec![root.join("src/daemon")];
+    let mut found = Vec::new();
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                dirs.push(path);
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            let code = text.split("mod tests {").next().unwrap_or_default();
+            for (n, line) in code.lines().enumerate() {
+                if line.contains("crate::ui") && !line.trim_start().starts_with("//") {
+                    found.push(format!("{}:{}", path.display(), n + 1));
+                }
+            }
+        }
+    }
+    assert!(found.is_empty(), "the daemon uses the UI at {found:?}");
+}

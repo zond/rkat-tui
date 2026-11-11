@@ -760,7 +760,7 @@ impl Runner {
                     Some(effect) => self.handle_effect(effect),
                 },
                 event = self.conn.next() => match event {
-                    ConnEvent::Note(note) => self.on_notification(&note),
+                    ConnEvent::Note(note) => self.on_notification(note),
                     ConnEvent::Lost => self.lost(),
                     ConnEvent::Connected(joined) => self.connected(joined),
                     ConnEvent::RetryDue => self.retry(),
