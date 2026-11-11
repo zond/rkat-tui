@@ -631,6 +631,21 @@ fn check_no_symlinks_from(base: &Path, rel: &Path, path: &Path) -> Result<(), At
     Ok(())
 }
 
+/// This machine's host name.
+#[must_use]
+pub fn local_host() -> Option<String> {
+    #[cfg(unix)]
+    {
+        nix::unistd::gethostname()
+            .ok()
+            .and_then(|name| name.into_string().ok())
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {

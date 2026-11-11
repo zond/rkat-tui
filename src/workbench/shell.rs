@@ -44,7 +44,8 @@ impl Workbench {
                 Ok(run) => {
                     let context = agent
                         .append_system_context(context_text(&command, &run), run_key())
-                        .await;
+                        .await
+                        .map_err(|err| err.to_string());
                     ShellOutcome::Ran { run, context }
                 }
                 Err(err) => ShellOutcome::Failed(err.to_string()),

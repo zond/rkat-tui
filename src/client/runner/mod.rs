@@ -54,9 +54,11 @@ use crate::ui::{
 };
 use crate::ui::{Connection as LinkState, Departure, QuitDecision};
 use crate::user_shell::UserShell;
+use crate::workbench::context;
 use crate::workbench::models::Current;
-use crate::workbench::{AgentContext, SavedUnsent, Workbench, WorkbenchParts};
-use crate::workbench::{context, tasks};
+use crate::workbench::{
+    AgentContext, ContextError, ContextSink, SavedUnsent, Workbench, WorkbenchParts,
+};
 
 mod commands;
 mod depart;
@@ -480,9 +482,6 @@ impl Turn {
 /// Why a call to the daemon brought no answer.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CallFailure {
-    /// No connection now.
-    #[error("not attached to the daemon")]
-    NotAttached,
     /// No answer within the call's bound.
     #[error("the daemon did not answer in time")]
     TimedOut,
@@ -1197,23 +1196,33 @@ impl Runner {
 
     /// The orchestrator as the workbench reaches it, over this connection.
     fn linked(&self) -> AgentContext {
-        AgentContext::new(self.connection())
+        AgentContext::new(
+            self.connection()
+                .map(|connection| Arc::new(Linked(connection)) as Arc<dyn ContextSink>),
+        )
     }
 }
 
-/// `mob/append_system_context` for the orchestrator over `connection`
-/// (`None`: not attached now), bounded ([`AgentContext`]).
-pub(crate) async fn append_system_context(
-    connection: Option<Arc<Connection>>,
-    text: &str,
-    key: &str,
-) -> Result<(), CallFailure> {
-    let connection = connection.ok_or(CallFailure::NotAttached)?;
-    bounded(
-        CALL_TIMEOUT,
-        remote::append_system_context(&connection, text, key),
-    )
-    .await
+/// The agent over this client's connection, as the workbench reaches it:
+/// `mob/append_system_context`, bounded.
+struct Linked(Arc<Connection>);
+
+impl ContextSink for Linked {
+    fn append(
+        &self,
+        text: String,
+        key: String,
+    ) -> futures::future::BoxFuture<'static, Result<(), ContextError>> {
+        let connection = Arc::clone(&self.0);
+        Box::pin(async move {
+            bounded(
+                CALL_TIMEOUT,
+                remote::append_system_context(&connection, &text, &key),
+            )
+            .await
+            .map_err(|err| ContextError::NotTaken(err.to_string()))
+        })
+    }
 }
 
 /// The endpoint and model the status bar names, as the picker lists them

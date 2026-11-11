@@ -951,7 +951,7 @@ impl Agents {
     /// when nothing (or more than one) matches.
     async fn resolve(&self, reference: &str) -> Option<(SessionId, String)> {
         let listed = self.conversations.list(None, &self.live()).await;
-        match crate::client::sessions::resolve(reference, &listed, None) {
+        match super::conversations::resolve(reference, &listed, None) {
             Ok(session) => {
                 let owner = self.conversations.agent_of(&session)?;
                 Some((session, owner))

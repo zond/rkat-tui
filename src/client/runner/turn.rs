@@ -270,7 +270,9 @@ impl Runner {
                 // Once more: a mob made while the tool ran.
                 self.discover_at = Some(Instant::now());
             }
-            AgentEvent::ToolExecutionCompleted { name, .. } if tasks::changes_tasks(name) => {
+            AgentEvent::ToolExecutionCompleted { name, .. }
+                if crate::daemon::tasks::changes_tasks(name) =>
+            {
                 self.refresh_tasks();
             }
             AgentEvent::BoundaryAppendApplied { .. } => {

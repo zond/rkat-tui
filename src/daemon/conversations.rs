@@ -976,6 +976,70 @@ pub fn title(messages: &[Message]) -> Option<String> {
     })
 }
 
+/// Resolve a `/resume` reference against the conversations (last used
+/// first): `last` (`~`, `~0`), `~N`, a full id, or a unique id prefix.
+/// `last` and `~N` count the conversations other than the current one (the
+/// current one is the most recently used, so `last` would always name it):
+/// `last` is the one before it; with `mine` (this client's agent) only that
+/// agent's conversations count, the ones it can resume.
+///
+/// # Errors
+///
+/// Why nothing (or more than one conversation) matches.
+pub fn resolve(
+    reference: &str,
+    listed: &[Listed],
+    mine: Option<&str>,
+) -> Result<SessionId, String> {
+    let reference = reference.trim();
+    if reference.is_empty() {
+        return Err("empty session reference".to_string());
+    }
+    let offset = match reference {
+        "last" | "~" | "~0" => Some(0),
+        s => match s.strip_prefix('~') {
+            Some(n) => Some(
+                n.parse::<usize>()
+                    .map_err(|_| "expected ~N where N is a non-negative number".to_string())?,
+            ),
+            None => None,
+        },
+    };
+    if let Some(offset) = offset {
+        let others: Vec<&Listed> = listed
+            .iter()
+            .filter(|row| !row.current)
+            .filter(|row| mine.is_none_or(|mine| row.agent == mine))
+            .collect();
+        return match others.get(offset) {
+            Some(row) => Ok(row.session_id.clone()),
+            None if others.is_empty() => Err(if mine.is_some() {
+                "no other conversations of this agent".to_string()
+            } else {
+                "no other conversations in this workspace".to_string()
+            }),
+            None => Err(format!(
+                "only {} other conversation(s) exist; ~{offset} is out of range",
+                others.len()
+            )),
+        };
+    }
+    let prefix = reference.to_ascii_lowercase();
+    let mut matches = listed
+        .iter()
+        .filter(|row| row.session_id.to_string().starts_with(&prefix));
+    match (matches.next(), matches.next()) {
+        (Some(only), None) => Ok(only.session_id.clone()),
+        (None, _) => Err(format!(
+            "no conversation or earlier session of this workspace matches `{reference}`"
+        )),
+        (Some(_), Some(_)) => Err(format!(
+            "prefix is ambiguous ({} conversations match); use more characters",
+            2 + matches.count()
+        )),
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {

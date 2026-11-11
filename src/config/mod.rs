@@ -31,9 +31,11 @@
 pub mod file;
 pub mod layers;
 pub mod persist;
+pub mod settings;
 #[cfg(test)]
 mod tests;
 
 pub use file::*;
 pub use layers::*;
 pub use persist::*;
+pub use settings::ChecklistView;

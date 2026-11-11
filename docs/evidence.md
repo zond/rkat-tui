@@ -6312,3 +6312,35 @@ start` to try again, or stopped) and what did not happen. The
 `RecallQueued` round trip is left as it is: it gets wired to a daemon
 `rkat/recall` when Meerkat 0.9.12 is adopted
 (`.handover/release-adoption-brief.md` 3.2).
+
+### Item 10 of the first review, finished, and the module graph (R2 item 10)
+
+- The realm `tui.toml` writer left the approval engine:
+  `config::RealmFile { path, trust }` writes the rules, the permission
+  mode and the checklist view, each write recorded in the host trust
+  record. Bootstrap makes it, the engine is handed it for the rules and
+  the mode (`ApprovalConfig::realm_file`, replacing `rules_path` and
+  `rules_trust`), and the daemon keeps one for `rkat/checklist_view`,
+  which no longer goes through the engine
+  (`ApprovalEngine::persist_checklist_view` is gone).
+- The settings the UI renders and the daemon applies are `config`'s:
+  `config::settings` holds `ChecklistView`, `HelperView`, `CompactMode`,
+  `CompactionPolicy` (its data and the trigger) and `CompactionTrigger`;
+  `ui` re-exports what it renders and keeps the gauge's own reading of the
+  policy (`describe`, `zone`) as an `impl` beside the gauge. `config`
+  imports nothing of `ui` now. (`ScheduleRow::cost` still carries the
+  UI's `SessionCost` on the wire.)
+- The daemon imports nothing of the client: `rkat/tasks`' reader is
+  `daemon::tasks` (from `workbench::tasks`), `/resume`'s reference
+  resolution is `daemon::conversations::resolve` (the client re-exports
+  it as `client::sessions::resolve`), `local_host` is `paths::local_host`,
+  `--list` is `client::list` (it is a client of each daemon; the
+  `rkat-tui-mob --list` entry calls it from the crate root,
+  `run_daemon`), and the realm-pin test moved to `client::launch`.
+- The workbench imports nothing of the client: `AgentContext` holds a
+  `ContextSink` (the client's connection, `client::runner::Linked`) and
+  answers a typed `ContextError` (not attached, or not taken).
+- `tests/layout.rs` keeps `CLAUDE.md`'s layout table naming every
+  module directory and top-level module file; the table names
+  `agents.rs`, `peer.rs`, `persona.rs`, `settings.rs`, `tasks.rs` and
+  `list.rs` where they live now.

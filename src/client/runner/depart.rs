@@ -167,8 +167,7 @@ impl Runner {
             (
                 Departure::Terminate,
                 Err(
-                    err @ (CallFailure::NotAttached
-                    | CallFailure::TimedOut
+                    err @ (CallFailure::TimedOut
                     | CallFailure::Failed(ClientError::Disconnected)),
                 ),
             ) => {
@@ -301,7 +300,7 @@ pub(crate) async fn daemon_ended(
     loop {
         if no_file_names(files, &endpoint.token)
             || (direct
-                && (crate::daemon::list::pid_gone(endpoint.pid)
+                && (crate::client::list::pid_gone(endpoint.pid)
                     || probe_address(endpoint.address) == Probe::Refused))
         {
             return true;

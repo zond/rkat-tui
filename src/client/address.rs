@@ -90,25 +90,10 @@ pub fn read_token_file(path: &Path) -> Result<String, String> {
     Ok(token)
 }
 
-/// This machine's host name.
-#[must_use]
-pub fn local_host() -> Option<String> {
-    #[cfg(unix)]
-    {
-        nix::unistd::gethostname()
-            .ok()
-            .and_then(|name| name.into_string().ok())
-    }
-    #[cfg(not(unix))]
-    {
-        None
-    }
-}
-
 /// Why the daemon of `status`, reached with `token`, does not serve a
 /// local directory, or `None` when it does. Local is established only by
 /// this machine's own record: one of `local_files` (the endpoint files
-/// here, [`crate::daemon::list::files`]) names the daemon by `token` for
+/// here, [`crate::client::list::files`]) names the daemon by `token` for
 /// the workspace `status` reports, and that workspace is a directory. A
 /// matching host name and an existing path are not evidence: two machines
 /// can share both, and treating the other's workspace as this one's would
@@ -190,7 +175,12 @@ pub async fn reach(
     let status = status_of(&probe)
         .await
         .map_err(|err| fail(format!("no daemon answered with that token: {err}")))?;
-    let remote = remote_reason(&status, local_host().as_deref(), &probe.token, local_files);
+    let remote = remote_reason(
+        &status,
+        crate::paths::local_host().as_deref(),
+        &probe.token,
+        local_files,
+    );
     Ok(Reached {
         endpoint: Endpoint {
             pid: status.pid,

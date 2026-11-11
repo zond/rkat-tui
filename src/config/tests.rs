@@ -1,14 +1,12 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use super::settings::{ChecklistView, CompactMode, HelperView};
 use super::*;
 use crate::approval::mode::PermissionMode;
 use crate::approval::rules::{ArgPattern, Rule, RuleKind, RuleOrigin, RuleSet, RulesError};
 use crate::bootstrap::confinement::ConfinementSection;
 use crate::bootstrap::trust::Untrusted;
 use crate::thinking::ThinkingSetting;
-use crate::ui::checklist::ChecklistView;
-use crate::ui::compaction::CompactMode;
-use crate::ui::transcript::HelperView;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 

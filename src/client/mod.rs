@@ -38,6 +38,7 @@ pub mod approvals;
 pub mod catchup;
 pub mod helpers;
 pub mod launch;
+pub mod list;
 pub mod rehome;
 pub mod remote;
 pub mod runner;
@@ -186,7 +187,7 @@ pub enum ClientError {
 /// be read.
 #[cfg(any(test, feature = "test-support"))]
 pub async fn configure(args: &Args, target: AttachTarget) -> Result<ClientConfig, TuiError> {
-    configure_at(args, target, &crate::daemon::list::files(None)).await
+    configure_at(args, target, &crate::client::list::files(None)).await
 }
 
 /// [`configure`], with `local_files` as this machine's endpoint files (the
@@ -502,7 +503,7 @@ pub async fn run(
         args,
         &target,
         Some(layers),
-        &crate::daemon::list::files(None),
+        &crate::client::list::files(None),
     )
     .await?;
     let mut config = configure_with(

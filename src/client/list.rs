@@ -3,7 +3,7 @@
 //! the config directory ([`realm_lines`]: id, workspace, last use, daemon).
 //!
 //! The files are found where the daemon writes them
-//! ([`super::endpoint::search_dirs`]: `<state>/rkat-tui/*/mob.endpoint`,
+//! ([`crate::daemon::endpoint::search_dirs`]: `<state>/rkat-tui/*/mob.endpoint`,
 //! then the runtime-dir fallback), or the one `--endpoint-file` names. Each
 //! is probed: connect, `rkat/attach` with its token as a probe (not
 //! counted as a client), then `rkat/status`. A file whose address refuses
@@ -23,10 +23,10 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use super::endpoint::{self, Endpoint};
-use super::protocol::{self, Status};
 use crate::bootstrap::GlobalDirs;
 use crate::bootstrap::realm_home::{self, Home};
+use crate::daemon::endpoint::{self, Endpoint};
+use crate::daemon::protocol::{self, Status};
 
 /// How long one daemon may take to answer.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -73,7 +73,7 @@ pub fn files_in(dirs: &[PathBuf]) -> Vec<PathBuf> {
         .iter()
         .filter_map(|dir| std::fs::read_dir(dir).ok())
         .flat_map(|entries| entries.filter_map(Result::ok))
-        .map(|entry| entry.path().join(super::ENDPOINT_NAME))
+        .map(|entry| entry.path().join(crate::daemon::ENDPOINT_NAME))
         .filter(|file| file.is_file())
         .collect();
     files.sort();
@@ -84,7 +84,7 @@ pub fn files_in(dirs: &[PathBuf]) -> Vec<PathBuf> {
 pub async fn probe(endpoint: &Endpoint) -> Found {
     let attached = tokio::time::timeout(
         PROBE_TIMEOUT,
-        crate::client::transport::Connection::attach_as(endpoint, PROBE_TIMEOUT, None, true),
+        super::transport::Connection::attach_as(endpoint, PROBE_TIMEOUT, None, true),
     )
     .await;
     let Ok(Ok((connection, _notes))) = attached else {
@@ -98,7 +98,7 @@ pub async fn probe(endpoint: &Endpoint) -> Found {
     };
     let status = tokio::time::timeout(
         PROBE_TIMEOUT,
-        crate::client::remote::call::<protocol::method::Status>(&connection, &protocol::Empty {}),
+        super::remote::call::<protocol::method::Status>(&connection, &protocol::Empty {}),
     )
     .await;
     Found::Live(status.ok().and_then(Result::ok))

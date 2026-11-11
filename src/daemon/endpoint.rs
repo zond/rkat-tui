@@ -567,35 +567,6 @@ mod tests {
         assert_eq!(plain, workspace_key(workspace, &RealmKey::Default));
     }
 
-    /// A client started with `--isolated` hands its daemon the realm it
-    /// minted, not `--isolated` again (which would mint another and leave
-    /// the client waiting at the wrong endpoint file).
-    #[test]
-    fn an_isolated_client_pins_its_realm_for_the_daemon() {
-        use clap::Parser as _;
-        let dir = tempfile::tempdir().unwrap();
-        let state = tempfile::tempdir().unwrap();
-        let argv = [
-            "rkat-tui",
-            "-w",
-            dir.path().to_str().unwrap(),
-            "--isolated",
-            "--state-root",
-            state.path().to_str().unwrap(),
-        ];
-        let args = crate::cli::Args::try_parse_from(argv).unwrap();
-        let minted = crate::bootstrap::resolve_scope(&args).unwrap();
-        let pinned = crate::client::launch::pin_realm(&args, &minted);
-        assert!(!pinned.isolated);
-        let daemon = crate::bootstrap::resolve_scope(&pinned).unwrap();
-        assert_eq!(daemon.realm_root(), minted.realm_root());
-        assert_eq!(RealmKey::of(&daemon), RealmKey::of(&minted));
-        // Anything else goes as it is.
-        let plain = crate::cli::Args::try_parse_from(&argv[..3]).unwrap();
-        let pinned = crate::client::launch::pin_realm(&plain, &minted);
-        assert_eq!(format!("{pinned:?}"), format!("{plain:?}"));
-    }
-
     #[tokio::test]
     async fn a_stale_file_is_replaced_and_a_live_one_refuses() {
         let dir = tempfile::tempdir().unwrap();

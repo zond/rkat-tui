@@ -63,7 +63,6 @@ use super::prompts::MAX_REVIEWED_ACTION_BYTES;
 use super::rules::{Rule, RuleId, RuleOrigin, RuleSet, RulesError};
 use super::transcript::{ApprovalTranscript, InputKey};
 use super::{ApprovalEvent, DenyReason, Verdict, prompts, shell};
-use crate::bootstrap::trust::HostTrustRecord;
 use crate::config::{self, AutoSettings};
 use crate::paths::ProjectRoot;
 
@@ -110,11 +109,9 @@ pub struct ApprovalConfig {
     pub posix_shell: bool,
     /// UI notifications.
     pub events: mpsc::UnboundedSender<ApprovalEvent>,
-    /// Realm rules file; rules added at runtime are persisted here when set.
-    pub rules_path: Option<PathBuf>,
-    /// The host's trust record: every write of the realm rules file records
-    /// the digest of what rkat-tui wrote, so the next start trusts it.
-    pub rules_trust: Option<Arc<Mutex<HostTrustRecord>>>,
+    /// The realm's `tui.toml`: rules added at run time and the permission
+    /// mode are written there when set (each write recorded as trusted).
+    pub realm_file: Option<config::RealmFile>,
 }
 
 /// One tool call to decide.
@@ -270,8 +267,7 @@ pub struct ApprovalEngine {
     environment: Environment,
     posix_shell: bool,
     events: mpsc::UnboundedSender<ApprovalEvent>,
-    rules_path: Option<PathBuf>,
-    rules_trust: Option<Arc<Mutex<HostTrustRecord>>>,
+    realm_file: Option<config::RealmFile>,
     origins: OnceLock<Arc<dyn ToolOrigins>>,
     /// Who is with each agent ([`super::attendance`]); unset: every call is
     /// attended.
@@ -324,8 +320,7 @@ impl ApprovalEngine {
             environment,
             posix_shell,
             events,
-            rules_path,
-            rules_trust,
+            realm_file,
         } = config;
         let dropped = rules.sanitize_for_auto();
         if !dropped.is_empty() {
@@ -345,8 +340,7 @@ impl ApprovalEngine {
             environment,
             posix_shell,
             events,
-            rules_path,
-            rules_trust,
+            realm_file,
             origins: OnceLock::new(),
             attendance: OnceLock::new(),
             agent_peers: OnceLock::new(),
@@ -614,7 +608,7 @@ impl ApprovalEngine {
     }
 
     fn push_rule(&self, mut rule: Rule) -> RuleSet {
-        if self.rules_path.is_some() {
+        if self.realm_file.is_some() {
             rule.origin = RuleOrigin::Realm;
         }
         let mut rules = self.rules.write();
@@ -632,7 +626,11 @@ impl ApprovalEngine {
     /// [`TrustRulesError`] when there is no realm rules file, it cannot be
     /// read, or it cannot be trusted (symlinked, not a regular file).
     pub fn trust_realm_rules(&self) -> Result<String, TrustRulesError> {
-        let (Some(path), Some(trust)) = (&self.rules_path, &self.rules_trust) else {
+        let Some((path, trust)) = self
+            .realm_file
+            .as_ref()
+            .and_then(|file| Some((file.path(), file.trust()?)))
+        else {
             return Err(TrustRulesError::NoRealmFile);
         };
         let file = config::RulesFile::load(path)?;
@@ -676,20 +674,18 @@ impl ApprovalEngine {
     }
 
     fn persist(&self, rules: &RuleSet) -> Result<(), RulesError> {
-        match &self.rules_path {
-            Some(path) => persist_trusted(path, rules, self.rules_trust.as_ref()),
+        match &self.realm_file {
+            Some(file) => file.write_rules(rules),
             None => Ok(()),
         }
     }
 
     /// [`Self::persist`] off the async executor (the escalation path).
     async fn persist_blocking(&self, rules: RuleSet) -> Result<(), PersistError> {
-        let Some(path) = self.rules_path.clone() else {
+        let Some(file) = self.realm_file.clone() else {
             return Ok(());
         };
-        let trust = self.rules_trust.clone();
-        tokio::task::spawn_blocking(move || persist_trusted(&path, &rules, trust.as_ref()))
-            .await??;
+        tokio::task::spawn_blocking(move || file.write_rules(&rules)).await??;
         Ok(())
     }
 
@@ -731,31 +727,10 @@ impl ApprovalEngine {
     ///
     /// Returns [`RulesError`] when the file cannot be written.
     pub fn persist_mode(&self) -> Result<(), RulesError> {
-        let Some(path) = &self.rules_path else {
-            return Ok(());
-        };
-        let mode = self.mode();
-        config::write_trusted(path, self.rules_trust.as_deref(), |path| {
-            config::persist_realm_mode(path, mode)
-        })
-    }
-
-    /// Record the checklist panel's view (Ctrl+T) in the realm rules file
-    /// (`[ui] checklist`), recorded as trusted as the other writes are; a
-    /// no-op without a realm rules file. The daemon saves an attached
-    /// client's choice with it (`rkat/checklist_view`): the file and its
-    /// trust record are the daemon's.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RulesError`] when the file cannot be written.
-    pub fn persist_checklist_view(&self, view: crate::ui::ChecklistView) -> Result<(), RulesError> {
-        let Some(path) = &self.rules_path else {
-            return Ok(());
-        };
-        config::write_trusted(path, self.rules_trust.as_deref(), |path| {
-            config::persist_realm_checklist(path, view)
-        })
+        match &self.realm_file {
+            Some(file) => file.write_mode(self.mode()),
+            None => Ok(()),
+        }
     }
 
     fn emit(&self, event: ApprovalEvent) {
@@ -1415,18 +1390,6 @@ async fn read_capped(path: PathBuf, cap: usize) -> Option<Vec<u8>> {
     .flatten()
 }
 
-/// Persist `rules` to the realm rules file and record what was written in
-/// the host trust record.
-fn persist_trusted(
-    path: &std::path::Path,
-    rules: &RuleSet,
-    trust: Option<&Arc<Mutex<HostTrustRecord>>>,
-) -> Result<(), RulesError> {
-    config::write_trusted(path, trust.map(AsRef::as_ref), |path| {
-        config::persist_realm_rules(path, rules)
-    })
-}
-
 /// An escalation put to the human. Dropped unsettled (the tool call was
 /// abandoned while waiting), it withdraws the dialog.
 struct PendingEscalation<'a> {
@@ -1823,8 +1786,7 @@ mod tests {
             environment: Environment::basic(root.as_path(), root.as_path()),
             posix_shell: true,
             events: tx,
-            rules_path: None,
-            rules_trust: None,
+            realm_file: None,
         });
         Rig {
             dir,
@@ -2452,8 +2414,7 @@ mod tests {
             environment: Environment::basic(root.as_path(), root.as_path()),
             posix_shell: true,
             events: tx,
-            rules_path: Some(blocker.join("tui.toml")),
-            rules_trust: None,
+            realm_file: Some(config::RealmFile::new(blocker.join("tui.toml"), None)),
         });
         let session = SessionId::new();
         let ask = |id: &'static str| {
@@ -3103,8 +3064,7 @@ mod tests {
             environment: Environment::basic(root.as_path(), root.as_path()),
             posix_shell: true,
             events: tx,
-            rules_path: Some(path.clone()),
-            rules_trust: None,
+            realm_file: Some(config::RealmFile::new(path.clone(), None)),
         });
         engine.set_mode(PermissionMode::Plan);
         engine.persist_mode().unwrap();
@@ -3222,8 +3182,7 @@ mod tests {
             environment: Environment::basic(root.as_path(), root.as_path()),
             posix_shell: true,
             events: tx,
-            rules_path: None,
-            rules_trust: None,
+            realm_file: None,
         });
         let verdict = call_as(
             &engine,

@@ -558,8 +558,8 @@ fn the_quit_decision_follows_the_rules() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn list_shows_a_live_daemon_and_removes_a_stale_file() {
+    use rkat_tui::client::list::{self, Found};
     use rkat_tui::daemon::endpoint::Endpoint;
-    use rkat_tui::daemon::list::{self, Found};
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![]);
     let daemon = owned_daemon(&ws, &llm).await;

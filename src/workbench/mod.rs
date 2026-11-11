@@ -11,8 +11,6 @@
 //!   prices, the community list refreshed in the background) and the
 //!   per-session cost record.
 //! - [`models`]: the endpoints' model lists and the `/model` picker.
-//! - [`tasks`]: the Ctrl+T checklist's source, the engine's task store,
-//!   read by the daemon for `rkat/tasks`.
 //! - [`unsent`]: the messages the agent never got, saved on quit and
 //!   announced at the next start.
 //! - [`app`]: the UI the client starts ([`app::build_app`]) and the log file.
@@ -29,7 +27,6 @@ pub mod export;
 pub mod memory;
 pub mod models;
 pub mod shell;
-pub mod tasks;
 pub mod unsent;
 
 use std::path::PathBuf;
@@ -51,30 +48,55 @@ pub use app::AppSetup;
 pub use app::build_app;
 pub use unsent::SavedUnsent;
 
+/// Why the agent did not take a context note ([`AgentContext`]).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ContextError {
+    /// No connection to the agent now.
+    #[error("not attached to the daemon")]
+    NotAttached,
+    /// The daemon refused it or did not answer in time.
+    #[error("{0}")]
+    NotTaken(String),
+}
+
+/// What hands text to the agent as durable system context (the client's
+/// connection to the daemon, `crate::client::runner`).
+pub trait ContextSink: Send + Sync {
+    /// Append `text` under the idempotency `key`.
+    fn append(
+        &self,
+        text: String,
+        key: String,
+    ) -> futures::future::BoxFuture<'static, Result<(), ContextError>>;
+}
+
 /// The one thing the workbench asks of the agent: take text as durable
-/// system context, idempotent per key, read from its next model call. The
-/// agent is the daemon's orchestrator, reached over this client's
-/// connection (`None`: not attached now).
+/// system context, idempotent per key, read from its next model call
+/// (`None`: no agent to take it now).
 #[derive(Clone)]
-pub struct AgentContext(Option<Arc<crate::client::transport::Connection>>);
+pub struct AgentContext(Option<Arc<dyn ContextSink>>);
 
 impl AgentContext {
-    /// The orchestrator over `connection`.
+    /// The agent behind `sink`.
     #[must_use]
-    pub fn new(connection: Option<Arc<crate::client::transport::Connection>>) -> Self {
-        Self(connection)
+    pub fn new(sink: Option<Arc<dyn ContextSink>>) -> Self {
+        Self(sink)
     }
 
     /// Append `text` under the idempotency `key`.
     ///
     /// # Errors
     ///
-    /// Why the agent could not take it (not attached, or the daemon's
-    /// refusal or silence).
-    pub async fn append_system_context(&self, text: String, key: String) -> Result<(), String> {
-        crate::client::runner::append_system_context(self.0.clone(), &text, &key)
-            .await
-            .map_err(|err| err.to_string())
+    /// [`ContextError`]: not attached, or the daemon's refusal or silence.
+    pub async fn append_system_context(
+        &self,
+        text: String,
+        key: String,
+    ) -> Result<(), ContextError> {
+        match &self.0 {
+            Some(sink) => sink.append(text, key).await,
+            None => Err(ContextError::NotAttached),
+        }
     }
 }
 

@@ -9,39 +9,12 @@
 //! calls or results.
 
 use meerkat_tools::builtin::types::{Task, TaskStatus};
-use serde::{Deserialize, Serialize};
 
 /// Most lines of the checklist panel: past this many items one line fewer
 /// shows the newest-updated items and one says how many more there are.
 pub const MAX_CHECKLIST_LINES: usize = 5;
 
-/// Whether the checklist panel shows (`tui.toml` `[ui] checklist`).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ChecklistView {
-    /// Hidden until Ctrl+T (the default).
-    #[default]
-    Hidden,
-    /// Shown under the input whenever the session has tasks.
-    Shown,
-}
-
-impl ChecklistView {
-    /// The other view.
-    #[must_use]
-    pub fn toggled(self) -> Self {
-        match self {
-            Self::Hidden => Self::Shown,
-            Self::Shown => Self::Hidden,
-        }
-    }
-
-    /// Whether the panel shows.
-    #[must_use]
-    pub fn is_shown(self) -> bool {
-        self == Self::Shown
-    }
-}
+pub use crate::config::settings::ChecklistView;
 
 /// Where a checklist item is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

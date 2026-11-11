@@ -8,12 +8,12 @@
 //! only chooses that threshold and watches the gauge:
 //!
 //! - **native** (default): the engine's own threshold policy decides
-//!   ([`CompactionTrigger::Inherit`]: no override is set). The gauge is
+//!   ([`crate::config::settings::CompactionTrigger::Inherit`]: no override is set). The gauge is
 //!   advisory: one warning when usage crosses `compact_warn_percent`
 //!   (re-armed once usage drops below it or a compaction succeeds), and a
 //!   warning after every turn at or above `compact_auto_percent`.
 //! - **warn**: the native size trigger is off
-//!   ([`CompactionTrigger::Disable`]; upstream still compacts to recover a
+//!   ([`crate::config::settings::CompactionTrigger::Disable`]; upstream still compacts to recover a
 //!   request the provider refused as too large) and the gauge warns as in
 //!   native mode; compaction only on `/compact now`.
 //! - **auto**: the threshold is `compact_auto_percent` of the model's
@@ -40,99 +40,13 @@
 //!
 //! Everything here is pure; [`super::App`] owns a [`CompactionGauge`].
 
-use std::num::NonZeroU64;
-
-use serde::{Deserialize, Serialize};
-
 use super::render::fmt_ctx_tokens;
+pub use crate::config::settings::{
+    CompactMode, CompactionPolicy, FALLBACK_AUTO_TOKENS, FALLBACK_WARN_TOKENS,
+};
 
-/// Default `compact_warn_percent`.
-pub const DEFAULT_WARN_PERCENT: u8 = 75;
-/// Default `compact_auto_percent`.
-pub const DEFAULT_AUTO_PERCENT: u8 = 85;
-/// Tokens at which to warn when the context window is unknown.
-pub const FALLBACK_WARN_TOKENS: u64 = 120_000;
-/// Tokens at which to compact (auto) or warn every turn (warn) when the
-/// context window is unknown.
-pub const FALLBACK_AUTO_TOKENS: u64 = 150_000;
-
-/// What happens when the context fills up.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum CompactMode {
-    /// The engine's own threshold policy; the gauge only warns.
-    #[default]
-    Native,
-    /// Warn; compaction only on `/compact now`.
-    Warn,
-    /// Let the engine compact at `compact_auto_percent`.
-    Auto,
-}
-
-/// Thresholds and mode for [`CompactionGauge`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CompactionPolicy {
-    /// Warn or compact automatically.
-    pub mode: CompactMode,
-    /// Usage (percent of the window) at which to warn once.
-    pub warn_percent: u8,
-    /// Usage (percent of the window) at which the engine compacts (auto
-    /// mode) or the gauge warns after every turn (warn mode). Never below
-    /// `warn_percent`.
-    pub auto_percent: u8,
-}
-
-impl Default for CompactionPolicy {
-    fn default() -> Self {
-        Self {
-            mode: CompactMode::Native,
-            warn_percent: DEFAULT_WARN_PERCENT,
-            auto_percent: DEFAULT_AUTO_PERCENT,
-        }
-    }
-}
-
+/// What the gauge and `/compact` read of the policy.
 impl CompactionPolicy {
-    /// Clamp `warn_percent` to `1..=100` and `auto_percent` to
-    /// `warn_percent..=100`. Returns the clamped policy and whether anything
-    /// changed.
-    #[must_use]
-    pub fn normalized(self) -> (Self, bool) {
-        let warn_percent = self.warn_percent.clamp(1, 100);
-        let auto_percent = self.auto_percent.clamp(warn_percent, 100);
-        let fixed = Self {
-            mode: self.mode,
-            warn_percent,
-            auto_percent,
-        };
-        (fixed, fixed != self)
-    }
-
-    /// Tokens at `auto_percent` of `window` (or [`FALLBACK_AUTO_TOKENS`]
-    /// when the window is unknown or zero).
-    #[must_use]
-    pub fn auto_tokens(&self, window: Option<u64>) -> u64 {
-        match window.filter(|w| *w > 0) {
-            Some(window) => window.saturating_mul(u64::from(self.auto_percent)) / 100,
-            None => FALLBACK_AUTO_TOKENS,
-        }
-    }
-
-    /// The native auto-compaction trigger for a session whose model has
-    /// `window` tokens of context: [`CompactionTrigger::Inherit`] in native
-    /// mode, [`CompactionTrigger::Disable`] in warn mode, [`Self::auto_tokens`]
-    /// in auto mode.
-    #[must_use]
-    pub fn trigger(&self, window: Option<u64>) -> CompactionTrigger {
-        match self.mode {
-            CompactMode::Native => CompactionTrigger::Inherit,
-            CompactMode::Warn => CompactionTrigger::Disable,
-            CompactMode::Auto => CompactionTrigger::At(
-                NonZeroU64::new(self.auto_tokens(window)).unwrap_or(NonZeroU64::MIN),
-            ),
-        }
-    }
-
     /// What `/compact` says about the policy.
     #[must_use]
     pub fn describe(&self, window: Option<u64>) -> String {
@@ -156,7 +70,6 @@ impl CompactionPolicy {
             ),
         }
     }
-
     fn zone(&self, used: u64, window: Option<u64>) -> Zone {
         let (warn, auto) = match window {
             Some(window) => {
@@ -174,46 +87,6 @@ impl CompactionPolicy {
             Zone::Warn
         } else {
             Zone::Below
-        }
-    }
-}
-
-/// The native auto-compaction trigger a session is built with
-/// (`SessionBuildOptions::auto_compact_threshold_override`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum CompactionTrigger {
-    /// Upstream's model-aware default threshold.
-    #[default]
-    Inherit,
-    /// No compaction by size. Upstream has no typed "off", so this lowers to
-    /// the largest threshold ([`NonZeroU64::MAX`], never reached); upstream
-    /// still compacts to recover a request the provider refused as too
-    /// large. Recorded as an upstream ask in `docs/evidence.md`.
-    Disable,
-    /// Compact before the first model call whose context reaches this many
-    /// tokens.
-    At(NonZeroU64),
-}
-
-impl CompactionTrigger {
-    /// The build's `auto_compact_threshold_override`.
-    #[must_use]
-    pub fn threshold_override(self) -> Option<NonZeroU64> {
-        match self {
-            Self::Inherit => None,
-            Self::Disable => Some(NonZeroU64::MAX),
-            Self::At(tokens) => Some(tokens),
-        }
-    }
-
-    /// The trigger a build's override stands for.
-    #[must_use]
-    #[cfg(test)]
-    pub fn from_override(threshold: Option<NonZeroU64>) -> Self {
-        match threshold {
-            None => Self::Inherit,
-            Some(NonZeroU64::MAX) => Self::Disable,
-            Some(tokens) => Self::At(tokens),
         }
     }
 }
@@ -321,6 +194,9 @@ fn usage_text(used: u64, window: Option<u64>) -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::config::settings::CompactionTrigger;
+    use serde::Deserialize;
+    use std::num::NonZeroU64;
 
     const W: Option<u64> = Some(100_000);
 

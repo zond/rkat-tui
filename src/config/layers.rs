@@ -1,12 +1,12 @@
 //! Loading and merging the `tui.toml` layers (see the [module docs](super)).
 
 use super::file::*;
+use super::settings::CompactionPolicy;
 use crate::approval::mode::PermissionMode;
 use crate::approval::rules::{Rule, RuleKind, RuleOrigin, RuleSet, RulesError};
 use crate::bootstrap::confinement::ConfinementSection;
 use crate::bootstrap::trust::{TrustStatus, Untrusted};
 use crate::thinking::ThinkingSetting;
-use crate::ui::compaction::CompactionPolicy;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};

@@ -36,13 +36,13 @@ pub mod endpoint;
 pub mod engine;
 pub mod handshake;
 pub mod lifecycle;
-pub mod list;
 pub mod local;
 pub mod orchestrator;
 pub mod policy;
 pub mod protocol;
 pub mod schedules;
 pub mod serve;
+pub mod tasks;
 pub mod watches;
 
 use std::path::{Path, PathBuf};
@@ -670,6 +670,7 @@ impl Daemon {
             project: composed.project_inputs.clone(),
             decisions: Arc::clone(&composed.decisions),
             tasks_db: composed.tasks_db.clone(),
+            realm_file: composed.realm_file.clone(),
             machine: composed.runtime.runtime_adapter(),
             realm_config: Arc::clone(&composed.realm_config),
             endpoints: composed.endpoints.clone(),
@@ -1048,18 +1049,6 @@ async fn stop_mobs(state: &Arc<MobMcpState>) {
 ///
 /// [`DaemonError`] when it cannot start or does not shut down cleanly.
 pub async fn run(cli: DaemonCli) -> Result<(), DaemonError> {
-    if cli.tui.list {
-        list::print(
-            cli.endpoint_file.as_deref(),
-            bootstrap::GlobalDirs::resolve(
-                cli.tui.config_dir.as_deref(),
-                cli.tui.user_config_root.as_deref(),
-            )
-            .as_ref(),
-        )
-        .await;
-        return Ok(());
-    }
     cli.check()?;
     let (layers, config) = bootstrap::prepare(&cli.tui).await?;
     init_logging(&layers.scope.realm_root());

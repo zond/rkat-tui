@@ -54,6 +54,9 @@ pub struct ApprovalParts {
     pub events: Option<mpsc::UnboundedReceiver<ApprovalEvent>>,
     /// Observations from loading the rules, shown once.
     pub notices: Vec<String>,
+    /// The realm's `tui.toml` as rkat-tui writes it (the daemon saves the
+    /// checklist view through it).
+    pub realm_file: Option<crate::config::RealmFile>,
 }
 
 impl std::fmt::Debug for ApprovalParts {
@@ -153,7 +156,7 @@ pub(crate) async fn build(
     trust: Arc<parking_lot::Mutex<HostTrustRecord>>,
 ) -> Result<ApprovalParts, TuiError> {
     let realm_dir = scope.realm_root();
-    let realm_rules = realm_dir.join(RULES_FILE_NAME);
+    let realm_file = config::RealmFile::new(realm_dir.join(RULES_FILE_NAME), Some(trust));
     let (events_tx, events_rx) = mpsc::unbounded_channel();
     let (broker, escalations) = EscalationBroker::new(ESCALATION_CAPACITY);
     let cwd = std::env::current_dir().map_err(|e| TuiError::io("read current directory", e))?;
@@ -185,11 +188,11 @@ pub(crate) async fn build(
         environment,
         posix_shell: shell_is_posix(),
         events: events_tx,
-        rules_path: Some(realm_rules),
-        rules_trust: Some(trust),
+        realm_file: Some(realm_file.clone()),
     });
     Ok(ApprovalParts {
         engine,
+        realm_file: Some(realm_file),
         escalations: Some(escalations),
         events: Some(events_rx),
         notices,

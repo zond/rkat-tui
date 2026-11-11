@@ -1,14 +1,12 @@
 //! The `tui.toml` schema: [`RulesFile`] and its sections, and the settings
 //! they layer into (see [`super::layers`]).
 
+use super::settings::{ChecklistView, CompactMode, CompactionPolicy, HelperView};
 use crate::approval::mode::PermissionMode;
 use crate::approval::rules::{Rule, RuleKind, RuleOrigin, RulesError};
 use crate::bootstrap::confinement::ConfinementSection;
 use crate::endpoints::ApiStyle;
 use crate::thinking::ThinkingSetting;
-use crate::ui::checklist::ChecklistView;
-use crate::ui::compaction::{CompactMode, CompactionPolicy};
-use crate::ui::transcript::HelperView;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;

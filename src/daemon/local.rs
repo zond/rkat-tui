@@ -106,6 +106,7 @@ pub struct Local {
     decisions: Arc<super::decisions::Decisions>,
     /// The engine's task store (`rkat/tasks`).
     tasks_db: std::path::PathBuf,
+    realm_file: Option<crate::config::RealmFile>,
     /// The runtime the orchestrator's session lives in (`rkat/set_model`).
     machine: Arc<meerkat_runtime::MeerkatMachine>,
     /// The realm config (a switched-to model's profile is written there).
@@ -147,6 +148,8 @@ pub struct LocalParts {
     pub decisions: Arc<super::decisions::Decisions>,
     /// The engine's task store.
     pub tasks_db: std::path::PathBuf,
+    /// The realm's `tui.toml` as rkat-tui writes it (the checklist view).
+    pub realm_file: Option<crate::config::RealmFile>,
     /// The runtime the members' sessions live in.
     pub machine: Arc<meerkat_runtime::MeerkatMachine>,
     /// The realm config store.
@@ -212,6 +215,7 @@ impl Local {
             project,
             decisions,
             tasks_db,
+            realm_file,
             machine,
             realm_config,
             endpoints,
@@ -242,6 +246,7 @@ impl Local {
             project,
             decisions,
             tasks_db,
+            realm_file,
             machine,
             realm_config,
             endpoints,
@@ -319,7 +324,7 @@ impl Local {
             .and_then(|name| agents.iter().find(|row| &row.name == name));
         Status {
             workspace: self.lifecycle.workspace().to_path_buf(),
-            host: crate::client::address::local_host(),
+            host: crate::paths::local_host(),
             pid: std::process::id(),
             started_at: self.lifecycle.started_at().to_string(),
             clients: self.lifecycle.clients(),
@@ -464,7 +469,7 @@ impl Local {
                 })
             };
             method::Tasks, protocol::SessionParams { session_id } => {
-                let tasks = crate::workbench::tasks::read_tasks(&self.tasks_db, &session_id)
+                let tasks = super::tasks::read_tasks(&self.tasks_db, &session_id)
                     .await
                     .map_err(|err| Refusal::new(protocol::INTERNAL_ERROR, err.to_string()))?;
                 Ok(Tasks { tasks })
@@ -489,9 +494,10 @@ impl Local {
             };
             method::SetModel, params => self.set_model(&self.agent_of(&caller)?, params).await;
             method::ChecklistView, protocol::ChecklistViewParams { view } => {
-                self.engine
-                    .persist_checklist_view(view)
-                    .map_err(|err| Refusal::new(protocol::INTERNAL_ERROR, err.to_string()))?;
+                if let Some(file) = &self.realm_file {
+                    file.write_checklist(view)
+                        .map_err(|err| Refusal::new(protocol::INTERNAL_ERROR, err.to_string()))?;
+                }
                 Ok(Empty {})
             };
             method::Trust, protocol::TrustParams { op } => Ok(match op {

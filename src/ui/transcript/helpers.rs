@@ -7,7 +7,6 @@ use std::time::Instant;
 use indexmap::IndexMap;
 use meerkat_core::{ScopedAgentEvent, StreamScopeFrame};
 use ratatui::text::Line;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{Block, BlockId, CachedLayout, HelperScope, Transcript};
@@ -17,17 +16,7 @@ use crate::ui::render::{SPINNER, SPINNER_FRAME_MS, block_lines};
 /// Maximum characters of a helper header's last-activity preview.
 pub const MAX_HELPER_PREVIEW: usize = 60;
 
-/// How helper headers start: folded to one line (the default) or showing the
-/// helper's nested blocks (`tui.toml` `[ui] helpers`).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum HelperView {
-    /// One header line per helper; open one to watch it.
-    #[default]
-    Folded,
-    /// Every helper shows its nested blocks.
-    Expanded,
-}
+pub use crate::config::settings::HelperView;
 
 /// Lifecycle state of a helper, as its header shows it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

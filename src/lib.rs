@@ -146,7 +146,29 @@ pub mod client;
 pub(crate) mod client;
 
 /// The `rkat-tui-mob` daemon's command line and entry point.
-pub use daemon::{DaemonCli, run as run_daemon};
+pub use daemon::DaemonCli;
+
+/// Run the `rkat-tui-mob` daemon (`daemon::run`), or with `--list`, list
+/// this user's live daemons (`client::list`: a client of each).
+///
+/// # Errors
+///
+/// What `daemon::run` returns.
+pub async fn run_daemon(cli: DaemonCli) -> Result<(), daemon::DaemonError> {
+    if cli.tui.list {
+        client::list::print(
+            cli.endpoint_file.as_deref(),
+            bootstrap::GlobalDirs::resolve(
+                cli.tui.config_dir.as_deref(),
+                cli.tui.user_config_root.as_deref(),
+            )
+            .as_ref(),
+        )
+        .await;
+        return Ok(());
+    }
+    daemon::run(cli).await
+}
 
 pub use approval::ApprovalError;
 pub use bootstrap::confinement::ConfinementError;
@@ -170,7 +192,7 @@ pub use ui::UiError;
 /// cannot be driven.
 pub async fn run(args: Args) -> Result<(), TuiError> {
     if args.list {
-        daemon::list::print(
+        client::list::print(
             None,
             bootstrap::GlobalDirs::resolve(
                 args.config_dir.as_deref(),

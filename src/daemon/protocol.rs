@@ -880,7 +880,7 @@ pub struct Tasks {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct ChecklistViewParams {
     /// `hidden` or `shown`.
-    pub view: crate::ui::ChecklistView,
+    pub view: crate::config::ChecklistView,
 }
 
 /// [`method::SetModel`]'s parameters.

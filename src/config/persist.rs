@@ -1,12 +1,13 @@
 //! Writes to the realm's `tui.toml`.
 
 use super::file::{AutoSection, RuleEntry, RulesFile, UiSection};
+use super::settings::ChecklistView;
 use crate::approval::mode::PermissionMode;
 use crate::approval::rules::{RuleOrigin, RuleSet, RulesError};
 use crate::bootstrap::trust::HostTrustRecord;
-use crate::ui::checklist::ChecklistView;
 use parking_lot::Mutex;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// Atomically write a rules file (temp file in the same directory + rename).
 ///
@@ -106,6 +107,71 @@ pub fn persist_realm_checklist(path: &Path, view: ChecklistView) -> Result<(), R
     let mut file = RulesFile::load(path)?;
     file.ui.get_or_insert_with(UiSection::default).checklist = Some(view);
     save_realm(path, &file)
+}
+
+/// The realm's `tui.toml` as rkat-tui writes it: the rules added at run
+/// time, the permission mode, the checklist panel's view. Every write is
+/// recorded in the host trust record (when there is one), so the next
+/// start trusts what rkat-tui wrote. The daemon owns it; the approval
+/// engine is handed it for the rules and the mode, and `rkat/checklist_view`
+/// writes through it.
+#[derive(Debug, Clone)]
+pub struct RealmFile {
+    path: PathBuf,
+    trust: Option<Arc<Mutex<HostTrustRecord>>>,
+}
+
+impl RealmFile {
+    /// The file at `path`, its writes recorded in `trust`.
+    #[must_use]
+    pub fn new(path: PathBuf, trust: Option<Arc<Mutex<HostTrustRecord>>>) -> Self {
+        Self { path, trust }
+    }
+
+    /// Where it is.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The host trust record its writes are recorded in.
+    #[must_use]
+    pub fn trust(&self) -> Option<&Arc<Mutex<HostTrustRecord>>> {
+        self.trust.as_ref()
+    }
+
+    /// Write `rules` as the file's rules.
+    ///
+    /// # Errors
+    ///
+    /// [`RulesError`] when the file cannot be read, parsed or written.
+    pub fn write_rules(&self, rules: &RuleSet) -> Result<(), RulesError> {
+        write_trusted(&self.path, self.trust.as_deref(), |path| {
+            persist_realm_rules(path, rules)
+        })
+    }
+
+    /// Write `mode` as its `[auto] mode`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::write_rules`].
+    pub fn write_mode(&self, mode: PermissionMode) -> Result<(), RulesError> {
+        write_trusted(&self.path, self.trust.as_deref(), |path| {
+            persist_realm_mode(path, mode)
+        })
+    }
+
+    /// Write `view` as its `[ui] checklist`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::write_rules`].
+    pub fn write_checklist(&self, view: ChecklistView) -> Result<(), RulesError> {
+        write_trusted(&self.path, self.trust.as_deref(), |path| {
+            persist_realm_checklist(path, view)
+        })
+    }
 }
 
 /// Run `write` on the realm file at `path`, then record what was written
