@@ -542,8 +542,9 @@ list of what the daemon and its client do not do yet.
 
 The phase records are the evidence sections in the status table, plus "The
 pin moves to upstream `main`" (2026-11-08) and "The pin moves to the 0.9.11
-integration" (2026-11-09); the engine is now the crates.io 0.9.11 release
-("The engine moves to crates.io 0.9.11", 2026-11-09). Two asks of the first list are done: the stream
+integration" (2026-11-09); the engine was the crates.io 0.9.11 release
+("The engine moves to crates.io 0.9.11", 2026-11-09) and is now 0.9.12
+("The engine moves to crates.io 0.9.12", 2026-11-11). Two asks of the first list are done: the stream
 cursor (#2114) and pushed consent, delivered through durable decisions
 rather than plain approval records (#2115).
 
@@ -560,5 +561,6 @@ Upstream PRs:
 - #2116: session events routed to the turn's connection.
 - #2117: `mob/fork_member` as an operator method (rewind deferred).
 - #2124: the 0.9.11 release integration, `bffcd8f98a`, released on crates.io as 0.9.11.
+- #2155: `mob/member_send` answers the input it admitted (ask 6), released in 0.9.12.
 - #2126: the same-identity rewind design (merged as db8547a532; implementation not scheduled).
 - #2122: the map of the governed-realm gaps (withdrawn 2026-11-10: one daemon per workspace, one owner, a tunnel for remote use).

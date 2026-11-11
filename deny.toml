@@ -11,19 +11,20 @@ all-features = true
 # them); unmaintained crates are errors too, for the whole graph.
 unmaintained = "all"
 yanked = "deny"
+# An ignore that no longer matches anything fails the job, so a stale
+# entry is removed rather than kept.
+unused-ignored-advisory = "deny"
 # Only advisories with no fixed version this tree can take. Each entry is
 # dated and says what lifts it.
 ignore = [
-    # The bundled SQLite of libsqlite3-sys 0.35 (through the engine's
-    # rusqlite 0.37); the fix is libsqlite3-sys 0.39, a semver-breaking
-    # move only the engine can make. Fixed upstream in lukacf/meerkat#2164,
-    # lands with the next Meerkat release. Ignored 2026-11-10.
-    { id = "RUSTSEC-2026-0459", reason = "fixed upstream in lukacf/meerkat#2164, lands with the next Meerkat release (libsqlite3-sys 0.39 is outside the engine's rusqlite 0.37)" },
     # rmcp 1.8 buffers an MCP HTTP server's response body without a limit;
-    # the fix is rmcp 3.9, outside meerkat-mcp 0.9.11's `rmcp = "1.4"`
-    # requirement. Only a configured HTTP MCP server can send such a body.
-    # Ignored 2026-11-10; lifts when a Meerkat release takes rmcp >= 3.9.
-    { id = "RUSTSEC-2026-0462", reason = "no fixed rmcp within meerkat-mcp 0.9.11's ^1.4; reachable only from an HTTP MCP server the user configures; lifts with a Meerkat release on rmcp >= 3.9" },
+    # the fix is rmcp 3.9, outside meerkat-mcp 0.9.12's `rmcp = "1.4"`.
+    # Meerkat 0.9.12 no longer compiles rmcp's reqwest Streamable HTTP
+    # client (meerkat-mcp's own client bounds bodies and SSE events at
+    # 64 MiB), so the affected code is not in this graph; cargo-deny matches
+    # the advisory by rmcp's version alone. Ignored 2026-11-10, reason
+    # rewritten 2026-11-11; lifts when a Meerkat release takes rmcp >= 3.9.
+    { id = "RUSTSEC-2026-0462", reason = "not affected: rmcp's reqwest Streamable HTTP client is not compiled from Meerkat 0.9.12 (meerkat-mcp's own client bounds bodies and SSE events at 64 MiB); cargo-deny matches the rmcp version alone; remove with the Meerkat release that moves to rmcp >= 3.9" },
 ]
 
 [licenses]

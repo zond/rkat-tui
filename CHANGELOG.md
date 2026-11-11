@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The engine is Meerkat 0.9.12 (from 0.9.11): the engine's own file tools
+  (`apply_patch`, `blob_save_file`) refuse every path in a `.rkat`
+  directory of the workspace, the realm's SQLite is 3.54.1 (the bundled
+  SQLite of RUSTSEC-2026-0459 is gone), and Claude Fable 5.2
+  (`claude-fable-5-2`) is in the model catalog.
+
 ## [0.0.1] - 2026-11-10
 
 The first release on crates.io, opening the 0.0.x line: the maintainer's

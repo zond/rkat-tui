@@ -139,7 +139,7 @@ pub const SHELL_JOB_TOOLS: [&str; 3] = ["shell_jobs", "shell_job_status", "shell
 
 /// Why `shell` with `background` and the [`SHELL_JOB_TOOLS`] are refused:
 /// what the agent reads, with what to do instead.
-pub const BACKGROUND_SHELL_UNAVAILABLE: &str = "background shell jobs are not available here: the engine this build runs on (meerkat 0.9.11) drops the shell's background mode from the tool catalog of an agent that has the mob tools, so every background job would be refused (docs/evidence.md, \"Background shell jobs\"); run the command in the foreground instead, with `timeout_secs` for a long one";
+pub const BACKGROUND_SHELL_UNAVAILABLE: &str = "background shell jobs are not available here: the engine this build runs on (meerkat 0.9.12) drops the shell's background mode from the tool catalog of an agent that has the mob tools, so every background job would be refused (docs/evidence.md, \"Background shell jobs\"); run the command in the foreground instead, with `timeout_secs` for a long one";
 
 /// Builtins that only read state or manage the agent's own bookkeeping.
 ///

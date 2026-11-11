@@ -77,7 +77,8 @@ the `##` section named after it):
   `docs/mob-split.md` has the plan and the status.
 - **Upstream asks and the engine pin:** "Open asks" below; "The pin moves
   to upstream `main`"; "The pin moves to the 0.9.11 integration"; "P3b and
-  the 0.9.11 adoption"; "The engine moves to crates.io 0.9.11"; "Steer
+  the 0.9.11 adoption"; "The engine moves to crates.io 0.9.11"; "The
+  engine moves to crates.io 0.9.12"; "Steer
   delivery is attributed first in, first out (an engine ask)".
 
 ## Open asks
@@ -3583,7 +3584,10 @@ and listed here.
      with "runtime store is no longer available"). A fix is in progress
      upstream. Until it ships, the rule is one store handle per realm per
      process: the daemon opens its realm once, and tests read the store
-     only between daemon runs.
+     only between daemon runs. **Fixed in 0.9.12** (lukacf/meerkat#2149:
+     the auth authority uses the newest still-open handle); the rule is
+     dropped. The daemon keeps its single handle, and `rig::stored_session`
+     reading beside a running daemon is now sound.
   2. A compaction or an in-place model change on a cold session (right
      after a daemon restart, before the restored orchestrator's first run)
      does not wake it, by design; the engine's "Runtime not ready:
@@ -4932,6 +4936,17 @@ cargo-deny 0.20.2 against the advisory database of 2026-11-10:
   with exactly them (verified); with them it passes (`advisories ok, bans
   ok, licenses ok, sources ok`).
 - Bans: none (`multiple-versions` and wildcards allowed) to start.
+
+**Updated 2026-11-11 (Meerkat 0.9.12):** RUSTSEC-2026-0459 is gone from the
+graph (0.9.12 locks `rusqlite` 0.41.1 and `libsqlite3-sys` 0.39.1, bundled
+SQLite 3.54.1), so its ignore is removed. RUSTSEC-2026-0462 stays ignored
+with a new reason: 0.9.12 still locks `rmcp` 1.8.0 (`meerkat-mcp`'s
+`rmcp = "1.4"`), but `meerkat-mcp` no longer enables rmcp's
+`transport-streamable-http-client-reqwest`, so the affected client is not
+compiled and `reqwest` 0.13 left this graph (`cargo tree -i reqwest@0.13`
+finds nothing; rkat-tui's own `reqwest` is 0.12); cargo-deny matches the
+advisory by rmcp's version alone. `unused-ignored-advisory = "deny"` is
+set, as upstream does, so the entry fails the job once it is stale.
 
 `cargo-vet` is not added: a deliberate non-goal until asked
 (`docs/mob-split.md`, security).
@@ -6344,3 +6359,62 @@ start` to try again, or stopped) and what did not happen. The
   module directory and top-level module file; the table names
   `agents.rs`, `peer.rs`, `persona.rs`, `settings.rs`, `tasks.rs` and
   `list.rs` where they live now.
+
+## The engine moves to crates.io 0.9.12 (2026-11-11)
+
+Every `meerkat-*` dependency names `version = "0.9.12"` from crates.io;
+`cargo update -p meerkat` moved all 39 engine crates of the lock together
+(upstream pins its own crates exactly), and with them `rusqlite` 0.37 →
+0.41.1 (`libsqlite3-sys` 0.39.1, bundled SQLite 3.54.1, `rsqlite-vfs` and
+`sqlite-wasm-rs` added); `reqwest` 0.13.5 and `wasm-streams` left the lock
+(`meerkat-mcp` no longer compiles rmcp's reqwest client). The release
+delta upstream is 304 commits over 486 files (`v0.9.11..v0.9.12`); in the
+engine sources rkat-tui compiles against, the changes are in
+`meerkat-core` (`lifecycle/run_primitive.rs`, the `xhigh` effort alias),
+`meerkat-mob` (the member-send admission plumbing), `meerkat-mob-mcp`
+(`public_mcp.rs`), `meerkat-tools` (the protected paths of `apply_patch`
+and `blob_save_file`), the facade (`factory.rs`, `host_confinement.rs`,
+`surface/schedule_host.rs`), `meerkat-contracts` (`MobMemberSendResult`
+gains `admission`), the runtime (the terminal-row CAS and the audit
+archive) and `meerkat-models` (the `claude-fable-5-2` row).
+
+API drift: none. `cargo check --all-targets --all-features` compiled
+unchanged; rkat-tui builds `MobMemberSendResult` nowhere, has no direct
+`rusqlite` dependency (it calls only
+`meerkat_sqlite::disable_memory_statistics_at_process_start`, kept), and
+`REQUIRED_LIBSQLITE3_FLAGS` is the same string, so `.cargo/config.toml`
+stays.
+
+What the release carries for rkat-tui, and where each is taken up:
+
+- `mob/member_send` answers the input it admitted (engine ask 6,
+  lukacf/meerkat#2155): steers are attributed by input id, and a sent
+  message can be taken back again (the two sections after this one).
+- The engine's file tools refuse `.rkat` and the host's declared inputs:
+  "The engine's file tools protect the realm" below.
+- Claude Fable 5.2 in the catalog: `[thinking]` validation already asks
+  the catalog, so `"claude-fable-5-2" = { enabled = N }` is dropped at
+  start with a notice and `"adaptive"` passes; the manual's `[thinking]`
+  paragraph says so, and `thinking::tests` pins both. The catalog has no
+  prices for it; they come from `[pricing]`, LiteLLM or the community
+  list as for any model.
+- The auth-store handle (lukacf/meerkat#2149): the authority uses the
+  newest still-open handle, so "one store handle per realm per process"
+  (P4's engine facts) is fixed; the daemon keeps its single handle.
+- The terminal-row CAS (`meerkat-runtime` `driver/persistent.rs`,
+  `input_audit.rs`): a run that recorded an authorization audit
+  observation after its terminal rows settled only after a restart, and
+  unregistering its session failed with it. rkat-tui had no recorded
+  symptom; recorded as a fix that may have been latent.
+- `xhigh`/`x_high` effort alias: rkat-tui sets no effort (a future
+  `/effort` would). Copilot model ids, `rkat auth profile`, Meta harvest
+  and Intel macOS are not used here. MCP OAuth discovery is bounded at
+  1 MiB, which applies to the user's MCP servers for free.
+- `deny.toml`: the RUSTSEC-2026-0459 ignore is removed and the 0462 one
+  rewritten ("cargo-deny in CI", updated).
+
+Engine asks after the move (`docs/mob-split.md`, "Open engine asks"):
+ask 6 shipped; 1 (same-identity rewind), 4 (`delegate` naming the
+helper's session), 5 (`host_root` on `mob/spawn`) and 8 (Linux
+`deny_write`) are not in 0.9.12; 3 needs no engine change; 2 and 7 stay
+withdrawn. None of the evidence index's other open asks shipped.

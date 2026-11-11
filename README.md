@@ -102,7 +102,7 @@ agents").
   design) and [`docs/evidence.md`](docs/evidence.md) (the engineering
   record).
 
-Early and moving fast; built on Meerkat 0.9.11 from crates.io.
+Early and moving fast; built on Meerkat 0.9.12 from crates.io.
 
 ## License
 

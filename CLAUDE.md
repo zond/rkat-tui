@@ -108,7 +108,7 @@ The README is the front page; the full user manual is `docs/manual.md`.
 ## Engine dependency
 
 `Cargo.toml` depends on every `meerkat-*` crate at one crates.io release,
-currently 0.9.11; there are no git sources. Moving the version is the pin
+currently 0.9.12; there are no git sources. Moving the version is the pin
 move: change the version in every dependency line, `cargo update -p
 meerkat`, `cargo check --all-targets --all-features`, adapt to API drift by
 reading upstream's replacement in the fetched sources under
