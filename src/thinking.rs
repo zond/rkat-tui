@@ -469,6 +469,40 @@ mod tests {
         );
     }
 
+    /// Claude Fable 5.2 (in the catalog from Meerkat 0.9.12) thinks
+    /// adaptively only: a budget is refused at start with the engine's
+    /// reason, `adaptive` is kept.
+    #[test]
+    fn claude_fable_5_2_takes_only_adaptive_thinking() {
+        let (table, notices) = ThinkingTable::validate(
+            BTreeMap::from([(
+                "claude-fable-5-2".to_string(),
+                ThinkingSetting::Enabled {
+                    budget_tokens: 4096,
+                },
+            )]),
+            &[],
+        );
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert!(
+            notices[0].contains("claude-fable-5-2") && notices[0].contains("'enabled'"),
+            "{notices:?}"
+        );
+        assert_eq!(
+            table.resolve(None, Provider::Anthropic, "claude-fable-5-2"),
+            None
+        );
+        let (table, notices) = ThinkingTable::validate(
+            BTreeMap::from([("claude-fable-5-2".to_string(), ThinkingSetting::Adaptive)]),
+            &[],
+        );
+        assert!(notices.is_empty(), "{notices:?}");
+        assert_eq!(
+            table.resolve(None, Provider::Anthropic, "claude-fable-5-2"),
+            Some(AnthropicThinkingConfig::Adaptive)
+        );
+    }
+
     #[test]
     fn a_catalogued_model_refusing_the_type_is_ignored_with_the_engines_reason() {
         let endpoints = [ep("proxy", WireDialect::Anthropic)];

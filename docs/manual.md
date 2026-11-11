@@ -754,7 +754,8 @@ created, on every `/model` switch (a model without one gets none), and on
 every resume and rewind (the session follows the setting as it is now). It
 applies on Anthropic-dialect endpoints only: a reference to an endpoint of
 another dialect, a bare id the catalog gives another provider, and a type a
-catalogued model does not accept (an adaptive-only model with a budget, say)
+catalogued model does not accept (an adaptive-only model with a budget, say:
+Claude Fable 5.2, `claude-fable-5-2`, takes only `"adaptive"`)
 are ignored with a start-up notice; an id outside the catalog is sent as
 set. Like `[pricing]`, only your own `tui.toml` files set it. Helpers
 (`delegate`, `fork`) keep the engine's default.

@@ -6394,7 +6394,12 @@ What the release carries for rkat-tui, and where each is taken up:
 - Claude Fable 5.2 in the catalog: `[thinking]` validation already asks
   the catalog, so `"claude-fable-5-2" = { enabled = N }` is dropped at
   start with a notice and `"adaptive"` passes; the manual's `[thinking]`
-  paragraph says so, and `thinking::tests` pins both. The catalog has no
+  paragraph says so, and
+  `thinking::tests::claude_fable_5_2_takes_only_adaptive_thinking` pins
+  both. As `[auto] classifier_model` it builds (temperature is stripped,
+  tool choice is never forced) but always thinks, so stage 1's 32-token
+  budget leaves no room for the verdict; that was already true of Opus
+  5.5 and Fable 5.1, and no start-up notice was added for it. The catalog has no
   prices for it; they come from `[pricing]`, LiteLLM or the community
   list as for any model.
 - The auth-store handle (lukacf/meerkat#2149): the authority uses the
