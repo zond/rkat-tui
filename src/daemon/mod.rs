@@ -742,6 +742,7 @@ impl Daemon {
                 composed.diffs_task,
                 composed.notes_task,
                 composed.follower_task,
+                composed.destroyed_task,
             ],
         })
     }
@@ -758,6 +759,13 @@ impl Daemon {
     #[cfg(any(test, feature = "test-support"))]
     pub fn tool_origins(&self) -> &Arc<approvals::DaemonToolOrigins> {
         &self.origins
+    }
+
+    /// The daemon's own methods and its view of the proxied ones (tests).
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn local(&self) -> &Arc<local::Local> {
+        &self.local
     }
 
     /// The engine's own method router, past the proxy (tests: what a

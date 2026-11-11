@@ -43,6 +43,12 @@ pub const TRIGGERED: &str = "rkat/triggered";
 /// call of its agent, a helper or the classifier, a compaction):
 /// [`CostNote`].
 pub const COST: &str = "rkat/cost";
+/// The notification that an agent runs another conversation now (a
+/// client's `/new` or `/resume`): [`SwitchedNote`].
+pub const SWITCHED: &str = "rkat/switched";
+/// The notification that a mob hosts helpers or was destroyed:
+/// [`MobNote`].
+pub const MOB: &str = "rkat/mob";
 
 /// One of the daemon's own `rkat/*` methods: its name, and what it takes
 /// and answers. The daemon dispatches on [`Method::NAME`] and answers with
@@ -527,6 +533,10 @@ pub struct Attached {
     /// The agent the connection is bound to (`None`: a probe).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
+    /// The conversation that agent runs as now (later moves are pushed:
+    /// [`SWITCHED`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<SessionId>,
     /// The agent was seated for this connection.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub seated: bool,
@@ -718,6 +728,34 @@ pub struct TriggeredNote {
     pub label: String,
     /// The run's input.
     pub prompt: String,
+}
+
+/// [`SWITCHED`]'s parameters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SwitchedNote {
+    /// The agent.
+    pub agent: String,
+    /// The conversation it runs as now.
+    pub session_id: SessionId,
+}
+
+/// What [`MOB`] says of a mob.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MobChange {
+    /// It hosts a helper the daemon follows: a client opens its stream.
+    Hosts,
+    /// It was destroyed.
+    Destroyed,
+}
+
+/// [`MOB`]'s parameters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MobNote {
+    /// The mob.
+    pub mob_id: meerkat_mob::MobId,
+    /// What happened.
+    pub change: MobChange,
 }
 
 /// [`COST`]'s parameters.

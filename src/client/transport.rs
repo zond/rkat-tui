@@ -74,6 +74,8 @@ pub struct Connection {
     address: SocketAddr,
     /// The agent the daemon bound the connection to (`None`: a probe).
     agent: Option<String>,
+    /// The conversation the agent ran as at the attach.
+    session: Option<meerkat_core::SessionId>,
     /// The daemon seated the agent for this connection.
     seated: bool,
     /// The daemon's build.
@@ -251,6 +253,7 @@ impl Connection {
             Self {
                 address,
                 agent: attached.agent,
+                session: attached.session_id,
                 seated: attached.seated,
                 daemon_build: attached.build,
                 outgoing,
@@ -267,6 +270,13 @@ impl Connection {
     #[must_use]
     pub fn agent(&self) -> &str {
         self.agent.as_deref().unwrap_or_default()
+    }
+
+    /// The conversation the agent ran as when the connection attached
+    /// (`None`: a probe).
+    #[must_use]
+    pub fn session(&self) -> Option<&meerkat_core::SessionId> {
+        self.session.as_ref()
     }
 
     /// Whether the daemon seated the agent for this connection.
@@ -548,9 +558,16 @@ mod tests {
             )
             .await
             {
-                handshake::acknowledge(&mut self.writer, &pending, None, None, handshake::TIMEOUT)
-                    .await
-                    .unwrap();
+                handshake::acknowledge(
+                    &mut self.writer,
+                    &pending,
+                    None,
+                    None,
+                    None,
+                    handshake::TIMEOUT,
+                )
+                .await
+                .unwrap();
             }
         }
 

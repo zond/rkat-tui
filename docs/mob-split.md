@@ -298,7 +298,7 @@ methods on the wire, and `daemon::protocol` types each one for both ends:
 
 | Method | Params | Result |
 |---|---|---|
-| `rkat/attach` | `{"nonce", "start_token"?, "probe"?, "agent"?: {"choice": "new"\|"recent"\|"agent"\|"conversation", "name"?, "reference"?}}`, then `{"proof"}` | `{"challenge": {"nonce", "proof"}}`, then `{"attached": true, "agent"?, "seated"?, "build"?}` (the first lines only; `build` is the daemon's version and commit; the start token marks the client that launched the daemon, a probe is not counted as a client and is bound to no agent; any other attach must name its `agent` choice) |
+| `rkat/attach` | `{"nonce", "start_token"?, "probe"?, "agent"?: {"choice": "new"\|"recent"\|"agent"\|"conversation", "name"?, "reference"?}}`, then `{"proof"}` | `{"challenge": {"nonce", "proof"}}`, then `{"attached": true, "agent"?, "session_id"?, "seated"?, "build"?}` (the first lines only; `session_id` is the conversation the agent runs as, later moves come as `rkat/switched`; `build` is the daemon's version and commit; the start token marks the client that launched the daemon, a probe is not counted as a client and is bound to no agent; any other attach must name its `agent` choice) |
 | `rkat/status` | `{}` | `{"workspace", "host"?, "pid", "started_at", "clients", "detached", "owner", "session_id"?, "running", "agent"?, "agents": [{"name", "session_id"?, "running", "clients", "detached"}], "shell"}` (`shell`: the agent shell's confinement the daemon installed, the engine's `ShellConfinement`, which a client compares with its own flags' before attaching; `session_id` and `running` of the caller's agent, whose `running` is true when its state cannot be read; an agent row's `running` is `null` then; `detached`: a live agent runs without a client) |
 | `rkat/holds` | `{}` | `{"held": [String]}` (each conversation with a user turn, or that cannot be read: what a re-home replacing this realm would lose; empty means provably empty) |
 | `rkat/detach` | `{}` | `{}` (the caller's agent is marked detached: a later `/quit` asks) |
@@ -322,6 +322,8 @@ methods on the wire, and `daemon::protocol` types each one for both ends:
 | `rkat/checklist_view` | `{"view": "hidden"\|"shown"}` | `{}` (saved as `[ui] checklist`) |
 | `rkat/decision_ended` | notification, daemon to client | a decision the client was shown ended |
 | `rkat/file_diff` | notification, daemon to client | `{"tool_use_id", "path", "unified", "added", "removed"}`: a change the orchestrator's file tools made |
+| `rkat/switched` | notification, daemon to client | `{"agent", "session_id"}`: the agent runs another conversation now (a client's `/new` or `/resume`); its other clients show it |
+| `rkat/mob` | notification, daemon to client | `{"mob_id", "change": "hosts"\|"destroyed"}`: the daemon follows a helper in the mob (a client opens its stream if it is its agent's), or the mob was destroyed. A client lists the mobs once per attach and per conversation (`mob/list`) and learns the rest from these |
 | `rkat/cost` | notification, daemon to client | `{"session_id", "cost"}`: a conversation's totals by model changed (a model call of its agent, one of its helpers or the classifier, or a compaction) |
 
 The mode is the daemon's (one per daemon; it governs the orchestrator and

@@ -63,6 +63,7 @@ pub struct Running {
     state: std::sync::Weak<meerkat_mob_mcp::MobMcpState>,
     registry: std::sync::Weak<rkat_tui::mobs::HelperRegistry>,
     engine: std::sync::Weak<rkat_tui::approval::ApprovalEngine>,
+    local: std::sync::Weak<rkat_tui::daemon::local::Local>,
     /// The engine's router past the proxy's allow-list.
     pub engine_side: rkat_tui::daemon::testing::EngineSide,
     /// The orchestrator profile's auto-compaction threshold.
@@ -122,6 +123,7 @@ impl Running {
         let state = Arc::downgrade(daemon.mob_state());
         let registry = Arc::downgrade(daemon.helper_registry());
         let engine = Arc::downgrade(daemon.approval_engine());
+        let local = Arc::downgrade(daemon.local());
         let engine_side = daemon.engine_side();
         let compact_threshold = daemon.compact_threshold();
         let (stop, stopped) = tokio::sync::oneshot::channel();
@@ -139,9 +141,19 @@ impl Running {
             state,
             registry,
             engine,
+            local,
             engine_side,
             compact_threshold,
         }
+    }
+
+    /// How many `method` requests the clients sent the engine through the
+    /// daemon's proxy so far.
+    pub fn forwarded(&self, method: &str) -> usize {
+        self.local
+            .upgrade()
+            .expect("the daemon serves")
+            .forwarded(method)
     }
 
     /// The daemon's mob host (while it serves).

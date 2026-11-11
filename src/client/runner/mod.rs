@@ -37,7 +37,7 @@ use tokio::time::Instant;
 use super::ClientError;
 use super::approvals::{Approvals, decision_params};
 use super::catchup::{Cursor, CursorFile, Mark};
-use super::helpers::{self, Action as FollowerAction, Followers, HelperId};
+use super::helpers::{Action as FollowerAction, Followers, HelperId};
 use super::launch::{self, Decision};
 use super::remote::{self, ModelSwitch};
 use super::sessions;
@@ -83,16 +83,6 @@ const RETRY_INPUT: &str = "(retrying the request above)";
 const START_RETRIES: u32 = 3;
 /// The wait before the first of those retries; each next one doubles it.
 const START_RETRY_FIRST: Duration = Duration::from_millis(500);
-
-/// How often the orchestrator's current session is read (another client's
-/// `/new` or `/resume` moves it).
-pub const SESSION_POLL: Duration = Duration::from_secs(1);
-
-/// How often the mobs are listed while a tool that seats helpers runs.
-pub const DISCOVER_EVERY: Duration = Duration::from_millis(250);
-
-/// How long after such a tool starts the mobs are listed.
-pub const DISCOVER_FOR: Duration = Duration::from_secs(10);
 
 /// How many events of streams not known yet are held (see
 /// [`Runner`]'s `orphans`).
@@ -312,7 +302,8 @@ enum Report {
     Interrupt(String),
     /// The daemon's permission mode.
     Mode(ModeStatus),
-    /// The mobs the daemon hosts (a discovery round).
+    /// The mobs the daemon hosts (listed once per attach and per
+    /// conversation; later ones are pushed, [`protocol::MOB`]).
     Mobs(Vec<String>),
     /// A mob's stream opened, with its members' sessions; or not.
     MobOpened {
@@ -326,10 +317,6 @@ enum Report {
     },
     /// A helper's model.
     HelperModel { helper: HelperId, model: String },
-    /// The orchestrator's current session, as just read.
-    SessionNow(SessionId),
-    /// It could not be read.
-    SessionUnread,
     /// A conversation switch (this client's, `fresh` for `/new`; `None`:
     /// another client's) and what the new conversation shows.
     Switched {
@@ -606,14 +593,15 @@ pub struct Runner {
     followers: Followers,
     /// Events of streams opened but not registered yet, by stream id.
     orphans: Orphans<meerkat_mob::AttributedEvent>,
-    /// When the mobs are listed next, and until when the listing repeats.
-    discover_at: Option<Instant>,
-    discover_until: Option<Instant>,
-    /// A listing is running.
-    discovering: bool,
-    /// When the orchestrator's current session is read next.
-    session_check_at: Option<Instant>,
-    checking_session: bool,
+    /// The mobs the daemon said host helpers (listed at the attach,
+    /// pushed since): one is opened once it is this agent's
+    /// ([`Followers::should_open`], which a helper's session or a council
+    /// can make true later).
+    known_mobs: HashSet<String>,
+    /// The conversation the daemon last said the agent moved to
+    /// ([`protocol::SWITCHED`]) while a switch of this client's ran: shown
+    /// once that switch ends, unless it ended there.
+    pushed_session: Option<SessionId>,
     /// A conversation switch (this client's, or adopting another's) runs.
     switching: bool,
     /// The last `/model` switch (carried to a `/new` conversation).
@@ -722,11 +710,8 @@ impl Runner {
             approvals: Approvals::default(),
             followers: Followers::default(),
             orphans: Orphans::default(),
-            discover_at: None,
-            discover_until: None,
-            discovering: false,
-            session_check_at: None,
-            checking_session: false,
+            known_mobs: HashSet::new(),
+            pushed_session: None,
             switching: false,
             last_switch: None,
             current_endpoint: None,
@@ -803,9 +788,7 @@ impl Runner {
                 }
                 Some((epoch, report)) = self.reports_rx.recv() => self.on_report(epoch, report),
                 () = sleep_until(self.turn.deadline()) => self.on_deadline(),
-                () = sleep_until(self.discover_at) => self.discover(),
                 () = sleep_until(self.retry_at) => self.retry(),
-                () = sleep_until(self.session_check_at) => self.check_session(),
                 joined = self.bench.background() => self.model_lists(joined),
             }
         }
@@ -871,10 +854,6 @@ impl Runner {
                     self.notice(level, text);
                     return;
                 }
-                Report::SessionNow(_) | Report::SessionUnread => {
-                    self.checking_session = false;
-                    return;
-                }
                 _ => {}
             }
         }
@@ -925,18 +904,8 @@ impl Runner {
             }
             Report::Mode(status) => self.push_mode(status),
             Report::Mobs(mobs) => {
-                self.discovering = false;
-                for mob in mobs {
-                    if self.followers.should_open(&mob) {
-                        self.open_mob(mob);
-                    }
-                }
-                let now = Instant::now();
-                if self.discover_until.is_some_and(|until| until > now)
-                    && self.discover_at.is_none()
-                {
-                    self.discover_at = Some(now + DISCOVER_EVERY);
-                }
+                self.known_mobs.extend(mobs);
+                self.open_known_mobs();
             }
             Report::MobOpened { mob, opened } => match opened {
                 Ok((stream, members)) => {
@@ -952,6 +921,8 @@ impl Runner {
                         actions.extend(self.followers.member(&mob, &label, session));
                     }
                     self.follow(actions);
+                    // A helper's session may make a mob this agent's.
+                    self.open_known_mobs();
                 }
                 Err(why) => {
                     tracing::debug!(%mob, %why, "cannot follow the mob");
@@ -966,25 +937,6 @@ impl Runner {
                 let actions = self.followers.model(&helper, model);
                 self.follow(actions);
             }
-            Report::SessionNow(session) => {
-                self.checking_session = false;
-                if self.link.is_some() {
-                    self.session_check_at = Some(Instant::now() + SESSION_POLL);
-                }
-                let moved = self
-                    .link
-                    .as_ref()
-                    .is_some_and(|link| link.session != session);
-                if moved && !self.switching {
-                    self.adopt_switch(session, None, None);
-                }
-            }
-            Report::SessionUnread => {
-                self.checking_session = false;
-                if self.link.is_some() {
-                    self.session_check_at = Some(Instant::now() + SESSION_POLL);
-                }
-            }
             Report::Switched {
                 result,
                 own,
@@ -992,11 +944,17 @@ impl Runner {
             } => {
                 self.switching = false;
                 match result {
-                    Ok(adopted) => self.adopted(adopted, own, warning, None),
-                    Err(why) if own.is_some() => self.notice(
-                        NoticeLevel::Error,
-                        format!("could not switch conversations: {why}"),
-                    ),
+                    Ok(adopted) => {
+                        self.adopted(adopted, own, warning, None);
+                        self.follow_pushed_session();
+                    }
+                    Err(why) if own.is_some() => {
+                        self.notice(
+                            NoticeLevel::Error,
+                            format!("could not switch conversations: {why}"),
+                        );
+                        self.follow_pushed_session();
+                    }
                     Err(why) => {
                         tracing::warn!(%why, "cannot show the orchestrator's new conversation");
                     }
@@ -1005,7 +963,10 @@ impl Runner {
             Report::Rerendered(result, again) => {
                 self.switching = false;
                 match result {
-                    Ok(adopted) => self.adopted(adopted, None, None, Some(again)),
+                    Ok(adopted) => {
+                        self.adopted(adopted, None, None, Some(again));
+                        self.follow_pushed_session();
+                    }
                     Err(why) => self.notice(
                         NoticeLevel::Warn,
                         format!("the conversation could not be read again: {why}"),
@@ -1020,6 +981,7 @@ impl Runner {
             Report::SwitchRefused(level, text) => {
                 self.switching = false;
                 self.notice(level, text);
+                self.follow_pushed_session();
             }
             Report::Tasks { session, tasks } => {
                 // A list read for a conversation left since is not shown.
@@ -1479,9 +1441,16 @@ mod tests {
                 crate::daemon::handshake::read_attach(&mut lines, &mut server_write, "t", timeout)
                     .await
                     .unwrap();
-            crate::daemon::handshake::acknowledge(&mut server_write, &pending, None, None, timeout)
-                .await
-                .unwrap();
+            crate::daemon::handshake::acknowledge(
+                &mut server_write,
+                &pending,
+                None,
+                None,
+                None,
+                timeout,
+            )
+            .await
+            .unwrap();
             // Held open: the link stays up.
             if held {
                 std::future::pending::<()>().await;

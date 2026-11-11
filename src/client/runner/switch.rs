@@ -175,7 +175,7 @@ impl Runner {
         if let Some(warning) = warning {
             self.notice(NoticeLevel::Warn, warning);
         }
-        self.discover_at = Some(Instant::now());
+        self.list_mobs();
     }
 
     /// `/resume <reference>`: resolve it against the conversations, then

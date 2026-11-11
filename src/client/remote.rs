@@ -56,15 +56,6 @@ fn decode<T: serde::de::DeserializeOwned>(
     serde_json::from_value(value).map_err(|source| ClientError::Decode { what, source })
 }
 
-/// The current session of the connection's agent.
-///
-/// # Errors
-///
-/// The call's error, or [`ClientError::NoSession`].
-pub async fn session_id(connection: &Connection) -> Result<SessionId, ClientError> {
-    member_session(connection, MOB_ID, connection.agent()).await
-}
-
 /// The model and provider the session runs on (`events/snapshot`).
 ///
 /// # Errors

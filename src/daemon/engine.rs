@@ -94,6 +94,8 @@ pub struct Composed {
     pub notes_task: tokio::task::JoinHandle<()>,
     /// The helper follower's task.
     pub follower_task: tokio::task::JoinHandle<()>,
+    /// The task that tells the clients of destroyed mobs.
+    pub destroyed_task: tokio::task::JoinHandle<()>,
     /// What every agent's and helper's model calls used.
     pub ledger: Arc<super::usage::Ledger>,
     /// The members' tool catalogs.
@@ -459,13 +461,43 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     // The daemon follows its helpers once each: their usage, their run
     // ends (the tool catalog is read then) and their sessions (for
     // nesting). Clients see the helpers' events on the mobs' own streams.
+    // The clients open a mob's stream once the daemon follows a helper in
+    // it (`rkat/mob`), instead of listing the mobs again and again.
+    let helper_events = Arc::new(super::approvals::HelperEvents::new(
+        super::approvals::CatalogReads::of(&origins),
+        Arc::clone(&ledger),
+        {
+            let decisions = Arc::downgrade(&decisions);
+            move |mob: &meerkat_mob::MobId, change| {
+                if let Some(decisions) = decisions.upgrade() {
+                    decisions.broadcast(
+                        super::protocol::MOB,
+                        &super::protocol::MobNote {
+                            mob_id: mob.clone(),
+                            change,
+                        },
+                    );
+                }
+            }
+        },
+    ));
+    let mut destroyed = registry.destroyed_mobs();
+    let destroyed_task = tokio::spawn({
+        let helper_events = Arc::clone(&helper_events);
+        async move {
+            loop {
+                match destroyed.recv().await {
+                    Ok(mob) => helper_events.mob_destroyed(&mob),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        }
+    });
     let follower = tokio::spawn(crate::mobs::follow::watch(
         Arc::downgrade(&state),
         Arc::clone(&registry),
-        Arc::new(super::approvals::HelperEvents::new(
-            super::approvals::CatalogReads::of(&origins),
-            Arc::clone(&ledger),
-        )),
+        helper_events,
         spawning_rx,
     ));
     let notes_task = forward_approval_notes(&decisions, &ledger, approval_events);
@@ -491,6 +523,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         notes_task,
         diffs_task,
         follower_task: follower,
+        destroyed_task,
         ledger,
         origins,
         watches,

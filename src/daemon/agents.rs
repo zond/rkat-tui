@@ -501,6 +501,12 @@ impl Agents {
         self.watches.end_turn(name);
     }
 
+    /// The conversation `name` runs as now.
+    #[must_use]
+    pub fn session_of(&self, name: &str) -> Option<SessionId> {
+        self.conversations.current(name)
+    }
+
     /// The agents' file watches.
     #[must_use]
     pub fn watches(&self) -> &Arc<super::watches::Watches> {
@@ -1019,6 +1025,17 @@ impl Agents {
         let switched = self.conversations.switch(name, target).await;
         if self.lost(name, &switched).await {
             return switched;
+        }
+        // Every client of the agent follows it there (the one that asked
+        // too: it reads the answer).
+        if let Ok(session) = &switched {
+            self.decisions.broadcast(
+                super::protocol::SWITCHED,
+                &super::protocol::SwitchedNote {
+                    agent: name.to_string(),
+                    session_id: session.clone(),
+                },
+            );
         }
         self.rewire(&[name.to_string()]).await;
         if switched.is_ok() {

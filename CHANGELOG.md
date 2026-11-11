@@ -54,6 +54,10 @@
 
 ### Changed
 
+- Clients poll the daemon no more: another client's `/new` or `/resume`
+  and a helper's new mob are pushed to every attached client the moment
+  they happen (it read the agent's status every second, and listed the
+  mobs every quarter second for ten seconds after any helper tool).
 - `/context` shows what every model request pays for tool definitions,
   in bytes and tokens per family (the engine's schedule, mob and comms
   tools are most of it), where it said "unknown here"; the daemon

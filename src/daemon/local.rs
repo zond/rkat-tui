@@ -122,6 +122,9 @@ pub struct Local {
     report: ReportParts,
     /// The audit log (`rkat/audit`), when it could be opened.
     audit: Option<Arc<super::audit::AuditLog>>,
+    /// Tests: how many times each engine method was forwarded.
+    #[cfg(any(test, feature = "test-support"))]
+    forwarded: parking_lot::Mutex<std::collections::HashMap<String, usize>>,
 }
 
 /// What [`Local`] is made of.
@@ -255,7 +258,17 @@ impl Local {
             lifecycle,
             report,
             audit,
+            #[cfg(any(test, feature = "test-support"))]
+            forwarded: parking_lot::Mutex::default(),
         }
+    }
+
+    /// How many requests of the engine method `method` the clients sent
+    /// through the proxy (tests: what a client polls).
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn forwarded(&self, method: &str) -> usize {
+        self.forwarded.lock().get(method).copied().unwrap_or(0)
     }
 
     /// Append `line` to the audit log (nothing when there is none).
@@ -1135,6 +1148,10 @@ impl Local {
             .unwrap_or("")
             .to_string();
         self.admit(caller, &method, request.get("params"))?;
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            *self.forwarded.lock().entry(method.clone()).or_insert(0) += 1;
+        }
         let Some(params) = request.get_mut("params") else {
             return Ok(request);
         };

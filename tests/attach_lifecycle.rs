@@ -430,7 +430,11 @@ async fn a_retired_agent_takes_no_input_and_its_conversation_is_seated_again() {
     .await;
     assert_eq!(back.agent(), name);
     assert!(back.seated());
-    assert_eq!(remote::session_id(&back).await.unwrap(), session);
+    assert_eq!(
+        back.session(),
+        Some(&session),
+        "the attach names the conversation"
+    );
     back.call(
         "mob/member_send",
         json!({"mob_id": "tui", "agent_identity": name, "content": "and now"}),

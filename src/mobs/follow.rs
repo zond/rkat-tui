@@ -32,6 +32,9 @@ pub trait HelperWatch: Send + Sync {
     async fn turn(&self, tag: &HelperTag, usage: &TurnUsage);
     /// A run of the helper running as `session` ended.
     fn run_ended(&self, session: &SessionId);
+    /// `mob` hosts a helper the follower subscribed to (its stream can be
+    /// opened now).
+    fn mob_hosts(&self, mob: &MobId);
 }
 
 /// Hand `event` of the helper `tag` to `watch`, if it wants it.
@@ -83,6 +86,7 @@ async fn follow(
     let Spawning { key, tag } = helper;
     let retired = match subscribe(&state, &key.mob, &key.member).await {
         Ok((handle, mut stream, session)) => {
+            observer.mob_hosts(&key.mob);
             if let Some(session) = session {
                 registry.bind_session(&key, &tag, &session);
             }

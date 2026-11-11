@@ -293,9 +293,8 @@ impl Runner {
             }));
             self.send(Msg::Status(StatusUpdate::CostTotals(usage.cost)));
         }
-        let now = Instant::now();
-        self.discover_at = Some(now);
-        self.session_check_at = Some(now + SESSION_POLL);
+        // The mobs there are now; the daemon pushes the ones to come.
+        self.list_mobs();
         self.refresh_mode();
         self.refresh_tasks();
         if new_daemon {
@@ -437,8 +436,8 @@ impl Runner {
         self.save_cursor();
         self.followers.streams_lost();
         self.orphans.clear();
-        self.discover_at = None;
-        self.session_check_at = None;
+        self.known_mobs.clear();
+        self.pushed_session = None;
         self.switching = false;
         // What is still pending shows again after the reattach.
         for id in self.approvals.clear() {
@@ -471,8 +470,8 @@ impl Runner {
         self.link = None;
         self.followers.streams_lost();
         self.orphans.clear();
-        self.discover_at = None;
-        self.session_check_at = None;
+        self.known_mobs.clear();
+        self.pushed_session = None;
         for id in self.approvals.clear() {
             self.send(Msg::EscalationResolved(id));
         }
@@ -550,6 +549,42 @@ impl Runner {
             }
             return;
         }
+        if note.method == protocol::SWITCHED {
+            match serde_json::from_value::<protocol::SwitchedNote>(note.params.clone()) {
+                Ok(moved) if moved.agent == link.connection.agent() => {
+                    if moved.session_id == link.session {
+                        self.pushed_session = None;
+                    } else if self.switching {
+                        // Shown once the switch under way ends.
+                        self.pushed_session = Some(moved.session_id);
+                    } else {
+                        self.adopt_switch(moved.session_id, None, None);
+                    }
+                }
+                Ok(_) => {}
+                Err(err) => tracing::debug!(error = %err, "unreadable switch note"),
+            }
+            return;
+        }
+        if note.method == protocol::MOB {
+            match serde_json::from_value::<protocol::MobNote>(note.params.clone()) {
+                Ok(protocol::MobNote {
+                    mob_id,
+                    change: protocol::MobChange::Hosts,
+                }) => {
+                    self.known_mobs.insert(mob_id.to_string());
+                    self.open_known_mobs();
+                }
+                Ok(protocol::MobNote {
+                    mob_id,
+                    change: protocol::MobChange::Destroyed,
+                }) => {
+                    self.known_mobs.remove(mob_id.as_str());
+                }
+                Err(err) => tracing::debug!(error = %err, "unreadable mob note"),
+            }
+            return;
+        }
         if note.method == protocol::DECISION_ENDED {
             if let Some(change) = self.approvals.decision_ended(&note.params) {
                 for msg in change.messages() {
@@ -576,9 +611,6 @@ impl Runner {
         let Some((stream, attributed)) = remote::attributed_event(note) else {
             return;
         };
-        if helpers::starts_helpers(&attributed.envelope.payload) {
-            self.start_discovery();
-        }
         if let Some(by) = self.followers.helper_of(&stream, &attributed) {
             self.followers
                 .convening(&attributed.envelope.payload, Some(&by));
@@ -586,6 +618,8 @@ impl Runner {
         if self.followers.owns(&stream) {
             let actions = self.followers.event(&stream, attributed);
             self.follow(actions);
+            // A helper's session or a council may make a mob this agent's.
+            self.open_known_mobs();
         } else {
             // A stream whose open has not answered yet.
             self.orphans.hold(stream, attributed);
@@ -633,26 +667,12 @@ impl Runner {
         }
     }
 
-    /// A tool that seats helpers started: list the mobs for a while, so a
-    /// new one (an implicit `delegate` mob) is followed.
-    pub(super) fn start_discovery(&mut self) {
-        let now = Instant::now();
-        self.discover_until = Some(now + DISCOVER_FOR);
-        if self.discover_at.is_none() {
-            self.discover_at = Some(now);
-        }
-    }
-
-    /// List the daemon's mobs and follow the new ones.
-    pub(super) fn discover(&mut self) {
-        self.discover_at = None;
+    /// List the daemon's mobs once (an attach, another conversation): the
+    /// daemon pushes the ones that host helpers later ([`protocol::MOB`]).
+    pub(super) fn list_mobs(&self) {
         let Some(connection) = self.connection() else {
             return;
         };
-        if self.discovering {
-            return;
-        }
-        self.discovering = true;
         let reports = self.reporter();
         tokio::spawn(async move {
             let mobs = bounded(CALL_TIMEOUT, remote::mobs(&connection))
@@ -660,6 +680,34 @@ impl Runner {
                 .unwrap_or_default();
             reports.send(Report::Mobs(mobs));
         });
+    }
+
+    /// Open every known mob that is this agent's and not open yet.
+    pub(super) fn open_known_mobs(&mut self) {
+        let mobs: Vec<String> = self
+            .known_mobs
+            .iter()
+            .filter(|mob| self.followers.should_open(mob))
+            .cloned()
+            .collect();
+        for mob in mobs {
+            self.open_mob(mob);
+        }
+    }
+
+    /// The daemon moved the agent to another conversation while a switch
+    /// of this client's ran: show it now, unless the switch ended there.
+    pub(super) fn follow_pushed_session(&mut self) {
+        let Some(session) = self.pushed_session.take() else {
+            return;
+        };
+        if self
+            .link
+            .as_ref()
+            .is_some_and(|link| link.session != session)
+        {
+            self.adopt_switch(session, None, None);
+        }
     }
 
     /// Open `mob`'s mob-wide stream and read its members' sessions.
@@ -681,29 +729,6 @@ impl Runner {
             .await
             .map_err(|err| err.to_string());
             reports.send(Report::MobOpened { mob, opened });
-        });
-    }
-
-    /// Read the orchestrator's current session (another client may have
-    /// switched it).
-    pub(super) fn check_session(&mut self) {
-        self.session_check_at = None;
-        let Some(connection) = self.connection() else {
-            return;
-        };
-        if self.checking_session || self.switching {
-            self.session_check_at = Some(Instant::now() + SESSION_POLL);
-            return;
-        }
-        self.checking_session = true;
-        let reports = self.reporter();
-        tokio::spawn(async move {
-            reports.send(
-                match bounded(CALL_TIMEOUT, remote::session_id(&connection)).await {
-                    Ok(session) => Report::SessionNow(session),
-                    Err(_) => Report::SessionUnread,
-                },
-            );
         });
     }
 
@@ -855,7 +880,10 @@ pub(super) async fn establish(
         connection
             .call(protocol::engine::INITIALIZE, serde_json::json!({}))
             .await?;
-        let session = remote::session_id(&connection).await?;
+        let session = connection
+            .session()
+            .cloned()
+            .ok_or(ClientError::NoSession)?;
         let id = session.to_string();
         let resume = saved.and_then(|cursor| {
             cursor.resumable(&id, &super::super::catchup::daemon_id(&endpoint.token))

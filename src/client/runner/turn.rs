@@ -270,9 +270,6 @@ impl Runner {
         {
             return;
         }
-        if helpers::starts_helpers(&envelope.payload) {
-            self.start_discovery();
-        }
         self.followers.convening(&envelope.payload, None);
         let mut terminal = false;
         // A run already going when this client attached (its start was shown
@@ -347,12 +344,6 @@ impl Runner {
                     self.turn.open_runs.insert(run.clone());
                     self.turn.current_run = Some(run.clone());
                 }
-            }
-            AgentEvent::ToolExecutionCompleted { name, .. }
-                if helpers::HELPER_TOOLS.contains(&name.as_str()) =>
-            {
-                // Once more: a mob made while the tool ran.
-                self.discover_at = Some(Instant::now());
             }
             AgentEvent::ToolExecutionCompleted { name, .. }
                 if crate::daemon::tasks::changes_tasks(name) =>

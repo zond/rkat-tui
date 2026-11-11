@@ -473,10 +473,15 @@ where
             }
         }
     }
+    let session = bound
+        .as_ref()
+        .zip(agents)
+        .and_then(|(bound, agents)| agents.session_of(&bound.name));
     match handshake::acknowledge(
         writer,
         &pending,
         bound.as_ref(),
+        session.as_ref(),
         Some(lifecycle.build()),
         handshake::TIMEOUT,
     )

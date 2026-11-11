@@ -7117,3 +7117,32 @@ totals, so a daemon restart keeps the seed
 (`usage::a_turn_no_client_saw_is_counted_and_survives_a_restart`);
 `attach_sessions::the_token_counter_and_gauge_follow_the_conversation`
 covers a resume and a late attach whose cursor is past the last turn.
+
+**Pushes instead of polls.** The client polled three ways: every client
+called `mob/member_status` once a second to notice another client's
+`/new` or `/resume` (`SESSION_POLL`), it listed every mob every 250 ms
+for 10 s after any helper tool started (`DISCOVER_EVERY`/`DISCOVER_FOR`,
+driven by a third hand-kept list of helper tool names, `HELPER_TOOLS`),
+and the daemon's event watcher polled once a second for the same switch.
+The daemon performs the switch and follows every helper, so it pushes:
+`rkat/switched {agent, session_id}` from `Agents::switch`, and
+`rkat/mob {mob_id, change}` when the helper follower first subscribes to
+a helper in a mob ("hosts", so the mob is managed and its stream can be
+opened; the engine's create hook runs before the mob exists, and it has
+no after-create hook, so the follower's subscription is the first
+positive evidence) and when the registry's destroy hook fires. The attach
+answer names the agent's conversation (`Attached::session_id`), so a
+reconnecting client starts from the current state without a member
+status read (`remote::session_id` is gone); it lists the mobs once per
+attach and per conversation and keeps the pushed ones, opening each once
+it is this agent's (a helper's session or a council can make a mob its
+agent's after the push). A switch pushed while the client's own switch
+runs is shown when that switch ends. The watcher's poll went with
+item 1 (seatings). Tests count what the clients send through the proxy
+(`Local::forwarded`, test-support): `pushes::another_clients_new_is_shown_without_polling`
+(no `mob/member_status` over 1.5 s quiet spells before and after the
+switch, B shows A's `/new`) and
+`pushes::a_delegate_helper_is_followed_from_its_first_event_without_listing_mobs`
+(one `mob/list` at attach, none for the turn; the helper's `RunStarted`
+and its text are shown, the backfill path covering what came before the
+client's stream opened).

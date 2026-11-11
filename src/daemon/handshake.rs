@@ -212,12 +212,13 @@ where
     W: AsyncWrite + Unpin,
 {
     let pending = read_attach(reader, writer, token, timeout).await?;
-    acknowledge(writer, &pending, None, None, timeout).await?;
+    acknowledge(writer, &pending, None, None, None, timeout).await?;
     Ok(pending.params)
 }
 
 /// Answer `pending` with `{attached: true}` on `writer`, naming the agent
-/// the connection was bound to and the daemon's `build`. The daemon registers the connection first
+/// the connection was bound to, the conversation it runs as (`session`)
+/// and the daemon's `build`. The daemon registers the connection first
 /// ([`super::serve`]): a client that read this answer is counted for every
 /// other connection.
 ///
@@ -229,6 +230,7 @@ pub async fn acknowledge<W: AsyncWrite + Unpin>(
     writer: &mut W,
     pending: &Pending,
     agent: Option<&super::agents::Bound>,
+    session: Option<&meerkat_core::SessionId>,
     build: Option<&str>,
     timeout: Duration,
 ) -> Result<(), HandshakeError> {
@@ -237,6 +239,7 @@ pub async fn acknowledge<W: AsyncWrite + Unpin>(
         Attached {
             attached: true,
             agent: agent.map(|bound| bound.name.clone()),
+            session_id: session.cloned(),
             seated: agent.is_some_and(|bound| bound.seated),
             build: build.map(str::to_string),
         },

@@ -787,13 +787,34 @@ impl CatalogReads {
 pub struct HelperEvents {
     catalogs: CatalogReads,
     ledger: Arc<super::usage::Ledger>,
+    /// Tells the clients a mob hosts helpers or was destroyed.
+    announce: Box<dyn Fn(&MobId, super::protocol::MobChange) + Send + Sync>,
+    /// The mobs announced as hosting helpers (each once, until destroyed).
+    hosting: Mutex<std::collections::HashSet<MobId>>,
 }
 
 impl HelperEvents {
-    /// Over `catalogs` and `ledger`.
+    /// Over `catalogs` and `ledger`; `announce` tells the clients of mobs.
     #[must_use]
-    pub fn new(catalogs: CatalogReads, ledger: Arc<super::usage::Ledger>) -> Self {
-        Self { catalogs, ledger }
+    pub fn new(
+        catalogs: CatalogReads,
+        ledger: Arc<super::usage::Ledger>,
+        announce: impl Fn(&MobId, super::protocol::MobChange) + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            catalogs,
+            ledger,
+            announce: Box::new(announce),
+            hosting: Mutex::default(),
+        }
+    }
+
+    /// `mob` was destroyed: the clients are told, and a mob made again
+    /// under its id is announced again.
+    pub fn mob_destroyed(&self, mob: &MobId) {
+        if self.hosting.lock().remove(mob) {
+            (self.announce)(mob, super::protocol::MobChange::Destroyed);
+        }
     }
 }
 
@@ -814,6 +835,12 @@ impl crate::mobs::follow::HelperWatch for HelperEvents {
     fn run_ended(&self, session: &SessionId) {
         self.catalogs.run_ended(session);
         self.ledger.persist();
+    }
+
+    fn mob_hosts(&self, mob: &MobId) {
+        if self.hosting.lock().insert(mob.clone()) {
+            (self.announce)(mob, super::protocol::MobChange::Hosts);
+        }
     }
 }
 

@@ -16,9 +16,10 @@
 //! - A mob-wide stream subscribes a member that joins later from the
 //!   member's live events on, so a helper's first events (its run start)
 //!   can come before the stream has it; and an implicit mob exists only
-//!   once the first `delegate` creates it. The runner lists the mobs again
-//!   while a mob tool runs ([`starts_helpers`]), opens a stream on each
-//!   new one, and the first time a helper is seen its session's durable
+//!   once the first `delegate` creates it. The runner lists the mobs once
+//!   per attach, the daemon pushes each mob that hosts a helper it follows
+//!   (`rkat/mob`), the runner opens a stream on each of this agent's, and
+//!   the first time a helper is seen its session's durable
 //!   events are read (`events/list_since`, [`Action::Backfill`]); its live
 //!   events are held until that read returns, then shown in order, each
 //!   once (a high-water mark per helper session, as for the orchestrator).
@@ -42,28 +43,6 @@ use crate::ui::{Msg, StatusUpdate};
 
 /// The prefix of a session's implicit (`delegate`) mob.
 pub const IMPLICIT_PREFIX: &str = "implicit-";
-
-/// The tools that create helpers (and maybe their mobs): while one runs,
-/// the runner looks for new mobs to follow.
-pub const HELPER_TOOLS: [&str; 7] = [
-    "delegate",
-    "spawn_member",
-    "spawn_many_members",
-    "mob_create",
-    "mob_spawn_member",
-    "council",
-    "fork_off",
-];
-
-/// Whether `event` starts a tool that may seat a helper.
-#[must_use]
-pub fn starts_helpers(event: &AgentEvent) -> bool {
-    matches!(
-        event,
-        AgentEvent::ToolCallRequested { name, .. } | AgentEvent::ToolExecutionStarted { name, .. }
-            if HELPER_TOOLS.contains(&name.as_str())
-    )
-}
 
 /// A helper: its mob and member identity.
 pub type HelperId = (String, String);
@@ -630,17 +609,5 @@ mod tests {
                 .member(MOB_ID, "main-ab12", Some(other))
                 .is_empty()
         );
-    }
-
-    #[test]
-    fn helper_tools_start_discovery() {
-        assert!(starts_helpers(&AgentEvent::ToolExecutionStarted {
-            id: "1".into(),
-            name: "delegate".into()
-        }));
-        assert!(!starts_helpers(&AgentEvent::ToolExecutionStarted {
-            id: "1".into(),
-            name: "read_file".into()
-        }));
     }
 }
