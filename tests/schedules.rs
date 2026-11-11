@@ -231,14 +231,28 @@ async fn a_fired_schedule_is_unattended_while_nobody_is_attached() {
     let result = tool_result(&llm.requests()[3], "a1");
     assert!(result.contains("needs a user attached"), "{result}");
     // A client attaches before fetch-b: it is shown what was denied, and
-    // fetch-b's curl is reviewed. fetch-a's run ends first (a client
-    // attaching while it ends would join it as a remote turn).
+    // fetch-b's curl is reviewed. fetch-a's run ends first.
     daemon.idle(&agent).await;
     let mut b = rig::Client::attach_agent(&ws.root, AgentChoice::Agent { name: agent }).await;
     b.wait_for(|m| {
         matches!(m, Msg::Notice { text, .. } if text.contains("wanted to run `curl -s http://127.0.0.1:9/a`"))
     })
     .await;
+    // The client catches up on the run it missed: fetch-a's, shown as a
+    // turn that ends (a UI starts nothing while it runs).
+    let fetched_a = |m: &Msg| {
+        matches!(m, Msg::TurnFinished(outcome)
+            if outcome.result.as_ref().is_ok_and(|summary| summary.text == "fetched a"))
+    };
+    if !b.seen.iter().any(fetched_a) {
+        b.wait_for(fetched_a).await;
+    }
+    assert!(
+        b.seen
+            .iter()
+            .any(|m| matches!(m, Msg::RemoteTurn { prompt: Some(p) } if p == "fetch a")),
+        "the missed run was caught up as a turn"
+    );
     b.send(Effect::StartTurn("schedule another".into()));
     assert_eq!(b.turn_finished().await.result.unwrap().text, "scheduled b");
     b.wait_for(|m| fired_by(m, "fetch-b")).await;

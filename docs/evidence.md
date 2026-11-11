@@ -6617,4 +6617,10 @@ rig's own. `schedules::a_fired_schedule_is_unattended_while_nobody_is_attached`
 attached its second client right after the scheduled run's last model
 call; when that run had not ended yet the client joined it as a remote
 turn and took its end for its own turn's. It now waits for the agent to
-be idle at the daemon first (`Running::idle`, bounded).
+be idle at the daemon first (`Running::idle`, bounded). Even then the
+client catches up on the run it missed (its cursor predates it) and shows
+it as a turn that ends; the test sent its next prompt straight into the
+runner while that caught-up turn was open, which a UI never does (it
+queues), so either turn's end could come first. The test now waits for
+the caught-up turn's end ("fetched a") and checks it was shown as a
+turn, then starts its own.
