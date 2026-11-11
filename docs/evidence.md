@@ -6656,3 +6656,36 @@ budget later, allowed) and, on the rig,
 (A's dialog left open on A's client, B's shown on B's and answered, then
 A's). With the lock made daemon-wide again the three "another session"
 tests fail (checked).
+
+## The agents follow each start's profile (A8 of senior review 3, 2026-11-11)
+
+`ensure_mob` creates the workspace's mob from `definition(plan)` once
+per realm and only resumes it on later starts, so the stored `main`
+profile kept the MCP servers, the memory flag and the compaction
+threshold of the realm's first start. The engine's way to change a
+stored definition is `MobStorage::update_definition(expected_revision,
+definition)`, documented "call this before constructing/resuming a
+`MobHandle`"; `MobMcpState` opens the storage itself (its path is
+internal, `storage_for_new_mob`) and restores the mob while listing, and
+exposes no update. `mob_profile_update` is the realm profile store, not
+a mob's inline profiles. What the spawn path does take is
+`SpawnMemberSpec::override_profile`: the spawn builds on that profile
+instead of the definition's, the actor persists it as the member's
+`effective_profile_override`, and a restore or rebuild uses the one the
+customizer hands it (the definition's current role profile still adds
+its deny list and read-only flag, `build.rs`). A resumed session keeps
+its persisted identity (model, provider, provider params, unless
+`resume_provider_params`).
+
+So `orchestrator::main_profile(plan)` builds the profile of this start,
+`definition` uses it for a new mob, and `RootMember::current_profile`
+carries it to the customizer, which sets it as the override profile of
+every agent's spawn and rebuild. Limit, stated in the code: the stored
+definition itself still shows the first start's profile (only the
+members follow), which nothing in rkat-tui reads.
+
+Test: `compact::a_changed_compaction_policy_reaches_an_existing_realms_agent`
+(first start in `warn`, history past the threshold, nothing compacts;
+second start of the same realm and conversation in `auto` at 5%: the
+next turn compacts first). It failed before the change (the second
+start answered with the summary text: no compaction).

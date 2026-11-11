@@ -36,8 +36,33 @@ fn definition(plan: &RootPlan) -> MobDefinition {
     let mut definition =
         MobDefinition::implicit_with_provider(MOB_ID, &plan.model, Some(plan.provider), None);
     definition.id = MobId::from(MOB_ID);
-    let profiles = std::mem::take(&mut definition.profiles);
-    for (_, binding) in profiles {
+    definition.profiles.clear();
+    if let Some(profile) = main_profile(plan) {
+        definition.profiles.insert(
+            ProfileName::from(ORCHESTRATOR),
+            ProfileBinding::Inline(Box::new(profile)),
+        );
+    }
+    definition
+}
+
+/// The `main` profile of this start: what every agent is built on, fresh
+/// or rebuilt. The mob keeps the definition it was created with on the
+/// realm's first start, and the engine updates a stored definition only
+/// while no handle of the mob is live
+/// (`meerkat_mob::MobStorage::update_definition`), which `MobMcpState`
+/// does not expose; so the daemon puts this profile on every agent's spawn
+/// as its override profile (`crate::mobs::RootMember::current_profile`),
+/// and the MCP servers, the memory tools and the compaction threshold of
+/// the current start reach the agents of an existing realm. A rebuilt
+/// agent keeps its session's model, provider and provider parameters (the
+/// engine keeps a resumed session's identity).
+#[must_use]
+pub fn main_profile(plan: &RootPlan) -> Option<meerkat_mob::Profile> {
+    let mut definition =
+        MobDefinition::implicit_with_provider(MOB_ID, &plan.model, Some(plan.provider), None);
+    let mut main = None;
+    for (_, binding) in std::mem::take(&mut definition.profiles) {
         if let ProfileBinding::Inline(mut profile) = binding {
             profile
                 .self_hosted_server_id
@@ -58,17 +83,12 @@ fn definition(plan: &RootPlan) -> MobDefinition {
             // The `[thinking]` of the start-up model; a rebuild re-applies
             // the setting of the session's model (the customizer).
             profile.provider_params = crate::thinking::params_for(plan.thinking.as_ref());
-            // The `[auto]` compaction policy (the mob keeps the definition
-            // it was created with: a policy changed later reaches the
-            // orchestrator once its mob is created again).
+            // The `[auto]` compaction policy of this start.
             profile.auto_compact_threshold = plan.compact_threshold;
-            definition.profiles.insert(
-                ProfileName::from(ORCHESTRATOR),
-                ProfileBinding::Inline(profile),
-            );
+            main = Some(*profile);
         }
     }
-    definition
+    main
 }
 
 /// Create the mob, or restore it (and resume it when it was stopped). Its

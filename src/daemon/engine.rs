@@ -310,10 +310,22 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
                 as Arc<dyn meerkat_core::ToolDispatchAdmission>
         })
     };
+    let root_plan = RootPlan {
+        model: choice.engine_model.clone(),
+        provider: choice.engine_provider,
+        self_hosted_server: choice.self_hosted_server.clone(),
+        auth_binding: choice.auth_binding.clone(),
+        mcp_servers,
+        memory,
+        registry: Arc::clone(&registry),
+        thinking: choice.thinking.clone(),
+        compact_threshold,
+    };
     let root = RootMember {
         mob: MOB_ID.into(),
         is_root: super::agents::is_agent,
         profile: ORCHESTRATOR.to_string(),
+        current_profile: super::orchestrator::main_profile(&root_plan),
         tools: root_tools,
         instructions: Arc::new(move |identity: &meerkat_mob::AgentIdentity| {
             let mut sections = vec![
@@ -328,7 +340,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
             sections
         }),
         model: choice.engine_model.clone(),
-        auth_binding: choice.auth_binding.clone(),
+        auth_binding: choice.auth_binding,
         admission: Some(admission),
         thinking: Some(root_thinking),
     };
@@ -446,17 +458,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         config_store,
         realm_config,
         state,
-        root: RootPlan {
-            model: choice.engine_model,
-            provider: choice.engine_provider,
-            self_hosted_server: choice.self_hosted_server,
-            auth_binding: choice.auth_binding,
-            mcp_servers,
-            memory,
-            registry,
-            thinking: choice.thinking,
-            compact_threshold,
-        },
+        root: root_plan,
         lease: realm_lease,
         scope,
         engine,

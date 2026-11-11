@@ -96,6 +96,13 @@ pub struct RootMember {
     pub is_root: fn(&str) -> bool,
     /// The profile the daemon seats them with.
     pub profile: String,
+    /// That profile as this start defines it, put on every spawn and
+    /// rebuild of theirs as the override profile: the mob keeps the
+    /// definition of the realm's first start, so without it the MCP
+    /// servers, memory tools and compaction threshold of a later start
+    /// never reach them (`crate::daemon::orchestrator::main_profile`).
+    /// `None`: the mob's stored profile.
+    pub current_profile: Option<meerkat_mob::Profile>,
     /// Each one's external tools (the TUI session's file and note tools);
     /// not persisted by the engine, so supplied again on every rebuild.
     pub tools: RootTools,
@@ -251,6 +258,9 @@ fn shape_root(
     // another endpoint than the start-up one, or none.
     if fresh && spec.auth_binding.is_none() {
         spec.auth_binding.clone_from(&root.auth_binding);
+    }
+    if let Some(profile) = &root.current_profile {
+        spec.override_profile = Some(profile.clone());
     }
     if let Some(admission) = &root.admission {
         spec.tool_dispatch_admission = Some(admission(key));
@@ -1004,6 +1014,7 @@ mod tests {
             mob: meerkat_mob::MobId::from("tui"),
             is_root: |name| name == "main" || name.starts_with("main-"),
             profile: "main".to_string(),
+            current_profile: None,
             tools: Arc::new(|_| {
                 Arc::new(meerkat_tools::EmptyToolDispatcher) as Arc<dyn AgentToolDispatcher>
             }),

@@ -250,3 +250,50 @@ async fn warn_mode_warns_and_compacts_only_on_compact() {
     assert!(!last.user().contains("turn 0"), "{}", last.user());
     rig.quit().await;
 }
+
+/// The compaction policy of each start reaches an existing realm's agent.
+/// The mob is created once per realm and keeps the definition it was
+/// created with, so a policy set later never reached the agent; now the
+/// agent is built on the profile of the current start. First start: `warn`
+/// (no native compaction), the history grows past the threshold and
+/// nothing compacts. Second start of the same realm and conversation:
+/// `auto` at 5%, and the next turn compacts first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_changed_compaction_policy_reaches_an_existing_realms_agent() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(history());
+    let (mut first, policy) = rig(&llm, &ws, "warn").await;
+    assert_eq!(policy.mode, CompactMode::Warn);
+    turns(&mut first, SHORT_TURNS + 1, "turn").await;
+    assert_eq!(started(&first), 0);
+    let session = first.current_session().await;
+    first.quit().await;
+
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Text("SUMMARY of the earlier turns"),
+        Step::Text("after"),
+    ]);
+    let mut setup = Setup::args(&[
+        "--set",
+        "auto.compact=auto",
+        "--set",
+        "auto.compact_warn_percent=5",
+        "--set",
+        "auto.compact_auto_percent=5",
+    ]);
+    setup.client_args = vec!["-c".to_string()];
+    let mut second = Attached::start_with(&ws.root, &llm, setup).await;
+    assert_eq!(second.current_session().await, session);
+    second.send(Effect::StartTurn("next".into()));
+    let outcome = second.turn_finished().await;
+    assert_eq!(outcome.result.expect("turn succeeds").text, "after");
+    assert_eq!(started(&second), 1, "the new policy compacted");
+    let requests = llm.recorded();
+    assert_eq!(requests.len(), 2, "one extra call: the summary");
+    assert!(
+        requests[1].user().contains("SUMMARY of the earlier turns"),
+        "{}",
+        requests[1].user()
+    );
+    second.quit().await;
+}

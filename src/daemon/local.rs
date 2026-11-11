@@ -747,7 +747,7 @@ impl Local {
                 RuleOutcome {
                     ok: true,
                     text: format!(
-                        "trusted {files} as they are now; their hooks run from the agent's next session (/new, /resume or a daemon restart); the agent's MCP servers are the ones its mob was created with"
+                        "trusted {files} as they are now; their hooks run from the agent's next session (/new, /resume or a daemon restart), their MCP servers from the daemon's next start"
                     ),
                 }
             }

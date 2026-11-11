@@ -32,6 +32,11 @@
 
 ### Fixed
 
+- A workspace's agents follow the configuration of each daemon start:
+  MCP servers added to `.rkat/mcp.toml` (and trusted), the memory
+  tools and the `[auto]` compaction policy reach the agents of an
+  existing workspace at the next start. They were fixed at the
+  workspace's first start, when its mob was created.
 - Streaming is cheaper to draw: the UI applies every message already
   queued (up to 256) before drawing a frame, instead of drawing one per
   stream event, and a frame lays out only the blocks that changed and
