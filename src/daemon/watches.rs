@@ -1,12 +1,17 @@
 //! The agents' file watches (P6 item B): what `watch_paths` registers.
 //!
 //! The daemon's process holds one recursive file-system watch on the
-//! workspace (the `notify` crate, set up on the first watch), never the
-//! agent's confined shell. Every changed path is matched against each
-//! agent's watches; the matches of one agent are batched until no change
-//! came for [`DEBOUNCE`] and leave as one [`Batch`] (at most [`MAX_PATHS`]
-//! paths named, then "and N more"), which the daemon delivers to the agent
-//! as a message into its session (`super::agents::Agents::watch_event`).
+//! workspace (the `notify` crate, set up on the first watch and dropped
+//! when the last watch goes), never the agent's confined shell. Every
+//! changed path is matched against each agent's watches; a path no watch
+//! matches is dropped at once (it neither opens a batch nor delays one).
+//! The matches of one agent are batched until no matching change came for
+//! [`DEBOUNCE`], or the batch is [`MAX_BATCH_AGE`] old (a build that writes
+//! continuously does not hold it back), and leave as one [`Batch`] (at
+//! most [`MAX_PATHS`] paths named, then "and N more"; at most
+//! [`MAX_TRACKED`] are remembered per agent and batch, the rest only
+//! counted), which the daemon delivers to the agent as a message into its
+//! session (`super::agents::Agents::watch_event`).
 //!
 //! A watch made with `once` is dropped after its first batch; any other
 //! lives until the run that made it ends ([`Watches::end_turn`]), the
@@ -30,6 +35,10 @@ use crate::tools::WatchHost;
 
 /// How long a batch waits for more changes.
 pub const DEBOUNCE: Duration = Duration::from_millis(250);
+/// The oldest a batch gets before it leaves, changes or not.
+pub const MAX_BATCH_AGE: Duration = Duration::from_secs(2);
+/// How many changed paths one agent's batch remembers; more are counted.
+pub const MAX_TRACKED: usize = 4096;
 /// How many paths one batch names.
 pub const MAX_PATHS: usize = 50;
 /// How long after its own write a change of the same file is the agent's.
@@ -81,8 +90,11 @@ struct Watch {
 struct Inner {
     next_id: u64,
     watches: BTreeMap<String, Vec<Watch>>,
-    /// Matched paths per agent, waiting for the batch.
+    /// Matched paths per agent, waiting for the batch (at most
+    /// [`MAX_TRACKED`] each).
     pending: BTreeMap<String, BTreeSet<String>>,
+    /// Matched paths past [`MAX_TRACKED`] per agent: only counted.
+    overflow: BTreeMap<String, usize>,
     /// The paths created in the open batch, and those gone since: one
     /// that is both was transient (a write's temporary file renamed over
     /// its target) and is not reported.
@@ -149,19 +161,43 @@ impl Watches {
 
     /// `agent`'s run ended: its watches other than `once` ones go.
     pub fn end_turn(&self, agent: &str) {
-        let mut inner = self.inner.lock();
-        if let Some(list) = inner.watches.get_mut(agent) {
-            list.retain(|watch| watch.once);
+        {
+            let mut inner = self.inner.lock();
+            if let Some(list) = inner.watches.get_mut(agent) {
+                list.retain(|watch| watch.once);
+            }
         }
+        self.release_if_idle();
     }
 
     /// `agent` retired: every watch of its goes, and what was pending.
     pub fn forget(&self, agent: &str) {
-        let mut inner = self.inner.lock();
-        inner.watches.remove(agent);
-        inner.pending.remove(agent);
-        inner.fired_once.remove(agent);
-        inner.own.retain(|(owner, _), _| owner != agent);
+        {
+            let mut inner = self.inner.lock();
+            inner.watches.remove(agent);
+            inner.pending.remove(agent);
+            inner.overflow.remove(agent);
+            inner.fired_once.remove(agent);
+            inner.own.retain(|(owner, _), _| owner != agent);
+        }
+        self.release_if_idle();
+    }
+
+    /// Drop the file-system watch when no watch is left (taken with the
+    /// watcher lock first, as [`WatchHost::watch`] does, so a watch being
+    /// added keeps it).
+    fn release_if_idle(&self) {
+        let mut slot = self.watcher.lock();
+        if slot.is_some() && self.inner.lock().watches.values().all(Vec::is_empty) {
+            *slot = None;
+            tracing::debug!("no file watch left: the workspace is not watched any more");
+        }
+    }
+
+    /// Whether the workspace is watched now (tests).
+    #[cfg(test)]
+    fn watching(&self) -> bool {
+        self.watcher.lock().is_some()
     }
 
     /// `agent`'s live watches, as `/status` shows them.
@@ -197,54 +233,74 @@ impl Watches {
         (!text.is_empty()).then_some(text)
     }
 
-    /// Queue `path` for the watches it matches.
-    fn queue(&self, path: &Path, change: Change) {
+    /// Queue `path` for the watches it matches; whether any did (a path
+    /// nobody watches leaves no trace).
+    fn queue(&self, path: &Path, change: Change) -> bool {
         let Some(relative) = self.relative(path) else {
-            return;
+            return false;
         };
         let mut inner = self.inner.lock();
-        match change {
-            Change::Created => {
-                inner.created.insert(relative.clone());
-            }
-            Change::Gone => {
-                inner.gone.insert(relative.clone());
-            }
-            Change::Other => {}
-        }
         let Inner {
             watches,
             pending,
+            overflow,
             fired_once,
+            created,
+            gone,
             ..
         } = &mut *inner;
+        let mut matched = false;
         for (agent, list) in watches.iter() {
             for watch in list {
-                if watch.set.is_match(&relative) {
-                    pending
+                if !watch.set.is_match(&relative) {
+                    continue;
+                }
+                matched = true;
+                let paths = pending.entry(agent.clone()).or_default();
+                if paths.len() < MAX_TRACKED || paths.contains(&relative) {
+                    paths.insert(relative.clone());
+                } else {
+                    *overflow.entry(agent.clone()).or_default() += 1;
+                }
+                if watch.once {
+                    fired_once
                         .entry(agent.clone())
                         .or_default()
-                        .insert(relative.clone());
-                    if watch.once {
-                        fired_once
-                            .entry(agent.clone())
-                            .or_default()
-                            .insert(watch.id);
-                    }
+                        .insert(watch.id);
                 }
             }
         }
+        if matched {
+            let transient = match change {
+                Change::Created => Some(&mut *created),
+                Change::Gone => Some(&mut *gone),
+                Change::Other => None,
+            };
+            if let Some(set) = transient
+                && set.len() < MAX_TRACKED
+            {
+                set.insert(relative);
+            }
+        }
+        matched
     }
 
     /// The batches due now: each agent's pending paths less its own
     /// writes; the `once` watches that matched are dropped.
     fn flush(&self) -> Vec<Batch> {
+        let batches = self.take_batches();
+        self.release_if_idle();
+        batches
+    }
+
+    fn take_batches(&self) -> Vec<Batch> {
         let mut inner = self.inner.lock();
         let now = Instant::now();
         inner
             .own
             .retain(|_, at| now.saturating_duration_since(*at) < OWN_WRITE_WINDOW);
         let pending = std::mem::take(&mut inner.pending);
+        let mut overflow = std::mem::take(&mut inner.overflow);
         let created = std::mem::take(&mut inner.created);
         let gone = std::mem::take(&mut inner.gone);
         let fired = std::mem::take(&mut inner.fired_once);
@@ -260,10 +316,11 @@ impl Watches {
                 .filter(|path| !inner.own.contains_key(&(agent.clone(), path.clone())))
                 .filter(|path| !(created.contains(path) && gone.contains(path)))
                 .collect();
-            if paths.is_empty() {
+            let counted = overflow.remove(&agent).unwrap_or(0);
+            if paths.is_empty() && counted == 0 {
                 continue;
             }
-            let more = paths.len().saturating_sub(MAX_PATHS);
+            let more = paths.len().saturating_sub(MAX_PATHS) + counted;
             batches.push(Batch {
                 agent,
                 paths: paths.into_iter().take(MAX_PATHS).collect(),
@@ -273,10 +330,10 @@ impl Watches {
         batches
     }
 
-    /// The file-system watch on the workspace, set up on first use.
-    fn ensure_watcher(&self) -> Result<(), String> {
+    /// The file-system watch on the workspace in `slot` (the watcher
+    /// lock), set up when there is none.
+    fn ensure_watcher(&self, slot: &mut Option<notify::RecommendedWatcher>) -> Result<(), String> {
         use notify::Watcher as _;
-        let mut slot = self.watcher.lock();
         if slot.is_some() {
             return Ok(());
         }
@@ -321,7 +378,10 @@ impl WatchHost for Watches {
         let set = builder
             .build()
             .map_err(|err| format!("invalid patterns: {err}"))?;
-        self.ensure_watcher()?;
+        // The watcher lock is held until the watch is in the table, so the
+        // last watch going elsewhere cannot drop the watcher meanwhile.
+        let mut slot = self.watcher.lock();
+        self.ensure_watcher(&mut slot)?;
         let mut inner = self.inner.lock();
         inner.next_id += 1;
         let id = inner.next_id;
@@ -339,21 +399,26 @@ impl WatchHost for Watches {
     }
 
     fn unwatch(&self, agent: &str, id: Option<u64>) -> usize {
-        let mut inner = self.inner.lock();
-        let Some(list) = inner.watches.get_mut(agent) else {
-            return 0;
+        let removed = {
+            let mut inner = self.inner.lock();
+            let Some(list) = inner.watches.get_mut(agent) else {
+                return 0;
+            };
+            let before = list.len();
+            match id {
+                Some(id) => list.retain(|watch| watch.id != id),
+                None => list.clear(),
+            }
+            before - list.len()
         };
-        let before = list.len();
-        match id {
-            Some(id) => list.retain(|watch| watch.id != id),
-            None => list.clear(),
-        }
-        before - list.len()
+        self.release_if_idle();
+        removed
     }
 }
 
-/// Batch the changes: the first change after a quiet spell opens a batch,
-/// which is flushed once no change came for [`DEBOUNCE`].
+/// Batch the changes: the first matching change after a quiet spell opens
+/// a batch, which is flushed once no matching change came for [`DEBOUNCE`]
+/// or it is [`MAX_BATCH_AGE`] old. A change no watch matches is dropped.
 async fn batch(
     watches: std::sync::Weak<Watches>,
     mut changed: mpsc::UnboundedReceiver<(PathBuf, Change)>,
@@ -363,10 +428,19 @@ async fn batch(
         let Some(live) = watches.upgrade() else {
             return;
         };
-        live.queue(&first, change);
+        if !live.queue(&first, change) {
+            continue;
+        }
+        let opened = Instant::now();
+        let mut last = opened;
         loop {
-            match tokio::time::timeout(DEBOUNCE, changed.recv()).await {
-                Ok(Some((path, change))) => live.queue(&path, change),
+            let due = (last + DEBOUNCE).min(opened + MAX_BATCH_AGE);
+            match tokio::time::timeout_at(due, changed.recv()).await {
+                Ok(Some((path, change))) => {
+                    if live.queue(&path, change) {
+                        last = Instant::now();
+                    }
+                }
                 Ok(None) => return,
                 Err(_) => break,
             }
@@ -430,6 +504,104 @@ mod tests {
                 more: 0
             }
         );
+    }
+
+    /// Changes no watch matches neither delay a batch nor are kept: a
+    /// matching change is delivered after the debounce although unmatched
+    /// ones keep coming, and the transient-file sets stay empty.
+    #[tokio::test(start_paused = true)]
+    async fn unmatched_changes_do_not_hold_a_batch_or_grow_the_state() {
+        let (w, mut rx) = watches();
+        add(&w, "main-a", &["src/**"], false);
+        let feeder = {
+            let w = Arc::clone(&w);
+            tokio::spawn(async move {
+                for n in 0..100 {
+                    w.observe(Path::new(&format!("/w/target/o{n}")), Change::Created);
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let started = Instant::now();
+        w.observe(Path::new("/w/src/lib.rs"), Change::Other);
+        let batch = rx.recv().await.unwrap();
+        assert_eq!(batch.paths, ["src/lib.rs"]);
+        assert!(started.elapsed() < DEBOUNCE * 2, "{:?}", started.elapsed());
+        {
+            let inner = w.inner.lock();
+            assert!(inner.created.is_empty() && inner.gone.is_empty());
+            assert!(inner.pending.is_empty());
+        }
+        feeder.abort();
+    }
+
+    /// A watched path that keeps changing (a build) does not hold its
+    /// batch back past [`MAX_BATCH_AGE`].
+    #[tokio::test(start_paused = true)]
+    async fn a_continuously_changing_tree_is_delivered_within_the_batch_age() {
+        let (w, mut rx) = watches();
+        add(&w, "main-a", &["src/**"], false);
+        let feeder = {
+            let w = Arc::clone(&w);
+            tokio::spawn(async move {
+                for n in 0..1000 {
+                    w.observe(Path::new(&format!("/w/src/gen{}.rs", n % 7)), Change::Other);
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            })
+        };
+        let started = Instant::now();
+        let batch = rx.recv().await.unwrap();
+        let waited = started.elapsed();
+        assert!(
+            waited >= MAX_BATCH_AGE && waited < MAX_BATCH_AGE + DEBOUNCE,
+            "{waited:?}"
+        );
+        assert_eq!(batch.paths.len(), 7);
+        feeder.abort();
+    }
+
+    /// One batch remembers at most [`MAX_TRACKED`] paths per agent and
+    /// counts the rest.
+    #[tokio::test(start_paused = true)]
+    async fn a_batch_counts_what_it_does_not_remember() {
+        let (w, mut rx) = watches();
+        add(&w, "main-a", &["src/**"], false);
+        for n in 0..(MAX_TRACKED + 5) {
+            w.observe(Path::new(&format!("/w/src/f{n}.rs")), Change::Other);
+        }
+        let batch = rx.recv().await.unwrap();
+        assert_eq!(batch.paths.len(), MAX_PATHS);
+        assert_eq!(batch.more, MAX_TRACKED + 5 - MAX_PATHS);
+    }
+
+    /// The recursive file-system watch goes when the last watch goes: by
+    /// `unwatch`, at the turn's end, with the retired agent, and after a
+    /// `once` watch fired.
+    #[tokio::test]
+    async fn the_workspace_watch_is_dropped_with_the_last_watch() {
+        let dir = tempfile::tempdir().unwrap();
+        let (w, mut rx) = Watches::new(dir.path().to_path_buf());
+        let patterns = vec!["*.txt".to_string()];
+        assert!(!w.watching());
+        let id = w.watch("main-a", &patterns, false).unwrap();
+        let other = w.watch("main-a", &patterns, false).unwrap();
+        assert!(w.watching());
+        assert_eq!(w.unwatch("main-a", Some(id)), 1);
+        assert!(w.watching(), "one watch is left");
+        assert_eq!(w.unwatch("main-a", Some(other)), 1);
+        assert!(!w.watching());
+        w.watch("main-a", &patterns, false).unwrap();
+        w.end_turn("main-a");
+        assert!(!w.watching());
+        w.watch("main-b", &patterns, false).unwrap();
+        w.forget("main-b");
+        assert!(!w.watching());
+        w.watch("main-a", &patterns, true).unwrap();
+        w.observe(&dir.path().join("a.txt"), Change::Other);
+        assert_eq!(rx.recv().await.unwrap().paths, ["a.txt"]);
+        assert!(!w.watching(), "the once watch fired and went");
     }
 
     #[tokio::test(start_paused = true)]

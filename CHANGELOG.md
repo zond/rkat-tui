@@ -32,6 +32,11 @@
 
 ### Fixed
 
+- File watches (`watch_paths`): the recursive watch of the workspace is
+  dropped when the last watch goes; a change no watch matches neither
+  delays a batch nor is kept, so a watch on `src/**` is delivered within
+  2 s even while a build writes `target/` continuously; and a batch
+  remembers at most 4096 paths per agent, counting the rest.
 - A workspace's agents follow the configuration of each daemon start:
   MCP servers added to `.rkat/mcp.toml` (and trusted), the memory
   tools and the `[auto]` compaction policy reach the agents of an
