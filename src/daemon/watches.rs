@@ -1,4 +1,4 @@
-//! The agents' file watches (P6 item B): what `watch_paths` registers.
+//! The agents' file watches: what `watch_paths` registers.
 //!
 //! The daemon's process holds one recursive file-system watch on the
 //! workspace (the `notify` crate, set up on the first watch and dropped

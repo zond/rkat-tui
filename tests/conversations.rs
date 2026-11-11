@@ -1,5 +1,5 @@
-//! Conversations in attach mode (P4): `/new` seats the daemon's
-//! orchestrator on a fresh session, `/resume` lists the workspace's
+//! Conversations: `/new` seats the daemon's
+//! agent on a fresh session, `/resume` lists the workspace's
 //! conversations and brings an earlier one back (rendered from its
 //! committed messages), another attached client follows the switch, and
 //! `/rewind` says why it is not offered.
@@ -7,7 +7,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;
-#[path = "common/attach.rs"]
+#[path = "common/rig.rs"]
 mod rig;
 
 use common::{ScriptedLlmClient, Step, Workspace, user_texts};
@@ -146,7 +146,7 @@ async fn the_engine_refuses_rewinding_a_members_session() {
     daemon.stop().await;
 }
 
-/// The daemon itself refuses a switch while the orchestrator's run is
+/// The daemon itself refuses a switch while the agent's run is
 /// open: the client's guard is in another process (another client's turn).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_switch_is_refused_while_another_clients_turn_runs() {
@@ -270,7 +270,7 @@ async fn the_token_counter_and_gauge_follow_the_conversation() {
     daemon.stop().await;
 }
 
-/// `/compact now` in attach mode asks the orchestrator's next compaction
+/// `/compact now` in attach mode asks the agent's next compaction
 /// check to compact (`mob/compact_member`): the next prompt's first model
 /// call is the summary, and the client sees `compaction_completed`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -411,7 +411,7 @@ async fn attach_as_typed(root: &std::path::Path, extra: &[&str]) -> Client {
     .await
 }
 
-/// The start semantics (P5): the first `rkat-tui` takes the daemon's
+/// The start semantics: the first `rkat-tui` takes the daemon's
 /// first agent; a second one in the same workspace starts a new agent and
 /// names the others working there; `-c` joins the most recently active
 /// one.

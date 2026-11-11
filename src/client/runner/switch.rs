@@ -8,7 +8,7 @@ use super::*;
 
 impl Runner {
     /// `/new` (`target: None`) or `/resume <session>`: ask the daemon to
-    /// switch the orchestrator's conversation, then show the new one.
+    /// switch the agent's conversation, then show the new one.
     pub(super) fn switch_conversation(&mut self, target: Option<SessionId>) {
         if !self.may_switch() {
             return;
@@ -48,7 +48,7 @@ impl Runner {
         true
     }
 
-    /// Show the conversation the orchestrator moved to (another client
+    /// Show the conversation the agent moved to (another client
     /// switched it).
     pub(super) fn adopt_switch(
         &mut self,
@@ -89,7 +89,7 @@ impl Runner {
         });
     }
 
-    /// The orchestrator runs as `adopted.session` now: follow it, and show
+    /// The agent runs as `adopted.session` now: follow it, and show
     /// its transcript, model and cost.
     pub(super) fn adopted(
         &mut self,
@@ -594,7 +594,7 @@ pub(super) async fn switch_and_adopt(
     }
 }
 
-/// Follow the orchestrator's conversation `session` on `connection`: its
+/// Follow the agent's conversation `session` on `connection`: its
 /// stream opened again (the old one follows the retired session), its last
 /// sequence (what is shown starts after it) and its committed transcript.
 pub(super) async fn adopt(

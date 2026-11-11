@@ -1687,7 +1687,7 @@ mod tests {
         })
     }
 
-    /// The origin a real TUI session gives `name` (a fixture: production
+    /// The origin a real agent's session gives `name` (a fixture: production
     /// reads the session's live tool definitions).
     fn origin(name: &str) -> ToolOrigin {
         if FILE_TOOL_NAMES.contains(&name) {

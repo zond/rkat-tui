@@ -5,7 +5,7 @@
 //! confinement plan, project trust, approval engine, instructions, MCP set
 //! and factory) and composes Meerkat's JSON-RPC host on top of it: a `meerkat_rpc` [`SessionRuntime`] with this crate's own
 //! [`MobMcpState`] ([`engine`]), one durable host-root mob member as the
-//! orchestrator ([`orchestrator`]), and the engine's `MethodRouter` served
+//! agent ([`mob`]), and the engine's `MethodRouter` served
 //! per connection over loopback TCP ([`serve`]), each connection first
 //! proving it holds the daemon's token ([`handshake`]). Clients come and
 //! go; the runtime, the mob and its members stay.
@@ -17,7 +17,7 @@
 //! token is the whole access control, so it lives where the agent's
 //! confined shell cannot read it.
 //!
-//! Approvals (P3, P3b): every member's tool calls pass the TUI's approval
+//! Approvals: every member's tool calls pass rkat-tui's approval
 //! engine ([`approvals`]); a call that needs the human is held as a durable
 //! decision, which the daemon pushes to every attached client
 //! (`decision/notice`) and decides from a client's `decision/decide` as its
@@ -38,7 +38,7 @@ pub mod engine;
 pub mod handshake;
 pub mod lifecycle;
 pub mod local;
-pub mod orchestrator;
+pub mod mob;
 pub mod policy;
 pub mod protocol;
 pub mod schedules;
@@ -60,7 +60,7 @@ use crate::bootstrap::{self, BootstrapOptions};
 use crate::cli::Args;
 use crate::error::TuiError;
 
-pub use orchestrator::Orchestrator;
+pub use mob::FirstAgent;
 
 /// The surface name the daemon's realm lease records.
 pub const LEASE_SURFACE: &str = "rkat-tui-mob";
@@ -70,7 +70,7 @@ pub const MOB_ID: &str = "tui";
 
 /// The agents' profile name (agents are named `main-<id>`, see
 /// [`agents`]).
-pub const ORCHESTRATOR: &str = "main";
+pub const AGENT_PROFILE: &str = "main";
 
 /// The endpoint file name (in the workspace's directory under the user's
 /// state directory, see [`endpoint::default_file`]).
@@ -165,8 +165,8 @@ pub enum DaemonError {
     /// The workspace's first agent could not be seated.
     #[error("cannot seat the workspace's first agent: {0}")]
     FirstAgent(String),
-    /// The orchestrator has no session after its spawn or restore.
-    #[error("the orchestrator `{0}` has no session")]
+    /// The agent has no session after its spawn or restore.
+    #[error("the agents' profile `{0}` has no session")]
     NoSession(String),
     /// A daemon already answers at the address its endpoint file names.
     #[error(
@@ -435,13 +435,13 @@ pub fn choose_endpoint_file(
 }
 
 /// A started daemon: the runtime and its mob host are composed, the
-/// orchestrator is seated and the socket is bound; [`Daemon::serve_until`]
+/// agent is seated and the socket is bound; [`Daemon::serve_until`]
 /// serves it.
 pub struct Daemon {
     runtime: Arc<SessionRuntime>,
     config_store: Arc<dyn ConfigStore>,
     state: Arc<MobMcpState>,
-    orchestrator: Orchestrator,
+    first_agent: FirstAgent,
     lease: Option<RealmLeaseGuard>,
     listener: serve::Listener,
     /// The realm's directory (its databases settle at shutdown).
@@ -467,14 +467,14 @@ impl std::fmt::Debug for Daemon {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Daemon")
             .field("address", &self.listener.address())
-            .field("orchestrator", &self.orchestrator)
+            .field("first_agent", &self.first_agent)
             .finish_non_exhaustive()
     }
 }
 
 impl Daemon {
     /// Bootstrap the workspace realm `args` names, compose the runtime and
-    /// the mob host, create or restore the mob and its orchestrator, and
+    /// the mob host, create or restore the mob and its agent, and
     /// bind the socket.
     ///
     /// # Errors
@@ -555,7 +555,7 @@ impl Daemon {
                 None
             }
         };
-        orchestrator::ensure_mob(&composed.state, &composed.root).await?;
+        mob::ensure_mob(&composed.state, &composed.root).await?;
         let conversations = conversations::Conversations::open(
             Arc::clone(&composed.state),
             Arc::clone(&composed.root.registry),
@@ -649,7 +649,7 @@ impl Daemon {
         if let Err(err) = composed.runtime.ensure_schedule_host_started().await {
             tracing::warn!(error = %err, "the schedule host did not start; schedules fire once a session is created");
         }
-        let orchestrator = Orchestrator {
+        let first_agent = FirstAgent {
             mob_id: meerkat_mob::MobId::from(MOB_ID),
             identity: meerkat_mob::AgentIdentity::from(first.as_str()),
             session_id: session,
@@ -660,7 +660,7 @@ impl Daemon {
             if !composed.origins.refresh(&session).await {
                 tracing::info!(
                     %agent,
-                    "the agent's tool catalog is read after its first run; until then only the TUI's own tools are known to the gate"
+                    "the agent's tool catalog is read after its first run; until then only rkat-tui's own tools are known to the gate"
                 );
             }
         }
@@ -713,15 +713,15 @@ impl Daemon {
             address = %listener.address(),
             endpoint = %file.display(),
             mob = MOB_ID,
-            agent = %orchestrator.identity,
-            session = %orchestrator.session_id,
+            agent = %first_agent.identity,
+            session = %first_agent.session_id,
             "rkat-tui-mob serving"
         );
         Ok(Self {
             runtime: composed.runtime,
             config_store: composed.config_store,
             state: composed.state,
-            orchestrator,
+            first_agent,
             lease: Some(composed.lease),
             listener,
             realm_root: composed.scope.realm_root(),
@@ -783,7 +783,7 @@ impl Daemon {
         }
     }
 
-    /// The orchestrator profile's auto-compaction threshold.
+    /// The agent profile's auto-compaction threshold.
     #[must_use]
     #[cfg(any(test, feature = "test-support"))]
     pub fn compact_threshold(&self) -> Option<std::num::NonZeroU64> {
@@ -826,8 +826,8 @@ impl Daemon {
     /// The agent the daemon started with (the most recent one it
     /// restored, else the one it seated for the first client).
     #[must_use]
-    pub fn orchestrator(&self) -> &Orchestrator {
-        &self.orchestrator
+    pub fn first_agent(&self) -> &FirstAgent {
+        &self.first_agent
     }
 
     /// The JSON-RPC session runtime.
@@ -1090,8 +1090,8 @@ pub async fn run(cli: DaemonCli) -> Result<(), DaemonError> {
         "rkat-tui-mob: serving {} (endpoint file {}; mob `{MOB_ID}`, agent `{}`, session {})",
         daemon.address(),
         daemon.endpoint_file().display(),
-        daemon.orchestrator().identity,
-        daemon.orchestrator().session_id
+        daemon.first_agent().identity,
+        daemon.first_agent().session_id
     );
     daemon.serve_until(termination_signal()).await
 }

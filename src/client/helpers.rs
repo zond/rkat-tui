@@ -1,10 +1,10 @@
-//! The orchestrator's helpers in the client: the follower view
+//! The agent's helpers in the client: the follower view
 //! (`[helper · model]` headers, their progress and result, the running
 //! count, per-helper cost) from the mobs' own event streams.
 //!
-//! The daemon hosts every helper the orchestrator starts: `delegate`
-//! helpers in the orchestrator session's implicit mob
-//! (`implicit-<session>`), `spawn_member` members in the orchestrator's own
+//! The daemon hosts every helper the agent starts: `delegate`
+//! helpers in the agent session's implicit mob
+//! (`implicit-<session>`), `spawn_member` members in the agent's own
 //! mob, and the helpers of helpers in theirs. A mob-wide `mob/stream_open
 //! {mob_id}` (no `agent_identity`) carries every member's events, each
 //! attributed to its member ([`AttributedEvent`]); [`Followers`] turns them
@@ -22,10 +22,10 @@
 //!   the first time a helper is seen its session's durable
 //!   events are read (`events/list_since`, [`Action::Backfill`]); its live
 //!   events are held until that read returns, then shown in order, each
-//!   once (a high-water mark per helper session, as for the orchestrator).
+//!   once (a high-water mark per helper session, as for the agent).
 //! - The model a helper runs on is read from its session
 //!   (`events/snapshot`, [`Action::Snapshot`]); until then the header
-//!   names the orchestrator's model, which a `delegate` helper inherits.
+//!   names the agent's model, which a `delegate` helper inherits.
 //! - The engine attributes a helper of a helper to its own mob
 //!   (`implicit-<parent session>`): the path of the helper whose session
 //!   that is nests it.
@@ -84,7 +84,7 @@ struct Helper {
     model: Option<String>,
 }
 
-/// The helpers followed on one connection, for one orchestrator session.
+/// The helpers followed on one connection, for one agent session.
 #[derive(Debug, Default)]
 pub struct Followers {
     owner: Option<SessionId>,
@@ -97,12 +97,12 @@ pub struct Followers {
     /// temporary mob, with the labels above their participants
     /// ([`Self::convening`]).
     convened: HashMap<String, Vec<String>>,
-    /// The orchestrator's model (a helper's until its own is read).
+    /// The agent's model (a helper's until its own is read).
     default_model: String,
 }
 
 impl Followers {
-    /// Follow the helpers of the orchestrator running as `owner`; what was
+    /// Follow the helpers of the agent running as `owner`; what was
     /// followed before is forgotten (a new conversation).
     pub fn reset(&mut self, owner: SessionId) {
         *self = Self {
@@ -112,7 +112,7 @@ impl Followers {
         };
     }
 
-    /// The orchestrator session whose helpers these are.
+    /// The agent session whose helpers these are.
     #[must_use]
     pub fn owner(&self) -> Option<&SessionId> {
         self.owner.as_ref()
@@ -125,7 +125,7 @@ impl Followers {
         self.open.clear();
     }
 
-    /// The orchestrator runs on `model`.
+    /// The agent runs on `model`.
     pub fn set_default_model(&mut self, model: &str) {
         model.clone_into(&mut self.default_model);
     }
@@ -229,7 +229,7 @@ impl Followers {
         Action::Ui(Msg::Status(StatusUpdate::Helpers(self.live())))
     }
 
-    /// The labels above a helper of `mob`: none for the orchestrator's own
+    /// The labels above a helper of `mob`: none for the agent's own
     /// mobs, else the path of the helper whose implicit mob it is.
     fn parent_path(&self, mob: &str) -> Vec<String> {
         if let Some(path) = self.convened.get(mob) {
@@ -546,7 +546,7 @@ mod tests {
     }
 
     #[test]
-    fn the_orchestrator_is_not_a_helper_and_a_helpers_helper_nests() {
+    fn the_agent_is_not_a_helper_and_a_helpers_helper_nests() {
         let owner = SessionId::new();
         let mut followers = Followers::default();
         followers.reset(owner.clone());

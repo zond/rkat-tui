@@ -11,7 +11,7 @@
 //! does not end by itself.
 //!
 //! A helper that left the roster of a running mob retired: it is dropped
-//! from the registry and its binding. One whose mob stopped (the TUI is
+//! from the registry and its binding. One whose mob stopped (the daemon is
 //! quitting) only stops being listed as running; its binding stays, so the
 //! member is gated for its owner when the mob is restored.
 

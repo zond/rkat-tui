@@ -1,4 +1,4 @@
-//! The UI both runners start: [`AppSetup`] is everything about it that
+//! The UI the client starts: [`AppSetup`] is everything about it that
 //! comes from the configuration, [`build_app`] the one place it becomes an
 //! [`App`]; [`open`] and [`drive`] are the terminal session around it
 //! (input histories, the prompt argument, waiting for the runner on quit).
@@ -17,7 +17,7 @@ use crate::error::TuiError;
 use crate::paths::ProjectRoot;
 use crate::ui::{App, CompactionPolicy, Effect, History, Msg, StatusInfo, UiChannels, run_ui};
 
-/// What the UI takes from the configuration, the same for both runners.
+/// What the UI takes from the configuration, .
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppSetup {
     /// The context-compaction policy of the `tui.toml` layers.
@@ -46,7 +46,7 @@ pub fn build_app(
         .with_global_history(global_history.to_vec())
 }
 
-/// The input histories of `scope`, the same files for both runners: the
+/// The input histories of `scope`, the same files: the
 /// realm's (`<realm>/tui_history`) and the user's global one, when there is
 /// a user config root. The UI recalls (↑/↓, Ctrl+R) from them and appends
 /// every submitted line to each.

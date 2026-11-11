@@ -47,7 +47,7 @@ pub enum UiError {
     /// Terminal I/O failed.
     #[error("terminal I/O failed: {0}")]
     Io(#[from] io::Error),
-    /// The integrator dropped the effect receiver.
+    /// The client runner dropped the effect receiver.
     #[error("effect channel closed")]
     EffectChannelClosed,
 }
@@ -385,7 +385,7 @@ pub async fn run_ui(
                 },
                 Some(Err(err)) => return Err(UiError::Io(err)),
                 None => {
-                    // Input stream ended (terminal gone): tell the integrator to shut down.
+                    // Input stream ended (terminal gone): tell the client runner to shut down.
                     let _ = effects.send(Effect::Quit);
                     return Ok(());
                 }
@@ -423,7 +423,7 @@ fn write_clipboard(text: &str, tmux: bool, out: &mut impl Write) -> io::Result<(
 }
 
 /// Apply one message, take what it asks of the loop ([`absorb`]) and
-/// forward its effects to the integrator. Returns whether the user quit.
+/// forward its effects to the client runner. Returns whether the user quit.
 fn apply(
     app: &mut App,
     msg: Msg,
@@ -556,7 +556,7 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_z_suspends_in_the_loop_and_nothing_reaches_the_integrator() {
+    fn ctrl_z_suspends_in_the_loop_and_nothing_reaches_the_client_runner() {
         let (effects, mut effect_rx) = mpsc::unbounded_channel();
         let mut app = App::new(StatusInfo::default());
         let (mut copies, mut local) = (Vec::new(), LocalEffects::default());
@@ -600,7 +600,7 @@ mod tests {
             }
         );
 
-        // Ctrl-G: the draft goes to the loop, not the integrator.
+        // Ctrl-G: the draft goes to the loop, not the client runner.
         app.input.set_text("draft");
         let ctrl_g = Msg::Key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
         apply(&mut app, ctrl_g, &effects, &mut [], &mut copies, &mut local).unwrap();

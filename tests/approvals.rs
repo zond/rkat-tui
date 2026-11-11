@@ -1,4 +1,4 @@
-//! Approvals in attach mode (P3): the daemon's orchestrator and its
+//! Approvals: the daemon's agent and its
 //! helpers run behind the TUI's approval engine, the human answers in the
 //! attached TUI over the engine's `approval/*` methods, the permission mode
 //! and the rules reach the daemon through its `rkat/*` methods, and the
@@ -9,7 +9,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;
-#[path = "common/attach.rs"]
+#[path = "common/rig.rs"]
 mod rig;
 
 use std::path::Path;
@@ -427,7 +427,7 @@ async fn auto_mode_needs_no_dialog_and_plan_mode_refuses_writes() {
     assert_eq!(client.turn_finished().await.result.unwrap().text, "planned");
     assert!(!ws.root.join("plan.txt").exists());
     assert!(result_text(&llm, 3, "w1").contains("plan mode is on"));
-    // The orchestrator was told plan mode started.
+    // The agent was told plan mode started.
     let told = llm.requests()[2].iter().any(|m| match m {
         Message::System(_) | Message::SystemNotice(_) | Message::User(_) => {
             format!("{m:?}").contains("Plan mode is on")
@@ -472,7 +472,7 @@ async fn a_deny_rule_added_in_attach_mode_refuses_the_next_call() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_helpers_reviewed_call_raises_an_approval_too() {
     let ws = Workspace::new();
-    // The orchestrator and its helper share the scripted client and may
+    // The agent and its helper share the scripted client and may
     // call it in either order: each answer is chosen by what was asked.
     let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
         let results: Vec<&str> = messages
@@ -740,7 +740,7 @@ async fn a_helpers_shell_is_judged_as_the_native_shell() {
     daemon.stop().await;
 }
 
-/// A daemon restarted in a persisted plan mode tells the orchestrator, and
+/// A daemon restarted in a persisted plan mode tells the agent, and
 /// leaving plan mode afterwards says so (its "told" state starts from the
 /// persisted mode, not from "never told").
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -863,7 +863,7 @@ args = ["-c", "printf entered > \"$1\"; cat >/dev/null; printf '{{}}'", "hook-pr
 
 /// A seated helper's own tool catalog is read once its first run has
 /// ended (the session is idle then), and cached for its later calls, as
-/// the orchestrator's is.
+/// the agent's is.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_seated_helpers_catalog_is_read_after_its_first_run() {
     let ws = Workspace::new();
@@ -941,7 +941,7 @@ async fn a_seated_helpers_catalog_is_read_after_its_first_run() {
 
 /// Overlapping mode changes (a client's timed-out `plan` and the user's
 /// switch back, here many at once on two connections) leave the
-/// orchestrator's last plan-mode note matching the mode that holds: the
+/// agent's last plan-mode note matching the mode that holds: the
 /// check and the note are one step under the daemon's lock, and the note
 /// follows the current mode, not the caller's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1157,8 +1157,8 @@ async fn a_restarted_daemon_withdraws_the_request_its_predecessor_left_open() {
 }
 
 /// The engine's `fork_off` seats its child under the source's dispatch
-/// admission (lukacf/meerkat#2112): an orchestrator's fork child is a
-/// helper of the orchestrator's session behind the same gate, so its
+/// admission (lukacf/meerkat#2112): an agent's fork child is a
+/// helper of the agent's session behind the same gate, so its
 /// write asks the human (naming the child) and a denial reaches it. Before
 /// the daemon's members kept `fork_off`, the call was refused and no child
 /// ran.

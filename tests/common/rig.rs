@@ -1,6 +1,6 @@
-//! The attach-mode rig shared by `tests/attach.rs`,
-//! `tests/attach_approvals.rs`, `tests/attach_helpers.rs`,
-//! `tests/attach_sessions.rs` and `tests/daemon.rs`: a daemon started
+//! The attach-mode rig shared by `tests/client.rs`,
+//! `tests/approvals.rs`, `tests/helpers.rs`,
+//! `tests/conversations.rs` and `tests/daemon.rs`: a daemon started
 //! inside the test process with a scripted LLM (an allow-all classifier unless the test
 //! passes its own options), and attach runners driven through the UI's
 //! `Effect`/`Msg` channels. `tests/daemon.rs` keeps its own raw JSON-RPC
@@ -54,7 +54,7 @@ pub struct Running {
     /// The agent the daemon started with (`main-<id>`).
     pub agent: String,
     pub session: meerkat_core::SessionId,
-    /// Whether the orchestrator was created (not restored) at start.
+    /// Whether the agent was created (not restored) at start.
     pub created: bool,
     pub origins: Arc<DaemonToolOrigins>,
     /// The daemon's mob host, helper bookkeeping and approval engine,
@@ -66,7 +66,7 @@ pub struct Running {
     local: std::sync::Weak<rkat_tui::daemon::local::Local>,
     /// The engine's router past the proxy's allow-list.
     pub engine_side: rkat_tui::daemon::testing::EngineSide,
-    /// The orchestrator profile's auto-compaction threshold.
+    /// The agent profile's auto-compaction threshold.
     pub compact_threshold: Option<std::num::NonZeroU64>,
 }
 
@@ -116,9 +116,9 @@ impl Running {
     /// Serve a started daemon in the background.
     pub fn serve(daemon: Daemon) -> Self {
         let endpoint_file = daemon.endpoint_file().to_path_buf();
-        let session = daemon.orchestrator().session_id.clone();
-        let agent = daemon.orchestrator().identity.to_string();
-        let created = daemon.orchestrator().created;
+        let session = daemon.first_agent().session_id.clone();
+        let agent = daemon.first_agent().identity.to_string();
+        let created = daemon.first_agent().created;
         let origins = Arc::clone(daemon.tool_origins());
         let state = Arc::downgrade(daemon.mob_state());
         let registry = Arc::downgrade(daemon.helper_registry());
@@ -671,7 +671,7 @@ impl Attached {
         Ok(Self { daemon, client })
     }
 
-    /// The session the orchestrator runs as now.
+    /// The session the agent runs as now.
     pub async fn current_session(&self) -> meerkat_core::SessionId {
         self.daemon.current_session().await
     }

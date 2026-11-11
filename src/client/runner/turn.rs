@@ -280,7 +280,7 @@ impl Runner {
             self.send(Msg::RemoteTurn { prompt: None });
         }
         match &envelope.payload {
-            // Another agent's message (P5). Into a running turn it is
+            // Another agent's message. Into a running turn it is
             // delivered at the next boundary, and the events carry no text:
             // the block names the sender. An idle agent wakes for it: the
             // run's input carries the text (below).
@@ -589,7 +589,7 @@ impl Runner {
         }
     }
 
-    /// Switch the orchestrator's session to `switch` in place
+    /// Switch the agent's session to `switch` in place
     /// (`rkat/set_model`): refused while a
     /// turn runs; the next prompt is an ordinary send.
     pub(super) fn switch_model(&self, switch: ModelSwitch) {
@@ -642,7 +642,7 @@ impl Runner {
         }
     }
 
-    /// `/compact now`: ask the orchestrator's next compaction check to
+    /// `/compact now`: ask the agent's next compaction check to
     /// compact (`mob/compact_member`, no rebuild); its next model request
     /// compacts, and the gauge follows the `compaction_completed` event.
     /// A member the engine refuses (dormant after a daemon restart, before

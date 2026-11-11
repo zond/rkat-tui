@@ -1,4 +1,4 @@
-//! The agents' schedules (P6): the engine's schedule service, as the
+//! The agents' schedules: the engine's schedule service, as the
 //! daemon's runtime composes it, seen per agent.
 //!
 //! An agent creates a schedule with the engine's `meerkat_schedule_create`

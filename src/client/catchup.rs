@@ -32,7 +32,7 @@ pub const CURSOR_NAME: &str = "attach.cursor";
 /// The last event shown, by session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Cursor {
-    /// The orchestrator's session.
+    /// The agent's session.
     pub session_id: String,
     /// The sequence of the last event shown.
     pub sequence: u64,
@@ -262,7 +262,7 @@ mod tests {
         assert_eq!(file.path(), dir.path().join(CURSOR_NAME));
         let saved = file.load().unwrap();
         assert_eq!(Mark::resume("s1", Some(&saved)).sequence(), 7);
-        // Another session (the daemon's orchestrator was replaced) starts
+        // Another session (the daemon's agent was replaced) starts
         // from the beginning.
         assert_eq!(Mark::resume("s2", Some(&saved)).sequence(), 0);
         // The cursor resumes the same daemon's stream of that session only.

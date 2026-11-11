@@ -1,6 +1,6 @@
 //! The approval gate end to end, through the `rkat-tui-mob` daemon with a
 //! scripted LLM and an attached client: every tool call of the
-//! orchestrator passes the gate the daemon installed as its
+//! agent passes the gate the daemon installed as its
 //! `ToolDispatchAdmission`. A Tier-1 read runs; a classifier block reaches
 //! the model as a reason and the run continues; a classifier allow runs the
 //! call; an escalation is answered through the client's effect channel; a
@@ -10,7 +10,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;
-#[path = "common/attach.rs"]
+#[path = "common/rig.rs"]
 mod rig;
 
 use std::sync::Arc;

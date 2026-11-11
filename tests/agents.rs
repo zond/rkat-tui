@@ -1,10 +1,10 @@
-//! Several agents per workspace (P5, `docs/mob-split.md`): the agents'
+//! Several agents per workspace: the agents'
 //! names are the daemon's, and each client works with its own agent.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;
-#[path = "common/attach.rs"]
+#[path = "common/rig.rs"]
 mod rig;
 
 use std::sync::Arc;

@@ -1,5 +1,5 @@
 //! `watch_paths` and `unwatch`: an agent asks to be told when files of
-//! the workspace change (P6 item B).
+//! the workspace change.
 //!
 //! The tools only register and drop watches with a [`WatchHost`]; the
 //! daemon owns the watching itself (`crate::daemon::watches`): its process

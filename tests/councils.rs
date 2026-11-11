@@ -7,7 +7,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;
-#[path = "common/attach.rs"]
+#[path = "common/rig.rs"]
 mod rig;
 
 use std::sync::Arc;
@@ -190,7 +190,7 @@ async fn a_council_mob_nobody_convened_here_gets_no_participant() {
     };
     assert!(
         err.to_string()
-            .contains("is neither a session of this TUI nor a helper"),
+            .contains("is neither a session of this daemon nor a helper"),
         "{err}"
     );
     assert!(daemon.registry().live().is_empty());

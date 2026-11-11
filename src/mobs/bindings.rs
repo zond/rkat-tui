@@ -3,10 +3,10 @@
 //! restores after a restart is gated for the session that spawned it.
 //!
 //! The mob runtime owns the members and their durable sessions; this is the
-//! TUI's own fact next to it (upstream records no host metadata on a
+//! rkat-tui's own fact next to it (upstream records no host metadata on a
 //! member): each helper's [`HelperTag`] (its owner session, label path and
 //! model) and, once known, the session it runs as; and the owner bridge
-//! session of each mob the TUI's sessions created (from the mob host's
+//! session of each mob rkat-tui's sessions created (from the mob host's
 //! create hook).
 //!
 //! Every write goes to memory and to the file (read, changed, written

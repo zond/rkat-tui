@@ -6,8 +6,8 @@
 //! factory, config store and confinement come from
 //! [`crate::bootstrap::assemble`], so the realm is configured as the
 //! client reads it; the mob state is this crate's own (not
-//! `compose_rpc_mob_state`), carrying the TUI's spawn customizer with the
-//! orchestrator as its [`RootMember`]; and the connection callback-tool
+//! `compose_rpc_mob_state`), carrying rkat-tui's spawn customizer with the
+//! agent as its [`RootMember`]; and the connection callback-tool
 //! routes `compose_rpc_mob_state` installs are left out (their builders are
 //! crate-private, and the daemon's members get their tools from the
 //! customizer); and the approval engine the bootstrap built gates every
@@ -30,7 +30,7 @@ use tokio::sync::mpsc;
 
 use super::approvals::{DaemonToolOrigins, Desk, RootGate};
 use super::decisions::{Decisions, Principal};
-use super::{DaemonError, MOB_ID, ORCHESTRATOR};
+use super::{AGENT_PROFILE, DaemonError, MOB_ID};
 use crate::approval::ApprovalEngine;
 use crate::bootstrap::{Assembled, CODING_PERSONA, RuntimeScope};
 use crate::error::TuiError;
@@ -40,7 +40,7 @@ use crate::mobs::{HelperKey, HelperRegistry};
 use crate::thinking::ThinkingTable;
 use crate::tools::FileToolDispatcher;
 
-/// What the agents are seated with ([`super::orchestrator::ensure_mob`] creates their mob from it).
+/// What the agents are seated with ([`super::mob::ensure_mob`] creates their mob from it).
 #[derive(Debug, Clone)]
 pub struct RootPlan {
     /// The start-up model, as the engine names it (a self-hosted
@@ -56,12 +56,12 @@ pub struct RootPlan {
     pub mcp_servers: Vec<meerkat_core::McpServerConfig>,
     /// Whether the realm's semantic memory is on.
     pub memory: bool,
-    /// The helper bookkeeping (the orchestrator registers as a root owner).
+    /// The helper bookkeeping (the agent registers as a root owner).
     pub registry: Arc<HelperRegistry>,
     /// The `[thinking]` of the start-up model (the profile's provider
     /// params on a fresh spawn).
     pub thinking: Option<meerkat_core::lifecycle::run_primitive::AnthropicThinkingConfig>,
-    /// The orchestrator profile's auto-compaction threshold, from the
+    /// The agent profile's auto-compaction threshold, from the
     /// `[auto]` compaction policy (`CompactionTrigger::threshold_override`:
     /// none in native mode, the policy's tokens in auto mode, the largest
     /// threshold in warn mode).
@@ -88,7 +88,7 @@ pub struct Composed {
     pub decisions: Arc<Decisions>,
     /// The task that offers the decisions that open.
     pub decisions_task: tokio::task::JoinHandle<()>,
-    /// The task that pushes the orchestrator's file changes to the clients.
+    /// The task that pushes the agent's file changes to the clients.
     pub diffs_task: tokio::task::JoinHandle<()>,
     /// The task that pushes the approval engine's notes to the clients.
     pub notes_task: tokio::task::JoinHandle<()>,
@@ -138,7 +138,7 @@ pub struct PolicyOptions {
 ///
 /// [`DaemonError::Hosting`], [`DaemonError::Composition`],
 /// [`DaemonError::Driver`], or [`DaemonError::Bootstrap`] when the
-/// orchestrator's tools cannot be composed.
+/// agent's tools cannot be composed.
 pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, DaemonError> {
     let instructions = parts.instructions();
     let Assembled {
@@ -166,7 +166,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         context_window,
         ..
     } = parts;
-    // The `[auto]` compaction policy as the orchestrator's threshold, for
+    // The `[auto]` compaction policy as the agent's threshold, for
     // the start-up model's window (a configured endpoint's own listing
     // first; unknown: the policy's fallback).
     let compact_threshold = compaction.trigger(context_window).threshold_override();
@@ -292,8 +292,8 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     let root = RootMember {
         mob: MOB_ID.into(),
         is_root: super::agents::is_agent,
-        profile: ORCHESTRATOR.to_string(),
-        current_profile: super::orchestrator::main_profile(&root_plan),
+        profile: AGENT_PROFILE.to_string(),
+        current_profile: super::mob::main_profile(&root_plan),
         host,
         model: choice.engine_model.clone(),
         auth_binding: choice.auth_binding,
@@ -375,7 +375,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     runtime.set_mob_state(Arc::clone(&state));
     // The agent-facing mob tools (`delegate`, `mob_*`, …) reach a session
     // build through the builder's mob-tools slot. `MethodRouter::new` fills
-    // it on the first connection, which is after the orchestrator's spawn:
+    // it on the first connection, which is after the agent's spawn:
     // without this its build mounts only the operator family
     // (`spawn_member`, …) and no `delegate`.
     //

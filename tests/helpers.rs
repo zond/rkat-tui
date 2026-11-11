@@ -1,13 +1,13 @@
-//! Helpers in attach mode (P4): the daemon's orchestrator delegates with
+//! Helpers: the daemon's agent delegates with
 //! the engine's `delegate`, and the attached TUI shows the helper
 //! (`[helper · model]`, its events nested, its
 //! result, the running count, its usage in `/cost`), from the mobs' own
-//! event streams. Esc stops the orchestrator's run and its helpers.
+//! event streams. Esc stops the agent's run and its helpers.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;
-#[path = "common/attach.rs"]
+#[path = "common/rig.rs"]
 mod rig;
 
 use std::sync::Arc;
@@ -126,7 +126,7 @@ async fn a_delegated_helper_is_followed_with_its_result_and_cost() {
     )));
 
     // The UI over what the runner said: the follower line, the result, the
-    // cost summed across the orchestrator and the helper.
+    // cost summed across the agent and the helper.
     let mut app = App::new(StatusInfo::default());
     for msg in client.seen.clone() {
         app.update(msg);
@@ -146,14 +146,14 @@ async fn a_delegated_helper_is_followed_with_its_result_and_cost() {
     assert_eq!(
         app.status.cost().per_model[MODEL].input,
         30,
-        "two calls of the orchestrator and one of the helper"
+        "two calls of the agent and one of the helper"
     );
     client.quit().await;
     daemon.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn esc_during_a_helper_stops_the_orchestrator_and_the_helper() {
+async fn esc_during_a_helper_stops_the_agent_and_the_helper() {
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![
         delegate("d1", "slow", "wait forever"),
@@ -185,7 +185,7 @@ async fn esc_during_a_helper_stops_the_orchestrator_and_the_helper() {
         }
     })
     .await;
-    // The orchestrator serves the next prompt.
+    // The agent serves the next prompt.
     client.send(Effect::StartTurn("again".into()));
     assert_eq!(client.turn_finished().await.result.unwrap().text, "after");
     client.quit().await;
@@ -193,9 +193,9 @@ async fn esc_during_a_helper_stops_the_orchestrator_and_the_helper() {
 }
 
 /// The adoption test of the lukacf/meerkat#2102 fix on the daemon: after a
-/// `/model` switch the orchestrator's `delegate` seats its helper on the
+/// `/model` switch the agent's `delegate` seats its helper on the
 /// switched model (the helper inherits the session's identity as it is
-/// now, not the one the orchestrator was spawned with).
+/// now, not the one the agent was spawned with).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_helper_delegated_after_a_model_switch_runs_on_the_new_model() {
     const SWITCHED: &str = "claude-opus-4-8";

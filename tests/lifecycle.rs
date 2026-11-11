@@ -1,5 +1,4 @@
-//! The daemon's lifecycle (P2 of the always-daemon plan, per agent since
-//! P5, `docs/mob-split.md`): `rkat/status` reports the clients, the agents,
+//! The daemon's lifecycle, per agent: `rkat/status` reports the clients, the agents,
 //! the detach record and the owner (the client that presents the daemon's
 //! start token); `rkat/detach` and an agent's last connection ending
 //! without retiring it are detaches that keep the agent running;
@@ -10,7 +9,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;
-#[path = "common/attach.rs"]
+#[path = "common/rig.rs"]
 mod rig;
 
 use std::time::Duration;

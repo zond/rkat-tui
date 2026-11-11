@@ -1,19 +1,19 @@
 //! Helpers (mob members) end to end in the daemon, with a scripted LLM: a
 //! `delegate` call spawns a helper that runs one turn and returns; the
-//! helper's calls pass the orchestrator's approval gate (a read runs, a
+//! helper's calls pass the agent's approval gate (a read runs, a
 //! Tier-3 call is denied with the reason the helper reads, judged against
 //! the user's words and counted for the session); its events reach the
 //! attached UI nested and named, its usage lands in the cost breakdown and
 //! the sidecar; a configured endpoint's session hands its model and binding
 //! on; the depth limit holds; a mob nobody owns gets no helper; and a
 //! helper's owner survives a daemon restart until it retires.
-//! (`tests/attach_helpers.rs` has the follower view, Esc and the model
+//! (`tests/helpers.rs` has the follower view, Esc and the model
 //! switch.)
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;
-#[path = "common/attach.rs"]
+#[path = "common/rig.rs"]
 mod rig;
 
 use std::sync::Arc;
@@ -325,8 +325,8 @@ async fn a_helper_no_open_session_owns_is_refused() {
     let llm = ScriptedLlmClient::new(vec![Step::Text("never")]);
     let daemon = Running::start(&ws.root, &llm).await;
     let id = daemon.session.clone();
-    // Named as the orchestrator's implicit mob, but created by the host:
-    // its helpers work for nobody, and never for the orchestrator.
+    // Named as the agent's implicit mob, but created by the host:
+    // its helpers work for nobody, and never for the agent.
     let definition = meerkat_mob::MobDefinition::implicit(&id.to_string(), common::MODEL);
     let mob = within(daemon.state().mob_create_definition(definition))
         .await
@@ -378,7 +378,9 @@ async fn a_followed_helper_stays_live_until_its_member_retired_arrives() {
     within(handle.spawn_spec(spec)).await.unwrap();
     llm.wait_call(0).await;
     let registry = daemon.registry();
-    // Idle after its turn: still followed, still live.
+    // Idle after its turn: still followed, still live. The sleep gives a
+    // wrong retire the time to happen (an absence has no event to wait
+    // on); the assertion is the condition.
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     assert_eq!(registry.live_for(&owner), vec![key.clone()]);
     within(handle.retire(key.member.clone())).await.unwrap();
@@ -430,7 +432,7 @@ async fn a_helpers_owner_survives_a_restart_until_it_retires() {
     // the session that spawned it.
     let llm = ScriptedLlmClient::new(vec![Step::Text("idle"), Step::Text("idle")]);
     let daemon = Running::start(&ws.root, &llm).await;
-    assert!(!daemon.created, "the orchestrator is restored");
+    assert!(!daemon.created, "the agent is restored");
     let registry = daemon.registry();
     assert_eq!(registry.owner_for_resume(&key).unwrap().owner, owner);
     let handle = within(daemon.state().handle_for(&mob)).await.unwrap();
@@ -510,7 +512,7 @@ async fn a_helper_at_the_default_depth_cannot_delegate() {
         4,
         "parent, helper ×2, parent; no nested helper"
     );
-    // The orchestrator may delegate; its helper, at depth 1 of 1, is
+    // The agent may delegate; its helper, at depth 1 of 1, is
     // offered no tool that starts helpers, and its call is refused.
     assert!(recorded[0].tools.iter().any(|t| t == "delegate"));
     assert!(recorded[1].user().contains("HELPER-TASK"));

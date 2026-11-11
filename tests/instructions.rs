@@ -12,7 +12,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;
-#[path = "common/attach.rs"]
+#[path = "common/rig.rs"]
 mod rig;
 
 use std::path::Path;
@@ -124,7 +124,7 @@ async fn remember_reaches_this_session_and_the_next() {
     rig.quit().await;
 }
 
-/// The daemon restores its orchestrator on the conversation it had: the
+/// The daemon restores its agent on the conversation it had: the
 /// instructions it was created with stay (the edited file is not pushed
 /// into it, the persona appears once); a new conversation reads the file.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -1,12 +1,11 @@
-//! Attach mode: the TUI's attach runner (`rkat-tui --attach`) against the
-//! `rkat-tui-mob` daemon started inside the test process with a scripted
+//! The client: its runner against the `rkat-tui-mob` daemon started inside the test process with a scripted
 //! LLM, driven
 //! through the same `Effect`/`Msg` channels the UI uses.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;
-#[path = "common/attach.rs"]
+#[path = "common/rig.rs"]
 mod rig;
 
 use std::sync::Arc;
@@ -543,7 +542,7 @@ async fn a_bang_command_runs_in_this_process_and_joins_the_agents_context() {
         panic!("{finished:?}");
     };
     assert!(run.output.contains("bang-42"), "{}", run.output);
-    context.expect("the output joined the orchestrator's context");
+    context.expect("the output joined the agent's context");
     client.send(Effect::StartTurn("what did I run?".into()));
     client.turn_finished().await.result.unwrap();
     let request = format!("{:?}", llm.requests()[0]);

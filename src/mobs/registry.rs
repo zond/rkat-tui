@@ -1,8 +1,8 @@
 //! Who the helpers work for, which of them are running, and what the UI
 //! hears about them.
 //!
-//! The registry is the TUI's own bookkeeping next to the mob runtime (which
-//! owns the helpers): every session the TUI opens registers its model and
+//! The registry is rkat-tui's own bookkeeping next to the mob runtime (which
+//! owns the helpers): every session rkat-tui opens registers its model and
 //! auth binding; every helper spawn is tagged with the session it works for
 //! (its *owner*: the session whose user's words its calls are judged
 //! against), its path of helper labels (nesting) and the model it runs on.
@@ -10,9 +10,9 @@
 //! A helper's owner is resolved from typed facts only, never guessed
 //! ([`HelperRegistry::owner_for_spawn`]): the member that spawned it (its
 //! owner is that member's), or else the bridge session that created its mob
-//! (recorded by the mob host's create hook), which is a TUI session or a
+//! (recorded by the mob host's create hook), which is an agent's session or a
 //! helper's own session. A spawn whose owner does not resolve to a session
-//! open in this TUI is refused.
+//! open in this daemon is refused.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -28,7 +28,7 @@ use crate::mobs::bindings::{BindingsError, HelperBindings};
 /// What a helper is and whom it works for.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HelperTag {
-    /// The TUI session the helper works for (directly, or through the
+    /// The agent's session the helper works for (directly, or through the
     /// helpers above it).
     pub owner: SessionId,
     /// Helper labels from the outermost helper to this one (its depth is the
@@ -118,7 +118,7 @@ impl std::fmt::Display for HelperKey {
 /// The session a new helper works for, and what it inherits from it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Owner {
-    /// The TUI session.
+    /// The agent's session.
     pub session: SessionId,
     /// Labels of the helpers between the session and the new helper.
     pub path: Vec<String>,
@@ -133,16 +133,16 @@ pub struct Owner {
 /// refused.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum OwnerError {
-    /// The spawning member is no helper this TUI bound.
-    #[error("the spawning member {0} works for no session of this TUI")]
+    /// The spawning member is no helper this daemon bound.
+    #[error("the spawning member {0} works for no session of this daemon")]
     UnknownSpawner(HelperKey),
-    /// The mob was not created by a session of this TUI.
-    #[error("mob {0} was created by no session of this TUI")]
+    /// The mob was not created by a session of this daemon.
+    #[error("mob {0} was created by no session of this daemon")]
     UnknownMob(MobId),
-    /// The mob's creator is neither a TUI session nor a helper.
-    #[error("session {0} is neither a session of this TUI nor a helper")]
+    /// The mob's creator is neither an agent's session nor a helper.
+    #[error("session {0} is neither a session of this daemon nor a helper")]
     UnknownSession(SessionId),
-    /// The owner session is not open in this TUI.
+    /// The owner session is not open in this daemon.
     #[error("session {0} is not open")]
     OwnerNotOpen(SessionId),
     /// A restored member has no persisted owner.
@@ -153,21 +153,21 @@ pub enum OwnerError {
 /// How many destroyed mobs a slow listener may fall behind by.
 const DESTROYED_QUEUE: usize = 64;
 
-/// A TUI session's model, as helpers inherit it.
+/// A agent's session's model, as helpers inherit it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SessionModel {
     model: String,
     auth_binding: Option<AuthBindingRef>,
 }
 
-/// The TUI's helper bookkeeping, shared by the spawn customizer, the
+/// rkat-tui's helper bookkeeping, shared by the spawn customizer, the
 /// event followers, the session handles and the runner.
 #[derive(Debug)]
 pub struct HelperRegistry {
-    /// TUI sessions open in this process.
+    /// agent's sessions open in this process.
     sessions: RwLock<HashMap<SessionId, SessionModel>>,
     /// Host-root members that are owners themselves (the mob daemon's
-    /// orchestrator), and the session each runs as: a member they spawn
+    /// agent), and the session each runs as: a member they spawn
     /// works for that session.
     roots: RwLock<HashMap<HelperKey, SessionId>>,
     /// Whom each helper and each agent-created mob works for.
@@ -340,7 +340,7 @@ impl HelperRegistry {
         self.owner_of_session(&creator)
     }
 
-    /// The owner of work a `session` starts: the TUI session itself, or
+    /// The owner of work a `session` starts: the agent's session itself, or
     /// the owner of the helper running as it.
     fn owner_of_session(&self, session: &SessionId) -> Result<Owner, OwnerError> {
         if let Some(model) = self.sessions.read().get(session) {

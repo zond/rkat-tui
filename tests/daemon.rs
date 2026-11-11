@@ -7,7 +7,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;
-#[path = "common/attach.rs"]
+#[path = "common/rig.rs"]
 mod rig;
 
 use std::path::Path;
@@ -154,7 +154,7 @@ impl Client {
         }
     }
 
-    /// Open a stream on the orchestrator.
+    /// Open a stream on the agent.
     async fn open_stream(&mut self) -> Value {
         let opened = self
             .ok(
@@ -195,7 +195,7 @@ impl Client {
     }
 }
 
-fn members_include_orchestrator(result: &Value, agent: &str) -> bool {
+fn members_include_agent(result: &Value, agent: &str) -> bool {
     result.to_string().contains(&format!("\"{agent}\""))
 }
 
@@ -205,7 +205,7 @@ fn last_request(llm: &ScriptedLlmClient) -> String {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_client_attaches_and_finds_the_orchestrator() {
+async fn a_client_attaches_and_finds_its_agent() {
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![]);
     let daemon = Running::start(&ws.root, &llm).await;
@@ -236,10 +236,7 @@ async fn a_client_attaches_and_finds_the_orchestrator() {
     }
     let mut client = connect(&daemon).await;
     let members = client.ok("mob/members", json!({"mob_id": MOB_ID})).await;
-    assert!(
-        members_include_orchestrator(&members, &daemon.agent),
-        "{members}"
-    );
+    assert!(members_include_agent(&members, &daemon.agent), "{members}");
     let status = client.ok("mob/member_status", client.member()).await;
     assert_eq!(
         status["current_session_id"],
@@ -283,10 +280,7 @@ async fn a_connection_without_the_token_never_reaches_the_router() {
     // The daemon still serves a client that holds the token.
     let mut client = connect(&daemon).await;
     let members = client.ok("mob/members", json!({"mob_id": MOB_ID})).await;
-    assert!(
-        members_include_orchestrator(&members, &daemon.agent),
-        "{members}"
-    );
+    assert!(members_include_agent(&members, &daemon.agent), "{members}");
     daemon.stop().await;
 }
 
@@ -345,10 +339,7 @@ async fn the_proxy_forwards_only_requests_it_parsed() {
 
     // A served method still works, after the malformed lines.
     let listed = client.ok("mob/members", json!({"mob_id": MOB_ID})).await;
-    assert!(
-        members_include_orchestrator(&listed, &daemon.agent),
-        "{listed}"
-    );
+    assert!(members_include_agent(&listed, &daemon.agent), "{listed}");
     // Nothing the refused lines asked for ran: a sentinel turn on the
     // agent is the model's first request (a forwarded session/create runs
     // its turn before it answers, and would have taken the one step).
@@ -364,7 +355,7 @@ async fn the_proxy_forwards_only_requests_it_parsed() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_turn_streams_to_every_attached_client() {
     let ws = Workspace::new();
-    let llm = ScriptedLlmClient::new(vec![Step::Text("hello from the orchestrator")]);
+    let llm = ScriptedLlmClient::new(vec![Step::Text("hello from the agent")]);
     let daemon = Running::start(&ws.root, &llm).await;
     let mut first = connect(&daemon).await;
     let mut second = connect(&daemon).await;
@@ -374,7 +365,7 @@ async fn a_turn_streams_to_every_attached_client() {
     for (client, stream) in [(&mut first, &first_stream), (&mut second, &second_stream)] {
         let events = client.run_completed(stream).await;
         let text = Value::Array(events).to_string();
-        assert!(text.contains("hello from the orchestrator"), "{text}");
+        assert!(text.contains("hello from the agent"), "{text}");
     }
     assert!(llm.recorded()[0].user().contains("say hello"));
     daemon.stop().await;
@@ -545,7 +536,7 @@ async fn a_client_leaving_mid_turn_leaves_the_turn_running() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_orchestrator_has_the_tui_file_tools() {
+async fn the_agent_has_the_tui_file_tools() {
     let ws = Workspace::new();
     std::fs::write(ws.root.join("notes.txt"), "the file content 4711\n").unwrap();
     let llm = ScriptedLlmClient::new(vec![
@@ -608,7 +599,7 @@ async fn sandbox_unavailable(_workspace: &Path) -> Option<String> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_orchestrator_shell_runs_confined() {
+async fn the_agent_shell_runs_confined() {
     let ws = Workspace::new();
     if let Some(reason) = sandbox_unavailable(&ws.root).await {
         common::sandbox_skipped(&format!(
@@ -731,7 +722,7 @@ fn files_containing(dir: &Path, needle: &[u8]) -> Vec<std::path::PathBuf> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_restarted_daemon_restores_the_orchestrator_with_its_tools() {
+async fn a_restarted_daemon_restores_the_agent_with_its_tools() {
     let ws = Workspace::new();
     std::fs::write(ws.root.join("after.txt"), "after the restart 1234\n").unwrap();
     let llm = ScriptedLlmClient::new(vec![Step::Text("first life")]);
@@ -753,17 +744,11 @@ async fn a_restarted_daemon_restores_the_orchestrator_with_its_tools() {
         Step::Text("second life"),
     ]);
     let daemon = Running::start(&ws.root, &llm).await;
-    assert!(
-        !daemon.created,
-        "the orchestrator is restored, not spawned again"
-    );
+    assert!(!daemon.created, "the agent is restored, not spawned again");
     assert_eq!(daemon.session, first_session);
     let mut client = connect(&daemon).await;
     let members = client.ok("mob/members", json!({"mob_id": MOB_ID})).await;
-    assert!(
-        members_include_orchestrator(&members, &daemon.agent),
-        "{members}"
-    );
+    assert!(members_include_agent(&members, &daemon.agent), "{members}");
     let stream = client.open_stream().await;
     client.ok("mob/turn_start", client.turn("two")).await;
     let events = client.run_completed(&stream).await;
@@ -796,7 +781,7 @@ async fn a_second_daemon_on_a_live_workspace_is_refused() {
     daemon.stop().await;
 }
 
-/// `rkat/set_model` switches the orchestrator's session in place, and is
+/// `rkat/set_model` switches the agent's session in place, and is
 /// refused with `SWITCH_BUSY` while its run is open.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn set_model_switches_in_place_and_waits_for_the_run() {

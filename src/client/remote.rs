@@ -1,4 +1,4 @@
-//! The orchestrator member over the daemon connection: the engine's own
+//! The agent member over the daemon connection: the engine's own
 //! methods, with the parameters `docs/mob-split.md` settles on.
 //!
 //! - prompts and steers: `mob/member_send` (answered at once; the run is the
@@ -116,7 +116,7 @@ pub async fn snapshot(
     }
 }
 
-/// Open the orchestrator's event stream; returns its id. Live, or with
+/// Open the agent's event stream; returns its id. Live, or with
 /// `cursor` (`(epoch, seq)` of the last event shown) the events the member
 /// still retains after it first: of another epoch, from the earliest one
 /// the member retains.
@@ -180,11 +180,11 @@ pub async fn replay(
     Ok((events, page.has_more))
 }
 
-/// Hand `text` to the orchestrator (`handling_mode` `queue` or `steer`):
+/// Hand `text` to the agent (`handling_mode` `queue` or `steer`):
 /// the input its runtime admitted (`admission.input_id`), which the
 /// agent's `boundary_append_applied` names when a steer joins the run.
 /// `None` when the daemon named none (a member not served by a local
-/// runtime: the orchestrator always is).
+/// runtime: the agent always is).
 ///
 /// # Errors
 ///
@@ -240,7 +240,7 @@ pub struct ModelSwitch {
     pub listed: Option<crate::daemon::protocol::ListedModel>,
 }
 
-/// Stop the orchestrator's run `run_id`.
+/// Stop the agent's run `run_id`.
 ///
 /// # Errors
 ///
@@ -258,7 +258,7 @@ pub async fn stop_run(
         .await
 }
 
-/// Cancel whatever the orchestrator runs.
+/// Cancel whatever the agent runs.
 ///
 /// # Errors
 ///
@@ -306,7 +306,7 @@ pub async fn decide(
         .await
 }
 
-/// Append `text` to the orchestrator's system context under `key`.
+/// Append `text` to the agent's system context under `key`.
 ///
 /// # Errors
 ///
@@ -356,7 +356,7 @@ pub async fn close_stream(connection: &Connection, stream: &str) -> Result<(), C
         .map(drop)
 }
 
-/// The orchestrator's live stream, opened again (after a conversation
+/// The agent's live stream, opened again (after a conversation
 /// switch the old one still follows the retired session).
 ///
 /// # Errors
@@ -427,7 +427,7 @@ pub async fn member_session(
         .ok_or(ClientError::NoSession)
 }
 
-/// The orchestrator's conversations (`rkat/conversations`).
+/// The agent's conversations (`rkat/conversations`).
 ///
 /// # Errors
 ///
@@ -440,7 +440,7 @@ pub async fn conversations(
 }
 
 /// `/new` (`session: None`) or `/resume` (`rkat/new`, `rkat/resume`): the
-/// session the orchestrator runs as afterwards, and a warning.
+/// session the agent runs as afterwards, and a warning.
 ///
 /// # Errors
 ///
@@ -505,7 +505,7 @@ pub async fn session_endpoint(
         .map(|answer| answer.endpoint)
 }
 
-/// `/compact now` for the orchestrator: `mob/compact_member` (its next
+/// `/compact now` for the agent: `mob/compact_member` (its next
 /// compaction check compacts). Returns the engine's refusal as text.
 ///
 /// # Errors
@@ -519,7 +519,7 @@ pub async fn compact_member(connection: &Connection) -> Result<(), String> {
         .map_err(|err| err.to_string())
 }
 
-/// `/compact now` through the orchestrator's session (`session/compact`).
+/// `/compact now` through the agent's session (`session/compact`).
 ///
 /// # Errors
 ///

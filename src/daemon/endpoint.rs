@@ -456,7 +456,7 @@ mod tests {
         check_stale(&path).await.unwrap();
     }
 
-    /// The finding this guards (second review, item 9): a probe that timed
+    /// The finding this guards: a probe that timed
     /// out, or a file that could not be read, was taken as stale, so a
     /// daemon could start beside a live one that was slow to accept.
     #[tokio::test]

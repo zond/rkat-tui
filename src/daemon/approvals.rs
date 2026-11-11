@@ -1,12 +1,12 @@
-//! The approval gate on the daemon side (P3 of `docs/mob-split.md`).
+//! The approval gate on the daemon side.
 //!
 //! The daemon runs the [`ApprovalEngine`] (tiers, rules, classifier,
 //! permission modes, escalation timeouts), built by the shared bootstrap;
 //! the durable decisions are the record of its escalations. Three parts
 //! are the daemon's own, all here:
 //!
-//! - [`RootGate`]: the orchestrator's `ToolDispatchAdmission`. It is the
-//!   shared [`ApprovalGate`], resolved per call to the orchestrator's
+//! - [`RootGate`]: the agent's `ToolDispatchAdmission`. It is the
+//!   shared [`ApprovalGate`], resolved per call to the agent's
 //!   session (unknown until its first spawn: the helper registry knows it).
 //! - [`Desk`]: where an escalation goes. The engine's broker hands it to
 //!   the desk, which holds a durable
@@ -21,13 +21,13 @@
 //!   nothing while a turn runs), so the catalog is read when the session is
 //!   idle (at start and after every run) and cached. A session not read
 //!   yet (a helper, which runs from its spawn on and so is never idle
-//!   before its first call; a fresh conversation) is judged by the TUI's
+//!   before its first call; a fresh conversation) is judged by rkat-tui's
 //!   own file and note tools plus the engine-native tools of the catalogs
 //!   read so far: every session of the daemon is built by the same factory,
-//!   so its native `shell` is the orchestrator's. Everything else is judged
+//!   so its native `shell` is the agent's. Everything else is judged
 //!   as a foreign tool (the classifier or the human decides it).
 //!
-//! [`watch`] follows the orchestrator's events: a run start lifts a Stop,
+//! [`watch`] follows the agent's events: a run start lifts a Stop,
 //! a model call is counted ([`super::usage`]), a run end refreshes the
 //! tool catalog. [`HelperEvents`] does the same for the helpers, from the
 //! follower's one subscription to each ([`crate::mobs::follow`]): their
@@ -69,8 +69,8 @@ const CATALOG_READ: Duration = Duration::from_secs(30);
 /// once).
 const RESUBSCRIBE: Duration = Duration::from_secs(1);
 
-/// The orchestrator's approval gate: the shared [`ApprovalGate`], for the
-/// session the orchestrator runs as.
+/// The agent's approval gate: the shared [`ApprovalGate`], for the
+/// session the agent runs as.
 pub struct RootGate {
     engine: Arc<ApprovalEngine>,
     registry: Arc<HelperRegistry>,
@@ -120,7 +120,7 @@ impl ToolDispatchAdmission for RootGate {
             }
             // Fail closed: a call nobody can attribute is not run.
             None => Err(denial_error(&DenyReason::ClassifierUnavailable(
-                "the orchestrator's session is not known to the approval gate yet".to_string(),
+                "the agent's session is not known to the approval gate yet".to_string(),
             ))),
         }
     }
@@ -319,7 +319,7 @@ impl Desk {
 pub const MAX_CATALOGS: usize = 256;
 
 /// [`ToolOrigins`] for the daemon's sessions: catalogs read while their
-/// session is idle, the TUI's own tools before that.
+/// session is idle, rkat-tui's own tools before that.
 pub struct DaemonToolOrigins {
     service: Arc<dyn MobSessionService>,
     /// By session, the one read longest ago first (at most
@@ -328,7 +328,7 @@ pub struct DaemonToolOrigins {
     /// The definitions' sizes by family each session's model requests
     /// carry, as last read (`/context`; as many as [`MAX_CATALOGS`]).
     sizes: RwLock<indexmap::IndexMap<SessionId, Vec<super::context::FamilySize>>>,
-    /// The TUI's own tools, and the engine-native tools of every catalog
+    /// rkat-tui's own tools, and the engine-native tools of every catalog
     /// read: what a session not read yet is judged by.
     known: RwLock<ToolCatalog>,
     /// The deferrable tools an agent may reveal mid-run: judged as what
@@ -345,7 +345,7 @@ impl std::fmt::Debug for DaemonToolOrigins {
 }
 
 impl DaemonToolOrigins {
-    /// Origins over `service`; `own` are the TUI's tools every session of
+    /// Origins over `service`; `own` are rkat-tui's tools every session of
     /// the daemon is given (their definitions name their source).
     /// `deferrable` are the tools an agent may reveal mid-run.
     #[must_use]

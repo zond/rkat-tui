@@ -1,9 +1,9 @@
 //! `/new` and `/resume`.
 //!
-//! A conversation is a session the daemon's orchestrator runs as
+//! A conversation is a session the daemon's agent runs as
 //! ([`crate::daemon::conversations`]): `/new` and `/resume` ask the daemon
 //! to switch (`rkat/new`, `rkat/resume`), every attached client notices the
-//! orchestrator's new `current_session_id` and shows it (a resumed one from
+//! agent's new `current_session_id` and shows it (a resumed one from
 //! its committed messages, `rkat/transcript`). There is no rewind: the
 //! engine refuses `session/fork_at` for a mob member's session
 //! (lukacf/meerkat#2126).

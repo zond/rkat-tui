@@ -12,7 +12,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;
-#[path = "common/attach.rs"]
+#[path = "common/rig.rs"]
 mod rig;
 
 use std::sync::Arc;
@@ -454,7 +454,7 @@ fn window_options(model: &str) -> Setup {
 
 /// A configured endpoint is the authority for its models' facts: a
 /// gateway serving a catalogued id with a 50k window has the gauge (and
-/// so `/context`) show 50k and the orchestrator's threshold follow it, not
+/// so `/context`) show 50k and the agent's threshold follow it, not
 /// of the catalog's window, although the model was named explicitly (its
 /// list is read at start). The same id on the built-in endpoint keeps the
 /// catalog's window.

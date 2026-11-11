@@ -1,5 +1,5 @@
-//! The workspace's agents (P5 of `docs/mob-split.md`): several
-//! orchestrator members of the daemon's mob `tui`, one per agent a user
+//! The workspace's agents: several
+//! agent members of the daemon's mob `tui`, one per agent a user
 //! works with.
 //!
 //! An agent is named `main-<id>` ([`new_name`], a short random id; stable
@@ -35,7 +35,7 @@ use super::approvals::DaemonToolOrigins;
 use super::conversations::{Conversations, RunState, SwitchError, Target};
 use super::lifecycle::Lifecycle;
 use super::protocol::{AgentChoice, AgentRow};
-use super::{MOB_ID, ORCHESTRATOR};
+use super::{AGENT_PROFILE, MOB_ID};
 use crate::approval::ApprovalEngine;
 
 /// What every agent's name starts with (its id follows).
@@ -613,7 +613,7 @@ impl Agents {
         // made again now.
         self.rewire(&names).await;
         let Some((name, session)) = restored.pop() else {
-            return Err(super::DaemonError::NoSession(ORCHESTRATOR.to_string()));
+            return Err(super::DaemonError::NoSession(AGENT_PROFILE.to_string()));
         };
         tracing::info!(agents = ?names, "restored the workspace's agents");
         Ok((name, session, false))

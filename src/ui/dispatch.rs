@@ -113,7 +113,7 @@ impl App {
             }
             Command::Clear => {
                 if self.idle_or_notice() {
-                    // The integrator resets the transcript and counters once
+                    // The client runner resets the transcript and counters once
                     // the new session is live (and keeps them on failure).
                     fx.push(Effect::NewSession);
                 }

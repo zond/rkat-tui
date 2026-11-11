@@ -7,7 +7,7 @@
 //!
 //! - engine-native provenance (`builtin`, `shell`, `comms`, `memory`,
 //!   `schedule`, `workgraph`, `mob`) ⇒ [`ToolFamily::Native`];
-//! - the TUI's own callback surfaces ([`FILE_TOOLS_SOURCE`],
+//! - rkat-tui's own callback surfaces ([`FILE_TOOLS_SOURCE`],
 //!   [`NOTES_SOURCE`]) ⇒ [`ToolFamily::Files`] / [`ToolFamily::Notes`];
 //! - MCP, Rust bundles, any other callback surface, a definition without
 //!   provenance and a name the session does not offer ⇒
@@ -39,9 +39,9 @@ use crate::tools::{
 pub enum ToolFamily {
     /// An engine builtin (native provenance).
     Native,
-    /// The TUI's file tools.
+    /// rkat-tui's file tools.
     Files,
-    /// The TUI's note tools.
+    /// rkat-tui's note tools.
     Notes,
     /// Anything else: MCP, bundles, other callback surfaces, no provenance,
     /// or a name the session does not offer.
@@ -67,9 +67,9 @@ impl ToolOrigin {
         }
     }
 
-    /// A tool of the TUI's own callback surface `source`
+    /// A tool of rkat-tui's own callback surface `source`
     /// ([`FILE_TOOLS_SOURCE`] or [`NOTES_SOURCE`]), with the mutation class
-    /// the TUI declares for `name`.
+    /// rkat-tui declares for `name`.
     #[must_use]
     pub fn tui(source: &str, name: &str) -> Self {
         Self {
@@ -89,7 +89,7 @@ impl ToolOrigin {
     }
 
     /// The origin of the tool `name` whose definition declares
-    /// `provenance`: the TUI's own tools get the mutation class the TUI
+    /// `provenance`: rkat-tui's own tools get the mutation class the TUI
     /// declares for them, every other tool `Unknown`.
     fn declared(name: &str, provenance: Option<ToolProvenance>) -> Self {
         let mut origin = Self {
@@ -133,7 +133,7 @@ impl ToolOrigin {
     }
 }
 
-/// The mutation class the TUI declares for its own tools.
+/// The mutation class rkat-tui declares for its own tools.
 fn tui_mutation(name: &str) -> ToolMutationClass {
     match name {
         READ_FILE | GLOB | GREP | NOTE_LIST | NOTE_READ | WATCH_PATHS | UNWATCH | TOOL_SEARCH => {
@@ -151,8 +151,8 @@ pub struct ToolCatalog {
 }
 
 impl ToolCatalog {
-    /// The catalog of `defs`. The TUI's own tools get the mutation class
-    /// the TUI declares for them; every other tool `Unknown`.
+    /// The catalog of `defs`. rkat-tui's own tools get the mutation class
+    /// rkat-tui declares for them; every other tool `Unknown`.
     pub fn from_defs<'a>(defs: impl IntoIterator<Item = &'a ToolDef>) -> Self {
         let tools = defs
             .into_iter()

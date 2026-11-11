@@ -21,7 +21,7 @@
 //!   endpoint. The engine names the provider route the session's build
 //!   resolved for its model in the implicit mob's profile, so a model only
 //!   an endpoint lists (a self-hosted alias) delegates too.
-//! - **Tools and instructions.** The TUI's file tools and
+//! - **Tools and instructions.** rkat-tui's file tools and
 //!   [`crate::bootstrap::HELPER_PERSONA`].
 //! - **Observation.** [`follow`] subscribes to each helper once and hands
 //!   the daemon what it needs of the helper's events
@@ -63,7 +63,7 @@ use meerkat_mob_mcp::MobMcpState;
 /// have retired it is abandoned with the owner's run, so without the retire
 /// the helper would stay seated. Failures are logged: the gate already
 /// denies the helpers' reviewed calls once the owner is stopped. The daemon
-/// calls it when the orchestrator's run is interrupted and before it
+/// calls it when the agent's run is interrupted and before it
 /// switches conversations.
 pub(crate) async fn cancel_helpers(
     state: &MobMcpState,

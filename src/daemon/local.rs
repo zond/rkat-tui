@@ -21,7 +21,7 @@
 //! never forwarded.
 //!
 //! What the forwarded methods tell the daemon ([`Local::observe`]): a
-//! prompt or steer for the orchestrator (`mob/member_send`,
+//! prompt or steer for the agent (`mob/member_send`,
 //! `mob/turn_start`) is the human's words, recorded in the classifier's
 //! transcript (the connection proved it holds the daemon's token), and the
 //! run that takes it is one a user started (attended, see
@@ -108,7 +108,7 @@ pub struct Local {
     /// The engine's task store (`rkat/tasks`).
     tasks_db: std::path::PathBuf,
     realm_file: Option<crate::config::RealmFile>,
-    /// The runtime the orchestrator's session lives in (`rkat/set_model`).
+    /// The runtime the agent's session lives in (`rkat/set_model`).
     machine: Arc<meerkat_runtime::MeerkatMachine>,
     /// The realm config (a switched-to model's profile is written there).
     realm_config: Arc<crate::bootstrap::RealmConfigStore>,
@@ -758,8 +758,8 @@ impl Local {
     /// `rkat/trust {"op": "project"}`: `/trust`, every present project
     /// input recorded as it is now. The record is the one the realm config
     /// store's guard and the factory's hook-source check read on every
-    /// session build, so the hooks run from the orchestrator's next build
-    /// (`/new`, `/resume`, a daemon restart). The orchestrator's MCP servers
+    /// session build, so the hooks run from the agent's next build
+    /// (`/new`, `/resume`, a daemon restart). The agent's MCP servers
     /// are part of its mob's definition, made when the mob was first
     /// created; trusting `.rkat/mcp.toml` here does not add them to it.
     fn trust_project(&self) -> RuleOutcome {
@@ -796,7 +796,7 @@ impl Local {
         }
     }
 
-    /// `rkat/set_model`: switch the orchestrator's session to another model
+    /// `rkat/set_model`: switch the agent's session to another model
     /// in place: the engine's LLM reconfigure on the live session,
     /// with the endpoint's auth binding and the `[thinking]` setting the
     /// new model is configured with. Refused while a turn runs;
@@ -946,7 +946,7 @@ impl Local {
             }
             .map_err(|err| Refusal::new(SWITCH_FAILED, err.to_string()))?;
             // The live agent's model registry predates the alias: seat
-            // the orchestrator again on its session, which rebuilds its
+            // the agent again on its session, which rebuilds its
             // agent.
             if written {
                 reseated = true;
@@ -1019,7 +1019,7 @@ impl Local {
             })?;
         let (session, report) =
             switched.map_err(|err| Refusal::new(SWITCH_FAILED, err.to_string()))?;
-        tracing::debug!(?report, "switched the orchestrator's model");
+        tracing::debug!(?report, "switched the agent's model");
         let (model, provider) = crate::endpoints::from_engine(
             &report.new_identity.model,
             report.new_identity.provider.as_str(),

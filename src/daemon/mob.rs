@@ -1,4 +1,4 @@
-//! The orchestrators: durable, turn-driven, host-root members of the
+//! The agents: durable, turn-driven, host-root members of the
 //! workspace's mob, one per agent ([`super::agents`]), all seated with the
 //! one profile `main` this module defines.
 //!
@@ -13,12 +13,12 @@ use meerkat_mob::{
 use meerkat_mob_mcp::MobMcpState;
 
 use super::engine::RootPlan;
-use super::{DaemonError, MOB_ID, ORCHESTRATOR};
+use super::{AGENT_PROFILE, DaemonError, MOB_ID};
 
 /// Where the agent the daemon started with lives (the most recent one it
 /// restored, else the one it seated).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Orchestrator {
+pub struct FirstAgent {
     /// Its mob.
     pub mob_id: MobId,
     /// Its member identity.
@@ -39,7 +39,7 @@ fn definition(plan: &RootPlan) -> MobDefinition {
     definition.profiles.clear();
     if let Some(profile) = main_profile(plan) {
         definition.profiles.insert(
-            ProfileName::from(ORCHESTRATOR),
+            ProfileName::from(AGENT_PROFILE),
             ProfileBinding::Inline(Box::new(profile)),
         );
     }

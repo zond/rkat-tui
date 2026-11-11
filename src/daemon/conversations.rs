@@ -1,5 +1,5 @@
-//! Conversations: `/new` and `/resume` over the mob (P4 of
-//! `docs/mob-split.md`), one agent at a time.
+//! Conversations: `/new` and `/resume` over the mob, one agent at a
+//! time.
 //!
 //! An agent is one member identity of the daemon's mob (`tui/main-<id>`,
 //! [`super::agents`]) whatever it talks about; a conversation is the
@@ -32,7 +32,7 @@ use meerkat_mob::{AgentIdentity, MemberLaunchMode, MobId, MobRuntimeMode, SpawnM
 use meerkat_mob_mcp::MobMcpState;
 use serde::{Deserialize, Serialize};
 
-use super::{MOB_ID, ORCHESTRATOR};
+use super::{AGENT_PROFILE, MOB_ID};
 use crate::mobs::{HelperKey, HelperRegistry};
 
 /// The conversation log's file name in the realm.
@@ -247,7 +247,7 @@ pub enum SwitchError {
     /// `/resume` named the current conversation.
     #[error("already in this conversation")]
     Current,
-    /// The orchestrator's run is open (a turn is running): a switch would
+    /// The agent's run is open (a turn is running): a switch would
     /// retire the member mid-turn.
     #[error("a turn is running; interrupt it first (Esc)")]
     Running,
@@ -285,7 +285,7 @@ impl SwitchError {
     }
 }
 
-/// What a switch spawns the orchestrator on.
+/// What a switch spawns the agent on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
     /// A fresh session (`/new`).
@@ -981,7 +981,7 @@ impl Conversations {
         {
             return Err(SwitchError::NoSession);
         }
-        let mut spec = SpawnMemberSpec::host_root(ORCHESTRATOR, agent);
+        let mut spec = SpawnMemberSpec::host_root(AGENT_PROFILE, agent);
         spec.runtime_mode = Some(MobRuntimeMode::TurnDriven);
         if let Target::Resume(session) = target {
             spec.launch_mode = MemberLaunchMode::Resume {
@@ -1170,7 +1170,7 @@ pub fn resolve(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
 
-    /// The finding this guards (second review, item 9): a status without
+    /// The finding this guards: a status without
     /// a run state read as idle, so a retire skipped the cancel and
     /// `/agents` said idle.
     #[test]

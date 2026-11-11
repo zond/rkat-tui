@@ -1,5 +1,5 @@
 //! The client's loop between the UI and the daemon: [`Effect`]s become
-//! the orchestrator's methods ([`super::remote`]), the member's events
+//! the agent's methods ([`super::remote`]), the member's events
 //! become [`Msg`]s, and the connection is kept (re-attached with backoff,
 //! with catch-up, when it drops).
 //!
@@ -15,13 +15,13 @@
 //! interruption when this client interrupted it or the class is
 //! `cancelled`, else the failure).
 //!
-//! Every event is sent to the UI as [`Msg::Agent`] on the integrator
+//! Every event is sent to the UI as [`Msg::Agent`] on the client runner
 //! channel, so the turn messages stay in order with the events.
 //!
 //! What runs on this side of the agent (`!` shell mode, `/remember`,
 //! `/memory`, `/export`, prices and the cost record, the model lists and
 //! picker, unsent messages) is the [`Workbench`]'s; it reaches the
-//! orchestrator through its [`AgentContext`] (`mob/append_system_context`).
+//! agent through its [`AgentContext`] (`mob/append_system_context`).
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -119,7 +119,7 @@ pub const INTERRUPT_DEADLINE: Duration = Duration::from_secs(10);
 const CALL_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Bound on a conversation switch (the daemon retires and seats the
-/// orchestrator) and on reading the new conversation.
+/// agent) and on reading the new conversation.
 const SWITCH_TIMEOUT: Duration = Duration::from_mins(1);
 
 /// Bound on the calls that decide how to leave (`rkat/status`) and that
@@ -280,7 +280,7 @@ pub(super) struct ShownModel {
     model: String,
 }
 
-/// One attached connection with the orchestrator's stream open.
+/// One attached connection with the agent's stream open.
 pub(super) struct Link {
     connection: Arc<Connection>,
     notifications: mpsc::UnboundedReceiver<Notification>,
@@ -453,7 +453,7 @@ enum Again {
 /// What a client shows of the conversation it switched to.
 struct Adopted {
     session: SessionId,
-    /// The orchestrator's stream, opened again.
+    /// The agent's stream, opened again.
     stream: String,
     blocks: Vec<Block>,
     /// The last durable sequence of the session (shown as the transcript).
@@ -615,7 +615,7 @@ pub struct Runner {
     daemon_id_seen: Option<String>,
     /// The approval dialogs shown.
     approvals: Approvals,
-    /// The orchestrator's helpers.
+    /// The agent's helpers.
     followers: Followers,
     /// Events of streams opened but not registered yet, by stream id.
     orphans: Orphans<meerkat_mob::AttributedEvent>,
@@ -845,7 +845,7 @@ impl Runner {
     /// task started on an earlier link learned about that connection (a
     /// switched-to stream, a mob stream, the session it read) is dropped:
     /// installed, a dead connection's stream id would silently mute the
-    /// orchestrator; the reattach read everything again.
+    /// agent; the reattach read everything again.
     fn on_report(&mut self, epoch: u64, report: Report) {
         if epoch != self.link_epoch {
             match report {
@@ -962,7 +962,7 @@ impl Runner {
                         self.follow_pushed_session();
                     }
                     Err(why) => {
-                        tracing::warn!(%why, "cannot show the orchestrator's new conversation");
+                        tracing::warn!(%why, "cannot show the agent's new conversation");
                     }
                 }
             }
@@ -1162,7 +1162,7 @@ impl Runner {
         }
     }
 
-    /// The orchestrator as the workbench reaches it, over this connection.
+    /// The agent as the workbench reaches it, over this connection.
     fn linked(&self) -> AgentContext {
         AgentContext::new(
             self.connection()
@@ -1513,7 +1513,7 @@ mod tests {
 
     /// The finding this guards: a switch read on a connection lost before
     /// the reattach installed that connection's stream id, and every
-    /// orchestrator event after was dropped as another stream's.
+    /// agent event after was dropped as another stream's.
     #[tokio::test]
     async fn a_switch_read_on_a_lost_connection_is_not_installed_after_the_reattach() {
         let dir = tempfile::tempdir().unwrap();

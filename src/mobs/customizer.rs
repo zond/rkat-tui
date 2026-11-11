@@ -1,10 +1,10 @@
 //! The spawn customizer every helper passes: it gives the helper the
 //! approval gate of the session it works for, that session's model binding,
-//! the TUI's file tools and the helper instructions, and tells the
+//! rkat-tui's file tools and the helper instructions, and tells the
 //! [`super::follow`] task to observe it.
 //!
 //! A host that runs its main agent as a mob member (the `rkat-tui-mob`
-//! daemon's orchestrator) names it as the customizer's [`RootMember`]: that
+//! daemon's agent) names it as the customizer's [`RootMember`]: that
 //! member is shaped as the owner itself (the session's tools, persona,
 //! instructions, curated shell environment and model binding), and the
 //! helpers it spawns work for its session.
@@ -51,7 +51,7 @@ pub fn tool_access_policy() -> meerkat_core::ops::ToolAccessPolicy {
     )
 }
 
-/// Builds the external tools of one helper (the TUI's file tools).
+/// Builds the external tools of one helper (rkat-tui's file tools).
 pub type HelperTools = Arc<dyn Fn() -> Arc<dyn AgentToolDispatcher> + Send + Sync>;
 
 /// A helper about to be spawned, for the follower task.
@@ -98,7 +98,7 @@ pub enum RootThinking {
 }
 
 /// The host-root members that are owners themselves, not helpers: the mob
-/// daemon's agents (its orchestrators), every member of one mob whose
+/// daemon's agents (its agents), every member of one mob whose
 /// identity [`RootMember::is_root`] accepts. A member an agent seats
 /// itself (`spawn_member`) under such a name is refused: the names are
 /// the daemon's.
@@ -113,7 +113,7 @@ pub struct RootMember {
     /// rebuild of theirs as the override profile: the mob keeps the
     /// definition of the realm's first start, so without it the MCP
     /// servers, memory tools and compaction threshold of a later start
-    /// never reach them (`crate::daemon::orchestrator::main_profile`).
+    /// never reach them (`crate::daemon::mob::main_profile`).
     /// `None`: the mob's stored profile.
     pub current_profile: Option<meerkat_mob::Profile>,
     /// Their tools, instructions, gate and thinking.
@@ -133,7 +133,7 @@ impl std::fmt::Debug for RootMember {
     }
 }
 
-/// The TUI's [`SpawnMemberCustomizer`].
+/// rkat-tui's [`SpawnMemberCustomizer`].
 pub struct HelperCustomizer {
     registry: Arc<HelperRegistry>,
     engine: Arc<ApprovalEngine>,
@@ -242,7 +242,7 @@ impl HelperCustomizer {
 }
 
 /// Shape the root member `key`'s `spec` as an owner session: its tools,
-/// the curated shell environment, the TUI's tool access policy, its
+/// the curated shell environment, rkat-tui's tool access policy, its
 /// binding and (fresh only) its instructions. The model is the mob
 /// profile's.
 fn shape_root(
@@ -465,9 +465,9 @@ fn shape(
 
 /// A helper is a seated member, so the engine would let it `fork_off`; its
 /// fork child would seat without this customizer and so without the gate.
-/// Every helper's tool access policy denies the TUI's denied tools
+/// Every helper's tool access policy denies rkat-tui's denied tools
 /// ([`tool_access_policy`]), merged into whatever policy its
-/// spec names: none or `Inherit` becomes the TUI's deny list, a deny list
+/// spec names: none or `Inherit` becomes rkat-tui's deny list, a deny list
 /// gains the names, an allow list loses them, constraints gain a deny
 /// constraint, and `ReadOnly` (which already admits no mutating tool) stays.
 /// `also` adds names to deny (a helper at the depth limit gets

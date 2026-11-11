@@ -1,4 +1,4 @@
-//! `--attach=HOST:PORT` (P3 of the always-daemon plan): a daemon reached
+//! `--attach=HOST:PORT`: a daemon reached
 //! through a tunnel. The daemon keeps binding loopback only; the user
 //! forwards a local port to it (`ssh -L 127.0.0.1:PORT:127.0.0.1:DAEMON_PORT
 //! host`) and copies its token (`--attach-token-file`: the token alone, or

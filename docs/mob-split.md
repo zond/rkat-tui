@@ -1,5 +1,26 @@
 # rkat-tui as a client of a running mob
 
+## Words
+
+The code, the comments and the texts use these words for these things:
+
+- **agent**: one of the daemon's own members, working for the clients
+  bound to it (`main-<id>`, `daemon::agents`). The code once called it the
+  orchestrator and the root member; "root" survives only in the
+  engine-facing names `RootMember` and `RootHost` (the engine's
+  `host_root` spawn) and the gate `RootGate`.
+- **member**: the engine's word for any participant of a mob (an agent,
+  a helper, a council participant); used only where the engine's type is
+  meant.
+- **`main`**: the profile every agent is seated with
+  (`daemon::AGENT_PROFILE`, a stored name), never an agent itself.
+- **helper**: a member an agent spawns (`delegate`), followed and gated
+  for its owner.
+- **client** / **the client runner**: an `rkat-tui` process attached to
+  the daemon, and the loop in it (`client::runner`) that turns the UI's
+  effects into daemon calls. "The TUI" is the terminal program the user
+  sees.
+
 ## Status (2026-11-10)
 
 Built and on `main`; the record of each phase, with its probes and test
@@ -83,7 +104,7 @@ the end state.
 - `/quit` semantics as above, including the owner notion (the client that started the daemon holds a start token or the daemon records the owner connection id), the other-clients rule, hangup = detach.
 - `rkat-tui --list` (and `rkat-tui-mob --list` sharing the code).
 - Endpoint-file fallback when confinement would expose the state dir: `$XDG_RUNTIME_DIR/rkat-tui/<key>/`, else refuse with today's message. The temp dir is granted to the sandbox, so never there.
-- Tests: `tests/attach_lifecycle.rs` with a scripted daemon: quit-stops, detach-keeps, quit-after-detach-asks, other-client-detaches, drop-without-message-keeps, `--list` rows and stale cleanup.
+- Tests: `tests/lifecycle.rs` with a scripted daemon: quit-stops, detach-keeps, quit-after-detach-asks, other-client-detaches, drop-without-message-keeps, `--list` rows and stale cleanup.
 
 #### P3 Default flip (done 2026-11-09)
 - `AttachMode::IfRunningElseStart` (the existing `Auto`) becomes the default; `--no-attach` escape hatch with the alongside notice.
@@ -93,7 +114,7 @@ the end state.
 
 #### P4 Delete the in-process runner (done 2026-11-10)
 - Remove `src/runner/` (keep what the workbench absorbed), `src/fork/`, the in-process paths in `src/bootstrap/`, `--no-attach`, `AttachMode::None`; `src/session/` stays only as far as the daemon uses it.
-- Migrate `tests/integrator.rs`, `tests/fork.rs`, `tests/compact.rs`, `tests/mobs.rs`, … onto the daemon rig (`tests/common/attach.rs`), keeping each behaviour assertion; delete `tests/common/mod.rs`'s `Rig`. Record in `docs/evidence.md` which in-process test became which attach test.
+- Migrate `tests/client_turns.rs`, `tests/fork.rs`, `tests/compact.rs`, `tests/mobs.rs`, … onto the daemon rig (`tests/common/rig.rs`), keeping each behaviour assertion; delete `tests/common/mod.rs`'s `Rig`. Record in `docs/evidence.md` which in-process test became which attach test.
 - CLAUDE.md layout table, README, manual, mob-split (now the architecture doc), changelog.
 
 #### P5 Several agents per workspace (done 2026-11-10)
@@ -563,7 +584,7 @@ rather than plain approval records (#2115).
 Upstream PRs:
 
 - #2100: sandbox pid namespace, read-only procfs, Unix socketpairs.
-- #2102: `delegate` follows the member's current identity and model (closed; the fix shipped in 0.9.11 and `attach_helpers::a_helper_delegated_after_a_model_switch_runs_on_the_new_model` pins it).
+- #2102: `delegate` follows the member's current identity and model (closed; the fix shipped in 0.9.11 and `helpers::a_helper_delegated_after_a_model_switch_runs_on_the_new_model` pins it).
 - #2104: the thinking binding for uncatalogued model ids.
 - #2105: host trust over hook source bytes (`HookSourceTrust`).
 - #2112: fork children inherit the source's dispatch admission.

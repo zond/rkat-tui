@@ -465,7 +465,7 @@ impl App {
     }
 
     /// The external editor closed: an edited instruction file goes to the
-    /// integrator to reload, an edited draft replaces the input (Ctrl-_
+    /// client runner to reload, an edited draft replaces the input (Ctrl-_
     /// brings the old one back); a failure keeps everything and notices.
     pub(super) fn editor_closed(&mut self, closed: EditorClosed, fx: &mut Vec<Effect>) {
         match closed {
@@ -564,7 +564,7 @@ impl App {
     /// `/quit` (and a confirmed or busy Ctrl-D): quit right away when idle;
     /// otherwise warn and quit only on a second request within
     /// [`QUIT_CONFIRM_WINDOW`]. Quitting hands every held message to the
-    /// integrator ([`Effect::SaveUnsent`]) so undelivered ones are saved.
+    /// client runner ([`Effect::SaveUnsent`]) so undelivered ones are saved.
     pub(super) fn request_quit(&mut self, now: Instant, fx: &mut Vec<Effect>) {
         let queued = self.pending.len() + usize::from(self.send_next.is_some());
         let busy = self.running || queued > 0;
@@ -642,7 +642,7 @@ impl App {
         }
     }
 
-    /// Leave now: hand every held message to the integrator
+    /// Leave now: hand every held message to the client runner
     /// ([`Effect::SaveUnsent`]), say what leaving does to an attached
     /// daemon ([`Effect::Leave`]), then [`Effect::Quit`].
     pub(super) fn leave(&mut self, departure: Option<Departure>, fx: &mut Vec<Effect>) {

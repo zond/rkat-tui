@@ -1,9 +1,9 @@
 //! The approval dialogs of the client.
 //!
-//! The daemon (its `initialize` lists `decision/notice`, P3b; a daemon
+//! The daemon (its `initialize` lists `decision/notice`; a daemon
 //! without it is refused at attach) holds every escalation as a durable decision and pushes it to every
 //! attached client: this client shows each `decision/notice` for the
-//! orchestrator's session as the approval dialog ([`Msg::Escalation`];
+//! agent's session as the approval dialog ([`Msg::Escalation`];
 //! the notice's rendering is the dialog, [`DialogRendering`]), answers with
 //! `decision/decide` ([`decision_params`]: the answer, the digest of what
 //! was shown, the comment as the reason, and the dialog's answer for the

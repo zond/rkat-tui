@@ -14,7 +14,7 @@
 mod common;
 #[path = "common/fake_openai.rs"]
 mod fake;
-#[path = "common/attach.rs"]
+#[path = "common/rig.rs"]
 mod rig;
 
 use std::sync::Arc;
@@ -137,7 +137,7 @@ fn has_key(value: &serde_json::Value, name: &str) -> bool {
 /// `claude-opus-5-5` runs it on the endpoint's facts, not the catalog's.
 /// The request names the model as the endpoint does and carries the
 /// endpoint's key, no Anthropic beta header and no thinking field; the
-/// gauge and the orchestrator's threshold follow the endpoint's 50k
+/// gauge and the agent's threshold follow the endpoint's 50k
 /// window; the cost uses the endpoint's prices; the realm document holds
 /// the alias and no `[models."claude-opus-5-5"]`, and names the key's
 /// variable, never the key.

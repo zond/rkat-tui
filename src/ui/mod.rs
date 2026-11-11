@@ -1,8 +1,8 @@
 //! ratatui application: Elm-style state + pure `update`, a renderer and a terminal runtime.
 //!
 //! [`App::update`] is pure — it never touches the terminal or performs I/O — and
-//! returns [`Effect`]s that the integrator (session/approval wiring) executes.
-//! Everything the integrator wants to show is pushed back in as a [`Msg`].
+//! returns [`Effect`]s that the client runner (session/approval wiring) executes.
+//! Everything the client runner wants to show is pushed back in as a [`Msg`].
 
 pub mod checklist;
 pub mod commands;
@@ -161,7 +161,7 @@ impl TurnFailure {
     }
 }
 
-/// Fold one run's end `next` into the turn's end so far, in both runners:
+/// Fold one run's end `next` into the turn's end so far, :
 /// the higher [`TurnFailure::rank`] wins. On a tie a failure keeps the
 /// earlier one (the first failure is the one to show) and a completion
 /// takes the later one (the last run's text is the turn's answer).
@@ -202,7 +202,7 @@ pub struct ApprovalNotice {
     pub reason: Option<String>,
 }
 
-/// Status-bar update pushed by the integrator.
+/// Status-bar update pushed by the client runner.
 #[derive(Debug, Clone, PartialEq)]
 pub enum StatusUpdate {
     /// The endpoint and model changed.
@@ -412,7 +412,7 @@ pub enum Msg {
     CompactRequested(Result<(), CompactFailure>),
     /// The terminal gained (`true`) or lost (`false`) the focus.
     Focus(bool),
-    /// The integrator resolved `/memory`'s file (and created a missing
+    /// The client runner resolved `/memory`'s file (and created a missing
     /// `SYSTEM.md`): open it in the external editor.
     EditFile {
         /// Which instruction file.
@@ -529,7 +529,7 @@ pub const COMPACT_FOCUS_UNSUPPORTED: &str =
 /// Notice shown once the engine took a `/compact` request.
 pub const COMPACT_REQUESTED: &str = "the context will be compacted at the start of your next message (the ✓ compacted notice confirms it)";
 
-/// Side effect requested by [`App::update`], executed by the integrator.
+/// Side effect requested by [`App::update`], executed by the client runner.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
     /// Run a turn with this prompt; answer with [`Msg::TurnFinished`].
@@ -562,7 +562,7 @@ pub enum Effect {
         /// Raw user text, sent as an ordinary user message.
         text: String,
     },
-    /// Leave the application. The integrator interrupts a running turn,
+    /// Leave the application. The client runner interrupts a running turn,
     /// persists the session and saves undelivered messages before exiting.
     /// Leaves the daemon running (a hangup is a detach).
     Quit,
@@ -574,7 +574,7 @@ pub enum Effect {
     DecideQuit,
     /// Sent right before [`Effect::Quit`]: every message the UI still holds
     /// (queued, deferred, or the Ctrl-X Ctrl-S prompt as `None`). The
-    /// integrator saves those the model never received.
+    /// client runner saves those the model never received.
     SaveUnsent(Vec<(Option<PendingId>, String)>),
     /// Start a fresh session.
     NewSession,
@@ -622,7 +622,7 @@ pub enum Effect {
     /// session's next model call; answered with [`Msg::CompactRequested`].
     CompactNow,
     /// `/context`: the UI's part of the report (the gauge and the
-    /// compaction policy); the integrator adds what the context holds and
+    /// compaction policy); the client runner adds what the context holds and
     /// answers with one [`Msg::Notice`].
     ContextReport(String),
     /// `/export [file]`: write `text` (the transcript as plain text) to
@@ -634,7 +634,7 @@ pub enum Effect {
         /// The transcript text.
         text: String,
     },
-    /// `/status`: the integrator answers with one [`Msg::Notice`] naming
+    /// `/status`: the client runner answers with one [`Msg::Notice`] naming
     /// the version, model, session, workspace, realm, confinement, auto
     /// mode, trust state and helper depth limit.
     StatusReport,
@@ -672,7 +672,7 @@ pub enum Effect {
 }
 
 /// What the UI loop ([`run_ui`]) does itself after an update; none of it
-/// reaches the integrator. Drained with [`App::take_local`].
+/// reaches the client runner. Drained with [`App::take_local`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LocalEffect {
     /// A line was submitted with Enter (a prompt or a slash command, as
@@ -813,7 +813,7 @@ impl StatusInfo {
         }
     }
 
-    /// Apply an integrator update: the only way in from outside the UI.
+    /// Apply an client runner update: the only way in from outside the UI.
     pub fn apply(&mut self, update: StatusUpdate) {
         match update {
             StatusUpdate::Model { endpoint, model } => {
@@ -994,7 +994,7 @@ impl std::fmt::Display for Busy {
 /// Application state.
 ///
 /// `App` is pure: it performs no I/O. Prompt-history persistence is the
-/// integrator's job — seed recall with [`App::with_history`] (e.g. from
+/// client runner's job — seed recall with [`App::with_history`] (e.g. from
 /// [`History::load`]) and, after each [`App::update`], drain newly submitted
 /// lines with [`App::take_submitted`] and append them to the [`History`] file.
 #[derive(Debug)]

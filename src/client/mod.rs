@@ -6,7 +6,7 @@
 //!   file's token, then a JSON-RPC multiplexer over newline-delimited JSON).
 //! - [`launch`]: start-on-demand (probe the endpoint file, start the daemon
 //!   in the background when none answers, wait for its endpoint).
-//! - [`remote`]: the orchestrator member through the engine's own methods
+//! - [`remote`]: the agent member through the engine's own methods
 //!   (`mob/member_send`, `mob/stream_open`,
 //!   `events/list_since`, `mob/stop_member_run`, `mob/force_cancel`).
 //! - [`catchup`]: the stream cursor `{epoch, seq}` the client reattaches
@@ -18,11 +18,11 @@
 //!   daemon's gate (`rkat/*` methods, see [`crate::daemon::local`]); the
 //!   user's `!` shell, the model picker (this process's endpoints),
 //!   `/remember`, `/memory`, `/export` and the cost readout run here, in
-//!   the [`crate::workbench`] (the new context reaches the orchestrator
+//!   the [`crate::workbench`] (the new context reaches the agent
 //!   with `mob/append_system_context`);
 //!   `/trust` acts on the daemon's trust record (`rkat/trust`); `/compact now` asks the daemon's
 //!   engine (`mob/compact_member`).
-//! - [`helpers`]: the follower view of the orchestrator's helpers, from the
+//! - [`helpers`]: the follower view of the agent's helpers, from the
 //!   mobs' own event streams.
 //! - [`sessions`]: `/new`, `/resume` (the daemon's `rkat/new`,
 //!   `rkat/resume`, `rkat/conversations`, `rkat/transcript`).
@@ -120,8 +120,8 @@ pub enum ClientError {
         /// What it answered.
         reason: String,
     },
-    /// The orchestrator has no session.
-    #[error("the daemon's orchestrator has no session")]
+    /// The agent has no session.
+    #[error("the agent has no session")]
     NoSession,
     /// No daemon answers and `--attach=existing` may not start one.
     #[error(
@@ -379,7 +379,7 @@ impl StartAt {
     }
 }
 
-/// Which agent `args` ask for (P5): with neither `-c` nor `--resume`, a
+/// Which agent `args` ask for: with neither `-c` nor `--resume`, a
 /// new agent (the daemon's first one when this client started it); `-c`,
 /// `--resume last` and `--resume` alone (the picker) the most recently
 /// active one; `--resume <ref>` the agent that owns that conversation,

@@ -147,7 +147,10 @@ pub const SHELL_JOB_TOOLS: [&str; 3] = ["shell_jobs", "shell_job_status", "shell
 
 /// Why `shell` with `background` and the [`SHELL_JOB_TOOLS`] are refused:
 /// what the agent reads, with what to do instead.
-pub const BACKGROUND_SHELL_UNAVAILABLE: &str = "background shell jobs are not available here: the engine this build runs on (meerkat 0.9.12) drops the shell's background mode from the tool catalog of an agent that has the mob tools, so every background job would be refused (docs/evidence.md, \"Background shell jobs\"); run the command in the foreground instead, with `timeout_secs` for a long one";
+/// (The engine drops the shell's background mode from the catalog of an
+/// agent that has the mob tools: `docs/evidence.md`, "Background shell
+/// jobs".)
+pub const BACKGROUND_SHELL_UNAVAILABLE: &str = "background shell jobs are not available here; run the command in the foreground instead, with `timeout_secs` for a long one";
 
 /// Builtins that only read state or manage the agent's own bookkeeping.
 ///
@@ -625,7 +628,7 @@ fn builtin_tier(action: &Action<'_>, ctx: &PolicyContext<'_>) -> Result<TierDeci
         ActionKind::Withheld => Ok(TierDecision::new(
             Tier::Sealed,
             format!(
-                "`{}` is withheld from every agent: the TUI owns model switching and file \
+                "`{}` is withheld from every agent: rkat-tui owns model switching and file \
                  writes (use write_file or edit_file)",
                 action.name
             ),
@@ -751,7 +754,7 @@ fn builtin_tier(action: &Action<'_>, ctx: &PolicyContext<'_>) -> Result<TierDeci
             ))
         }
         ActionKind::Other if action.family == ToolFamily::Foreign => Err(format!(
-            "`{}` is not a tool the TUI or the engine provides",
+            "`{}` is not a tool rkat-tui or the engine provides",
             action.name
         )),
         ActionKind::Other => Err(format!("`{}` requires review", action.name)),
@@ -841,7 +844,7 @@ mod tests {
         (dir, root)
     }
 
-    /// The origin a real TUI session gives `name` (test fixture: the
+    /// The origin a real agent's session gives `name` (test fixture: the
     /// production gate reads origins from the session's live tool
     /// definitions).
     fn origin(name: &str) -> Option<ToolOrigin> {
@@ -1591,7 +1594,7 @@ mod tests {
                 "{name}"
             );
         }
-        // A foreign callback surface reusing the TUI's tool name.
+        // A foreign callback surface reusing rkat-tui's tool name.
         let other = ToolOrigin {
             provenance: Some(crate::tools::provenance("someone-else")),
             mutation: ToolMutationClass::ReadOnly,

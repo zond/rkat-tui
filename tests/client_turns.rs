@@ -1,4 +1,4 @@
-//! The TUI end to end, headless: effects in, UI messages out, through the
+//! The client's turns end to end, headless: effects in, UI messages out, through the
 //! `rkat-tui-mob` daemon with a scripted LLM and an attached client. Covers
 //! a turn, a queued turn, a steered message applied at a tool boundary
 //! (and one typed while a slow shell call runs), interrupt (also during a
@@ -8,7 +8,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;
-#[path = "common/attach.rs"]
+#[path = "common/rig.rs"]
 mod rig;
 
 use std::sync::Arc;

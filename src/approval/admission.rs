@@ -20,13 +20,13 @@
 //! [`super::catalog`]): a name is a builtin, file or note tool only when
 //! its provenance says so.
 //!
-//! The daemon gives its orchestrator a gate as the root member's admission
+//! The daemon gives its agent a gate as the root member's admission
 //! (`crate::daemon::approvals::RootGate`), composed after any admission
 //! the build already carries ([`ApprovalGate::after`]), so every build of
 //! it (fresh or restored) runs behind one. A helper it delegates to (a mob
 //! member) gets a gate
 //! from [`ApprovalGate::for_helper`], installed on its spawn spec by the
-//! TUI's spawn customizer ([`crate::mobs`]): its calls are decided as the
+//! rkat-tui's spawn customizer ([`crate::mobs`]): its calls are decided as the
 //! delegating session's, naming the helper.
 
 use std::sync::Arc;

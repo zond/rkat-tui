@@ -35,7 +35,7 @@ use crate::paths::{FileMode, write_atomic};
 
 /// Tool name: search the hidden tools and reveal the matches.
 pub const TOOL_SEARCH: &str = "tool_search";
-/// Provenance source id of [`TOOL_SEARCH`] (judged with the TUI's own
+/// Provenance source id of [`TOOL_SEARCH`] (judged with rkat-tui's own
 /// read-only tools, see `crate::approval::catalog`).
 pub const TOOL_SEARCH_SOURCE: &str = "rkat-tui.tool-search";
 /// The reveals' file in the realm.

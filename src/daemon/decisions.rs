@@ -1,5 +1,4 @@
-//! Consent through the engine's durable decisions (P3b of
-//! `docs/mob-split.md`).
+//! Consent through the engine's durable decisions.
 //!
 //! When the approval engine needs the human, the daemon's desk
 //! ([`super::approvals::Desk`]) holds one durable decision through the
@@ -93,7 +92,7 @@ pub const INGRESS: &str = "rkat-tui-mob";
 /// The trust domain of the daemon's principals.
 pub const TRUST_DOMAIN: &str = "rkat-tui.local";
 
-/// The requester of every decision: the TUI's approval gate.
+/// The requester of every decision: rkat-tui's approval gate.
 pub const GATE: &str = "rkat-tui-approval-gate";
 
 /// The notification that tells a client a decision it was shown ended.

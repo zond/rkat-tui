@@ -57,7 +57,7 @@ denied to you, you are at that limit and cannot delegate further, so do the work
 ";
 
 /// The section every agent's instructions carry about the other agents of
-/// its workspace (P5): its own name, that it is wired to every other
+/// its workspace: its own name, that it is wired to every other
 /// agent, how their messages and the join and leave notes reach it, and
 /// the norms for working beside them. The names of the others come as
 /// system notes ([`crate::daemon::agents`]), as they come and go.

@@ -164,7 +164,7 @@ realm holds one since the realm moved out of the workspace).
 - `cargo clippy --all-targets --all-features -- -D warnings`: exit 0
 - `cargo nextest run`: 429 run, 429 passed, 3 skipped (live-API);
   lib 368, approval_policy 15, file_tools 22, memory_tools 2, render_snapshot 11, integrator 8
-- `nextest run --test integrator` repeated 5x: 8/8 each time (~1.3 s)
+- `nextest run --test client_turns` repeated 5x: 8/8 each time (~1.3 s)
 - integrator (real `PersistentSessionService` + `MeerkatMachine`, scripted client):
   turn completes (P1-T001); `Queue` prompt behind a running turn and a `Steer`
   applied at a `read_file` tool boundary (`boundary_append_applied`, one run,
@@ -188,7 +188,7 @@ realm holds one since the realm moved out of the workspace).
 - `cargo nextest run`: 477 run, 477 passed, 6 skipped (live-API);
   lib+bin 398, approval_policy 15, approval_service 6, classifier_llm 15, file_tools 22,
   integrator 8, memory_tools 2, render_snapshot 11 (e2e_classifier: 3 ignored, live keys)
-- `nextest run --test approval_service --test integrator` repeated 5x: 14/14 each time (~1.4 s)
+- `nextest run --test approval_service --test client_turns` repeated 5x: 14/14 each time (~1.4 s)
 - `cargo run --bin rkat-tui -- --help </dev/null`: exit 0
 - `node scripts/generate-bazel-rust-builds.mjs`: the crate's `BUILD.bazel` and the root
   `BUILD.bazel` test suite gained `approval_service_test` and `classifier_llm_test`; `--check` clean
@@ -296,7 +296,7 @@ realm holds one since the realm moved out of the workspace).
 - `cargo nextest run`: 496 run, 496 passed, 6 skipped (live-API);
   lib+bin 412, approval_policy 15, approval_service 6, classifier_llm 15, confinement 3 (2 skip internally, see P3),
   file_tools 22, integrator 8, memory_tools 2, models 2, render_snapshot 11
-- `--test models --test confinement --test integrator --test approval_service` repeated 5x: 19/19 each time (~2 s)
+- `--test models --test confinement --test client_turns --test approval_service` repeated 5x: 19/19 each time (~2 s)
 - `rkat-tui --help </dev/null`: exit 0; `rkat-tui --realm-backend memory --no-confinement -w <dir> </dev/null`: exit 2 in
   <0.01 s ("stdin and stdout must be a terminal"); in a pty with a fake key: default mode exits 2 with the confinement
   refusal; `--no-confinement` runs, `/help`, `/model`, `/cost`, `/quit` → exit 0, no panic.
@@ -370,7 +370,7 @@ realm holds one since the realm moved out of the workspace).
      `pub(crate)`), so on an uncatalogued model it fails with `ForkError::UncataloguedModel` unless `delegate` created
      the mob first. **Resolved (2026-11-09, by #2102 in the 0.9.11 pin; the rebuild is removed, test
      `mobs::a_helper_delegated_after_a_model_switch_runs_on_the_new_model` passed without it; #2102 is closed, its
-     fix shipped in 0.9.11, and `attach_helpers::a_helper_delegated_after_a_model_switch_runs_on_the_new_model`
+     fix shipped in 0.9.11, and `helpers::a_helper_delegated_after_a_model_switch_runs_on_the_new_model`
      pins it on the daemon):** found with it: the
      agent's mob tools capture the
      model at build (`AgentMobToolSurface.model`), so after a hot `/model` switch `delegate` helpers ran on the old
@@ -378,7 +378,7 @@ realm holds one since the realm moved out of the workspace).
      (`RebuildReason::ModelSwitch`); `mobs::a_helper_delegated_after_a_model_switch_runs_on_the_new_model`. Ask: the
      mob tools read the session's current model.
   2. **Resolved in attach mode (2026-11-09, by P3b on #2112, test
-     `attach_approvals::a_fork_off_child_runs_behind_the_gate`); true of the in-process runner, removed in P4, where the main session was
+     `approvals::a_fork_off_child_runs_behind_the_gate`); true of the in-process runner, removed in P4, where the main session was
      not a mob member:** `fork_off` requires the caller to be a durable mob member; the TUI's primary session is not one and delegate
      helpers are `durable: false`, so only `delegate` (and the `mob_*` tools) are usable from the TUI.
   3. Hook inheritance for members: not used (the TUI gates via admission, hooks only observe); not verified.
@@ -399,7 +399,7 @@ realm holds one since the realm moved out of the workspace).
   warnings`: exit 0 (lint enforcement probed with a deliberate `unwrap`).
 - `cargo nextest run`: 504 run, 504 passed, 6 skipped; lib+bin 417, approval_policy 15,
   approval_service 6, classifier_llm 15, confinement 3, file_tools 22, integrator 8, memory_tools 2, mobs 3, models 2,
-  render_snapshot 11. `--test mobs --test approval_service --test integrator --test models` ×5: 19/19 each.
+  render_snapshot 11. `--test mobs --test approval_service --test client_turns --test models` ×5: 19/19 each.
 - `rkat-tui --help`: exit 0; pty smoke `--no-confinement` (fake key, DSR answered) `/help`, `/cost`, `/quit` → exit 0, no
   panic.
 - `node scripts/generate-bazel-rust-builds.mjs`: `mobs_test` added to the crate's `BUILD.bazel` and the root
@@ -492,7 +492,7 @@ realm holds one since the realm moved out of the workspace).
 - `cargo nextest run`: 522 run, 522 passed, 6 skipped; lib+bin 428, approval_policy 16,
   approval_service 6, classifier_llm 15, compact 2, confinement 3, file_tools 22, instructions 2, integrator 8,
   memory_tools 2, mobs 3, models 2, render_snapshot 11, semantic_recall 2. `--test compact --test instructions --test
-  semantic_recall --test integrator --test mobs` ×5: 17/17 each.
+  semantic_recall --test client_turns --test mobs` ×5: 17/17 each.
 - `rkat-tui --help`: exit 0. PTY smoke (`--no-confinement`, fake key, 160×60): `/help`, `#note from hash`, `/remember x`,
   `/compact`, `/compact now` ("nothing to compact yet"), `/quit` → exit 0, no panic, workspace `AGENTS.md` =
   `# AGENTS.md\n\n- note from hash\n- x\n`.
@@ -627,9 +627,9 @@ Verification (Agent B, lane `tui-port`, 2026-11-05, concurrent with Agent A's ed
 - `clippy --all-targets --all-features -- -D warnings`: no finding in Agent B's files; the remaining
   findings are in Agent A's in-progress files (`approval/engine.rs` double_must_use, `memory/store.rs` redundant_clone,
   `tests/drift_pins.rs`, `tests/mobs.rs`).
-- `nextest run --lib --test integrator --test models --test compact --test instructions --test
-  semantic_recall --test confinement --test render_snapshot`: 495 passed; failing: `approval::policy::tests::
-  user_rules_take_precedence` (A), and `integrator::a_steered_message_is_applied_at_the_next_tool_boundary` +
+- `nextest run --lib --test client_turns --test models --test compact --test instructions --test
+  semantic_recall --test confinement --test render`: 495 passed; failing: `approval::policy::tests::
+  user_rules_take_precedence` (A), and `client_turns::a_steered_message_is_applied_at_the_next_tool_boundary` +
   `semantic_recall::a_compacted_fact_is_found_with_memory_search`, both because `read_file` / `memory_search` now reach
   the classifier (A4 provenance lookup; the test fails the same with B's tool policy removed). The confinement cases
   printed `SKIPPED:` (no unprivileged user namespaces on this host); the realm-floor case ran and passed.
@@ -735,7 +735,7 @@ The A4 regression (Tier-1 `read_file`/`memory_search` reaching the classifier) w
   neither `fork` nor `fork_off`), the probe above; unit `fork_is_tiered_like_delegate_only_from_the_tuis_own_surface`,
   `fork::context` tests, the catalog family test.
 - **Resolved (2026-11-09, by #2112: fork children inherit the source's dispatch admission, test
-  `attach_approvals::a_fork_off_child_runs_behind_the_gate`):** Upstream ask: a host hook to shape fork seats (the
+  `approvals::a_fork_off_child_runs_behind_the_gate`):** Upstream ask: a host hook to shape fork seats (the
   spawn customizer for persisted-fork children). It only matters once
   the main session is a durable mob member, which would make `fork_off` (exact context) usable behind the gate.
 
@@ -800,14 +800,14 @@ The A4 regression (Tier-1 `read_file`/`memory_search` reaching the classifier) w
 ## Dogfood fixes: pickers, retries, classifier wording, the helper panel (2026-11-06)
 
 - `/model` picker vanished while a turn ran: an escalation prompt replaced the open picker and `advance_escalation` cleared the modal afterwards. Now a picker is parked while escalations show and restored once none remains; key repeats of Enter/Esc/Ctrl-C never act in modals (kitty reports repeats). Tests: `ui::tests::escalation_parks_the_model_picker_and_restores_it`, `parked_picker_returns_after_the_last_queued_escalation`, `stopping_all_escalations_restores_the_parked_picker`, `escalation_parks_the_resume_picker_and_restores_it`, `repeated_enter_and_esc_do_not_act_in_modals`.
-- A prompt re-sent with the same text right after a failed turn was committed again (a failed run keeps its input; verified with a `RejectTools` probe): the runner now sends `(retrying the request above)` with a notice instead. Tests: `integrator::the_same_prompt_after_a_failed_turn_is_not_added_twice`, `a_different_prompt_after_a_failed_turn_is_sent_as_written`.
+- A prompt re-sent with the same text right after a failed turn was committed again (a failed run keeps its input; verified with a `RejectTools` probe): the runner now sends `(retrying the request above)` with a notice instead. Tests: `client_turns::the_same_prompt_after_a_failed_turn_is_not_added_twice`, `a_different_prompt_after_a_failed_turn_is_sent_as_written`.
 - `/compact now` notice reworded to say the compaction happens at the start of the next message; the read-before-edit refusal says a restart forgets earlier reads. Mouse copy: OSC 52 only (user's choice), written after the frame, clipboard + primary, honest notice.
-- Classifier wording and visibility (a model's report from inside the TUI): (1) a block for lack of user intent said "the user never requested …" / "agent-authored exercise instructions" although the user had said "do the exercise in EXERCISE.md"; the classifier sees only the user's words, so stage 2 is now told (`prompts::STAGE2_INSTRUCTIONS`, `NOT_COVERED_REASON`) never to claim the user did not ask or that the request was agent-authored (only `<agent_written_files>` are) and to give "Not covered by what the user asked for in this session; ask the user to confirm before doing it." (2) The denial tag `[read 0 files, 2 searches]` read as the session's reads; it is now `[classifier checked 0 files, 2 searches]` (`1 file`, `1 search` singular). (3) A classifier allow was indistinguishable from a tier-1 call: `ClassifierVerdict::Allow` now carries its reason (stage 1: "nothing flagged by the quick check"; a cache hit: "allowed earlier in this session"), the `Decision` event carries it, and the runner sends `Msg::ToolNote` instead of the old separate approval line; the transcript shows it as one dim `allowed by classifier: <reason>` line (one line, ≤ 100 chars) under the tool block (`Block::Tool.note`, attached by tool-use id, a helper's call by `{scope}/{id}`, held until a late block arrives), hidden with a folded helper. Tests: `approval::prompts::tests::stage2_asks_for_confirmation_instead_of_blaming_the_agent`, `approval::classifier::tests::{run_suffixes, verdict_display}`, `runner::approval::tests::classifier_allow_note_is_one_short_line`, `ui::transcript::tests::{notes_attach_to_tool_blocks_by_call_id, a_helper_calls_note_hides_with_its_fold}`, `integrator::a_classifier_allowed_call_gets_a_note_and_a_tier1_call_does_not`, `classifier_llm::{stage2_reads_build_rs_then_decides, the_tool_loop_is_bounded_and_ends_with_a_toolless_call}`.
-- Protected writes ask the user: the classifier allowed a `write_file .env.dogfood` once and denied the same write once (stage-2 variance on a secrets file). A `write_file` / `edit_file` / `apply_patch` with a protected target inside the project (`paths::PROTECTED_PATTERNS`, not sealed) is now `Tier::AskUser` ("ask the user"), between tier 2 and the classifier: deny rule → sealed → allow rule → ask → classifier; outside-only targets still go to the classifier, a patch mixing a protected and an outside target asks. The engine skips the classifier, auto mode and its pause and escalates with `EscalationPrompt.policy_reason` (`protected path: \`.env.local\` (secrets); the policy always asks for these`, shown as `Policy: …` in the dialog); the verdict is `AskUser · Human`, the answer leaves the denial counters alone, auto mode off still asks. "Allow + rule" mints the existing literal rule over the project-relative path (`write_file .env.local`). Tests: `approval::policy::tests::{tier_table (rows .env, .env.local, build.rs, AGENTS.md, .gitmodules, tui.toml, a patch with .cargo/config.toml), protected_writes_ask_the_user_unless_a_rule_or_seal_decides, protected_kinds_name_what_the_path_is}`, `approval_policy::protected_path_edit_asks_the_user` (was `protected_path_edit_goes_to_classifier`), `approval::engine::tests::{protected_writes_ask_the_user_and_never_the_classifier, auto_off_still_asks_for_protected_writes}`, `approval_service::a_protected_write_asks_the_user_and_allow_always_stops_the_prompts`, `integrator::a_protected_write_is_put_to_the_user_and_runs_when_allowed`.
+- Classifier wording and visibility (a model's report from inside the TUI): (1) a block for lack of user intent said "the user never requested …" / "agent-authored exercise instructions" although the user had said "do the exercise in EXERCISE.md"; the classifier sees only the user's words, so stage 2 is now told (`prompts::STAGE2_INSTRUCTIONS`, `NOT_COVERED_REASON`) never to claim the user did not ask or that the request was agent-authored (only `<agent_written_files>` are) and to give "Not covered by what the user asked for in this session; ask the user to confirm before doing it." (2) The denial tag `[read 0 files, 2 searches]` read as the session's reads; it is now `[classifier checked 0 files, 2 searches]` (`1 file`, `1 search` singular). (3) A classifier allow was indistinguishable from a tier-1 call: `ClassifierVerdict::Allow` now carries its reason (stage 1: "nothing flagged by the quick check"; a cache hit: "allowed earlier in this session"), the `Decision` event carries it, and the runner sends `Msg::ToolNote` instead of the old separate approval line; the transcript shows it as one dim `allowed by classifier: <reason>` line (one line, ≤ 100 chars) under the tool block (`Block::Tool.note`, attached by tool-use id, a helper's call by `{scope}/{id}`, held until a late block arrives), hidden with a folded helper. Tests: `approval::prompts::tests::stage2_asks_for_confirmation_instead_of_blaming_the_agent`, `approval::classifier::tests::{run_suffixes, verdict_display}`, `runner::approval::tests::classifier_allow_note_is_one_short_line`, `ui::transcript::tests::{notes_attach_to_tool_blocks_by_call_id, a_helper_calls_note_hides_with_its_fold}`, `client_turns::a_classifier_allowed_call_gets_a_note_and_a_tier1_call_does_not`, `classifier_llm::{stage2_reads_build_rs_then_decides, the_tool_loop_is_bounded_and_ends_with_a_toolless_call}`.
+- Protected writes ask the user: the classifier allowed a `write_file .env.dogfood` once and denied the same write once (stage-2 variance on a secrets file). A `write_file` / `edit_file` / `apply_patch` with a protected target inside the project (`paths::PROTECTED_PATTERNS`, not sealed) is now `Tier::AskUser` ("ask the user"), between tier 2 and the classifier: deny rule → sealed → allow rule → ask → classifier; outside-only targets still go to the classifier, a patch mixing a protected and an outside target asks. The engine skips the classifier, auto mode and its pause and escalates with `EscalationPrompt.policy_reason` (`protected path: \`.env.local\` (secrets); the policy always asks for these`, shown as `Policy: …` in the dialog); the verdict is `AskUser · Human`, the answer leaves the denial counters alone, auto mode off still asks. "Allow + rule" mints the existing literal rule over the project-relative path (`write_file .env.local`). Tests: `approval::policy::tests::{tier_table (rows .env, .env.local, build.rs, AGENTS.md, .gitmodules, tui.toml, a patch with .cargo/config.toml), protected_writes_ask_the_user_unless_a_rule_or_seal_decides, protected_kinds_name_what_the_path_is}`, `approval_policy::protected_path_edit_asks_the_user` (was `protected_path_edit_goes_to_classifier`), `approval::engine::tests::{protected_writes_ask_the_user_and_never_the_classifier, auto_off_still_asks_for_protected_writes}`, `approval_service::a_protected_write_asks_the_user_and_allow_always_stops_the_prompts`, `client_turns::a_protected_write_is_put_to_the_user_and_runs_when_allowed`.
 - Known rare flake: `approval::engine::tests::parallel_escalations_share_one_timeout_including_the_queue` failed once while test binaries were compiling concurrently (heavy load), passed in 5×644 full runs and 6 lib runs afterwards. Hypothesis: with `start_paused`, the clock auto-advances past the escalation timeout while the ledger's `spawn_blocking` submit is still running on a starved thread. Not fixed; revisit if CI shows it.
 
-- Helper panel and full view (user verdict on the inline fold: the header lines scroll away with the output; wanted Claude Code's behaviour). A panel under the input (`render::draw_panel`, at most `MAX_PANEL_LINES` = 6, `… and N more` past that, hidden when empty) lists `Transcript::panel_helpers`: running helpers and those finished during the current turn (`HelperFold.this_turn`, cleared by `retire_finished_helpers` when a turn starts), the newest top-level first with its nested helpers under it. Ctrl+↑/↓ move a panel selection (was: inline header focus); Enter on an empty input opens the helper's full view in place of the transcript (`render::draw_helper_view`, own `ScrollState`, follows at the bottom), Enter with text submits, Esc closes the view then drops the selection; Ctrl-O / Ctrl-T act on the view's blocks. Helper `TextDelta`/`TextComplete` and `ReasoningDelta`/`ReasoningComplete` now become `Block::Assistant` / `Block::Reasoning` owned by the helper's fold (per-helper open streams, separate from the session's), so they show in the view and in the inline unfolded header. Inline headers stay; a click still unfolds one. Tests: `ui::tests::{the_panel_lists_running_helpers_newest_first_and_drops_finished_ones_at_the_next_turn, a_nested_helper_is_listed_under_its_parent, the_panel_shows_at_most_six_lines, ctrl_down_selects_the_newest_helper_and_ctrl_up_down_wrap, enter_with_an_empty_input_opens_the_full_view_without_submitting, enter_with_text_submits_despite_a_selection, esc_closes_the_view_then_drops_the_selection, the_helper_view_follows_new_output_while_at_the_bottom, a_helpers_prose_and_reasoning_are_in_its_view_in_order, a_reset_drops_the_selection_and_the_view}`, `ui::transcript::tests::{helper_text_and_reasoning_become_blocks_owned_by_its_fold, finished_helpers_leave_the_panel_when_a_turn_starts}`, `render_snapshot::{the_helper_panel_renders_under_the_input, a_helper_full_view_renders_title_prose_reasoning_and_tools, an_expanded_helper_renders_its_blocks (was ..._and_the_focus_is_reversed), a_folded_helper_renders_one_line (rows shifted for the panel)}`.
-- Input soft wrap (user request: long lines scrolled sideways): `input::wrap_layout(lines: &[String], width: usize) -> WrapLayout` wraps each logical line at the field width by display width (sanitized: tab 4, wide 2, zero-width 0 and kept on the previous char's row; char boundaries, no word wrap; an empty line one row; a line whose last row is exactly full gets an empty row where its end cursor sits). `WrapLayout::{rows, to_visual, from_visual}` map logical `(row, col)` to visual `(vrow, vcol)` and back (a boundary position belongs to the later row). The stored lines are unchanged; `render::draw_at` sets `InputEditor::set_wrap_width(width - 2)` each frame, the field height is the visual row count clamped to 1..=`MAX_INPUT_LINES` (6, the existing cap), and the field scrolls so the cursor's row is visible. Up/Down move by visual rows keeping the display column (clamped); history recall stays on the first/last visual row; Home/End stay logical. The transcript area (and `set_transcript_rows`, so mouse hit-testing) shrinks with the taller input. Tests: `ui::input::tests::{wrap_layout_splits_a_long_line_at_the_width, wrap_layout_never_splits_a_wide_char, wrap_layout_gives_an_empty_line_one_row, wrap_layout_maps_row_ends_to_the_next_row, wrap_layout_puts_the_cursor_after_an_exactly_full_line_on_the_next_row, wrap_width_zero_does_not_wrap, up_and_down_move_by_visual_rows}`, `ui::tests::{up_moves_a_visual_row_within_a_wrapped_line_keeping_the_column, down_moves_a_visual_row_within_a_wrapped_line_then_recalls_newer_history}`, `render_snapshot::a_long_input_line_wraps_and_the_transcript_shrinks`; no existing snapshot changed.
+- Helper panel and full view (user verdict on the inline fold: the header lines scroll away with the output; wanted Claude Code's behaviour). A panel under the input (`render::draw_panel`, at most `MAX_PANEL_LINES` = 6, `… and N more` past that, hidden when empty) lists `Transcript::panel_helpers`: running helpers and those finished during the current turn (`HelperFold.this_turn`, cleared by `retire_finished_helpers` when a turn starts), the newest top-level first with its nested helpers under it. Ctrl+↑/↓ move a panel selection (was: inline header focus); Enter on an empty input opens the helper's full view in place of the transcript (`render::draw_helper_view`, own `ScrollState`, follows at the bottom), Enter with text submits, Esc closes the view then drops the selection; Ctrl-O / Ctrl-T act on the view's blocks. Helper `TextDelta`/`TextComplete` and `ReasoningDelta`/`ReasoningComplete` now become `Block::Assistant` / `Block::Reasoning` owned by the helper's fold (per-helper open streams, separate from the session's), so they show in the view and in the inline unfolded header. Inline headers stay; a click still unfolds one. Tests: `ui::tests::{the_panel_lists_running_helpers_newest_first_and_drops_finished_ones_at_the_next_turn, a_nested_helper_is_listed_under_its_parent, the_panel_shows_at_most_six_lines, ctrl_down_selects_the_newest_helper_and_ctrl_up_down_wrap, enter_with_an_empty_input_opens_the_full_view_without_submitting, enter_with_text_submits_despite_a_selection, esc_closes_the_view_then_drops_the_selection, the_helper_view_follows_new_output_while_at_the_bottom, a_helpers_prose_and_reasoning_are_in_its_view_in_order, a_reset_drops_the_selection_and_the_view}`, `ui::transcript::tests::{helper_text_and_reasoning_become_blocks_owned_by_its_fold, finished_helpers_leave_the_panel_when_a_turn_starts}`, `render::{the_helper_panel_renders_under_the_input, a_helper_full_view_renders_title_prose_reasoning_and_tools, an_expanded_helper_renders_its_blocks (was ..._and_the_focus_is_reversed), a_folded_helper_renders_one_line (rows shifted for the panel)}`.
+- Input soft wrap (user request: long lines scrolled sideways): `input::wrap_layout(lines: &[String], width: usize) -> WrapLayout` wraps each logical line at the field width by display width (sanitized: tab 4, wide 2, zero-width 0 and kept on the previous char's row; char boundaries, no word wrap; an empty line one row; a line whose last row is exactly full gets an empty row where its end cursor sits). `WrapLayout::{rows, to_visual, from_visual}` map logical `(row, col)` to visual `(vrow, vcol)` and back (a boundary position belongs to the later row). The stored lines are unchanged; `render::draw_at` sets `InputEditor::set_wrap_width(width - 2)` each frame, the field height is the visual row count clamped to 1..=`MAX_INPUT_LINES` (6, the existing cap), and the field scrolls so the cursor's row is visible. Up/Down move by visual rows keeping the display column (clamped); history recall stays on the first/last visual row; Home/End stay logical. The transcript area (and `set_transcript_rows`, so mouse hit-testing) shrinks with the taller input. Tests: `ui::input::tests::{wrap_layout_splits_a_long_line_at_the_width, wrap_layout_never_splits_a_wide_char, wrap_layout_gives_an_empty_line_one_row, wrap_layout_maps_row_ends_to_the_next_row, wrap_layout_puts_the_cursor_after_an_exactly_full_line_on_the_next_row, wrap_width_zero_does_not_wrap, up_and_down_move_by_visual_rows}`, `ui::tests::{up_moves_a_visual_row_within_a_wrapped_line_keeping_the_column, down_moves_a_visual_row_within_a_wrapped_line_then_recalls_newer_history}`, `render::a_long_input_line_wraps_and_the_transcript_shrinks`; no existing snapshot changed.
 
 ## Helper depth limit (2026-11-06)
 
@@ -825,12 +825,12 @@ The A4 regression (Tier-1 `read_file`/`memory_search` reaching the classifier) w
   Ctrl-X Ctrl-S / escalation Stop. The recovery notice is the engine closing a *cancelled* run's provisional tail
   (`meerkat-runtime/src/runtime_loop.rs` `settle_cancelled_run_tail` → `recovery.rs` `close_interrupted_run`), not
   a steer side effect. The engine's Steer waits for the tool: pinned by
-  `integrator::a_message_typed_while_a_slow_tool_runs_reaches_the_model_after_its_result` (real shell `sleep 2`, the
+  `client_turns::a_message_typed_while_a_slow_tool_runs_reaches_the_model_after_its_result` (real shell `sleep 2`, the
   steer lands after the tool result in the same run, no system notice).
 - Likely trigger (UI, not changed here): Esc with only *admitted* steers is not a recall but an interrupt
   (README "Esc limitation"), and Ctrl-C interrupts even right after a mouse selection. Suggested: Esc/Ctrl-C with
   admitted steers or an active selection should not interrupt on the first press.
-- Real runner bugs found while reproducing (`integrator::interrupting_a_slow_tool_returns_the_messages_typed_meanwhile`,
+- Real runner bugs found while reproducing (`client_turns::interrupting_a_slow_tool_returns_the_messages_typed_meanwhile`,
   failed about 1 run in 2 under parallel load before the fix):
   - a steer admitted before the interrupt but not yet bound to the run escaped: `stop_run` leaves it queued, the
     runtime stages it into a follow-up run, and the following `cancel_input_if_present` failed with
@@ -855,7 +855,7 @@ The A4 regression (Tier-1 `read_file`/`memory_search` reaching the classifier) w
   UI sends the recall when an admitted (or unacknowledged) steer is pending, returns the recalled and held messages to
   the editor oldest first, and marks the admitted ones left as reached ("your messages already reached the agent; Esc
   again interrupts"); only then, or with nothing pending, does Esc interrupt. The first Ctrl-C with a mouse selection
-  only clears it. Tests: `integrator::{recalling_a_message_typed_during_a_slow_tool_leaves_the_run_alone,
+  only clears it. Tests: `client_turns::{recalling_a_message_typed_during_a_slow_tool_leaves_the_run_alone,
   recalling_a_steer_that_already_joined_the_run_leaves_it_delivered}` (5 repeated runs clean),
   `ui::tests::{esc_with_an_admitted_message_recalls_it_without_interrupting,
   esc_when_the_messages_already_reached_the_agent_notices_then_interrupts,
@@ -891,7 +891,7 @@ Editor and key rebinds to match Claude Code (`docs/ux-parity.md` §2). Every ste
   to the prompt history (in memory and, through `take_submitted`, the history files); the first Esc arms it and
   the editor title says "Esc again to clear the input". Esc Esc on an empty input does nothing. Esc while running is
   unchanged. Tests: `ui::tests::esc_esc_clears_the_draft_into_history`,
-  `render_snapshot::esc_on_an_idle_draft_names_the_second_esc_in_the_editor_title`.
+  `render::esc_on_an_idle_draft_names_the_second_esc_in_the_editor_title`.
 - Ctrl+_ undo (also Ctrl+7 and Ctrl+Shift+-): `InputEditor` keeps up to `UNDO_DEPTH` = 64 snapshots (text and
   cursor), pushed at a typing word boundary, at the start of a run of deletes, and before kills, yanks, pastes,
   newlines, history recalls and clears (Ctrl+C's clear included); sending a prompt empties the stack. Tests:
@@ -902,7 +902,7 @@ Editor and key rebinds to match Claude Code (`docs/ux-parity.md` §2). Every ste
   stash replaced by a newer one goes to the prompt history. The editor title names Ctrl-S while a stash waits on an
   empty input. Tests: `input::tests::stash_puts_the_prompt_aside_and_brings_it_back`,
   `ui::tests::{ctrl_s_alone_stashes_and_restores, chord_expires_after_window, chord_ctrl_x_ctrl_s_interrupt_and_send_when_running}`,
-  `render_snapshot::a_stashed_prompt_is_named_in_the_editor_title`.
+  `render::a_stashed_prompt_is_named_in_the_editor_title`.
 - Ctrl+L: `Effect::Redraw`, kept by the UI loop (`runtime::apply` sets a flag, never forwards it; the runner's arm
   is a no-op) and answered with `terminal.clear()` before the next frame. Tests:
   `ui::tests::ctrl_l_requests_a_redraw`, `runtime::tests::ctrl_l_asks_the_loop_for_a_full_repaint_and_nothing_else`,
@@ -914,7 +914,7 @@ Editor and key rebinds to match Claude Code (`docs/ux-parity.md` §2). Every ste
   the second press quits. Busy behaviour (warning notice, interrupt, save undelivered) and `/quit` are unchanged;
   with text Ctrl+D still deletes forward. Tests: `ui::tests::{ctrl_d_quits_only_on_empty_input,
   quit_while_busy_needs_confirmation_and_hands_over_held_messages, idle_quit_is_immediate}`,
-  `render_snapshot::a_first_idle_ctrl_d_asks_for_a_second_in_the_editor_title`.
+  `render::a_first_idle_ctrl_d_asks_for_a_second_in_the_editor_title`.
 
 ## Esc, queued messages and commands to match Claude Code (2026-11-06)
 
@@ -930,8 +930,8 @@ Runner and command changes to match Claude Code (`docs/ux-parity.md` §1–2). E
   up_when_the_messages_already_reached_the_agent_notices_then_recalls_history, up_recalls_the_newest_held_message,
   interrupted_turn_sends_undelivered_messages_next, interrupted_turn_without_queued_messages_starts_nothing,
   discarded_delivery_of_a_stopped_turn_is_sent_again, failed_turn_returns_undelivered_with_a_notice}`,
-  `integrator::esc_interrupts_and_the_queued_message_runs_next` (real `App` driving the runner with the scripted
-  client), `render_snapshot::queued_block_status_count_and_hints`.
+  `client_turns::esc_interrupts_and_the_queued_message_runs_next` (real `App` driving the runner with the scripted
+  client), `render::queued_block_status_count_and_hints`.
 - **Superseded (2026-11-09, by `request_compaction`; no rebuild):** `/compact` (bare, or `now`) →
   `CompactCommand::Now` → the existing `Effect::CompactNow` rebuild; `/compact status`
   prints the policy (`CompactionPolicy::describe`); `/compact <instructions>` compacts the same way and adds the warn
@@ -950,7 +950,7 @@ Runner and command changes to match Claude Code (`docs/ux-parity.md` §1–2). E
 - `--resume` is `Option<Option<String>>` (`num_args = 0..=1`); a bare `--resume` is `Start::Pick`: a fresh session
   and `Effect::RequestResumePicker` as the first effect (sent by `runner::run` and the test harness before the
   prompt), the same path `/resume` alone takes. `--resume <ref>` and `-c` unchanged (`-c` still conflicts). Tests:
-  `lifecycle::tests::start_follows_the_flags`, `cli::tests` (parse), `integrator::resume_without_a_reference_opens_the_picker_at_start`.
+  `lifecycle::tests::start_follows_the_flags`, `cli::tests` (parse), `client_turns::resume_without_a_reference_opens_the_picker_at_start`.
 - `/context` (`/context all` too): `App::context_header` (gauge: used/window, percent, estimated flags; then the
   `/compact status` policy text) → `Effect::ContextReport` → `Runner::context_report` adds, without new engine
   calls, the session's system-message bytes and message counts (`SessionHandle::read`), the instruction files on
@@ -958,7 +958,7 @@ Runner and command changes to match Claude Code (`docs/ux-parity.md` §1–2). E
   count of tools rkat-tui registers (the external gateway); the engine's built-in/MCP/helper tools are labelled
   unknown. Tests: `ui::tests::context_command_sends_the_gauge_and_the_policy`,
   `runner::context::tests::the_context_breakdown_counts_the_prompt_messages_files_and_tools`,
-  `commands::tests::remember_and_compact_commands`, `integrator::context_report_describes_the_session`.
+  `commands::tests::remember_and_compact_commands`, `client_turns::context_report_describes_the_session`.
 - `/status` → `Effect::StatusReport` → `Runner::status_report` (`runner/status.rs`): one notice from `StatusReport`'s
   `Display` with `CARGO_PKG_VERSION`, the session identity's model/provider and its endpoint, the full session id,
   workspace, realm dir and id, `--confinement` mode, the auto state (`auto_status`, as the status bar), the host
@@ -966,7 +966,7 @@ Runner and command changes to match Claude Code (`docs/ux-parity.md` §1–2). E
   (`Runtime::helper_max_depth`, new; "not built in" without helpers). Tests:
   `runner::status::tests::the_status_report_names_everything_on_its_own_line`,
   `ui::tests::slash_commands_map_to_effects`, `commands::tests::remember_and_compact_commands`,
-  `integrator::status_report_names_the_session_and_the_workspace`.
+  `client_turns::status_report_names_the_session_and_the_workspace`.
 - `/export [file]`: `Transcript::export_text` (a `## ` header per shown block; folded reasoning, collapsed tool
   output and folded helpers' blocks keep only headers) → `Effect::Export { path, text }` → `Runner::export`
   (`runner/export.rs`): `paths::write_atomic` with `FileMode::Private`, the workspace as trusted root for the default
@@ -975,7 +975,7 @@ Runner and command changes to match Claude Code (`docs/ux-parity.md` §1–2). E
   Tests: `transcript::tests::export_text_has_a_header_per_block_and_folds_collapsed_output`,
   `runner::export::tests::{the_default_export_path_is_under_the_workspace_realm_dir,
   an_export_round_trips_through_the_atomic_write}`, `ui::tests::slash_commands_map_to_effects`,
-  `integrator::export_writes_the_transcript_and_names_the_file`.
+  `client_turns::export_writes_the_transcript_and_names_the_file`.
 - `/init` (idle only; refused with the busy notice while a turn runs or messages are queued) starts a turn with
   `commands::INIT_PROMPT` through `start_turn`, so the prompt shows as a user block; the agent writes AGENTS.md with
   its file tools under the usual approval/protected/sealed-path rules. Tests:
@@ -1042,7 +1042,7 @@ Runner and command changes to match Claude Code (`docs/ux-parity.md` §1–2). E
   memory_opens_the_file_the_integrator_names_and_reports_back}`, `context::tests::
   {memory_opens_the_workspace_user_or_system_file, memory_keys_follow_the_context}`, `instructions::tests::
   {a_system_md_with_only_its_header_counts_as_empty, an_edited_file_becomes_capped_system_context}`,
-  `commands::tests` (parse, help), `keymap::tests::control_keys`, `render_snapshot::
+  `commands::tests` (parse, help), `keymap::tests::control_keys`, `render::
   a_pending_ctrl_x_chord_names_its_second_keys`.
 - Commands: `clippy -p meerkat-core --all-targets --all-features -D warnings` exit 0; `nextest run -p meerkat-core
   confinement` 41 passed; `nextest run -p meerkat --test host_launch_sites` 12 passed; `clippy
@@ -1178,7 +1178,7 @@ Three "reuse the existing owner" items from the maintainer's review ("Existing o
   refuses to start while another holds one (with `instance_id: None` each process gets a fresh `instance-<uuid>`).
   So there is no "held by another host" condition to surface; a second `rkat-tui` on the same realm starts and holds
   a second lease, exactly like a second `rkat-rpc`.
-- Tests (`tests/integrator.rs`): `each_open_of_a_realm_holds_its_own_lease_until_released` (two bootstraps of the same
+- Tests (`tests/client_turns.rs`): `each_open_of_a_realm_holds_its_own_lease_until_released` (two bootstraps of the same
   workspace realm: two active leases, surface `rkat-tui`, this pid; releasing one leaves one; releasing both leaves
   none and `blocks_destructive_prune()` is false; release is idempotent), `quitting_releases_the_realm_lease` (the
   runner's quit removes the record).
@@ -1198,7 +1198,7 @@ Three "reuse the existing owner" items from the maintainer's review ("Existing o
 - Behaviour change from the owner: `PersistentSessionService::list` reads the runtime session catalog and leaves out
   sessions whose lifecycle is `Archived` or whose runtime state is `Retired`/`Destroyed`; the raw store listing
   included them. A session the TUI closed on switch or quit stays listed (the `-c`/`/resume` tests below cover it).
-- Tests: unchanged `tests/integrator.rs` `new_and_resume_switch_sessions_in_process`,
+- Tests: unchanged `tests/client_turns.rs` `new_and_resume_switch_sessions_in_process`,
   `continue_and_resume_by_id_across_lifetimes`, `resume_without_a_reference_opens_the_picker_at_start` pass (the
   harness's `Rig::store` is now the service as `Arc<dyn SessionService>`); new
   `references_resolve_over_the_service_listing` (two sessions listed newest first, `~1` and a prefix resolve to the
@@ -1269,7 +1269,7 @@ Three "reuse the existing owner" items from the maintainer's review ("Existing o
   on row 1.
 - Tests: `ui::modal::tests::escalation_dialog_moves_clamped_and_picks`,
   `ui::tests::escalation_choices_by_number_arrows_and_enter` (four queued escalations answered by `2`, ↓↓↑ Enter,
-  `1` and `s`; a held `j` moves; Ctrl+Y does nothing), `render_snapshot::escalation_modal_is_drawn_over_the_transcript`
+  `1` and `s`; a held `j` moves; Ctrl+Y does nothing), `render::escalation_modal_is_drawn_over_the_transcript`
   (full dialog snapshot, the cyan cursor row, ↓ moves the cursor to row 2). The parked-picker and queued-escalation
   tests pass unchanged.
 - Docs: HELP_TEXT "Approval prompt" (one line per choice), README "How approval works", CHANGELOG.
@@ -1295,7 +1295,7 @@ Three "reuse the existing owner" items from the maintainer's review ("Existing o
   picker: a typed + pasted comment, Enter on row 3 then empty Enter, Ctrl+C in an open field; the picker returns),
   `escalation_parks_the_model_picker_and_restores_it` / `escalation_parks_the_resume_picker_and_restores_it` (updated:
   Esc/`n` open the field, a second key denies), `approval::admission::tests::denials_are_policy_denied_with_the_reason`,
-  `render_snapshot::escalation_deny_comment_field_snapshot`, and end to end
+  `render::escalation_deny_comment_field_snapshot`, and end to end
   `approval_service::a_deny_comment_reaches_the_model_as_the_tool_error` (a protected `.env.local` write denied with
   a comment: the tool error the model receives contains `denied by the user: put it in .env.example instead`, the
   file is not written, the ledger record is Denied with reason `denied: put it in .env.example instead`).
@@ -1315,7 +1315,7 @@ Three "reuse the existing owner" items from the maintainer's review ("Existing o
 - Tests: `ui::tests::question_mark_on_an_empty_input_toggles_the_keys_panel`,
   `the_keys_panel_gives_way_to_escalations_and_pickers`,
   `ui::commands::tests::the_keys_panel_lists_the_keys_and_the_approval_prompt_only`,
-  `render_snapshot::keys_panel_snapshot` (the idle `? keys` title; the panel at 110×10, cut with `… more in /help`; the
+  `render::keys_panel_snapshot` (the idle `? keys` title; the panel at 110×10, cut with `… more in /help`; the
   wrapped layout at 60 columns; a key closes it), `renders_blocks_input_and_status_bar` (border row now carries the
   hint).
 - Commands: `cargo clippy --all-targets --all-features -- -D warnings` exit 0; `cargo fmt --all` exit 0;
@@ -1413,7 +1413,7 @@ covers the HELP_TEXT edits).
   undo, Enter completing `/he`, Enter sending `/status`, an alias, Tab before arguments) and
   `esc_closes_the_slash_menu_until_the_word_changes` (Esc, an agent event, retyping, Enter sending `/cop` as an
   unknown command, no menu for `/zz`, `//he`, `hi /he`, two lines, `/help x`);
-  `render_snapshot::the_slash_menu_renders_above_the_input_with_the_highlight` (full 70×12 snapshot of `/co` with
+  `render::the_slash_menu_renders_above_the_input_with_the_highlight` (full 70×12 snapshot of `/co` with
   ↓: four rows over the transcript, the second reversed edge to edge, cyan labels, the title hint; Esc restores
   the transcript rows and the title). The helper panel, keys panel and title-hint snapshots pass unchanged.
 - Docs: HELP_TEXT Keys gains the `/ (one-line input)` row; README "Keys and commands"; CHANGELOG.
@@ -1465,8 +1465,8 @@ covers the HELP_TEXT edits).
   substring, Enter sending a typed file, no sealed rows, no menu for `a@READ`) and
   `a_prompt_with_mentions_notes_what_it_attaches_and_what_is_sealed` (the StartTurn text as typed, the
   `+ 2 files (src/main.rs, src/ui/)` and sealed notices, singular, none for `a@b`);
-  `render_snapshot::the_at_menu_renders_matching_paths_above_the_input`; end to end
-  `integrator::an_at_mention_attaches_the_file_the_session_receives` (the scripted model's request and the stored
+  `render::the_at_menu_renders_matching_paths_above_the_input`; end to end
+  `client_turns::an_at_mention_attaches_the_file_the_session_receives` (the scripted model's request and the stored
   session both hold the prompt plus the `<file path="notes.txt">` block).
 - Docs: HELP_TEXT Keys gains the `@ (ending a word)` row; README "Keys and commands"; CHANGELOG; the module list in
   `lib.rs`.
@@ -1525,7 +1525,7 @@ covers the HELP_TEXT edits).
   holding the pipes does not stall it), long_output_is_capped}`;
   `config::tests::the_user_shell_timeout_layers_and_the_project_only_lowers_it`;
   `runner::shell::tests::run_keys_are_unique`; end to end
-  `integrator::a_bang_command_runs_and_joins_the_context_without_a_turn` (`echo hi; pwd` through the runner on
+  `client_turns::a_bang_command_runs_and_joins_the_context_without_a_turn` (`echo hi; pwd` through the runner on
   the test rigs' `--no-confinement`: output `hi` and the canonical workspace, no model call, then the next turn's
   system prompt holds `[shell run by the user] $ echo hi; pwd\nhi\n` and `(exit 0)`) and
   `confinement::a_bang_command_runs_under_the_shells_confinement` (gated like the other confined cases by the
@@ -1584,7 +1584,7 @@ Permission modes on Shift+Tab (`docs/ux-parity.md` rows 9, 27, 28; candidate 5).
   `ui::commands::tests::mode_commands`; `ui::tests::{shift_tab_cycles_the_permission_mode, plan_ready_dialog,
   slash_commands_map_to_effects, status_updates_and_dirty_tracking}`;
   `ui::render::tests::{status_bar_modes_and_classifying, status_line_segments}`; render snapshots for the new
-  idle title; end to end `integrator::plan_mode_refuses_a_write_and_the_model_reads_why` (SetMode(Plan) → the
+  idle title; end to end `client_turns::plan_mode_refuses_a_write_and_the_model_reads_why` (SetMode(Plan) → the
   model's `write_file` comes back `is_error` with "plan mode is on", no file, no dialog, the system prompt holds
   `# Plan mode is on`, realm `tui.toml` holds `mode = "plan"`; switching to accept edits adds `# Plan mode is off`
   and saves `mode = "accept-edits"`).
@@ -1629,7 +1629,7 @@ Task checklist on Ctrl+T (`docs/ux-parity.md` row 22; candidate 7).
   `ui::tests::{ctrl_t_toggles_the_checklist_and_records_the_view, an_unreadable_task_store_is_named_once_at_the_next_ctrl_t}`;
   render snapshots `ctrl_t_with_no_tasks_draws_nothing`, `the_checklist_renders_under_the_input` (three items,
   hint both ways), `more_than_five_tasks_show_the_newest_and_a_count`, `the_checklist_comes_before_the_helper_panel`;
-  end to end `integrator::the_task_tools_fill_the_checklist_and_resume_restores_it` (the scripted model creates
+  end to end `client_turns::the_task_tools_fill_the_checklist_and_resume_restores_it` (the scripted model creates
   three tasks, then updates two by the ids the results returned (new `Step::Dynamic` in `tests/common`); the App
   fed by the runner shows ☐ run the tests / ☑ read the parser / ◐ write the fix after Ctrl+T; realm `tui.toml`
   holds `checklist = "shown"`; `--resume last` sends the same list before any turn; a new session's is empty).
@@ -1691,7 +1691,7 @@ Conversation rewind: `/rewind` (aliases `/checkpoint`, `/undo`) and Esc Esc on a
   rewind_asks_for_the_menu_only_when_idle_with_nothing_queued, the_rewind_menu_opens_chooses_and_cancels,
   rewound_cuts_the_transcript_and_refills_the_input}`; `ui::commands::tests` (`/rewind`, `/checkpoint`,
   `/undo`, usage error, spec count 31); render snapshot `rewind_menu_and_hint_snapshot`; end to end
-  `integrator::rewind_forks_before_the_chosen_message_and_keeps_the_old_session` (three scripted turns; the menu
+  `client_turns::rewind_forks_before_the_chosen_message_and_keeps_the_old_session` (three scripted turns; the menu
   lists three, two, one; rewinding to "two" switches to a new session id, `Rewound { from_end: 2, text: "two" }`
   with the fork's blocks "one"/"first answer"; the next turn's model request carries exactly the user messages
   "one" and the new prompt plus the persona; the old session still holds one/two/three and is listed; a stale
@@ -1918,7 +1918,7 @@ connect; a reconnect waits for a live endpoint with backoff (100 ms to 2 s).
 `/daemon stop` signals the endpoint file's pid only when the file's address
 is the one this client is attached to. `rkat-tui-mob` refuses `--attach`.
 
-Tests: `tests/attach.rs`: `a_prompt_is_answered_and_rendered`,
+Tests: `tests/client.rs`: `a_prompt_is_answered_and_rendered`,
 `esc_interrupts_a_hanging_turn`, `model_switches_with_the_next_prompt_and_stays`,
 `a_client_that_left_mid_turn_sees_the_turn_once_on_reattach`,
 `the_client_reconnects_to_a_restarted_daemon`,
@@ -2003,7 +2003,7 @@ the in-process dialog's second choice (allow + add a literal rule): the
 in-process gate has no session-scoped allow, and gated-tool grants
 (`tool_grants/*`) do not apply to these tools.
 
-Tests: `tests/attach_approvals.rs`: `a_tier_one_call_runs_without_a_prompt`,
+Tests: `tests/approvals.rs`: `a_tier_one_call_runs_without_a_prompt`,
 `a_reviewed_call_shows_the_dialog_and_runs_after_approve`,
 `deny_with_a_comment_refuses_and_the_comment_reaches_the_model`,
 `allow_and_add_rule_skips_the_dialog_the_second_time`,
@@ -2015,7 +2015,7 @@ classifier read the user's words, the plan-mode note reached the model),
 `a_helpers_reviewed_call_raises_an_approval_too`,
 `a_restarted_daemon_keeps_the_application_policy_binding`,
 `the_local_methods_answer_before_the_engine`;
-`tests/attach.rs::a_bang_command_runs_in_this_process_and_joins_the_agents_context`;
+`tests/client.rs::a_bang_command_runs_in_this_process_and_joins_the_agents_context`;
 unit tests in `approval::desk` (answer ↔ record mapping, recorded prompt,
 wire forms), `approval::ledger::tests::settling_confirms_a_record_a_client_already_decided_the_same_way`,
 `daemon::approvals` (desk: decision handed back, interrupt stops only the
@@ -2100,14 +2100,14 @@ moves); clients poll `mob/member_status` every second and follow a switch
 `/new` conversation starts on the start-up model; the client carries its
 last `/model` to the next prompt, as in-process `/new` keeps the model.
 
-Tests: `tests/attach_helpers.rs`:
+Tests: `tests/helpers.rs`:
 `a_delegated_helper_is_followed_with_its_result_and_cost` (the header
 `[scout · claude-sonnet-4-6]` drawn, one `run_started` after the backfill,
 helper and total cost), `esc_during_a_helper_stops_the_orchestrator_and_the_helper`;
-`tests/attach_sessions.rs`:
+`tests/conversations.rs`:
 `new_starts_fresh_and_resume_brings_the_old_conversation_back` (a second
 client follows the switch), `rewind_says_why_it_is_not_offered` (the
-engine's refusal pinned); `tests/attach.rs`:
+engine's refusal pinned); `tests/client.rs`:
 `attach_mode_is_the_default_and_a_users_tui_toml_can_turn_it_off`,
 `two_clients_steer_in_turn_and_both_see_the_whole_conversation`,
 `a_reconnect_restarts_a_daemon_that_died` (the real `rkat-tui-mob`),
@@ -2170,7 +2170,7 @@ unconfined.
   (`rkat/*` code `SWITCH_BUSY`, -32011) while `progress.run_state` is
   `RunOpen` (the engine's machine-owned run phase, which answers during a
   turn). A run starting between that read and the retire is not excluded
-  (no engine lock spans both). Test: `tests/attach_sessions.rs`
+  (no engine lock spans both). Test: `tests/conversations.rs`
   `a_switch_is_refused_while_another_clients_turn_runs` (a second
   connection's `rkat/new` refused, the turn finishes on its session, the
   switch goes through afterwards).
@@ -2189,7 +2189,7 @@ unconfined.
   `shell` is the orchestrator's. Probe: an allow rule for a command with
   `$((…))` does not match even for the orchestrator (the policy sends it to
   the classifier), so the test uses a plain `echo`. Tests:
-  `tests/attach_approvals.rs` `a_helpers_shell_is_judged_as_the_native_shell`
+  `tests/approvals.rs` `a_helpers_shell_is_judged_as_the_native_shell`
   (fails before: the classifier was asked about `shell`),
   `approval::catalog::tests::families_follow_provenance_not_names`.
 - Inline local calls: the proxy awaited each `rkat/*` call before reading
@@ -2218,7 +2218,7 @@ unconfined.
   the persisted mode, and a daemon started in plan mode tells the
   orchestrator (`Local::announce_plan_mode`; a restored one may have been
   switched by another process, and a repeated note is harmless). Test:
-  `tests/attach_approvals.rs`
+  `tests/approvals.rs`
   `plan_mode_survives_a_restart_and_leaving_it_is_announced` (fails before).
 - Pending calls leaked on a caller's timeout: `Connection::call` now holds
   a guard that removes its id when the call ends or is dropped. Test:
@@ -2246,7 +2246,7 @@ ten more; each names its test.
   removal logged. Tests: `daemon::endpoint::tests::a_stale_legacy_file_is_removed_and_a_live_legacy_daemon_refuses`,
   `tests/daemon.rs`
   `a_legacy_endpoint_in_the_workspace_refuses_while_live_and_is_removed_when_stale`,
-  `tests/attach.rs` `a_live_legacy_daemon_is_stopped_on_request_and_then_replaced`
+  `tests/client.rs` `a_live_legacy_daemon_is_stopped_on_request_and_then_replaced`
   (a `sleep` process and a listener stand in for the old daemon).
 - Helper catalog reads were tried once: `watch_helpers` put a session in
   its `reading` set and never took it out, so a read that answered `None`
@@ -2262,7 +2262,7 @@ ten more; each names its test.
   and it reads the mode under the lock instead of taking the caller's, so
   the last note always matches the mode that holds (slow read-only calls
   stay concurrent; no per-connection serialization was needed). Test:
-  `tests/attach_approvals.rs`
+  `tests/approvals.rs`
   `overlapping_mode_changes_leave_the_plan_note_matching_the_mode` (twelve
   concurrent changes on two connections; a race, so it does not fail on
   every run before the fix).
@@ -2286,7 +2286,7 @@ ten more; each names its test.
   cursor held no turn end. `establish` now reads back from the mark for the
   last `TurnCompleted` (`last_context_before`: windows of 256 events,
   doubling, 4096 at most) and `connected` seeds the gauge as a switch does.
-  Test: `tests/attach_sessions.rs`
+  Test: `tests/conversations.rs`
   `the_token_counter_and_gauge_follow_the_conversation` (the late client;
   fails before).
 - `/resume` titles came from the first 16 messages only: `count_and_title`
@@ -2303,7 +2303,7 @@ ten more; each names its test.
 - `rkat/trust` had a `list` op no client used, and a missing `op` was
   answered as a list. The in-process `/trust` has no list form, so `list`
   is gone and a missing or unknown `op` is refused (`INVALID_PARAMS`). Test:
-  `tests/attach_approvals.rs`
+  `tests/approvals.rs`
   `trust_from_the_client_records_the_project_hooks_across_a_restart` (the
   refusals; trust is observed through the hook running, as before).
 
@@ -2329,7 +2329,7 @@ holds; a run ending between the replay's last page and the usage read is
 counted twice, its live event adding to a total that already holds it: an
 accepted race). After a switch the gauge is the last `turn_completed` usage
 in the replay the switch already reads (none for a fresh conversation); the
-in-process switch leaves the gauge as it was until the next model call. Test: `tests/attach_sessions.rs`
+in-process switch leaves the gauge as it was until the next model call. Test: `tests/conversations.rs`
 `the_token_counter_and_gauge_follow_the_conversation` (prompt, `/new`,
 prompt, `/resume` back: the counter shows the first conversation's 100/5
 and the gauge 105, not 0; a TUI attaching afterwards starts from 100/5).
@@ -2348,13 +2348,13 @@ client routes both effects there and shows the outcome. The in-process
 takes its MCP servers from its mob's definition, written when the mob was
 first created and restored as it is, so a trusted `.rkat/mcp.toml` does not
 reach the agent in attach mode (the notice says so); its hooks do, from the
-agent's next build. Test: `tests/attach_approvals.rs`
+agent's next build. Test: `tests/approvals.rs`
 `trust_from_the_client_records_the_project_hooks_across_a_restart` (a
 `pre_tool_execution` hook in the workspace `.rkat/config.toml`, with the
 user config root outside the workspace so the file is a project input:
 listed untrusted, does not run; `/trust` from the client; `/rules trust`
 summarises the rules file; after a daemon restart it is listed trusted and
-runs on the rebuilt agent's next call). `tests/attach.rs`
+runs on the rebuilt agent's next call). `tests/client.rs`
 `what_the_daemon_cannot_do_yet_says_so` now checks another unavailable
 action.
 
@@ -2370,7 +2370,7 @@ on. Probe: a `delegate` helper's catalog is read too (its session still
 answers right after the run), but the helper is retired then and never
 runs again, so for it the fallback stays what decides; its cache entry
 stays until the daemon stops, as an earlier conversation's does. Test:
-`tests/attach_approvals.rs`
+`tests/approvals.rs`
 `a_seated_helpers_catalog_is_read_after_its_first_run` (times out with the
 watcher's read disabled).
 
@@ -2517,7 +2517,7 @@ deciding. Facts that shaped the code:
   false`; the proxy adds `decision/notice` and `decision/decide` to the
   answer of each `initialize` it forwards, which the client feature-detects.
 
-Tests: `tests/attach_approvals.rs`
+Tests: `tests/approvals.rs`
 `a_reviewed_call_is_pushed_as_a_decision_and_the_first_answer_wins` (a raw
 connection gets the notice without asking, the catalog lists both methods,
 a named `actor`/`approver` is refused, the client's answer wins, the raw
@@ -2557,7 +2557,7 @@ numbered it (a digest of the attach token: the pid is the same for an
 in-process restart in tests) and is resumed only against that daemon.
 Otherwise, and on `StreamTruncated`, the conversation is rendered from its
 start (transcript, the last sequence and gauge from `events/list_since`).
-Tests: `tests/attach.rs`
+Tests: `tests/client.rs`
 `a_client_that_left_mid_turn_sees_the_turn_once_on_reattach` (the saved
 cursor has an epoch and a daemon; the turn shows once),
 `the_client_reconnects_to_a_restarted_daemon` (the conversation is rendered
@@ -2567,7 +2567,7 @@ from its start, the new cursor names the new daemon),
 **`/compact now`.** `mob/compact_member` (router.rs:3580, handlers/mob.rs:3685)
 records a request the member's next compaction check consumes; the client
 sends it (fallback `session/compact`, handlers/session.rs:1477). Test:
-`tests/attach_sessions.rs` `compact_now_compacts_at_the_next_turn` (the next
+`tests/conversations.rs` `compact_now_compacts_at_the_next_turn` (the next
 prompt's first call is the summary; the client sees `compaction_completed`).
 The in-process `/compact now` keeps its rebuild workaround: the facade has
 `MeerkatMachine::request_compaction` (meerkat/tests/compact_now.rs) but the
@@ -2631,7 +2631,7 @@ The tool it modelled is withheld from every agent: `session::TUI_OWNED_BUILTINS`
 puts `apply_patch` and `brain_swap` in every session's tool access policy,
 and `mobs::customizer` adds the same deny list to every helper and the
 daemon's members, so no call of it reached the gate in practice
-(`integrator::the_builtins_the_tui_owns_are_denied_by_the_tool_policy`).
+(`client_turns::the_builtins_the_tui_owns_are_denied_by_the_tool_policy`).
 
 The gate now treats a native call of any `TUI_OWNED_BUILTINS` name as
 `Tier::Sealed` (`ActionKind::Withheld`), before allow rules and the
@@ -2693,7 +2693,7 @@ enum cannot express.
 
 Tests: `approval::desk::tests::{a_decided_decision_carries_every_answer,
 answers_round_trip_through_the_wire, allow_and_add_rule_without_a_subject_allows_once}`,
-the render snapshots of the dialog (`render_snapshot::escalation_*`), and
+the render snapshots of the dialog (`render::escalation_*`), and
 the attach and in-process approval suites unchanged in meaning.
 
 ## The attach client and daemon after the senior review (2026-11-09)
@@ -2836,7 +2836,7 @@ resumed attach already used (256 events back, doubling, 4,096 at most), so a
 conversation whose last model call lies further back than that starts with
 an unknown gauge until its next turn (it was read from the full log before).
 `EventsListSinceResult.latest_cursor` exists too and is not needed here.
-Tests: the attach suites (`attach_sessions::the_token_counter_and_gauge_follow_the_conversation`,
+Tests: the attach suites (`conversations::the_token_counter_and_gauge_follow_the_conversation`,
 `attach::the_client_reconnects_to_a_restarted_daemon`) unchanged.
 
 ### Steer delivery is attributed first in, first out (an engine ask)
@@ -2977,7 +2977,7 @@ because it needs nothing from the session and the in-process runner is
 going away. Tests:
 `ui::tests::the_path_listing_is_asked_for_once_and_a_stale_answer_is_dropped`,
 `ui::tests::the_runners_mention_report_notes_what_was_attached_and_what_is_sealed`,
-`integrator::an_at_mention_attaches_the_file_the_session_receives`.
+`client_turns::an_at_mention_attaches_the_file_the_session_receives`.
 
 ### The task checklist in attach mode (`rkat/tasks`)
 
@@ -3083,7 +3083,7 @@ orchestrator has the same file and note tools and the same denied builtins
 text names `fork` (the tool describes itself, and the daemon does not
 register it). The quit texts said "quit" where attach mode detaches: the
 editor title follows the status bar's attach state. Tests:
-`render_snapshot::a_first_idle_ctrl_d_asks_for_a_second_in_the_editor_title`,
+`render::a_first_idle_ctrl_d_asks_for_a_second_in_the_editor_title`,
 `attach::what_the_daemon_cannot_do_yet_says_so`.
 
 ### The daemon's lifecycle state and its owner (`rkat/status`)
@@ -3110,10 +3110,10 @@ as SIGTERM (`Lifecycle::shutdown_requested` is selected with the signal
 in `Daemon::serve_until`), so the endpoint file goes first; once a
 shutdown began, connections ending are no detach. Hangup is detach: the
 owner's `Seat` dropping without a shutdown sets `detached`, any other
-connection's does not. Tests: `attach_lifecycle::status_reports_the_daemon_its_clients_and_the_owner`,
-`attach_lifecycle::a_dropped_owner_connection_is_a_detach_and_the_daemon_keeps_running`,
-`attach_lifecycle::detach_is_recorded_and_never_reset`,
-`attach_lifecycle::shutdown_stops_the_daemon_and_removes_its_endpoint_file`,
+connection's does not. Tests: `lifecycle::status_reports_the_daemon_its_clients_and_the_owner`,
+`lifecycle::a_dropped_owner_connection_is_a_detach_and_the_daemon_keeps_running`,
+`lifecycle::detach_is_recorded_and_never_reset`,
+`lifecycle::shutdown_stops_the_daemon_and_removes_its_endpoint_file`,
 `daemon::lifecycle::tests::*`,
 `client::launch::tests::the_start_token_is_handed_over_in_the_environment`.
 
@@ -3140,12 +3140,12 @@ terminal after the UI closes (`AttachRunner::farewells`), since the
 transcript is gone by then. SIGHUP is forwarded as `Msg::Hangup`, which
 leaves like a detach with no message to the daemon, so the terminal is
 restored and the daemon keeps running. Tests:
-`attach_lifecycle::quit_stops_the_daemon_this_client_started`,
-`attach_lifecycle::detach_keeps_the_daemon_and_a_later_quit_asks`,
-`attach_lifecycle::quit_with_another_client_attached_leaves_the_daemon_to_it`,
-`attach_lifecycle::a_client_that_did_not_start_the_daemon_is_asked`,
-`attach_lifecycle::the_owner_hanging_up_keeps_the_daemon`,
-`attach_lifecycle::the_quit_decision_follows_the_rules`,
+`lifecycle::quit_stops_the_daemon_this_client_started`,
+`lifecycle::detach_keeps_the_daemon_and_a_later_quit_asks`,
+`lifecycle::quit_with_another_client_attached_leaves_the_daemon_to_it`,
+`lifecycle::a_client_that_did_not_start_the_daemon_is_asked`,
+`lifecycle::the_owner_hanging_up_keeps_the_daemon`,
+`lifecycle::the_quit_decision_follows_the_rules`,
 `ui::tests::dispatch::an_attached_quit_asks_the_runner_and_follows_its_decision`,
 `ui::tests::dispatch::the_quit_dialog_detaches_by_default_terminates_on_request_and_esc_stays`,
 `ui::tests::dispatch::unsent_messages_are_saved_whichever_way_an_attached_quit_leaves`,
@@ -3186,7 +3186,7 @@ pid, uptime, clients, conversation, running or idle), with no header, so
 they cut and sort; the token is never printed. `--list` is handled
 before the daemon's UI-flag check and is not forwarded to a started
 daemon (`launch::NOT_FORWARDED`). Tests:
-`attach_lifecycle::list_shows_a_live_daemon_and_removes_a_stale_file`,
+`lifecycle::list_shows_a_live_daemon_and_removes_a_stale_file`,
 `daemon::list::tests::*`.
 
 ### A shutdown without an answer is not reported as done
@@ -3206,7 +3206,7 @@ does not, the farewell says the daemon may still be running and names
 `client::runner::tests::a_shutdown_without_an_answer_is_reported_stopped_only_once_the_daemon_ended`
 (the connection drops right after the attach, the file names a live
 daemon: never "stopped"; next to it the case where the daemon ended),
-and `attach_lifecycle::quit_stops_the_daemon_this_client_started` for the
+and `lifecycle::quit_stops_the_daemon_this_client_started` for the
 normal shutdown.
 
 ### Only a refused connect proves a stopped daemon
@@ -3321,8 +3321,8 @@ offers no route for (mob-owned transcripts cannot be edited, see the
 decides their migration; `--resume <ref>` and `/resume <ref>` that match
 no daemon conversation say so and name `rkat-tui --no-attach --resume
 <ref>` (`sessions::not_a_daemon_conversation`). Tests:
-`attach_sessions::resume_and_continue_choose_the_conversation_at_attach`,
-`attach_sessions::an_in_process_session_cannot_be_seated_on_the_member`
+`conversations::resume_and_continue_choose_the_conversation_at_attach`,
+`conversations::an_in_process_session_cannot_be_seated_on_the_member`
 (pins the engine's refusal and the member staying where it was),
 `client::tests::the_start_flags_choose_the_first_conversation`.
 
@@ -3344,7 +3344,7 @@ variants instead of walking sources); when `id` is the daemon's current
 session `alongside::explain` replaces it with
 `TuiError::RunningInDaemon`. A session the daemon does not run keeps the
 engine's error. Tests:
-`attach_lifecycle::no_attach_beside_a_live_daemon_says_so_and_explains_its_conversation`
+`lifecycle::no_attach_beside_a_live_daemon_says_so_and_explains_its_conversation`
 (find, describe, notice, the real engine refusal turned plain, stop),
 `ui::modal::tests::the_alongside_dialog_offers_attach_alongside_and_stop`.
 
@@ -3379,7 +3379,7 @@ daemon's).
 
 ### The attach is answered after the client is counted
 
-CI failure on fbb1ec3: `attach_lifecycle::status_reports_the_daemon_its_clients_and_the_owner`
+CI failure on fbb1ec3: `lifecycle::status_reports_the_daemon_its_clients_and_the_owner`
 saw 2 clients right after the third attach had completed. Maintainer
 review found the order: `handshake::accept` wrote and flushed
 `{attached: true}`, and only then did `serve::connection` take the
@@ -3394,7 +3394,7 @@ lives until the connection ends as before. Tests, deterministic (no
 polling): `daemon::serve::tests::the_client_is_counted_before_its_attach_is_acknowledged`
 (the writer records the count at the moment the answer is written),
 `daemon::serve::tests::a_failed_acknowledgement_gives_the_seat_up_without_a_detach`,
-`attach_lifecycle::an_answered_attach_is_counted_for_every_other_connection_at_once`
+`lifecycle::an_answered_attach_is_counted_for_every_other_connection_at_once`
 (seven attaches, each followed at once by another connection's
 `rkat/status`).
 
@@ -3500,7 +3500,7 @@ Engine ask (recorded as ask 7 in `docs/mob-split.md`): a way to seat a
 mob member on an existing non-member session, or to write the durable
 `comms_name` and member binding when seating one, so a consumer can adopt
 sessions created outside the mob. Tests:
-`attach_sessions::an_in_process_session_cannot_be_seated_on_the_member`
+`conversations::an_in_process_session_cannot_be_seated_on_the_member`
 (listed view only with its title, `--resume <it>` shows it with the
 notice, `/export`, the next prompt runs on the conversation, `/resume
 <current>` shows it again; the engine's refusal stays pinned),
@@ -3509,7 +3509,7 @@ notice, `/export`, the next prompt runs on the conversation, `/resume
 ### P4: the in-process tests and where they went
 
 The in-process runner is deleted in P4; its headless tests (`Rig` in
-`tests/common/mod.rs`) move onto the daemon rig (`tests/common/attach.rs`:
+`tests/common/mod.rs`) move onto the daemon rig (`tests/common/rig.rs`:
 `Running`, `Client`), one file per commit, keeping every behaviour
 assertion. A test of a mechanism that exists only in-process is deleted
 and listed here.
@@ -3518,7 +3518,7 @@ and listed here.
   rendered the conversation into a `delegate`-style helper's prompt
   because the engine refuses `fork_off` to a non-member caller). In the
   daemon the agent is a mob member and forks with the engine's
-  `fork_off`, pinned by `attach_approvals::a_fork_off_child_runs_behind_the_gate`.
+  `fork_off`, pinned by `approvals::a_fork_off_child_runs_behind_the_gate`.
   `a_fork_starts_with_the_parents_conversation_and_returns_its_answer`,
   `a_forks_calls_pass_the_parents_gate`, `an_interrupt_leaves_no_running_fork`
   and `fork_off_stays_denied_and_a_fork_cannot_fork` tested the tool
@@ -3528,7 +3528,7 @@ and listed here.
   deleted).
 - `tests/compact.rs`: both tests (`auto_mode_compacts_natively_at_the_threshold`,
   `warn_mode_warns_and_compacts_only_on_compact`) run over the daemon
-  harness (`tests/common/attach.rs`: `Setup`, `Attached`, which the later
+  harness (`tests/common/rig.rs`: `Setup`, `Attached`, which the later
   files use too) with every assertion kept; the policy is read from the
   same `tui.toml` layers the daemon reads. The migration found a parity
   gap: the daemon never gave its orchestrator the `[auto]` compaction
@@ -3629,7 +3629,7 @@ and listed here.
      resume seeded it from the session's history. The daemon now seeds it
      (`Conversations::seed`, `ApprovalEngine::seed_transcript` over the
      stored session) on restore and after every `/resume`.
-- `tests/integrator.rs`: 21 of its 30 tests run over the daemon harness
+- `tests/client_turns.rs`: 21 of its 30 tests run over the daemon harness
   with their assertions; `-c`, `--resume <prefix>` and `--resume` alone
   are the client's arguments (`Setup::client_args`) against a restarted
   daemon, and a stored identity is read with `rig::stored_session`.
@@ -3646,7 +3646,7 @@ and listed here.
   failed prompt is still the conversation's last message
   (`AttachRunner::retry_input`). Deleted, with what covers them now:
   - `new_and_resume_switch_sessions_in_process` →
-    `attach_sessions::new_starts_fresh_and_resume_brings_the_old_conversation_back`
+    `conversations::new_starts_fresh_and_resume_brings_the_old_conversation_back`
     (its `resolve_session_ref(.., "last")` check was the in-process
     listing; the daemon's references are `client::sessions::resolve`,
     unit-tested);
@@ -3657,7 +3657,7 @@ and listed here.
   - `references_resolve_over_the_service_listing` (`session::resolve`,
     deleted with `src/session/`) → `client::sessions::tests::*`;
   - `rewind_forks_before_the_chosen_message_and_keeps_the_old_session` →
-    `attach_sessions::rewind_says_why_it_is_not_offered` (the engine
+    `conversations::rewind_says_why_it_is_not_offered` (the engine
     refuses a member's transcript fork, ask 1);
   - `interrupt_cancels_the_running_turn_and_returns_steers`,
     `interrupting_a_slow_tool_returns_the_messages_typed_meanwhile`,
@@ -3675,7 +3675,7 @@ and listed here.
     answer); that is the manual's documented limit ("the agent gets it at
     its next step") and stays until ask 6 ships.
 - The adoption test of the lukacf/meerkat#2102 fix moved onto the daemon:
-  `attach_helpers::a_helper_delegated_after_a_model_switch_runs_on_the_new_model`
+  `helpers::a_helper_delegated_after_a_model_switch_runs_on_the_new_model`
   (a `/model` switch through `rkat/set_model`, then the orchestrator's
   `delegate`: the helper's model call and its stored session are on the
   switched model). Its in-process twin in `tests/mobs.rs` goes with that
@@ -3693,10 +3693,10 @@ and listed here.
   for the forget step). The depth tests also count `spawn_member` and
   `spawn_many_members`, which a daemon member is offered. Deleted:
   `an_interrupt_leaves_no_running_helper` →
-  `attach_helpers::esc_during_a_helper_stops_the_orchestrator_and_the_helper`
+  `helpers::esc_during_a_helper_stops_the_orchestrator_and_the_helper`
   (the mob's members listed empty over `mob/members`), and the in-process
   twin of the #2102 adoption test
-  (`attach_helpers::a_helper_delegated_after_a_model_switch_runs_on_the_new_model`).
+  (`helpers::a_helper_delegated_after_a_model_switch_runs_on_the_new_model`).
   The migration found that the daemon never installed the approval
   engine's forget hook the in-process host had (`Helpers::start`), so
   `ApprovalEngine::forget_session` left the forgotten session's helpers in
@@ -3720,7 +3720,7 @@ and listed here.
   could read (`DaemonError::EndpointExposed`), as it should. A start-up
   refusal is `DaemonError::Bootstrap` around the same typed
   `TuiError::Confinement` (`Attached::try_start_with`).
-- `tests/attach.rs`: `both_runners_build_the_same_app_for_the_same_config`
+- `tests/client.rs`: `both_runners_build_the_same_app_for_the_same_config`
   lost its purpose with one runner (it compared the in-process setup with
   the client's); it is now `the_client_builds_its_app_from_the_config`,
   asserting that the `[ui]`, `[auto]` and confinement settings reach the
@@ -3728,7 +3728,7 @@ and listed here.
   compared the history files with an in-process bootstrap's; it compares
   them with the scope `bootstrap::read_layers` resolves (the daemon's own
   resolution), assertions otherwise kept.
-- `tests/attach_sessions.rs`: the P3 probe created its pre-daemon session
+- `tests/conversations.rs`: the P3 probe created its pre-daemon session
   with the in-process `Rig`. It is now
   `a_session_outside_the_mob_cannot_be_seated_on_the_member` and creates
   the session with the engine's own `session/create` over the daemon's
@@ -3748,7 +3748,7 @@ and listed here.
 
 ### The daemon's stop waits for the realm's databases to close
 
-The hosted run of 983bb44 failed `integrator::workspace_state_survives_a_rename`
+The hosted run of 983bb44 failed `client_turns::workspace_state_survives_a_rename`
 with `NotFound` in `copy_tree`: a file the walk listed vanished before it
 was copied, right after the rig's quit. Root cause, by probe (snapshotting
 the workspace every 25 ms after quit): `Daemon::serve_until` returned with
@@ -3792,7 +3792,7 @@ client calls (the `mob/*` member and stream methods, `events/*`,
 with `protocol::NOT_SERVED` (`-32012`, rkat-tui's own code so a client can
 tell the proxy's refusal from the engine's `METHOD_NOT_FOUND`) and drops a
 notification. `decision/decide` and `rkat/*` stay the daemon's own.
-Pinned by `attach_approvals::engine_methods_that_make_sessions_outside_the_mob_are_refused`
+Pinned by `approvals::engine_methods_that_make_sessions_outside_the_mob_are_refused`
 (`session/create`, `turn/start`, `session/fork_at`, `mob/create`,
 `mob/spawn` refused over the raw wire, no model call made, no command
 run, `mob/members` still answered); the attach tests cover the
@@ -3898,7 +3898,7 @@ alongside dialog (`ui::ask_alongside`, `AlongsideDialog`) and
 `TuiError::RunningInDaemon`; `lib::run` always runs `client::run` on
 `Args::attach_target` (`--attach`, else `auto`). `tests/common/mod.rs`
 keeps the workspace, the scripted LLM and the command lines; `Rig` is
-gone, and the daemon rig (`tests/common/attach.rs`) is the only one.
+gone, and the daemon rig (`tests/common/rig.rs`) is the only one.
 What moved first (305cea2): `TUI_OWNED_BUILTINS` to `approval::policy`,
 `DENIED_SPAWN_TOOLS` and the members' `tool_access_policy` to
 `mobs::customizer`, `AdmissionError` to `error.rs`, `blocks_from_messages`
@@ -3920,7 +3920,7 @@ HelperUnmeasured}`, `SessionCost::{derived, reconcile, mark_unmeasured}`,
 Rewound}`, `Effect::Rewind`, `Transcript::cut_before_user`): the daemon
 has no rewind (ask 1, lukacf/meerkat#2126), so `/rewind` keeps only its
 "not available" answer (`client::sessions::REWIND_UNAVAILABLE`). Tests of
-those mechanisms went with them (`attach_lifecycle::no_attach_beside_a_live_daemon_says_so_and_explains_its_conversation`,
+those mechanisms went with them (`lifecycle::no_attach_beside_a_live_daemon_says_so_and_explains_its_conversation`,
 `ui::modal::tests::the_alongside_dialog_offers_attach_alongside_and_stop`,
 the rewind menu and rewound tests, `requeued_delivery_returns_to_waiting`,
 `an_unmeasured_helper_marks_the_cost_a_lower_bound`,
@@ -3936,7 +3936,7 @@ caller left: the daemon now forgets the gate's state of the conversation
 `/new` or `/resume` leaves (`Local::switch`; its classifier transcript,
 allow cache and, through the forget hook, its helpers), and a `/resume`
 seeds the transcript again, pinned in
-`attach_sessions::new_starts_fresh_and_resume_brings_the_old_conversation_back`
+`conversations::new_starts_fresh_and_resume_brings_the_old_conversation_back`
 (the transcript is there, gone after `/new`, back after `/resume`). This
 closes the gap the `tests/mobs.rs` entry recorded.
 
@@ -3956,7 +3956,7 @@ max_depth`). The client appends them to its own lines
 (`client::runner::report_lines`, unit-tested with the old report's
 wording) and says "the daemon's side is unknown" when the call fails,
 rather than leaving the lines out silently. Pinned end to end by
-`integrator::status_report_names_the_session_and_the_workspace`.
+`client_turns::status_report_names_the_session_and_the_workspace`.
 
 ## P5: several agents per workspace (2026-11-10)
 
@@ -4051,7 +4051,7 @@ and its open escalations are answered with Stop (`engine.stop`,
 its descendants too) and its root registration and gate state go. The
 engine archives the session, which stays in the log; seating it again
 under the agent's name revives it with its history
-(`attach_lifecycle::a_retired_agent_takes_no_input_and_its_conversation_is_seated_again`:
+(`lifecycle::a_retired_agent_takes_no_input_and_its_conversation_is_seated_again`:
 the second model call sees the first prompt). A retired agent is no
 member: a `mob/member_send` to it is refused by the engine and no model
 call follows (the same test; the negative case is the refusal itself, not
@@ -4070,7 +4070,7 @@ leave this agent running; terminate: `rkat/shutdown {"retire": true}`,
 which retires every agent before the daemon stops, `Lifecycle::retires_all`).
 A plain `rkat/shutdown` and SIGTERM keep the agents; the next start
 restores them, detached.
-Tests: `attach_lifecycle::quitting_one_of_two_agents_retires_it_and_the_last_quit_stops_the_daemon`,
+Tests: `lifecycle::quitting_one_of_two_agents_retires_it_and_the_last_quit_stops_the_daemon`,
 `quit_with_another_client_on_the_agent_leaves_it_to_that_client`,
 `the_quit_decision_follows_the_rules`, `detach_is_recorded_and_never_reset`.
 
@@ -4096,7 +4096,7 @@ re-seated member's stream is a new one (found by
 transcript before). The rig's clients join the most recent agent unless a
 test asks otherwise (`rig::Client::attach_config`), so the tests written
 for one agent keep their meaning. Tests:
-`attach_sessions::a_second_rkat_tui_starts_a_new_agent_and_c_joins_the_most_recent`,
+`conversations::a_second_rkat_tui_starts_a_new_agent_and_c_joins_the_most_recent`,
 `resume_of_a_quit_agents_conversation_seats_it_again`,
 `resume_and_continue_choose_the_conversation_at_attach`,
 `client::tests::the_start_flags_choose_the_agent`,
@@ -4114,7 +4114,7 @@ lists `send_message`, `reply_to_peer`, `send_request`, `send_response` and
 `peers` as callable only with a trusted peer
 (`comms_tool_unavailable_reason`). Only agents are wired, so an agent's
 `peers` lists the other agents and no helper
-(`attach_agents::a_peer_message_wakes_the_other_agent_and_its_client_shows_it`:
+(`agents::a_peer_message_wakes_the_other_agent_and_its_client_shows_it`:
 one entry, `tui/main/<agent>`, the member's comms name). The daemon wires
 no helper and leaves their tool lists as they were; whether the engine
 wires a `delegate` helper to its delegator for the length of its task was
@@ -4138,7 +4138,7 @@ peer", and a retire tells the others it left and takes no more messages
 `a_quit_agent_is_announced_and_takes_no_more_messages` (the leave note).
 
 What the engine does with a peer message, observed on 0.9.11 with two
-agents and a scripted model (probe in `tests/attach_agents.rs`, kept as
+agents and a scripted model (probe in `tests/agents.rs`, kept as
 the tests above): `send_message` with `handling_mode: "queue"` to an idle
 turn-driven agent starts a run on it at once; its stream carries
 `PeerContentIngested { kind: Message, peer: { display_name:
@@ -4385,7 +4385,7 @@ listen address) are unaffected; the daemon refuses `--attach-insecure` as
 it does the other client-only flags. Pinned by
 `only_a_loopback_address_is_attached_to_unless_insecure` and
 `reach_refuses_a_non_loopback_address_before_the_token`; the loopback
-path keeps its tests in `tests/attach.rs`.
+path keeps its tests in `tests/client.rs`.
 
 ### Two things the daemon does not isolate, written down
 
@@ -4569,7 +4569,7 @@ break in its "path" cannot start a `[user]` line of its own.
 Tests: `a_prompt_records_what_was_typed_and_names_the_attached_files`
 and `a_planted_opener_cannot_forge_a_user_line` (transcript) and
 `a_mentioned_files_instruction_is_not_the_users_words`
-(`tests/attach_approvals.rs`: through the daemon, the planted line reaches
+(`tests/approvals.rs`: through the daemon, the planted line reaches
 the model and not the classifier's `[user]` lines).
 
 ### A1 follow-up: the expanded approval dialog reaches every argument line
@@ -4671,7 +4671,7 @@ search the classifier allows above them never enters them.
 Tests: `the_endpoint_directory_is_sealed_for_reads_and_searches` (policy:
 read, grep, glob, write sealed under an allow-all rule; a neighbour still
 goes to the classifier) and `the_endpoint_file_is_sealed_for_the_file_tools`
-(`tests/attach_approvals.rs`: through the daemon the read is refused
+(`tests/approvals.rs`: through the daemon the read is refused
 without a classifier question, and an allowed grep above the state
 directory ran and does not show the token or the file).
 
@@ -4703,7 +4703,7 @@ Tests: `a_shell_is_within_another_only_when_it_can_do_no_more`
 (confinement: strict inside workspace, not the reverse, unconfined only
 inside unconfined, one more write grant is wider) and
 `a_client_whose_flags_confine_more_than_the_daemon_is_refused`
-(`tests/attach_lifecycle.rs`: an unconfined daemon, a client with
+(`tests/lifecycle.rs`: an unconfined daemon, a client with
 `--confinement=workspace`: refused naming the daemon's shell, not
 retried, no agent seated).
 
@@ -4859,7 +4859,7 @@ classifier call and no human asked, the notice queued; read, `ls` and an
 in-project write allowed; attaching makes the next call reviewed; the
 user's run, before and after its start is seen, is reviewed; the next run
 is a peer's again), `a_peer_woken_agent_with_no_client_is_denied_what_needs_review`
-(`tests/attach_agents.rs`: through the daemon, B detached and woken by A's
+(`tests/agents.rs`: through the daemon, B detached and woken by A's
 message: no classifier request for its `curl`, B reads why, its
 `notes.md` written; a client attaching to B mid-turn is shown the notice
 and B's next `curl` is reviewed; `rkat/missed` answers it once) and
@@ -4909,7 +4909,7 @@ agent or none; `rkat-tui --audit` prints the files beside the endpoint
 file's candidate places for the workspace.
 
 Tests: `every_gate_decision_is_one_audit_line_naming_who_decided`
-(`tests/attach_approvals.rs`: a policy-allowed read, a classifier allow
+(`tests/approvals.rs`: a policy-allowed read, a classifier allow
 and block with its reason, a human's allow named `human:…`, a sealed read
 of the log itself refused with nothing of it in the result, exactly five
 decision lines, the mode switch, 0600, and `/audit` showing them),
@@ -5158,7 +5158,7 @@ probed (`daemon pid N`, `no daemon`, a stale file, or unknown).
 
 Tests: `a_rehome_moves_the_path_and_sets_the_new_realm_aside` and
 `a_rehome_is_refused_while_a_lease_is_live_or_unreadable` (unit), and in
-`tests/integrator.rs`:
+`tests/client_turns.rs`:
 `after_a_rehome_continue_resumes_the_latest_conversation_in_the_new_place`
 (the brief's "re-home then `-c`": the same session and its message under
 the new path, the realm id unchanged),
@@ -5488,7 +5488,7 @@ Deleted with the paths they pinned:
 the old-daemon half of
 `transport::tests::a_squatter_that_does_not_know_the_token_never_receives_it`,
 the "daemon of before P5" case of `the_quit_decision_follows_the_rules`
-(`tests/attach_lifecycle.rs`) and the agentless shape of `--list` (`list::tests`).
+(`tests/lifecycle.rs`) and the agentless shape of `--list` (`list::tests`).
 
 ### On-disk formats
 
@@ -5524,7 +5524,7 @@ realm can hold such a session: all of it went, and `Listed::agent` is
 required (a listed conversation is always some agent's). Engine ask 7
 (seating a member on a non-member session) is no longer needed here.
 Deleted with it: `sessions::tests::earlier_sessions_are_marked_and_named_by_id_only`
-and `attach_sessions::a_session_outside_the_mob_cannot_be_seated_on_the_member`
+and `conversations::a_session_outside_the_mob_cannot_be_seated_on_the_member`
 (its second half probed the engine's refusal for such a session, which
 no product path reaches any more).
 
@@ -5995,7 +5995,7 @@ mob's record of each agent's endpoint, `MobHandle::member_peer_endpoint`,
 whose descriptor carries the peer id). A user deny rule still decides
 first; any other send stays reviewed. `reply_to_peer` names no peer and
 stays reviewed. Test:
-`tests/attach_agents.rs::a_message_to_another_agent_is_tier_one_and_any_other_send_asks`
+`tests/agents.rs::a_message_to_another_agent_is_tier_one_and_any_other_send_asks`
 (manual mode: the send to the other agent asks nothing and arrives; a
 send to an unknown peer id asks).
 
@@ -6273,7 +6273,7 @@ daemon did; only `Ask` is followed by a departure (`rkat/detach` or
 came (the connection dropped) is taken as a stop only when the daemon's
 endpoint file says it ended, as the shutdown was before.
 
-Tests: `tests/attach_lifecycle.rs::two_clients_quitting_at_once_get_one_decision_for_their_agent`
+Tests: `tests/lifecycle.rs::two_clients_quitting_at_once_get_one_decision_for_their_agent`
 (exactly one of the two leaves; before, both did), the quit tests there
 (`quit_stops_the_daemon_this_client_started`,
 `quitting_one_of_two_agents_retires_it_and_the_last_quit_stops_the_daemon`,
@@ -6531,9 +6531,9 @@ daemon serves the recall:
   the state read and the cancel. The ask for an atomic "abandon these
   inputs if still queued" ("Typing during a slow tool") stays open.
 
-Tests: `integrator::recalling_a_message_typed_during_a_slow_tool_leaves_the_run_alone`
-and `integrator::recalling_a_steer_that_already_joined_the_run_leaves_it_delivered`
-(ported from the in-process runner's), `attach_agents::an_agent_cannot_recall_another_agents_input`
+Tests: `client_turns::recalling_a_message_typed_during_a_slow_tool_leaves_the_run_alone`
+and `client_turns::recalling_a_steer_that_already_joined_the_run_leaves_it_delivered`
+(ported from the in-process runner's), `agents::an_agent_cannot_recall_another_agents_input`
 (the binding, an unknown id, the probe's refusal),
 `attach::what_the_daemon_cannot_do_yet_says_so` (a recall with nothing
 outstanding is an empty answer) and `client::runner::steers::tests::a_recall_takes_only_the_named_inputs`.
@@ -6636,7 +6636,7 @@ sees one `TurnFinished`, after its mark, and the client that did not send
 the follow-up's steer shows its text inside the turn).
 
 Two more hosted failures after a2bbba0, both timing assumptions in tests:
-`attach_agents::a_new_agent_attaches_while_another_agents_helper_runs`
+`agents::a_new_agent_attaches_while_another_agents_helper_runs`
 asserted that a new agent's attach takes under 5 s while another agent's
 helper is held on a gate; the loaded runner took 6.1 s (0.73 s locally
 with one test thread; 8.3 s for the whole test on c7ef0e9, before any of
@@ -6683,7 +6683,7 @@ Tests: `approval::escalation::tests::another_sessions_ask_is_not_held_by_an_open
 `approval::engine::tests::a_queued_escalation_s_budget_runs_from_when_it_is_shown`
 (paused clock: shown after 0.9 of a budget in the queue, answered half a
 budget later, allowed) and, on the rig,
-`attach_agents::each_agents_question_is_shown_on_its_client_while_another_is_open`
+`agents::each_agents_question_is_shown_on_its_client_while_another_is_open`
 (A's dialog left open on A's client, B's shown on B's and answered, then
 A's). With the lock made daemon-wide again the three "another session"
 tests fail (checked).
@@ -6721,7 +6721,7 @@ second start of the same realm and conversation in `auto` at 5%: the
 next turn compacts first). It failed before the change (the second
 start answered with the summary text: no compaction).
 
-A later full gate failed `attach_approvals::auto_mode_needs_no_dialog_and_plan_mode_refuses_writes`
+A later full gate failed `approvals::auto_mode_needs_no_dialog_and_plan_mode_refuses_writes`
 once (not reproduced in eight runs, alone and with its binaries in
 parallel): the plan-mode note was missing from the next turn's first
 request. The note is appended with `mob_append_system_context`, which the
@@ -7038,7 +7038,7 @@ writes outside the workspace) and
 `rkat/shutdown`; the client never signals a pid it read from a file. A
 client without a connection says it cannot ask and names `rkat-tui
 --list` and `kill <pid>` (`a_reconnect_restarts_a_daemon_that_died`'s
-tail in `tests/attach.rs`).
+tail in `tests/client.rs`).
 
 **The seal on case-insensitive volumes.** `paths::folds_case` asks the
 workspace's file system whether a name with its case flipped is the same
@@ -7111,7 +7111,7 @@ are what a request carries:
 `tool_costs::an_agent_s_request_carries_every_tool_definition` compares
 each family's bytes and tool count with the scripted LLM's recorded
 request; `attach::context_reports_the_daemons_conversation` and
-`integrator::context_report_describes_the_session` read them through
+`client_turns::context_report_describes_the_session` read them through
 `/context`; `workbench::context::tests::*` the text.
 
 **The gauge's seed from the daemon.** On every attach, switch and
@@ -7125,7 +7125,7 @@ the attach and the switch read anyway, carries it. `last_context_before`
 and its window constants are deleted. The record is written with the
 totals, so a daemon restart keeps the seed
 (`usage::a_turn_no_client_saw_is_counted_and_survives_a_restart`);
-`attach_sessions::the_token_counter_and_gauge_follow_the_conversation`
+`conversations::the_token_counter_and_gauge_follow_the_conversation`
 covers a resume and a late attach whose cursor is past the last turn.
 
 **Pushes instead of polls.** The client polled three ways: every client

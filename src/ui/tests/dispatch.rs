@@ -79,7 +79,7 @@ fn slash_commands_map_to_effects() {
             text,
         }]
     );
-    // The transcript is reset only once the integrator confirms.
+    // The transcript is reset only once the client runner confirms.
     app.transcript.push_notice(NoticeLevel::Info, "old");
     assert_eq!(run(&mut app, "/clear"), vec![Effect::NewSession]);
     assert!(!app.transcript.is_empty());
@@ -206,7 +206,7 @@ fn model_picker_warning_becomes_notice_when_modal_busy() {
 }
 
 #[test]
-fn memory_opens_the_file_the_integrator_names_and_reports_back() {
+fn memory_opens_the_file_the_client_runner_names_and_reports_back() {
     let mut app = App::new(StatusInfo::default());
     assert_eq!(
         submit(&mut app, "/memory"),

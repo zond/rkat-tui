@@ -25,11 +25,11 @@ fn a_remote_turn_shows_its_prompt_and_keeps_the_ui_busy_until_it_ends() {
         result: Ok(summary()),
     }));
     assert!(!app.is_running());
-    // `/daemon stop` is handed to the integrator.
+    // `/daemon stop` is handed to the client runner.
     type_str(&mut app, "/daemon stop");
     assert_eq!(app.update(key(KeyCode::Enter)), vec![Effect::DaemonStop]);
     // `/agents` lists the agents, `/agents <name>` switches: both the
-    // integrator's.
+    // client runner's.
     type_str(&mut app, "/agents");
     assert_eq!(app.update(key(KeyCode::Enter)), vec![Effect::Agents(None)]);
     type_str(&mut app, "/agents main-ab12");
@@ -174,8 +174,8 @@ fn tool_lifecycle_updates_block_states() {
     }
 }
 
-/// Both runners fold run ends with this; the attach runner used to
-/// keep the later of two failures.
+/// The client runner folds run ends with this; it once kept the later
+/// of two failures.
 #[test]
 fn a_turn_end_keeps_the_first_failure_and_the_last_completion() {
     let done = |text: &str| {
@@ -750,7 +750,7 @@ fn context_gauge_tracks_usage_compaction_and_clear() {
     assert_eq!(app.status.context_used, Some(3_100));
     assert!(!app.status.context_approx);
     assert_eq!(submit(&mut app, "/clear"), vec![Effect::NewSession]);
-    // What the integrator sends once the new session is live.
+    // What the client runner sends once the new session is live.
     app.update(Msg::Status(StatusUpdate::Context {
         used: None,
         approx: false,

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- Texts the agent reads say "rkat-tui" or "this daemon" instead of "the
+  TUI", and the background-shell refusal no longer names an engine version
+  and a file the agent cannot read.
+
 - The manual has a "Security model and its limits" section (linked from
   the README): what the sandbox covers and what it does not, and the rule
   or setting that tightens each limit.

@@ -6,7 +6,7 @@
 //! binding (`ApplicationToolPolicyBinding::Provider`), resolved against the
 //! host's `ToolConsequencePolicyRegistry` at every build. The daemon
 //! installs one provider ([`PROVIDER`]) with one policy ([`POLICY`]) and
-//! binds the orchestrator, its same-mob helpers and the members of child
+//! binds the agent, its same-mob helpers and the members of child
 //! mobs (`delegate`) to it.
 //!
 //! The policy only narrows ("narrow-only"): it denies a call a user deny

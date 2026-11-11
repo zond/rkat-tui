@@ -33,7 +33,7 @@ pub const ATTACH: &str = "rkat/attach";
 pub const DECISION_ENDED: &str = "rkat/decision_ended";
 /// How many lines `/audit` shows unless it names a number.
 pub const AUDIT_LINES: usize = 20;
-/// The notification of a change the orchestrator's file tools made:
+/// The notification of a change the agent's file tools made:
 /// [`FileDiffNote`].
 pub const FILE_DIFF: &str = "rkat/file_diff";
 /// The notification that a run no user started was fired by a schedule
@@ -327,7 +327,7 @@ pub const UNAUTHORIZED: i32 = -32001;
 pub const NO_AGENT: i32 = -32002;
 /// A conversation switch or read the engine refused.
 pub const SWITCH_FAILED: i32 = -32010;
-/// A conversation switch refused because the orchestrator's turn is
+/// A conversation switch refused because the agent's turn is
 /// running.
 pub const SWITCH_BUSY: i32 = -32011;
 /// An engine method the daemon does not forward to clients (not in
@@ -834,7 +834,7 @@ pub struct SessionParams {
 /// [`method::New`]'s and [`method::Resume`]'s result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Switched {
-    /// The session the orchestrator runs as now.
+    /// The session the agent runs as now.
     pub session_id: SessionId,
     /// What did not work (the new conversation not told about plan mode).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1046,7 +1046,7 @@ pub struct ModelSet {
     pub model: String,
     /// Its provider now.
     pub provider: String,
-    /// The orchestrator was seated again on the session first (its agent
+    /// The agent was seated again on the session first (its agent
     /// rebuilt for a model it had no profile for): the conversation's
     /// stream is a new one, which the client opens again.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -1122,7 +1122,7 @@ pub struct Notices {
     pub notices: Vec<StartupNotice>,
 }
 
-/// [`FILE_DIFF`]'s parameters: one file change, as the orchestrator's
+/// [`FILE_DIFF`]'s parameters: one file change, as the agent's
 /// file tools report it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileDiffNote {

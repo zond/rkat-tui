@@ -40,7 +40,7 @@ use meerkat_core::{
 };
 use parking_lot::RwLock;
 
-use super::{MOB_ID, ORCHESTRATOR};
+use super::{AGENT_PROFILE, MOB_ID};
 use crate::daemon::context::{FamilySize, family_sizes};
 
 /// The agent mob tools that stay direct: used in most sessions.
@@ -473,7 +473,7 @@ impl Deferral {
 fn agent_member(comms_name: Option<&str>) -> Option<meerkat_core::MobMemberBinding> {
     let name: MemberCommsName = comms_name?.parse().ok()?;
     (name.mob_id() == MOB_ID
-        && name.role() == ORCHESTRATOR
+        && name.role() == AGENT_PROFILE
         && super::agents::is_agent(name.member()))
     .then(|| name.to_member_binding())
 }

@@ -54,7 +54,7 @@ Scope the run to what changed, then run the full gate once at the end:
 
 ```bash
 cargo nextest run --all-features --lib                 # unit tests only
-cargo nextest run --all-features --test integrator     # one integration binary
+cargo nextest run --all-features --test client_turns     # one integration binary
 cargo nextest run --all-features -E 'test(resume)'     # tests whose name contains "resume"
 cargo nextest run --all-features --no-fail-fast        # see every failure at once
 ```
@@ -79,9 +79,9 @@ removed.
 |---|---|---|
 | Unit | `#[cfg(test)]` modules next to the code in `src/` | Pure logic: lexer, rules, keymap, input editing, completion, approval routing |
 | Integration | `tests/*.rs` | Drive the internal modules through the `test-support` feature (the crate's dev-dependency on itself turns it on) |
-| Headless harness | `tests/integrator.rs`, `tests/compact.rs`, `tests/mobs.rs`, `tests/attach*.rs`, … | The one rig: the real `rkat-tui-mob` daemon started in the test process with only the LLM scripted, and attach clients driven through the UI's `Effect`/`Msg` channels. `tests/common/attach.rs` has `Setup`, `Attached`, `Running`, `Client`, `AllowAll`, the shared `ScriptedClassifier` and `stored_session`; `tests/common/mod.rs` has the scripted LLM (`ScriptedLlmClient`, `Step`), `Workspace` and the command lines (`args_for`, `args_with`). No keys, no network |
+| Headless harness | `tests/client_turns.rs`, `tests/compact.rs`, `tests/mobs.rs`, `tests/attach*.rs`, … | The one rig: the real `rkat-tui-mob` daemon started in the test process with only the LLM scripted, and attach clients driven through the UI's `Effect`/`Msg` channels. `tests/common/rig.rs` has `Setup`, `Attached`, `Running`, `Client`, `AllowAll`, the shared `ScriptedClassifier` and `stored_session`; `tests/common/mod.rs` has the scripted LLM (`ScriptedLlmClient`, `Step`), `Workspace` and the command lines (`args_for`, `args_with`). No keys, no network |
 | Daemon wire | `tests/daemon.rs` | The raw JSON-RPC wire below the attach client (handshake, the proxy's method allow-list, endpoint files) |
-| Rendering | `tests/render_snapshot.rs` | Draws the UI into a ratatui `TestBackend` and asserts on rows; there are no snapshot files to update |
+| Rendering | `tests/render.rs` | Draws the UI into a ratatui `TestBackend` and asserts on rows; there are no snapshot files to update |
 | Confinement | `tests/confinement.rs` (and the confined rows of `tests/daemon.rs`) | Probes the host sandbox; prints `SKIPPED: <reason>` and passes where the backend is unavailable (nested namespaces, Ubuntu's user-namespace restriction), unless `RKAT_TUI_REQUIRE_SANDBOX=1`, which turns the skip into a failure |
 | Live | `tests/e2e_classifier.rs`, `--lib e2e_list_models` | `#[ignore]`; need provider keys. Not part of the gate |
 
@@ -93,7 +93,7 @@ ANTHROPIC_API_KEY=… OPENAI_API_KEY=… GEMINI_API_KEY=… cargo test --lib e2e
 ```
 
 Every behaviour change ships with a test in the matching place. A UI change
-gets a `render_snapshot` row assertion or an `App::update` unit test; a
+gets a `tests/render.rs` row assertion or an `App::update` unit test; a
 client or daemon change gets a test on the daemon rig (`ScriptedLlmClient`
 for the model); an approval change gets a routing test in `src/approval/`
 plus, if it touches the service gate, a case in
@@ -109,7 +109,7 @@ The daemon's endpoint files live in the user's state directory
 daemons write theirs beside the test's workspace (`endpoint_file_for`),
 and the one test that needs the default place, because the temp dir is
 granted to its confined shell
-(`the_orchestrator_shell_runs_confined`), puts it under a state directory
+(`the_agent_shell_runs_confined`), puts it under a state directory
 of its own in Cargo's target dir (`DaemonOptions::with_state_home`), which
 no grant covers. A daemon's stop removes its endpoint file and the empty
 directory it was in. CI points `XDG_STATE_HOME` at an empty directory for
@@ -148,7 +148,7 @@ output now says why; report it rather than retrying silently:
 - `parallel_escalations_share_one_timeout_including_the_queue`
   (`src/approval/engine.rs`): the paused tokio clock auto-advances while a task
   waits on `spawn_blocking`, so budget checks must happen after every await.
-- `workspace_state_survives_a_rename` (`tests/integrator.rs`; since the
+- `workspace_state_survives_a_rename` (`tests/client_turns.rs`; since the
   realm moved out of the workspace, its successors
   `a_moved_workspace_starts_anew_and_is_offered_its_old_state` and the
   re-home tests share its `move_workspace`): copies and

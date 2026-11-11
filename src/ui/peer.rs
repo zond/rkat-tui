@@ -1,4 +1,4 @@
-//! Messages another agent of the workspace sent this one (P5): how the
+//! Messages another agent of the workspace sent this one: how the
 //! engine's renderings name the sender and carry the body, for the
 //! labelled block the transcript shows ([`super::Block::Peer`]).
 //!
@@ -81,8 +81,7 @@ mod tests {
         );
         // A prompt is no peer message.
         assert_eq!(of_input("fix the failing test"), None);
-        // Nor is one that quotes a peer message (second review, item 9:
-        // another client's prompt was labelled as a message from the
+        // Nor is one that quotes a peer message (another client's prompt was labelled as a message from the
         // agent it quoted).
         assert_eq!(
             of_input(&format!("why did you answer this?\n\n{INPUT}")),

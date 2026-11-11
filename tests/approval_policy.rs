@@ -494,7 +494,7 @@ fn mcp_tools_reach_the_classifier_unless_a_rule_decides() {
         assert!(
             decision
                 .detail
-                .contains("not a tool the TUI or the engine provides"),
+                .contains("not a tool rkat-tui or the engine provides"),
             "{decision:?}"
         );
     }

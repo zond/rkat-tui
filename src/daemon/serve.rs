@@ -1355,7 +1355,7 @@ mod tests {
         })
     }
 
-    /// The finding this guards (second review, item 5): the engine's
+    /// The finding this guards: the engine's
     /// lines for a client went into an unbounded queue, so a client that
     /// stopped reading (a suspended TUI, a stalled tunnel) made the daemon
     /// buffer its whole event stream.
@@ -1405,7 +1405,7 @@ mod tests {
         drop(stalled_client);
     }
 
-    /// The finding this guards (second review, item 5): one failed
+    /// The finding this guards: one failed
     /// `accept` (out of file descriptors, a connection aborted before it
     /// was accepted) ended the serve loop and with it the daemon.
     #[tokio::test]
