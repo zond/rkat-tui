@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [0.0.1] - 2026-11-11
+
+The first release on crates.io, opening the 0.0.x line: the maintainer's
+dogfood builds, each carrying the fixes from using the one before. The
+state before the daemon was recorded as 0.1.0 on 2026-11-08 but never
+published; the numbers were renumbered for this line, so that section is
+the last part of this one.
+
+The agent moved out of the terminal UI into a per-workspace daemon:
+`rkat-tui` is now the client of `rkat-tui-mob`. `docs/evidence.md` holds
+the detailed record of every change below, and `docs/mob-split.md` the
+design.
+
 ### Security
 
 - On a case-insensitive file system (macOS's default) the `.rkat` and
@@ -29,207 +42,6 @@
 - The classifier is no longer sent the `origin` remote's credentials: a
   remote such as `https://user:token@host/x.git` reaches it (and the
   realm's manifest) without the user information, query or fragment.
-
-### Added
-
-- `tool_search`: an agent's requests leave out the eight schedule tools
-  and every agent mob tool but `delegate` (`council`, `fork_off`,
-  `mob_create`, `mob_spawn_member`, the `mob_profile_*` tools, …) until
-  the agent searches for them; a search reveals exactly its matches for
-  that conversation, declared with their full schemas from the next step
-  on. A fresh conversation's requests carry about 55 KB of tool
-  definitions instead of 122 KB (roughly 14k tokens instead of 30k). The
-  persona names both capabilities in a line each; the search is tier 1
-  in every mode, and a revealed tool passes the gate as itself. A
-  conversation keeps its reveals across restarts, `/model`, compaction
-  and `/resume` (`tui_tools.json` in the workspace's state); `/new`
-  starts with none. `/context` lists the hidden tools by family. Helpers
-  get neither the hidden tools nor the search. Schedule tools stay on for
-  every agent.
-
-### Removed
-
-- Profiles for models the catalog does not know: rkat-tui no longer
-  writes `[models.<id>]` entries into the realm config for a model only
-  an Anthropic- or Gemini-dialect gateway lists, nor keeps
-  `tui_models.json` or prunes such entries. A model the catalog does not
-  know is refused on such a gateway (and on a built-in endpoint) at start
-  and at `/model`, naming the way out: configure the proxy as an
-  `openai`-dialect endpoint, where every model it lists runs as
-  `<endpoint>:<model>`. Catalogued models on gateways work as before.
-- The realm section `rkat-tui-self-hosted`: every configured endpoint's
-  connection is in `rkat-tui-endpoints`. A conversation stored on an
-  OpenAI-dialect endpoint by an earlier build does not resume (no
-  migration).
-
-- The shared-realm flags `--realm`, `--state-root`, `--realm-backend` and
-  `--isolated` (both binaries). A workspace has exactly one realm, its
-  own, under `<config dir>/workspaces/<id>/` (SQLite). With them went
-  everything that existed only because a realm could be shared or placed
-  inside the workspace: `/permissions trust` and the "only its deny rules
-  apply" treatment of a realm `tui.toml` (the realm file is the user's
-  and applies in full), the trust record's entries for the realm's
-  `tui.toml` and `config.toml` (`/trust` covers the project's
-  `.rkat/mcp.toml` and `.rkat/config.toml` only), the refusal of a config
-  directory that collides with a realm directory, and `--list`'s
-  `(realm <root>)` / `(realm memory)` decorations.
-- `/rewind` (`/checkpoint`, `/undo`) and Esc Esc on an empty input,
-  which only said that rewinding is not available: `/help` says so once.
-- The daemon's dead `--foreground` flag (it was the only mode).
-- The realm `config.toml`'s `[confinement]` as a floor under the
-  command line: the agent shell's confinement is `--confinement` and the
-  extra grants alone (`--confinement=off` and the grants are no longer
-  refused under such a table; a start-up notice says the table does not
-  decide the shell).
-
-### Changed
-
-- Clients poll the daemon no more: another client's `/new` or `/resume`
-  and a helper's new mob are pushed to every attached client the moment
-  they happen (it read the agent's status every second, and listed the
-  mobs every quarter second for ten seconds after any helper tool).
-- `/context` shows what every model request pays for tool definitions,
-  in bytes and tokens per family (the engine's schedule, mob and comms
-  tools are most of it), where it said "unknown here"; the daemon
-  reports it with the message counts, so the client no longer downloads
-  the whole transcript to count messages.
-- The session's cost is counted by the daemon, not by the client that
-  happened to be attached: a turn that ran while you were detached (a
-  schedule's, a file watch's, a `/detach`ed agent's) is in `/cost` and
-  the footer when you attach again, every client of an agent shows the
-  same totals, the classifier's calls are counted for the conversation
-  whose call they judged, and the totals survive a daemon restart. The
-  `~` of "part of the totals is derived" and the "lower bound" note are
-  gone; `~` now means only that a model has no price or a stale one. The
-  totals live in `tui_usage/` in the workspace's state directory (the old
-  `tui_cost/` records are not read).
-- `!` commands run as you, with no sandbox: your shell (`$SHELL`, else
-  `/bin/sh`), your whole environment and the workspace as working
-  directory, like anything typed in a terminal (`!git push` and `!cargo
-  publish` work with your credentials). The timeout, the output capture,
-  the kill of what the command left running and the output joining the
-  agent's context are as before. The agent's shell is unchanged: the
-  daemon still confines it. With this the client no longer plans the
-  agent shell's confinement: it no longer refuses a daemon whose shell
-  is wider than its own flags (the "runs the agent's shell wider than
-  this client's flags allow" error) and no longer probes the daemon's
-  status before every attach.
-- A client stops a daemon one way: it asks it (`rkat/shutdown`).
-  `/daemon stop` no longer sends SIGTERM to the pid in the endpoint file,
-  and the quit dialog's "terminate" no longer falls back to SIGTERM when
-  the request fails; without a connection `/daemon stop` says it cannot
-  ask and names `rkat-tui --list` and `kill <pid>`.
-- The engine is Meerkat 0.9.12 (from 0.9.11): the engine's own file tools
-  (`apply_patch`, `blob_save_file`) refuse every path in a `.rkat`
-  directory of the workspace, the realm's SQLite is 3.54.1 (the bundled
-  SQLite of RUSTSEC-2026-0459 is gone), and Claude Fable 5.2
-  (`claude-fable-5-2`) is in the model catalog. Then Meerkat 0.9.13, a
-  packaging-only release (no source change in any engine crate
-  rkat-tui builds).
-
-### Fixed
-
-- A model call an agent completed right before the daemon stopped could be
-  missing from the conversation's usage record: the stop aborted the
-  agents' event watchers before writing the ledger. Each watcher now
-  counts what its stream already holds, then ends, and the ledger is
-  written after (a helper's call in that instant can still be missed).
-
-- `--attach-insecure`'s help and the refusal of a non-loopback
-  `--attach=HOST:PORT` no longer say the attach token crosses the
-  network in clear text: with the mutual HMAC handshake it never does.
-  What crosses such a link unencrypted is the session itself (prompts,
-  the agent's output, the approvals), and that is what they say now.
-- A long-lived daemon no longer grows without bound: tool catalogs (at
-  most 256 sessions, a retired session's dropped), the file tools'
-  read-before-write records (at most 4096), scheduled runs' attribution
-  (a run's at its end, at most 1024 occurrences) and council entries (a
-  failed council call's dropped) are bounded. A second council call
-  naming a live council's id no longer takes over its participants.
-- The `/model` picker lists every model of an OpenAI-dialect proxy: the
-  filter that drops OpenAI's embedding, speech and image families
-  applies to the built-in `openai` endpoint only (a proxy's model named
-  `text-large` or `fast-tts-free` was hidden).
-- A file whose name holds a backslash is completed and attached under
-  its own name (it was turned into a path with a `/`).
-- A tool block's collapsed line count is the result's own: a result
-  whose last line read like the preview's `... (N more lines)` trailer
-  was miscounted.
-- Prompt history: when a file passes 1000 lines it is cut from what it
-  holds then, so the lines another TUI appended meanwhile stay (the
-  global file is shared by every rkat-tui), and the files are
-  owner-only (they hold every prompt typed).
-- A rule added while the permission mode changes is no longer lost from
-  the realm `tui.toml`: each write is a read-modify-write under one lock
-  and writes what is current then.
-- A model profile rkat-tui writes into the realm config is recorded as
-  its own only once the write happened.
-- No blocking file or network I/O on the async loops any more: the
-  daemon records a prompt's conversation (a write with an fsync per
-  prompt and steer) from a blocking task, writes rules, the mode, the
-  checklist view and scheduled runs' costs off its connection and event
-  loops, and the TUI writes its cost record (one per model call) off the
-  loop that must take Esc and probes a stopping daemon with an async
-  connect.
-- File watches (`watch_paths`): the recursive watch of the workspace is
-  dropped when the last watch goes; a change no watch matches neither
-  delays a batch nor is kept, so a watch on `src/**` is delivered within
-  2 s even while a build writes `target/` continuously; and a batch
-  remembers at most 4096 paths per agent, counting the rest.
-- A workspace's agents follow the configuration of each daemon start:
-  MCP servers added to `.rkat/mcp.toml` (and trusted), the memory
-  tools and the `[auto]` compaction policy reach the agents of an
-  existing workspace at the next start. They were fixed at the
-  workspace's first start, when its mob was created.
-- Streaming is cheaper to draw: the UI applies every message already
-  queued (up to 256) before drawing a frame, instead of drawing one per
-  stream event, and a frame lays out only the blocks that changed and
-  visits only the blocks it shows, where it walked the whole transcript
-  three times.
-- An `@word` that matches no path no longer rescans the path index on
-  every tick and stream event while the cursor sits after it, and
-  matching a fragment allocates nothing per indexed path (each path is
-  lowercased once, when it is indexed).
-- Another agent's approval question is shown at once: escalations were
-  serialized for the whole daemon while a client shows only its own
-  agent's dialogs, so with agent A's dialog open agent B's question
-  waited unseen and was denied as "the user did not answer". Each agent
-  (with its helpers) now has its own queue, and a question's time limit
-  runs only while it is shown.
-- `grep` matches line by line in its default `files_with_matches` mode
-  too: `^fn main` or `foo$` found only files starting or ending with it
-  there, while `content` and `count` found every such line.
-- With two TUIs steering the same turn, each marks only its own message
-  delivered, at the moment the agent takes that message: the daemon now
-  names the input each message became (Meerkat 0.9.12), where before the
-  oldest steer was marked at any steer's delivery. A steer the agent
-  runs after the turn's last run (a follow-up run) belongs to that turn
-  in every client: a turn ends only when the daemon reports no message
-  the agent still holds for the conversation, so the steer is marked
-  when its run starts, and the other clients show its text inside the
-  turn. On a slow host the turn used to end first, marking the steer
-  delivered and starting a new turn with its text.
-- ↑ on an empty editor takes back a message sent while the agent works
-  again, as long as the agent has not read it (it waits behind a running
-  tool): the daemon abandons it and it returns to the editor, while the
-  running turn goes on. A message the agent already took is reported as
-  reached and left.
-
-## [0.0.1] - 2026-11-10
-
-The first release on crates.io, opening the 0.0.x line: the maintainer's
-dogfood builds, each carrying the fixes from using the one before. The
-state before the daemon was recorded as 0.1.0 on 2026-11-08 but never
-published; the numbers were renumbered for this line, so that section is
-the last part of this one.
-
-The agent moved out of the terminal UI into a per-workspace daemon:
-`rkat-tui` is now the client of `rkat-tui-mob`. `docs/evidence.md` holds
-the detailed record of every change below, and `docs/mob-split.md` the
-design.
-
-### Security
-
 - A workspace's state (sessions, approvals, rules, conversations, notes,
   the audit log) no longer lives in `<workspace>/.rkat/tui/`, where the
   agent's confined shell could rewrite it and a clone could carry it,
@@ -391,6 +203,20 @@ design.
 
 ### Added
 
+- `tool_search`: an agent's requests leave out the eight schedule tools
+  and every agent mob tool but `delegate` (`council`, `fork_off`,
+  `mob_create`, `mob_spawn_member`, the `mob_profile_*` tools, …) until
+  the agent searches for them; a search reveals exactly its matches for
+  that conversation, declared with their full schemas from the next step
+  on. A fresh conversation's requests carry about 55 KB of tool
+  definitions instead of 122 KB (roughly 14k tokens instead of 30k). The
+  persona names both capabilities in a line each; the search is tier 1
+  in every mode, and a revealed tool passes the gate as itself. A
+  conversation keeps its reveals across restarts, `/model`, compaction
+  and `/resume` (`tui_tools.json` in the workspace's state); `/new`
+  starts with none. `/context` lists the hidden tools by family. Helpers
+  get neither the hidden tools nor the search. Schedule tools stay on for
+  every agent.
 - `watch_paths` and `unwatch`: an agent can ask to be told when
   workspace files change (globs, once or for the turn); the daemon watches
   and sends `files changed: …` into the agent's turn, shown labelled in
@@ -522,6 +348,48 @@ design.
 
 ### Changed
 
+- Clients poll the daemon no more: another client's `/new` or `/resume`
+  and a helper's new mob are pushed to every attached client the moment
+  they happen (it read the agent's status every second, and listed the
+  mobs every quarter second for ten seconds after any helper tool).
+- `/context` shows what every model request pays for tool definitions,
+  in bytes and tokens per family (the engine's schedule, mob and comms
+  tools are most of it), where it said "unknown here"; the daemon
+  reports it with the message counts, so the client no longer downloads
+  the whole transcript to count messages.
+- The session's cost is counted by the daemon, not by the client that
+  happened to be attached: a turn that ran while you were detached (a
+  schedule's, a file watch's, a `/detach`ed agent's) is in `/cost` and
+  the footer when you attach again, every client of an agent shows the
+  same totals, the classifier's calls are counted for the conversation
+  whose call they judged, and the totals survive a daemon restart. The
+  `~` of "part of the totals is derived" and the "lower bound" note are
+  gone; `~` now means only that a model has no price or a stale one. The
+  totals live in `tui_usage/` in the workspace's state directory (the old
+  `tui_cost/` records are not read).
+- `!` commands run as you, with no sandbox: your shell (`$SHELL`, else
+  `/bin/sh`), your whole environment and the workspace as working
+  directory, like anything typed in a terminal (`!git push` and `!cargo
+  publish` work with your credentials). The timeout, the output capture,
+  the kill of what the command left running and the output joining the
+  agent's context are as before. The agent's shell is unchanged: the
+  daemon still confines it. With this the client no longer plans the
+  agent shell's confinement: it no longer refuses a daemon whose shell
+  is wider than its own flags (the "runs the agent's shell wider than
+  this client's flags allow" error) and no longer probes the daemon's
+  status before every attach.
+- A client stops a daemon one way: it asks it (`rkat/shutdown`).
+  `/daemon stop` no longer sends SIGTERM to the pid in the endpoint file,
+  and the quit dialog's "terminate" no longer falls back to SIGTERM when
+  the request fails; without a connection `/daemon stop` says it cannot
+  ask and names `rkat-tui --list` and `kill <pid>`.
+- The engine is Meerkat 0.9.12 (from 0.9.11): the engine's own file tools
+  (`apply_patch`, `blob_save_file`) refuse every path in a `.rkat`
+  directory of the workspace, the realm's SQLite is 3.54.1 (the bundled
+  SQLite of RUSTSEC-2026-0459 is gone), and Claude Fable 5.2
+  (`claude-fable-5-2`) is in the model catalog. Then Meerkat 0.9.13, a
+  packaging-only release (no source change in any engine crate
+  rkat-tui builds).
 - A message to another agent of the workspace (`send_message`,
   `send_request`, `send_response` to its peer id) is tier 1: manual mode
   no longer asks for every message between two agents. Sends to anything
@@ -608,6 +476,38 @@ design.
 
 ### Removed
 
+- Profiles for models the catalog does not know: rkat-tui no longer
+  writes `[models.<id>]` entries into the realm config for a model only
+  an Anthropic- or Gemini-dialect gateway lists, nor keeps
+  `tui_models.json` or prunes such entries. A model the catalog does not
+  know is refused on such a gateway (and on a built-in endpoint) at start
+  and at `/model`, naming the way out: configure the proxy as an
+  `openai`-dialect endpoint, where every model it lists runs as
+  `<endpoint>:<model>`. Catalogued models on gateways work as before.
+- The realm section `rkat-tui-self-hosted`: every configured endpoint's
+  connection is in `rkat-tui-endpoints`. A conversation stored on an
+  OpenAI-dialect endpoint by an earlier build does not resume (no
+  migration).
+
+- The shared-realm flags `--realm`, `--state-root`, `--realm-backend` and
+  `--isolated` (both binaries). A workspace has exactly one realm, its
+  own, under `<config dir>/workspaces/<id>/` (SQLite). With them went
+  everything that existed only because a realm could be shared or placed
+  inside the workspace: `/permissions trust` and the "only its deny rules
+  apply" treatment of a realm `tui.toml` (the realm file is the user's
+  and applies in full), the trust record's entries for the realm's
+  `tui.toml` and `config.toml` (`/trust` covers the project's
+  `.rkat/mcp.toml` and `.rkat/config.toml` only), the refusal of a config
+  directory that collides with a realm directory, and `--list`'s
+  `(realm <root>)` / `(realm memory)` decorations.
+- `/rewind` (`/checkpoint`, `/undo`) and Esc Esc on an empty input,
+  which only said that rewinding is not available: `/help` says so once.
+- The daemon's dead `--foreground` flag (it was the only mode).
+- The realm `config.toml`'s `[confinement]` as a floor under the
+  command line: the agent shell's confinement is `--confinement` and the
+  extra grants alone (`--confinement=off` and the grants are no longer
+  refused under such a table; a start-up notice says the table does not
+  decide the shell).
 - The in-process runner and `--no-attach` (with the dialog that offered to
   run beside a live daemon).
 - The `/rewind` menu: the daemon cannot rewind a conversation (the engine
@@ -652,6 +552,91 @@ design.
 
 ### Fixed
 
+- A model call an agent completed right before the daemon stopped could be
+  missing from the conversation's usage record: the stop aborted the
+  agents' event watchers before writing the ledger. Each watcher now
+  counts what its stream already holds, then ends, and the ledger is
+  written after (a helper's call in that instant can still be missed).
+
+- `--attach-insecure`'s help and the refusal of a non-loopback
+  `--attach=HOST:PORT` no longer say the attach token crosses the
+  network in clear text: with the mutual HMAC handshake it never does.
+  What crosses such a link unencrypted is the session itself (prompts,
+  the agent's output, the approvals), and that is what they say now.
+- A long-lived daemon no longer grows without bound: tool catalogs (at
+  most 256 sessions, a retired session's dropped), the file tools'
+  read-before-write records (at most 4096), scheduled runs' attribution
+  (a run's at its end, at most 1024 occurrences) and council entries (a
+  failed council call's dropped) are bounded. A second council call
+  naming a live council's id no longer takes over its participants.
+- The `/model` picker lists every model of an OpenAI-dialect proxy: the
+  filter that drops OpenAI's embedding, speech and image families
+  applies to the built-in `openai` endpoint only (a proxy's model named
+  `text-large` or `fast-tts-free` was hidden).
+- A file whose name holds a backslash is completed and attached under
+  its own name (it was turned into a path with a `/`).
+- A tool block's collapsed line count is the result's own: a result
+  whose last line read like the preview's `... (N more lines)` trailer
+  was miscounted.
+- Prompt history: when a file passes 1000 lines it is cut from what it
+  holds then, so the lines another TUI appended meanwhile stay (the
+  global file is shared by every rkat-tui), and the files are
+  owner-only (they hold every prompt typed).
+- A rule added while the permission mode changes is no longer lost from
+  the realm `tui.toml`: each write is a read-modify-write under one lock
+  and writes what is current then.
+- A model profile rkat-tui writes into the realm config is recorded as
+  its own only once the write happened.
+- No blocking file or network I/O on the async loops any more: the
+  daemon records a prompt's conversation (a write with an fsync per
+  prompt and steer) from a blocking task, writes rules, the mode, the
+  checklist view and scheduled runs' costs off its connection and event
+  loops, and the TUI writes its cost record (one per model call) off the
+  loop that must take Esc and probes a stopping daemon with an async
+  connect.
+- File watches (`watch_paths`): the recursive watch of the workspace is
+  dropped when the last watch goes; a change no watch matches neither
+  delays a batch nor is kept, so a watch on `src/**` is delivered within
+  2 s even while a build writes `target/` continuously; and a batch
+  remembers at most 4096 paths per agent, counting the rest.
+- A workspace's agents follow the configuration of each daemon start:
+  MCP servers added to `.rkat/mcp.toml` (and trusted), the memory
+  tools and the `[auto]` compaction policy reach the agents of an
+  existing workspace at the next start. They were fixed at the
+  workspace's first start, when its mob was created.
+- Streaming is cheaper to draw: the UI applies every message already
+  queued (up to 256) before drawing a frame, instead of drawing one per
+  stream event, and a frame lays out only the blocks that changed and
+  visits only the blocks it shows, where it walked the whole transcript
+  three times.
+- An `@word` that matches no path no longer rescans the path index on
+  every tick and stream event while the cursor sits after it, and
+  matching a fragment allocates nothing per indexed path (each path is
+  lowercased once, when it is indexed).
+- Another agent's approval question is shown at once: escalations were
+  serialized for the whole daemon while a client shows only its own
+  agent's dialogs, so with agent A's dialog open agent B's question
+  waited unseen and was denied as "the user did not answer". Each agent
+  (with its helpers) now has its own queue, and a question's time limit
+  runs only while it is shown.
+- `grep` matches line by line in its default `files_with_matches` mode
+  too: `^fn main` or `foo$` found only files starting or ending with it
+  there, while `content` and `count` found every such line.
+- With two TUIs steering the same turn, each marks only its own message
+  delivered, at the moment the agent takes that message: the daemon now
+  names the input each message became (Meerkat 0.9.12), where before the
+  oldest steer was marked at any steer's delivery. A steer the agent
+  runs after the turn's last run (a follow-up run) belongs to that turn
+  in every client: a turn ends only when the daemon reports no message
+  the agent still holds for the conversation, so the steer is marked
+  when its run starts, and the other clients show its text inside the
+  turn. On a slow host the turn used to end first, marking the steer
+  delivered and starting a new turn with its text.
+- ↑ on an empty editor takes back a message sent while the agent works
+  again, as long as the agent has not read it (it waits behind a running
+  tool): the daemon abandons it and it returns to the editor, while the
+  running turn goes on. A message the agent already took is reported as
+  reached and left.
 - The TUI never waits for the daemon between keys: a prompt, a steer,
   `/status`, `/agents`, `/audit`, `/schedules`, `/permissions`, a mode
   switch, `/quit`, `/daemon stop`, `/rehome`, `/remember` and an edited
@@ -1008,3 +993,4 @@ followed, before the daemon: the agent ran in the `rkat-tui` process.
   trusted before. `/status` lists each file's state. An existing realm
   `config.toml` that defines MCP servers or hooks needs one `/trust` after
   upgrading.
+
