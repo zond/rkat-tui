@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "mobs": {
+    "implicit-01a1cc1a-3977-7480-acbc-0330b9c34d18": "01a1cc1a-3977-7480-acbc-0330b9c34d18"
+  },
+  "members": [
+    {
+      "mob": "implicit-01a1cc1a-3977-7480-acbc-0330b9c34d18",
+      "member": "scout",
+      "owner": "01a1cc1a-3977-7480-acbc-0330b9c34d18",
+      "path": [
+        "scout"
+      ],
+      "model": "claude-sonnet-4-6",
+      "session": "01a1cc1a-3cb6-75a9-9653-f5c3eda5b2f8"
+    }
+  ]
+}

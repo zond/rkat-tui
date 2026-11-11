@@ -1,0 +1,9 @@
+{"time":"2026-11-11T19:33:53.134Z","event":"daemon_start","detail":"pid 3960942 on /tmp/.tmpFPRcKY/project, mode auto"}
+{"time":"2026-11-11T19:33:53.621Z","event":"decision","agent":"main-ujb2","session":"01a1cc1a-3977-7480-acbc-0330b9c34d18","run":"01a1cc1a-3ac8-7433-b48b-d8c4be5e454c","tool":"note_save","argument":"user/style","tier":"classifier","verdict":"allow","decider":"classifier"}
+{"time":"2026-11-11T19:33:53.650Z","event":"decision","agent":"main-ujb2","session":"01a1cc1a-3977-7480-acbc-0330b9c34d18","run":"01a1cc1a-3ac8-7433-b48b-d8c4be5e454c","tool":"note_save","argument":"workspace/build","tier":"in-project edit","verdict":"allow","decider":"mode"}
+{"time":"2026-11-11T19:33:53.672Z","event":"decision","agent":"main-ujb2","session":"01a1cc1a-3977-7480-acbc-0330b9c34d18","run":"01a1cc1a-3ac8-7433-b48b-d8c4be5e454c","tool":"tool_search","argument":"{\n  \"query\": \"meerkat_schedule_create\"\n}","tier":"always allow","verdict":"allow","decider":"policy"}
+{"time":"2026-11-11T19:33:53.805Z","event":"decision","agent":"main-ujb2","session":"01a1cc1a-3977-7480-acbc-0330b9c34d18","run":"01a1cc1a-3ac8-7433-b48b-d8c4be5e454c","tool":"delegate","argument":"{\n  \"max_text_bytes\": 4000,\n  \"member_id\": \"scout\",\n  \"result_label\": \"result\",\n  \"task\": \"look\"\n}","tier":"always allow","verdict":"allow","decider":"policy"}
+{"time":"2026-11-11T19:33:54.637Z","event":"mode","detail":"auto -> plan"}
+{"time":"2026-11-11T19:33:54.680Z","event":"rule_added","detail":"shell cargo test*"}
+{"time":"2026-11-11T19:33:54.681Z","event":"project_trusted","detail":"/tmp/.tmpFPRcKY/project/.rkat/mcp.toml"}
+{"time":"2026-11-11T19:33:54.694Z","event":"daemon_stop","detail":"pid 3960942"}

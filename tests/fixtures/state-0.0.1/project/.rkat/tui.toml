@@ -1,0 +1,7 @@
+# The project layer a repository ships: deny rules and `[auto]` only.
+[auto]
+mode = "default"
+
+[[deny]]
+tool = "write_file"
+arg = "migrations/**"

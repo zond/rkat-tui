@@ -1,0 +1,60 @@
+# The global layer as a user writes it: every key 0.0.1 reads.
+[auto]
+mode = "auto"
+classifier_model = "claude-haiku-4-5"
+trust_project_builds = true
+compact = "auto"
+compact_warn_percent = 70
+compact_auto_percent = 85
+classifier_tools = false
+
+[[allow]]
+tool = "shell"
+arg = "cargo fmt*"
+
+[[allow]]
+tool = "read_file"
+literal = "/etc/hosts"
+
+[[deny]]
+tool = "shell"
+arg = "rm -rf *"
+
+[endpoints.work]
+dialect = "openai"
+base_url = "http://127.0.0.1:4000/v1"
+api_key_env = "WORK_PROXY_KEY"
+priority = 10
+api_style = "chat_completions"
+
+[pricing]
+fetch = false
+
+[pricing.claude-sonnet-4-6]
+input = 3.0
+output = 15.0
+cached_input = 0.3
+cache_write = 3.75
+
+[thinking]
+claude-sonnet-4-6 = "adaptive"
+claude-opus-4-1 = { enabled = 4096 }
+claude-haiku-4-5 = "default"
+
+[confinement]
+extra_read = ["/usr/share/dict"]
+extra_write = ["/var/tmp/rkat-tui-fixture"]
+
+[helpers]
+max_depth = 2
+
+[shell]
+user_timeout_secs = 120
+
+[ui]
+helpers = "expanded"
+bell = false
+checklist = "hidden"
+
+[daemon]
+principal = "fixture-user"

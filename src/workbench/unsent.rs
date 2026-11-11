@@ -74,7 +74,7 @@ fn append_unsent(path: &Path, texts: &[String]) -> std::io::Result<()> {
 
 /// Number of messages in an unsent-messages file.
 #[must_use]
-fn count_unsent(path: &Path) -> usize {
+pub(crate) fn count_unsent(path: &Path) -> usize {
     std::fs::read_to_string(path)
         .map(|content| content.lines().filter(|l| *l == UNSENT_HEADER).count())
         .unwrap_or(0)

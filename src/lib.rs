@@ -150,6 +150,9 @@ pub mod client;
 #[cfg(not(feature = "test-support"))]
 pub(crate) mod client;
 
+#[cfg(test)]
+mod state_fixtures;
+
 /// The `rkat-tui-mob` daemon's command line and entry point.
 pub use daemon::DaemonCli;
 

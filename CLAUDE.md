@@ -81,6 +81,7 @@ shell (`src/user_shell.rs`) and the client's start-on-demand of the
 | `src/memory/` | Notes at user and workspace scope, memory tools |
 | `src/endpoints.rs`, `src/models.rs`, `src/pricing.rs`, `src/cost.rs`, `src/thinking.rs` | LLM endpoints, model listing, price table, token totals by model and their price (the daemon counts them, `daemon/usage.rs`), the per-model `[thinking]` setting |
 | `src/mentions.rs`, `src/paths.rs`, `src/overlay.rs`, `src/http.rs`, `src/user_shell.rs`, `src/error.rs` | `@` mentions and the path index, path expansion, `--set` overlays, the HTTP client, the user's `!` shell, the crate's error types |
+| `src/state_fixtures.rs` | The stored-state guard: opens the first release's files (`tests/fixtures/state-0.0.1/`) with this build's readers |
 | `tests/` | Integration tests through the `test-support` feature on the one rig: the real daemon with a scripted LLM (`tests/common/attach.rs`: `Setup`, `Attached`, `Running`, `Client`); `tests/common/mod.rs` holds the scripted LLM, the workspace and the command lines |
 | `docs/` | `testing.md` (protocol), `evidence.md` (what was built, why, with the probes and test names), `mob-split.md` (the architecture, its status and the engine asks), `ux-parity.md` (Claude Code parity audit), `spec.yaml` / `traceability.md` (the requirements and where each is implemented and tested), `state.md` (every stored file, its format and writer) |
 
@@ -149,7 +150,11 @@ repository). Open upstream issues this code waits on:
 `docs/state.md` lists every file rkat-tui stores (path, format, writer,
 what losing it loses). From the first release on these formats are a
 contract: state a tagged build wrote must keep opening; a change that
-would break it needs the owner's explicit yes.
+would break it needs the owner's explicit yes. The guard is
+`src/state_fixtures.rs`: it opens the copies in
+`tests/fixtures/state-0.0.1/` (taken from a run of the rig at the first
+release) with this build's readers; never edit those copies to make it
+pass.
 
 ## Sandbox facts worth knowing
 
