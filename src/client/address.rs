@@ -240,8 +240,7 @@ pub async fn status_of(endpoint: &Endpoint) -> Result<Status, ClientError> {
     tokio::time::timeout(PROBE_TIMEOUT, async {
         let (connection, _notes) =
             Connection::attach_as(endpoint, ATTACH_TIMEOUT, None, true).await?;
-        super::remote::local::<_, Status>(&connection, protocol::STATUS, &serde_json::json!({}))
-            .await
+        super::remote::call::<protocol::method::Status>(&connection, &protocol::Empty {}).await
     })
     .await
     .map_err(|_| ClientError::Timeout("reading the daemon's status"))?

@@ -572,7 +572,11 @@ async fn an_agent_lost_in_a_failed_switch_is_no_ghost() {
         refused.contains(&format!("agent {lost} was lost")),
         "{refused}"
     );
-    let status: Status = rkat_tui::client::remote::local(&b, "rkat/status", &json!({}))
+    let status: Status =
+        rkat_tui::client::remote::call::<rkat_tui::daemon::protocol::method::Status>(
+            &b,
+            &rkat_tui::daemon::protocol::Empty {},
+        )
         .await
         .unwrap();
     assert!(

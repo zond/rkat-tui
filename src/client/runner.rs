@@ -44,7 +44,7 @@ use crate::approval::desk::{ModeStatus, RuleCommand, RuleOutcome};
 use crate::bootstrap::RuntimeScope;
 use crate::cli::AttachMode;
 use crate::daemon::endpoint::Endpoint;
-use crate::daemon::protocol::{self, AgentChoice, ModeSet, SetModeParams, TrustOp, TrustParams};
+use crate::daemon::protocol::{self, AgentChoice, SetModeParams, TrustOp, TrustParams};
 use crate::endpoints::{EndpointRegistry, ModelRefError, WireDialect, parse_model_ref};
 use crate::models::{FetchResults, ModelCache};
 use crate::ui::delivery::{PendingId, SteerFailure};
@@ -1267,11 +1267,7 @@ impl AttachRunner {
         tokio::spawn(async move {
             let read = bounded(
                 CALL_TIMEOUT,
-                remote::local::<_, protocol::Status>(
-                    &connection,
-                    protocol::STATUS,
-                    &serde_json::json!({}),
-                ),
+                remote::call::<protocol::method::Status>(&connection, &protocol::Empty {}),
             )
             .await;
             if let Ok(status) = read
@@ -1295,11 +1291,7 @@ impl AttachRunner {
         tokio::spawn(async move {
             let read = bounded(
                 CALL_TIMEOUT,
-                remote::local::<_, protocol::Notices>(
-                    &connection,
-                    protocol::MISSED,
-                    &serde_json::json!({}),
-                ),
+                remote::call::<protocol::method::Missed>(&connection, &protocol::Empty {}),
             )
             .await;
             match read {
@@ -1327,11 +1319,7 @@ impl AttachRunner {
         tokio::spawn(async move {
             let read = bounded(
                 CALL_TIMEOUT,
-                remote::local::<_, protocol::Notices>(
-                    &connection,
-                    protocol::NOTICES,
-                    &serde_json::json!({}),
-                ),
+                remote::call::<protocol::method::Notices>(&connection, &protocol::Empty {}),
             )
             .await;
             match read {
@@ -1364,7 +1352,7 @@ impl AttachRunner {
         tokio::spawn(async move {
             let read = bounded(
                 CALL_TIMEOUT,
-                remote::local(&connection, protocol::GET_MODE, &serde_json::json!({})),
+                remote::call::<protocol::method::GetMode>(&connection, &protocol::Empty {}),
             )
             .await;
             if let Ok(status) = read {
@@ -2105,7 +2093,7 @@ impl AttachRunner {
             };
             let tasks = bounded(
                 CALL_TIMEOUT,
-                remote::local::<_, protocol::Tasks>(&connection, protocol::TASKS, &params),
+                remote::call::<protocol::method::Tasks>(&connection, &params),
             )
             .await
             .map(|read| read.tasks)
@@ -2130,11 +2118,7 @@ impl AttachRunner {
             let params = protocol::ChecklistViewParams { view };
             let saved = bounded(
                 CALL_TIMEOUT,
-                remote::local::<_, serde_json::Value>(
-                    &connection,
-                    protocol::CHECKLIST_VIEW,
-                    &params,
-                ),
+                remote::call::<protocol::method::ChecklistView>(&connection, &params),
             )
             .await;
             if let Err(err) = saved {
@@ -2263,27 +2247,30 @@ impl AttachRunner {
                     tool,
                     pattern,
                 };
-                self.outcome_command(protocol::RULES, &command, "/permissions")
+                self.outcome_command::<protocol::method::Rules>(&command, "/permissions")
                     .await;
             }
             Effect::RemoveRule(n) => {
-                self.outcome_command(protocol::RULES, &RuleCommand::Remove { n }, "/permissions")
+                self.outcome_command::<protocol::method::Rules>(
+                    &RuleCommand::Remove { n },
+                    "/permissions",
+                )
                     .await;
             }
             Effect::ListRules => {
-                self.outcome_command(protocol::RULES, &RuleCommand::List, "/permissions")
+                self.outcome_command::<protocol::method::Rules>(&RuleCommand::List, "/permissions")
                     .await;
             }
             Effect::TrustRealmRules => {
                 let params = TrustParams { op: TrustOp::Rules };
-                self.outcome_command(protocol::TRUST, &params, "/permissions trust")
+                self.outcome_command::<protocol::method::Trust>(&params, "/permissions trust")
                     .await;
             }
             Effect::TrustProject => {
                 let params = TrustParams {
                     op: TrustOp::Project,
                 };
-                self.outcome_command(protocol::TRUST, &params, "/trust")
+                self.outcome_command::<protocol::method::Trust>(&params, "/trust")
                     .await;
             }
             Effect::SaveUnsent(held) => self.bench.hold_unsent(held),
@@ -2321,15 +2308,7 @@ impl AttachRunner {
         let params = decision_params(decision, digest, answer);
         let ui_tx = self.ui_tx.clone();
         tokio::spawn(async move {
-            let decided = bounded(
-                CALL_TIMEOUT,
-                remote::local::<_, serde_json::Value>(
-                    &connection,
-                    protocol::DECISION_DECIDE,
-                    &params,
-                ),
-            )
-            .await;
+            let decided = bounded(CALL_TIMEOUT, remote::decide(&connection, &params)).await;
             let text = match decided {
                 Ok(_) => return,
                 Err(CallFailure::Failed(ClientError::Rpc { message, .. })) => {
@@ -2391,10 +2370,7 @@ impl AttachRunner {
         let params = SetModeParams {
             mode: mode.to_string(),
         };
-        match self
-            .call_local::<_, ModeSet>(protocol::SET_MODE, &params)
-            .await
-        {
+        match self.call_local::<protocol::method::SetMode>(&params).await {
             Ok(set) => {
                 self.push_mode(set.status);
                 if let Some(warning) = set.warning {
@@ -2412,13 +2388,12 @@ impl AttachRunner {
     /// A command whose answer is a [`RuleOutcome`] (`/permissions …` on the
     /// daemon's engine, `/trust` and `/permissions trust` on its trust record),
     /// named `name` in what goes wrong.
-    async fn outcome_command<P: serde::Serialize>(
+    async fn outcome_command<M: protocol::Method<Result = RuleOutcome>>(
         &self,
-        method: &'static str,
-        params: &P,
+        params: &M::Params,
         name: &str,
     ) {
-        match self.call_local::<_, RuleOutcome>(method, params).await {
+        match self.call_local::<M>(params).await {
             Ok(outcome) => {
                 let level = if outcome.ok {
                     NoticeLevel::Info
@@ -2435,15 +2410,14 @@ impl AttachRunner {
         }
     }
 
-    /// Call the daemon's own `method` (one of [`protocol`]'s) with
-    /// `params`, bounded by [`CALL_TIMEOUT`].
-    async fn call_local<P: serde::Serialize, R: serde::de::DeserializeOwned>(
+    /// Call the daemon's own method `M` with `params`, bounded by
+    /// [`CALL_TIMEOUT`].
+    async fn call_local<M: protocol::Method>(
         &self,
-        method: &'static str,
-        params: &P,
-    ) -> Result<R, CallFailure> {
+        params: &M::Params,
+    ) -> Result<M::Result, CallFailure> {
         let connection = self.connection().ok_or(CallFailure::NotAttached)?;
-        bounded(CALL_TIMEOUT, remote::local(&connection, method, params)).await
+        bounded(CALL_TIMEOUT, remote::call::<M>(&connection, params)).await
     }
 
     /// The orchestrator as the workbench reaches it, over this connection.
@@ -2640,7 +2614,7 @@ impl AttachRunner {
             };
             let result = bounded(
                 SWITCH_TIMEOUT,
-                remote::local::<_, protocol::ModelSet>(&connection, protocol::SET_MODEL, &params),
+                remote::call::<protocol::method::SetModel>(&connection, &params),
             )
             .await
             .map_err(|err| match err {
@@ -2952,7 +2926,7 @@ impl AttachRunner {
                 .to_string(),
         );
         match self
-            .call_local::<_, protocol::Report>(protocol::REPORT, &serde_json::json!({}))
+            .call_local::<protocol::method::Report>(&protocol::Empty {})
             .await
         {
             Ok(report) => lines.extend(report_lines(&report)),
@@ -2967,11 +2941,7 @@ impl AttachRunner {
         let connection = self.connection()?;
         bounded(
             LEAVE_TIMEOUT,
-            remote::local::<_, protocol::Status>(
-                &connection,
-                protocol::STATUS,
-                &serde_json::json!({}),
-            ),
+            remote::call::<protocol::method::Status>(&connection, &protocol::Empty {}),
         )
         .await
         .map_err(|err| tracing::info!(error = %err, "the daemon's status is unknown"))
@@ -2990,11 +2960,7 @@ impl AttachRunner {
         };
         let read = bounded(
             CALL_TIMEOUT,
-            remote::local::<_, protocol::AuditTail>(
-                &connection,
-                protocol::AUDIT,
-                &protocol::AuditParams { lines },
-            ),
+            remote::call::<protocol::method::Audit>(&connection, &protocol::AuditParams { lines }),
         )
         .await;
         match read {
@@ -3029,15 +2995,11 @@ impl AttachRunner {
             );
             return;
         };
-        let params = protocol::SchedulesParams { action };
-        if params.action.is_some() {
+        if let Some((op, schedule)) = action {
+            let params = protocol::ScheduleAction { op, schedule };
             let done = bounded(
                 CALL_TIMEOUT,
-                remote::local::<_, crate::approval::desk::RuleOutcome>(
-                    &connection,
-                    protocol::SCHEDULES,
-                    &params,
-                ),
+                remote::call::<protocol::method::Schedule>(&connection, &params),
             )
             .await;
             match done {
@@ -3049,7 +3011,7 @@ impl AttachRunner {
         }
         let listed = bounded(
             CALL_TIMEOUT,
-            remote::local::<_, protocol::ScheduleList>(&connection, protocol::SCHEDULES, &params),
+            remote::call::<protocol::method::Schedules>(&connection, &protocol::Empty {}),
         )
         .await;
         match listed {
@@ -3138,10 +3100,9 @@ impl AttachRunner {
             };
             let asked = bounded(
                 LEAVE_TIMEOUT,
-                remote::local::<_, serde_json::Value>(
+                remote::call::<protocol::method::Shutdown>(
                     &connection,
-                    protocol::SHUTDOWN,
-                    &serde_json::json!({}),
+                    &protocol::ShutdownParams::default(),
                 ),
             )
             .await;
@@ -3189,11 +3150,7 @@ impl AttachRunner {
         let status = match (self.stopping, self.connection()) {
             (false, Some(connection)) => bounded(
                 LEAVE_TIMEOUT,
-                remote::local::<_, protocol::Status>(
-                    &connection,
-                    protocol::STATUS,
-                    &serde_json::json!({}),
-                ),
+                remote::call::<protocol::method::Status>(&connection, &protocol::Empty {}),
             )
             .await
             .map_err(|err| tracing::info!(error = %err, "the daemon's status is unknown at quit"))
@@ -3244,25 +3201,35 @@ impl AttachRunner {
         };
         let endpoint = self.link.as_ref().map(|link| link.endpoint.clone());
         let pid = endpoint.as_ref().map_or(0, |endpoint| endpoint.pid);
-        let (method, params, wait) = match departure {
-            Departure::Detach => (protocol::DETACH, serde_json::json!({}), LEAVE_TIMEOUT),
-            // Retiring interrupts a running turn and stops its helpers.
-            Departure::Retire => (protocol::RETIRE, serde_json::json!({}), CALL_TIMEOUT),
-            Departure::Terminate => (
-                protocol::SHUTDOWN,
-                serde_json::json!({"retire": true}),
+        let empty = protocol::Empty {};
+        let answered = match departure {
+            Departure::Detach => bounded(
                 LEAVE_TIMEOUT,
-            ),
+                remote::call::<protocol::method::Detach>(&connection, &empty),
+            )
+            .await
+            .map(|_| None),
+            // Retiring interrupts a running turn and stops its helpers.
+            Departure::Retire => bounded(
+                CALL_TIMEOUT,
+                remote::call::<protocol::method::Retire>(&connection, &empty),
+            )
+            .await
+            .map(Some),
+            Departure::Terminate => bounded(
+                LEAVE_TIMEOUT,
+                remote::call::<protocol::method::Shutdown>(
+                    &connection,
+                    &protocol::ShutdownParams { retire: true },
+                ),
+            )
+            .await
+            .map(|_| None),
         };
-        let answered = bounded(
-            wait,
-            remote::local::<_, serde_json::Value>(&connection, method, &params),
-        )
-        .await;
         let agent = connection.agent().to_string();
         match (departure, answered) {
             (Departure::Retire, Ok(answer)) => {
-                let deleted = serde_json::from_value::<protocol::Retired>(answer)
+                let deleted = answer
                     .map(|retired| retired.schedules_deleted)
                     .unwrap_or_default();
                 let schedules = if deleted.is_empty() {
@@ -3423,7 +3390,7 @@ pub fn agent_lines(agents: &[protocol::AgentRow], mine: Option<&str>) -> Vec<Str
     lines
 }
 
-/// `/status`'s lines for the daemon's side ([`protocol::REPORT`]).
+/// `/status`'s lines for the daemon's side ([`protocol::method::Report`]).
 fn report_lines(report: &protocol::Report) -> Vec<String> {
     use crate::approval::mode::PermissionMode;
     let mut lines = vec![

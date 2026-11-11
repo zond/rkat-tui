@@ -22,9 +22,7 @@ use serde_json::{Value, json};
 use super::ClientError;
 use super::transport::{Connection, Notification};
 use crate::daemon::MOB_ID;
-use crate::daemon::protocol::{
-    self, ConversationList, SessionParams, Switched, Transcript, Usage, engine,
-};
+use crate::daemon::protocol::{Empty, Method, SessionParams, engine, method};
 
 /// The notification that carries a member stream's events.
 pub const STREAM_EVENT: &str = engine::STREAM_EVENT;
@@ -77,27 +75,6 @@ pub async fn identity(
     snapshot(connection, session)
         .await
         .map(|snapshot| (snapshot.model, snapshot.provider))
-}
-
-/// The configured endpoint `session`'s auth binding names (`rkat/endpoint`;
-/// `None`: a built-in endpoint).
-///
-/// # Errors
-///
-/// The call's error.
-pub async fn session_endpoint(
-    connection: &Connection,
-    session: &SessionId,
-) -> Result<Option<String>, ClientError> {
-    let answer: crate::daemon::protocol::SessionEndpoint = local(
-        connection,
-        protocol::ENDPOINT,
-        &SessionParams {
-            session_id: session.clone(),
-        },
-    )
-    .await?;
-    Ok(answer.endpoint)
 }
 
 /// What `events/snapshot` says of a session.
@@ -304,22 +281,40 @@ pub async fn force_cancel(connection: &Connection) -> Result<(), ClientError> {
         .map(drop)
 }
 
-/// Call one of the daemon's own `rkat/*` methods (`method`, one of
-/// [`protocol`]'s) with `params`, its answer read as `R`.
+/// Call the daemon's own method `M` with `params`, its answer read as
+/// `M`'s result ([`Method`]).
 ///
 /// # Errors
 ///
 /// The call's error, or [`ClientError::Decode`].
-pub async fn local<P: serde::Serialize, R: serde::de::DeserializeOwned>(
+pub async fn call<M: Method>(
     connection: &Connection,
-    method: &'static str,
-    params: &P,
-) -> Result<R, ClientError> {
+    params: &M::Params,
+) -> Result<M::Result, ClientError> {
     let params = serde_json::to_value(params).map_err(|source| ClientError::Decode {
-        what: method,
+        what: M::NAME,
         source,
     })?;
-    decode(method, connection.call(method, params).await?)
+    decode(M::NAME, connection.call(M::NAME, params).await?)
+}
+
+/// `decision/decide` with `params`: the daemon decides it (its answer is
+/// the engine's decision record, which the client does not read).
+///
+/// # Errors
+///
+/// The call's error (a decision already settled is refused).
+pub async fn decide(
+    connection: &Connection,
+    params: &crate::daemon::protocol::DecideParams,
+) -> Result<Value, ClientError> {
+    let params = serde_json::to_value(params).map_err(|source| ClientError::Decode {
+        what: crate::daemon::protocol::DECISION_DECIDE,
+        source,
+    })?;
+    connection
+        .call(crate::daemon::protocol::DECISION_DECIDE, params)
+        .await
 }
 
 /// Append `text` to the orchestrator's system context under `key`.
@@ -479,7 +474,7 @@ pub fn stream_end(notification: &Notification) -> Option<&str> {
 pub async fn conversations(
     connection: &Connection,
 ) -> Result<Vec<crate::daemon::conversations::Listed>, ClientError> {
-    let listed: ConversationList = local(connection, protocol::CONVERSATIONS, &json!({})).await?;
+    let listed = call::<method::Conversations>(connection, &Empty {}).await?;
     Ok(listed.conversations)
 }
 
@@ -493,20 +488,18 @@ pub async fn switch(
     connection: &Connection,
     session: Option<&SessionId>,
 ) -> Result<(SessionId, Option<String>), ClientError> {
-    let switched: Switched = match session {
-        None => local(connection, protocol::NEW, &json!({})).await?,
-        Some(session) => {
-            local(
-                connection,
-                protocol::RESUME,
-                &SessionParams {
-                    session_id: session.clone(),
-                },
-            )
-            .await?
-        }
+    let switched = match session {
+        None => call::<method::New>(connection, &Empty {}).await?,
+        Some(session) => call::<method::Resume>(connection, &session_params(session)).await?,
     };
     Ok((switched.session_id, switched.warning))
+}
+
+/// The parameters naming `session`.
+fn session_params(session: &SessionId) -> SessionParams {
+    SessionParams {
+        session_id: session.clone(),
+    }
 }
 
 /// A conversation's committed messages (`rkat/transcript`).
@@ -518,15 +511,9 @@ pub async fn transcript(
     connection: &Connection,
     session: &SessionId,
 ) -> Result<Vec<meerkat_core::Message>, ClientError> {
-    let transcript: Transcript = local(
-        connection,
-        protocol::TRANSCRIPT,
-        &SessionParams {
-            session_id: session.clone(),
-        },
-    )
-    .await?;
-    Ok(transcript.messages)
+    call::<method::Transcript>(connection, &session_params(session))
+        .await
+        .map(|transcript| transcript.messages)
 }
 
 /// A conversation's total token usage, `(input, output)` (`rkat/usage`).
@@ -538,15 +525,24 @@ pub async fn usage(
     connection: &Connection,
     session: &SessionId,
 ) -> Result<(u64, u64), ClientError> {
-    let totals: Usage = local(
-        connection,
-        protocol::USAGE,
-        &SessionParams {
-            session_id: session.clone(),
-        },
-    )
-    .await?;
-    Ok((totals.input_tokens, totals.output_tokens))
+    call::<method::Usage>(connection, &session_params(session))
+        .await
+        .map(|totals| (totals.input_tokens, totals.output_tokens))
+}
+
+/// The configured endpoint `session`'s auth binding names (`rkat/endpoint`;
+/// `None`: a built-in endpoint).
+///
+/// # Errors
+///
+/// The call's error.
+pub async fn session_endpoint(
+    connection: &Connection,
+    session: &SessionId,
+) -> Result<Option<String>, ClientError> {
+    call::<method::Endpoint>(connection, &session_params(session))
+        .await
+        .map(|answer| answer.endpoint)
 }
 
 /// `/compact now` for the orchestrator: `mob/compact_member` (its next

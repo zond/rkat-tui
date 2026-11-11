@@ -26,7 +26,7 @@ use super::launch::{self, Liveness};
 use super::transport::Connection;
 use crate::bootstrap::realm_home::{self, Home, HomeError, Reading, Way};
 use crate::daemon::endpoint::Endpoint;
-use crate::daemon::protocol::{self, Holds, ShutdownParams, Status};
+use crate::daemon::protocol::{self, ShutdownParams, Status};
 
 /// How long a re-home waits for a daemon it asked to stop to release its
 /// realm.
@@ -161,13 +161,12 @@ impl std::fmt::Display for Rehomed {
     }
 }
 
-/// `call` on `connection`, bounded.
-async fn ask<R: serde::de::DeserializeOwned>(
+/// The method `M` on `connection`, bounded.
+async fn ask<M: protocol::Method>(
     connection: &Connection,
-    method: &'static str,
-    params: &serde_json::Value,
-) -> Result<R, String> {
-    tokio::time::timeout(ASK, super::remote::local(connection, method, params))
+    params: &M::Params,
+) -> Result<M::Result, String> {
+    tokio::time::timeout(ASK, super::remote::call::<M>(connection, params))
         .await
         .map_err(|_| "it did not answer in time".to_string())?
         .map_err(|err| err.to_string())
@@ -186,7 +185,7 @@ async fn live_daemon(workspace: &Path, files: &[PathBuf]) -> Result<Option<Live>
     let (connection, _notes) = Connection::attach_as(&endpoint, ASK, None, true)
         .await
         .map_err(|err| unasked(err.to_string()))?;
-    let status = ask(&connection, protocol::STATUS, &serde_json::json!({}))
+    let status = ask::<protocol::method::Status>(&connection, &protocol::Empty {})
         .await
         .map_err(unasked)?;
     Ok(Some(Live {
@@ -237,7 +236,7 @@ pub async fn prepare(
     let replace_files = files(&workspace);
     let mine_status = match mine {
         Some((connection, _)) => Some(
-            ask::<Status>(connection, protocol::STATUS, &serde_json::json!({}))
+            ask::<protocol::method::Status>(connection, &protocol::Empty {})
                 .await
                 .map_err(|why| RehomeError::Unasked {
                     workspace: workspace.clone(),
@@ -312,7 +311,7 @@ pub async fn prepare(
 
 /// What the daemon on `connection` says its realm holds.
 async fn held_by(connection: &Connection, workspace: &Path) -> Result<Vec<String>, RehomeError> {
-    ask::<Holds>(connection, protocol::HOLDS, &serde_json::json!({}))
+    ask::<protocol::method::Holds>(connection, &protocol::Empty {})
         .await
         .map(|holds| holds.held)
         .map_err(|why| RehomeError::Unasked {
@@ -331,7 +330,7 @@ pub async fn stop(connection: &Connection) -> Result<(), String> {
     let params = ShutdownParams { retire: false };
     let asked = tokio::time::timeout(
         ASK,
-        super::remote::local::<_, serde_json::Value>(connection, protocol::SHUTDOWN, &params),
+        super::remote::call::<protocol::method::Shutdown>(connection, &params),
     )
     .await;
     match asked {

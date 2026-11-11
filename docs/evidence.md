@@ -6186,3 +6186,37 @@ false before this, with the client following the mob),
 `tests/mob_destroy.rs::the_agent_destroys_a_mob_it_made_and_its_database_goes`,
 `a_mob_restored_by_a_later_daemon_is_destroyed_with_its_database`;
 unit: `daemon::serve::tests::a_destroyed_mobs_streams_are_closed_for_the_client`.
+
+## The second senior review's batch R2 (2026-11-11)
+
+### The `rkat/*` wire is paired at compile time (R2 item 7)
+
+Each of the daemon's own methods is one type in
+`daemon::protocol::method`, declared once by the `methods!` table with
+its name, parameters and result (`protocol::Method`: `NAME`, `Params`,
+`Result`). The daemon's `Local::call` dispatches on those declarations
+(one arm per method: the parameters are read as the method's, the
+handler's value must be the method's result or the arm does not
+compile), and the client calls `client::remote::call::<M>(connection,
+&params) -> M::Result`; the string constants and the hand-picked result
+type of `remote::local::<P, R>(name, …)` are gone. `{}` is
+`protocol::Empty`. Where one name answered two shapes it is two methods
+now: `rkat/schedules` lists, `rkat/schedule` acts (pause, resume,
+delete), as one method can have one result.
+
+Folding, as the review proposed, was looked at with the methods added
+since and not done: `rkat/get_mode` is read on every approval note and is
+cheap, `rkat/report` reads trust records and the watches; `rkat/status`
+serves `--list`, `/agents` and the attach notice; `rkat/notices` is read
+once per daemon while `rkat/missed` consumes what it answers on every
+attach. The three per-conversation reads (`transcript`, `usage`,
+`endpoint`) are read at different points of an attach: the usage read
+must follow the stream open and precede draining the notifications that
+arrived meanwhile (a turn that ended before it is in the totals), so
+one call returning all three would either read the transcript twice or
+move the usage read. `decision/decide` stays the engine's method (the
+daemon decides it on its own route, `Routed::Decide`).
+
+Tests: `daemon::protocol::tests::the_methods_have_distinct_local_names`;
+the wire tests in `tests/daemon.rs` and the rig's calls are unchanged in
+what they assert (they call through `remote::call` now).

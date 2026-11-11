@@ -98,11 +98,7 @@ pub async fn probe(endpoint: &Endpoint) -> Found {
     };
     let status = tokio::time::timeout(
         PROBE_TIMEOUT,
-        crate::client::remote::local::<_, Status>(
-            &connection,
-            protocol::STATUS,
-            &serde_json::json!({}),
-        ),
+        crate::client::remote::call::<protocol::method::Status>(&connection, &protocol::Empty {}),
     )
     .await;
     Found::Live(status.ok().and_then(Result::ok))

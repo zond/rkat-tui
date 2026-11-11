@@ -66,7 +66,7 @@ async fn attach_agent(
 }
 
 async fn status(connection: &Connection) -> Status {
-    remote::local(connection, protocol::STATUS, &json!({}))
+    remote::call::<protocol::method::Status>(connection, &protocol::Empty {})
         .await
         .unwrap()
 }
@@ -153,7 +153,7 @@ async fn detach_is_recorded_and_never_reset() {
     let daemon = owned_daemon(&ws, &llm).await;
     let client = attach(&daemon, None, false).await;
     assert!(!status(&client).await.detached);
-    let _: serde_json::Value = remote::local(&client, protocol::DETACH, &json!({}))
+    let _ = remote::call::<protocol::method::Detach>(&client, &protocol::Empty {})
         .await
         .unwrap();
     assert!(status(&client).await.detached);
@@ -171,9 +171,10 @@ async fn shutdown_stops_the_daemon_and_removes_its_endpoint_file() {
     let daemon = owned_daemon(&ws, &llm).await;
     let file = daemon.endpoint_file.clone();
     let owner = attach(&daemon, Some(START), false).await;
-    let _: serde_json::Value = remote::local(&owner, protocol::SHUTDOWN, &json!({}))
-        .await
-        .unwrap();
+    let _ =
+        remote::call::<protocol::method::Shutdown>(&owner, &protocol::ShutdownParams::default())
+            .await
+            .unwrap();
     drop(owner);
     daemon.ended().await;
     assert!(!file.exists(), "the endpoint file is removed");
@@ -309,7 +310,11 @@ async fn quitting_one_of_two_agents_retires_it_and_the_last_quit_stops_the_daemo
     assert_eq!(names, vec![a_name.as_str()], "{seen:?}");
     assert!(!seen.detached, "a retired agent is no detached one");
     // Its conversation is listed, under its agent.
-    let listed: serde_json::Value = remote::local(&watcher, protocol::CONVERSATIONS, &json!({}))
+    let listed: serde_json::Value = watcher
+        .call(
+            <protocol::method::Conversations as protocol::Method>::NAME,
+            json!({}),
+        )
         .await
         .unwrap();
     let row = listed["conversations"]
@@ -352,9 +357,10 @@ async fn a_retired_agent_takes_no_input_and_its_conversation_is_seated_again() {
         .await
         .session_id
         .unwrap();
-    let retired: protocol::Retired = remote::local(&leaver, protocol::RETIRE, &json!({}))
-        .await
-        .unwrap();
+    let retired: protocol::Retired =
+        remote::call::<protocol::method::Retire>(&leaver, &protocol::Empty {})
+            .await
+            .unwrap();
     assert_eq!(retired.agent, name);
     assert_eq!(retired.session_id.as_ref(), Some(&session));
     drop(leaver);

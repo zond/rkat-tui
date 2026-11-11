@@ -25,94 +25,169 @@ pub use meerkat_rpc::error::{
 /// Every local method starts with this.
 pub const PREFIX: &str = "rkat/";
 /// The attach handshake ([`super::handshake`]): [`AttachParams`] →
-/// [`Attached`].
+/// [`Attached`]. Answered before the connection is served, so it is no
+/// [`Method`].
 pub const ATTACH: &str = "rkat/attach";
-/// `{}` → [`ModeStatus`]: the permission mode and the denial counters.
-pub const GET_MODE: &str = "rkat/get_mode";
-/// [`SetModeParams`] → [`ModeSet`]: switch the permission mode.
-pub const SET_MODE: &str = "rkat/set_mode";
-/// A [`crate::approval::desk::RuleCommand`] →
-/// [`crate::approval::desk::RuleOutcome`]: a `/permissions` command.
-pub const RULES: &str = "rkat/rules";
-/// `{}` → [`ConversationList`]: the agents' conversations (the caller's
-/// agent's current one marked).
-pub const CONVERSATIONS: &str = "rkat/conversations";
-/// `{}` → [`Switched`]: `/new`.
-pub const NEW: &str = "rkat/new";
-/// [`SessionParams`] → [`Switched`]: `/resume <session>`.
-pub const RESUME: &str = "rkat/resume";
-/// [`SessionParams`] → [`Transcript`]: a conversation's committed messages.
-pub const TRANSCRIPT: &str = "rkat/transcript";
-/// [`SessionParams`] → [`Usage`]: a conversation's total token usage.
-pub const USAGE: &str = "rkat/usage";
-/// [`SessionParams`] → [`SessionEndpoint`]: the configured endpoint a
-/// conversation's auth binding names (the status bar shows it).
-pub const ENDPOINT: &str = "rkat/endpoint";
-/// [`TrustParams`] → [`crate::approval::desk::RuleOutcome`]: the project
-/// trust record (`/trust`, `/permissions trust`).
-pub const TRUST: &str = "rkat/trust";
-/// [`SessionParams`] → [`Tasks`]: a conversation's tasks in the engine's
-/// task store (the Ctrl+T checklist).
-pub const TASKS: &str = "rkat/tasks";
-/// `{}` → [`Report`]: what `/status` shows of the daemon's side (the
-/// realm, the shell's confinement, the permission mode, the trust of the
-/// realm rules and the project inputs, the helpers' depth limit).
-pub const REPORT: &str = "rkat/report";
-/// [`ChecklistViewParams`] → `{}`: record the checklist panel's view
-/// (Ctrl+T) as the realm's `[ui] checklist`.
-pub const CHECKLIST_VIEW: &str = "rkat/checklist_view";
-/// [`SetModelParams`] → [`ModelSet`]: switch the orchestrator's current
-/// session to another model in place (`/model`), with the endpoint's auth
-/// binding and the `[thinking]` setting the model is configured with.
-pub const SET_MODEL: &str = "rkat/set_model";
 /// The notification that a decision a client was shown ended:
 /// [`DecisionEnded`].
 pub const DECISION_ENDED: &str = "rkat/decision_ended";
-/// `{}` → [`Notices`]: what the daemon's start-up had to say (the
-/// confinement, the rules, the configuration), which a client shows when
-/// it first attaches.
-pub const NOTICES: &str = "rkat/notices";
-/// `{}` → [`Notices`]: what the caller's agent was denied in unattended
-/// turns since its last client asked (each is answered once; a client asks
-/// whenever it attaches).
-pub const MISSED: &str = "rkat/missed";
-/// [`AuditParams`] → [`AuditTail`]: the last lines of the audit log for
-/// the caller's agent (`/audit`).
-pub const AUDIT: &str = "rkat/audit";
 /// How many lines `/audit` shows unless it names a number.
 pub const AUDIT_LINES: usize = 20;
 /// The notification of a change the orchestrator's file tools made:
 /// [`FileDiffNote`].
 pub const FILE_DIFF: &str = "rkat/file_diff";
-/// `{}` → [`Status`]: the daemon's lifecycle state as the caller sees it
-/// (`/quit` decides from it, `--list` and `/agents` print it).
-pub const STATUS: &str = "rkat/status";
-
-/// [`SchedulesParams`] → [`ScheduleList`] (`list`) or
-/// [`crate::approval::desk::RuleOutcome`] (an action): the caller's agent's
-/// schedules (`/schedules`), and the user's own pause, resume and delete.
-pub const SCHEDULES: &str = "rkat/schedules";
 /// The notification that a run no user started was fired by a schedule
 /// (or a file watch): [`TriggeredNote`].
 pub const TRIGGERED: &str = "rkat/triggered";
 
-/// What the realm holds that a re-home replacing it would lose
-/// ([`Holds`]).
-pub const HOLDS: &str = "rkat/holds";
-/// `{}` → `{}`: the caller leaves and wants the agent kept running
-/// (`/detach`); the daemon records that it has been detached from.
-pub const DETACH: &str = "rkat/detach";
-/// [`ShutdownParams`] → `{}`: stop the daemon (`/quit` when this client
-/// started it, is the last one and no agent was left detached, or the
-/// choice "terminate"): it removes its endpoint file and shuts down as on
-/// SIGTERM; with `retire`, every agent retires first (their conversations
-/// stay).
-pub const SHUTDOWN: &str = "rkat/shutdown";
-/// `{}` → [`Retired`]: `/quit` while other clients are attached to other
-/// agents: the caller's agent leaves the workspace (a running turn is
-/// interrupted first, its helpers stop); its conversation stays for
-/// `/resume`, and nothing can wake it.
-pub const RETIRE: &str = "rkat/retire";
+/// One of the daemon's own `rkat/*` methods: its name, and what it takes
+/// and answers. The daemon dispatches on [`Method::NAME`] and answers with
+/// the [`Method::Result`] its handler returns (`super::local`), the client
+/// calls it through `crate::client::remote::call::<M>`, so a name and its
+/// types are paired once, here, and the compiler checks both ends.
+pub trait Method {
+    /// The method's name on the wire.
+    const NAME: &'static str;
+    /// What it takes (`{}`: [`Empty`]).
+    type Params: Serialize + serde::de::DeserializeOwned + Send + Sync;
+    /// What it answers (`{}`: [`Empty`]).
+    type Result: Serialize + serde::de::DeserializeOwned + Send;
+}
+
+/// `{}`: the parameters of a method that takes none, the result of one
+/// that answers nothing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Empty {}
+
+/// Declares each method type of [`method`] and [`METHODS`].
+macro_rules! methods {
+    ($( $(#[$doc:meta])* $ty:ident = $name:literal ($params:ty) -> $result:ty; )*) => {
+        /// The daemon's `rkat/*` methods, one type each ([`Method`]).
+        pub mod method {
+            #[allow(unused_imports)]
+            use super::*;
+            $(
+                $(#[$doc])*
+                #[derive(Debug, Clone, Copy)]
+                pub struct $ty;
+
+                impl Method for $ty {
+                    const NAME: &'static str = $name;
+                    type Params = $params;
+                    type Result = $result;
+                }
+            )*
+        }
+
+        /// Every `rkat/*` method's name.
+        #[cfg(any(test, feature = "test-support"))]
+        pub const METHODS: &[&str] = &[$($name),*];
+    };
+}
+
+methods! {
+    /// The permission mode and the denial counters.
+    GetMode = "rkat/get_mode" (Empty) -> ModeStatus;
+    /// Switch the permission mode: the daemon's one mode governs every
+    /// agent and its helpers, is recorded in the realm rules file, and the
+    /// agents are told when plan mode starts or ends.
+    SetMode = "rkat/set_mode" (SetModeParams) -> ModeSet;
+    /// A `/permissions` command on the daemon's engine, which persists to
+    /// the realm rules file.
+    Rules = "rkat/rules" (crate::approval::desk::RuleCommand) -> crate::approval::desk::RuleOutcome;
+    /// The agents' conversations, last used first, the caller's agent's
+    /// current one marked ([`crate::daemon::conversations`]).
+    Conversations = "rkat/conversations" (Empty) -> ConversationList;
+    /// `/new`: the caller's agent on a fresh conversation; refused with
+    /// [`SWITCH_BUSY`] while its run is open.
+    New = "rkat/new" (Empty) -> Switched;
+    /// `/resume <session>`: the caller's agent back on an earlier
+    /// conversation of its own (another agent's is refused with where it
+    /// is); refused with [`SWITCH_BUSY`] while its run is open.
+    Resume = "rkat/resume" (SessionParams) -> Switched;
+    /// A conversation's committed messages (a client renders a resumed
+    /// conversation from them).
+    Transcript = "rkat/transcript" (SessionParams) -> MessageList;
+    /// A conversation's total usage as the engine keeps it with the session
+    /// (a client seeds its token counter from it on attach and after a
+    /// switch; the engine's wire reports usage only per turn).
+    Usage = "rkat/usage" (SessionParams) -> UsageTotals;
+    /// The configured endpoint a conversation's durable auth binding names
+    /// (the status bar shows it).
+    Endpoint = "rkat/endpoint" (SessionParams) -> SessionEndpoint;
+    /// The project trust record the daemon owns: `project` is `/trust`
+    /// (every present input recorded as it is now, read on every session
+    /// build), `rules` is `/permissions trust` (the realm rules file's
+    /// summary, then its digest recorded and its allow rules applied).
+    Trust = "rkat/trust" (TrustParams) -> crate::approval::desk::RuleOutcome;
+    /// A conversation's tasks in the engine's task store (the Ctrl+T
+    /// checklist; read on attach, after a switch and after each of the
+    /// agent's `task_create` and `task_update` calls).
+    Tasks = "rkat/tasks" (SessionParams) -> TaskList;
+    /// What `/status` shows of the daemon's side: the realm, the shell's
+    /// confinement, the permission mode, the trust of the realm rules and
+    /// the project inputs, the helpers' depth limit, the caller's agent's
+    /// file watches.
+    Report = "rkat/report" (Empty) -> DaemonReport;
+    /// Ctrl+T's choice saved as the realm's `[ui] checklist`, through the
+    /// engine that owns the realm file and its trust record.
+    ChecklistView = "rkat/checklist_view" (ChecklistViewParams) -> Empty;
+    /// `/model`: the caller's agent's current session on another model in
+    /// place, with the endpoint's auth binding and the model's `[thinking]`
+    /// setting.
+    SetModel = "rkat/set_model" (SetModelParams) -> ModelSet;
+    /// What the daemon's start-up had to say (the confinement, the rules,
+    /// the configuration), which a client shows when it first attaches.
+    Notices = "rkat/notices" (Empty) -> NoticeList;
+    /// What the caller's agent wanted to do and was denied in turns no user
+    /// started while no client was attached
+    /// ([`crate::approval::attendance`]); each is answered once, to the
+    /// first client that asks (a client asks whenever it attaches).
+    Missed = "rkat/missed" (Empty) -> NoticeList;
+    /// The last lines of the audit log for the caller's agent (`/audit`,
+    /// default [`AUDIT_LINES`]), oldest first.
+    Audit = "rkat/audit" (AuditParams) -> AuditTail;
+    /// The daemon's lifecycle state as the caller sees it (`--list` and
+    /// `/agents` print it).
+    Status = "rkat/status" (Empty) -> DaemonStatus;
+    /// The caller's agent's schedules (`/schedules`), each with what its
+    /// runs cost.
+    Schedules = "rkat/schedules" (Empty) -> ScheduleList;
+    /// The user's own pause, resume or delete of one of the caller's
+    /// agent's schedules (`/schedules pause|resume|delete <name>`).
+    Schedule = "rkat/schedule" (ScheduleAction) -> crate::approval::desk::RuleOutcome;
+    /// What the realm holds that a re-home replacing it would lose: each
+    /// conversation with a user turn (or that cannot be read); `/rehome`
+    /// refuses then.
+    Holds = "rkat/holds" (Empty) -> HeldList;
+    /// `/detach`: the caller leaves and wants its agent kept running; the
+    /// daemon records that it has been detached from.
+    Detach = "rkat/detach" (Empty) -> Empty;
+    /// Stop the daemon: it removes its endpoint file and shuts down as on
+    /// SIGTERM; with `retire`, every agent retires first (their
+    /// conversations stay).
+    Shutdown = "rkat/shutdown" (ShutdownParams) -> Empty;
+    /// The caller's agent leaves the workspace (a running turn is
+    /// interrupted first, its helpers stop, its schedules are deleted); its
+    /// conversation stays for `/resume`, and nothing can wake it.
+    Retire = "rkat/retire" (Empty) -> Retired;
+}
+
+/// [`method::Status`]'s result.
+pub type DaemonStatus = Status;
+/// [`method::Report`]'s result.
+pub type DaemonReport = Report;
+/// [`method::Tasks`]'s result.
+pub type TaskList = Tasks;
+/// [`method::Notices`]'s and [`method::Missed`]'s result.
+pub type NoticeList = Notices;
+/// [`method::Holds`]'s result.
+pub type HeldList = Holds;
+/// [`method::Transcript`]'s result.
+pub type MessageList = Transcript;
+/// [`method::Usage`]'s result.
+pub type UsageTotals = Usage;
+
 /// The engine's decision notice, pushed by the daemon.
 pub const DECISION_NOTICE: &str = meerkat_contracts::DECISION_NOTICE_NOTIFICATION;
 /// The engine's decide method, decided by the daemon ([`DecideParams`]).
@@ -431,7 +506,7 @@ pub struct Attached {
     pub build: Option<String>,
 }
 
-/// [`STATUS`]'s result.
+/// [`method::Status`]'s result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Status {
     /// The canonical workspace path the daemon serves.
@@ -468,7 +543,7 @@ pub struct Status {
     pub shell: meerkat_tools::builtin::shell::ShellConfinement,
 }
 
-/// [`HOLDS`]'s result.
+/// [`method::Holds`]'s result.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Holds {
     /// Each conversation with a user turn, or that cannot be read, in
@@ -476,7 +551,7 @@ pub struct Holds {
     pub held: Vec<String>,
 }
 
-/// [`SHUTDOWN`]'s parameters.
+/// [`method::Shutdown`]'s parameters.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShutdownParams {
     /// Retire every agent before stopping (else they are restored at the
@@ -485,7 +560,7 @@ pub struct ShutdownParams {
     pub retire: bool,
 }
 
-/// [`RETIRE`]'s result.
+/// [`method::Retire`]'s result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Retired {
     /// The agent that retired.
@@ -510,15 +585,16 @@ pub enum ScheduleOp {
     Delete,
 }
 
-/// [`SCHEDULES`]'s parameters: no action lists.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SchedulesParams {
-    /// The action, and the schedule's name or id.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub action: Option<(ScheduleOp, String)>,
+/// [`method::Schedule`]'s parameters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScheduleAction {
+    /// What to do.
+    pub op: ScheduleOp,
+    /// The schedule's name or id.
+    pub schedule: String,
 }
 
-/// One schedule as `/schedules` shows it.
+/// One schedule as [`method::Schedules`] lists it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScheduleRow {
     /// The engine's id.
@@ -539,7 +615,7 @@ pub struct ScheduleRow {
     pub cost: Option<crate::ui::SessionCost>,
 }
 
-/// [`SCHEDULES`]'s list.
+/// [`method::Schedules`]'s list.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScheduleList {
     /// The caller's agent's live schedules.
@@ -568,7 +644,7 @@ pub struct TrustedFile {
     pub trust: String,
 }
 
-/// [`REPORT`]'s result.
+/// [`method::Report`]'s result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Report {
     /// The realm directory.
@@ -590,14 +666,14 @@ pub struct Report {
     pub watches: Vec<String>,
 }
 
-/// [`SET_MODE`]'s parameters.
+/// [`method::SetMode`]'s parameters.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SetModeParams {
     /// `default`, `accept-edits`, `plan` or `auto` (case-insensitive).
     pub mode: String,
 }
 
-/// [`SET_MODE`]'s result.
+/// [`method::SetMode`]'s result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModeSet {
     /// The mode and the counters now.
@@ -609,7 +685,7 @@ pub struct ModeSet {
     pub warning: Option<String>,
 }
 
-/// [`CONVERSATIONS`]'s result.
+/// [`method::Conversations`]'s result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConversationList {
     /// Last used first.
@@ -623,7 +699,7 @@ pub struct SessionParams {
     pub session_id: SessionId,
 }
 
-/// [`NEW`]'s and [`RESUME`]'s result.
+/// [`method::New`]'s and [`method::Resume`]'s result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Switched {
     /// The session the orchestrator runs as now.
@@ -633,7 +709,7 @@ pub struct Switched {
     pub warning: Option<String>,
 }
 
-/// [`TRANSCRIPT`]'s result.
+/// [`method::Transcript`]'s result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Transcript {
     /// The committed messages.
@@ -741,7 +817,7 @@ impl ApprovalNote {
     }
 }
 
-/// [`ENDPOINT`]'s result.
+/// [`method::Endpoint`]'s result.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionEndpoint {
     /// The configured endpoint (`None`: a built-in one, named by the
@@ -750,7 +826,7 @@ pub struct SessionEndpoint {
     pub endpoint: Option<String>,
 }
 
-/// [`USAGE`]'s result.
+/// [`method::Usage`]'s result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
     /// Input tokens.
@@ -759,21 +835,21 @@ pub struct Usage {
     pub output_tokens: u64,
 }
 
-/// [`TASKS`]'s result.
+/// [`method::Tasks`]'s result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tasks {
     /// The conversation's tasks as the store lists them.
     pub tasks: Vec<meerkat_tools::builtin::types::Task>,
 }
 
-/// [`CHECKLIST_VIEW`]'s parameters.
+/// [`method::ChecklistView`]'s parameters.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct ChecklistViewParams {
     /// `hidden` or `shown`.
     pub view: crate::ui::ChecklistView,
 }
 
-/// [`SET_MODEL`]'s parameters.
+/// [`method::SetModel`]'s parameters.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SetModelParams {
     /// The model id.
@@ -810,7 +886,7 @@ pub struct ListedModel {
     pub vision: Option<bool>,
 }
 
-/// [`SET_MODEL`]'s result: the session's identity after the switch.
+/// [`method::SetModel`]'s result: the session's identity after the switch.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelSet {
     /// The session the switch applied to.
@@ -826,7 +902,7 @@ pub struct ModelSet {
     pub reseated: bool,
 }
 
-/// What [`TRUST`] acts on.
+/// What [`method::Trust`] acts on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TrustOp {
@@ -836,7 +912,7 @@ pub enum TrustOp {
     Rules,
 }
 
-/// [`TRUST`]'s parameters.
+/// [`method::Trust`]'s parameters.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct TrustParams {
     /// What to trust.
@@ -887,7 +963,7 @@ impl StartupNotice {
     }
 }
 
-/// [`AUDIT`]'s parameters.
+/// [`method::Audit`]'s parameters.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuditParams {
     /// How many lines (default [`AUDIT_LINES`]).
@@ -895,7 +971,7 @@ pub struct AuditParams {
     pub lines: Option<usize>,
 }
 
-/// [`AUDIT`]'s result.
+/// [`method::Audit`]'s result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuditTail {
     /// The audit log's file.
@@ -904,7 +980,7 @@ pub struct AuditTail {
     pub lines: Vec<String>,
 }
 
-/// [`NOTICES`]'s result.
+/// [`method::Notices`]'s result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Notices {
     /// In the order the daemon's start-up produced them, which a client
@@ -944,6 +1020,18 @@ pub struct DecisionEnded {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Every method has its own `rkat/*` name (the dispatcher takes the
+    /// first match).
+    #[test]
+    fn the_methods_have_distinct_local_names() {
+        let mut seen = std::collections::HashSet::new();
+        for name in METHODS {
+            assert!(name.starts_with(PREFIX), "{name}");
+            assert!(seen.insert(*name), "{name} twice");
+        }
+        assert!(!METHODS.contains(&ATTACH));
+    }
 
     #[test]
     fn answer_lines_are_json_rpc_responses() {

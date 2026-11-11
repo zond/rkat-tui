@@ -2,78 +2,14 @@
 //! line, and what the daemon learns from the engine methods it forwards.
 //!
 //! The wire is Meerkat's JSON-RPC; the only non-engine methods are these
-//! `rkat/*` ones (their names, parameters and results are typed in
-//! [`super::protocol`]) (and [`super::handshake`]'s `rkat/attach`). They exist
-//! because the approval policy lives in the daemon and the engine's wire
-//! has nothing for an application's permission mode or rule list:
-//!
-//! - [`GET_MODE`] `{}` → [`ModeStatus`] (`{"mode", "paused", "denials"}`);
-//! - [`SET_MODE`] `{"mode": "default"|"accept-edits"|"plan"|"auto"}` →
-//!   `{"status": ModeStatus, "notice": "…", "warning"?: "…"}`: switches the
-//!   daemon's permission mode (one per daemon: it governs the orchestrator
-//!   and its helpers), records it in the realm rules file and tells the
-//!   orchestrator when plan mode starts or ends;
-//! - [`RULES`] a [`RuleCommand`] (`{"op": "add"|"remove"|"list", …}`) →
-//!   [`crate::approval::desk::RuleOutcome`]: `/permissions` run on the daemon's
-//!   engine, which persists to the realm rules file.
-//!
-//! - [`CONVERSATIONS`] `{}` → `{"conversations": [Listed]}`: the
-//!   orchestrator's conversations, last used first
-//!   ([`super::conversations`]);
-//! - [`NEW`] `{}` → `{"session_id"}`: `/new`, the orchestrator on a fresh
-//!   session;
-//! - [`RESUME`] `{"session_id"}` → `{"session_id"}`: `/resume`, the
-//!   orchestrator back on an earlier session of its own; both are refused
-//!   with [`SWITCH_BUSY`] while the orchestrator's run is open (another
-//!   client's turn);
-//! - [`TRANSCRIPT`] `{"session_id"}` → `{"messages": [Message]}`: a
-//!   conversation's committed messages (the client renders a resumed
-//!   conversation from them);
-//! - [`ENDPOINT`] `{"session_id"}` → `{"endpoint"?}`: the configured
-//!   endpoint a conversation's durable auth binding names (absent: a
-//!   built-in one), which the status bar shows;
-//! - [`USAGE`] `{"session_id"}` → `{"input_tokens", "output_tokens"}`: a
-//!   conversation's total usage as the engine keeps it with the session (the
-//!   client seeds its token counter from it on attach and after a switch;
-//!   the engine's wire reports usage only per turn);
-//! - [`TRUST`] `{"op": "project"|"rules"}` → `{"ok", "text"}`: the
-//!   project trust record the daemon owns (a missing `op` is refused).
-//!   `project` is `/trust`
-//!   (every present input recorded as it is now, in the host trust record
-//!   the daemon's realm config store and factory read on every session
-//!   build); `rules` is `/permissions trust` (the realm rules file's summary, then
-//!   its digest recorded and its allow rules applied).
-//!
-//! - [`NOTICES`] `{}` → `{"notices": [{"warn", "text"}]}`: what the
-//!   daemon's start-up had to say (the confinement, the rules, the
-//!   configuration); a client shows them when it first attaches to this
-//!   daemon;
-//! - [`AUDIT`] `{"lines"?}` → `{"path", "lines": [String]}`: the last lines
-//!   of the audit log ([`super::audit`]) naming the caller's agent or no
-//!   agent (default [`AUDIT_LINES`]), oldest first (`/audit`);
-//! - [`MISSED`] `{}` → `{"notices": [{"warn", "text"}]}`: what the caller's
-//!   agent wanted to do and was denied in turns no user started while no
-//!   client was attached (A6, [`crate::approval::attendance`]); each is
-//!   answered once, to the first client that asks;
-//! - [`TASKS`] `{"session_id"}` → `{"tasks": [Task]}`: a conversation's
-//!   tasks in the engine's task store (the Ctrl+T checklist; the client
-//!   reads them on attach, after a switch and after each of the agent's
-//!   `task_create` and `task_update` calls);
-//! - [`CHECKLIST_VIEW`] `{"view": "hidden"|"shown"}` → `{}`: Ctrl+T's
-//!   choice saved as the realm's `[ui] checklist`, through the engine that
-//!   owns the realm file and its trust record.
-//!
-//! - [`STATUS`] `{}` → [`Status`]: the workspace, pid, start time, the
-//!   attached clients, whether anyone detached, whether the caller started
-//!   the daemon, the current conversation and whether its turn runs
-//!   ([`super::lifecycle`]; `/quit` decides from it, `--list` prints it);
-//! - [`protocol::HOLDS`] `{}` → `{"held": [String]}`: each conversation
-//!   with a user turn (or that cannot be read): what a re-home replacing
-//!   this realm would lose (`/rehome` refuses then);
-//! - [`DETACH`] `{}` → `{}`: `/detach`, recorded so that a later `/quit`
-//!   asks before stopping the daemon;
-//! - [`SHUTDOWN`] `{}` → `{}`: stop the daemon (its endpoint file goes
-//!   first, as on SIGTERM).
+//! `rkat/*` ones (and [`super::handshake`]'s `rkat/attach`). They exist
+//! because the approval policy and the agents' lifecycle live in the
+//! daemon and the engine's wire has nothing for an application's
+//! permission mode, rules, conversations or agents. Each is declared once,
+//! with its parameters and result, in [`protocol::method`]
+//! ([`protocol::Method`]); [`Local::call`] dispatches on those
+//! declarations, so a handler answers its method's result type or does not
+//! compile.
 //!
 //! A future engine extension (an application-defined method namespace, or
 //! the governed realm's own review policy) could replace them.
@@ -109,7 +45,7 @@ use super::MOB_ID;
 use super::agents::Agents;
 use super::approvals::{DaemonToolOrigins, Desk};
 use super::conversations::{Conversations, Target};
-use crate::approval::desk::{ModeStatus, RuleCommand, RuleOutcome, mode_notice, run_rule_command};
+use crate::approval::desk::{ModeStatus, RuleOutcome, mode_notice, run_rule_command};
 use crate::approval::mode::PermissionMode;
 use crate::approval::{ApprovalEngine, InputKey};
 use crate::bootstrap::project_trust::ProjectInputs;
@@ -119,20 +55,10 @@ use crate::thinking::{self, ThinkingTable};
 
 use super::lifecycle::{Caller, Lifecycle};
 use super::protocol::{
-    self, ConversationList, METHOD_NOT_FOUND, ModeSet, SWITCH_BUSY, SWITCH_FAILED, SessionParams,
-    SetModeParams, Switched, Transcript, TrustOp, TrustParams, Usage, engine,
+    self, AUDIT_LINES, AuditTail, ConversationList, Empty, METHOD_NOT_FOUND, Method, ModeSet,
+    ModelSet, Notices, Refusal, Report, Retired, SWITCH_BUSY, SWITCH_FAILED, SetModelParams,
+    StartupNotice, Status, Switched, Tasks, TrustOp, TrustedFile, Usage, engine, method,
 };
-use super::protocol::{AUDIT, AUDIT_LINES, AuditParams, AuditTail};
-use super::protocol::{
-    CHECKLIST_VIEW, ChecklistViewParams, ModelSet, SET_MODEL, SetModelParams, TASKS, Tasks,
-};
-use super::protocol::{
-    CONVERSATIONS, ENDPOINT, GET_MODE, NEW, RESUME, RULES, Refusal, SET_MODE, SessionEndpoint,
-    TRANSCRIPT, TRUST, USAGE,
-};
-use super::protocol::{DETACH, RETIRE, Retired, SHUTDOWN, STATUS, ShutdownParams, Status};
-use super::protocol::{MISSED, NOTICES, Notices, StartupNotice};
-use super::protocol::{REPORT, Report, TrustedFile};
 
 /// The idempotency source of the daemon's system-context notes.
 const SYSTEM_CONTEXT_SOURCE: &str = "rkat-tui";
@@ -218,7 +144,7 @@ pub struct LocalParts {
     pub audit: Option<Arc<super::audit::AuditLog>>,
 }
 
-/// The fixed part of [`REPORT`]'s answer.
+/// The fixed part of [`protocol::method::Report`]'s answer.
 #[derive(Debug, Clone)]
 pub struct ReportParts {
     /// The realm directory.
@@ -394,146 +320,145 @@ impl Local {
         &self.decisions
     }
 
-    /// Answer the local method `method` for `caller`.
+    /// Answer the local method `method` for `caller`: its parameters read
+    /// as the method's ([`protocol::Method`]), its handler's answer
+    /// written as the method's result.
     ///
     /// # Errors
     ///
     /// [`protocol::METHOD_NOT_FOUND`] for an unknown `rkat/*` method,
-    /// [`protocol::INVALID_PARAMS`] for bad parameters.
+    /// [`protocol::INVALID_PARAMS`] for bad parameters, and the handler's
+    /// refusal.
     pub async fn call(
         &self,
         caller: Caller,
         method: &str,
         params: Value,
     ) -> Result<Value, Refusal> {
-        match method {
-            STATUS => answer(self.status(&caller).await),
-            protocol::HOLDS => answer(protocol::Holds {
+        /// One arm per method: `$p` is its parameters, `$body` (which may
+        /// await) its `Result<M::Result, Refusal>`.
+        macro_rules! dispatch {
+            ($($m:ty, $p:pat => $body:expr;)*) => {
+                $(
+                    if method == <$m as Method>::NAME {
+                        let $p: <$m as Method>::Params = protocol::params(params)?;
+                        let result: Result<<$m as Method>::Result, Refusal> = $body;
+                        return answer(result?);
+                    }
+                )*
+            };
+        }
+        dispatch! {
+            method::Status, Empty {} => Ok(self.status(&caller).await);
+            method::Holds, Empty {} => Ok(protocol::Holds {
                 held: self.conversations.holding().await,
-            }),
-            DETACH => {
+            });
+            method::Detach, Empty {} => {
                 let agent = self.agent_of(&caller)?;
                 tracing::info!(%agent, "a client detached: the agent keeps running without it");
                 self.agents.detach(&agent);
-                answer(json!({}))
-            }
-            SHUTDOWN => {
-                let ShutdownParams { retire } = protocol::params(params)?;
+                Ok(Empty {})
+            };
+            method::Shutdown, protocol::ShutdownParams { retire } => {
                 tracing::info!(owner = caller.owner, retire, "rkat/shutdown: shutting down");
                 if retire {
                     self.lifecycle.shutdown_retiring();
                 } else {
                     self.lifecycle.shutdown();
                 }
-                answer(json!({}))
-            }
-            RETIRE => {
+                Ok(Empty {})
+            };
+            method::Retire, Empty {} => self.retire(&self.agent_of(&caller)?).await;
+            method::Schedules, Empty {} => {
                 let agent = self.agent_of(&caller)?;
-                answer(self.retire(&agent).await?)
-            }
-            protocol::SCHEDULES => {
-                let protocol::SchedulesParams { action } = protocol::params(params)?;
+                Ok(protocol::ScheduleList {
+                    schedules: self.agents.schedules().rows(&agent).await.map_err(|err| {
+                        Refusal::new(protocol::INTERNAL_ERROR, err.to_string())
+                    })?,
+                })
+            };
+            method::Schedule, protocol::ScheduleAction { op, schedule } => {
                 let agent = self.agent_of(&caller)?;
-                let schedules = self.agents.schedules();
-                match action {
-                    None => answer(protocol::ScheduleList {
-                        schedules: schedules.rows(&agent).await.map_err(|err| {
-                            Refusal::new(protocol::INTERNAL_ERROR, err.to_string())
-                        })?,
-                    }),
-                    Some((op, name)) => answer(match schedules.act(&agent, op, &name).await {
-                        Ok(text) => {
-                            self.audit(
-                                super::audit::Line::event("schedule_changed", text.clone())
-                                    .of_agent(&agent),
-                            );
-                            RuleOutcome { ok: true, text }
-                        }
-                        Err(err) => RuleOutcome {
-                            ok: false,
-                            text: err.to_string(),
-                        },
-                    }),
-                }
-            }
-            GET_MODE => answer(ModeStatus::of(&self.engine)),
-            REPORT => answer(self.report(self.agent_of(&caller).ok().as_deref())),
-            SET_MODE => {
-                let SetModeParams { mode } = protocol::params(params)?;
+                Ok(match self.agents.schedules().act(&agent, op, &schedule).await {
+                    Ok(text) => {
+                        self.audit(
+                            super::audit::Line::event("schedule_changed", text.clone())
+                                .of_agent(&agent),
+                        );
+                        RuleOutcome { ok: true, text }
+                    }
+                    Err(err) => RuleOutcome {
+                        ok: false,
+                        text: err.to_string(),
+                    },
+                })
+            };
+            method::GetMode, Empty {} => Ok(ModeStatus::of(&self.engine));
+            method::Report, Empty {} => Ok(self.report(self.agent_of(&caller).ok().as_deref()));
+            method::SetMode, protocol::SetModeParams { mode } => {
                 let mode = PermissionMode::parse(&mode).ok_or_else(|| {
                     Refusal::new(
                         protocol::INVALID_PARAMS,
                         "`mode` must be one of default, accept-edits, plan, auto",
                     )
                 })?;
-                answer(self.set_mode(mode).await)
-            }
-            RULES => {
-                let command: RuleCommand = protocol::params(params)?;
-                answer(run_rule_command(&self.engine, &command))
-            }
-            CONVERSATIONS => {
+                Ok(self.set_mode(mode).await)
+            };
+            method::Rules, command => Ok(run_rule_command(&self.engine, &command));
+            method::Conversations, Empty {} => {
                 let agent = self.agent_of(&caller).ok();
-                answer(ConversationList {
+                Ok(ConversationList {
                     conversations: self
                         .conversations
                         .list(agent.as_deref(), &self.agents.live())
                         .await,
                 })
-            }
-            NEW => answer(self.switch(&self.agent_of(&caller)?, Target::Fresh).await?),
-            RESUME => {
-                let SessionParams { session_id } = protocol::params(params)?;
-                answer(
-                    self.switch(&self.agent_of(&caller)?, Target::Resume(session_id))
-                        .await?,
-                )
-            }
-            TRANSCRIPT => {
-                let SessionParams { session_id } = protocol::params(params)?;
+            };
+            method::New, Empty {} => self.switch(&self.agent_of(&caller)?, Target::Fresh).await;
+            method::Resume, protocol::SessionParams { session_id } => {
+                self.switch(&self.agent_of(&caller)?, Target::Resume(session_id))
+                    .await
+            };
+            method::Transcript, protocol::SessionParams { session_id } => {
                 let messages = self
                     .conversations
                     .messages(&session_id)
                     .await
                     .map_err(|err| Refusal::new(SWITCH_FAILED, err.to_string()))?;
-                answer(Transcript { messages })
-            }
-            ENDPOINT => {
-                let SessionParams { session_id } = protocol::params(params)?;
-                answer(SessionEndpoint {
+                Ok(protocol::Transcript { messages })
+            };
+            method::Endpoint, protocol::SessionParams { session_id } => {
+                Ok(protocol::SessionEndpoint {
                     endpoint: self.conversations.endpoint_of(&session_id).await,
                 })
-            }
-            USAGE => {
-                let SessionParams { session_id } = protocol::params(params)?;
+            };
+            method::Usage, protocol::SessionParams { session_id } => {
                 let usage = self
                     .conversations
                     .usage(&session_id)
                     .await
                     .map_err(|err| Refusal::new(SWITCH_FAILED, err.to_string()))?;
-                answer(Usage {
+                Ok(Usage {
                     input_tokens: usage.input_tokens,
                     output_tokens: usage.output_tokens,
                 })
-            }
-            TASKS => {
-                let SessionParams { session_id } = protocol::params(params)?;
+            };
+            method::Tasks, protocol::SessionParams { session_id } => {
                 let tasks = crate::workbench::tasks::read_tasks(&self.tasks_db, &session_id)
                     .await
                     .map_err(|err| Refusal::new(protocol::INTERNAL_ERROR, err.to_string()))?;
-                answer(Tasks { tasks })
-            }
-            NOTICES => answer(Notices {
+                Ok(Tasks { tasks })
+            };
+            method::Notices, Empty {} => Ok(Notices {
                 notices: self.startup_notices.clone(),
-            }),
-            AUDIT => {
-                let AuditParams { lines } = protocol::params(params)?;
+            });
+            method::Audit, protocol::AuditParams { lines } => {
                 let agent = self.agent_of(&caller)?;
-                answer(self.audit_tail(&agent, lines.unwrap_or(AUDIT_LINES))?)
-            }
-            MISSED => {
+                self.audit_tail(&agent, lines.unwrap_or(AUDIT_LINES))
+            };
+            method::Missed, Empty {} => {
                 let agent = self.agent_of(&caller)?;
-                answer(Notices {
+                Ok(Notices {
                     notices: self
                         .agents
                         .take_missed(&agent)
@@ -541,39 +466,32 @@ impl Local {
                         .map(StartupNotice::warn)
                         .collect(),
                 })
-            }
-            SET_MODEL => {
-                let params: SetModelParams = protocol::params(params)?;
-                answer(self.set_model(&self.agent_of(&caller)?, params).await?)
-            }
-            CHECKLIST_VIEW => {
-                let ChecklistViewParams { view } = protocol::params(params)?;
+            };
+            method::SetModel, params => self.set_model(&self.agent_of(&caller)?, params).await;
+            method::ChecklistView, protocol::ChecklistViewParams { view } => {
                 self.engine
                     .persist_checklist_view(view)
                     .map_err(|err| Refusal::new(protocol::INTERNAL_ERROR, err.to_string()))?;
-                answer(json!({}))
-            }
-            TRUST => {
-                let TrustParams { op } = protocol::params(params)?;
-                match op {
-                    TrustOp::Project => answer(self.trust_project()),
-                    TrustOp::Rules => answer(match self.engine.trust_realm_rules() {
-                        Ok(summary) => RuleOutcome {
-                            ok: true,
-                            text: summary,
-                        },
-                        Err(err) => RuleOutcome {
-                            ok: false,
-                            text: format!("not trusted: {err}"),
-                        },
-                    }),
-                }
-            }
-            other => Err(Refusal::new(
-                METHOD_NOT_FOUND,
-                format!("unknown method `{other}`"),
-            )),
+                Ok(Empty {})
+            };
+            method::Trust, protocol::TrustParams { op } => Ok(match op {
+                TrustOp::Project => self.trust_project(),
+                TrustOp::Rules => match self.engine.trust_realm_rules() {
+                    Ok(summary) => RuleOutcome {
+                        ok: true,
+                        text: summary,
+                    },
+                    Err(err) => RuleOutcome {
+                        ok: false,
+                        text: format!("not trusted: {err}"),
+                    },
+                },
+            });
         }
+        Err(Refusal::new(
+            METHOD_NOT_FOUND,
+            format!("unknown method `{method}`"),
+        ))
     }
 
     /// `rkat/report`: the daemon's side of `/status` (`agent`: the caller's
