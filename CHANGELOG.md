@@ -32,9 +32,12 @@
   delivered, at the moment the agent takes that message: the daemon now
   names the input each message became (Meerkat 0.9.12), where before the
   oldest steer was marked at any steer's delivery. A steer the agent
-  runs after the turn's last run (a follow-up run) is marked when that
-  run starts: on a slow host the turn could end first, marking it
-  delivered and then starting a new turn with its text.
+  runs after the turn's last run (a follow-up run) belongs to that turn
+  in every client: a turn ends only when the daemon reports no message
+  the agent still holds for the conversation, so the steer is marked
+  when its run starts, and the other clients show its text inside the
+  turn. On a slow host the turn used to end first, marking the steer
+  delivered and starting a new turn with its text.
 - ↑ on an empty editor takes back a message sent while the agent works
   again, as long as the agent has not read it (it waits behind a running
   tool): the daemon abandons it and it returns to the editor, while the

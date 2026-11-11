@@ -5,11 +5,12 @@
 //!
 //! A turn, as the UI sees it, starts with [`Effect::StartTurn`] (or with a
 //! run this UI did not start: another client's, or one the catch-up found,
-//! announced with [`Msg::RemoteTurn`]) and ends [`RUN_GRACE`] after the last
-//! run it saw ended without another starting (a steer that missed the
-//! boundary runs as a follow-up run; while one of this client's steers
-//! waits for it after a completed run, the turn waits up to
-//! [`FOLLOW_UP_WAIT`]). Its result is the runs' terminal
+//! announced with [`Msg::RemoteTurn`]) and ends once every run it saw
+//! ended and the daemon reports no unfinished input of the conversation
+//! (`rkat/active_inputs`): a steer that missed the boundary, whichever
+//! client sent it, runs as a follow-up run of the same turn. The wait is
+//! bounded by [`FOLLOW_UP_WAIT`]; without a daemon to ask the turn ends
+//! [`RUN_GRACE`] after its last run. Its result is the runs' terminal
 //! events: `run_completed` (the text and usage), `run_failed` (an
 //! interruption when this client interrupted it or the class is
 //! `cancelled`, else the failure).
@@ -104,13 +105,18 @@ pub const ATTACH_NOTICE: &str = "the agent runs in this workspace's rkat-tui-mob
 /// How long a turn whose runs all ended waits for a follow-up run.
 pub const RUN_GRACE: Duration = Duration::from_millis(300);
 
-/// How long a turn whose runs all completed waits for the follow-up run
-/// that carries this client's steers still with the runtime (sent or
-/// admitted, not written into a run yet): those are delivered at that
-/// run's start, not at the turn's end, so the turn does not end (and a
-/// new one start with the steer's own text) between them. Past the bound
-/// the runtime is taken to own them, as at any turn's end.
+/// The longest a turn whose runs all ended stays open while the runtime
+/// still holds unfinished input of the conversation (`rkat/active_inputs`:
+/// a steer, this client's or another's, that runs as a follow-up run) or
+/// a steer of this client is not written into a run yet. The follow-up
+/// run's start delivers such a steer, so the turn does not end (and a new
+/// one start with the steer's own text) before it. Past the bound the
+/// turn ends with a notice; the runtime owns what it holds.
 pub const FOLLOW_UP_WAIT: Duration = Duration::from_secs(10);
+
+/// How soon a turn whose runs ended asks the daemon again while it still
+/// holds unfinished input.
+pub const INPUT_RECHECK: Duration = Duration::from_millis(100);
 
 /// How long after the first interrupt a second one force-cancels.
 pub const STOP_GRACE: Duration = Duration::from_secs(1);
@@ -365,6 +371,12 @@ enum Report {
     },
     /// `rkat/recall` answered (or failed, in words).
     Recalled(Result<protocol::Recalled, String>),
+    /// `rkat/active_inputs` answered question `check` of the turn (or
+    /// failed, in words).
+    ActiveInputs {
+        check: u64,
+        result: Result<usize, String>,
+    },
     /// `/agents <name>`: the daemon's agents as read for it.
     AgentsRead {
         name: String,
@@ -467,6 +479,14 @@ struct Turn {
     force_cancelled: bool,
     /// Every run ended: the turn ends then unless another starts.
     finish_by: Option<Instant>,
+    /// Every run ended and the runtime still held unfinished input: ask
+    /// the daemon again then ([`INPUT_RECHECK`]).
+    recheck_at: Option<Instant>,
+    /// The `rkat/active_inputs` question this turn waits for (answers of
+    /// an older one are dropped).
+    settle: u64,
+    /// The last answer named unfinished input.
+    held_input: bool,
     /// An interrupt the daemon has not confirmed ends the turn then.
     give_up_at: Option<Instant>,
     /// The prompt that started it, as sent (`None`: another client's run).
@@ -484,10 +504,10 @@ impl Turn {
     }
 
     fn deadline(&self) -> Option<Instant> {
-        match (self.finish_by, self.give_up_at) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        [self.finish_by, self.give_up_at, self.recheck_at]
+            .into_iter()
+            .flatten()
+            .min()
     }
 }
 
@@ -878,6 +898,7 @@ impl Runner {
                 result,
             } => self.sent(turn, steer, result),
             Report::Recalled(result) => self.recalled(result),
+            Report::ActiveInputs { check, result } => self.active_inputs(check, result),
             Report::AgentsRead { name, status } => self.agents_read(name, status),
             Report::StopAsked(Ok(text)) => {
                 self.stopping = true;

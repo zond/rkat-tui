@@ -404,7 +404,9 @@ pub enum Msg {
     /// A turn this UI did not start runs on the daemon (another
     /// client's, or one the catch-up found in progress): show `prompt` as
     /// the user's message when there is one and count the UI busy until
-    /// [`Msg::TurnFinished`], as if it had started it.
+    /// [`Msg::TurnFinished`], as if it had started it. During a running
+    /// turn: another client's steer joined it as a follow-up run, shown as
+    /// the user's message.
     RemoteTurn {
         /// The run's prompt (`None`: a continuation without one).
         prompt: Option<String>,

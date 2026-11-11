@@ -182,6 +182,11 @@ methods! {
     /// queued is abandoned, leaving the running turn alone; one that
     /// already joined a run is reported reached and left.
     Recall = "rkat/recall" (RecallParams) -> Recalled;
+    /// How many inputs of the caller's agent's current conversation the
+    /// runtime still holds unfinished (queued, staged or applied and not
+    /// consumed: a steer that will run as a follow-up run, whoever sent
+    /// it). A client ends its turn when its runs ended and this is zero.
+    ActiveInputs = "rkat/active_inputs" (Empty) -> UnfinishedInputs;
 }
 
 /// [`method::Status`]'s result.
@@ -592,6 +597,13 @@ pub struct Recalled {
     /// The cancels the runtime refused, in words.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<String>,
+}
+
+/// [`method::ActiveInputs`]'s result.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnfinishedInputs {
+    /// The unfinished inputs.
+    pub count: usize,
 }
 
 /// [`method::Retire`]'s result.

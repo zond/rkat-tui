@@ -400,6 +400,7 @@ impl Local {
             method::Recall, protocol::RecallParams { input_ids } => {
                 self.recall(&caller, &input_ids).await
             };
+            method::ActiveInputs, Empty {} => self.active_inputs(&caller).await;
             method::Schedules, Empty {} => {
                 let agent = self.agent_of(&caller)?;
                 Ok(protocol::ScheduleList {
@@ -816,6 +817,35 @@ impl Local {
             tracing::info!(recalled = answer.recalled.len(), %session, "rkat/recall");
         }
         Ok(answer)
+    }
+
+    /// [`protocol::method::ActiveInputs`] for the caller's agent.
+    ///
+    /// # Errors
+    ///
+    /// [`protocol::NO_AGENT`] when the connection is bound to no agent or
+    /// its agent has no conversation; [`protocol::INTERNAL_ERROR`] when the
+    /// runtime cannot list them.
+    async fn active_inputs(&self, caller: &Caller) -> Result<protocol::UnfinishedInputs, Refusal> {
+        use meerkat_runtime::SessionServiceRuntimeExt as _;
+        let session = caller
+            .agent
+            .as_deref()
+            .and_then(|agent| self.conversations.current(agent))
+            .ok_or_else(|| {
+                Refusal::new(
+                    protocol::NO_AGENT,
+                    "rkat/active_inputs answers for the agent this connection works with",
+                )
+            })?;
+        let active = self
+            .machine
+            .list_active_inputs(&session)
+            .await
+            .map_err(|err| Refusal::new(protocol::INTERNAL_ERROR, err.to_string()))?;
+        Ok(protocol::UnfinishedInputs {
+            count: active.len(),
+        })
     }
 
     async fn set_model(&self, agent: &str, params: SetModelParams) -> Result<ModelSet, Refusal> {

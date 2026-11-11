@@ -862,12 +862,15 @@ fn applies(msg: &Msg, text: &str) -> bool {
 /// as a follow-up run, so a first-in-first-out client would have B mark
 /// its own steer at A's boundary event: the negative case.
 ///
-/// The follow-up run is part of the turn: after a completed run the turn
-/// waits for the run that carries a steer of its client still with the
-/// runtime (`FOLLOW_UP_WAIT`), however late it starts, so each client sees
-/// one turn end, after its mark. A slow host once let the short run grace
-/// end the turn first, which swept B's steer "delivered", ended the turn
-/// and started a new one with B's own text.
+/// The follow-up run is part of the turn for both clients: a client ends
+/// its turn only when every run it saw ended and the daemon reports no
+/// unfinished input of the conversation (`rkat/active_inputs`), so a steer
+/// still queued (whoever sent it) keeps the turn open for the run that
+/// carries it, however late that run starts, and each client sees one turn
+/// end, after its mark. The client that did not send the follow-up's steer
+/// shows its text inside the turn. A short run-grace timer decided this
+/// before, and a slow host ended the turn first (once for B, sweeping its
+/// steer "delivered", once for A, which showed B's run as a new turn).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn each_client_marks_only_its_own_steer_delivered() {
     use rkat_tui::ui::delivery::PendingId;
@@ -957,6 +960,16 @@ async fn each_client_marks_only_its_own_steer_delivered() {
             .collect();
         assert_eq!(ends.len(), 1, "one turn, ended once: {seen:#?}");
         assert!(ends[0] > at, "the turn ends after the mark: {seen:#?}");
+        if !follow_up {
+            // The other client's steer joined this client's turn as its
+            // follow-up run: its text is shown inside the turn.
+            assert!(
+                seen[at..ends[0]]
+                    .iter()
+                    .any(|m| matches!(m, Msg::RemoteTurn { prompt: Some(p) } if p == theirs)),
+                "the other client's steer shown in the turn: {seen:#?}"
+            );
+        }
         if let Some(theirs_at) = seen.iter().position(|m| applies(m, theirs)) {
             negative_seen = true;
             assert!(

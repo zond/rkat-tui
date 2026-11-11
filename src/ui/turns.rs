@@ -119,8 +119,14 @@ impl App {
 
     /// [`Msg::RemoteTurn`](crate::ui::Msg::RemoteTurn): a turn the daemon runs without this UI having
     /// started it; the UI is busy until its [`Msg::TurnFinished`](crate::ui::Msg::TurnFinished).
+    /// While a turn runs it is another client's steer that joined it as a
+    /// follow-up run: its text is shown.
     pub(super) fn remote_turn(&mut self, prompt: Option<String>, now: Instant) {
         if self.running {
+            if let Some(text) = prompt {
+                self.transcript.push(Block::User { text });
+                self.scroll.bottom();
+            }
             return;
         }
         self.transcript.retire_finished_helpers();

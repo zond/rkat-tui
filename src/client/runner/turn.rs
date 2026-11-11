@@ -272,7 +272,6 @@ impl Runner {
         }
         self.followers.convening(&envelope.payload, None);
         let mut terminal = false;
-        let mut completed = false;
         // A run already going when this client attached (its start was shown
         // before it detached): the UI is busy until its end.
         if !self.turn.active && joins_a_run(&envelope.payload) {
@@ -324,12 +323,23 @@ impl Runner {
                 } else if self.turn.saw_run {
                     // A follow-up run: it carries the steers that missed
                     // the boundary.
-                    for id in self.turn.steers.take_all() {
+                    let own = self.turn.steers.take_all();
+                    if own.is_empty() {
+                        // Another client's steer: its text joins the turn.
+                        if let Some(prompt) = input.prompt_text() {
+                            self.send(Msg::RemoteTurn {
+                                prompt: Some(prompt),
+                            });
+                        }
+                    }
+                    for id in own {
                         self.send(Msg::SteerDelivered(id));
                     }
                 }
                 self.turn.saw_run = true;
                 self.turn.finish_by = None;
+                self.turn.recheck_at = None;
+                self.turn.settle += 1;
                 if let Some(run) = &identity.run_id {
                     self.turn.open_runs.insert(run.clone());
                     self.turn.current_run = Some(run.clone());
@@ -369,7 +379,6 @@ impl Runner {
                     output_tokens: usage.output_tokens,
                 }));
                 terminal = true;
-                completed = true;
             }
             AgentEvent::RunFailed {
                 identity,
@@ -394,15 +403,66 @@ impl Runner {
         if terminal {
             self.save_cursor();
             if self.turn.active && self.turn.open_runs.is_empty() {
-                // A steer of this client the runtime still holds after a
-                // completed run runs as a follow-up run, which delivers it:
-                // the turn waits for that run instead of ending first.
-                let wait = if completed && self.turn.steers.following() {
-                    FOLLOW_UP_WAIT
-                } else {
-                    RUN_GRACE
-                };
-                self.turn.finish_by = Some(Instant::now() + wait);
+                self.runs_ended();
+            }
+        }
+    }
+
+    /// Every run of the turn ended. Input the runtime still holds (a steer
+    /// that missed the boundary, whichever client sent it) runs as a
+    /// follow-up run of this turn, so the turn ends only when the daemon
+    /// reports none, within [`FOLLOW_UP_WAIT`]. Without a daemon to ask it
+    /// ends [`RUN_GRACE`] later, or waits the bound for a steer of its own.
+    fn runs_ended(&mut self) {
+        let now = Instant::now();
+        let Some(connection) = self.connection() else {
+            let wait = if self.turn.steers.following() {
+                FOLLOW_UP_WAIT
+            } else {
+                RUN_GRACE
+            };
+            self.turn.finish_by = Some(now + wait);
+            return;
+        };
+        self.turn.finish_by = Some(now + FOLLOW_UP_WAIT);
+        self.ask_active_inputs(connection);
+    }
+
+    /// Ask the daemon how much unfinished input the conversation holds.
+    fn ask_active_inputs(&mut self, connection: Arc<Connection>) {
+        self.turn.recheck_at = None;
+        self.turn.settle += 1;
+        let check = self.turn.settle;
+        let reports = self.reporter();
+        tokio::spawn(async move {
+            let result = bounded(
+                CALL_TIMEOUT,
+                remote::call::<protocol::method::ActiveInputs>(&connection, &protocol::Empty {}),
+            )
+            .await
+            .map(|answer| answer.count)
+            .map_err(|err| err.to_string());
+            reports.send(Report::ActiveInputs { check, result });
+        });
+    }
+
+    /// The daemon's answer to [`Self::ask_active_inputs`]: none held and no
+    /// steer of this client outstanding ends the turn; otherwise it asks
+    /// again shortly (a run starting meanwhile cancels that). A failed
+    /// question falls back to the short grace.
+    pub(super) fn active_inputs(&mut self, check: u64, result: Result<usize, String>) {
+        if !self.turn.active || check != self.turn.settle || !self.turn.open_runs.is_empty() {
+            return;
+        }
+        match result {
+            Ok(0) if !self.turn.steers.following() => self.finish_turn(),
+            Ok(held) => {
+                self.turn.held_input = held > 0;
+                self.turn.recheck_at = Some(Instant::now() + INPUT_RECHECK);
+            }
+            Err(err) => {
+                tracing::debug!(error = %err, "cannot ask the daemon for unfinished input");
+                self.turn.finish_by = Some(Instant::now() + RUN_GRACE);
             }
         }
     }
@@ -410,7 +470,19 @@ impl Runner {
     pub(super) fn on_deadline(&mut self) {
         let now = Instant::now();
         if self.turn.finish_by.is_some_and(|at| at <= now) {
+            if self.turn.held_input || self.turn.steers.following() {
+                self.notice(
+                    NoticeLevel::Warn,
+                    "the agent still holds a message for this turn; it runs when the agent takes it",
+                );
+            }
             self.finish_turn();
+        } else if self.turn.recheck_at.is_some_and(|at| at <= now) {
+            self.turn.recheck_at = None;
+            match self.connection() {
+                Some(connection) => self.ask_active_inputs(connection),
+                None => self.turn.finish_by = Some(now + RUN_GRACE),
+            }
         } else if self.turn.give_up_at.is_some_and(|at| at <= now) {
             self.notice(
                 NoticeLevel::Warn,
