@@ -81,6 +81,8 @@ sha2 = "0.10"
 # The attach handshake's proofs (the token never travels).
 hmac = "0.12"
 tempfile = "3.14"
+# A council's mob id, derived as the engine derives it (`mobs::council`).
+uuid = { version = "1", features = ["v5"] }
 # Task update stamps (the checklist orders by them).
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 

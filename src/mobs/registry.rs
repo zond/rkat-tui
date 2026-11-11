@@ -180,6 +180,10 @@ pub struct HelperRegistry {
     bindings: HelperBindings,
     /// Running helpers, in spawn order.
     live: Mutex<IndexMap<HelperKey, HelperTag>>,
+    /// The councils the gate admitted and the session that convened each,
+    /// by the temporary mob the engine creates for it
+    /// ([`super::council`]).
+    councils: Mutex<HashMap<MobId, SessionId>>,
     updates: mpsc::UnboundedSender<HelperUpdate>,
 }
 
@@ -207,6 +211,7 @@ impl HelperRegistry {
                 roots: RwLock::new(HashMap::new()),
                 bindings,
                 live: Mutex::new(IndexMap::new()),
+                councils: Mutex::new(HashMap::new()),
                 updates,
             },
             rx,
@@ -276,13 +281,23 @@ impl HelperRegistry {
         self.bindings.forget_owner(session);
     }
 
-    /// `mob` was created for the bridge session `owner`.
+    /// `mob` was created for the bridge session `owner`; a council's
+    /// temporary mob ([`Self::expect_council`]) is recorded for the session
+    /// that convened it instead.
     ///
     /// # Errors
     ///
     /// [`BindingsError`] when the binding cannot be persisted.
     pub fn record_mob(&self, mob: &MobId, owner: &SessionId) -> Result<(), BindingsError> {
-        self.bindings.set_mob_owner(mob, owner)
+        let convener = self.councils.lock().get(mob).cloned();
+        self.bindings
+            .set_mob_owner(mob, convener.as_ref().unwrap_or(owner))
+    }
+
+    /// The gate admitted a council that `session` convened, for which the
+    /// engine creates `mob`: its participants work for `session`.
+    pub fn expect_council(&self, mob: MobId, session: SessionId) {
+        self.councils.lock().insert(mob, session);
     }
 
     /// Whom a helper spawned into `mob` works for: the owner of
@@ -418,6 +433,7 @@ impl HelperRegistry {
     /// `mob` was destroyed: drop its helpers everywhere. Idempotent.
     pub fn mob_destroyed(&self, mob: &MobId) {
         self.live.lock().retain(|key, _| &key.mob != mob);
+        self.councils.lock().remove(mob);
         if let Err(err) = self.bindings.remove_mob(mob) {
             tracing::warn!(mob = %mob, error = %err, "cannot drop the mob's bindings");
         }
@@ -511,6 +527,39 @@ mod tests {
         assert_eq!(
             registry.owner_for_spawn(&implicit, None).unwrap().session,
             session
+        );
+    }
+
+    #[test]
+    fn a_council_works_for_the_session_that_convened_it_and_no_other() {
+        use meerkat_mob::MobId;
+
+        let (registry, _rx) = HelperRegistry::new();
+        let agent = SessionId::new();
+        registry.register_session(&agent, "m", None);
+        // The engine creates a council's mob for a fresh session of its own.
+        let convened = MobId::from("council--agent-1");
+        registry.expect_council(convened.clone(), agent.clone());
+        registry.record_mob(&convened, &SessionId::new()).unwrap();
+        assert_eq!(
+            registry.owner_for_spawn(&convened, None).unwrap().session,
+            agent
+        );
+        // One the gate never admitted keeps that foreign session.
+        let foreign = MobId::from("council--agent-2");
+        let stranger = SessionId::new();
+        registry.record_mob(&foreign, &stranger).unwrap();
+        assert_eq!(
+            registry.owner_for_spawn(&foreign, None),
+            Err(OwnerError::UnknownSession(stranger))
+        );
+        // Destroyed, the expectation goes with it.
+        registry.mob_destroyed(&convened);
+        let again = SessionId::new();
+        registry.record_mob(&convened, &again).unwrap();
+        assert_eq!(
+            registry.owner_for_spawn(&convened, None),
+            Err(OwnerError::UnknownSession(again))
         );
     }
 

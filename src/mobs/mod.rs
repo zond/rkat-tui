@@ -43,6 +43,7 @@
 pub mod registry;
 
 pub mod bindings;
+pub mod council;
 pub mod customizer;
 pub(crate) mod follow;
 

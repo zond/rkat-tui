@@ -1502,6 +1502,10 @@ impl AttachRunner {
         if helpers::starts_helpers(&attributed.envelope.payload) {
             self.start_discovery();
         }
+        if let Some(by) = self.followers.helper_of(&stream, &attributed) {
+            self.followers
+                .convening(&attributed.envelope.payload, Some(&by));
+        }
         if self.followers.owns(&stream) {
             let actions = self.followers.event(&stream, attributed);
             self.follow(actions);
@@ -1717,6 +1721,7 @@ impl AttachRunner {
         if helpers::starts_helpers(&envelope.payload) {
             self.start_discovery();
         }
+        self.followers.convening(&envelope.payload, None);
         let mut terminal = false;
         // A run already going when this client attached (its start was shown
         // before it detached): the UI is busy until its end.

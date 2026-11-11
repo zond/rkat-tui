@@ -6082,18 +6082,59 @@ pins the engine state),
 `approval::policy::tests::tier_table`, `upstream_builtins_are_all_classified`,
 `bootstrap::persona::tests::the_persona_restates_no_tool_contract`.
 
-### Items 17 and 18: not done in P6
+### Councils (item 17): participants work for the session that convened them
 
-Item 17 (councils from the daemon's agent): not attempted beyond reading.
-The refusal "neither a session of this TUI nor a helper" is
-`HelperRegistry`'s (`UnknownSession`) for a session it has no owner for;
-a council's participants are forked sessions the engine seats in a
-temporary council mob, which the customizer would have to recognise and
-bind to the agent that convened the council. That needs a probe of how
-the engine reports a council participant's spawn to the customizer
-(`SpawnSource`, the spawner identity it carries) before anything is
-registered; registering on a guess would put unknown sessions behind an
-owner's gate. Left open.
+Probed on the rig (an agent makes a mob `team` with two members and
+convenes them, `tests/councils.rs`): the engine creates the council's
+temporary mob `council--<council id>` through the ordinary create path
+with an owner bridge session of its own (`SessionId::new()` in
+`meerkat_mob_mcp::temporary_council`'s `seat_participants`; the create
+request's docs say so: "a session of its own for a temporary council"),
+and seats each participant (a fork of a named member, identity
+`council-p<order>`, profile `council_p<order>`) with
+`SpawnSource::AttachedForkedParticipant` and no spawner identity. The
+create hook recorded that fresh session as the mob's owner, the
+customizer resolved the participant's owner from it, and no session here
+had it: "attached spawn failed: … helper refused: session … is neither a
+session of this TUI nor a helper" (`OwnerError::UnknownSession`); the
+council ended `participant_seating_failed` and destroyed its mob.
+
+Nothing in the create request or the spawn names the convener, but the
+council id is derived from the call: the call's `council_id` when it
+names one, else `agent-` and a UUIDv5 of `"{convening session}:{call
+id}"` in the engine's `AGENT_COUNCIL_NAMESPACE` (`agent_council_id`,
+`meerkat_mob_mcp::agent_tools`). So the gate records it:
+`mobs::council::Convening` wraps every member's dispatch admission (the
+agent's `RootGate` and each helper's gate) and, once a `council` call is
+admitted, records the mob the engine will create as convened by the
+dispatching session (`HelperRegistry::expect_council`); the create hook's
+`record_mob` then records that session as the mob's owner instead of the
+engine's. The participants resolve to the convener like any helper:
+gated for its owner (its transcript, allow cache and Stop), bound and
+followed, their catalogs read when their runs end. The client follows the
+council's mob too: its follower computes the same mob id from the
+`council` call it sees on the agent's (or a helper's) stream
+(`Followers::convening`) and opens it as one of the agent's. A council
+mob nobody convened through the gate keeps the engine's owner and its
+participants are refused, as before.
+
+The council runs in the background (its tool answers "running" with a
+job id); its end reaches the agent as a background-job notice
+("Background council job … finished") that starts a turn, and the
+council destroys its temporary mob itself (the report's
+`temporary_mob_destroyed: true`).
+
+Tests: `tests/councils.rs::a_two_member_council_completes_with_its_participants_as_helpers`
+(the council's notice is not a failure and carries the participants'
+views; a participant's reviewed `shell` went through the classifier with
+the agent's transcript and ran; the client saw both participants' events
+scoped to them; a drift of the derived id fails it),
+`a_council_mob_nobody_convened_here_gets_no_participant` (negative:
+`UnknownSession`); unit: `mobs::council::tests`,
+`mobs::registry::tests::a_council_works_for_the_session_that_convened_it_and_no_other`,
+`client::helpers::tests::a_council_the_agent_convenes_is_followed`.
+
+### Item 18: not done in P6
 
 Item 18 (`mob_destroy` leaves its database): read, not fixed. The refusal
 is `SqliteMobObserverDrainRefused::OtherOwners` (meerkat-mob

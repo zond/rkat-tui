@@ -439,6 +439,13 @@ design.
 
 ### Fixed
 
+- A council the agent convenes runs: its participants were refused as
+  working for no session ("neither a session of this TUI nor a helper"),
+  because the engine creates a council's mob for a session of its own.
+  The gate now records which session convened each council, so its
+  participants work for the agent (gated for it, shown in its TUI as
+  helpers), and the council's result reaches the agent.
+
 - A classifier denial no longer hands the agent the user's annotations:
   the block-rule tag (`[T3]`) and how the classifier checked
   (`[classifier checked 0 files]`) stay in the notice and the dialog; the

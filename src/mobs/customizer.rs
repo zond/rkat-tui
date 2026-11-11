@@ -429,13 +429,19 @@ fn shape(
     spec: &mut SpawnMemberSpec,
     owner: &Owner,
     label: &str,
+    registry: &Arc<HelperRegistry>,
     engine: &Arc<ApprovalEngine>,
     tools: &HelperTools,
     shell_env: Option<&HashMap<String, String>>,
 ) {
     let gate = ApprovalGate::for_helper(Arc::clone(engine), owner.session.clone(), label)
         .after(spec.tool_dispatch_admission.take());
-    spec.tool_dispatch_admission = Some(Arc::new(gate));
+    // A council it convenes works for its owner, through it.
+    spec.tool_dispatch_admission = Some(Arc::new(super::council::Convening::new(
+        Arc::new(gate),
+        registry,
+        None,
+    )));
     if spec.external_tools.is_none() {
         spec.external_tools = Some(tools());
     }
@@ -579,6 +585,7 @@ impl HelperCustomizer {
             spec,
             owner,
             &label,
+            &self.registry,
             &self.engine,
             &self.tools,
             self.shell_env.as_ref(),

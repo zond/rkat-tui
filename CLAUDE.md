@@ -77,7 +77,7 @@ shell (`src/user_shell.rs`) and attach mode's start-on-demand of the
 | `src/ui/` | Elm-style UI: `App::update(Msg) -> Vec<Effect>` (`mod.rs`), split by concern (`turns.rs`, `keys.rs`, `mouse.rs`, `dispatch.rs`, `delivery.rs`, `escalations.rs`, `helpers.rs`, `shell.rs`), rendering (`render.rs`), the input editor, the command table (`commands.rs`), completion, modals, the checklist; `ui/tests/` holds its unit tests split the same way |
 | `src/ui/transcript/` | The transcript model: blocks, the event-to-block mapping, helper folds (`helpers.rs`), notices (`notices.rs`), a stored conversation as blocks (`restore.rs`) |
 | `src/tools/` | The file tools the agent gets (the shell is the engine's), and the watch tools (`watch.rs`) |
-| `src/mobs/` | Helpers (delegate) as mob members: the customizer with the members' tool policy, follower, registry |
+| `src/mobs/` | Helpers (delegate) as mob members: the customizer with the members' tool policy, follower, registry, the councils the gate records (`council.rs`) |
 | `src/memory/` | Notes at user and workspace scope, memory tools |
 | `src/endpoints.rs`, `src/models.rs`, `src/pricing.rs`, `src/thinking.rs` | LLM endpoints, model listing, price table, the per-model `[thinking]` setting |
 | `src/mentions.rs`, `src/paths.rs`, `src/overlay.rs`, `src/http.rs`, `src/user_shell.rs`, `src/error.rs` | `@` mentions and the path index, path expansion, `--set` overlays, the HTTP client, the user's `!` shell, the crate's error types |

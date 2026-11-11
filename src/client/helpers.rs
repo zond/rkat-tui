@@ -114,6 +114,10 @@ pub struct Followers {
     /// Mobs with a stream open or opening.
     open: HashSet<String>,
     helpers: IndexMap<HelperId, Helper>,
+    /// The councils the agent or one of its helpers convened, by their
+    /// temporary mob, with the labels above their participants
+    /// ([`Self::convening`]).
+    convened: HashMap<String, Vec<String>>,
     /// The orchestrator's model (a helper's until its own is read).
     default_model: String,
 }
@@ -158,8 +162,36 @@ impl Followers {
         self.open.insert(mob.to_string())
     }
 
+    /// `event` of the agent (`by` `None`) or of its helper `by`: a
+    /// `council` call convenes a council, whose temporary mob (the one the
+    /// engine creates for the call, `crate::mobs::council::council_mob`)
+    /// holds this agent's helpers from now on.
+    pub fn convening(&mut self, event: &AgentEvent, by: Option<&HelperId>) {
+        let AgentEvent::ToolCallRequested { id, name, args } = event else {
+            return;
+        };
+        if name != crate::mobs::council::COUNCIL {
+            return;
+        }
+        let (session, path) = match by {
+            None => (self.owner.clone(), Vec::new()),
+            Some(helper) => match self.helpers.get(helper) {
+                Some(helper) => (helper.session.clone(), helper.path.clone()),
+                None => return,
+            },
+        };
+        if let Some(mob) = session
+            .and_then(|session| crate::mobs::council::council_mob(&session, id, args.as_value()))
+        {
+            self.convened.insert(mob.to_string(), path);
+        }
+    }
+
     /// Whether `mob` holds this agent's helpers.
     fn is_ours(&self, mob: &str) -> bool {
+        if self.convened.contains_key(mob) {
+            return true;
+        }
         let Some(session) = mob.strip_prefix(IMPLICIT_PREFIX) else {
             return mob == MOB_ID;
         };
@@ -221,6 +253,9 @@ impl Followers {
     /// The labels above a helper of `mob`: none for the orchestrator's own
     /// mobs, else the path of the helper whose implicit mob it is.
     fn parent_path(&self, mob: &str) -> Vec<String> {
+        if let Some(path) = self.convened.get(mob) {
+            return path.clone();
+        }
         let Some(session) = mob
             .strip_prefix(IMPLICIT_PREFIX)
             .and_then(|id| SessionId::parse(id).ok())
@@ -278,6 +313,14 @@ impl Followers {
             return Vec::new();
         }
         self.first_sight(&id, session)
+    }
+
+    /// The helper `attributed` of `stream` is from, when the stream is a
+    /// followed mob's.
+    #[must_use]
+    pub fn helper_of(&self, stream: &str, attributed: &AttributedEvent) -> Option<HelperId> {
+        let mob = self.streams.get(stream)?;
+        Some((mob.clone(), attributed.source.identity.to_string()))
     }
 
     /// One event of a followed stream.
@@ -500,6 +543,27 @@ mod tests {
         assert!(actions.iter().any(
             |a| matches!(a, Action::Ui(Msg::Status(StatusUpdate::Helpers(h))) if h.is_empty())
         ));
+    }
+
+    #[test]
+    fn a_council_the_agent_convenes_is_followed() {
+        let owner = SessionId::new();
+        let mut followers = Followers::default();
+        followers.reset(owner.clone());
+        let args = meerkat_core::ToolCallArguments::from_value(serde_json::json!({})).unwrap();
+        let mob = crate::mobs::council::council_mob(&owner, "c1", args.as_value()).unwrap();
+        assert!(!followers.should_open(mob.as_str()));
+        followers.convening(
+            &AgentEvent::ToolCallRequested {
+                id: "c1".into(),
+                name: "council".into(),
+                args,
+            },
+            None,
+        );
+        assert!(followers.should_open(mob.as_str()));
+        // Another agent's council is not this one's.
+        assert!(!followers.should_open("council--agent-other"));
     }
 
     #[test]

@@ -298,11 +298,14 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         let engine = Arc::clone(&engine);
         let registry = Arc::clone(&registry);
         Arc::new(move |key: &HelperKey| {
-            Arc::new(RootGate::new(
+            let gate = Arc::new(RootGate::new(
                 Arc::clone(&engine),
                 Arc::clone(&registry),
                 key.clone(),
-            )) as Arc<dyn meerkat_core::ToolDispatchAdmission>
+            ));
+            // A council the agent convenes works for it.
+            Arc::new(crate::mobs::council::Convening::new(gate, &registry, None))
+                as Arc<dyn meerkat_core::ToolDispatchAdmission>
         })
     };
     let root = RootMember {
