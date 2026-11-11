@@ -241,57 +241,55 @@ pub fn load_layered_with(
     project_rkat_dir: &Path,
     cli: Option<&RulesFile>,
 ) -> Result<Layered, RulesError> {
-    let mut rules = RuleSet::default();
-    let mut settings = AutoSettings::default();
-    let mut mode = PermissionMode::default();
-    let mut notices = Vec::new();
-    let mut endpoints: BTreeMap<String, LayeredEndpoint> = BTreeMap::new();
-    let mut pricing: BTreeMap<String, PricingSection> = BTreeMap::new();
-    let mut pricing_fetch = true;
-    let mut thinking: BTreeMap<String, ThinkingSetting> = BTreeMap::new();
-    let mut confinement = ConfinementSection::default();
-    let mut helpers = HelperSettings::default();
-    let mut shell = ShellSettings::default();
-    let mut ui = UiSettings::default();
-    let mut daemon_principal = None;
-
-    let mut user_layers: Vec<(RuleOrigin, RulesFile)> = Vec::new();
+    let mut layered = Layered {
+        pricing_fetch: true,
+        ..Layered::default()
+    };
     if let Some(global) = global_rules_file {
-        user_layers.push((RuleOrigin::Global, RulesFile::load(global)?));
+        layered.apply_user_layer(RuleOrigin::Global, &RulesFile::load(global)?)?;
     }
-    user_layers.push((
+    layered.apply_user_layer(
         RuleOrigin::Realm,
-        RulesFile::load(&realm_dir.join(RULES_FILE_NAME))?,
-    ));
+        &RulesFile::load(&realm_dir.join(RULES_FILE_NAME))?,
+    )?;
     if let Some(cli) = cli {
-        user_layers.push((RuleOrigin::Cli, cli.clone()));
+        layered.apply_user_layer(RuleOrigin::Cli, cli)?;
     }
+    let project_path = project_rkat_dir.join(RULES_FILE_NAME);
+    let project = RulesFile::load(&project_path)?;
+    layered.apply_project_layer(project, project_path, cli)?;
+    layered.clamp_compaction();
+    Ok(layered)
+}
 
-    for (origin, file) in user_layers {
+impl Layered {
+    /// Apply one of the user's own layers (global, realm, command line),
+    /// over the ones before it.
+    fn apply_user_layer(&mut self, origin: RuleOrigin, file: &RulesFile) -> Result<(), RulesError> {
         for rule in file.rules(origin)? {
-            rules.push(rule);
+            self.rules.push(rule);
         }
         if let Some(section) = &file.confinement {
-            confinement.extend_from(section);
+            self.confinement.extend_from(section);
         }
         for (model, section) in &file.pricing {
-            pricing
+            self.pricing
                 .entry(model.clone())
                 .or_default()
                 .merge_from(section);
         }
         if let Some(fetch) = file.pricing.fetch {
-            pricing_fetch = fetch;
+            self.pricing_fetch = fetch;
         }
         // A later layer's setting replaces an earlier one's (`"default"`
         // undoes it).
-        thinking.extend(
+        self.thinking.extend(
             file.thinking
                 .iter()
                 .map(|(key, setting)| (key.clone(), *setting)),
         );
         for (name, section) in &file.endpoints {
-            endpoints
+            self.endpoints
                 .entry(name.clone())
                 .and_modify(|layered| layered.section.merge_from(section))
                 .or_insert_with(|| LayeredEndpoint {
@@ -300,182 +298,186 @@ pub fn load_layered_with(
                 });
         }
         if let Some(auto) = &file.auto {
-            apply_auto(&mut settings, &mut mode, auto);
+            apply_auto(&mut self.settings, &mut self.mode, auto);
         }
         if let Some(depth) = file.helpers.as_ref().and_then(|h| h.max_depth) {
-            helpers.max_depth = depth;
+            self.helpers.max_depth = depth;
         }
         if let Some(secs) = file.shell.and_then(|s| s.user_timeout_secs) {
-            shell.user_timeout_secs = secs.max(1);
+            self.shell.user_timeout_secs = secs.max(1);
         }
         if let Some(section) = &file.ui {
-            ui.apply(section);
+            self.ui.apply(section);
         }
         if let Some(principal) = file.daemon.as_ref().and_then(|d| d.principal.clone()) {
-            daemon_principal = Some(principal);
+            self.daemon_principal = Some(principal);
         }
+        Ok(())
     }
 
-    let project_path = project_rkat_dir.join(RULES_FILE_NAME);
-    let project = RulesFile::load(&project_path)?;
-    // A project's display preference applies unless the command line set it.
-    if let Some(section) = &project.ui {
-        let cli_ui = cli.and_then(|c| c.ui).unwrap_or_default();
-        ui.apply(&UiSection {
-            helpers: section.helpers.filter(|_| cli_ui.helpers.is_none()),
-            bell: section.bell.filter(|_| cli_ui.bell.is_none()),
-            checklist: section.checklist.filter(|_| cli_ui.checklist.is_none()),
-        });
-    }
-    if !project.allow.is_empty() {
-        notices.push(Notice::ProjectAllowIgnored {
-            path: project_path.clone(),
-            count: project.allow.len(),
-        });
-    }
-    for entry in &project.deny {
-        rules.push(Rule::from_entry(
-            RuleKind::Deny,
-            entry,
-            RuleOrigin::Project,
-        )?);
-    }
-    // Not fetching only keeps a request from being made.
-    if project.pricing.fetch == Some(false) {
-        pricing_fetch = false;
-    }
-    if !project.pricing.models.is_empty() {
-        notices.push(Notice::PricingIgnored {
-            path: project_path.clone(),
-            count: project.pricing.len(),
-        });
-    }
-    if !project.thinking.is_empty() {
-        notices.push(Notice::ThinkingIgnored {
-            path: project_path.clone(),
-            count: project.thinking.len(),
-        });
-    }
-    if project.daemon.is_some() {
-        notices.push(Notice::DaemonIgnored {
-            path: project_path.clone(),
-        });
-    }
-    pricing.retain(|model, section| match section.invalid_field() {
-        Some(field) => {
-            notices.push(Notice::PricingInvalid {
-                model: model.clone(),
-                field,
+    /// Apply the project file (`.rkat/tui.toml`, which a cloned repository
+    /// writes): deny rules and what may only lower the user's settings;
+    /// the rest is ignored with a notice.
+    fn apply_project_layer(
+        &mut self,
+        project: RulesFile,
+        project_path: std::path::PathBuf,
+        cli: Option<&RulesFile>,
+    ) -> Result<(), RulesError> {
+        // A project's display preference applies unless the command line set it.
+        if let Some(section) = &project.ui {
+            let cli_ui = cli.and_then(|c| c.ui).unwrap_or_default();
+            self.ui.apply(&UiSection {
+                helpers: section.helpers.filter(|_| cli_ui.helpers.is_none()),
+                bell: section.bell.filter(|_| cli_ui.bell.is_none()),
+                checklist: section.checklist.filter(|_| cli_ui.checklist.is_none()),
             });
-            false
         }
-        None => true,
-    });
-    // Nor do they widen the shell's sandbox.
-    let project_grants = project
-        .confinement
-        .as_ref()
-        .map_or(0, ConfinementSection::len);
-    if project_grants > 0 {
-        notices.push(Notice::ProjectConfinementIgnored {
-            path: project_path.clone(),
-            count: project_grants,
-        });
-    }
-    // A cloned repository may keep helpers shallower, never deeper.
-    if let Some(depth) = project.helpers.as_ref().and_then(|h| h.max_depth) {
-        helpers.max_depth = helpers.max_depth.min(depth);
-    }
-    // Nor may it let the user's own commands run longer.
-    if let Some(secs) = project.shell.and_then(|s| s.user_timeout_secs) {
-        shell.user_timeout_secs = shell.user_timeout_secs.min(secs.max(1));
-    }
-    // Project files never define endpoints, not even new ones: a cloned
-    // repository could route prompts and credentials to its own server.
-    for name in project.endpoints.keys() {
-        notices.push(Notice::ProjectEndpointIgnored {
-            path: project_path.clone(),
-            name: name.clone(),
-        });
-    }
-    if let Some(mut auto) = project.auto {
-        if auto.trust_project_builds == Some(true) {
-            auto.trust_project_builds = None;
-            notices.push(Notice::ProjectTrustIgnored {
+        if !project.allow.is_empty() {
+            self.notices.push(Notice::ProjectAllowIgnored {
+                path: project_path.clone(),
+                count: project.allow.len(),
+            });
+        }
+        for entry in &project.deny {
+            self.rules.push(Rule::from_entry(
+                RuleKind::Deny,
+                entry,
+                RuleOrigin::Project,
+            )?);
+        }
+        // Not fetching only keeps a request from being made.
+        if project.pricing.fetch == Some(false) {
+            self.pricing_fetch = false;
+        }
+        if !project.pricing.models.is_empty() {
+            self.notices.push(Notice::PricingIgnored {
+                path: project_path.clone(),
+                count: project.pricing.len(),
+            });
+        }
+        if !project.thinking.is_empty() {
+            self.notices.push(Notice::ThinkingIgnored {
+                path: project_path.clone(),
+                count: project.thinking.len(),
+            });
+        }
+        if project.daemon.is_some() {
+            self.notices.push(Notice::DaemonIgnored {
                 path: project_path.clone(),
             });
         }
-        // Nor the model that reviews the agent's actions: a cloned
-        // repository could pick one that is cheap to talk past.
-        if let Some(model) = auto.classifier_model.take() {
-            notices.push(Notice::ProjectClassifierModelIgnored {
-                path: project_path,
-                model,
+        self.pricing
+            .retain(|model, section| match section.invalid_field() {
+                Some(field) => {
+                    self.notices.push(Notice::PricingInvalid {
+                        model: model.clone(),
+                        field,
+                    });
+                    false
+                }
+                None => true,
+            });
+        // Nor do they widen the self.shell's sandbox.
+        let project_grants = project
+            .confinement
+            .as_ref()
+            .map_or(0, ConfinementSection::len);
+        if project_grants > 0 {
+            self.notices.push(Notice::ProjectConfinementIgnored {
+                path: project_path.clone(),
+                count: project_grants,
             });
         }
-        // The permission mode is the user's choice: a cloned repository
-        // cannot pick one (`/mode` writes the realm file, never this one),
-        // it can only turn the classifier off (`enabled = false` moves auto
-        // mode to manual; any other mode stays).
-        auto.mode = None;
-        let classifier_off = auto.enabled.take() == Some(false);
-        let classifier_off_by_cli = cli
-            .and_then(|c| c.auto.as_ref())
-            .is_some_and(|c| c.enabled.is_some() || c.mode.is_some());
-        // File contents a cloned repository wrote must not reach the
-        // classifier against the user's choice: the project may only turn
-        // the classifier's file reads off.
-        if auto.classifier_tools == Some(true) {
-            auto.classifier_tools = None;
+        // A cloned repository may keep self.helpers shallower, never deeper.
+        if let Some(depth) = project.helpers.as_ref().and_then(|h| h.max_depth) {
+            self.helpers.max_depth = self.helpers.max_depth.min(depth);
         }
-        // The command line wins over the project file, except that the
-        // project may always lower `trust_project_builds` and turn off
-        // `classifier_tools`.
-        if let Some(cli_auto) = cli.and_then(|c| c.auto.as_ref()) {
-            let lower_trust = auto.trust_project_builds;
-            let tools_off = auto.classifier_tools;
-            auto = project_auto_without(auto, cli_auto);
-            if lower_trust == Some(false) {
-                auto.trust_project_builds = Some(false);
+        // Nor may it let the user's own commands run longer.
+        if let Some(secs) = project.shell.and_then(|s| s.user_timeout_secs) {
+            self.shell.user_timeout_secs = self.shell.user_timeout_secs.min(secs.max(1));
+        }
+        // Project files never define self.endpoints, not even new ones: a cloned
+        // repository could route prompts and credentials to its own server.
+        for name in project.endpoints.keys() {
+            self.notices.push(Notice::ProjectEndpointIgnored {
+                path: project_path.clone(),
+                name: name.clone(),
+            });
+        }
+        if let Some(mut auto) = project.auto {
+            if auto.trust_project_builds == Some(true) {
+                auto.trust_project_builds = None;
+                self.notices.push(Notice::ProjectTrustIgnored {
+                    path: project_path.clone(),
+                });
             }
-            if tools_off == Some(false) {
-                auto.classifier_tools = Some(false);
+            // Nor the model that reviews the agent's actions: a cloned
+            // repository could pick one that is cheap to talk past.
+            if let Some(model) = auto.classifier_model.take() {
+                self.notices.push(Notice::ProjectClassifierModelIgnored {
+                    path: project_path,
+                    model,
+                });
+            }
+            // The permission self.mode is the user's choice: a cloned repository
+            // cannot pick one (`/self.mode` writes the realm file, never this one),
+            // it can only turn the classifier off (`enabled = false` moves auto
+            // self.mode to manual; any other self.mode stays).
+            auto.mode = None;
+            let classifier_off = auto.enabled.take() == Some(false);
+            let classifier_off_by_cli = cli
+                .and_then(|c| c.auto.as_ref())
+                .is_some_and(|c| c.enabled.is_some() || c.mode.is_some());
+            // File contents a cloned repository wrote must not reach the
+            // classifier against the user's choice: the project may only turn
+            // the classifier's file reads off.
+            if auto.classifier_tools == Some(true) {
+                auto.classifier_tools = None;
+            }
+            // The command line wins over the project file, except that the
+            // project may always lower `trust_project_builds` and turn off
+            // `classifier_tools`.
+            if let Some(cli_auto) = cli.and_then(|c| c.auto.as_ref()) {
+                let lower_trust = auto.trust_project_builds;
+                let tools_off = auto.classifier_tools;
+                auto = project_auto_without(auto, cli_auto);
+                if lower_trust == Some(false) {
+                    auto.trust_project_builds = Some(false);
+                }
+                if tools_off == Some(false) {
+                    auto.classifier_tools = Some(false);
+                }
+            }
+            apply_auto(&mut self.settings, &mut self.mode, &auto);
+            if classifier_off && !classifier_off_by_cli && self.mode == PermissionMode::Auto {
+                self.mode = PermissionMode::Manual;
             }
         }
-        apply_auto(&mut settings, &mut mode, &auto);
-        if classifier_off && !classifier_off_by_cli && mode == PermissionMode::Auto {
-            mode = PermissionMode::Manual;
+        Ok(())
+    }
+
+    /// Bring the compaction percentages into range, with a notice when
+    /// they were not.
+    fn clamp_compaction(&mut self) {
+        let (policy, clamped) = CompactionPolicy {
+            mode: self.settings.compact,
+            warn_percent: self.settings.compact_warn_percent,
+            auto_percent: self.settings.compact_auto_percent,
+        }
+        .normalized();
+        if clamped {
+            self.notices.push(Notice::CompactPercentClamped {
+                configured: (
+                    self.settings.compact_warn_percent,
+                    self.settings.compact_auto_percent,
+                ),
+                applied: (policy.warn_percent, policy.auto_percent),
+            });
+            self.settings.compact_warn_percent = policy.warn_percent;
+            self.settings.compact_auto_percent = policy.auto_percent;
         }
     }
-    let (policy, clamped) = CompactionPolicy {
-        mode: settings.compact,
-        warn_percent: settings.compact_warn_percent,
-        auto_percent: settings.compact_auto_percent,
-    }
-    .normalized();
-    if clamped {
-        notices.push(Notice::CompactPercentClamped {
-            configured: (settings.compact_warn_percent, settings.compact_auto_percent),
-            applied: (policy.warn_percent, policy.auto_percent),
-        });
-        settings.compact_warn_percent = policy.warn_percent;
-        settings.compact_auto_percent = policy.auto_percent;
-    }
-    Ok(Layered {
-        rules,
-        settings,
-        mode,
-        endpoints,
-        pricing,
-        pricing_fetch,
-        thinking,
-        confinement,
-        helpers,
-        shell,
-        ui,
-        daemon_principal,
-        notices,
-    })
 }
 
 /// `project` with every field `cli` sets cleared.

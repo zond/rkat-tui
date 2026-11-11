@@ -63,26 +63,39 @@ pub struct Spawning {
     pub tag: HelperTag,
 }
 
-/// Builds the instruction sections of a fresh root member (the persona
-/// first) for its identity, read again on every fresh spawn.
-pub type RootInstructions = Arc<dyn Fn(&AgentIdentity) -> Vec<String> + Send + Sync>;
+/// What the host supplies for its root members (the daemon's agents) on
+/// every spawn and rebuild: the engine persists none of it.
+pub trait RootHost: Send + Sync {
+    /// The external tools of the member `member` (each its own: the file
+    /// tools report their changes under its name).
+    fn tools(&self, member: &AgentIdentity) -> Arc<dyn AgentToolDispatcher>;
 
-/// Builds the external tools of one root member (each its own: the file
-/// tools report their changes under the member's name).
-pub type RootTools = Arc<dyn Fn(&AgentIdentity) -> Arc<dyn AgentToolDispatcher> + Send + Sync>;
+    /// Its instruction sections on a fresh spawn (the persona first).
+    fn instructions(&self, member: &AgentIdentity) -> Vec<String>;
 
-/// Builds the approval gate of one root member (its key names it).
-pub type RootAdmission = Arc<dyn Fn(&HelperKey) -> Arc<dyn ToolDispatchAdmission> + Send + Sync>;
+    /// The approval gate of the member `key`'s own calls (`None`: none,
+    /// a host without a gate).
+    fn admission(&self, key: &HelperKey) -> Option<Arc<dyn ToolDispatchAdmission>> {
+        let _ = key;
+        None
+    }
 
-/// The `[thinking]` a rebuilt root member's identity is configured with
-/// (its model may have been switched since the spawn).
-pub type RootThinking = Arc<
-    dyn Fn(
-            &meerkat_core::SessionLlmIdentity,
-        ) -> Option<meerkat_core::lifecycle::run_primitive::AnthropicThinkingConfig>
-        + Send
-        + Sync,
->;
+    /// The `[thinking]` a rebuilt member's identity is configured with
+    /// (its model may have been switched since the spawn).
+    fn thinking(&self, identity: &meerkat_core::SessionLlmIdentity) -> RootThinking {
+        let _ = identity;
+        RootThinking::Keep
+    }
+}
+
+/// What a rebuilt root member's provider params get.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RootThinking {
+    /// The persisted params stay as they are.
+    Keep,
+    /// The params of this `[thinking]` setting (`None`: no override).
+    Set(Option<meerkat_core::lifecycle::run_primitive::AnthropicThinkingConfig>),
+}
 
 /// The host-root members that are owners themselves, not helpers: the mob
 /// daemon's agents (its orchestrators), every member of one mob whose
@@ -103,23 +116,12 @@ pub struct RootMember {
     /// never reach them (`crate::daemon::orchestrator::main_profile`).
     /// `None`: the mob's stored profile.
     pub current_profile: Option<meerkat_mob::Profile>,
-    /// Each one's external tools (the TUI session's file and note tools);
-    /// not persisted by the engine, so supplied again on every rebuild.
-    pub tools: RootTools,
-    /// Its instruction sections on a fresh spawn.
-    pub instructions: RootInstructions,
+    /// Their tools, instructions, gate and thinking.
+    pub host: Arc<dyn RootHost>,
     /// The model it starts on (a rebuilt member keeps its session's).
     pub model: String,
     /// The start-up endpoint's auth binding.
     pub auth_binding: Option<AuthBindingRef>,
-    /// The approval gate for a root member's own calls (the daemon's
-    /// `RootGate`: the TUI's tiers, rules, classifier and modes, consent
-    /// through the approval store). Re-installed on every rebuild: the
-    /// engine does not persist an admission.
-    pub admission: Option<RootAdmission>,
-    /// The `[thinking]` of a rebuilt member's model; `None`: the persisted
-    /// provider params stay as they are.
-    pub thinking: Option<RootThinking>,
 }
 
 impl std::fmt::Debug for RootMember {
@@ -127,8 +129,6 @@ impl std::fmt::Debug for RootMember {
         f.debug_struct("RootMember")
             .field("mob", &self.mob)
             .field("model", &self.model)
-            .field("gated", &self.admission.is_some())
-            .field("thinking", &self.thinking.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -262,11 +262,11 @@ fn shape_root(
     if let Some(profile) = &root.current_profile {
         spec.override_profile = Some(profile.clone());
     }
-    if let Some(admission) = &root.admission {
-        spec.tool_dispatch_admission = Some(admission(key));
+    if let Some(admission) = root.host.admission(key) {
+        spec.tool_dispatch_admission = Some(admission);
     }
     if spec.external_tools.is_none() {
-        spec.external_tools = Some((root.tools)(&key.member));
+        spec.external_tools = Some(root.host.tools(&key.member));
     }
     inherit_shell_env(spec, shell_env);
     // The engine's schedule category stays off, also for an agent whose
@@ -277,7 +277,7 @@ fn shape_root(
     if fresh {
         spec.additional_instructions
             .get_or_insert_with(Vec::new)
-            .extend((root.instructions)(&key.member));
+            .extend(root.host.instructions(&key.member));
     }
     deny_tools(spec, &[], gated_fork_off);
 }
@@ -718,11 +718,10 @@ impl SpawnMemberCustomizer for HelperCustomizer {
                 false,
                 self.gated_fork_off,
             );
-            if let (Some(thinking), Some(identity)) = (&root.thinking, &durable.llm_identity)
-                && let crate::thinking::Reapplied::Replace(params) = crate::thinking::reapplied(
-                    identity.provider_params.as_ref(),
-                    thinking(identity).as_ref(),
-                )
+            if let Some(identity) = &durable.llm_identity
+                && let RootThinking::Set(thinking) = root.host.thinking(identity)
+                && let crate::thinking::Reapplied::Replace(params) =
+                    crate::thinking::reapplied(identity.provider_params.as_ref(), thinking.as_ref())
             {
                 spec.resume_provider_params = Some(params.unwrap_or_default());
             }
@@ -1037,14 +1036,22 @@ mod tests {
             is_root: |name| name == "main" || name.starts_with("main-"),
             profile: "main".to_string(),
             current_profile: None,
-            tools: Arc::new(|_| {
-                Arc::new(meerkat_tools::EmptyToolDispatcher) as Arc<dyn AgentToolDispatcher>
-            }),
-            instructions: Arc::new(|_| vec!["persona".to_string(), "agents".to_string()]),
+            host: Arc::new(TestHost),
             model: "m".to_string(),
             auth_binding: None,
-            admission: None,
-            thinking: None,
+        }
+    }
+
+    /// A host without a gate or a `[thinking]`.
+    struct TestHost;
+
+    impl RootHost for TestHost {
+        fn tools(&self, _: &AgentIdentity) -> Arc<dyn AgentToolDispatcher> {
+            Arc::new(meerkat_tools::EmptyToolDispatcher)
+        }
+
+        fn instructions(&self, _: &AgentIdentity) -> Vec<String> {
+            vec!["persona".to_string(), "agents".to_string()]
         }
     }
 

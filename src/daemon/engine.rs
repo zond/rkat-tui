@@ -267,58 +267,17 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     }
     let helper_endpoints = endpoints.as_slice().to_vec();
     let daemon_endpoints = endpoints.clone();
-    let root_thinking: crate::mobs::customizer::RootThinking = Arc::new({
-        let thinking = thinking.clone();
-        move |identity: &meerkat_core::SessionLlmIdentity| {
-            let endpoint = crate::endpoints::endpoint_of(
-                identity.provider,
-                identity.auth_binding.as_ref(),
-                &endpoints,
-            );
-            thinking.resolve(endpoint.as_deref(), identity.provider, &identity.model)
-        }
+    let host = Arc::new(AgentHost {
+        scope: scope.clone(),
+        notes: Arc::clone(&notes),
+        watches: Arc::clone(&watches),
+        diff_tx,
+        engine: Arc::clone(&engine),
+        registry: Arc::clone(&registry),
+        thinking: thinking.clone(),
+        endpoints,
+        instructions,
     });
-    let notes_for_index = Arc::clone(&notes);
-    let root_tools: crate::mobs::customizer::RootTools = {
-        let scope = scope.clone();
-        let notes = Arc::clone(&notes);
-        let watches = Arc::clone(&watches);
-        Arc::new(move |identity: &meerkat_mob::AgentIdentity| {
-            let diffs = tagged_diffs(
-                identity.to_string(),
-                diff_tx.clone(),
-                Arc::downgrade(&watches),
-            );
-            let watch = Arc::new(crate::tools::WatchToolDispatcher::new(
-                identity.to_string(),
-                Arc::clone(&watches) as Arc<dyn crate::tools::WatchHost>,
-            ));
-            match agent_tools(&scope, &notes, Some(diffs), Some(watch)) {
-                Ok(tools) => tools,
-                Err(err) => {
-                    // The same composition succeeded at start for the
-                    // catalog; an agent without its file tools still has
-                    // the engine's.
-                    tracing::error!(error = %err, agent = %identity, "the agent's file tools could not be composed");
-                    Arc::new(meerkat_tools::EmptyToolDispatcher) as Arc<dyn AgentToolDispatcher>
-                }
-            }
-        })
-    };
-    let admission: crate::mobs::customizer::RootAdmission = {
-        let engine = Arc::clone(&engine);
-        let registry = Arc::clone(&registry);
-        Arc::new(move |key: &HelperKey| {
-            let gate = Arc::new(RootGate::new(
-                Arc::clone(&engine),
-                Arc::clone(&registry),
-                key.clone(),
-            ));
-            // A council the agent convenes works for it.
-            Arc::new(crate::mobs::council::Convening::new(gate, &registry, None))
-                as Arc<dyn meerkat_core::ToolDispatchAdmission>
-        })
-    };
     let root_plan = RootPlan {
         model: choice.engine_model.clone(),
         provider: choice.engine_provider,
@@ -335,24 +294,9 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         is_root: super::agents::is_agent,
         profile: ORCHESTRATOR.to_string(),
         current_profile: super::orchestrator::main_profile(&root_plan),
-        tools: root_tools,
-        instructions: Arc::new(move |identity: &meerkat_mob::AgentIdentity| {
-            let mut sections = vec![
-                CODING_PERSONA.to_string(),
-                crate::bootstrap::persona::agents_persona(identity.as_str()),
-                super::deferral::PERSONA.to_string(),
-            ];
-            sections.extend(instructions.render());
-            sections.extend(prompt_index(
-                notes_for_index.user(),
-                notes_for_index.workspace(),
-            ));
-            sections
-        }),
+        host,
         model: choice.engine_model.clone(),
         auth_binding: choice.auth_binding,
-        admission: Some(admission),
-        thinking: Some(root_thinking),
     };
     let project_root = scope.project_root.clone();
     let helper_tools: HelperTools = Arc::new(move || {
@@ -570,6 +514,90 @@ fn note_tools(scope: &RuntimeScope) -> NoteToolDispatcher {
             Scope::Workspace,
         ),
     )
+}
+
+/// What the daemon supplies for its agents on every spawn and rebuild
+/// ([`crate::mobs::customizer::RootHost`]).
+struct AgentHost {
+    scope: RuntimeScope,
+    notes: Arc<NoteToolDispatcher>,
+    watches: Arc<super::watches::Watches>,
+    diff_tx: tokio::sync::mpsc::UnboundedSender<(String, crate::tools::FileDiff)>,
+    engine: Arc<ApprovalEngine>,
+    registry: Arc<HelperRegistry>,
+    thinking: ThinkingTable,
+    endpoints: crate::endpoints::EndpointRegistry,
+    instructions: crate::bootstrap::InstructionSources,
+}
+
+impl crate::mobs::customizer::RootHost for AgentHost {
+    /// The agent's file, note and watch tools.
+    fn tools(&self, identity: &meerkat_mob::AgentIdentity) -> Arc<dyn AgentToolDispatcher> {
+        let diffs = tagged_diffs(
+            identity.to_string(),
+            self.diff_tx.clone(),
+            Arc::downgrade(&self.watches),
+        );
+        let watch = Arc::new(crate::tools::WatchToolDispatcher::new(
+            identity.to_string(),
+            Arc::clone(&self.watches) as Arc<dyn crate::tools::WatchHost>,
+        ));
+        match agent_tools(&self.scope, &self.notes, Some(diffs), Some(watch)) {
+            Ok(tools) => tools,
+            Err(err) => {
+                // The same composition succeeded at start for the catalog;
+                // an agent without its file tools still has the engine's.
+                tracing::error!(error = %err, agent = %identity, "the agent's file tools could not be composed");
+                Arc::new(meerkat_tools::EmptyToolDispatcher) as Arc<dyn AgentToolDispatcher>
+            }
+        }
+    }
+
+    /// The persona, the agents' and the deferral's notes, the instruction
+    /// files and the notes index.
+    fn instructions(&self, identity: &meerkat_mob::AgentIdentity) -> Vec<String> {
+        let mut sections = vec![
+            CODING_PERSONA.to_string(),
+            crate::bootstrap::persona::agents_persona(identity.as_str()),
+            super::deferral::PERSONA.to_string(),
+        ];
+        sections.extend(self.instructions.render());
+        sections.extend(prompt_index(self.notes.user(), self.notes.workspace()));
+        sections
+    }
+
+    /// The daemon's gate (`RootGate`: the tiers, rules, classifier and
+    /// modes, consent through the approval store); a council the agent
+    /// convenes works for it.
+    fn admission(&self, key: &HelperKey) -> Option<Arc<dyn meerkat_core::ToolDispatchAdmission>> {
+        let gate = Arc::new(RootGate::new(
+            Arc::clone(&self.engine),
+            Arc::clone(&self.registry),
+            key.clone(),
+        ));
+        Some(Arc::new(crate::mobs::council::Convening::new(
+            gate,
+            &self.registry,
+            None,
+        )))
+    }
+
+    /// The `[thinking]` of the identity's model on its endpoint.
+    fn thinking(
+        &self,
+        identity: &meerkat_core::SessionLlmIdentity,
+    ) -> crate::mobs::customizer::RootThinking {
+        let endpoint = crate::endpoints::endpoint_of(
+            identity.provider,
+            identity.auth_binding.as_ref(),
+            &self.endpoints,
+        );
+        crate::mobs::customizer::RootThinking::Set(self.thinking.resolve(
+            endpoint.as_deref(),
+            identity.provider,
+            &identity.model,
+        ))
+    }
 }
 
 /// One agent's external tools: its own file tools (reporting every change
