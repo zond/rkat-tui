@@ -5,9 +5,8 @@
 use std::time::Instant;
 
 use super::{
-    App, Block, BlockId, COMPACT_REQUESTED, Command, CompactFailure, Effect, NoticeLevel,
-    OpenHelperView, Pending, PendingId, PendingState, SteerFailure, TurnFailure, TurnOutcome,
-    commands, quote_short,
+    App, Block, BlockId, COMPACT_REQUESTED, Command, CompactFailure, Effect, NoticeLevel, Pending,
+    PendingId, PendingState, SteerFailure, TurnFailure, TurnOutcome, commands, quote_short,
 };
 
 impl App {
@@ -104,7 +103,7 @@ impl App {
     ) {
         // Helpers that finished drop off the helper panel.
         self.transcript.retire_finished_helpers();
-        self.run_first_block = self.transcript.len();
+        self.run_first_block = self.transcript.next_id();
         self.streamed_text = false;
         if user_block {
             self.transcript.push(Block::User {
@@ -130,13 +129,13 @@ impl App {
             return;
         }
         self.transcript.retire_finished_helpers();
-        self.run_first_block = self.transcript.len();
+        self.run_first_block = self.transcript.next_id();
         self.streamed_text = false;
         if let Some(text) = prompt {
             // A watch event the daemon announced before its run started
             // is shown labelled already.
             let announced = matches!(
-                self.transcript.blocks().last(),
+                self.transcript.last(),
                 Some(Block::Triggered { text: shown, .. }) if *shown == text
             );
             if !announced {
@@ -179,30 +178,20 @@ impl App {
         }
     }
 
-    /// Remove transcript blocks (highest index first, so the remaining ids
-    /// stay valid) and fix up every id the app holds.
+    /// Remove transcript blocks and forget the ones the app held (every
+    /// other id stays valid).
     pub(super) fn drop_blocks(&mut self, blocks: impl IntoIterator<Item = BlockId>) {
-        let mut blocks: Vec<BlockId> = blocks.into_iter().collect();
-        blocks.sort_by_key(|b| std::cmp::Reverse(b.0));
         for block in blocks {
             if self.transcript.remove_block(block).is_some() {
-                self.pending.block_removed(block);
-                let shift = |id: BlockId| match id {
-                    f if f == block => None,
-                    f if f.0 > block.0 => Some(BlockId(f.0 - 1)),
-                    f => Some(f),
-                };
-                self.panel_selected = self.panel_selected.and_then(shift);
-                self.helper_view = self.helper_view.take().and_then(|view| {
-                    shift(view.header).map(|header| OpenHelperView { header, ..view })
-                });
-                if let Some(run) = &mut self.shell_run
-                    && let Some(moved) = shift(run.block)
-                {
-                    run.block = moved;
+                if self.panel_selected == Some(block) {
+                    self.panel_selected = None;
                 }
-                if self.run_first_block > block.0 {
-                    self.run_first_block -= 1;
+                if self
+                    .helper_view
+                    .as_ref()
+                    .is_some_and(|view| view.header == block)
+                {
+                    self.helper_view = None;
                 }
             }
         }
@@ -395,7 +384,7 @@ impl App {
         } else {
             self.next_after_turn(unsent, interrupted, succeeded, now, fx);
         }
-        if self.shell_run.is_none() && !self.running {
+        if self.shell.running.is_none() && !self.running {
             self.run_next_shell(now, fx);
         }
         self.offer_plan(answered);

@@ -17,8 +17,8 @@ impl App {
     /// line of its first row and the block shown on each row (set by the
     /// renderer; row `i` shows logical line `first_line + i`).
     pub fn set_transcript_rows(&mut self, area: Rect, first_line: usize, rows: Vec<BlockId>) {
-        self.transcript_area = area;
-        self.transcript_rows = rows
+        self.mouse.transcript_area = area;
+        self.mouse.transcript_rows = rows
             .into_iter()
             .enumerate()
             .map(|(i, id)| (id, first_line + i))
@@ -27,8 +27,9 @@ impl App {
 
     /// The transcript block drawn at screen row `row` in the last frame.
     pub fn block_at_row(&self, row: u16) -> Option<BlockId> {
-        let offset = row.checked_sub(self.transcript_area.y)?;
-        self.transcript_rows
+        let offset = row.checked_sub(self.mouse.transcript_area.y)?;
+        self.mouse
+            .transcript_rows
             .get(usize::from(offset))
             .map(|(id, _)| *id)
     }
@@ -36,18 +37,18 @@ impl App {
     /// The transcript cell (logical line, display column) at a screen
     /// position in the last frame.
     pub fn cell_at(&self, row: u16, column: u16) -> Option<CellPos> {
-        let offset = row.checked_sub(self.transcript_area.y)?;
-        let col = column.checked_sub(self.transcript_area.x)?;
-        if col >= self.transcript_area.width {
+        let offset = row.checked_sub(self.mouse.transcript_area.y)?;
+        let col = column.checked_sub(self.mouse.transcript_area.x)?;
+        if col >= self.mouse.transcript_area.width {
             return None;
         }
-        let (_, line) = self.transcript_rows.get(usize::from(offset))?;
+        let (_, line) = self.mouse.transcript_rows.get(usize::from(offset))?;
         Some(CellPos::new(*line, usize::from(col)))
     }
 
     /// The current mouse selection.
     pub fn selection(&self) -> Option<&Selection> {
-        self.selection.as_ref()
+        self.mouse.selection.as_ref()
     }
 
     /// The copy queued since the last call.
@@ -65,8 +66,9 @@ impl App {
     /// Bring the layout up to date at the last drawn width (so logical line
     /// indices match what is on screen) and return line `idx`.
     pub(super) fn layout_line(&mut self, idx: usize) -> Option<Line<'static>> {
-        if self.transcript_area.width > 0 {
-            self.transcript.ensure_layout(self.transcript_area.width);
+        if self.mouse.transcript_area.width > 0 {
+            self.transcript
+                .ensure_layout(self.mouse.transcript_area.width);
         }
         self.transcript.line(idx).cloned()
     }
@@ -91,13 +93,13 @@ impl App {
         if self.modal.is_some() {
             return false;
         }
-        let had_selection = self.selection.take().is_some();
+        let had_selection = self.mouse.selection.take().is_some();
         let Some(pos) = self.cell_at(row, column) else {
-            self.press = None;
-            self.last_down = None;
+            self.mouse.press = None;
+            self.mouse.last_down = None;
             return had_selection;
         };
-        let clicks = match self.last_down {
+        let clicks = match self.mouse.last_down {
             Some(d)
                 if d.row == row
                     && d.column == column
@@ -107,19 +109,19 @@ impl App {
             }
             _ => 1,
         };
-        self.last_down = Some(LastDown {
+        self.mouse.last_down = Some(LastDown {
             at: now,
             row,
             column,
             clicks,
         });
-        self.press = Some(Press {
+        self.mouse.press = Some(Press {
             pos,
             row,
             clicks,
             dragged: false,
         });
-        self.selection = match clicks {
+        self.mouse.selection = match clicks {
             1 => None,
             2 => {
                 let line = self.layout_line(pos.line);
@@ -136,7 +138,7 @@ impl App {
         if self.modal.is_some() {
             return false;
         }
-        let Some(press) = self.press.as_mut() else {
+        let Some(press) = self.mouse.press.as_mut() else {
             return false;
         };
         press.dragged = true;
@@ -146,6 +148,7 @@ impl App {
         };
         let line = self.layout_line(pos.line);
         let sel = self
+            .mouse
             .selection
             .get_or_insert_with(|| Selection::new(start, SelectMode::Char, None));
         sel.extend(pos, line.as_ref());
@@ -157,9 +160,9 @@ impl App {
     /// targets the line that scrolls in; below the last line it targets the
     /// end of the last line.
     pub(super) fn drag_target(&mut self, row: u16, column: u16) -> Option<CellPos> {
-        let first = self.transcript_rows.first()?.1;
-        let last = self.transcript_rows.last()?.1;
-        let area = self.transcript_area;
+        let first = self.mouse.transcript_rows.first()?.1;
+        let last = self.mouse.transcript_rows.last()?.1;
+        let area = self.mouse.transcript_area;
         let col = usize::from(column.saturating_sub(area.x));
         if row < area.y {
             if first > 0 {
@@ -167,7 +170,7 @@ impl App {
             }
             return Some(CellPos::new(first.saturating_sub(1), col));
         }
-        if let Some((_, line)) = self.transcript_rows.get(usize::from(row - area.y)) {
+        if let Some((_, line)) = self.mouse.transcript_rows.get(usize::from(row - area.y)) {
             return Some(CellPos::new(*line, col));
         }
         if row >= area.bottom() && self.scroll.offset_from_bottom > 0 {
@@ -181,7 +184,7 @@ impl App {
     /// Left release: a press without drag is a click (expand/collapse a tool
     /// block); after a drag or a double/triple click the selection is copied.
     pub(super) fn mouse_up(&mut self) -> bool {
-        let Some(press) = self.press.take() else {
+        let Some(press) = self.mouse.press.take() else {
             return false;
         };
         if self.modal.is_some() {
@@ -196,12 +199,13 @@ impl App {
 
     /// Queue the selected text for the clipboard.
     pub(super) fn copy_selection(&mut self) {
-        let Some(sel) = self.selection else {
+        let Some(sel) = self.mouse.selection else {
             return;
         };
         let (start, end) = sel.range();
-        if self.transcript_area.width > 0 {
-            self.transcript.ensure_layout(self.transcript_area.width);
+        if self.mouse.transcript_area.width > 0 {
+            self.transcript
+                .ensure_layout(self.mouse.transcript_area.width);
         }
         let lines = self
             .transcript
@@ -214,10 +218,9 @@ impl App {
     pub(super) fn copy_answer(&mut self, n: usize) {
         let answers: Vec<String> = self
             .transcript
-            .blocks()
             .iter()
             .rev()
-            .filter_map(|b| match b {
+            .filter_map(|(_, b)| match b {
                 Block::Assistant { md } if !md.trim().is_empty() => Some(md.clone()),
                 _ => None,
             })
@@ -254,8 +257,8 @@ impl App {
 
     /// Clear the selection and any press in progress.
     pub(super) fn clear_selection(&mut self) {
-        self.selection = None;
-        self.press = None;
+        self.mouse.selection = None;
+        self.mouse.press = None;
     }
 
     /// A left click: expand or collapse the tool block under it. Expanding
@@ -281,4 +284,20 @@ impl App {
             None => false,
         }
     }
+}
+
+/// The mouse: what the last draw put where, and the selection.
+#[derive(Debug, Default)]
+pub(super) struct MouseState {
+    /// Screen area of the transcript as of the last draw.
+    pub(super) transcript_area: Rect,
+    /// Per drawn row, the block and the transcript logical line shown
+    /// there, as of the last draw (hit-testing and selection).
+    pub(super) transcript_rows: Vec<(BlockId, usize)>,
+    /// The text selection (logical line coordinates).
+    pub(super) selection: Option<Selection>,
+    /// A left press not yet released.
+    pub(super) press: Option<Press>,
+    /// The last left press, for multi-click detection.
+    pub(super) last_down: Option<LastDown>,
 }

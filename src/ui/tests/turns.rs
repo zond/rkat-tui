@@ -464,8 +464,8 @@ fn interrupted_turn_sends_undelivered_messages_next() {
     assert_eq!(app.input.text(), "draft");
     let users: Vec<&Block> = app
         .transcript
-        .blocks()
         .iter()
+        .map(|(_, b)| b)
         .filter(|b| matches!(b, Block::User { .. }))
         .collect();
     assert_eq!(users, vec![&user("one"), &user("two"), &user("three")]);
@@ -524,8 +524,8 @@ fn send_next_takes_priority_over_undelivered() {
     assert!(app.input.is_empty());
     let users: Vec<&Block> = app
         .transcript
-        .blocks()
         .iter()
+        .map(|(_, b)| b)
         .filter(|b| matches!(b, Block::User { .. }))
         .collect();
     assert_eq!(users, vec![&user("one"), &user("two"), &user("urgent")]);

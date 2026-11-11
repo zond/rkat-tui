@@ -263,16 +263,19 @@ fn a_word_with_no_match_is_not_looked_up_again_on_every_message() {
     type_str(&mut app, "see @nosuchfile");
     answer_index(&mut app);
     assert!(app.menu().is_none());
-    let after_index = app.menu_lookups;
+    let after_index = app.completion.lookups;
     for _ in 0..50 {
         app.update(Msg::Tick);
     }
-    assert_eq!(app.menu_lookups, after_index, "ticks scanned the index");
+    assert_eq!(
+        app.completion.lookups, after_index,
+        "ticks scanned the index"
+    );
     // Another word is looked up.
     type_str(&mut app, "x");
-    assert_eq!(app.menu_lookups, after_index + 1);
+    assert_eq!(app.completion.lookups, after_index + 1);
     app.update(Msg::Tick);
-    assert_eq!(app.menu_lookups, after_index + 1);
+    assert_eq!(app.completion.lookups, after_index + 1);
     // A word that matches opens its menu again.
     for _ in 0.."nosuchfilex".len() {
         app.update(key(KeyCode::Backspace));
@@ -610,7 +613,7 @@ fn quit_while_busy_needs_confirmation_and_hands_over_held_messages() {
     ));
     // The window expires on a tick; the next press only re-arms.
     app.update_at(Msg::Tick, t0 + QUIT_CONFIRM_WINDOW);
-    assert!(app.quit_confirm.is_none());
+    assert!(app.quit.confirm.is_none());
     assert!(
         app.update_at(ctrl('d'), t0 + QUIT_CONFIRM_WINDOW)
             .is_empty()
@@ -1120,4 +1123,20 @@ fn hash_input_remembers_and_escapes_do_not() {
         submit(&mut app, "b"),
         vec![Effect::StartTurn("#a\nb".into())]
     );
+}
+
+/// The loop ticks only while something animates or waits to expire: an
+/// idle app wants none, a running turn and an armed Ctrl-C each want it,
+/// and the Ctrl-C window's expiry (at a tick) ends it.
+#[test]
+fn the_tick_runs_only_while_something_animates() {
+    let mut idle = App::new(StatusInfo::default());
+    assert!(!idle.wants_tick());
+    let t0 = Instant::now();
+    assert!(idle.update_at(ctrl('c'), t0).is_empty());
+    assert!(idle.wants_tick(), "the Ctrl-C window");
+    idle.update_at(Msg::Tick, t0 + Duration::from_secs(5));
+    assert!(!idle.wants_tick(), "expired at a tick");
+    let running = running_app();
+    assert!(running.wants_tick(), "the turn's spinner");
 }

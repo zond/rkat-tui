@@ -5,6 +5,7 @@ use super::transcript::test_support::{test_args, test_tool_result, test_usage};
 use super::*;
 use meerkat_core::{StopReason, Usage};
 use ratatui::crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
+use ratatui::layout::Rect;
 use serde_json::json;
 
 mod dispatch;

@@ -40,7 +40,6 @@ use std::time::{Duration, Instant};
 
 use meerkat_core::{AgentEvent, EventEnvelope, ScopedAgentEvent};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
-use ratatui::layout::Rect;
 
 pub use crate::cost::SessionCost;
 #[cfg(any(test, feature = "test-support"))]
@@ -1025,12 +1024,6 @@ pub struct App {
     /// admitted as an ordinary `Queue` input once the request is answered
     /// (the runner serves effects in order); session switches wait.
     compacting: bool,
-    /// When a Ctrl-D / `/quit` was refused because work is in flight; a
-    /// second one within [`QUIT_CONFIRM_WINDOW`] quits anyway.
-    quit_confirm: Option<Instant>,
-    /// An [`Effect::DecideQuit`] waits for its
-    /// [`Msg::QuitDecided`] (another `/quit` meanwhile leaves at once).
-    deciding_quit: bool,
     /// Context-gauge policy: warn about a filling context (warn mode).
     gauge: CompactionGauge,
     /// Whether assistant text streamed during the current turn (the turn
@@ -1047,20 +1040,10 @@ pub struct App {
     parked: Option<Modal>,
     submitted: Vec<String>,
     running: bool,
-    run_first_block: usize,
-    last_ctrl_c: Option<Instant>,
+    run_first_block: BlockId,
     /// When an Esc on an idle input with text armed the draft clear.
     last_esc: Option<Instant>,
     viewport_height: usize,
-    /// Screen area of the transcript and, per drawn row, the block and the
-    /// transcript logical line shown there, as of the last draw (for mouse
-    /// hit-testing and selection).
-    transcript_area: Rect,
-    transcript_rows: Vec<(BlockId, usize)>,
-    /// Mouse text selection (logical line coordinates).
-    selection: Option<Selection>,
-    press: Option<Press>,
-    last_down: Option<LastDown>,
     /// Text to put on the system clipboard (drained by the runtime).
     clipboard: Option<QueuedCopy>,
     /// The loop's own effects queued in order ([`LocalEffect::ExternalEditor`],
@@ -1084,36 +1067,19 @@ pub struct App {
     focused: bool,
     /// A bell is due ([`Self::take_bell`]).
     ring: bool,
-    /// The completion menu above the input, while open.
-    menu: Option<complete::Menu>,
-    /// The word Esc closed the menu for: it stays closed until the word
-    /// changes.
-    menu_dismissed: Option<complete::Word>,
     /// The workspace `@` mentions complete and resolve against (`None`:
     /// no path menu, no mention notices).
     workspace: Option<ProjectRoot>,
-    /// The workspace paths, asked for when a path menu opens and dropped
-    /// when it closes.
-    path_index: PathIndex,
-    /// The last [`LocalEffect::IndexPaths`] generation.
-    path_index_generation: u64,
-    /// The word last looked up that opened no menu, with the path index
-    /// it was looked up in ([`Self::index_key`]): the next refresh for the
-    /// same word and index does not scan the index again.
-    menu_missed: Option<(complete::Word, (u64, bool))>,
-    /// How many times the completion candidates were computed (tests).
-    #[cfg(test)]
-    menu_lookups: usize,
-    /// The `!` command running now, if any.
-    shell_run: Option<RunningShell>,
-    /// The last allocated [`ShellRunId`].
-    last_shell_id: u64,
-    /// The current session's tasks (the panel under the input, Ctrl+T).
-    checklist: Checklist,
-    /// Whether the checklist panel shows (`[ui] checklist`).
-    checklist_view: ChecklistView,
-    /// Why the task store could not be read, said once at the next Ctrl+T.
-    checklist_note: Option<String>,
+    /// Ctrl-C, Ctrl-D and `/quit` ([`keys::QuitState`]).
+    quit: keys::QuitState,
+    /// The mouse: hit-testing and the selection ([`mouse::MouseState`]).
+    mouse: mouse::MouseState,
+    /// The completion menu and the `@` path index ([`keys::Completion`]).
+    completion: keys::Completion,
+    /// The `!` commands ([`shell::ShellRuns`]).
+    shell: shell::ShellRuns,
+    /// The checklist panel ([`checklist::ChecklistPanel`]).
+    checklist: checklist::ChecklistPanel,
     dirty: bool,
 }
 
@@ -1142,8 +1108,6 @@ impl App {
             mode: InputMode::Normal,
             chord: None,
             compacting: false,
-            quit_confirm: None,
-            deciding_quit: false,
             gauge: CompactionGauge::default(),
             streamed_text: false,
             global_history: Vec::new(),
@@ -1152,15 +1116,9 @@ impl App {
             parked: None,
             submitted: Vec::new(),
             running: false,
-            run_first_block: 0,
-            last_ctrl_c: None,
+            run_first_block: BlockId(0),
             last_esc: None,
             viewport_height: 20,
-            transcript_area: Rect::default(),
-            transcript_rows: Vec::new(),
-            selection: None,
-            press: None,
-            last_down: None,
             clipboard: None,
             local: Vec::new(),
             panel_selected: None,
@@ -1170,19 +1128,12 @@ impl App {
             bell: true,
             focused: true,
             ring: false,
-            menu: None,
-            menu_dismissed: None,
             workspace: None,
-            path_index: PathIndex::Dropped,
-            path_index_generation: 0,
-            menu_missed: None,
-            #[cfg(test)]
-            menu_lookups: 0,
-            shell_run: None,
-            last_shell_id: 0,
-            checklist: Checklist::default(),
-            checklist_view: ChecklistView::default(),
-            checklist_note: None,
+            quit: keys::QuitState::default(),
+            mouse: mouse::MouseState::default(),
+            completion: keys::Completion::default(),
+            shell: shell::ShellRuns::default(),
+            checklist: checklist::ChecklistPanel::default(),
             dirty: true,
         }
     }
@@ -1202,6 +1153,20 @@ impl App {
         self
     }
 
+    /// Whether something animates or waits to expire, so the loop sends
+    /// [`Msg::Tick`]: a spinner (a turn, a classifier call, a running
+    /// helper) or a key's pending second press (Ctrl-C, Ctrl-D, a Ctrl-X
+    /// chord). An idle terminal is not woken.
+    #[must_use]
+    pub fn wants_tick(&self) -> bool {
+        self.status.running_since.is_some()
+            || self.status.classifying
+            || self.quit.last_ctrl_c.is_some()
+            || self.quit.confirm.is_some()
+            || self.chord.is_some()
+            || self.transcript.helpers_running()
+    }
+
     /// Whether a bell is due; clears it.
     #[cfg(any(test, feature = "test-support"))]
     pub fn take_bell(&mut self) -> bool {
@@ -1218,28 +1183,29 @@ impl App {
     /// Whether the task checklist starts shown (`[ui] checklist`).
     #[must_use]
     pub fn with_checklist_view(mut self, view: ChecklistView) -> Self {
-        self.checklist_view = view;
+        self.checklist.view = view;
         self
     }
 
     /// The current session's task checklist.
     pub fn checklist(&self) -> &Checklist {
-        &self.checklist
+        &self.checklist.tasks
     }
 
     /// The checklist the panel under the input shows: `Some` while the
     /// panel is on and the session has tasks.
     pub fn checklist_panel(&self) -> Option<&Checklist> {
-        (self.checklist_view.is_shown() && !self.checklist.is_empty()).then_some(&self.checklist)
+        (self.checklist.view.is_shown() && !self.checklist.tasks.is_empty())
+            .then_some(&self.checklist.tasks)
     }
 
     /// Ctrl+T: show or hide the checklist and record the choice. With no
     /// tasks nothing shows either way; a store that could not be read is
     /// named once.
     fn toggle_checklist(&mut self, fx: &mut Vec<Effect>) {
-        self.checklist_view = self.checklist_view.toggled();
-        fx.push(Effect::SetChecklistView(self.checklist_view));
-        if let Some(why) = self.checklist_note.take() {
+        self.checklist.view = self.checklist.view.toggled();
+        fx.push(Effect::SetChecklistView(self.checklist.view));
+        if let Some(why) = self.checklist.note.take() {
             self.transcript.push_notice(
                 NoticeLevel::Info,
                 format!("the task checklist could not be read: {why}"),
@@ -1326,7 +1292,7 @@ impl App {
         let mut dirty = true;
         match msg {
             Msg::Key(key) => {
-                if self.selection.is_some() {
+                if self.mouse.selection.is_some() {
                     self.clear_selection();
                     let ctrl_c = key.code == KeyCode::Char('c')
                         && key.modifiers.contains(KeyModifiers::CONTROL);
@@ -1415,8 +1381,8 @@ impl App {
             Msg::QuitDecided(decision) => self.quit_decided(decision, &mut fx),
             Msg::Rerooted { workspace, realm } => {
                 self.workspace = Some(workspace);
-                self.path_index = PathIndex::Dropped;
-                self.path_index_generation += 1;
+                self.completion.path_index = PathIndex::Dropped;
+                self.completion.generation += 1;
                 self.local.push(LocalEffect::Reroot(realm));
             }
             Msg::Hangup => self.leave(None, &mut fx),
@@ -1514,7 +1480,7 @@ impl App {
                 self.last_seq = 0;
                 // Keep placeholders for messages still in flight.
                 self.pending.restore_placeholders(&mut self.transcript);
-                if let Some(run) = &mut self.shell_run {
+                if let Some(run) = &mut self.shell.running {
                     run.block = self.transcript.push(Block::Shell {
                         command: run.command.clone(),
                         state: ShellState::Running { since: run.since },
@@ -1522,7 +1488,7 @@ impl App {
                         collapsed: false,
                     });
                 }
-                self.run_first_block = self.transcript.len();
+                self.run_first_block = self.transcript.next_id();
                 self.scroll.bottom();
             }
             Msg::CompactRequested(result) => self.compact_requested(result),
@@ -1536,31 +1502,32 @@ impl App {
             Msg::EditorClosed(closed) => self.editor_closed(closed, &mut fx),
             Msg::ShellFinished { id, outcome } => self.shell_finished(id, outcome, now, &mut fx),
             Msg::Checklist(list) => {
-                self.checklist = list;
-                self.checklist_note = None;
+                self.checklist.tasks = list;
+                self.checklist.note = None;
             }
-            Msg::ChecklistUnavailable(why) => self.checklist_note = Some(why),
+            Msg::ChecklistUnavailable(why) => self.checklist.note = Some(why),
             Msg::Mentions { attached, sealed } => self.note_mentions(&attached, &sealed),
             Msg::PathIndex { generation, paths } => {
-                if self.path_index == PathIndex::Indexing(generation) {
-                    self.path_index = PathIndex::Ready(paths);
+                if self.completion.path_index == PathIndex::Indexing(generation) {
+                    self.completion.path_index = PathIndex::Ready(paths);
                     // Rebuild the menu for the word under the cursor.
-                    self.menu = None;
+                    self.completion.menu = None;
                 }
             }
+            // Sent only while [`Self::wants_tick`].
             Msg::Tick => {
                 let helpers_spun = self.transcript.tick_helpers(now);
                 dirty = helpers_spun
                     || self.status.running_since.is_some()
                     || self.status.classifying
-                    || self.last_ctrl_c.is_some()
-                    || self.quit_confirm.is_some()
+                    || self.quit.last_ctrl_c.is_some()
+                    || self.quit.confirm.is_some()
                     || self.chord.is_some();
-                if self.last_ctrl_c.is_some() && !self.quit_armed(now) {
-                    self.last_ctrl_c = None;
+                if self.quit.last_ctrl_c.is_some() && !self.quit_armed(now) {
+                    self.quit.last_ctrl_c = None;
                 }
-                if self.quit_confirm.is_some() && !self.quit_confirm_armed(now) {
-                    self.quit_confirm = None;
+                if self.quit.confirm.is_some() && !self.quit_confirm_armed(now) {
+                    self.quit.confirm = None;
                 }
                 if self.chord.is_some() && !self.chord_pending(now) {
                     self.chord = None;

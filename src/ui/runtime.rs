@@ -29,7 +29,8 @@ use super::render::draw;
 use super::selection::{copy_notice, osc52};
 use super::{App, EditorClosed, EditorTarget, Effect, History, LocalEffect, Msg, QueuedCopy};
 
-/// Render tick interval (~30 fps).
+/// Render tick interval (~30 fps), while something animates
+/// ([`App::wants_tick`]).
 pub const TICK: Duration = Duration::from_millis(33);
 
 /// Whether keyboard-enhancement flags were pushed (so restore knows to pop them).
@@ -389,7 +390,7 @@ pub async fn run_ui(
                     return Ok(());
                 }
             },
-            _ = tick.tick() => vec![Msg::Tick],
+            _ = tick.tick(), if app.wants_tick() => vec![Msg::Tick],
         };
         for msg in batch {
             if apply(

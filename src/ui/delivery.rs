@@ -229,15 +229,6 @@ impl PendingQueue {
         self.settled.clear();
     }
 
-    /// Fix up block ids after the transcript removed block `removed`.
-    pub fn block_removed(&mut self, removed: BlockId) {
-        for item in self.items.iter_mut().chain(self.settled.iter_mut()) {
-            if item.block.0 > removed.0 {
-                item.block = BlockId(item.block.0 - 1);
-            }
-        }
-    }
-
     /// Hold `text` (a message, or a `!` command as typed) in `state` with
     /// its placeholder appended to the transcript.
     pub fn add(
@@ -449,7 +440,7 @@ mod tests {
     }
 
     #[test]
-    fn take_where_keeps_order_and_block_fixup_shifts() {
+    fn take_where_keeps_order_and_settled_items_keep_their_block() {
         let mut q = PendingQueue::new();
         let a = item(&mut q, "a", 2);
         let b = item(&mut q, "b", 5);
@@ -457,17 +448,13 @@ mod tests {
         let taken = q.take_where(|p| p.id != b);
         assert_eq!(taken.iter().map(|p| p.id).collect::<Vec<_>>(), vec![a, c]);
         assert_eq!(q.len(), 1);
-        q.block_removed(BlockId(3));
-        assert_eq!(q.get(b).unwrap().block, BlockId(4));
-        q.block_removed(BlockId(9));
-        assert_eq!(q.get(b).unwrap().block, BlockId(4));
-        // Settled items leave the queue but keep their text and block fix-ups.
+        // Settled items leave the queue but keep their text and block (a
+        // block id never shifts).
         assert_eq!(q.settle(b).map(|p| p.text.as_str()), Some("b"));
         assert!(q.is_empty());
-        q.block_removed(BlockId(0));
         assert_eq!(
             q.all().find(|p| p.id == b).map(|p| p.block),
-            Some(BlockId(3))
+            Some(BlockId(5))
         );
     }
 

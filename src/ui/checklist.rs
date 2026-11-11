@@ -131,6 +131,17 @@ fn updated_millis(task: &Task) -> i64 {
         .unwrap_or(i64::MIN)
 }
 
+/// The checklist panel under the input (Ctrl+T).
+#[derive(Debug, Default)]
+pub(crate) struct ChecklistPanel {
+    /// The current session's tasks.
+    pub(crate) tasks: Checklist,
+    /// Whether the panel shows (`[ui] checklist`).
+    pub(crate) view: ChecklistView,
+    /// Why the task store could not be read, said once at the next Ctrl+T.
+    pub(crate) note: Option<String>,
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {

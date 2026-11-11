@@ -25,7 +25,7 @@ impl App {
 
     /// Whether a `!` command runs or waits to.
     pub(super) fn shell_busy(&self) -> bool {
-        self.shell_run.is_some() || self.has_held_shell()
+        self.shell.running.is_some() || self.has_held_shell()
     }
 
     /// Whether a `!` command waits for the turn to end.
@@ -77,9 +77,9 @@ impl App {
         now: Instant,
         fx: &mut Vec<Effect>,
     ) {
-        self.last_shell_id += 1;
-        let id = ShellRunId(self.last_shell_id);
-        self.shell_run = Some(RunningShell {
+        self.shell.last_id += 1;
+        let id = ShellRunId(self.shell.last_id);
+        self.shell.running = Some(RunningShell {
             id,
             block,
             command: command.clone(),
@@ -129,7 +129,7 @@ impl App {
         now: Instant,
         fx: &mut Vec<Effect>,
     ) {
-        let Some(run) = self.shell_run.take_if(|run| run.id == id) else {
+        let Some(run) = self.shell.running.take_if(|run| run.id == id) else {
             return;
         };
         let (state, output) = match outcome {
@@ -171,4 +171,13 @@ impl App {
             self.next_after_turn(held, false, true, now, fx);
         }
     }
+}
+
+/// The `!` commands.
+#[derive(Debug, Default)]
+pub(super) struct ShellRuns {
+    /// The command running now, if any.
+    pub(super) running: Option<RunningShell>,
+    /// The last allocated [`ShellRunId`].
+    pub(super) last_id: u64,
 }

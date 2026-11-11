@@ -33,8 +33,10 @@ pub const MAX_TOOL_ARGS_PREVIEW: usize = 200;
 /// Most notes kept for tool calls whose block has not arrived yet.
 const MAX_PENDING_NOTES: usize = 64;
 
-/// Index of a block in the transcript.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// A block of the transcript: given in the order blocks are added and
+/// never reused, so it names the same block for its life and orders as the
+/// blocks do (a removal shifts nothing).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BlockId(pub usize);
 
 /// Severity of a notice block.
@@ -392,18 +394,17 @@ pub struct CachedLayout {
 /// The transcript: blocks, tool-id index and per-block layout cache.
 #[derive(Debug, Default)]
 pub struct Transcript {
-    blocks: Vec<Block>,
+    /// The blocks in order, each with its id, layouts and owner.
+    entries: Vec<Entry>,
+    /// The id the next block gets.
+    next_id: usize,
     by_tool_id: IndexMap<String, BlockId>,
-    layout: Vec<Option<CachedLayout>>,
     /// The open prose and reasoning blocks deltas append to: the session's
     /// own under `None`, each helper's under its header.
     streams: IndexMap<Option<BlockId>, Stream>,
     /// The model of each helper (by label) the UI has heard of, for block
     /// labels.
     helper_models: IndexMap<String, String>,
-    /// Per block, the header of the helper it belongs to (`None`: the
-    /// session's own blocks and top-level helper headers).
-    owner: Vec<Option<BlockId>>,
     /// The current header of each helper, by label.
     helper_folds: IndexMap<String, BlockId>,
     /// Helpers listed as running by the last live update.
@@ -417,9 +418,6 @@ pub struct Transcript {
     helper_clock: Option<Instant>,
     /// Number of helper headers.
     helper_count: usize,
-    /// Per block, its layout at one width as a helper's full view draws it
-    /// (folded helpers do not hide it there).
-    view_layout: Vec<Option<CachedLayout>>,
     /// `prefix[i]`: the laid-out lines of blocks `[0, i)`, valid for
     /// `i <= clean` ([`Self::ensure_layout`]): a frame finds its first
     /// visible block by binary search instead of walking the transcript.
@@ -436,6 +434,21 @@ pub struct Transcript {
     /// Blocks visited to find and copy visible lines (tests).
     #[cfg(test)]
     walked: std::cell::Cell<usize>,
+}
+
+/// One block of the transcript and what is kept about it.
+#[derive(Debug)]
+struct Entry {
+    id: BlockId,
+    block: Block,
+    /// Its layout at the transcript's width (folded helpers hide it).
+    layout: Option<CachedLayout>,
+    /// Its layout at one width as a helper's full view draws it (folded
+    /// helpers do not hide it there).
+    view_layout: Option<CachedLayout>,
+    /// The header of the helper it belongs to (`None`: the session's own
+    /// blocks and top-level helper headers).
+    owner: Option<BlockId>,
 }
 
 /// One agent's streaming state (the session's or a helper's): the prose
@@ -477,9 +490,11 @@ impl Transcript {
                 ids.reverse();
                 ids
             }
-            None => (0..self.blocks.len())
+            None => self
+                .entries
+                .iter()
                 .rev()
-                .map(BlockId)
+                .map(|entry| entry.id)
                 .filter(|id| !self.is_hidden(*id))
                 .collect(),
         }
@@ -494,8 +509,8 @@ impl Transcript {
     pub fn export_text(&self) -> String {
         use std::fmt::Write as _;
         let mut out = String::new();
-        for (idx, block) in self.blocks.iter().enumerate() {
-            if self.is_hidden(BlockId(idx)) {
+        for Entry { id, block, .. } in &self.entries {
+            if self.is_hidden(*id) {
                 continue;
             }
             if !out.is_empty() {
@@ -621,34 +636,76 @@ impl Transcript {
     /// Whether `block` is inside a folded helper (the renderer skips it).
     pub fn is_hidden(&self, block: BlockId) -> bool {
         let mut at = block;
-        while let Some(Some(up)) = self.owner.get(at.0) {
-            if matches!(self.block(*up), Some(Block::Helper(f)) if !f.expanded) {
+        while let Some(up) = self.owner_of(at) {
+            if matches!(self.block(up), Some(Block::Helper(f)) if !f.expanded) {
                 return true;
             }
-            at = *up;
+            at = up;
         }
         false
     }
 
-    /// All blocks in order.
-    pub fn blocks(&self) -> &[Block] {
-        &self.blocks
+    /// The position of block `id` in the transcript.
+    fn index_of(&self, id: BlockId) -> Option<usize> {
+        self.entries
+            .binary_search_by_key(&id, |entry| entry.id)
+            .ok()
+    }
+
+    fn entry(&self, id: BlockId) -> Option<&Entry> {
+        self.entries.get(self.index_of(id)?)
+    }
+
+    fn entry_mut(&mut self, id: BlockId) -> Option<&mut Entry> {
+        let index = self.index_of(id)?;
+        self.entries.get_mut(index)
+    }
+
+    /// The header of the helper `id` belongs to.
+    pub(super) fn owner_of(&self, id: BlockId) -> Option<BlockId> {
+        self.entry(id)?.owner
+    }
+
+    /// The blocks in order, with their ids.
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = (BlockId, &Block)> {
+        self.entries.iter().map(|entry| (entry.id, &entry.block))
+    }
+
+    /// The last block.
+    pub fn last(&self) -> Option<&Block> {
+        self.entries.last().map(|entry| &entry.block)
+    }
+
+    /// The id the next block will get: every block added from now on has
+    /// this id or a later one.
+    pub fn next_id(&self) -> BlockId {
+        BlockId(self.next_id)
+    }
+
+    /// All blocks in order (a copy).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn blocks(&self) -> Vec<Block> {
+        self.entries
+            .iter()
+            .map(|entry| entry.block.clone())
+            .collect()
     }
 
     /// Number of blocks.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn len(&self) -> usize {
-        self.blocks.len()
+        self.entries.len()
     }
 
     /// Whether the transcript has no blocks.
     #[cfg(any(test, feature = "test-support"))]
     pub fn is_empty(&self) -> bool {
-        self.blocks.is_empty()
+        self.entries.is_empty()
     }
 
     /// Block by id.
     pub fn block(&self, id: BlockId) -> Option<&Block> {
-        self.blocks.get(id.0)
+        self.entry(id).map(|entry| &entry.block)
     }
 
     /// Block id registered for a tool-use id.
@@ -702,30 +759,31 @@ impl Transcript {
 
     /// Mutable access to a block; invalidates its layout.
     pub fn block_mut(&mut self, id: BlockId) -> Option<&mut Block> {
-        self.touch(id.0);
-        if let Some(slot) = self.layout.get_mut(id.0) {
-            *slot = None;
-        }
-        if let Some(slot) = self.view_layout.get_mut(id.0) {
-            *slot = None;
-        }
-        self.blocks.get_mut(id.0)
+        let index = self.index_of(id)?;
+        self.touch(index);
+        let entry = self.entries.get_mut(index)?;
+        entry.layout = None;
+        entry.view_layout = None;
+        Some(&mut entry.block)
     }
 
     /// A run nobody typed was fired by `label` with input `prompt`: the
-    /// prompt's block among the run's (from `run_first`) is relabelled,
-    /// else the labelled block is appended.
-    pub fn label_triggered(&mut self, run_first: usize, label: String, prompt: String) {
-        let at = (run_first.min(self.blocks.len())..self.blocks.len())
+    /// prompt's block among the run's (`run_first` and later) is
+    /// relabelled, else the labelled block is appended.
+    pub fn label_triggered(&mut self, run_first: BlockId, label: String, prompt: String) {
+        let at = self
+            .iter()
             .rev()
-            .find(|&i| matches!(&self.blocks[i], Block::User { text } if *text == prompt));
+            .take_while(|(id, _)| *id >= run_first)
+            .find(|(_, block)| matches!(block, Block::User { text } if *text == prompt))
+            .map(|(id, _)| id);
         let block = Block::Triggered {
             label,
             text: prompt,
         };
         match at {
-            Some(i) => {
-                self.replace_block(BlockId(i), block);
+            Some(id) => {
+                self.replace_block(id, block);
             }
             None => {
                 self.push(block);
@@ -745,62 +803,34 @@ impl Transcript {
         }
     }
 
-    /// Remove a block. Later block ids shift down by one; the tool-id index and
-    /// open streams are fixed up, callers holding other ids must adjust them.
+    /// Remove a block. Every other id stays as it was; the tool-id index,
+    /// the helper headers, the owners and the open streams forget it.
     pub fn remove_block(&mut self, id: BlockId) -> Option<Block> {
-        if id.0 >= self.blocks.len() {
-            return None;
-        }
-        let block = self.blocks.remove(id.0);
-        self.touch(id.0);
-        if matches!(block, Block::Helper(_)) {
+        let index = self.index_of(id)?;
+        let entry = self.entries.remove(index);
+        self.touch(index);
+        if matches!(entry.block, Block::Helper(_)) {
             self.helper_count = self.helper_count.saturating_sub(1);
         }
-        if id.0 < self.layout.len() {
-            self.layout.remove(id.0);
-        }
-        if id.0 < self.view_layout.len() {
-            self.view_layout.remove(id.0);
-        }
-        if id.0 < self.owner.len() {
-            self.owner.remove(id.0);
-        }
-        let shift = |b: BlockId| if b.0 > id.0 { BlockId(b.0 - 1) } else { b };
         self.by_tool_id.retain(|_, b| *b != id);
-        for b in self.by_tool_id.values_mut() {
-            *b = shift(*b);
-        }
         self.helper_folds.retain(|_, b| *b != id);
-        for b in self.helper_folds.values_mut() {
-            *b = shift(*b);
+        for entry in &mut self.entries {
+            entry.owner = entry.owner.filter(|b| *b != id);
         }
-        for slot in &mut self.owner {
-            *slot = slot.filter(|b| *b != id).map(shift);
+        self.streams.retain(|header, _| *header != Some(id));
+        for stream in self.streams.values_mut() {
+            stream.assistant = stream.assistant.filter(|b| *b != id);
+            stream.reasoning = stream.reasoning.filter(|b| *b != id);
         }
-        let streams = std::mem::take(&mut self.streams);
-        self.streams = streams
-            .into_iter()
-            .filter(|(header, _)| *header != Some(id))
-            .map(|(header, s)| {
-                let open = |b: Option<BlockId>| b.filter(|b| *b != id).map(shift);
-                (
-                    header.map(shift),
-                    Stream {
-                        assistant: open(s.assistant),
-                        reasoning: open(s.reasoning),
-                        ..s
-                    },
-                )
-            })
-            .collect();
-        Some(block)
+        Some(entry.block)
     }
 
     /// Drop every cached layout (e.g. on resize).
     pub fn invalidate_all(&mut self) {
         self.clean = 0;
-        for slot in self.layout.iter_mut().chain(self.view_layout.iter_mut()) {
-            *slot = None;
+        for entry in &mut self.entries {
+            entry.layout = None;
+            entry.view_layout = None;
         }
     }
 
@@ -960,43 +990,44 @@ impl Transcript {
             self.laid_width = width;
             self.clean = 0;
         }
-        let start = self.clean.min(self.blocks.len());
+        let start = self.clean.min(self.entries.len());
         self.prefix.truncate(start + 1);
         if self.prefix.is_empty() {
             self.prefix.push(0);
         }
-        for i in start..self.blocks.len() {
-            let stale = self
+        for i in start..self.entries.len() {
+            let entry = &self.entries[i];
+            if entry
                 .layout
-                .get(i)
-                .is_some_and(|slot| slot.as_ref().is_none_or(|c| c.width != width));
-            if stale {
-                let lines = match self.blocks.get(i) {
-                    Some(_) if self.is_hidden(BlockId(i)) => Vec::new(),
-                    Some(block) => block_lines(block, width),
-                    None => Vec::new(),
+                .as_ref()
+                .is_none_or(|cached| cached.width != width)
+            {
+                let lines = if self.is_hidden(entry.id) {
+                    Vec::new()
+                } else {
+                    block_lines(&entry.block, width)
                 };
                 #[cfg(test)]
                 {
                     self.laid_out += 1;
                 }
-                if let Some(slot) = self.layout.get_mut(i) {
-                    *slot = Some(CachedLayout { width, lines });
-                }
+                self.entries[i].layout = Some(CachedLayout { width, lines });
             }
             let base = self.prefix.get(i).copied().unwrap_or(0);
             self.prefix.push(base + self.lines_of(i));
         }
-        self.clean = self.blocks.len();
+        self.clean = self.entries.len();
         self.prefix.get(self.clean).copied().unwrap_or(0)
     }
 
     /// The cached line count of block `index` (0 when not laid out).
     fn lines_of(&self, index: usize) -> usize {
-        self.layout
-            .get(index)
-            .and_then(Option::as_ref)
-            .map_or(0, |c| c.lines.len())
+        self.layout_at(index).map_or(0, |c| c.lines.len())
+    }
+
+    /// The cached layout of the block at position `index`.
+    fn layout_at(&self, index: usize) -> Option<&CachedLayout> {
+        self.entries.get(index)?.layout.as_ref()
     }
 
     /// The block holding laid-out line `idx` and the line's offset in it,
@@ -1006,7 +1037,7 @@ impl Transcript {
         let known = self
             .clean
             .min(self.prefix.len().saturating_sub(1))
-            .min(self.layout.len());
+            .min(self.entries.len());
         let known_lines = self.prefix.get(known).copied().unwrap_or(0);
         let (mut block, mut base) = if idx < known_lines {
             let at = self.prefix[..=known]
@@ -1016,7 +1047,7 @@ impl Transcript {
         } else {
             (known, known_lines)
         };
-        while block < self.layout.len() {
+        while block < self.entries.len() {
             #[cfg(test)]
             self.walked.set(self.walked.get() + 1);
             let n = self.lines_of(block);
@@ -1036,10 +1067,11 @@ impl Transcript {
         let Some((mut block, mut skip)) = self.locate(start) else {
             return out;
         };
-        while out.len() < len && block < self.layout.len() {
+        while out.len() < len && block < self.entries.len() {
             #[cfg(test)]
             self.walked.set(self.walked.get() + 1);
-            if let Some(Some(cached)) = self.layout.get(block) {
+            let entry = &self.entries[block];
+            if let Some(cached) = &entry.layout {
                 let room = len - out.len();
                 out.extend(
                     cached
@@ -1047,7 +1079,7 @@ impl Transcript {
                         .iter()
                         .skip(skip)
                         .take(room)
-                        .map(|line| (BlockId(block), line)),
+                        .map(|line| (entry.id, line)),
                 );
             }
             skip = 0;
@@ -1068,7 +1100,7 @@ impl Transcript {
     /// [`Self::ensure_layout`] (`None` past the end or for stale blocks).
     pub fn line(&self, idx: usize) -> Option<&Line<'static>> {
         let (block, offset) = self.locate(idx)?;
-        self.layout.get(block)?.as_ref()?.lines.get(offset)
+        self.layout_at(block)?.lines.get(offset)
     }
 
     /// Number of laid-out lines as of the last [`Self::ensure_layout`].
@@ -1076,10 +1108,10 @@ impl Transcript {
         let known = self
             .clean
             .min(self.prefix.len().saturating_sub(1))
-            .min(self.layout.len());
+            .min(self.entries.len());
         let known_lines = self.prefix.get(known).copied().unwrap_or(0);
         known_lines
-            + (known..self.layout.len())
+            + (known..self.entries.len())
                 .map(|i| self.lines_of(i))
                 .sum::<usize>()
     }
@@ -1328,14 +1360,18 @@ impl Transcript {
     }
 
     fn push_raw(&mut self, block: Block) -> BlockId {
-        let id = BlockId(self.blocks.len());
+        let id = BlockId(self.next_id);
+        self.next_id += 1;
         if matches!(block, Block::Helper(_)) {
             self.helper_count += 1;
         }
-        self.blocks.push(block);
-        self.layout.push(None);
-        self.view_layout.push(None);
-        self.owner.push(None);
+        self.entries.push(Entry {
+            id,
+            block,
+            layout: None,
+            view_layout: None,
+            owner: None,
+        });
         id
     }
 
@@ -1597,7 +1633,7 @@ mod tests {
         t.push(Block::User {
             text: "check the build".into(),
         });
-        let run = t.len();
+        let run = t.next_id();
         t.push(Block::User {
             text: "check the build".into(),
         });
@@ -1605,7 +1641,7 @@ mod tests {
         assert!(matches!(&t.blocks()[0], Block::User { .. }));
         assert!(matches!(&t.blocks()[1], Block::Triggered { label, text }
             if label == "scheduled: nightly" && text == "check the build"));
-        t.label_triggered(t.len(), "scheduled: other".into(), "elsewhere".into());
+        t.label_triggered(t.next_id(), "scheduled: other".into(), "elsewhere".into());
         assert_eq!(t.len(), 3);
         assert!(
             matches!(&t.blocks()[2], Block::Triggered { label, .. } if label == "scheduled: other")
@@ -2186,10 +2222,10 @@ mod tests {
         assert_eq!(t.panel_helpers(), vec![b, a]);
         t.retire_finished_helpers();
         assert_eq!(t.panel_helpers(), vec![b]);
-        // Removing an earlier block shifts the panel's ids with the blocks.
+        // Removing an earlier block leaves the panel's ids as they were.
         t.push(Block::User { text: "x".into() });
         assert!(t.remove_block(a).is_some());
-        assert_eq!(t.panel_helpers(), vec![BlockId(b.0 - 1)]);
+        assert_eq!(t.panel_helpers(), vec![b]);
     }
 
     #[test]
@@ -2355,7 +2391,7 @@ mod tests {
     }
 
     #[test]
-    fn replace_and_remove_blocks_keep_order_and_indices() {
+    fn replace_and_remove_blocks_keep_order_and_ids() {
         let mut t = Transcript::new();
         t.push(Block::User { text: "a".into() });
         let q = t.push(Block::Queued {
@@ -2377,7 +2413,10 @@ mod tests {
             Some(Block::User { text: "b".into() })
         );
         assert_eq!(t.len(), 2);
-        assert_eq!(t.tool_block("t1"), Some(BlockId(1)));
+        // The ids after it stay: an id names its block for good.
+        assert_eq!(t.tool_block("t1"), Some(BlockId(2)));
+        assert!(matches!(t.block(BlockId(2)), Some(Block::Tool { .. })));
+        assert!(t.block(BlockId(1)).is_none());
         assert!(t.remove_block(BlockId(5)).is_none());
         assert_eq!(t.ensure_layout(40), t.visible_lines(0, 100).len());
     }

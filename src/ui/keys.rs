@@ -30,7 +30,8 @@ impl App {
 
     /// Whether a second Ctrl-C at `now` would quit (used for the input hint).
     pub fn quit_armed(&self, now: Instant) -> bool {
-        self.last_ctrl_c
+        self.quit
+            .last_ctrl_c
             .is_some_and(|t| now.saturating_duration_since(t) < DOUBLE_CTRL_C_WINDOW)
     }
 
@@ -47,19 +48,20 @@ impl App {
         self.running
             || !self.pending.is_empty()
             || self.send_next.is_some()
-            || self.shell_run.is_some()
+            || self.shell.running.is_some()
     }
 
     /// Whether a second Ctrl-D (or, while busy, `/quit`) at `now` would quit
     /// (used for the input hint).
     pub fn quit_confirm_armed(&self, now: Instant) -> bool {
-        self.quit_confirm
+        self.quit
+            .confirm
             .is_some_and(|t| now.saturating_duration_since(t) < QUIT_CONFIRM_WINDOW)
     }
 
     /// The open completion menu, if any.
     pub fn menu(&self) -> Option<&complete::Menu> {
-        self.menu.as_ref()
+        self.completion.menu.as_ref()
     }
 
     /// Open, keep or close the completion menu for the word under the
@@ -77,38 +79,44 @@ impl App {
             .as_ref()
             .is_none_or(|word| word.kind != complete::CompletionKind::Path)
         {
-            self.path_index = PathIndex::Dropped;
+            self.completion.path_index = PathIndex::Dropped;
         }
         let Some(word) = word else {
-            self.menu = None;
-            self.menu_dismissed = None;
+            self.completion.menu = None;
+            self.completion.dismissed = None;
             return;
         };
-        if self.menu_dismissed.as_ref() == Some(&word) {
-            self.menu = None;
+        if self.completion.dismissed.as_ref() == Some(&word) {
+            self.completion.menu = None;
             return;
         }
-        self.menu_dismissed = None;
-        if self.menu.as_ref().is_some_and(|menu| menu.word == word) {
+        self.completion.dismissed = None;
+        if self
+            .completion
+            .menu
+            .as_ref()
+            .is_some_and(|menu| menu.word == word)
+        {
             return;
         }
         // The same word in the same index found nothing a moment ago.
-        if self.menu.is_none()
+        if self.completion.menu.is_none()
             && self
-                .menu_missed
+                .completion
+                .missed
                 .as_ref()
                 .is_some_and(|(missed, index)| *missed == word && *index == self.index_key())
         {
             return;
         }
         let paths: &[crate::mentions::PathEntry] = match (&word.kind, &self.workspace) {
-            (complete::CompletionKind::Path, Some(root)) => match &self.path_index {
+            (complete::CompletionKind::Path, Some(root)) => match &self.completion.path_index {
                 PathIndex::Ready(paths) => paths,
                 PathIndex::Indexing(_) => &[],
                 PathIndex::Dropped => {
-                    self.path_index_generation += 1;
-                    let generation = self.path_index_generation;
-                    self.path_index = PathIndex::Indexing(generation);
+                    self.completion.generation += 1;
+                    let generation = self.completion.generation;
+                    self.completion.path_index = PathIndex::Indexing(generation);
                     self.local.push(LocalEffect::IndexPaths {
                         generation,
                         root: root.clone(),
@@ -121,13 +129,13 @@ impl App {
         let items = complete::candidates(&word, paths);
         #[cfg(test)]
         {
-            self.menu_lookups += 1;
+            self.completion.lookups += 1;
         }
-        self.menu_missed = None;
+        self.completion.missed = None;
         let missed = word.clone();
-        self.menu = complete::Menu::open(word, items);
-        if self.menu.is_none() {
-            self.menu_missed = Some((missed, self.index_key()));
+        self.completion.menu = complete::Menu::open(word, items);
+        if self.completion.menu.is_none() {
+            self.completion.missed = Some((missed, self.index_key()));
         }
     }
 
@@ -135,8 +143,8 @@ impl App {
     /// its paths had arrived.
     fn index_key(&self) -> (u64, bool) {
         (
-            self.path_index_generation,
-            matches!(self.path_index, PathIndex::Ready(_)),
+            self.completion.generation,
+            matches!(self.completion.path_index, PathIndex::Ready(_)),
         )
     }
 
@@ -148,7 +156,7 @@ impl App {
         if self.modal.is_some() || !key.modifiers.is_empty() {
             return false;
         }
-        let Some(menu) = &mut self.menu else {
+        let Some(menu) = &mut self.completion.menu else {
             return false;
         };
         match key.code {
@@ -157,8 +165,8 @@ impl App {
             KeyCode::Tab => self.accept_completion(),
             KeyCode::Enter if !menu.is_complete() => self.accept_completion(),
             KeyCode::Esc => {
-                self.menu_dismissed = Some(menu.word.clone());
-                self.menu = None;
+                self.completion.dismissed = Some(menu.word.clone());
+                self.completion.menu = None;
             }
             _ => return false,
         }
@@ -168,7 +176,7 @@ impl App {
     /// Put the highlighted row in place of the word, followed by a space
     /// unless one follows already.
     pub(super) fn accept_completion(&mut self) {
-        let Some(menu) = self.menu.take() else {
+        let Some(menu) = self.completion.menu.take() else {
             return;
         };
         let Some(item) = menu.current() else {
@@ -202,7 +210,7 @@ impl App {
 
     pub(super) fn main_key(&mut self, key: &KeyEvent, now: Instant, fx: &mut Vec<Effect>) {
         if let InputMode::Search(search) = &mut self.mode {
-            self.last_ctrl_c = None;
+            self.quit.last_ctrl_c = None;
             match search.key(key, &self.search_corpus) {
                 SearchOutcome::Continue => {}
                 SearchOutcome::Accept(text) | SearchOutcome::Cancel(text) => {
@@ -216,16 +224,16 @@ impl App {
         {
             match key.code {
                 KeyCode::Esc => {
-                    self.last_ctrl_c = None;
+                    self.quit.last_ctrl_c = None;
                     return;
                 }
                 KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.last_ctrl_c = None;
+                    self.quit.last_ctrl_c = None;
                     self.interrupt_and_send(now, fx);
                     return;
                 }
                 KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.last_ctrl_c = None;
+                    self.quit.last_ctrl_c = None;
                     self.edit_draft_externally();
                     return;
                 }
@@ -234,7 +242,7 @@ impl App {
             }
         }
         if self.menu_key(key) {
-            self.last_ctrl_c = None;
+            self.quit.last_ctrl_c = None;
             self.last_esc = None;
             return;
         }
@@ -246,14 +254,14 @@ impl App {
         {
             // `?` on an empty input opens the shortcut panel; with text it
             // is just typed.
-            self.last_ctrl_c = None;
+            self.quit.last_ctrl_c = None;
             self.last_esc = None;
             self.modal = Some(Modal::Keys);
             return;
         }
         let action = keymap::map_key(key, self.input.is_empty());
         if action != Action::CtrlC {
-            self.last_ctrl_c = None;
+            self.quit.last_ctrl_c = None;
         }
         let esc_armed = self.esc_clear_armed(now);
         self.last_esc = None;
@@ -502,7 +510,7 @@ impl App {
     pub(super) fn escape(&mut self, esc_armed: bool, now: Instant, fx: &mut Vec<Effect>) {
         if self.running {
             self.interrupt(fx);
-        } else if self.shell_run.is_some() {
+        } else if self.shell.running.is_some() {
             fx.push(Effect::CancelShell);
         } else if self.input.is_empty() {
             // Nothing to clear.
@@ -518,19 +526,19 @@ impl App {
 
     pub(super) fn ctrl_c(&mut self, now: Instant, fx: &mut Vec<Effect>) {
         if self.running {
-            self.last_ctrl_c = None;
+            self.quit.last_ctrl_c = None;
             self.interrupt(fx);
-        } else if self.shell_run.is_some() {
-            self.last_ctrl_c = None;
+        } else if self.shell.running.is_some() {
+            self.quit.last_ctrl_c = None;
             fx.push(Effect::CancelShell);
         } else if !self.input.is_empty() {
-            self.last_ctrl_c = None;
+            self.quit.last_ctrl_c = None;
             self.input.clear();
         } else if self.quit_armed(now) {
-            self.last_ctrl_c = None;
+            self.quit.last_ctrl_c = None;
             self.request_quit(now, fx);
         } else {
-            self.last_ctrl_c = Some(now);
+            self.quit.last_ctrl_c = Some(now);
         }
     }
 
@@ -549,7 +557,7 @@ impl App {
         if self.quit_is_busy() || self.quit_confirm_armed(now) {
             self.request_quit(now, fx);
         } else {
-            self.quit_confirm = Some(now);
+            self.quit.confirm = Some(now);
         }
     }
 
@@ -561,7 +569,7 @@ impl App {
         let queued = self.pending.len() + usize::from(self.send_next.is_some());
         let busy = self.running || queued > 0;
         if busy && !self.quit_confirm_armed(now) {
-            self.quit_confirm = Some(now);
+            self.quit.confirm = Some(now);
             let mut what = Vec::new();
             if self.running {
                 what.push("a turn is running".to_string());
@@ -583,12 +591,12 @@ impl App {
             self.scroll.bottom();
             return;
         }
-        self.quit_confirm = None;
+        self.quit.confirm = None;
         // Attached: the runner asks the daemon whether this client stops
         // it, leaves it to other clients, or asks (detach or terminate). A
         // second `/quit` while it asks leaves at once, as a detach.
-        if self.status.reached_daemon() && !std::mem::take(&mut self.deciding_quit) {
-            self.deciding_quit = true;
+        if self.status.reached_daemon() && !std::mem::take(&mut self.quit.deciding) {
+            self.quit.deciding = true;
             fx.push(Effect::DecideQuit);
             return;
         }
@@ -612,7 +620,7 @@ impl App {
 
     /// The runner's answer to [`Effect::DecideQuit`].
     pub(super) fn quit_decided(&mut self, decision: QuitDecision, fx: &mut Vec<Effect>) {
-        if !std::mem::take(&mut self.deciding_quit) {
+        if !std::mem::take(&mut self.quit.deciding) {
             return;
         }
         match decision {
@@ -638,7 +646,7 @@ impl App {
     /// ([`Effect::SaveUnsent`]), say what leaving does to an attached
     /// daemon ([`Effect::Leave`]), then [`Effect::Quit`].
     pub(super) fn leave(&mut self, departure: Option<Departure>, fx: &mut Vec<Effect>) {
-        self.deciding_quit = false;
+        self.quit.deciding = false;
         // Delivered (settled) messages are in the conversation already.
         let mut held: Vec<(Option<PendingId>, String)> = self
             .pending
@@ -656,5 +664,54 @@ impl App {
             fx.push(Effect::Leave(departure));
         }
         fx.push(Effect::Quit);
+    }
+}
+
+/// Ctrl-C, Ctrl-D and `/quit` while work is in flight.
+#[derive(Debug, Default)]
+pub(super) struct QuitState {
+    /// When a Ctrl-D / `/quit` was refused because work is in flight; a
+    /// second one within [`super::QUIT_CONFIRM_WINDOW`] quits anyway.
+    pub(super) confirm: Option<Instant>,
+    /// An [`Effect::DecideQuit`] waits for its [`super::Msg::QuitDecided`]
+    /// (another `/quit` meanwhile leaves at once).
+    pub(super) deciding: bool,
+    /// When Ctrl-C was last pressed on an idle input.
+    pub(super) last_ctrl_c: Option<Instant>,
+}
+
+/// The completion menu above the input and the `@` path index it reads.
+#[derive(Debug)]
+pub(super) struct Completion {
+    /// The menu, while open.
+    pub(super) menu: Option<complete::Menu>,
+    /// The word Esc closed the menu for: it stays closed until the word
+    /// changes.
+    pub(super) dismissed: Option<complete::Word>,
+    /// The workspace paths, asked for when a path menu opens and dropped
+    /// when it closes.
+    pub(super) path_index: PathIndex,
+    /// The last [`super::LocalEffect::IndexPaths`] generation.
+    pub(super) generation: u64,
+    /// The word last looked up that opened no menu, with the path index
+    /// it was looked up in ([`App::index_key`]): the next refresh for the
+    /// same word and index does not scan the index again.
+    pub(super) missed: Option<(complete::Word, (u64, bool))>,
+    /// How many times the candidates were computed (tests).
+    #[cfg(test)]
+    pub(super) lookups: usize,
+}
+
+impl Default for Completion {
+    fn default() -> Self {
+        Self {
+            menu: None,
+            dismissed: None,
+            path_index: PathIndex::Dropped,
+            generation: 0,
+            missed: None,
+            #[cfg(test)]
+            lookups: 0,
+        }
     }
 }

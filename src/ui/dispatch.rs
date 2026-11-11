@@ -51,7 +51,7 @@ impl App {
             Some(Busy::Turn)
         } else if self.compacting {
             Some(Busy::Compacting)
-        } else if self.shell_run.is_some() {
+        } else if self.shell.running.is_some() {
             Some(Busy::Shell)
         } else if !self.pending.is_empty() || self.send_next.is_some() || self.recalling {
             Some(Busy::Queued)

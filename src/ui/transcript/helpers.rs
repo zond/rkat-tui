@@ -165,6 +165,15 @@ impl Transcript {
         self.live_helpers = now_live;
     }
 
+    /// Whether a helper header spins (a helper runs).
+    pub fn helpers_running(&self) -> bool {
+        self.helper_clock.is_some()
+            && self
+                .helper_folds
+                .values()
+                .any(|id| matches!(self.block(*id), Some(Block::Helper(f)) if f.state.is_running()))
+    }
+
     /// Advance the spinner of running helper headers. Returns whether any
     /// header changed.
     pub fn tick_helpers(&mut self, now: Instant) -> bool {
@@ -190,8 +199,8 @@ impl Transcript {
 
     /// The helper headers, in transcript order.
     pub fn helper_headers(&self) -> impl Iterator<Item = (BlockId, &HelperFold)> {
-        self.blocks.iter().enumerate().filter_map(|(i, b)| match b {
-            Block::Helper(fold) => Some((BlockId(i), fold)),
+        self.iter().filter_map(|(id, b)| match b {
+            Block::Helper(fold) => Some((id, fold)),
             _ => None,
         })
     }
@@ -241,8 +250,8 @@ impl Transcript {
                 continue;
             }
             let mut root = id;
-            while let Some(Some(up)) = self.owner.get(root.0) {
-                root = *up;
+            while let Some(up) = self.owner_of(root) {
+                root = up;
             }
             groups.entry(root).or_default().push(id);
         }
@@ -253,14 +262,14 @@ impl Transcript {
     /// view: no folded helper sits between them.
     pub(super) fn shown_in_view(&self, block: BlockId, header: BlockId) -> bool {
         let mut at = block;
-        while let Some(Some(up)) = self.owner.get(at.0) {
-            if *up == header {
+        while let Some(up) = self.owner_of(at) {
+            if up == header {
                 return true;
             }
-            if matches!(self.block(*up), Some(Block::Helper(f)) if !f.expanded) {
+            if matches!(self.block(up), Some(Block::Helper(f)) if !f.expanded) {
                 return false;
             }
-            at = *up;
+            at = up;
         }
         false
     }
@@ -269,9 +278,9 @@ impl Transcript {
     /// prose, reasoning, tool calls, notes and the headers of the helpers
     /// it spawned (with their blocks while expanded).
     pub fn helper_view_blocks(&self, header: BlockId) -> Vec<BlockId> {
-        (header.0 + 1..self.blocks.len())
-            .map(BlockId)
-            .filter(|id| self.shown_in_view(*id, header))
+        self.iter()
+            .map(|(id, _)| id)
+            .filter(|id| *id > header && self.shown_in_view(*id, header))
             .collect()
     }
 
@@ -281,20 +290,20 @@ impl Transcript {
         let ids = self.helper_view_blocks(header);
         let mut lines = Vec::new();
         for id in ids {
-            let stale = self
+            let Some(entry) = self.entry_mut(id) else {
+                continue;
+            };
+            if entry
                 .view_layout
-                .get(id.0)
-                .is_some_and(|slot| slot.as_ref().is_none_or(|c| c.width != width));
-            if stale
-                && let Some(block) = self.blocks.get(id.0)
-                && let Some(slot) = self.view_layout.get_mut(id.0)
+                .as_ref()
+                .is_none_or(|cached| cached.width != width)
             {
-                *slot = Some(CachedLayout {
+                entry.view_layout = Some(CachedLayout {
                     width,
-                    lines: block_lines(block, width),
+                    lines: block_lines(&entry.block, width),
                 });
             }
-            if let Some(Some(cached)) = self.view_layout.get(id.0) {
+            if let Some(cached) = &entry.view_layout {
                 lines.extend(cached.lines.iter().cloned());
             }
         }
@@ -319,13 +328,14 @@ impl Transcript {
             return false;
         }
         self.update_fold(id, |fold| fold.expanded = expanded);
-        self.touch(id.0);
         // Every block inside the helper appears or disappears.
-        for i in 0..self.blocks.len() {
-            if self.owned_by(BlockId(i), id)
-                && let Some(slot) = self.layout.get_mut(i)
-            {
-                *slot = None;
+        let inside: Vec<bool> = self
+            .iter()
+            .map(|(block, _)| self.owned_by(block, id))
+            .collect();
+        for (entry, inside) in self.entries.iter_mut().zip(inside) {
+            if inside {
+                entry.layout = None;
             }
         }
         true
@@ -334,11 +344,11 @@ impl Transcript {
     /// Whether `block` sits (at any depth) inside the helper header `header`.
     pub(super) fn owned_by(&self, block: BlockId, header: BlockId) -> bool {
         let mut at = block;
-        while let Some(Some(up)) = self.owner.get(at.0) {
-            if *up == header {
+        while let Some(up) = self.owner_of(at) {
+            if up == header {
                 return true;
             }
-            at = *up;
+            at = up;
         }
         false
     }
@@ -374,13 +384,12 @@ impl Transcript {
     }
 
     pub(super) fn set_owner(&mut self, id: BlockId, owner: Option<BlockId>) {
-        if let Some(slot) = self.owner.get_mut(id.0) {
-            *slot = owner;
-        }
-        // Whether it is hidden may have changed.
-        self.touch(id.0);
-        if let Some(slot) = self.layout.get_mut(id.0) {
-            *slot = None;
+        // Whether it is hidden may have changed: its layout goes.
+        if let Some(index) = self.index_of(id) {
+            self.touch(index);
+            let entry = &mut self.entries[index];
+            entry.owner = owner;
+            entry.layout = None;
         }
     }
 

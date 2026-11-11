@@ -272,6 +272,92 @@ fn draw_menu(frame: &mut Frame<'_>, app: &App, transcript: Rect, input: Rect) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
+/// What the input's title line names: the one hint that applies first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InputHint {
+    /// Ctrl-C again quits.
+    QuitCtrlC,
+    /// Ctrl-D again quits although work is in flight.
+    QuitBusy,
+    /// Ctrl-D again quits.
+    QuitAgain,
+    /// Esc again clears the input.
+    ClearInput,
+    /// A Ctrl-X chord waits for its second key.
+    Chord,
+    /// The history search's keys.
+    Search,
+    /// The completion menu's keys.
+    Menu,
+    /// `!` shell mode.
+    Shell,
+    /// A helper's full view replaces the transcript.
+    HelperView,
+    /// A helper is selected in the panel.
+    PanelSelection,
+    /// Queued messages can be taken back.
+    TakeBack,
+    /// A turn runs.
+    Running,
+    /// A stashed prompt can be restored.
+    Stash,
+    /// The idle keys (and the checklist's).
+    Keys,
+    /// The helper panel's keys.
+    PickHelper,
+    /// Nothing to say.
+    Nothing,
+}
+
+/// What decides the input's hint.
+#[derive(Debug, Clone, Copy, Default)]
+#[allow(clippy::struct_excessive_bools)]
+struct HintFacts {
+    quit_armed: bool,
+    quit_confirm: bool,
+    busy: bool,
+    esc_clear: bool,
+    chord: bool,
+    search: bool,
+    menu: bool,
+    shell: bool,
+    helper_view: bool,
+    panel_selected: bool,
+    input_empty: bool,
+    take_back: bool,
+    running: bool,
+    stash: bool,
+    helpers: bool,
+}
+
+impl InputHint {
+    /// The hint `facts` call for: the first that applies, in this order
+    /// (the priority).
+    fn of(facts: &HintFacts) -> Self {
+        let f = facts;
+        [
+            (f.quit_armed, Self::QuitCtrlC),
+            (f.quit_confirm && f.busy, Self::QuitBusy),
+            (f.quit_confirm, Self::QuitAgain),
+            (f.esc_clear, Self::ClearInput),
+            (f.chord, Self::Chord),
+            (f.search, Self::Search),
+            (f.menu, Self::Menu),
+            (f.shell, Self::Shell),
+            (f.helper_view, Self::HelperView),
+            (f.panel_selected, Self::PanelSelection),
+            (f.input_empty && f.take_back, Self::TakeBack),
+            (f.running, Self::Running),
+            (f.input_empty && f.stash, Self::Stash),
+            (!f.helpers && f.input_empty, Self::Keys),
+            (f.helpers, Self::PickHelper),
+        ]
+        .into_iter()
+        .find_map(|(applies, hint)| applies.then_some(hint))
+        .unwrap_or(Self::Nothing)
+    }
+}
+
 fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect, now: Instant) {
     // The helper panel's keys are named here, like every other key, while
     // the panel lists something and nothing in it is selected yet.
@@ -286,46 +372,52 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect, now: Instant) {
     } else {
         "quit"
     };
-    let title: String = if app.quit_armed(now) {
-        format!(" press Ctrl-C again to {quit} ")
-    } else if app.quit_confirm_armed(now) && app.quit_is_busy() {
-        format!(" press Ctrl-D (or /quit) again to {quit} anyway ")
-    } else if app.quit_confirm_armed(now) {
-        format!(" Ctrl-D again to {quit} ")
-    } else if app.esc_clear_armed(now) {
-        " Esc again to clear the input (saved to history) ".into()
-    } else if app.chord_pending(now) {
-        " C-x- · C-s send now · C-e edit in $EDITOR ".into()
-    } else if app.search().is_some() {
-        " Ctrl-R older · Enter accept · Esc cancel ".into()
-    } else if app.menu().is_some() {
-        " Tab completes · ↑/↓ choose · Esc closes the menu ".into()
-    } else if app.shell_mode() {
-        app.shell_mode_hint().into()
-    } else if app.helper_view().is_some() {
-        " Esc back to the transcript · PgUp/PgDn scroll · Enter sends typed text ".into()
-    } else if app.panel_selection().is_some() {
-        " Enter opens the helper (empty input; with text Enter sends) · Esc deselects ".into()
-    } else if app.input.is_empty() && app.can_take_back() {
-        format!(
-            " ↑ takes back queued · Ctrl+Enter send now{helpers} · Esc interrupts (queued go next) "
-        )
-    } else if app.is_running() {
-        format!(" Enter queues · Ctrl+Enter interrupts and sends{helpers} · Esc/Ctrl-C interrupts ")
-    } else if app.input.is_empty() && app.input.has_stash() {
-        format!(" Ctrl-S restores the stashed prompt{helpers} ")
-    } else if helpers.is_empty() && app.input.is_empty() && !app.is_running() {
-        if app.checklist().is_empty() {
-            " ? keys · Shift+Tab mode ".into()
-        } else if app.checklist_panel().is_some() {
-            " ? keys · Shift+Tab mode · Ctrl+T hides the tasks ".into()
-        } else {
-            " ? keys · Shift+Tab mode · Ctrl+T shows the tasks ".into()
+    let facts = HintFacts {
+        quit_armed: app.quit_armed(now),
+        quit_confirm: app.quit_confirm_armed(now),
+        busy: app.quit_is_busy(),
+        esc_clear: app.esc_clear_armed(now),
+        chord: app.chord_pending(now),
+        search: app.search().is_some(),
+        menu: app.menu().is_some(),
+        shell: app.shell_mode(),
+        helper_view: app.helper_view().is_some(),
+        panel_selected: app.panel_selection().is_some(),
+        input_empty: app.input.is_empty(),
+        take_back: app.can_take_back(),
+        running: app.is_running(),
+        stash: app.input.has_stash(),
+        helpers: !helpers.is_empty(),
+    };
+    let title: String = match InputHint::of(&facts) {
+        InputHint::QuitCtrlC => format!(" press Ctrl-C again to {quit} "),
+        InputHint::QuitBusy => format!(" press Ctrl-D (or /quit) again to {quit} anyway "),
+        InputHint::QuitAgain => format!(" Ctrl-D again to {quit} "),
+        InputHint::ClearInput => " Esc again to clear the input (saved to history) ".into(),
+        InputHint::Chord => " C-x- · C-s send now · C-e edit in $EDITOR ".into(),
+        InputHint::Search => " Ctrl-R older · Enter accept · Esc cancel ".into(),
+        InputHint::Menu => " Tab completes · ↑/↓ choose · Esc closes the menu ".into(),
+        InputHint::Shell => app.shell_mode_hint().into(),
+        InputHint::HelperView => {
+            " Esc back to the transcript · PgUp/PgDn scroll · Enter sends typed text ".into()
         }
-    } else if helpers.is_empty() {
-        String::new()
-    } else {
-        " Ctrl+↑/↓ pick a helper · Enter opens it ".into()
+        InputHint::PanelSelection => {
+            " Enter opens the helper (empty input; with text Enter sends) · Esc deselects ".into()
+        }
+        InputHint::TakeBack => format!(
+            " ↑ takes back queued · Ctrl+Enter send now{helpers} · Esc interrupts (queued go next) "
+        ),
+        InputHint::Running => format!(
+            " Enter queues · Ctrl+Enter interrupts and sends{helpers} · Esc/Ctrl-C interrupts "
+        ),
+        InputHint::Stash => format!(" Ctrl-S restores the stashed prompt{helpers} "),
+        InputHint::Keys if app.checklist().is_empty() => " ? keys · Shift+Tab mode ".into(),
+        InputHint::Keys if app.checklist_panel().is_some() => {
+            " ? keys · Shift+Tab mode · Ctrl+T hides the tasks ".into()
+        }
+        InputHint::Keys => " ? keys · Shift+Tab mode · Ctrl+T shows the tasks ".into(),
+        InputHint::PickHelper => " Ctrl+↑/↓ pick a helper · Enter opens it ".into(),
+        InputHint::Nothing => String::new(),
     };
     let block = BorderBlock::default()
         .borders(Borders::TOP)
@@ -977,6 +1069,77 @@ fn tool_body(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    /// The input hint's priority: with every fact true the first hint
+    /// shows, and each hint shows once the facts before it no longer hold.
+    #[test]
+    fn the_input_hint_follows_its_priority() {
+        let mut f = HintFacts {
+            quit_armed: true,
+            quit_confirm: true,
+            busy: true,
+            esc_clear: true,
+            chord: true,
+            search: true,
+            menu: true,
+            shell: true,
+            helper_view: true,
+            panel_selected: true,
+            input_empty: true,
+            take_back: true,
+            running: true,
+            stash: true,
+            helpers: true,
+        };
+        let mut seen = Vec::new();
+        let steps: [fn(&mut HintFacts); 13] = [
+            |f| f.quit_armed = false,
+            |f| f.busy = false,
+            |f| f.quit_confirm = false,
+            |f| f.esc_clear = false,
+            |f| f.chord = false,
+            |f| f.search = false,
+            |f| f.menu = false,
+            |f| f.shell = false,
+            |f| f.helper_view = false,
+            |f| f.panel_selected = false,
+            |f| f.take_back = false,
+            |f| f.running = false,
+            |f| f.stash = false,
+        ];
+        seen.push(InputHint::of(&f));
+        for step in steps {
+            step(&mut f);
+            seen.push(InputHint::of(&f));
+        }
+        assert_eq!(
+            seen,
+            [
+                InputHint::QuitCtrlC,
+                InputHint::QuitBusy,
+                InputHint::QuitAgain,
+                InputHint::ClearInput,
+                InputHint::Chord,
+                InputHint::Search,
+                InputHint::Menu,
+                InputHint::Shell,
+                InputHint::HelperView,
+                InputHint::PanelSelection,
+                InputHint::TakeBack,
+                InputHint::Running,
+                InputHint::Stash,
+                InputHint::PickHelper,
+            ]
+        );
+        f.helpers = false;
+        assert_eq!(InputHint::of(&f), InputHint::Keys);
+        f.input_empty = false;
+        assert_eq!(InputHint::of(&f), InputHint::Nothing);
+        // A queued message is taken back only from an empty input.
+        f.take_back = true;
+        f.running = true;
+        assert_eq!(InputHint::of(&f), InputHint::Running);
+    }
     use crate::ui::StatusUpdate;
 
     #[test]
