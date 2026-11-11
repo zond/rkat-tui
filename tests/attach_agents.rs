@@ -601,7 +601,11 @@ async fn an_agent_lost_in_a_failed_switch_is_no_ghost() {
 }
 
 /// A new agent's attach is answered while another agent's helper runs a
-/// turn: seating it waits on nothing of the other agent's work.
+/// turn: seating it waits on nothing of the other agent's work. The proof
+/// is that the attach returns at all while the helper's model call is held
+/// on a gate that opens only after it: an attach that waited on the helper
+/// could not return. How long seating takes is the host's (a loaded CI
+/// runner took 6 s), so no time bound is asserted beyond the wait's own.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_new_agent_attaches_while_another_agents_helper_runs() {
     use rkat_tui::daemon::protocol::AgentChoice;
@@ -630,14 +634,14 @@ async fn a_new_agent_attaches_while_another_agents_helper_runs() {
     llm.wait_call(1).await;
     let started = std::time::Instant::now();
     let b = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
+        std::time::Duration::from_secs(30),
         rig::Client::attach_agent(&ws.root, AgentChoice::New),
     )
     .await;
     let waited = started.elapsed();
+    // Only now may the helper finish.
     gate.notify_one();
     let mut b = b.unwrap_or_else(|_| panic!("the attach waited on the helper ({waited:?})"));
-    assert!(waited < std::time::Duration::from_secs(5), "{waited:?}");
     let b_name = b.agent().await;
     assert_ne!(a.agent().await, b_name);
     assert_eq!(a.turn_finished().await.result.unwrap().text, "parent done");

@@ -231,7 +231,9 @@ async fn a_fired_schedule_is_unattended_while_nobody_is_attached() {
     let result = tool_result(&llm.requests()[3], "a1");
     assert!(result.contains("needs a user attached"), "{result}");
     // A client attaches before fetch-b: it is shown what was denied, and
-    // fetch-b's curl is reviewed.
+    // fetch-b's curl is reviewed. fetch-a's run ends first (a client
+    // attaching while it ends would join it as a remote turn).
+    daemon.idle(&agent).await;
     let mut b = rig::Client::attach_agent(&ws.root, AgentChoice::Agent { name: agent }).await;
     b.wait_for(|m| {
         matches!(m, Msg::Notice { text, .. } if text.contains("wanted to run `curl -s http://127.0.0.1:9/a`"))

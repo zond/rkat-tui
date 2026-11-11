@@ -735,6 +735,27 @@ impl Running {
         serde_json::from_value(answer).unwrap()
     }
 
+    /// Wait (bounded by [`within`]) until the daemon reports
+    /// `agent`'s turn idle: a run it started on its own (a schedule, a
+    /// watch) has ended, so a client attaching now does not join it.
+    pub async fn idle(&self, agent: &str) {
+        within(async {
+            loop {
+                let idle = self
+                    .status()
+                    .await
+                    .agents
+                    .iter()
+                    .any(|row| row.name == agent && row.running == Some(false));
+                if idle {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+    }
+
     /// The committed messages of `session` (`rkat/transcript`).
     pub async fn transcript(
         &self,

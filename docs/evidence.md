@@ -6603,3 +6603,18 @@ grace once nothing is held) and
 `attach::each_client_marks_only_its_own_steer_delivered` (each client
 sees one `TurnFinished`, after its mark, and the client that did not send
 the follow-up's steer shows its text inside the turn).
+
+Two more hosted failures after a2bbba0, both timing assumptions in tests:
+`attach_agents::a_new_agent_attaches_while_another_agents_helper_runs`
+asserted that a new agent's attach takes under 5 s while another agent's
+helper is held on a gate; the loaded runner took 6.1 s (0.73 s locally
+with one test thread; 8.3 s for the whole test on c7ef0e9, before any of
+these changes). The attach runs while the other agent's run is open, so
+the turn-end rule above asks nothing yet. The test's proof is that the
+attach returns while the helper's gate is still shut (a waiting attach
+could not return), so the time bound went and the wait is only the
+rig's own. `schedules::a_fired_schedule_is_unattended_while_nobody_is_attached`
+attached its second client right after the scheduled run's last model
+call; when that run had not ended yet the client joined it as a remote
+turn and took its end for its own turn's. It now waits for the agent to
+be idle at the daemon first (`Running::idle`, bounded).
