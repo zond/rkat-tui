@@ -7507,3 +7507,22 @@ Checked and kept, each with a production caller or sender: every other
 the proxy serves include three the client no longer calls
 (`mob/turn_start`, `decision/get`, `approval/list`); raw-wire tests drive
 them, and narrowing the served list is its own change.
+
+## A schedule's usage record goes when the schedule does (2026-11-12)
+
+The daemon dropped `<realm>/tui_usage/schedule-<id>.toml` on `/schedules
+delete` and when an agent retired, but a schedule the agent deleted with
+its own `meerkat_schedule_delete` kept its record. The tool's
+`ToolExecutionCompleted` carries no schedule id (only the call id; the
+id is in the arguments of the `ToolCallRequested` before it), so the
+daemon reconciles instead of matching: `Schedules::reconcile` lists the
+live schedules (any phase but `Deleted`) and drops the record of every
+other schedule the ledger has, in memory or on disk; a failed list drops
+nothing. It runs after a successful `meerkat_schedule_delete` the
+watcher sees, when `/schedules` lists, and at the daemon's start (a
+schedule deleted while it was down). The engine does not delete a
+one-shot schedule that fired (it stays `Active` with no pending
+occurrence and is still listed), so its record stays with it. Tests:
+`schedules::a_schedule_the_agent_deletes_itself_loses_its_usage_record`
+(the tool's delete, and an orphan record dropped at the next start),
+`daemon::usage::tests::the_schedules_with_a_record_are_read_from_disk_and_memory`.

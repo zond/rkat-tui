@@ -605,6 +605,8 @@ impl Daemon {
         if let Err(err) = composed.runtime.ensure_schedule_host_started().await {
             tracing::warn!(error = %err, "the schedule host did not start; schedules fire once a session is created");
         }
+        // Records of schedules deleted while the daemon was down go.
+        agents.schedules().reconcile().await;
         let first_agent = FirstAgent {
             mob_id: meerkat_mob::MobId::from(MOB_ID),
             identity: meerkat_mob::AgentIdentity::from(first.as_str()),

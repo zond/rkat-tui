@@ -387,3 +387,81 @@ async fn stored_schedules(ws: &Workspace) -> Vec<(meerkat::Schedule, Vec<meerkat
     }
     out
 }
+
+/// The usage record of schedule `id` in the realm of `root`.
+fn usage_record(root: &std::path::Path, id: &str) -> std::path::PathBuf {
+    common::realm_of(root)
+        .join(rkat_tui::daemon::usage::USAGE_DIR)
+        .join(format!("schedule-{id}.toml"))
+}
+
+/// The id of the schedule the call `s1` in `messages` created.
+fn created_id(messages: &[Message]) -> String {
+    let result = tool_result(messages, "s1");
+    let created: serde_json::Value =
+        serde_json::from_str(&result).unwrap_or_else(|err| panic!("{err}: {result}"));
+    created["schedule_id"]
+        .as_str()
+        .or_else(|| created["schedule"]["schedule_id"].as_str())
+        .unwrap_or_else(|| panic!("no schedule id in {created}"))
+        .to_string()
+}
+
+/// Wait until `path` exists or not, as `present` says.
+async fn file_is(path: &std::path::Path, present: bool) {
+    common::within(async {
+        while path.exists() != present {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+}
+
+/// A schedule the agent deletes with its own `meerkat_schedule_delete`
+/// loses its usage record (the daemon sees the tool's success and drops
+/// the record of every schedule no longer live); a record of a schedule
+/// gone while the daemon was down is dropped at the next start.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_schedule_the_agent_deletes_itself_loses_its_usage_record() {
+    let ws = Workspace::new();
+    let delete = Step::Dynamic(Arc::new(|messages: &[Message]| Step::Tool {
+        id: "d1",
+        name: "meerkat_schedule_delete",
+        args: json!({"schedule_id": created_id(messages)}),
+    }));
+    let llm = ScriptedLlmClient::new(vec![
+        at_call("s1", "tick", 2, "tick once"),
+        Step::Text("scheduled"),
+        Step::Text("ticked"),
+        delete,
+        Step::Text("deleted"),
+    ]);
+    let mut rig = Attached::start(&ws.root, &llm).await;
+    let session = rig.current_session().await;
+    reveal(&rig.daemon, &session).await;
+    rig.daemon
+        .reveal(&session, &["meerkat_schedule_delete"])
+        .await;
+    rig.send(Effect::StartTurn("tick once in a bit".into()));
+    assert_eq!(rig.turn_finished().await.unwrap().text, "scheduled");
+    rig.wait_for(|m| fired_by(m, "tick")).await;
+    assert_eq!(rig.turn_finished().await.unwrap().text, "ticked");
+    let id = created_id(&llm.requests()[1]);
+    // The fired run was counted to the schedule.
+    let record = usage_record(&ws.root, &id);
+    file_is(&record, true).await;
+    rig.send(Effect::StartTurn("delete it".into()));
+    assert_eq!(rig.turn_finished().await.unwrap().text, "deleted");
+    let deleted = tool_result(&llm.requests()[4], "d1");
+    assert!(!deleted.to_lowercase().contains("error"), "{deleted}");
+    file_is(&record, false).await;
+    rig.quit().await;
+
+    // A record left behind while the daemon was down.
+    let orphan = usage_record(&ws.root, &meerkat::ScheduleId::new().to_string());
+    std::fs::write(&orphan, "").unwrap();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let rig = Attached::start(&ws.root, &llm).await;
+    file_is(&orphan, false).await;
+    rig.quit().await;
+}

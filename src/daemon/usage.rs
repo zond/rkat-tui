@@ -26,6 +26,8 @@ use crate::paths::{FileMode, write_atomic};
 
 /// Directory (inside the realm root) of the usage records.
 pub const USAGE_DIR: &str = "tui_usage";
+/// The start of a schedule's record's file name (`schedule-<id>.toml`).
+const SCHEDULE_PREFIX: &str = "schedule-";
 
 /// Whose model calls a [`Record`] counts.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -47,7 +49,7 @@ impl Account {
     fn file_name(&self) -> String {
         match self {
             Self::Session(session) => format!("{session}.toml"),
-            Self::Schedule(schedule) => format!("schedule-{schedule}.toml"),
+            Self::Schedule(schedule) => format!("{SCHEDULE_PREFIX}{schedule}.toml"),
         }
     }
 }
@@ -259,6 +261,40 @@ impl Ledger {
             summarized.is_some() || moved
         })
         .await;
+    }
+
+    /// The schedules that have a record, in memory or on disk.
+    pub async fn schedule_accounts(&self) -> Vec<ScheduleId> {
+        let mut ids: std::collections::HashSet<ScheduleId> = self
+            .records
+            .lock()
+            .keys()
+            .filter_map(|account| match account {
+                Account::Schedule(id) => Some(id.clone()),
+                Account::Session(_) => None,
+            })
+            .collect();
+        let dir = self.realm_root.join(USAGE_DIR);
+        let on_disk = tokio::task::spawn_blocking(move || {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                return Vec::new();
+            };
+            entries
+                .flatten()
+                .filter_map(|entry| {
+                    let name = entry.file_name();
+                    let id = name
+                        .to_str()?
+                        .strip_prefix(SCHEDULE_PREFIX)?
+                        .strip_suffix(".toml")?;
+                    ScheduleId::parse(id).ok()
+                })
+                .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_default();
+        ids.extend(on_disk);
+        ids.into_iter().collect()
     }
 
     /// `account` is gone (a deleted schedule): its record goes, in memory
@@ -490,6 +526,27 @@ mod tests {
                 .is_empty()
         );
         assert!(Account::Session(session).path(realm.path()).exists());
+    }
+
+    /// The schedules with a record are those on disk (as a restarted
+    /// daemon finds them) and those counted in memory, never a
+    /// conversation's or a file that names no schedule.
+    #[tokio::test]
+    async fn the_schedules_with_a_record_are_read_from_disk_and_memory() {
+        let realm = tempfile::tempdir().unwrap();
+        let ledger = Ledger::new(realm.path(), |_: &SessionId, _: &Record| {});
+        let (written, counted) = (ScheduleId::new(), ScheduleId::new());
+        ledger.scheduled(&written, "m", &usage(1, 1)).await;
+        ledger.turn(&SessionId::new(), "m", &usage(1, 1)).await;
+        ledger.flush();
+        std::fs::write(realm.path().join(USAGE_DIR).join("schedule-nope.toml"), "").unwrap();
+        let again = Ledger::new(realm.path(), |_: &SessionId, _: &Record| {});
+        again.scheduled(&counted, "m", &usage(1, 1)).await;
+        let mut found = again.schedule_accounts().await;
+        found.sort_by_key(ToString::to_string);
+        let mut expected = vec![written, counted];
+        expected.sort_by_key(ToString::to_string);
+        assert_eq!(found, expected);
     }
 
     /// A compaction counts its estimate when a provider call made the

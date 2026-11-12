@@ -20,7 +20,10 @@
 //!   attributed before, whose prompt is the run's input;
 //! - shows what each schedule's runs used: the event watcher counts a
 //!   scheduled run's model calls to its schedule as well as to its
-//!   conversation ([`super::usage::Account::Schedule`]).
+//!   conversation ([`super::usage::Account::Schedule`]), and drops the
+//!   record of a schedule that is gone ([`Schedules::reconcile`]: at the
+//!   daemon's start, after the agent's own `meerkat_schedule_delete`, and
+//!   when `/schedules` lists them).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -282,6 +285,33 @@ impl Schedules {
                     .forget(&super::usage::Account::Schedule(id.clone()))
                     .await;
                 Ok(format!("deleted schedule {label}"))
+            }
+        }
+    }
+
+    /// Drop the usage record of every schedule that no longer lives: one
+    /// the agent deleted with its own tools (the daemon is not told of
+    /// it otherwise), or one deleted while the daemon was down. Decided
+    /// on the service's list of live schedules; when that cannot be read
+    /// nothing is dropped.
+    pub async fn reconcile(&self) {
+        let live: HashSet<ScheduleId> = match self.service.list().await {
+            Ok(schedules) => schedules
+                .into_iter()
+                .filter(|s| s.phase != SchedulePhase::Deleted)
+                .map(|s| s.schedule_id)
+                .collect(),
+            Err(err) => {
+                tracing::warn!(error = %err, "cannot list the schedules: their usage records stay");
+                return;
+            }
+        };
+        for id in self.ledger.schedule_accounts().await {
+            if !live.contains(&id) {
+                tracing::info!(schedule = %id, "a deleted schedule's usage record is dropped");
+                self.ledger
+                    .forget(&super::usage::Account::Schedule(id))
+                    .await;
             }
         }
     }

@@ -431,6 +431,7 @@ impl Local {
             };
             method::Schedules, Empty {} => {
                 let agent = self.agent_of(&caller)?;
+                self.agents.schedules().reconcile().await;
                 Ok(protocol::ScheduleList {
                     schedules: self.agents.schedules().rows(&agent).await.map_err(|err| {
                         Refusal::new(protocol::INTERNAL_ERROR, err.to_string())

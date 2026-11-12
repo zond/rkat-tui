@@ -738,6 +738,19 @@ impl Watcher {
                     agents.tool_requested(&self.name, tool, args.as_value());
                 }
             }
+            AgentEvent::ToolExecutionCompleted {
+                name,
+                is_error: false,
+                ..
+            } if name == SCHEDULE_DELETE => {
+                // The agent deleted one of its schedules: its usage record
+                // goes (the event names no schedule; the service's list
+                // says which are gone).
+                if let Some(agents) = self.watched.agents.upgrade() {
+                    let schedules = Arc::clone(agents.schedules());
+                    tokio::spawn(async move { schedules.reconcile().await });
+                }
+            }
             AgentEvent::TurnCompleted {
                 usage: Some(usage), ..
             } => {
@@ -880,6 +893,9 @@ impl Watcher {
         });
     }
 }
+
+/// The engine's tool that deletes a schedule.
+const SCHEDULE_DELETE: &str = "meerkat_schedule_delete";
 
 /// The session an event of an agent belongs to: its source's, else the
 /// session the watcher subscribed to.
