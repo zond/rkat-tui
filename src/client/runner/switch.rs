@@ -137,7 +137,7 @@ impl Runner {
                 self.switch_model(switch);
             }
         }
-        let short = id.get(..8).unwrap_or(&id).to_string();
+        let short = crate::text::short_id(&id).to_string();
         let text = match why {
             Shown::LostEvents => format!(
                 "the stream lost events the daemon no longer keeps; conversation {short} is shown from its start"

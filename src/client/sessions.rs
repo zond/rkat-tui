@@ -26,7 +26,7 @@ pub fn picker_items(listed: &[Listed], mine: Option<&str>) -> Vec<(String, Strin
         .iter()
         .map(|row| {
             let id = row.session_id.to_string();
-            let short = id.get(..8).unwrap_or(&id).to_string();
+            let short = crate::text::short_id(&id).to_string();
             let mut label = format!("{short} · {} ago", age(row.last_used));
             if let Some(messages) = row.messages {
                 label.push_str(&format!(" · {messages} msgs"));
@@ -107,6 +107,54 @@ mod tests {
                 .unwrap_err()
                 .contains("no other conversations")
         );
+    }
+
+    /// Conversations made within the same minute share the first eight
+    /// characters of their ids (UUID v7 starts with the time), so the
+    /// short form shown everywhere is the id's end, and `/resume` takes it
+    /// as well as a prefix: a prefix that matches wins, an end is tried
+    /// only when no prefix matches, and one that matches two is ambiguous.
+    #[test]
+    fn the_short_id_tells_close_conversations_apart_and_resolves() {
+        // Three ids of one minute, as UUID v7 makes them.
+        let listed: Vec<Listed> = [
+            "019a7f3e-1c2d-7000-8000-0000a1b2c3d4",
+            "019a7f3e-5e6f-7111-9111-0000e5f60718",
+            "019a7f3e-8a9b-7222-a222-00002b3c4d5e",
+        ]
+        .iter()
+        .enumerate()
+        .map(|(i, id)| Listed {
+            session_id: SessionId::parse(id).unwrap(),
+            ..row(i == 0)
+        })
+        .collect();
+        let ids: Vec<String> = listed.iter().map(|r| r.session_id.to_string()).collect();
+        assert_eq!(&ids[1][..8], &ids[2][..8], "made together: {ids:?}");
+        let shorts: Vec<&str> = ids.iter().map(|id| crate::text::short_id(id)).collect();
+        assert_eq!(shorts[1].len(), 8);
+        assert_ne!(shorts[1], shorts[2]);
+        assert!(ids[1].ends_with(shorts[1]));
+        for (i, short) in shorts.iter().enumerate() {
+            assert_eq!(resolve(short, &listed, None).unwrap(), listed[i].session_id);
+            assert_eq!(
+                resolve(&short.to_ascii_uppercase(), &listed, None).unwrap(),
+                listed[i].session_id
+            );
+        }
+        // A prefix still resolves; a shared one is ambiguous.
+        assert_eq!(
+            resolve(&ids[2][..30], &listed, None).unwrap(),
+            listed[2].session_id
+        );
+        assert!(
+            resolve(&ids[1][..8], &listed, None)
+                .unwrap_err()
+                .contains("ambiguous")
+        );
+        // The picker's rows show the short form.
+        let items = picker_items(&listed, None);
+        assert!(items[1].1.starts_with(shorts[1]), "{:?}", items[1]);
     }
 
     /// `last` and `~N` count this agent's conversations; the picker names

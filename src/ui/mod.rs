@@ -800,9 +800,6 @@ pub struct StatusInfo {
 /// The prompt the "Plan ready" dialog's proceed choices send.
 pub const PROCEED_PROMPT: &str = "Proceed with the plan";
 
-/// Number of session-id characters shown in the status bar.
-const SESSION_SHORT_LEN: usize = 8;
-
 impl StatusInfo {
     /// Whether this client reached the daemon ([`Connection::reached`]).
     #[must_use]
@@ -859,7 +856,7 @@ impl StatusInfo {
                 self.model = model;
             }
             StatusUpdate::Session(id) => {
-                self.session_short = id.chars().take(SESSION_SHORT_LEN).collect();
+                self.session_short = crate::text::short_id(&id).to_string();
             }
             StatusUpdate::Tokens { input, output } => {
                 self.input_tokens = input;

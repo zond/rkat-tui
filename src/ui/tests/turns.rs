@@ -781,7 +781,7 @@ fn status_updates_and_dirty_tracking() {
     app.update(Msg::Status(StatusUpdate::Session(
         "0123456789abcdef".into(),
     )));
-    assert_eq!(app.status.session_short, "01234567");
+    assert_eq!(app.status.session_short, "89abcdef");
 }
 
 /// The gauge shows the daemon's reading (`rkat/cost`; how it is computed

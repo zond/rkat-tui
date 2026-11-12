@@ -98,7 +98,7 @@ fn renders_blocks_input_and_status_bar() {
     assert_eq!(rows[10], "›");
     assert_eq!(
         rows[11],
-        " anthropic/claude-sonnet-4-6 │ session abc123ef │ ↑1.2k ↓345"
+        " anthropic/claude-sonnet-4-6 │ session 3ef-0000 │ ↑1.2k ↓345"
     );
 }
 
@@ -524,7 +524,7 @@ fn status_bar_shows_context_gauge_with_threshold_colours() {
     let rows = render_sized(&mut app, now, 100);
     assert_eq!(
         rows[11],
-        " anthropic/claude-sonnet-4-6 │ session abc123ef │ ↑1.2k ↓345 │ ctx 42% (84k/200k)"
+        " anthropic/claude-sonnet-4-6 │ session 3ef-0000 │ ↑1.2k ↓345 │ ctx 42% (84k/200k)"
     );
 
     app.update(Msg::Status(StatusUpdate::Context {
@@ -1347,7 +1347,7 @@ fn the_slash_menu_renders_above_the_input_with_the_highlight() {
             " /cost — token usage and cost per model",
             " Tab completes · ↑/↓ choose · Esc closes the menu ────────────────────",
             "› /co",
-            " anthropic/claude-sonnet-4-6 │ session abc123ef │ ↑1.2k ↓345",
+            " anthropic/claude-sonnet-4-6 │ session 3ef-0000 │ ↑1.2k ↓345",
         ]
     );
     // The highlighted row (↓: the second) is reversed, the others are not.

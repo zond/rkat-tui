@@ -107,8 +107,11 @@ async fn new_starts_fresh_and_resume_brings_the_old_conversation_back() {
     assert_eq!(client.turn_finished().await.unwrap().text, "three");
     assert_eq!(user_texts(&llm.recorded()[2].messages), ["first", "third"]);
     // Resuming the current one is a no-op (`last` names the most recent
-    // other one).
-    client.send(Effect::ResumeSession(first.clone()));
+    // other one); the short form every notice and picker shows (the id's
+    // end) names it as the full id does.
+    client.send(Effect::ResumeSession(
+        rkat_tui::text::short_id(&first).to_string(),
+    ));
     client
         .wait_for(
             |m| matches!(m, Msg::Notice { text, .. } if text == "already in this conversation"),

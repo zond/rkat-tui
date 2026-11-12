@@ -1177,7 +1177,7 @@ mod tests {
         let line = status_line(&s, now);
         assert_eq!(
             line,
-            " anthropic/claude-sonnet-4-6 │ session abc12345 │ ↑1.5k ↓20 │ auto (deny 1/3, 4/20) │ ⠋ running 0s │ queued 2"
+            " anthropic/claude-sonnet-4-6 │ session 345-ffff │ ↑1.5k ↓20 │ auto (deny 1/3, 4/20) │ ⠋ running 0s │ queued 2"
         );
     }
 

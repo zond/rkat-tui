@@ -538,10 +538,10 @@ pub fn agent_entries(
             crate::ui::AgentEntry {
                 name: row.name.clone(),
                 run: row.run_label(),
-                conversation: row.session_id.as_ref().map(|session| {
-                    let id = session.to_string();
-                    id.get(..8).unwrap_or(&id).to_string()
-                }),
+                conversation: row
+                    .session_id
+                    .as_ref()
+                    .map(|session| crate::text::short_id(&session.to_string()).to_string()),
                 title,
                 clients: row.clients,
                 detached: row.detached,
@@ -556,10 +556,9 @@ pub fn agent_entries(
 pub(super) fn retired_words(retired: &protocol::Retired) -> String {
     let mut text = format!("retired agent {}", retired.agent);
     if let Some(session) = &retired.session_id {
-        let id = session.to_string();
         text.push_str(&format!(
             "; its conversation {} stays in /resume",
-            id.get(..8).unwrap_or(&id)
+            crate::text::short_id(&session.to_string())
         ));
     }
     if !retired.schedules_deleted.is_empty() {

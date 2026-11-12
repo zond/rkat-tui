@@ -1436,9 +1436,15 @@ mod tests {
         assert_eq!(entries.len(), 5);
         let (a, b) = (&entries[0], &entries[1]);
         assert!(a.mine && !b.mine);
-        assert_eq!(a.conversation.as_deref(), Some(&session.to_string()[..8]));
+        assert_eq!(
+            a.conversation.as_deref(),
+            Some(crate::text::short_id(&session.to_string()))
+        );
         assert_eq!(a.title, None);
-        assert_eq!(b.conversation.as_deref(), Some(&other.to_string()[..8]));
+        assert_eq!(
+            b.conversation.as_deref(),
+            Some(crate::text::short_id(&other.to_string()))
+        );
         assert_eq!(b.title.as_deref(), Some("fix the test"));
         assert_eq!((b.run, b.clients, b.detached), ("idle", 0, true));
         assert_eq!(b.unretirable, None, "idle and nobody's: retirable");

@@ -20,6 +20,11 @@
   shows are sorted by path but no longer necessarily the first matches by
   path; the truncation line says so.
 
+- Short conversation ids (in `/resume`, `/agents`, the status bar and
+  the notices) are an id's last eight characters, not its first: ids
+  start with the time, so conversations made within a minute or so showed
+  the same short id. `/resume <short id>` takes that form; a prefix still
+  works.
 - More commands open a list you act on, as `/agents` does: `/schedules`
   lists this agent's schedules (Enter or `p` pauses or resumes one, `d`
   then `y` deletes it, and the list shows the change at once);

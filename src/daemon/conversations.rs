@@ -1107,7 +1107,9 @@ pub fn title(messages: &[Message]) -> Option<String> {
 /// `last` and `~N` count the conversations other than the current one (the
 /// current one is the most recently used, so `last` would always name it):
 /// `last` is the one before it; with `mine` (this client's agent) only that
-/// agent's conversations count, the ones it can resume.
+/// agent's conversations count, the ones it can resume. An id is
+/// matched by its start (a prefix), else by its end (the short form
+/// [`crate::text::short_id`] shows).
 ///
 /// # Errors
 ///
@@ -1150,17 +1152,31 @@ pub fn resolve(
             )),
         };
     }
-    let prefix = reference.to_ascii_lowercase();
-    let mut matches = listed
+    // A prefix as before; else the short form shown everywhere
+    // ([`crate::text::short_id`]: the id's end).
+    let reference_lower = reference.to_ascii_lowercase();
+    let ids: Vec<(String, &Listed)> = listed
         .iter()
-        .filter(|row| row.session_id.to_string().starts_with(&prefix));
+        .map(|row| (row.session_id.to_string(), row))
+        .collect();
+    let by = |test: &dyn Fn(&str) -> bool| -> Vec<&Listed> {
+        ids.iter()
+            .filter(|(id, _)| test(id))
+            .map(|(_, row)| *row)
+            .collect()
+    };
+    let mut found = by(&|id| id.starts_with(&reference_lower));
+    if found.is_empty() {
+        found = by(&|id| id.ends_with(&reference_lower));
+    }
+    let mut matches = found.into_iter();
     match (matches.next(), matches.next()) {
         (Some(only), None) => Ok(only.session_id.clone()),
         (None, _) => Err(format!(
             "no conversation or earlier session of this workspace matches `{reference}`"
         )),
         (Some(_), Some(_)) => Err(format!(
-            "prefix is ambiguous ({} conversations match); use more characters",
+            "`{reference}` is ambiguous ({} conversations match); use more characters",
             2 + matches.count()
         )),
     }

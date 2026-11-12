@@ -297,7 +297,7 @@ async fn the_agent_picker_lists_retires_idle_agents_and_seats_a_new_one() {
     assert_eq!(b_entry.title.as_deref(), Some("for b"));
     assert_eq!(
         b_entry.conversation.as_deref(),
-        Some(&b_session.to_string()[..8])
+        Some(rkat_tui::text::short_id(&b_session.to_string()))
     );
     assert_eq!(b_entry.unretirable, None);
     assert_eq!(entry(&c_name).clients, 1);
@@ -325,7 +325,7 @@ async fn the_agent_picker_lists_retires_idle_agents_and_seats_a_new_one() {
 
     // B retires; its conversation stays in /resume.
     a.send(Effect::RetireAgent(b_name.clone()));
-    let short = b_session.to_string()[..8].to_string();
+    let short = rkat_tui::text::short_id(&b_session.to_string()).to_string();
     a.wait_for(|m| matches!(m, Msg::Notice { text, .. } if text.contains(&format!("retired agent {b_name}")) && text.contains(&short)))
         .await;
     let status = daemon.status().await;

@@ -91,8 +91,8 @@ the engine's runtime owning input admission, interruption and resume. The
 transcript, the model and the cost totals survive restarts: `-c` joins
 the agent active last and its conversation, `--resume <ref>` joins the
 agent that owns that conversation and `/resume [ref]` switches yours to
-another (`last`, `~N` for the N-th most recent, an id or
-id prefix; `/resume` or `--resume` alone opens a picker), `/clear`
+another (`last`, `~N` for the N-th most recent, an id, an
+id prefix or the short id shown; `/resume` or `--resume` alone opens a picker), `/clear`
 (`/new`) starts a fresh one (see [The workspace daemon](#the-workspace-daemon)).
 While it runs, `rkat-tui` holds a lease on the realm (surface `rkat-tui`,
 one per process; released on quit), so `rkat realm prune` and realm
@@ -1651,7 +1651,10 @@ agent, `/resume` lists this workspace's conversations (newest first, with
 their size, first message and, for another agent's, its name) and
 switches back to one of this agent's, showing its transcript; `/resume
 <ref>` takes `last` (this agent's most recent conversation other than
-this one), `~N` (counting those), an id or an id prefix. A conversation
+this one), `~N` (counting those), an id, an id prefix, or the short id
+the picker, `/agents`, the status bar and the notices show (an id's last
+eight characters: ids start with the time, so conversations made within a
+minute share their first ones). A conversation
 belongs to the agent that ran it (the engine seats a session only under
 the identity that created it): `/resume` of another agent's says where it
 is (`/agents <name>` when that agent works, `rkat-tui --resume <id>` when

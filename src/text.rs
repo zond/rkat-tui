@@ -1,5 +1,6 @@
-//! The two small formatters every message shares: a count with its noun
-//! (`1 tool`, `3 tools`) and a length of time (`5m6s`, `5m`).
+//! The small formatters every message shares: a count with its noun
+//! (`1 tool`, `3 tools`), a length of time (`5m6s`, `5m`) and a
+//! conversation's short id.
 
 use std::fmt::{Display, Write as _};
 
@@ -14,6 +15,20 @@ pub fn count<N: Copy + PartialEq + From<u8> + Display>(n: N, thing: &str) -> Str
 #[must_use]
 pub fn plural<N: PartialEq + From<u8>>(n: N) -> &'static str {
     if n == N::from(1) { "" } else { "s" }
+}
+
+/// How many characters of a conversation's id [`short_id`] shows.
+pub const SHORT_ID_LEN: usize = 8;
+
+/// The short form of a conversation's (session's) id, the one every place
+/// that shows an id short uses: its last [`SHORT_ID_LEN`] characters.
+/// Session ids are UUID v7, whose first characters are a timestamp, so
+/// conversations made within a minute or so share their first eight; the
+/// last ones are random. `/resume` takes this form as well as a prefix.
+#[must_use]
+pub fn short_id(id: &str) -> &str {
+    let start = id.len().saturating_sub(SHORT_ID_LEN);
+    id.get(start..).unwrap_or(id)
 }
 
 /// `seconds` in the largest unit that is not zero (days, hours, minutes,

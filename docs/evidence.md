@@ -7747,3 +7747,18 @@ Upstream asks (recorded under "Open asks", not posted): `member_not_found`
 should name the mobs that do have a member of that id (as far as the
 caller may see them); `delegate`'s result, and its timeout error, should
 carry the helper's mob id and member name.
+
+## Short conversation ids: the end, not the start (2026-11-12)
+
+Session ids are UUID v7 (`meerkat_core::SessionId::new`): the first 48
+bits are the creation time in milliseconds, so the first eight hex digits
+change only every 65 s and conversations made together (a `/new` right
+after a start, several agents started at once) showed the same short id
+in `/resume`, `/agents`, the status bar and the notices. The short form
+is now the id's last eight characters (random in v7), made in one place,
+`text::short_id`; `conversations::resolve` takes a prefix as before and,
+when no prefix matches, the id's end, so `/resume <what is shown>` works.
+Tests: `sessions::tests::the_short_id_tells_close_conversations_apart_and_resolves`,
+`conversations::new_starts_fresh_and_resume_brings_the_old_conversation_back` (the short form names the
+current conversation), `tests/agents.rs` (the picker's and the retire
+notice's short id).

@@ -363,11 +363,11 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "resume",
         aliases: &[],
-        usage: "[last | ~N | id-prefix]",
+        usage: "[last | ~N | short id | id prefix]",
         summary: "resume a session (no ref: pick one)",
         help: &[(
             "/resume [ref]",
-            "resume a session (last, ~N, or id prefix); no ref opens a picker\n(so does rkat-tui --resume without a ref; archived sessions\nare not offered)",
+            "resume a session (last, ~N, the short id shown, or an id prefix);\nno ref opens a picker\n(so does rkat-tui --resume without a ref; archived sessions\nare not offered)",
         )],
         parse: parse_resume,
     },
@@ -979,10 +979,13 @@ mod tests {
     /// once (on its spec) and cannot disagree with the menu or `/help`.
     #[test]
     fn usage_errors_quote_the_spec() {
-        assert_eq!(usage_of("/resume a b"), "/resume [last | ~N | id-prefix]");
+        assert_eq!(
+            usage_of("/resume a b"),
+            "/resume [last | ~N | short id | id prefix]"
+        );
         assert_eq!(
             spec("resume").map(|s| s.usage),
-            Some("[last | ~N | id-prefix]")
+            Some("[last | ~N | short id | id prefix]")
         );
         assert_eq!(usage_of("/copy 0"), "/copy [N]");
     }
