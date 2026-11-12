@@ -7959,3 +7959,68 @@ Tests: `daemon::deferral::tests::the_mob_hint_names_only_hidden_tools`
 but `delegate`; the operator tools only on their own line),
 `tests/approvals.rs` `a_fork_off_outcome_arrives_later_in_the_transcript`,
 `tests/agents.rs` `a_member_seated_with_auto_wire_parent_is_wired_to_the_agent`.
+
+## The engine moves to crates.io 0.9.14 (2026-11-12)
+
+Every `meerkat-*` line names `version = "0.9.14"`; `cargo update -p
+meerkat` moved the 38 engine crates of the lock together and nothing
+else (`rustix` was 1.1.6 in this lock already, so RUSTSEC-2026-0486,
+which upstream's own 0.9.14 lock still carries, is not in this graph).
+API drift: none (`cargo check --all-targets --all-features` compiled
+unchanged).
+
+What changed, read in the published sources against 0.9.13: only
+`meerkat-openai`, `meerkat-core` (`transcript_replay`, `types.rs`: the
+OpenAI continuity issuer and ledger), `meerkat-llm-core` (the replay
+witness; `usage_limit_reached` as an exhausted-quota code), the facade's
+`factory.rs` (a self-hosted Responses client is its configured server),
+`meerkat-store`, `meerkat-tools` `builtin/file_store.rs` and
+`meerkat-auth-core` (the refused-write fix: tokio's `sync_all` dropped
+the write's error), the Copilot client identity, and the version in
+`meerkat-contracts`. `meerkat-mob`, `meerkat-mob-mcp`, `meerkat-rpc`,
+`meerkat-runtime`, `meerkat-session`, `meerkat-sqlite`, `meerkat-skills`,
+`meerkat-sandbox`, `meerkat-schedule`, `meerkat-mcp` and `meerkat-comms`
+differ only in packaging files. So none of this project's open upstream
+items is in the release: #2180 (the members' exact catalog;
+`tool_costs::an_agent_s_request_carries_every_tool_definition` still
+passes), #2182, #2183, #2184, #2206, #2207, #2208 and #2126 keep their
+workarounds or limits as recorded. The engine facts quoted in the
+entries "Orphaned delegate helpers", "Tool deadlines inside a helper",
+"Where a helper lives", "The user's skills directory", "The agent opens
+a skill" and "What the mob hint says" are in crates this release does
+not change and still hold.
+
+Upstream fixes looked for and not in 0.9.14 (no source change in it):
+owner-only config documents, binding and comms key files; a provider's
+error text without the credential (only the new stream causes pass the
+existing authorizer redaction); a retry-exhausted turn error carrying
+provider, typed reason and retryable (the error and event shapes are
+unchanged, so the failure notice stays); the reasoning-effort
+vocabulary (`[thinking]` is passed as before); per-member operator
+instructions; kickoff notices and a woken member wired from its
+recorded endpoint (the release notes list the waking-peer spawn delay
+and refusal as known limitations).
+
+What rkat-tui's users get: OpenAI-family continuity material (encrypted
+reasoning, item and response ids) is replayed only to the service that
+issued it in this process, so a conversation moved between two
+OpenAI-wire endpoints no longer fails its first turn there; after a
+daemon restart earlier turns go without it (one prompt-cache miss). A
+stream-reported refusal (`invalid_request_body`, `model_not_found`, …)
+is a terminal `InvalidRequest`/`ModelNotFound` at once, not retried; the
+classifier's `tools_rejected` reads `InvalidRequest` as "this endpoint
+takes no tools" and makes its tool-less call, as it does for an HTTP
+400. rkat-tui's own `paths::write_atomic` writes through `std::io`, whose
+`write_all` reports the error, so it never had the engine's bug.
+
+Stored state: a realm made by the 0.9.13 build (HEAD `94e3aa5`, the
+rig's daemon with a scripted LLM: one turn, one `task_create`) was
+opened by this build at the same paths: the agent restored (not
+created), the same session, its task listed by `rkat/tasks`, the next
+request carrying the first turn. Every engine store kept its
+`meerkat_schema` rows (session-store 5, schedule-store 3, runtime-store
+3, mob 12, jobs 4, memory 3, workgraph 4, tools-tasks 1) and its schema
+text unchanged: 0.9.14 migrates nothing on open. The probe was a
+temporary test, not kept; `state_fixtures` passes unchanged.
+`cargo deny check` passes; the RUSTSEC-2026-0462 ignore still matches
+(`rmcp` 1.8.0) and its reason names 0.9.14.

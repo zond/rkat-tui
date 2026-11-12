@@ -33,33 +33,33 @@ path = "src/bin/rkat-tui-mob.rs"
 # store, auto-compaction), skills, MCP, comms and semantic memory
 # (`meerkat-memory` directly for the start-up index probe).
 #
-# One crates.io release for every `meerkat-*` line; 0.9.13 carries every
+# One crates.io release for every `meerkat-*` line; 0.9.14 carries every
 # engine fix the application needs. Moving the version on every line is the
 # pin move.
-meerkat = { version = "0.9.13", features = ["anthropic", "openai", "gemini", "session-store", "jsonl-store", "session-compaction", "memory-store-session", "skills", "comms", "mcp", "schedule"] }
-meerkat-core = { version = "0.9.13" }
-meerkat-runtime = { version = "0.9.13", features = ["sqlite-store"] }
-meerkat-store = { version = "0.9.13" }
-meerkat-sqlite = { version = "0.9.13" }
+meerkat = { version = "0.9.14", features = ["anthropic", "openai", "gemini", "session-store", "jsonl-store", "session-compaction", "memory-store-session", "skills", "comms", "mcp", "schedule"] }
+meerkat-core = { version = "0.9.14" }
+meerkat-runtime = { version = "0.9.14", features = ["sqlite-store"] }
+meerkat-store = { version = "0.9.14" }
+meerkat-sqlite = { version = "0.9.14" }
 # `sqlite`: the session task store the Ctrl+T checklist reads.
-meerkat-tools = { version = "0.9.13", features = ["sqlite"] }
-meerkat-models = { version = "0.9.13" }
-meerkat-llm-core = { version = "0.9.13" }
-meerkat-memory = { version = "0.9.13" }
-meerkat-sandbox = { version = "0.9.13" }
-meerkat-schedule = { version = "0.9.13" }
-meerkat-mob = { version = "0.9.13" }
-meerkat-mob-mcp = { version = "0.9.13" }
+meerkat-tools = { version = "0.9.14", features = ["sqlite"] }
+meerkat-models = { version = "0.9.14" }
+meerkat-llm-core = { version = "0.9.14" }
+meerkat-memory = { version = "0.9.14" }
+meerkat-sandbox = { version = "0.9.14" }
+meerkat-schedule = { version = "0.9.14" }
+meerkat-mob = { version = "0.9.14" }
+meerkat-mob-mcp = { version = "0.9.14" }
 # The user skills directory: listed and counted by the engine's own
 # filesystem skill source (`bootstrap::skills`).
-meerkat-skills = { version = "0.9.13" }
+meerkat-skills = { version = "0.9.14" }
 # The `rkat-tui-mob` daemon serves Meerkat's own JSON-RPC method router
 # (`MethodRouter`, `RpcServer`, `SessionRuntime`) over loopback TCP. Default
 # features off: no realtime voice and no governed-realm host.
-meerkat-rpc = { version = "0.9.13", default-features = false, features = ["mob", "mcp", "comms", "schedule"] }
+meerkat-rpc = { version = "0.9.14", default-features = false, features = ["mob", "mcp", "comms", "schedule"] }
 # The attach client (`rkat-tui --attach`) reads the daemon's replies with the
 # engine's own wire types (`events/list_since`, `events/snapshot`).
-meerkat-contracts = { version = "0.9.13" }
+meerkat-contracts = { version = "0.9.14" }
 
 # Async + serialization
 tokio = { version = "1.43", features = ["full"] }

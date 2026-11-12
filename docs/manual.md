@@ -2078,7 +2078,7 @@ with no slot a host can wrap, so their definitions ride on every request.
 
 This is rkat-tui's own stand-in for the engine's deferred tool catalog
 (`tool_catalog_search` / `tool_catalog_load`), which does not engage for
-the daemon's agents on Meerkat 0.9.13 (lukacf/meerkat#2180); when it
+the daemon's agents on Meerkat 0.9.14 (lukacf/meerkat#2180); when it
 does, rkat-tui moves to it (`docs/evidence.md`, "Search and reveal").
 
 ### File watches

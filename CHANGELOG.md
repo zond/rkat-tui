@@ -27,6 +27,20 @@
 
 ### Changed
 
+- The engine is Meerkat 0.9.14 from crates.io (was 0.9.13). What it
+  changes for rkat-tui: a conversation moved between two OpenAI-family
+  endpoints (the OpenAI API, a self-hosted or LiteLLM server in
+  Responses mode, Azure, Copilot) no longer fails its first turn on the
+  new one, because encrypted reasoning and response ids go back only to
+  the service that issued them; after the daemon restarts, earlier turns
+  are sent without that material, so the provider's prompt cache misses
+  once. A request an OpenAI-family service refuses inside its response
+  stream fails at once with the service's reason instead of being sent
+  again until the retries run out (`retry exhausted`), and the ChatGPT backend's
+  `usage_limit_reached` is an exhausted quota, not retried. A write the
+  operating system refuses (a full disk, a quota) no longer leaves the
+  realm's `realm_manifest.json` empty while the open reports success.
+  Stored state is unchanged: a realm 0.0.1 wrote opens as it was.
 - The agent's note on its hidden mob tools now says what they do:
   `mob_create` and `mob_spawn_member` start helpers that stay after their
   task until retired, a `council`'s summary and a `fork_off` child's
