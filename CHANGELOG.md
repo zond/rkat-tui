@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Documentation
+
+- The README shows how to use a LiteLLM (or any OpenAI-compatible) proxy:
+  the key in an environment variable, the endpoint on the command line or
+  in `~/.rkat/tui/tui.toml`. The manual's "Models, endpoints and cost"
+  opens with the same as a short setup guide; how endpoints reach the
+  engine follows it.
+
 ## [0.0.1] - 2026-11-12
 
 The first release. rkat-tui is an interactive terminal coding agent with

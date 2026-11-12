@@ -14,7 +14,7 @@ the test protocol for working on rkat-tui itself.
 - [Confinement](#confinement) ([Security decisions](#security-decisions), [Security model and its limits](#security-model-and-its-limits))
 - [Helpers](#helpers)
 - [Rules](#rules) ([Configuration reference](#configuration-reference-tuitoml))
-- [Models, endpoints and cost](#models-endpoints-and-cost)
+- [Models, endpoints and cost](#models-endpoints-and-cost) ([Setting up an endpoint](#setting-up-an-endpoint))
 - [Instructions and memory](#instructions-and-memory) ([Context and compaction](#context-and-compaction))
 - [Keys and commands](#keys-and-commands) ([Task checklist](#task-checklist))
 - [Where things live](#where-things-live)
@@ -705,12 +705,50 @@ Other flags: `--model`/`-m <[endpoint:]id>`, `--endpoint <name>`,
 
 ## Models, endpoints and cost
 
+### Setting up an endpoint
+
 An **endpoint** is a named place to send requests in one of Meerkat's wire
 dialects: `anthropic`, `openai` (also LiteLLM and other OpenAI-compatible
 proxies) or `gemini`. A dialect names the protocol, not who serves the
-model. The built-in endpoints exist when their key resolves (realm config,
-provider environment variable, or the `rkat` token store). More come from
-`[endpoints.<name>]` in `tui.toml`.
+model.
+
+- **The built-in endpoints** `anthropic`, `openai` and `gemini` need nothing
+  but their key: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `GEMINI_API_KEY`
+  in the environment (or a binding in the realm config, or the `rkat`
+  token store).
+- **Any other server** is an endpoint you configure, in
+  `~/.rkat/tui/tui.toml` (yours, for every workspace), in a workspace's
+  realm `tui.toml`, or for one run on the command line. A project's own
+  `.rkat/tui.toml` cannot define endpoints.
+- **The key is always an environment variable** you name with
+  `api_key_env` (`key_env=` on the command line). rkat-tui records only the
+  variable's name; a key written into a file or `--set` refuses the start.
+
+For a LiteLLM proxy at `https://litellm.example.com` whose key is in
+`WORK_LLM_KEY`:
+
+```bash
+export WORK_LLM_KEY='sk-…'
+```
+
+```toml
+# ~/.rkat/tui/tui.toml
+[endpoints.work]
+dialect = "openai"
+base_url = "https://litellm.example.com"   # the proxy's root, with or without /v1
+api_key_env = "WORK_LLM_KEY"
+```
+
+or, for one run, `--endpoint-def work=openai=https://litellm.example.com,key_env=WORK_LLM_KEY`.
+Its models are `work:<model>`, the model as the proxy lists it: start with
+`--model work:claude-opus-5-5`, or pick one with `/model` (the picker lists
+every endpoint's models). A server without the Responses API takes
+`api_style = "chat_completions"` (`,api_style=chat_completions`). With the
+proxy as the only endpoint, the safety classifier runs there too: give it
+a model the proxy serves with `--classifier-model work:<model>` (or
+`[auto] classifier_model`).
+
+### How endpoints reach the engine
 
 Configured endpoints are **written into the realm's own `config.toml`**
 (through the realm's `ConfigRuntime`: the writer lock and generation check

@@ -39,15 +39,35 @@ live under `~/.rkat/tui/workspaces/<id>/`, not in the project (see
 ## Start
 
 You need a provider key: export `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or
-`GEMINI_API_KEY` (other servers, such as a LiteLLM proxy or a local model,
-are added as endpoints; see
-[Models, endpoints and cost](docs/manual.md#models-endpoints-and-cost)).
-Then, in your project:
+`GEMINI_API_KEY`. Then, in your project:
 
 ```bash
 rkat-tui                          # type a request and press Enter
 rkat-tui "fix the failing test"   # or start with one
 ```
+
+**A LiteLLM proxy** (or vLLM, Ollama, any OpenAI-compatible server) is an
+endpoint you name. Its key stays in an environment variable; you tell
+rkat-tui the variable's name, never the key:
+
+```bash
+export WORK_LLM_KEY='sk-…'
+rkat-tui --endpoint-def work=openai=https://litellm.example.com,key_env=WORK_LLM_KEY \
+         --model work:claude-opus-5-5     # <endpoint>:<model as the proxy lists it>
+```
+
+To keep it, put the same in `~/.rkat/tui/tui.toml` and pick the model with
+`/model` inside the app:
+
+```toml
+[endpoints.work]
+dialect = "openai"
+base_url = "https://litellm.example.com"
+api_key_env = "WORK_LLM_KEY"
+```
+
+More (Chat Completions servers, gateways, prices, the classifier's model):
+[Models, endpoints and cost](docs/manual.md#models-endpoints-and-cost).
 
 `?` on an empty input lists the keys and `/help` the commands.
 
