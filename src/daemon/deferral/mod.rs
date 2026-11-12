@@ -54,6 +54,7 @@ pub const PERSONA: &str = "\
 Some tools are left out of your tool list until you search for them with `tool_search`:
 - You can schedule yourself (reminders, recurring checks, follow-ups): call `tool_search` with family `schedule`.
 - Teams, councils, forks and mob profiles beyond `delegate`: call `tool_search` with family `mob`.
+- A `delegate` helper is a member of the mob `implicit-<your session id>`, not of the workspace's mob; `mob_list` shows the mobs.
 ";
 
 /// The families whose tools are deferrable.
@@ -578,6 +579,9 @@ mod tests {
             assert!(PERSONA.contains(&call), "{call}");
         }
         assert!(!PERSONA.contains("tool catalog"));
+        // Where a `delegate` helper lives, which no tool says before its
+        // call returns (`docs/evidence.md`, "Where a helper lives").
+        assert!(PERSONA.contains("mob `implicit-<your session id>`"));
     }
 
     /// The deferrable tools are what a hidden family's dispatcher offers

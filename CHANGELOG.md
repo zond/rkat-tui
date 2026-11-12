@@ -49,6 +49,10 @@
   it waited exactly as long as one tool call of its helper, so a helper's
   long shell command timed out together with the `delegate` and the
   helper could not report it. Nothing is written to the config.
+- The agent is told that a `delegate` helper is a member of the mob
+  `implicit-<its session id>`, not of the workspace's mob, and that
+  `mob_list` shows the mobs, so it no longer takes `member_not_found` in
+  the workspace's mob for a helper that is gone.
 
 ### Documentation
 

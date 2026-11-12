@@ -469,3 +469,46 @@ async fn a_helper_s_tool_times_out_before_its_delegate_does() {
     client.quit().await;
     daemon.stop().await;
 }
+
+/// What the persona says of a helper's mob holds: after a `delegate`,
+/// the agent's `mob_list` names `implicit-<its session id>`, where the
+/// helper was a member.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mob_list_shows_the_mob_of_the_agent_s_helpers() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![
+        delegate("d1", "scout", "say hi"),
+        Step::Text("hi"),
+        Step::Tool {
+            id: "l1",
+            name: "mob_list",
+            args: json!({}),
+        },
+        Step::Text("listed"),
+    ]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    daemon.reveal(&daemon.session, &["mob_list"]).await;
+    let mut client = Client::attach(&ws.root).await;
+    client.send(Effect::StartTurn("go".into()));
+    assert_eq!(client.turn_finished().await.unwrap().text, "listed");
+    let listed = llm
+        .recorded()
+        .pop()
+        .unwrap()
+        .messages
+        .iter()
+        .find_map(|m| match m {
+            Message::ToolResults { results, .. } => results
+                .iter()
+                .find(|r| r.tool_use_id == "l1")
+                .map(|r| r.text_content()),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        listed.contains(&format!("implicit-{}", daemon.session)),
+        "{listed}"
+    );
+    client.quit().await;
+    daemon.stop().await;
+}

@@ -134,6 +134,9 @@ the mob split are numbered in `docs/mob-split.md`, "Open engine asks"):
 - `delegate` waits under the same core tool deadline as each tool call of
   its helper; it should own its deadline as `fork_off` and `council` do:
   "Tool deadlines inside a helper".
+- `member_not_found` naming the mobs that have a member of that id, and
+  `delegate`'s result and timeout error carrying the helper's mob id and
+  member name: "Where a helper lives".
 
 - The engine cannot update a stored mob definition after creation
   (`MobStorage::update_definition` is not exposed through `MobMcpState`);
@@ -7712,3 +7715,35 @@ Upstream ask (recorded under "Open asks"): `delegate` should own its
 deadline the way `fork_off` and `council` do (a wait derived from the
 helper's own bounds, or a `[tools]` setting of its own), so one tool call
 of a helper cannot use up the whole time its delegator waits.
+
+## Where a helper lives (2026-11-12)
+
+The owner's main agent looked for a timed-out helper with
+`mob_member_status` and `mob_id: "tui"` (the workspace's mob, where the
+agents are members), got `member_not_found` and concluded the helper was
+gone; it was seated in `implicit-<the agent's session id>` (meerkat-mob
+`definition.rs`, `MobDefinition::implicit_on_route`).
+
+What the agent can know: nothing it is given names its session id (the
+engine's prompt and rkat-tui's persona name the agent, not the session).
+A `delegate` result carries `mob_id` (meerkat-mob-mcp `agent_tools.rs`,
+`dispatch_delegate`), but only when the call returns; a timed-out call
+returns the timeout error, which names no mob. `mob_list` lists the
+implicit mob once a `delegate` made it (the call grants the session manage
+scope over it). So the persona's hint section
+(`src/daemon/deferral/mod.rs`, `PERSONA`, the agent's persona part that
+already names the mob family and `delegate`; `CODING_PERSONA` names no
+tool by design, `bootstrap::persona::tests::the_persona_restates_no_tool_contract`)
+gained one line: a `delegate` helper is a member of the mob
+`implicit-<your session id>`, not of the workspace's mob, and `mob_list`
+shows the mobs. Cost: 130 bytes (about 30 tokens) on every request;
+`tool_costs::an_agent_s_request_carries_every_tool_definition` measures it
+with the other hint lines (1 156 bytes with the search tool, against
+67 601 hidden). Tests: `daemon::deferral::tests::the_hints_name_the_search_call_for_every_family`,
+`helpers::mob_list_shows_the_mob_of_the_agent_s_helpers` (after a
+`delegate`, the agent's `mob_list` names `implicit-<its session>`).
+
+Upstream asks (recorded under "Open asks", not posted): `member_not_found`
+should name the mobs that do have a member of that id (as far as the
+caller may see them); `delegate`'s result, and its timeout error, should
+carry the helper's mob id and member name.

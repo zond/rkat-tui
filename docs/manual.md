@@ -624,6 +624,9 @@ call that runs too long times out first and the helper reports it.
 the wait itself. A `delegate` call that times out ends without the helper's
 result, and the daemon then retires that helper; members started with
 `mob_spawn_member` stay until they are retired or their mob is destroyed.
+A `delegate` helper is a member of the mob `implicit-<session id>` of the
+agent that started it, not of the workspace's mob (`tui`, where the agents
+are); the agent is told so.
 
 **Watching a helper.** While helpers work, a panel under the input lists
 them, one line each, indented by nesting depth (the newest top-level helper
