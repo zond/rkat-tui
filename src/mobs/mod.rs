@@ -41,12 +41,16 @@
 //!   memory.
 //! - **Interrupts.** [`cancel_helpers`] force-cancels the running helpers of
 //!   a session when its turn is interrupted or its conversation is left.
+//! - **Orphans.** A `delegate` call that ends without its helper's result
+//!   (timed out, failed, or left open by its run's end) leaves the helper
+//!   seated; [`delegates`] names it from the caller's events and retires it.
 
 pub mod registry;
 
 pub mod bindings;
 pub mod council;
 pub mod customizer;
+pub mod delegates;
 pub(crate) mod follow;
 
 use std::sync::Arc;
@@ -71,19 +75,20 @@ pub(crate) async fn cancel_helpers(
     owner: &SessionId,
 ) {
     for key in registry.live_for(owner) {
-        let handle = match state.handle_for(&key.mob).await {
-            Ok(handle) => handle,
-            Err(err) => {
-                tracing::warn!(helper = %key, error = %err, "cannot reach helper's mob");
-                continue;
-            }
-        };
-        if let Err(err) = handle.force_cancel_member(key.member.clone()).await {
-            tracing::debug!(helper = %key, error = %err, "helper run not cancelled");
+        match state.handle_for(&key.mob).await {
+            Ok(handle) => stop_helper(&handle, &key).await,
+            Err(err) => tracing::warn!(helper = %key, error = %err, "cannot reach helper's mob"),
         }
-        if let Err(err) = handle.retire(key.member.clone()).await {
-            tracing::warn!(helper = %key, error = %err, "cannot retire helper");
-        }
+    }
+}
+
+/// Force-cancel the helper `key`'s run in its mob `handle`, then retire it.
+async fn stop_helper(handle: &meerkat_mob::MobHandle, key: &HelperKey) {
+    if let Err(err) = handle.force_cancel_member(key.member.clone()).await {
+        tracing::debug!(helper = %key, error = %err, "helper run not cancelled");
+    }
+    if let Err(err) = handle.retire(key.member.clone()).await {
+        tracing::warn!(helper = %key, error = %err, "cannot retire helper");
     }
 }
 

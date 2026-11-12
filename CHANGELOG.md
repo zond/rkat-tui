@@ -38,6 +38,12 @@
   daemon), `-c` and `--resume` (which agent in it) answers, and has
   examples for joining and for a new agent in another workspace's daemon.
 
+- A `delegate` call that times out no longer leaves its helper seated:
+  the daemon retires the helper when the call ends without its result
+  (timed out, or still open when the agent's run ends), as the engine
+  does after a helper's turn completes or fails. A `spawn_member` member
+  is never retired this way.
+
 ### Documentation
 
 - The manual opens "The workspace daemon" with "Which daemon, which

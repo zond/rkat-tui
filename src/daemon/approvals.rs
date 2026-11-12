@@ -29,7 +29,8 @@
 //!
 //! [`watch`] follows the agent's events: a run start lifts a Stop,
 //! a model call is counted ([`super::usage`]), a run end refreshes the
-//! tool catalog. [`HelperEvents`] does the same for the helpers, from the
+//! tool catalog, and the helper of a `delegate` call that ended without its
+//! result is retired ([`crate::mobs::delegates`]). [`HelperEvents`] does the same for the helpers, from the
 //! follower's one subscription to each ([`crate::mobs::follow`]): their
 //! model calls are counted to their owner's conversation, and a helper's
 //! catalog is read after its first run; a helper that stays seated
@@ -507,8 +508,9 @@ pub struct Watched {
 /// goes to the engine (it lifts a Stop given to an earlier run) and makes
 /// the agent the most recently active one (`agents`), every run end
 /// refreshes the session's tool catalog, every model call and compaction
-/// is counted ([`super::usage`]), and each run's start and end tell
-/// [`super::activity`] when the agent is idle. When the agent is seated
+/// is counted ([`super::usage`]), each run's start and end tell
+/// [`super::activity`] when the agent is idle, and a `delegate` call that
+/// ends without its helper's result has the helper retired. When the agent is seated
 /// again (a conversation switch, a reseat:
 /// [`super::conversations::Conversations::seatings`]) it subscribes again,
 /// from the new incarnation's first event: the member's old stream does
@@ -554,6 +556,9 @@ struct Following {
     run: Option<meerkat_core::RunId>,
     /// A compaction's history estimate, until it completes.
     compacting: Option<u64>,
+    /// The agent's open `delegate` calls: a helper whose call ends
+    /// without its result is retired.
+    delegates: crate::mobs::delegates::DelegateCalls,
 }
 
 /// One agent's event watcher ([`watch`]).
@@ -720,6 +725,15 @@ impl Watcher {
         following: &mut Following,
     ) {
         let session = || event_session(&envelope.source, following.session.as_ref());
+        for orphan in following
+            .delegates
+            .observe(session().as_ref(), &envelope.payload)
+        {
+            let state = Arc::clone(&self.watched.state);
+            tokio::spawn(async move {
+                crate::mobs::delegates::retire_orphan(&state, &orphan).await;
+            });
+        }
         match &envelope.payload {
             AgentEvent::RunStarted {
                 session_id,

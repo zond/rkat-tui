@@ -14,10 +14,11 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use common::{MODEL, ScriptedLlmClient, Step, Workspace, within};
-use meerkat_core::{AgentEvent, StreamScopeFrame};
+use meerkat_core::{AgentEvent, Message, StreamScopeFrame};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use rig::{Client, Running};
+use rkat_tui::client::transport::Connection;
 use rkat_tui::ui::{App, Effect, Msg, StatusInfo, StatusUpdate, TurnFailure};
 use serde_json::json;
 
@@ -246,4 +247,161 @@ async fn a_helper_delegated_after_a_model_switch_runs_on_the_new_model() {
         .session_metadata()
         .unwrap();
     assert_eq!(meta.model, SWITCHED);
+}
+
+/// The member identities `mob` lists, by `connection`.
+async fn members(connection: &Connection, mob: &str) -> Vec<String> {
+    let members = connection
+        .call("mob/members", json!({"mob_id": mob}))
+        .await
+        .unwrap();
+    members["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|member| member["agent_identity"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// Wait until `mob` lists no member.
+async fn until_empty(connection: &Connection, mob: &str) {
+    within(async {
+        while !members(connection, mob).await.is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+}
+
+/// The realm config of `ws` with `delegate`'s tool timeout at 3 s.
+fn delegate_times_out(ws: &Workspace) {
+    let config = common::realm_of(&ws.root).join("config.toml");
+    std::fs::write(&config, "[tools.tool_timeouts]\ndelegate = \"3s\"\n").unwrap();
+}
+
+/// A `delegate` call that times out (the engine's tool timeout, here 3 s
+/// from the realm's `[tools.tool_timeouts] delegate`) leaves no helper
+/// seated: the engine drops the call without retiring its helper, and the
+/// daemon retires it when the agent's stream says the call ended with an
+/// error (`rkat_tui::mobs::delegates`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_timed_out_delegate_leaves_no_helper_seated() {
+    let ws = Workspace::new();
+    delegate_times_out(&ws);
+    let llm = ScriptedLlmClient::new(vec![
+        delegate("d1", "stuck", "never finishes"),
+        Step::Hang,
+        Step::Text("after the timeout"),
+    ]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let mut client = Client::attach(&ws.root).await;
+    client.send(Effect::StartTurn("go".into()));
+    llm.wait_call(1).await;
+    client.saw(one_helper("stuck")).await;
+    // The call times out; the agent goes on with the error.
+    let outcome = client.turn_finished().await;
+    assert_eq!(outcome.unwrap().text, "after the timeout");
+    assert!(client.events().iter().any(|event| matches!(
+        event,
+        AgentEvent::ToolExecutionTimedOut { name, .. } if name == "delegate"
+    )));
+    let connection = daemon.connect().await;
+    until_empty(&connection, &format!("implicit-{}", daemon.session)).await;
+    client.saw(no_helpers).await;
+    client.quit().await;
+    daemon.stop().await;
+}
+
+/// A helper whose own turn fails ends its `delegate` call with an error,
+/// and the engine retires it then; nothing stays seated.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_delegate_whose_helper_fails_leaves_no_helper_seated() {
+    let ws = Workspace::new();
+    let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
+        if common::user_texts(messages)
+            .concat()
+            .contains("fail please")
+        {
+            // The helper's model call: a 400, which is not retried.
+            return Step::RejectTools;
+        }
+        match messages
+            .iter()
+            .filter(|m| matches!(m, Message::ToolResults { .. }))
+            .count()
+        {
+            0 => delegate("d1", "doomed", "fail please"),
+            _ => Step::Text("after the failure"),
+        }
+    }));
+    let llm = ScriptedLlmClient::new(vec![step; 10]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let mut client = Client::attach(&ws.root).await;
+    client.send(Effect::StartTurn("go".into()));
+    let outcome = client.turn_finished().await;
+    assert_eq!(outcome.unwrap().text, "after the failure");
+    assert!(client.events().iter().any(|event| matches!(
+        event,
+        AgentEvent::ToolExecutionCompleted { name, is_error: true, .. } if name == "delegate"
+    )));
+    let connection = daemon.connect().await;
+    until_empty(&connection, &format!("implicit-{}", daemon.session)).await;
+    client.quit().await;
+    daemon.stop().await;
+}
+
+/// The retire is the timed-out call's helper's only: a `spawn_member`
+/// member that is meant to stay (here with the same member id, in its own
+/// mob) is still seated after a `delegate` of the same run timed out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_timed_out_delegate_leaves_a_long_lived_member_seated() {
+    let ws = Workspace::new();
+    delegate_times_out(&ws);
+    let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
+        let user = common::user_texts(messages).concat();
+        if user.contains("hello") {
+            // The team member's own turn.
+            return Step::Text("ready");
+        }
+        if user.contains("never finishes") {
+            // The helper's model call.
+            return Step::Hang;
+        }
+        match messages
+            .iter()
+            .filter(|m| matches!(m, Message::ToolResults { .. }))
+            .count()
+        {
+            0 => Step::Tool {
+                id: "m1",
+                name: "mob_create",
+                args: json!({"definition": {"id": "team", "profiles": {"worker": {"model": MODEL, "tools": {"comms": true}}}}}),
+            },
+            1 => Step::Tool {
+                id: "s1",
+                name: "mob_spawn_member",
+                args: json!({"mob_id": "team", "profile": "worker", "member_id": "w1", "initial_message": "hello"}),
+            },
+            2 => delegate("d1", "w1", "never finishes"),
+            _ => Step::Text("after the timeout"),
+        }
+    }));
+    let llm = ScriptedLlmClient::new(vec![step; 20]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    daemon
+        .reveal(&daemon.session, &["mob_create", "mob_spawn_member"])
+        .await;
+    let mut client = Client::attach(&ws.root).await;
+    client.send(Effect::StartTurn("go".into()));
+    let outcome = client.turn_finished().await;
+    assert_eq!(outcome.unwrap().text, "after the timeout");
+    assert!(client.events().iter().any(|event| matches!(
+        event,
+        AgentEvent::ToolExecutionTimedOut { name, .. } if name == "delegate"
+    )));
+    let connection = daemon.connect().await;
+    until_empty(&connection, &format!("implicit-{}", daemon.session)).await;
+    assert_eq!(members(&connection, "team").await, vec!["w1".to_string()]);
+    client.quit().await;
+    daemon.stop().await;
 }

@@ -1,9 +1,10 @@
 //! Following helpers in the daemon: every helper the customizer saw
 //! spawning is subscribed through its mob (from its earliest retained
 //! event, so a fast helper's whole run is seen), its session is bound in
-//! the registry (for nesting), and what the daemon needs of its events is
+//! the registry (for nesting), what the daemon needs of its events is
 //! handed to a [`HelperWatch`] (each model call's usage, each run's end)
-//! until it leaves its mob. The mob's own structural events drive the
+//! until it leaves its mob, and a helper of its own whose `delegate` call
+//! ended without its result is retired ([`super::delegates`]). The mob's own structural events drive the
 //! rest (`MobHandle::events().subscribe()`, taken before the member's stream): a
 //! helper that is not a member yet is subscribed once its `MemberSpawned`
 //! arrives, and its `MemberRetired` (or the mob's destroy, reset or
@@ -103,16 +104,28 @@ async fn follow(
             mut mob_events,
         }) => {
             observer.mob_hosts(&key.mob);
-            if let Some(session) = session {
-                registry.bind_session(&key, &tag, &session);
+            if let Some(session) = &session {
+                registry.bind_session(&key, &tag, session);
             }
             let mut retired = None;
+            let mut runs_as = session;
+            // The helper's own `delegate` calls: one that ends without its
+            // result leaves the helper's helper seated.
+            let mut delegates = super::delegates::DelegateCalls::default();
             loop {
                 tokio::select! {
                     envelope = stream.next() => {
                         let Some(envelope) = envelope else { break };
                         if let EventSourceIdentity::Session { session_id } = &envelope.source {
                             registry.bind_session(&key, &tag, session_id);
+                            runs_as = Some(session_id.clone());
+                        }
+                        for orphan in delegates.observe(runs_as.as_ref(), &envelope.payload) {
+                            if let Some(state) = state.upgrade() {
+                                tokio::spawn(async move {
+                                    super::delegates::retire_orphan(&state, &orphan).await;
+                                });
+                            }
                         }
                         observe(&*observer, &tag, &envelope.payload).await;
                     }

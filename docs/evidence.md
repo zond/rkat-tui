@@ -128,6 +128,10 @@ the mob split are numbered in `docs/mob-split.md`, "Open engine asks"):
   helpers, conversations and detach in attach mode", "P3b and the 0.9.11
   adoption", and `docs/mob-split.md`.
 
+- A `delegate` call whose future is dropped (the tool timeout) leaves its
+  helper seated; the engine should retire it as it does after a completed
+  or failed turn: "Orphaned delegate helpers".
+
 - The engine cannot update a stored mob definition after creation
   (`MobStorage::update_definition` is not exposed through `MobMcpState`);
   rkat-tui overrides each agent's profile at start instead (c7b0d54):
@@ -7602,3 +7606,54 @@ short of the tree once the call's future is dropped, for both tools),
 `tools::scan::tests::*`, `config::tests::the_search_limits_layer_and_the_project_only_lowers_them`.
 The walk probe (`WalkProbe`: an entry counter and a per-entry delay) is
 test-support only.
+
+## Orphaned delegate helpers (2026-11-12)
+
+The second half of the incident above: after the helper's `delegate` call
+timed out, the helper stayed a member of `implicit-<session>`, seated and
+listed, until the daemon stopped.
+
+What the engine does (meerkat-mob 0.9.13 `runtime/delegation.rs`,
+`DelegationExecutionService::execute`; meerkat-mob-mcp 0.9.13
+`agent_tools.rs`, `dispatch_delegate`): the tool spawns the helper,
+awaits its turn's terminal state, then retires it, for a completed turn
+and for a failed one alike (`DelegationExecutionError::Turn` carries the
+retirement's error); a failed start retires too. The call's future is the
+only thing that ever retires the helper, so a call dropped while it
+waits never does: the engine's tool timeout (`[tools.tool_timeouts]
+delegate`, else `[tools] default_timeout`, 600 s) drops it, emits
+`ToolExecutionTimedOut` and then `ToolExecutionCompleted { is_error: true
+}` for the call (meerkat-core `agent/state.rs`, "A timed-out call still
+completes with its timeout result"), and the helper stays seated. Checked
+on the rig for each end: timed out, seated (the test below fails without
+the fix); failed (the helper's model call refused with a 400), retired by
+the engine; interrupted, retired by the daemon already
+(`crate::mobs::cancel_helpers`, `esc_during_a_helper_stops_the_agent_and_the_helper`).
+
+What the daemon does (`src/mobs/delegates.rs`): `DelegateCalls` follows
+one session's tool events. A `delegate` call names its helper exactly:
+`member_id` is required by the engine, and the helper is spawned into the
+mob `implicit-<calling session>`, so the call's `ToolCallRequested` gives
+the helper's key. A call that completes with an error, and a call still
+open when its run ends, names its helper for retirement, unless another
+open call of the session names the same helper (that one may be the one
+that spawned it). `retire_orphan` then force-cancels and retires it, but
+only when the mob still lists the member under the `delegate` profile: a
+helper the engine retired is gone already, and a member a `delegate` call
+did not spawn (a `spawn_member` member of another mob, or of another
+profile) is never touched. The agent's watcher
+(`src/daemon/approvals.rs`) does this for the agents' calls, the helper
+follower (`src/mobs/follow.rs`) for a helper's own `delegate` calls
+(nesting; unit-tested through the tracker, not on the rig). Retiring all
+of the owner's live helpers (`cancel_helpers`) was the rejected rule: it
+would retire the `spawn_member` members meant to stay.
+
+Tests: `helpers::a_timed_out_delegate_leaves_no_helper_seated`,
+`helpers::a_delegate_whose_helper_fails_leaves_no_helper_seated` (the
+engine's own retire, pinned), `helpers::a_timed_out_delegate_leaves_a_long_lived_member_seated`
+(a `spawn_member` member with the same member id, in its own mob, stays),
+`mobs::delegates::tests::*`.
+
+Upstream ask (recorded under "Open asks"): a `delegate` call that ends
+without its helper's terminal result (timed out, its future dropped)
+should retire its helper in the engine, as a completed or failed one does.
