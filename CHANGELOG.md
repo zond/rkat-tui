@@ -27,6 +27,13 @@
 
 ### Changed
 
+- The agent's note on its hidden mob tools now says what they do:
+  `mob_create` and `mob_spawn_member` start helpers that stay after their
+  task until retired, a `council`'s summary and a `fork_off` child's
+  outcome arrive later in the conversation. A further line says that
+  `spawn_member`, which needs no search, seats a helper in the agent's
+  own mob, wired to it with `auto_wire_parent` so the two can message
+  each other.
 - `glob` and `grep` are bounded like the other tools: they walk the tree
   on several threads and stop after 10 s (`[search] budget_secs`) or
   500 000 files and directories examined (`[search] max_entries`),
@@ -105,6 +112,9 @@
 
 ### Documentation
 
+- The manual's `fork_off` paragraph said a fork's result comes back as
+  the call's outcome; the call returns at once and the outcome is written
+  into the conversation later.
 - The manual opens "The workspace daemon" with "Which daemon, which
   agent": a table of the four starts (this workspace's daemon or another,
   joining an agent or starting a new one), what idle agents keep, and

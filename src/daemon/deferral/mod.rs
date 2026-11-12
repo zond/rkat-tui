@@ -55,7 +55,8 @@ pub const PERSONA: &str = "\
 
 Some tools are left out of your tool list until you search for them with `tool_search`:
 - You can schedule yourself (reminders, recurring checks, follow-ups): call `tool_search` with family `schedule`.
-- Teams, councils, forks and mob profiles beyond `delegate`: call `tool_search` with family `mob`.
+- Teams, councils, forks and mob profiles beyond `delegate`: call `tool_search` with family `mob`. Among them: `mob_create` and `mob_spawn_member` start helpers in a mob of their own that stay after their task, which you check on with `mob_check_member` and retire with `mob_retire_member`; `council` convenes existing members for a few rounds, and its summary arrives later in your transcript; `fork_off` forks you from the conversation so far onto a task, and its outcome is written into your transcript later.
+- Without a search, `spawn_member` seats a helper that stays in your own mob (profile `main`) until `retire_member`; with `auto_wire_parent: true` it is wired to you, so you can message each other.
 - A `delegate` helper is a member of the mob `implicit-<your session id>`, not of the workspace's mob; `mob_list` shows the mobs.
 ";
 
@@ -584,6 +585,47 @@ mod tests {
         // Where a `delegate` helper lives, which no tool says before its
         // call returns (`docs/evidence.md`, "Where a helper lives").
         assert!(PERSONA.contains("mob `implicit-<your session id>`"));
+    }
+
+    /// The `mob` line names only tools that are in the hidden family (the
+    /// engine's agent mob tools but `delegate`), and the direct operator
+    /// tools only on a line of their own that says they need no search.
+    #[test]
+    fn the_mob_hint_names_only_hidden_tools() {
+        let line = |start: &str| {
+            PERSONA
+                .lines()
+                .find(|line| line.starts_with(start))
+                .expect("the hint has this line")
+        };
+        let named = |line: &str| -> Vec<String> {
+            line.split('`')
+                .skip(1)
+                .step_by(2)
+                .filter(|word| word.chars().all(|c| c.is_ascii_lowercase() || c == '_'))
+                .map(str::to_owned)
+                .collect()
+        };
+        let mob = line("- Teams, councils");
+        let tools: Vec<String> = named(mob)
+            .into_iter()
+            .filter(|word| !["delegate", "tool_search", "mob"].contains(&word.as_str()))
+            .collect();
+        for tool in ["mob_create", "mob_spawn_member", "council", "fork_off"] {
+            assert!(tools.iter().any(|t| t == tool), "{tool}: {mob}");
+        }
+        for tool in &tools {
+            assert!(
+                meerkat_mob::AGENT_MOB_TOOL_NAMES.contains(&tool.as_str())
+                    && !DIRECT_MOB_TOOLS.contains(&tool.as_str()),
+                "{tool} is not a hidden mob tool"
+            );
+        }
+        let direct = line("- Without a search");
+        for tool in ["spawn_member", "retire_member"] {
+            assert!(named(direct).iter().any(|t| t == tool), "{direct}");
+            assert!(!meerkat_mob::AGENT_MOB_TOOL_NAMES.contains(&tool));
+        }
     }
 
     /// The deferrable tools are what a hidden family's dispatcher offers

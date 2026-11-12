@@ -94,6 +94,108 @@ async fn an_agent_cannot_seat_a_member_under_an_agents_name() {
     daemon.stop().await;
 }
 
+/// A member the agent seats with the operator tool `spawn_member` and
+/// `auto_wire_parent` is wired to the agent both ways (so the two can
+/// message each other) and stays after its first turn until retired. The
+/// persona's hint says so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_member_seated_with_auto_wire_parent_is_wired_to_the_agent() {
+    let ws = Workspace::new();
+    let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
+        let helper = messages
+            .iter()
+            .any(|m| matches!(m, Message::User(_)) && format!("{m:?}").contains("HELPER-KICKOFF"));
+        if helper {
+            Step::Text("helper idle")
+        } else if tool_results(messages).is_empty() {
+            Step::Tool {
+                id: "s1",
+                name: "spawn_member",
+                args: json!({
+                    "profile": "main",
+                    "member_id": "scout",
+                    "initial_message": "HELPER-KICKOFF wait",
+                    "auto_wire_parent": true,
+                }),
+            }
+        } else {
+            Step::Text("done")
+        }
+    }));
+    let llm = ScriptedLlmClient::new(vec![step; 6]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let connection = daemon.connect_bound().await;
+    connection
+        .call(
+            "mob/turn_start",
+            json!({"mob_id": "tui", "agent_identity": daemon.agent, "prompt": "seat one"}),
+        )
+        .await
+        .unwrap();
+    let wired = |members: &serde_json::Value, from: &str, to: &str| {
+        members["members"].as_array().is_some_and(|all| {
+            all.iter().any(|m| {
+                m["agent_identity"] == from
+                    && m["wired_to"]
+                        .as_array()
+                        .is_some_and(|peers| peers.iter().any(|p| p == to))
+            })
+        })
+    };
+    let members = common::within(async {
+        loop {
+            let members = connection
+                .call("mob/members", json!({"mob_id": "tui"}))
+                .await
+                .unwrap();
+            if wired(&members, &daemon.agent, "scout") {
+                return members;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert!(wired(&members, "scout", &daemon.agent), "{members}");
+    // Its first turn ran and ended; it is still a member, wired.
+    let ran = |llm: &ScriptedLlmClient| {
+        llm.requests().iter().any(|messages| {
+            messages
+                .iter()
+                .any(|m| format!("{m:?}").contains("HELPER-KICKOFF"))
+        })
+    };
+    common::within(async {
+        while !ran(&llm) {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    let after = common::within(async {
+        loop {
+            let members = connection
+                .call("mob/members", json!({"mob_id": "tui"}))
+                .await
+                .unwrap();
+            let idle = connection
+                .call(
+                    "mob/member_status",
+                    json!({"mob_id": "tui", "agent_identity": "scout"}),
+                )
+                .await
+                .unwrap();
+            if idle["progress"]["run_state"] == "idle" {
+                return (members, idle);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert_eq!(after.1["output_preview"], "helper idle", "{after:?}");
+    assert!(wired(&after.0, "scout", &daemon.agent), "{after:?}");
+    drop(connection);
+    daemon.stop().await;
+}
+
 /// Two clients on two agents each see their own agent; `/agents` lists
 /// both (in its picker), and `/agents <name>` moves a client to the other agent, whose
 /// conversation it then shows (the agent it left keeps running).

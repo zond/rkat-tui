@@ -1326,6 +1326,88 @@ async fn a_fork_off_child_runs_behind_the_gate() {
     daemon.stop().await;
 }
 
+/// A `fork_off` call returns at once (its child runs in the background),
+/// and the child's outcome is written into the forking agent's transcript
+/// later, as a "Background fork_off job ... finished" notice that starts a
+/// turn of its own once the agent's turn has ended. The manual and the
+/// persona's hint say so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fork_off_outcome_arrives_later_in_the_transcript() {
+    const TASK: &str = "FORK-CHILD-TASK say the word";
+    const OUTCOME: &str = "CHILD-OUTCOME-7731";
+    let ws = Workspace::new();
+    let forked = |messages: &[Message]| {
+        messages.iter().any(|m| match m {
+            Message::ToolResults { results, .. } => results.iter().any(|r| r.tool_use_id == "fo1"),
+            _ => false,
+        })
+    };
+    let step = Step::Dynamic(Arc::new(move |messages: &[Message]| {
+        let child = messages
+            .iter()
+            .any(|m| matches!(m, Message::User(_)) && format!("{m:?}").contains("FORK-CHILD-TASK"));
+        if forked(messages) {
+            Step::Text("parent done")
+        } else if child {
+            Step::Text(OUTCOME)
+        } else {
+            Step::Tool {
+                id: "fo1",
+                name: "fork_off",
+                args: json!({"member_id": "forky", "task": TASK}),
+            }
+        }
+    }));
+    let llm = ScriptedLlmClient::new(vec![step; 8]);
+    let daemon = start(&ws.root, &llm, &Setup::default()).await;
+    daemon.reveal(&daemon.session, &["fork_off"]).await;
+    let client = attach(&ws.root).await;
+    client.send(Effect::StartTurn("fork a child".into()));
+    let delivered = within(async {
+        loop {
+            let seen = llm.requests().into_iter().find(|messages| {
+                forked(messages)
+                    && messages.iter().any(|m| {
+                        matches!(m, Message::SystemNotice(_)) && {
+                            let text = format!("{m:?}");
+                            text.contains("Background fork_off job") && text.contains(OUTCOME)
+                        }
+                    })
+            });
+            if let Some(messages) = seen {
+                return messages;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    // The call's own result was only that the child runs.
+    let immediate = delivered
+        .iter()
+        .find_map(|m| match m {
+            Message::ToolResults { results, .. } => results
+                .iter()
+                .find(|r| r.tool_use_id == "fo1")
+                .map(|r| format!("{r:?}")),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        immediate.contains("Running in the background"),
+        "{immediate}"
+    );
+    assert!(!immediate.contains(OUTCOME), "{immediate}");
+    // The notice came after the agent's turn had ended.
+    assert!(
+        delivered
+            .iter()
+            .any(|m| format!("{m:?}").contains("parent done")),
+        "{delivered:?}"
+    );
+    client.quit().await;
+    daemon.stop().await;
+}
+
 /// A parameter refusal answers the request that caused it (upstream
 /// #2114): the client's call fails at once with the engine's message
 /// instead of waiting for an answer that never names it.

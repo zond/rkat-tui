@@ -684,9 +684,11 @@ The agent forks itself with the engine's `fork_off`: the child starts
 from the conversation so far, works on the task it is given, runs behind
 the same gate as every helper and shows as one (see [The workspace daemon](#the-workspace-daemon)).
 A fork is turn-driven and not wired to the agent that forked it, by the
-engine's design: it does its task and ends, its result reaches the
-parent as the tool's outcome, and it cannot message the parent or be
-messaged while it runs.
+engine's design: the `fork_off` call returns at once while the child
+works in the background, and when the child ends its outcome is written
+into the agent's transcript ("Background fork_off job … finished"): at
+the agent's next model call if it is mid-turn, else in a turn of its
+own. The child cannot message the parent or be messaged while it runs.
 
 ## Rules
 
@@ -2047,7 +2049,13 @@ name or description; exact tool names find just those) and/or a family
 and reveals exactly those tools for the conversation: from the agent's
 next step on they are declared with their full schemas and it calls them
 directly. Tools nobody searched for cost nothing. The agent's persona
-names both capabilities in a line each, so a model knows to search.
+names both capabilities in a line each, so a model knows to search; the
+`mob` line also says what its main tools do (`mob_create` and
+`mob_spawn_member` start helpers that stay until retired, a `council`'s
+summary and a fork's outcome arrive later in the transcript), and a
+further line says that the engine's `spawn_member`, which needs no
+search, seats a helper in the agent's own mob, wired to it with
+`auto_wire_parent`.
 `tool_search` is tier 1 in every mode, plan mode included (it only changes
 what the next request declares); a revealed tool's calls pass the gate as
 that tool, exactly as if it had always been declared, and the audit log

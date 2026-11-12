@@ -7925,3 +7925,37 @@ is kept; `/context`'s inventory line), `tools::skill::tests`,
 Engine ask kept: a factory switch for the engine's own `browse_skills` /
 `load_skill` (and with it the engine's capability-exact listing);
 `skill_read` goes when it ships.
+
+## What the mob hint says (2026-11-12)
+
+The persona's `mob` hint (`daemon::deferral::PERSONA`) named the family
+but not what its tools do, so a model had no reason to search for one.
+The owner's suggested wording named `spawn_member` and
+`spawn_many_members` as tools to search for; those are the engine's
+operator tools (`meerkat-mob` `runtime/tools.rs`), mounted direct in every
+agent's request and never hidden, so the hint names them only on a line
+of their own that says they need no search. What each hidden tool does,
+from the engine and the rig:
+
+- `mob_create` and `mob_spawn_member` (`meerkat-mob-mcp`
+  `agent_tools.rs`): a spawned member stays after its task and is checked
+  on and retired; it is wired to the caller only with `auto_wire_parent`
+  when the caller is a member of that mob, which an agent is not of a mob
+  it made with `mob_create`. So the hint promises no messaging there.
+- `council`: existing members, each forked from its own context, for
+  bounded rounds; the summary arrives later as "Background council job …
+  finished" (engine description; not run on the rig).
+- `fork_off`: on the rig the call returns at once ("Running in the
+  background", a job id) and, once the agent's turn has ended, a turn of
+  its own starts with "Background fork_off job … finished (completed)"
+  carrying the child's final text. The manual said the result came back
+  as the call's outcome; it is fixed.
+- `spawn_member` with `auto_wire_parent: true` in the workspace's mob
+  `tui` (profile `main`): the agent and the member are wired both ways,
+  and the member stays, wired, after its first turn.
+
+Tests: `daemon::deferral::tests::the_mob_hint_names_only_hidden_tools`
+(every tool on the `mob` line is in `meerkat_mob::AGENT_MOB_TOOL_NAMES`
+but `delegate`; the operator tools only on their own line),
+`tests/approvals.rs` `a_fork_off_outcome_arrives_later_in_the_transcript`,
+`tests/agents.rs` `a_member_seated_with_auto_wire_parent_is_wired_to_the_agent`.
