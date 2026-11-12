@@ -292,6 +292,8 @@ pub struct Assembled {
     pub context_window: Option<u64>,
     /// How deep helpers may nest.
     pub helper_max_depth: u8,
+    /// How far the agents' and helpers' `glob` and `grep` may go.
+    pub search_limits: crate::tools::SearchLimits,
     /// `[daemon] principal` of the user's `tui.toml` layers.
     pub daemon_principal: Option<String>,
     /// Start-up notices (warnings).
@@ -496,6 +498,7 @@ pub async fn assemble(
     approval_notices.extend(endpoint_notices.iter().map(ToString::to_string));
     approval_notices.extend(thinking_notices);
     let helper_depth = layered.helpers.max_depth;
+    let search_limits = layered.search;
     let daemon_principal = layered.daemon_principal.clone();
     let approval = approval::build(
         &scope,
@@ -545,6 +548,7 @@ pub async fn assemble(
         compaction,
         context_window,
         helper_max_depth: helper_depth,
+        search_limits,
         daemon_principal,
         notices,
         llm_override: options.llm_override,

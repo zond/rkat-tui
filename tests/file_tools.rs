@@ -3,9 +3,11 @@
 
 use meerkat_core::{AgentToolDispatcher, ToolCallView, ToolError, ToolResult};
 use rkat_tui::paths::ProjectRoot;
-use rkat_tui::tools::{FILE_TOOL_NAMES, FileDiff, FileToolDispatcher};
+use rkat_tui::tools::{FILE_TOOL_NAMES, FileDiff, FileToolDispatcher, SearchLimits, WalkProbe};
 use serde_json::{Value, json};
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 use tempfile::TempDir;
 use tokio::sync::mpsc;
@@ -1003,4 +1005,191 @@ async fn an_owned_dispatcher_keys_context_free_calls_by_its_session() {
     )
     .await;
     assert!(!ok.is_error, "{}", ok.text_content());
+}
+
+// ------------------------------------------------------- bounded searches ----
+
+/// A tree of `big/` (`big` files) and `small/` (`small` files).
+fn search_tree(big: usize, small: usize) -> TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    for (sub, n) in [("big", big), ("small", small)] {
+        std::fs::create_dir(dir.path().join(sub)).unwrap();
+        for i in 0..n {
+            std::fs::write(dir.path().join(sub).join(format!("f{i}.txt")), "needle\n").unwrap();
+        }
+    }
+    dir
+}
+
+fn bounded(dir: &TempDir, limits: SearchLimits, probe: &Arc<WalkProbe>) -> FileToolDispatcher {
+    FileToolDispatcher::new(ProjectRoot::new(dir.path()).unwrap(), None)
+        .with_search_limits(limits)
+        .with_walk_probe(Arc::clone(probe))
+}
+
+fn paced(delay: Duration) -> Arc<WalkProbe> {
+    Arc::new(WalkProbe {
+        entries: AtomicU64::new(0),
+        delay,
+    })
+}
+
+async fn search(tools: &FileToolDispatcher, name: &str, args: Value) -> String {
+    let result = call_as(tools, None, name, args).await;
+    assert!(!result.is_error, "{}", result.text_content());
+    result.text_content()
+}
+
+/// A `glob` over a tree that takes longer than its budget stops at the
+/// budget and says so: what it examined, where most entries were, how to
+/// narrow, and that the order is the newest among what it saw.
+#[tokio::test]
+async fn a_glob_past_its_time_budget_returns_a_partial_answer() {
+    let dir = search_tree(400, 5);
+    // Each entry takes 20 ms: walking all 408 takes far longer than the
+    // 200 ms budget on any number of threads this machine has.
+    let probe = paced(Duration::from_millis(20));
+    let limits = SearchLimits {
+        budget: Duration::from_millis(200),
+        max_entries: 1_000_000,
+    };
+    let tools = bounded(&dir, limits, &probe);
+    let out = search(&tools, "glob", json!({"pattern": "**/*.txt"})).await;
+    let note = out.lines().last().unwrap();
+    assert!(
+        note.starts_with("[partial: the search stopped after"),
+        "{out}"
+    );
+    assert!(note.contains("time budget of 0.2 s"), "{note}");
+    assert!(note.contains("`[search] budget_secs`"), "{note}");
+    assert!(note.contains("under big/ ("), "{note}");
+    assert!(note.contains("with `path`"), "{note}");
+    assert!(note.contains("newest among the entries examined"), "{note}");
+    let listed = out.lines().count() - 1;
+    assert!(listed < 405, "the walk stopped early: {listed} listed");
+    let examined = probe.entries.load(Ordering::Relaxed);
+    assert!(examined < 408, "examined {examined}");
+}
+
+/// A `grep` over more entries than its cap stops at the cap, keeps what it
+/// found, sorted by path, and names the busiest directory.
+#[tokio::test]
+async fn a_grep_past_its_entry_cap_returns_a_partial_answer() {
+    let dir = search_tree(200, 3);
+    let probe = paced(Duration::ZERO);
+    let limits = SearchLimits {
+        budget: Duration::from_mins(10),
+        max_entries: 50,
+    };
+    let tools = bounded(&dir, limits, &probe);
+    let out = search(&tools, "grep", json!({"pattern": "needle"})).await;
+    let (found, note) = out.rsplit_once('\n').map_or(("", out.as_str()), |(a, _)| {
+        a.rsplit_once('\n').map_or(("", a), |pair| pair)
+    });
+    assert!(note.starts_with("[partial:"), "{out}");
+    assert!(note.contains("cap of 50 entries"), "{note}");
+    assert!(note.contains("`[search] max_entries`"), "{note}");
+    assert!(note.contains("50 entries examined"), "{note}");
+    assert!(note.contains("under big/ ("), "{note}");
+    assert!(note.contains("a `glob` filter"), "{note}");
+    let lines: Vec<&str> = found.lines().collect();
+    assert!(!lines.is_empty() && lines.len() < 50, "{out}");
+    let mut sorted = lines.clone();
+    sorted.sort_unstable();
+    assert_eq!(lines, sorted, "matches are sorted by path");
+}
+
+/// A complete search has no partial note, and its order is unchanged.
+#[tokio::test]
+async fn a_search_within_its_budget_is_complete() {
+    let dir = search_tree(20, 3);
+    let probe = paced(Duration::ZERO);
+    let tools = bounded(&dir, SearchLimits::default(), &probe);
+    let out = search(
+        &tools,
+        "grep",
+        json!({"pattern": "needle", "path": "small"}),
+    )
+    .await;
+    assert_eq!(out, "small/f0.txt\nsmall/f1.txt\nsmall/f2.txt\n");
+    let out = search(&tools, "glob", json!({"pattern": "**/*.txt"})).await;
+    assert_eq!(out.lines().count(), 23);
+    assert!(!out.contains("[partial"), "{out}");
+}
+
+/// A large file is searched inside the budget: a count cut short by the
+/// budget is not reported (it would be wrong), and the answer is partial.
+#[tokio::test]
+async fn grep_over_a_big_file_stays_within_the_budget() {
+    let dir = tempfile::tempdir().unwrap();
+    let line = "abababababababababababababababababababababababababababab\n";
+    std::fs::write(dir.path().join("big.txt"), line.repeat(250_000)).unwrap();
+    let probe = paced(Duration::ZERO);
+    let limits = SearchLimits {
+        budget: Duration::from_millis(1),
+        max_entries: 1_000_000,
+    };
+    let tools = bounded(&dir, limits, &probe);
+    let out = search(
+        &tools,
+        "grep",
+        json!({"pattern": "(a|b)+c", "output_mode": "count"}),
+    )
+    .await;
+    assert!(out.contains("[partial:"), "{out}");
+    assert!(out.contains("No matches"), "{out}");
+}
+
+/// Dropping a search's call (a timeout, an interrupt) stops its walk: the
+/// count of entries examined stops growing shortly after, well short of
+/// the whole tree.
+#[tokio::test]
+async fn a_dropped_search_stops_its_walk() {
+    let dir = search_tree(400, 0);
+    let probe = paced(Duration::from_millis(20));
+    let limits = SearchLimits {
+        budget: Duration::from_mins(10),
+        max_entries: 1_000_000,
+    };
+    let tools = bounded(&dir, limits, &probe);
+    for name in ["glob", "grep"] {
+        let before = probe.entries.load(Ordering::Relaxed);
+        let args = if name == "glob" {
+            json!({"pattern": "**/*"})
+        } else {
+            json!({"pattern": "needle"})
+        };
+        let call = call_as(&tools, None, name, args);
+        let started = async {
+            while probe.entries.load(Ordering::Relaxed) < before + 10 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        };
+        tokio::select! {
+            result = call => panic!("{name} finished: {}", result.text_content()),
+            () = started => {}
+            () = tokio::time::sleep(Duration::from_mins(1)) => panic!("{name} never started"),
+        }
+        // The call is dropped. The count settles: each walk thread finishes
+        // at most the entry it is on.
+        let mut last = probe.entries.load(Ordering::Relaxed);
+        let deadline = tokio::time::Instant::now() + Duration::from_mins(1);
+        loop {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let now = probe.entries.load(Ordering::Relaxed);
+            if now == last {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "{name}: the walk kept going"
+            );
+            last = now;
+        }
+        assert!(
+            last - before < 200,
+            "{name}: examined {} of 401 entries after the drop",
+            last - before
+        );
+    }
 }

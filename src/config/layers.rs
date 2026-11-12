@@ -190,6 +190,8 @@ pub struct Layered {
     pub helpers: HelperSettings,
     /// Merged `[shell]` settings.
     pub shell: ShellSettings,
+    /// Merged `[search]` limits.
+    pub search: crate::tools::SearchLimits,
     /// Merged `[ui]` settings.
     pub ui: UiSettings,
     /// `[daemon] principal` of the user layers (the last one set).
@@ -306,6 +308,9 @@ impl Layered {
         if let Some(secs) = file.shell.and_then(|s| s.user_timeout_secs) {
             self.shell.user_timeout_secs = secs.max(1);
         }
+        if let Some(section) = &file.search {
+            section.apply(&mut self.search, false);
+        }
         if let Some(section) = &file.ui {
             self.ui.apply(section);
         }
@@ -396,6 +401,10 @@ impl Layered {
         // Nor may it let the user's own commands run longer.
         if let Some(secs) = project.shell.and_then(|s| s.user_timeout_secs) {
             self.shell.user_timeout_secs = self.shell.user_timeout_secs.min(secs.max(1));
+        }
+        // Nor make the agent's searches go further.
+        if let Some(section) = &project.search {
+            section.apply(&mut self.search, true);
         }
         // Project files never define self.endpoints, not even new ones: a cloned
         // repository could route prompts and credentials to its own server.

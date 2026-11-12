@@ -4,6 +4,22 @@
 
 ### Changed
 
+- `glob` and `grep` are bounded like the other tools: they walk the tree
+  on several threads and stop after 10 s (`[search] budget_secs`) or
+  500 000 files and directories examined (`[search] max_entries`),
+  answering with what they found and a note that says the answer is
+  partial, how far the search got, which directories held most entries
+  and how to narrow it. `grep`'s reading of each file counts against the
+  budget. A big directory no longer holds a call (or a helper waiting on
+  it) for the engine's whole ten-minute tool timeout.
+- A file tool's work stops when its call goes away (the tool timeout,
+  Esc, a cancelled helper): a search stops walking, and a write, edit or
+  note change not yet made is not made. Before, a timed-out `glob` kept
+  walking in the daemon after its call had ended.
+- When `grep`'s output fills up it stops searching, and the lines it
+  shows are sorted by path but no longer necessarily the first matches by
+  path; the truncation line says so.
+
 - `/agents` opens a picker of the workspace's agents, like `/model` and
   `/resume`: each row shows the agent's name, running or idle, its
   conversation (short id and first message), its clients, `detached` when

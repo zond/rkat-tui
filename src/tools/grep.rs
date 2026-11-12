@@ -3,13 +3,14 @@
 use super::glob::{search_root, walker};
 use super::{
     CallMeta, GREP, MAX_FILE_READ_BYTES, ReadRefusal, Shared, ToolFailure, ToolOutcome,
-    looks_binary, read_capped, truncate_line,
+    looks_binary, read_capped_while, truncate_line,
 };
 use globset::Glob;
 use meerkat_core::ToolDef;
 use regex::RegexBuilder;
 use serde::Deserialize;
 use std::fmt::Write as _;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// Default maximum number of output lines (entries) when `head_limit` is omitted.
 pub(crate) const DEFAULT_HEAD_LIMIT: usize = 250;
@@ -108,7 +109,16 @@ impl Output {
     }
 }
 
-pub(crate) fn run(shared: &Shared, _call: CallMeta, args: GrepArgs) -> ToolOutcome {
+/// How many lines a file's matching runs between two budget checks.
+const LINES_PER_CHECK: usize = 4096;
+
+/// One walk thread's findings: each file's output lines, by its display path.
+#[derive(Default)]
+struct Found {
+    files: Vec<(String, Vec<String>)>,
+}
+
+pub(crate) fn run(shared: &Shared, call: CallMeta, args: GrepArgs) -> ToolOutcome {
     let regex = RegexBuilder::new(&args.pattern)
         .case_insensitive(args.case_insensitive)
         .build()
@@ -132,104 +142,178 @@ pub(crate) fn run(shared: &Shared, _call: CallMeta, args: GrepArgs) -> ToolOutco
             .into_failure("search", &shared.display_abs(&root)));
     }
     let context = args.context.unwrap_or(0) as usize;
-    let mut out = Output::new(args.head_limit.unwrap_or(DEFAULT_HEAD_LIMIT).max(1));
-    let mut any = false;
+    let line_limit = args.head_limit.unwrap_or(DEFAULT_HEAD_LIMIT).max(1);
+    // Lines and bytes found so far by every thread: once more than fit the
+    // output was found, the walk stops.
+    let lines_found = AtomicUsize::new(0);
+    let bytes_found = AtomicUsize::new(0);
+    let full = AtomicBool::new(false);
 
-    let mut builder = walker(&root, shared.hide_secrets, shared.root.secret_roots());
-    builder.sort_by_file_name(std::cmp::Ord::cmp);
-    'files: for entry in builder.build().flatten() {
+    let scan = call.scan(&root);
+    let go_on = || scan.go_on();
+    let walker = walker(&root, shared.hide_secrets, shared.root.secret_roots());
+    let found = scan.walk(&walker, |entry, found: &mut Found| {
         if !entry.file_type().is_some_and(|ft| ft.is_file()) {
-            continue;
+            return true;
         }
         let path = entry.path();
         if let Some(filter) = &filter {
             let relative = path.strip_prefix(&root).unwrap_or(path);
             let name_matches = path.file_name().is_some_and(|name| filter.is_match(name));
             if !filter.is_match(relative) && !name_matches {
-                continue;
+                return true;
             }
         }
-        // `read_capped` re-checks the path (an entry's type comes from the
-        // directory listing) and never reads more than the cap.
-        let Ok(read) = read_capped(path, MAX_FILE_READ_BYTES) else {
-            continue;
+        // `read_capped_while` re-checks the path (an entry's type comes
+        // from the directory listing) and never reads more than the cap.
+        let Ok(Some(read)) = read_capped_while(path, MAX_FILE_READ_BYTES, &go_on) else {
+            return true;
         };
-        let bytes = read.bytes;
-        if looks_binary(&bytes) {
-            continue;
+        if looks_binary(&read.bytes) {
+            return true;
         }
-        let text = String::from_utf8_lossy(&bytes);
+        let text = String::from_utf8_lossy(&read.bytes);
         let display = shared.display_abs(path);
-        // Every mode matches line by line, so `^`, `$` and `(?s).` mean the
-        // same thing whichever output was asked for.
-        let keep_going = match args.output_mode {
-            OutputMode::FilesWithMatches => {
-                if text.lines().any(|line| regex.is_match(line)) {
-                    any = true;
-                    out.push(&display)
-                } else {
-                    true
-                }
+        let (lines, cut) = search_file(
+            &text,
+            &regex,
+            args.output_mode,
+            context,
+            &display,
+            line_limit,
+            &go_on,
+        );
+        if lines.is_empty() {
+            return true;
+        }
+        let count = lines.len();
+        let bytes: usize = lines.iter().map(|line| line.len() + 1).sum();
+        found.files.push((display, lines));
+        let lines_now = lines_found.fetch_add(count, Ordering::Relaxed) + count;
+        let bytes_now = bytes_found.fetch_add(bytes, Ordering::Relaxed) + bytes;
+        if cut || lines_now > line_limit || bytes_now > MAX_OUTPUT_BYTES {
+            full.store(true, Ordering::Relaxed);
+            return false;
+        }
+        true
+    });
+
+    let mut files: Vec<(String, Vec<String>)> =
+        found.into_iter().flat_map(|found| found.files).collect();
+    files.sort_by(|(a, _), (b, _)| a.cmp(b));
+    let narrow = if args.glob.is_some() {
+        "search a subdirectory with `path` or narrow the `glob` filter"
+    } else {
+        "search a subdirectory with `path` or pass a `glob` filter such as `*.rs`"
+    };
+    let partial = scan.partial_note(narrow, |path| shared.display_abs(path));
+    let mut out = Output::new(line_limit);
+    'files: for (_, lines) in &files {
+        for line in lines {
+            if !out.push(line) {
+                break 'files;
             }
-            OutputMode::Count => {
-                let count = text.lines().filter(|line| regex.is_match(line)).count();
-                if count > 0 {
-                    any = true;
-                    out.push(&format!("{display}:{count}"))
-                } else {
-                    true
-                }
-            }
-            OutputMode::Content => {
-                let found = content_matches(&text, &regex, context, &display, &mut out);
-                any |= found.any;
-                found.keep_going
-            }
-        };
-        if !keep_going {
-            break 'files;
         }
     }
 
-    if !any {
-        return Ok(format!("No matches for `{}`", args.pattern));
-    }
+    // A file's own lines were cut at the output's limits.
+    out.truncated |= full.load(Ordering::Relaxed);
     let mut text = out.text;
+    if files.is_empty() {
+        let _ = writeln!(text, "No matches for `{}`", args.pattern);
+    }
     if out.truncated {
+        let order = if full.load(Ordering::Relaxed) {
+            " (the search stops once the output is full, so these are sorted by path but \
+             not necessarily the first matches by path)"
+        } else {
+            ""
+        };
         let _ = writeln!(
             text,
-            "… [output truncated after {} lines; narrow the search or raise head_limit]",
+            "… [output truncated after {} lines{order}; narrow the search or raise head_limit]",
             out.lines
         );
+    }
+    if let Some(note) = partial {
+        let _ = writeln!(text, "{note}");
     }
     Ok(text)
 }
 
-struct ContentResult {
-    any: bool,
-    keep_going: bool,
+/// One file's output lines for `mode`, at most `line_limit` of them, and
+/// whether more were cut (the output's line or byte limit).
+/// Every mode matches line by line, so `^`, `$` and `(?s).` mean the same
+/// thing whichever output was asked for. A count cut short by `go_on`
+/// is left out (it would be wrong); found paths and lines are kept.
+fn search_file(
+    text: &str,
+    regex: &regex::Regex,
+    mode: OutputMode,
+    context: usize,
+    display: &str,
+    line_limit: usize,
+    go_on: &dyn Fn() -> bool,
+) -> (Vec<String>, bool) {
+    match mode {
+        OutputMode::FilesWithMatches => {
+            for (n, line) in text.lines().enumerate() {
+                if n % LINES_PER_CHECK == LINES_PER_CHECK - 1 && !go_on() {
+                    break;
+                }
+                if regex.is_match(line) {
+                    return (vec![display.to_string()], false);
+                }
+            }
+            (Vec::new(), false)
+        }
+        OutputMode::Count => {
+            let mut count = 0usize;
+            for (n, line) in text.lines().enumerate() {
+                if n % LINES_PER_CHECK == LINES_PER_CHECK - 1 && !go_on() {
+                    return (Vec::new(), false);
+                }
+                count += usize::from(regex.is_match(line));
+            }
+            if count == 0 {
+                (Vec::new(), false)
+            } else {
+                (vec![format!("{display}:{count}")], false)
+            }
+        }
+        OutputMode::Content => {
+            let mut out = Output::new(line_limit);
+            content_matches(text, regex, context, display, &mut out, go_on);
+            (
+                out.text.lines().map(str::to_string).collect(),
+                out.truncated,
+            )
+        }
+    }
 }
-
-/// Emit matching lines (with `context` surrounding lines) for one file.
+/// Emit matching lines (with `context` surrounding lines) for one file
+/// until `out` is full; the matches found before `go_on` says no, when it
+/// does.
 fn content_matches(
     text: &str,
     regex: &regex::Regex,
     context: usize,
     display: &str,
     out: &mut Output,
-) -> ContentResult {
+    go_on: &dyn Fn() -> bool,
+) {
     let lines: Vec<&str> = text.lines().collect();
-    let matches: Vec<usize> = lines
-        .iter()
-        .enumerate()
-        .filter(|(_, line)| regex.is_match(line))
-        .map(|(idx, _)| idx)
-        .collect();
+    let mut matches: Vec<usize> = Vec::new();
+    for (idx, line) in lines.iter().enumerate() {
+        if idx % LINES_PER_CHECK == LINES_PER_CHECK - 1 && !go_on() {
+            break;
+        }
+        if regex.is_match(line) {
+            matches.push(idx);
+        }
+    }
     if matches.is_empty() {
-        return ContentResult {
-            any: false,
-            keep_going: true,
-        };
+        return;
     }
 
     // Merge overlapping context windows into contiguous ranges.
@@ -246,10 +330,7 @@ fn content_matches(
     let mut match_iter = matches.iter().peekable();
     for (n, &(start, end)) in ranges.iter().enumerate() {
         if context > 0 && n > 0 && !out.push("--") {
-            return ContentResult {
-                any: true,
-                keep_going: false,
-            };
+            return;
         }
         for (idx, line) in lines.iter().enumerate().take(end + 1).skip(start) {
             let is_match = match_iter.peek().is_some_and(|&&m| m == idx);
@@ -263,16 +344,9 @@ fn content_matches(
                 truncate_line(line, MAX_LINE_CHARS)
             );
             if !out.push(&rendered) {
-                return ContentResult {
-                    any: true,
-                    keep_going: false,
-                };
+                return;
             }
         }
-    }
-    ContentResult {
-        any: true,
-        keep_going: true,
     }
 }
 
@@ -284,7 +358,7 @@ mod tests {
     fn render(text: &str, pattern: &str, context: usize) -> String {
         let regex = regex::Regex::new(pattern).unwrap();
         let mut out = Output::new(100);
-        content_matches(text, &regex, context, "f", &mut out);
+        content_matches(text, &regex, context, "f", &mut out, &|| true);
         out.text
     }
 
@@ -298,6 +372,54 @@ mod tests {
         let text = "x\nhit\ny\nz\nw\nv\nhit\n";
         let out = render(text, "hit", 1);
         assert_eq!(out, "f-1-x\nf:2:hit\nf-3-y\n--\nf-6-v\nf:7:hit\n");
+    }
+
+    /// The budget is checked inside one file: a count cut short is left
+    /// out, matched lines found before the stop are kept, and a file read
+    /// stops between chunks.
+    #[test]
+    fn a_big_file_checks_the_budget_while_it_is_searched() {
+        let regex = regex::Regex::new("hit").unwrap();
+        let mut text = "hit\n".to_string();
+        text.push_str(&"miss\n".repeat(LINES_PER_CHECK * 3));
+        let checks = std::cell::Cell::new(0);
+        let stop_at_first = || {
+            checks.set(checks.get() + 1);
+            false
+        };
+        let (count, _) = search_file(&text, &regex, OutputMode::Count, 0, "f", 10, &stop_at_first);
+        assert!(count.is_empty(), "{count:?}");
+        assert_eq!(checks.get(), 1, "checked once, then stopped");
+        let (lines, _) = search_file(
+            &text,
+            &regex,
+            OutputMode::Content,
+            0,
+            "f",
+            10,
+            &stop_at_first,
+        );
+        assert_eq!(lines, ["f:1:hit"]);
+        let (all, _) = search_file(&text, &regex, OutputMode::Count, 0, "f", 10, &|| true);
+        assert_eq!(all, ["f:1"]);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big");
+        std::fs::write(&path, vec![b'x'; 3 * 1024 * 1024]).unwrap();
+        let reads = std::cell::Cell::new(0);
+        let two_chunks = || {
+            reads.set(reads.get() + 1);
+            reads.get() <= 2
+        };
+        assert!(
+            super::super::read_capped_while(&path, MAX_FILE_READ_BYTES, &two_chunks)
+                .unwrap()
+                .is_none()
+        );
+        let whole = super::super::read_capped_while(&path, MAX_FILE_READ_BYTES, &|| true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(whole.bytes.len(), 3 * 1024 * 1024);
     }
 
     #[test]

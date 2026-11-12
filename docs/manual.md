@@ -567,6 +567,40 @@ choice; after it, what a cautious user can do about it.
   and the file tools refuse it; with `--no-confinement` the shell can.
   *To tighten:* keep confinement on.
 
+### The file tools' limits
+
+The file tools run in the daemon and are bounded there, so one call can
+neither hang nor take a helper's whole time:
+
+- `read_file` reads at most the first 16 MiB of a file and refuses
+  anything that is not a regular file (a named pipe, a socket, a device);
+  `write_file` and `edit_file` refuse to rewrite a file larger than that.
+- `glob` lists at most 500 paths, newest first. `grep` searches the first
+  16 MiB of each file, skips binary files, and prints at most 250 lines
+  (`head_limit`) and 64 KiB.
+- `glob` and `grep` walk the tree on several threads and stop at a time
+  budget (`[search] budget_secs`, default 10 s) or after examining a
+  number of files and directories (`[search] max_entries`, default
+  500 000), whichever comes first; `grep`'s reading and matching of each
+  file count against the same budget. A project's `tui.toml` may only
+  lower either.
+- A search that stops early still answers with what it found and ends
+  with a note saying it is partial, how far it got, which directories
+  held most of the entries it examined, and how to narrow it:
+
+  ```text
+  [partial: the search stopped after 10.0 s and 412377 entries examined, because it reached its time budget of 10 s (`[search] budget_secs` in tui.toml); there may be more matches in what it did not reach. Most entries examined were under node_modules/ (371020), target/ (38112), src/ (911). To narrow it, search a subdirectory with `path` (the pattern is then relative to it) or use a more specific pattern.] The files listed are the newest among the entries examined, not of the whole tree.
+  ```
+
+  `glob`'s list is then the newest among what it examined, and `grep`
+  suggests a `glob` filter (`*.rs`) as well. When `grep`'s output fills
+  up, it stops searching; the lines shown are sorted by path but are not
+  necessarily the first matches by path, and the truncation line says so.
+- A call that goes away (the engine's tool timeout, Esc or Ctrl-C, a
+  helper being cancelled) stops its work: the walk notices within an
+  entry, a file being read within a megabyte, and a `write_file`,
+  `edit_file` or note change that had not been made yet is not made.
+
 ## Helpers
 
 The agent can hand self-contained subtasks to helper agents with `delegate`
@@ -696,6 +730,8 @@ are never written to a file.
 | `ui.helpers` (`"folded"`/`"expanded"`: how helper headers start) | `--set ui.helpers=expanded` | `"folded"` |
 | `ui.checklist` (`"hidden"`/`"shown"`: the task checklist under the input; Ctrl-T writes it) | `--set ui.checklist=shown` | `"hidden"` |
 | `shell.user_timeout_secs` (how long a `!` command may run; a project file may only lower it) | `--set shell.user_timeout_secs=N` | `120` |
+| `search.budget_secs` (how long one `glob` or `grep` may run before it answers with what it found; a project file may only lower it) | `--set search.budget_secs=N` | `10` |
+| `search.max_entries` (how many files and directories one `glob` or `grep` may examine; a project file may only lower it) | `--set search.max_entries=N` | `500000` |
 | `pricing."<model id>".input`, `.output`, `.cached_input`, `.cache_write` (USD per 1M tokens) | `--set 'pricing."<id>".input=15'` | fetched prices |
 | `pricing.fetch` (fetch the community price list; a project file may only set `false`) | `--no-pricing-fetch` (= `false`) | `true` |
 | `thinking."<endpoint:id or id>"` (`"adaptive"`, `{ enabled = <budget tokens> }` or `"default"`; Anthropic-dialect endpoints only, see "Thinking") | `--set 'thinking."proxy:my-alias"=adaptive'` | the engine's default |

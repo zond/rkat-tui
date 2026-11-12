@@ -82,6 +82,10 @@ fn rules_file_round_trip() {
         shell: Some(ShellSection {
             user_timeout_secs: Some(300),
         }),
+        search: Some(SearchSection {
+            budget_secs: Some(30),
+            max_entries: None,
+        }),
         ui: Some(UiSection {
             helpers: Some(HelperView::Expanded),
             bell: Some(false),
@@ -486,6 +490,56 @@ fn helper_depth_defaults_to_one_layers_and_the_project_only_lowers_it() {
     write(&project, "[helpers]\nmax_depth = 5\n");
     let layered = load_layered_with(&realm, None, &project, None).unwrap();
     assert_eq!(layered.helpers.max_depth, 1);
+}
+
+#[test]
+fn the_search_limits_layer_and_the_project_only_lowers_them() {
+    use crate::tools::{DEFAULT_SEARCH_BUDGET_SECS, DEFAULT_SEARCH_MAX_ENTRIES};
+    use std::time::Duration;
+    let tmp = tempfile::tempdir().unwrap();
+    let (realm, project) = (tmp.path().join("realm"), tmp.path().join("p"));
+    write(&realm, "");
+    write(&project, "");
+    let layered = load_layered_with(&realm, None, &project, None).unwrap();
+    assert_eq!(
+        layered.search.budget,
+        Duration::from_secs(DEFAULT_SEARCH_BUDGET_SECS)
+    );
+    assert_eq!(layered.search.max_entries, DEFAULT_SEARCH_MAX_ENTRIES);
+    write(
+        &realm,
+        "[search]
+budget_secs = 60
+max_entries = 0
+",
+    );
+    let layered = load_layered_with(&realm, None, &project, None).unwrap();
+    assert_eq!(layered.search.budget, Duration::from_mins(1));
+    assert_eq!(layered.search.max_entries, 1, "at least one entry");
+    write(
+        &realm,
+        "[search]
+budget_secs = 60
+",
+    );
+    write(
+        &project,
+        "[search]
+budget_secs = 5
+max_entries = 9999999999
+",
+    );
+    let layered = load_layered_with(&realm, None, &project, None).unwrap();
+    assert_eq!(layered.search.budget, Duration::from_secs(5));
+    assert_eq!(layered.search.max_entries, DEFAULT_SEARCH_MAX_ENTRIES);
+    write(
+        &project,
+        "[search]
+budget_secs = 600
+",
+    );
+    let layered = load_layered_with(&realm, None, &project, None).unwrap();
+    assert_eq!(layered.search.budget, Duration::from_mins(1));
 }
 
 #[test]

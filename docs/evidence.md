@@ -7556,3 +7556,49 @@ Tests: `agents::the_agent_picker_lists_retires_idle_agents_and_seats_a_new_one`,
 `ui::modal::tests::the_agent_picker_switches_seats_and_retires_after_a_confirmation`,
 `ui::tests::dispatch::agent_picker_switches_seats_and_retires`,
 `render::agent_picker_snapshot`.
+
+## Bounded searches and cancellable file tools (2026-11-12)
+
+The incident (owner's work machine): a `delegate` helper's `glob` over a
+big directory used the whole 600 s the engine allows one tool call (and
+so the whole `delegate` call, which waits under the same timeout), and
+kept walking after the timeout: `FileToolDispatcher::run_blocking` put
+the walk on `spawn_blocking`, which a dropped future does not stop.
+
+What changed (`src/tools/scan.rs`):
+
+- Every file tool and note tool runs through `run_cancellable`: the
+  blocking closure gets a `Cancel` flag that a guard held across the
+  `spawn_blocking` await sets when the future is dropped (the engine's
+  `tokio::time::timeout` around the dispatch, an interrupt, a helper's
+  cancel) or ends. Queued work that sees the flag does not run; a
+  `write_file`/`edit_file` checks it again right before committing
+  (`Shared::commit_write`).
+- `glob` and `grep` walk with `ignore`'s `build_parallel` (as
+  `mentions::workspace_paths`) under a `Scan`: a time budget and a cap
+  on entries examined (`[search] budget_secs` = 10, `max_entries` =
+  500 000; a project file may only lower them), checked at every entry,
+  between 1 MiB chunks of a file `grep` reads (`read_capped_while`) and
+  every 4096 lines it matches. Each walk thread keeps its own state and
+  its own tally of entries per first-level directory, merged when the
+  thread ends. A stopped scan answers with what it found and
+  `Scan::partial_note`.
+- Ordering: `glob` keeps the newest 500 per thread (a bounded heap) and
+  merges them, so its order is unchanged for a complete search and is
+  "the newest among what was examined" for a partial one (the note says
+  so). `grep` sorts its files by path afterwards, which is today's order
+  for a complete search; when its output fills up it stops the walk, so
+  the lines shown are sorted by path but not necessarily the first by
+  path (the truncation line says so). Keeping "first by path" would mean
+  walking the whole tree for every truncated search.
+
+Tests: `file_tools::a_glob_past_its_time_budget_returns_a_partial_answer`
+(a paced walk, 200 ms budget), `a_grep_past_its_entry_cap_returns_a_partial_answer`,
+`a_search_within_its_budget_is_complete`,
+`grep_over_a_big_file_stays_within_the_budget`,
+`a_dropped_search_stops_its_walk` (the probe's entry count settles well
+short of the tree once the call's future is dropped, for both tools),
+`tools::grep::tests::a_big_file_checks_the_budget_while_it_is_searched`,
+`tools::scan::tests::*`, `config::tests::the_search_limits_layer_and_the_project_only_lowers_them`.
+The walk probe (`WalkProbe`: an entry counter and a per-entry delay) is
+test-support only.

@@ -5,6 +5,8 @@ use globset::GlobBuilder;
 use ignore::WalkBuilder;
 use meerkat_core::ToolDef;
 use serde::Deserialize;
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -99,7 +101,47 @@ pub(crate) fn mention_walker(root: &crate::paths::ProjectRoot, start: &Path) -> 
     builder
 }
 
-pub(crate) fn run(shared: &Shared, _call: CallMeta, args: GlobArgs) -> ToolOutcome {
+/// One walk thread's matches: the newest [`MAX_RESULTS`] of them (the
+/// worst on top) and how many it saw.
+#[derive(Default)]
+struct Newest {
+    kept: BinaryHeap<Reverse<Hit>>,
+    total: usize,
+}
+
+/// A match ordered by how early it is listed: newer first, then by path.
+#[derive(PartialEq, Eq)]
+struct Hit {
+    mtime: SystemTime,
+    path: PathBuf,
+}
+
+impl Ord for Hit {
+    /// Greater is listed earlier: the newer, then the smaller path.
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.mtime
+            .cmp(&other.mtime)
+            .then_with(|| other.path.cmp(&self.path))
+    }
+}
+
+impl PartialOrd for Hit {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Newest {
+    fn keep(&mut self, hit: Hit) {
+        self.total += 1;
+        self.kept.push(Reverse(hit));
+        if self.kept.len() > MAX_RESULTS {
+            self.kept.pop();
+        }
+    }
+}
+
+pub(crate) fn run(shared: &Shared, call: CallMeta, args: GlobArgs) -> ToolOutcome {
     let matcher = GlobBuilder::new(&args.pattern)
         .literal_separator(true)
         .build()
@@ -113,41 +155,57 @@ pub(crate) fn run(shared: &Shared, _call: CallMeta, args: GlobArgs) -> ToolOutco
         )));
     }
 
-    let mut hits: Vec<(SystemTime, PathBuf)> = Vec::new();
-    for entry in walker(&root, shared.hide_secrets, shared.root.secret_roots())
-        .build()
-        .flatten()
-    {
+    let scan = call.scan(&root);
+    let walker = walker(&root, shared.hide_secrets, shared.root.secret_roots());
+    let found = scan.walk(&walker, |entry, newest: &mut Newest| {
         if !entry.file_type().is_some_and(|ft| ft.is_file()) {
-            continue;
+            return true;
         }
         let Ok(relative) = entry.path().strip_prefix(&root) else {
-            continue;
+            return true;
         };
-        if !matcher.is_match(relative) {
-            continue;
+        if matcher.is_match(relative) {
+            let mtime = entry
+                .metadata()
+                .ok()
+                .and_then(|meta| meta.modified().ok())
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            newest.keep(Hit {
+                mtime,
+                path: entry.path().to_path_buf(),
+            });
         }
-        let mtime = entry
-            .metadata()
-            .ok()
-            .and_then(|meta| meta.modified().ok())
-            .unwrap_or(SystemTime::UNIX_EPOCH);
-        hits.push((mtime, entry.into_path()));
-    }
+        true
+    });
+    let total: usize = found.iter().map(|newest| newest.total).sum();
+    let mut hits: Vec<Hit> = found
+        .into_iter()
+        .flat_map(|newest| newest.kept.into_iter().map(|Reverse(hit)| hit))
+        .collect();
+    hits.sort_by(|a, b| b.cmp(a));
+    hits.truncate(MAX_RESULTS);
+    let partial = scan.partial_note(
+        "search a subdirectory with `path` (the pattern is then relative to it) or use a more specific pattern",
+        |path| shared.display_abs(path),
+    );
 
-    if hits.is_empty() {
-        return Ok(format!("No files matched `{}`", args.pattern));
-    }
-    hits.sort_by(|(ta, pa), (tb, pb)| tb.cmp(ta).then_with(|| pa.cmp(pb)));
-    let total = hits.len();
     let mut out = String::new();
-    for (_, path) in hits.iter().take(MAX_RESULTS) {
-        let _ = writeln!(out, "{}", shared.display_abs(path));
+    if hits.is_empty() {
+        let _ = writeln!(out, "No files matched `{}`", args.pattern);
+    }
+    for hit in &hits {
+        let _ = writeln!(out, "{}", shared.display_abs(&hit.path));
     }
     if total > MAX_RESULTS {
         let _ = writeln!(
             out,
             "… [results truncated: showing {MAX_RESULTS} of {total} matches; use a narrower pattern or path]"
+        );
+    }
+    if let Some(note) = partial {
+        let _ = writeln!(
+            out,
+            "{note} The files listed are the newest among the entries examined, not of the whole tree."
         );
     }
     Ok(out)

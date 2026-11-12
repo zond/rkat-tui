@@ -214,11 +214,19 @@ impl NoteToolDispatcher {
                 reason: err.to_string(),
             })?;
         let stores = Arc::clone(&self.stores);
-        let outcome = tokio::task::spawn_blocking(move || run(&stores, args))
-            .await
-            .map_err(|err| ToolError::ExecutionFailed {
-                message: format!("{} worker failed: {err}", call.name),
-            })?;
+        // Work still queued when the call went (timed out, interrupted)
+        // does not run: a save or forget nobody sees is not made.
+        let outcome = crate::tools::run_cancellable(move |cancel| {
+            if cancel.is_cancelled() {
+                Err("the call was cancelled".to_string())
+            } else {
+                run(&stores, args)
+            }
+        })
+        .await
+        .map_err(|err| ToolError::ExecutionFailed {
+            message: format!("{} worker failed: {err}", call.name),
+        })?;
         let id = call.id.to_string();
         Ok(match outcome {
             Ok(text) => ToolResult::new(id, text, false),

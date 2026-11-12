@@ -158,6 +158,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         project_inputs,
         memory,
         helper_max_depth,
+        search_limits,
         llm_override,
         daemon_principal,
         tasks_db,
@@ -214,6 +215,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         thinking: thinking.clone(),
         endpoints,
         instructions,
+        search_limits,
     });
     let root_plan = RootPlan {
         model: choice.engine_model.clone(),
@@ -237,8 +239,9 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     };
     let project_root = scope.project_root.clone();
     let helper_tools: HelperTools = Arc::new(move || {
-        Arc::new(FileToolDispatcher::new(project_root.clone(), None))
-            as Arc<dyn AgentToolDispatcher>
+        Arc::new(
+            FileToolDispatcher::new(project_root.clone(), None).with_search_limits(search_limits),
+        ) as Arc<dyn AgentToolDispatcher>
     });
     // The daemon follows its helpers: the
     // registry's running set (an interrupt cancels it), and each helper's
@@ -469,7 +472,11 @@ fn tool_origins(
     ),
     DaemonError,
 > {
-    let catalog = agent_tools(scope, notes, None, None)?;
+    let catalog = agent_tools(
+        FileToolDispatcher::new(scope.project_root.clone(), None),
+        notes,
+        None,
+    )?;
     let deferrable = Arc::new(super::deferral::Deferrable::new());
     let reveals = Arc::new(super::deferral::reveal::Reveals::new(&scope.realm_root()));
     let search = Arc::new(super::deferral::reveal::SearchTool::new(
@@ -646,6 +653,8 @@ struct AgentHost {
     thinking: ThinkingTable,
     endpoints: crate::endpoints::EndpointRegistry,
     instructions: crate::bootstrap::InstructionSources,
+    /// `[search]`: how far the file tools' searches go.
+    search_limits: crate::tools::SearchLimits,
 }
 
 impl crate::mobs::customizer::RootHost for AgentHost {
@@ -660,7 +669,9 @@ impl crate::mobs::customizer::RootHost for AgentHost {
             identity.to_string(),
             Arc::clone(&self.watches) as Arc<dyn crate::tools::WatchHost>,
         ));
-        match agent_tools(&self.scope, &self.notes, Some(diffs), Some(watch)) {
+        let files = FileToolDispatcher::new(self.scope.project_root.clone(), Some(diffs))
+            .with_search_limits(self.search_limits);
+        match agent_tools(files, &self.notes, Some(watch)) {
             Ok(tools) => tools,
             Err(err) => {
                 // The same composition succeeded at start for the catalog;
@@ -718,18 +729,17 @@ impl crate::mobs::customizer::RootHost for AgentHost {
     }
 }
 
-/// One agent's external tools: its own file tools (reporting every change
-/// they make to `diffs`, which the clients show as a diff), the shared
-/// note tools and its watch tools, behind one gateway. Without `watch`
-/// (the catalog read at start) the watch tools are named over a host that
+/// One agent's external tools: its own file tools (`files`, reporting
+/// every change they make as a diff the clients show), the shared note
+/// tools and its watch tools, behind one gateway. Without `watch` (the
+/// catalog read at start) the watch tools are named over a host that
 /// watches nothing.
 fn agent_tools(
-    scope: &RuntimeScope,
+    files: FileToolDispatcher,
     notes: &Arc<NoteToolDispatcher>,
-    diffs: Option<tokio::sync::mpsc::UnboundedSender<crate::tools::FileDiff>>,
     watch: Option<Arc<crate::tools::WatchToolDispatcher>>,
 ) -> Result<Arc<dyn AgentToolDispatcher>, DaemonError> {
-    let files = Arc::new(FileToolDispatcher::new(scope.project_root.clone(), diffs));
+    let files = Arc::new(files);
     let watch = watch.unwrap_or_else(|| {
         Arc::new(crate::tools::WatchToolDispatcher::new(
             "",

@@ -140,6 +140,42 @@ pub struct ShellSection {
     pub user_timeout_secs: Option<u64>,
 }
 
+/// `[search]` section of a rules file: how far one `glob` or `grep` may go
+/// ([`crate::tools::SearchLimits`]). Unset fields inherit from lower
+/// layers; the project file may only lower them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SearchSection {
+    /// How long one search may take, in seconds (at least 1; default
+    /// [`crate::tools::DEFAULT_SEARCH_BUDGET_SECS`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_secs: Option<u64>,
+    /// How many files and directories one search may examine (at least 1;
+    /// default [`crate::tools::DEFAULT_SEARCH_MAX_ENTRIES`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_entries: Option<u64>,
+}
+
+impl SearchSection {
+    /// Apply this section over `limits`; with `lower_only`, only where it
+    /// lowers them (a project file).
+    pub(crate) fn apply(&self, limits: &mut crate::tools::SearchLimits, lower_only: bool) {
+        let pick = |current: u64, set: u64| {
+            if lower_only {
+                current.min(set.max(1))
+            } else {
+                set.max(1)
+            }
+        };
+        if let Some(secs) = self.budget_secs {
+            limits.budget = std::time::Duration::from_secs(pick(limits.budget.as_secs(), secs));
+        }
+        if let Some(entries) = self.max_entries {
+            limits.max_entries = pick(limits.max_entries, entries);
+        }
+    }
+}
+
 /// `!` shell-mode settings after layering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ShellSettings {
@@ -436,6 +472,9 @@ pub struct RulesFile {
     /// `!` shell-mode settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shell: Option<ShellSection>,
+    /// How far `glob` and `grep` may go.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search: Option<SearchSection>,
     /// Transcript display settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui: Option<UiSection>,

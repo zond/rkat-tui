@@ -22,6 +22,7 @@ mod glob;
 mod grep;
 mod read;
 mod read_only;
+mod scan;
 mod watch;
 mod write;
 
@@ -29,6 +30,10 @@ pub use diff::FileDiff;
 pub(crate) use glob::mention_walker;
 
 pub use read_only::ReadOnlyProjectTools;
+pub use scan::SearchLimits;
+pub(crate) use scan::run_cancellable;
+#[cfg(any(test, feature = "test-support"))]
+pub use scan::{DEFAULT_SEARCH_BUDGET_SECS, DEFAULT_SEARCH_MAX_ENTRIES, WalkProbe};
 pub use watch::{UNWATCH, WATCH_PATHS, WATCH_TOOLS_SOURCE, WatchHost, WatchToolDispatcher};
 
 /// The catalog support of a dispatcher whose tool list is fixed when it is
@@ -180,14 +185,47 @@ pub(crate) fn file_kind(kind: std::fs::FileType) -> &'static str {
     }
 }
 
-/// Read at most `cap` bytes of the regular file at `path`.
-///
-/// The path is checked with `metadata` before it is opened (opening a FIFO
-/// blocks until a writer appears, and a device may never end), the open
-/// handle is checked again (the path may have been swapped in between),
-/// and the read goes through [`io::Read::take`], so a file growing after
-/// the check still yields at most `cap` bytes.
+/// Read at most `cap` bytes of the regular file at `path`
+/// ([`open_regular`]). The read goes through [`io::Read::take`], so a file
+/// growing after the check still yields at most `cap` bytes.
 pub(crate) fn read_capped(path: &Path, cap: u64) -> Result<CappedRead, ReadRefusal> {
+    let file = open_regular(path)?;
+    let mut bytes = Vec::with_capacity(initial_capacity(&file, cap));
+    file.take(cap.saturating_add(1)).read_to_end(&mut bytes)?;
+    Ok(CappedRead::of(bytes, cap))
+}
+
+/// As [`read_capped`], in chunks of [`READ_CHUNK_BYTES`], asking `go_on`
+/// before each: `Ok(None)` when it said no (a search out of time or
+/// cancelled), so a slow file cannot hold a search past its budget.
+pub(crate) fn read_capped_while(
+    path: &Path,
+    cap: u64,
+    go_on: &dyn Fn() -> bool,
+) -> Result<Option<CappedRead>, ReadRefusal> {
+    let file = open_regular(path)?;
+    let mut bytes = Vec::with_capacity(initial_capacity(&file, cap));
+    let mut rest = file.take(cap.saturating_add(1));
+    loop {
+        if !go_on() {
+            return Ok(None);
+        }
+        let read = (&mut rest).take(READ_CHUNK_BYTES).read_to_end(&mut bytes)?;
+        if read == 0 {
+            break;
+        }
+    }
+    Ok(Some(CappedRead::of(bytes, cap)))
+}
+
+/// How much [`read_capped_while`] reads between two checks.
+const READ_CHUNK_BYTES: u64 = 1024 * 1024;
+
+/// The regular file at `path`, opened. The path is checked with `metadata`
+/// before it is opened (opening a FIFO blocks until a writer appears, and
+/// a device may never end), and the open handle is checked again (the
+/// path may have been swapped in between).
+fn open_regular(path: &Path) -> Result<std::fs::File, ReadRefusal> {
     let meta = std::fs::metadata(path)?;
     if !meta.is_file() {
         return Err(ReadRefusal::NotRegular(meta.file_type()));
@@ -197,12 +235,22 @@ pub(crate) fn read_capped(path: &Path, cap: u64) -> Result<CappedRead, ReadRefus
     if !opened.is_file() {
         return Err(ReadRefusal::NotRegular(opened.file_type()));
     }
-    let mut bytes = Vec::with_capacity(usize::try_from(opened.len().min(cap)).unwrap_or(0));
-    file.take(cap.saturating_add(1)).read_to_end(&mut bytes)?;
-    let limit = usize::try_from(cap).unwrap_or(usize::MAX);
-    let truncated = bytes.len() > limit;
-    bytes.truncate(limit);
-    Ok(CappedRead { bytes, truncated })
+    Ok(file)
+}
+
+fn initial_capacity(file: &std::fs::File, cap: u64) -> usize {
+    let len = file.metadata().map_or(0, |meta| meta.len());
+    usize::try_from(len.min(cap)).unwrap_or(0)
+}
+
+impl CappedRead {
+    /// `bytes` (read up to one byte past `cap`) cut to `cap`.
+    fn of(mut bytes: Vec<u8>, cap: u64) -> Self {
+        let limit = usize::try_from(cap).unwrap_or(usize::MAX);
+        let truncated = bytes.len() > limit;
+        bytes.truncate(limit);
+        Self { bytes, truncated }
+    }
 }
 
 /// Why a tool invocation did not succeed.
@@ -234,7 +282,8 @@ impl ToolFailure {
 
 pub(crate) type ToolOutcome = Result<String, ToolFailure>;
 
-/// Who made a tool call: the call id and the session it belongs to.
+/// One tool call: its id, the session it belongs to, the flag set when the
+/// call goes, and how far a search may go.
 #[derive(Debug, Clone)]
 pub(crate) struct CallMeta {
     pub(crate) id: String,
@@ -242,6 +291,22 @@ pub(crate) struct CallMeta {
     /// ([`ToolDispatchContext::origin_session_id`]), else the dispatcher's
     /// owning session, else `None` (a context-free call).
     pub(crate) session: Option<SessionId>,
+    /// Set when the call's future is dropped ([`scan::run_cancellable`]).
+    pub(crate) cancel: scan::Cancel,
+    /// The budget of a `glob` or `grep`.
+    pub(crate) limits: SearchLimits,
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) probe: Option<Arc<WalkProbe>>,
+}
+
+impl CallMeta {
+    /// The scan a search of `root` runs under.
+    pub(crate) fn scan<'a>(&'a self, root: &'a Path) -> scan::Scan<'a> {
+        let scan = scan::Scan::new(root, self.limits, &self.cancel);
+        #[cfg(any(test, feature = "test-support"))]
+        let scan = scan.with_probe(self.probe.clone());
+        scan
+    }
 }
 
 /// Key of the read-before-write record: the session that read, and the path.
@@ -412,6 +477,13 @@ impl Shared {
         content: &str,
     ) -> Result<FileDiff, ToolFailure> {
         let display = self.display(resolved);
+        // The call is gone (timed out, interrupted): nobody would see what
+        // this write did.
+        if call.cancel.is_cancelled() {
+            return Err(ToolFailure::recoverable(format!(
+                "{display} was not written: the call was cancelled"
+            )));
+        }
         // A temporary file renamed over the target: a hard link created
         // after `check_writable` keeps the old content, never this write.
         crate::paths::write_atomic(
@@ -459,6 +531,10 @@ pub struct FileToolDispatcher {
     /// The session this dispatcher serves, when it serves exactly one: the
     /// read-state key of calls whose dispatch context names no session.
     owner: Option<SessionId>,
+    /// How far one `glob` or `grep` may go.
+    limits: SearchLimits,
+    #[cfg(any(test, feature = "test-support"))]
+    probe: Option<Arc<WalkProbe>>,
 }
 
 impl FileToolDispatcher {
@@ -520,7 +596,25 @@ impl FileToolDispatcher {
             }),
             tools,
             owner: None,
+            limits: SearchLimits::default(),
+            #[cfg(any(test, feature = "test-support"))]
+            probe: None,
         }
+    }
+
+    /// The same dispatcher with `glob` and `grep` bounded by `limits`.
+    #[must_use]
+    pub fn with_search_limits(mut self, limits: SearchLimits) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    /// The same dispatcher with its searches counted (and paced) by `probe`.
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_walk_probe(mut self, probe: Arc<WalkProbe>) -> Self {
+        self.probe = Some(probe);
+        self
     }
 
     /// The project root the tools resolve paths against.
@@ -546,15 +640,29 @@ impl FileToolDispatcher {
             })?;
         let shared = Arc::clone(&self.shared);
         let id = call.id.to_string();
-        let meta = CallMeta {
-            id: id.clone(),
-            session,
-        };
-        let outcome = tokio::task::spawn_blocking(move || run(&shared, meta, args))
-            .await
-            .map_err(|err| ToolError::ExecutionFailed {
-                message: format!("{} worker failed: {err}", call.name),
-            })?;
+        let limits = self.limits;
+        #[cfg(any(test, feature = "test-support"))]
+        let probe = self.probe.clone();
+        let outcome = run_cancellable(move |cancel| {
+            // Still queued when the call went: nothing to do for anyone.
+            if cancel.is_cancelled() {
+                return Err(ToolFailure::recoverable("the call was cancelled"));
+            }
+            let meta = CallMeta {
+                id,
+                session,
+                cancel: cancel.clone(),
+                limits,
+                #[cfg(any(test, feature = "test-support"))]
+                probe,
+            };
+            run(&shared, meta, args)
+        })
+        .await
+        .map_err(|err| ToolError::ExecutionFailed {
+            message: format!("{} worker failed: {err}", call.name),
+        })?;
+        let id = call.id.to_string();
         match outcome {
             Ok(text) => Ok(ToolResult::new(id, text, false)),
             Err(ToolFailure::Recoverable(message)) => Ok(ToolResult::new(id, message, true)),
