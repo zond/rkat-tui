@@ -221,7 +221,12 @@ impl Running {
     /// lets drive the agent through the engine's member methods (a probe
     /// is bound to no agent and may only read).
     pub async fn connect_bound(&self) -> Connection {
-        let (connection, _notes) = Connection::attach_to(
+        self.connect_bound_with_notes().await.0
+    }
+
+    /// [`Self::connect_bound`], with the connection's pushes.
+    pub async fn connect_bound_with_notes(&self) -> (Connection, UnboundedReceiver<Notification>) {
+        let (connection, notes) = Connection::attach_to(
             &self.endpoint(),
             Duration::from_secs(5),
             None,
@@ -236,7 +241,7 @@ impl Running {
             .call("initialize", serde_json::json!({}))
             .await
             .unwrap();
-        connection
+        (connection, notes)
     }
 
     /// Wait for the daemon to end by itself (`rkat/shutdown`).

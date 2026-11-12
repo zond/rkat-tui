@@ -7489,3 +7489,21 @@ Unit tests: `client::runner::tests::an_idle_agent_holding_nothing_settles_the_fo
 `client::runner::steers::tests::a_settled_input_ends_only_its_own_steer_once`,
 `daemon::local::tests::an_inputs_fate_is_its_records_phase`,
 `ui::tests::turns::a_message_the_agent_did_not_take_returns_to_the_editor`.
+
+## Dead wire removed (2026-11-12)
+
+`rkat/get_mode` and `rkat/retire` had no production caller any more: the
+mode is pushed (`rkat/mode`, also as a connection registers) and `/quit`
+retires through `rkat/quit`. Both left the `Method` table, the
+dispatcher and `docs/mob-split.md`; the raw-wire tests read the pushed
+mode (`approvals::the_local_methods_answer_before_the_engine`, the plan
+mode restart test), `rkat/report`'s mode (the overlapping-switch test),
+and retire through `rkat/quit` beside another agent's client
+(`lifecycle::a_retired_agent_takes_no_input_and_its_conversation_is_seated_again`).
+Checked and kept, each with a production caller or sender: every other
+`rkat/*` method, and the pushes `rkat/decision_ended`, `rkat/file_diff`,
+`rkat/triggered`, `rkat/cost`, `rkat/switched`, `rkat/mob`, `rkat/idle`,
+`rkat/mode`, `rkat/approval_note`. Not in this sweep: the engine methods
+the proxy serves include three the client no longer calls
+(`mob/turn_start`, `decision/get`, `approval/list`); raw-wire tests drive
+them, and narrowing the served list is its own change.

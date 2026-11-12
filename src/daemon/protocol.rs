@@ -106,8 +106,6 @@ macro_rules! methods {
 }
 
 methods! {
-    /// The permission mode and the denial counters.
-    GetMode = "rkat/get_mode" (Empty) -> ModeStatus;
     /// Switch the permission mode: the daemon's one mode governs every
     /// agent and its helpers, is recorded in the realm rules file, and the
     /// agents are told when plan mode starts or ends.
@@ -193,10 +191,6 @@ methods! {
     /// SIGTERM; with `retire`, every agent retires first (their
     /// conversations stay).
     Shutdown = "rkat/shutdown" (ShutdownParams) -> Empty;
-    /// The caller's agent leaves the workspace (a running turn is
-    /// interrupted first, its helpers stop, its schedules are deleted); its
-    /// conversation stays for `/resume`, and nothing can wake it.
-    Retire = "rkat/retire" (Empty) -> Retired;
     /// `/quit`: the daemon decides how the caller leaves and does it, under
     /// the seating lock, so no client binds or quits between the decision
     /// and the act (`super::lifecycle::quit_decision`): it leaves the agent
@@ -673,7 +667,7 @@ pub struct InputFates {
     pub inputs: Vec<InputRow>,
 }
 
-/// [`method::Retire`]'s result.
+/// What retired ([`QuitOutcome::Retired`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Retired {
     /// The agent that retired.

@@ -609,8 +609,9 @@ async fn the_local_methods_answer_before_the_engine() {
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![]);
     let daemon = start(&ws.root, &llm, &Setup::default()).await;
-    let connection = daemon.connect().await;
-    let status = connection.call("rkat/get_mode", json!({})).await.unwrap();
+    let (connection, mut notes) = daemon.connect_with_notes().await;
+    // The mode is pushed as the connection registers.
+    let status = next_note(&mut notes, "rkat/mode").await;
     assert_eq!(status["mode"], "auto", "{status}");
     assert_eq!(
         status["denials"],
@@ -756,8 +757,8 @@ async fn plan_mode_survives_a_restart_and_leaving_it_is_announced() {
     daemon.stop().await;
 
     let daemon = start(&ws.root, &llm, &setup).await;
-    let connection = daemon.connect_bound().await;
-    let mode = connection.call("rkat/get_mode", json!({})).await.unwrap();
+    let (connection, mut notes) = daemon.connect_bound_with_notes().await;
+    let mode = next_note(&mut notes, "rkat/mode").await;
     assert_eq!(mode["mode"], "plan", "{mode}");
     let turn =
         |prompt: &str| json!({"mob_id": "tui", "agent_identity": daemon.agent, "prompt": prompt});
@@ -957,7 +958,8 @@ async fn overlapping_mode_changes_leave_the_plan_note_matching_the_mode() {
         let answer = answer.unwrap();
         assert!(answer.get("warning").is_none(), "{answer}");
     }
-    let mode = a.call("rkat/get_mode", json!({})).await.unwrap();
+    // The mode that holds, as `/status` reads it.
+    let mode = a.call("rkat/report", json!({})).await.unwrap()["mode"].clone();
     let plan = mode["mode"] == "plan";
     a.call(
         "mob/turn_start",

@@ -161,7 +161,7 @@ pub fn answered(
 
 /// The permission mode, whether auto mode is paused after classifier
 /// blocks, and the denial counters with their limits, as the status bar
-/// shows them (and `rkat/get_mode` answers).
+/// shows them (and `rkat/mode` pushes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModeStatus {
     /// The permission mode.

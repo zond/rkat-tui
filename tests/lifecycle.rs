@@ -2,7 +2,7 @@
 //! the detach record and the owner (the client that presents the daemon's
 //! start token); `rkat/detach` and an agent's last connection ending
 //! without retiring it are detaches that keep the agent running;
-//! `rkat/retire` retires the caller's agent; `rkat/shutdown` stops the
+//! `rkat/quit` beside another agent's client retires the caller's agent; `rkat/shutdown` stops the
 //! daemon (retiring every agent with `retire`) and removes its endpoint
 //! file.
 
@@ -398,10 +398,13 @@ async fn a_retired_agent_takes_no_input_and_its_conversation_is_seated_again() {
         .await
         .session_id
         .unwrap();
-    let retired: protocol::Retired =
-        remote::call::<protocol::method::Retire>(&leaver, &protocol::Empty {})
-            .await
-            .unwrap();
+    // `/quit` with another client on another agent retires the agent.
+    let quit = remote::call::<protocol::method::Quit>(&leaver, &protocol::Empty {})
+        .await
+        .unwrap();
+    let protocol::QuitOutcome::Retired { retired } = quit else {
+        panic!("{quit:?}");
+    };
     assert_eq!(retired.agent, name);
     assert_eq!(retired.session_id.as_ref(), Some(&session));
     drop(leaver);

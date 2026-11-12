@@ -323,9 +323,7 @@ methods on the wire, and `daemon::protocol` types each one for both ends:
 | `rkat/status` | `{}` | `{"workspace", "host"?, "pid", "started_at", "clients", "detached", "owner", "session_id"?, "running", "agent"?, "agents": [{"name", "session_id"?, "running", "clients", "detached"}], "shell"}` (`shell`: the agent shell's confinement the daemon installed, the engine's `ShellConfinement`, which a client compares with its own flags' before attaching; `session_id` and `running` of the caller's agent, whose `running` is true when its state cannot be read; an agent row's `running` is `null` then; `detached`: a live agent runs without a client) |
 | `rkat/holds` | `{}` | `{"held": [String]}` (each conversation with a user turn, or that cannot be read: what a re-home replacing this realm would lose; empty means provably empty) |
 | `rkat/detach` | `{}` | `{}` (the caller's agent is marked detached: a later `/quit` asks) |
-| `rkat/retire` | `{}` | `{"agent", "session_id"?}` (the caller's agent leaves the mob; a running turn is interrupted; its conversation stays) |
 | `rkat/shutdown` | `{"retire"?}` | `{}` (the daemon removes its endpoint file and shuts down; with `retire` every agent retires first) |
-| `rkat/get_mode` | `{}` | `{"mode", "paused", "denials"}` |
 | `rkat/set_mode` | `{"mode": "default"\|"accept-edits"\|"plan"\|"auto"}` | `{"status", "notice", "warning"?}` |
 | `rkat/rules` | `{"op": "list"}`, `{"op": "add", "deny", "tool", "pattern"?}`, `{"op": "remove", "n"}` | `{"ok", "text"}` |
 | `rkat/conversations` | `{}` | `{"conversations": [{session_id, last_used, messages, title, current}]}` |
@@ -468,7 +466,7 @@ with its own gate and file tools, and refuses such a name from any spawn
 the host did not make. Every agent is wired to every other one (seat,
 switch, reseat, restore), its persona names it and the norms, and system
 notes (`mob_append_system_context`) give it the roster and tell the others
-of a join or a leave. `rkat/retire` (a `/quit` with other clients on other
+of a join or a leave. `rkat/quit` that retires (a `/quit` with other clients on other
 agents) cancels a running turn, stops its helpers and retires the member;
 `rkat/shutdown {"retire": true}` (the last client's stop, or "terminate")
 retires every agent before the daemon stops; SIGTERM keeps them for the

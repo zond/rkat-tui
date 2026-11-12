@@ -417,7 +417,6 @@ impl Local {
                 }
                 Ok(Empty {})
             };
-            method::Retire, Empty {} => self.retire(&self.agent_of(&caller)?, None).await;
             method::Quit, Empty {} => self.quit(&caller).await;
             method::Recall, protocol::RecallParams { input_ids } => {
                 let recalled = self.recall(&caller, &input_ids).await;
@@ -454,7 +453,6 @@ impl Local {
                     },
                 })
             };
-            method::GetMode, Empty {} => Ok(ModeStatus::of(&self.engine));
             method::Report, Empty {} => Ok(self.report(self.agent_of(&caller).ok().as_deref()));
             method::SetMode, protocol::SetModeParams { mode } => Ok(self.set_mode(mode).await);
             method::Rules, command => {
@@ -651,7 +649,7 @@ impl Local {
         })
     }
 
-    /// `rkat/retire`: `agent` leaves the workspace. A running turn is
+    /// `agent` leaves the workspace (`rkat/quit`'s retire). A running turn is
     /// interrupted first (its review stops, its open escalations are
     /// answered with Stop), then the agent retires
     /// ([`Agents::retire`]): its helpers stop, the engine archives its
