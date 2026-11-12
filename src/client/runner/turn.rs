@@ -404,8 +404,77 @@ impl Runner {
     /// The daemon says the agent is idle (`rkat/idle`): no run open and
     /// no input of the conversation unfinished.
     pub(super) fn idle_reported(&mut self, note: protocol::IdleNote) {
+        let holds_nothing = note.held == 0;
         self.idle = Some(note);
         self.settle_turn();
+        if holds_nothing {
+            self.ask_fates();
+        }
+    }
+
+    /// The agent is idle and its runtime holds nothing, yet this client
+    /// still follows admitted steers: each was either written into a run
+    /// (its event not seen here yet) or ended without one. Ask the daemon
+    /// which (`rkat/inputs`) rather than conclude from the absence of an
+    /// event; [`Self::input_fates`] takes the answer.
+    pub(super) fn ask_fates(&mut self) {
+        let outstanding = self.steers.outstanding();
+        if outstanding.is_empty() {
+            return;
+        }
+        if let Some(again) = &mut self.asking_fates {
+            *again = true;
+            return;
+        }
+        let Some(connection) = self.connection() else {
+            return;
+        };
+        self.asking_fates = Some(false);
+        let reports = self.reporter();
+        tokio::spawn(async move {
+            let params = protocol::RecallParams {
+                input_ids: outstanding.into_iter().map(|(_, input)| input).collect(),
+            };
+            let result = bounded(
+                CALL_TIMEOUT,
+                remote::call::<protocol::method::Inputs>(&connection, &params),
+            )
+            .await
+            .map_err(|err| err.to_string());
+            reports.send(Report::InputFates(result));
+        });
+    }
+
+    /// The daemon's answer to [`Self::ask_fates`]: a steer written into a
+    /// run is shown delivered; one that ended without a run returns to the
+    /// editor ([`Msg::NotDelivered`]); one still held, or not found in the
+    /// agent's conversation, stays followed.
+    pub(super) fn input_fates(&mut self, result: Result<protocol::InputFates, String>) {
+        let again = self.asking_fates.take().unwrap_or(false);
+        match result {
+            Ok(answer) => {
+                for row in answer.inputs {
+                    match row.fate {
+                        protocol::InputFate::Taken => {
+                            if let Some(id) = self.steers.settled(&row.input_id) {
+                                self.send(Msg::SteerDelivered(id));
+                            }
+                        }
+                        protocol::InputFate::Dropped { why } => {
+                            if let Some(id) = self.steers.settled(&row.input_id) {
+                                self.admitted.retain(|admitted| *admitted != id);
+                                self.send(Msg::NotDelivered { id, why });
+                            }
+                        }
+                        protocol::InputFate::Pending | protocol::InputFate::Unknown => {}
+                    }
+                }
+            }
+            Err(why) => tracing::info!(%why, "rkat/inputs failed: the steers stay followed"),
+        }
+        if again {
+            self.ask_fates();
+        }
     }
 
     /// End the turn once the daemon said the agent is idle after a run

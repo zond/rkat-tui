@@ -395,6 +395,62 @@ fn up_when_the_messages_already_reached_the_agent_notices_then_recalls_history()
     assert_eq!(app.status.queued, 1);
 }
 
+/// A steered message the runtime ended without a run returns to the
+/// editor before the draft, its placeholder gone, with one notice saying
+/// why; another admitted message stays with the agent.
+#[test]
+fn a_message_the_agent_did_not_take_returns_to_the_editor() {
+    let mut app = running_app();
+    submit(&mut app, "two");
+    submit(&mut app, "three");
+    app.update(ack(1, Ok(())));
+    app.update(ack(2, Ok(())));
+    app.update(Msg::TurnFinished(Err(TurnFailure::Interrupted)));
+    app.input.set_text("draft");
+    let fx = app.update(Msg::NotDelivered {
+        id: PendingId(1),
+        why: Some("it was cancelled".into()),
+    });
+    assert!(fx.is_empty());
+    assert_eq!(app.input.text(), "two\ndraft");
+    assert_eq!(
+        last_notice(&app),
+        Some((
+            NoticeLevel::Warn,
+            "the agent did not take “two” (it was cancelled); it is back in the editor".into()
+        ))
+    );
+    assert!(app.pending.get(PendingId(1)).is_none());
+    let queued: Vec<Block> = app
+        .transcript
+        .blocks()
+        .iter()
+        .filter(|b| matches!(b, Block::Queued { .. }))
+        .cloned()
+        .collect();
+    assert_eq!(queued, [queued_block(2, "three", QueuedLabel::Delivering)]);
+    // Without a reason, and a second time for the same message: nothing.
+    app.input.set_text("");
+    app.update(Msg::NotDelivered {
+        id: PendingId(2),
+        why: None,
+    });
+    assert_eq!(
+        last_notice(&app),
+        Some((
+            NoticeLevel::Warn,
+            "the agent did not take “three”; it is back in the editor".into()
+        ))
+    );
+    let notices = app.transcript.blocks().len();
+    app.update(Msg::NotDelivered {
+        id: PendingId(2),
+        why: None,
+    });
+    assert_eq!(app.transcript.blocks().len(), notices);
+    assert_eq!(app.input.text(), "three");
+}
+
 #[test]
 fn esc_with_nothing_pending_interrupts() {
     let mut app = running_app();

@@ -341,6 +341,8 @@ methods on the wire, and `daemon::protocol` types each one for both ends:
 | `rkat/missed` | `{}` | `{"notices": [{"warn", "text"}]}` (what the caller's agent was denied in unattended turns, each answered once; a client asks on every attach) |
 | `rkat/tasks` | `{"session_id"}` | `{"tasks": [Task]}` (the engine's task store) |
 | `rkat/checklist_view` | `{"view": "hidden"\|"shown"}` | `{}` (saved as `[ui] checklist`) |
+| `rkat/recall` | `{"input_ids": [InputId]}` | `{"recalled", "reached", "foreign", "errors"?}` (each input of the caller's agent's current conversation still queued is abandoned; the others are left) |
+| `rkat/inputs` | `{"input_ids": [InputId]}` | `{"inputs": [{"input_id", "fate": "pending"\|"taken"\|"dropped"\|"unknown", "why"?}]}` (read only: what the runtime records of each; a client asks when the agent is idle holding nothing while it still follows a steer) |
 | `rkat/decision_ended` | notification, daemon to client | a decision the client was shown ended |
 | `rkat/file_diff` | notification, daemon to client | `{"tool_use_id", "path", "unified", "added", "removed"}`: a change the orchestrator's file tools made |
 | `rkat/switched` | notification, daemon to client | `{"agent", "session_id"}`: the agent runs another conversation now (a client's `/new` or `/resume`); its other clients show it |

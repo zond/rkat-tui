@@ -7454,3 +7454,38 @@ told; a compaction still re-arms the UI's warning. The rule is tested
 where it lives: `daemon::usage::tests::{counts_are_told_written_on_flush_and_read_back,
 a_compaction_counts_its_summary_call_and_estimates_the_context}`; the UI
 test became `context_gauge_shows_the_daemons_reading_and_clears`.
+
+## A steer the runtime dropped returns to the editor (2026-11-12)
+
+A steer the runtime ended without writing it into a run stayed
+*delivering…* for good: its only marks were its `BoundaryAppendApplied`
+and a run carrying it, and an abandoned input has neither. The agent's
+event stream does not say when an input is abandoned, so the client
+does not conclude it from an absence: when `rkat/idle` says `held: 0`
+while the client still follows admitted steers, it asks the new
+`rkat/inputs` (read only, the caller's agent's current conversation, the
+same `input_state` read `rkat/recall` makes) what the runtime records.
+`Applied`, `AppliedPendingConsumption`, `Consumed` and `Coalesced` mark
+the steer delivered (its event may still be on its way on the stream);
+`Abandoned` and `Superseded` return it to the editor (`Msg::NotDelivered`)
+with one notice naming the abandon reason in words; `Accepted`, `Queued`,
+`Staged`, an input not found in the conversation and a phase this build
+does not know leave it followed. One question at a time; a notice that
+comes meanwhile asks again on the answer.
+
+What the engine does with a steer queued behind a run when the turn is
+interrupted (probed on 0.9.13 through the rig): Esc's
+`mob/stop_member_run` cancels only the run; the queued steer stays
+`Queued` and the runtime runs it as a follow-up run right after the
+cancelled one, so it is delivered and the turn ends `Interrupted` after
+that run (`client_turns::a_steer_queued_behind_an_interrupted_run_runs_after_it`).
+`mob/force_cancel` (a second Esc after `STOP_GRACE`, or another client of
+the agent) abandons the input the member held queued, reason
+`Cancelled`; it takes a run at its next boundary, so a model call that
+never returns is not ended by it (the rig's `Step::Hang` was not; a gated
+call released after the cancel was). That is the rig case:
+`client_turns::a_steer_the_runtime_abandoned_returns_to_the_editor`.
+Unit tests: `client::runner::tests::an_idle_agent_holding_nothing_settles_the_followed_steers_by_their_state`,
+`client::runner::steers::tests::a_settled_input_ends_only_its_own_steer_once`,
+`daemon::local::tests::an_inputs_fate_is_its_records_phase`,
+`ui::tests::turns::a_message_the_agent_did_not_take_returns_to_the_editor`.

@@ -91,8 +91,19 @@ impl Steers {
         }
     }
 
-    /// The admitted steers not applied yet, oldest first (what a recall
-    /// asks the daemon to take back).
+    /// The daemon says `input` reached a terminal state (written into a
+    /// run, or ended without one): its steer, no longer followed, if it is
+    /// still followed.
+    pub(super) fn settled(&mut self, input: &InputId) -> Option<PendingId> {
+        let at = self
+            .admitted
+            .iter()
+            .position(|(admitted, _)| admitted == input)?;
+        Some(self.admitted.remove(at).1)
+    }
+
+    /// The admitted steers not applied yet, oldest first (what a recall,
+    /// or a question of their fates, names to the daemon).
     pub(super) fn outstanding(&self) -> Vec<(PendingId, InputId)> {
         self.admitted
             .iter()
@@ -214,6 +225,22 @@ mod tests {
         assert!(steers.applied.is_empty());
         assert!(!steers.sending_any());
         assert!(steers.holds(PendingId(1)));
+    }
+
+    #[test]
+    fn a_settled_input_ends_only_its_own_steer_once() {
+        let mut steers = Steers::default();
+        let (first, second) = (input(), input());
+        steers.sending(PendingId(1));
+        steers.sending(PendingId(2));
+        steers.admitted(PendingId(1), first.clone());
+        steers.admitted(PendingId(2), second);
+        assert_eq!(steers.settled(&input()), None);
+        assert_eq!(steers.settled(&first), Some(PendingId(1)));
+        assert_eq!(steers.settled(&first), None);
+        assert!(steers.holds(PendingId(2)));
+        // Its boundary event after the answer marks nothing twice.
+        assert_eq!(steers.applied(&first), None);
     }
 
     #[test]

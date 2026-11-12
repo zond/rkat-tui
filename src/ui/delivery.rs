@@ -23,7 +23,8 @@
 //! ([`super::Effect::RecallQueued`], answered by [`super::Msg::Recalled`]):
 //! it abandons the ones the runtime still holds queued, leaving the running
 //! turn alone; one that already joined the run stays, and only an interrupt
-//! ends it.
+//! ends it. One the runtime ends without writing it into a run returns to
+//! the editor the same way ([`super::Msg::NotDelivered`]).
 //!
 //! [`Block::Queued`]: super::transcript::Block::Queued
 

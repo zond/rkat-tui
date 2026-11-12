@@ -327,6 +327,15 @@ pub enum Msg {
         /// Failed cancels.
         errors: Vec<String>,
     },
+    /// A steered message the runtime ended without writing it into a run
+    /// (abandoned: the run was stopped, the agent retired, …): the agent
+    /// never reads it, and it returns to the editor as a recalled one does.
+    NotDelivered {
+        /// The message.
+        id: PendingId,
+        /// Why, in words, when the runtime recorded why.
+        why: Option<String>,
+    },
     /// A file tool produced a diff.
     Diff {
         /// Tool-use id of the producing call.
@@ -548,8 +557,8 @@ pub enum Effect {
     /// [`Msg::Recalled`].
     RecallQueued,
     /// Steer a message into the running turn (a durable `Steer` input);
-    /// answered with [`Msg::SteerAck`], then [`Msg::SteerDelivered`], or
-    /// taken back at the turn's end when it was never delivered.
+    /// answered with [`Msg::SteerAck`], then [`Msg::SteerDelivered`] or,
+    /// when the runtime ended it without a run, [`Msg::NotDelivered`].
     Steer {
         /// Queue id allocated by the UI.
         id: PendingId,
@@ -1343,6 +1352,7 @@ impl App {
             Msg::SteerAck { id, result } => self.steer_ack(id, result, now, &mut fx),
             Msg::SteerDelivered(id) => self.pending.show_delivered(&mut self.transcript, id),
             Msg::Recalled { recalled, errors } => self.recalled(&recalled, &errors),
+            Msg::NotDelivered { id, why } => self.not_delivered(id, why.as_deref()),
             Msg::QuitDecided(decision) => self.quit_decided(decision, &mut fx),
             Msg::Rerooted { workspace, realm } => {
                 self.workspace = Some(workspace);

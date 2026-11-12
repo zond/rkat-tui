@@ -1223,3 +1223,94 @@ fn remaining_entries(root: &std::path::Path) -> Vec<String> {
     }
     out
 }
+
+/// A steer the runtime abandons before any run takes it (another client
+/// of the agent force-cancels its work, which abandons the input it held
+/// queued) is not left "delivering": once the daemon says the agent is
+/// idle with nothing held, the client asks what became of it
+/// (`rkat/inputs`), and it returns to the editor with a notice saying why.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_steer_the_runtime_abandoned_returns_to_the_editor() {
+    let ws = Workspace::new();
+    let gate = Arc::new(Notify::new());
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Gated(
+            Arc::clone(&gate),
+            Box::new(Step::Text("cancelled before this")),
+        ),
+        Step::Text("never asked"),
+    ]);
+    let mut rig = Attached::start(&ws.root, &llm).await;
+    let agent = rig.agent().await;
+    rig.send(Effect::StartTurn("hang".into()));
+    llm.wait_call(0).await;
+    rig.send(steer(1, "typed while it hangs"));
+    let ack = rig
+        .wait_for(|msg| matches!(msg, Msg::SteerAck { .. }))
+        .await;
+    assert!(
+        matches!(ack, Msg::SteerAck { result: Ok(()), .. }),
+        "{ack:?}"
+    );
+    let other = rig.daemon.connect_bound().await;
+    other
+        .call(
+            "mob/force_cancel",
+            json!({"mob_id": "tui", "agent_identity": agent}),
+        )
+        .await
+        .unwrap();
+    // The cancel takes the run at its next boundary.
+    gate.notify_one();
+    let fate = rig
+        .wait_for(|msg| {
+            matches!(
+                msg,
+                Msg::SteerDelivered(PendingId(1)) | Msg::NotDelivered { .. }
+            )
+        })
+        .await;
+    assert!(
+        matches!(&fate, Msg::NotDelivered { id: PendingId(1), why: Some(why) } if why == "it was cancelled"),
+        "{fate:?}"
+    );
+    rig.saw(|msg| matches!(msg, Msg::TurnFinished(_))).await;
+    assert_eq!(llm.requests().len(), 1, "no run took it");
+    let session = rig.messages().await;
+    assert!(!user_texts(&session).contains(&"typed while it hangs".to_string()));
+    rig.quit().await;
+}
+
+/// Esc stops only the run: a steer queued behind it stays with the
+/// runtime, which runs it as a follow-up run, so it is delivered, not
+/// returned.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_steer_queued_behind_an_interrupted_run_runs_after_it() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![Step::Hang, Step::Text("after")]);
+    let mut rig = Attached::start(&ws.root, &llm).await;
+    rig.send(Effect::StartTurn("hang".into()));
+    rig.wait_for(|msg| matches!(msg, Msg::Agent(env) if matches!(env.payload, AgentEvent::RunStarted { .. })))
+        .await;
+    llm.wait_call(0).await;
+    rig.send(steer(1, "typed while it hangs"));
+    rig.wait_for(|msg| matches!(msg, Msg::SteerAck { .. }))
+        .await;
+    rig.send(Effect::Interrupt);
+    assert_eq!(rig.turn_finished().await, Err(TurnFailure::Interrupted));
+    assert!(
+        rig.seen
+            .iter()
+            .any(|msg| matches!(msg, Msg::SteerDelivered(PendingId(1)))),
+        "{:#?}",
+        rig.seen
+    );
+    assert!(
+        !rig.seen
+            .iter()
+            .any(|msg| matches!(msg, Msg::NotDelivered { .. }))
+    );
+    assert_eq!(llm.requests().len(), 2);
+    assert!(user_texts(&llm.requests()[1]).contains(&"typed while it hangs".to_string()));
+    rig.quit().await;
+}

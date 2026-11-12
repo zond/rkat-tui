@@ -208,6 +208,11 @@ methods! {
     /// queued is abandoned, leaving the running turn alone; one that
     /// already joined a run is reported reached and left.
     Recall = "rkat/recall" (RecallParams) -> Recalled;
+    /// What became of messages the caller's agent was sent: each named
+    /// input of its current conversation as the runtime records it now
+    /// (read only; a client asks when the agent is idle and holds nothing
+    /// while it still waits for one of its steers).
+    Inputs = "rkat/inputs" (RecallParams) -> InputFates;
 }
 
 /// [`method::Status`]'s result.
@@ -608,11 +613,11 @@ pub struct ShutdownParams {
     pub retire: bool,
 }
 
-/// [`method::Recall`]'s parameters: the inputs `mob/member_send` admitted
-/// (`admission.input_id`), oldest first.
+/// [`method::Recall`]'s and [`method::Inputs`]'s parameters: the inputs
+/// `mob/member_send` admitted (`admission.input_id`), oldest first.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecallParams {
-    /// The inputs to take back.
+    /// The inputs to take back, or to read.
     pub input_ids: Vec<meerkat_core::lifecycle::InputId>,
 }
 
@@ -629,6 +634,43 @@ pub struct Recalled {
     /// The cancels the runtime refused, in words.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<String>,
+}
+
+/// What became of one input ([`method::Inputs`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "fate", rename_all = "snake_case")]
+pub enum InputFate {
+    /// The runtime still holds it: not written into a run yet.
+    Pending,
+    /// Written into a run (applied or consumed, alone or merged into
+    /// another input).
+    Taken,
+    /// Ended without being written into a run (abandoned, superseded):
+    /// the agent never reads it.
+    Dropped {
+        /// Why, in words, when the runtime records why.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        why: Option<String>,
+    },
+    /// Not an input of the caller's agent's current conversation.
+    Unknown,
+}
+
+/// One input and its fate ([`InputFates`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InputRow {
+    /// The input.
+    pub input_id: meerkat_core::lifecycle::InputId,
+    /// What became of it.
+    #[serde(flatten)]
+    pub fate: InputFate,
+}
+
+/// [`method::Inputs`]'s result, in the order asked.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InputFates {
+    /// Each input asked about (one that could not be read is left out).
+    pub inputs: Vec<InputRow>,
 }
 
 /// [`method::Retire`]'s result.

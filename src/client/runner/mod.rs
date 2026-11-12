@@ -359,6 +359,9 @@ enum Report {
     },
     /// `rkat/recall` answered (or failed, in words).
     Recalled(Result<protocol::Recalled, String>),
+    /// `rkat/inputs` answered for the steers this client still followed
+    /// (or failed, in words).
+    InputFates(Result<protocol::InputFates, String>),
     /// `/agents <name>`: the daemon's agents as read for it.
     AgentsRead {
         name: String,
@@ -590,6 +593,9 @@ pub struct Runner {
     steers: Steers,
     /// What the daemon said last of this agent's being idle.
     idle: Option<protocol::IdleNote>,
+    /// What became of the followed steers is being asked (`rkat/inputs`);
+    /// `Some(true)`: an idle notice came meanwhile, ask again on the answer.
+    asking_fates: Option<bool>,
     /// The model and endpoint as last read or switched to.
     model: Option<ShownModel>,
     /// The daemon the events shown came from (the cursor names it, see
@@ -701,6 +707,7 @@ impl Runner {
             turn: Turn::default(),
             steers: Steers::default(),
             idle: None,
+            asking_fates: None,
             model: None,
             daemon_id_seen: None,
             approvals: Approvals::default(),
@@ -853,6 +860,7 @@ impl Runner {
                 result,
             } => self.sent(turn, steer, result),
             Report::Recalled(result) => self.recalled(result),
+            Report::InputFates(result) => self.input_fates(result),
             Report::AgentsRead { name, status } => self.agents_read(name, status),
             Report::StopAsked(Ok(text)) => {
                 self.stopped();
@@ -1951,6 +1959,83 @@ mod tests {
             runner.finish_turn();
             drain(&mut rx);
         }
+    }
+
+    /// An idle notice with nothing held while this client still follows
+    /// admitted steers asks the daemon what became of them (once at a
+    /// time; a notice meanwhile asks again on the answer); one held asks
+    /// nothing. The answer decides each steer by its state: written into
+    /// a run is delivered, ended without one returns to the editor with
+    /// why, still held or not found stays followed.
+    #[tokio::test]
+    async fn an_idle_agent_holding_nothing_settles_the_followed_steers_by_their_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut runner, mut rx) = runner(dir.path());
+        let session = SessionId::new();
+        runner.conn = up(link("live", session.clone()).await);
+        let feed = Feed { session, seq: 0 };
+        let inputs: Vec<InputId> = (0..4).map(|_| InputId::new()).collect();
+        for (n, input) in (1..).zip(&inputs) {
+            runner.steers.sending(PendingId(n));
+            runner.sent(0, Some(PendingId(n)), Ok(Some(input.clone())));
+        }
+        drain(&mut rx);
+        let run = RunId::new();
+        runner.idle_reported(feed.idle(&run, 1));
+        assert_eq!(runner.asking_fates, None, "the runtime still holds one");
+        runner.idle_reported(feed.idle(&run, 0));
+        assert_eq!(runner.asking_fates, Some(false));
+        runner.idle_reported(feed.idle(&run, 0));
+        assert_eq!(runner.asking_fates, Some(true), "asked again on the answer");
+        let row = |n: usize, fate| protocol::InputRow {
+            input_id: inputs[n].clone(),
+            fate,
+        };
+        runner.input_fates(Ok(protocol::InputFates {
+            inputs: vec![
+                row(0, protocol::InputFate::Taken),
+                row(
+                    1,
+                    protocol::InputFate::Dropped {
+                        why: Some("it was cancelled".into()),
+                    },
+                ),
+                row(2, protocol::InputFate::Pending),
+                row(3, protocol::InputFate::Unknown),
+            ],
+        }));
+        let msgs = drain(&mut rx);
+        assert!(
+            matches!(
+                msgs.as_slice(),
+                [
+                    Msg::SteerDelivered(PendingId(1)),
+                    Msg::NotDelivered { id: PendingId(2), why: Some(why) },
+                ] if why == "it was cancelled"
+            ),
+            "{msgs:?}"
+        );
+        assert!(!runner.steers.holds(PendingId(1)));
+        assert!(!runner.steers.holds(PendingId(2)));
+        assert!(runner.steers.holds(PendingId(3)) && runner.steers.holds(PendingId(4)));
+        assert!(
+            !runner.admitted.contains(&PendingId(2)),
+            "not saved as sent"
+        );
+        assert!(runner.admitted.contains(&PendingId(1)));
+        // The notice that came meanwhile asked again, for the two left.
+        assert_eq!(runner.asking_fates, Some(false));
+        // A failed question leaves them followed; nothing is asked again
+        // until the next notice.
+        runner.input_fates(Err("lost".into()));
+        assert_eq!(runner.asking_fates, None);
+        assert!(drain(&mut rx).is_empty());
+        assert!(runner.steers.holds(PendingId(3)));
+        // The answer to a question for a steer settled since marks nothing.
+        runner.input_fates(Ok(protocol::InputFates {
+            inputs: vec![row(0, protocol::InputFate::Taken)],
+        }));
+        assert!(drain(&mut rx).is_empty());
     }
 
     #[test]

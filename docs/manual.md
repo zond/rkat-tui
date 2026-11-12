@@ -109,7 +109,9 @@ the editor.
 the same (the first Esc or Ctrl-C after a mouse selection only clears it):
 the daemon stops the agent's run and its running helpers. A message sent to
 the daemon meanwhile is the runtime's: the agent gets it at its next step
-unless ↑ takes it back first.
+unless ↑ takes it back first. A second Esc a second later force-cancels
+the agent's work, which also drops the messages the runtime still holds
+queued; those come back to the editor.
 
 *↑ on an empty editor* takes back the messages the UI still holds (not yet
 sent) and the ones sent to the daemon that the agent has not read yet
@@ -127,7 +129,12 @@ A steered message counts as delivered only when the stream shows it
 written at a boundary or the run that carries it starts. One the agent
 has not read when the turn ends (the runtime started no run for it within
 10 s; a notice says so) stays shown as *delivering…*, is marked when the
-agent reads it, and ↑ can still take it back.
+agent reads it, and ↑ can still take it back. When the daemon reports the
+agent idle with nothing held while a message is still *delivering…*, the
+client asks the daemon what the runtime recorded for it: written into a
+run, it is marked delivered; ended without one (a force-cancel, the agent
+retired or was stopped), it returns to the editor with a notice saying
+the agent did not take it and why.
 
 **Rewind.** There is no rewind (no `/rewind`, and Esc twice on an empty
 editor does nothing): the daemon cannot continue a conversation from

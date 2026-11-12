@@ -316,6 +316,28 @@ impl App {
         self.scroll.bottom();
     }
 
+    /// [`Msg::NotDelivered`](crate::ui::Msg::NotDelivered): the runtime
+    /// ended the message `id` without writing it into a run; it returns to
+    /// the editor (before the draft), as a recalled one does, with one
+    /// notice saying so and why.
+    pub(super) fn not_delivered(&mut self, id: PendingId, why: Option<&str>) {
+        let Some(text) = self.pending.get(id).map(|p| p.text.clone()) else {
+            return;
+        };
+        self.reached.retain(|reached| *reached != id);
+        let texts = self.withdraw(&[id]);
+        self.prepend_to_editor(texts);
+        let why = why.map(|why| format!(" ({why})")).unwrap_or_default();
+        self.transcript.push_notice(
+            NoticeLevel::Warn,
+            format!(
+                "the agent did not take {}{why}; it is back in the editor",
+                quote_short(&text)
+            ),
+        );
+        self.scroll.bottom();
+    }
+
     /// ↑ on an empty editor with queued messages: while the runtime holds
     /// messages no recall has found with the agent (during a turn, or
     /// after one that ended before the agent read them), ask the runner to

@@ -94,7 +94,8 @@ runs in an OS sandbox. 0.0.x is the maintainer's dogfood line;
 - Claude Code's keys where both have the feature: Enter sends, or queues
   while the agent works; Ctrl+Enter sends now; Esc interrupts; Up takes
   back queued messages the agent has not read yet, which show as on their
-  way until it does; `?` lists the keys. The approval dialog offers the
+  way until it does (one the runtime drops unread returns to the editor,
+  saying why); `?` lists the keys. The approval dialog offers the
   same three numbered choices.
 - A `/` command menu, `@` file mentions, Ctrl+R history search, readline
   editing, Ctrl+G external editor, Ctrl+T task checklist, `/export`,
