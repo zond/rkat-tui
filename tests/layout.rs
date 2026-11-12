@@ -52,36 +52,39 @@ fn the_layout_table_names_every_module_directory_and_top_level_file() {
 }
 
 /// The engine's source of the package `name` at the version this build
-/// uses (`cargo metadata`, so neither the registry's path nor the version
-/// is written here).
+/// uses: the version is read from `Cargo.lock` and the source from the
+/// Cargo home's extracted registry, which the build itself filled. No
+/// `cargo metadata`: that resolves every platform's dependencies and fails
+/// offline on a cache that holds only this host's (a hosted run lacked
+/// `android_system_properties`).
 fn package_dir(name: &str) -> PathBuf {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
-    let out = std::process::Command::new(cargo)
-        .args([
-            "metadata",
-            "--format-version",
-            "1",
-            "--offline",
-            "--manifest-path",
-        ])
-        .arg(root.join("Cargo.toml"))
-        .output()
+    let lock: toml::Table = std::fs::read_to_string(root.join("Cargo.lock"))
+        .unwrap()
+        .parse()
         .unwrap();
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let metadata: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    let manifest = metadata["packages"]
+    let version = lock["package"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|package| package["name"] == name)
-        .and_then(|package| package["manifest_path"].as_str())
-        .unwrap_or_else(|| panic!("no package {name}"));
-    Path::new(manifest).parent().unwrap().to_path_buf()
+        .find(|package| {
+            package["name"].as_str() == Some(name)
+                && package
+                    .get("source")
+                    .and_then(toml::Value::as_str)
+                    .is_some_and(|source| source.starts_with("registry+"))
+        })
+        .and_then(|package| package["version"].as_str())
+        .unwrap_or_else(|| panic!("no registry package {name} in Cargo.lock"))
+        .to_string();
+    let cargo_home = std::env::var_os("CARGO_HOME")
+        .map_or_else(|| dirs::home_dir().unwrap().join(".cargo"), PathBuf::from);
+    let wanted = format!("{name}-{version}");
+    std::fs::read_dir(cargo_home.join("registry").join("src"))
+        .unwrap()
+        .map(|index| index.unwrap().path().join(&wanted))
+        .find(|dir| dir.join("Cargo.toml").is_file())
+        .unwrap_or_else(|| panic!("{wanted} is not under {}", cargo_home.display()))
 }
 
 /// The text of the first `.rs` file under `dir` that contains `needle`.
