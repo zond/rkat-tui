@@ -1091,7 +1091,7 @@ why, is in [`docs/ux-parity.md`](ux-parity.md), which compares the two
 feature by feature.
 
 
-`/help` (alias `/?`), `/quit` (aliases `/exit`, `/q`), `/detach`, `/agents [name]`, `/audit [n]`, `/daemon stop`, `/daemon start`, `/clear` (alias `/new`), `/resume [ref]`,
+`/help` (alias `/?`), `/quit` (aliases `/exit`, `/q`), `/detach`, `/agents [name]`, `/audit [n]`, `/schedules [pause|resume|delete <name>]`, `/daemon stop`, `/daemon start`, `/clear` (alias `/new`), `/resume [ref]`,
 `/permissions [list|add allow|deny <tool> [pattern]|rm <n>]` (`remove` for `rm`),
 `/mode [default|accept-edits|plan|auto]`, `/auto [on|off|resume]`, `/model [[endpoint:]id|refresh]`,
 `/remember <text>`, `/memory [user|system]`, `/init`, `/compact [now|status|<instructions>]`, `/context`, `/status`, `/export [file]`, `/usage` (aliases `/cost`, `/stats`), `/copy [N]`, `/trust`,
@@ -1860,11 +1860,15 @@ warning per denied action. So a nightly `cargo test` runs unattended only
 when it is allowlisted (`--trust-project-builds`, or an `[[allow]]` rule);
 a nightly `curl` or `git push` waits for you.
 
-**`/schedules`.** Lists this agent's schedules: name, when it fires, the
-next occurrence, `active` or `paused`, how many times it fired and what
-its runs cost (at the cost readout's prices; the daemon attributes a run
-to the schedule that fired it). `/schedules pause <name>`, `resume` and
-`delete` (by name or id) are your own actions: no approval is asked.
+**`/schedules`.** Opens a list of this agent's schedules: name, when it
+fires, the next occurrence, `active` or `paused`, how many times it fired
+and what its runs cost (at the cost readout's prices; the daemon
+attributes a run to the schedule that fired it). Enter or `p` pauses the
+highlighted schedule, or resumes it when paused; `d` asks, and `y`
+deletes it. The list shows the change at once; Esc, `q` or Ctrl-C close
+it. With no schedules it says the agent sets them itself.
+`/schedules pause <name>`, `resume` and `delete` (by name or id) do the
+same without the list. These are your own actions: no approval is asked.
 `--list` shows how many schedules each agent has; the audit log records a
 fired run as `run_triggered` with the schedule's name (its decisions
 carry the same run id), and your `/schedules` actions as

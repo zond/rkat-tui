@@ -20,6 +20,13 @@
   shows are sorted by path but no longer necessarily the first matches by
   path; the truncation line says so.
 
+- More commands open a list you act on, as `/agents` does: `/schedules`
+  lists this agent's schedules (Enter or `p` pauses or resumes one, `d`
+  then `y` deletes it, and the list shows the change at once). The list
+  moves with ↑/↓ or j/k and closes with Esc, `q` or Ctrl-C; an approval
+  request takes over and the list comes back after it. The typed forms
+  (`/schedules pause <name>` and the like) work as before.
+
 - `/agents` opens a picker of the workspace's agents, like `/model` and
   `/resume`: each row shows the agent's name, running or idle, its
   conversation (short id and first message), its clients, `detached` when

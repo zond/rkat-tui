@@ -760,6 +760,102 @@ fn agent_picker_snapshot() {
     );
 }
 
+/// A list picker over an open terminal: its rows with the highlighted
+/// one reversed, the empty line when it has none, the question a `d`
+/// asks and the key hint; the window scrolls to keep the selection in a
+/// short terminal.
+#[test]
+fn schedule_picker_snapshot() {
+    use ratatui::crossterm::event::KeyCode;
+    use rkat_tui::daemon::protocol::ScheduleOp;
+    use rkat_tui::ui::{ListPicker, PickAct, PickKey, PickRow, PickerKind};
+    let row = |name: &str| {
+        PickRow::new(
+            format!("{name}  every 3600s  next 12:00:00Z  active  fired 2x  $0"),
+            vec![PickKey::confirmed(
+                KeyCode::Char('d'),
+                PickAct::Schedule(ScheduleOp::Delete, name.into()),
+                format!("delete schedule {name}? it never fires again"),
+            )],
+        )
+    };
+    let picker = |rows| {
+        ListPicker::new(
+            PickerKind::Schedules,
+            rows,
+            "this agent has no schedules",
+            "↑/↓ move · Enter or p pause/resume · d delete · Esc close",
+        )
+    };
+    let key = |code| Msg::Key(ratatui::crossterm::event::KeyEvent::from(code));
+    let draw = |app: &mut App, height| {
+        let mut terminal = Terminal::new(TestBackend::new(72, height)).unwrap();
+        terminal.draw(|f| draw_at(f, app, Instant::now())).unwrap();
+        terminal.backend().buffer().clone()
+    };
+    let modal = |buffer: &Buffer, lines: usize| {
+        let all = rows(buffer);
+        let top = all
+            .iter()
+            .position(|row| row.contains("┌ Schedules"))
+            .expect("the picker is drawn");
+        all[top..top + lines].to_vec()
+    };
+    let mut app = App::new(StatusInfo::default());
+    app.update(Msg::ShowPicker {
+        picker: picker(vec![row("nightly"), row("hourly")]),
+        refresh: false,
+    });
+    app.update(key(KeyCode::Down));
+    app.update(key(KeyCode::Char('d')));
+    let buffer = draw(&mut app, H);
+    assert_eq!(
+        modal(&buffer, 7),
+        vec![
+            "  ┌ Schedules ───────────────────────────────────────────────────────┐",
+            "  │nightly  every 3600s  next 12:00:00Z  active  fired 2x  $0        │",
+            "  │hourly  every 3600s  next 12:00:00Z  active  fired 2x  $0         │",
+            "  │delete schedule hourly? it never fires again (y yes, any other key│",
+            "  │no)                                                               │",
+            "  │↑/↓ move · Enter or p pause/resume · d delete · Esc close         │",
+            "  └──────────────────────────────────────────────────────────────────┘",
+        ]
+    );
+    let all = rows(&buffer);
+    let top = all.iter().position(|r| r.contains("┌ Schedules")).unwrap();
+    let at = |line: usize| u16::try_from(top + line).unwrap();
+    assert!(!buffer[(3, at(1))].modifier.contains(Modifier::REVERSED));
+    assert!(buffer[(3, at(2))].modifier.contains(Modifier::REVERSED));
+    assert_eq!(buffer[(3, at(3))].fg, Color::Yellow);
+    // Six rows in a terminal with room for three: the selection stays in
+    // the window at its bottom.
+    app.update(key(KeyCode::Char('n')));
+    app.update(Msg::ShowPicker {
+        picker: picker(["a", "b", "c", "d", "e", "f"].map(row).to_vec()),
+        refresh: true,
+    });
+    for _ in 0..3 {
+        app.update(key(KeyCode::Down));
+    }
+    let shown = modal(&draw(&mut app, 8), 6);
+    assert!(shown[1].contains("│c  every"), "{shown:#?}");
+    assert!(shown[3].contains("│e  every"), "{shown:#?}");
+    assert!(shown[4].contains("↑/↓ move"), "{shown:#?}");
+    // With no rows: the empty line and the hint.
+    let mut app = App::new(StatusInfo::default());
+    app.update(Msg::ShowPicker {
+        picker: picker(vec![]),
+        refresh: false,
+    });
+    assert_eq!(
+        modal(&draw(&mut app, H), 4)[1..3],
+        [
+            "  │this agent has no schedules                                       │",
+            "  │↑/↓ move · Enter or p pause/resume · d delete · Esc close         │",
+        ]
+    );
+}
+
 #[test]
 fn selected_cells_render_reversed() {
     use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};

@@ -1,5 +1,7 @@
 //! Modal dialogs: the escalation (approval) prompt, the resume picker, the
-//! model picker, the agent picker, the shortcut panel and plan mode's "Plan ready" dialog.
+//! model picker, the agent picker, the list pickers
+//! ([`super::picker`]), the shortcut panel and plan mode's "Plan ready"
+//! dialog.
 //!
 //! Modals are driven by plain data so the UI stays decoupled from the
 //! session modules. The escalation dialog shows the approval engine's
@@ -16,6 +18,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block as BorderBlock, Borders, Clear, Paragraph};
 
 use super::markdown::{truncate_to_width, wrap_text};
+use super::picker::{ListPicker, list_picker_lines};
 use super::render::fmt_ctx_tokens;
 pub use crate::approval::desk::EscalationAnswer;
 use crate::approval::escalation::RecordedPrompt;
@@ -39,6 +42,12 @@ pub enum ModalKey<T> {
 pub struct ListCursor(usize);
 
 impl ListCursor {
+    /// The cursor on row `index`.
+    #[must_use]
+    pub fn at(index: usize) -> Self {
+        Self(index)
+    }
+
     /// The highlighted row's index.
     #[must_use]
     pub fn index(self) -> usize {
@@ -68,18 +77,18 @@ pub fn windowed(selected: usize, rows: usize) -> Range<usize> {
 }
 
 /// Ctrl-C.
-fn is_ctrl_c(key: &KeyEvent) -> bool {
+pub(super) fn is_ctrl_c(key: &KeyEvent) -> bool {
     key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c')
 }
 
 /// A held key (auto-repeat): it may move, edit and type, never answer,
 /// select or close.
-fn is_held(key: &KeyEvent) -> bool {
+pub(super) fn is_held(key: &KeyEvent) -> bool {
     key.kind == KeyEventKind::Repeat
 }
 
 /// Ctrl or Alt held (not typed into a filter or comment).
-fn has_ctrl_or_alt(key: &KeyEvent) -> bool {
+pub(super) fn has_ctrl_or_alt(key: &KeyEvent) -> bool {
     key.modifiers
         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
 }
@@ -729,6 +738,9 @@ pub enum Modal {
     Model(ModelPicker),
     /// Agent picker (`/agents`).
     Agents(AgentPicker),
+    /// A list picker (`/schedules`, `/permissions`, `/helpers`, `/mode`,
+    /// `/memory`).
+    List(ListPicker),
     /// The `?` shortcut panel: the keys part of the help.
     Keys,
     /// A turn ended in plan mode with an answer: proceed or keep planning.
@@ -782,6 +794,10 @@ pub fn draw_modal(frame: &mut Frame<'_>, area: Rect, modal: &mut Modal) {
         Modal::Agents(picker) => (
             " Agents ".to_string(),
             agent_picker_lines(picker, inner_w, usize::from(area.height.saturating_sub(4))),
+        ),
+        Modal::List(picker) => (
+            picker.kind.title().to_string(),
+            list_picker_lines(picker, inner_w, usize::from(area.height.saturating_sub(4))),
         ),
         Modal::PlanReady(dialog) => (" Plan ready ".to_string(), plan_lines(*dialog, inner_w)),
         Modal::Quit(dialog) => (" Quit ".to_string(), quit_lines(dialog, inner_w)),
@@ -1114,22 +1130,45 @@ fn agent_picker_lines(picker: &AgentPicker, width: usize, max_lines: usize) -> V
         "↑/↓ move · Enter switch · d retire · Esc close",
         dim,
     ));
-    let window = windowed(selected, max_lines.saturating_sub(tail.len()));
-    let mut lines: Vec<Line<'static>> = rows
+    let rows = rows
         .into_iter()
-        .enumerate()
-        .skip(window.start)
-        .take(window.len())
-        .map(|(i, row)| {
-            let text = truncate_to_width(&row, width);
-            if i == selected {
-                Line::styled(text, Style::default().add_modifier(Modifier::REVERSED))
-            } else {
-                Line::from(text)
-            }
-        })
+        .map(|row| vec![Line::from(truncate_to_width(&row, width))])
         .collect();
+    let mut lines = window_lines(rows, selected, max_lines.saturating_sub(tail.len()));
     lines.extend(tail);
+    lines
+}
+
+/// The rows (each one or more lines) that fit in `room` lines with row
+/// `selected` among them and its first line highlighted: the list scrolls
+/// once the selection passes the last line, as [`windowed`] does.
+pub(super) fn window_lines(
+    rows: Vec<Vec<Line<'static>>>,
+    selected: usize,
+    room: usize,
+) -> Vec<Line<'static>> {
+    let room = room.max(1);
+    let height = |row: &Vec<Line<'static>>| row.len().max(1);
+    let selected = selected.min(rows.len().saturating_sub(1));
+    let mut start = selected;
+    let mut used = rows.get(selected).map_or(0, height);
+    while start > 0 && used + height(&rows[start - 1]) <= room {
+        start -= 1;
+        used += height(&rows[start]);
+    }
+    // Rows after the selection fill what is left.
+    let mut lines = Vec::new();
+    for (i, mut row) in rows.into_iter().enumerate().skip(start) {
+        if lines.len() + row.len() > room && i != selected {
+            break;
+        }
+        if i == selected
+            && let Some(first) = row.first_mut()
+        {
+            first.style = first.style.add_modifier(Modifier::REVERSED);
+        }
+        lines.extend(row);
+    }
     lines
 }
 

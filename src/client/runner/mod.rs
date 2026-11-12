@@ -1098,6 +1098,7 @@ impl Runner {
             Effect::RetireAgent(name) => self.retire_agent(name),
             Effect::Audit(lines) => self.show_audit(lines),
             Effect::Schedules(action) => self.schedules(action),
+            Effect::PickedSchedule(op, id) => self.picked_schedule(op, id),
             Effect::Agents(Some(name)) => self.switch_agent(name),
             Effect::DecideQuit => self.decide_quit(),
             // Done once the loop ends: [`Effect::Quit`] follows.
@@ -1197,7 +1198,7 @@ async fn sleep_until(deadline: Option<Instant>) {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::commands::{agent_entries, others_notice, report_lines, schedules_text};
+    use super::commands::{agent_entries, others_notice, report_lines, schedule_picker};
     use super::turn::model_switch;
     use super::*;
 
@@ -1209,22 +1210,62 @@ mod tests {
         }
     }
 
-    /// The `/quit` dialog says what terminating does to the agent's
-    /// schedules; `/schedules` prices each schedule's runs.
+    /// The `/schedules` picker: a row per schedule with its timing, next
+    /// run, state, times fired and cost; Enter and `p` pause an active one
+    /// and resume a paused one, `d` deletes after a confirmation, each by
+    /// the schedule's id; with none, the line says the agent sets them.
     #[test]
-    fn listing_names_the_schedules() {
-        let row = protocol::ScheduleRow {
-            id: "id".into(),
-            name: "nightly".into(),
+    fn the_schedule_picker_rows_pause_resume_and_delete_by_id() {
+        use crate::ui::{ModalKey, PickAct, PickerLine};
+        use protocol::ScheduleOp;
+        use ratatui::crossterm::event::{KeyCode, KeyEvent};
+        let row = |id: &str, name: &str, state: &str| protocol::ScheduleRow {
+            id: id.into(),
+            name: name.into(),
             expression: "every 86400s from 2026-11-11 02:00:00Z".into(),
-            next: Some("2026-11-12 02:00:00Z".into()),
-            state: "active".into(),
+            next: (state == "active").then(|| "2026-11-12 02:00:00Z".into()),
+            state: state.into(),
             fired: 1,
             cost: None,
         };
+        let prices = crate::pricing::PriceTable::default();
+        let mut picker = schedule_picker(
+            &[
+                row("s-1", "nightly", "active"),
+                row("s-2", "weekly", "paused"),
+            ],
+            &prices,
+        );
         assert_eq!(
-            schedules_text(&[row], &crate::pricing::PriceTable::default()),
-            "1 schedule of this agent:\n  nightly  every 86400s from 2026-11-11 02:00:00Z  next 2026-11-12 02:00:00Z  active  fired 1x  $0"
+            picker.rows[0].text,
+            "nightly  every 86400s from 2026-11-11 02:00:00Z  next 2026-11-12 02:00:00Z  active  fired 1x  $0"
+        );
+        assert!(picker.rows[1].text.contains("next none  paused  fired 1x"));
+        let press = |code| KeyEvent::from(code);
+        let pause = ModalKey::Choose(PickAct::Schedule(ScheduleOp::Pause, "s-1".into()));
+        assert_eq!(picker.key(&press(KeyCode::Enter)), pause);
+        assert_eq!(picker.key(&press(KeyCode::Char('p'))), pause);
+        picker.key(&press(KeyCode::Down));
+        assert_eq!(
+            picker.key(&press(KeyCode::Char('p'))),
+            ModalKey::Choose(PickAct::Schedule(ScheduleOp::Resume, "s-2".into()))
+        );
+        assert_eq!(picker.key(&press(KeyCode::Char('d'))), ModalKey::Stay);
+        assert!(
+            matches!(&picker.line, Some(PickerLine::Confirm { question, .. }) if question.contains("delete schedule weekly?")),
+            "{:?}",
+            picker.line
+        );
+        assert_eq!(
+            picker.key(&press(KeyCode::Char('y'))),
+            ModalKey::Choose(PickAct::Schedule(ScheduleOp::Delete, "s-2".into()))
+        );
+        let none = schedule_picker(&[], &prices);
+        assert!(none.rows.is_empty());
+        assert!(
+            none.empty.contains("meerkat_schedule_create"),
+            "{}",
+            none.empty
         );
     }
 

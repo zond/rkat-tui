@@ -186,6 +186,103 @@ fn agent_picker_switches_seats_and_retires() {
     );
 }
 
+/// A schedule picker as the runner builds it: `n` rows, the first paused.
+fn schedules_picker(n: usize) -> ListPicker {
+    use crate::daemon::protocol::ScheduleOp;
+    let rows = (0..n)
+        .map(|i| {
+            let op = if i == 0 {
+                ScheduleOp::Resume
+            } else {
+                ScheduleOp::Pause
+            };
+            let toggle = PickAct::Schedule(op, format!("s-{i}"));
+            PickRow::new(
+                format!("sched-{i}"),
+                vec![
+                    PickKey::now(KeyCode::Enter, toggle.clone()),
+                    PickKey::now(KeyCode::Char('p'), toggle),
+                    PickKey::confirmed(
+                        KeyCode::Char('d'),
+                        PickAct::Schedule(ScheduleOp::Delete, format!("s-{i}")),
+                        format!("delete schedule sched-{i}?"),
+                    ),
+                ],
+            )
+        })
+        .collect();
+    ListPicker::new(PickerKind::Schedules, rows, "no schedules", "keys")
+}
+
+/// `/schedules` asks for the picker; its acts run as the typed command
+/// and leave it open, a refresh replaces it on the same row (and is
+/// dropped once it was closed); `/schedules pause <name>` stays the
+/// shortcut. An approval dialog takes over and the picker (refreshed
+/// meanwhile) comes back after it.
+#[test]
+fn schedule_picker_acts_and_refreshes_in_place() {
+    use crate::daemon::protocol::ScheduleOp;
+    let mut app = App::new(StatusInfo::default());
+    assert_eq!(
+        submit(&mut app, "/schedules"),
+        vec![Effect::Schedules(None)]
+    );
+    app.update(Msg::ShowPicker {
+        picker: schedules_picker(2),
+        refresh: false,
+    });
+    assert!(matches!(&app.modal, Some(Modal::List(p)) if p.kind == PickerKind::Schedules));
+    assert_eq!(
+        app.update(key(KeyCode::Enter)),
+        vec![Effect::PickedSchedule(ScheduleOp::Resume, "s-0".into())]
+    );
+    app.update(key(KeyCode::Down));
+    assert_eq!(
+        app.update(key(KeyCode::Char('p'))),
+        vec![Effect::PickedSchedule(ScheduleOp::Pause, "s-1".into())]
+    );
+    assert!(app.update(key(KeyCode::Char('d'))).is_empty());
+    assert_eq!(
+        app.update(key(KeyCode::Char('y'))),
+        vec![Effect::PickedSchedule(ScheduleOp::Delete, "s-1".into())]
+    );
+    // Still open; the list again replaces it on the same row.
+    app.update(Msg::ShowPicker {
+        picker: schedules_picker(3),
+        refresh: true,
+    });
+    assert!(
+        matches!(&app.modal, Some(Modal::List(p)) if p.rows.len() == 3 && p.cursor.index() == 1)
+    );
+    // An approval request takes over; a refresh meanwhile updates the
+    // waiting picker, which comes back once the request is answered.
+    app.update(Msg::Escalation(shell_prompt(), EscalationId(1)));
+    assert!(matches!(app.modal, Some(Modal::Escalation { .. })));
+    app.update(Msg::ShowPicker {
+        picker: schedules_picker(1),
+        refresh: true,
+    });
+    app.update(Msg::EscalationResolved(EscalationId(1)));
+    assert!(
+        matches!(&app.modal, Some(Modal::List(p)) if p.rows.len() == 1 && p.cursor.index() == 0)
+    );
+    // Closed (q), a late refresh does not reopen it.
+    app.update(key(KeyCode::Char('q')));
+    assert!(app.modal.is_none());
+    app.update(Msg::ShowPicker {
+        picker: schedules_picker(1),
+        refresh: true,
+    });
+    assert!(app.modal.is_none());
+    assert_eq!(
+        submit(&mut app, "/schedules pause nightly"),
+        vec![Effect::Schedules(Some((
+            ScheduleOp::Pause,
+            "nightly".into()
+        )))]
+    );
+}
+
 #[test]
 fn model_command_requests_picker_or_refresh() {
     let mut app = app_on_sonnet();

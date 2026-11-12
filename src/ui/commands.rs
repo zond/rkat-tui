@@ -317,15 +317,15 @@ pub static COMMANDS: &[CommandSpec] = &[
         name: "schedules",
         aliases: &[],
         usage: "[pause|resume|delete <name>]",
-        summary: "this agent's schedules, or pause, resume or delete one",
+        summary: "pick one of this agent's schedules: pause, resume or delete it",
         help: &[
             (
                 "/schedules",
-                "this agent's schedules (timers the agent set with\nmeerkat_schedule_create): name, when, next occurrence, state,\nhow often it fired and what its runs cost",
+                "open a list of this agent's schedules (timers the agent set\nwith meerkat_schedule_create): name, when, next occurrence,\nstate, how often it fired and what its runs cost; Enter or p\npauses or resumes one, d then y deletes it (no approval is\nasked, it is yours)",
             ),
             (
                 "/schedules pause|resume|delete <name>",
-                "your own action on one of them (by name or id); no approval\nis asked, it is yours",
+                "the same on one of them by name or id, without the list",
             ),
         ],
         parse: |rest| {
@@ -801,7 +801,12 @@ Agent picker (/agents):
   Up/Down, j/k, Enter            move; switch to the agent (the last row starts a new one)
   d, then y                      retire the agent: only one idle with no client (its
                                  conversation stays in /resume); any other key keeps it
-  Esc, q                         close";
+  Esc, q                         close
+Lists (/schedules):
+  Up/Down, j/k                   move
+  Enter, p (/schedules)          pause the schedule, or resume a paused one
+  d, then y (/schedules)         delete it; any other key keeps it
+  Esc, q, Ctrl-C                 close (an approval request takes over and the list comes back)";
 
 /// The line that ends `/help`. `/rewind` returns when the engine can rewind
 /// a session in place under the same identity (lukacf/meerkat#2126).

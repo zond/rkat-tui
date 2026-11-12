@@ -22,6 +22,7 @@ pub mod markdown;
 pub mod modal;
 mod mouse;
 pub mod peer;
+pub mod picker;
 pub mod render;
 pub mod runtime;
 pub mod search;
@@ -63,6 +64,9 @@ pub use modal::{
     AgentEntry, AgentPick, AgentPicker, EscalationAnswer, EscalationDialog, EscalationId, Modal,
     ModalKey, ModelPicker, PlanChoice, PlanDialog, QuitChoice, QuitDialog, ResumePicker,
 };
+#[cfg(any(test, feature = "test-support"))]
+pub use picker::PickerLine;
+pub use picker::{ListPicker, PickAct, PickKey, PickRow, PickerKind};
 pub use runtime::{UiChannels, UiError, run_ui};
 pub use search::{HistorySearch, SearchOutcome};
 pub use selection::{CellPos, SelectMode, Selection};
@@ -381,6 +385,16 @@ pub enum Msg {
     /// Open the agent picker (answer to [`Effect::Agents`] without a
     /// name): the workspace's agents, names in order.
     ShowAgentPicker(Vec<AgentEntry>),
+    /// Show a list picker (`/schedules`, `/permissions`, `/memory`). A
+    /// `refresh` is the list again after the picker's own act: it replaces
+    /// only a picker of its kind still open (or waiting behind an approval
+    /// dialog).
+    ShowPicker {
+        /// The picker.
+        picker: ListPicker,
+        /// Replace an open picker of its kind only.
+        refresh: bool,
+    },
     /// Replace the transcript (e.g. after resuming a session).
     ResetTranscript(Vec<Block>),
     /// A turn this UI did not start runs on the daemon (another
@@ -667,9 +681,12 @@ pub enum Effect {
     /// `/audit [n]`: show the daemon's audit log's last lines for this
     /// client's agent (answered with a notice).
     Audit(Option<usize>),
-    /// `/schedules`: list this agent's schedules, or act on one (answered
-    /// with a notice).
+    /// `/schedules`: open the schedule picker (`None`, answered with
+    /// [`Msg::ShowPicker`]), or act on one (answered with a notice).
     Schedules(Option<(crate::daemon::protocol::ScheduleOp, String)>),
+    /// The schedule picker's act on the schedule with this id: as
+    /// `/schedules <op> <id>`, then the picker's list again.
+    PickedSchedule(crate::daemon::protocol::ScheduleOp, String),
     /// `/memory`: resolve the instruction file (creating `SYSTEM.md` with
     /// a comment header) and answer with [`Msg::EditFile`].
     OpenMemory(MemoryTarget),
@@ -1430,25 +1447,12 @@ impl App {
                 self.status.apply(update);
             }
             Msg::ShowResumePicker(items) => {
-                let picker = Modal::Resume(ResumePicker::new(items));
-                match self.modal {
-                    None | Some(Modal::Keys) => self.modal = Some(picker),
-                    // Shown once the escalations are answered; replaces a
-                    // picker parked earlier.
-                    Some(Modal::Escalation { .. }) => self.parked = Some(picker),
-                    Some(_) => {}
-                }
+                self.show_modal(Modal::Resume(ResumePicker::new(items)));
             }
             Msg::ShowAgentPicker(agents) => {
-                let picker = Modal::Agents(AgentPicker::new(agents));
-                match self.modal {
-                    None | Some(Modal::Keys) => self.modal = Some(picker),
-                    // Shown once the escalations are answered, as the
-                    // resume picker is.
-                    Some(Modal::Escalation { .. }) => self.parked = Some(picker),
-                    Some(_) => {}
-                }
+                self.show_modal(Modal::Agents(AgentPicker::new(agents)));
             }
+            Msg::ShowPicker { picker, refresh } => self.show_picker(picker, refresh),
             Msg::ShowModelPicker(groups) => {
                 if matches!(self.modal, None | Some(Modal::Keys)) && self.parked.is_none() {
                     self.modal = Some(Modal::Model(ModelPicker::new(groups)));

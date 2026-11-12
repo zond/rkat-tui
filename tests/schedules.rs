@@ -78,6 +78,22 @@ fn fired_by(m: &Msg, name: &str) -> bool {
     matches!(m, Msg::Triggered { label, .. } if label == &format!("scheduled: {name}"))
 }
 
+/// Whether `m` shows the schedule picker with `needle` in a row, or in
+/// its empty line when it has no rows.
+fn schedules_shown(m: &Msg, needle: &str) -> bool {
+    use rkat_tui::ui::PickerKind;
+    match m {
+        Msg::ShowPicker { picker, .. } if picker.kind == PickerKind::Schedules => {
+            if picker.rows.is_empty() {
+                picker.empty.contains(needle)
+            } else {
+                picker.rows.iter().any(|row| row.text.contains(needle))
+            }
+        }
+        _ => false,
+    }
+}
+
 /// The audit log's lines (in the realm).
 fn audit_lines(root: &std::path::Path) -> Vec<serde_json::Value> {
     let path = common::realm_of(root).join(rkat_tui::daemon::audit::AUDIT_FILE);
@@ -138,8 +154,9 @@ async fn a_schedule_the_agent_creates_fires_its_turn() {
     // Fired once, with what its run cost.
     rig.send(Effect::Schedules(None));
     rig.wait_for(|m| {
-        matches!(m, Msg::Notice { text, .. }
-            if text.contains("check-build") && text.contains("fired 1x") && text.contains("next none"))
+        schedules_shown(m, "check-build  ")
+            && schedules_shown(m, "next none")
+            && schedules_shown(m, "fired 1x")
     })
     .await;
     // The user's own delete: no approval.
@@ -152,9 +169,79 @@ async fn a_schedule_the_agent_creates_fires_its_turn() {
     )
     .await;
     rig.send(Effect::Schedules(None));
-    rig.wait_for(|m| matches!(m, Msg::Notice { text, .. } if text.starts_with("this agent has no schedules")))
+    rig.wait_for(|m| schedules_shown(m, "this agent has no schedules"))
         .await;
     assert_eq!(rig.escalations(), 0);
+    rig.quit().await;
+}
+
+/// The `/schedules` picker acts on the real daemon: `p` on a row pauses
+/// the schedule and the picker's list comes again showing it paused,
+/// Enter resumes it, and the confirmed `d` deletes it, after which the
+/// list is empty. Each act is the row's own key, as the picker sends it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_schedule_picker_pauses_resumes_and_deletes_a_schedule() {
+    use ratatui::crossterm::event::KeyCode;
+    use rkat_tui::ui::{PickAct, PickRow};
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![
+        at_call("s1", "later", 3600, "do it later"),
+        Step::Text("scheduled"),
+    ]);
+    let mut rig = Attached::start(&ws.root, &llm).await;
+    reveal(&rig.daemon, &rig.current_session().await).await;
+    rig.send(Effect::StartTurn("schedule it".into()));
+    assert_eq!(rig.turn_finished().await.unwrap().text, "scheduled");
+    // The act a key sends on the picker's only row, and whether the
+    // list came again (a refresh).
+    let act = |m: &Msg, code: KeyCode| -> PickAct {
+        let Msg::ShowPicker { picker, .. } = m else {
+            unreachable!()
+        };
+        let row: &PickRow = &picker.rows[0];
+        row.keys
+            .iter()
+            .find(|key| key.code == code)
+            .map(|key| key.act.clone().unwrap())
+            .unwrap()
+    };
+    let refreshed = |m: &Msg| matches!(m, Msg::ShowPicker { refresh: true, .. });
+    let send = |rig: &mut Attached, act: PickAct| {
+        let PickAct::Schedule(op, id) = act;
+        rig.send(Effect::PickedSchedule(op, id));
+    };
+
+    rig.send(Effect::Schedules(None));
+    let shown = rig
+        .wait_for(|m| schedules_shown(m, "later  once at ") && schedules_shown(m, "  active  "))
+        .await;
+    assert!(!refreshed(&shown));
+    let pause = act(&shown, KeyCode::Char('p'));
+    assert!(
+        matches!(&pause, PickAct::Schedule(ScheduleOp::Pause, _)),
+        "{pause:?}"
+    );
+    send(&mut rig, pause);
+    rig.wait_for(
+        |m| matches!(m, Msg::Notice { text, .. } if text.contains("paused schedule later")),
+    )
+    .await;
+    let shown = rig
+        .wait_for(|m| refreshed(m) && schedules_shown(m, "  paused  "))
+        .await;
+    let resume = act(&shown, KeyCode::Enter);
+    assert!(
+        matches!(&resume, PickAct::Schedule(ScheduleOp::Resume, _)),
+        "{resume:?}"
+    );
+    send(&mut rig, resume);
+    let shown = rig
+        .wait_for(|m| refreshed(m) && schedules_shown(m, "  active  "))
+        .await;
+    send(&mut rig, act(&shown, KeyCode::Char('d')));
+    rig.wait_for(|m| refreshed(m) && schedules_shown(m, "this agent has no schedules"))
+        .await;
+    assert_eq!(rig.escalations(), 0, "the user's own acts ask nothing");
     rig.quit().await;
 }
 
@@ -187,7 +274,7 @@ async fn creating_a_schedule_asks_in_manual_mode() {
     ));
     rig.turn_finished().await.unwrap();
     rig.send(Effect::Schedules(None));
-    rig.wait_for(|m| matches!(m, Msg::Notice { text, .. } if text.starts_with("this agent has no schedules")))
+    rig.wait_for(|m| schedules_shown(m, "this agent has no schedules"))
         .await;
     rig.quit().await;
 }
@@ -313,8 +400,9 @@ async fn a_retiring_agent_s_schedules_are_deleted_and_never_fire() {
     // Listed with its next occurrence while it waits.
     b.send(Effect::Schedules(None));
     b.wait_for(|m| {
-        matches!(m, Msg::Notice { text, .. }
-            if text.contains("wake-b  once at ") && text.contains("next 20") && text.contains("active  fired 0x"))
+        schedules_shown(m, "wake-b  once at ")
+            && schedules_shown(m, "next 20")
+            && schedules_shown(m, "active  fired 0x")
     })
     .await;
     b.send(Effect::DecideQuit);

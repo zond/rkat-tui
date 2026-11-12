@@ -156,43 +156,67 @@ impl Runner {
         );
     }
 
-    /// `/schedules`: this agent's schedules (`rkat/schedules`), each with
-    /// what its runs cost at the readout's prices; or the user's own
-    /// pause, resume or delete of one.
+    /// `/schedules`: the schedule picker over this agent's schedules
+    /// (`rkat/schedules`), each with what its runs cost at the readout's
+    /// prices; or the user's own pause, resume or delete of one.
     pub(super) fn schedules(&self, action: Option<(protocol::ScheduleOp, String)>) {
-        if let Some((op, schedule)) = action {
-            self.ask::<protocol::method::Schedule>(
+        match action {
+            Some((op, schedule)) => self.ask::<protocol::method::Schedule>(
                 protocol::ScheduleAction { op, schedule },
                 "the schedule was not changed",
-                |done| {
-                    vec![match done {
-                        Ok(outcome) if outcome.ok => (NoticeLevel::Info, outcome.text),
-                        Ok(outcome) => (NoticeLevel::Warn, outcome.text),
-                        Err(err) => (NoticeLevel::Warn, format!("schedule not changed: {err}")),
-                    }]
-                },
-            );
-            return;
+                |done| vec![schedule_notice(done)],
+            ),
+            None => self.schedule_picker(None),
         }
+    }
+
+    /// The schedule picker's act on the schedule `id`: as the typed
+    /// command, then the picker's list again (it replaces the picker when
+    /// that is still open).
+    pub(super) fn picked_schedule(&self, op: protocol::ScheduleOp, id: String) {
+        self.schedule_picker(Some(protocol::ScheduleAction { op, schedule: id }));
+    }
+
+    /// Do `action` first when there is one (its notice shown), then list
+    /// the schedules into the picker: a fresh one, or (after an action) a
+    /// refresh of the one open.
+    fn schedule_picker(&self, action: Option<protocol::ScheduleAction>) {
+        let Some(connection) = self.link_or_say(if action.is_some() {
+            "the schedule was not changed"
+        } else {
+            "the schedules were not read"
+        }) else {
+            return;
+        };
+        let say = self.say();
         let prices = self.bench.prices().clone();
-        self.ask::<protocol::method::Schedules>(
-            protocol::Empty {},
-            "the schedules were not read",
-            move |listed| {
-                vec![match listed {
-                    Ok(list) if list.schedules.is_empty() => (
-                        NoticeLevel::Info,
-                        "this agent has no schedules (the agent sets them with meerkat_schedule_create)"
-                            .to_string(),
-                    ),
-                    Ok(list) => (NoticeLevel::Info, schedules_text(&list.schedules, &prices)),
-                    Err(err) => (
-                        NoticeLevel::Warn,
-                        format!("cannot list the schedules: {err}"),
-                    ),
-                }]
-            },
-        );
+        tokio::spawn(async move {
+            let refresh = action.is_some();
+            if let Some(action) = action {
+                let done = bounded(
+                    CALL_TIMEOUT,
+                    remote::call::<protocol::method::Schedule>(&connection, &action),
+                )
+                .await;
+                let (level, text) = schedule_notice(done);
+                say.notice(level, text);
+            }
+            let listed = bounded(
+                CALL_TIMEOUT,
+                remote::call::<protocol::method::Schedules>(&connection, &protocol::Empty {}),
+            )
+            .await;
+            match listed {
+                Ok(list) => {
+                    let picker = schedule_picker(&list.schedules, &prices);
+                    let _ = say.ui_tx.send(Msg::ShowPicker { picker, refresh });
+                }
+                Err(err) => say.notice(
+                    NoticeLevel::Warn,
+                    format!("cannot list the schedules: {err}"),
+                ),
+            }
+        });
     }
 
     /// `/agents`: open the picker over the workspace's agents, each with
@@ -537,36 +561,73 @@ pub(super) fn report_lines(report: &protocol::Report) -> Vec<String> {
     lines
 }
 
-/// `/schedules`' text: a line per schedule.
-pub(super) fn schedules_text(
+/// What a pause, resume or delete of a schedule did, as a notice.
+fn schedule_notice(done: Result<RuleOutcome, CallFailure>) -> (NoticeLevel, String) {
+    match done {
+        Ok(outcome) if outcome.ok => (NoticeLevel::Info, outcome.text),
+        Ok(outcome) => (NoticeLevel::Warn, outcome.text),
+        Err(err) => (NoticeLevel::Warn, format!("schedule not changed: {err}")),
+    }
+}
+
+/// The `/schedules` picker: a row per schedule (name, when, next
+/// occurrence, state, times fired, what its runs cost); Enter or `p`
+/// pauses an active one and resumes a paused one, `d` deletes after a
+/// confirmation (each by its id, as the typed command does).
+pub(super) fn schedule_picker(
     rows: &[protocol::ScheduleRow],
     prices: &crate::pricing::PriceTable,
-) -> String {
-    let mut text = format!(
-        "{} of this agent:",
-        crate::text::count(rows.len(), "schedule")
-    );
-    for row in rows {
-        let cost = match &row.cost {
-            None => "$0".to_string(),
-            Some(cost) => {
-                let (usd, all) = cost.cost_usd(prices);
-                if all {
-                    format!("${usd:.4}")
-                } else {
-                    format!("${usd:.4}+ (some models unpriced)")
+) -> crate::ui::ListPicker {
+    use crate::ui::{ListPicker, PickAct, PickKey, PickRow, PickerKind};
+    use protocol::ScheduleOp;
+    use ratatui::crossterm::event::KeyCode;
+    let rows = rows
+        .iter()
+        .map(|row| {
+            let cost = match &row.cost {
+                None => "$0".to_string(),
+                Some(cost) => {
+                    let (usd, all) = cost.cost_usd(prices);
+                    if all {
+                        format!("${usd:.4}")
+                    } else {
+                        format!("${usd:.4}+ (some models unpriced)")
+                    }
                 }
-            }
-        };
-        text.push_str(&format!(
-            "\n  {}  {}  next {}  {}  fired {}x  {}",
-            row.name,
-            row.expression,
-            row.next.as_deref().unwrap_or("none"),
-            row.state,
-            row.fired,
-            cost,
-        ));
-    }
-    text
+            };
+            let text = format!(
+                "{}  {}  next {}  {}  fired {}x  {}",
+                row.name,
+                row.expression,
+                row.next.as_deref().unwrap_or("none"),
+                row.state,
+                row.fired,
+                cost,
+            );
+            let toggle = if row.state == "paused" {
+                ScheduleOp::Resume
+            } else {
+                ScheduleOp::Pause
+            };
+            let toggle = PickAct::Schedule(toggle, row.id.clone());
+            PickRow::new(
+                text,
+                vec![
+                    PickKey::now(KeyCode::Enter, toggle.clone()),
+                    PickKey::now(KeyCode::Char('p'), toggle),
+                    PickKey::confirmed(
+                        KeyCode::Char('d'),
+                        PickAct::Schedule(ScheduleOp::Delete, row.id.clone()),
+                        format!("delete schedule {}? it never fires again", row.name),
+                    ),
+                ],
+            )
+        })
+        .collect();
+    ListPicker::new(
+        PickerKind::Schedules,
+        rows,
+        "this agent has no schedules (the agent sets them with meerkat_schedule_create)",
+        "↑/↓ move · Enter or p pause/resume · d delete · Esc close",
+    )
 }

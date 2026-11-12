@@ -439,6 +439,11 @@ impl App {
                     });
                 }
             },
+            Some(Modal::List(picker)) => match picker.key(key) {
+                ModalKey::Stay => {}
+                ModalKey::Close => self.modal = None,
+                ModalKey::Choose(act) => self.picked(act, fx),
+            },
             Some(Modal::Model(picker)) => match picker.key(key) {
                 ModalKey::Stay => {}
                 ModalKey::Close => self.modal = None,
