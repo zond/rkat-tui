@@ -418,6 +418,11 @@ impl<'a> Action<'a> {
             {
                 ActionKind::ReadOnlyBuiltin
             }
+            // Reading a skill of the agent's own inventory, through the
+            // engine's skill runtime: no path, nothing written.
+            (ToolFamily::Files, crate::tools::SKILL_READ) if !declared_mutating => {
+                ActionKind::ReadOnlyBuiltin
+            }
             (ToolFamily::Files, READ_FILE) if !declared_mutating => typed::<PathArgs>(args)
                 .map_or(ActionKind::Other, |a| ActionKind::FileRead { path: a.path }),
             (ToolFamily::Files, GLOB | GREP) if !declared_mutating => typed::<SearchArgs>(args)

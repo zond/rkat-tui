@@ -1694,6 +1694,8 @@ mod tests {
             ToolOrigin::tui(FILE_TOOLS_SOURCE, name)
         } else if NOTE_TOOL_NAMES.contains(&name) {
             ToolOrigin::tui(NOTES_SOURCE, name)
+        } else if name == crate::tools::SKILL_READ {
+            ToolOrigin::tui(crate::tools::SKILL_TOOLS_SOURCE, name)
         } else {
             ToolOrigin::native(ToolSourceKind::Builtin)
         }
@@ -3082,6 +3084,29 @@ mod tests {
             }
         }
         assert!(rig.escalations.try_recv().is_err(), "nobody is asked");
+        assert_eq!(rig.classifier.calls(), 0);
+    }
+
+    /// Reading a skill is tier 1 in every mode, plan mode included: it
+    /// reads the agent's own inventory through the engine, no path.
+    #[tokio::test]
+    async fn a_skill_read_passes_in_every_mode() {
+        let rig = rig(vec![], DEFAULT_ESCALATION_TIMEOUT);
+        for mode in PermissionMode::ALL {
+            rig.engine.set_mode(mode);
+            for args in [json!({}), json!({"name": "review", "source": "user"})] {
+                assert!(
+                    matches!(
+                        call(&rig, "c1", crate::tools::SKILL_READ, &args).await,
+                        Verdict::Allow {
+                            tier: Tier::AlwaysAllow,
+                            ..
+                        }
+                    ),
+                    "{args} in {mode}"
+                );
+            }
+        }
         assert_eq!(rig.classifier.calls(), 0);
     }
 

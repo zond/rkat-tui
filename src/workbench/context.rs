@@ -12,7 +12,7 @@ use crate::daemon::protocol::ContextReport;
 
 use crate::bootstrap::RuntimeScope;
 use crate::bootstrap::instructions::{InstructionSources, SectionKind, remember_target};
-use crate::bootstrap::skills::{SkillPlace, SkillsReport};
+use crate::bootstrap::skills::{Inventory, SkillPlace, SkillsReport};
 
 /// The instruction files `/context` names for `scope`: the user's
 /// `SYSTEM.md`, the workspace `AGENTS.md` and every discovered section.
@@ -186,7 +186,10 @@ fn skill_lines(out: &mut String, skills: &SkillsReport) {
         SkillsReport::Off => {
             out.push_str("\nskills: off ([skills] enabled = false in the realm config)");
         }
-        SkillsReport::On { directories } => {
+        SkillsReport::On {
+            directories,
+            inventory,
+        } => {
             out.push_str("\nskills directories (new sessions list their skills):");
             for dir in directories {
                 let label = match dir.place {
@@ -199,6 +202,20 @@ fn skill_lines(out: &mut String, skills: &SkillsReport) {
                 };
                 let _ = write!(out, "\n  {label}: {} — {count}", dir.path.display());
             }
+            if let Some(Inventory { skills, threshold }) = inventory {
+                let all = format!("{skills} skill{}", crate::text::plural(*skills));
+                if skills <= threshold {
+                    let _ = write!(
+                        out,
+                        "\n  the agent's inventory names all {all} with their descriptions (up to {threshold}); it opens one with skill_read"
+                    );
+                } else {
+                    let _ = write!(
+                        out,
+                        "\n  the agent's inventory counts {all} by source (over {threshold} are not named); skill_read lists and opens them"
+                    );
+                }
+            }
         }
     }
 }
@@ -206,7 +223,7 @@ fn skill_lines(out: &mut String, skills: &SkillsReport) {
 #[cfg(test)]
 mod tests {
     use super::{InstructionFile, context_breakdown};
-    use crate::bootstrap::skills::{SkillDirectory, SkillPlace, SkillsReport};
+    use crate::bootstrap::skills::{Inventory, SkillDirectory, SkillPlace, SkillsReport};
     use crate::daemon::context::{FamilySize, MessageCounts, ToolFamily};
     use crate::daemon::protocol::ContextReport;
     use meerkat_core::{Message, SessionId, SystemMessage, UserMessage};
@@ -251,6 +268,10 @@ mod tests {
                         skills: Some(1),
                     },
                 ],
+                inventory: Some(Inventory {
+                    skills: 15,
+                    threshold: 32,
+                }),
             },
         };
         let files = [
@@ -302,7 +323,7 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("skills directories (new sessions list their skills):\n  your skills: /cfg/skills — 2 skills\n  project skills: /w/.rkat/skills — 1 skill\n"),
+            text.contains("skills directories (new sessions list their skills):\n  your skills: /cfg/skills — 2 skills\n  project skills: /w/.rkat/skills — 1 skill\n  the agent's inventory names all 15 skills with their descriptions (up to 32); it opens one with skill_read\n"),
             "{text}"
         );
         let unread = ContextReport {

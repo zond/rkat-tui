@@ -139,8 +139,10 @@ the mob split are numbered in `docs/mob-split.md`, "Open engine asks"):
   member name (lukacf/meerkat#2208): "Where a helper lives".
 
 - A host switch for the skill discovery tools (`browse_skills`,
-  `load_skill`), default-disabled builtins no factory setting composes:
-  "The user's skills directory".
+  `load_skill`), default-disabled builtins no factory setting composes
+  (rkat-tui's own `skill_read` goes when it ships), and a way to list one
+  source's skills in full while the embedded ones are counted: "The
+  user's skills directory" and "The agent opens a skill".
 
 - The engine cannot update a stored mob definition after creation
   (`MobStorage::update_definition` is not exposed through `MobMcpState`);
@@ -7829,5 +7831,97 @@ the confinement test above.
 
 Upstream ask (recorded, not posted): a host switch for the skill
 discovery tools (`browse_skills`, `load_skill`), for example a
-`ToolCategoryOverride` as `web_search` has; until then rkat-tui's agents
-see their skills' names and descriptions but cannot load one.
+`ToolCategoryOverride` as `web_search` has. Until then rkat-tui's own
+`skill_read` opens a skill ("The agent opens a skill", below).
+
+## The agent opens a skill (2026-11-12)
+
+The entry above left two gaps: the agent saw the inventory but could not
+open a skill, and with any skill of the user's the inventory showed only
+counts. What Meerkat 0.9.13 offers a host, checked again in the sources:
+
+- `browse_skills`, `load_skill`, `skill_list_resources` and
+  `skill_read_resource` (`meerkat-tools` `builtin/skills/`) all return
+  `default_enabled() == false`. `CompositeDispatcher::register_skill_tools`
+  admits a tool only when the resolved builtin policy enables it, and the
+  factory builds that policy itself in
+  `build_tool_dispatcher_for_agent_with_overrides` ("Create builtin tool
+  config"): `AllowAll` (or `AllowList` without builtins) plus the four
+  shell tools, with no layer a host supplies. The build's
+  `ToolCategoryOverride`s are for builtins, shell, memory, schedule,
+  workgraph, mob, comms, image generation and web search, none for
+  skills; `SkillsConfig` has
+  `enabled`, `max_injection_bytes`, `inventory_threshold`, `repositories`,
+  `health_thresholds` and `identity`, no tool switch. The agent builder's
+  `with_skill_engine` swaps the runtime, not the policy. So the engine's
+  tools cannot be enabled from the host side.
+- The runtime itself is public: `AgentFactory::build_skill_runtime(&config)`
+  builds the same `DefaultSkillEngine` a session build does (the same
+  `resolve_repositories_with_roots_trusting` sources, the remaps of
+  `[skills.identity]`), and `SkillRuntime` has `list_all_with_provenance`
+  (what `inventory_section` lists: the active entries passing the
+  capability gate) and `load_from_source` (which resolves remaps first).
+- The capability gate depends on the build: an embedded skill's
+  `requires_capabilities` is checked against the factory's flags and the
+  build's overrides (`effective_skill_capabilities`). Built with the
+  daemon's factory as it is, the runtime listed `schedule-workflow` and
+  not `multi-agent-comms` or `mob-communication`, the opposite of an
+  agent's inventory. The catalog's factory clone therefore carries the
+  agents' profile flags (builtins, shell, comms on, schedule off, memory
+  as configured); `tests/skills.rs`
+  `the_agent_reads_the_users_skill` pins that the tool lists exactly the
+  inventory's names.
+- The inventory is `render_inventory`: flat while the active skills are
+  at most the threshold, collections otherwise. There is no way to leave
+  the embedded skills out of the count or to list one source in full:
+  only the one count threshold.
+- The source reads (`FilesystemSkillSource`) call `std::fs` inside their
+  futures.
+
+What rkat-tui adds:
+
+- `skill_read` (`src/tools/skill.rs`, provenance `rkat-tui.skills`), one
+  tool, 373 bytes of definition on every request (`tests/tool_costs.rs`).
+  With `name`, the body of the active skill of that skill name, through
+  `load_from_source`, cut at 32 KiB (the engine's own injection default)
+  with a note of the full size; `source` (a source's name or uuid) picks
+  between two active skills of one name. Without `name`, every active
+  skill as `- name [source]: description` (each description cut at 300
+  characters, the list at 32 KiB). An unknown name is an error result
+  naming the skills there are. The runtime is
+  `bootstrap::skills::SkillCatalog`: the daemon's factory (cloned, with
+  the agents' capability flags) over the realm config store as a session
+  build reads it, built per call on a blocking thread
+  (`tools::with_skill_runtime`), so a skill added since start counts.
+  No path reaches the agent.
+- The gate: rkat-tui's callback family with the file tools, read-only,
+  `ActionKind::ReadOnlyBuiltin`, so tier 1 in every mode
+  (`approval::engine::tests::a_skill_read_passes_in_every_mode`). It is
+  direct (not behind `tool_search`), in every agent's tools and in every
+  `delegate` helper's (`daemon::engine::helper_external_tools`).
+- The persona (`CODING_PERSONA`, `HELPER_PERSONA`) has one line saying
+  that skills in `<available_skills>` are opened with `skill_read`.
+- `bootstrap::skills::default_inventory_threshold`, a load-time default
+  of the realm config store, never written: a threshold equal to the
+  engine's default (12; the engine merges config layers the same way, so
+  an explicit 12 counts as unset) becomes `INVENTORY_BOUND`, 32: the 12
+  embedded skills and 20 more. An entry costs 116 bytes plus its skill
+  name and description (the user's `review` with a 17-byte description:
+  139 bytes), so 20 one-line skills stay under 5 KB a request. Past the
+  bound the inventory falls back to counts per source and `skill_read`
+  without a name lists them; a huge directory costs one collection line.
+- `/context` adds whether the inventory names all skills (the count from
+  the same runtime, against the threshold).
+
+Tests: `tests/skills.rs` (the request names the user's skill with its
+description; `skill_read` returns its body and not the project's copy;
+the listing equals the inventory; an unknown name; the size cap; plan
+mode without an escalation; a `delegate` helper reads it; past the bound
+the inventory counts and the tool lists; a realm config's own threshold
+is kept; `/context`'s inventory line), `tools::skill::tests`,
+`bootstrap::skills::tests::the_inventory_threshold_default_is_raised_to_the_bound`,
+`tests/tool_costs.rs`.
+
+Engine ask kept: a factory switch for the engine's own `browse_skills` /
+`load_skill` (and with it the engine's capability-exact listing);
+`skill_read` goes when it ships.

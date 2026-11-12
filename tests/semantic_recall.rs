@@ -105,6 +105,7 @@ async fn every_offered_builtin_is_classified_and_memory_search_is_tier_one() {
             || NOTE_TOOL_NAMES.contains(&name.as_str())
             || [rkat_tui::tools::WATCH_PATHS, rkat_tui::tools::UNWATCH].contains(&name.as_str())
             || name == rkat_tui::daemon::deferral::reveal::TOOL_SEARCH
+            || name == rkat_tui::tools::SKILL_READ
             // Mutating mob tools (the read-only ones are listed).
             || name.starts_with("mob_");
         if !known {

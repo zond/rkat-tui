@@ -74,6 +74,8 @@ pub struct Composed {
     pub config_store: Arc<dyn ConfigStore>,
     /// The same store, typed (the endpoints' documents are written there).
     pub realm_config: Arc<crate::bootstrap::RealmConfigStore>,
+    /// The skills a session build lists (`/context`).
+    pub skills: Arc<crate::bootstrap::skills::SkillCatalog>,
     pub state: Arc<MobMcpState>,
     pub root: RootPlan,
     pub lease: RealmLeaseGuard,
@@ -177,6 +179,23 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     // (`rkat/approval_note`, forwarded once the consent surface exists).
     let approval_events = approval.events.take();
     let config_store = Arc::clone(&realm_config) as Arc<dyn ConfigStore>;
+    // The agents' `skill_read` reads the skills an agent's session build
+    // lists: this factory with the capabilities the agents' profile gives
+    // a build (`super::mob::main_profile`), which decide the embedded
+    // skills gated on them.
+    let skills = Arc::new(crate::bootstrap::skills::SkillCatalog::new(
+        factory
+            .clone()
+            .builtins(true)
+            .shell(true)
+            .comms(true)
+            .schedule(false)
+            .memory(memory),
+        Arc::clone(&realm_config),
+    ));
+    let skill_tools = Arc::new(crate::tools::SkillToolDispatcher::new(
+        Arc::clone(&skills) as Arc<dyn crate::tools::SkillHost>
+    ));
     let runtime = session_runtime(RuntimeParts {
         factory,
         effective: &effective,
@@ -196,7 +215,8 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     let (watches, watch_batches) =
         super::watches::Watches::new(scope.project_root.as_path().to_path_buf());
     let engine = Arc::clone(&approval.engine);
-    let (origins, deferrable, reveals) = tool_origins(&runtime, &engine, &scope, &notes)?;
+    let (origins, deferrable, reveals) =
+        tool_origins(&runtime, &engine, &scope, &notes, &skill_tools)?;
     let Some(escalations) = approval.escalations.take() else {
         return Err(DaemonError::Approval(
             "the approval engine has no escalation channel".to_string(),
@@ -208,6 +228,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     let host = Arc::new(AgentHost {
         scope: scope.clone(),
         notes: Arc::clone(&notes),
+        skills: Arc::clone(&skill_tools),
         watches: Arc::clone(&watches),
         diff_tx,
         engine: Arc::clone(&engine),
@@ -238,10 +259,11 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         auth_binding: choice.auth_binding,
     };
     let project_root = scope.project_root.clone();
+    let helper_skills = Arc::clone(&skill_tools);
     let helper_tools: HelperTools = Arc::new(move || {
-        Arc::new(
-            FileToolDispatcher::new(project_root.clone(), None).with_search_limits(search_limits),
-        ) as Arc<dyn AgentToolDispatcher>
+        let files =
+            FileToolDispatcher::new(project_root.clone(), None).with_search_limits(search_limits);
+        helper_external_tools(files, &helper_skills)
     });
     // The daemon follows its helpers: the
     // registry's running set (an interrupt cancels it), and each helper's
@@ -332,6 +354,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         runtime,
         config_store,
         realm_config,
+        skills,
         state,
         root: root_plan,
         lease: realm_lease,
@@ -464,6 +487,7 @@ fn tool_origins(
     engine: &Arc<ApprovalEngine>,
     scope: &RuntimeScope,
     notes: &Arc<NoteToolDispatcher>,
+    skills: &Arc<crate::tools::SkillToolDispatcher>,
 ) -> Result<
     (
         Arc<DaemonToolOrigins>,
@@ -475,6 +499,7 @@ fn tool_origins(
     let catalog = agent_tools(
         FileToolDispatcher::new(scope.project_root.clone(), None),
         notes,
+        skills,
         None,
     )?;
     let deferrable = Arc::new(super::deferral::Deferrable::new());
@@ -646,6 +671,7 @@ fn note_tools(scope: &RuntimeScope) -> NoteToolDispatcher {
 struct AgentHost {
     scope: RuntimeScope,
     notes: Arc<NoteToolDispatcher>,
+    skills: Arc<crate::tools::SkillToolDispatcher>,
     watches: Arc<super::watches::Watches>,
     diff_tx: tokio::sync::mpsc::UnboundedSender<(String, crate::tools::FileDiff)>,
     engine: Arc<ApprovalEngine>,
@@ -658,7 +684,7 @@ struct AgentHost {
 }
 
 impl crate::mobs::customizer::RootHost for AgentHost {
-    /// The agent's file, note and watch tools.
+    /// The agent's file, note, skill and watch tools.
     fn tools(&self, identity: &meerkat_mob::AgentIdentity) -> Arc<dyn AgentToolDispatcher> {
         let diffs = tagged_diffs(
             identity.to_string(),
@@ -671,7 +697,7 @@ impl crate::mobs::customizer::RootHost for AgentHost {
         ));
         let files = FileToolDispatcher::new(self.scope.project_root.clone(), Some(diffs))
             .with_search_limits(self.search_limits);
-        match agent_tools(files, &self.notes, Some(watch)) {
+        match agent_tools(files, &self.notes, &self.skills, Some(watch)) {
             Ok(tools) => tools,
             Err(err) => {
                 // The same composition succeeded at start for the catalog;
@@ -729,14 +755,36 @@ impl crate::mobs::customizer::RootHost for AgentHost {
     }
 }
 
+/// A helper's external tools: its file tools and the shared skill tool
+/// (a helper's prompt lists the skills too). The file tools alone when
+/// the two cannot be composed (they could at start, for the agents).
+fn helper_external_tools(
+    files: FileToolDispatcher,
+    skills: &Arc<crate::tools::SkillToolDispatcher>,
+) -> Arc<dyn AgentToolDispatcher> {
+    let files = Arc::new(files);
+    match ToolGatewayBuilder::new()
+        .add_dispatcher(Arc::clone(&files) as Arc<dyn AgentToolDispatcher>)
+        .add_dispatcher(Arc::clone(skills) as Arc<dyn AgentToolDispatcher>)
+        .build()
+    {
+        Ok(gateway) => Arc::new(gateway),
+        Err(err) => {
+            tracing::error!(error = %err, "a helper's skill tool could not be composed");
+            files
+        }
+    }
+}
+
 /// One agent's external tools: its own file tools (`files`, reporting
 /// every change they make as a diff the clients show), the shared note
-/// tools and its watch tools, behind one gateway. Without `watch` (the
-/// catalog read at start) the watch tools are named over a host that
-/// watches nothing.
+/// and skill tools and its watch tools, behind one gateway. Without
+/// `watch` (the catalog read at start) the watch tools are named over a
+/// host that watches nothing.
 fn agent_tools(
     files: FileToolDispatcher,
     notes: &Arc<NoteToolDispatcher>,
+    skills: &Arc<crate::tools::SkillToolDispatcher>,
     watch: Option<Arc<crate::tools::WatchToolDispatcher>>,
 ) -> Result<Arc<dyn AgentToolDispatcher>, DaemonError> {
     let files = Arc::new(files);
@@ -749,6 +797,7 @@ fn agent_tools(
     let gateway = ToolGatewayBuilder::new()
         .add_dispatcher(files as Arc<dyn AgentToolDispatcher>)
         .add_dispatcher(Arc::clone(notes) as Arc<dyn AgentToolDispatcher>)
+        .add_dispatcher(Arc::clone(skills) as Arc<dyn AgentToolDispatcher>)
         .add_dispatcher(watch as Arc<dyn AgentToolDispatcher>)
         .build()
         .map_err(TuiError::ToolGateway)?;

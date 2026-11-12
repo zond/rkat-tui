@@ -893,16 +893,17 @@ async fn the_confined_shell_cannot_reach_the_users_skills() {
     assert!(!output.contains("LISTED"), "{output}");
     assert_eq!(std::fs::read_to_string(&mine).unwrap(), text);
     assert!(!skills.join("planted").exists());
+    // Both are named in the inventory (14 skills, under its bound).
     assert!(
         system.contains(&format!(
-            "<collection source=\"{}\" count=\"1\">",
+            "<skill source_uuid=\"{}\" skill_name=\"review\">",
             rkat_tui::bootstrap::skills::user_source()
         )),
         "{system}"
     );
     assert!(
         system.contains(&format!(
-            "<collection source=\"{}\" count=\"1\">",
+            "<skill source_uuid=\"{}\" skill_name=\"lint\">",
             meerkat_core::skills::SourceUuid::project_local()
         )),
         "{system}"

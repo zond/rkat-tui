@@ -1089,11 +1089,11 @@ and whether either is an estimate), the policy `/compact status` prints, and
 what the context holds as the daemon reports it: the system prompt's size,
 the message counts and the tool definitions every model request carries,
 in bytes and tokens per family (the engine's built-in, comms, memory, mob
-and schedule tools, rkat-tui's file, note and watch tools and its
+and schedule tools, rkat-tui's file, note, skill and watch tools and its
 `tool_search` under `catalog`, each MCP server's), and the tools still
 hidden until a search reveals them ([Tools an agent
 reveals](#tools-an-agent-reveals)); the skills directories with their
-skills ([Skills](#skills)); and the instruction files on disk (`SYSTEM.md`, the workspace
+skills and whether the agent's inventory names them ([Skills](#skills)); and the instruction files on disk (`SYSTEM.md`, the workspace
 and parent `AGENTS.md`, `AGENTS.local.md`). The daemon reads a
 conversation's tool definitions while its agent is idle, so a brand-new
 conversation says "not read yet" until its first turn ends. Sizes in
@@ -1113,8 +1113,8 @@ places:
    `--config-dir`). Keep a skill here once and every workspace's agents,
    and their `delegate` helpers, list it. It is in the config directory,
    so neither the agent's shell nor its file tools can read or change it;
-   the daemon reads it when it builds a session. A missing directory is
-   no error.
+   the daemon reads it when it builds a session and when the agent opens a
+   skill. A missing directory is no error.
 2. **Repositories** in the realm config (`~/.rkat/tui/workspaces/<id>/config.toml`),
    Meerkat's own `[[skills.repositories]]` (a directory, a Git
    repository, an HTTP source), listed after yours.
@@ -1159,22 +1159,56 @@ other names from every place are listed side by side.
 
 **Settings.** Skills are on unless the realm config says
 `[skills] enabled = false`, which turns all of them off, yours included.
-The inventory lists each skill's name and description while there are at
-most `[skills] inventory_threshold` of them (12 by default; Meerkat's own
-embedded skills are 12 already), and above that only how many each
-source has. If you list your directory in `[[skills.repositories]]`
-yourself, that entry is used as it is, not doubled.
+If you list your directory in `[[skills.repositories]]` yourself, that
+entry is used as it is, not doubled.
 
-**What the agent can do with a skill.** In this version the agent sees
-the inventory but cannot open a skill's body: Meerkat's `browse_skills`
-and `load_skill` tools are off by default and the engine has no switch a
-host can turn them on with (an engine ask). The inventory tells the
-agent what exists; to have it follow a skill now, paste the skill's text
-into your message.
+**What the agent sees.** Every agent's and helper's system prompt has
+the inventory, one entry per skill with its source and name and the
+`description` from its frontmatter:
+
+```text
+<available_skills>
+  <skill source_uuid="00000000-0000-4b11-8111-000000000001" skill_name="shell-patterns">
+    <description>Background job patterns with shell and job management tools</description>
+  </skill>
+  …
+  <skill source_uuid="6f1c2a9e-4b37-4d05-9c1e-7a2b5d8f3e01" skill_name="code-review">
+    <description>How I want a change reviewed before I merge it.</description>
+  </skill>
+</available_skills>
+```
+
+Meerkat's own embedded skills come first (12 of them for an agent), then
+yours (always under the source id above), the repositories' and the
+project's. Each entry costs every model request about 120 bytes plus its
+name and description, so keep the description to one line. The
+inventory names skills only while there are at most `[skills]
+inventory_threshold` of them; above that it says only how many each
+source has (`<collection source="…" count="3">`). Meerkat's default
+threshold is 12, which its own skills already fill, so rkat-tui raises it
+to 32 when the realm config leaves it at that default (it is never
+written): room for 20 of your and the project's skills. Set
+`inventory_threshold` in the realm config to choose otherwise (a value
+of 12 counts as unset).
+
+**How the agent opens a skill.** With `skill_read`: given a skill's
+name it returns that skill's `SKILL.md` body (yours when the project has
+one of the same name; `source` picks between two other sources that
+share a name), at most 32 KiB of it; without a name it lists every skill
+with its source and description, which is how the agent finds them when
+the inventory shows only counts. An unknown name gets an error naming
+the skills there are. `skill_read` reads through Meerkat's skill sources,
+never a path, so the agent still cannot reach your skills directory with
+its shell or file tools. It is read-only and allowed without asking in
+every permission mode, plan mode included; helpers have it too. The
+agent's instructions say that skills in `<available_skills>` are opened
+with `skill_read`. Meerkat's own `browse_skills` and `load_skill` stay
+off: the engine offers a host no switch for them (an engine ask).
 
 **Check** with `/context`: it names your skills directory and the
-project's (when there is one) with how many valid skills each holds, or
-says that skills are off.
+project's (when there is one) with how many valid skills each holds, and
+whether the agent's inventory names all its skills or only counts them;
+or it says that skills are off.
 
 ## Keys and commands
 

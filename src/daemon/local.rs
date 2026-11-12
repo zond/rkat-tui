@@ -115,6 +115,8 @@ pub struct Local {
     realm_config: Arc<crate::bootstrap::RealmConfigStore>,
     /// The workspace (`/context` names its `.rkat/skills`).
     workspace: std::path::PathBuf,
+    /// The skills a session build lists (`/context`'s inventory line).
+    skills: Arc<crate::bootstrap::skills::SkillCatalog>,
     /// The daemon's endpoints (a switch names one by its binding).
     endpoints: crate::endpoints::EndpointRegistry,
     /// What the start-up had to say (`rkat/notices`).
@@ -165,6 +167,8 @@ pub struct LocalParts {
     pub realm_config: Arc<crate::bootstrap::RealmConfigStore>,
     /// The workspace (its conventions root).
     pub workspace: std::path::PathBuf,
+    /// The skills a session build lists.
+    pub skills: Arc<crate::bootstrap::skills::SkillCatalog>,
     /// The daemon's endpoints.
     pub endpoints: crate::endpoints::EndpointRegistry,
     /// What the start-up had to say.
@@ -232,6 +236,7 @@ impl Local {
             machine,
             realm_config,
             workspace,
+            skills,
             endpoints,
             startup_notices,
             lifecycle,
@@ -265,6 +270,7 @@ impl Local {
             machine,
             realm_config,
             workspace,
+            skills,
             endpoints,
             startup_notices,
             lifecycle,
@@ -348,22 +354,42 @@ impl Local {
     }
 
     /// The skills directories a session build of this workspace lists
-    /// skills from (`/context`), as the realm config serves it now.
+    /// skills from and the size of its inventory (`/context`), as the
+    /// realm config serves it now.
     ///
     /// # Errors
     ///
     /// [`protocol::SWITCH_FAILED`] when the realm config cannot be read.
     async fn skills(&self) -> Result<crate::bootstrap::skills::SkillsReport, Refusal> {
-        let config = meerkat_core::ConfigStore::get(&*self.realm_config)
+        use crate::bootstrap::skills::{Inventory, SkillsReport};
+        let config = self
+            .skills
+            .config()
             .await
-            .map_err(|err| Refusal::new(SWITCH_FAILED, err.to_string()))?;
+            .map_err(|err| Refusal::new(SWITCH_FAILED, err))?;
+        let threshold = config.skills.inventory_threshold;
         let global = self.realm_config.global().cloned();
         let workspace = self.workspace.clone();
-        tokio::task::spawn_blocking(move || {
+        let mut report = tokio::task::spawn_blocking(move || {
             crate::bootstrap::skills::report(&config, global.as_ref(), &workspace)
         })
         .await
-        .map_err(|err| Refusal::new(SWITCH_FAILED, err.to_string()))
+        .map_err(|err| Refusal::new(SWITCH_FAILED, err.to_string()))?;
+        if let SkillsReport::On { inventory, .. } = &mut report {
+            let host = Arc::clone(&self.skills) as Arc<dyn crate::tools::SkillHost>;
+            let listed = crate::tools::with_skill_runtime(&host, |runtime| async move {
+                match runtime {
+                    Some(runtime) => crate::tools::listed_skills(&runtime).await.map(|s| s.len()),
+                    None => Ok(0),
+                }
+            })
+            .await;
+            match listed {
+                Ok(skills) => *inventory = Some(Inventory { skills, threshold }),
+                Err(err) => tracing::debug!(error = %err, "the skill inventory could not be read"),
+            }
+        }
+        Ok(report)
     }
 
     /// `rkat/status` for `caller`.

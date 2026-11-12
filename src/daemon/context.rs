@@ -27,6 +27,8 @@ pub enum ToolFamily {
     Schedule,
     /// rkat-tui's watch tools.
     Watch,
+    /// rkat-tui's skill tool.
+    Skills,
     /// Another host callback tool.
     Callback,
     /// The engine's work graph tools.
@@ -45,7 +47,7 @@ pub enum ToolFamily {
 impl ToolFamily {
     /// Every family.
     #[cfg(test)]
-    const ALL: [Self; 14] = [
+    const ALL: [Self; 15] = [
         Self::Builtin,
         Self::Comms,
         Self::Files,
@@ -54,6 +56,7 @@ impl ToolFamily {
         Self::Notes,
         Self::Schedule,
         Self::Watch,
+        Self::Skills,
         Self::Callback,
         Self::Workgraph,
         Self::Mcp,
@@ -75,6 +78,7 @@ impl ToolFamily {
             Self::Notes => "notes",
             Self::Schedule => "schedule",
             Self::Watch => "watch",
+            Self::Skills => "skills",
             Self::Callback => "callback",
             Self::Workgraph => "workgraph",
             Self::Mcp => "mcp",
@@ -103,6 +107,7 @@ impl ToolFamily {
                 crate::tools::FILE_TOOLS_SOURCE => Self::Files,
                 crate::memory::NOTES_SOURCE => Self::Notes,
                 crate::tools::WATCH_TOOLS_SOURCE => Self::Watch,
+                crate::tools::SKILL_TOOLS_SOURCE => Self::Skills,
                 _ => Self::Callback,
             },
             ToolSourceKind::Builtin | ToolSourceKind::Shell => Self::Builtin,

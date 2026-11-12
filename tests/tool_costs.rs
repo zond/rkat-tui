@@ -22,7 +22,8 @@ use rkat_tui::ui::Effect;
 use serde_json::json;
 
 /// A fresh conversation's request carries the direct tools and the search
-/// tool, about 55 KB (122 KB before rkat-tui's own deferral): no schedule
+/// tool, about 56 KB (122 KB before rkat-tui's own deferral; `skill_read`
+/// added 373 bytes): no schedule
 /// tool and of the agent mob tools only `delegate`; what is hidden (the
 /// eight schedule tools, 18 mob tools, about 67 KB) `/context` reports as
 /// hidden. Its session's catalog is inexact, so the engine defers nothing
@@ -54,7 +55,7 @@ async fn an_agent_s_request_carries_every_tool_definition() {
     let total = main.total_tool_bytes();
     let report = format!("{total} bytes: {bytes:?}");
     for family in [
-        "builtin", "catalog", "comms", "files", "memory", "mob", "notes", "watch",
+        "builtin", "catalog", "comms", "files", "memory", "mob", "notes", "skills", "watch",
     ] {
         assert!(bytes.contains_key(family), "{family} missing: {report}");
     }
@@ -74,12 +75,15 @@ async fn an_agent_s_request_carries_every_tool_definition() {
     assert!(main.tools.iter().any(|name| name == "delegate"), "{report}");
     assert!(bytes["mob"] < 12_000, "{report}");
     assert!(bytes["comms"] > 20_000, "{report}");
-    // rkat-tui's own: small, and kept so.
+    // rkat-tui's own: small, and kept so. The skill tool is one short
+    // definition.
+    assert_eq!(main.tools_of("skills"), ["skill_read"], "{report}");
+    assert!(bytes["skills"] < 500, "{report}");
     assert!(
-        bytes["files"] + bytes["notes"] + bytes["watch"] < 10_000,
+        bytes["files"] + bytes["notes"] + bytes["watch"] + bytes["skills"] < 10_500,
         "{report}"
     );
-    assert!(total < 56_000, "{report}");
+    assert!(total < 56_500, "{report}");
     // What is hidden: the eight schedule tools and 18 mob tools.
     let session = rig.current_session().await;
     let hidden = deferral.hidden(&session);
@@ -144,6 +148,12 @@ async fn an_agent_s_request_carries_every_tool_definition() {
         !helper_bytes.contains_key("schedule")
             && !helper_bytes.contains_key("mob")
             && !helper_bytes.contains_key("catalog"),
+        "{helper_bytes:?}"
+    );
+    // A helper reads skills too.
+    assert_eq!(
+        helper.tools_of("skills"),
+        ["skill_read"],
         "{helper_bytes:?}"
     );
     assert!(helper.total_tool_bytes() < 45_000, "{helper_bytes:?}");

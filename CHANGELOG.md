@@ -11,9 +11,19 @@
   name of one of yours is not listed; yours is. `[skills] enabled =
   false` in the realm config still turns skills off. `/context` names
   your skills directory and the project's with how many skills each
-  holds. The agent sees the skill inventory but cannot yet open a
-  skill's body (Meerkat 0.9.13 composes no `load_skill` for a host); the
-  manual's new "Skills" section says what a skill looks like.
+  holds; the manual's new "Skills" section says what a skill looks like.
+- `skill_read`, so an agent can use its skills: given a skill's name it
+  returns the skill's `SKILL.md` body (your copy when the project has one
+  of the same name, at most 32 KiB), without a name it lists every skill
+  with its source and description. It is read-only and allowed in every
+  permission mode, plan mode included, and `delegate` helpers have it
+  too. It costs every request about 370 bytes of tool definition.
+- The skill inventory names your and the project's skills with their
+  descriptions: when the realm config leaves `[skills]
+  inventory_threshold` at Meerkat's default of 12 (which its own 12
+  skills fill), rkat-tui uses 32. Past 32 skills the inventory counts
+  them per source and `skill_read` lists them. `/context` says which of
+  the two the agent's inventory does.
 
 ### Changed
 

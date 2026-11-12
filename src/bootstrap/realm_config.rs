@@ -5,7 +5,8 @@
 //!
 //! The user's skills directory is a load-time default too
 //! ([`super::skills::apply_user_skills`]): the first skill repository,
-//! when it exists and skills are on.
+//! when it exists and skills are on, and so is the inventory threshold
+//! that names them ([`super::skills::default_inventory_threshold`]).
 //!
 //! One more load-time default: when the document sets no
 //! `[tools.tool_timeouts] delegate`, a `delegate` call waits
@@ -131,6 +132,7 @@ impl RealmConfigStore {
         config.apply_env_overrides()?;
         super::instructions::apply_system_md(&mut config, self.global.as_ref());
         super::skills::apply_user_skills(&mut config, self.global.as_ref()).await;
+        super::skills::default_inventory_threshold(&mut config);
         default_delegate_wait(&mut config);
         Ok(config)
     }

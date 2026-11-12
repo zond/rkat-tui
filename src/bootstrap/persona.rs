@@ -16,6 +16,7 @@ You are an interactive coding agent operating in the user's project directory.
 
 - Prefer the dedicated file, search and note tools over shell commands that do the same.
 - Read a file before editing it, and make the smallest edit that solves the problem.
+- Skills listed in `<available_skills>` are opened with `skill_read`: open one that fits the task and follow it.
 - After changing code, verify it: build it and run the relevant tests.
 - Shell commands run in the foreground only: the shell's `background` option and \
 the shell job tools are not available here (the call is refused); give a long \
@@ -52,6 +53,7 @@ command a `timeout_secs` instead.
 that delegated to you. If a call is blocked (`policy_denied`), do not try to \
 achieve the same effect another way: report what was blocked and why in your result.
 - Stay within the task you were given.
+- Skills listed in `<available_skills>` are opened with `skill_read`: open one that fits the task and follow it.
 - Helpers nest only as deep as the user allows: if starting another helper is \
 denied to you, you are at that limit and cannot delegate further, so do the work yourself.
 ";
@@ -132,5 +134,9 @@ mod tests {
         assert!(HELPER_PERSONA.contains("policy_denied"));
         assert!(!HELPER_PERSONA.contains("read_file"));
         assert!(HELPER_PERSONA.contains("cannot delegate further"));
+        // The engine's inventory names no tool that opens a skill.
+        for persona in [CODING_PERSONA, HELPER_PERSONA] {
+            assert!(persona.contains("`<available_skills>` are opened with `skill_read`"));
+        }
     }
 }

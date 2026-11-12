@@ -1,5 +1,6 @@
 //! In-crate file tools: `read_file`, `write_file`, `edit_file`, `glob`, `grep`,
-//! and the watch tools `watch_paths` and `unwatch` ([`WatchToolDispatcher`]).
+//! the watch tools `watch_paths` and `unwatch` ([`WatchToolDispatcher`]),
+//! and the skill tool `skill_read` ([`SkillToolDispatcher`]).
 //!
 //! [`FileToolDispatcher`] implements [`AgentToolDispatcher`] and is injected
 //! into sessions as an external tool source. It is deliberately policy-free:
@@ -23,6 +24,7 @@ mod grep;
 mod read;
 mod read_only;
 mod scan;
+mod skill;
 mod watch;
 mod write;
 
@@ -34,6 +36,12 @@ pub use scan::SearchLimits;
 pub(crate) use scan::run_cancellable;
 #[cfg(any(test, feature = "test-support"))]
 pub use scan::{DEFAULT_SEARCH_BUDGET_SECS, DEFAULT_SEARCH_MAX_ENTRIES, WalkProbe};
+#[cfg(any(test, feature = "test-support"))]
+pub use skill::MAX_SKILL_BYTES;
+pub use skill::{
+    SKILL_READ, SKILL_TOOLS_SOURCE, SkillHost, SkillToolDispatcher, listed as listed_skills,
+    with_runtime as with_skill_runtime,
+};
 pub use watch::{UNWATCH, WATCH_PATHS, WATCH_TOOLS_SOURCE, WatchHost, WatchToolDispatcher};
 
 /// The catalog support of a dispatcher whose tool list is fixed when it is

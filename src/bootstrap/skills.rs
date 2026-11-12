@@ -26,6 +26,16 @@
 //! The directory is read with the engine's own filesystem source, on a
 //! blocking thread, so the names and the counts `/context` shows are the
 //! ones a session build lists.
+//!
+//! The inventory (`<available_skills>`) lists names and descriptions only
+//! while there are at most `[skills] inventory_threshold` skills, 12 by
+//! default, which the engine's 12 embedded skills already reach.
+//! [`default_inventory_threshold`] is another load-time default: a realm
+//! config that leaves the threshold at the engine's default gets
+//! [`INVENTORY_BOUND`] instead, so the user's and the project's skills
+//! are named too, up to a bound. Past it the inventory is counts per
+//! source and the agent lists them with `skill_read`
+//! ([`SkillCatalog`], `crate::tools::SkillToolDispatcher`).
 
 use std::path::{Path, PathBuf};
 
@@ -38,6 +48,74 @@ use meerkat_core::skills_config::{SkillRepoTransport, SkillRepositoryConfig};
 use serde::{Deserialize, Serialize};
 
 use super::GlobalDirs;
+
+/// The inventory threshold a realm config that leaves it at the engine's
+/// default gets: the engine's 12 embedded skills and 20 of the user's and
+/// the project's. A listed skill costs every request about 120 bytes plus
+/// its name and description (`docs/evidence.md`, "The agent opens a
+/// skill"); 20 skills of one-line descriptions stay under 5 KB.
+pub const INVENTORY_BOUND: usize = 32;
+
+/// Raise `[skills] inventory_threshold` to [`INVENTORY_BOUND`] when the
+/// config has the engine's default (the engine merges config layers the
+/// same way: a value equal to the default counts as unset). Never written.
+pub fn default_inventory_threshold(config: &mut Config) {
+    let default = meerkat_core::skills_config::SkillsConfig::default().inventory_threshold;
+    if config.skills.inventory_threshold == default {
+        config.skills.inventory_threshold = INVENTORY_BOUND.max(default);
+    }
+}
+
+/// The skill runtime a session build of the daemon makes, for the
+/// agents' `skill_read` and `/context`: the daemon's factory over the
+/// realm config as its store serves it now (load-time defaults applied).
+pub struct SkillCatalog {
+    factory: meerkat::AgentFactory,
+    config: std::sync::Arc<super::RealmConfigStore>,
+}
+
+impl SkillCatalog {
+    /// The catalog of `factory` (a clone of the daemon's) over `config`.
+    #[must_use]
+    pub fn new(
+        factory: meerkat::AgentFactory,
+        config: std::sync::Arc<super::RealmConfigStore>,
+    ) -> Self {
+        Self { factory, config }
+    }
+
+    /// The realm config as a session build reads it.
+    ///
+    /// # Errors
+    ///
+    /// The store's error, in words.
+    pub async fn config(&self) -> Result<Config, String> {
+        meerkat_core::ConfigStore::get(&*self.config)
+            .await
+            .map_err(|err| format!("the realm config could not be read: {err}"))
+    }
+}
+
+impl std::fmt::Debug for SkillCatalog {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SkillCatalog")
+            .field("config", &self.config)
+            .finish_non_exhaustive()
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::tools::SkillHost for SkillCatalog {
+    async fn runtime(
+        &self,
+    ) -> Result<Option<std::sync::Arc<meerkat_core::skills::SkillRuntime>>, String> {
+        let config = self.config().await?;
+        self.factory
+            .build_skill_runtime(&config)
+            .await
+            .map_err(|err| format!("the skills could not be read: {err}"))
+    }
+}
 
 /// The directory's name inside the config directory.
 pub const USER_SKILLS_DIR: &str = "skills";
@@ -218,7 +296,20 @@ pub enum SkillsReport {
     On {
         /// The directories.
         directories: Vec<SkillDirectory>,
+        /// What the inventory of a session built now lists (`None`: the
+        /// skills could not be read).
+        inventory: Option<Inventory>,
     },
+}
+
+/// The size of a session's skill inventory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Inventory {
+    /// The skills it covers, the embedded ones included.
+    pub skills: usize,
+    /// `[skills] inventory_threshold`: up to this many it names each
+    /// skill, above it only counts per source.
+    pub threshold: usize,
 }
 
 /// The skills directories `config` (as the realm config store serves it)
@@ -246,7 +337,10 @@ pub fn report(config: &Config, global: Option<&GlobalDirs>, context_root: &Path)
             path: project,
         });
     }
-    SkillsReport::On { directories }
+    SkillsReport::On {
+        directories,
+        inventory: None,
+    }
 }
 
 #[cfg(test)]
@@ -358,6 +452,18 @@ mod tests {
         skills.build_source_identity_registry().unwrap();
     }
 
+    /// The engine's default threshold becomes the bound; a threshold the
+    /// realm config sets stays.
+    #[test]
+    fn the_inventory_threshold_default_is_raised_to_the_bound() {
+        let mut config = Config::default();
+        default_inventory_threshold(&mut config);
+        assert_eq!(config.skills.inventory_threshold, INVENTORY_BOUND);
+        config.skills.inventory_threshold = 5;
+        default_inventory_threshold(&mut config);
+        assert_eq!(config.skills.inventory_threshold, 5);
+    }
+
     #[test]
     fn the_report_counts_the_valid_skills_of_each_directory() {
         let tmp = tempfile::tempdir().unwrap();
@@ -371,7 +477,8 @@ mod tests {
                     place: SkillPlace::User,
                     path: global.skills_dir(),
                     skills: None,
-                }]
+                }],
+                inventory: None,
             }
         );
         skill(&global.skills_dir(), "review");
@@ -385,7 +492,8 @@ mod tests {
         )
         .unwrap();
         skill(&workspace.join(".rkat/skills"), "review");
-        let SkillsReport::On { directories } = report(&config, Some(&global), &workspace) else {
+        let SkillsReport::On { directories, .. } = report(&config, Some(&global), &workspace)
+        else {
             panic!("skills are on");
         };
         assert_eq!(directories[0].skills, Some(2));

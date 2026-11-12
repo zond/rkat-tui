@@ -30,8 +30,8 @@ use meerkat_core::{
 use crate::daemon::deferral::reveal::{TOOL_SEARCH, TOOL_SEARCH_SOURCE};
 use crate::memory::{NOTE_FORGET, NOTE_LIST, NOTE_READ, NOTE_SAVE, NOTES_SOURCE};
 use crate::tools::{
-    EDIT_FILE, FILE_TOOLS_SOURCE, GLOB, GREP, READ_FILE, UNWATCH, WATCH_PATHS, WATCH_TOOLS_SOURCE,
-    WRITE_FILE,
+    EDIT_FILE, FILE_TOOLS_SOURCE, GLOB, GREP, READ_FILE, SKILL_READ, SKILL_TOOLS_SOURCE, UNWATCH,
+    WATCH_PATHS, WATCH_TOOLS_SOURCE, WRITE_FILE,
 };
 
 /// Which implementation family a tool belongs to.
@@ -119,6 +119,7 @@ impl ToolOrigin {
             ToolSourceKind::Callback
                 if provenance.source_id.as_str() == FILE_TOOLS_SOURCE
                     || provenance.source_id.as_str() == WATCH_TOOLS_SOURCE
+                    || provenance.source_id.as_str() == SKILL_TOOLS_SOURCE
                     || provenance.source_id.as_str() == TOOL_SEARCH_SOURCE =>
             {
                 ToolFamily::Files
@@ -136,9 +137,8 @@ impl ToolOrigin {
 /// The mutation class rkat-tui declares for its own tools.
 fn tui_mutation(name: &str) -> ToolMutationClass {
     match name {
-        READ_FILE | GLOB | GREP | NOTE_LIST | NOTE_READ | WATCH_PATHS | UNWATCH | TOOL_SEARCH => {
-            ToolMutationClass::ReadOnly
-        }
+        READ_FILE | GLOB | GREP | NOTE_LIST | NOTE_READ | WATCH_PATHS | UNWATCH | TOOL_SEARCH
+        | SKILL_READ => ToolMutationClass::ReadOnly,
         WRITE_FILE | EDIT_FILE | NOTE_SAVE | NOTE_FORGET => ToolMutationClass::Mutating,
         _ => ToolMutationClass::Unknown,
     }
