@@ -32,7 +32,11 @@
   expands its block (`/helpers list` prints the old notice); `/mode`
   lists the four modes with what each asks and allows, the current one
   marked, and Enter switches (on a paused auto mode it resumes it, as
-  `/auto resume`; `/auto` still shows the mode as a notice). The list
+  `/auto resume`; `/auto` still shows the mode as a notice); `/memory`
+  lists the workspace `AGENTS.md`, the user `AGENTS.md` and `SYSTEM.md`
+  with each path and size (or that it is not written yet), and Enter
+  edits one. Bare `/memory` used to open the workspace `AGENTS.md`; that
+  is now `/memory workspace`. The list
   moves with ↑/↓ or j/k and closes with Esc, `q` or Ctrl-C; an approval
   request takes over and the list comes back after it. The typed forms
   (`/schedules pause <name>` and the like) work as before.

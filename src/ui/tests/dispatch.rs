@@ -370,6 +370,50 @@ fn mode_picker_switches_the_mode() {
     );
 }
 
+/// `/memory` asks for the instruction-file picker; its Enter opens the
+/// file as `/memory <file>` does and closes it; the typed forms
+/// (`/memory workspace|user|system`) open the files directly.
+#[test]
+fn memory_picker_opens_the_file() {
+    let mut app = App::new(StatusInfo::default());
+    assert_eq!(
+        submit(&mut app, "/memory"),
+        vec![Effect::RequestMemoryPicker]
+    );
+    let row = |target| {
+        PickRow::new(
+            "file",
+            vec![PickKey::now(KeyCode::Enter, PickAct::OpenMemory(target))],
+        )
+    };
+    app.update(Msg::ShowPicker {
+        picker: ListPicker::new(
+            PickerKind::Memory,
+            vec![
+                row(MemoryTarget::Workspace),
+                row(MemoryTarget::User),
+                row(MemoryTarget::System),
+            ],
+            "",
+            "keys",
+        ),
+        refresh: false,
+    });
+    app.update(key(KeyCode::Char('j')));
+    assert_eq!(
+        app.update(key(KeyCode::Enter)),
+        vec![Effect::OpenMemory(MemoryTarget::User)]
+    );
+    assert!(app.modal.is_none());
+    for (typed, target) in [
+        ("/memory workspace", MemoryTarget::Workspace),
+        ("/memory user", MemoryTarget::User),
+        ("/memory system", MemoryTarget::System),
+    ] {
+        assert_eq!(submit(&mut app, typed), vec![Effect::OpenMemory(target)]);
+    }
+}
+
 #[test]
 fn model_command_requests_picker_or_refresh() {
     let mut app = app_on_sonnet();
@@ -444,7 +488,7 @@ fn model_picker_warning_becomes_notice_when_modal_busy() {
 fn memory_opens_the_file_the_client_runner_names_and_reports_back() {
     let mut app = App::new(StatusInfo::default());
     assert_eq!(
-        submit(&mut app, "/memory"),
+        submit(&mut app, "/memory workspace"),
         vec![Effect::OpenMemory(MemoryTarget::Workspace)]
     );
     assert_eq!(

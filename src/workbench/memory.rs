@@ -18,7 +18,9 @@ use crate::bootstrap::instructions::{
     SYSTEM_MD_HEADER, append_remember_line, edited_context, remember_line, remember_target,
     remembered_context,
 };
-use crate::ui::{MemoryTarget, Msg, NoticeLevel};
+use crate::ui::{
+    ListPicker, MemoryTarget, Msg, NoticeLevel, PickAct, PickKey, PickRow, PickerKind,
+};
 
 impl Workbench {
     /// [`crate::ui::Effect::Remember`]: write the line to `AGENTS.md` and
@@ -85,6 +87,23 @@ impl Workbench {
         }
         self.memory_before = Some((path.clone(), std::fs::read(&path).ok()));
         self.send(Msg::EditFile { target, path });
+    }
+
+    /// [`crate::ui::Effect::RequestMemoryPicker`]: the three files with
+    /// their paths, whether each exists and its size (read off the loop),
+    /// as the `/memory` picker; `refused` (the daemon's workspace is not
+    /// on this machine) says why on every row.
+    pub fn memory_picker(&self, refused: Option<String>) {
+        let workspace = self.scope.context_root.clone();
+        let global = self.scope.global.clone();
+        let ui_tx = self.ui_tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let picker = memory_picker(&workspace, Some(&global), refused.as_deref());
+            let _ = ui_tx.send(Msg::ShowPicker {
+                picker,
+                refresh: false,
+            });
+        });
     }
 
     /// [`crate::ui::Effect::MemoryEdited`]: an edited `AGENTS.md` reaches
@@ -160,6 +179,73 @@ fn memory_path(
         (MemoryTarget::User | MemoryTarget::System, None) => Err(
             "there is no user config directory (--config-dir) for /memory user or /memory system",
         ),
+    }
+}
+
+/// The `/memory` picker: the workspace `AGENTS.md`, the user `AGENTS.md`
+/// and the user `SYSTEM.md`, each with its path, its size or that it is
+/// not written yet; Enter opens it in the editor as `/memory workspace`,
+/// `/memory user` and `/memory system` do. A file that cannot be opened
+/// from here (no user config directory; `refused`, the whole workspace
+/// elsewhere) says why instead.
+fn memory_picker(
+    workspace: &Path,
+    global: Option<&GlobalDirs>,
+    refused: Option<&str>,
+) -> ListPicker {
+    use ratatui::crossterm::event::KeyCode;
+    let rows = [
+        (MemoryTarget::Workspace, "workspace AGENTS.md"),
+        (MemoryTarget::User, "user AGENTS.md"),
+        (MemoryTarget::System, "user SYSTEM.md"),
+    ]
+    .into_iter()
+    .map(|(target, name)| {
+        let path = memory_path(target, workspace, global);
+        let (state, note, enter) = match (refused, path) {
+            (Some(why), _) => (
+                "not here".to_string(),
+                why.to_string(),
+                PickKey::refused(KeyCode::Enter, why),
+            ),
+            (None, Err(why)) => (
+                "not here".to_string(),
+                why.to_string(),
+                PickKey::refused(KeyCode::Enter, why),
+            ),
+            (None, Ok(path)) => {
+                let state = match std::fs::metadata(&path) {
+                    Ok(meta) if meta.is_file() => size(meta.len()),
+                    Ok(_) => "not a file".to_string(),
+                    Err(_) => "not written yet (Enter creates it)".to_string(),
+                };
+                (
+                    state,
+                    path.display().to_string(),
+                    PickKey::now(KeyCode::Enter, PickAct::OpenMemory(target)),
+                )
+            }
+        };
+        PickRow::new(format!("{name} · {state}"), vec![enter]).noted(note)
+    })
+    .collect();
+    ListPicker::new(
+        PickerKind::Memory,
+        rows,
+        "",
+        "↑/↓ move · Enter edit in $VISUAL / $EDITOR · Esc close",
+    )
+}
+
+/// A file's size in words: bytes below a KiB, else KiB with one decimal.
+fn size(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else {
+        // Exact enough for a size shown to a tenth.
+        #[allow(clippy::cast_precision_loss)]
+        let kib = bytes as f64 / 1024.0;
+        format!("{kib:.1} KiB")
     }
 }
 
@@ -240,6 +326,83 @@ mod tests {
         std::fs::remove_dir_all(&global.config).unwrap();
         prepare_memory_file(MemoryTarget::User, &user).unwrap();
         assert!(global.config.is_dir() && !user.exists());
+    }
+
+    /// The `/memory` picker: the three files with their paths, the size
+    /// of one that exists and "not written yet" for one that does not;
+    /// Enter opens each as its typed form does. Without a user config
+    /// directory the user rows say why, and a workspace that is not on
+    /// this machine makes every row say so; Enter there acts on nothing.
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn the_memory_picker_rows_name_the_files_their_state_and_why_not() {
+        use super::{memory_picker, size};
+        use crate::ui::{ModalKey, PickAct, PickerLine};
+        use ratatui::crossterm::event::{KeyCode, KeyEvent};
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(ws.join("AGENTS.md"), "x".repeat(2048)).unwrap();
+        let global = GlobalDirs {
+            config: tmp.path().join("config"),
+            cache: tmp.path().join("cache"),
+        };
+        let mut picker = memory_picker(&ws, Some(&global), None);
+        let texts: Vec<&str> = picker.rows.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec![
+                "workspace AGENTS.md · 2.0 KiB",
+                "user AGENTS.md · not written yet (Enter creates it)",
+                "user SYSTEM.md · not written yet (Enter creates it)",
+            ]
+        );
+        assert_eq!(
+            picker.rows[0].note.as_deref(),
+            Some(ws.join("AGENTS.md").display().to_string().as_str())
+        );
+        assert_eq!(
+            picker.rows[2].note.as_deref(),
+            Some(global.system_md().display().to_string().as_str())
+        );
+        let press = |code| KeyEvent::from(code);
+        assert_eq!(
+            picker.key(&press(KeyCode::Enter)),
+            ModalKey::Choose(PickAct::OpenMemory(MemoryTarget::Workspace))
+        );
+        picker.key(&press(KeyCode::Down));
+        picker.key(&press(KeyCode::Down));
+        assert_eq!(
+            picker.key(&press(KeyCode::Enter)),
+            ModalKey::Choose(PickAct::OpenMemory(MemoryTarget::System))
+        );
+        // No user config directory: the user rows say why.
+        let mut alone = memory_picker(&ws, None, None);
+        assert!(
+            alone.rows[1].text.ends_with("not here"),
+            "{:?}",
+            alone.rows[1]
+        );
+        alone.key(&press(KeyCode::Down));
+        assert_eq!(alone.key(&press(KeyCode::Enter)), ModalKey::Stay);
+        assert!(
+            matches!(&alone.line, Some(PickerLine::Refused(why)) if why.contains("--config-dir"))
+        );
+        // The daemon's workspace elsewhere: every row says so.
+        let mut remote = memory_picker(
+            &ws,
+            Some(&global),
+            Some("the daemon's workspace is on host b"),
+        );
+        assert!(
+            remote
+                .rows
+                .iter()
+                .all(|r| r.note.as_deref() == Some("the daemon's workspace is on host b"))
+        );
+        assert_eq!(remote.key(&press(KeyCode::Enter)), ModalKey::Stay);
+        assert_eq!(size(512), "512 B");
+        assert_eq!(size(1536), "1.5 KiB");
     }
 
     #[test]

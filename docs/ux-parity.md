@@ -46,7 +46,7 @@ official tables name, then niche features.
 | 29 | `/permissions` | `/permissions`: interactive allow/ask/deny rules | `/permissions` opens a list of the rules (`d` removes one); `/permissions [list\|add allow\|deny <tool> [pattern]\|rm <n>]` | same |
 | 30 | `/context` | `/context [all]`: usage grid | `/context` prints the gauge, the compaction policy and what the context holds; the status bar shows `ctx 42% (84k/200k)` | same |
 | 31 | Context warnings / auto-compact | warns, then auto-compacts; `/autocompact` sets the window | warnings at 75% and 85%; `auto.compact` and `--auto-compact` | same (no `/autocompact`) |
-| 32 | `/memory` | `/memory`: edit CLAUDE.md, toggle auto memory | `/memory [user\|system]` opens the workspace or user `AGENTS.md`, or `SYSTEM.md`, in the editor | same |
+| 32 | `/memory` | `/memory`: edit CLAUDE.md, toggle auto memory | `/memory` opens a list of the workspace and user `AGENTS.md` and `SYSTEM.md` (path, size); Enter, or `/memory workspace\|user\|system`, edits one in the editor | same |
 | 33 | `#` memory prefix | not in CC any more (the memory docs say to ask Claude or use `/memory`) | `#text` and `/remember <text>` append to the workspace `AGENTS.md` | n/a (rkat-tui keeps a control CC dropped) |
 | 34 | `/init` | `/init` writes CLAUDE.md | `/init` asks the agent to write or update the workspace `AGENTS.md` | same |
 | 35 | Image paste | `Ctrl+V` (`Alt+V` on Windows/WSL) inserts an `[Image #N]` chip | text paste only | missing |

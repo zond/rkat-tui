@@ -102,7 +102,8 @@ impl App {
                     self.start_turn(commands::INIT_PROMPT.to_string(), now, fx);
                 }
             }
-            Command::Memory(target) => fx.push(Effect::OpenMemory(target)),
+            Command::Memory(Some(target)) => fx.push(Effect::OpenMemory(target)),
+            Command::Memory(None) => fx.push(Effect::RequestMemoryPicker),
             Command::Export(path) => fx.push(Effect::Export {
                 path,
                 text: self.transcript.export_text(),

@@ -150,9 +150,9 @@ pub enum Command {
     Rehome(Option<String>),
     /// `/init`: ask the agent to write or update the workspace `AGENTS.md`.
     Init,
-    /// `/memory [user | system]`: open an instruction file in the user's
-    /// editor.
-    Memory(MemoryTarget),
+    /// `/memory [workspace | user | system]`: open the instruction-file
+    /// picker (`None`), or that file in the user's editor.
+    Memory(Option<MemoryTarget>),
     /// `/context`: the context gauge, the compaction policy and what the
     /// context holds, as far as the TUI knows.
     Context,
@@ -529,16 +529,23 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "memory",
         aliases: &[],
-        usage: "[user | system]",
-        summary: "edit AGENTS.md or SYSTEM.md in your editor",
-        help: &[(
-            "/memory [user | system]",
-            "edit the workspace AGENTS.md, the user AGENTS.md or SYSTEM.md\nin $VISUAL / $EDITOR / vi; an edited AGENTS.md reaches this\nsession (also while a turn runs), SYSTEM.md the next one",
-        )],
+        usage: "[workspace | user | system]",
+        summary: "pick AGENTS.md or SYSTEM.md to edit in your editor",
+        help: &[
+            (
+                "/memory",
+                "open a list of the workspace AGENTS.md, the user AGENTS.md and\nSYSTEM.md, each with its path, size or that it is not written\nyet; Enter edits it in $VISUAL / $EDITOR / vi",
+            ),
+            (
+                "/memory workspace|user|system",
+                "edit that file without the list; an edited AGENTS.md reaches\nthis session (also while a turn runs), SYSTEM.md the next one",
+            ),
+        ],
         parse: |rest| match words(rest).as_slice() {
-            [] => Some(Command::Memory(MemoryTarget::Workspace)),
-            ["user"] => Some(Command::Memory(MemoryTarget::User)),
-            ["system"] => Some(Command::Memory(MemoryTarget::System)),
+            [] => Some(Command::Memory(None)),
+            ["workspace"] => Some(Command::Memory(Some(MemoryTarget::Workspace))),
+            ["user"] => Some(Command::Memory(Some(MemoryTarget::User))),
+            ["system"] => Some(Command::Memory(Some(MemoryTarget::System))),
             _ => None,
         },
     },
@@ -815,7 +822,7 @@ Agent picker (/agents):
   d, then y                      retire the agent: only one idle with no client (its
                                  conversation stays in /resume); any other key keeps it
   Esc, q                         close
-Lists (/schedules, /permissions, /helpers, /mode):
+Lists (/schedules, /permissions, /helpers, /mode, /memory):
   Up/Down, j/k                   move
   Enter, p (/schedules)          pause the schedule, or resume a paused one
   d, then y (/schedules)         delete it; any other key keeps it
@@ -823,6 +830,7 @@ Lists (/schedules, /permissions, /helpers, /mode):
   Enter (/helpers)               open the helper's full view (Esc returns)
   f (/helpers)                   fold or expand the helper's block in the transcript
   Enter (/mode)                  switch to the mode (a paused auto mode: resume it)
+  Enter (/memory)                edit the file in $VISUAL / $EDITOR
   Esc, q, Ctrl-C                 close (an approval request takes over and the list comes back)";
 
 /// The line that ends `/help`. `/rewind` returns when the engine can rewind
@@ -1121,10 +1129,23 @@ mod tests {
         );
         assert_eq!(ok("/export"), Command::Export(None));
         assert_eq!(ok("/init"), Command::Init);
-        assert_eq!(ok("/memory"), Command::Memory(MemoryTarget::Workspace));
-        assert_eq!(ok("/memory user"), Command::Memory(MemoryTarget::User));
-        assert_eq!(ok("/memory system"), Command::Memory(MemoryTarget::System));
-        assert_eq!(usage_of("/memory workspace"), "/memory [user | system]");
+        assert_eq!(ok("/memory"), Command::Memory(None));
+        assert_eq!(
+            ok("/memory workspace"),
+            Command::Memory(Some(MemoryTarget::Workspace))
+        );
+        assert_eq!(
+            ok("/memory user"),
+            Command::Memory(Some(MemoryTarget::User))
+        );
+        assert_eq!(
+            ok("/memory system"),
+            Command::Memory(Some(MemoryTarget::System))
+        );
+        assert_eq!(
+            usage_of("/memory notes"),
+            "/memory [workspace | user | system]"
+        );
         assert_eq!(usage_of("/init x"), "/init");
         assert_eq!(
             ok("/export notes/chat.txt"),
@@ -1289,7 +1310,7 @@ mod tests {
             "/status",
             "/export [file]",
             "/init",
-            "/memory [user | system]",
+            "/memory workspace|user|system",
             "/stats",
             "/tasks",
             "/auto",

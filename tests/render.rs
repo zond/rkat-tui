@@ -951,6 +951,59 @@ fn mode_picker_snapshot() {
     assert!(buffer[(5, row + 1)].modifier.contains(Modifier::DIM));
 }
 
+/// The `/memory` picker: each file's row with its state and its path
+/// dim under it, and a row that cannot be used saying why when Enter is
+/// pressed on it.
+#[test]
+fn memory_picker_snapshot() {
+    use ratatui::crossterm::event::KeyCode;
+    use rkat_tui::ui::{ListPicker, PickKey, PickRow, PickerKind};
+    let mut app = App::new(StatusInfo::default());
+    app.update(Msg::ShowPicker {
+        picker: ListPicker::new(
+            PickerKind::Memory,
+            vec![
+                PickRow::new(
+                    "workspace AGENTS.md · not here",
+                    vec![PickKey::refused(
+                        KeyCode::Enter,
+                        "the workspace is on host b",
+                    )],
+                )
+                .noted("the workspace is on host b"),
+            ],
+            "",
+            "↑/↓ move · Enter edit in $VISUAL / $EDITOR · Esc close",
+        ),
+        refresh: false,
+    });
+    app.update(Msg::Key(ratatui::crossterm::event::KeyEvent::from(
+        KeyCode::Enter,
+    )));
+    let mut terminal = Terminal::new(TestBackend::new(72, H)).unwrap();
+    terminal
+        .draw(|f| draw_at(f, &mut app, Instant::now()))
+        .unwrap();
+    let buffer = terminal.backend().buffer().clone();
+    let all = rows(&buffer);
+    let top = all
+        .iter()
+        .position(|row| row.contains("┌ Instruction files"))
+        .expect("the picker is drawn");
+    assert_eq!(
+        all[top + 1..top + 5].to_vec(),
+        vec![
+            "  │workspace AGENTS.md · not here                                    │",
+            "  │    the workspace is on host b                                    │",
+            "  │the workspace is on host b                                        │",
+            "  │↑/↓ move · Enter edit in $VISUAL / $EDITOR · Esc close            │",
+        ]
+    );
+    let row = u16::try_from(top + 2).unwrap();
+    assert!(buffer[(7, row)].modifier.contains(Modifier::DIM));
+    assert_eq!(buffer[(3, row + 1)].fg, Color::Yellow);
+}
+
 #[test]
 fn selected_cells_render_reversed() {
     use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};

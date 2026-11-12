@@ -1112,6 +1112,11 @@ impl Runner {
             }
             Effect::Remember(text) => self.bench.remember(&text, &self.linked()),
             Effect::OpenMemory(target) => self.bench.open_memory(target),
+            Effect::RequestMemoryPicker => self
+                .bench
+                .memory_picker(self.config.remote.as_deref().map(|why| {
+                    format!("/memory edits the daemon's workspace, which is not on this machine: {why}")
+                })),
             Effect::MemoryEdited { target, path } => {
                 let linked = self.linked();
                 self.bench.memory_edited(target, &path, &linked);

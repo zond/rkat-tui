@@ -15,7 +15,7 @@ use ratatui::text::Line;
 
 use super::markdown::{truncate_to_width, wrap_text};
 use super::modal::{ListCursor, ModalKey, has_ctrl_or_alt, is_ctrl_c, is_held, window_lines};
-use super::{App, BlockId, Effect, Modal, OpenHelperView, ScrollState};
+use super::{App, BlockId, Effect, MemoryTarget, Modal, OpenHelperView, ScrollState};
 use crate::approval::mode::PermissionMode;
 use crate::daemon::protocol::ScheduleOp;
 
@@ -31,6 +31,8 @@ pub enum PickerKind {
     Helpers,
     /// `/mode`.
     Mode,
+    /// `/memory`.
+    Memory,
 }
 
 impl PickerKind {
@@ -42,6 +44,7 @@ impl PickerKind {
             Self::Permissions => " Approval rules ",
             Self::Helpers => " Helpers ",
             Self::Mode => " Permission mode ",
+            Self::Memory => " Instruction files ",
         }
     }
 }
@@ -55,6 +58,8 @@ pub enum PickAct {
     RemoveRule(usize),
     /// `/mode <mode>` (`/auto resume` for a paused auto mode).
     SetMode(PermissionMode),
+    /// `/memory [workspace | user | system]`.
+    OpenMemory(MemoryTarget),
     /// The helper's full view (Ctrl+Up/Down, then Enter).
     ViewHelper(BlockId),
     /// Fold or expand the helper's block in the transcript.
@@ -424,6 +429,7 @@ impl App {
             PickAct::Schedule(op, id) => fx.push(Effect::PickedSchedule(op, id)),
             PickAct::RemoveRule(n) => fx.push(Effect::PickedRuleRemoval(n)),
             PickAct::SetMode(mode) => fx.push(Effect::SetMode(mode)),
+            PickAct::OpenMemory(target) => fx.push(Effect::OpenMemory(target)),
             PickAct::ViewHelper(header) => {
                 self.helper_view = Some(OpenHelperView {
                     header,

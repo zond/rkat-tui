@@ -693,7 +693,10 @@ pub enum Effect {
     /// The schedule picker's act on the schedule with this id: as
     /// `/schedules <op> <id>`, then the picker's list again.
     PickedSchedule(crate::daemon::protocol::ScheduleOp, String),
-    /// `/memory`: resolve the instruction file (creating `SYSTEM.md` with
+    /// `/memory`: open the instruction-file picker (answered with
+    /// [`Msg::ShowPicker`]).
+    RequestMemoryPicker,
+    /// `/memory <file>`: resolve the instruction file (creating `SYSTEM.md` with
     /// a comment header) and answer with [`Msg::EditFile`].
     OpenMemory(MemoryTarget),
     /// An instruction file was edited (`/memory`): push its new content to

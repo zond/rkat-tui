@@ -993,7 +993,11 @@ session's persisted instructions back unchanged (the persona appears once).
 Edited instruction files apply from the next new session; `/remember`
 and `/memory` reach the live one.
 
-**`/memory`** opens the workspace `AGENTS.md` (the file `/remember` writes),
+**`/memory`** opens a list of the three instruction files, each with its
+path and its size (or "not written yet"); Enter edits the highlighted one
+as the typed forms do, and a file that cannot be edited from here (the
+daemon's workspace is not on this machine) says why. **`/memory
+workspace`** opens the workspace `AGENTS.md` (the file `/remember` writes),
 **`/memory user`** the user-global `AGENTS.md` and **`/memory system`** the
 user-global `SYSTEM.md` in your editor: `$VISUAL`, else `$EDITOR`, else
 `vi`, split on whitespace so `code --wait` works (a variable holding only
@@ -1112,7 +1116,7 @@ feature by feature.
 `/help` (alias `/?`), `/quit` (aliases `/exit`, `/q`), `/detach`, `/agents [name]`, `/audit [n]`, `/schedules [pause|resume|delete <name>]`, `/daemon stop`, `/daemon start`, `/clear` (alias `/new`), `/resume [ref]`,
 `/permissions [list|add allow|deny <tool> [pattern]|rm <n>]` (`remove` for `rm`; alone, it opens a list of the rules: d then y removes the highlighted one),
 `/mode [default|accept-edits|plan|auto]`, `/auto [on|off|resume]`, `/model [[endpoint:]id|refresh]`,
-`/remember <text>`, `/memory [user|system]`, `/init`, `/compact [now|status|<instructions>]`, `/context`, `/status`, `/export [file]`, `/usage` (aliases `/cost`, `/stats`), `/copy [N]`, `/trust`,
+`/remember <text>`, `/memory [workspace|user|system]`, `/init`, `/compact [now|status|<instructions>]`, `/context`, `/status`, `/export [file]`, `/usage` (aliases `/cost`, `/stats`), `/copy [N]`, `/trust`,
 `/helpers [list|expand|fold <label>|all]` (alias `/tasks`). `/status` prints the
 rkat-tui version, the model and its endpoint, the session id, the workspace
 and realm directories, the shell confinement, the permission mode, the
