@@ -93,7 +93,9 @@ pub enum HelperTarget {
 /// `/helpers` subcommands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HelpersCommand {
-    /// List the helpers with their state.
+    /// Open the helper picker (`/helpers`).
+    Pick,
+    /// List the helpers with their state (`/helpers list`).
     List,
     /// Show the helpers' nested blocks.
     Expand(HelperTarget),
@@ -632,12 +634,16 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "helpers",
         aliases: &["tasks"],
-        usage: "[expand|fold <label>|all]",
-        summary: "list the helpers (sub-agents), or show or fold their work",
+        usage: "[list | expand|fold <label>|all]",
+        summary: "pick a helper (sub-agent): open its full view, or fold its work",
         help: &[
             (
                 "/helpers, /tasks",
-                "list the helpers (sub-agents) and their state",
+                "open a list of this conversation's helpers (sub-agents): label,\nmodel, state, calls and tokens, nested ones indented; Enter\nopens one's full view, f folds or expands its block",
+            ),
+            (
+                "/helpers list",
+                "list the helpers and their state as a notice",
             ),
             (
                 "/helpers expand|fold <label>|all",
@@ -727,7 +733,8 @@ fn parse_helpers(rest: &str) -> Option<Command> {
         label => HelperTarget::Label(label.to_string()),
     };
     match words(rest).as_slice() {
-        [] | ["list"] => Some(Command::Helpers(HelpersCommand::List)),
+        [] => Some(Command::Helpers(HelpersCommand::Pick)),
+        ["list"] => Some(Command::Helpers(HelpersCommand::List)),
         ["expand", t] => Some(Command::Helpers(HelpersCommand::Expand(target(t)))),
         ["fold", t] => Some(Command::Helpers(HelpersCommand::Fold(target(t)))),
         _ => None,
@@ -808,11 +815,13 @@ Agent picker (/agents):
   d, then y                      retire the agent: only one idle with no client (its
                                  conversation stays in /resume); any other key keeps it
   Esc, q                         close
-Lists (/schedules, /permissions):
+Lists (/schedules, /permissions, /helpers):
   Up/Down, j/k                   move
   Enter, p (/schedules)          pause the schedule, or resume a paused one
   d, then y (/schedules)         delete it; any other key keeps it
   d, then y (/permissions)       remove the rule (adding stays /permissions add)
+  Enter (/helpers)               open the helper's full view (Esc returns)
+  f (/helpers)                   fold or expand the helper's block in the transcript
   Esc, q, Ctrl-C                 close (an approval request takes over and the list comes back)";
 
 /// The line that ends `/help`. `/rewind` returns when the engine can rewind
@@ -1386,7 +1395,8 @@ mod tests {
 
     #[test]
     fn helpers_commands() {
-        assert_eq!(ok("/helpers"), Command::Helpers(HelpersCommand::List));
+        assert_eq!(ok("/helpers"), Command::Helpers(HelpersCommand::Pick));
+        assert_eq!(ok("/helpers list"), Command::Helpers(HelpersCommand::List));
         assert_eq!(
             ok("/helpers expand scout"),
             Command::Helpers(HelpersCommand::Expand(HelperTarget::Label("scout".into())))
@@ -1397,7 +1407,7 @@ mod tests {
         );
         assert_eq!(
             usage_of("/helpers expand"),
-            "/helpers [expand|fold <label>|all]"
+            "/helpers [list | expand|fold <label>|all]"
         );
     }
 

@@ -26,7 +26,10 @@
   `/permissions` lists the approval rules with their pattern or literal
   and layer, and `d` then `y` removes one (for good for the workspace's
   own rules, until the daemon restarts for one written in another layer,
-  as `/permissions rm` does; adding stays `/permissions add`). The list
+  as `/permissions rm` does; adding stays `/permissions add`);
+  `/helpers` lists this conversation's helpers as their headers show
+  them, nested ones indented: Enter opens one's full view, `f` folds or
+  expands its block (`/helpers list` prints the old notice). The list
   moves with ↑/↓ or j/k and closes with Esc, `q` or Ctrl-C; an approval
   request takes over and the list comes back after it. The typed forms
   (`/schedules pause <name>` and the like) work as before.

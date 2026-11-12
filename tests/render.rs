@@ -1029,6 +1029,38 @@ fn the_helper_panel_renders_under_the_input() {
     );
 }
 
+/// The `/helpers` picker over the transcript: the helper as its header
+/// shows it (without the spinner), highlighted, and the key hint.
+#[test]
+fn helper_picker_snapshot() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent};
+    let mut app = helper_app();
+    for c in "/helpers".chars() {
+        app.update(Msg::Key(KeyEvent::from(KeyCode::Char(c))));
+    }
+    app.update(Msg::Key(KeyEvent::from(KeyCode::Enter)));
+    let mut terminal = Terminal::new(TestBackend::new(72, H)).unwrap();
+    terminal
+        .draw(|f| draw_at(f, &mut app, Instant::now()))
+        .unwrap();
+    let buffer = terminal.backend().buffer().clone();
+    let all = rows(&buffer);
+    let top = all
+        .iter()
+        .position(|row| row.contains("┌ Helpers"))
+        .expect("the picker is drawn");
+    assert_eq!(
+        all[top + 1..top + 4].to_vec(),
+        vec![
+            "  │  ▸ [scout · opus] running · 2 tool calls · grep \"fn resolve\"     │",
+            "  │↑/↓ move · Enter full view (Esc returns) · f fold/expand in the   │",
+            "  │transcript · Esc close                                            │",
+        ]
+    );
+    let row = u16::try_from(top + 1).unwrap();
+    assert!(buffer[(3, row)].modifier.contains(Modifier::REVERSED));
+}
+
 #[test]
 fn an_expanded_helper_renders_its_blocks() {
     let mut app = helper_app();

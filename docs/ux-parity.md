@@ -43,7 +43,7 @@ official tables name, then niche features.
 | 26 | Permission prompt | Yes / Yes, don't ask again (rule) / No, and tell Claude what to do (`Esc`). Arrow keys or number keys; `Tab` adds a comment | `1`/`2`/`3`, arrows and `Enter`, a comment on No; `y`/`a`/`n`/`s` as accelerators; `Ctrl+C` stops every open prompt | same |
 | 27 | Plan mode | `Shift+Tab` to plan, `/plan [desc]`, `--permission-mode plan`; plan approval dialog | `Shift+Tab`, `/mode plan`, `--set auto.mode=plan`; a "Plan ready" dialog when a turn ends in plan mode | partial (no `/plan` command) |
 | 28 | Auto-accept edits | `Shift+Tab` → acceptEdits | accept edits mode | same |
-| 29 | `/permissions` | `/permissions`: interactive allow/ask/deny rules | `/permissions [list\|add allow\|deny <tool> [pattern]\|rm <n>]` | same |
+| 29 | `/permissions` | `/permissions`: interactive allow/ask/deny rules | `/permissions` opens a list of the rules (`d` removes one); `/permissions [list\|add allow\|deny <tool> [pattern]\|rm <n>]` | same |
 | 30 | `/context` | `/context [all]`: usage grid | `/context` prints the gauge, the compaction policy and what the context holds; the status bar shows `ctx 42% (84k/200k)` | same |
 | 31 | Context warnings / auto-compact | warns, then auto-compacts; `/autocompact` sets the window | warnings at 75% and 85%; `auto.compact` and `--auto-compact` | same (no `/autocompact`) |
 | 32 | `/memory` | `/memory`: edit CLAUDE.md, toggle auto memory | `/memory [user\|system]` opens the workspace or user `AGENTS.md`, or `SYSTEM.md`, in the editor | same |
@@ -53,7 +53,7 @@ official tables name, then niche features.
 | 36 | External editor | `Ctrl+G` or `Ctrl+X Ctrl+E` | `Ctrl+G` or `Ctrl+X Ctrl+E` | same |
 | 37 | Redraw | `Ctrl+L` | `Ctrl+L` | same |
 | 38 | Background a task | `Ctrl+B`; `/tasks` (`/bashes`) | none: the shell runs commands in the foreground (background jobs are not available); `/tasks` is an alias of `/helpers` | missing |
-| 39 | Subagents: watch and expand | collapsed subagent lines, `Ctrl+O` to expand; `/tasks` lists background subagents; `Ctrl+X Ctrl+K` stops them | helper panel with `Ctrl+↑/↓` to select and `Enter` for a helper's full view; a click on a header unfolds it; `/helpers [expand\|fold <label>\|all]` (alias `/tasks`); `Esc` stops them with the turn | differs (more than CC: a panel and a full view per helper) |
+| 39 | Subagents: watch and expand | collapsed subagent lines, `Ctrl+O` to expand; `/tasks` lists background subagents; `Ctrl+X Ctrl+K` stops them | helper panel with `Ctrl+↑/↓` to select and `Enter` for a helper's full view; a click on a header unfolds it; `/helpers` opens a list of them (Enter: full view, `f`: fold), `/helpers [list\|expand\|fold <label>\|all]` (alias `/tasks`); `Esc` stops them with the turn | differs (more than CC: a panel and a full view per helper) |
 | 40 | Thinking toggle | `Alt+T` (`Option+T`); `/effort` | none (`[thinking]` in `tui.toml`, per model) | missing |
 | 41 | Switch model, keeping the prompt | `Alt+P` (`Option+P`) | `Alt+P` | same |
 | 42 | Undo an input edit | `Ctrl+_` | `Ctrl+_` | same |

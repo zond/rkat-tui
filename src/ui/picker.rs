@@ -15,7 +15,7 @@ use ratatui::text::Line;
 
 use super::markdown::{truncate_to_width, wrap_text};
 use super::modal::{ListCursor, ModalKey, has_ctrl_or_alt, is_ctrl_c, is_held, window_lines};
-use super::{App, Effect, Modal};
+use super::{App, BlockId, Effect, Modal, OpenHelperView, ScrollState};
 use crate::daemon::protocol::ScheduleOp;
 
 /// Which command's picker a [`ListPicker`] is (a refresh replaces only a
@@ -26,6 +26,8 @@ pub enum PickerKind {
     Schedules,
     /// `/permissions`.
     Permissions,
+    /// `/helpers`.
+    Helpers,
 }
 
 impl PickerKind {
@@ -35,6 +37,7 @@ impl PickerKind {
         match self {
             Self::Schedules => " Schedules ",
             Self::Permissions => " Approval rules ",
+            Self::Helpers => " Helpers ",
         }
     }
 }
@@ -46,13 +49,20 @@ pub enum PickAct {
     Schedule(ScheduleOp, String),
     /// `/permissions rm <n>`, then the list again.
     RemoveRule(usize),
+    /// The helper's full view (Ctrl+Up/Down, then Enter).
+    ViewHelper(BlockId),
+    /// Fold or expand the helper's block in the transcript.
+    FoldHelper(BlockId),
 }
 
 impl PickAct {
     /// Whether the picker stays open after it (a refreshed list replaces
     /// it; the others leave it for the editor, a view or the new mode).
     fn keeps_picker(&self) -> bool {
-        matches!(self, Self::Schedule(..) | Self::RemoveRule(_))
+        matches!(
+            self,
+            Self::Schedule(..) | Self::RemoveRule(_) | Self::FoldHelper(_)
+        )
     }
 }
 
@@ -357,6 +367,18 @@ impl App {
         match act {
             PickAct::Schedule(op, id) => fx.push(Effect::PickedSchedule(op, id)),
             PickAct::RemoveRule(n) => fx.push(Effect::PickedRuleRemoval(n)),
+            PickAct::ViewHelper(header) => {
+                self.helper_view = Some(OpenHelperView {
+                    header,
+                    scroll: ScrollState::default(),
+                });
+                self.clear_selection();
+            }
+            PickAct::FoldHelper(header) => {
+                self.toggle_helper(header);
+                let picker = self.helper_picker();
+                self.show_picker(picker, true);
+            }
         }
     }
 }

@@ -651,8 +651,12 @@ transcript, a second Esc drops the selection.
 The transcript keeps each helper's header where it was spawned, as the
 record: `▸ [scout · model] done · 7 tool calls`. A click on it unfolds the
 helper's blocks in place (indented, tool output still collapsed), and
-`/helpers` (or `/tasks`) lists the helpers, `/helpers expand|fold <label>|all` unfolds or
-folds them. `[ui] helpers = "expanded"` in `tui.toml` starts every header
+`/helpers` (or `/tasks`) opens a list of this conversation's helpers, as
+their headers show them (label, model, state, calls, tokens; nested ones
+indented under their parent): Enter opens the highlighted helper's full
+view, as Ctrl+↓ then Enter does, and `f` folds or expands its block in the
+transcript; Esc, `q` or Ctrl-C close the list. `/helpers list` prints them
+as a notice, and `/helpers expand|fold <label>|all` unfolds or folds them. `[ui] helpers = "expanded"` in `tui.toml` starts every header
 unfolded (default `"folded"`); a resumed session shows its helpers folded.
 
 **Bell.** When a turn ends (and no queued message starts the next one) or an
@@ -1105,7 +1109,7 @@ feature by feature.
 `/permissions [list|add allow|deny <tool> [pattern]|rm <n>]` (`remove` for `rm`; alone, it opens a list of the rules: d then y removes the highlighted one),
 `/mode [default|accept-edits|plan|auto]`, `/auto [on|off|resume]`, `/model [[endpoint:]id|refresh]`,
 `/remember <text>`, `/memory [user|system]`, `/init`, `/compact [now|status|<instructions>]`, `/context`, `/status`, `/export [file]`, `/usage` (aliases `/cost`, `/stats`), `/copy [N]`, `/trust`,
-`/helpers [expand|fold <label>|all]` (alias `/tasks`). `/status` prints the
+`/helpers [list|expand|fold <label>|all]` (alias `/tasks`). `/status` prints the
 rkat-tui version, the model and its endpoint, the session id, the workspace
 and realm directories, the shell confinement, the permission mode, the
 realm `tui.toml`, the trust state of each project input `/trust` covers

@@ -2,9 +2,10 @@
 //! a helper's full view and `/helpers` (their usage is counted in the
 //! daemon).
 
+use super::transcript::HelperFold;
 use super::{
-    App, Block, BlockId, HelperTarget, HelperView, HelpersCommand, NoticeLevel, OpenHelperView,
-    ScrollState,
+    App, Block, BlockId, HelperTarget, HelperView, HelpersCommand, ListPicker, Modal, NoticeLevel,
+    OpenHelperView, PickAct, PickKey, PickRow, PickerKind, ScrollState,
 };
 
 impl App {
@@ -105,6 +106,11 @@ impl App {
     /// `/helpers`: list, expand or fold.
     pub(super) fn helpers_command(&mut self, cmd: HelpersCommand) {
         let (target, expand) = match cmd {
+            HelpersCommand::Pick => {
+                let picker = self.helper_picker();
+                self.show_modal(Modal::List(picker));
+                return;
+            }
             HelpersCommand::List => {
                 let text = self.helpers_listing();
                 self.transcript.push_notice(NoticeLevel::Info, text);
@@ -142,26 +148,58 @@ impl App {
         let mut any = false;
         for (_, fold) in self.transcript.helper_headers() {
             any = true;
-            let indent = "  ".repeat(fold.depth);
-            let marker = if fold.expanded { "▾" } else { "▸" };
-            let status = fold.status_text();
-            // No spinner glyph in a static listing.
-            let status = if fold.state.is_running() {
-                status
-                    .split_once(' ')
-                    .map_or(status.as_str(), |(_, rest)| rest)
-            } else {
-                status.as_str()
-            };
-            let _ = write!(text, "\n{indent}{marker} {} {status}", fold.tag());
+            let _ = write!(text, "\n{}", helper_line(fold));
         }
         if any {
             text.push_str(
-                "\n(/helpers expand|fold <label>|all; Ctrl+Up/Down then Enter opens one in full)",
+                "\n(/helpers picks one; /helpers expand|fold <label>|all; Ctrl+Up/Down then Enter opens one in full)",
             );
         } else {
             text.push_str(" none yet");
         }
         text
     }
+
+    /// The `/helpers` picker: the helpers of this conversation in
+    /// transcript order, nested ones indented under their parent, each
+    /// as the transcript's header shows it (label, model, state, calls,
+    /// tokens); Enter opens its full view, `f` folds or expands its block.
+    pub(super) fn helper_picker(&self) -> ListPicker {
+        use ratatui::crossterm::event::KeyCode;
+        let rows = self
+            .transcript
+            .helper_headers()
+            .map(|(id, fold)| {
+                PickRow::new(
+                    helper_line(fold),
+                    vec![
+                        PickKey::now(KeyCode::Enter, PickAct::ViewHelper(id)),
+                        PickKey::now(KeyCode::Char('f'), PickAct::FoldHelper(id)),
+                    ],
+                )
+            })
+            .collect();
+        ListPicker::new(
+            PickerKind::Helpers,
+            rows,
+            "no helpers in this conversation yet (the agent starts them with delegate)",
+            "↑/↓ move · Enter full view (Esc returns) · f fold/expand in the transcript · Esc close",
+        )
+    }
+}
+
+/// A helper header as a static line: indented by its depth, `▾` expanded
+/// or `▸` folded, its tag and its status without the spinner glyph.
+fn helper_line(fold: &HelperFold) -> String {
+    let indent = "  ".repeat(fold.depth);
+    let marker = if fold.expanded { "▾" } else { "▸" };
+    let status = fold.status_text();
+    let status = if fold.state.is_running() {
+        status
+            .split_once(' ')
+            .map_or(status.as_str(), |(_, rest)| rest)
+    } else {
+        status.as_str()
+    };
+    format!("{indent}{marker} {} {status}", fold.tag())
 }

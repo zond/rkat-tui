@@ -270,7 +270,7 @@ fn a_click_on_a_helper_header_toggles_it() {
 #[test]
 fn helpers_command_lists_expands_and_folds() {
     let (mut app, scout, fork) = helper_app();
-    type_str(&mut app, "/helpers");
+    type_str(&mut app, "/helpers list");
     app.update(key(KeyCode::Enter));
     let listing = match app.transcript.blocks().last() {
         Some(Block::Notice { text, .. }) => text.clone(),
@@ -308,4 +308,76 @@ fn a_reset_drops_the_selection_and_the_view() {
     assert_eq!(app.panel_selection(), None);
     assert_eq!(app.helper_view(), None);
     assert!(!app.status.helper_panel);
+}
+
+/// `/helpers` opens the picker over this conversation's helpers, nested
+/// ones indented, each as its header shows it; `f` folds and expands the
+/// highlighted helper's block and the picker stays, refreshed; Enter opens
+/// its full view (as Ctrl+Down then Enter does) and closes the picker.
+/// With none, the picker says so. An approval request takes over and the
+/// picker comes back after it.
+#[test]
+fn the_helper_picker_folds_and_opens_a_helper() {
+    let mut empty = App::new(StatusInfo::default());
+    type_str(&mut empty, "/helpers");
+    empty.update(key(KeyCode::Enter));
+    assert!(matches!(&empty.modal, Some(Modal::List(p))
+        if p.kind == PickerKind::Helpers && p.rows.is_empty() && p.empty.contains("no helpers")));
+
+    let (mut app, scout, fork) = helper_app();
+    app.update(Msg::Scoped(
+        crate::mobs::HelperTag {
+            owner: meerkat_core::SessionId::new(),
+            path: vec!["scout".into(), "inner".into()],
+            model: "m".into(),
+        }
+        .scope(AgentEvent::ToolCallRequested {
+            id: "b".into(),
+            name: "grep".into(),
+            args: test_args(json!({})),
+        }),
+    ));
+    type_str(&mut app, "/helpers");
+    assert!(app.update(key(KeyCode::Enter)).is_empty());
+    let texts = |app: &App| match &app.modal {
+        Some(Modal::List(p)) => p.rows.iter().map(|r| r.text.clone()).collect::<Vec<_>>(),
+        other => panic!("{other:?}"),
+    };
+    let rows = texts(&app);
+    assert_eq!(rows.len(), 3, "{rows:?}");
+    assert_eq!(
+        rows[0],
+        "  ▸ [scout · m] running · 1 tool call · glob \"*\""
+    );
+    assert!(
+        rows.iter().any(|r| r.starts_with("    ▸ [inner]")),
+        "{rows:?}"
+    );
+    assert!(rows.iter().any(|r| r.contains("[fork-1 · m]")), "{rows:?}");
+    // `f`: scout's block expands, the picker stays on it, marked ▾.
+    assert!(!expanded(&app, scout));
+    app.update(key(KeyCode::Char('f')));
+    assert!(expanded(&app, scout));
+    assert!(
+        texts(&app)[0].starts_with("  ▾ [scout"),
+        "{:?}",
+        texts(&app)
+    );
+    app.update(key(KeyCode::Char('f')));
+    assert!(!expanded(&app, scout));
+    // An approval request takes over; the picker returns after it.
+    app.update(Msg::Escalation(shell_prompt(), EscalationId(1)));
+    app.update(Msg::EscalationResolved(EscalationId(1)));
+    assert!(matches!(&app.modal, Some(Modal::List(p)) if p.kind == PickerKind::Helpers));
+    // Enter on fork-1: its full view, the picker closed.
+    let at = texts(&app)
+        .iter()
+        .position(|r| r.contains("[fork-1"))
+        .unwrap();
+    for _ in 0..at {
+        app.update(key(KeyCode::Down));
+    }
+    app.update(key(KeyCode::Enter));
+    assert!(app.modal.is_none());
+    assert_eq!(app.helper_view(), Some(fork));
 }
