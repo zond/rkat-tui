@@ -131,6 +131,9 @@ the mob split are numbered in `docs/mob-split.md`, "Open engine asks"):
 - A `delegate` call whose future is dropped (the tool timeout) leaves its
   helper seated; the engine should retire it as it does after a completed
   or failed turn: "Orphaned delegate helpers".
+- `delegate` waits under the same core tool deadline as each tool call of
+  its helper; it should own its deadline as `fork_off` and `council` do:
+  "Tool deadlines inside a helper".
 
 - The engine cannot update a stored mob definition after creation
   (`MobStorage::update_definition` is not exposed through `MobMcpState`);
@@ -7657,3 +7660,55 @@ engine's own retire, pinned), `helpers::a_timed_out_delegate_leaves_a_long_lived
 Upstream ask (recorded under "Open asks"): a `delegate` call that ends
 without its helper's terminal result (timed out, its future dropped)
 should retire its helper in the engine, as a completed or failed one does.
+
+## Tool deadlines inside a helper (2026-11-12)
+
+What the engine does (Meerkat 0.9.13):
+
+- Every tool call of the agent loop gets one core deadline: the realm
+  config's `[tools.tool_timeouts] <tool>` when set, else `[tools]
+  default_timeout` (600 s, meerkat-core `config.rs` `ToolsConfig::default`);
+  meerkat-core `agent/state.rs` `dispatch_tool_calls_fenced_boxed`. The
+  factory hands the loop `config.tools` (meerkat `factory.rs`,
+  `assemble_agent`, `.with_tools_config(config.tools.clone())`), read from
+  the config store at each build, so a helper (built by the same factory
+  over the same store) has the same deadlines as its delegator.
+- `delegate` owns no deadline of its own: meerkat-mob-mcp `agent_tools.rs`
+  `tool_catalog` marks only `fork_off` and `council` tool-owned
+  (`with_tool_owned_deadline`, which lifts the core default), so a
+  `delegate` call waits under the same 600 s as any one tool call its
+  helper makes.
+- The shell's own timeout is `[shell] timeout_secs` (30 s, meerkat-core
+  `config_template.toml`) or the call's `timeout_secs`, which has no upper
+  bound (meerkat-tools `builtin/shell/tool.rs`, `validated_timeout_secs`);
+  its plan adds a `ToolInternal` deadline of that plus a setup bound, and
+  the core deadline still caps it. So a helper's shell call asked for 600 s
+  or more runs into the core 600 s, exactly the time its `delegate` waits:
+  the delegator's call times out at the same moment, with no result, and
+  (before 9571be2) the helper stayed seated. rkat-tui's file tools stop by
+  themselves at 10 s (`[search] budget_secs`), so they no longer can.
+
+What rkat-tui does (`src/bootstrap/realm_config.rs`,
+`default_delegate_wait`): the realm config store the factory reads applies
+one more load-time default, never written to the document (as the
+environment overrides and `SYSTEM.md`): when the document sets no
+`[tools.tool_timeouts] delegate`, `delegate` waits three times the longest
+deadline any other tool has (`default_timeout`, or a longer per-tool
+entry): 30 min with the engine's defaults. A helper's tool call then times
+out at 600 s at most and the helper has the rest to report the failure
+itself. A user's own `delegate` entry wins. Nested helpers (`[helpers]
+max_depth` above 1) get the same 30 min at every level, so an inner
+`delegate` can still use up an outer one's wait; the default depth of 1
+has no nesting.
+
+Tests: `bootstrap::realm_config::tests::delegate_waits_longer_than_any_other_tool_unless_configured`
+(the default, a configured one, nothing written),
+`helpers::a_helper_s_tool_times_out_before_its_delegate_does` (rig:
+`default_timeout = "2s"`, a helper's `sleep 30` is cut at 2 s, the helper
+reports it, the `delegate` completes; it fails without the default, the
+`delegate` timing out with the shell).
+
+Upstream ask (recorded under "Open asks"): `delegate` should own its
+deadline the way `fork_off` and `council` do (a wait derived from the
+helper's own bounds, or a `[tools]` setting of its own), so one tool call
+of a helper cannot use up the whole time its delegator waits.

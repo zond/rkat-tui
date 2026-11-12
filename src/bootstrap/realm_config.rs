@@ -3,6 +3,13 @@
 //! and the user-global `SYSTEM.md`
 //! ([`super::instructions::apply_system_md`]) applied on top.
 //!
+//! One more load-time default: when the document sets no
+//! `[tools.tool_timeouts] delegate`, a `delegate` call waits
+//! [`DELEGATE_WAIT_FACTOR`] times the longest deadline any other tool call
+//! has ([`default_delegate_wait`]), so a helper's own tool call (its shell
+//! above all) times out well before the call that waits for the helper,
+//! and the helper reports the failure itself.
+//!
 //! Every read goes to the document, so what rkat-tui writes into it (the
 //! endpoint connections, the self-hosted servers and aliases; see
 //! [`crate::endpoints`]) is what the next session build sees. Writes go to
@@ -113,8 +120,39 @@ impl RealmConfigStore {
         }
         config.apply_env_overrides()?;
         super::instructions::apply_system_md(&mut config, self.global.as_ref());
+        default_delegate_wait(&mut config);
         Ok(config)
     }
+}
+
+/// How many times the longest deadline of any other tool call a
+/// `delegate` call waits for its helper by default.
+pub const DELEGATE_WAIT_FACTOR: u32 = 3;
+
+/// Give `delegate` a deadline of [`DELEGATE_WAIT_FACTOR`] times the longest
+/// one any other tool call has (`[tools] default_timeout`, 600 s by
+/// default, or a longer `[tools.tool_timeouts]` entry), unless the config
+/// sets one for it. The engine gives every call the same default deadline,
+/// `delegate` included, so one tool call of a helper could use up the whole
+/// time its delegator waits (`docs/evidence.md`, "Tool deadlines inside a
+/// helper").
+fn default_delegate_wait(config: &mut Config) {
+    let tools = &mut config.tools;
+    if tools
+        .tool_timeouts
+        .contains_key(crate::mobs::delegates::DELEGATE)
+    {
+        return;
+    }
+    let longest = tools
+        .tool_timeouts
+        .values()
+        .copied()
+        .fold(tools.default_timeout, std::cmp::max);
+    tools.tool_timeouts.insert(
+        crate::mobs::delegates::DELEGATE.to_string(),
+        longest.saturating_mul(DELEGATE_WAIT_FACTOR),
+    );
 }
 
 impl std::fmt::Debug for RealmConfigStore {
@@ -194,6 +232,40 @@ impl ConfigStore for RealmConfigStore {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    /// `delegate` waits three times the longest other deadline unless the
+    /// document names its own; the default is never written.
+    #[tokio::test]
+    async fn delegate_waits_longer_than_any_other_tool_unless_configured() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        let store = RealmConfigStore::new(&path, tmp.path().join("config_state.json"), None);
+        let waits = |config: Config| config.tools.tool_timeouts.get("delegate").copied();
+        assert_eq!(
+            waits(store.get().await.unwrap()),
+            Some(Duration::from_mins(30))
+        );
+        std::fs::write(
+            &path,
+            "[tools]\ndefault_timeout = \"2s\"\n[tools.tool_timeouts]\nshell = \"20m\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            waits(store.get().await.unwrap()),
+            Some(Duration::from_hours(1))
+        );
+        std::fs::write(&path, "[tools.tool_timeouts]\ndelegate = \"5s\"\n").unwrap();
+        assert_eq!(
+            waits(store.get().await.unwrap()),
+            Some(Duration::from_secs(5))
+        );
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("30m"));
+        // The document as persisted carries no default.
+        std::fs::write(&path, "").unwrap();
+        let persisted = store.runtime().get().await.unwrap();
+        assert!(persisted.config.tools.tool_timeouts.is_empty());
+    }
 
     #[tokio::test]
     async fn reads_follow_the_document_and_writes_reach_it() {
@@ -224,6 +296,7 @@ mod tests {
         assert_eq!(written.generation, 1);
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("m-2"), "{text}");
+        assert!(!text.contains("delegate"), "{text}");
         assert!(store.get().await.unwrap().models.custom.contains_key("m-2"));
         // A writer that read an older generation is refused.
         assert!(matches!(

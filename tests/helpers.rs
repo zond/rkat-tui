@@ -405,3 +405,67 @@ async fn a_timed_out_delegate_leaves_a_long_lived_member_seated() {
     client.quit().await;
     daemon.stop().await;
 }
+
+/// A helper's tool call is cut by the realm's tool deadline well before
+/// the `delegate` that waits for the helper: with `[tools] default_timeout
+/// = "2s"` and no `delegate` entry, the helper's `sleep` times out at 2 s,
+/// the helper reports it, and the `delegate` call (waiting three times as
+/// long) completes with the helper's result.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_helper_s_tool_times_out_before_its_delegate_does() {
+    let ws = Workspace::new();
+    let config = common::realm_of(&ws.root).join("config.toml");
+    std::fs::write(&config, "[tools]\ndefault_timeout = \"2s\"\n").unwrap();
+    let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
+        let results = messages
+            .iter()
+            .filter(|m| matches!(m, Message::ToolResults { .. }))
+            .count();
+        if common::user_texts(messages).concat().contains("sleep long") {
+            // The helper: one long command, then its report.
+            return match results {
+                0 => Step::Tool {
+                    id: "s1",
+                    name: "shell",
+                    args: json!({"command": "sleep 30", "timeout_secs": 60}),
+                },
+                _ => Step::Text("the command timed out"),
+            };
+        }
+        match results {
+            0 => delegate("d1", "sleeper", "sleep long"),
+            _ => Step::Text("the helper reported"),
+        }
+    }));
+    let llm = ScriptedLlmClient::new(vec![step; 10]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let mut client = Client::attach(&ws.root).await;
+    client.send(Effect::StartTurn("go".into()));
+    let outcome = client.turn_finished().await;
+    assert_eq!(outcome.unwrap().text, "the helper reported");
+    let events = client.events();
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AgentEvent::ToolExecutionCompleted { name, is_error: false, .. } if name == "delegate"
+        )),
+        "{events:?}"
+    );
+    assert!(!events.iter().any(|event| matches!(
+        event,
+        AgentEvent::ToolExecutionTimedOut { name, .. } if name == "delegate"
+    )));
+    // The helper's own request saw its shell call time out.
+    let helper_saw_timeout = llm.recorded().iter().any(|request| {
+        request.user().contains("sleep long")
+            && request.messages.iter().any(|m| match m {
+                Message::ToolResults { results, .. } => results
+                    .iter()
+                    .any(|r| r.tool_use_id == "s1" && r.text_content().contains("timed out")),
+                _ => false,
+            })
+    });
+    assert!(helper_saw_timeout, "{:?}", llm.recorded());
+    client.quit().await;
+    daemon.stop().await;
+}

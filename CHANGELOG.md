@@ -43,6 +43,12 @@
   (timed out, or still open when the agent's run ends), as the engine
   does after a helper's turn completes or fails. A `spawn_member` member
   is never retired this way.
+- A `delegate` call waits for its helper three times as long as any one
+  tool call may run (30 min with the default 600 s tool timeout), unless
+  the realm's `config.toml` sets `[tools.tool_timeouts] delegate`. Before,
+  it waited exactly as long as one tool call of its helper, so a helper's
+  long shell command timed out together with the `delegate` and the
+  helper could not report it. Nothing is written to the config.
 
 ### Documentation
 

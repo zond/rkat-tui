@@ -615,9 +615,13 @@ refused, naming the configured endpoints that speak its dialect. Its tool calls 
 session's** gate (same rules, counters and Stop; escalations name the
 helper), so delegating never unlocks an action. The transcript shows each
 helper as one `[label · model]` line, the status bar counts running helpers,
-and an interrupt cancels them. A `delegate` call that times out (the
-engine's tool timeout: `[tools.tool_timeouts] delegate` in the realm's
-config, else `[tools] default_timeout`, 600 s) ends without the helper's
+and an interrupt cancels them. A `delegate` call waits for its helper
+three times as long as any one tool call may run: `[tools] default_timeout`
+(600 s unless the realm's `config.toml` sets it) or a longer
+`[tools.tool_timeouts]` entry, so 30 min by default; a helper's own tool
+call that runs too long times out first and the helper reports it.
+`[tools.tool_timeouts] delegate = "45m"` in the realm's `config.toml` sets
+the wait itself. A `delegate` call that times out ends without the helper's
 result, and the daemon then retires that helper; members started with
 `mob_spawn_member` stay until they are retired or their mob is destroyed.
 
