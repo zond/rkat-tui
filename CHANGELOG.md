@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-## [0.0.1] - 2026-11-11
+## [0.0.1] - 2026-11-12
 
 The first release. rkat-tui is an interactive terminal coding agent with
 Claude Code's keys and feel, built on the Meerkat agent engine: you type
