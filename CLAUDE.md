@@ -36,7 +36,12 @@ RUSTDOCFLAGS="-D warnings -A rustdoc::private_intra_doc_links" cargo doc --no-de
 ```
 
 Every step must exit 0 before a commit. Never commit on red, never loosen a
-lint or delete a test to get there. While iterating, scope the run
+lint or delete a test to get there. The one exception: a commit that changes
+only Markdown files outside `src/` and `tests/` (`README.md`, `CHANGELOG.md`,
+`CLAUDE.md`, `docs/*.md`) skips the local gate, since no step reads them;
+it still waits for its hosted CI run to end green. Anything else (code,
+`Cargo.toml`, `Cargo.lock`, `deny.toml`, `.cargo/`, CI config, test
+fixtures, a Markdown file a test or `include_str!` reads) runs the full gate. While iterating, scope the run
 (`--lib`, `--test <name>`, `-E 'test(<substring>)'`), then run the full gate
 once. The first clippy run must always be `--all-targets --all-features`; the
 second builds the library and binaries without `test-support`, so an
