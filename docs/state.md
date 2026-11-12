@@ -31,6 +31,7 @@ refused.
 | `tui.toml` | TOML, `config::file::RulesFile` (global layer) | the user only | user settings |
 | `AGENTS.md` | Markdown (user-scope instructions) | the user (`/memory user` opens an editor) | user data |
 | `SYSTEM.md` | Markdown, replaces the base system prompt | the user; the client creates a stub (plain write) | user data |
+| `skills/<name>/SKILL.md` | Markdown with YAML frontmatter (`name`, `description`), Meerkat's skill format; the directory is a skill source of every agent, read by the daemon at each session build (`bootstrap::skills`, a load-time default never written to a realm's `config.toml`) | the user only | user data |
 | `notes/<slug>.md` | Markdown, one user-scope note each (`memory::NoteStore`) | daemon (`note_save`, `note_forget`), the user | user data |
 | `notes/MEMORY.md` | Markdown index of the notes | daemon, atomic | nothing (rebuilt on every note write) |
 | `history` | text, one escaped prompt per line, at most 1000 (`ui::history`) | client: appends (0600), rewrites atomically | prompt history |

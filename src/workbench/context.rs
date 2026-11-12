@@ -1,6 +1,7 @@
 //! `/context`'s breakdown: the UI's header, the session's system prompt
-//! and message counts and its tool definitions by family, as the daemon
-//! reports them (`rkat/context`), and the instruction files on disk,
+//! and message counts, its skills directories and its tool definitions by
+//! family, as the daemon reports them (`rkat/context`), and the
+//! instruction files on disk,
 //! found the same way the session builds find them
 //! ([`InstructionSources::of`]).
 
@@ -11,6 +12,7 @@ use crate::daemon::protocol::ContextReport;
 
 use crate::bootstrap::RuntimeScope;
 use crate::bootstrap::instructions::{InstructionSources, SectionKind, remember_target};
+use crate::bootstrap::skills::{SkillPlace, SkillsReport};
 
 /// The instruction files `/context` names for `scope`: the user's
 /// `SYSTEM.md`, the workspace `AGENTS.md` and every discovered section.
@@ -124,6 +126,9 @@ pub fn context_breakdown(
         };
         let _ = write!(out, "\n  {}: {} — {size}", file.label, file.path.display());
     }
+    if let Ok(report) = &report {
+        skill_lines(&mut out, &report.skills);
+    }
     match report.as_ref().map(|report| report.tools.as_deref()) {
         Ok(Some(families)) => {
             let bytes: usize = families.iter().map(|family| family.bytes).sum();
@@ -175,9 +180,33 @@ pub fn context_breakdown(
     out
 }
 
+/// The skills directories of `skills`, each with its count.
+fn skill_lines(out: &mut String, skills: &SkillsReport) {
+    match skills {
+        SkillsReport::Off => {
+            out.push_str("\nskills: off ([skills] enabled = false in the realm config)");
+        }
+        SkillsReport::On { directories } => {
+            out.push_str("\nskills directories (new sessions list their skills):");
+            for dir in directories {
+                let label = match dir.place {
+                    SkillPlace::User => "your skills",
+                    SkillPlace::Project => "project skills",
+                };
+                let count = match dir.skills {
+                    Some(n) => format!("{n} skill{}", crate::text::plural(n)),
+                    None => "absent".to_string(),
+                };
+                let _ = write!(out, "\n  {label}: {} — {count}", dir.path.display());
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{InstructionFile, context_breakdown};
+    use crate::bootstrap::skills::{SkillDirectory, SkillPlace, SkillsReport};
     use crate::daemon::context::{FamilySize, MessageCounts, ToolFamily};
     use crate::daemon::protocol::ContextReport;
     use meerkat_core::{Message, SessionId, SystemMessage, UserMessage};
@@ -209,6 +238,20 @@ mod tests {
                 tools: 18,
                 bytes: 29_000,
             }],
+            skills: SkillsReport::On {
+                directories: vec![
+                    SkillDirectory {
+                        place: SkillPlace::User,
+                        path: PathBuf::from("/cfg/skills"),
+                        skills: Some(2),
+                    },
+                    SkillDirectory {
+                        place: SkillPlace::Project,
+                        path: PathBuf::from("/w/.rkat/skills"),
+                        skills: Some(1),
+                    },
+                ],
+            },
         };
         let files = [
             InstructionFile {
@@ -258,13 +301,22 @@ mod tests {
             text.contains("hidden until tool_search reveals them (no request carries them): 29000 bytes (~7.2k tokens) in 18 tools\n  mob: 18 tools, 29000 bytes"),
             "{text}"
         );
+        assert!(
+            text.contains("skills directories (new sessions list their skills):\n  your skills: /cfg/skills — 2 skills\n  project skills: /w/.rkat/skills — 1 skill\n"),
+            "{text}"
+        );
         let unread = ContextReport {
             tools: None,
             hidden: Vec::new(),
+            skills: SkillsReport::Off,
             ..report
         };
         let text = context_breakdown("h", Ok(&unread), &[]);
         assert!(text.contains("tool definitions: not read yet"), "{text}");
+        assert!(
+            text.contains("skills: off ([skills] enabled = false in the realm config)"),
+            "{text}"
+        );
         let text = context_breakdown("h", Err("gone".into()), &[]);
         assert!(
             text.contains("system prompt and messages: unknown (gone)"),

@@ -48,6 +48,8 @@ pub const DIRECT_MOB_TOOLS: [&str; 1] = ["delegate"];
 
 /// The persona's lines naming each deferred capability, so a model that
 /// was never shown a schedule or council tool knows to search for one.
+/// The `delegate` line goes with lukacf/meerkat#2208 (a helper's mob named
+/// after a failed call).
 pub const PERSONA: &str = "\
 # Tools you can reveal
 

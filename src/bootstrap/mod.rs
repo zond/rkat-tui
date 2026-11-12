@@ -41,6 +41,7 @@ pub mod project_trust;
 pub mod realm_config;
 pub mod realm_home;
 pub mod scope;
+pub mod skills;
 pub mod trust;
 
 use std::path::PathBuf;

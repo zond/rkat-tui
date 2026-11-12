@@ -1084,6 +1084,8 @@ pub struct ContextReport {
     /// them, by family, the largest first (`super::deferral`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hidden: Vec<super::context::FamilySize>,
+    /// The skills directories a session build lists skills from.
+    pub skills: crate::bootstrap::skills::SkillsReport,
 }
 
 /// [`method::Usage`]'s result.

@@ -3,6 +3,10 @@
 //! and the user-global `SYSTEM.md`
 //! ([`super::instructions::apply_system_md`]) applied on top.
 //!
+//! The user's skills directory is a load-time default too
+//! ([`super::skills::apply_user_skills`]): the first skill repository,
+//! when it exists and skills are on.
+//!
 //! One more load-time default: when the document sets no
 //! `[tools.tool_timeouts] delegate`, a `delegate` call waits
 //! [`DELEGATE_WAIT_FACTOR`] times the longest deadline any other tool call
@@ -101,6 +105,12 @@ impl RealmConfigStore {
         &self.state_path
     }
 
+    /// The user-global directories the load-time defaults read.
+    #[must_use]
+    pub fn global(&self) -> Option<&GlobalDirs> {
+        self.global.as_ref()
+    }
+
     /// The document's path.
     #[must_use]
     pub fn path(&self) -> &Path {
@@ -120,6 +130,7 @@ impl RealmConfigStore {
         }
         config.apply_env_overrides()?;
         super::instructions::apply_system_md(&mut config, self.global.as_ref());
+        super::skills::apply_user_skills(&mut config, self.global.as_ref()).await;
         default_delegate_wait(&mut config);
         Ok(config)
     }
@@ -135,7 +146,7 @@ pub const DELEGATE_WAIT_FACTOR: u32 = 3;
 /// sets one for it. The engine gives every call the same default deadline,
 /// `delegate` included, so one tool call of a helper could use up the whole
 /// time its delegator waits (`docs/evidence.md`, "Tool deadlines inside a
-/// helper").
+/// helper"). Goes with lukacf/meerkat#2207 (a deadline of `delegate`'s own).
 fn default_delegate_wait(config: &mut Config) {
     let tools = &mut config.tools;
     if tools

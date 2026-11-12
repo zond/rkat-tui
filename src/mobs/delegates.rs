@@ -17,6 +17,8 @@
 //! still lists that member under the `delegate` profile: a member a
 //! `delegate` call never spawned (a `spawn_member` member whose id the
 //! call reused, which fails the call) is left alone.
+//!
+//! Goes when the engine retires the helper itself (lukacf/meerkat#2206).
 
 use std::collections::HashMap;
 

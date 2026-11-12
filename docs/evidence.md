@@ -138,6 +138,10 @@ the mob split are numbered in `docs/mob-split.md`, "Open engine asks"):
   `delegate`'s result and timeout error carrying the helper's mob id and
   member name (lukacf/meerkat#2208): "Where a helper lives".
 
+- A host switch for the skill discovery tools (`browse_skills`,
+  `load_skill`), default-disabled builtins no factory setting composes:
+  "The user's skills directory".
+
 - The engine cannot update a stored mob definition after creation
   (`MobStorage::update_definition` is not exposed through `MobMcpState`);
   rkat-tui overrides each agent's profile at start instead (c7b0d54):
@@ -7762,3 +7766,68 @@ Tests: `sessions::tests::the_short_id_tells_close_conversations_apart_and_resolv
 `conversations::new_starts_fresh_and_resume_brings_the_old_conversation_back` (the short form names the
 current conversation), `tests/agents.rs` (the picker's and the retire
 notice's short id).
+
+## The user's skills directory (2026-11-12)
+
+The owner wants skills kept once, in `<config dir>/skills/`, and seen by
+every workspace's agents. What Meerkat 0.9.13 does, read in the sources:
+
+- Sources (`meerkat_skills::resolve_repositories_with_roots_trusting`):
+  the embedded skills, then `config.skills.repositories` in order, then
+  `<context>/.rkat/skills` when it is a directory. The `user_root` the
+  factory passes is used only as a fallback root of the Git skill cache:
+  there is no user-level directory.
+- A skill's key is `(source_uuid, skill_name)` (`FilesystemSkillSource`
+  builds it from the repository's uuid and the directory's name). The
+  composite source (`CompositeSkillSource::list`) drops only a second copy
+  of the same canonical key, so the same name in two sources is two
+  skills, both active and both listed: no source replaces another's
+  skill by name. Precedence by order decides nothing across sources.
+- The only way to make one copy win is `[skills.identity] remaps` (a
+  remap across sources needs a lineage edge between them,
+  `SourceIdentityRegistry::build`; `rename_or_relocate` needs no required
+  skill list). A remapped-away key is skipped in the listing and a load
+  of it serves the target.
+- The project's `.rkat/skills` is judged by the factory's
+  `skill_host_boundary`, which is the trusted host unless the factory has
+  a `HostConfinement` (`with_host_confinement`). rkat-tui sets only
+  `with_shell_confinement`, so the project's skills load whenever the
+  directory exists, confined or not, and `/trust` does not cover them
+  (they are text, like the project's `AGENTS.md`).
+  `confinement::the_confined_shell_cannot_reach_the_users_skills` pins it.
+- The inventory (`<available_skills>`) is in the system prompt of a
+  rkat-tui agent and of a `delegate` helper (both `HostPromptSections::Full`).
+  It is flat up to `[skills] inventory_threshold` (12) skills and a count
+  per source above; the 12 embedded skills reach it, so any further skill
+  switches to counts by default.
+- The agent cannot open a skill. `browse_skills`, `load_skill` and the
+  resource tools are `default_enabled: false` builtins, and the factory
+  composes builtins under a fixed `ToolMode::AllowAll` layer
+  (`factory.rs`, "Create builtin tool config") with no host switch, so no
+  request carries them (seen in the rig's recorded tool lists). A skill's
+  body reaches a model only through `preload_skills` or a turn's
+  `skill_refs`.
+
+What rkat-tui does (`src/bootstrap/skills.rs`): a load-time default of
+the realm config store, like the `SYSTEM.md` override, never written to
+the document. When `[skills] enabled` and the directory exists, a
+filesystem repository named `user` under a fixed source uuid goes first;
+a repository the user already has for that directory (or under that uuid)
+is used instead. Each valid skill name of the directory (listed with the
+engine's own `FilesystemSkillSource`, on a blocking thread) gets a remap
+from the project source to the user's, unless the user configured a remap
+for that key, plus one lineage event relating the two sources. Entry only
+when the directory exists: a missing directory adds no phantom source,
+and the config is read at every build, so a directory made later counts
+from the next session. `/context` reports the directories with the
+engine's count of valid skills (`rkat/context`'s `skills`).
+
+Tests: `tests/skills.rs` (two workspaces, the user's name wins over the
+project's, a missing directory, `enabled = false`, a `delegate` helper,
+`/context`), `bootstrap::skills::tests`, `workbench::context::tests`, and
+the confinement test above.
+
+Upstream ask (recorded, not posted): a host switch for the skill
+discovery tools (`browse_skills`, `load_skill`), for example a
+`ToolCategoryOverride` as `web_search` has; until then rkat-tui's agents
+see their skills' names and descriptions but cannot load one.

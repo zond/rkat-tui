@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Added
+
+- A skills directory of your own, `~/.rkat/tui/skills/`
+  (`<config-dir>/skills/`): every workspace's agents and their `delegate`
+  helpers list its skills, ahead of the realm config's skill
+  repositories and the project's `.rkat/skills`. A project skill with the
+  name of one of yours is not listed; yours is. `[skills] enabled =
+  false` in the realm config still turns skills off. `/context` names
+  your skills directory and the project's with how many skills each
+  holds. The agent sees the skill inventory but cannot yet open a
+  skill's body (Meerkat 0.9.13 composes no `load_skill` for a host); the
+  manual's new "Skills" section says what a skill looks like.
+
 ### Changed
 
 - `glob` and `grep` are bounded like the other tools: they walk the tree

@@ -113,6 +113,8 @@ pub struct Local {
     machine: Arc<meerkat_runtime::MeerkatMachine>,
     /// The realm config (a switched-to model's profile is written there).
     realm_config: Arc<crate::bootstrap::RealmConfigStore>,
+    /// The workspace (`/context` names its `.rkat/skills`).
+    workspace: std::path::PathBuf,
     /// The daemon's endpoints (a switch names one by its binding).
     endpoints: crate::endpoints::EndpointRegistry,
     /// What the start-up had to say (`rkat/notices`).
@@ -161,6 +163,8 @@ pub struct LocalParts {
     pub machine: Arc<meerkat_runtime::MeerkatMachine>,
     /// The realm config store.
     pub realm_config: Arc<crate::bootstrap::RealmConfigStore>,
+    /// The workspace (its conventions root).
+    pub workspace: std::path::PathBuf,
     /// The daemon's endpoints.
     pub endpoints: crate::endpoints::EndpointRegistry,
     /// What the start-up had to say.
@@ -227,6 +231,7 @@ impl Local {
             realm_file,
             machine,
             realm_config,
+            workspace,
             endpoints,
             startup_notices,
             lifecycle,
@@ -259,6 +264,7 @@ impl Local {
             realm_file,
             machine,
             realm_config,
+            workspace,
             endpoints,
             startup_notices,
             lifecycle,
@@ -339,6 +345,25 @@ impl Local {
             .clone()
             .or_else(|| self.agents.recent())
             .ok_or_else(|| Refusal::new(protocol::NO_AGENT, "no agent works in this workspace"))
+    }
+
+    /// The skills directories a session build of this workspace lists
+    /// skills from (`/context`), as the realm config serves it now.
+    ///
+    /// # Errors
+    ///
+    /// [`protocol::SWITCH_FAILED`] when the realm config cannot be read.
+    async fn skills(&self) -> Result<crate::bootstrap::skills::SkillsReport, Refusal> {
+        let config = meerkat_core::ConfigStore::get(&*self.realm_config)
+            .await
+            .map_err(|err| Refusal::new(SWITCH_FAILED, err.to_string()))?;
+        let global = self.realm_config.global().cloned();
+        let workspace = self.workspace.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::bootstrap::skills::report(&config, global.as_ref(), &workspace)
+        })
+        .await
+        .map_err(|err| Refusal::new(SWITCH_FAILED, err.to_string()))
     }
 
     /// `rkat/status` for `caller`.
@@ -504,6 +529,7 @@ impl Local {
                     messages: super::context::MessageCounts::of(&messages),
                     tools: self.origins.sizes(&session_id),
                     hidden: self.deferral.hidden(&session_id),
+                    skills: self.skills().await?,
                     session_id,
                 })
             };

@@ -16,6 +16,7 @@ the test protocol for working on rkat-tui itself.
 - [Rules](#rules) ([Configuration reference](#configuration-reference-tuitoml))
 - [Models, endpoints and cost](#models-endpoints-and-cost) ([Setting up an endpoint](#setting-up-an-endpoint))
 - [Instructions and memory](#instructions-and-memory) ([Context and compaction](#context-and-compaction))
+- [Skills](#skills)
 - [Keys and commands](#keys-and-commands) ([Task checklist](#task-checklist))
 - [Where things live](#where-things-live)
 - [The workspace daemon](#the-workspace-daemon) ([Which daemon, which agent](#which-daemon-which-agent))
@@ -1091,7 +1092,8 @@ in bytes and tokens per family (the engine's built-in, comms, memory, mob
 and schedule tools, rkat-tui's file, note and watch tools and its
 `tool_search` under `catalog`, each MCP server's), and the tools still
 hidden until a search reveals them ([Tools an agent
-reveals](#tools-an-agent-reveals)); then the instruction files on disk (`SYSTEM.md`, the workspace
+reveals](#tools-an-agent-reveals)); the skills directories with their
+skills ([Skills](#skills)); and the instruction files on disk (`SYSTEM.md`, the workspace
 and parent `AGENTS.md`, `AGENTS.local.md`). The daemon reads a
 conversation's tool definitions while its agent is idle, so a brand-new
 conversation says "not read yet" until its first turn ends. Sizes in
@@ -1100,6 +1102,79 @@ tokens are estimates (four bytes a token).
 `/compact <instructions>` compacts the same way. Claude Code uses such text
 to focus the summary; Meerkat's compaction takes no instructions yet, so
 rkat-tui says so in a warning and compacts without them.
+
+## Skills
+
+A skill is a named piece of instructions Meerkat lists in the system
+prompt under `<available_skills>`. An agent lists skills from three
+places:
+
+1. **Yours**: `~/.rkat/tui/skills/` (`<config-dir>/skills/` with
+   `--config-dir`). Keep a skill here once and every workspace's agents,
+   and their `delegate` helpers, list it. It is in the config directory,
+   so neither the agent's shell nor its file tools can read or change it;
+   the daemon reads it when it builds a session. A missing directory is
+   no error.
+2. **Repositories** in the realm config (`~/.rkat/tui/workspaces/<id>/config.toml`),
+   Meerkat's own `[[skills.repositories]]` (a directory, a Git
+   repository, an HTTP source), listed after yours.
+3. **The project's** `<workspace>/.rkat/skills/`, last. It is read
+   whenever it exists, as the project's `AGENTS.md` is: a skill is text,
+   not something that runs, and `/trust` does not cover it (it covers the
+   MCP servers and hooks a repository brings).
+
+A skill directory holds one directory per skill, named by the skill:
+lowercase letters, digits and single dashes (`code-review`, not
+`Code_Review`). Each holds a `SKILL.md` that starts with YAML frontmatter
+between two `---` lines: `name` (the directory's name, exactly) and
+`description` (one line the agent sees in the inventory) are required;
+`version`, `metadata` (a map of strings) and `requires_capabilities` are
+optional, and any other key must be namespaced (`myteam.owner`). The
+text after the frontmatter is the skill's body. A skill whose
+frontmatter does not parse, or whose `name` differs from its directory,
+is left out (the daemon's log names it). Put skills directly under the
+skills directory: Meerkat finds a skill nested deeper but cannot load it.
+
+```text
+~/.rkat/tui/skills/
+└── code-review/
+    └── SKILL.md
+```
+
+```markdown
+---
+name: code-review
+description: How I want a change reviewed before I merge it.
+---
+
+Read the whole diff first. Check error handling and tests before style.
+Say what you would change and why, most important first.
+```
+
+**Precedence.** Meerkat names a skill by its source and its name, so two
+sources may each have a `code-review`. A project skill with the name of
+one of yours is not listed: yours is, and a request for the project's
+gets yours. A cloned repository cannot stand in for your skill. Skills of
+other names from every place are listed side by side.
+
+**Settings.** Skills are on unless the realm config says
+`[skills] enabled = false`, which turns all of them off, yours included.
+The inventory lists each skill's name and description while there are at
+most `[skills] inventory_threshold` of them (12 by default; Meerkat's own
+embedded skills are 12 already), and above that only how many each
+source has. If you list your directory in `[[skills.repositories]]`
+yourself, that entry is used as it is, not doubled.
+
+**What the agent can do with a skill.** In this version the agent sees
+the inventory but cannot open a skill's body: Meerkat's `browse_skills`
+and `load_skill` tools are off by default and the engine has no switch a
+host can turn them on with (an engine ask). The inventory tells the
+agent what exists; to have it follow a skill now, paste the skill's text
+into your message.
+
+**Check** with `/context`: it names your skills directory and the
+project's (when there is one) with how many valid skills each holds, or
+says that skills are off.
 
 ## Keys and commands
 

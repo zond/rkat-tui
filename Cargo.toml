@@ -50,6 +50,9 @@ meerkat-sandbox = { version = "0.9.13" }
 meerkat-schedule = { version = "0.9.13" }
 meerkat-mob = { version = "0.9.13" }
 meerkat-mob-mcp = { version = "0.9.13" }
+# The user skills directory: listed and counted by the engine's own
+# filesystem skill source (`bootstrap::skills`).
+meerkat-skills = { version = "0.9.13" }
 # The `rkat-tui-mob` daemon serves Meerkat's own JSON-RPC method router
 # (`MethodRouter`, `RpcServer`, `SessionRuntime`) over loopback TCP. Default
 # features off: no realtime voice and no governed-realm host.

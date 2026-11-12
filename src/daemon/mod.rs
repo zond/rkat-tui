@@ -638,6 +638,7 @@ impl Daemon {
             realm_file: composed.realm_file.clone(),
             machine: composed.runtime.runtime_adapter(),
             realm_config: Arc::clone(&composed.realm_config),
+            workspace: composed.scope.context_root.clone(),
             endpoints: composed.endpoints.clone(),
             startup_notices: composed.startup_notices.clone(),
             lifecycle,

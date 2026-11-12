@@ -122,6 +122,9 @@ agents").
 - **Instructions and memory.** `AGENTS.md` and `SYSTEM.md` files,
   `/remember`, notes the agent keeps across sessions, and semantic memory
   over compacted history.
+- **Skills.** Your own skills in `~/.rkat/tui/skills/` are listed to the
+  agents of every workspace, ahead of a project's `.rkat/skills`
+  ([Skills](docs/manual.md#skills)).
 
 ## Documentation
 

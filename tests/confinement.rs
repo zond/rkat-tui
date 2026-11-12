@@ -6,7 +6,8 @@
 //! runs in the attached client as the user, unconfined. The security
 //! review's sandbox claims (recommendation 12): no `~/.ssh`, no Cargo
 //! credentials, no network in strict; `.rkat/` and `.git/` are still
-//! writable (engine ask 8), pinned as the gap it is.
+//! writable (engine ask 8), pinned as the gap it is. The user's skills
+//! directory is out of the shell's reach.
 //!
 //! The confined cases need the platform backend (Linux: unprivileged user
 //! namespaces; macOS: Seatbelt). Each case first probes the backend directly
@@ -830,6 +831,81 @@ async fn the_realm_is_out_of_reach_and_git_stays_writable_until_engine_ask_8() {
     assert!(
         output.contains("GIT-WRITTEN"),
         "the engine now keeps .git/ read only: make this half the claim ({output})"
+    );
+}
+
+/// The user's skills directory is in the config directory, out of the
+/// confined shell's reach: a command can neither change one of its
+/// skills, plant a new one nor list it, while the daemon, which reads it,
+/// lists the skill in the agent's prompt.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_confined_shell_cannot_reach_the_users_skills() {
+    let ws = Workspace::new();
+    if let Some(reason) = sandbox_unavailable(&ws.root, ConfinementArg::Workspace).await {
+        common::sandbox_skipped(&format!(
+            "--confinement=workspace is unavailable on this host: {reason}"
+        ));
+        return;
+    }
+    let (setup, _state) = allow_shell_detected(&["--confinement=workspace"]);
+    let skills = rkat_tui::bootstrap::resolve_scope(&setup.command_line(&ws.root))
+        .unwrap()
+        .global
+        .skills_dir();
+    let mine = skills.join("review").join("SKILL.md");
+    std::fs::create_dir_all(mine.parent().unwrap()).unwrap();
+    let text = "---\nname: review\ndescription: USER-REVIEW-SKILL\n---\nbody\n";
+    std::fs::write(&mine, text).unwrap();
+    // The project's skills load under confinement too: the engine is
+    // given no host boundary to judge them by (the manual's "Skills").
+    let lint = ws.root.join(".rkat/skills/lint");
+    std::fs::create_dir_all(&lint).unwrap();
+    std::fs::write(
+        lint.join("SKILL.md"),
+        "---\nname: lint\ndescription: PROJECT-LINT\n---\nbody\n",
+    )
+    .unwrap();
+    let command = leak(format!(
+        "echo x >> '{mine}' 2>/dev/null && echo SKILL-WRITTEN; mkdir -p '{skills}/planted' 2>/dev/null && echo PLANTED; ls '{skills}' >/dev/null 2>&1 && echo LISTED; echo END",
+        mine = mine.display(),
+        skills = skills.display()
+    ));
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Tool {
+            id: "sh",
+            name: "shell",
+            args: json!({ "command": command }),
+        },
+        Step::Text("done"),
+    ]);
+    let mut rig = Attached::try_start_with(&ws.root, &llm, setup)
+        .await
+        .unwrap_or_else(|err| panic!("daemon start: {err}"));
+    rig.send(Effect::StartTurn("probe".into()));
+    let _ = rig.turn_finished().await;
+    let output = tool_text(&llm.requests()[1], "sh");
+    let system = llm.recorded()[0].system();
+    rig.quit().await;
+    assert!(output.contains("END"), "{output}");
+    assert!(!output.contains("SKILL-WRITTEN"), "{output}");
+    assert!(!output.contains("PLANTED"), "{output}");
+    assert!(!output.contains("LISTED"), "{output}");
+    assert_eq!(std::fs::read_to_string(&mine).unwrap(), text);
+    assert!(!skills.join("planted").exists());
+    assert!(
+        system.contains(&format!(
+            "<collection source=\"{}\" count=\"1\">",
+            rkat_tui::bootstrap::skills::user_source()
+        )),
+        "{system}"
+    );
+    assert!(
+        system.contains(&format!(
+            "<collection source=\"{}\" count=\"1\">",
+            meerkat_core::skills::SourceUuid::project_local()
+        )),
+        "{system}"
     );
 }
 

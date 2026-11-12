@@ -3757,6 +3757,7 @@ dependencies = [
  "meerkat-runtime",
  "meerkat-sandbox",
  "meerkat-schedule",
+ "meerkat-skills",
  "meerkat-sqlite",
  "meerkat-store",
  "meerkat-tools",

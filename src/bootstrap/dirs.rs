@@ -1,9 +1,9 @@
 //! User-global `rkat-tui` directories.
 //!
 //! Everything the TUI keeps per user (rather than per workspace) lives in one
-//! config directory: user-global `AGENTS.md` and `SYSTEM.md`, the global
-//! `tui.toml` rules file, notes, the input history and the host trust
-//! records.
+//! config directory: user-global `AGENTS.md` and `SYSTEM.md`, the user's
+//! skills, the global `tui.toml` rules file, notes, the input history and
+//! the host trust records.
 //!
 //! Resolution order (first match wins):
 //!
@@ -103,6 +103,13 @@ impl GlobalDirs {
     #[must_use]
     pub fn system_md(&self) -> PathBuf {
         self.config.join("SYSTEM.md")
+    }
+
+    /// The user's own skills directory, a skill source of every
+    /// workspace's agents (see [`super::skills`]).
+    #[must_use]
+    pub fn skills_dir(&self) -> PathBuf {
+        self.config.join(super::skills::USER_SKILLS_DIR)
     }
 
     /// Directory of user-global notes.
