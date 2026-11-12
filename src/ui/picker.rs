@@ -16,6 +16,7 @@ use ratatui::text::Line;
 use super::markdown::{truncate_to_width, wrap_text};
 use super::modal::{ListCursor, ModalKey, has_ctrl_or_alt, is_ctrl_c, is_held, window_lines};
 use super::{App, BlockId, Effect, Modal, OpenHelperView, ScrollState};
+use crate::approval::mode::PermissionMode;
 use crate::daemon::protocol::ScheduleOp;
 
 /// Which command's picker a [`ListPicker`] is (a refresh replaces only a
@@ -28,6 +29,8 @@ pub enum PickerKind {
     Permissions,
     /// `/helpers`.
     Helpers,
+    /// `/mode`.
+    Mode,
 }
 
 impl PickerKind {
@@ -38,6 +41,7 @@ impl PickerKind {
             Self::Schedules => " Schedules ",
             Self::Permissions => " Approval rules ",
             Self::Helpers => " Helpers ",
+            Self::Mode => " Permission mode ",
         }
     }
 }
@@ -49,6 +53,8 @@ pub enum PickAct {
     Schedule(ScheduleOp, String),
     /// `/permissions rm <n>`, then the list again.
     RemoveRule(usize),
+    /// `/mode <mode>` (`/auto resume` for a paused auto mode).
+    SetMode(PermissionMode),
     /// The helper's full view (Ctrl+Up/Down, then Enter).
     ViewHelper(BlockId),
     /// Fold or expand the helper's block in the transcript.
@@ -99,7 +105,6 @@ impl PickKey {
     }
 
     /// `code` says `why` it does nothing here.
-    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn refused(code: KeyCode, why: impl Into<String>) -> Self {
         Self {
@@ -133,7 +138,6 @@ impl PickRow {
     }
 
     /// The row with `note` under it.
-    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn noted(mut self, note: impl Into<String>) -> Self {
         self.note = Some(note.into());
@@ -321,6 +325,58 @@ pub(super) fn list_picker_lines(
     lines
 }
 
+/// One line on what each mode asks and allows (the `/mode` picker's).
+fn mode_explained(mode: PermissionMode) -> &'static str {
+    match mode {
+        PermissionMode::Manual => "every edit and command asks you",
+        PermissionMode::AcceptEdits => "edits inside the project run; commands ask you",
+        PermissionMode::Plan => "read-only: the agent plans and asks before changing anything",
+        PermissionMode::Auto => "a classifier reviews what is not always allowed",
+    }
+}
+
+/// The `/mode` picker: the four modes, `current` marked and highlighted;
+/// Enter switches. A `paused` auto mode says so, and Enter on it resumes
+/// it (as `/auto resume`).
+#[must_use]
+pub fn mode_picker(current: Option<PermissionMode>, paused: bool) -> ListPicker {
+    let rows = PermissionMode::ALL
+        .iter()
+        .map(|&mode| {
+            let is_current = current == Some(mode);
+            let mark = if is_current { "* " } else { "  " };
+            let enter = match mode {
+                PermissionMode::Auto if is_current && paused => {
+                    PickKey::now(KeyCode::Enter, PickAct::SetMode(mode))
+                }
+                _ if is_current => {
+                    PickKey::refused(KeyCode::Enter, format!("{} is the mode now", mode.label()))
+                }
+                _ => PickKey::now(KeyCode::Enter, PickAct::SetMode(mode)),
+            };
+            let state = match mode {
+                PermissionMode::Auto if is_current && paused => {
+                    " · PAUSED after too many blocks: Enter resumes it"
+                }
+                _ if is_current => " · now",
+                _ => "",
+            };
+            PickRow::new(format!("{mark}{}{state}", mode.label()), vec![enter])
+                .noted(mode_explained(mode))
+        })
+        .collect();
+    let at = current
+        .and_then(|mode| PermissionMode::ALL.iter().position(|m| *m == mode))
+        .unwrap_or(0);
+    ListPicker::new(
+        PickerKind::Mode,
+        rows,
+        "",
+        "↑/↓ move · Enter switch · Esc close · Shift+Tab cycles the modes",
+    )
+    .at(at)
+}
+
 impl App {
     /// Open a picker `modal` over nothing (or over the keys panel); behind
     /// an approval dialog it waits until the dialogs are answered
@@ -367,6 +423,7 @@ impl App {
         match act {
             PickAct::Schedule(op, id) => fx.push(Effect::PickedSchedule(op, id)),
             PickAct::RemoveRule(n) => fx.push(Effect::PickedRuleRemoval(n)),
+            PickAct::SetMode(mode) => fx.push(Effect::SetMode(mode)),
             PickAct::ViewHelper(header) => {
                 self.helper_view = Some(OpenHelperView {
                     header,
@@ -485,5 +542,44 @@ mod tests {
             "keys",
         );
         assert_eq!(open.refreshed(shorter).cursor.index(), 0);
+    }
+
+    /// The mode picker: four rows, the current one marked and highlighted;
+    /// Enter on another switches, on the current one says it is the mode
+    /// now; a paused auto mode says so and Enter on it resumes it.
+    #[test]
+    fn the_mode_picker_marks_the_mode_and_resumes_a_paused_auto() {
+        let mut p = mode_picker(Some(PermissionMode::Plan), false);
+        let texts: Vec<&str> = p.rows.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec!["  manual", "  accept edits", "* plan · now", "  auto"]
+        );
+        assert!(p.rows.iter().all(|r| r.note.is_some()));
+        assert_eq!(p.cursor.index(), 2);
+        p.key(&press(KeyCode::Enter));
+        assert_eq!(
+            p.line,
+            Some(PickerLine::Refused("plan is the mode now".into()))
+        );
+        p.key(&press(KeyCode::Up));
+        assert_eq!(
+            p.key(&press(KeyCode::Enter)),
+            ModalKey::Choose(PickAct::SetMode(PermissionMode::AcceptEdits))
+        );
+        let mut paused = mode_picker(Some(PermissionMode::Auto), true);
+        assert_eq!(paused.cursor.index(), 3);
+        assert!(
+            paused.rows[3].text.contains("PAUSED"),
+            "{:?}",
+            paused.rows[3]
+        );
+        assert_eq!(
+            paused.key(&press(KeyCode::Enter)),
+            ModalKey::Choose(PickAct::SetMode(PermissionMode::Auto))
+        );
+        // Before the mode is known nothing is marked.
+        let unknown = mode_picker(None, false);
+        assert!(unknown.rows.iter().all(|r| r.text.starts_with("  ")));
     }
 }

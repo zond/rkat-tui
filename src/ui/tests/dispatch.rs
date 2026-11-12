@@ -53,7 +53,8 @@ fn slash_commands_map_to_effects() {
             total_limit: 20,
         },
     });
-    assert!(run(&mut app, "/mode").is_empty());
+    // `/auto` shows the mode as a notice (`/mode` opens its picker).
+    assert!(run(&mut app, "/auto").is_empty());
     assert!(
         last_notice(&app).is_some_and(|(_, t)| t.starts_with("permission mode: accept edits")),
         "{:?}",
@@ -329,6 +330,44 @@ fn rule_picker_removes_after_a_confirmation() {
         refresh: true,
     });
     assert!(matches!(&app.modal, Some(Modal::List(p)) if p.rows.is_empty()));
+}
+
+/// `/mode` opens the mode picker on the current mode; Enter on another
+/// switches (the daemon's push then changes the mode), Esc closes it;
+/// `/mode <name>` and Shift+Tab stay the shortcuts.
+#[test]
+fn mode_picker_switches_the_mode() {
+    let mut app = App::new(StatusInfo::default());
+    app.status.apply(StatusUpdate::Mode {
+        mode: PermissionMode::Manual,
+        paused: false,
+        denials: crate::approval::desk::Denials::default(),
+    });
+    assert!(submit(&mut app, "/mode").is_empty());
+    assert!(
+        matches!(&app.modal, Some(Modal::List(p)) if p.kind == PickerKind::Mode && p.cursor.index() == 0)
+    );
+    app.update(key(KeyCode::Down));
+    app.update(key(KeyCode::Down));
+    assert_eq!(
+        app.update(key(KeyCode::Enter)),
+        vec![Effect::SetMode(PermissionMode::Plan)]
+    );
+    assert!(app.modal.is_none());
+    assert!(submit(&mut app, "/mode").is_empty());
+    app.update(key(KeyCode::Esc));
+    assert!(app.modal.is_none());
+    assert_eq!(
+        submit(&mut app, "/mode auto"),
+        vec![Effect::SetMode(PermissionMode::Auto)]
+    );
+    assert_eq!(
+        app.update(Msg::Key(KeyEvent::new(
+            KeyCode::BackTab,
+            KeyModifiers::SHIFT
+        ))),
+        vec![Effect::SetMode(PermissionMode::AcceptEdits)]
+    );
 }
 
 #[test]

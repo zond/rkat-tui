@@ -405,11 +405,11 @@ pub static COMMANDS: &[CommandSpec] = &[
         name: "mode",
         aliases: &[],
         usage: "[default | accept-edits | plan | auto]",
-        summary: "show or set the permission mode",
+        summary: "pick or set the permission mode",
         help: &[
             (
                 "/mode",
-                "show the permission mode (Shift+Tab cycles manual → accept\nedits → plan → auto)",
+                "open a list of the four modes, the current one marked, each\nwith what it asks and allows; Enter switches (on a paused\nauto mode: resumes it). Shift+Tab cycles manual → accept\nedits → plan → auto",
             ),
             (
                 "/mode default|accept-edits|plan|auto",
@@ -815,13 +815,14 @@ Agent picker (/agents):
   d, then y                      retire the agent: only one idle with no client (its
                                  conversation stays in /resume); any other key keeps it
   Esc, q                         close
-Lists (/schedules, /permissions, /helpers):
+Lists (/schedules, /permissions, /helpers, /mode):
   Up/Down, j/k                   move
   Enter, p (/schedules)          pause the schedule, or resume a paused one
   d, then y (/schedules)         delete it; any other key keeps it
   d, then y (/permissions)       remove the rule (adding stays /permissions add)
   Enter (/helpers)               open the helper's full view (Esc returns)
   f (/helpers)                   fold or expand the helper's block in the transcript
+  Enter (/mode)                  switch to the mode (a paused auto mode: resume it)
   Esc, q, Ctrl-C                 close (an approval request takes over and the list comes back)";
 
 /// The line that ends `/help`. `/rewind` returns when the engine can rewind

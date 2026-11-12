@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use super::{
     App, AutoCommand, Busy, COMPACT_FOCUS_UNSUPPORTED, Command, CompactCommand, CompactFailure,
-    Effect, ModelCommand, NoticeLevel, RulesCommand, commands,
+    Effect, Modal, ModelCommand, NoticeLevel, RulesCommand, commands,
 };
 use crate::approval::mode::PermissionMode;
 
@@ -161,7 +161,11 @@ impl App {
                     });
                 }
             }
-            Command::Auto(AutoCommand::Status) | Command::Mode(None) => {
+            Command::Mode(None) => self.show_modal(Modal::List(super::picker::mode_picker(
+                self.status.mode,
+                self.status.auto_paused,
+            ))),
+            Command::Auto(AutoCommand::Status) => {
                 let text = format!(
                     "permission mode: {} (Shift+Tab cycles manual → accept edits → plan → auto; /mode <name> sets one)",
                     self.status.mode_text()

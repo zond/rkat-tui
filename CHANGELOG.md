@@ -29,7 +29,10 @@
   as `/permissions rm` does; adding stays `/permissions add`);
   `/helpers` lists this conversation's helpers as their headers show
   them, nested ones indented: Enter opens one's full view, `f` folds or
-  expands its block (`/helpers list` prints the old notice). The list
+  expands its block (`/helpers list` prints the old notice); `/mode`
+  lists the four modes with what each asks and allows, the current one
+  marked, and Enter switches (on a paused auto mode it resumes it, as
+  `/auto resume`; `/auto` still shows the mode as a notice). The list
   moves with ↑/↓ or j/k and closes with Esc, `q` or Ctrl-C; an approval
   request takes over and the list comes back after it. The typed forms
   (`/schedules pause <name>` and the like) work as before.

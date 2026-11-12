@@ -259,7 +259,11 @@ behind it are denied as not answered too.
 As in Claude Code, Shift+Tab cycles four modes, manual → accept edits →
 plan → auto → manual, and the status bar names the one in force (`manual`,
 `accept edits`, `plan`, or `auto (deny 0/3, 0/20)`; `auto: PAUSED (…)` on
-yellow after a denial pause). `/mode` shows it and `/mode
+yellow after a denial pause). `/mode` opens a list of the four modes, the
+current one marked, each with a line on what it asks and allows: Enter
+switches to the highlighted one (on auto paused after a denial pause it
+resumes it, as `/auto resume`), Esc closes the list. `/auto` shows the
+mode as a notice, and `/mode
 default|accept-edits|plan|auto` sets it (`manual` and `acceptEdits` are
 accepted too); `/auto on` is `/mode auto` and `/auto off` is `/mode default`.
 

@@ -904,6 +904,53 @@ fn rule_picker_snapshot() {
     );
 }
 
+/// The `/mode` picker: four rows with their explanations under them,
+/// the current mode marked and highlighted, a paused auto mode saying
+/// Enter resumes it.
+#[test]
+fn mode_picker_snapshot() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent};
+    use rkat_tui::approval::mode::PermissionMode;
+    let mut status = StatusInfo::default();
+    status.apply(StatusUpdate::Mode {
+        mode: PermissionMode::Auto,
+        paused: true,
+        denials: rkat_tui::approval::desk::Denials::default(),
+    });
+    let mut app = App::new(status);
+    for c in "/mode".chars() {
+        app.update(Msg::Key(KeyEvent::from(KeyCode::Char(c))));
+    }
+    app.update(Msg::Key(KeyEvent::from(KeyCode::Enter)));
+    let mut terminal = Terminal::new(TestBackend::new(72, 16)).unwrap();
+    terminal
+        .draw(|f| draw_at(f, &mut app, Instant::now()))
+        .unwrap();
+    let buffer = terminal.backend().buffer().clone();
+    let all = rows(&buffer);
+    let top = all
+        .iter()
+        .position(|row| row.contains("┌ Permission mode"))
+        .expect("the picker is drawn");
+    assert_eq!(
+        all[top + 1..top + 10].to_vec(),
+        vec![
+            "  │  manual                                                          │",
+            "  │    every edit and command asks you                               │",
+            "  │  accept edits                                                    │",
+            "  │    edits inside the project run; commands ask you                │",
+            "  │  plan                                                            │",
+            "  │    read-only: the agent plans and asks before changing anything  │",
+            "  │* auto · PAUSED after too many blocks: Enter resumes it           │",
+            "  │    a classifier reviews what is not always allowed               │",
+            "  │↑/↓ move · Enter switch · Esc close · Shift+Tab cycles the modes  │",
+        ]
+    );
+    let row = u16::try_from(top + 7).unwrap();
+    assert!(buffer[(3, row)].modifier.contains(Modifier::REVERSED));
+    assert!(buffer[(5, row + 1)].modifier.contains(Modifier::DIM));
+}
+
 #[test]
 fn selected_cells_render_reversed() {
     use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};

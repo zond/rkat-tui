@@ -531,6 +531,40 @@ async fn the_rule_picker_removes_a_rule_from_the_daemon() {
     daemon.stop().await;
 }
 
+/// The `/mode` picker switches the daemon's mode: its Enter on another
+/// row is the mode switch, the daemon pushes the new mode, and the next
+/// picker marks it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_mode_picker_switches_the_daemon_s_mode() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent};
+    use rkat_tui::approval::mode::PermissionMode;
+    use rkat_tui::ui::picker::mode_picker;
+    use rkat_tui::ui::{ModalKey, PickAct, StatusUpdate};
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let daemon = start(&ws.root, &llm, &Setup::default()).await;
+    let mut client = attach(&ws.root).await;
+    client.set_mode(PermissionMode::Manual).await;
+    let mut picker = mode_picker(Some(PermissionMode::Manual), false);
+    picker.key(&KeyEvent::from(KeyCode::Down));
+    let ModalKey::Choose(PickAct::SetMode(mode)) = picker.key(&KeyEvent::from(KeyCode::Enter))
+    else {
+        panic!("no switch")
+    };
+    assert_eq!(mode, PermissionMode::AcceptEdits);
+    client.send(Effect::SetMode(mode));
+    client
+        .wait_for(|msg| {
+            matches!(msg, Msg::Status(StatusUpdate::Mode { mode: shown, .. }) if *shown == PermissionMode::AcceptEdits)
+        })
+        .await;
+    let marked = mode_picker(Some(PermissionMode::AcceptEdits), false);
+    assert_eq!(marked.cursor.index(), 1);
+    assert!(marked.rows[1].text.starts_with("* accept edits"));
+    client.quit().await;
+    daemon.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_helpers_reviewed_call_raises_an_approval_too() {
     let ws = Workspace::new();

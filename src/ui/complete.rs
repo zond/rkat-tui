@@ -273,7 +273,7 @@ mod tests {
             items[0].label,
             "/mode [default | accept-edits | plan | auto]"
         );
-        assert_eq!(items[0].detail, "show or set the permission mode");
+        assert_eq!(items[0].detail, "pick or set the permission mode");
         assert_eq!(items[1].insert, "/model");
         assert_eq!(items[1].label, "/model [[endpoint:]id | refresh]");
         assert_eq!(items[1].detail, "pick or switch the model");
