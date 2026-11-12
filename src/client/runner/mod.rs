@@ -576,6 +576,9 @@ pub struct Runner {
     /// An `/agents <name>` switch runs: the next link renders that agent's
     /// conversation from its start.
     agent_switch: bool,
+    /// The agent picker's "new agent" row: connects ask for a new agent
+    /// until one is bound.
+    seat_new: bool,
     ui_tx: mpsc::UnboundedSender<Msg>,
     effect_rx: mpsc::UnboundedReceiver<Effect>,
     /// The connection's lifecycle.
@@ -697,6 +700,7 @@ impl Runner {
             config,
             agent: None,
             agent_switch: false,
+            seat_new: false,
             ui_tx,
             effect_rx,
             conn: Conn::Idle,
@@ -1089,7 +1093,9 @@ impl Runner {
             Effect::DaemonStop => self.daemon_stop(),
             Effect::Rehome(reference) => self.rehome(reference),
             Effect::DaemonStart => self.daemon_start(),
-            Effect::Agents(None) => self.list_agents(),
+            Effect::Agents(None) => self.show_agent_picker(),
+            Effect::NewAgent => self.new_agent(),
+            Effect::RetireAgent(name) => self.retire_agent(name),
             Effect::Audit(lines) => self.show_audit(lines),
             Effect::Schedules(action) => self.schedules(action),
             Effect::Agents(Some(name)) => self.switch_agent(name),
@@ -1191,7 +1197,7 @@ async fn sleep_until(deadline: Option<Instant>) {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::commands::{agent_lines, others_notice, report_lines, schedules_text};
+    use super::commands::{agent_entries, others_notice, report_lines, schedules_text};
     use super::turn::model_switch;
     use super::*;
 
@@ -1222,87 +1228,104 @@ mod tests {
         );
     }
 
-    /// `/status`'s daemon side: the realm, confinement, mode, trust and
-    /// helper lines, in their order.
+    /// The start-up notice about the other agents, for a client that
+    /// joined one and for one that got a new agent.
     #[test]
     fn the_start_up_notice_names_the_other_agents() {
-        let row = |name: &str, running| protocol::AgentRow {
+        let row = |name: &str, running, clients| protocol::AgentRow {
             name: name.into(),
             session_id: None,
             running,
-            clients: 0,
-            detached: false,
+            clients,
+            detached: clients == 0,
             schedules: 0,
         };
-        assert_eq!(
-            others_notice(&[row("main-mine", Some(false))], "main-mine"),
-            None
-        );
-        let text = others_notice(
-            &[
-                row("main-abcd", Some(true)),
-                row("main-mine", Some(false)),
-                row("main-efgh", Some(false)),
-                row("main-ijkl", None),
-            ],
-            "main-mine",
-        )
-        .unwrap();
+        let alone = [row("main-mine", Some(false), 1)];
+        assert_eq!(others_notice(&alone, "main-mine", false), None);
+        assert_eq!(others_notice(&alone, "main-mine", true), None);
+        let rows = [
+            row("main-abcd", Some(true), 0),
+            row("main-mine", Some(false), 1),
+            row("main-efgh", Some(false), 0),
+            row("main-ijkl", None, 0),
+            row("main-mnop", Some(false), 2),
+        ];
+        // Joined (`-c`, `--resume`): the others' state.
+        let text = others_notice(&rows, "main-mine", false).unwrap();
         assert!(
             text.starts_with(
-                "other agents work in this workspace: main-abcd is running, main-efgh is idle, main-ijkl is unknown;"
+                "other agents work in this workspace: main-abcd is running, main-efgh is idle, main-ijkl is unknown, main-mnop is idle;"
             ),
             "{text}"
         );
-        assert!(text.contains("-c joins the most recent"), "{text}");
+        assert!(text.contains("/agents picks one"), "{text}");
+        // A new agent: said so, with the others counted and how to reach
+        // them; only an idle agent nobody works with counts as idle
+        // without a client (running, unknown and attached ones do not).
+        assert_eq!(
+            others_notice(&rows, "main-mine", true).unwrap(),
+            "started a new agent (main-mine); 4 others work here, 1 idle without a client: /agents picks one (rkat-tui -c joins the most recently active instead of starting a new one)"
+        );
+        let one = [
+            row("main-mine", Some(false), 1),
+            row("main-abcd", Some(true), 1),
+        ];
+        assert_eq!(
+            others_notice(&one, "main-mine", true).unwrap(),
+            "started a new agent (main-mine); 1 other works here: /agents picks one (rkat-tui -c joins the most recently active instead of starting a new one)"
+        );
     }
 
+    /// The picker's rows: state, the conversation's short id and title
+    /// (from the conversation list), clients, the client's own agent
+    /// marked, and why the retire key refuses an agent that is this
+    /// client's, has a client, runs, or cannot be read.
     #[test]
-    fn agents_are_listed_with_state_conversation_and_clients() {
+    fn the_agent_picker_rows_have_state_conversation_clients_and_retire_refusals() {
         let session = SessionId::new();
+        let other = SessionId::new();
+        let row = |name: &str, session_id: Option<SessionId>, running, clients, detached| {
+            protocol::AgentRow {
+                name: name.into(),
+                session_id,
+                running,
+                clients,
+                detached,
+                schedules: 0,
+            }
+        };
         let rows = vec![
-            protocol::AgentRow {
-                name: "main-aaaa".into(),
-                session_id: Some(session.clone()),
-                running: Some(true),
-                clients: 1,
-                detached: false,
-                schedules: 0,
-            },
-            protocol::AgentRow {
-                name: "main-bbbb".into(),
-                session_id: None,
-                running: Some(false),
-                clients: 0,
-                detached: true,
-                schedules: 0,
-            },
-            protocol::AgentRow {
-                name: "main-cccc".into(),
-                session_id: None,
-                running: None,
-                clients: 1,
-                detached: false,
-                schedules: 0,
-            },
+            row("main-aaaa", Some(session.clone()), Some(false), 1, false),
+            row("main-bbbb", Some(other.clone()), Some(false), 0, true),
+            row("main-cccc", None, Some(true), 0, true),
+            row("main-dddd", None, Some(false), 2, false),
+            row("main-eeee", None, None, 0, true),
         ];
-        let lines = agent_lines(&rows, Some("main-aaaa"));
-        let short = &session.to_string()[..8];
-        assert_eq!(lines[0], "3 agents in this workspace:");
-        assert_eq!(
-            lines[1],
-            format!("  main-aaaa · running · conversation {short} · 1 client (this rkat-tui)")
-        );
-        assert_eq!(
-            lines[2],
-            "  main-bbbb · idle · no conversation · 0 clients (detached)"
-        );
-        // Unknown is not idle.
-        assert_eq!(
-            lines[3],
-            "  main-cccc · unknown · no conversation · 1 client"
-        );
-        assert!(lines[4].contains("/agents <name>"));
+        let listed = vec![crate::daemon::conversations::Listed {
+            session_id: other.clone(),
+            agent: "main-bbbb".into(),
+            in_use: None,
+            last_used: 0,
+            messages: Some(2),
+            title: Some("fix the test".into()),
+            current: false,
+        }];
+        let entries = agent_entries(&rows, &listed, Some("main-aaaa"));
+        assert_eq!(entries.len(), 5);
+        let (a, b) = (&entries[0], &entries[1]);
+        assert!(a.mine && !b.mine);
+        assert_eq!(a.conversation.as_deref(), Some(&session.to_string()[..8]));
+        assert_eq!(a.title, None);
+        assert_eq!(b.conversation.as_deref(), Some(&other.to_string()[..8]));
+        assert_eq!(b.title.as_deref(), Some("fix the test"));
+        assert_eq!((b.run, b.clients, b.detached), ("idle", 0, true));
+        assert_eq!(b.unretirable, None, "idle and nobody's: retirable");
+        let why = |i: usize| entries[i].unretirable.clone().unwrap();
+        assert!(why(0).contains("/quit retires it"), "{}", why(0));
+        assert!(why(2).contains("running a turn"), "{}", why(2));
+        assert!(why(3).contains("has 2 clients"), "{}", why(3));
+        assert_eq!(entries[4].run, "unknown");
+        assert!(why(4).contains("cannot be read"), "{}", why(4));
     }
 
     #[test]

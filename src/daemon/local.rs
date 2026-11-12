@@ -418,6 +418,9 @@ impl Local {
                 Ok(Empty {})
             };
             method::Quit, Empty {} => self.quit(&caller).await;
+            method::RetireAgent, protocol::AgentParams { name } => {
+                self.retire_other(&caller, &name).await
+            };
             method::Recall, protocol::RecallParams { input_ids } => {
                 let recalled = self.recall(&caller, &input_ids).await;
                 // What was taken back may leave the agent idle.
@@ -742,6 +745,25 @@ impl Local {
                 running,
             },
         })
+    }
+
+    /// `rkat/retire_agent` for `caller`: retire `name` when it is another
+    /// agent than the caller's, has no client and is idle, decided and done
+    /// under the seating lock so no client binds to it in between.
+    async fn retire_other(&self, caller: &Caller, name: &str) -> Result<Retired, Refusal> {
+        let seated = self.agents.seating().await;
+        let rows = self.agents.rows().await;
+        let Some(row) = rows.iter().find(|row| row.name == name) else {
+            return Err(Refusal::new(
+                protocol::NO_AGENT,
+                format!("no agent {name} works here"),
+            ));
+        };
+        if let Some(why) = row.retire_refusal(caller.agent.as_deref()) {
+            return Err(Refusal::new(protocol::AGENT_IN_USE, why));
+        }
+        tracing::info!(agent = %name, by = ?caller.agent, "an idle agent with no client is retired");
+        self.retire(name, Some(&seated)).await
     }
 
     /// Retire every agent ([`Self::retire`]; the daemon is shutting down

@@ -79,7 +79,7 @@ official tables name, then niche features.
 | 62 | `/doctor` | setup checkup | none | missing |
 | 63 | Notifications / bell | terminal bell or notification on completion or prompt | terminal bell when a turn ends or a dialog opens while the terminal is unfocused | same |
 | 64 | `/statusline` | custom status line | fixed status bar | missing |
-| 65 | `/agents`, `/hooks` | subagent definitions, hook config | none (rkat-tui's `/agents` lists the workspace's agents and switches between them; it has no subagent definitions) | missing / low priority |
+| 65 | `/agents`, `/hooks` | subagent definitions, hook config | none (rkat-tui's `/agents` is a picker of the workspace's agents: switch, start a new one, retire an idle one; it has no subagent definitions) | missing / low priority |
 | 66 | Vim mode | `/config` → Editor mode (`/vim` removed in v2.1.92) | none | missing |
 | 67 | `/terminal-setup` | installs Shift+Enter in some terminals | not needed: `Ctrl+J`/`Alt+Enter` work everywhere | n/a |
 | 68 | `/login`, `/logout`, `/bug`, `/feedback`, `/release-notes`, `/upgrade`, `/mobile`, `/desktop`, `/install-github-app`, `/theme` | account and product commands | none | n/a |

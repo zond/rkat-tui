@@ -7,10 +7,11 @@ use std::time::Instant;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::{
-    Action, App, CHORD_WINDOW, Command, DOUBLE_CTRL_C_WINDOW, DOUBLE_ESC_WINDOW, Departure,
-    EditAction, EditorClosed, EditorTarget, Effect, HistorySearch, InputMode, LocalEffect, Modal,
-    ModalKey, ModelCommand, NoticeLevel, PathIndex, PendingId, QUIT_CONFIRM_WINDOW, QuitChoice,
-    QuitDecision, QuitDialog, SearchOutcome, StashOutcome, complete, keymap, search,
+    Action, AgentPick, App, CHORD_WINDOW, Command, DOUBLE_CTRL_C_WINDOW, DOUBLE_ESC_WINDOW,
+    Departure, EditAction, EditorClosed, EditorTarget, Effect, HistorySearch, InputMode,
+    LocalEffect, Modal, ModalKey, ModelCommand, NoticeLevel, PathIndex, PendingId,
+    QUIT_CONFIRM_WINDOW, QuitChoice, QuitDecision, QuitDialog, SearchOutcome, StashOutcome,
+    complete, keymap, search,
 };
 
 impl App {
@@ -424,6 +425,18 @@ impl App {
                 ModalKey::Choose(reference) => {
                     self.modal = None;
                     fx.push(Effect::ResumeSession(reference));
+                }
+            },
+            Some(Modal::Agents(picker)) => match picker.key(key) {
+                ModalKey::Stay => {}
+                ModalKey::Close => self.modal = None,
+                ModalKey::Choose(pick) => {
+                    self.modal = None;
+                    fx.push(match pick {
+                        AgentPick::Switch(name) => Effect::Agents(Some(name)),
+                        AgentPick::New => Effect::NewAgent,
+                        AgentPick::Retire(name) => Effect::RetireAgent(name),
+                    });
                 }
             },
             Some(Modal::Model(picker)) => match picker.key(key) {

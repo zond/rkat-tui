@@ -8,7 +8,7 @@ use std::path::PathBuf;
 #[command(name = "rkat-tui", version = crate::BUILD)]
 #[command(about = "Interactive terminal coding harness for Meerkat")]
 #[command(
-    after_help = "Examples:\n  rkat-tui\n  rkat-tui \"fix the failing test\"\n  rkat-tui --resume last\n  rkat-tui --model claude-sonnet-4-6 --classifier-model claude-haiku-5-5\n  rkat-tui --endpoint-def litellm=openai=http://localhost:4000,key_env=LITELLM_KEY --model litellm:gpt-5.5\n  rkat-tui --allow 'shell=cargo nextest run*' --set auto.compact=auto\n\nEvery tui.toml setting can be given with --set <dotted.key>=<value> (TOML value; bare words are strings).\nCommand-line settings apply after the global and realm tui.toml, before the project file's deny rules."
+    after_help = "Examples:\n  rkat-tui\n  rkat-tui \"fix the failing test\"\n  rkat-tui --resume last\n  rkat-tui --attach=~/src/other -c\n  rkat-tui --attach=~/src/other\n  rkat-tui --model claude-sonnet-4-6 --classifier-model claude-haiku-5-5\n  rkat-tui --endpoint-def litellm=openai=http://localhost:4000,key_env=LITELLM_KEY --model litellm:gpt-5.5\n  rkat-tui --allow 'shell=cargo nextest run*' --set auto.compact=auto\n\nEvery tui.toml setting can be given with --set <dotted.key>=<value> (TOML value; bare words are strings).\nCommand-line settings apply after the global and realm tui.toml, before the project file's deny rules.\n\nWhich daemon and which agent are two separate choices: --attach picks the daemon (default: this workspace's), -c or --resume picks an agent in it to join; with neither, you get a new agent."
 )]
 pub struct Args {
     /// Optional initial prompt to send as the first turn.
@@ -61,12 +61,16 @@ pub struct Args {
     #[arg(long)]
     pub no_trust_project_builds: bool,
 
-    /// Resume an existing session: `last`, `~N`, a session ID, or an ID
-    /// prefix. Without a value, opens the session picker at start-up.
+    /// Which agent: join the one that owns this conversation (`last`,
+    /// `~N`, a session ID, or an ID prefix), in whichever daemon `--attach`
+    /// picks. Without a value, joins the most recently active agent and
+    /// opens the session picker. Without -c or --resume you get a new agent.
     #[arg(long, conflicts_with = "continue_last", num_args = 0..=1, value_name = "REF")]
     pub resume: Option<Option<String>>,
 
-    /// Continue the most recent session of this workspace (same as `--resume last`).
+    /// Which agent: join the most recently active one (same as `--resume
+    /// last`), in whichever daemon `--attach` picks. Without -c or --resume
+    /// you get a new agent.
     #[arg(short = 'c', long = "continue")]
     pub continue_last: bool,
 
@@ -159,8 +163,10 @@ pub struct Args {
     #[arg(long)]
     pub no_pricing_fetch: bool,
 
-    /// Which `rkat-tui-mob` daemon runs the agent (the default, as `auto`:
-    /// the workspace's, attaching to the running one, else starting one).
+    /// Which daemon (not which agent: -c or --resume joins one in it,
+    /// without them you get a new agent). The default, as `auto`: the
+    /// workspace's `rkat-tui-mob`, attaching to the running one, else
+    /// starting one.
     /// `existing` only attaches to a running one; a DIRECTORY (containing
     /// `/` or starting with `.` or `~`) attaches to that workspace's
     /// running daemon; HOST:PORT attaches to a daemon reached through a

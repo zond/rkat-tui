@@ -2,7 +2,34 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `/agents` opens a picker of the workspace's agents, like `/model` and
+  `/resume`: each row shows the agent's name, running or idle, its
+  conversation (short id and first message), its clients, `detached` when
+  it has none, and marks your own. Enter switches to the highlighted
+  agent, the last row starts a new agent for this TUI, and `d` then `y`
+  retires an idle agent nobody works with (its conversation stays in
+  `/resume`); the daemon refuses to retire a running agent, one with a
+  client, and your own, saying why. `/agents <name>` still switches
+  directly.
+- A start that gets a new agent beside others says so in one notice: how
+  many others work there, how many are idle without a client, and that
+  `/agents` picks one (`-c` would have joined the most recent). It
+  replaces the old "other agents work in this workspace" notice for that
+  case.
+- `rkat-tui --help` says which question each of `--attach` (which
+  daemon), `-c` and `--resume` (which agent in it) answers, and has
+  examples for joining and for a new agent in another workspace's daemon.
+
 ### Documentation
+
+- The manual opens "The workspace daemon" with "Which daemon, which
+  agent": a table of the four starts (this workspace's daemon or another,
+  joining an agent or starting a new one), what idle agents keep, and
+  what stopping the daemon does to them; the README's daemon section has
+  the same table, and the other places that explain `--attach`, `-c`,
+  `--resume` and several agents follow it.
 
 - The README shows how to use a LiteLLM (or any OpenAI-compatible) proxy:
   the key in an environment variable, the endpoint on the command line or

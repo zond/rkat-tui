@@ -197,6 +197,13 @@ methods! {
     /// to its other clients, retires it, stops the daemon, or answers what
     /// to ask the user (then `rkat/detach` or `rkat/shutdown` follows).
     Quit = "rkat/quit" (Empty) -> QuitOutcome;
+    /// `/agents`' retire key: another agent, idle and with no client,
+    /// leaves the workspace as a `/quit` would retire it (its schedules are
+    /// deleted, its conversation stays for `/resume`). Refused with
+    /// [`AGENT_IN_USE`] for the caller's own agent (which leaves with
+    /// `/quit`), an agent with a client, or one whose turn runs (or whose
+    /// state cannot be read); with [`NO_AGENT`] for one that is not live.
+    RetireAgent = "rkat/retire_agent" (AgentParams) -> Retired;
     /// Take back messages the caller's agent has not read yet: each named
     /// input of its current conversation that the runtime still holds
     /// queued is abandoned, leaving the running turn alone; one that
@@ -341,6 +348,10 @@ pub const NOT_SERVED: i32 = -32012;
 /// another agent, or a session that is not the caller's agent's): the
 /// connection drives its own agent only.
 pub const NOT_YOURS: i32 = -32013;
+
+/// A retire ([`method::RetireAgent`]) refused because the agent is in
+/// use: it is the caller's own, has a client, or its turn runs.
+pub const AGENT_IN_USE: i32 = -32014;
 
 /// A local method's refusal: a JSON-RPC error code and message.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -505,6 +516,35 @@ impl AgentRow {
             None => "unknown",
         }
     }
+
+    /// Why this agent may not be retired from `/agents` by a client
+    /// working with `mine` (`None`: it may): it is that client's own (which
+    /// leaves with `/quit`), it has a client, or its turn runs or its state
+    /// cannot be read (unknown is not idle).
+    #[must_use]
+    pub fn retire_refusal(&self, mine: Option<&str>) -> Option<String> {
+        let name = &self.name;
+        if mine == Some(name.as_str()) {
+            return Some(format!(
+                "{name} is this rkat-tui's own agent: /quit retires it"
+            ));
+        }
+        if self.clients > 0 {
+            return Some(format!(
+                "{name} has {}: only an agent nobody works with is retired",
+                crate::text::count(self.clients, "client")
+            ));
+        }
+        match self.running {
+            Some(false) => None,
+            Some(true) => Some(format!(
+                "{name} is running a turn: retire it once it is idle"
+            )),
+            None => Some(format!(
+                "{name}'s state cannot be read: it is not retired while it may be running"
+            )),
+        }
+    }
 }
 
 impl std::fmt::Debug for AttachParams {
@@ -667,7 +707,7 @@ pub struct InputFates {
     pub inputs: Vec<InputRow>,
 }
 
-/// What retired ([`QuitOutcome::Retired`]).
+/// What retired ([`QuitOutcome::Retired`], [`method::RetireAgent`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Retired {
     /// The agent that retired.
@@ -888,6 +928,13 @@ pub struct ModeSet {
 pub struct ConversationList {
     /// Last used first.
     pub conversations: Vec<Listed>,
+}
+
+/// [`method::RetireAgent`]'s parameters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentParams {
+    /// The agent's name (`main-<id>`).
+    pub name: String,
 }
 
 /// The parameters of the methods on one conversation.

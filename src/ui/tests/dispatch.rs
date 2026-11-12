@@ -135,6 +135,57 @@ fn resume_picker_selects() {
     assert!(app.modal.is_none());
 }
 
+/// `/agents` asks for the picker; its answers become the switch, the new
+/// agent and the retire effects, and the picker closes.
+#[test]
+fn agent_picker_switches_seats_and_retires() {
+    let entry = |name: &str, mine: bool| AgentEntry {
+        name: name.into(),
+        run: "idle",
+        conversation: None,
+        title: None,
+        clients: usize::from(mine),
+        detached: !mine,
+        mine,
+        unretirable: mine.then(|| "own".to_string()),
+    };
+    let open = || {
+        let mut app = App::new(StatusInfo::default());
+        assert_eq!(submit(&mut app, "/agents"), vec![Effect::Agents(None)]);
+        app.update(Msg::ShowAgentPicker(vec![
+            entry("main-aaaa", true),
+            entry("main-bbbb", false),
+        ]));
+        assert!(matches!(app.modal, Some(Modal::Agents(_))));
+        app
+    };
+    let mut app = open();
+    app.update(key(KeyCode::Down));
+    assert_eq!(
+        app.update(key(KeyCode::Enter)),
+        vec![Effect::Agents(Some("main-bbbb".into()))]
+    );
+    assert!(app.modal.is_none());
+    let mut app = open();
+    app.update(key(KeyCode::Down));
+    app.update(key(KeyCode::Down));
+    assert_eq!(app.update(key(KeyCode::Enter)), vec![Effect::NewAgent]);
+    let mut app = open();
+    app.update(key(KeyCode::Down));
+    assert!(app.update(key(KeyCode::Char('d'))).is_empty());
+    assert_eq!(
+        app.update(key(KeyCode::Char('y'))),
+        vec![Effect::RetireAgent("main-bbbb".into())]
+    );
+    assert!(app.modal.is_none());
+    // `/agents <name>` stays the shortcut.
+    let mut app = App::new(StatusInfo::default());
+    assert_eq!(
+        submit(&mut app, "/agents main-bbbb"),
+        vec![Effect::Agents(Some("main-bbbb".into()))]
+    );
+}
+
 #[test]
 fn model_command_requests_picker_or_refresh() {
     let mut app = app_on_sonnet();

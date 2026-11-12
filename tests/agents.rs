@@ -95,7 +95,7 @@ async fn an_agent_cannot_seat_a_member_under_an_agents_name() {
 }
 
 /// Two clients on two agents each see their own agent; `/agents` lists
-/// both, and `/agents <name>` moves a client to the other agent, whose
+/// both (in its picker), and `/agents <name>` moves a client to the other agent, whose
 /// conversation it then shows (the agent it left keeps running).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn agents_lists_the_agents_and_switches_to_one() {
@@ -116,17 +116,20 @@ async fn agents_lists_the_agents_and_switches_to_one() {
     assert_eq!(a.texts("b answers"), 0);
     assert_eq!(b.texts("a answers"), 0);
     a.send(Effect::Agents(None));
-    let listing = a
-        .wait_for(|m| matches!(m, Msg::Notice { text, .. } if text.starts_with("2 agents")))
-        .await;
-    let Msg::Notice { text, .. } = listing else {
+    let listing = a.wait_for(|m| matches!(m, Msg::ShowAgentPicker(_))).await;
+    let Msg::ShowAgentPicker(rows) = listing else {
         unreachable!()
     };
-    assert!(
-        text.contains(&format!("{a_name} · idle")) && text.contains("(this rkat-tui)"),
-        "{text}"
-    );
-    assert!(text.contains(&format!("{b_name} · idle")), "{text}");
+    let shown: Vec<(&str, &str, bool)> = rows
+        .iter()
+        .map(|row| (row.name.as_str(), row.run, row.mine))
+        .collect();
+    let mut expected = vec![
+        (a_name.as_str(), "idle", true),
+        (b_name.as_str(), "idle", false),
+    ];
+    expected.sort_unstable();
+    assert_eq!(shown, expected);
     // An agent that is not here is refused with the ones that are.
     a.send(Effect::Agents(Some("main-nope".into())));
     a.wait_for(|m| matches!(m, Msg::Notice { text, .. } if text.contains("no agent main-nope")))
@@ -155,6 +158,219 @@ async fn agents_lists_the_agents_and_switches_to_one() {
     assert!(left.detached, "the agent left keeps running: {status:?}");
     a.quit().await;
     b.quit().await;
+    daemon.stop().await;
+}
+
+/// A start with neither `-c` nor `--resume` gets a new agent whichever
+/// daemon it names, and is told so when others work there: a plain start
+/// beside an idle detached agent, and `--attach=<dir>` beside it and the
+/// plain one's. The first start, alone with the daemon's agent, has no
+/// other to name (the notice's text for that case, none, is
+/// `others_notice`'s unit test; here the daemon lists it alone).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_new_agent_is_told_about_the_others_whichever_daemon_it_names() {
+    use rkat_tui::ui::{Departure, Effect, Msg};
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let real = |args: &rkat_tui::Args| Some(rkat_tui::client::agent_choice(args));
+    let plain = common::args_for(&ws.root);
+    let endpoint = common::endpoint_file_for(&ws.root);
+    let mut a =
+        rig::Client::attach_config(&plain, None, common::no_lists(), &endpoint, real(&plain)).await;
+    let a_name = a.agent().await;
+    assert_eq!(
+        a_name, daemon.agent,
+        "the first start takes the daemon's agent"
+    );
+    let status = daemon.status().await;
+    assert_eq!(
+        status.agents.len(),
+        1,
+        "alone: no other to name: {status:?}"
+    );
+    a.send(Effect::Leave(Departure::Detach));
+    a.quit().await;
+    without_client(&daemon, &a_name).await;
+
+    let mut b =
+        rig::Client::attach_config(&plain, None, common::no_lists(), &endpoint, real(&plain)).await;
+    let b_name = b.agent().await;
+    assert_ne!(b_name, a_name, "a plain start gets a new agent");
+    b.wait_for(|m| matches!(m, Msg::Notice { text, .. } if text == &format!(
+        "started a new agent ({b_name}); 1 other works here, 1 idle without a client: /agents picks one (rkat-tui -c joins the most recently active instead of starting a new one)"
+    )))
+    .await;
+
+    // `--attach=<dir>` chooses the daemon only: a new agent again.
+    let at = format!("--attach={}", ws.root.display());
+    let attach = common::args_with(&ws.root, &[&at]);
+    let target = attach.attach.clone().unwrap();
+    let mut config = rkat_tui::client::configure(&attach, target).await.unwrap();
+    config.lister = common::no_lists();
+    config.endpoint_files = vec![endpoint.clone()];
+    let mut c = rig::Client::attach_with_config(config).await;
+    let c_name = c.agent().await;
+    assert!(c_name != a_name && c_name != b_name, "{c_name}");
+    c.wait_for(|m| {
+        matches!(m, Msg::Notice { text, .. } if text.starts_with(&format!(
+            "started a new agent ({c_name}); 2 others work here, 1 idle without a client:"
+        )))
+    })
+    .await;
+    assert_eq!(daemon.status().await.agents.len(), 3);
+    b.quit().await;
+    c.quit().await;
+    daemon.stop().await;
+}
+
+/// Wait until the daemon lists `name` with no client.
+async fn without_client(daemon: &Running, name: &str) {
+    common::within(async {
+        while !daemon
+            .status()
+            .await
+            .agents
+            .iter()
+            .any(|row| row.name == name && row.clients == 0)
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+}
+
+/// `/agents` opens the picker over every agent (this client's marked, the
+/// ones nobody works with retirable, the others with why not); its retire
+/// refuses this client's own agent, an agent with a client and a running
+/// one, and retires an idle detached one, whose conversation stays in
+/// `/resume`; its "new agent" row seats a fresh agent for this client.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_agent_picker_lists_retires_idle_agents_and_seats_a_new_one() {
+    use rkat_tui::daemon::protocol::AgentChoice;
+    use rkat_tui::ui::{Departure, Effect, Msg};
+    let ws = Workspace::new();
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Text("b answers"),
+        Step::Gated(Arc::clone(&gate), Box::new(Step::Text("d answers"))),
+    ]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let mut a = rig::Client::attach(&ws.root).await;
+    let mut b = rig::Client::attach_agent(&ws.root, AgentChoice::New).await;
+    let mut c = rig::Client::attach_agent(&ws.root, AgentChoice::New).await;
+    let mut d = rig::Client::attach_agent(&ws.root, AgentChoice::New).await;
+    let (a_name, b_name, c_name, d_name) = (
+        a.agent().await,
+        b.agent().await,
+        c.agent().await,
+        d.agent().await,
+    );
+    // B: a conversation, then left idle and detached.
+    b.send(Effect::StartTurn("for b".into()));
+    assert_eq!(b.turn_finished().await.unwrap().text, "b answers");
+    let b_session = daemon.session_of(&b_name).await;
+    b.send(Effect::Leave(Departure::Detach));
+    b.quit().await;
+    without_client(&daemon, &b_name).await;
+    // D: left detached while its turn runs.
+    d.send(Effect::StartTurn("for d".into()));
+    llm.wait_call(1).await;
+    d.send(Effect::Leave(Departure::Detach));
+    d.quit().await;
+    without_client(&daemon, &d_name).await;
+
+    a.send(Effect::Agents(None));
+    let shown = a.wait_for(|m| matches!(m, Msg::ShowAgentPicker(_))).await;
+    let Msg::ShowAgentPicker(entries) = shown else {
+        unreachable!()
+    };
+    let entry = |name: &str| entries.iter().find(|e| e.name == name).unwrap().clone();
+    assert_eq!(entries.len(), 4, "{entries:?}");
+    assert!(entry(&a_name).mine && entry(&a_name).unretirable.is_some());
+    let b_entry = entry(&b_name);
+    assert!(
+        !b_entry.mine && b_entry.detached && b_entry.clients == 0,
+        "{b_entry:?}"
+    );
+    assert_eq!(b_entry.run, "idle");
+    assert_eq!(b_entry.title.as_deref(), Some("for b"));
+    assert_eq!(
+        b_entry.conversation.as_deref(),
+        Some(&b_session.to_string()[..8])
+    );
+    assert_eq!(b_entry.unretirable, None);
+    assert_eq!(entry(&c_name).clients, 1);
+    assert!(entry(&c_name).unretirable.is_some());
+    assert!(entry(&d_name).unretirable.is_some());
+
+    // The daemon refuses each agent in use, saying why, and keeps it.
+    for (name, why) in [
+        (&a_name, "own agent"),
+        (&c_name, "has 1 client"),
+        (&d_name, "running a turn"),
+    ] {
+        a.send(Effect::RetireAgent(name.clone()));
+        a.wait_for(|m| matches!(m, Msg::Notice { text, .. } if text.contains(&format!("{name} was not retired")) && text.contains(why)))
+            .await;
+    }
+    let names: Vec<String> = daemon
+        .status()
+        .await
+        .agents
+        .into_iter()
+        .map(|r| r.name)
+        .collect();
+    assert_eq!(names.len(), 4, "{names:?}");
+
+    // B retires; its conversation stays in /resume.
+    a.send(Effect::RetireAgent(b_name.clone()));
+    let short = b_session.to_string()[..8].to_string();
+    a.wait_for(|m| matches!(m, Msg::Notice { text, .. } if text.contains(&format!("retired agent {b_name}")) && text.contains(&short)))
+        .await;
+    let status = daemon.status().await;
+    assert!(status.agents.iter().all(|r| r.name != b_name), "{status:?}");
+    a.send(Effect::Agents(None));
+    let shown = a
+        .wait_for(|m| matches!(m, Msg::ShowAgentPicker(rows) if rows.len() == 3))
+        .await;
+    assert!(matches!(shown, Msg::ShowAgentPicker(rows) if rows.iter().all(|r| r.name != b_name)));
+    a.send(Effect::RequestResumePicker);
+    let picker = a.wait_for(|m| matches!(m, Msg::ShowResumePicker(_))).await;
+    let Msg::ShowResumePicker(items) = picker else {
+        unreachable!()
+    };
+    assert!(
+        items.iter().any(|(id, _)| id == &b_session.to_string()),
+        "{items:?}"
+    );
+
+    // The "new agent" row: A works with a fresh agent; the one it left
+    // keeps running.
+    a.send(Effect::NewAgent);
+    a.wait_for(
+        |m| matches!(m, Msg::Notice { text, .. } if text.starts_with("switched to a new agent")),
+    )
+    .await;
+    // The status bar names the agent before the notice says so.
+    let fresh = a.agent().await;
+    assert!(
+        ![&a_name, &b_name, &c_name, &d_name].contains(&&fresh),
+        "{fresh}"
+    );
+    let status = daemon.status().await;
+    assert_eq!(status.agents.len(), 4, "{status:?}");
+    assert!(
+        status
+            .agents
+            .iter()
+            .any(|r| r.name == a_name && r.clients == 0)
+    );
+
+    gate.notify_one();
+    daemon.idle(&d_name).await;
+    a.quit().await;
+    c.quit().await;
     daemon.stop().await;
 }
 

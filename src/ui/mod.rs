@@ -60,8 +60,8 @@ pub use history::History;
 pub use input::{InputEditor, StashOutcome};
 pub use keymap::{Action, EditAction};
 pub use modal::{
-    EscalationAnswer, EscalationDialog, EscalationId, Modal, ModalKey, ModelPicker, PlanChoice,
-    PlanDialog, QuitChoice, QuitDialog, ResumePicker,
+    AgentEntry, AgentPick, AgentPicker, EscalationAnswer, EscalationDialog, EscalationId, Modal,
+    ModalKey, ModelPicker, PlanChoice, PlanDialog, QuitChoice, QuitDialog, ResumePicker,
 };
 pub use runtime::{UiChannels, UiError, run_ui};
 pub use search::{HistorySearch, SearchOutcome};
@@ -378,6 +378,9 @@ pub enum Msg {
     /// group per endpoint, the current endpoint and model first; a group's
     /// warning says why its list is missing.
     ShowModelPicker(Vec<ModelGroup>),
+    /// Open the agent picker (answer to [`Effect::Agents`] without a
+    /// name): the workspace's agents, names in order.
+    ShowAgentPicker(Vec<AgentEntry>),
     /// Replace the transcript (e.g. after resuming a session).
     ResetTranscript(Vec<Block>),
     /// A turn this UI did not start runs on the daemon (another
@@ -650,9 +653,17 @@ pub enum Effect {
     /// it when this client may) after the connect failed or the daemon
     /// stopped (answered with notices and the connection's state).
     DaemonStart,
-    /// `/agents`: list the workspace's agents (`None`), or switch this
-    /// client to the agent named (answered with notices).
+    /// `/agents`: open the agent picker (`None`, answered with
+    /// [`Msg::ShowAgentPicker`]), or switch this client to the agent named
+    /// (answered with notices).
     Agents(Option<String>),
+    /// The agent picker's "new agent" row: seat a fresh agent for this
+    /// client and switch to it (answered with notices).
+    NewAgent,
+    /// The agent picker's confirmed retire: retire another agent that is
+    /// idle and has no client (`rkat/retire_agent`; answered with a
+    /// notice).
+    RetireAgent(String),
     /// `/audit [n]`: show the daemon's audit log's last lines for this
     /// client's agent (answered with a notice).
     Audit(Option<usize>),
@@ -1027,7 +1038,7 @@ pub struct App {
     /// Search corpus (newest first, deduplicated), built when a search starts.
     search_corpus: Vec<String>,
     pending_escalations: VecDeque<(EscalationId, RecordedPrompt)>,
-    /// A picker ([`Modal::Model`] or [`Modal::Resume`]) an escalation
+    /// A picker ([`Modal::Model`], [`Modal::Resume`] or [`Modal::Agents`]) an escalation
     /// displaced; restored once no escalation remains.
     parked: Option<Modal>,
     submitted: Vec<String>,
@@ -1424,6 +1435,16 @@ impl App {
                     None | Some(Modal::Keys) => self.modal = Some(picker),
                     // Shown once the escalations are answered; replaces a
                     // picker parked earlier.
+                    Some(Modal::Escalation { .. }) => self.parked = Some(picker),
+                    Some(_) => {}
+                }
+            }
+            Msg::ShowAgentPicker(agents) => {
+                let picker = Modal::Agents(AgentPicker::new(agents));
+                match self.modal {
+                    None | Some(Modal::Keys) => self.modal = Some(picker),
+                    // Shown once the escalations are answered, as the
+                    // resume picker is.
                     Some(Modal::Escalation { .. }) => self.parked = Some(picker),
                     Some(_) => {}
                 }

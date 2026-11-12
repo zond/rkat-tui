@@ -1,5 +1,5 @@
 //! Modal dialogs: the escalation (approval) prompt, the resume picker, the
-//! model picker, the shortcut panel and plan mode's "Plan ready" dialog.
+//! model picker, the agent picker, the shortcut panel and plan mode's "Plan ready" dialog.
 //!
 //! Modals are driven by plain data so the UI stays decoupled from the
 //! session modules. The escalation dialog shows the approval engine's
@@ -452,6 +452,140 @@ impl ResumePicker {
     }
 }
 
+/// One agent of the workspace as the `/agents` picker shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentEntry {
+    /// Its name (`main-<id>`).
+    pub name: String,
+    /// `running`, `idle` or `unknown`.
+    pub run: &'static str,
+    /// Its conversation's short id, when it runs as one.
+    pub conversation: Option<String>,
+    /// That conversation's title, when known.
+    pub title: Option<String>,
+    /// How many clients work with it.
+    pub clients: usize,
+    /// It was left running without a client.
+    pub detached: bool,
+    /// It is this client's own agent.
+    pub mine: bool,
+    /// Why the retire key refuses it (`None`: it may be retired).
+    pub unretirable: Option<String>,
+}
+
+/// What the `/agents` picker chose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentPick {
+    /// Switch this client to the agent.
+    Switch(String),
+    /// Seat a fresh agent for this client and switch to it.
+    New,
+    /// Retire the agent (confirmed).
+    Retire(String),
+}
+
+/// The line under the `/agents` picker's rows: a retire to confirm, or
+/// why one was refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentPickerLine {
+    /// `d` on this agent: `y` retires it.
+    Confirm(String),
+    /// Why `d` did not offer to retire it.
+    Refused(String),
+}
+
+/// Agent picker for `/agents` without a name: the workspace's agents, then
+/// a "new agent" row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentPicker {
+    /// The agents, names in order.
+    pub agents: Vec<AgentEntry>,
+    /// The highlighted row (`agents.len()`: the "new agent" row).
+    pub cursor: ListCursor,
+    /// A retire being confirmed, or why one was refused.
+    pub line: Option<AgentPickerLine>,
+}
+
+impl AgentPicker {
+    /// A picker over `agents` with this client's own agent highlighted.
+    #[must_use]
+    pub fn new(agents: Vec<AgentEntry>) -> Self {
+        let mine = agents.iter().position(|agent| agent.mine).unwrap_or(0);
+        Self {
+            agents,
+            cursor: ListCursor(mine),
+            line: None,
+        }
+    }
+
+    /// The highlighted agent (`None`: the "new agent" row).
+    #[must_use]
+    pub fn selected(&self) -> Option<&AgentEntry> {
+        self.agents.get(self.cursor.index())
+    }
+
+    /// ↑/↓ (or k/j) move, Enter switches to the highlighted agent (or seats
+    /// a new one on the last row), `d` asks to retire the highlighted
+    /// agent (`y` confirms, any other key cancels) or says why it cannot,
+    /// Esc, `q` or Ctrl-C close. A held key only moves.
+    pub fn key(&mut self, key: &KeyEvent) -> ModalKey<AgentPick> {
+        let held = is_held(key);
+        if is_ctrl_c(key) {
+            return if held {
+                ModalKey::Stay
+            } else {
+                ModalKey::Close
+            };
+        }
+        if held
+            && !matches!(
+                key.code,
+                KeyCode::Up | KeyCode::Down | KeyCode::Char('j' | 'k')
+            )
+        {
+            return ModalKey::Stay;
+        }
+        if has_ctrl_or_alt(key) {
+            return ModalKey::Stay;
+        }
+        if let Some(AgentPickerLine::Confirm(name)) = self.line.take() {
+            return match key.code {
+                KeyCode::Char('y') => ModalKey::Choose(AgentPick::Retire(name)),
+                // Anything else cancels the retire and is not acted on.
+                _ => ModalKey::Stay,
+            };
+        }
+        self.line = None;
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.cursor.up();
+                ModalKey::Stay
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.cursor.down(self.agents.len() + 1);
+                ModalKey::Stay
+            }
+            KeyCode::Enter => ModalKey::Choose(self.selected().map_or(AgentPick::New, |agent| {
+                AgentPick::Switch(agent.name.clone())
+            })),
+            KeyCode::Char('d') => {
+                self.line = Some(match self.selected() {
+                    None => AgentPickerLine::Refused(
+                        "pick an agent to retire (the new-agent row is none)".to_string(),
+                    ),
+                    Some(agent) => match &agent.unretirable {
+                        Some(why) => AgentPickerLine::Refused(why.clone()),
+                        None => AgentPickerLine::Confirm(agent.name.clone()),
+                    },
+                });
+                ModalKey::Stay
+            }
+            KeyCode::Esc | KeyCode::Char('q') => ModalKey::Close,
+            _ => ModalKey::Stay,
+        }
+    }
+}
+
 /// Model picker for `/model` without an id: one group per endpoint (the
 /// current endpoint and model first), narrowed by a type-to-filter query.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -593,6 +727,8 @@ pub enum Modal {
     Resume(ResumePicker),
     /// Model picker.
     Model(ModelPicker),
+    /// Agent picker (`/agents`).
+    Agents(AgentPicker),
     /// The `?` shortcut panel: the keys part of the help.
     Keys,
     /// A turn ended in plan mode with an answer: proceed or keep planning.
@@ -642,6 +778,10 @@ pub fn draw_modal(frame: &mut Frame<'_>, area: Rect, modal: &mut Modal) {
         Modal::Model(picker) => (
             " Select model ".to_string(),
             model_picker_lines(picker, inner_w, usize::from(area.height.saturating_sub(4))),
+        ),
+        Modal::Agents(picker) => (
+            " Agents ".to_string(),
+            agent_picker_lines(picker, inner_w, usize::from(area.height.saturating_sub(4))),
         ),
         Modal::PlanReady(dialog) => (" Plan ready ".to_string(), plan_lines(*dialog, inner_w)),
         Modal::Quit(dialog) => (" Quit ".to_string(), quit_lines(dialog, inner_w)),
@@ -946,6 +1086,85 @@ fn picker_lines(picker: &ResumePicker, width: usize, max_rows: usize) -> Vec<Lin
         .collect()
 }
 
+/// The agents, then the "new agent" row, then the confirm or refusal
+/// line, then a key hint; at most `max_lines` lines (the rows scroll to
+/// keep the selection visible).
+fn agent_picker_lines(picker: &AgentPicker, width: usize, max_lines: usize) -> Vec<Line<'static>> {
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let selected = picker.cursor.index();
+    let mut rows: Vec<String> = picker.agents.iter().map(agent_row).collect();
+    rows.push("+ new agent".to_string());
+    let mut tail = Vec::new();
+    match &picker.line {
+        Some(AgentPickerLine::Confirm(name)) => tail.push(Line::styled(
+            truncate_to_width(
+                &format!("retire {name}? its conversation stays in /resume (y retires, any other key keeps it)"),
+                width,
+            ),
+            Style::default().fg(Color::Yellow),
+        )),
+        Some(AgentPickerLine::Refused(why)) => tail.extend(
+            wrap_text(&format!("not retired: {why}"), width)
+                .into_iter()
+                .map(|line| Line::styled(line, Style::default().fg(Color::Yellow))),
+        ),
+        None => {}
+    }
+    tail.push(Line::styled(
+        "↑/↓ move · Enter switch · d retire · Esc close",
+        dim,
+    ));
+    let window = windowed(selected, max_lines.saturating_sub(tail.len()));
+    let mut lines: Vec<Line<'static>> = rows
+        .into_iter()
+        .enumerate()
+        .skip(window.start)
+        .take(window.len())
+        .map(|(i, row)| {
+            let text = truncate_to_width(&row, width);
+            if i == selected {
+                Line::styled(text, Style::default().add_modifier(Modifier::REVERSED))
+            } else {
+                Line::from(text)
+            }
+        })
+        .collect();
+    lines.extend(tail);
+    lines
+}
+
+/// `* main-ab12 · idle · 01234567 fix the test · 1 client · this rkat-tui`
+/// (the mark and the last part on this client's own agent; `detached`, or
+/// `no client`, for one nobody works with).
+fn agent_row(agent: &AgentEntry) -> String {
+    let mut row = format!(
+        "{} {} · {}",
+        if agent.mine { "*" } else { " " },
+        agent.name,
+        agent.run
+    );
+    match (&agent.conversation, &agent.title) {
+        (Some(id), Some(title)) => row.push_str(&format!(" · {id} {title}")),
+        (Some(id), None) => row.push_str(&format!(" · {id}")),
+        (None, _) => row.push_str(" · no conversation"),
+    }
+    row.push_str(&format!(
+        " · {}",
+        crate::text::count(agent.clients, "client")
+    ));
+    if agent.clients == 0 {
+        row.push_str(if agent.detached {
+            " · detached"
+        } else {
+            " · no client yet"
+        });
+    }
+    if agent.mine {
+        row.push_str(" · this rkat-tui");
+    }
+    row
+}
+
 /// Filter line, then per endpoint a header, its warning and its models,
 /// then a key hint. At most `max_lines` lines; the list scrolls to keep the
 /// selection visible.
@@ -1070,6 +1289,86 @@ mod tests {
             ResumePicker::new(Vec::new()).key(&press(KeyCode::Enter)),
             ModalKey::Close
         );
+    }
+
+    fn agents() -> AgentPicker {
+        let entry = |name: &str, mine: bool, unretirable: Option<&str>| AgentEntry {
+            name: name.into(),
+            run: "idle",
+            conversation: None,
+            title: None,
+            clients: usize::from(mine),
+            detached: !mine,
+            mine,
+            unretirable: unretirable.map(str::to_string),
+        };
+        AgentPicker::new(vec![
+            entry("main-aaaa", false, None),
+            entry(
+                "main-bbbb",
+                true,
+                Some("main-bbbb is this rkat-tui's own agent"),
+            ),
+        ])
+    }
+
+    /// The agent picker opens on this client's own agent; Enter switches,
+    /// the last row seats a new agent, `d` asks and `y` retires (any other
+    /// key keeps the agent), `d` on an agent in use says why and retires
+    /// nothing; Esc, `q` and Ctrl-C close.
+    #[test]
+    fn the_agent_picker_switches_seats_and_retires_after_a_confirmation() {
+        let press = |code| KeyEvent::from(code);
+        let mut p = agents();
+        assert_eq!(p.selected().map(|a| a.name.as_str()), Some("main-bbbb"));
+        assert_eq!(
+            p.key(&press(KeyCode::Enter)),
+            ModalKey::Choose(AgentPick::Switch("main-bbbb".into()))
+        );
+        // Its own agent is refused with the reason.
+        assert_eq!(p.key(&press(KeyCode::Char('d'))), ModalKey::Stay);
+        assert!(
+            matches!(&p.line, Some(AgentPickerLine::Refused(why)) if why.contains("own agent")),
+            "{:?}",
+            p.line
+        );
+        assert_eq!(p.key(&press(KeyCode::Char('y'))), ModalKey::Stay);
+        assert_eq!(p.line, None);
+        // Up to the other one: `d` asks, `n` keeps it, `d` `y` retires it.
+        p.key(&press(KeyCode::Up));
+        assert_eq!(p.key(&press(KeyCode::Char('d'))), ModalKey::Stay);
+        assert_eq!(p.line, Some(AgentPickerLine::Confirm("main-aaaa".into())));
+        assert_eq!(p.key(&press(KeyCode::Char('n'))), ModalKey::Stay);
+        assert_eq!(p.line, None);
+        // A cancelled confirmation does not also act: Esc there keeps the
+        // picker open.
+        p.key(&press(KeyCode::Char('d')));
+        assert_eq!(p.key(&press(KeyCode::Esc)), ModalKey::Stay);
+        p.key(&press(KeyCode::Char('d')));
+        assert_eq!(
+            p.key(&press(KeyCode::Char('y'))),
+            ModalKey::Choose(AgentPick::Retire("main-aaaa".into()))
+        );
+        // The last row is a new agent; `d` there retires nothing.
+        p.key(&press(KeyCode::Down));
+        p.key(&press(KeyCode::Char('j')));
+        p.key(&press(KeyCode::Down));
+        assert_eq!(p.selected(), None);
+        p.key(&press(KeyCode::Char('d')));
+        assert!(matches!(p.line, Some(AgentPickerLine::Refused(_))));
+        assert_eq!(
+            p.key(&press(KeyCode::Enter)),
+            ModalKey::Choose(AgentPick::New)
+        );
+        // A held key only moves; Esc, `q` and Ctrl-C close.
+        let mut held = press(KeyCode::Char('d'));
+        held.kind = KeyEventKind::Repeat;
+        assert_eq!(p.key(&held), ModalKey::Stay);
+        assert_eq!(p.line, None);
+        assert_eq!(p.key(&press(KeyCode::Char('q'))), ModalKey::Close);
+        assert_eq!(p.key(&press(KeyCode::Esc)), ModalKey::Close);
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(p.key(&ctrl_c), ModalKey::Close);
     }
 
     #[test]

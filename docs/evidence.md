@@ -1319,7 +1319,7 @@ Three "reuse the existing owner" items from the maintainer's review ("Existing o
   when idle with an empty input and nothing else to say.
 - Tests: `ui::tests::question_mark_on_an_empty_input_toggles_the_keys_panel`,
   `the_keys_panel_gives_way_to_escalations_and_pickers`,
-  `ui::commands::tests::the_keys_panel_lists_the_keys_and_the_approval_prompt_only`,
+  `ui::commands::tests::the_keys_panel_lists_the_keys_and_the_dialogs_only`,
   `render::keys_panel_snapshot` (the idle `? keys` title; the panel at 110×10, cut with `… more in /help`; the
   wrapped layout at 60 columns; a key closes it), `renders_blocks_input_and_status_bar` (border row now carries the
   hint).
@@ -7526,3 +7526,33 @@ occurrence and is still listed), so its record stays with it. Tests:
 `schedules::a_schedule_the_agent_deletes_itself_loses_its_usage_record`
 (the tool's delete, and an orphan record dropped at the next start),
 `daemon::usage::tests::the_schedules_with_a_record_are_read_from_disk_and_memory`.
+
+## Which daemon, which agent; the `/agents` picker (2026-11-12)
+
+The owner twice ended up with idle agents nobody worked with: a plain
+`rkat-tui` and `rkat-tui --attach=<dir>` each seat a new agent. Making
+`--attach` join an agent was considered and rejected by the owner: the
+flags stay independent (`--attach` the daemon, `-c`/`--resume` the agent
+in it, neither a new agent), and the fix is to make that visible. A start
+that asked for a new agent beside others now says so in one notice with
+the count of others and of those idle without a client
+(`commands::others_notice`, `new` when the attach asked for
+`AgentChoice::New`); the help and the manual's "Which daemon, which
+agent" table say which flag answers which question.
+
+`/agents` became a picker (`ui::modal::AgentPicker`) over `rkat/status`
+joined with `rkat/conversations` for titles. Its retire key goes through
+a new typed method, `rkat/retire_agent`, which runs the `/quit` retire
+(`Local::retire`, schedules deleted, others told) under the seating lock
+after `AgentRow::retire_refusal` (the same rule the picker shows: not the
+caller's own agent, no client, idle with a readable state; refused with
+`AGENT_IN_USE`). The "new agent" row reconnects with `AgentChoice::New`
+(the runner's `seat_new`, cleared once bound), as a plain start does.
+Tests: `agents::the_agent_picker_lists_retires_idle_agents_and_seats_a_new_one`,
+`agents::a_new_agent_is_told_about_the_others_whichever_daemon_it_names`,
+`conversations::a_second_rkat_tui_starts_a_new_agent_and_c_joins_the_most_recent`,
+`client::runner::tests::the_start_up_notice_names_the_other_agents`,
+`client::runner::tests::the_agent_picker_rows_have_state_conversation_clients_and_retire_refusals`,
+`ui::modal::tests::the_agent_picker_switches_seats_and_retires_after_a_confirmation`,
+`ui::tests::dispatch::agent_picker_switches_seats_and_retires`,
+`render::agent_picker_snapshot`.

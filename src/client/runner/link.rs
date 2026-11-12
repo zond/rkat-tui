@@ -89,6 +89,7 @@ impl Runner {
             .map(|mark| mark.cursor(self.daemon_id_seen.as_deref()));
         let attach = Attach {
             agent: match &self.agent {
+                _ if self.seat_new => AgentChoice::New,
                 Some(name) => AgentChoice::Agent { name: name.clone() },
                 None => self.config.agent.clone(),
             },
@@ -140,6 +141,7 @@ impl Runner {
         let address = link.endpoint.address;
         let agent = link.connection.agent().to_string();
         let switched_agent = std::mem::take(&mut self.agent_switch);
+        self.seat_new = false;
         let seated = link.connection.seated();
         self.agent = Some(agent.clone());
         self.send(Msg::Status(StatusUpdate::Agent(Some(agent.clone()))));
@@ -227,9 +229,10 @@ impl Runner {
         switched_agent: bool,
     ) {
         if switched_agent {
+            let new = if seated { "a new agent, " } else { "agent " };
             self.notice(
                 NoticeLevel::Info,
-                format!("switched to agent {agent}; the agent you left keeps running"),
+                format!("switched to {new}{agent}; the agent you left keeps running"),
             );
         } else if fresh {
             self.notice(NoticeLevel::Info, ATTACH_NOTICE);
@@ -297,9 +300,10 @@ impl Runner {
         let Some(mine) = self.connection().map(|c| c.agent().to_string()) else {
             return;
         };
+        let new = self.config.agent == AgentChoice::New;
         self.ask_if_attached::<protocol::method::Status>(protocol::Empty {}, move |read| {
             read.ok()
-                .and_then(|status| others_notice(&status.agents, &mine))
+                .and_then(|status| others_notice(&status.agents, &mine, new))
                 .map(|text| (NoticeLevel::Info, text))
                 .into_iter()
                 .collect()

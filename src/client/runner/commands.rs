@@ -195,25 +195,47 @@ impl Runner {
         );
     }
 
-    /// `/agents`: the workspace's agents, from the daemon's `rkat/status`.
-    pub(super) fn list_agents(&self) {
+    /// `/agents`: open the picker over the workspace's agents, each with
+    /// its conversation's title when the conversation list has it (a list
+    /// that cannot be read leaves the titles out).
+    pub(super) fn show_agent_picker(&self) {
         let say = self.say();
         let Some(connection) = self.link_or_say("the agents were not listed") else {
             return;
         };
         let bound = self.agent.clone();
         tokio::spawn(async move {
-            match daemon_status(&connection).await {
-                Some(status) => {
-                    let mine = status.agent.as_deref().or(bound.as_deref());
-                    say.notice(
-                        NoticeLevel::Info,
-                        agent_lines(&status.agents, mine).join("\n"),
-                    );
-                }
-                None => say.notice(NoticeLevel::Warn, "the daemon did not list its agents"),
-            }
+            let Some(status) = daemon_status(&connection).await else {
+                say.notice(NoticeLevel::Warn, "the daemon did not list its agents");
+                return;
+            };
+            let listed = bounded(CALL_TIMEOUT, remote::conversations(&connection))
+                .await
+                .map_err(|err| tracing::info!(error = %err, "no conversation titles for /agents"))
+                .unwrap_or_default();
+            let mine = status.agent.as_deref().or(bound.as_deref());
+            let _ = say.ui_tx.send(Msg::ShowAgentPicker(agent_entries(
+                &status.agents,
+                &listed,
+                mine,
+            )));
         });
+    }
+
+    /// The picker's confirmed retire: `name` leaves the workspace through
+    /// the daemon (`rkat/retire_agent`), which refuses an agent in use.
+    pub(super) fn retire_agent(&self, name: String) {
+        let params = protocol::AgentParams { name: name.clone() };
+        self.ask::<protocol::method::RetireAgent>(
+            params,
+            "the agent was not retired",
+            move |retired| {
+                vec![match retired {
+                    Ok(retired) => (NoticeLevel::Info, retired_words(&retired)),
+                    Err(err) => (NoticeLevel::Warn, format!("{name} was not retired: {err}")),
+                }]
+            },
+        );
     }
 
     /// Shift+Tab, `/mode`, `/auto resume`: switch the daemon's mode.
@@ -388,58 +410,96 @@ pub(super) async fn daemon_status(connection: &Connection) -> Option<protocol::S
     .ok()
 }
 
-/// The start-up notice naming the agents other than `mine` working here,
-/// with their state ("main-abc is running, main-def is idle; `-c` joins
-/// the most recent"); `None` when there are none.
+/// The start-up notice about the agents other than `mine` working here;
+/// `None` when there are none. A client that asked for a `new` agent
+/// (a start with neither `-c` nor `--resume`) is told so, with how many
+/// others there are, how many of them are idle without a client, and how
+/// to reach them; one that joined an agent is told the others' state.
 #[must_use]
-pub fn others_notice(agents: &[protocol::AgentRow], mine: &str) -> Option<String> {
-    let others: Vec<String> = agents
-        .iter()
-        .filter(|row| row.name != mine)
-        .map(|row| format!("{} is {}", row.name, row.run_label()))
-        .collect();
+pub fn others_notice(agents: &[protocol::AgentRow], mine: &str, new: bool) -> Option<String> {
+    let others: Vec<&protocol::AgentRow> = agents.iter().filter(|row| row.name != mine).collect();
     if others.is_empty() {
         return None;
     }
+    if new {
+        let idle = others
+            .iter()
+            .filter(|row| row.clients == 0 && row.running == Some(false))
+            .count();
+        let idle = if idle == 0 {
+            String::new()
+        } else {
+            format!(", {idle} idle without a client")
+        };
+        let count = others.len();
+        let verb = if count == 1 { "works" } else { "work" };
+        let noun = if count == 1 { "other" } else { "others" };
+        return Some(format!(
+            "started a new agent ({mine}); {count} {noun} {verb} here{idle}: /agents picks one (rkat-tui -c joins the most recently active instead of starting a new one)"
+        ));
+    }
+    let states: Vec<String> = others
+        .iter()
+        .map(|row| format!("{} is {}", row.name, row.run_label()))
+        .collect();
     Some(format!(
-        "other agents work in this workspace: {}; you are agent {mine}, wired to them (rkat-tui -c joins the most recent one, /agents <name> switches)",
-        others.join(", ")
+        "other agents work in this workspace: {}; you are agent {mine}, wired to them (/agents picks one)",
+        states.join(", ")
     ))
 }
 
-/// `/agents`' lines: one per agent (name, state, conversation, clients),
-/// `mine` marked.
+/// The `/agents` picker's rows: each agent of `agents` with its
+/// conversation's title from `listed`, marked when it is `mine`, with why
+/// the retire key refuses it.
 #[must_use]
-pub fn agent_lines(agents: &[protocol::AgentRow], mine: Option<&str>) -> Vec<String> {
-    let mut lines = vec![format!(
-        "{} in this workspace:",
-        crate::text::count(agents.len(), "agent")
-    )];
-    for row in agents {
-        let session = row.session_id.as_ref().map_or_else(
-            || "no conversation".to_string(),
-            |session| {
-                let id = session.to_string();
-                format!("conversation {}", id.get(..8).unwrap_or(&id))
-            },
-        );
-        let mut line = format!(
-            "  {} · {} · {session} · {} client{}",
-            row.name,
-            row.run_label(),
-            row.clients,
-            crate::text::plural(row.clients)
-        );
-        if row.detached && row.clients == 0 {
-            line.push_str(" (detached)");
-        }
-        if mine == Some(row.name.as_str()) {
-            line.push_str(" (this rkat-tui)");
-        }
-        lines.push(line);
+pub fn agent_entries(
+    agents: &[protocol::AgentRow],
+    listed: &[crate::daemon::conversations::Listed],
+    mine: Option<&str>,
+) -> Vec<crate::ui::AgentEntry> {
+    agents
+        .iter()
+        .map(|row| {
+            let title = row.session_id.as_ref().and_then(|session| {
+                listed
+                    .iter()
+                    .find(|listed| &listed.session_id == session)
+                    .and_then(|listed| listed.title.clone())
+            });
+            crate::ui::AgentEntry {
+                name: row.name.clone(),
+                run: row.run_label(),
+                conversation: row.session_id.as_ref().map(|session| {
+                    let id = session.to_string();
+                    id.get(..8).unwrap_or(&id).to_string()
+                }),
+                title,
+                clients: row.clients,
+                detached: row.detached,
+                mine: mine == Some(row.name.as_str()),
+                unretirable: row.retire_refusal(mine),
+            }
+        })
+        .collect()
+}
+
+/// What a retire from `/agents` did, in words.
+pub(super) fn retired_words(retired: &protocol::Retired) -> String {
+    let mut text = format!("retired agent {}", retired.agent);
+    if let Some(session) = &retired.session_id {
+        let id = session.to_string();
+        text.push_str(&format!(
+            "; its conversation {} stays in /resume",
+            id.get(..8).unwrap_or(&id)
+        ));
     }
-    lines.push("/agents <name> switches to one".to_string());
-    lines
+    if !retired.schedules_deleted.is_empty() {
+        text.push_str(&format!(
+            "; its schedules were deleted: {}",
+            retired.schedules_deleted.join(", ")
+        ));
+    }
+    text
 }
 
 /// `/status`'s lines for the daemon's side ([`protocol::method::Report`]).

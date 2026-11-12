@@ -106,8 +106,8 @@ pub enum Command {
     Quit,
     /// `/detach`: leave and keep the agent running.
     Detach,
-    /// `/agents [name]`: list the workspace's agents, or switch this
-    /// rkat-tui to the agent `name`.
+    /// `/agents [name]`: open the agent picker, or switch this rkat-tui
+    /// to the agent `name`.
     Agents(Option<String>),
     /// `/audit [n]`: the last `n` lines of the daemon's audit log for this
     /// agent.
@@ -287,10 +287,10 @@ pub static COMMANDS: &[CommandSpec] = &[
         name: "agents",
         aliases: &[],
         usage: "[name]",
-        summary: "list the workspace's agents, or switch to one",
+        summary: "pick an agent: switch, start a new one, retire an idle one",
         help: &[(
             "/agents [name]",
-            "list the agents working in this workspace (name, state,\nconversation, attached clients); with a name, switch this\nrkat-tui to that agent (yours keeps running)",
+            "open a picker of the agents working in this workspace (name,\nstate, conversation, clients, yours marked): Enter switches this\nrkat-tui to one (yours keeps running), the last row starts a\nnew agent, d then y retires an idle one nobody works with (its\nconversation stays in /resume); with a name, switch directly",
         )],
         parse: |rest| match words(rest).as_slice() {
             [] => Some(Command::Agents(None)),
@@ -796,7 +796,12 @@ Approval prompt:
   Up/Down, j/k, Enter            move between the rows and pick one
   Ctrl+O                         show the whole arguments when the prompt abbreviates them
   PgUp/PgDn, Home/End            while they are shown whole: scroll them, start, end
-  s                              stop the turn (Ctrl-C stops every open prompt)";
+  s                              stop the turn (Ctrl-C stops every open prompt)
+Agent picker (/agents):
+  Up/Down, j/k, Enter            move; switch to the agent (the last row starts a new one)
+  d, then y                      retire the agent: only one idle with no client (its
+                                 conversation stays in /resume); any other key keeps it
+  Esc, q                         close";
 
 /// The line that ends `/help`. `/rewind` returns when the engine can rewind
 /// a session in place under the same identity (lukacf/meerkat#2126).
@@ -1320,14 +1325,13 @@ mod tests {
     }
 
     #[test]
-    fn the_keys_panel_lists_the_keys_and_the_approval_prompt_only() {
+    fn the_keys_panel_lists_the_keys_and_the_dialogs_only() {
         let keys = keys_help();
         assert!(keys.starts_with("Keys:\n  ? (empty input)"), "{keys}");
         assert!(keys.contains("Approval prompt:"));
-        assert!(
-            keys.trim_end().ends_with("stops every open prompt)"),
-            "{keys}"
-        );
+        assert!(keys.contains("stops every open prompt)"), "{keys}");
+        assert!(keys.contains("Agent picker (/agents):"), "{keys}");
+        assert!(keys.contains("d, then y"), "{keys}");
         assert!(!keys.contains("/permissions"));
         assert!(!keys.contains("Start a prompt"));
     }

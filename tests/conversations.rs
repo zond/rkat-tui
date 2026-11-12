@@ -413,7 +413,7 @@ async fn attach_as_typed(root: &std::path::Path, extra: &[&str]) -> Client {
 
 /// The start semantics: the first `rkat-tui` takes the daemon's
 /// first agent; a second one in the same workspace starts a new agent and
-/// names the others working there; `-c` joins the most recently active
+/// is told so, with the others counted; `-c` joins the most recently active
 /// one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_second_rkat_tui_starts_a_new_agent_and_c_joins_the_most_recent() {
@@ -427,16 +427,18 @@ async fn a_second_rkat_tui_starts_a_new_agent_and_c_joins_the_most_recent() {
         "the first one takes the start's agent"
     );
     assert!(
-        !a.notices().contains("other agents work"),
+        !a.notices().contains("other agents work") && !a.notices().contains("started a new agent"),
         "{}",
         a.notices()
     );
     let mut b = attach_as_typed(&ws.root, &[]).await;
     let b_name = b.agent().await;
     assert_ne!(b_name, a_name, "a second rkat-tui is a new agent");
+    // It is told it got a new agent, beside one other (A has a client, so
+    // none is idle without one).
     b.wait_for(|m| {
         matches!(m, Msg::Notice { text, .. }
-            if text.contains(&format!("other agents work in this workspace: {a_name} is idle")))
+            if text.starts_with(&format!("started a new agent ({b_name}); 1 other works here: /agents picks one")))
     })
     .await;
     b.send(Effect::StartTurn("b's work".into()));

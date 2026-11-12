@@ -87,9 +87,20 @@ the same one. So the agent keeps working when you leave:
   another conversation, and `rkat-tui --list` shows every running daemon
   and its agents.
 
-A second `rkat-tui` in the same directory gets an agent of its own in the
-same daemon, wired to the others so they can tell each other which files
-they are changing (`/agents` lists them; see the manual's "Several
+Which daemon and which agent are separate choices: `--attach` picks the
+daemon, `-c` (or `--resume <ref>`) joins an agent in it, and without
+them you get a new agent:
+
+| | joins an agent | starts a new agent |
+|---|---|---|
+| this workspace's daemon | `rkat-tui -c` | `rkat-tui` |
+| another daemon | `rkat-tui --attach=<dir or HOST:PORT> -c` | `rkat-tui --attach=<dir or HOST:PORT>` |
+
+So a second `rkat-tui` in the same directory gets an agent of its own in
+the same daemon, wired to the others so they can tell each other which
+files they are changing. Idle agents cost nothing but keep their
+schedules and watches; `/agents` lists them, switches to one and retires
+an idle one (see the manual's "Which daemon, which agent" and "Several
 agents").
 
 ## Highlights

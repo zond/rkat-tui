@@ -249,6 +249,28 @@ impl Runner {
         });
     }
 
+    /// The agent picker's "new agent" row: this client attaches again,
+    /// bound to an agent seated for it, as a plain `rkat-tui` start is; the
+    /// agent left keeps running (detached when this was its last client).
+    pub(super) fn new_agent(&mut self) {
+        if self.turn.active || self.switching {
+            self.notice(
+                NoticeLevel::Warn,
+                "a turn is running or a switch is under way; start a new agent once it ends (or interrupt it)",
+            );
+            return;
+        }
+        if self.link_or_say("no new agent was started").is_none() {
+            return;
+        }
+        self.unlink();
+        self.mark = None;
+        self.seat_new = true;
+        self.agent_switch = true;
+        self.show(LinkState::Reconnecting);
+        self.connect(false, 0);
+    }
+
     /// The agents as read for `/agents <name>`: switch to `name` when it
     /// works here and nothing runs now.
     pub(super) fn agents_read(&mut self, name: String, status: Option<protocol::Status>) {

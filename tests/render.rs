@@ -667,6 +667,99 @@ fn model_picker_snapshot() {
     assert_eq!(buffer[(3, 8)].fg, Color::Yellow);
 }
 
+/// The `/agents` picker: one row per agent (state, conversation, clients,
+/// `detached`, this client's own marked), the "new agent" row last, the
+/// key hint; `d` on an agent in use says why instead of asking.
+#[test]
+fn agent_picker_snapshot() {
+    use rkat_tui::ui::AgentEntry;
+    let entry = |name: &str,
+                 run: &'static str,
+                 title: Option<&str>,
+                 clients: usize,
+                 mine: bool,
+                 unretirable: Option<&str>| {
+        AgentEntry {
+            name: name.into(),
+            run,
+            conversation: Some(format!("{}0000000", &name[5..6])),
+            title: title.map(str::to_string),
+            clients,
+            detached: clients == 0,
+            mine,
+            unretirable: unretirable.map(str::to_string),
+        }
+    };
+    let mut app = App::new(StatusInfo::default());
+    app.update(Msg::ShowAgentPicker(vec![
+        entry(
+            "main-aaaa",
+            "idle",
+            Some("fix the test"),
+            1,
+            true,
+            Some("mine"),
+        ),
+        entry(
+            "main-bbbb",
+            "running",
+            None,
+            0,
+            false,
+            Some("main-bbbb is running a turn"),
+        ),
+        entry("main-cccc", "idle", Some("docs"), 0, false, None),
+    ]));
+    let key = |code| Msg::Key(ratatui::crossterm::event::KeyEvent::from(code));
+    use ratatui::crossterm::event::KeyCode;
+    let draw = |app: &mut App| {
+        let mut terminal = Terminal::new(TestBackend::new(72, H)).unwrap();
+        terminal.draw(|f| draw_at(f, app, Instant::now())).unwrap();
+        terminal.backend().buffer().clone()
+    };
+    let buffer = draw(&mut app);
+    let all = rows(&buffer);
+    let top = all
+        .iter()
+        .position(|row| row.contains("┌ Agents"))
+        .expect("the picker is drawn");
+    let modal: Vec<&str> = all[top..top + 7].iter().map(String::as_str).collect();
+    assert_eq!(
+        modal,
+        vec![
+            "  ┌ Agents ──────────────────────────────────────────────────────────┐",
+            "  │* main-aaaa · idle · a0000000 fix the test · 1 client · this rkat…│",
+            "  │  main-bbbb · running · b0000000 · 0 clients · detached           │",
+            "  │  main-cccc · idle · c0000000 docs · 0 clients · detached         │",
+            "  │+ new agent                                                       │",
+            "  │↑/↓ move · Enter switch · d retire · Esc close                    │",
+            "  └──────────────────────────────────────────────────────────────────┘",
+        ]
+    );
+    // This client's own agent is highlighted first.
+    let row = u16::try_from(top + 1).unwrap();
+    assert!(buffer[(3, row)].modifier.contains(Modifier::REVERSED));
+    assert!(!buffer[(3, row + 1)].modifier.contains(Modifier::REVERSED));
+    // `d` on a running agent says why, in the picker.
+    app.update(key(KeyCode::Down));
+    app.update(key(KeyCode::Char('d')));
+    let all = rows(&draw(&mut app));
+    assert!(
+        all.iter()
+            .any(|row| row.contains("not retired: main-bbbb is running a turn")),
+        "{all:#?}"
+    );
+    // `d` on an idle one with no client asks.
+    app.update(key(KeyCode::Down));
+    app.update(key(KeyCode::Char('d')));
+    let all = rows(&draw(&mut app));
+    assert!(
+        all.iter()
+            .any(|row| row.contains("retire main-cccc? its conversation stays")),
+        "{all:#?}"
+    );
+}
+
 #[test]
 fn selected_cells_render_reversed() {
     use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
