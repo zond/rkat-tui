@@ -130,13 +130,13 @@ the mob split are numbered in `docs/mob-split.md`, "Open engine asks"):
 
 - A `delegate` call whose future is dropped (the tool timeout) leaves its
   helper seated; the engine should retire it as it does after a completed
-  or failed turn: "Orphaned delegate helpers".
+  or failed turn (lukacf/meerkat#2206): "Orphaned delegate helpers".
 - `delegate` waits under the same core tool deadline as each tool call of
-  its helper; it should own its deadline as `fork_off` and `council` do:
-  "Tool deadlines inside a helper".
+  its helper; it should own its deadline as `fork_off` and `council` do
+  (lukacf/meerkat#2207): "Tool deadlines inside a helper".
 - `member_not_found` naming the mobs that have a member of that id, and
   `delegate`'s result and timeout error carrying the helper's mob id and
-  member name: "Where a helper lives".
+  member name (lukacf/meerkat#2208): "Where a helper lives".
 
 - The engine cannot update a stored mob definition after creation
   (`MobStorage::update_definition` is not exposed through `MobMcpState`);

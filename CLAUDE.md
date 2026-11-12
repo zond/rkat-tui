@@ -152,6 +152,15 @@ repository). Open upstream issues this code waits on:
   `src/daemon/mob.rs` `main_profile`).
 - #2126: rewinding a session in place under the same identity; `/rewind`
   returns then.
+- #2206: a `delegate` call that times out leaves its helper seated.
+  rkat-tui's orphan retirement (`src/mobs/delegates.rs`) goes when the
+  engine retires the helper itself.
+- #2207: a deadline of `delegate`'s own. The load-time default
+  `default_delegate_wait` (`src/bootstrap/realm_config.rs`) goes when it
+  ships.
+- #2208: a `delegate` helper's mob discoverable after a failed call. The
+  persona's hint line naming `implicit-<your session id>`
+  (`src/daemon/deferral/mod.rs`) goes when it ships.
 
 ## Stored state
 
