@@ -22,7 +22,11 @@
 
 - More commands open a list you act on, as `/agents` does: `/schedules`
   lists this agent's schedules (Enter or `p` pauses or resumes one, `d`
-  then `y` deletes it, and the list shows the change at once). The list
+  then `y` deletes it, and the list shows the change at once);
+  `/permissions` lists the approval rules with their pattern or literal
+  and layer, and `d` then `y` removes one (for good for the workspace's
+  own rules, until the daemon restarts for one written in another layer,
+  as `/permissions rm` does; adding stays `/permissions add`). The list
   moves with ↑/↓ or j/k and closes with Esc, `q` or Ctrl-C; an approval
   request takes over and the list comes back after it. The typed forms
   (`/schedules pause <name>` and the like) work as before.

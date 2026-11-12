@@ -283,6 +283,54 @@ fn schedule_picker_acts_and_refreshes_in_place() {
     );
 }
 
+/// `/permissions` asks for the rule picker, `/permissions list` still
+/// lists; the picker's confirmed `d` is the removal, and it stays open
+/// for the list again.
+#[test]
+fn rule_picker_removes_after_a_confirmation() {
+    let mut app = App::new(StatusInfo::default());
+    assert_eq!(
+        submit(&mut app, "/permissions"),
+        vec![Effect::RequestRulePicker]
+    );
+    assert_eq!(
+        submit(&mut app, "/permissions list"),
+        vec![Effect::ListRules]
+    );
+    assert_eq!(
+        submit(&mut app, "/permissions rm 3"),
+        vec![Effect::RemoveRule(3)]
+    );
+    let row = PickRow::new(
+        "3. allow shell (every call) · realm",
+        vec![PickKey::confirmed(
+            KeyCode::Char('d'),
+            PickAct::RemoveRule(3),
+            "remove rule 3?",
+        )],
+    );
+    app.update(Msg::ShowPicker {
+        picker: ListPicker::new(PickerKind::Permissions, vec![row], "none", "keys"),
+        refresh: false,
+    });
+    assert!(app.update(key(KeyCode::Char('d'))).is_empty());
+    assert_eq!(
+        app.update(key(KeyCode::Char('y'))),
+        vec![Effect::PickedRuleRemoval(3)]
+    );
+    assert!(matches!(&app.modal, Some(Modal::List(p)) if p.kind == PickerKind::Permissions));
+    app.update(Msg::ShowPicker {
+        picker: ListPicker::new(
+            PickerKind::Permissions,
+            vec![],
+            "no approval rules yet",
+            "keys",
+        ),
+        refresh: true,
+    });
+    assert!(matches!(&app.modal, Some(Modal::List(p)) if p.rows.is_empty()));
+}
+
 #[test]
 fn model_command_requests_picker_or_refresh() {
     let mut app = app_on_sonnet();

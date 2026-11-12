@@ -113,6 +113,9 @@ methods! {
     /// A `/permissions` command on the daemon's engine, which persists to
     /// the realm rules file.
     Rules = "rkat/rules" (crate::approval::desk::RuleCommand) -> crate::approval::desk::RuleOutcome;
+    /// The `/permissions` picker's rows: every rule of the daemon's
+    /// engine with its number, its patterns and its layer.
+    RuleRows = "rkat/rule_rows" (Empty) -> crate::approval::desk::RuleRows;
     /// The agents' conversations, last used first, the caller's agent's
     /// current one marked ([`crate::daemon::conversations`]).
     Conversations = "rkat/conversations" (Empty) -> ConversationList;

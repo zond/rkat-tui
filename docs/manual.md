@@ -690,6 +690,16 @@ only add deny rules and `[auto]` settings; its `[endpoints]`, `[pricing]`,
 yours to pick). Broad allow rules (blanket shell, interpreters, package-manager run
 commands) are dropped when auto mode starts.
 
+**`/permissions`** opens a list of the rules in effect: each row's number,
+allow or deny, tool, pattern or literal, and the layer it came from. `d`
+asks, and `y` removes the highlighted rule, as `/permissions rm <n>`
+does: a rule of the realm (or one added during this run) is gone for
+good; one written in your global `tui.toml`, the project's
+`.rkat/tui.toml` or on the daemon's command line is removed until the
+daemon restarts, and the question says so. Adding stays typed:
+`/permissions add allow|deny <tool> [pattern]` (the list's last line says
+so). `/permissions list` prints the rules as a notice.
+
 **The realm file.** The workspace's realm `tui.toml` lives in its state
 directory under the config directory, out of the agent's and a
 repository's reach: it is yours, and a hand edit applies.
@@ -1092,7 +1102,7 @@ feature by feature.
 
 
 `/help` (alias `/?`), `/quit` (aliases `/exit`, `/q`), `/detach`, `/agents [name]`, `/audit [n]`, `/schedules [pause|resume|delete <name>]`, `/daemon stop`, `/daemon start`, `/clear` (alias `/new`), `/resume [ref]`,
-`/permissions [list|add allow|deny <tool> [pattern]|rm <n>]` (`remove` for `rm`),
+`/permissions [list|add allow|deny <tool> [pattern]|rm <n>]` (`remove` for `rm`; alone, it opens a list of the rules: d then y removes the highlighted one),
 `/mode [default|accept-edits|plan|auto]`, `/auto [on|off|resume]`, `/model [[endpoint:]id|refresh]`,
 `/remember <text>`, `/memory [user|system]`, `/init`, `/compact [now|status|<instructions>]`, `/context`, `/status`, `/export [file]`, `/usage` (aliases `/cost`, `/stats`), `/copy [N]`, `/trust`,
 `/helpers [expand|fold <label>|all]` (alias `/tasks`). `/status` prints the

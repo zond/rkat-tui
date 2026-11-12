@@ -45,7 +45,7 @@ use super::MOB_ID;
 use super::agents::Agents;
 use super::approvals::{DaemonToolOrigins, Desk};
 use super::conversations::{Conversations, Target};
-use crate::approval::desk::{ModeStatus, RuleOutcome, mode_notice, run_rule_command};
+use crate::approval::desk::{ModeStatus, RuleOutcome, mode_notice, rule_rows, run_rule_command};
 use crate::approval::mode::PermissionMode;
 use crate::approval::{ApprovalEngine, InputKey};
 use crate::bootstrap::project_trust::ProjectInputs;
@@ -467,6 +467,7 @@ impl Local {
                     .await
                     .map_err(|err| Refusal::new(protocol::INTERNAL_ERROR, err.to_string()))
             };
+            method::RuleRows, Empty {} => Ok(rule_rows(&self.engine));
             method::Conversations, Empty {} => {
                 let agent = self.agent_of(&caller).ok();
                 Ok(ConversationList {

@@ -1136,6 +1136,8 @@ impl Runner {
                     "/permissions",
                 );
             }
+            Effect::RequestRulePicker => self.rule_picker(None),
+            Effect::PickedRuleRemoval(n) => self.rule_picker(Some(n)),
             Effect::ListRules => {
                 self.outcome_command::<protocol::method::Rules>(RuleCommand::List, "/permissions");
             }
@@ -1198,7 +1200,9 @@ async fn sleep_until(deadline: Option<Instant>) {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::commands::{agent_entries, others_notice, report_lines, schedule_picker};
+    use super::commands::{
+        agent_entries, others_notice, report_lines, rule_picker, schedule_picker,
+    };
     use super::turn::model_switch;
     use super::*;
 
@@ -1267,6 +1271,78 @@ mod tests {
             "{}",
             none.empty
         );
+    }
+
+    /// The `/permissions` picker: a row per rule with its number, kind,
+    /// tool, pattern or literal and layer; `d` asks before removing it by
+    /// its number, saying for good for the workspace's own rules and until
+    /// the daemon restarts for one written in another layer; Enter does
+    /// nothing; with none, the empty line, and the hint says how to add.
+    #[test]
+    fn the_rule_picker_rows_remove_by_number_after_saying_for_how_long() {
+        use crate::approval::desk::RuleRow;
+        use crate::approval::rules::RuleOrigin;
+        use crate::ui::{ModalKey, PickAct, PickerLine};
+        use ratatui::crossterm::event::{KeyCode, KeyEvent};
+        let rule = |n, deny, arg: Option<&str>, literal, origin| RuleRow {
+            n,
+            deny,
+            tool: "shell".into(),
+            arg: arg.map(str::to_string),
+            literal,
+            origin,
+        };
+        let mut picker = rule_picker(&[
+            rule(1, false, Some("git status*"), false, RuleOrigin::Realm),
+            rule(4, true, Some("git push"), true, RuleOrigin::Global),
+            rule(7, false, None, false, RuleOrigin::Cli),
+        ]);
+        let texts: Vec<&str> = picker.rows.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec![
+                "1. allow shell pattern `git status*` · realm",
+                "4. deny shell literal `git push` · global",
+                "7. allow shell (every call) · cli",
+            ]
+        );
+        let press = |code| KeyEvent::from(code);
+        assert_eq!(picker.key(&press(KeyCode::Enter)), ModalKey::Stay);
+        let question = |picker: &crate::ui::ListPicker| match &picker.line {
+            Some(PickerLine::Confirm { question, .. }) => question.clone(),
+            other => format!("not a question: {other:?}"),
+        };
+        picker.key(&press(KeyCode::Char('d')));
+        assert!(
+            question(&picker).contains("for good"),
+            "{}",
+            question(&picker)
+        );
+        assert_eq!(
+            picker.key(&press(KeyCode::Char('y'))),
+            ModalKey::Choose(PickAct::RemoveRule(1))
+        );
+        picker.key(&press(KeyCode::Down));
+        picker.key(&press(KeyCode::Char('d')));
+        let asked = question(&picker);
+        assert!(
+            asked.contains("global tui.toml") && asked.contains("until the daemon restarts"),
+            "{asked}"
+        );
+        assert_eq!(
+            picker.key(&press(KeyCode::Char('y'))),
+            ModalKey::Choose(PickAct::RemoveRule(4))
+        );
+        picker.key(&press(KeyCode::Down));
+        picker.key(&press(KeyCode::Char('d')));
+        assert!(
+            question(&picker).contains("command line"),
+            "{}",
+            question(&picker)
+        );
+        let none = rule_picker(&[]);
+        assert!(none.rows.is_empty());
+        assert!(none.footer.contains("/permissions add"), "{}", none.footer);
     }
 
     /// The start-up notice about the other agents, for a client that

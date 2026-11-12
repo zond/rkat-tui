@@ -16,6 +16,8 @@ pub enum RuleEffect {
 /// `/permissions` subcommands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RulesCommand {
+    /// Open the rule picker (`/permissions`).
+    Pick,
     /// List the active rules.
     List,
     /// Add a rule.
@@ -371,9 +373,13 @@ pub static COMMANDS: &[CommandSpec] = &[
         name: "permissions",
         aliases: &[],
         usage: "[list | add allow|deny <tool> [pattern] | rm <n>]",
-        summary: "list or edit the approval rules",
+        summary: "pick an approval rule to remove, or list or add rules",
         help: &[
-            ("/permissions [list]", "list approval rules"),
+            (
+                "/permissions",
+                "open a list of the approval rules (allow or deny, tool,\npattern or literal, layer); d then y removes one (for good for\nthe workspace's own rules, until the daemon restarts for one\nwritten in another layer)",
+            ),
+            ("/permissions list", "list approval rules"),
             (
                 "/permissions add allow|deny <tool> [pattern]",
                 "add an approval rule",
@@ -802,10 +808,11 @@ Agent picker (/agents):
   d, then y                      retire the agent: only one idle with no client (its
                                  conversation stays in /resume); any other key keeps it
   Esc, q                         close
-Lists (/schedules):
+Lists (/schedules, /permissions):
   Up/Down, j/k                   move
   Enter, p (/schedules)          pause the schedule, or resume a paused one
   d, then y (/schedules)         delete it; any other key keeps it
+  d, then y (/permissions)       remove the rule (adding stays /permissions add)
   Esc, q, Ctrl-C                 close (an approval request takes over and the list comes back)";
 
 /// The line that ends `/help`. `/rewind` returns when the engine can rewind
@@ -911,7 +918,8 @@ pub fn parse(input: &str) -> Option<Result<Command, CommandError>> {
 
 fn parse_rules(args: &[&str]) -> Option<RulesCommand> {
     match args {
-        [] | ["list"] => Some(RulesCommand::List),
+        [] => Some(RulesCommand::Pick),
+        ["list"] => Some(RulesCommand::List),
         ["add", effect, tool, pattern @ ..] => {
             let effect = match *effect {
                 "allow" => RuleEffect::Allow,
@@ -1217,7 +1225,7 @@ mod tests {
 
     #[test]
     fn rules_commands() {
-        assert_eq!(ok("/permissions"), Command::Rules(RulesCommand::List));
+        assert_eq!(ok("/permissions"), Command::Rules(RulesCommand::Pick));
         assert_eq!(ok("/permissions list"), Command::Rules(RulesCommand::List));
         assert_eq!(
             ok("/permissions add allow shell cargo test *"),
@@ -1337,7 +1345,7 @@ mod tests {
         assert!(keys.contains("stops every open prompt)"), "{keys}");
         assert!(keys.contains("Agent picker (/agents):"), "{keys}");
         assert!(keys.contains("d, then y"), "{keys}");
-        assert!(!keys.contains("/permissions"));
+        assert!(!keys.contains("/permissions [list]"));
         assert!(!keys.contains("Start a prompt"));
     }
 

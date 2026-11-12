@@ -24,6 +24,8 @@ use crate::daemon::protocol::ScheduleOp;
 pub enum PickerKind {
     /// `/schedules`.
     Schedules,
+    /// `/permissions`.
+    Permissions,
 }
 
 impl PickerKind {
@@ -32,6 +34,7 @@ impl PickerKind {
     pub fn title(self) -> &'static str {
         match self {
             Self::Schedules => " Schedules ",
+            Self::Permissions => " Approval rules ",
         }
     }
 }
@@ -41,13 +44,15 @@ impl PickerKind {
 pub enum PickAct {
     /// `/schedules pause|resume|delete <id>`, then the list again.
     Schedule(ScheduleOp, String),
+    /// `/permissions rm <n>`, then the list again.
+    RemoveRule(usize),
 }
 
 impl PickAct {
     /// Whether the picker stays open after it (a refreshed list replaces
     /// it; the others leave it for the editor, a view or the new mode).
     fn keeps_picker(&self) -> bool {
-        matches!(self, Self::Schedule(..))
+        matches!(self, Self::Schedule(..) | Self::RemoveRule(_))
     }
 }
 
@@ -351,6 +356,7 @@ impl App {
         }
         match act {
             PickAct::Schedule(op, id) => fx.push(Effect::PickedSchedule(op, id)),
+            PickAct::RemoveRule(n) => fx.push(Effect::PickedRuleRemoval(n)),
         }
     }
 }

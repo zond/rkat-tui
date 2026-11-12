@@ -207,7 +207,9 @@ async fn the_schedule_picker_pauses_resumes_and_deletes_a_schedule() {
     };
     let refreshed = |m: &Msg| matches!(m, Msg::ShowPicker { refresh: true, .. });
     let send = |rig: &mut Attached, act: PickAct| {
-        let PickAct::Schedule(op, id) = act;
+        let PickAct::Schedule(op, id) = act else {
+            unreachable!("{act:?}")
+        };
         rig.send(Effect::PickedSchedule(op, id));
     };
 

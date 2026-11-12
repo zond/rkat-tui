@@ -219,6 +219,51 @@ impl Runner {
         });
     }
 
+    /// The `/permissions` picker over the daemon's rules
+    /// (`rkat/rule_rows`); after the picker's removal of rule `remove`
+    /// (as `/permissions rm`, its notice shown), a refresh of the one open.
+    pub(super) fn rule_picker(&self, remove: Option<usize>) {
+        let Some(connection) = self.link_or_say(if remove.is_some() {
+            "/permissions needs it"
+        } else {
+            "the rules were not read"
+        }) else {
+            return;
+        };
+        let say = self.say();
+        tokio::spawn(async move {
+            let refresh = remove.is_some();
+            if let Some(n) = remove {
+                let done = bounded(
+                    CALL_TIMEOUT,
+                    remote::call::<protocol::method::Rules>(
+                        &connection,
+                        &RuleCommand::Remove { n },
+                    ),
+                )
+                .await;
+                let (level, text) = match done {
+                    Ok(outcome) if outcome.ok => (NoticeLevel::Info, outcome.text),
+                    Ok(outcome) => (NoticeLevel::Error, outcome.text),
+                    Err(err) => (NoticeLevel::Error, format!("/permissions failed: {err}")),
+                };
+                say.notice(level, text);
+            }
+            match bounded(
+                CALL_TIMEOUT,
+                remote::call::<protocol::method::RuleRows>(&connection, &protocol::Empty {}),
+            )
+            .await
+            {
+                Ok(rows) => {
+                    let picker = rule_picker(&rows.rules);
+                    let _ = say.ui_tx.send(Msg::ShowPicker { picker, refresh });
+                }
+                Err(err) => say.notice(NoticeLevel::Warn, format!("cannot list the rules: {err}")),
+            }
+        });
+    }
+
     /// `/agents`: open the picker over the workspace's agents, each with
     /// its conversation's title when the conversation list has it (a list
     /// that cannot be read leaves the titles out).
@@ -559,6 +604,51 @@ pub(super) fn report_lines(report: &protocol::Report) -> Vec<String> {
         lines.push(format!("file watches: {}", report.watches.join("; ")));
     }
     lines
+}
+
+/// The `/permissions` picker: a row per rule (number, allow or deny, tool,
+/// pattern or literal, layer); `d` removes it after a confirmation that
+/// says how long the removal lasts: for good for the realm's own rules,
+/// until the daemon restarts for those written in another layer (as
+/// `/permissions rm` does). Adding stays typed; the hint says how.
+pub(super) fn rule_picker(rules: &[crate::approval::desk::RuleRow]) -> crate::ui::ListPicker {
+    use crate::approval::rules::RuleOrigin;
+    use crate::ui::{ListPicker, PickAct, PickKey, PickRow, PickerKind};
+    use ratatui::crossterm::event::KeyCode;
+    let rows = rules
+        .iter()
+        .map(|rule| {
+            let kind = if rule.deny { "deny" } else { "allow" };
+            let what = match (&rule.arg, rule.literal) {
+                (None, _) => format!("{kind} {} (every call)", rule.tool),
+                (Some(arg), true) => format!("{kind} {} literal `{arg}`", rule.tool),
+                (Some(arg), false) => format!("{kind} {} pattern `{arg}`", rule.tool),
+            };
+            let lasts = match rule.origin {
+                RuleOrigin::Realm | RuleOrigin::Session => {
+                    "it leaves the workspace's rules for good".to_string()
+                }
+                RuleOrigin::Global => "it is written in your global tui.toml, so it is removed until the daemon restarts (edit that file to drop it for good)".to_string(),
+                RuleOrigin::Project => "it is written in the project's .rkat/tui.toml, so it is removed until the daemon restarts (edit that file to drop it for good)".to_string(),
+                RuleOrigin::Cli => "it comes from the daemon's command line, so it is removed until the daemon restarts".to_string(),
+            };
+            let n = usize::try_from(rule.n).unwrap_or(usize::MAX);
+            PickRow::new(
+                format!("{}. {what} · {}", rule.n, rule.origin.as_str()),
+                vec![PickKey::confirmed(
+                    KeyCode::Char('d'),
+                    PickAct::RemoveRule(n),
+                    format!("remove rule {}? {lasts}", rule.n),
+                )],
+            )
+        })
+        .collect();
+    ListPicker::new(
+        PickerKind::Permissions,
+        rows,
+        "no approval rules yet",
+        "↑/↓ move · d remove · /permissions add allow|deny <tool> [pattern] adds one · Esc close",
+    )
 }
 
 /// What a pause, resume or delete of a schedule did, as a notice.

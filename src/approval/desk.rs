@@ -328,6 +328,54 @@ pub fn run_rule_command(engine: &ApprovalEngine, command: &RuleCommand) -> RuleO
     }
 }
 
+/// One rule as the `/permissions` picker shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuleRow {
+    /// The number `/permissions list` shows and `/permissions rm` takes.
+    pub n: u64,
+    /// A deny rule (else an allow rule).
+    pub deny: bool,
+    /// The tool pattern as written.
+    pub tool: String,
+    /// The argument pattern as written (`None`: every call of the tool).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arg: Option<String>,
+    /// The argument is an exact subject, not a glob.
+    #[serde(default)]
+    pub literal: bool,
+    /// The layer it came from.
+    pub origin: RuleOrigin,
+}
+
+/// [`crate::daemon::protocol::method::RuleRows`]'s answer: every rule, in
+/// `/permissions list`'s order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuleRows {
+    /// The rules.
+    pub rules: Vec<RuleRow>,
+}
+
+/// The rules of `engine` as the `/permissions` picker shows them.
+#[must_use]
+pub fn rule_rows(engine: &ApprovalEngine) -> RuleRows {
+    let rules = engine.rules();
+    RuleRows {
+        rules: numbered_rules(&rules)
+            .map(|(n, rule)| RuleRow {
+                n,
+                deny: rule.kind == RuleKind::Deny,
+                tool: rule.tool.as_str().to_string(),
+                arg: rule.arg.as_ref().map(|arg| arg.as_str().to_string()),
+                literal: rule
+                    .arg
+                    .as_ref()
+                    .is_some_and(super::rules::ArgPattern::is_literal),
+                origin: rule.origin,
+            })
+            .collect(),
+    }
+}
+
 /// Every rule with the number `/permissions list` shows and `/permissions remove`
 /// takes: its stable serial ([`RuleId::serial`]), which never shifts when
 /// other rules are removed.

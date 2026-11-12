@@ -856,6 +856,54 @@ fn schedule_picker_snapshot() {
     );
 }
 
+/// The `/permissions` picker: its title, a row per rule, the question
+/// `d` asks and the hint that says how to add one.
+#[test]
+fn rule_picker_snapshot() {
+    use ratatui::crossterm::event::KeyCode;
+    use rkat_tui::ui::{ListPicker, PickAct, PickKey, PickRow, PickerKind};
+    let mut app = App::new(StatusInfo::default());
+    app.update(Msg::ShowPicker {
+        picker: ListPicker::new(
+            PickerKind::Permissions,
+            vec![PickRow::new(
+                "1. deny shell pattern `git push*` · realm",
+                vec![PickKey::confirmed(
+                    KeyCode::Char('d'),
+                    PickAct::RemoveRule(1),
+                    "remove rule 1? it leaves the workspace's rules for good",
+                )],
+            )],
+            "no approval rules yet",
+            "↑/↓ move · d remove · /permissions add allow|deny <tool> [pattern] adds one · Esc close",
+        ),
+        refresh: false,
+    });
+    app.update(Msg::Key(ratatui::crossterm::event::KeyEvent::from(
+        KeyCode::Char('d'),
+    )));
+    let mut terminal = Terminal::new(TestBackend::new(72, H)).unwrap();
+    terminal
+        .draw(|f| draw_at(f, &mut app, Instant::now()))
+        .unwrap();
+    let all = rows(terminal.backend().buffer());
+    let top = all
+        .iter()
+        .position(|row| row.contains("┌ Approval rules"))
+        .expect("the picker is drawn");
+    assert_eq!(
+        all[top..top + 6].to_vec(),
+        vec![
+            "  ┌ Approval rules ──────────────────────────────────────────────────┐",
+            "  │1. deny shell pattern `git push*` · realm                         │",
+            "  │remove rule 1? it leaves the workspace's rules for good (y yes,   │",
+            "  │any other key no)                                                 │",
+            "  │↑/↓ move · d remove · /permissions add allow|deny <tool> [pattern]│",
+            "  │adds one · Esc close                                              │",
+        ]
+    );
+}
+
 #[test]
 fn selected_cells_render_reversed() {
     use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};

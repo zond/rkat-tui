@@ -617,6 +617,12 @@ pub enum Effect {
     RemoveRule(usize),
     /// List rules; answer with [`Msg::Notice`].
     ListRules,
+    /// `/permissions`: open the rule picker (answered with
+    /// [`Msg::ShowPicker`]).
+    RequestRulePicker,
+    /// The rule picker's confirmed removal of rule `n`: as
+    /// `/permissions rm <n>`, then the picker's list again.
+    PickedRuleRemoval(usize),
     /// `/trust`: record every project input's digest
     /// in the host trust record; their servers and hooks run from the next
     /// session.

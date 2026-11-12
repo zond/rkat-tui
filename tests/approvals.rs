@@ -466,6 +466,71 @@ async fn a_deny_rule_added_in_attach_mode_refuses_the_next_call() {
     daemon.stop().await;
 }
 
+/// The `/permissions` picker lists the daemon's rules and its confirmed
+/// `d` removes one: the notice says so, the list comes again without it,
+/// and the daemon's engine no longer has it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_rule_picker_removes_a_rule_from_the_daemon() {
+    use ratatui::crossterm::event::KeyCode;
+    use rkat_tui::ui::{PickAct, PickerKind};
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let daemon = start(&ws.root, &llm, &Setup::default()).await;
+    let mut client = attach(&ws.root).await;
+    client.send(Effect::AddRule {
+        effect: RuleEffect::Deny,
+        tool: "write_file".into(),
+        pattern: Some("*.lock".into()),
+    });
+    client
+        .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text == "rule added"))
+        .await;
+    client.send(Effect::RequestRulePicker);
+    let shown = client
+        .wait_for(|msg| matches!(msg, Msg::ShowPicker { picker, refresh: false } if picker.kind == PickerKind::Permissions))
+        .await;
+    let Msg::ShowPicker { picker, .. } = shown else {
+        unreachable!()
+    };
+    let row = picker
+        .rows
+        .iter()
+        .find(|row| {
+            row.text
+                .contains("deny write_file pattern `*.lock` · realm")
+        })
+        .unwrap_or_else(|| panic!("{:?}", picker.rows));
+    let remove = row
+        .keys
+        .iter()
+        .find(|key| key.code == KeyCode::Char('d'))
+        .unwrap();
+    assert!(remove.confirm.as_deref().unwrap().contains("for good"));
+    let Ok(PickAct::RemoveRule(n)) = remove.act.clone() else {
+        panic!("{remove:?}")
+    };
+    client.send(Effect::PickedRuleRemoval(n));
+    client
+        .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text == "removed deny write_file *.lock"))
+        .await;
+    client
+        .wait_for(|msg| matches!(msg, Msg::ShowPicker { picker, refresh: true }
+            if picker.kind == PickerKind::Permissions && picker.rows.iter().all(|row| !row.text.contains("write_file"))))
+        .await;
+    client.send(Effect::ListRules);
+    client
+        .wait_for(|msg| {
+            matches!(msg, Msg::Notice { text, .. } if !text.contains("write_file")
+                && (text == "no rules"
+                    || text.lines().all(|line| line
+                        .split_once(". ")
+                        .is_some_and(|(n, _)| n.parse::<u64>().is_ok()))))
+        })
+        .await;
+    client.quit().await;
+    daemon.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_helpers_reviewed_call_raises_an_approval_too() {
     let ws = Workspace::new();
