@@ -7707,7 +7707,7 @@ has no nesting.
 Tests: `bootstrap::realm_config::tests::delegate_waits_longer_than_any_other_tool_unless_configured`
 (the default, a configured one, nothing written),
 `helpers::a_helper_s_tool_times_out_before_its_delegate_does` (rig:
-`default_timeout = "2s"`, a helper's `sleep 30` is cut at 2 s, the helper
+`default_timeout = "10s"`, a helper's `sleep 300` is cut at 10 s, the helper
 reports it, the `delegate` completes; it fails without the default, the
 `delegate` timing out with the shell).
 

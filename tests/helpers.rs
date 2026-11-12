@@ -408,14 +408,15 @@ async fn a_timed_out_delegate_leaves_a_long_lived_member_seated() {
 
 /// A helper's tool call is cut by the realm's tool deadline well before
 /// the `delegate` that waits for the helper: with `[tools] default_timeout
-/// = "2s"` and no `delegate` entry, the helper's `sleep` times out at 2 s,
-/// the helper reports it, and the `delegate` call (waiting three times as
-/// long) completes with the helper's result.
+/// = "10s"` and no `delegate` entry, the helper's `sleep` times out at
+/// 10 s, the helper reports it, and the `delegate` call (waiting three
+/// times as long, so 20 s are left for the helper's spawn and model calls
+/// on a slow runner) completes with the helper's result.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_helper_s_tool_times_out_before_its_delegate_does() {
     let ws = Workspace::new();
     let config = common::realm_of(&ws.root).join("config.toml");
-    std::fs::write(&config, "[tools]\ndefault_timeout = \"2s\"\n").unwrap();
+    std::fs::write(&config, "[tools]\ndefault_timeout = \"10s\"\n").unwrap();
     let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
         let results = messages
             .iter()
@@ -427,7 +428,7 @@ async fn a_helper_s_tool_times_out_before_its_delegate_does() {
                 0 => Step::Tool {
                     id: "s1",
                     name: "shell",
-                    args: json!({"command": "sleep 30", "timeout_secs": 60}),
+                    args: json!({"command": "sleep 300", "timeout_secs": 600}),
                 },
                 _ => Step::Text("the command timed out"),
             };
