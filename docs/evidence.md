@@ -8047,3 +8047,8 @@ The first tag's run showed one thing at once: GitHub no longer offers
 supported"), so the macOS job names `macos-latest`. A run for a tag
 skips a target whose archive the release has already, so a rerun for the
 failed target does not replace a published archive.
+The same run's Linux job ended after an hour with "The hosted runner
+lost communication with the server", no log kept, as the first hosted
+test run of the 0.9.14 move did; taken as the runner out of memory in a
+cold build of the engine, not proven. The release build runs two
+compilations at a time (`--jobs 2`).

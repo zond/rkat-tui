@@ -38,7 +38,7 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 180
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
         with:
@@ -73,7 +73,11 @@ jobs:
         with:
           toolchain: 1.97.0
           targets: ${{ matrix.target }}
-      - run: cargo build --release --locked --target ${{ matrix.target }}
+      # Two compilations at a time: with one per core the v0.0.2 run's
+      # Linux runner stopped answering an hour into the build ("lost
+      # communication with the server"), which is what running out of
+      # memory looks like there.
+      - run: cargo build --release --locked --jobs 2 --target ${{ matrix.target }}
         if: env.ATTACHED != '1'
       - name: Archive
         if: env.ATTACHED != '1'
