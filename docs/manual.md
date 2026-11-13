@@ -2167,6 +2167,14 @@ already). `/wire` from a TUI attached with `--attach=HOST:PORT` to a
 daemon on another machine is refused: wires join daemons of one machine
 through local sockets.
 
+The two halves are two calls, not one step: an `rkat-tui` that dies
+after the other daemon wired and before yours did (killed, or its
+terminal closed) leaves a one-sided wire. The other workspace's
+`/agents` and `/unwire` picker then show it wired to your agent, yours
+show nothing, and its messages to your agent are not delivered (your
+daemon does not know its key and drops them). `/wire` to it again from
+your side completes the wire; `/unwire` there removes the half instead.
+
 **Names.** Both workspaces call their agents `main-<id>`, so across a
 wire an agent is named `<workspace>/<agent>` (the workspace's directory
 name): `peers` lists it so, the receiving TUI labels its messages
