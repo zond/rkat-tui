@@ -1042,7 +1042,7 @@ async fn an_agent_lost_in_a_failed_switch_is_no_ghost() {
     assert_ne!(b.agent(), lost);
     // A file watch of the agent about to be lost (review 5, A1: a lost
     // agent kept its watches, unlike a retired one).
-    let watches = Arc::clone(daemon.local().agents().watches());
+    let watches = Arc::clone(&daemon.local().core().watches);
     rkat_tui::tools::WatchHost::watch(&*watches, &lost, &["*.txt".to_string()], false).unwrap();
     assert_eq!(watches.describe(&lost).len(), 1);
     // The new conversation fails to spawn, and so does seating the old one.

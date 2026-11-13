@@ -29,7 +29,7 @@ impl Local {
     pub(super) async fn switch(&self, agent: &str, target: Target) -> Result<Switched, Refusal> {
         use crate::daemon::conversations::SwitchError;
         let resumed = matches!(target, Target::Resume(_));
-        let previous = self.conversations.current(agent);
+        let previous = self.core.conversations.current(agent);
         let session = self
             .agents
             .switch(agent, target)
@@ -46,15 +46,18 @@ impl Local {
                 _ => err.into(),
             })?;
         if let Some(previous) = previous.filter(|previous| *previous != session) {
-            self.engine.forget_session(&previous);
+            self.core.engine.forget_session(&previous);
         }
         if resumed {
-            self.conversations.seed(&self.engine, &session).await;
+            self.core
+                .conversations
+                .seed(&self.core.engine, &session)
+                .await;
         }
         // The new conversation was never told anything.
         self.plan_noted.lock().await.remove(agent);
         let warning = self.note_plan_mode().await;
-        let origins = Arc::clone(&self.origins);
+        let origins = Arc::clone(&self.core.origins);
         let idle = session.clone();
         tokio::spawn(async move {
             origins.refresh(&idle).await;
@@ -77,14 +80,14 @@ impl Local {
         why: &crate::daemon::agents::Leave,
         seated: Option<&crate::daemon::agents::Seated<'_>>,
     ) -> Result<Retired, Refusal> {
-        let session = self.conversations.current(agent);
+        let session = self.core.conversations.current(agent);
         if let Some(session) = &session {
-            self.engine.stop(session);
-            self.desk.stop(session);
+            self.core.engine.stop(session);
+            self.parts.desk.stop(session);
         }
         // Nothing wakes a retired agent: its schedules go first, so none
         // fires between the retire and their deletion.
-        let schedules_deleted = self.agents.schedules().delete_all(agent).await;
+        let schedules_deleted = self.core.schedules.delete_all(agent).await;
         let retired = match seated {
             Some(seated) => self.agents.retire_seated(agent, why, seated).await,
             None => self.agents.retire(agent, why).await,
@@ -140,7 +143,7 @@ impl Local {
                     .find(|row| row.name == agent)
                     .map_or(status.clients, |row| row.clients)
                     .saturating_sub(1);
-                self.lifecycle.leave(caller);
+                self.core.lifecycle.leave(caller);
                 self.agents.left(&agent);
                 tracing::info!(%agent, others, "a client quit: the agent stays for its other clients");
                 QuitOutcome::Left { others }
@@ -149,13 +152,13 @@ impl Local {
                 let retired = self
                     .retire(&agent, &crate::daemon::agents::Leave::Quit, Some(&seated))
                     .await?;
-                self.lifecycle.leave(caller);
+                self.core.lifecycle.leave(caller);
                 QuitOutcome::Retired { retired }
             }
             QuitPlan::Terminate => {
-                self.lifecycle.leave(caller);
+                self.core.lifecycle.leave(caller);
                 tracing::info!(%agent, "the owner quit as the last client: shutting down");
-                self.lifecycle.shutdown_retiring();
+                self.core.lifecycle.shutdown_retiring();
                 QuitOutcome::Terminated
             }
             QuitPlan::Ask { reason, running } => QuitOutcome::Ask {
@@ -217,9 +220,9 @@ impl Local {
     pub(super) fn shutdown(&self, caller: &Caller, retire: bool) -> Empty {
         tracing::info!(owner = caller.owner, retire, "rkat/shutdown: shutting down");
         if retire {
-            self.lifecycle.shutdown_retiring();
+            self.core.lifecycle.shutdown_retiring();
         } else {
-            self.lifecycle.shutdown();
+            self.core.lifecycle.shutdown();
         }
         Empty {}
     }

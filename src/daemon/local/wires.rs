@@ -48,7 +48,7 @@ impl Local {
         agent: Option<String>,
     ) -> Result<WireCard, Refusal> {
         let agent = self.wire_agent(caller, agent)?;
-        self.agents.wires().card(&agent).await.map_err(wire_refusal)
+        self.core.wires.card(&agent).await.map_err(wire_refusal)
     }
 
     /// `rkat/wire`: wire the agent `agent` names to the one `card` names;
@@ -63,8 +63,8 @@ impl Local {
         let label = card.label();
         let workspace = card.workspace.display().to_string();
         let already = self
-            .agents
-            .wires()
+            .core
+            .wires
             .wire(&agent, card)
             .await
             .map_err(wire_refusal)?;
@@ -86,8 +86,8 @@ impl Local {
         let agent = self.wire_agent(caller, agent)?;
         let label = protocol::wire_label(workspace, peer);
         let removed = self
-            .agents
-            .wires()
+            .core
+            .wires
             .unwire(&agent, workspace, peer)
             .await
             .map_err(wire_refusal)?;

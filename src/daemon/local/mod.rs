@@ -50,21 +50,21 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use meerkat_core::lifecycle::run_primitive::TurnMetadataOverride;
 use meerkat_mob::{AgentIdentity, MobId};
-use meerkat_mob_mcp::MobMcpState;
 use serde_json::{Value, json};
 
 use super::MOB_ID;
 use super::agents::Agents;
-use super::approvals::{DaemonToolOrigins, Desk};
-use super::conversations::{Conversations, Target};
+use super::approvals::Desk;
+use super::conversations::Target;
+use crate::approval::InputKey;
 use crate::approval::desk::{ModeStatus, RuleOutcome, mode_notice, rule_rows, run_rule_command};
 use crate::approval::mode::PermissionMode;
-use crate::approval::{ApprovalEngine, InputKey};
 use crate::bootstrap::project_trust::ProjectInputs;
 use crate::endpoints::{WireDialect, is_endpoint_realm};
 use crate::mobs::HelperRegistry;
 use crate::thinking::{self, ThinkingTable};
 
+use super::core::Core;
 use super::lifecycle::{Caller, Lifecycle};
 use super::protocol::{
     self, AUDIT_LINES, AuditTail, ConversationList, Empty, METHOD_NOT_FOUND, Method, ModeSet,
@@ -78,15 +78,12 @@ const SYSTEM_CONTEXT_SOURCE: &str = "rkat-tui";
 
 /// What the local methods and the observer act on.
 pub struct Local {
-    engine: Arc<ApprovalEngine>,
-    state: Arc<MobMcpState>,
-    conversations: Arc<Conversations>,
+    /// What the local methods share with the agents.
+    core: Arc<Core>,
+    /// The live agents.
     agents: Arc<Agents>,
-    registry: Arc<HelperRegistry>,
-    origins: Arc<DaemonToolOrigins>,
-    deferral: Arc<super::deferral::Deferral>,
-    desk: Arc<Desk>,
-    thinking: ThinkingTable,
+    /// What only the local methods read.
+    parts: LocalParts,
     /// Which agents were told plan mode is on (an agent missing was told
     /// nothing: it is told when plan mode is on). A daemon started in plan
     /// mode tells every agent ([`Local::announce_plan_mode`]), so leaving
@@ -95,83 +92,37 @@ pub struct Local {
     /// cannot interleave their check and their note.
     plan_noted: tokio::sync::Mutex<std::collections::HashMap<String, bool>>,
     inputs: AtomicU64,
-    /// The workspace's project inputs and their trust (`rkat/trust`).
-    project: ProjectInputs,
-    /// The consent surface: the decisions offered to the clients.
-    decisions: Arc<super::decisions::Decisions>,
-    /// The engine's task store (`rkat/tasks`).
-    tasks_db: std::path::PathBuf,
-    realm_file: Option<crate::config::RealmFile>,
-    /// The runtime the agent's session lives in (`rkat/set_model`).
-    machine: Arc<meerkat_runtime::MeerkatMachine>,
-    /// The realm config (a switched-to model's profile is written there).
-    realm_config: Arc<crate::bootstrap::RealmConfigStore>,
-    /// The workspace (`/context` names its `.rkat/skills`).
-    workspace: std::path::PathBuf,
-    /// The skills a session build lists (`/context`'s inventory line).
-    skills: Arc<crate::bootstrap::skills::SkillCatalog>,
-    /// The daemon's endpoints (a switch names one by its binding).
-    endpoints: crate::endpoints::EndpointRegistry,
-    /// What the start-up had to say (`rkat/notices`).
-    startup_notices: Vec<StartupNotice>,
-    /// The clients, the detach record and the shutdown request
-    /// (`rkat/status`, `rkat/detach`, `rkat/shutdown`).
-    lifecycle: Arc<Lifecycle>,
-    /// The fixed part of `rkat/report`.
-    report: ReportParts,
-    /// The audit log (`rkat/audit`), when it could be opened.
-    audit: Option<Arc<super::audit::AuditLog>>,
     /// Tests: how many times each engine method was forwarded.
     #[cfg(any(test, feature = "test-support"))]
     forwarded: parking_lot::Mutex<std::collections::HashMap<String, usize>>,
 }
 
-/// What [`Local`] is made of.
+/// What only [`Local`] reads, beside the [`Core`] it shares.
 pub struct LocalParts {
-    /// The daemon's approval engine.
-    pub engine: Arc<ApprovalEngine>,
-    /// The mob host.
-    pub state: Arc<MobMcpState>,
-    /// The agents' conversations.
-    pub conversations: Arc<Conversations>,
-    /// The live agents.
-    pub agents: Arc<Agents>,
-    /// The helpers the agents started.
-    pub registry: Arc<HelperRegistry>,
-    /// The members' tool catalogs the gate reads.
-    pub origins: Arc<DaemonToolOrigins>,
-    /// The agents' hidden tools and their reveals.
-    pub deferral: Arc<super::deferral::Deferral>,
     /// The daemon's approval desk.
     pub desk: Arc<Desk>,
     /// The `[thinking]` settings a model switch carries.
     pub thinking: ThinkingTable,
-    /// The workspace's project inputs and their trust.
+    /// The workspace's project inputs and their trust (`rkat/trust`).
     pub project: ProjectInputs,
-    /// The consent surface.
-    pub decisions: Arc<super::decisions::Decisions>,
-    /// The engine's task store.
+    /// The engine's task store (`rkat/tasks`).
     pub tasks_db: std::path::PathBuf,
     /// The realm's `tui.toml` as rkat-tui writes it (the checklist view).
     pub realm_file: Option<crate::config::RealmFile>,
-    /// The runtime the members' sessions live in.
+    /// The runtime the agents' sessions live in (`rkat/set_model`).
     pub machine: Arc<meerkat_runtime::MeerkatMachine>,
-    /// The realm config store.
+    /// The realm config (a switched-to model's profile is written there).
     pub realm_config: Arc<crate::bootstrap::RealmConfigStore>,
-    /// The workspace (its conventions root).
+    /// The workspace (`/context` names its `.rkat/skills`).
     pub workspace: std::path::PathBuf,
-    /// The skills a session build lists.
+    /// The skills a session build lists (`/context`'s inventory line).
     pub skills: Arc<crate::bootstrap::skills::SkillCatalog>,
-    /// The daemon's endpoints.
+    /// The daemon's endpoints (a switch names one by its binding).
     pub endpoints: crate::endpoints::EndpointRegistry,
-    /// What the start-up had to say.
+    /// What the start-up had to say (`rkat/notices`).
     pub startup_notices: Vec<StartupNotice>,
-    /// The daemon's lifecycle state.
-    pub lifecycle: Arc<Lifecycle>,
-    /// What `rkat/report` names besides the engine's state.
+    /// The fixed part of `rkat/report`.
     pub report: ReportParts,
-    /// The audit log, when it could be opened.
-    pub audit: Option<Arc<super::audit::AuditLog>>,
 }
 
 /// The fixed part of [`protocol::method::Report`]'s answer.
@@ -190,75 +141,40 @@ pub struct ReportParts {
 impl std::fmt::Debug for Local {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Local")
-            .field("conversations", &self.conversations)
+            .field("conversations", &self.core.conversations)
             .finish_non_exhaustive()
     }
 }
 
 impl Local {
-    /// The local surface over `parts`.
+    /// The local surface over `agents` (and the core they share) and
+    /// `parts`.
     #[must_use]
-    pub fn new(parts: LocalParts) -> Self {
-        let LocalParts {
-            engine,
-            state,
-            conversations,
-            agents,
-            registry,
-            origins,
-            deferral,
-            desk,
-            thinking,
-            project,
-            decisions,
-            tasks_db,
-            realm_file,
-            machine,
-            realm_config,
-            workspace,
-            skills,
-            endpoints,
-            startup_notices,
-            lifecycle,
-            report,
-            audit,
-        } = parts;
+    pub fn new(agents: Arc<Agents>, parts: LocalParts) -> Self {
         // In plan mode every restored agent heard it (its conversation
         // has the note): leaving plan mode tells it.
-        let in_plan = engine.mode() == PermissionMode::Plan;
+        let core = Arc::clone(agents.core());
+        let in_plan = core.engine.mode() == PermissionMode::Plan;
         let noted = agents
             .names()
             .into_iter()
             .map(|name| (name, in_plan))
             .collect();
         Self {
-            engine,
-            state,
-            conversations,
+            core,
             agents,
-            registry,
-            origins,
-            deferral,
-            desk,
-            thinking,
+            parts,
             plan_noted: tokio::sync::Mutex::new(noted),
             inputs: AtomicU64::new(0),
-            project,
-            decisions,
-            tasks_db,
-            realm_file,
-            machine,
-            realm_config,
-            workspace,
-            skills,
-            endpoints,
-            startup_notices,
-            lifecycle,
-            report,
-            audit,
             #[cfg(any(test, feature = "test-support"))]
             forwarded: parking_lot::Mutex::default(),
         }
+    }
+
+    /// What the local methods share with the agents.
+    #[must_use]
+    pub fn core(&self) -> &Arc<Core> {
+        &self.core
     }
 
     /// How many requests of the engine method `method` the clients sent
@@ -271,7 +187,7 @@ impl Local {
 
     /// Append `line` to the audit log (nothing when there is none).
     pub fn audit(&self, line: super::audit::Line) {
-        if let Some(log) = &self.audit {
+        if let Some(log) = &self.core.audit {
             log.write(&line);
         }
     }
@@ -279,19 +195,19 @@ impl Local {
     /// The daemon's lifecycle state.
     #[must_use]
     pub fn lifecycle(&self) -> &Arc<Lifecycle> {
-        &self.lifecycle
+        &self.core.lifecycle
     }
 
     /// The helpers the agents started.
     #[must_use]
     pub fn registry(&self) -> &Arc<HelperRegistry> {
-        &self.registry
+        &self.core.registry
     }
 
     /// The agents' hidden tools and their reveals.
     #[must_use]
     pub fn deferral(&self) -> &Arc<super::deferral::Deferral> {
-        &self.deferral
+        &self.core.deferral
     }
 
     /// The live agents.
@@ -322,11 +238,11 @@ impl Local {
             .as_ref()
             .and_then(|name| agents.iter().find(|row| &row.name == name));
         Status {
-            workspace: self.lifecycle.workspace().to_path_buf(),
+            workspace: self.core.lifecycle.workspace().to_path_buf(),
             host: crate::paths::local_host(),
             pid: std::process::id(),
-            started_at: self.lifecycle.started_at().to_string(),
-            clients: self.lifecycle.clients(),
+            started_at: self.core.lifecycle.started_at().to_string(),
+            clients: self.core.lifecycle.clients(),
             detached: self.agents.any_detached(),
             owner: caller.owner,
             session_id: row.and_then(|row| row.session_id.clone()),
@@ -339,7 +255,7 @@ impl Local {
     /// The consent surface.
     #[must_use]
     pub fn decisions(&self) -> &Arc<super::decisions::Decisions> {
-        &self.decisions
+        &self.core.decisions
     }
 
     /// Answer the local method `method` for `caller`: its parameters read
@@ -384,7 +300,7 @@ impl Local {
             method::Report, Empty {} => Ok(self.report(self.agent_of(&caller).ok().as_deref()));
             method::SetMode, protocol::SetModeParams { mode } => Ok(self.set_mode(mode).await);
             method::Rules, command => self.rules(command).await;
-            method::RuleRows, Empty {} => Ok(rule_rows(&self.engine));
+            method::RuleRows, Empty {} => Ok(rule_rows(&self.core.engine));
             method::Conversations, Empty {} => Ok(self.conversation_list(&caller).await);
             method::New, Empty {} => self.switch(&self.agent_of(&caller)?, Target::Fresh).await;
             method::Resume, protocol::SessionParams { session_id } => self.switch(&self.agent_of(&caller)?, Target::Resume(session_id)).await;
@@ -393,7 +309,7 @@ impl Local {
             method::Endpoint, protocol::SessionParams { session_id } => Ok(self.endpoint_of(&session_id).await);
             method::Usage, protocol::SessionParams { session_id } => self.usage(session_id).await;
             method::Tasks, protocol::SessionParams { session_id } => self.tasks(&session_id).await;
-            method::Notices, Empty {} => Ok(Notices { notices: self.startup_notices.clone() });
+            method::Notices, Empty {} => Ok(Notices { notices: self.parts.startup_notices.clone() });
             method::Audit, protocol::AuditParams { lines } => self.audit_tail(&self.agent_of(&caller)?, lines.unwrap_or(AUDIT_LINES));
             method::Missed, Empty {} => self.missed(&caller);
             method::SetModel, params => self.set_model(&self.agent_of(&caller)?, params).await;
@@ -411,7 +327,7 @@ impl Local {
 
     /// Write the conversation log as it is now (the daemon's stop).
     pub fn flush_conversations(&self) {
-        self.conversations.flush();
+        self.core.conversations.flush();
     }
 
     /// Learn from `caller`'s engine request on its way to the router (see
@@ -453,19 +369,19 @@ impl Local {
                 self.agents.touch(&agent);
                 // On its way until the engine answers: the agent is not
                 // idle meanwhile.
-                input = Some(self.agents.activity().sending(&agent));
+                input = Some(self.core.activity.sending(&agent));
                 // The user's input: the run that takes it is attended, and
                 // its conversation is the one used last (`-c` after a
                 // restart continues it).
-                if let Some(session) = self.conversations.current(&agent) {
-                    self.engine.human_input(&session);
-                    self.conversations.touch(&session, &agent);
+                if let Some(session) = self.core.conversations.current(&agent) {
+                    self.core.engine.human_input(&session);
+                    self.core.conversations.touch(&session, &agent);
                     if let Some(text) = params.get(field).and_then(content_text)
                         && !text.trim().is_empty()
                     {
                         let n = self.inputs.fetch_add(1, Ordering::Relaxed);
                         let key = InputKey::new(format!("rkat-attach:{}:{n}", std::process::id()));
-                        self.engine.record_user_input(&session, key, &text);
+                        self.core.engine.record_user_input(&session, key, &text);
                     }
                 }
                 if method == engine::TURN_START {
@@ -474,13 +390,13 @@ impl Local {
             }
             engine::STOP_MEMBER_RUN | engine::FORCE_CANCEL | engine::HARD_CANCEL_MEMBER => {
                 tracing::info!(%method, %agent, "the client interrupts the agent");
-                if let Some(session) = self.conversations.current(&agent) {
-                    self.engine.stop(&session);
-                    self.desk.stop(&session);
+                if let Some(session) = self.core.conversations.current(&agent) {
+                    self.core.engine.stop(&session);
+                    self.parts.desk.stop(&session);
                     // The `delegate` call that would retire a helper is
                     // abandoned with the run: stop the helpers too.
-                    let state = Arc::clone(&self.state);
-                    let registry = Arc::clone(&self.registry);
+                    let state = Arc::clone(&self.core.state);
+                    let registry = Arc::clone(&self.core.registry);
                     tokio::spawn(async move {
                         crate::mobs::cancel_helpers(&state, &registry, &session).await;
                     });
@@ -517,7 +433,7 @@ impl Local {
         };
         if method == engine::SESSION_COMPACT {
             let session = field("session_id").unwrap_or("");
-            let current = own.and_then(|own| self.conversations.current(own));
+            let current = own.and_then(|own| self.core.conversations.current(own));
             return if current.is_some_and(|current| current.to_string() == session) {
                 Ok(())
             } else {
@@ -545,7 +461,7 @@ impl Local {
             return Err(refuse(format!("helper {member} of mob {mob}")));
         }
         let key = crate::mobs::HelperKey::new(MobId::from(mob), AgentIdentity::from(member));
-        let Some(owner) = self.registry.owner_of(&key) else {
+        let Some(owner) = self.core.registry.owner_of(&key) else {
             return Ok(());
         };
         match self

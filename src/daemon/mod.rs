@@ -32,6 +32,7 @@ pub mod approvals;
 pub mod audit;
 pub mod context;
 pub mod conversations;
+pub mod core;
 pub mod decisions;
 pub mod deferral;
 pub mod endpoint;
@@ -512,69 +513,62 @@ impl Daemon {
             #[cfg(any(test, feature = "test-support"))]
             options.spawn_faults.clone(),
         )?;
-        let lifecycle = lifecycle::Lifecycle::built(
-            workspace.clone(),
-            started_at.clone(),
-            options.start_token,
-            options.build.unwrap_or_else(|| crate::BUILD.to_string()),
-        );
-        let wires = open_wires(&mut composed, &workspace);
-        let agents = agents::Agents::new(agents::AgentsParts {
+        let core = Arc::new(core::Core {
+            state: Arc::clone(&composed.state),
+            engine: Arc::clone(&composed.engine),
+            origins: Arc::clone(&composed.origins),
+            registry: Arc::clone(&composed.root.registry),
+            decisions: Arc::clone(&composed.decisions),
+            ledger: Arc::clone(&composed.ledger),
+            deferral: Arc::clone(&composed.deferral),
+            watches: Arc::clone(&composed.watches),
+            lifecycle: lifecycle::Lifecycle::built(
+                workspace.clone(),
+                started_at.clone(),
+                options.start_token,
+                options.build.unwrap_or_else(|| crate::BUILD.to_string()),
+            ),
+            wires: open_wires(&mut composed, &workspace),
+            schedules: Arc::new(schedules::Schedules::new(
+                composed.runtime.schedule_service(),
+                Arc::clone(&composed.ledger),
+            )),
             activity: idle_activity(
                 &conversations,
                 composed.runtime.runtime_adapter(),
                 &composed.decisions,
             ),
-            state: Arc::clone(&composed.state),
-            conversations: Arc::clone(&conversations),
-            engine: Arc::clone(&composed.engine),
-            origins: Arc::clone(&composed.origins),
-            lifecycle: Arc::clone(&lifecycle),
-            schedules: Arc::new(schedules::Schedules::new(
-                composed.runtime.schedule_service(),
-                Arc::clone(&composed.ledger),
-            )),
-            decisions: Arc::clone(&composed.decisions),
-            audit: audit.clone(),
-            watches: Arc::clone(&composed.watches),
-            ledger: Arc::clone(&composed.ledger),
-            registry: Arc::clone(&composed.root.registry),
-            wires,
+            conversations,
+            audit,
         });
-        attach_engine(&composed.engine, &agents, audit.as_ref(), &workspace)?;
+        let agents = agents::Agents::new(Arc::clone(&core));
+        attach_engine(&core, &agents, &workspace)?;
         composed.desk.report_to(&composed.engine);
         let first_agent = start_agents(&agents, &composed).await?;
         let watch_task = deliver_watches(&agents, composed.watch_batches);
-        let local = Arc::new(local::Local::new(local::LocalParts {
-            engine: Arc::clone(&composed.engine),
-            state: Arc::clone(&composed.state),
-            conversations,
-            agents: Arc::clone(&agents),
-            registry: Arc::clone(&composed.root.registry),
-            origins: Arc::clone(&composed.origins),
-            deferral: Arc::clone(&composed.deferral),
-            desk: Arc::clone(&composed.desk),
-            thinking: composed.thinking.clone(),
-            project: composed.project_inputs.clone(),
-            decisions: Arc::clone(&composed.decisions),
-            tasks_db: composed.tasks_db.clone(),
-            realm_file: composed.realm_file.clone(),
-            machine: composed.runtime.runtime_adapter(),
-            realm_config: Arc::clone(&composed.realm_config),
-            skills: Arc::clone(&composed.skills),
-            workspace: composed.scope.context_root.clone(),
-            endpoints: composed.endpoints.clone(),
-            startup_notices: composed.startup_notices.clone(),
-            lifecycle,
-            audit,
-            report: local::ReportParts {
-                realm: composed.scope.realm_root(),
-                realm_id: composed.scope.realm_id.clone(),
-                confinement: args.effective_confinement().name().to_string(),
-                helper_depth: composed.helper_max_depth,
+        let local = Arc::new(local::Local::new(
+            agents,
+            local::LocalParts {
+                desk: Arc::clone(&composed.desk),
+                thinking: composed.thinking,
+                project: composed.project_inputs,
+                tasks_db: composed.tasks_db,
+                realm_file: composed.realm_file,
+                machine: composed.runtime.runtime_adapter(),
+                realm_config: composed.realm_config,
+                skills: composed.skills,
+                workspace: composed.scope.context_root.clone(),
+                endpoints: composed.endpoints,
+                startup_notices: composed.startup_notices,
+                report: local::ReportParts {
+                    realm: composed.scope.realm_root(),
+                    realm_id: composed.scope.realm_id.clone(),
+                    confinement: args.effective_confinement().name().to_string(),
+                    helper_depth: composed.helper_max_depth,
+                },
             },
-        }));
-        settle_leftovers(&composed.decisions, &local).await;
+        ));
+        settle_leftovers(&core.decisions, &local).await;
         let listener =
             serve::Listener::bind(options.listen, &file, &workspace, &started_at).await?;
         tracing::info!(
@@ -595,9 +589,9 @@ impl Daemon {
             realm_root: composed.scope.realm_root(),
             #[cfg(any(test, feature = "test-support"))]
             seams: testing::Seams {
-                origins: Arc::clone(&composed.origins),
-                registry: Arc::clone(&composed.root.registry),
-                engine: Arc::clone(&composed.engine),
+                origins: Arc::clone(&core.origins),
+                registry: Arc::clone(&core.registry),
+                engine: Arc::clone(&core.engine),
                 compact_threshold: composed.root.compact_threshold,
             },
             local,
@@ -691,7 +685,7 @@ impl Daemon {
         // longer accepts.
         self.listener.remove_files();
         // Nor an agent's socket.
-        self.local.agents().wires().close();
+        self.local.core().wires.close();
         // "Terminate": the agents leave with the daemon (their
         // conversations stay); else they are restored at the next start.
         if self.local.lifecycle().retires_all() {
@@ -715,7 +709,7 @@ impl Daemon {
             let _ = task.await;
         }
         // The usage counted since the last run end, off the loop.
-        let ledger = Arc::clone(self.local.agents().ledger());
+        let ledger = Arc::clone(&self.local.core().ledger);
         let _ = tokio::task::spawn_blocking(move || ledger.flush()).await;
         stop_mobs(&self.state).await;
         let shutdown = self.runtime.try_shutdown().await;
@@ -945,7 +939,7 @@ async fn start_agents(
         tracing::warn!(error = %err, "the schedule host did not start; schedules fire once a session is created");
     }
     // Records of schedules deleted while the daemon was down go.
-    agents.schedules().reconcile().await;
+    agents.core().schedules.reconcile().await;
     // The agents are idle now: their tool catalogs can be read.
     for (agent, session) in agents.live() {
         if !composed.origins.refresh(&session).await {
@@ -1023,11 +1017,11 @@ fn idle_activity(
 /// and the audit log. Each is installed once: a second composition over
 /// one engine is refused rather than left on the first one's agents.
 fn attach_engine(
-    engine: &Arc<crate::approval::ApprovalEngine>,
+    core: &core::Core,
     agents: &Arc<agents::Agents>,
-    audit: Option<&Arc<audit::AuditLog>>,
     workspace: &Path,
 ) -> Result<(), DaemonError> {
+    let engine = &core.engine;
     let attendance = Arc::new(agents::AgentAttendance::new(agents));
     if !engine.set_attendance(Arc::clone(&attendance) as _) {
         return Err(DaemonError::Approval(
@@ -1039,7 +1033,7 @@ fn attach_engine(
             "the approval engine already knows the workspace's agents".to_string(),
         ));
     }
-    if let Some(log) = audit {
+    if let Some(log) = &core.audit {
         engine.set_audit(Arc::new(audit::DaemonAudit::new(Arc::clone(log), agents)));
         log.write(&audit::Line::event(
             "daemon_start",

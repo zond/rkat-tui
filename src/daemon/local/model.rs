@@ -28,7 +28,7 @@ impl Local {
             .as_ref()
             .and_then(|binding| bound_endpoint(binding.realm.as_str(), binding.binding.as_str()));
         let endpoint = endpoint_name
-            .and_then(|name| self.endpoints.get(name))
+            .and_then(|name| self.parts.endpoints.get(name))
             .cloned();
         let reseated = self
             .ensure_alias(
@@ -66,8 +66,9 @@ impl Local {
                 None => TurnMetadataOverride::Clear,
             }),
         };
-        let machine = Arc::clone(&self.machine);
+        let machine = Arc::clone(&self.parts.machine);
         let (session, report) = self
+            .core
             .conversations
             .while_idle(agent, |session| async move {
                 let report = machine
@@ -127,11 +128,11 @@ impl Local {
             },
         });
         // A built-in endpoint is named by the dialect.
-        let Some(target) = endpoint.or_else(|| self.endpoints.get(dialect.as_str())) else {
+        let Some(target) = endpoint.or_else(|| self.parts.endpoints.get(dialect.as_str())) else {
             return Ok(false);
         };
         let written = crate::endpoints::ensure_endpoint_model(
-            self.realm_config.runtime(),
+            self.parts.realm_config.runtime(),
             target,
             model,
             listed.as_ref(),
@@ -154,23 +155,25 @@ impl Local {
         dialect: WireDialect,
         model: &str,
     ) -> Option<meerkat_core::lifecycle::run_primitive::AnthropicThinkingConfig> {
-        self.thinking
+        self.parts
+            .thinking
             .resolve(Some(endpoint.unwrap_or(provider)), dialect.into(), model)
     }
 
     /// The permission mode and the denial counters now.
     #[must_use]
     pub fn mode(&self) -> ModeStatus {
-        ModeStatus::of(&self.engine)
+        ModeStatus::of(&self.core.engine)
     }
 
     pub(super) async fn set_mode(&self, mode: PermissionMode) -> ModeSet {
-        self.engine.set_mode(mode);
+        self.core.engine.set_mode(mode);
         // Every client shows it.
-        self.decisions
-            .broadcast(protocol::MODE, &ModeStatus::of(&self.engine));
+        self.core
+            .decisions
+            .broadcast(protocol::MODE, &ModeStatus::of(&self.core.engine));
         let mut warnings = Vec::new();
-        let engine = Arc::clone(&self.engine);
+        let engine = Arc::clone(&self.core.engine);
         let persisted = tokio::task::spawn_blocking(move || engine.persist_mode())
             .await
             .map_err(|err| err.to_string())
@@ -184,7 +187,7 @@ impl Local {
             warnings.push(warning);
         }
         ModeSet {
-            status: ModeStatus::of(&self.engine),
+            status: ModeStatus::of(&self.core.engine),
             notice: mode_notice(mode).to_string(),
             warning: (!warnings.is_empty()).then(|| warnings.join("\n")),
         }
@@ -195,7 +198,7 @@ impl Local {
     /// plan mode by another process). Returns a warning when one could not
     /// be told.
     pub async fn announce_plan_mode(&self) -> Option<String> {
-        if self.engine.mode() != PermissionMode::Plan {
+        if self.core.engine.mode() != PermissionMode::Plan {
             return None;
         }
         self.note_plan(true).await
@@ -214,7 +217,7 @@ impl Local {
     /// said otherwise (`all`: every live agent, whatever it was told).
     pub(super) async fn note_plan(&self, all: bool) -> Option<String> {
         let mut noted = self.plan_noted.lock().await;
-        let plan = self.engine.mode() == PermissionMode::Plan;
+        let plan = self.core.engine.mode() == PermissionMode::Plan;
         let live = self.agents.names();
         noted.retain(|agent, _| live.contains(agent));
         let mut warnings = Vec::new();
@@ -239,7 +242,7 @@ impl Local {
             crate::approval::mode::PLAN_OFF_NOTE
         };
         match crate::daemon::agents::append_note(
-            &self.state,
+            &self.core.state,
             agent,
             SYSTEM_CONTEXT_SOURCE,
             note.to_string(),
@@ -256,7 +259,7 @@ impl Local {
     /// A connection was just bound to `agent`: when plan mode is on and the
     /// agent was never told (one seated for it), tell it.
     pub async fn bound(&self, agent: &str) {
-        if self.engine.mode() == PermissionMode::Plan
+        if self.core.engine.mode() == PermissionMode::Plan
             && let Some(warning) = self.note_plan_mode().await
         {
             tracing::warn!(%agent, %warning, "plan mode");

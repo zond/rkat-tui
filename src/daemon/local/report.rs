@@ -9,7 +9,7 @@ impl Local {
     /// `rkat/holds`: the conversations the runtime still holds inputs for.
     pub(super) async fn holds(&self) -> protocol::Holds {
         protocol::Holds {
-            held: self.conversations.holding().await,
+            held: self.core.conversations.holding().await,
         }
     }
 
@@ -20,11 +20,11 @@ impl Local {
         caller: &Caller,
     ) -> Result<protocol::ScheduleList, Refusal> {
         let agent = self.agent_of(caller)?;
-        self.agents.schedules().reconcile().await;
+        self.core.schedules.reconcile().await;
         Ok(protocol::ScheduleList {
             schedules: self
-                .agents
-                .schedules()
+                .core
+                .schedules
                 .rows(&agent)
                 .await
                 .map_err(Refusal::internal)?,
@@ -40,21 +40,19 @@ impl Local {
         schedule: &str,
     ) -> Result<RuleOutcome, Refusal> {
         let agent = self.agent_of(caller)?;
-        Ok(
-            match self.agents.schedules().act(&agent, op, schedule).await {
-                Ok(text) => {
-                    self.audit(
-                        crate::daemon::audit::Line::event("schedule_changed", text.clone())
-                            .of_agent(&agent),
-                    );
-                    RuleOutcome { ok: true, text }
-                }
-                Err(err) => RuleOutcome {
-                    ok: false,
-                    text: err.to_string(),
-                },
+        Ok(match self.core.schedules.act(&agent, op, schedule).await {
+            Ok(text) => {
+                self.audit(
+                    crate::daemon::audit::Line::event("schedule_changed", text.clone())
+                        .of_agent(&agent),
+                );
+                RuleOutcome { ok: true, text }
+            }
+            Err(err) => RuleOutcome {
+                ok: false,
+                text: err.to_string(),
             },
-        )
+        })
     }
 
     /// `rkat/rules`: a rule command; a rule written to the realm file is
@@ -63,7 +61,7 @@ impl Local {
         &self,
         command: crate::approval::desk::RuleCommand,
     ) -> Result<RuleOutcome, Refusal> {
-        let engine = Arc::clone(&self.engine);
+        let engine = Arc::clone(&self.core.engine);
         tokio::task::spawn_blocking(move || run_rule_command(&engine, &command))
             .await
             .map_err(Refusal::internal)
@@ -75,6 +73,7 @@ impl Local {
         let agent = self.agent_of(caller).ok();
         ConversationList {
             conversations: self
+                .core
                 .conversations
                 .list(agent.as_deref(), &self.agents.live())
                 .await,
@@ -87,6 +86,7 @@ impl Local {
         session_id: &meerkat_core::SessionId,
     ) -> Result<protocol::Transcript, Refusal> {
         let messages = self
+            .core
             .conversations
             .messages(session_id)
             .await
@@ -101,19 +101,20 @@ impl Local {
         caller: &Caller,
     ) -> Result<protocol::ContextReport, Refusal> {
         let agent = self.agent_of(caller)?;
-        let session_id = self
-            .conversations
-            .current(&agent)
-            .ok_or_else(|| Refusal::switch_failed(format!("agent {agent} runs no conversation")))?;
+        let session_id =
+            self.core.conversations.current(&agent).ok_or_else(|| {
+                Refusal::switch_failed(format!("agent {agent} runs no conversation"))
+            })?;
         let messages = self
+            .core
             .conversations
             .messages(&session_id)
             .await
             .map_err(Refusal::switch_failed)?;
         Ok(protocol::ContextReport {
             messages: crate::daemon::context::MessageCounts::of(&messages),
-            tools: self.origins.sizes(&session_id),
-            hidden: self.deferral.hidden(&session_id),
+            tools: self.core.origins.sizes(&session_id),
+            hidden: self.core.deferral.hidden(&session_id),
             skills: self.skills().await?,
             session_id,
         })
@@ -125,7 +126,7 @@ impl Local {
         session_id: &meerkat_core::SessionId,
     ) -> protocol::SessionEndpoint {
         protocol::SessionEndpoint {
-            endpoint: self.conversations.endpoint_of(session_id).await,
+            endpoint: self.core.conversations.endpoint_of(session_id).await,
         }
     }
 
@@ -136,13 +137,14 @@ impl Local {
         session_id: meerkat_core::SessionId,
     ) -> Result<Usage, Refusal> {
         let usage = self
+            .core
             .conversations
             .usage(&session_id)
             .await
             .map_err(Refusal::switch_failed)?;
         let counted = self
-            .agents
-            .ledger()
+            .core
+            .ledger
             .get(&crate::daemon::usage::Account::Session(session_id))
             .await;
         Ok(Usage {
@@ -158,7 +160,7 @@ impl Local {
         &self,
         session_id: &meerkat_core::SessionId,
     ) -> Result<Tasks, Refusal> {
-        let tasks = crate::daemon::tasks::read_tasks(&self.tasks_db, session_id)
+        let tasks = crate::daemon::tasks::read_tasks(&self.parts.tasks_db, session_id)
             .await
             .map_err(Refusal::internal)?;
         Ok(Tasks { tasks })
@@ -184,7 +186,7 @@ impl Local {
         &self,
         view: crate::config::ChecklistView,
     ) -> Result<Empty, Refusal> {
-        if let Some(file) = self.realm_file.clone() {
+        if let Some(file) = self.parts.realm_file.clone() {
             tokio::task::spawn_blocking(move || file.write_checklist(view))
                 .await
                 .map_err(Refusal::internal)?
@@ -208,7 +210,7 @@ impl Local {
     /// `rkat/audit`: the last lines of the audit log for `agent` (its
     /// decisions and the workspace-wide changes of authority).
     pub(super) fn audit_tail(&self, agent: &str, lines: usize) -> Result<AuditTail, Refusal> {
-        let Some(log) = &self.audit else {
+        let Some(log) = &self.core.audit else {
             return Err(Refusal::new(
                 protocol::INTERNAL_ERROR,
                 "this daemon keeps no audit log (its start-up notice says why)",
@@ -233,17 +235,22 @@ impl Local {
     /// [`protocol::SWITCH_FAILED`] when the realm config cannot be read.
     pub(super) async fn skills(&self) -> Result<crate::bootstrap::skills::SkillsReport, Refusal> {
         use crate::bootstrap::skills::{Inventory, SkillsReport};
-        let config = self.skills.config().await.map_err(Refusal::switch_failed)?;
+        let config = self
+            .parts
+            .skills
+            .config()
+            .await
+            .map_err(Refusal::switch_failed)?;
         let threshold = config.skills.inventory_threshold;
-        let global = self.realm_config.global().cloned();
-        let workspace = self.workspace.clone();
+        let global = self.parts.realm_config.global().cloned();
+        let workspace = self.parts.workspace.clone();
         let mut report = tokio::task::spawn_blocking(move || {
             crate::bootstrap::skills::report(&config, global.as_ref(), &workspace)
         })
         .await
         .map_err(Refusal::switch_failed)?;
         if let SkillsReport::On { inventory, .. } = &mut report {
-            let host = Arc::clone(&self.skills) as Arc<dyn crate::tools::SkillHost>;
+            let host = Arc::clone(&self.parts.skills) as Arc<dyn crate::tools::SkillHost>;
             let listed = crate::tools::with_skill_runtime(&host, |runtime| async move {
                 match runtime {
                     Some(runtime) => crate::tools::listed_skills(&runtime).await.map(|s| s.len()),
@@ -268,14 +275,15 @@ impl Local {
             confinement,
             helper_depth,
             ..
-        } = self.report.clone();
+        } = self.parts.report.clone();
         let realm_rules = realm.join(crate::config::RULES_FILE_NAME);
         let project_inputs = self
+            .parts
             .project
             .files()
             .map(|file| {
-                let mut trust = trust_words(&self.project.status(file));
-                if self.project.by_flag() && trust.starts_with("not trusted") {
+                let mut trust = trust_words(&self.parts.project.status(file));
+                if self.parts.project.by_flag() && trust.starts_with("not trusted") {
                     trust.push_str(" (trusted for this run by --trust-project)");
                 }
                 TrustedFile {
@@ -288,11 +296,11 @@ impl Local {
             realm,
             realm_id,
             confinement,
-            mode: ModeStatus::of(&self.engine),
+            mode: ModeStatus::of(&self.core.engine),
             realm_rules,
             project_inputs,
             helper_depth,
-            watches: agent.map_or_else(Vec::new, |agent| self.agents.watches().describe(agent)),
+            watches: agent.map_or_else(Vec::new, |agent| self.core.watches.describe(agent)),
         }
     }
 
@@ -304,7 +312,7 @@ impl Local {
     /// are part of its mob's definition, made when the mob was first
     /// created; trusting `.rkat/mcp.toml` here does not add them to it.
     pub(super) fn trust_project(&self) -> RuleOutcome {
-        match self.project.trust_all() {
+        match self.parts.project.trust_all() {
             Ok(recorded) if recorded.is_empty() => RuleOutcome {
                 ok: true,
                 text: "the project has no .rkat/mcp.toml, .rkat/config.toml or workspace realm config.toml to trust".to_string(),

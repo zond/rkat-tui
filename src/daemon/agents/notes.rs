@@ -169,7 +169,7 @@ impl Agents {
             .collect();
         let mut states = Vec::with_capacity(attached.len());
         for (name, attached) in attached {
-            let run = self.conversations.running(&name).await;
+            let run = self.core.conversations.running(&name).await;
             states.push((name, PeerState { run, attached }));
         }
         states
@@ -183,7 +183,7 @@ impl Agents {
             .filter(|(other, _)| other != name)
             .cloned()
             .collect();
-        with_wired(roster_note(&others), &self.wires.labels(name))
+        with_wired(roster_note(&others), &self.core.wires.labels(name))
     }
 
     /// Tell `name` which other agents work here now and what each is
@@ -239,7 +239,7 @@ impl Agents {
         let name = name.to_string();
         runtime.spawn(async move {
             let _one = agents.seating.lock().await;
-            if agents.is_live(&name) && !agents.lifecycle.is_terminating() {
+            if agents.is_live(&name) && !agents.core.lifecycle.is_terminating() {
                 agents.note_roster_to_others(&name, false).await;
             }
         });
@@ -268,8 +268,12 @@ impl Agents {
     pub(super) async fn send_notes(&self, notes: Vec<(String, String)>) {
         let mut waited = Vec::new();
         for (other, text) in notes {
-            let idle = self.conversations.running(&other).await == RunState::Idle;
-            let task = tokio::spawn(note_agent(Arc::clone(&self.state), other.clone(), text));
+            let idle = self.core.conversations.running(&other).await == RunState::Idle;
+            let task = tokio::spawn(note_agent(
+                Arc::clone(&self.core.state),
+                other.clone(),
+                text,
+            ));
             if idle {
                 waited.push((other, task));
             } else {

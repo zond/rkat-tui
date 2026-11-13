@@ -8576,3 +8576,55 @@ also by `client_turns::esc_with_nothing_running_says_so`,
 `ui::tests::turns::esc_with_nothing_pending_interrupts`. Not verified:
 the owner's exact sequence (the 0.0.2 log does not record forwarded
 interrupts).
+
+## The daemon's code after review 5 (2026-11-13)
+
+Review 5 asked for less size, complexity and inelegance without
+changing behaviour. The daemon pass found two defects. First, three
+paths removed an agent and each cleaned up a different set; an agent
+lost in a failed switch kept its file watches and activity record.
+`Agents::drop_agent` is now the one way out of the table. Second, the
+roster notes' idempotency keys (`{agent}:{tick}`) were unique only
+within one process. The engine refuses a key a session already holds
+with another text (`Session::append_system_message_idempotent`: same
+key and same text is a duplicate, another text is a conflict), and a
+session keeps the notes of earlier daemons. Every note now goes through
+`agents::append_note`, whose key carries the process id, the time and a
+counter. `agents::restored_agents_are_told_the_roster_after_a_restart`
+guards the restored roster note. That scenario's keys did not collide
+before the fix either, so the key format itself is not pinned by a
+test.
+
+What was restructured, and why:
+
+- `daemon/core.rs`: the fourteen handles that `Agents` and `Local` both
+  need are one `Core`, built once in `Daemon::start_with` and held as
+  one `Arc`. It replaces `AgentsParts`, most of `LocalParts` (now only
+  what `Local` alone reads, kept as a field rather than destructured)
+  and the accessor chains (`local.agents().wires()`).
+  `engine::compose` keeps its shape. Folding `Composed` into `Core`
+  would ripple into `bootstrap::assemble`, which is reviewed separately.
+- `daemon/agents/` (`names.rs`, `notes.rs`, `triggers.rs`, `mod.rs`) and
+  `daemon/local/` (`lifecycle.rs`, `inputs.rs`, `model.rs`, `wires.rs`,
+  `report.rs`, `mod.rs`): split by concern. `Local::call` is one line
+  per method.
+- `Daemon::start_with`: named steps (`EndpointPlaces`, `open_audit`,
+  `open_conversations`, `open_wires`, `start_agents`,
+  `settle_leftovers`).
+- `serve.rs`: one `Pending` map of what each forwarded request's answer
+  is for (`Awaiting`) replaces three id-keyed tables under three locks.
+  An engine line is parsed only while a request waits, and then once.
+- `wires.rs`: a card's peer id is checked against its key once, when the
+  card is accepted, and the gate compares the stored string. A failed
+  re-wire drops the stale card, and a wire whose card cannot be saved is
+  undone (`cross_workspace::the_daemon_wires_unwires_and_refuses`).
+- `client/wires.rs`: the other daemons are probed all at once
+  (`client::wires::tests::the_other_daemons_are_probed_at_once`), and
+  the wire pickers stay open after their act (`cross_workspace::
+  wired_agents_of_two_workspaces_message_both_ways_across_restarts`,
+  `ui::tests::dispatch::the_wire_pickers_stay_open_after_their_act`).
+- The daemon writes its log once, without colour, when its stderr is
+  the launching client's log file (`daemon::tests::
+  a_daemon_logs_plain_and_once_when_its_stderr_is_a_file`).
+- Nine doc comments that sat on the item next to theirs, left behind
+  when functions moved, are back on their own items.

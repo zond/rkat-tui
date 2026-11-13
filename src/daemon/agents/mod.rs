@@ -42,14 +42,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use meerkat_core::SessionId;
 use meerkat_mob::{AgentIdentity, MobId};
-use meerkat_mob_mcp::MobMcpState;
 
-use super::approvals::DaemonToolOrigins;
-use super::conversations::{Conversations, RunState, SwitchError, Target};
-use super::lifecycle::Lifecycle;
+use super::conversations::{RunState, SwitchError, Target};
+use super::core::Core;
 use super::protocol::{AgentChoice, AgentRow};
 use super::{AGENT_PROFILE, MOB_ID};
-use crate::approval::ApprovalEngine;
 
 /// Why a connection could not be bound to an agent.
 #[derive(Debug, thiserror::Error)]
@@ -125,28 +122,8 @@ const MISSED_KEPT: usize = 32;
 
 /// The live agents.
 pub struct Agents {
-    /// When the agents are idle.
-    activity: Arc<super::activity::Activity>,
-    state: Arc<MobMcpState>,
-    conversations: Arc<Conversations>,
-    engine: Arc<ApprovalEngine>,
-    origins: Arc<DaemonToolOrigins>,
-    lifecycle: Arc<Lifecycle>,
-    /// The agents' schedules (a run one fired is attributed to it).
-    schedules: Arc<super::schedules::Schedules>,
-    /// Where a fired run is announced to the clients.
-    decisions: Arc<super::decisions::Decisions>,
-    /// The audit log, when it could be opened.
-    audit: Option<Arc<super::audit::AuditLog>>,
-    /// The agents' file watches.
-    watches: Arc<super::watches::Watches>,
-    /// What every agent's and helper's model calls used.
-    ledger: Arc<super::usage::Ledger>,
-    /// The helpers and whom they work for (a message to one's own helper
-    /// is a peer message like one to another agent).
-    registry: Arc<crate::mobs::HelperRegistry>,
-    /// The agents' sockets and wires to other workspaces.
-    wires: Arc<super::wires::Wires>,
+    /// What the agents share with the local methods.
+    core: Arc<Core>,
     /// The last watch event sent to each agent: a run it starts is the
     /// watch's.
     watch_sent: parking_lot::Mutex<std::collections::HashMap<String, String>>,
@@ -168,69 +145,12 @@ impl std::fmt::Debug for Agents {
     }
 }
 
-/// What [`Agents`] is made of.
-pub struct AgentsParts {
-    /// When the agents are idle.
-    pub activity: Arc<super::activity::Activity>,
-    /// The mob host.
-    pub state: Arc<MobMcpState>,
-    /// The agents' conversations.
-    pub conversations: Arc<Conversations>,
-    /// The approval engine every agent's gate shares.
-    pub engine: Arc<ApprovalEngine>,
-    /// The members' tool catalogs.
-    pub origins: Arc<DaemonToolOrigins>,
-    /// The daemon's lifecycle (a shutdown leaves no agent detached).
-    pub lifecycle: Arc<Lifecycle>,
-    /// The agents' schedules.
-    pub schedules: Arc<super::schedules::Schedules>,
-    /// The consent surface (its broadcast announces fired runs).
-    pub decisions: Arc<super::decisions::Decisions>,
-    /// The audit log, when it could be opened.
-    pub audit: Option<Arc<super::audit::AuditLog>>,
-    /// The agents' file watches.
-    pub watches: Arc<super::watches::Watches>,
-    /// The usage records.
-    pub ledger: Arc<super::usage::Ledger>,
-    /// The helpers and their owners.
-    pub registry: Arc<crate::mobs::HelperRegistry>,
-    /// The agents' sockets and wires to other workspaces.
-    pub wires: Arc<super::wires::Wires>,
-}
-
 impl Agents {
     /// No agents yet ([`Self::start`] restores or seats them).
     #[must_use]
-    pub fn new(parts: AgentsParts) -> Arc<Self> {
-        let AgentsParts {
-            activity,
-            state,
-            conversations,
-            engine,
-            origins,
-            lifecycle,
-            schedules,
-            decisions,
-            audit,
-            watches,
-            ledger,
-            registry,
-            wires,
-        } = parts;
+    pub fn new(core: Arc<Core>) -> Arc<Self> {
         Arc::new(Self {
-            activity,
-            state,
-            conversations,
-            engine,
-            origins,
-            lifecycle,
-            schedules,
-            decisions,
-            audit,
-            watches,
-            ledger,
-            registry,
-            wires,
+            core,
             watch_sent: parking_lot::Mutex::new(std::collections::HashMap::new()),
             table: parking_lot::Mutex::new(BTreeMap::new()),
             seating: tokio::sync::Mutex::new(()),
@@ -239,15 +159,21 @@ impl Agents {
         })
     }
 
+    /// What the agents share with the local methods.
+    #[must_use]
+    pub fn core(&self) -> &Arc<Core> {
+        &self.core
+    }
+
     /// Whether `peer_id` is the comms peer id of a live agent other than
     /// the one running `session` (the mob's record of each agent's
     /// endpoint names it).
     pub async fn is_agent_peer(&self, session: &SessionId, peer_id: &str) -> bool {
-        let caller = self.conversations.agent_of(session);
+        let caller = self.core.conversations.agent_of(session);
         // An agent of another workspace the caller is wired to.
         if caller
             .as_deref()
-            .is_some_and(|caller| self.wires.is_peer(caller, peer_id))
+            .is_some_and(|caller| self.core.wires.is_peer(caller, peer_id))
         {
             return true;
         }
@@ -258,7 +184,7 @@ impl Agents {
             .filter(|name| caller.as_deref() != Some(name.as_str()))
             .cloned()
             .collect();
-        let Ok(handle) = self.state.handle_for(&MobId::from(MOB_ID)).await else {
+        let Ok(handle) = self.core.state.handle_for(&MobId::from(MOB_ID)).await else {
             return false;
         };
         for name in names {
@@ -272,8 +198,8 @@ impl Agents {
         }
         // One of the caller's own helpers (wired to it): a message to a
         // child is a peer message like one to another agent.
-        for key in self.registry.live_for(session) {
-            let Ok(handle) = self.state.handle_for(&key.mob).await else {
+        for key in self.core.registry.live_for(session) {
+            let Ok(handle) = self.core.state.handle_for(&key.mob).await else {
                 continue;
             };
             if let Ok(Some(endpoint)) = handle.member_peer_endpoint(&key.member).await
@@ -284,45 +210,16 @@ impl Agents {
         }
         false
     }
-    /// When the agents are idle.
-    #[must_use]
-    pub fn activity(&self) -> &Arc<super::activity::Activity> {
-        &self.activity
-    }
 
     /// `name`'s run ended: its watches that live for a turn go.
     pub fn run_ended(&self, name: &str) {
-        self.watches.end_turn(name);
+        self.core.watches.end_turn(name);
     }
 
     /// The conversation `name` runs as now.
     #[must_use]
     pub fn session_of(&self, name: &str) -> Option<SessionId> {
-        self.conversations.current(name)
-    }
-
-    /// The agents' file watches.
-    #[must_use]
-    pub fn watches(&self) -> &Arc<super::watches::Watches> {
-        &self.watches
-    }
-
-    /// What every agent's and helper's model calls used.
-    #[must_use]
-    pub fn ledger(&self) -> &Arc<super::usage::Ledger> {
-        &self.ledger
-    }
-
-    /// The agents' sockets and wires to other workspaces.
-    #[must_use]
-    pub fn wires(&self) -> &Arc<super::wires::Wires> {
-        &self.wires
-    }
-
-    /// The agents' schedules.
-    #[must_use]
-    pub fn schedules(&self) -> &Arc<super::schedules::Schedules> {
-        &self.schedules
+        self.core.conversations.current(name)
     }
 
     fn tick(&self) -> u64 {
@@ -342,6 +239,7 @@ impl Agents {
     pub async fn start(self: &Arc<Self>) -> Result<(String, SessionId, bool), super::DaemonError> {
         let mob = MobId::from(MOB_ID);
         let members = self
+            .core
             .state
             .mob_list_members(&mob)
             .await
@@ -355,17 +253,18 @@ impl Agents {
             // A restored agent registered itself in its customizer's
             // resume; one that did not is registered here, before its
             // first turn can delegate.
-            let session = match self.conversations.current(&name) {
+            let session = match self.core.conversations.current(&name) {
                 Some(session) => Some(session),
                 None => {
                     let session = self
+                        .core
                         .state
                         .mob_member_status(&mob, &member.agent_identity)
                         .await
                         .ok()
                         .and_then(|status| status.current_session_id);
                     if let Some(session) = &session {
-                        self.conversations.register(&name, session);
+                        self.core.conversations.register(&name, session);
                     }
                     session
                 }
@@ -379,6 +278,7 @@ impl Agents {
         }
         // The log's order: the conversation used last is the most recent.
         let order: Vec<SessionId> = self
+            .core
             .conversations
             .entries()
             .into_iter()
@@ -390,6 +290,7 @@ impl Agents {
             let _one = self.seating.lock().await;
             let name = new_name(|name| self.taken(name));
             let session = self
+                .core
                 .conversations
                 .seat_new(&name, &Target::Fresh)
                 .await
@@ -399,14 +300,17 @@ impl Agents {
             return Ok((name, session, true));
         }
         for (name, session) in &restored {
-            self.conversations.record(session, name);
+            self.core.conversations.record(session, name);
             self.admit(name, false, true);
-            self.conversations.seed(&self.engine, session).await;
+            self.core
+                .conversations
+                .seed(&self.core.engine, session)
+                .await;
         }
         let names: Vec<String> = restored.iter().map(|(name, _)| name.clone()).collect();
         // The mob keeps its wiring across a restart; an edge it lost is
         // made again now.
-        self.wires.keep_only(&names);
+        self.core.wires.keep_only(&names);
         self.wire_up(&names).await;
         // No client came back with them: what each was last told of the
         // others' clients is stale.
@@ -423,6 +327,7 @@ impl Agents {
     fn taken(&self, name: &str) -> bool {
         self.table.lock().contains_key(name)
             || self
+                .core
                 .conversations
                 .entries()
                 .iter()
@@ -433,15 +338,15 @@ impl Agents {
     /// restored: `detached`) and follow its events.
     fn admit(self: &Arc<Self>, name: &str, spare: bool, detached: bool) {
         let watcher = super::approvals::watch(super::approvals::Watched {
-            state: Arc::clone(&self.state),
+            state: Arc::clone(&self.core.state),
             mob: MobId::from(MOB_ID),
             identity: AgentIdentity::from(name),
-            engine: Arc::clone(&self.engine),
-            origins: Arc::clone(&self.origins),
-            current: Arc::clone(&self.conversations),
-            ledger: Arc::clone(&self.ledger),
+            engine: Arc::clone(&self.core.engine),
+            origins: Arc::clone(&self.core.origins),
+            current: Arc::clone(&self.core.conversations),
+            ledger: Arc::clone(&self.core.ledger),
             agents: Arc::downgrade(self),
-            activity: Arc::clone(&self.activity),
+            activity: Arc::clone(&self.core.activity),
             draining: self.draining.subscribe(),
         });
         let active = self.tick();
@@ -459,7 +364,7 @@ impl Agents {
         );
         // Its socket for agents of other workspaces (a failure is kept for
         // its card: `/wire` names it).
-        let _ = self.wires.bind(name);
+        let _ = self.core.wires.bind(name);
     }
 
     /// Wire every agent of `names` to every other live agent, and make its
@@ -468,7 +373,7 @@ impl Agents {
     async fn wire_up(&self, names: &[String]) {
         self.rewire(names).await;
         for name in names {
-            self.wires.restore(name).await;
+            self.core.wires.restore(name).await;
         }
     }
 
@@ -499,6 +404,7 @@ impl Agents {
             })
             .collect();
         match self
+            .core
             .state
             .mob_wire_members_batch(&MobId::from(MOB_ID), edges)
             .await
@@ -530,7 +436,7 @@ impl Agents {
         self.names()
             .into_iter()
             .filter_map(|name| {
-                let session = self.conversations.current(&name)?;
+                let session = self.core.conversations.current(&name)?;
                 Some((name, session))
             })
             .collect()
@@ -541,7 +447,7 @@ impl Agents {
     pub fn agent_running_as(&self, session: &SessionId) -> Option<String> {
         self.names()
             .into_iter()
-            .find(|name| self.conversations.current(name).as_ref() == Some(session))
+            .find(|name| self.core.conversations.current(name).as_ref() == Some(session))
     }
 
     /// Whether a client is bound to the live agent that runs as `session`.
@@ -677,6 +583,7 @@ impl Agents {
         }
         let spare = self.spare();
         let last = self
+            .core
             .conversations
             .entries()
             .into_iter()
@@ -715,10 +622,10 @@ impl Agents {
     /// prefix, as `/resume` takes it) and the agent it belongs to; `None`
     /// when nothing (or more than one) matches.
     async fn resolve(&self, reference: &str) -> Option<(SessionId, String)> {
-        let listed = self.conversations.list(None, &self.live()).await;
+        let listed = self.core.conversations.list(None, &self.live()).await;
         match super::conversations::resolve(reference, &listed, None) {
             Ok(session) => {
-                let owner = self.conversations.agent_of(&session)?;
+                let owner = self.core.conversations.agent_of(&session)?;
                 Some((session, owner))
             }
             Err(why) => {
@@ -738,11 +645,11 @@ impl Agents {
         name: Option<String>,
     ) -> Result<Bound, BindError> {
         if let Some(spare) = self.spare() {
-            match self.conversations.retire(&spare).await {
+            match self.core.conversations.retire(&spare).await {
                 Ok(session) => {
                     self.drop_agent(&spare, session.as_ref());
                     if let Some(session) = session {
-                        self.conversations.forget(&session);
+                        self.core.conversations.forget(&session);
                     }
                 }
                 Err(err) => {
@@ -751,9 +658,12 @@ impl Agents {
             }
         }
         let name = name.unwrap_or_else(|| new_name(|name| self.taken(name)));
-        let session = self.conversations.seat_new(&name, &target).await?;
+        let session = self.core.conversations.seat_new(&name, &target).await?;
         if matches!(target, Target::Resume(_)) {
-            self.conversations.seed(&self.engine, &session).await;
+            self.core
+                .conversations
+                .seed(&self.core.engine, &session)
+                .await;
         }
         self.admit(&name, false, false);
         self.wire_up(std::slice::from_ref(&name)).await;
@@ -764,7 +674,7 @@ impl Agents {
         Ok(Bound { name, seated: true })
     }
 
-    /// Switch `name`'s conversation ([`Conversations::switch`]).
+    /// Switch `name`'s conversation ([`super::conversations::Conversations::switch`]).
     ///
     /// # Errors
     ///
@@ -774,14 +684,14 @@ impl Agents {
         // its conversation when the switch failed): its wiring went with
         // it, and the conversation it runs as now may know none of the
         // agents working here.
-        let switched = self.conversations.switch(name, target).await;
+        let switched = self.core.conversations.switch(name, target).await;
         if self.lost(name, &switched).await {
             return switched;
         }
         // Every client of the agent follows it there (the one that asked
         // too: it reads the answer).
         if let Ok(session) = &switched {
-            self.decisions.broadcast(
+            self.core.decisions.broadcast(
                 super::protocol::SWITCHED,
                 &super::protocol::SwitchedNote {
                     agent: name.to_string(),
@@ -805,19 +715,19 @@ impl Agents {
             return false;
         };
         tracing::error!(agent = %name, "the agent was lost in a failed switch");
-        let session = self.conversations.current(name);
+        let session = self.core.conversations.current(name);
         self.drop_agent(name, session.as_ref());
         self.note_others(name, &Leave::Closed).await;
         true
     }
 
-    /// [`Conversations::reseat`].
+    /// [`super::conversations::Conversations::reseat`].
     ///
     /// # Errors
     ///
     /// [`SwitchError`].
     pub async fn reseat(&self, name: &str) -> Result<SessionId, SwitchError> {
-        let reseated = self.conversations.reseat(name).await;
+        let reseated = self.core.conversations.reseat(name).await;
         if self.lost(name, &reseated).await {
             return reseated;
         }
@@ -828,7 +738,7 @@ impl Agents {
     /// Retire `name`: a running turn is cancelled (also when whether it
     /// runs cannot be told: a cancel of an idle member is harmless), then
     /// the member leaves
-    /// the mob ([`Conversations::retire`]: its helpers stop, the engine
+    /// the mob ([`super::conversations::Conversations::retire`]: its helpers stop, the engine
     /// archives its session, which stays in the log). Nothing reaches it
     /// afterwards: it is no member, so a peer's send to it is refused.
     /// Returns the session it ran as.
@@ -862,12 +772,12 @@ impl Agents {
     ) -> Result<Option<SessionId>, SwitchError> {
         let mob = MobId::from(MOB_ID);
         let identity = AgentIdentity::from(name);
-        if self.conversations.running(name).await != RunState::Idle
-            && let Err(err) = self.state.mob_force_cancel(&mob, identity).await
+        if self.core.conversations.running(name).await != RunState::Idle
+            && let Err(err) = self.core.state.mob_force_cancel(&mob, identity).await
         {
             tracing::warn!(agent = %name, error = %err, "the running turn could not be cancelled before the retire");
         }
-        let session = self.conversations.retire(name).await?;
+        let session = self.core.conversations.retire(name).await?;
         self.drop_agent(name, session.as_ref());
         self.note_others(name, why).await;
         tracing::info!(agent = %name, ?session, "the agent retired");
@@ -880,12 +790,12 @@ impl Agents {
     /// as. The one place an agent leaves the table.
     fn drop_agent(&self, name: &str, session: Option<&SessionId>) {
         self.table.lock().remove(name);
-        self.activity.forget(name);
-        self.watches.forget(name);
+        self.core.activity.forget(name);
+        self.core.watches.forget(name);
         self.watch_sent.lock().remove(name);
-        self.wires.forget(name);
+        self.core.wires.forget(name);
         if let Some(session) = session {
-            self.engine.forget_session(session);
+            self.core.engine.forget_session(session);
         }
     }
 
@@ -898,13 +808,13 @@ impl Agents {
             .map(|(name, agent)| (name.clone(), agent.clients, agent.detached))
             .collect();
         let mut rows = Vec::with_capacity(snapshot.len());
-        let schedules = self.schedules.counts().await;
+        let schedules = self.core.schedules.counts().await;
         for (name, clients, detached) in snapshot {
             rows.push(AgentRow {
-                session_id: self.conversations.current(&name),
-                running: self.conversations.running(&name).await.reported(),
+                session_id: self.core.conversations.current(&name),
+                running: self.core.conversations.running(&name).await.reported(),
                 schedules: schedules.get(&name).copied().unwrap_or(0),
-                wires: self.wires.rows(&name),
+                wires: self.core.wires.rows(&name),
                 name,
                 clients,
                 detached,
@@ -926,7 +836,7 @@ impl Agents {
     /// (`fresh`), any other is left as it was. Either way, an agent left
     /// with no client is news to the others ([`Self::attachment_changed`]).
     fn release(self: &Arc<Self>, name: &str, withdrawn: bool, fresh: bool) {
-        let terminating = self.lifecycle.is_terminating();
+        let terminating = self.core.lifecycle.is_terminating();
         {
             let mut table = self.table.lock();
             let Some(agent) = table.get_mut(name) else {
@@ -1015,8 +925,8 @@ impl crate::approval::AgentPeers for AgentAttendance {
 
     async fn unreachable(&self, session: &SessionId, peer_id: &str) -> Option<String> {
         let agents = self.0.upgrade()?;
-        let caller = agents.conversations.agent_of(session)?;
-        agents.wires.unreachable(&caller, peer_id)
+        let caller = agents.core.conversations.agent_of(session)?;
+        agents.core.wires.unreachable(&caller, peer_id)
     }
 }
 

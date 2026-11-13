@@ -33,6 +33,10 @@
 
 ### Fixed
 
+- After a daemon restart, a note the daemon sends an agent about the
+  other agents could be refused, because the engine already held its
+  key from the earlier daemon with another text. The agent then missed
+  the note. Every note's key is now unique across daemons too.
 - The `/unwire` picker stays open after a wire is removed and shows the
   wires that remain, as `/agents` does after a retire. The `/wire`
   picker stays open after a wire too and marks the row wired. Opening

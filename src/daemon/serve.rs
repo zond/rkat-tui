@@ -579,7 +579,7 @@ impl LocalMethods for Local {
         if let Some(note) = caller
             .agent
             .as_deref()
-            .and_then(|agent| self.agents().activity().idle(agent))
+            .and_then(|agent| self.core().activity.idle(agent))
         {
             let _ = out.send(Outgoing::line(protocol::notification_line(
                 protocol::IDLE,

@@ -20,7 +20,7 @@ impl Local {
     ) -> Result<protocol::Recalled, Refusal> {
         let recalled = self.take_back(caller, inputs).await;
         if let Some(agent) = &caller.agent {
-            self.agents.activity().changed(agent, false);
+            self.core.activity.changed(agent, false);
         }
         recalled
     }
@@ -51,9 +51,10 @@ impl Local {
         let session = self.caller_session(caller, "rkat/recall takes back")?;
         let mut answer = protocol::Recalled::default();
         for input in inputs {
-            match self.machine.input_state(&session, input).await {
+            match self.parts.machine.input_state(&session, input).await {
                 Ok(Some(stored)) if stored.seed.phase == InputLifecycleState::Queued => {
                     match self
+                        .parts
                         .machine
                         .cancel_input_if_present(&session, input, RECALL_REASON)
                         .await
@@ -84,7 +85,7 @@ impl Local {
         caller
             .agent
             .as_deref()
-            .and_then(|agent| self.conversations.current(agent))
+            .and_then(|agent| self.core.conversations.current(agent))
             .ok_or_else(|| {
                 Refusal::new(
                     protocol::NO_AGENT,
@@ -111,7 +112,7 @@ impl Local {
         let session = self.caller_session(caller, "rkat/inputs reads")?;
         let mut answer = protocol::InputFates::default();
         for input in inputs {
-            let fate = match self.machine.input_state(&session, input).await {
+            let fate = match self.parts.machine.input_state(&session, input).await {
                 Ok(Some(stored)) => input_fate(&stored.seed),
                 Ok(None) => protocol::InputFate::Unknown,
                 Err(err) => {

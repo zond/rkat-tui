@@ -59,7 +59,7 @@ impl Agents {
             );
             return;
         }
-        let Some(fired) = self.schedules.attribute(name, run, prompt).await else {
+        let Some(fired) = self.core.schedules.attribute(name, run, prompt).await else {
             return;
         };
         let label = format!("scheduled: {}", fired.name);
@@ -103,7 +103,7 @@ impl Agents {
         event: &str,
         detail: String,
     ) {
-        if let Some(audit) = &self.audit {
+        if let Some(audit) = &self.core.audit {
             let mut line = crate::daemon::audit::Line::event(event, detail).of_agent(name);
             if let Some((session, run)) = run {
                 line.session = Some(session.to_string());
@@ -116,7 +116,7 @@ impl Agents {
     /// Tell the clients a run of `name` that no client started began
     /// ([`crate::daemon::protocol::TRIGGERED`]).
     fn tell_triggered(&self, name: &str, session: &SessionId, label: String, prompt: String) {
-        self.decisions.broadcast(
+        self.core.decisions.broadcast(
             crate::daemon::protocol::TRIGGERED,
             &crate::daemon::protocol::TriggeredNote {
                 agent: name.to_string(),
@@ -141,7 +141,7 @@ impl Agents {
             return;
         }
         tokio::spawn(note_agent(
-            Arc::clone(&self.state),
+            Arc::clone(&self.core.state),
             name.to_string(),
             READ_ONLY_COMMS_NOTE.to_string(),
         ));
@@ -153,7 +153,7 @@ impl Agents {
     /// and written to the audit log.
     pub async fn watch_event(&self, batch: crate::daemon::watches::Batch) {
         let name = batch.agent.clone();
-        let Some(session) = self.conversations.current(&name) else {
+        let Some(session) = self.core.conversations.current(&name) else {
             return;
         };
         if !self.table.lock().contains_key(&name) {
@@ -161,8 +161,9 @@ impl Agents {
         }
         let text = batch.text();
         self.watch_sent.lock().insert(name.clone(), text.clone());
-        let _sending = self.activity.sending(&name);
+        let _sending = self.core.activity.sending(&name);
         let sent = self
+            .core
             .state
             .mob_member_send(
                 &MobId::from(MOB_ID),

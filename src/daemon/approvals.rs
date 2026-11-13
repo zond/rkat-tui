@@ -761,7 +761,7 @@ impl Watcher {
                 // goes (the event names no schedule; the service's list
                 // says which are gone).
                 if let Some(agents) = self.watched.agents.upgrade() {
-                    let schedules = Arc::clone(agents.schedules());
+                    let schedules = Arc::clone(&agents.core().schedules);
                     tokio::spawn(async move { schedules.reconcile().await });
                 }
             }
@@ -874,7 +874,7 @@ impl Watcher {
         let fired = run.and_then(|run| {
             agents
                 .upgrade()
-                .and_then(|agents| agents.schedules().schedule_of(run))
+                .and_then(|agents| agents.core().schedules.schedule_of(run))
         });
         if let Some(schedule) = fired {
             ledger.scheduled(&schedule, &model, usage).await;
@@ -896,7 +896,7 @@ impl Watcher {
         if let Some(agents) = agents.upgrade() {
             agents.run_ended(&self.name);
             if let Some(run) = run {
-                agents.schedules().run_ended(run);
+                agents.core().schedules.run_ended(run);
             }
         }
         ledger.persist();
