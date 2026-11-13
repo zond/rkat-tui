@@ -404,6 +404,30 @@ impl Refusal {
     pub fn invalid(err: &serde_json::Error) -> Self {
         Self::new(INVALID_PARAMS, err.to_string())
     }
+
+    /// [`INTERNAL_ERROR`] saying `err`.
+    #[must_use]
+    pub fn internal(err: impl std::fmt::Display) -> Self {
+        Self::new(INTERNAL_ERROR, err.to_string())
+    }
+
+    /// [`SWITCH_FAILED`] saying `err`.
+    #[must_use]
+    pub fn switch_failed(err: impl std::fmt::Display) -> Self {
+        Self::new(SWITCH_FAILED, err.to_string())
+    }
+}
+
+/// A switch's error as its refusal: [`SWITCH_BUSY`] while a run is open,
+/// else [`SWITCH_FAILED`], saying the error.
+impl From<super::conversations::SwitchError> for Refusal {
+    fn from(err: super::conversations::SwitchError) -> Self {
+        let code = match err {
+            super::conversations::SwitchError::Running => SWITCH_BUSY,
+            _ => SWITCH_FAILED,
+        };
+        Self::new(code, err.to_string())
+    }
 }
 
 /// Read a method's parameters (`null`: none, read as `{}`).

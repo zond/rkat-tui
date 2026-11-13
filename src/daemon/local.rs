@@ -35,8 +35,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use meerkat_core::AppendSystemContextRequest;
 use meerkat_core::lifecycle::run_primitive::TurnMetadataOverride;
-use meerkat_core::{AppendSystemContextRequest, Provider};
 use meerkat_mob::{AgentIdentity, MobId};
 use meerkat_mob_mcp::MobMcpState;
 use serde_json::{Value, json};
@@ -56,8 +56,8 @@ use crate::thinking::{self, ThinkingTable};
 use super::lifecycle::{Caller, Lifecycle};
 use super::protocol::{
     self, AUDIT_LINES, AuditTail, ConversationList, Empty, METHOD_NOT_FOUND, Method, ModeSet,
-    ModelSet, Notices, Refusal, Report, Retired, SWITCH_BUSY, SWITCH_FAILED, SetModelParams,
-    StartupNotice, Status, Switched, Tasks, TrustedFile, Usage, engine, method,
+    ModelSet, Notices, Refusal, Report, Retired, SWITCH_BUSY, SetModelParams, StartupNotice,
+    Status, Switched, Tasks, TrustedFile, Usage, engine, method,
 };
 use super::serve::Observed;
 
@@ -72,11 +72,10 @@ fn with_schedules(reason: String, status: &Status) -> String {
     if count == 0 {
         return reason;
     }
+    let them = if count == 1 { "it" } else { "them" };
     format!(
-        "{reason}\nThis agent has {count} schedule{}: detaching keeps {} firing; terminating deletes {}.",
+        "{reason}\nThis agent has {count} schedule{}: detaching keeps {them} firing; terminating deletes {them}.",
         crate::text::plural(count),
-        if count == 1 { "it" } else { "them" },
-        if count == 1 { "it" } else { "them" },
     )
 }
 
@@ -313,7 +312,7 @@ impl Local {
         let lines = super::audit::tail(log.path(), lines, |line| {
             line.agent.as_deref().is_none_or(|of| of == agent)
         })
-        .map_err(|err| Refusal::new(protocol::INTERNAL_ERROR, err.to_string()))?;
+        .map_err(Refusal::internal)?;
         Ok(AuditTail {
             path: log.path().to_path_buf(),
             lines,
@@ -394,11 +393,7 @@ impl Local {
     /// [`protocol::SWITCH_FAILED`] when the realm config cannot be read.
     async fn skills(&self) -> Result<crate::bootstrap::skills::SkillsReport, Refusal> {
         use crate::bootstrap::skills::{Inventory, SkillsReport};
-        let config = self
-            .skills
-            .config()
-            .await
-            .map_err(|err| Refusal::new(SWITCH_FAILED, err))?;
+        let config = self.skills.config().await.map_err(Refusal::switch_failed)?;
         let threshold = config.skills.inventory_threshold;
         let global = self.realm_config.global().cloned();
         let workspace = self.workspace.clone();
@@ -406,7 +401,7 @@ impl Local {
             crate::bootstrap::skills::report(&config, global.as_ref(), &workspace)
         })
         .await
-        .map_err(|err| Refusal::new(SWITCH_FAILED, err.to_string()))?;
+        .map_err(Refusal::switch_failed)?;
         if let SkillsReport::On { inventory, .. } = &mut report {
             let host = Arc::clone(&self.skills) as Arc<dyn crate::tools::SkillHost>;
             let listed = crate::tools::with_skill_runtime(&host, |runtime| async move {
@@ -519,9 +514,12 @@ impl Local {
                 let agent = self.agent_of(&caller)?;
                 self.agents.schedules().reconcile().await;
                 Ok(protocol::ScheduleList {
-                    schedules: self.agents.schedules().rows(&agent).await.map_err(|err| {
-                        Refusal::new(protocol::INTERNAL_ERROR, err.to_string())
-                    })?,
+                    schedules: self
+                        .agents
+                        .schedules()
+                        .rows(&agent)
+                        .await
+                        .map_err(Refusal::internal)?,
                 })
             };
             method::Schedule, protocol::ScheduleAction { op, schedule } => {
@@ -548,7 +546,7 @@ impl Local {
                 let engine = Arc::clone(&self.engine);
                 tokio::task::spawn_blocking(move || run_rule_command(&engine, &command))
                     .await
-                    .map_err(|err| Refusal::new(protocol::INTERNAL_ERROR, err.to_string()))
+                    .map_err(Refusal::internal)
             };
             method::RuleRows, Empty {} => Ok(rule_rows(&self.engine));
             method::Conversations, Empty {} => {
@@ -570,19 +568,19 @@ impl Local {
                     .conversations
                     .messages(&session_id)
                     .await
-                    .map_err(|err| Refusal::new(SWITCH_FAILED, err.to_string()))?;
+                    .map_err(Refusal::switch_failed)?;
                 Ok(protocol::Transcript { messages })
             };
             method::Context, Empty {} => {
                 let agent = self.agent_of(&caller)?;
                 let session_id = self.conversations.current(&agent).ok_or_else(|| {
-                    Refusal::new(SWITCH_FAILED, format!("agent {agent} runs no conversation"))
+                    Refusal::switch_failed(format!("agent {agent} runs no conversation"))
                 })?;
                 let messages = self
                     .conversations
                     .messages(&session_id)
                     .await
-                    .map_err(|err| Refusal::new(SWITCH_FAILED, err.to_string()))?;
+                    .map_err(Refusal::switch_failed)?;
                 Ok(protocol::ContextReport {
                     messages: super::context::MessageCounts::of(&messages),
                     tools: self.origins.sizes(&session_id),
@@ -601,7 +599,7 @@ impl Local {
                     .conversations
                     .usage(&session_id)
                     .await
-                    .map_err(|err| Refusal::new(SWITCH_FAILED, err.to_string()))?;
+                    .map_err(Refusal::switch_failed)?;
                 let counted = self
                     .agents
                     .ledger()
@@ -617,7 +615,7 @@ impl Local {
             method::Tasks, protocol::SessionParams { session_id } => {
                 let tasks = super::tasks::read_tasks(&self.tasks_db, &session_id)
                     .await
-                    .map_err(|err| Refusal::new(protocol::INTERNAL_ERROR, err.to_string()))?;
+                    .map_err(Refusal::internal)?;
                 Ok(Tasks { tasks })
             };
             method::Notices, Empty {} => Ok(Notices {
@@ -643,8 +641,8 @@ impl Local {
                 if let Some(file) = self.realm_file.clone() {
                     tokio::task::spawn_blocking(move || file.write_checklist(view))
                         .await
-                        .map_err(|err| Refusal::new(protocol::INTERNAL_ERROR, err.to_string()))?
-                        .map_err(|err| Refusal::new(protocol::INTERNAL_ERROR, err.to_string()))?;
+                        .map_err(Refusal::internal)?
+                        .map_err(Refusal::internal)?;
                 }
                 Ok(Empty {})
             };
@@ -744,22 +742,21 @@ impl Local {
         use super::conversations::SwitchError;
         let resumed = matches!(target, Target::Resume(_));
         let previous = self.conversations.current(agent);
-        let session = self.agents.switch(agent, target).await.map_err(|err| {
-            let code = match err {
-                SwitchError::Running => SWITCH_BUSY,
-                _ => SWITCH_FAILED,
-            };
-            let message = match &err {
+        let session = self
+            .agents
+            .switch(agent, target)
+            .await
+            .map_err(|err| match &err {
                 SwitchError::OtherAgent { agent: owner, .. } if self.agents.is_live(owner) => {
-                    format!("{err}, which works on it now: /agents {owner} switches to it")
+                    Refusal::switch_failed(format!(
+                        "{err}, which works on it now: /agents {owner} switches to it"
+                    ))
                 }
-                SwitchError::OtherAgent { .. } => {
-                    format!("{err}, which has quit: `rkat-tui --resume <id>` seats it again on it")
-                }
-                _ => err.to_string(),
-            };
-            Refusal::new(code, message)
-        })?;
+                SwitchError::OtherAgent { .. } => Refusal::switch_failed(format!(
+                    "{err}, which has quit: `rkat-tui --resume <id>` seats it again on it"
+                )),
+                _ => err.into(),
+            })?;
         if let Some(previous) = previous.filter(|previous| *previous != session) {
             self.engine.forget_session(&previous);
         }
@@ -804,7 +801,7 @@ impl Local {
             Some(seated) => self.agents.retire_seated(agent, why, seated).await,
             None => self.agents.retire(agent, why).await,
         }
-        .map_err(|err| Refusal::new(SWITCH_FAILED, err.to_string()))?;
+        .map_err(Refusal::switch_failed)?;
         if !schedules_deleted.is_empty() {
             self.audit(
                 super::audit::Line::event("schedules_deleted", schedules_deleted.join(", "))
@@ -926,19 +923,12 @@ impl Local {
                 text: "the project has no .rkat/mcp.toml, .rkat/config.toml or workspace realm config.toml to trust".to_string(),
             },
             Ok(recorded) => {
-                self.audit(super::audit::Line::event(
-                    "project_trusted",
-                    recorded
-                        .iter()
-                        .map(|p| p.display().to_string())
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                ));
                 let files = recorded
                     .iter()
                     .map(|p| p.display().to_string())
                     .collect::<Vec<_>>()
                     .join(", ");
+                self.audit(super::audit::Line::event("project_trusted", files.clone()));
                 RuleOutcome {
                     ok: true,
                     text: format!(
@@ -1076,69 +1066,24 @@ impl Local {
         } = params;
         // The configured endpoint the switch's binding names (`None`: a
         // built-in endpoint).
-        let endpoint = auth_binding
+        let endpoint_name = auth_binding
             .as_ref()
-            .filter(|binding| is_endpoint_realm(binding.realm.as_str()))
-            .and_then(|binding| self.endpoints.get(binding.binding.as_str()))
+            .and_then(|binding| bound_endpoint(binding.realm.as_str(), binding.binding.as_str()));
+        let endpoint = endpoint_name
+            .and_then(|name| self.endpoints.get(name))
             .cloned();
-        // A model on a self-hosted endpoint needs its alias in the realm
-        // config before the runtime accepts it; anywhere else only a
-        // catalogued model runs (refused here, naming the way out).
-        let mut reseated = false;
-        if let Some(dialect) = provider.as_deref().and_then(WireDialect::parse) {
-            let listed = listed.map(|listed| crate::models::ModelEntry {
-                id: model.clone(),
-                display_name: None,
-                source: crate::models::ModelSource::Provider,
-                context_window: listed.context_window,
-                max_output_tokens: listed.max_output_tokens,
-                capabilities: crate::models::ModelCapabilities {
-                    reasoning: listed.reasoning,
-                    vision: listed.vision,
-                    function_calling: None,
-                },
-            });
-            // A built-in endpoint is named by the dialect.
-            let target = endpoint
-                .clone()
-                .or_else(|| self.endpoints.get(dialect.as_str()).cloned());
-            let written = match &target {
-                Some(target) => {
-                    crate::endpoints::ensure_endpoint_model(
-                        self.realm_config.runtime(),
-                        target,
-                        &model,
-                        listed.as_ref(),
-                    )
-                    .await
-                }
-                None => Ok(false),
-            }
-            .map_err(|err| Refusal::new(SWITCH_FAILED, err.to_string()))?;
-            // The live agent's model registry predates the alias: seat
-            // the agent again on its session, which rebuilds its
-            // agent.
-            if written {
-                reseated = true;
-                self.agents.reseat(agent).await.map_err(|err| {
-                    let code = match err {
-                        super::conversations::SwitchError::Running => SWITCH_BUSY,
-                        _ => SWITCH_FAILED,
-                    };
-                    Refusal::new(code, err.to_string())
-                })?;
-            }
-        }
+        let reseated = self
+            .ensure_alias(
+                agent,
+                &model,
+                provider.as_deref(),
+                endpoint.as_ref(),
+                listed,
+            )
+            .await?;
         let provider_params = provider.as_deref().and_then(|provider| {
             let dialect = WireDialect::parse(provider)?;
-            // A configured endpoint is named by its auth binding.
-            let endpoint = auth_binding
-                .as_ref()
-                .filter(|binding| is_endpoint_realm(binding.realm.as_str()))
-                .map_or(provider, |binding| binding.binding.as_str());
-            let configured = self
-                .thinking
-                .resolve(Some(endpoint), dialect.into(), &model);
+            let configured = self.configured_thinking(endpoint_name, provider, dialect, &model);
             Some(match thinking::params_for(configured.as_ref()) {
                 Some(params) => TurnMetadataOverride::Set(params),
                 None => TurnMetadataOverride::Clear,
@@ -1164,7 +1109,7 @@ impl Local {
             }),
         };
         let machine = Arc::clone(&self.machine);
-        let switched = self
+        let (session, report) = self
             .conversations
             .while_idle(agent, |session| async move {
                 let report = machine
@@ -1173,22 +1118,14 @@ impl Local {
                 Ok::<_, meerkat_runtime::RuntimeDriverError>((session, report))
             })
             .await
-            .map_err(|err| {
-                let code = match err {
-                    super::conversations::SwitchError::Running => SWITCH_BUSY,
-                    _ => SWITCH_FAILED,
-                };
-                let message = match err {
-                    super::conversations::SwitchError::Running => {
-                        "a turn is running; switch models once it ends (or interrupt it)"
-                            .to_string()
-                    }
-                    other => other.to_string(),
-                };
-                Refusal::new(code, message)
-            })?;
-        let (session, report) =
-            switched.map_err(|err| Refusal::new(SWITCH_FAILED, err.to_string()))?;
+            .map_err(|err| match err {
+                super::conversations::SwitchError::Running => Refusal::new(
+                    SWITCH_BUSY,
+                    "a turn is running; switch models once it ends (or interrupt it)",
+                ),
+                other => other.into(),
+            })?
+            .map_err(Refusal::switch_failed)?;
         tracing::debug!(?report, "switched the agent's model");
         let (model, provider) = crate::endpoints::from_engine(
             &report.new_identity.model,
@@ -1200,6 +1137,67 @@ impl Local {
             provider,
             reseated,
         })
+    }
+
+    /// A model on a self-hosted endpoint needs its alias in the realm
+    /// config before the runtime accepts it; anywhere else only a
+    /// catalogued model runs (refused at the reconfigure, naming the way
+    /// out). When the alias is new, the live agent's model registry
+    /// predates it: the agent is seated again on its session, which
+    /// rebuilds it. Whether it was.
+    async fn ensure_alias(
+        &self,
+        agent: &str,
+        model: &str,
+        provider: Option<&str>,
+        endpoint: Option<&crate::endpoints::Endpoint>,
+        listed: Option<protocol::ListedModel>,
+    ) -> Result<bool, Refusal> {
+        let Some(dialect) = provider.and_then(WireDialect::parse) else {
+            return Ok(false);
+        };
+        let listed = listed.map(|listed| crate::models::ModelEntry {
+            id: model.to_string(),
+            display_name: None,
+            source: crate::models::ModelSource::Provider,
+            context_window: listed.context_window,
+            max_output_tokens: listed.max_output_tokens,
+            capabilities: crate::models::ModelCapabilities {
+                reasoning: listed.reasoning,
+                vision: listed.vision,
+                function_calling: None,
+            },
+        });
+        // A built-in endpoint is named by the dialect.
+        let Some(target) = endpoint.or_else(|| self.endpoints.get(dialect.as_str())) else {
+            return Ok(false);
+        };
+        let written = crate::endpoints::ensure_endpoint_model(
+            self.realm_config.runtime(),
+            target,
+            model,
+            listed.as_ref(),
+        )
+        .await
+        .map_err(Refusal::switch_failed)?;
+        if written {
+            self.agents.reseat(agent).await.map_err(Refusal::from)?;
+        }
+        Ok(written)
+    }
+
+    /// The `[thinking]` setting `model` of `provider` (its `dialect`) is
+    /// configured with, a configured endpoint named by `endpoint` (its auth
+    /// binding), a built-in one by the provider.
+    fn configured_thinking(
+        &self,
+        endpoint: Option<&str>,
+        provider: &str,
+        dialect: WireDialect,
+        model: &str,
+    ) -> Option<meerkat_core::lifecycle::run_primitive::AnthropicThinkingConfig> {
+        self.thinking
+            .resolve(Some(endpoint.unwrap_or(provider)), dialect.into(), model)
     }
 
     /// The permission mode and the denial counters now.
@@ -1239,20 +1237,10 @@ impl Local {
     /// plan mode by another process). Returns a warning when one could not
     /// be told.
     pub async fn announce_plan_mode(&self) -> Option<String> {
-        let mut noted = self.plan_noted.lock().await;
         if self.engine.mode() != PermissionMode::Plan {
             return None;
         }
-        let mut warnings = Vec::new();
-        for agent in self.agents.names() {
-            match self.append_plan_note(&agent, true).await {
-                None => {
-                    noted.insert(agent, true);
-                }
-                Some(warning) => warnings.push(warning),
-            }
-        }
-        (!warnings.is_empty()).then(|| warnings.join("\n"))
+        self.note_plan(true).await
     }
 
     /// Tell every live agent plan mode started or ended, once per change
@@ -1261,13 +1249,19 @@ impl Local {
     /// changes, the later note always matches the mode that holds, and the
     /// notes alternate.
     async fn note_plan_mode(&self) -> Option<String> {
+        self.note_plan(false).await
+    }
+
+    /// Tell each live agent the plan mode that holds when its last note
+    /// said otherwise (`all`: every live agent, whatever it was told).
+    async fn note_plan(&self, all: bool) -> Option<String> {
         let mut noted = self.plan_noted.lock().await;
         let plan = self.engine.mode() == PermissionMode::Plan;
         let live = self.agents.names();
         noted.retain(|agent, _| live.contains(agent));
         let mut warnings = Vec::new();
         for agent in live {
-            if noted.get(&agent).copied().unwrap_or(false) == plan {
+            if !all && noted.get(&agent).copied().unwrap_or(false) == plan {
                 continue;
             }
             match self.append_plan_note(&agent, plan).await {
@@ -1357,14 +1351,13 @@ impl Local {
                 if let Some(session) = self.conversations.current(&agent) {
                     self.engine.human_input(&session);
                     self.conversations.touch(&session, &agent);
-                }
-                if let Some(text) = params.get(field).and_then(content_text)
-                    && !text.trim().is_empty()
-                    && let Some(session) = self.conversations.current(&agent)
-                {
-                    let n = self.inputs.fetch_add(1, Ordering::Relaxed);
-                    let key = InputKey::new(format!("rkat-attach:{}:{n}", std::process::id()));
-                    self.engine.record_user_input(&session, key, &text);
+                    if let Some(text) = params.get(field).and_then(content_text)
+                        && !text.trim().is_empty()
+                    {
+                        let n = self.inputs.fetch_add(1, Ordering::Relaxed);
+                        let key = InputKey::new(format!("rkat-attach:{}:{n}", std::process::id()));
+                        self.engine.record_user_input(&session, key, &text);
+                    }
                 }
                 if method == engine::TURN_START {
                     self.with_thinking(params);
@@ -1471,24 +1464,25 @@ impl Local {
         ) else {
             return;
         };
+        let binding = params.pointer("/auth_binding/value");
+        let endpoint = binding.and_then(|binding| {
+            bound_endpoint(
+                binding.get("realm")?.as_str()?,
+                binding.get("binding")?.as_str()?,
+            )
+        });
         let Some(dialect) = WireDialect::parse(provider) else {
             return;
         };
-        let provider_kind: Provider = dialect.into();
-        // A configured endpoint is named by its auth binding.
-        let endpoint = params
-            .pointer("/auth_binding/value")
-            .filter(|binding| {
-                binding
-                    .get("realm")
-                    .and_then(Value::as_str)
-                    .is_some_and(is_endpoint_realm)
-            })
-            .and_then(|binding| binding.get("binding").and_then(Value::as_str))
-            .unwrap_or(provider);
-        let configured = self.thinking.resolve(Some(endpoint), provider_kind, model);
+        let configured = self.configured_thinking(endpoint, provider, dialect, model);
         params["provider_params"] = thinking_override(configured.as_ref());
     }
+}
+
+/// The configured endpoint an auth binding of `realm` names (`binding`);
+/// `None` for a built-in endpoint's binding.
+fn bound_endpoint<'a>(realm: &str, binding: &'a str) -> Option<&'a str> {
+    is_endpoint_realm(realm).then_some(binding)
 }
 
 /// The `provider_params` override of a model switch: set the thinking the
@@ -1556,8 +1550,7 @@ fn abandon_words(reason: &meerkat_runtime::input_state::InputAbandonReason) -> O
 
 /// A method's answer as JSON.
 fn answer(result: impl serde::Serialize) -> Result<Value, Refusal> {
-    serde_json::to_value(result)
-        .map_err(|err| Refusal::new(protocol::INTERNAL_ERROR, err.to_string()))
+    serde_json::to_value(result).map_err(Refusal::internal)
 }
 
 /// The text of a wire content input: a string, or the text blocks of a
