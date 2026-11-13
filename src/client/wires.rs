@@ -604,5 +604,49 @@ mod tests {
         assert!(picker.rows[0].keys[0].confirm.is_some());
         assert_eq!(resolve_wire("web", &wired).unwrap().agent, "main-cccc");
         assert!(resolve_wire("web", &[]).is_err());
+        // The other daemon runs, but the agent retired there: stale.
+        let status: Status = serde_json::from_value(serde_json::json!({
+            "workspace": "/w/web", "pid": 1, "started_at": "2026-11-13T00:00:00Z",
+            "clients": 0, "detached": false, "owner": false, "running": false,
+            "agents": [{"name": "main-dddd", "clients": 0, "detached": false}],
+        }))
+        .unwrap();
+        let other = Other {
+            endpoint: Endpoint {
+                address: "127.0.0.1:9".parse().unwrap(),
+                token: String::new(),
+                pid: 1,
+                workspace: Some("/w/web".into()),
+                started_at: None,
+            },
+            status,
+        };
+        let picker = unwire_picker(&wired, &[other]);
+        assert_eq!(
+            picker.rows[0].text,
+            "web/main-cccc  retired there (the wire is stale)"
+        );
+    }
+
+    /// A daemon without the methods is told apart, and says what to do.
+    #[test]
+    fn an_older_daemon_is_named_with_what_to_do() {
+        let old = ClientError::Rpc {
+            method: "rkat/wire_card".into(),
+            code: METHOD_NOT_FOUND,
+            message: "unknown method".into(),
+        };
+        let said = words("the daemon of /w/api", &old);
+        assert!(
+            said.contains("older rkat-tui-mob without cross-workspace wires")
+                && said.contains("start rkat-tui there again with this version"),
+            "{said}"
+        );
+        let refused = ClientError::Rpc {
+            method: "rkat/wire".into(),
+            code: crate::daemon::protocol::WIRE_REFUSED,
+            message: "nope".into(),
+        };
+        assert_eq!(words("x", &refused), "x refused: nope");
     }
 }
