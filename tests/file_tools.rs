@@ -257,6 +257,61 @@ async fn write_creates_new_files_with_parents_and_emits_diff() {
     assert_eq!(fx.read("deep/nested/new.txt"), "three\n");
 }
 
+/// The write mark is told the path before the file changes (a watch knows
+/// the change is the agent's before it can see it), for `write_file` and
+/// `edit_file` alike.
+#[tokio::test]
+async fn the_write_mark_comes_before_the_file_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = ProjectRoot::new(dir.path()).unwrap();
+    let seen = Arc::new(parking_lot::Mutex::new(
+        Vec::<(String, Option<String>)>::new(),
+    ));
+    let mark: rkat_tui::tools::WriteMark = {
+        let seen = Arc::clone(&seen);
+        let base = dir.path().to_path_buf();
+        Arc::new(move |path: &Path| {
+            let now = std::fs::read_to_string(base.join(path)).ok();
+            seen.lock().push((path.display().to_string(), now));
+        })
+    };
+    let tools = FileToolDispatcher::new(root, None).with_write_mark(mark);
+    let call = |name: &'static str, args: Value| {
+        let raw = serde_json::value::to_raw_value(&args).unwrap();
+        let tools = &tools;
+        async move {
+            let view = ToolCallView {
+                id: "call-1",
+                name,
+                args: &raw,
+            };
+            let result = tools.dispatch(view).await.unwrap().result;
+            assert!(!result.is_error, "{}", result.text_content());
+        }
+    };
+    call(
+        "write_file",
+        json!({"path": "src/a.rs", "content": "one\n"}),
+    )
+    .await;
+    call(
+        "edit_file",
+        json!({"path": "src/a.rs", "old_string": "one", "new_string": "two"}),
+    )
+    .await;
+    assert_eq!(
+        *seen.lock(),
+        vec![
+            ("src/a.rs".to_string(), None),
+            ("src/a.rs".to_string(), Some("one\n".to_string())),
+        ]
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("src/a.rs")).unwrap(),
+        "two\n"
+    );
+}
+
 #[tokio::test]
 async fn write_refuses_unread_existing_file_then_succeeds_after_read() {
     let mut fx = Fixture::new();

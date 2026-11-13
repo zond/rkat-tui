@@ -142,7 +142,7 @@ RKAT_TUI_REQUIRE_SANDBOX=1 cargo nextest run --all-features --test confinement -
 
 ## Known flaky tests
 
-Two tests were flaky on CI and have been hardened. If either fails again, the
+These tests were flaky on CI and have been hardened. If one fails again, the
 output now says why; report it rather than retrying silently:
 
 - `parallel_escalations_share_one_timeout_including_the_queue`
@@ -164,6 +164,17 @@ output now says why; report it rather than retrying silently:
   database file of the realm open (`daemon::settle_stores`), so the tree is
   quiet when quit returns. A failure now means a database stayed open past
   that wait (the daemon logs "may still be open at exit").
+- `a_watched_change_reaches_the_agent_in_its_turn` (`tests/watches.rs`):
+  failed once on the two-core runner (run 43388269247, "the agent's own
+  write was not reported"). The daemon learned of the agent's own
+  `write_file` only from its diff, which a separate task forwarded after
+  the rename, and judged it against the batch's flush time with a 2 s
+  window. A batch flushed before that task ran (the 250 ms debounce), or
+  flushed late on a starved runtime, reported the agent's own write. The
+  file tools now mark the path before they write (`with_write_mark`, pinned
+  by `the_write_mark_comes_before_the_file_changes`) and a change is judged
+  by when it was seen (`an_own_write_flushed_late_is_still_the_agent_s`).
+  No bound was raised.
 
 Paused-clock tests (`#[tokio::test(start_paused = true)]`) count a task
 blocked in `spawn_blocking` as idle, so the virtual clock jumps; re-check a

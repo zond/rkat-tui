@@ -12,6 +12,10 @@
   too many columns for even that is shown stacked: one `header: cell` line
   per cell, its rows divided by a short rule. A table that fits looks as
   before.
+- A `watch_paths` watch could report the agent's own `write_file` or
+  `edit_file` back to it when the daemon was busy. The file tools now mark
+  the write before the file changes, and a change is judged by when it
+  happened rather than when its batch left.
 
 ## [0.0.2] - 2026-11-13
 

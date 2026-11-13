@@ -695,8 +695,20 @@ impl crate::mobs::customizer::RootHost for AgentHost {
             identity.to_string(),
             Arc::clone(&self.watches) as Arc<dyn crate::tools::WatchHost>,
         ));
+        // The agent's own write is marked before the file changes (and again
+        // with its diff): its watches never see the change first.
+        let mark: crate::tools::WriteMark = {
+            let agent = identity.to_string();
+            let watches = Arc::downgrade(&self.watches);
+            Arc::new(move |path: &std::path::Path| {
+                if let Some(watches) = watches.upgrade() {
+                    watches.own_write(&agent, path);
+                }
+            })
+        };
         let files = FileToolDispatcher::new(self.scope.project_root.clone(), Some(diffs))
-            .with_search_limits(self.search_limits);
+            .with_search_limits(self.search_limits)
+            .with_write_mark(mark);
         match agent_tools(files, &self.notes, &self.skills, Some(watch)) {
             Ok(tools) => tools,
             Err(err) => {
@@ -827,7 +839,9 @@ fn tagged_diffs(
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<crate::tools::FileDiff>();
     tokio::spawn(async move {
         while let Some(diff) = rx.recv().await {
-            // The agent's own write: its watches do not report it back.
+            // The agent's own write, marked again now that it is done (it was
+            // marked before, `AgentHost::tools`): its watches do not report
+            // it back.
             if let Some(watches) = watches.upgrade() {
                 watches.own_write(&agent, &diff.path);
             }

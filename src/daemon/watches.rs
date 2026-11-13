@@ -41,7 +41,9 @@ pub const MAX_BATCH_AGE: Duration = Duration::from_secs(2);
 pub const MAX_TRACKED: usize = 4096;
 /// How many paths one batch names.
 pub const MAX_PATHS: usize = 50;
-/// How long after its own write a change of the same file is the agent's.
+/// How close to its own write's mark a change of the same file is the
+/// agent's (measured from when the change was seen, not when its batch
+/// leaves).
 const OWN_WRITE_WINDOW: Duration = Duration::from_secs(2);
 
 /// What happened to a path, as far as transient files are concerned.
@@ -102,8 +104,13 @@ struct Inner {
     gone: BTreeSet<String>,
     /// The `once` watches that matched, per agent: dropped at the flush.
     fired_once: BTreeMap<String, BTreeSet<u64>>,
-    /// When each agent's file tools last wrote each path.
+    /// When each agent's file tools last wrote each path (marked before
+    /// the write and again after it).
     own: HashMap<(String, String), Instant>,
+    /// When each path matched in the open batch was last seen to change
+    /// (at most [`MAX_TRACKED`]): an own write is judged against when its
+    /// change happened, not when the batch leaves.
+    observed: HashMap<String, Instant>,
 }
 
 /// The agents' watches on one workspace.
@@ -247,6 +254,7 @@ impl Watches {
             fired_once,
             created,
             gone,
+            observed,
             ..
         } = &mut *inner;
         let mut matched = false;
@@ -271,6 +279,9 @@ impl Watches {
             }
         }
         if matched {
+            if observed.len() < MAX_TRACKED || observed.contains_key(&relative) {
+                observed.insert(relative.clone(), Instant::now());
+            }
             let transient = match change {
                 Change::Created => Some(&mut *created),
                 Change::Gone => Some(&mut *gone),
@@ -296,10 +307,19 @@ impl Watches {
     fn take_batches(&self) -> Vec<Batch> {
         let mut inner = self.inner.lock();
         let now = Instant::now();
-        inner
-            .own
-            .retain(|_, at| now.saturating_duration_since(*at) < OWN_WRITE_WINDOW);
         let pending = std::mem::take(&mut inner.pending);
+        let observed = std::mem::take(&mut inner.observed);
+        // An agent's change: one seen within the window of its own mark,
+        // however late the batch leaves.
+        let own = |inner: &Inner, agent: &str, path: &str| {
+            let Some(at) = inner.own.get(&(agent.to_string(), path.to_string())) else {
+                return false;
+            };
+            let seen = observed.get(path).copied().unwrap_or(now);
+            seen.saturating_duration_since(*at)
+                .max(at.saturating_duration_since(seen))
+                < OWN_WRITE_WINDOW
+        };
         let mut overflow = std::mem::take(&mut inner.overflow);
         let created = std::mem::take(&mut inner.created);
         let gone = std::mem::take(&mut inner.gone);
@@ -313,7 +333,7 @@ impl Watches {
         for (agent, paths) in pending {
             let paths: Vec<String> = paths
                 .into_iter()
-                .filter(|path| !inner.own.contains_key(&(agent.clone(), path.clone())))
+                .filter(|path| !own(&inner, &agent, path))
                 .filter(|path| !(created.contains(path) && gone.contains(path)))
                 .collect();
             let counted = overflow.remove(&agent).unwrap_or(0);
@@ -327,6 +347,10 @@ impl Watches {
                 more,
             });
         }
+        // Judged: what is past the window now cannot cover a later change.
+        inner
+            .own
+            .retain(|_, at| now.saturating_duration_since(*at) < OWN_WRITE_WINDOW);
         batches
     }
 
@@ -649,5 +673,35 @@ mod tests {
             (batch.agent.as_str(), batch.paths.as_slice()),
             ("main-b", &["src/own.rs".to_string()][..])
         );
+    }
+
+    /// A batch that leaves late (a starved runtime) still knows the
+    /// agent's own write: it is judged by when the change was seen, which
+    /// was right after the mark; a change seen well after the window is
+    /// someone else's.
+    #[tokio::test(start_paused = true)]
+    async fn an_own_write_flushed_late_is_still_the_agent_s() {
+        let (w, _rx) = watches();
+        add(&w, "main-a", &["src/**"], false);
+        w.own_write("main-a", Path::new("src/own.rs"));
+        // Queued directly: the batcher does not flush it meanwhile.
+        assert!(w.queue(Path::new("/w/src/own.rs"), Change::Other));
+        tokio::time::advance(OWN_WRITE_WINDOW * 2).await;
+        assert_eq!(w.take_batches(), Vec::new());
+        // The mark is gone with that flush: a later change is reported.
+        assert!(w.queue(Path::new("/w/src/own.rs"), Change::Other));
+        assert_eq!(
+            w.take_batches(),
+            vec![Batch {
+                agent: "main-a".into(),
+                paths: vec!["src/own.rs".into()],
+                more: 0
+            }]
+        );
+        // A mark long before the change does not cover it.
+        w.own_write("main-a", Path::new("src/own.rs"));
+        tokio::time::advance(OWN_WRITE_WINDOW * 2).await;
+        assert!(w.queue(Path::new("/w/src/own.rs"), Change::Other));
+        assert_eq!(w.take_batches().len(), 1);
     }
 }

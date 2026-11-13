@@ -317,6 +317,10 @@ impl CallMeta {
     }
 }
 
+/// What a dispatcher calls with a path (as shown) just before its file
+/// tools replace that file ([`FileToolDispatcher::with_write_mark`]).
+pub type WriteMark = Arc<dyn Fn(&Path) + Send + Sync>;
+
 /// Key of the read-before-write record: the session that read, and the path.
 type ReadKey = (Option<SessionId>, PathBuf);
 
@@ -330,6 +334,10 @@ pub(crate) struct Shared {
     /// after that asks for the file to be read again).
     pub(crate) read_state: Mutex<indexmap::IndexMap<ReadKey, SystemTime>>,
     pub(crate) diff_tx: Option<mpsc::UnboundedSender<FileDiff>>,
+    /// Told the path (as shown, relative to the root) just before
+    /// `write_file` or `edit_file` replaces a file, so a watch on it knows
+    /// the change is this agent's before the change can be seen.
+    pub(crate) before_write: Option<WriteMark>,
     /// Skip environment files ([`crate::paths::is_secret_file_name`]) when
     /// walking for `glob`/`grep` (the classifier's read-only tools).
     pub(crate) hide_secrets: bool,
@@ -492,6 +500,9 @@ impl Shared {
                 "{display} was not written: the call was cancelled"
             )));
         }
+        if let Some(mark) = &self.before_write {
+            mark(Path::new(&display));
+        }
         // A temporary file renamed over the target: a hard link created
         // after `check_writable` keeps the old content, never this write.
         crate::paths::write_atomic(
@@ -600,6 +611,7 @@ impl FileToolDispatcher {
                 root,
                 read_state: Mutex::new(indexmap::IndexMap::new()),
                 diff_tx,
+                before_write: None,
                 hide_secrets,
             }),
             tools,
@@ -614,6 +626,18 @@ impl FileToolDispatcher {
     #[must_use]
     pub fn with_search_limits(mut self, limits: SearchLimits) -> Self {
         self.limits = limits;
+        self
+    }
+
+    /// The same dispatcher telling `mark` each path its `write_file` or
+    /// `edit_file` is about to replace (before the change is made).
+    #[must_use]
+    pub fn with_write_mark(mut self, mark: WriteMark) -> Self {
+        // A dispatcher just built holds its state alone.
+        match Arc::get_mut(&mut self.shared) {
+            Some(shared) => shared.before_write = Some(mark),
+            None => tracing::error!("the file tools' state is shared already: no write mark"),
+        }
         self
     }
 
