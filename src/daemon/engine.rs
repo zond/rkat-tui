@@ -84,20 +84,14 @@ pub struct Composed {
     pub engine: Arc<ApprovalEngine>,
     /// Where escalations wait for their decision.
     pub desk: Arc<Desk>,
-    /// The desk's task.
-    pub desk_task: tokio::task::JoinHandle<()>,
     /// The consent surface every client is offered decisions through.
     pub decisions: Arc<Decisions>,
-    /// The task that offers the decisions that open.
-    pub decisions_task: tokio::task::JoinHandle<()>,
-    /// The task that pushes the agent's file changes to the clients.
-    pub diffs_task: tokio::task::JoinHandle<()>,
-    /// The task that pushes the approval engine's notes to the clients.
-    pub notes_task: tokio::task::JoinHandle<()>,
-    /// The helper follower's task.
-    pub follower_task: tokio::task::JoinHandle<()>,
-    /// The task that tells the clients of destroyed mobs.
-    pub destroyed_task: tokio::task::JoinHandle<()>,
+    /// The background tasks the daemon aborts at shutdown: the desk's,
+    /// the one that offers the decisions that open, the ones that push the
+    /// agent's file changes and the approval engine's notes to the
+    /// clients, the helper follower's, and the one that tells the clients
+    /// of destroyed mobs.
+    pub tasks: Vec<tokio::task::JoinHandle<()>>,
     /// What every agent's and helper's model calls used.
     pub ledger: Arc<super::usage::Ledger>,
     /// The members' tool catalogs.
@@ -361,13 +355,15 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         scope,
         engine,
         desk,
-        desk_task,
         decisions,
-        decisions_task,
-        notes_task,
-        diffs_task,
-        follower_task: follower,
-        destroyed_task,
+        tasks: vec![
+            desk_task,
+            decisions_task,
+            diffs_task,
+            notes_task,
+            follower,
+            destroyed_task,
+        ],
         ledger,
         origins,
         deferral,

@@ -444,17 +444,7 @@ pub struct Daemon {
     /// The realm's directory (its databases settle at shutdown).
     realm_root: PathBuf,
     #[cfg(any(test, feature = "test-support"))]
-    scope: bootstrap::RuntimeScope,
-    #[cfg(any(test, feature = "test-support"))]
-    desk: Arc<approvals::Desk>,
-    #[cfg(any(test, feature = "test-support"))]
-    origins: Arc<approvals::DaemonToolOrigins>,
-    #[cfg(any(test, feature = "test-support"))]
-    registry: Arc<crate::mobs::HelperRegistry>,
-    #[cfg(any(test, feature = "test-support"))]
-    engine: Arc<crate::approval::ApprovalEngine>,
-    #[cfg(any(test, feature = "test-support"))]
-    compact_threshold: Option<std::num::NonZeroU64>,
+    seams: testing::Seams,
     local: Arc<local::Local>,
     /// The desk and the event watcher, aborted at shutdown.
     tasks: Vec<tokio::task::JoinHandle<()>>,
@@ -690,42 +680,22 @@ impl Daemon {
             listener,
             realm_root: composed.scope.realm_root(),
             #[cfg(any(test, feature = "test-support"))]
-            scope: composed.scope,
-            #[cfg(any(test, feature = "test-support"))]
-            desk: composed.desk,
-            #[cfg(any(test, feature = "test-support"))]
-            origins: Arc::clone(&composed.origins),
-            #[cfg(any(test, feature = "test-support"))]
-            registry: Arc::clone(&composed.root.registry),
-            #[cfg(any(test, feature = "test-support"))]
-            engine: Arc::clone(&composed.engine),
-            #[cfg(any(test, feature = "test-support"))]
-            compact_threshold: composed.root.compact_threshold,
+            seams: testing::Seams {
+                origins: Arc::clone(&composed.origins),
+                registry: Arc::clone(&composed.root.registry),
+                engine: Arc::clone(&composed.engine),
+                compact_threshold: composed.root.compact_threshold,
+            },
             local,
-            tasks: vec![
-                watch_task,
-                composed.desk_task,
-                composed.decisions_task,
-                composed.diffs_task,
-                composed.notes_task,
-                composed.follower_task,
-                composed.destroyed_task,
-            ],
+            tasks: std::iter::once(watch_task).chain(composed.tasks).collect(),
         })
     }
 
-    /// Where escalations wait for their decision.
+    /// What tests reach of a started daemon.
     #[must_use]
     #[cfg(any(test, feature = "test-support"))]
-    pub fn desk(&self) -> &Arc<approvals::Desk> {
-        &self.desk
-    }
-
-    /// The members' tool catalogs the gate judges calls by.
-    #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn tool_origins(&self) -> &Arc<approvals::DaemonToolOrigins> {
-        &self.origins
+    pub fn seams(&self) -> &testing::Seams {
+        &self.seams
     }
 
     /// The daemon's own methods and its view of the proxied ones (tests).
@@ -747,32 +717,11 @@ impl Daemon {
         }
     }
 
-    /// The agent profile's auto-compaction threshold.
-    #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn compact_threshold(&self) -> Option<std::num::NonZeroU64> {
-        self.compact_threshold
-    }
-
     /// The mob host every member lives in.
     #[must_use]
     #[cfg(any(test, feature = "test-support"))]
     pub fn mob_state(&self) -> &Arc<MobMcpState> {
         &self.state
-    }
-
-    /// The helpers' bookkeeping (owners, running set, durable bindings).
-    #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn helper_registry(&self) -> &Arc<crate::mobs::HelperRegistry> {
-        &self.registry
-    }
-
-    /// The approval engine every member's gate shares.
-    #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn approval_engine(&self) -> &Arc<crate::approval::ApprovalEngine> {
-        &self.engine
     }
 
     /// The bound address clients connect to.
@@ -792,20 +741,6 @@ impl Daemon {
     #[must_use]
     pub fn first_agent(&self) -> &FirstAgent {
         &self.first_agent
-    }
-
-    /// The JSON-RPC session runtime.
-    #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn runtime(&self) -> &Arc<SessionRuntime> {
-        &self.runtime
-    }
-
-    /// The realm and workspace the daemon serves.
-    #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn scope(&self) -> &bootstrap::RuntimeScope {
-        &self.scope
     }
 
     /// Serve clients until `shutdown` resolves or a client asks for it
@@ -894,6 +829,18 @@ pub mod testing {
     use meerkat_core::ConfigStore;
     use meerkat_rpc::session_runtime::SessionRuntime;
     use serde_json::Value;
+
+    /// What tests reach of a started daemon ([`super::Daemon::seams`]).
+    pub struct Seams {
+        /// The members' tool catalogs the gate judges calls by.
+        pub origins: Arc<super::approvals::DaemonToolOrigins>,
+        /// The helpers' bookkeeping (owners, running set, durable bindings).
+        pub registry: Arc<crate::mobs::HelperRegistry>,
+        /// The approval engine every member's gate shares.
+        pub engine: Arc<crate::approval::ApprovalEngine>,
+        /// The agent profile's auto-compaction threshold.
+        pub compact_threshold: Option<std::num::NonZeroU64>,
+    }
 
     /// The engine's method router of a serving daemon, without the proxy's
     /// method allow-list ([`super::protocol::engine::SERVED`]). Holds the
