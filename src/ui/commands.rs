@@ -797,7 +797,8 @@ Keys:
                                  (sends normally when idle; same as Ctrl-X Ctrl-S)
   Shift+Enter, Alt+Enter, Ctrl+J insert a newline (so does \\ right before Enter at a line end)
   Ctrl-C                         interrupt the turn (as Esc) · clear the input · press twice to quit
-  Esc                            interrupt the turn; queued messages are sent next
+  Esc                            interrupt the turn; queued messages are sent next (no turn shown:
+                                 the client asks the daemon and says when nothing runs)
   Esc Esc (idle, with text)      clear the input and save it to the prompt history (↑ recalls it)
   Up (empty input)               take queued messages back into the editor
   Ctrl-D                         quit on an empty input: press again within 3 s (while a turn

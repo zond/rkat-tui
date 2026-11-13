@@ -203,9 +203,12 @@ impl Runner {
 
     /// Esc: stop the run the stream reported; a second Esc after
     /// [`STOP_GRACE`] (or a first one before any run was reported)
-    /// force-cancels the member.
+    /// force-cancels the member. With no turn of this client's open the
+    /// daemon is asked whether the agent runs ([`Self::interrupt_unseen`]).
+    /// Every press acts or says why not.
     pub(super) fn interrupt(&mut self) {
         if !self.turn.active {
+            self.interrupt_unseen();
             return;
         }
         let now = Instant::now();
@@ -223,7 +226,27 @@ impl Runner {
             {
                 None
             }
-            (Some(_), _) => return,
+            (Some(first), _) if !self.turn.force_cancelled => {
+                let left = STOP_GRACE.saturating_sub(now.duration_since(*first));
+                self.notice(
+                    NoticeLevel::Info,
+                    format!(
+                        "the interrupt was sent; waiting for the run to end (press again in {} ms to force it)",
+                        left.as_millis().max(1)
+                    ),
+                );
+                return;
+            }
+            (Some(_), _) => {
+                self.notice(
+                    NoticeLevel::Info,
+                    format!(
+                        "the interrupt was forced; waiting for the run to end (whatever the agent runs is cancelled if it has not within {}s)",
+                        INTERRUPT_DEADLINE.as_secs()
+                    ),
+                );
+                return;
+            }
         };
         if self.turn.interrupted_at.is_none() {
             self.turn.interrupted_at = Some(now);
@@ -264,6 +287,56 @@ impl Runner {
             if let Err(failure) = result {
                 reports.send(Report::Interrupt(failure.to_string()));
             }
+        });
+    }
+
+    /// Esc with no turn of this client's open. The agent may run all the
+    /// same: a run this client did not see start (it attached mid-run), or
+    /// one that went on after this client's turn ended as interrupted or
+    /// unconfirmed. The daemon's `rkat/status` says whether the bound agent
+    /// runs: when it does (or cannot tell), its current run is cancelled
+    /// (`mob/hard_cancel_member`); when it is idle the user is told nothing
+    /// runs.
+    fn interrupt_unseen(&self) {
+        let Some(connection) = self.connection() else {
+            self.notice(
+                NoticeLevel::Warn,
+                format!("{}: nothing to interrupt", self.unattached()),
+            );
+            return;
+        };
+        let ui_tx = self.ui_tx.clone();
+        tokio::spawn(async move {
+            let agent = connection.agent().to_string();
+            let running = bounded(
+                CALL_TIMEOUT,
+                remote::call::<protocol::method::Status>(&connection, &protocol::Empty {}),
+            )
+            .await
+            .ok()
+            .and_then(|status| status.agents.into_iter().find(|row| row.name == agent))
+            .and_then(|row| row.running);
+            let (level, text) = if running == Some(false) {
+                (NoticeLevel::Info, NOTHING_RUNS.to_string())
+            } else {
+                match bounded(
+                    CALL_TIMEOUT,
+                    remote::hard_cancel(&connection, INTERRUPT_REASON),
+                )
+                .await
+                {
+                    Ok(()) if running == Some(true) => {
+                        (NoticeLevel::Info, INTERRUPTED_UNSEEN.to_string())
+                    }
+                    Ok(()) => (
+                        NoticeLevel::Info,
+                        "whether the agent runs could not be read; whatever it runs was interrupted"
+                            .to_string(),
+                    ),
+                    Err(err) => (NoticeLevel::Error, format!("interrupt incomplete: {err}")),
+                }
+            };
+            let _ = ui_tx.send(Msg::Notice { level, text });
         });
     }
 
@@ -870,6 +943,14 @@ impl Runner {
 }
 
 use crate::ui::COMPACT_PROMPT;
+
+/// What an interrupt says when the agent runs nothing.
+pub const NOTHING_RUNS: &str = "nothing is running";
+
+/// What an interrupt says when it cancelled a run this client had no
+/// turn for.
+pub const INTERRUPTED_UNSEEN: &str =
+    "interrupted the agent's run (one this client had not started or no longer followed)";
 
 /// What the UI is told when the daemon's answer to a steer names no
 /// input: its delivery cannot be told from another client's.

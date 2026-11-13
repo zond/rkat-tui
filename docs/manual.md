@@ -128,7 +128,15 @@ transcript still shows it. A message sent to
 the daemon meanwhile is the runtime's: the agent gets it at its next step
 unless ↑ takes it back first. A second Esc a second later force-cancels
 the agent's work, which also drops the messages the runtime still holds
-queued; those come back to the editor.
+queued; those come back to the editor. A press in between says the
+interrupt was sent and when the next one forces it; a press after the
+force says it waits for the run to end.
+
+*Esc on an empty editor with no turn shown* (and Ctrl+Enter on an empty
+editor) still interrupts: the agent may run a turn this client does not
+show, for example one that was going when the client attached. The client
+asks the daemon; when the agent runs, its run is cancelled and a notice
+says so; when it does not, the notice says "nothing is running".
 
 *↑ on an empty editor* takes back the messages the UI still holds (not yet
 sent) and the ones sent to the daemon that the agent has not read yet
@@ -153,8 +161,8 @@ run, it is marked delivered; ended without one (a force-cancel, the agent
 retired or was stopped), it returns to the editor with a notice saying
 the agent did not take it and why.
 
-**Rewind.** There is no rewind (no `/rewind`, and Esc twice on an empty
-editor does nothing): the daemon cannot continue a conversation from
+**Rewind.** There is no rewind (no `/rewind`; Esc twice on an empty
+editor only interrupts, as above): the daemon cannot continue a conversation from
 before an earlier message (the engine refuses a transcript fork of a mob
 member's session; a same-identity rewind is designed upstream,
 lukacf/meerkat#2126, but not yet implemented). `/help` says so. `/new`

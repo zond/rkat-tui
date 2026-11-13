@@ -8545,3 +8545,34 @@ platform's `sun_path`, not run), a connection from inside the confined
 shell (the realm is outside its grants, and the sandbox admits only IP
 sockets per the manual; not run against this socket), a client attached
 over `--attach HOST:PORT`.
+
+## An interrupt always acts or says why not (review 5, TU1, 2026-11-13)
+
+The owner reported Esc and Ctrl+Enter doing nothing while a message sat
+on *delivering…*. `Runner::interrupt` returned silently in two cases:
+when the client had no turn of its own, and on a second press inside
+`STOP_GRACE` or after the force cancel. The first case is real. A client
+that attaches while its agent runs a model request with nothing streamed
+has no turn: the catch-up shows the run's start, but `joins_a_run` needs
+a later event. The rig reproduced it
+(`client_turns::esc_interrupts_a_run_the_client_did_not_start`: the
+press went down the no-turn path, and the `RemoteTurn` came only from the
+cancelled run's end). The UI's `running` flag and the runner's
+`turn.active` cannot disagree, because each change of one is a message to
+the other. Both can miss a run the daemon has, though.
+
+The daemon pushes `rkat/idle` only when an agent becomes idle, never when
+it becomes busy, so the last idle note is no evidence that the agent
+runs. The press with no turn asks `rkat/status` instead. When the bound
+agent's row says it runs (or cannot tell), the client sends
+`mob/hard_cancel_member`; when the row says it is idle, the client says
+"nothing is running". Esc on an empty idle editor, and Ctrl+Enter on an
+empty editor, now send the interrupt. They used to do nothing; there is
+still no rewind. A press inside the grace says when the next one forces
+it, and a press after the force says that the client is waiting. Pinned
+also by `client_turns::esc_with_nothing_running_says_so`,
+`client_turns::ctrl_enter_interrupts_another_clients_run_then_sends`
+(the run another client started, shown as a remote turn) and
+`ui::tests::turns::esc_with_nothing_pending_interrupts`. Not verified:
+the owner's exact sequence (the 0.0.2 log does not record forwarded
+interrupts).

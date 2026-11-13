@@ -455,8 +455,9 @@ fn a_message_the_agent_did_not_take_returns_to_the_editor() {
 fn esc_with_nothing_pending_interrupts() {
     let mut app = running_app();
     assert_eq!(app.update(key(KeyCode::Esc)), vec![Effect::Interrupt]);
+    // Idle as the UI knows it: the client asks the daemon (TU1).
     let mut idle = App::new(StatusInfo::default());
-    assert!(idle.update(key(KeyCode::Esc)).is_empty());
+    assert_eq!(idle.update(key(KeyCode::Esc)), vec![Effect::Interrupt]);
 }
 
 #[test]

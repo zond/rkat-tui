@@ -136,12 +136,19 @@ fn esc_esc_clears_the_draft_into_history() {
     app.update_at(key(KeyCode::Esc), late);
     assert_eq!(app.input.text(), "a draft");
     assert!(app.take_submitted().is_empty());
-    // An empty input: Esc Esc does nothing (there is no rewind), arms
-    // nothing and saves nothing to history.
+    // An empty input: Esc arms nothing and saves nothing to history; it
+    // interrupts (the client asks the daemon whether the agent runs a turn
+    // this UI does not show, and says when nothing does).
     let mut app = App::new(StatusInfo::default());
-    assert!(app.update_at(key(KeyCode::Esc), t0).is_empty());
+    assert!(matches!(
+        app.update_at(key(KeyCode::Esc), t0).as_slice(),
+        [Effect::Interrupt]
+    ));
     assert!(!app.esc_clear_armed(t0));
-    assert!(app.update_at(key(KeyCode::Esc), t0).is_empty());
+    assert!(matches!(
+        app.update_at(key(KeyCode::Esc), t0).as_slice(),
+        [Effect::Interrupt]
+    ));
     assert!(app.take_submitted().is_empty());
 }
 

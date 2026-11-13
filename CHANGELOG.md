@@ -33,6 +33,14 @@
 
 ### Fixed
 
+- Esc and Ctrl+Enter (on an empty editor) now always act or say why
+  not. When the client shows no turn but the agent runs one, for example
+  a run that was going when this client attached, the client asks the
+  daemon and cancels that run, and a notice says so. When nothing runs,
+  the notice says "nothing is running". Before, the key did nothing in
+  that case. A second press within the one-second grace now says the
+  interrupt was sent and when the next press forces it. Before, that
+  press was silent too.
 - A daemon the TUI started writes its log once, to
   `<realm>/logs/rkat-tui-mob.stderr.log`, and without colour escape
   codes. It used to write every line twice (also to `rkat-tui-mob.log`)

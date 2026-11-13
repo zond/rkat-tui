@@ -349,8 +349,6 @@ impl App {
         self.input.set_text(text);
     }
 
-    /// Ctrl+Enter or Ctrl-X Ctrl-S: when idle, the same as Enter; when running, interrupt and
-    /// send the editor contents next (plain interrupt when the editor is empty).
     /// Ctrl-G, Ctrl-X Ctrl-E: open the draft in the user's editor (idle or
     /// running: it only edits the input).
     pub(super) fn edit_draft_externally(&mut self) {
@@ -360,11 +358,15 @@ impl App {
             )));
     }
 
+    /// Ctrl+Enter or Ctrl-X Ctrl-S: when idle, the same as Enter; when
+    /// running, interrupt and send the editor contents next. On an empty
+    /// editor a plain interrupt, idle too: the client then asks the daemon
+    /// whether the agent runs a turn this UI does not show.
     pub(super) fn interrupt_and_send(&mut self, now: Instant, fx: &mut Vec<Effect>) {
-        if !self.running {
-            self.submit(now, fx);
-        } else if self.input.text().trim().is_empty() {
+        if self.input.text().trim().is_empty() {
             self.interrupt(fx);
+        } else if !self.running {
+            self.submit(now, fx);
         } else {
             let text = self.input.take();
             self.submitted.push(text.clone());
@@ -527,15 +529,17 @@ impl App {
     ///
     /// Idle, Esc twice within [`DOUBLE_ESC_WINDOW`] on an input with text
     /// clears it and saves it to the prompt history (`esc_armed`: the
-    /// previous key was such an Esc); on an empty input it does nothing.
-    /// One Esc only arms it.
+    /// previous key was such an Esc); one Esc only arms it. On an empty
+    /// input it interrupts all the same: the agent may run a turn this UI
+    /// does not show, and the client asks the daemon (it says when nothing
+    /// runs).
     pub(super) fn escape(&mut self, esc_armed: bool, now: Instant, fx: &mut Vec<Effect>) {
         if self.running {
             self.interrupt(fx);
         } else if self.shell.running.is_some() {
             fx.push(Effect::CancelShell);
         } else if self.input.is_empty() {
-            // Nothing to clear.
+            self.interrupt(fx);
         } else if esc_armed {
             let text = self.input.take();
             if !text.trim().is_empty() {
