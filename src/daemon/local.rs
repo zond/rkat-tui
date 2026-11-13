@@ -715,6 +715,7 @@ impl Local {
     async fn retire(
         &self,
         agent: &str,
+        why: &super::agents::Leave,
         seated: Option<&super::agents::Seated<'_>>,
     ) -> Result<Retired, Refusal> {
         let session = self.conversations.current(agent);
@@ -726,8 +727,8 @@ impl Local {
         // fires between the retire and their deletion.
         let schedules_deleted = self.agents.schedules().delete_all(agent).await;
         let retired = match seated {
-            Some(seated) => self.agents.retire_seated(agent, seated).await,
-            None => self.agents.retire(agent).await,
+            Some(seated) => self.agents.retire_seated(agent, why, seated).await,
+            None => self.agents.retire(agent, why).await,
         }
         .map_err(|err| Refusal::new(SWITCH_FAILED, err.to_string()))?;
         if !schedules_deleted.is_empty() {
@@ -783,7 +784,9 @@ impl Local {
                 QuitOutcome::Left { others }
             }
             QuitPlan::Retire => {
-                let retired = self.retire(&agent, Some(&seated)).await?;
+                let retired = self
+                    .retire(&agent, &super::agents::Leave::Quit, Some(&seated))
+                    .await?;
                 self.lifecycle.leave(caller);
                 QuitOutcome::Retired { retired }
             }
@@ -816,14 +819,20 @@ impl Local {
             return Err(Refusal::new(protocol::AGENT_IN_USE, why));
         }
         tracing::info!(agent = %name, by = ?caller.agent, "an idle agent with no client is retired");
-        self.retire(name, Some(&seated)).await
+        let why = super::agents::Leave::Retired {
+            by: caller.agent.clone(),
+        };
+        self.retire(name, &why, Some(&seated)).await
     }
 
     /// Retire every agent ([`Self::retire`]; the daemon is shutting down
     /// with `rkat/shutdown {"retire": true}`). A refusal is logged.
     pub async fn retire_all(&self) {
         for agent in self.agents.names() {
-            if let Err(refusal) = self.retire(&agent, None).await {
+            if let Err(refusal) = self
+                .retire(&agent, &super::agents::Leave::Closed, None)
+                .await
+            {
                 tracing::warn!(%agent, error = %refusal.message, "the agent did not retire");
             }
         }

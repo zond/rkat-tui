@@ -30,6 +30,14 @@
   inlined, optional fields' `anyOf [T, null]` folded into `T`, `oneOf` as
   `anyOf` and a `type` on every constrained node. `/context` measures the
   definitions as sent.
+- A `send_message` call reads recipient first:
+  `send_message → tui/main/main-bbbb: I am changing src/lib.rs` (the
+  peer's name from the conversation's `peers` result, else its id), and a
+  successful receipt folds to `sent to <name>` with the raw JSON behind
+  the toggle; a failed send shows its error unfolded.
+- The note other agents get when an agent leaves says why: "its user
+  quit" only after `/quit`; one retired from `/agents` says who retired
+  it, and one whose session closed otherwise says so.
 - A `fork_off` child's outcome no longer fills screens with raw JSON:
   the transcript shows one header (`fork <name> finished (completed) ·
   11 turns · 39 tool calls · 12.3k tokens`) and the fork's report as

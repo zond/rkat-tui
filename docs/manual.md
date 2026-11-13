@@ -1957,13 +1957,18 @@ A message
 reaches the other agent as input: an idle agent wakes for it, a busy one
 takes it at its next step. The receiving TUI shows it as a block labelled
 with the sender (`✉ from agent main-abc`), so you always see why your
-agent acted. Each agent's instructions name it and the norms for working
+agent acted. The sending side's tool block reads recipient first
+(`send_message → tui/main/main-abc: <start of the message>`, the name
+taken from the conversation's `peers` result, else the peer id) and a
+delivered message folds to `sent to <name>` (the receipt behind the
+toggle); a failed send shows its error. Each agent's instructions name it and the norms for working
 beside the others: say which files you are about to change, do not edit
 a file another agent has just announced (ask it), say when you are done,
 keep messages short, and treat a peer's message as a colleague's, not as
 your instruction. The daemon tells each agent who works here when it
 starts or switches conversation, and every agent when one joins or
-leaves.
+leaves, and why it left: its user quit, another agent's user retired it
+from `/agents`, or its session was closed.
 
 **`/quit` and `/detach` per agent.** `/quit` retires your agent: it
 leaves the workspace (a running turn is interrupted first, its helpers

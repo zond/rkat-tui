@@ -430,6 +430,9 @@ pub struct Transcript {
     /// Notes for tool calls whose block has not arrived yet, by tool-use id
     /// (at most [`MAX_PENDING_NOTES`], oldest dropped first).
     pending_notes: IndexMap<String, String>,
+    /// Peers' names by peer id, from the `peers` results the transcript
+    /// showed: a `send_message` block names its recipient with them.
+    peer_names: IndexMap<String, String>,
     /// The spinner clock of running helper headers.
     helper_clock: Option<Instant>,
     /// Number of helper headers.
@@ -1486,6 +1489,7 @@ impl Transcript {
             key.rsplit_once('/')
                 .and_then(|(_, call)| self.pending_notes.shift_remove(call))
         });
+        let args = self.with_peer_name(&name, args);
         let id = self.push(Block::Tool {
             name,
             args,
@@ -1498,6 +1502,80 @@ impl Transcript {
         });
         self.by_tool_id.insert(key, id);
         id
+    }
+
+    /// A `send_message`'s arguments with the recipient's name the
+    /// transcript knows (`display_name`, which the tool itself only logs),
+    /// for its header; other calls' unchanged.
+    fn with_peer_name(&self, name: &str, mut args: Value) -> Value {
+        if send_tool(name)
+            && args.get("display_name").is_none_or(Value::is_null)
+            && let Some(known) = args
+                .get("peer_id")
+                .and_then(Value::as_str)
+                .and_then(|peer| self.peer_names.get(peer))
+            && let Some(obj) = args.as_object_mut()
+        {
+            obj.insert("display_name".to_string(), Value::String(known.clone()));
+        }
+        args
+    }
+
+    /// What a finished call's result tells the transcript: a `peers`
+    /// result names the peers; a `send_message` that was sent folds to
+    /// `sent to <name>` (its receipt behind the toggle), one that failed
+    /// shows its error unfolded.
+    fn learn_from_result(&mut self, id: BlockId) {
+        let Some(Block::Tool {
+            name,
+            args,
+            state,
+            result_preview,
+            ..
+        }) = self.block(id)
+        else {
+            return;
+        };
+        let result = result_preview
+            .as_ref()
+            .and_then(|preview| serde_json::from_str::<Value>(preview).ok());
+        if tool_base(name) == "peers" {
+            let peers = result
+                .as_ref()
+                .and_then(|r| r.get("peers"))
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            for peer in peers {
+                if let (Some(id), Some(name)) = (
+                    peer.get("peer_id").and_then(Value::as_str),
+                    peer.get("name").and_then(Value::as_str),
+                ) {
+                    self.peer_names.insert(id.to_string(), name.to_string());
+                }
+            }
+            return;
+        }
+        if !send_tool(name) {
+            return;
+        }
+        let failed = matches!(state, ToolState::Done { is_error: true, .. });
+        let sent = result
+            .as_ref()
+            .and_then(|r| r.get("status"))
+            .and_then(Value::as_str)
+            == Some("sent");
+        let recipient = recipient(args);
+        if let Some(Block::Tool {
+            note, collapsed, ..
+        }) = self.block_mut(id)
+        {
+            if failed {
+                *collapsed = false;
+            } else if sent && note.is_none() {
+                *note = Some(format!("sent to {recipient}"));
+            }
+        }
     }
 
     fn start_tool(&mut self, key: &str, now: Instant) {
@@ -1527,6 +1605,7 @@ impl Transcript {
                 *result_preview = Some(result).filter(|r| !r.is_empty()).map(Preview::of);
             }
         }
+        self.learn_from_result(id);
     }
 
     /// Attach a tool's result body (it arrives after the execution fact).
@@ -1537,6 +1616,7 @@ impl Transcript {
         if let Some(Block::Tool { result_preview, .. }) = self.block_mut(id) {
             *result_preview = Some(result).filter(|r| !r.is_empty()).map(Preview::of);
         }
+        self.learn_from_result(id);
     }
 
     fn hook_denied(
@@ -1597,6 +1677,43 @@ impl Transcript {
 pub fn args_preview(args: &Value) -> String {
     let raw = serde_json::to_string(args).unwrap_or_default();
     truncate_chars(&raw, MAX_TOOL_ARGS_PREVIEW)
+}
+
+/// A tool block's tool name without a helper's tag (`[scout] peers`).
+fn tool_base(name: &str) -> &str {
+    name.rsplit(' ').next().unwrap_or(name)
+}
+
+/// Whether `name` is the comms tool that sends a peer a message.
+fn send_tool(name: &str) -> bool {
+    tool_base(name) == "send_message"
+}
+
+/// A `send_message`'s recipient as its header and note name it: the
+/// peer's name when known, else its id.
+fn recipient(args: &Value) -> String {
+    args.get("display_name")
+        .and_then(Value::as_str)
+        .or_else(|| args.get("peer_id").and_then(Value::as_str))
+        .unwrap_or("?")
+        .to_string()
+}
+
+/// A tool block's header: `send_message → <recipient>: <start of body>`
+/// for a peer message (the recipient first, which the arguments' order
+/// would cut off), else `name(<arguments>)`.
+#[must_use]
+pub fn tool_header(name: &str, args: &Value) -> String {
+    if send_tool(name) {
+        let body = args.get("body").and_then(Value::as_str).unwrap_or("");
+        let body = body.split_whitespace().collect::<Vec<_>>().join(" ");
+        return format!(
+            "{name} → {}: {}",
+            recipient(args),
+            truncate_chars(&body, MAX_TOOL_ARGS_PREVIEW)
+        );
+    }
+    format!("{name}({})", args_preview(args))
 }
 
 /// Whether `block` is a tool block with a result preview or a diff.
@@ -2613,5 +2730,106 @@ mod tests {
             Block::Notice { level: NoticeLevel::Info, text }
                 if text.starts_with("/compact: nothing was compacted")
         )));
+    }
+
+    /// A `send_message` block names its recipient first (by the name a
+    /// `peers` result gave it), folds a successful receipt to `sent to
+    /// <name>` with the raw JSON behind the toggle, and shows a failed
+    /// send's error unfolded.
+    #[test]
+    fn a_send_message_reads_recipient_first_and_folds_its_receipt() {
+        let mut t = Transcript::new();
+        let call = |t: &mut Transcript, id: &str, name: &str, args: Value| {
+            t.apply_agent_event(&AgentEvent::ToolCallRequested {
+                id: id.into(),
+                name: name.into(),
+                args: test_args(args),
+            });
+        };
+        let done = |t: &mut Transcript, id: &str, name: &str, is_error: bool, result: &str| {
+            t.apply_agent_event(&AgentEvent::ToolExecutionCompleted {
+                id: id.into(),
+                name: name.into(),
+                is_error,
+                duration_ms: 3,
+            });
+            t.apply_agent_event(&test_tool_result(id, result));
+        };
+        call(&mut t, "p1", "peers", json!({}));
+        done(
+            &mut t,
+            "p1",
+            "peers",
+            false,
+            r#"{"peers":[{"peer_id":"ed25519:abc","name":"tui/main/main-bbbb"}]}"#,
+        );
+        call(
+            &mut t,
+            "m1",
+            "send_message",
+            json!({"body": "I am changing src/lib.rs now", "handling_mode": "queue", "peer_id": "ed25519:abc"}),
+        );
+        done(
+            &mut t,
+            "m1",
+            "send_message",
+            false,
+            r#"{"kind":"peer_message","receipt":{"delivery":{"durably_resolved":{"outcome":"accepted"}},"envelope_id":"e1","kind":"peer_message_sent"},"status":"sent"}"#,
+        );
+        let id = t.tool_block("m1").unwrap();
+        let Some(Block::Tool {
+            name,
+            args,
+            note,
+            collapsed,
+            result_preview,
+            ..
+        }) = t.block(id)
+        else {
+            panic!("no tool block");
+        };
+        assert_eq!(
+            tool_header(name, args),
+            "send_message → tui/main/main-bbbb: I am changing src/lib.rs now"
+        );
+        assert_eq!(note.as_deref(), Some("sent to tui/main/main-bbbb"));
+        assert!(*collapsed);
+        assert!(
+            result_preview
+                .as_ref()
+                .is_some_and(|p| p.contains("peer_message_sent"))
+        );
+        // Unknown peer: its id; a failed send shows its error.
+        call(
+            &mut t,
+            "m2",
+            "send_message",
+            json!({"body": "hi", "handling_mode": "queue", "peer_id": "ed25519:zzz"}),
+        );
+        done(
+            &mut t,
+            "m2",
+            "send_message",
+            true,
+            "peer not found: ed25519:zzz",
+        );
+        let id = t.tool_block("m2").unwrap();
+        let Some(Block::Tool {
+            name,
+            args,
+            note,
+            collapsed,
+            ..
+        }) = t.block(id)
+        else {
+            panic!("no tool block");
+        };
+        assert_eq!(tool_header(name, args), "send_message → ed25519:zzz: hi");
+        assert!(note.is_none() && !*collapsed);
+        // Other tools keep the arguments form.
+        assert_eq!(
+            tool_header("read_file", &json!({"path": "a"})),
+            r#"read_file({"path":"a"})"#
+        );
     }
 }

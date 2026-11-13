@@ -13,7 +13,7 @@ use super::markdown::{display_width, render_markdown, sanitize, truncate_to_widt
 use super::modal::draw_modal;
 use super::transcript::{
     Block, BlockId, DiffView, HelperFold, HelperState, NoticeLevel, Preview, ShellState, ToolState,
-    args_preview,
+    tool_header,
 };
 use super::{App, HistorySearch, StatusInfo};
 use crate::approval::mode::PermissionMode;
@@ -854,7 +854,7 @@ pub fn block_lines(block: &Block, width: u16) -> Vec<Line<'static>> {
                     diff.as_ref(),
                 ));
             }
-            let header = format!("{indent}{marker} {name}({})", args_preview(args));
+            let header = format!("{indent}{marker} {}", tool_header(name, args));
             let header_w = w.saturating_sub(display_width(&status));
             out.push(Line::from(vec![
                 Span::styled(

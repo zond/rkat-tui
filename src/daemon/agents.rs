@@ -113,15 +113,36 @@ pub fn roster_note(others: &[String]) -> Option<String> {
     ))
 }
 
-/// The note telling an agent that `name` joined (`joined`) or left the
-/// workspace.
+/// Why an agent leaves the workspace, as the others are told.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Leave {
+    /// Its user ran `/quit` (or quit the TUI) as its last client.
+    Quit,
+    /// Another agent's user retired it from `/agents` (`by`: that agent).
+    Retired {
+        /// The agent whose user retired it, when known.
+        by: Option<String>,
+    },
+    /// Its session was closed otherwise (the daemon stopped, it was lost).
+    Closed,
+}
+
+/// The note telling an agent that `name` joined (`None`) or left the
+/// workspace, and why.
 #[must_use]
-pub fn membership_note(name: &str, joined: bool) -> String {
-    if joined {
-        format!("Agent `{name}` joined this workspace; you are wired to it as a peer.")
-    } else {
-        format!("Agent `{name}` left this workspace (its user quit); it takes no more messages.")
-    }
+pub fn membership_note(name: &str, left: Option<&Leave>) -> String {
+    let why = match left {
+        None => {
+            return format!("Agent `{name}` joined this workspace; you are wired to it as a peer.");
+        }
+        Some(Leave::Quit) => "its user quit".to_string(),
+        Some(Leave::Retired { by: Some(by) }) => {
+            format!("the user of `{by}` retired it from /agents")
+        }
+        Some(Leave::Retired { by: None }) => "it was retired from /agents".to_string(),
+        Some(Leave::Closed) => "its session was closed".to_string(),
+    };
+    format!("Agent `{name}` left this workspace ({why}); it takes no more messages.")
 }
 
 /// Why a connection could not be bound to an agent.
@@ -757,7 +778,7 @@ impl Agents {
     /// idle agent is waited for (bounded by [`NOTE_WAIT`]), so the agent
     /// reads it at its next turn; one to a running agent, or one whose
     /// state cannot be read, is left to land when that turn ends.
-    async fn note_others(&self, name: &str, joined: bool) {
+    async fn note_others(&self, name: &str, left: Option<&Leave>) {
         let mut waited = Vec::new();
         for other in self.names() {
             if other == name {
@@ -768,7 +789,7 @@ impl Agents {
             let task = tokio::spawn(append_note(
                 Arc::clone(&self.state),
                 other.clone(),
-                membership_note(name, joined),
+                membership_note(name, left),
                 key,
             ));
             if idle {
@@ -1045,7 +1066,7 @@ impl Agents {
         }
         self.admit(&name, false, false);
         self.rewire(std::slice::from_ref(&name)).await;
-        self.note_others(&name, true).await;
+        self.note_others(&name, None).await;
         self.note_roster(&name).await;
         tracing::info!(agent = %name, %session, "seated an agent");
         Ok(Bound { name, seated: true })
@@ -1093,7 +1114,7 @@ impl Agents {
         };
         tracing::error!(agent = %name, "the agent was lost in a failed switch");
         self.table.lock().remove(name);
-        self.note_others(name, false).await;
+        self.note_others(name, Some(&Leave::Closed)).await;
         true
     }
 
@@ -1122,9 +1143,9 @@ impl Agents {
     /// # Errors
     ///
     /// [`SwitchError`] when the engine refuses the retire.
-    pub async fn retire(&self, name: &str) -> Result<Option<SessionId>, SwitchError> {
+    pub async fn retire(&self, name: &str, why: &Leave) -> Result<Option<SessionId>, SwitchError> {
         let seated = self.seating().await;
-        self.retire_seated(name, &seated).await
+        self.retire_seated(name, why, &seated).await
     }
 
     /// The seating lock: no agent is seated, bound or retired while it is
@@ -1143,6 +1164,7 @@ impl Agents {
     pub async fn retire_seated(
         &self,
         name: &str,
+        why: &Leave,
         _seated: &Seated<'_>,
     ) -> Result<Option<SessionId>, SwitchError> {
         let mob = MobId::from(MOB_ID);
@@ -1160,7 +1182,7 @@ impl Agents {
         if let Some(session) = &session {
             self.engine.forget_session(session);
         }
-        self.note_others(name, false).await;
+        self.note_others(name, Some(why)).await;
         tracing::info!(agent = %name, ?session, "the agent retired");
         Ok(session)
     }
@@ -1370,8 +1392,29 @@ mod tests {
             roster.contains("`main-aaaa`, `main-bbbb`") && roster.contains("wired"),
             "{roster}"
         );
-        assert!(membership_note("main-cccc", true).contains("`main-cccc` joined"));
-        assert!(membership_note("main-cccc", false).contains("`main-cccc` left"));
+        assert!(membership_note("main-cccc", None).contains("`main-cccc` joined"));
+        // Why it left: its user quit only on /quit.
+        let quit = membership_note("main-cccc", Some(&Leave::Quit));
+        assert!(
+            quit.contains("`main-cccc` left") && quit.contains("its user quit"),
+            "{quit}"
+        );
+        let retired = membership_note(
+            "main-cccc",
+            Some(&Leave::Retired {
+                by: Some("main-aaaa".into()),
+            }),
+        );
+        assert!(
+            retired.contains("the user of `main-aaaa` retired it from /agents")
+                && !retired.contains("quit"),
+            "{retired}"
+        );
+        let closed = membership_note("main-cccc", Some(&Leave::Closed));
+        assert!(
+            closed.contains("its session was closed") && !closed.contains("quit"),
+            "{closed}"
+        );
     }
 
     #[test]
