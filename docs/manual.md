@@ -1477,7 +1477,9 @@ Details the table leaves out:
   a stash moves the older one to the prompt history.
 - **Long pastes.** A paste of more than one line, or of one line over 80
   characters, shows in the input as one chip, `[Pasted text #N, C lines]`
-  (`C chars` for one long line), numbered from 1 for the session. The chip
+  (`C chars` for one long line), numbered from 1 for each message (a
+  chip killed or stashed before a send keeps its text, and its number
+  counts on). The chip
   edits as one character: the cursor crosses it in one step, Backspace,
   Delete and the kill keys remove it whole, and undo and yank bring it
   back; text typed around it stays. When the input leaves the editor (a
@@ -1485,7 +1487,10 @@ Details the table leaves out:
   each chip is replaced by its text in place, so the agent, the
   transcript, the prompt history and the unsent-message store get the
   real content. A short one-line paste is inserted as text, and the
-  dialogs' one-line fields take pastes as before.
+  dialogs' one-line fields take pastes as before. A character of
+  Unicode's supplementary private use planes (15 and 16, where the chips
+  live) that comes into the input any other way, typed, pasted short,
+  recalled or restored, becomes U+FFFD.
 - **The external editor** (Ctrl-G) edits a private temporary file in the
   realm directory's `drafts/`; the edited text replaces the input when the
   editor exits successfully (trailing newline dropped; Ctrl-_ restores the

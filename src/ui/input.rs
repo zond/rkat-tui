@@ -8,6 +8,7 @@
 use std::collections::VecDeque;
 
 use super::markdown::{display_width, sanitize};
+use super::paste::{self, Chips};
 
 /// Entries the kill ring keeps (the oldest is dropped beyond this).
 pub const KILL_RING_CAP: usize = 16;
@@ -77,6 +78,9 @@ pub struct InputEditor {
     undo: VecDeque<Snapshot>,
     /// A prompt put aside with Ctrl+S (text and cursor).
     stash: Option<Snapshot>,
+    /// The pasted texts the chips in the text stand for (and in the undo
+    /// states, the stash and the kill ring); see [`super::paste`].
+    chips: Chips,
 }
 
 impl Default for InputEditor {
@@ -95,9 +99,9 @@ fn char_len(line: &str) -> usize {
 
 /// Display columns one char of a stored line takes once sanitized for the
 /// screen (a tab expands, a control char becomes a replacement glyph).
-fn cell_width(ch: char) -> usize {
+fn cell_width(ch: char, chips: &Chips) -> usize {
     // A pasted-text chip is as wide as its label.
-    if let Some(label) = super::paste::label(ch) {
+    if let Some(label) = chips.label(ch) {
         return display_width(&label);
     }
     let mut buf = [0u8; 4];
@@ -126,14 +130,15 @@ pub struct WrapLayout {
 /// zero-width char stays on the row of the char before it. A line of width 0
 /// still takes one row, and a line whose last row is exactly full gets an
 /// empty row after it, where the cursor at its end sits. `width == 0` means
-/// no wrapping (one row per line).
-pub fn wrap_layout(lines: &[String], width: usize) -> WrapLayout {
+/// no wrapping (one row per line). A chip of `chips` is as wide as its
+/// label.
+pub fn wrap_layout(lines: &[String], width: usize, chips: &Chips) -> WrapLayout {
     let limit = if width == 0 { usize::MAX } else { width };
     let mut rows = Vec::with_capacity(lines.len());
     for (line, text) in lines.iter().enumerate() {
         let (mut start, mut used, mut idx) = (0, 0usize, 0);
         for ch in text.chars() {
-            let w = cell_width(ch);
+            let w = cell_width(ch, chips);
             if w > 0 && used > 0 && used.saturating_add(w) > limit {
                 rows.push(VisualRow {
                     line,
@@ -192,7 +197,13 @@ impl WrapLayout {
 
     /// The visual `(row, display column)` of logical `(row, char column)`.
     /// A position at a row boundary belongs to the later row.
-    pub fn to_visual(&self, lines: &[String], row: usize, col: usize) -> (usize, usize) {
+    pub fn to_visual(
+        &self,
+        lines: &[String],
+        chips: &Chips,
+        row: usize,
+        col: usize,
+    ) -> (usize, usize) {
         let mut found = None;
         for (i, r) in self.rows.iter().enumerate() {
             if r.line > row {
@@ -211,7 +222,7 @@ impl WrapLayout {
             .chars()
             .skip(start)
             .take(col.saturating_sub(start))
-            .map(cell_width)
+            .map(|ch| cell_width(ch, chips))
             .sum();
         (i, vcol)
     }
@@ -220,12 +231,18 @@ impl WrapLayout {
     /// last char boundary of the row at or left of `vcol`. Only the last row
     /// of a line can hold the position after its last char (elsewhere that
     /// position is the next row's start). `None` past the last row.
-    pub fn logical_at(&self, lines: &[String], vrow: usize, vcol: usize) -> Option<(usize, usize)> {
+    pub fn logical_at(
+        &self,
+        lines: &[String],
+        chips: &Chips,
+        vrow: usize,
+        vcol: usize,
+    ) -> Option<(usize, usize)> {
         let r = *self.rows.get(vrow)?;
         let text = lines.get(r.line).map_or("", String::as_str);
         let (mut col, mut used) = (r.start, 0usize);
         for ch in text.chars().skip(r.start).take(r.end - r.start) {
-            used += cell_width(ch);
+            used += cell_width(ch, chips);
             if used > vcol {
                 break;
             }
@@ -254,7 +271,36 @@ impl InputEditor {
             last: LastEdit::Other,
             undo: VecDeque::new(),
             stash: None,
+            chips: Chips::default(),
         }
+    }
+
+    /// The pasted texts the input's chips stand for (the renderer draws
+    /// their labels).
+    pub fn chips(&self) -> &Chips {
+        &self.chips
+    }
+
+    /// Keep only the chips something can still bring back (the text, an
+    /// undo state, the stash, a kill to yank), numbered again from 1.
+    fn drop_unused_chips(&mut self) {
+        let Self {
+            lines,
+            undo,
+            stash,
+            kill_ring,
+            draft,
+            chips,
+            ..
+        } = self;
+        chips.retain_in(
+            lines
+                .iter_mut()
+                .chain(undo.iter_mut().flat_map(|s| s.lines.iter_mut()))
+                .chain(stash.iter_mut().flat_map(|s| s.lines.iter_mut()))
+                .chain(kill_ring.iter_mut())
+                .chain(draft.iter_mut()),
+        );
     }
 
     /// Set the columns a visual row holds (0 = do not wrap). The renderer
@@ -265,12 +311,12 @@ impl InputEditor {
 
     /// The current lines wrapped at the wrap width.
     pub fn layout(&self) -> WrapLayout {
-        wrap_layout(&self.lines, self.wrap_width)
+        wrap_layout(&self.lines, self.wrap_width, &self.chips)
     }
 
     /// The cursor's visual `(row, display column)` in `layout`.
     pub fn cursor_visual(&self, layout: &WrapLayout) -> (usize, usize) {
-        layout.to_visual(&self.lines, self.row, self.col)
+        layout.to_visual(&self.lines, &self.chips, self.row, self.col)
     }
 
     /// Replace the recall history (oldest first), leaving the editor's
@@ -304,7 +350,7 @@ impl InputEditor {
     /// Full text joined with `\n`, every pasted-text chip expanded to the
     /// text it stands for ([`super::paste`]).
     pub fn text(&self) -> String {
-        super::paste::expand(&self.raw_text())
+        self.chips.expand(&self.raw_text())
     }
 
     /// Full text joined with `\n`, chips as they are.
@@ -362,7 +408,7 @@ impl InputEditor {
                 .stash
                 .replace(self.snapshot())
                 // It goes to the history: with its chips expanded.
-                .map(|old| super::paste::expand(&old.lines.join("\n")));
+                .map(|old| self.chips.expand(&old.lines.join("\n")));
             self.last = LastEdit::Other;
             self.reset();
             return StashOutcome::Stashed { displaced };
@@ -387,6 +433,7 @@ impl InputEditor {
         self.push_undo();
         self.last = LastEdit::Other;
         self.reset();
+        self.drop_unused_chips();
     }
 
     fn reset(&mut self) {
@@ -397,11 +444,19 @@ impl InputEditor {
         self.draft = None;
     }
 
-    /// Replace the text and put the cursor at the end.
+    /// Replace the text and put the cursor at the end. The text comes from
+    /// outside the editor: a private-use char in it is no chip
+    /// ([`paste::plain`]).
     pub fn set_text(&mut self, text: &str) {
+        self.load(&paste::plain(text));
+    }
+
+    /// Replace the text with `raw` (its chips this editor's own) and put
+    /// the cursor at the end.
+    fn load(&mut self, raw: &str) {
         self.push_undo();
         self.last = LastEdit::Other;
-        self.lines = text.split('\n').map(str::to_string).collect();
+        self.lines = raw.split('\n').map(str::to_string).collect();
         if self.lines.is_empty() {
             self.lines.push(String::new());
         }
@@ -416,13 +471,14 @@ impl InputEditor {
             return;
         };
         let (a, b) = (byte_index(line, start), byte_index(line, end.max(start)));
+        let text = paste::plain(text);
         self.push_undo();
         self.last = LastEdit::Other;
         if let Some(line) = self.lines.get_mut(row) {
-            line.replace_range(a..b, text);
+            line.replace_range(a..b, &text);
         }
         self.row = row;
-        self.col = start + char_len(text);
+        self.col = start + char_len(&text);
     }
 
     /// Add non-blank `text` to the prompt history (unless it is the newest
@@ -434,6 +490,8 @@ impl InputEditor {
     }
 
     /// Take the text for submission: clears the editor and records non-blank text in history.
+    /// The sent text's pasted texts go (the next message's chips count from
+    /// 1 again), but for the ones a kill or the stash can still bring back.
     pub fn take(&mut self) -> String {
         let text = self.text();
         self.remember(&text);
@@ -441,6 +499,7 @@ impl InputEditor {
         self.reset();
         self.last = LastEdit::Other;
         self.undo.clear();
+        self.drop_unused_chips();
         text
     }
 
@@ -455,8 +514,10 @@ impl InputEditor {
         &mut self.lines[self.row]
     }
 
-    /// Insert one character at the cursor (`\n` splits the line).
+    /// Insert one character at the cursor (`\n` splits the line; a
+    /// private-use char is no chip, [`paste::plain_char`]).
     pub fn insert_char(&mut self, ch: char) {
+        let ch = paste::plain_char(ch);
         if ch == '\n' {
             self.newline();
             return;
@@ -481,11 +542,12 @@ impl InputEditor {
         self.col += 1;
     }
 
-    /// Insert text verbatim. `\r\n` and `\r` become newlines.
+    /// Insert text verbatim. `\r\n` and `\r` become newlines; a
+    /// private-use char is no chip ([`paste::plain`]).
     pub fn insert_str(&mut self, text: &str) {
         self.push_undo();
         self.last = LastEdit::Other;
-        let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+        let normalized = paste::plain(text).replace("\r\n", "\n").replace('\r', "\n");
         self.put_str(&normalized);
     }
 
@@ -495,13 +557,14 @@ impl InputEditor {
     /// send; anything shorter is inserted as text.
     pub fn paste(&mut self, text: &str) {
         let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
-        if !super::paste::wants_chip(&normalized) {
+        if !paste::wants_chip(&normalized) {
             self.insert_str(&normalized);
             return;
         }
         self.push_undo();
         self.last = LastEdit::Other;
-        self.put_char(super::paste::chip(&normalized));
+        let chip = self.chips.chip(&normalized);
+        self.put_char(chip);
     }
 
     /// Split the line at the cursor.
@@ -824,7 +887,7 @@ impl InputEditor {
 
     /// Move the cursor to visual row `vrow` at display column `vcol` (clamped).
     fn move_to_visual(&mut self, layout: &WrapLayout, vrow: usize, vcol: usize) {
-        if let Some((row, col)) = layout.logical_at(&self.lines, vrow, vcol) {
+        if let Some((row, col)) = layout.logical_at(&self.lines, &self.chips, vrow, vcol) {
             self.row = row;
             self.col = col;
         }
@@ -873,8 +936,9 @@ impl InputEditor {
             self.set_text(&entry);
         } else {
             self.history_pos = None;
+            // The draft is this editor's own text, chips and all.
             let draft = self.draft.take().unwrap_or_default();
-            self.set_text(&draft);
+            self.load(&draft);
         }
     }
 }
@@ -1209,67 +1273,88 @@ mod tests {
     #[test]
     fn wrap_layout_splits_a_long_line_at_the_width() {
         let ls = lines(&["abcdefghijklmnopqrstuvwxy"]);
-        let layout = wrap_layout(&ls, 10);
+        let layout = wrap_layout(&ls, 10, &Chips::default());
         assert_eq!(spans(&layout), vec![(0, 0, 10), (0, 10, 20), (0, 20, 25)]);
         assert_eq!(
             layout.rows().iter().map(|r| r.width).collect::<Vec<_>>(),
             vec![10, 10, 5]
         );
-        assert_eq!(layout.to_visual(&ls, 0, 25), (2, 5));
-        assert_eq!(layout.to_visual(&ls, 0, 3), (0, 3));
+        assert_eq!(layout.to_visual(&ls, &Chips::default(), 0, 25), (2, 5));
+        assert_eq!(layout.to_visual(&ls, &Chips::default(), 0, 3), (0, 3));
     }
 
     #[test]
     fn wrap_layout_never_splits_a_wide_char() {
         // 4 narrow + 3 wide (2 columns each) = 10 columns at width 5.
         let ls = lines(&["abcd日本語"]);
-        let layout = wrap_layout(&ls, 5);
+        let layout = wrap_layout(&ls, 5, &Chips::default());
         assert_eq!(spans(&layout), vec![(0, 0, 4), (0, 4, 6), (0, 6, 7)]);
         assert!(layout.rows().iter().all(|r| r.width <= 5));
-        assert_eq!(layout.to_visual(&ls, 0, 5), (1, 2));
+        assert_eq!(layout.to_visual(&ls, &Chips::default(), 0, 5), (1, 2));
         // A zero-width joiner stays on the row of the char before it.
         let ls = lines(&["abcde\u{200D}f"]);
-        assert_eq!(spans(&wrap_layout(&ls, 5)), vec![(0, 0, 6), (0, 6, 7)]);
+        assert_eq!(
+            spans(&wrap_layout(&ls, 5, &Chips::default())),
+            vec![(0, 0, 6), (0, 6, 7)]
+        );
     }
 
     #[test]
     fn wrap_layout_gives_an_empty_line_one_row() {
         let ls = lines(&["", "ab", ""]);
-        let layout = wrap_layout(&ls, 10);
+        let layout = wrap_layout(&ls, 10, &Chips::default());
         assert_eq!(spans(&layout), vec![(0, 0, 0), (1, 0, 2), (2, 0, 0)]);
-        assert_eq!(layout.to_visual(&ls, 2, 0), (2, 0));
-        assert_eq!(wrap_layout(&[], 10).len(), 1);
+        assert_eq!(layout.to_visual(&ls, &Chips::default(), 2, 0), (2, 0));
+        assert_eq!(wrap_layout(&[], 10, &Chips::default()).len(), 1);
     }
 
     #[test]
     fn wrap_layout_maps_row_ends_to_the_next_row() {
         let ls = lines(&["abcdefghijklmnopqrstuvwxy"]);
-        let layout = wrap_layout(&ls, 10);
+        let layout = wrap_layout(&ls, 10, &Chips::default());
         // The boundary position belongs to the later row.
-        assert_eq!(layout.to_visual(&ls, 0, 10), (1, 0));
-        assert_eq!(layout.to_visual(&ls, 0, 20), (2, 0));
+        assert_eq!(layout.to_visual(&ls, &Chips::default(), 0, 10), (1, 0));
+        assert_eq!(layout.to_visual(&ls, &Chips::default(), 0, 20), (2, 0));
         // A column past a row's end clamps to its last char, except on the
         // line's last row.
-        assert_eq!(layout.logical_at(&ls, 0, 99), Some((0, 9)));
-        assert_eq!(layout.logical_at(&ls, 2, 99), Some((0, 25)));
-        assert_eq!(layout.logical_at(&ls, 1, 4), Some((0, 14)));
-        assert_eq!(layout.logical_at(&ls, 3, 0), None);
+        assert_eq!(
+            layout.logical_at(&ls, &Chips::default(), 0, 99),
+            Some((0, 9))
+        );
+        assert_eq!(
+            layout.logical_at(&ls, &Chips::default(), 2, 99),
+            Some((0, 25))
+        );
+        assert_eq!(
+            layout.logical_at(&ls, &Chips::default(), 1, 4),
+            Some((0, 14))
+        );
+        assert_eq!(layout.logical_at(&ls, &Chips::default(), 3, 0), None);
     }
 
     #[test]
     fn wrap_layout_puts_the_cursor_after_an_exactly_full_line_on_the_next_row() {
         let ls = lines(&["abcdefghij", "k"]);
-        let layout = wrap_layout(&ls, 10);
+        let layout = wrap_layout(&ls, 10, &Chips::default());
         assert_eq!(spans(&layout), vec![(0, 0, 10), (0, 10, 10), (1, 0, 1)]);
-        assert_eq!(layout.to_visual(&ls, 0, 10), (1, 0));
-        assert_eq!(layout.logical_at(&ls, 1, 0), Some((0, 10)));
-        assert_eq!(layout.logical_at(&ls, 0, 99), Some((0, 9)));
+        assert_eq!(layout.to_visual(&ls, &Chips::default(), 0, 10), (1, 0));
+        assert_eq!(
+            layout.logical_at(&ls, &Chips::default(), 1, 0),
+            Some((0, 10))
+        );
+        assert_eq!(
+            layout.logical_at(&ls, &Chips::default(), 0, 99),
+            Some((0, 9))
+        );
     }
 
     #[test]
     fn wrap_width_zero_does_not_wrap() {
         let ls = lines(&["abcdefghijklmnopqrstuvwxy"]);
-        assert_eq!(spans(&wrap_layout(&ls, 0)), vec![(0, 0, 25)]);
+        assert_eq!(
+            spans(&wrap_layout(&ls, 0, &Chips::default())),
+            vec![(0, 0, 25)]
+        );
     }
 
     #[test]
@@ -1289,5 +1374,82 @@ mod tests {
         e.up();
         e.up();
         assert_eq!(e.text(), "old");
+    }
+
+    /// The chips' label of the input's text.
+    fn shown(e: &InputEditor) -> String {
+        e.chips().shown(&e.raw_text())
+    }
+
+    /// The pasted texts belong to one message: once it is sent the editor
+    /// holds none, and the next message's chips count from 1 again; a
+    /// clear keeps them for undo, a killed chip is kept for its yank.
+    #[test]
+    fn chips_count_per_message_and_go_with_the_sent_text() {
+        let mut e = InputEditor::new();
+        e.paste("a\nb");
+        e.paste("c\nd");
+        assert_eq!(
+            shown(&e),
+            "[Pasted text #1, 2 lines][Pasted text #2, 2 lines]"
+        );
+        assert_eq!(e.take(), "a\nbc\nd");
+        assert!(e.chips().is_empty());
+        e.paste("e\nf");
+        assert_eq!(shown(&e), "[Pasted text #1, 2 lines]");
+        // A clear keeps it for undo.
+        e.clear();
+        assert!(e.undo());
+        assert_eq!(e.text(), "e\nf");
+        // Killed, then sent: kept for the yank, and the next one is #2.
+        e.kill_to_line_start();
+        type_into(&mut e, "x");
+        assert_eq!(e.take(), "x");
+        assert_eq!(e.chips().len(), 1);
+        e.paste("g\nh");
+        e.yank();
+        assert_eq!(
+            shown(&e),
+            "[Pasted text #2, 2 lines][Pasted text #1, 2 lines]"
+        );
+        assert_eq!(e.take(), "g\nhe\nf");
+        // With the kill ring's chip still there, nothing else stays.
+        assert_eq!(e.chips().len(), 1);
+    }
+
+    fn type_into(e: &mut InputEditor, s: &str) {
+        for ch in s.chars() {
+            e.insert_char(ch);
+        }
+    }
+
+    /// A private-use char that comes in any other way than as a chip
+    /// (typed, pasted short, set, recalled from the history) is no chip:
+    /// it neither shows as nor expands to a paste.
+    #[test]
+    fn a_private_use_char_from_outside_is_no_chip() {
+        let mut e = InputEditor::new().with_history(vec!["old \u{F0000}".into()]);
+        e.paste("secret\npaste");
+        // Typed: the char of the chip just made.
+        e.insert_char('\u{F0000}');
+        // Pasted short, and inserted.
+        e.paste("[\u{F0000}]");
+        e.insert_str("\u{100000}");
+        assert_eq!(e.text(), "secret\npaste\u{FFFD}[\u{FFFD}]\u{FFFD}");
+        assert_eq!(shown(&e).matches("Pasted text").count(), 1);
+        // Set (the external editor's result, an unsent message).
+        e.set_text("set \u{F0000}");
+        assert_eq!(e.text(), "set \u{FFFD}");
+        // Recalled from the history.
+        e.clear();
+        e.up();
+        assert_eq!(e.text(), "old \u{FFFD}");
+        // The draft keeps its chip through a recall.
+        let mut e = InputEditor::new().with_history(vec!["old".into()]);
+        e.paste("p\nq");
+        e.up();
+        e.down();
+        assert_eq!(e.text(), "p\nq");
+        assert_eq!(shown(&e), "[Pasted text #1, 2 lines]");
     }
 }

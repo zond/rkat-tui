@@ -1192,6 +1192,14 @@ fn a_long_paste_is_one_chip_that_expands_on_send() {
         app.input.history().last().map(String::as_str),
         Some("see fn a() {}\nfn b() {}\nfn c() {} ok")
     );
+    // The sent text's paste is gone; the next message counts from 1.
+    assert!(app.input.chips().is_empty());
+    app.update(Msg::Paste("x\ny".into()));
+    let rows = screen(&mut app, 12);
+    assert!(
+        rows.iter().any(|r| r.contains("[Pasted text #1, 2 lines]")),
+        "{rows:#?}"
+    );
     // A short one-line paste stays text; one over 80 characters is a chip.
     let mut app = App::new(StatusInfo::default());
     app.update(Msg::Paste("short".into()));

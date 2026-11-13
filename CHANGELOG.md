@@ -31,6 +31,9 @@
   your agent's helpers are unchanged. The approval record now names the
   kind of recipient: an agent of this workspace, your own helper, or
   `<workspace>/<agent>`, an agent of another workspace.
+- A pasted-text chip's number counts per message: `[Pasted text #1, …]`
+  starts at 1 again after a send, and a sent message's pasted texts are
+  no longer kept in memory for the rest of the session.
 - Agents are told not to wake an idle agent nobody is attached to just
   to announce file changes. The daemon's list of the other agents now says whether each one is
   working, idle with a client attached, or idle with no client attached.
@@ -46,6 +49,11 @@
   other agents could be refused, because the engine already held its
   key from the earlier daemon with another text. The agent then missed
   the note. Every note's key is now unique across daemons too.
+- A supplementary private-use character (planes 15 and 16) typed,
+  pasted as short text, recalled from the history, restored as an unsent
+  message or returned by the external editor is no longer taken for a
+  pasted-text chip, which showed as and sent another paste's content; it
+  becomes U+FFFD.
 - The `/unwire` picker stays open after a wire is removed and shows the
   wires that remain, as `/agents` does after a retire. The `/wire`
   picker stays open after a wire too and marks the row wired. Opening

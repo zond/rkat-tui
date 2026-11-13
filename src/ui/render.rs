@@ -467,7 +467,7 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect, now: Instant) {
                 "  "
             };
             let mut spans = vec![Span::styled(prefix, prompt_style)];
-            spans.extend(input_spans(&raw));
+            spans.extend(input_spans(&raw, app.input.chips()));
             Line::from(spans)
         })
         .collect();
@@ -483,14 +483,14 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect, now: Instant) {
 
 /// One visual row of the input as spans: its text sanitized, each
 /// pasted-text chip as its label ([`super::paste`]), set apart.
-fn input_spans(raw: &str) -> Vec<Span<'static>> {
+fn input_spans(raw: &str, chips: &super::paste::Chips) -> Vec<Span<'static>> {
     let chip_style = Style::default()
         .fg(Color::Magenta)
         .add_modifier(Modifier::BOLD);
     let mut spans = Vec::new();
     let mut text = String::new();
     for ch in raw.chars() {
-        match super::paste::label(ch) {
+        match chips.label(ch) {
             Some(label) => {
                 if !text.is_empty() {
                     spans.push(Span::raw(sanitize(&std::mem::take(&mut text))));
