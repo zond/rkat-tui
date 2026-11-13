@@ -315,6 +315,9 @@ pub enum ClassifierVerdict {
         /// What the user sees beside the reason (how the classifier
         /// checked: `[classifier checked 2 files]`), never the agent.
         annotation: Option<String>,
+        /// The path outside the allowed scope the classifier named as why
+        /// (its `PATH:` line), if it named one.
+        path: Option<String>,
     },
 }
 
@@ -653,10 +656,13 @@ impl LlmClassifier {
         };
         tracing::debug!(model = %self.model, tool = input.tool, ?run, "classifier stage 2 mode");
         let verdict = match stage2_or_block(&text) {
-            ClassifierVerdict::Block { rule, reason, .. } => ClassifierVerdict::Block {
+            ClassifierVerdict::Block {
+                rule, reason, path, ..
+            } => ClassifierVerdict::Block {
                 rule,
                 reason,
                 annotation: run.suffix(),
+                path,
             },
             allow @ ClassifierVerdict::Allow { .. } => allow,
         };
@@ -1156,6 +1162,7 @@ mod tests {
             rule: Some("D1".into()),
             reason: "force push".into(),
             annotation: None,
+            path: None,
         };
         assert_eq!(v.to_string(), "BLOCK [D1]: force push");
         assert_eq!(

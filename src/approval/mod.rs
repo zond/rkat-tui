@@ -159,6 +159,9 @@ pub enum DenyReason {
         explanation: String,
         /// How the classifier checked (the user's text only).
         annotation: Option<String>,
+        /// What would allow it, when a path outside the allowed scope is
+        /// why ([`scope_hint`]): for the agent and the user alike.
+        hint: Option<String>,
     },
     /// The human denied it, optionally telling the agent what to do instead.
     Human {
@@ -210,47 +213,73 @@ impl DenyReason {
 impl fmt::Display for DenyReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UserRule { id, rule } => write!(f, "the user's deny rule {id} ({rule}) matches"),
-            Self::Sealed { detail } | Self::Unavailable { detail } => f.write_str(detail),
+            Self::UserRule { id, rule } => write!(
+                f,
+                "denied by the user's deny rule {id} (`{rule}`); only the user can lift it \
+                 (`/permissions` lists and removes rules)"
+            ),
+            Self::Sealed { detail } => write!(
+                f,
+                "denied by rkat-tui's fixed policy, which no rule or answer opens: {detail}"
+            ),
+            Self::Unavailable { detail } => f.write_str(detail),
             Self::Classifier {
                 rule,
                 explanation,
                 annotation,
+                hint,
             } => {
-                f.write_str(explanation)?;
+                write!(f, "{CLASSIFIER_SOURCE}{explanation}")?;
                 if let Some(rule) = rule {
                     write!(f, " [{rule}]")?;
                 }
                 if let Some(annotation) = annotation {
                     write!(f, " {annotation}")?;
                 }
+                if let Some(hint) = hint {
+                    write!(f, ". {hint}")?;
+                }
                 Ok(())
             }
-            Self::Human { comment: None } => f.write_str("the user denied this action"),
+            Self::Human { comment: None } => {
+                f.write_str("the user denied this action in the approval dialog")
+            }
             Self::Human {
                 comment: Some(comment),
             } => write!(f, "denied by the user: {comment}"),
-            Self::Stopped => f.write_str("the user stopped this turn"),
+            Self::Stopped => f.write_str("the user stopped this turn from the approval dialog"),
             Self::PlanMode => f.write_str(PLAN_MODE_DENIAL),
-            Self::ClassifierUnavailable(err) => {
-                write!(f, "the safety classifier is unavailable ({err})")
-            }
-            Self::EscalationTimedOut => {
-                f.write_str("the user did not answer the approval request in time")
-            }
+            Self::ClassifierUnavailable(err) => write!(
+                f,
+                "the safety classifier is unavailable ({err}) and no user could be asked; \
+                 the user can answer such calls once attached, or switch to manual mode"
+            ),
+            Self::EscalationTimedOut => f.write_str(
+                "the user did not answer the approval request in time (or one queued ahead of \
+                 it went unanswered); say in your answer what you wanted to do, so the user can \
+                 ask for it again",
+            ),
             Self::Unattended => f.write_str(UNATTENDED_DENIAL),
         }
     }
 }
 
+/// How a classifier denial starts: its source.
+pub const CLASSIFIER_SOURCE: &str = "the safety classifier blocked it: ";
+
 impl DenyReason {
-    /// The reason as the agent reads it: what was denied and why, without
-    /// the user-facing tags (the classifier's block-rule id and how it
-    /// checked), which the notice and the dialog show.
+    /// The reason as the agent reads it: what was denied, by whom and why,
+    /// without the user-facing tags (the classifier's block-rule id and
+    /// how it checked), which the notice and the dialog show.
     #[must_use]
     pub fn for_model(&self) -> String {
         match self {
-            Self::Classifier { explanation, .. } => explanation.clone(),
+            Self::Classifier {
+                explanation, hint, ..
+            } => match hint {
+                Some(hint) => format!("{CLASSIFIER_SOURCE}{explanation}. {hint}"),
+                None => format!("{CLASSIFIER_SOURCE}{explanation}"),
+            },
             other => other.to_string(),
         }
     }
@@ -276,10 +305,58 @@ pub fn deny_message(reason: &DenyReason) -> String {
              try to achieve the denied action's effect another way."
         );
     }
+    if let DenyReason::Classifier { hint: Some(_), .. } = user_reason {
+        // The way forward is named: the user's grant, or a place inside
+        // the allowed scope.
+        return format!(
+            "Blocked by auto-mode safety policy: {reason}. Tell the user what would allow it, or \
+             take the alternative named; do not try to reach the same place another way \
+             (different tool, rewritten or encoded command, or a script)."
+        );
+    }
     format!(
         "Blocked by auto-mode safety policy: {reason}. Do not try to achieve the same effect \
          another way (different tool, rewritten or encoded command, or a script). Choose a safer \
          approach within the user's request, or stop and ask the user."
+    )
+}
+
+/// What would allow a call the classifier blocked because `path` lies
+/// outside the project and the directories the user allows: the user's
+/// grant of its nearest existing directory (`--confinement-write`, or
+/// `--confinement-read` for a read, or `[confinement]` in the user's own
+/// `tui.toml`), `rule` (an allow rule's exact `/permissions add` line),
+/// and the places inside the allowed scope to use instead (`temp`: the
+/// temp directory the user allows).
+#[must_use]
+pub fn scope_hint(
+    path: &std::path::Path,
+    write: bool,
+    rule: Option<&str>,
+    temp: Option<&std::path::Path>,
+) -> String {
+    let dir = path
+        .ancestors()
+        .find(|dir| dir.is_dir())
+        .unwrap_or(path)
+        .display();
+    let (flag, key) = if write {
+        ("--confinement-write", "extra_write")
+    } else {
+        ("--confinement-read", "extra_read")
+    };
+    let rule = rule.map_or_else(String::new, |rule| {
+        format!(", or allow this one call's kind with `{rule}`")
+    });
+    let temp = temp.map_or_else(String::new, |temp| {
+        format!(" or the temp directory `{}`", temp.display())
+    });
+    format!(
+        "`{}` is outside the project and the directories the user allows. The user can allow \
+         `{dir}` by starting rkat-tui with `{flag} {dir}`, or with `{key} = [\"{dir}\"]` under \
+         `[confinement]` in their own tui.toml (`~/.rkat/tui/tui.toml`) and a daemon restart \
+         (`/daemon stop`){rule}; or use a directory inside the project{temp} instead",
+        path.display()
     )
 }
 
@@ -349,10 +426,12 @@ mod tests {
             rule: Some("T3".into()),
             explanation: "force push rewrites shared history".into(),
             annotation: Some("[classifier checked 0 files]".into()),
+            hint: None,
         };
         let msg = deny_message(&reason);
         assert!(msg.starts_with(
-            "Blocked by auto-mode safety policy: force push rewrites shared history. Do not try"
+            "Blocked by auto-mode safety policy: the safety classifier blocked it: force push \
+             rewrites shared history. Do not try"
         ));
         assert!(msg.ends_with("or stop and ask the user."));
         // The tags are the user's: in the notice, never in the model's text.
@@ -362,8 +441,113 @@ mod tests {
         );
         assert_eq!(
             reason.to_string(),
-            "force push rewrites shared history [T3] [classifier checked 0 files]"
+            "the safety classifier blocked it: force push rewrites shared history [T3] \
+             [classifier checked 0 files]"
         );
+    }
+
+    /// Every denial says who denied it, for the agent and the user alike,
+    /// and what the agent can do next.
+    #[test]
+    fn every_denial_names_its_source() {
+        let cases = [
+            (
+                DenyReason::UserRule {
+                    id: RuleId {
+                        kind: rules::RuleKind::Deny,
+                        serial: 3,
+                    },
+                    rule: "shell git push*".into(),
+                },
+                "the user's deny rule deny#3 (`shell git push*`)",
+            ),
+            (DenyReason::PlanMode, "plan mode is on"),
+            (
+                DenyReason::Human { comment: None },
+                "the user denied this action in the approval dialog",
+            ),
+            (
+                DenyReason::Human {
+                    comment: Some("use b.txt".into()),
+                },
+                "denied by the user: use b.txt",
+            ),
+            (DenyReason::Stopped, "the user stopped this turn"),
+            (
+                DenyReason::EscalationTimedOut,
+                "the user did not answer the approval request in time",
+            ),
+            (DenyReason::Unattended, "needs a user attached"),
+            (
+                DenyReason::ClassifierUnavailable("timed out".into()),
+                "the safety classifier is unavailable (timed out) and no user could be asked",
+            ),
+            (
+                DenyReason::Sealed {
+                    detail: "`.git/x` is sealed".into(),
+                },
+                "rkat-tui's fixed policy",
+            ),
+            (
+                DenyReason::Classifier {
+                    rule: None,
+                    explanation: "x".into(),
+                    annotation: None,
+                    hint: None,
+                },
+                CLASSIFIER_SOURCE,
+            ),
+        ];
+        for (reason, source) in cases {
+            let model = deny_message(&reason);
+            assert!(model.contains(source), "{model}");
+            assert!(reason.to_string().contains(source), "{reason}");
+        }
+    }
+
+    /// A denial whose reason is a path outside the allowed scope names the
+    /// path, the user's exact ways to allow it, and the places to use
+    /// instead; the agent is told to relay it or take the alternative.
+    #[test]
+    fn a_scope_denial_says_how_to_allow_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("pnpm/store");
+        std::fs::create_dir_all(&store).unwrap();
+        let target = store.join("v3/files/ab");
+        let hint = scope_hint(
+            &target,
+            true,
+            Some("/permissions add allow shell pnpm install"),
+            Some(std::path::Path::new("/tmp")),
+        );
+        let store = store.display();
+        for part in [
+            format!("`{}` is outside the project", target.display()),
+            format!("`--confinement-write {store}`"),
+            format!("`extra_write = [\"{store}\"]` under `[confinement]`"),
+            "`/permissions add allow shell pnpm install`".to_string(),
+            "a directory inside the project or the temp directory `/tmp`".to_string(),
+        ] {
+            assert!(hint.contains(&part), "{part}: {hint}");
+        }
+        let read = scope_hint(&target, false, None, None);
+        assert!(
+            read.contains("--confinement-read") && read.contains("extra_read"),
+            "{read}"
+        );
+        let reason = DenyReason::Classifier {
+            rule: Some("T3".into()),
+            explanation: "pnpm writes its store outside the project".into(),
+            annotation: None,
+            hint: Some(hint.clone()),
+        };
+        let model = deny_message(&reason);
+        assert!(model.contains(&hint), "{model}");
+        assert!(
+            model.contains("Tell the user what would allow it"),
+            "{model}"
+        );
+        assert!(reason.to_string().contains(&hint));
     }
 
     #[test]
@@ -372,6 +556,7 @@ mod tests {
             rule: Some("D1".into()),
             explanation: "x".into(),
             annotation: None,
+            hint: None,
         };
         assert_eq!(classifier.decider(), Decider::Classifier);
         assert_eq!(classifier.rule_label().as_deref(), Some("D1"));

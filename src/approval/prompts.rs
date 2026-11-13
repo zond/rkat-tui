@@ -208,10 +208,13 @@ request agent-invented or agent-authored (only files listed in \
 \"Not covered by what the user asked for in this session; ask the user to \
 confirm before doing it.\"
 
-Then end your answer with exactly these three lines:
+Then end your answer with exactly these four lines:
 VERDICT: ALLOW or BLOCK
 RULE: the id of the block rule that applies, or NONE
-REASON: one sentence explaining the verdict, addressed to the agent";
+PATH: when you block because the action writes or reads a path outside the \
+project root and the directories the user allows, that path (absolute); otherwise NONE
+REASON: one sentence explaining the verdict, addressed to the agent, naming that \
+path when it is why";
 
 /// Stage-2 instruction prepended to [`STAGE2_INSTRUCTIONS`] when the
 /// read-only project tools are available.
@@ -515,6 +518,9 @@ pub enum Stage2Verdict {
     Block {
         /// Rule id, `None` for `NONE`.
         rule: Option<String>,
+        /// The path outside the allowed scope that is why, `None` for
+        /// `NONE` or no `PATH:` line.
+        path: Option<String>,
         /// Stated reason.
         reason: String,
     },
@@ -524,16 +530,18 @@ impl From<Stage2Verdict> for ClassifierVerdict {
     fn from(v: Stage2Verdict) -> Self {
         match v {
             Stage2Verdict::Allow { reason } => Self::Allow { reason },
-            Stage2Verdict::Block { rule, reason } => Self::Block {
+            Stage2Verdict::Block { rule, path, reason } => Self::Block {
                 rule,
                 reason,
                 annotation: None,
+                path,
             },
         }
     }
 }
 
-/// Parse a stage-2 response: the **last** `VERDICT:`, `RULE:` and `REASON:` lines win.
+/// Parse a stage-2 response: the **last** `VERDICT:`, `RULE:`, `PATH:` and
+/// `REASON:` lines win (an answer without a `PATH:` line names no path).
 ///
 /// # Errors
 ///
@@ -541,6 +549,7 @@ impl From<Stage2Verdict> for ClassifierVerdict {
 pub fn parse_stage2(text: &str) -> Result<Stage2Verdict, ClassifierError> {
     let mut verdict = None;
     let mut rule = None;
+    let mut path = None;
     let mut reason = None;
     for line in text.lines() {
         let line = line.trim().trim_start_matches(['*', '-', '#', ' ']);
@@ -554,6 +563,8 @@ pub fn parse_stage2(text: &str) -> Result<Stage2Verdict, ClassifierError> {
             verdict = Some(v);
         } else if let Some(r) = field("RULE:") {
             rule = Some(r);
+        } else if let Some(p) = field("PATH:") {
+            path = Some(p);
         } else if let Some(r) = field("REASON:") {
             reason = Some(r);
         }
@@ -571,6 +582,9 @@ pub fn parse_stage2(text: &str) -> Result<Stage2Verdict, ClassifierError> {
         "ALLOW" => Ok(Stage2Verdict::Allow { reason }),
         "BLOCK" => Ok(Stage2Verdict::Block {
             rule: rule.filter(|r| !r.is_empty() && !r.eq_ignore_ascii_case("none")),
+            path: path
+                .map(|p| p.trim_matches('`').to_string())
+                .filter(|p| !p.is_empty() && !p.eq_ignore_ascii_case("none")),
             reason,
         }),
         _ => Err(ClassifierError::Unparseable(snippet(text))),
@@ -584,6 +598,7 @@ pub fn stage2_or_block(text: &str) -> ClassifierVerdict {
             rule: None,
             reason: "the safety classifier could not reach a clear verdict".to_string(),
             annotation: None,
+            path: None,
         },
         ClassifierVerdict::from,
     )
@@ -647,6 +662,7 @@ mod tests {
             v,
             Stage2Verdict::Block {
                 rule: Some("D2".into()),
+                path: None,
                 reason: "Force push rewrites shared history.".into()
             }
         );
@@ -662,9 +678,25 @@ mod tests {
             v,
             Stage2Verdict::Block {
                 rule: None,
+                path: None,
                 reason: "no reason given".into()
             }
         );
+        // The path outside the allowed scope, when the answer names one.
+        let v = parse_stage2(
+            "VERDICT: BLOCK\nRULE: T3\nPATH: `/home/u/.local/share/pnpm/store`\nREASON: pnpm writes its store at /home/u/.local/share/pnpm/store.",
+        )
+        .unwrap();
+        assert_eq!(
+            v,
+            Stage2Verdict::Block {
+                rule: Some("T3".into()),
+                path: Some("/home/u/.local/share/pnpm/store".into()),
+                reason: "pnpm writes its store at /home/u/.local/share/pnpm/store.".into()
+            }
+        );
+        let v = parse_stage2("VERDICT: BLOCK\nRULE: D2\nPATH: NONE\nREASON: x").unwrap();
+        assert!(matches!(v, Stage2Verdict::Block { path: None, .. }));
         // Last verdict wins (the model may quote the format first).
         let v = parse_stage2("VERDICT: ALLOW or BLOCK\n...\nVERDICT: BLOCK\nREASON: x").unwrap();
         assert!(matches!(v, Stage2Verdict::Block { .. }));

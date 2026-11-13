@@ -88,6 +88,7 @@ async fn a_delegated_helper_runs_behind_the_sessions_gate() {
         rule: Some("D1".into()),
         reason: "touches files outside the project".into(),
         annotation: None,
+        path: None,
     })]);
     let llm = ScriptedLlmClient::new(vec![
         delegate(
@@ -130,7 +131,7 @@ async fn a_delegated_helper_runs_behind_the_sessions_gate() {
     assert!(
         denied
             .text_content()
-            .contains("Blocked by auto-mode safety policy: touches files outside the project"),
+            .contains("Blocked by auto-mode safety policy: the safety classifier blocked it: touches files outside the project"),
         "{}",
         denied.text_content()
     );

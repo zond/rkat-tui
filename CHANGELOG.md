@@ -133,6 +133,16 @@
   (it was refused as redundant): the sandbox stays as it is and the gate
   trusts the directory. The sandbox's own defaults are not trusted this
   way; the classifier is only told of them.
+- Every denial the agent receives says who denied it (a deny rule by id
+  and pattern, the fixed policy, plan mode, you in the dialog, an
+  unanswered dialog, an unattended turn, an unavailable classifier, or
+  the classifier with its reason), and the notice shows the same. When a
+  path outside the project and your allowed directories is why, the
+  denial names the path and how you can allow it
+  (`--confinement-write <dir>`, `[confinement] extra_write` in your own
+  `tui.toml`, or an allow rule's exact `/permissions add` line) and what
+  the agent can use instead (a directory in the project, the temp
+  directory). The classifier's answer gains a `PATH:` line for this.
 - The engine is Meerkat 0.9.14 from crates.io (was 0.9.13). What it
   changes for rkat-tui: a conversation moved between two OpenAI-family
   endpoints (the OpenAI API, a self-hosted or LiteLLM server in

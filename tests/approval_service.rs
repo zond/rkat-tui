@@ -78,6 +78,7 @@ async fn a_classifier_block_reaches_the_model_and_the_run_continues() {
         rule: Some("D1".into()),
         reason: "touches files outside the project".into(),
         annotation: Some("[classifier checked 0 files]".into()),
+        path: None,
     })]);
     let llm = ScriptedLlmClient::new(vec![
         Step::Tool {
@@ -122,7 +123,7 @@ async fn a_classifier_block_reaches_the_model_and_the_run_continues() {
     let text = result.text_content();
     assert!(text.contains("policy_denied"), "{text}");
     assert!(
-        text.contains("Blocked by auto-mode safety policy: touches files outside the project."),
+        text.contains("Blocked by auto-mode safety policy: the safety classifier blocked it: touches files outside the project."),
         "{text}"
     );
     // The rule tag and how the classifier checked are the user's: the
@@ -352,6 +353,7 @@ async fn a_resumed_session_reseeds_the_classifier_transcript() {
         rule: None,
         reason: "no".into(),
         annotation: None,
+        path: None,
     })]);
     let second = ScriptedLlmClient::new(vec![
         Step::Tool {

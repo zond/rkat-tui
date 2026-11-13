@@ -202,7 +202,24 @@ rules are a convenience; the classifier and the sandbox are what contain an
 action.
 
 A denial is an ordinary tool result (`policy_denied` with the reason); the
-model reads it and the run continues.
+model reads it and the run continues. Every denial says who denied it: a
+deny rule (by its id and pattern, which only you can lift with
+`/permissions`), rkat-tui's fixed policy (a sealed path), plan mode, you
+in the approval dialog (with your instruction when you gave one), the
+dialog going unanswered, an unattended turn, the classifier being
+unavailable, or the classifier with its reason. The classifier is asked
+to name the path outside the project and your allowed directories when
+that is why it blocks (a `PATH:` line besides its verdict, rule and
+reason); when a path is why (a file tool's own target, or the path the
+classifier named for a command), the denial names it and the exact ways
+you can allow it, `--confinement-write <dir>` (`--confinement-read` for
+a read), `extra_write = ["<dir>"]` under `[confinement]` in your own
+`~/.rkat/tui/tui.toml` followed by a daemon restart, or an allow rule
+`/permissions add allow <tool> <pattern>`, and the places the agent can
+use instead (a directory inside the project, or the temp directory when
+it is allowed). The agent is told to relay that to you or take the
+alternative, not to reach the same place another way. The notice under
+the tool block shows the same text.
 
 The classifier is a separate LLM call on the start-up endpoint. It is given
 the user's messages and the agent's prior tool calls, never the agent's

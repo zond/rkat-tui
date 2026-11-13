@@ -8237,3 +8237,37 @@ protected paths, the link, the baseline directory),
 `an_edit_in_a_named_directory_runs_like_a_project_edit` (no classifier
 call, plan and manual mode), `extra_grants_are_validated_and_take_precedence`
 and `naming_the_temp_directory_is_accepted_confined_or_not`.
+
+## Denials say who denied and what would allow it (2026-11-13)
+
+From real use: an agent denied a write to a package manager's store, a
+redirect into the temp directory, or a test suite's temp files could not
+tell whether the classifier or the sandbox refused, nor what the user
+could grant. Every `DenyReason` now starts with its source (the user's
+deny rule by id and pattern, rkat-tui's fixed policy, plan mode, the user
+in the dialog, an unanswered dialog, an unattended turn, an unavailable
+classifier, `CLASSIFIER_SOURCE` for the classifier), in the agent's text
+and the user's notice alike (the Decision event carries the same
+`Display`). Texts tests matched before (`denied by the user: …`, `the
+user did not answer the approval request in time`) keep their words. The
+classifier's stage-2 format gains a `PATH:` line (the path outside the
+project and the allowed directories that is why, or `NONE`); it parses
+into `ClassifierVerdict::Block::path`, an answer without it names none,
+and the audit log's record is unchanged in shape (its `reason` is the
+same string field, now longer). When a path is why, a file tool's own
+target outside the project and the user's directories, or the path the
+classifier named, `engine::scope_hint` adds the path, its nearest
+existing directory as `--confinement-write <dir>` (`--confinement-read`
+for a read) or `[confinement] extra_write` in the user's own `tui.toml`
+with a daemon restart, the exact `/permissions add allow <tool>
+<subject>` line, and the alternatives (a directory inside the project;
+the temp directory when it is allowed); the agent is told to relay it or
+take the alternative. The cases from use: a redirect into the temp
+directory and a test suite's temp files now meet the temp directory in
+the classifier's allowed list (previous entry); `cargo info` writing
+Cargo's registry cache meets the Cargo home's `registry/` there too
+(planned with `--no-confinement` as well); `pnpm install` writing its
+store gets the store's path and the grant to ask for. Pinned by
+`every_denial_names_its_source`, `a_scope_denial_says_how_to_allow_it`,
+`a_scope_denial_names_the_path_and_how_to_allow_it` and the `PATH:`
+cases of `stage2_parsing`.
