@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use common::{ScriptedLlmClient, Step, Workspace, args_for, args_with, no_lists, user_texts};
-use meerkat_core::Message;
 use rig::{Client, Restarted, Running};
 use rkat_tui::bootstrap::realm_home;
 use rkat_tui::daemon::protocol::AgentChoice;
@@ -112,20 +111,6 @@ async fn notice(client: &mut Client, level: NoticeLevel, text: &str) -> String {
     }
 }
 
-/// The text of tool result `id` in `messages`.
-fn tool_result(messages: &[Message], id: &str) -> String {
-    messages
-        .iter()
-        .find_map(|message| match message {
-            Message::ToolResults { results, .. } => results
-                .iter()
-                .find(|result| result.tool_use_id == id)
-                .map(meerkat_core::ToolResult::text_content),
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("no result {id}"))
-}
-
 /// The push, the primary form: with an idle daemon on the realm, `/rehome
 /// <directory>` stops it, moves the realm, starts the daemon in the new
 /// directory and the same client reattaches to the same conversation,
@@ -183,7 +168,7 @@ async fn a_push_moves_the_session_to_the_new_workspace_without_a_restart() {
     issuer.send(Effect::StartTurn("where are you".into()));
     assert_eq!(issuer.turn_finished().await.unwrap().text, "after");
     let requests = llm.requests();
-    let pwd = tool_result(requests.last().unwrap(), "p1");
+    let pwd = common::tool_text(requests.last().unwrap(), "p1");
     assert!(pwd.contains(&new.display().to_string()), "{pwd}");
     assert_eq!(
         std::fs::read_to_string(new.join("marker.txt")).unwrap(),
@@ -432,12 +417,7 @@ async fn a_pull_stops_the_idle_daemon_of_the_adopted_realm() {
         .kill_on_drop(true)
         .spawn()
         .unwrap();
-    common::within(async {
-        while !file(&ws.root).exists() {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-    })
-    .await;
+    common::until(|| file(&ws.root).exists()).await;
     let llm = ScriptedLlmClient::new(vec![]);
     let copy = ws.sibling("copy");
     common::copy_tree(&ws.root, &copy);

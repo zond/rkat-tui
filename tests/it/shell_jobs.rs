@@ -10,25 +10,10 @@ use crate::common;
 use crate::rig;
 
 use common::{ScriptedLlmClient, Step, Workspace};
-use meerkat_core::Message;
 use rig::Attached;
 use rkat_tui::approval::policy::{BACKGROUND_SHELL_UNAVAILABLE, SHELL_JOB_TOOLS};
 use rkat_tui::ui::Effect;
 use serde_json::json;
-
-/// The text of the tool result for call `id` in `messages`.
-fn tool_result(messages: &[Message], id: &str) -> String {
-    messages
-        .iter()
-        .find_map(|m| match m {
-            Message::ToolResults { results, .. } => results
-                .iter()
-                .find(|r| r.tool_use_id == id)
-                .map(|r| r.text_content()),
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("no result for {id}"))
-}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_background_shell_is_refused_and_the_job_tools_are_withheld() {
@@ -69,7 +54,7 @@ async fn a_background_shell_is_refused_and_the_job_tools_are_withheld() {
     // lost the shell's background mode (the engine ask in the evidence;
     // when this changes, the gate's own refusal below applies to the agent
     // too). Nothing ran.
-    let refused = tool_result(&seen[1].messages, "bg");
+    let refused = common::tool_text(&seen[1].messages, "bg");
     assert!(
         refused.contains("requested tool execution mode Detached is not supported"),
         "{refused}"
@@ -113,7 +98,7 @@ async fn a_helpers_background_shell_is_refused_by_the_gate() {
         assert!(!seen[1].tools.iter().any(|t| t == tool), "{tool} offered");
     }
     let refused: serde_json::Value =
-        serde_json::from_str(&tool_result(&seen[2].messages, "bg")).unwrap();
+        serde_json::from_str(&common::tool_text(&seen[2].messages, "bg")).unwrap();
     assert_eq!(refused["error"], "policy_denied", "{refused}");
     assert_eq!(
         refused["data"]["message"],

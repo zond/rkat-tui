@@ -120,12 +120,7 @@ async fn a_mob_restored_by_a_later_daemon_is_destroyed_with_its_database() {
     rig.send(Effect::StartTurn("make".into()));
     assert_eq!(rig.turn_finished().await.unwrap().text, "made");
     // The member's first turn ended before the daemon stops.
-    common::within(async {
-        while !llm.recorded().iter().any(|r| r.user().contains("hello")) {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    })
-    .await;
+    common::until(|| llm.recorded().iter().any(|r| r.user().contains("hello"))).await;
     rig.quit().await;
     assert!(database(&ws).exists());
 

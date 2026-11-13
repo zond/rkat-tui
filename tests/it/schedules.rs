@@ -21,20 +21,6 @@ use rkat_tui::daemon::protocol::{AgentChoice, ScheduleOp};
 use rkat_tui::ui::{Departure, Effect, Msg};
 use serde_json::json;
 
-/// The text of the tool result for call `id` in `messages`.
-fn tool_result(messages: &[Message], id: &str) -> String {
-    messages
-        .iter()
-        .find_map(|m| match m {
-            Message::ToolResults { results, .. } => results
-                .iter()
-                .find(|r| r.tool_use_id == id)
-                .map(meerkat_core::types::ToolResult::text_content),
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("no result for {id}"))
-}
-
 /// The arguments of a one-shot schedule `name`, due `in_secs` from now, on
 /// the agent's own session with `prompt`.
 pub fn once(name: &str, in_secs: i64, prompt: &str) -> serde_json::Value {
@@ -121,7 +107,7 @@ async fn a_schedule_the_agent_creates_fires_its_turn() {
     rig.send(Effect::StartTurn("remind me".into()));
     let outcome = rig.turn_finished().await;
     assert_eq!(outcome.unwrap().text, "scheduled");
-    let created = tool_result(&llm.requests()[1], "s1");
+    let created = common::tool_text(&llm.requests()[1], "s1");
     assert!(created.contains("schedule_id"), "{created}");
     // Fired: the prompt, labelled with the schedule, and the turn.
     let fired = rig.wait_for(|m| fired_by(m, "check-build")).await;
@@ -330,7 +316,7 @@ async fn a_fired_schedule_is_unattended_while_nobody_is_attached() {
             .count()
     };
     assert_eq!(curls(), 0, "the unattended curl was not reviewed");
-    let result = tool_result(&llm.requests()[3], "a1");
+    let result = common::tool_text(&llm.requests()[3], "a1");
     assert!(result.contains("needs a user attached"), "{result}");
     // A client attaches before fetch-b: it is shown what was denied, and
     // fetch-b's curl is reviewed. fetch-a's run ends first.
@@ -360,7 +346,7 @@ async fn a_fired_schedule_is_unattended_while_nobody_is_attached() {
     b.wait_for(|m| fired_by(m, "fetch-b")).await;
     assert_eq!(b.turn_finished().await.unwrap().text, "fetched b");
     assert_eq!(curls(), 1, "attached, the fired run's curl was reviewed");
-    let result = tool_result(&llm.requests()[7], "b1");
+    let result = common::tool_text(&llm.requests()[7], "b1");
     assert!(!result.contains("needs a user attached"), "{result}");
     b.quit().await;
     daemon.stop().await;
@@ -412,12 +398,7 @@ async fn a_retiring_agent_s_schedules_are_deleted_and_never_fire() {
     b.quit().await;
     // Past the due time (a deadline, not a margin), the other agent's
     // turn is the next model call.
-    common::within(async {
-        while chrono::Utc::now() < due + chrono::Duration::seconds(2) {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-    })
-    .await;
+    common::until(|| chrono::Utc::now() >= due + chrono::Duration::seconds(2)).await;
     a.send(Effect::StartTurn("sentinel".into()));
     assert_eq!(a.turn_finished().await.unwrap().text, "sentinel");
     let prompts: Vec<String> = llm
@@ -486,7 +467,7 @@ fn usage_record(root: &std::path::Path, id: &str) -> std::path::PathBuf {
 
 /// The id of the schedule the call `s1` in `messages` created.
 fn created_id(messages: &[Message]) -> String {
-    let result = tool_result(messages, "s1");
+    let result = common::tool_text(messages, "s1");
     let created: serde_json::Value =
         serde_json::from_str(&result).unwrap_or_else(|err| panic!("{err}: {result}"));
     created["schedule_id"]
@@ -498,12 +479,7 @@ fn created_id(messages: &[Message]) -> String {
 
 /// Wait until `path` exists or not, as `present` says.
 async fn file_is(path: &std::path::Path, present: bool) {
-    common::within(async {
-        while path.exists() != present {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-    })
-    .await;
+    common::until(|| path.exists() == present).await;
 }
 
 /// A schedule the agent deletes with its own `meerkat_schedule_delete`
@@ -541,7 +517,7 @@ async fn a_schedule_the_agent_deletes_itself_loses_its_usage_record() {
     file_is(&record, true).await;
     rig.send(Effect::StartTurn("delete it".into()));
     assert_eq!(rig.turn_finished().await.unwrap().text, "deleted");
-    let deleted = tool_result(&llm.requests()[4], "d1");
+    let deleted = common::tool_text(&llm.requests()[4], "d1");
     assert!(!deleted.to_lowercase().contains("error"), "{deleted}");
     file_is(&record, false).await;
     rig.quit().await;

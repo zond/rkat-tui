@@ -10,7 +10,6 @@ use crate::common;
 use crate::rig;
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use common::{ScriptedLlmClient, Step, Workspace, within};
 use meerkat_core::{Message, StreamScopeFrame};
@@ -118,17 +117,10 @@ async fn a_two_member_council_completes_with_its_participants_as_helpers() {
     let _ = rig.turn_finished().await;
 
     // The council's end reaches the agent, and it did not fail.
-    let notice = within(async {
-        loop {
-            if let Some(notice) = llm
-                .recorded()
-                .iter()
-                .find_map(|r| job_notice(&r.messages, "council"))
-            {
-                return notice;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+    let notice = common::poll(async || {
+        llm.recorded()
+            .iter()
+            .find_map(|r| job_notice(&r.messages, "council"))
     })
     .await;
     assert!(!notice.contains("(failed)"), "{notice}");

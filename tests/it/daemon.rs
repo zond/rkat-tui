@@ -572,41 +572,8 @@ async fn the_agent_has_the_tui_file_tools() {
 }
 
 /// Why this host cannot run a confined launch over `workspace`.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn sandbox_unavailable(workspace: &Path) -> Option<String> {
-    use rkat_tui::bootstrap::confinement::lower;
-    use rkat_tui::cli::ConfinementArg;
-    let requirement = match lower(ConfinementArg::Workspace, workspace, &HostPaths::detect()) {
-        Ok(Some(requirement)) => requirement,
-        Ok(None) => return None,
-        Err(err) => return Some(format!("the requirement is invalid: {err}")),
-    };
-    let launch = match meerkat_sandbox::ProcessLaunchSpec::new(
-        "/bin/true".into(),
-        Vec::new(),
-        workspace.to_path_buf(),
-        std::collections::BTreeMap::new(),
-    ) {
-        Ok(launch) => launch,
-        Err(refusal) => return Some(format!("the probe launch is invalid: {refusal}")),
-    };
-    let prepared = match meerkat_sandbox::prepare(&requirement, launch) {
-        Ok(prepared) => prepared,
-        Err(refusal) => return Some(format!("the backend refuses the requirement: {refusal}")),
-    };
-    match prepared.spawn() {
-        Ok(mut child) => match child.wait().await {
-            Ok(status) if status.success() => None,
-            Ok(status) => Some(format!("a confined /bin/true exited with {status}")),
-            Err(err) => Some(format!("a confined launch cannot be awaited: {err}")),
-        },
-        Err(err) => Some(format!("a confined launch cannot start: {err}")),
-    }
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-async fn sandbox_unavailable(_workspace: &Path) -> Option<String> {
-    Some("this platform has no sandbox backend".to_string())
+    common::sandbox_unavailable(workspace, rkat_tui::cli::ConfinementArg::Workspace).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

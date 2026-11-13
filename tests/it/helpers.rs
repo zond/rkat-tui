@@ -12,7 +12,7 @@ use crate::rig;
 use std::sync::Arc;
 use std::time::Instant;
 
-use common::{MODEL, ScriptedLlmClient, Step, Workspace, within};
+use common::{MODEL, ScriptedLlmClient, Step, Workspace};
 use meerkat_core::{AgentEvent, Message, StreamScopeFrame};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -172,17 +172,12 @@ async fn esc_during_a_helper_stops_the_agent_and_the_helper() {
     // The daemon retired the helper with its parent's run.
     let connection = daemon.connect().await;
     let mob = format!("implicit-{}", daemon.session);
-    within(async {
-        loop {
-            let members = connection
-                .call("mob/members", json!({"mob_id": mob}))
-                .await
-                .unwrap();
-            if members["members"].as_array().is_some_and(Vec::is_empty) {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
+    common::until_async(async || {
+        let members = connection
+            .call("mob/members", json!({"mob_id": mob}))
+            .await
+            .unwrap();
+        members["members"].as_array().is_some_and(Vec::is_empty)
     })
     .await;
     // The agent serves the next prompt.
@@ -264,12 +259,7 @@ async fn members(connection: &Connection, mob: &str) -> Vec<String> {
 
 /// Wait until `mob` lists no member.
 async fn until_empty(connection: &Connection, mob: &str) {
-    within(async {
-        while !members(connection, mob).await.is_empty() {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-    })
-    .await;
+    common::until_async(async || members(connection, mob).await.is_empty()).await;
 }
 
 /// The realm config of `ws` with `delegate`'s tool timeout at 3 s.

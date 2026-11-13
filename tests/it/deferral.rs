@@ -21,20 +21,6 @@ use rkat_tui::daemon::protocol::AgentChoice;
 use rkat_tui::ui::{Effect, Msg};
 use serde_json::json;
 
-/// The text of the tool result for call `id` in `messages`.
-fn tool_result(messages: &[Message], id: &str) -> String {
-    messages
-        .iter()
-        .find_map(|m| match m {
-            Message::ToolResults { results, .. } => results
-                .iter()
-                .find(|r| r.tool_use_id == id)
-                .map(meerkat_core::types::ToolResult::text_content),
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("no result for {id}"))
-}
-
 /// The agent's call creating a one-shot schedule `name` on its own
 /// session, due `in_secs` after the call is made.
 fn create_at_call(
@@ -119,7 +105,7 @@ async fn a_search_reveals_its_matches_and_the_schedule_fires() {
         "{:?}",
         first.tools
     );
-    let found = tool_result(&recorded[1].messages, "q1");
+    let found = common::tool_text(&recorded[1].messages, "q1");
     assert!(found.contains("meerkat_schedule_create"), "{found}");
     assert!(!found.contains("meerkat_schedule_list"), "{found}");
     assert_eq!(
@@ -140,7 +126,7 @@ async fn a_search_reveals_its_matches_and_the_schedule_fires() {
         "one revealed tool: +{} bytes",
         common::tool_def_bytes(create)
     );
-    let created = tool_result(&recorded[2].messages, "s1");
+    let created = common::tool_text(&recorded[2].messages, "s1");
     assert!(created.contains("schedule_id"), "{created}");
     rig.wait_for(|m| matches!(m, Msg::Triggered { label, .. } if label == "scheduled: check"))
         .await;
@@ -154,7 +140,7 @@ async fn a_search_reveals_its_matches_and_the_schedule_fires() {
     rig.send(Effect::StartTurn("plan a team".into()));
     assert_eq!(rig.turn_finished().await.unwrap().text, "planned");
     let recorded = llm.recorded();
-    let found = tool_result(&recorded[5].messages, "q2");
+    let found = common::tool_text(&recorded[5].messages, "q2");
     assert!(
         found.contains("council") && !found.contains("delegate"),
         "{found}"
@@ -293,7 +279,7 @@ async fn a_guessed_hidden_tool_is_not_found_until_searched() {
     rig.send(Effect::StartTurn("list my schedules".into()));
     assert_eq!(rig.turn_finished().await.unwrap().text, "listed");
     let recorded = llm.recorded();
-    let guessed = tool_result(&recorded[1].messages, "g1");
+    let guessed = common::tool_text(&recorded[1].messages, "g1");
     assert!(guessed.contains("not found"), "{guessed}");
     assert!(hidden_in(&rig.daemon, &recorded[1]).is_empty());
     let search = recorded[0]
@@ -310,7 +296,7 @@ async fn a_guessed_hidden_tool_is_not_found_until_searched() {
         hidden_in(&rig.daemon, &recorded[2]),
         ["meerkat_schedule_list"]
     );
-    let listed = tool_result(&recorded[3].messages, "l1");
+    let listed = common::tool_text(&recorded[3].messages, "l1");
     assert!(!listed.contains("not found"), "{listed}");
     assert_eq!(rig.escalations(), 0);
     rig.quit().await;

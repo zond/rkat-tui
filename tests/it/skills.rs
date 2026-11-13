@@ -16,27 +16,12 @@ use crate::rig;
 use std::path::Path;
 
 use common::{ScriptedLlmClient, Step, Workspace};
-use meerkat_core::Message;
 use rig::{Attached, Client, Running, Setup};
 use rkat_tui::approval::mode::PermissionMode;
 use rkat_tui::bootstrap::skills::{INVENTORY_BOUND, user_source};
 use rkat_tui::tools::{MAX_SKILL_BYTES, SKILL_READ};
 use rkat_tui::ui::{Effect, Msg};
 use serde_json::json;
-
-/// The text of the tool result `id` in `messages`.
-fn tool_result(messages: &[Message], id: &str) -> String {
-    messages
-        .iter()
-        .find_map(|m| match m {
-            Message::ToolResults { results, .. } => results
-                .iter()
-                .find(|r| r.tool_use_id == id)
-                .map(meerkat_core::types::ToolResult::text_content),
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("no result for {id}"))
-}
 
 /// The agent's `skill_read` call `id` with `args`.
 fn read(id: &'static str, args: serde_json::Value) -> Step {
@@ -167,7 +152,7 @@ async fn past_the_bound_the_inventory_counts_and_the_tool_lists() {
         "{system}"
     );
     assert!(!system.contains("SKILL-07"), "{system}");
-    let listed = tool_result(&recorded[1].messages, "r1");
+    let listed = common::tool_text(&recorded[1].messages, "r1");
     for n in 0..INVENTORY_BOUND {
         assert!(
             listed.contains(&format!("- s{n:02} [user]: SKILL-{n:02}\n")),
@@ -216,12 +201,12 @@ async fn the_agent_reads_the_users_skill() {
         "{:?}",
         recorded[0].tools
     );
-    let body = tool_result(&recorded[1].messages, "r1");
+    let body = common::tool_text(&recorded[1].messages, "r1");
     assert_eq!(
         body,
         "skill `review` [user]: USER-REVIEW-SKILL\n\nBody of review.\n"
     );
-    let listed = tool_result(&recorded[2].messages, "r2");
+    let listed = common::tool_text(&recorded[2].messages, "r2");
     // The tool lists exactly what the inventory names (the embedded
     // skills gated on a capability included).
     let names = |text: &str, open: &str, close: char| -> Vec<String> {
@@ -246,14 +231,14 @@ async fn the_agent_reads_the_users_skill() {
         "{listed}"
     );
     assert!(!listed.contains("PROJECT-REVIEW-SKILL"), "{listed}");
-    let unknown = tool_result(&recorded[3].messages, "r3");
+    let unknown = common::tool_text(&recorded[3].messages, "r3");
     assert!(
         unknown.starts_with("no skill named `nope`. Skills: "),
         "{unknown}"
     );
     assert!(unknown.contains("review"), "{unknown}");
     assert!(unknown.contains("big"), "{unknown}");
-    let capped = tool_result(&recorded[4].messages, "r4");
+    let capped = common::tool_text(&recorded[4].messages, "r4");
     assert!(capped.len() < MAX_SKILL_BYTES + 200, "{}", capped.len());
     assert!(
         capped.ends_with(&format!(
@@ -281,7 +266,7 @@ async fn plan_mode_allows_a_skill_read() {
     rig.set_mode(PermissionMode::Plan).await;
     rig.send(Effect::StartTurn("plan the review".into()));
     assert_eq!(rig.turn_finished().await.unwrap().text, "planned");
-    let body = tool_result(&llm.recorded()[1].messages, "r1");
+    let body = common::tool_text(&llm.recorded()[1].messages, "r1");
     assert!(body.ends_with("Body of review.\n"), "{body}");
     assert_eq!(rig.escalations(), 0);
     rig.quit().await;
@@ -388,7 +373,7 @@ async fn a_delegate_helper_lists_the_users_skills() {
     let body = recorded
         .iter()
         .find(|r| r.user().contains("HELPER-TASK") && r.messages.len() > helper.messages.len())
-        .map(|r| tool_result(&r.messages, "h1"))
+        .map(|r| common::tool_text(&r.messages, "h1"))
         .expect("the helper's request after its read");
     assert!(body.ends_with("Body of review.\n"), "{body}");
     client.quit().await;

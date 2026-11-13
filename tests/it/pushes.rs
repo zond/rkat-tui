@@ -78,12 +78,7 @@ async fn a_delegate_helper_is_followed_from_its_first_event_without_listing_mobs
     ]);
     let mut rig = Attached::start(&ws.root, &llm).await;
     // The attach lists the mobs once.
-    common::within(async {
-        while rig.daemon.forwarded(LIST) == 0 {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await;
+    common::until(|| rig.daemon.forwarded(LIST) > 0).await;
     let listed = rig.daemon.forwarded(LIST);
     assert_eq!(listed, 1);
     rig.send(Effect::StartTurn("delegate it".into()));

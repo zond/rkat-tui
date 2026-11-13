@@ -34,6 +34,65 @@ pub async fn within<F: Future>(future: F) -> F::Output {
         .expect("timed out")
 }
 
+/// How often [`until`] and [`poll`] look again.
+pub const POLL: Duration = Duration::from_millis(20);
+
+/// Wait, [`within`] the bound, until `ready` holds.
+pub async fn until(mut ready: impl FnMut() -> bool) {
+    within(async {
+        while !ready() {
+            tokio::time::sleep(POLL).await;
+        }
+    })
+    .await;
+}
+
+/// [`until`] with a condition that awaits.
+pub async fn until_async(mut ready: impl AsyncFnMut() -> bool) {
+    within(async {
+        while !ready().await {
+            tokio::time::sleep(POLL).await;
+        }
+    })
+    .await;
+}
+
+/// Wait, [`within`] the bound, until `probe` yields a value.
+pub async fn poll<T>(mut probe: impl AsyncFnMut() -> Option<T>) -> T {
+    within(async {
+        loop {
+            if let Some(found) = probe().await {
+                return found;
+            }
+            tokio::time::sleep(POLL).await;
+        }
+    })
+    .await
+}
+
+/// The result of the tool call `id` in `messages`.
+pub fn tool_result(messages: &[Message], id: &str) -> meerkat_core::types::ToolResult {
+    messages
+        .iter()
+        .find_map(|m| match m {
+            Message::ToolResults { results, .. } => {
+                results.iter().find(|r| r.tool_use_id == id).cloned()
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no result for {id}"))
+}
+
+/// The text of [`tool_result`].
+pub fn tool_text(messages: &[Message], id: &str) -> String {
+    tool_result(messages, id).text_content()
+}
+
+/// `text` for as long as the test runs (a [`Step`] takes `&'static str`).
+pub fn leak(text: String) -> &'static str {
+    Box::leak(text.into_boxed_str())
+}
+
 /// One scripted LLM response.
 #[derive(Clone)]
 pub enum Step {
@@ -448,4 +507,51 @@ pub fn sandbox_skipped(reason: &str) {
         "{REQUIRE_SANDBOX}=1 and the sandbox cannot run here: {reason}"
     );
     println!("SKIPPED: {reason}");
+}
+
+/// Why this host cannot run a launch confined by `mode` over `workspace`,
+/// probed directly: the requirement is compiled by the sandbox backend and a
+/// confined `/bin/true` must exit successfully. `None` when it can.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub async fn sandbox_unavailable(
+    workspace: &Path,
+    mode: rkat_tui::cli::ConfinementArg,
+) -> Option<String> {
+    use rkat_tui::bootstrap::confinement::{HostPaths, lower};
+    let requirement = match lower(mode, workspace, &HostPaths::detect()) {
+        Ok(Some(requirement)) => requirement,
+        Ok(None) => return None,
+        Err(err) => return Some(format!("the requirement is invalid: {err}")),
+    };
+    let launch = match meerkat_sandbox::ProcessLaunchSpec::new(
+        "/bin/true".into(),
+        Vec::new(),
+        workspace.to_path_buf(),
+        std::collections::BTreeMap::new(),
+    ) {
+        Ok(launch) => launch,
+        Err(refusal) => return Some(format!("the probe launch is invalid: {refusal}")),
+    };
+    let prepared = match meerkat_sandbox::prepare(&requirement, launch) {
+        Ok(prepared) => prepared,
+        Err(refusal) => return Some(format!("the backend refuses the requirement: {refusal}")),
+    };
+    let mut child = match prepared.spawn() {
+        Ok(child) => child,
+        Err(err) => return Some(format!("a confined launch cannot start: {err}")),
+    };
+    match child.wait().await {
+        Ok(status) if status.success() => None,
+        Ok(status) => Some(format!("a confined /bin/true exited with {status}")),
+        Err(err) => Some(format!("a confined launch cannot be awaited: {err}")),
+    }
+}
+
+/// No sandbox backend on this platform.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub async fn sandbox_unavailable(
+    _workspace: &Path,
+    _mode: rkat_tui::cli::ConfinementArg,
+) -> Option<String> {
+    Some("this platform has no sandbox backend".to_string())
 }

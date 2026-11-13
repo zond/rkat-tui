@@ -31,20 +31,6 @@ fn tool_results(messages: &[Message]) -> String {
         .join("\n")
 }
 
-/// The text of the tool result for call `id` in `messages`.
-fn tool_result(messages: &[Message], id: &str) -> String {
-    messages
-        .iter()
-        .find_map(|m| match m {
-            Message::ToolResults { results, .. } => results
-                .iter()
-                .find(|r| r.tool_use_id == id)
-                .map(meerkat_core::types::ToolResult::text_content),
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("no result for {id}"))
-}
-
 /// An agent cannot seat a member under an agent's name: the names are the
 /// daemon's (a member so named would be shaped as an agent without being
 /// one of the daemon's). Another name is seated as a helper as before.
@@ -129,17 +115,12 @@ async fn a_member_seated_with_auto_wire_parent_is_wired_to_the_agent() {
             })
         })
     };
-    let members = common::within(async {
-        loop {
-            let members = connection
-                .call("mob/members", json!({"mob_id": "tui"}))
-                .await
-                .unwrap();
-            if wired(&members, &daemon.agent, "scout") {
-                return members;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
+    let members = common::poll(async || {
+        let members = connection
+            .call("mob/members", json!({"mob_id": "tui"}))
+            .await
+            .unwrap();
+        wired(&members, &daemon.agent, "scout").then_some(members)
     })
     .await;
     assert!(wired(&members, "scout", &daemon.agent), "{members}");
@@ -151,30 +132,20 @@ async fn a_member_seated_with_auto_wire_parent_is_wired_to_the_agent() {
                 .any(|m| format!("{m:?}").contains("HELPER-KICKOFF"))
         })
     };
-    common::within(async {
-        while !ran(&llm) {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-    })
-    .await;
-    let after = common::within(async {
-        loop {
-            let members = connection
-                .call("mob/members", json!({"mob_id": "tui"}))
-                .await
-                .unwrap();
-            let idle = connection
-                .call(
-                    "mob/member_status",
-                    json!({"mob_id": "tui", "agent_identity": "scout"}),
-                )
-                .await
-                .unwrap();
-            if idle["progress"]["run_state"] == "idle" {
-                return (members, idle);
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
+    common::until(|| ran(&llm)).await;
+    let after = common::poll(async || {
+        let members = connection
+            .call("mob/members", json!({"mob_id": "tui"}))
+            .await
+            .unwrap();
+        let idle = connection
+            .call(
+                "mob/member_status",
+                json!({"mob_id": "tui", "agent_identity": "scout"}),
+            )
+            .await
+            .unwrap();
+        (idle["progress"]["run_state"] == "idle").then_some((members, idle))
     })
     .await;
     assert_eq!(after.1["output_preview"], "helper idle", "{after:?}");
@@ -315,16 +286,13 @@ async fn a_new_agent_is_told_about_the_others_whichever_daemon_it_names() {
 
 /// Wait until the daemon lists `name` with no client.
 async fn without_client(daemon: &Running, name: &str) {
-    common::within(async {
-        while !daemon
+    common::until_async(async || {
+        daemon
             .status()
             .await
             .agents
             .iter()
             .any(|row| row.name == name && row.clients == 0)
-        {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
     })
     .await;
 }
@@ -634,18 +602,7 @@ async fn the_roster_note_shows_who_works_and_is_not_sent_for_runs() {
     let c_name = c.agent().await;
     c.send(Effect::Leave(Departure::Detach));
     c.quit().await;
-    common::within(async {
-        while !daemon
-            .status()
-            .await
-            .agents
-            .iter()
-            .any(|row| row.name == c_name && row.clients == 0)
-        {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    })
-    .await;
+    without_client(&daemon, &c_name).await;
     a.send(Effect::StartTurn("work on".into()));
     llm.wait_call(0).await;
     let mut d = rig::Client::attach_agent(&ws.root, AgentChoice::New).await;
@@ -807,20 +764,7 @@ async fn a_peer_woken_agent_with_no_client_is_denied_what_needs_review() {
     let b_name = b_name.lock().clone();
     b.send(Effect::Leave(Departure::Detach));
     b.quit().await;
-    common::within(async {
-        loop {
-            let status = daemon.status().await;
-            if status
-                .agents
-                .iter()
-                .any(|row| row.name == b_name && row.clients == 0)
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    })
-    .await;
+    without_client(&daemon, &b_name).await;
     a.send(Effect::StartTurn("tell b".into()));
     assert_eq!(a.turn_finished().await.unwrap().text, "told b");
     // B's third model call waits at the gate: its first two calls are
@@ -860,7 +804,7 @@ async fn a_peer_woken_agent_with_no_client_is_denied_what_needs_review() {
     gate.notify_one();
     llm.wait_call(6).await;
     assert_eq!(reviewed_curls(), 1, "attached, B's next curl was reviewed");
-    let result = tool_result(&llm.requests()[6], "b3");
+    let result = common::tool_text(&llm.requests()[6], "b3");
     assert!(
         !result.contains("needs a user attached"),
         "the reviewed curl ran: {result}"
@@ -912,22 +856,19 @@ async fn a_turn_the_user_started_is_reviewed_after_its_client_detaches() {
     llm.wait_call(0).await;
     client.send(Effect::Leave(Departure::Detach));
     client.quit().await;
-    common::within(async {
-        while daemon
+    common::until_async(async || {
+        !daemon
             .status()
             .await
             .agents
             .iter()
             .any(|row| row.clients > 0)
-        {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
     })
     .await;
     gate.notify_one();
     llm.wait_call(1).await;
     assert_eq!(classifier.tools(), ["shell"], "the curl was reviewed");
-    let result = tool_result(&llm.requests()[1], "c1");
+    let result = common::tool_text(&llm.requests()[1], "c1");
     assert!(!result.contains("needs a user attached"), "{result}");
     daemon.stop().await;
 }
@@ -1377,22 +1318,16 @@ async fn child_peers(route: &'static str) -> (String, String) {
     }
     let connection = daemon.connect_bound().await;
     daemon.prompt(&connection, "start a child").await;
-    let peers = common::within(async {
-        loop {
-            let found = llm.requests().iter().find_map(|messages| {
-                messages.iter().find_map(|m| match m {
-                    Message::ToolResults { results, .. } => results
-                        .iter()
-                        .find(|r| r.tool_use_id == "cp1")
-                        .map(meerkat_core::types::ToolResult::text_content),
-                    _ => None,
-                })
-            });
-            if let Some(found) = found {
-                return found;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
+    let peers = common::poll(async || {
+        llm.requests().iter().find_map(|messages| {
+            messages.iter().find_map(|m| match m {
+                Message::ToolResults { results, .. } => results
+                    .iter()
+                    .find(|r| r.tool_use_id == "cp1")
+                    .map(meerkat_core::types::ToolResult::text_content),
+                _ => None,
+            })
+        })
     })
     .await;
     let agent = daemon.agent.clone();
@@ -1471,22 +1406,16 @@ async fn a_parent_messages_its_child_like_a_peer() {
     let daemon = Running::start_with(&args, setup.options(&ws.root, &llm)).await;
     let connection = daemon.connect_bound().await;
     daemon.prompt(&connection, "seat a kid and tell it").await;
-    let sent = common::within(async {
-        loop {
-            let reply = llm.requests().iter().find_map(|messages| {
-                messages.iter().find_map(|m| match m {
-                    Message::ToolResults { results, .. } => results
-                        .iter()
-                        .find(|r| r.tool_use_id == "m1")
-                        .map(meerkat_core::types::ToolResult::text_content),
-                    _ => None,
-                })
-            });
-            if let Some(reply) = reply {
-                return reply;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
+    let sent = common::poll(async || {
+        llm.requests().iter().find_map(|messages| {
+            messages.iter().find_map(|m| match m {
+                Message::ToolResults { results, .. } => results
+                    .iter()
+                    .find(|r| r.tool_use_id == "m1")
+                    .map(meerkat_core::types::ToolResult::text_content),
+                _ => None,
+            })
+        })
     })
     .await;
     assert!(sent.contains("sent") || sent.contains("accepted"), "{sent}");
@@ -1496,18 +1425,13 @@ async fn a_parent_messages_its_child_like_a_peer() {
         classifier.tools()
     );
     // The kid reads it in a run of its own.
-    common::within(async {
-        loop {
-            let read = llm.requests().iter().any(|messages| {
-                messages.iter().any(|m| {
-                    matches!(m, Message::User(_)) && format!("{m:?}").contains("HELPER-TASK")
-                }) && format!("{messages:?}").contains("PARENT-WORD")
-            });
-            if read {
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
+    common::until(|| {
+        llm.requests().iter().any(|messages| {
+            messages
+                .iter()
+                .any(|m| matches!(m, Message::User(_)) && format!("{m:?}").contains("HELPER-TASK"))
+                && format!("{messages:?}").contains("PARENT-WORD")
+        })
     })
     .await;
     drop(connection);

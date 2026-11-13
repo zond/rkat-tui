@@ -345,14 +345,10 @@ async fn the_task_tools_fill_the_checklist_over_the_daemon() {
         client.send(effect);
     }
     let realm = common::realm_of(&ws.root).join("tui.toml");
-    within(async {
-        loop {
-            let text = std::fs::read_to_string(&realm).unwrap_or_default();
-            if text.contains("checklist = \"shown\"") {
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
+    common::until(|| {
+        std::fs::read_to_string(&realm)
+            .unwrap_or_default()
+            .contains("checklist = \"shown\"")
     })
     .await;
     assert!(
@@ -388,12 +384,7 @@ async fn context_reports_the_daemons_conversation() {
     client.turn_finished().await.unwrap();
     // The daemon reads the tool definitions once the agent is idle.
     let session = daemon.current_session().await;
-    common::within(async {
-        while daemon.origins.sizes(&session).is_none() {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    })
-    .await;
+    common::until(|| daemon.origins.sizes(&session).is_some()).await;
     client.send(Effect::ContextReport("context: the gauge".into()));
     let msg = client
         .wait_for(
@@ -1066,12 +1057,7 @@ async fn a_reconnect_restarts_a_daemon_that_died() {
     client
         .wait_for(|m| matches!(m, Msg::Notice { text, .. } if text.contains("asked the daemon")))
         .await;
-    within(async {
-        while endpoint_file.exists() {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-    })
-    .await;
+    common::until(|| !endpoint_file.exists()).await;
     // Without a connection there is no one to ask: `/daemon stop` says
     // so and names the way to stop a daemon by hand; nothing is signalled.
     let attached = |client: &Client| {

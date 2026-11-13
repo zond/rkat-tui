@@ -15,9 +15,8 @@ use crate::rig;
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::{ScriptedLlmClient, Step, Workspace, within};
-use meerkat_core::types::ToolResult;
-use meerkat_core::{AgentEvent, Message};
+use common::{ScriptedLlmClient, Step, Workspace, leak, tool_result, within};
+use meerkat_core::AgentEvent;
 use rig::{Attached, ScriptedClassifier, Setup};
 use rkat_tui::approval::classifier::{ActionClassifier, ClassifierError, ClassifierVerdict};
 use rkat_tui::ui::{ApprovalNotice, Effect, EscalationAnswer, Msg};
@@ -25,23 +24,6 @@ use serde_json::json;
 
 fn setup(classifier: &Arc<ScriptedClassifier>) -> Setup {
     Setup::default().classifier(Arc::clone(classifier) as Arc<dyn ActionClassifier>)
-}
-
-/// The result of tool call `id` in `messages`.
-fn tool_result(messages: &[Message], id: &str) -> ToolResult {
-    messages
-        .iter()
-        .find_map(|m| match m {
-            Message::ToolResults { results, .. } => {
-                results.iter().find(|r| r.tool_use_id == id).cloned()
-            }
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("no result for {id}"))
-}
-
-fn leak(text: String) -> &'static str {
-    Box::leak(text.into_boxed_str())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

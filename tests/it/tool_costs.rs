@@ -109,15 +109,7 @@ async fn an_agent_s_request_carries_every_tool_definition() {
     );
     // `/context` reports the same sizes, by family, from the daemon's own
     // read of the session's tool definitions.
-    let sizes = common::within(async {
-        loop {
-            if let Some(sizes) = rig.daemon.origins.sizes(&session) {
-                return sizes;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    })
-    .await;
+    let sizes = common::poll(async || rig.daemon.origins.sizes(&session)).await;
     for size in &sizes {
         assert_eq!(
             bytes.get(size.family.name()),

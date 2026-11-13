@@ -817,12 +817,7 @@ async fn context_report_describes_the_session() {
     let _ = rig.turn_finished().await;
     // The daemon reads the tool definitions once the agent is idle.
     let session = rig.current_session().await;
-    common::within(async {
-        while rig.daemon.origins.sizes(&session).is_none() {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    })
-    .await;
+    common::until(|| rig.daemon.origins.sizes(&session).is_some()).await;
     rig.send(Effect::ContextReport("context: header".into()));
     let msg = rig
         .wait_for(
@@ -1368,12 +1363,7 @@ async fn an_interrupt_during_a_stalled_model_request_ends_it_and_loses_nothing()
         ["for the steer", "for the message"].contains(&done.text.as_str()),
         "{done:?}"
     );
-    common::within(async {
-        while llm.requests().len() < 3 {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-    })
-    .await;
+    common::until(|| llm.requests().len() >= 3).await;
     let session = rig.messages().await;
     assert_eq!(
         count(&session, "steered during the stall"),

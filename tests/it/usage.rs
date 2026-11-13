@@ -10,7 +10,7 @@ use crate::rig;
 
 use std::sync::Arc;
 
-use common::{MODEL, ScriptedLlmClient, Step, Workspace, within};
+use common::{MODEL, ScriptedLlmClient, Step, Workspace};
 use rig::{Attached, Client, Running, Setup};
 use rkat_tui::cost::SessionCost;
 use rkat_tui::ui::{Departure, Effect, Msg, StatusUpdate};
@@ -61,16 +61,13 @@ async fn a_turn_no_client_saw_is_counted_and_survives_a_restart() {
     llm.wait_call(0).await;
     client.send(Effect::Leave(Departure::Detach));
     client.quit().await;
-    within(async {
-        while daemon
+    common::until_async(async || {
+        !daemon
             .status()
             .await
             .agents
             .iter()
             .any(|row| row.clients > 0)
-        {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
     })
     .await;
     // The model call happens with nobody attached.

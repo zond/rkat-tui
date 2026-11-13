@@ -17,8 +17,7 @@ use crate::rig;
 
 use std::sync::Arc;
 
-use common::{ScriptedLlmClient, Step, Workspace, args_with, within};
-use meerkat_core::types::ToolResult;
+use common::{ScriptedLlmClient, Step, Workspace, args_with, leak, tool_result, within};
 use meerkat_core::{Message, StreamScopeFrame};
 use rig::{Attached, Running, ScriptedClassifier, Setup};
 use rkat_tui::approval::classifier::{ActionClassifier, ClassifierVerdict};
@@ -39,22 +38,6 @@ fn delegate(id: &'static str, member: &str, task: &str) -> Step {
             "max_text_bytes": 4000,
         }),
     }
-}
-
-fn tool_result(messages: &[Message], id: &str) -> ToolResult {
-    messages
-        .iter()
-        .find_map(|m| match m {
-            Message::ToolResults { results, .. } => {
-                results.iter().find(|r| r.tool_use_id == id).cloned()
-            }
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("no result for {id}"))
-}
-
-fn leak(text: String) -> &'static str {
-    Box::leak(text.into_boxed_str())
 }
 
 fn no_helpers(msg: &Msg) -> bool {
@@ -384,10 +367,8 @@ async fn a_followed_helper_stays_live_until_its_member_retired_arrives() {
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     assert_eq!(registry.live_for(&owner), vec![key.clone()]);
     within(handle.retire(key.member.clone())).await.unwrap();
-    within(async {
-        while !registry.live_for(&owner).is_empty() || registry.owner_for_resume(&key).is_ok() {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+    common::until(|| {
+        registry.live_for(&owner).is_empty() && registry.owner_for_resume(&key).is_err()
     })
     .await;
     drop(handle);
@@ -440,12 +421,7 @@ async fn a_helpers_owner_survives_a_restart_until_it_retires() {
     // on its durable session through `customize_resume`.
     let member = within(handle.member(&key.member)).await.unwrap();
     within(member.internal_turn("wake up")).await.unwrap();
-    within(async {
-        while registry.live_for(&owner).is_empty() {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await;
+    common::until(|| !registry.live_for(&owner).is_empty()).await;
     assert_eq!(registry.live_for(&owner), vec![key.clone()]);
     assert_eq!(registry.owner_for_resume(&key).unwrap().owner, owner);
 
@@ -459,12 +435,7 @@ async fn a_helpers_owner_survives_a_restart_until_it_retires() {
 
     // Retiring drops the binding for good.
     within(handle.retire(key.member.clone())).await.unwrap();
-    within(async {
-        while registry.owner_for_resume(&key).is_ok() {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await;
+    common::until(|| registry.owner_for_resume(&key).is_err()).await;
     let file = std::fs::read_to_string(
         bootstrap::resolve_scope(&args_with(&ws.root, &[]))
             .unwrap()

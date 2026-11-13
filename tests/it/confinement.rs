@@ -22,16 +22,14 @@
 use crate::common;
 use crate::rig;
 
-use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
-use common::{ScriptedLlmClient, Step, Workspace, within};
-use meerkat_core::{AgentEvent, Message};
+use common::{ScriptedLlmClient, Step, Workspace, leak, sandbox_unavailable, tool_text};
+use meerkat_core::AgentEvent;
 use rig::{Attached, Setup};
 use rkat_tui::TuiError;
-use rkat_tui::bootstrap::confinement::{HostPaths, lower};
+use rkat_tui::bootstrap::confinement::HostPaths;
 use rkat_tui::cli::ConfinementArg;
 use rkat_tui::daemon::DaemonError;
 use rkat_tui::ui::Effect;
@@ -64,64 +62,6 @@ fn allow_shell_detected(args: &[&str]) -> (Setup, tempfile::TempDir) {
         ..Setup::args(&args)
     };
     (setup, state)
-}
-
-fn leak(text: String) -> &'static str {
-    Box::leak(text.into_boxed_str())
-}
-
-/// The text of tool result `id` in `messages`.
-fn tool_text(messages: &[Message], id: &str) -> String {
-    messages
-        .iter()
-        .find_map(|m| match m {
-            Message::ToolResults { results, .. } => results
-                .iter()
-                .find(|r| r.tool_use_id == id)
-                .map(meerkat_core::types::ToolResult::text_content),
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("no result for {id}"))
-}
-
-/// Why this host cannot run a launch confined by `mode` over `workspace`,
-/// probed directly: the requirement is compiled by the sandbox backend and a
-/// confined `/bin/true` must exit successfully. `None` when it can.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-async fn sandbox_unavailable(workspace: &Path, mode: ConfinementArg) -> Option<String> {
-    let requirement = match lower(mode, workspace, &HostPaths::detect()) {
-        Ok(Some(requirement)) => requirement,
-        Ok(None) => return None,
-        Err(err) => return Some(format!("the requirement is invalid: {err}")),
-    };
-    let launch = match meerkat_sandbox::ProcessLaunchSpec::new(
-        "/bin/true".into(),
-        Vec::new(),
-        workspace.to_path_buf(),
-        BTreeMap::new(),
-    ) {
-        Ok(launch) => launch,
-        Err(refusal) => return Some(format!("the probe launch is invalid: {refusal}")),
-    };
-    let prepared = match meerkat_sandbox::prepare(&requirement, launch) {
-        Ok(prepared) => prepared,
-        Err(refusal) => return Some(format!("the backend refuses the requirement: {refusal}")),
-    };
-    let mut child = match prepared.spawn() {
-        Ok(child) => child,
-        Err(err) => return Some(format!("a confined launch cannot start: {err}")),
-    };
-    match child.wait().await {
-        Ok(status) if status.success() => None,
-        Ok(status) => Some(format!("a confined /bin/true exited with {status}")),
-        Err(err) => Some(format!("a confined launch cannot be awaited: {err}")),
-    }
-}
-
-/// No sandbox backend on this platform.
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-async fn sandbox_unavailable(_workspace: &Path, _mode: ConfinementArg) -> Option<String> {
-    Some("this platform has no sandbox backend".to_string())
 }
 
 /// Start a daemon whose shell is allowed without review, under `mode`,
@@ -387,27 +327,16 @@ async fn an_interrupted_shell_call_leaves_custody_records_and_no_process() {
     let mut rig = Attached::start_with(&ws.root, &llm, allow_shell(&[])).await;
     let session = rig.current_session().await;
     rig.send(Effect::StartTurn("sleep".into()));
-    let pid = within(async {
-        loop {
-            if let Ok(text) = std::fs::read_to_string(&pid_file)
-                && !text.trim().is_empty()
-            {
-                return text.trim().to_string();
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+    let pid = common::poll(async || {
+        let text = std::fs::read_to_string(&pid_file).ok()?;
+        (!text.trim().is_empty()).then(|| text.trim().to_string())
     })
     .await;
     assert!(alive(&pid), "the shell process {pid} should be running");
     rig.send(Effect::Interrupt);
     let outcome = rig.turn_finished().await;
     assert!(outcome.is_err(), "{outcome:?}");
-    within(async {
-        while alive(&pid) {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await;
+    common::until(|| !alive(&pid)).await;
     // The call ran in the session's durable process custody.
     let custody = rkat_tui::bootstrap::resolve_scope(&common::args_for(&ws.root))
         .unwrap()

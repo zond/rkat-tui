@@ -18,7 +18,6 @@ use std::time::Duration;
 use async_trait::async_trait;
 use common::{ScriptedLlmClient, Step, Workspace, args_for, endpoint_file_for, no_lists, within};
 use meerkat::LlmClient;
-use meerkat_core::types::ToolResult;
 use meerkat_core::{AgentEvent, Message};
 use parking_lot::Mutex;
 use rig::{Client, Running};
@@ -127,21 +126,9 @@ async fn attach(root: &Path) -> Client {
     client
 }
 
-fn tool_result(messages: &[Message], id: &str) -> ToolResult {
-    messages
-        .iter()
-        .find_map(|m| match m {
-            Message::ToolResults { results, .. } => {
-                results.iter().find(|r| r.tool_use_id == id).cloned()
-            }
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("no result for {id}"))
-}
-
 /// The text of the tool result `id` the model read in request `n`.
 fn result_text(llm: &ScriptedLlmClient, n: usize, id: &str) -> String {
-    tool_result(&llm.requests()[n], id).text_content()
+    common::tool_text(&llm.requests()[n], id)
 }
 
 /// [`args_for`] with the user config root beside the workspace.
@@ -622,12 +609,7 @@ async fn a_helpers_reviewed_call_raises_an_approval_too() {
     assert_eq!(prompt.tool, "write_file");
     assert_eq!(prompt.agent.as_deref(), Some("scout"), "{prompt:?}");
     client.send(Effect::RespondEscalation(id, EscalationAnswer::AllowOnce));
-    within(async {
-        while !ws.root.join("helper.txt").exists() {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await;
+    common::until(|| ws.root.join("helper.txt").exists()).await;
     assert_eq!(
         std::fs::read_to_string(ws.root.join("helper.txt")).unwrap(),
         "FROM-HELPER"
@@ -987,29 +969,19 @@ async fn a_seated_helpers_catalog_is_read_after_its_first_run() {
     let daemon = start(&ws.root, &llm, &Setup::default()).await;
     let connection = daemon.connect_bound().await;
     daemon.prompt(&connection, "seat a scout").await;
-    let helper = within(async {
-        loop {
-            let status = connection
-                .call(
-                    "mob/member_status",
-                    json!({"mob_id": "tui", "agent_identity": "scout"}),
-                )
-                .await;
-            if let Ok(status) = status
-                && let Some(session) = status["current_session_id"].as_str()
-            {
-                return meerkat_core::SessionId::parse(session).unwrap();
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+    let helper = common::poll(async || {
+        let status = connection
+            .call(
+                "mob/member_status",
+                json!({"mob_id": "tui", "agent_identity": "scout"}),
+            )
+            .await
+            .ok()?;
+        let session = status["current_session_id"].as_str()?;
+        Some(meerkat_core::SessionId::parse(session).unwrap())
     })
     .await;
-    within(async {
-        while !daemon.origins.has(&helper) {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await;
+    common::until(|| daemon.origins.has(&helper)).await;
     // Its own catalog: the native shell as the engine defines it.
     assert!(daemon.origins.origin(&helper, "shell").is_some());
     drop(connection);
@@ -1277,22 +1249,16 @@ async fn a_fork_off_child_runs_behind_the_gate() {
             comment: Some("not from a fork".into()),
         },
     ));
-    let denied = within(async {
-        loop {
-            let seen = llm.requests().iter().find_map(|messages| {
-                messages.iter().find_map(|m| match m {
-                    Message::ToolResults { results, .. } => results
-                        .iter()
-                        .find(|r| r.tool_use_id == "fw1")
-                        .map(ToolResult::text_content),
-                    _ => None,
-                })
-            });
-            if let Some(text) = seen {
-                return text;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+    let denied = common::poll(async || {
+        llm.requests().iter().find_map(|messages| {
+            messages.iter().find_map(|m| match m {
+                Message::ToolResults { results, .. } => results
+                    .iter()
+                    .find(|r| r.tool_use_id == "fw1")
+                    .map(meerkat_core::types::ToolResult::text_content),
+                _ => None,
+            })
+        })
     })
     .await;
     assert!(denied.contains("not from a fork"), "{denied}");
@@ -1338,22 +1304,16 @@ async fn a_fork_off_outcome_arrives_later_in_the_transcript() {
     daemon.reveal(&daemon.session, &["fork_off"]).await;
     let mut client = attach(&ws.root).await;
     client.send(Effect::StartTurn("fork a child".into()));
-    let delivered = within(async {
-        loop {
-            let seen = llm.requests().into_iter().find(|messages| {
-                forked(messages)
-                    && messages.iter().any(|m| {
-                        matches!(m, Message::SystemNotice(_)) && {
-                            let text = format!("{m:?}");
-                            text.contains("Background fork_off job") && text.contains(OUTCOME)
-                        }
-                    })
-            });
-            if let Some(messages) = seen {
-                return messages;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+    let delivered = common::poll(async || {
+        llm.requests().into_iter().find(|messages| {
+            forked(messages)
+                && messages.iter().any(|m| {
+                    matches!(m, Message::SystemNotice(_)) && {
+                        let text = format!("{m:?}");
+                        text.contains("Background fork_off job") && text.contains(OUTCOME)
+                    }
+                })
+        })
     })
     .await;
     // The call's own result was only that the child runs.
