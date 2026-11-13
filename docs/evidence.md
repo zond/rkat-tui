@@ -8669,3 +8669,29 @@ event: in `daemon.rs` on the stream the test opened before sending
 which opens a probe's stream on the agent before the send and returns on
 its `run_completed`. `client_turns::start_other_run` sends and keeps the
 other client's connection until its run is interrupted.
+
+## A slow seat is waited for, not given up (hosted failure, 2026-11-14)
+
+Hosted CI at 32016bc failed
+`agents::the_agent_picker_lists_retires_idle_agents_and_seats_a_new_one`
+with five agents where four were attached: the extra one idle, detached,
+untitled, with a conversation of its own. The mechanism: the client's
+`ATTACH_TIMEOUT` (5 s) bounded the whole handshake, the daemon's answer
+to the proof included. That answer waits for `Agents::bind`, which for
+`AgentChoice::New` seats a fresh mob member under the seating lock; on a
+loaded runner, with several attaches in a row, that can take longer. The
+client gave up, closed the connection and retried with `New` again; the
+daemon finished the first seat (its acknowledgement written into a socket
+the client had half-closed, so it is not withdrawn), and the closed
+connection left that agent detached while the retry seated a second one.
+A daemon-side fix (give back the seat of a connection that never spoke)
+is racy: the retry's bind can take the seating lock before the first
+connection reads its EOF.
+
+`Connection::attach_io` now bounds the two halves apart: the hello and the
+daemon's challenge by the caller's timeout (a dead or wrong daemon is still
+found in 5 s), and the proof's answer, once the daemon proved it holds the
+token, by `SEAT_TIMEOUT` (1 min). Pinned by
+`client::transport::tests::a_slow_seat_is_waited_for` (a daemon that seats
+3 s after the challenge, the handshake bound 1 s). A seat slower than a
+minute still ends in the old retry.

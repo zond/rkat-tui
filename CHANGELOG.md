@@ -52,6 +52,11 @@
 
 ### Fixed
 
+- A daemon busy enough to take more than 5 seconds to seat a new agent
+  for an attaching `rkat-tui` no longer ends up with two: the client
+  gave the attach up and tried again, which seated a second agent and
+  left the first detached. Once the daemon has proved itself, the client
+  waits up to a minute for the seat.
 - After a daemon restart, a note the daemon sends an agent about the
   other agents could be refused, because the engine already held its
   key from the earlier daemon with another text. The agent then missed

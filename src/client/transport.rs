@@ -32,6 +32,10 @@ use crate::daemon::protocol::{AttachParams, Challenged};
 /// How long connecting and the attach handshake may take.
 pub const ATTACH_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How long the daemon, once it proved itself, may take to seat the agent
+/// the attach asked for (its answer to the proof).
+pub const SEAT_TIMEOUT: Duration = Duration::from_mins(1);
+
 /// The id of the first attach request (the first line on the wire: the
 /// client's nonce).
 const ATTACH_ID: u64 = 1;
@@ -205,7 +209,7 @@ impl Connection {
         let mut params = params;
         let client_nonce = handshake::new_nonce().map_err(ClientError::Io)?;
         params.nonce = Some(client_nonce.clone());
-        let handshake = async {
+        let challenge = async {
             let hello = json!({
                 "jsonrpc": "2.0",
                 "id": ATTACH_ID,
@@ -214,24 +218,33 @@ impl Connection {
             });
             write_line(&mut write, &hello).await?;
             let line = read_reply(&mut reader).await?;
-            let daemon_nonce = check_challenge(&line, token, &client_nonce, address)?;
-            let own_proof = handshake::client_proof(token, &client_nonce, &daemon_nonce)
-                .map_err(|err| ClientError::Protocol(err.to_string()))?;
-            let proof = json!({
-                "jsonrpc": "2.0",
-                "id": PROOF_ID,
-                "method": ATTACH_METHOD,
-                "params": AttachParams {
-                    proof: Some(own_proof),
-                    ..AttachParams::default()
-                },
-            });
+            check_challenge(&line, token, &client_nonce, address)
+        };
+        let daemon_nonce = tokio::time::timeout(timeout, challenge)
+            .await
+            .map_err(|_| ClientError::Timeout("the attach handshake"))??;
+        let own_proof = handshake::client_proof(token, &client_nonce, &daemon_nonce)
+            .map_err(|err| ClientError::Protocol(err.to_string()))?;
+        let proof = json!({
+            "jsonrpc": "2.0",
+            "id": PROOF_ID,
+            "method": ATTACH_METHOD,
+            "params": AttachParams {
+                proof: Some(own_proof),
+                ..AttachParams::default()
+            },
+        });
+        // The daemon proved itself; its answer to the proof waits for the
+        // agent's seat, which a busy daemon can take longer than `timeout`
+        // for. Giving that seat up would leave it behind and the retry
+        // would seat a second agent.
+        let seated = async {
             write_line(&mut write, &proof).await?;
             read_reply(&mut reader).await
         };
-        let line = tokio::time::timeout(timeout, handshake)
+        let line = tokio::time::timeout(SEAT_TIMEOUT.max(timeout), seated)
             .await
-            .map_err(|_| ClientError::Timeout("the attach handshake"))??;
+            .map_err(|_| ClientError::Timeout("waiting for the agent's seat"))??;
         let attached = check_attached(&line)?;
 
         let pending: Pending = Arc::new(Mutex::new(Some(HashMap::new())));
@@ -840,6 +853,36 @@ mod tests {
             matches!(attached, Err(ClientError::Timeout(_))),
             "{attached:?}"
         );
+    }
+
+    /// A daemon that proved itself and takes longer than the handshake's
+    /// bound to seat the agent is waited for: giving up would leave the
+    /// seat behind, and the retry would seat a second agent.
+    #[tokio::test(start_paused = true)]
+    async fn a_slow_seat_is_waited_for() {
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let (sr, mut sw) = tokio::io::split(server);
+        let (cr, cw) = tokio::io::split(client);
+        let mut sr = BufReader::new(sr);
+        let daemon = async {
+            let pending = handshake::read_attach(&mut sr, &mut sw, "secret", handshake::TIMEOUT)
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            handshake::acknowledge(&mut sw, &pending, None, None, None, handshake::TIMEOUT)
+                .await
+                .unwrap();
+        };
+        let attach = Connection::attach_io(
+            cr,
+            cw,
+            "secret",
+            AttachParams::default(),
+            ADDR.parse().unwrap(),
+            Duration::from_secs(1),
+        );
+        let (attached, ()) = tokio::join!(attach, daemon);
+        assert!(attached.is_ok(), "{:?}", attached.err());
     }
 
     #[tokio::test]
