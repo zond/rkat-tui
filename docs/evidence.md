@@ -8031,7 +8031,7 @@ Asked for with 0.0.2, ahead of the 0.1.0 the first publishing entry
 named. `.github/workflows/release.yml` runs on a `v*` tag (or by hand for
 an existing tag), builds `--release --locked` for
 `x86_64-unknown-linux-gnu` on Ubuntu 22.04 (glibc 2.35) and
-`aarch64-apple-darwin` on macOS 14, strips the two binaries and attaches
+`aarch64-apple-darwin` on the hosted `macos-latest`, strips the two binaries and attaches
 `rkat-tui-<target>-v<version>.tgz` with its SHA-256 to the tag's GitHub
 release; `[package.metadata.binstall]` in `Cargo.toml` names that path.
 Measured here on 0.0.2: `rkat-tui-mob` is 389 MB as built and 293 MB
@@ -8042,3 +8042,8 @@ target (the bundled SQLite and the confinement were never built against
 it) and no Windows. Not verified before the first tag: the workflow
 itself and the macOS build, which no machine of ours has compiled; the
 jobs are independent, so one target failing leaves the other's archive.
+The first tag's run showed one thing at once: GitHub no longer offers
+`macos-14` ("The configuration 'macos-14-arm64-us-default' is not
+supported"), so the macOS job names `macos-latest`. A run for a tag
+skips a target whose archive the release has already, so a rerun for the
+failed target does not replace a published archive.
