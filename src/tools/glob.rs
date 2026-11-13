@@ -1,5 +1,6 @@
 //! `glob`: gitignore-aware file search by glob pattern, newest first.
 
+use super::prune::Prune;
 use super::{CallMeta, GLOB, Shared, ToolFailure, ToolOutcome};
 use globset::GlobBuilder;
 use ignore::WalkBuilder;
@@ -62,7 +63,20 @@ pub(crate) fn search_root(
 /// [`crate::paths::ProjectRoot::secret_roots`]); with `hide_secrets` it also
 /// skips environment files.
 pub(crate) fn walker(root: &Path, hide_secrets: bool, secret: &[PathBuf]) -> WalkBuilder {
+    pruned_walker(root, hide_secrets, secret, |_| true)
+}
+
+/// [`walker`] that does not descend into a directory below `root` whose
+/// path relative to `root` `enter` refuses (a search's pruning,
+/// [`super::prune`]).
+pub(crate) fn pruned_walker(
+    root: &Path,
+    hide_secrets: bool,
+    secret: &[PathBuf],
+    enter: impl Fn(&Path) -> bool + Send + Sync + 'static,
+) -> WalkBuilder {
     let secret = secret.to_vec();
+    let base = root.to_path_buf();
     let mut builder = WalkBuilder::new(root);
     builder
         .hidden(false)
@@ -76,6 +90,9 @@ pub(crate) fn walker(root: &Path, hide_secrets: bool, secret: &[PathBuf]) -> Wal
             entry.file_name() != ".git"
                 && !(hide_secrets && crate::paths::is_secret_file_name(entry.file_name()))
                 && !secret.iter().any(|dir| entry.path().starts_with(dir))
+                && (entry.depth() == 0
+                    || !entry.file_type().is_some_and(|kind| kind.is_dir())
+                    || entry.path().strip_prefix(&base).map_or(true, &enter))
         });
     builder
 }
@@ -142,6 +159,17 @@ impl Newest {
 }
 
 pub(crate) fn run(shared: &Shared, call: CallMeta, args: GlobArgs) -> ToolOutcome {
+    run_with(shared, call, args, true)
+}
+
+/// [`run`], its walk pruned by the pattern ([`Prune`]) when `prune`; an
+/// unpruned walk is the tests' reference.
+pub(crate) fn run_with(
+    shared: &Shared,
+    call: CallMeta,
+    args: GlobArgs,
+    prune: bool,
+) -> ToolOutcome {
     let matcher = GlobBuilder::new(&args.pattern)
         .literal_separator(true)
         .build()
@@ -156,7 +184,16 @@ pub(crate) fn run(shared: &Shared, call: CallMeta, args: GlobArgs) -> ToolOutcom
     }
 
     let scan = call.scan(&root);
-    let walker = walker(&root, shared.hide_secrets, shared.root.secret_roots());
+    let pruning = prune.then(|| Prune::compile(&args.pattern)).flatten();
+    let walker = match pruning {
+        Some(pruning) => pruned_walker(
+            &root,
+            shared.hide_secrets,
+            shared.root.secret_roots(),
+            move |relative| pruning.may_match_below(relative),
+        ),
+        None => walker(&root, shared.hide_secrets, shared.root.secret_roots()),
+    };
     let found = scan.walk(&walker, |entry, newest: &mut Newest| {
         if !entry.file_type().is_some_and(|ft| ft.is_file()) {
             return true;
@@ -190,7 +227,15 @@ pub(crate) fn run(shared: &Shared, call: CallMeta, args: GlobArgs) -> ToolOutcom
     );
 
     let mut out = String::new();
-    if hits.is_empty() {
+    if hits.is_empty() && partial.is_some() {
+        // A search that stopped early is no evidence of absence.
+        let _ = writeln!(
+            out,
+            "No files matched `{}` among the entries examined. The search stopped before \
+             it was done, so matching files may exist beyond what it examined.",
+            args.pattern
+        );
+    } else if hits.is_empty() {
         let _ = writeln!(out, "No files matched `{}`", args.pattern);
     }
     for hit in &hits {

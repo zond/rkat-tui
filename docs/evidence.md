@@ -8271,3 +8271,29 @@ store gets the store's path and the grant to ask for. Pinned by
 `every_denial_names_its_source`, `a_scope_denial_says_how_to_allow_it`,
 `a_scope_denial_names_the_path_and_how_to_allow_it` and the `PATH:`
 cases of `stage2_parsing`.
+
+## Glob prunes its walk by the pattern (2026-11-13)
+
+From real use: `*-pnpm*/bin/pnpm` and `*-nodejs*/bin/npm` under a large
+store examined 500 000 entries, most of them deep under unrelated
+`*-source/` directories, and answered "no matches" with a partial note.
+`tools::prune::Prune` compiles a pattern into one matcher per `/`
+segment (`**` any number of them, adjacent ones folded) and answers, for
+a directory relative to the search root, whether a path below it can
+still match (a small NFA over the segments); `glob`'s walker
+(`glob::pruned_walker`, `filter_entry`) does not enter a directory where
+none can. Files are still matched against the whole pattern by
+`globset`, so a pruned walk lists exactly what a full one does; each
+segment is compiled with the same `literal_separator`, so a segment and
+the pattern agree on a name. A pattern holding `{`, `}`, `[`, `]` or `\`
+(an alternation or class that could hold `/`, an escape) or an empty
+segment is not pruned. `grep`'s `glob` filter is matched with `*`
+crossing `/` against the relative path or the bare file name; a `/` in
+its literal start rules the name out, so its literal directories
+(`prune::literal_dirs`) confine the walk. A capped search that found
+nothing says matches may exist beyond what it examined. Pinned by
+`pruning_never_skips_a_directory_holding_a_match` (generated paths and
+patterns: no ancestor of a match is pruned),
+`a_glob_prunes_its_walk_by_the_pattern` (answers equal to a full walk's,
+entries examined bounded), `a_grep_filter_with_directories_prunes_the_walk`
+and `a_capped_search_with_no_match_does_not_claim_absence`.

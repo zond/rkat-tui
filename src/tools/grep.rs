@@ -1,6 +1,6 @@
 //! `grep`: gitignore-aware regex search over file contents.
 
-use super::glob::{search_root, walker};
+use super::glob::{pruned_walker, search_root, walker};
 use super::{
     CallMeta, GREP, MAX_FILE_READ_BYTES, ReadRefusal, Shared, ToolFailure, ToolOutcome,
     looks_binary, read_capped_while, truncate_line,
@@ -151,7 +151,17 @@ pub(crate) fn run(shared: &Shared, call: CallMeta, args: GrepArgs) -> ToolOutcom
 
     let scan = call.scan(&root);
     let go_on = || scan.go_on();
-    let walker = walker(&root, shared.hide_secrets, shared.root.secret_roots());
+    // A filter with directories in its literal part confines the matches
+    // below them: the walk does not enter the others.
+    let walker = match args.glob.as_deref().and_then(super::prune::literal_dirs) {
+        Some(dirs) => pruned_walker(
+            &root,
+            shared.hide_secrets,
+            shared.root.secret_roots(),
+            move |relative| super::prune::on_the_way(relative, &dirs),
+        ),
+        None => walker(&root, shared.hide_secrets, shared.root.secret_roots()),
+    };
     let found = scan.walk(&walker, |entry, found: &mut Found| {
         if !entry.file_type().is_some_and(|ft| ft.is_file()) {
             return true;
@@ -219,7 +229,15 @@ pub(crate) fn run(shared: &Shared, call: CallMeta, args: GrepArgs) -> ToolOutcom
     // A file's own lines were cut at the output's limits.
     out.truncated |= full.load(Ordering::Relaxed);
     let mut text = out.text;
-    if files.is_empty() {
+    if files.is_empty() && partial.is_some() {
+        // A search that stopped early is no evidence of absence.
+        let _ = writeln!(
+            text,
+            "No matches for `{}` in the files examined. The search stopped before it was \
+             done, so matches may exist beyond what it examined.",
+            args.pattern
+        );
+    } else if files.is_empty() {
         let _ = writeln!(text, "No matches for `{}`", args.pattern);
     }
     if out.truncated {

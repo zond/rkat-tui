@@ -1248,3 +1248,132 @@ async fn a_dropped_search_stops_its_walk() {
         );
     }
 }
+
+/// A store-like tree: one package with `bin/pnpm`, one with `bin/npm`,
+/// and a large source tree that holds neither.
+fn store_tree() -> TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    for (package, tool) in [("aaa-pnpm-9.1", "pnpm"), ("bbb-nodejs-22", "npm")] {
+        let bin = dir.path().join(package).join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join(tool), "#!/bin/sh\n").unwrap();
+    }
+    for top in 0..4 {
+        for sub in 0..10 {
+            let deep = dir.path().join(format!("src{top}-source/pkg{sub}/bin/lib"));
+            std::fs::create_dir_all(&deep).unwrap();
+            for file in 0..5 {
+                std::fs::write(deep.join(format!("f{file}.rs")), "x\n").unwrap();
+            }
+        }
+    }
+    dir
+}
+
+/// Every file under `root` the pattern matches, as `glob` lists them
+/// (relative), found by walking everything: the unpruned reference.
+fn reference(root: &Path, pattern: &str) -> Vec<String> {
+    let matcher = globset::GlobBuilder::new(pattern)
+        .literal_separator(true)
+        .build()
+        .unwrap()
+        .compile_matcher();
+    let mut found = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                let relative = path.strip_prefix(root).unwrap();
+                if matcher.is_match(relative) {
+                    found.push(relative.display().to_string());
+                }
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// `glob` prunes its walk by the pattern: a pattern without `**` does not
+/// descend past its depth or into a directory its next segment cannot
+/// match, one with `**` still skips what its literal start rules out, and
+/// the answer is the same as an unpruned walk's for every pattern.
+#[tokio::test]
+async fn a_glob_prunes_its_walk_by_the_pattern() {
+    let dir = store_tree();
+    for (pattern, at_most) in [
+        ("*-pnpm*/bin/pnpm", 12),
+        ("*-nodejs*/bin/npm", 12),
+        ("src0-source/**/*.rs", 120),
+        ("*/*/bin/*", 400),
+        ("**/bin/pnpm", 400),
+        ("**/*.rs", 400),
+        ("nothing/*", 3),
+    ] {
+        let probe = paced(Duration::ZERO);
+        let tools = bounded(&dir, SearchLimits::default(), &probe);
+        let out = search(&tools, "glob", json!({ "pattern": pattern })).await;
+        let mut listed: Vec<String> = out
+            .lines()
+            .filter(|line| !line.starts_with("No files matched"))
+            .map(str::to_string)
+            .collect();
+        listed.sort();
+        assert_eq!(listed, reference(dir.path(), pattern), "{pattern}: {out}");
+        let examined = probe.entries.load(Ordering::Relaxed);
+        assert!(examined <= at_most, "{pattern}: examined {examined}");
+    }
+    // Unpruned, the store's source tree alone is more than 290 entries.
+    let probe = paced(Duration::ZERO);
+    let tools = bounded(&dir, SearchLimits::default(), &probe);
+    let _ = search(&tools, "glob", json!({"pattern": "**/pnpm"})).await;
+    assert!(probe.entries.load(Ordering::Relaxed) > 290);
+}
+
+/// `grep`'s `glob` filter with directories in its literal part keeps the
+/// walk below them.
+#[tokio::test]
+async fn a_grep_filter_with_directories_prunes_the_walk() {
+    let dir = store_tree();
+    let probe = paced(Duration::ZERO);
+    let tools = bounded(&dir, SearchLimits::default(), &probe);
+    let out = search(
+        &tools,
+        "grep",
+        json!({"pattern": "x", "glob": "src1-source/pkg3/**/*.rs", "output_mode": "files_with_matches"}),
+    )
+    .await;
+    assert_eq!(
+        out.lines().filter(|l| l.ends_with(".rs")).count(),
+        5,
+        "{out}"
+    );
+    let examined = probe.entries.load(Ordering::Relaxed);
+    assert!(examined < 20, "examined {examined}");
+}
+
+/// A search that stopped at its cap and found nothing does not read as
+/// absence: it says matches may exist beyond what it examined.
+#[tokio::test]
+async fn a_capped_search_with_no_match_does_not_claim_absence() {
+    let dir = store_tree();
+    let probe = paced(Duration::ZERO);
+    let limits = SearchLimits {
+        budget: Duration::from_mins(10),
+        max_entries: 10,
+    };
+    let tools = bounded(&dir, limits, &probe);
+    let out = search(&tools, "glob", json!({"pattern": "**/no-such-file"})).await;
+    assert!(
+        out.contains("matching files may exist beyond what it examined"),
+        "{out}"
+    );
+    let out = search(&tools, "grep", json!({"pattern": "no-such-text"})).await;
+    assert!(
+        out.contains("matches may exist beyond what it examined"),
+        "{out}"
+    );
+}

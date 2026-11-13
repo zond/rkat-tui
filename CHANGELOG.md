@@ -4,6 +4,15 @@
 
 ### Fixed
 
+- `glob` no longer walks what its pattern cannot match: `*-pnpm*/bin/pnpm`
+  under a large store examined hundreds of thousands of entries deep in
+  unrelated directories and answered "no matches" with a partial note;
+  it now enters only the first-level directories matching `*-pnpm*` and
+  goes no deeper than three levels. A pattern with `**` still skips what
+  its leading segments rule out, and `grep`'s `glob` filter keeps the
+  walk below the directories it names. A search that stopped at its cap
+  and found nothing now says matches may exist beyond what it examined.
+
 - A Markdown table wider than the transcript no longer loses its right-hand
   columns. When the columns' natural widths do not fit, the widest ones
   shrink (narrow ones keep their width, none below 6 columns) and their

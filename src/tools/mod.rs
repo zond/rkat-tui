@@ -21,6 +21,7 @@ mod diff;
 mod edit;
 mod glob;
 mod grep;
+mod prune;
 mod read;
 mod read_only;
 mod scan;

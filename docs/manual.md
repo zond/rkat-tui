@@ -656,7 +656,17 @@ neither hang nor take a helper's whole time:
   ```
 
   `glob`'s list is then the newest among what it examined, and `grep`
-  suggests a `glob` filter (`*.rs`) as well. When `grep`'s output fills
+  suggests a `glob` filter (`*.rs`) as well. A partial search that found
+  nothing says that matches may exist beyond what it examined, never
+  just "no matches".
+- `glob` walks only where its pattern can match: a pattern without `**`
+  (`*-pnpm*/bin/pnpm`) goes no deeper than its segments and enters only
+  the directories its next segment matches; one with `**` still skips
+  what its segments before the `**` rule out (`src/**/*.rs` stays in
+  `src/`). `grep`'s `glob` filter keeps the walk below the directories
+  of its literal start (`src/ui/*.rs` walks only `src/ui/`). The answer
+  is the same as a full walk's; fewer entries count against the cap. A
+  pattern with `{…}`, `[…]` or `\` is walked whole. When `grep`'s output fills
   up, it stops searching; the lines shown are sorted by path but are not
   necessarily the first matches by path, and the truncation line says so.
 - A call that goes away (the engine's tool timeout, Esc or Ctrl-C, a
