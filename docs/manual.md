@@ -2046,7 +2046,18 @@ keep messages short, and treat a peer's message as a colleague's, not as
 your instruction. The daemon tells each agent who works here when it
 starts or switches conversation, and every agent when one joins or
 leaves, and why it left: its user quit, another agent's user retired it
-from `/agents`, or its session was closed.
+from `/agents`, or its session was closed. That list says what each
+other agent was doing: working (a run open), idle with a client
+attached, or idle with no client attached. A fresh list goes to every
+agent when one joins, when a client attaches to an agent that had none
+or an agent's last client leaves, and when the daemon restarts with the
+agents it kept; none goes when an agent starts or ends a run, so the
+states are a snapshot. The instructions say to announce file changes
+only to the agents the latest list shows working or attached: a message
+to an idle agent nobody is attached to would start a model turn of it
+for a note it does not need yet. It is told when it asks, or once a
+later list shows it working or attached. This is guidance, not a gate:
+a message to such an agent is still allowed.
 
 **`/quit` and `/detach` per agent.** `/quit` retires your agent: it
 leaves the workspace (a running turn is interrupted first, its helpers

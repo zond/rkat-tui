@@ -587,7 +587,7 @@ async fn a_peer_message_wakes_the_other_agent_and_its_client_shows_it() {
     );
     assert!(
         system.contains(&format!(
-            "Other agents working in this workspace now: `{a_name}`"
+            "Other agents in this workspace now: `{a_name}` (idle, a client attached)"
         )),
         "{system}"
     );
@@ -604,6 +604,114 @@ async fn a_peer_message_wakes_the_other_agent_and_its_client_shows_it() {
     );
     a.quit().await;
     b.quit().await;
+    daemon.stop().await;
+}
+
+/// How many roster notes (the daemon's lists of the other agents and
+/// their states) `messages` hold.
+fn roster_notes(messages: &[Message]) -> usize {
+    format!("{messages:?}")
+        .matches("Other agents in this workspace now:")
+        .count()
+}
+
+/// The owner's decision (2026-11-13): an agent is shown which of the others
+/// are working, idle with a client, or idle with none, and told to announce
+/// only to the first two. A joins working (its turn held at the model), B
+/// idle with its client, C idle after its client detached: D, joining, is
+/// told exactly that, and its instructions say whom to announce to. The
+/// note is a snapshot sent on roster and attachment changes, never for a
+/// run: over A's three runs no agent is sent another, and nothing runs for
+/// C, which no note wakes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_roster_note_shows_who_works_and_is_not_sent_for_runs() {
+    use rkat_tui::daemon::protocol::AgentChoice;
+    use rkat_tui::ui::{Departure, Effect};
+    let ws = Workspace::new();
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Gated(Arc::clone(&gate), Box::new(Step::Text("a done"))),
+        Step::Text("d answered"),
+        Step::Text("a2"),
+        Step::Text("a3"),
+        Step::Text("d again"),
+        Step::Text("b answered"),
+    ]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let mut a = rig::Client::attach(&ws.root).await;
+    let mut b = rig::Client::attach_agent(&ws.root, AgentChoice::New).await;
+    let mut c = rig::Client::attach_agent(&ws.root, AgentChoice::New).await;
+    let a_name = a.agent().await;
+    let b_name = b.agent().await;
+    let c_name = c.agent().await;
+    c.send(Effect::Leave(Departure::Detach));
+    c.quit().await;
+    common::within(async {
+        while !daemon
+            .status()
+            .await
+            .agents
+            .iter()
+            .any(|row| row.name == c_name && row.clients == 0)
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    a.send(Effect::StartTurn("work on".into()));
+    llm.wait_call(0).await;
+    let mut d = rig::Client::attach_agent(&ws.root, AgentChoice::New).await;
+    d.send(Effect::StartTurn("who is here".into()));
+    assert_eq!(d.turn_finished().await.unwrap().text, "d answered");
+    let d_first = llm.recorded()[1].messages.clone();
+    let told = format!("{d_first:?}");
+    assert!(
+        told.contains(&format!("Other agents in this workspace now: {}", {
+            let mut listed = [
+                (a_name.clone(), "working"),
+                (b_name.clone(), "idle, a client attached"),
+                (c_name.clone(), "idle, no client attached"),
+            ];
+            listed.sort();
+            listed
+                .iter()
+                .map(|(name, state)| format!("`{name}` ({state})"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        })),
+        "{told}"
+    );
+    for line in [
+        "that the latest such note shows working or with a client attached",
+        "Do not message an agent it shows idle with no client attached",
+    ] {
+        assert!(told.contains(line), "{line}: {told}");
+    }
+    assert_eq!(roster_notes(&d_first), 1, "{told}");
+    // A's runs: the one held, then two more.
+    gate.notify_one();
+    assert_eq!(a.turn_finished().await.unwrap().text, "a done");
+    for text in ["a2", "a3"] {
+        a.send(Effect::StartTurn("more".into()));
+        assert_eq!(a.turn_finished().await.unwrap().text, text);
+    }
+    // A was told of B's, C's and D's joins and of C's detach, and nothing
+    // for its own runs or D's.
+    let a_last = llm.recorded()[3].messages.clone();
+    assert_eq!(roster_notes(&a_last), 4, "{a_last:?}");
+    // D: still its one note after A's runs.
+    d.send(Effect::StartTurn("again".into()));
+    assert_eq!(d.turn_finished().await.unwrap().text, "d again");
+    assert_eq!(roster_notes(&llm.recorded()[4].messages), 1);
+    // B: its own at its seat, C's join and detach, D's join.
+    b.send(Effect::StartTurn("and you".into()));
+    assert_eq!(b.turn_finished().await.unwrap().text, "b answered");
+    let b_last = llm.recorded()[5].messages.clone();
+    assert_eq!(roster_notes(&b_last), 4, "{b_last:?}");
+    assert_eq!(llm.recorded().len(), 6, "nothing ran for C");
+    a.quit().await;
+    b.quit().await;
+    d.quit().await;
     daemon.stop().await;
 }
 

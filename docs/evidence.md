@@ -8360,3 +8360,54 @@ the block and its aggregate rendering in the live transcript, in a
 stored conversation's restore (`transcript::restore`) and in the helpers'
 follower view: a change of the block model across three views, not a
 contained one.
+
+## Announcements skip an idle agent with no client (2026-11-13)
+
+An agent's `send_message` to an idle agent starts a model turn there at
+once, client or not (`a_peer_message_wakes_the_other_agent_and_its_client_shows_it`,
+`a_peer_woken_agent_with_no_client_is_denied_what_needs_review`); a user's
+log showed three idle leftover agents each make a model request within
+50 ms of one file announcement. The owner's decision: show each agent
+which of the others are idle with nobody attached, and tell it to
+announce only to those that are working or attached. A send that queues
+without waking is the engine's to add (an ask, not built here: the
+engine's `handling_mode: "queue"` delivers "at the peer's next turn
+boundary", which for an idle peer is now).
+
+The roster note (`daemon::agents::roster_note`) now names each other
+agent with its state: `working` (its member status shows a run open),
+`idle, a client attached`, `idle, no client attached`; an unreadable run
+state is worded by attachment alone. The persona
+(`bootstrap::persona::agents_persona`) says to announce to the agents
+the latest note shows working or attached, not to message one idle with
+no client ("a message starts it running for nothing"), and to tell it
+when it asks or a later note shows it working or attached; the helper
+and fork lines point at the same set. The gate is unchanged: such a send
+is still allowed.
+
+When the note is sent: to an agent seated or switched (its own roster);
+to every other agent when one joins (one note, the join line and the
+roster, sent from `Agents::bind` once the client is bound, so it already
+says "a client attached"), when an agent's first client binds or its
+last leaves (`Agents::release` spawns it under the seating lock, after
+the release, so it orders with seats and retires; a retired agent or a
+shutdown sends nothing), and to every restored agent at a daemon
+restart (no client came back). Never for a run's start or end: that would
+append a system note to every other agent's context per run. Pinned by
+`agents::the_roster_note_shows_who_works_and_is_not_sent_for_runs`
+(D joins beside A working, B attached, C detached and reads exactly those
+states; over A's three runs A holds 4 notes, B 4, D 1; nothing runs for
+C).
+
+Known weakness: the states are a snapshot. An agent shown idle may since
+have started a run (a schedule, a watch, a peer), and one shown working
+may since have gone idle; only attachment changes refresh the list. No
+tool shows a top-level agent the others' state live: `peers` carries no
+run or client state, and the member-scoped `list_members` /
+`member_status` and `mob_list_members` / `mob_check_member` show a
+member without manage scope only the members it spawned (meerkat-mob
+`runtime/tools.rs` `dispatch_for_owner`, meerkat-mob-mcp
+`dispatch_mob_list_members`); whether a client is attached is the
+daemon's alone. The cheapest truthful live source would be a read-only
+tool over `Agents::rows` (what `rkat/status` answers); not added. Whether
+a real model follows the instruction is not measured.

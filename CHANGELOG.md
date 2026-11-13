@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Agents are told not to wake an idle agent nobody is attached to just
+  to announce file changes. The daemon's list of the other agents now says whether each one is
+  working, idle with a client attached, or idle with no client attached.
+  A new list goes out when an agent joins, when a client attaches to an
+  agent or its last client leaves, and when the daemon restores its
+  agents, but not on every run. The instructions say to announce only to
+  agents that are working or attached, because a message to an idle
+  agent with no client starts a model request there for nothing.
+
 ## [0.0.3] - 2026-11-13
 
 ### Fixed

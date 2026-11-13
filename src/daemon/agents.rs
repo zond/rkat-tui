@@ -96,20 +96,48 @@ fn random_id() -> String {
 /// The source the daemon's notes about the other agents carry.
 const NOTE_SOURCE: &str = "rkat-tui-agents";
 
+/// What another agent was doing when a roster note was sent: whether a
+/// run of it was open, and whether a client was attached to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PeerState {
+    /// Its run, as its status said.
+    pub run: RunState,
+    /// At least one client was bound to it.
+    pub attached: bool,
+}
+
+impl PeerState {
+    /// The state as a roster note words it. An unreadable run state claims
+    /// neither working nor idle.
+    fn describe(self) -> &'static str {
+        match (self.run, self.attached) {
+            (RunState::Running, _) => "working",
+            (RunState::Idle, true) => "idle, a client attached",
+            (RunState::Idle, false) => "idle, no client attached",
+            (RunState::Unknown, true) => "a client attached",
+            (RunState::Unknown, false) => "no client attached",
+        }
+    }
+}
+
 /// The note telling an agent which other agents work in its workspace
-/// (`None`: none do).
+/// and what each was doing when it was sent (`None`: none do). It is sent
+/// when the roster or an agent's attachment changes, never for a run's
+/// start or end, so the note says its states are a snapshot.
 #[must_use]
-pub fn roster_note(others: &[String]) -> Option<String> {
+pub fn roster_note(others: &[(String, PeerState)]) -> Option<String> {
     if others.is_empty() {
         return None;
     }
     let names = others
         .iter()
-        .map(|name| format!("`{name}`"))
+        .map(|(name, state)| format!("`{name}` ({})", state.describe()))
         .collect::<Vec<_>>()
         .join(", ");
     Some(format!(
-        "Other agents working in this workspace now: {names}. You are wired to each of them as a peer."
+        "Other agents in this workspace now: {names}. You are wired to each of them as a peer. \
+         These states are as of this note: a new one replaces it when an agent joins, or a client \
+         attaches to an agent or leaves it; none comes when an agent starts or ends a run."
     ))
 }
 
@@ -205,7 +233,7 @@ impl Drop for Agent {
 const WATCHER_DRAIN: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// How long a seat or retire waits for its membership note to an idle
-/// agent ([`Agents::note_others`]) before leaving it to land on its own.
+/// agent ([`Agents::note_each`]) before leaving it to land on its own.
 const NOTE_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// How many unattended denials an agent keeps for its next client.
@@ -665,6 +693,9 @@ impl Agents {
         // The mob keeps its wiring across a restart; an edge it lost is
         // made again now.
         self.rewire(&names).await;
+        // No client came back with them: what each was last told of the
+        // others' clients is stale.
+        self.note_rosters(&names).await;
         let Some((name, session)) = restored.pop() else {
             return Err(super::DaemonError::NoSession(AGENT_PROFILE.to_string()));
         };
@@ -756,20 +787,104 @@ impl Agents {
         append_note(Arc::clone(&self.state), name.to_string(), text, key).await;
     }
 
-    /// Tell `name` which other agents work here now (its fresh
-    /// conversation knows none).
-    async fn note_roster(&self, name: &str) {
-        let others: Vec<String> = self
-            .names()
-            .into_iter()
-            .filter(|other| other != name)
+    /// Every live agent and what it is doing now (whether a run is open,
+    /// whether a client is attached), names in order.
+    async fn states(&self) -> Vec<(String, PeerState)> {
+        let attached: Vec<(String, bool)> = self
+            .table
+            .lock()
+            .iter()
+            .map(|(name, agent)| (name.clone(), agent.clients > 0))
             .collect();
-        if let Some(text) = roster_note(&others) {
+        let mut states = Vec::with_capacity(attached.len());
+        for (name, attached) in attached {
+            let run = self.conversations.running(&name).await;
+            states.push((name, PeerState { run, attached }));
+        }
+        states
+    }
+
+    /// The roster note for `name`: every other agent of `states`.
+    fn roster_for(name: &str, states: &[(String, PeerState)]) -> Option<String> {
+        let others: Vec<(String, PeerState)> = states
+            .iter()
+            .filter(|(other, _)| other != name)
+            .cloned()
+            .collect();
+        roster_note(&others)
+    }
+
+    /// Tell `name` which other agents work here now and what each is
+    /// doing (its fresh conversation knows none).
+    async fn note_roster(&self, name: &str) {
+        if let Some(text) = Self::roster_for(name, &self.states().await) {
             self.note(name, text).await;
         }
     }
 
-    /// Tell every other live agent that `name` joined (`joined`) or left.
+    /// Tell every agent of `names` the roster as it is now, each its own
+    /// ([`Self::note_each`]): the daemon restored them, and what their
+    /// conversations were last told of the others' clients is gone.
+    async fn note_rosters(&self, names: &[String]) {
+        let states = self.states().await;
+        let notes = names
+            .iter()
+            .filter_map(|name| Some((name.clone(), Self::roster_for(name, &states)?)))
+            .collect();
+        self.note_each(notes).await;
+    }
+
+    /// Tell every other live agent the roster as it is now, after `name`
+    /// joined (`joined`: led by the line saying so) or a client attached
+    /// to it or its last one left.
+    async fn note_roster_to_others(&self, name: &str, joined: bool) {
+        let states = self.states().await;
+        let notes = states
+            .iter()
+            .filter(|(other, _)| other != name)
+            .filter_map(|(other, _)| {
+                let roster = Self::roster_for(other, &states)?;
+                let text = if joined {
+                    format!("{} {roster}", membership_note(name, None))
+                } else {
+                    roster
+                };
+                Some((other.clone(), text))
+            })
+            .collect();
+        self.note_each(notes).await;
+    }
+
+    /// `name`'s attachment changed outside the seating lock (its last
+    /// client left): the others get the roster as it is then, under the
+    /// lock, so it is ordered with the seats and retires around it. An
+    /// agent retired meanwhile, or a daemon shutting down, tells no one.
+    fn attachment_changed(self: &Arc<Self>, name: &str) {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let agents = Arc::clone(self);
+        let name = name.to_string();
+        runtime.spawn(async move {
+            let _one = agents.seating.lock().await;
+            if agents.is_live(&name) && !agents.lifecycle.is_terminating() {
+                agents.note_roster_to_others(&name, false).await;
+            }
+        });
+    }
+
+    /// Tell every other live agent that `name` left.
+    async fn note_others(&self, name: &str, left: &Leave) {
+        let notes = self
+            .names()
+            .into_iter()
+            .filter(|other| other != name)
+            .map(|other| (other, membership_note(name, Some(left))))
+            .collect();
+        self.note_each(notes).await;
+    }
+
+    /// Append each note of `notes` (agent, text) to its agent.
     ///
     /// The engine applies an append to a running member's session only
     /// when its turn ends, so a note to a busy agent would hold the
@@ -778,29 +893,26 @@ impl Agents {
     /// idle agent is waited for (bounded by [`NOTE_WAIT`]), so the agent
     /// reads it at its next turn; one to a running agent, or one whose
     /// state cannot be read, is left to land when that turn ends.
-    async fn note_others(&self, name: &str, left: Option<&Leave>) {
+    async fn note_each(&self, notes: Vec<(String, String)>) {
         let mut waited = Vec::new();
-        for other in self.names() {
-            if other == name {
-                continue;
-            }
+        for (other, text) in notes {
             let idle = self.conversations.running(&other).await == RunState::Idle;
             let key = format!("rkat-agents:{other}:{}", self.tick());
             let task = tokio::spawn(append_note(
                 Arc::clone(&self.state),
                 other.clone(),
-                membership_note(name, left),
+                text,
                 key,
             ));
             if idle {
                 waited.push((other, task));
             } else {
-                tracing::debug!(agent = %other, "the agent is busy: its membership note lands after its turn");
+                tracing::debug!(agent = %other, "the agent is busy: its note about the other agents lands after its turn");
             }
         }
         for (other, task) in waited {
             if tokio::time::timeout(NOTE_WAIT, task).await.is_err() {
-                tracing::debug!(agent = %other, "the membership note was not applied in time: it lands later");
+                tracing::debug!(agent = %other, "the note about the other agents was not applied in time: it lands later");
             }
         }
     }
@@ -947,13 +1059,20 @@ impl Agents {
         // An agent left detached stays marked until it retires: `/quit`
         // asks once a detach happened ("nobody detached since").
         let mut fresh = bound.seated;
+        let mut first = false;
         if let Some(agent) = self.table.lock().get_mut(&bound.name) {
             fresh |= agent.spare;
+            first = agent.clients == 0;
             agent.clients += 1;
             agent.spare = false;
             agent.active = active;
         }
         tracing::info!(agent = %bound.name, seated = bound.seated, "a client bound to an agent");
+        // The others learn it joined, or that it has a client again; a
+        // second client changes nothing they are told.
+        if bound.seated || first {
+            self.note_roster_to_others(&bound.name, bound.seated).await;
+        }
         Ok((
             Binding {
                 agents: Arc::clone(self),
@@ -1066,7 +1185,8 @@ impl Agents {
         }
         self.admit(&name, false, false);
         self.rewire(std::slice::from_ref(&name)).await;
-        self.note_others(&name, None).await;
+        // The others are told it joined once its client is bound
+        // ([`Self::bind`]), so the one note says it has one.
         self.note_roster(&name).await;
         tracing::info!(agent = %name, %session, "seated an agent");
         Ok(Bound { name, seated: true })
@@ -1114,7 +1234,7 @@ impl Agents {
         };
         tracing::error!(agent = %name, "the agent was lost in a failed switch");
         self.table.lock().remove(name);
-        self.note_others(name, Some(&Leave::Closed)).await;
+        self.note_others(name, &Leave::Closed).await;
         true
     }
 
@@ -1182,7 +1302,7 @@ impl Agents {
         if let Some(session) = &session {
             self.engine.forget_session(session);
         }
-        self.note_others(name, Some(why)).await;
+        self.note_others(name, why).await;
         tracing::info!(agent = %name, ?session, "the agent retired");
         Ok(session)
     }
@@ -1220,28 +1340,34 @@ impl Agents {
     /// without one (and without a shutdown) leaves it detached. A
     /// `withdrawn` binding's client never learned it attached: an agent
     /// seated (or taken as the spare) for it waits for the next client
-    /// (`fresh`), any other is left as it was.
-    fn release(&self, name: &str, withdrawn: bool, fresh: bool) {
+    /// (`fresh`), any other is left as it was. Either way, an agent left
+    /// with no client is news to the others ([`Self::attachment_changed`]).
+    fn release(self: &Arc<Self>, name: &str, withdrawn: bool, fresh: bool) {
         let terminating = self.lifecycle.is_terminating();
-        let mut table = self.table.lock();
-        let Some(agent) = table.get_mut(name) else {
-            return;
-        };
-        agent.clients = agent.clients.saturating_sub(1);
-        if agent.clients > 0 {
-            return;
+        {
+            let mut table = self.table.lock();
+            let Some(agent) = table.get_mut(name) else {
+                return;
+            };
+            agent.clients = agent.clients.saturating_sub(1);
+            if agent.clients > 0 {
+                return;
+            }
+            if withdrawn {
+                agent.spare |= fresh;
+            } else if !terminating && !agent.detached {
+                agent.detached = true;
+                tracing::info!(agent = %name, "the agent's last client left without retiring it: detached, it keeps running");
+            }
         }
-        if withdrawn {
-            agent.spare |= fresh;
-        } else if !terminating && !agent.detached {
-            agent.detached = true;
-            tracing::info!(agent = %name, "the agent's last client left without retiring it: detached, it keeps running");
+        if !terminating {
+            self.attachment_changed(name);
         }
     }
 
     /// A client of `name` left by its `/quit` while other clients work with
     /// it: one client fewer, now.
-    pub fn left(&self, name: &str) {
+    pub fn left(self: &Arc<Self>, name: &str) {
         self.release(name, false, false);
     }
 
@@ -1387,9 +1513,24 @@ mod tests {
     #[test]
     fn the_notes_name_the_agents() {
         assert_eq!(roster_note(&[]), None);
-        let roster = roster_note(&["main-aaaa".into(), "main-bbbb".into()]).unwrap();
+        let state = |run, attached| PeerState { run, attached };
+        let roster = roster_note(&[
+            ("main-aaaa".into(), state(RunState::Running, false)),
+            ("main-bbbb".into(), state(RunState::Idle, true)),
+            ("main-cccc".into(), state(RunState::Idle, false)),
+            ("main-dddd".into(), state(RunState::Unknown, false)),
+        ])
+        .unwrap();
         assert!(
-            roster.contains("`main-aaaa`, `main-bbbb`") && roster.contains("wired"),
+            roster.contains(
+                "`main-aaaa` (working), `main-bbbb` (idle, a client attached), \
+                 `main-cccc` (idle, no client attached), `main-dddd` (no client attached)."
+            ) && roster.contains("wired"),
+            "{roster}"
+        );
+        // A snapshot, and the note says so.
+        assert!(
+            roster.contains("as of this note") && roster.contains("starts or ends a run"),
             "{roster}"
         );
         assert!(membership_note("main-cccc", None).contains("`main-cccc` joined"));
