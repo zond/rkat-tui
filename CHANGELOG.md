@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.0.3] - 2026-11-13
+
 ### Fixed
 
 - A daemon the TUI started that exits before serving is reported with

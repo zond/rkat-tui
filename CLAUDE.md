@@ -143,7 +143,7 @@ repository). Open upstream issues this code waits on:
 
 - lukacf/meerkat#2180: an exact tool catalog for a mob member's
   dispatchers. rkat-tui's own search and reveal
-  (`src/daemon/deferral/reveal.rs`) goes when it ships; `tests/tool_costs.rs`
+  (`src/daemon/deferral/reveal.rs`) goes when it ships; `tests/it/tool_costs.rs`
   fails on purpose that day.
 - #2182: an atomic "cancel if still queued" for `rkat/recall`
   (`Local::recall`'s lookup-then-cancel leaves a window in which the
