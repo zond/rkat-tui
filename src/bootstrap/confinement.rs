@@ -1156,7 +1156,7 @@ pub fn plan(
             .ok()
             .map(|exe| std::fs::canonicalize(&exe).unwrap_or(exe));
         ConfinementError::Unenforceable {
-            mode: mode_name(mode),
+            mode: mode.name(),
             status,
             help: unenforceable_help(status, &source, exe.as_deref()),
             source,
@@ -1168,14 +1168,6 @@ pub fn plan(
         shell_env: Some(confined_environment(std::env::vars_os())),
         granted,
     })
-}
-
-fn mode_name(mode: ConfinementArg) -> &'static str {
-    match mode {
-        ConfinementArg::Workspace => "workspace",
-        ConfinementArg::Strict => "strict",
-        ConfinementArg::Off => "off",
-    }
 }
 
 #[cfg(test)]

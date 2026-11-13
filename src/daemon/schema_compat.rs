@@ -20,6 +20,10 @@
 //! only in form: no argument a tool accepts is refused by it (the tools
 //! validate their own arguments), the model is only no longer offered an
 //! explicit `null` for an optional field, which it can leave out.
+//!
+//! One case stays as it was: a recursive type keeps its `$ref` past
+//! [`MAX_REF_DEPTH`] (and so its `$defs`), and a strict backend may still
+//! refuse that one tool.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -296,9 +300,13 @@ pub fn decorator() -> AgentLlmClientDecorator {
 pub struct SchemaCompat {
     inner: Arc<dyn AgentLlmClient>,
     /// The normalized definition per tool name, with the definition it was
-    /// made from (a tool whose definition changes is normalized again).
-    cache: Mutex<HashMap<String, (Arc<ToolDef>, Arc<ToolDef>)>>,
+    /// made from (a tool whose definition changes is normalized again);
+    /// shared with the client's forks.
+    cache: Arc<Mutex<Normalized>>,
 }
+
+/// [`SchemaCompat`]'s cache.
+type Normalized = HashMap<String, (Arc<ToolDef>, Arc<ToolDef>)>;
 
 impl SchemaCompat {
     /// `inner` with normalized tool schemas.
@@ -306,7 +314,7 @@ impl SchemaCompat {
     pub fn new(inner: Arc<dyn AgentLlmClient>) -> Self {
         Self {
             inner,
-            cache: Mutex::new(HashMap::new()),
+            cache: Arc::default(),
         }
     }
 
@@ -475,7 +483,10 @@ impl AgentLlmClient for SchemaCompat {
     fn fork_noncommitting_live_bridge(&self) -> Result<Arc<dyn AgentLlmClient>, AgentError> {
         // The fork's requests carry tools too.
         let fork = self.inner.fork_noncommitting_live_bridge()?;
-        Ok(Arc::new(Self::new(fork)))
+        Ok(Arc::new(Self {
+            inner: fork,
+            cache: Arc::clone(&self.cache),
+        }))
     }
 
     fn prepare_model_fallback(

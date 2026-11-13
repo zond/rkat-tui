@@ -402,39 +402,33 @@ pub fn check_endpoint_private(
     }
 }
 
-/// The first of `files` the agent's confined shell cannot read (see
-/// [`check_endpoint_private`]): the state directory's, else the runtime
-/// directory's fallback.
+/// The first of `first` and `fallbacks` the agent's confined shell cannot
+/// read (see [`check_endpoint_private`]): the state directory's, else the
+/// runtime directory's fallback.
 ///
 /// # Errors
 ///
-/// The first file's refusal ([`DaemonError::EndpointExposed`] with today's
+/// `first`'s refusal ([`DaemonError::EndpointExposed`] with today's
 /// message) when none is safe.
 pub fn choose_endpoint_file(
     plan: &bootstrap::ConfinementPlan,
-    files: &[PathBuf],
+    first: &Path,
+    fallbacks: &[PathBuf],
 ) -> Result<PathBuf, DaemonError> {
-    let mut first_refusal = None;
-    for file in files {
-        match check_endpoint_private(plan, file) {
-            Ok(()) => {
-                if first_refusal.is_some() {
-                    tracing::info!(file = %file.display(), "the state directory is granted to the agent's shell; the endpoint file goes to the runtime directory");
-                }
-                return Ok(file.clone());
-            }
-            Err(err) => {
-                first_refusal.get_or_insert(err);
-            }
+    let refusal = match check_endpoint_private(plan, first) {
+        Ok(()) => return Ok(first.to_path_buf()),
+        Err(err) => err,
+    };
+    match fallbacks
+        .iter()
+        .find(|file| check_endpoint_private(plan, file).is_ok())
+    {
+        Some(file) => {
+            tracing::info!(file = %file.display(), "the state directory is granted to the agent's shell; the endpoint file goes to the runtime directory");
+            Ok(file.clone())
         }
+        None => Err(refusal),
     }
-    Err(first_refusal.unwrap_or_else(|| {
-        DaemonError::io(
-            "find the endpoint file",
-            Path::new(""),
-            std::io::Error::new(std::io::ErrorKind::NotFound, "no place for it"),
-        )
-    }))
 }
 
 /// A started daemon: the runtime and its mob host are composed, the
@@ -506,11 +500,14 @@ impl Daemon {
         let started_at = endpoint::timestamp(std::time::SystemTime::now());
         let workspace = std::fs::canonicalize(&layers.scope.context_root)
             .unwrap_or_else(|_| layers.scope.context_root.clone());
-        let files = endpoint_files(
+        let (first_file, fallback_files) = endpoint_files(
             options.endpoint_file,
             options.state_home,
             &layers.scope.context_root,
         )?;
+        let files: Vec<&Path> = std::iter::once(first_file.as_path())
+            .chain(fallback_files.iter().map(PathBuf::as_path))
+            .collect();
         // Refuse before taking the realm unless every place is free or
         // proven stale (a refused connect): a live daemon keeps its
         // endpoint, at either place, and a slow one must not be mistaken
@@ -533,7 +530,7 @@ impl Daemon {
         layers.scope.project_root = layers.scope.project_root.clone().with_secret_roots(secret);
         let parts =
             bootstrap::assemble(layers, config, args, options.bootstrap, LEASE_SURFACE).await?;
-        let file = choose_endpoint_file(&parts.confinement, &files)?;
+        let file = choose_endpoint_file(&parts.confinement, &first_file, &fallback_files)?;
         let mut composed = engine::compose(parts, options.policy)?;
         // The audit log in the realm: owner-only, outside the workspace
         // and every grant of the agent's shell, secret to its file tools
@@ -609,13 +606,7 @@ impl Daemon {
         // Restored (their classifier seeded with what the user asked so
         // far), else one seated for the first client.
         let (first, session, created) = agents.start().await?;
-        let watch_task = deliver_watches(
-            &agents,
-            std::mem::replace(
-                &mut composed.watch_batches,
-                tokio::sync::mpsc::unbounded_channel().1,
-            ),
-        );
+        let watch_task = deliver_watches(&agents, composed.watch_batches);
         // Schedules fire while the daemon runs, from its start: the
         // runtime arms its firing host on a session's creation only, and a
         // restored agent creates none.
@@ -664,11 +655,7 @@ impl Daemon {
             report: local::ReportParts {
                 realm: composed.scope.realm_root(),
                 realm_id: composed.scope.realm_id.clone(),
-                confinement: clap::ValueEnum::to_possible_value(&args.effective_confinement())
-                    .map_or_else(
-                        || format!("{:?}", args.effective_confinement()),
-                        |value| value.get_name().to_string(),
-                    ),
+                confinement: args.effective_confinement().name().to_string(),
                 helper_depth: composed.helper_max_depth,
             },
         }));
@@ -964,23 +951,23 @@ pub mod testing {
 /// How long a stopped daemon waits for the realm's databases to close.
 const STORE_SETTLE: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// The endpoint files the daemon may write: the one named, the one in a
-/// state home, else the workspace's candidates (the state directory's,
-/// then the runtime directory's fallback).
+/// The endpoint files the daemon may write, first the preferred one: the
+/// one named, the one in a state home, else the workspace's candidates
+/// (the state directory's, then the runtime directory's fallback).
 fn endpoint_files(
     named: Option<PathBuf>,
     state_home: Option<PathBuf>,
     workspace: &Path,
-) -> Result<Vec<PathBuf>, DaemonError> {
+) -> Result<(PathBuf, Vec<PathBuf>), DaemonError> {
     Ok(match (named, state_home) {
-        (Some(file), _) => vec![file],
-        (None, Some(state_home)) => vec![endpoint::file_in(&state_home, workspace)],
+        (Some(file), _) => (file, Vec::new()),
+        (None, Some(state_home)) => (endpoint::file_in(&state_home, workspace), Vec::new()),
         (None, None) => {
-            let mut files = endpoint::candidates(workspace);
-            if files.is_empty() {
-                files.push(endpoint_file(workspace)?);
+            let mut files = endpoint::candidates(workspace).into_iter();
+            match files.next() {
+                Some(first) => (first, files.collect()),
+                None => (endpoint_file(workspace)?, Vec::new()),
             }
-            files
         }
     })
 }
@@ -1034,12 +1021,13 @@ fn attach_engine(
     audit: Option<&Arc<audit::AuditLog>>,
     workspace: &Path,
 ) -> Result<(), DaemonError> {
-    if !engine.set_attendance(Arc::new(agents::AgentAttendance::new(agents))) {
+    let attendance = Arc::new(agents::AgentAttendance::new(agents));
+    if !engine.set_attendance(Arc::clone(&attendance) as _) {
         return Err(DaemonError::Approval(
             "the approval engine already knows who is with its agents".to_string(),
         ));
     }
-    if !engine.set_agent_peers(Arc::new(agents::AgentAttendance::new(agents))) {
+    if !engine.set_agent_peers(attendance) {
         return Err(DaemonError::Approval(
             "the approval engine already knows the workspace's agents".to_string(),
         ));
@@ -1445,14 +1433,14 @@ mod tests {
         );
         if granted_fallback.is_none() {
             assert_eq!(
-                choose_endpoint_file(&exposed_plan, &[old.clone(), fallback.clone()]).unwrap(),
+                choose_endpoint_file(&exposed_plan, &old, std::slice::from_ref(&fallback)).unwrap(),
                 fallback
             );
         } else {
             eprintln!("SKIPPED: the current directory is granted to the shell here");
         }
         assert!(matches!(
-            choose_endpoint_file(&exposed_plan, std::slice::from_ref(&old)),
+            choose_endpoint_file(&exposed_plan, &old, &[]),
             Err(DaemonError::EndpointExposed { file, .. }) if file == old
         ));
     }

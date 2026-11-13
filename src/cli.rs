@@ -332,10 +332,33 @@ pub enum ConfinementArg {
     Off,
 }
 
+impl ConfinementArg {
+    /// Its command-line spelling (`workspace`, `strict`, `off`).
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Workspace => "workspace",
+            Self::Strict => "strict",
+            Self::Off => "off",
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    /// A confinement mode's name is its command-line spelling.
+    #[test]
+    fn a_confinement_mode_is_named_as_it_is_spelled() {
+        for mode in ConfinementArg::value_variants() {
+            assert_eq!(
+                mode.to_possible_value().map(|v| v.get_name().to_string()),
+                Some(mode.name().to_string())
+            );
+        }
+    }
 
     /// `--version` of both binaries prints the build id the attach
     /// handshake compares: the crate version, plus the commit in a checkout.
