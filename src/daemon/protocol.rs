@@ -256,8 +256,6 @@ pub const DECISION_DECIDE: &str = meerkat_rpc::router::DECISION_DECIDE_METHOD;
 pub mod engine {
     /// A prompt or a steer for a member.
     pub const MEMBER_SEND: &str = "mob/member_send";
-    /// A turn with request-scoped overrides (a model switch).
-    pub const TURN_START: &str = "mob/turn_start";
     /// Stop a member's run.
     pub const STOP_MEMBER_RUN: &str = "mob/stop_member_run";
     /// Cancel whatever a member runs.
@@ -304,10 +302,14 @@ pub mod engine {
     /// `session/fork_at`, `turn/start`, `mob/create`, `mob/spawn`, …)
     /// would build a session outside the daemon's mob, which no
     /// application gate admits, so the proxy refuses it with
-    /// [`super::NOT_SERVED`].
+    /// [`super::NOT_SERVED`]. So is `mob/turn_start`: on Meerkat 0.9.14
+    /// a request-scoped turn carries the runtime's cleanup that destroys
+    /// the mobs its session owns when the turn cannot be applied, is
+    /// cancelled or its member retired (prompts are [`MEMBER_SEND`],
+    /// admitted by the mob with no such cleanup; a model switch is
+    /// `rkat/set_model`).
     pub const SERVED: &[&str] = &[
         MEMBER_SEND,
-        TURN_START,
         STOP_MEMBER_RUN,
         FORCE_CANCEL,
         HARD_CANCEL_MEMBER,
@@ -334,7 +336,6 @@ pub mod engine {
     /// mob's helpers.
     pub const MEMBER_ACTIONS: &[&str] = &[
         MEMBER_SEND,
-        TURN_START,
         STOP_MEMBER_RUN,
         FORCE_CANCEL,
         HARD_CANCEL_MEMBER,

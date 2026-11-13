@@ -73,7 +73,7 @@ pub fn main_profile(plan: &RootPlan) -> Option<meerkat_mob::Profile> {
             profile.runtime_mode = MobRuntimeMode::TurnDriven;
             profile.peer_description = "rkat-tui orchestrator".to_string();
             // Clients reach it with `mob/member_send`, whose run outlives
-            // the client (a `mob/turn_start` run is its request's).
+            // the client.
             profile.external_addressable = true;
             profile.tools.builtins = true;
             profile.tools.shell = true;

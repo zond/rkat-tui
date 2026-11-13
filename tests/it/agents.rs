@@ -69,13 +69,7 @@ async fn an_agent_cannot_seat_a_member_under_an_agents_name() {
     let llm = ScriptedLlmClient::new(vec![step.clone(), step]);
     let daemon = Running::start(&ws.root, &llm).await;
     let connection = daemon.connect_bound().await;
-    connection
-        .call(
-            "mob/turn_start",
-            json!({"mob_id": "tui", "agent_identity": daemon.agent, "prompt": "seat one"}),
-        )
-        .await
-        .unwrap();
+    daemon.prompt(&connection, "seat one").await;
     let requests = llm.requests();
     let results = tool_results(requests.last().unwrap());
     assert!(
@@ -124,13 +118,7 @@ async fn a_member_seated_with_auto_wire_parent_is_wired_to_the_agent() {
     let llm = ScriptedLlmClient::new(vec![step; 6]);
     let daemon = Running::start(&ws.root, &llm).await;
     let connection = daemon.connect_bound().await;
-    connection
-        .call(
-            "mob/turn_start",
-            json!({"mob_id": "tui", "agent_identity": daemon.agent, "prompt": "seat one"}),
-        )
-        .await
-        .unwrap();
+    daemon.prompt(&connection, "seat one").await;
     let wired = |members: &serde_json::Value, from: &str, to: &str| {
         members["members"].as_array().is_some_and(|all| {
             all.iter().any(|m| {
@@ -1070,12 +1058,7 @@ async fn an_agent_lost_in_a_failed_switch_is_no_ghost() {
     );
     drop(watches);
     // The other agent was told it left.
-    b.call(
-        "mob/turn_start",
-        json!({"mob_id": "tui", "agent_identity": b.agent(), "prompt": "who is here"}),
-    )
-    .await
-    .unwrap();
+    daemon.prompt(&b, "who is here").await;
     let told = format!("{:?}", llm.recorded()[0].messages);
     assert!(
         told.contains(&format!("Agent `{lost}` left this workspace")),
@@ -1393,13 +1376,7 @@ async fn child_peers(route: &'static str) -> (String, String) {
         daemon.reveal(&daemon.session, &["fork_off"]).await;
     }
     let connection = daemon.connect_bound().await;
-    connection
-        .call(
-            "mob/turn_start",
-            json!({"mob_id": "tui", "agent_identity": daemon.agent, "prompt": "start a child"}),
-        )
-        .await
-        .unwrap();
+    daemon.prompt(&connection, "start a child").await;
     let peers = common::within(async {
         loop {
             let found = llm.requests().iter().find_map(|messages| {
@@ -1493,13 +1470,7 @@ async fn a_parent_messages_its_child_like_a_peer() {
     let args = setup.command_line(&ws.root);
     let daemon = Running::start_with(&args, setup.options(&ws.root, &llm)).await;
     let connection = daemon.connect_bound().await;
-    connection
-        .call(
-            "mob/turn_start",
-            json!({"mob_id": "tui", "agent_identity": daemon.agent, "prompt": "seat a kid and tell it"}),
-        )
-        .await
-        .unwrap();
+    daemon.prompt(&connection, "seat a kid and tell it").await;
     let sent = common::within(async {
         loop {
             let reply = llm.requests().iter().find_map(|messages| {

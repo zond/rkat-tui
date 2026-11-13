@@ -1514,20 +1514,19 @@ async fn a_hard_cancel_through_the_daemon_ends_a_stalled_run() {
 }
 
 /// Starts a run of the daemon's first agent from another client (a raw
-/// connection bound to it), held open by the scripted model: a run the
-/// client under test did not start.
-fn start_other_run(daemon: &rig::Running, connection: rkat_tui::client::transport::Connection) {
-    let agent = daemon.agent.clone();
-    tokio::spawn(async move {
-        let _ = connection
-            .call(
-                "mob/turn_start",
-                json!({"mob_id": "tui", "agent_identity": agent, "prompt": "another client's run"}),
-            )
-            .await;
-        // Held until the run ends, so the run is that client's.
-        drop(connection);
-    });
+/// connection bound to it, which the caller keeps open as that client),
+/// held open by the scripted model: a run the client under test did not
+/// start.
+async fn start_other_run(daemon: &rig::Running) -> rkat_tui::client::transport::Connection {
+    let connection = daemon.connect_bound().await;
+    connection
+        .call(
+            "mob/member_send",
+            json!({"mob_id": "tui", "agent_identity": daemon.agent, "content": "another client's run"}),
+        )
+        .await
+        .unwrap();
+    connection
 }
 
 /// Review 5, TU1: a client that attached while its agent ran (so it has
@@ -1538,7 +1537,7 @@ async fn esc_interrupts_a_run_the_client_did_not_start() {
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![Step::Hang, Step::Text("sentinel answered")]);
     let daemon = rig::Running::start(&ws.root, &llm).await;
-    start_other_run(&daemon, daemon.connect_bound().await);
+    let other = start_other_run(&daemon).await;
     llm.wait_call(0).await;
     let mut client = rig::Client::attach_agent(
         &ws.root,
@@ -1557,6 +1556,8 @@ async fn esc_interrupts_a_run_the_client_did_not_start() {
         })
         .await;
     assert!(!matches!(answer, Msg::Notice { ref text, .. } if text.contains("nothing is running")));
+    // The other client leaves once its run is over.
+    drop(other);
     daemon.idle(&daemon.agent).await;
     client.send(Effect::StartTurn("sentinel".into()));
     // (The interrupted run may end this client's view of it first.)
@@ -1590,7 +1591,7 @@ async fn ctrl_enter_interrupts_another_clients_run_then_sends() {
     let ws = Workspace::new();
     let llm = ScriptedLlmClient::new(vec![Step::Hang, Step::Text("sent after it")]);
     let mut rig = Attached::start(&ws.root, &llm).await;
-    start_other_run(&rig.daemon, rig.daemon.connect_bound().await);
+    let other = start_other_run(&rig.daemon).await;
     llm.wait_call(0).await;
     rig.wait_for(|msg| matches!(msg, Msg::RemoteTurn { .. }))
         .await;
@@ -1598,6 +1599,8 @@ async fn ctrl_enter_interrupts_another_clients_run_then_sends() {
     // the turn ended (the UI's `send_next`).
     rig.send(Effect::Interrupt);
     assert_eq!(rig.turn_finished().await, Err(TurnFailure::Interrupted));
+    // The other client leaves once its run is over.
+    drop(other);
     rig.send(Effect::StartTurn("typed meanwhile".into()));
     assert_eq!(rig.turn_finished().await.unwrap().text, "sent after it");
     assert!(user_texts(&llm.requests()[1]).contains(&"typed meanwhile".to_string()));

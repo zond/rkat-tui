@@ -810,13 +810,7 @@ async fn a_helpers_shell_is_judged_as_the_native_shell() {
         .await
         .unwrap();
     assert_eq!(added["text"], "rule added", "{added}");
-    connection
-        .call(
-            "mob/turn_start",
-            json!({"mob_id": "tui", "agent_identity": daemon.agent, "prompt": "delegate it"}),
-        )
-        .await
-        .unwrap();
+    daemon.prompt(&connection, "delegate it").await;
     let recorded = llm.recorded();
     let helper_after_shell = recorded
         .iter()
@@ -859,12 +853,7 @@ async fn plan_mode_survives_a_restart_and_leaving_it_is_announced() {
     let (connection, mut notes) = daemon.connect_bound_with_notes().await;
     let mode = next_note(&mut notes, "rkat/mode").await;
     assert_eq!(mode["mode"], "plan", "{mode}");
-    let turn =
-        |prompt: &str| json!({"mob_id": "tui", "agent_identity": daemon.agent, "prompt": prompt});
-    connection
-        .call("mob/turn_start", turn("first"))
-        .await
-        .unwrap();
+    daemon.prompt(&connection, "first").await;
     let request = format!("{:?}", llm.requests()[0]);
     assert!(request.contains("Plan mode is on"), "{request}");
     let set = connection
@@ -872,10 +861,7 @@ async fn plan_mode_survives_a_restart_and_leaving_it_is_announced() {
         .await
         .unwrap();
     assert!(set.get("warning").is_none(), "{set}");
-    connection
-        .call("mob/turn_start", turn("second"))
-        .await
-        .unwrap();
+    daemon.prompt(&connection, "second").await;
     let request = format!("{:?}", llm.requests()[1]);
     assert!(request.contains("Plan mode is off"), "{request}");
     drop(connection);
@@ -1000,13 +986,7 @@ async fn a_seated_helpers_catalog_is_read_after_its_first_run() {
     let llm = ScriptedLlmClient::new(vec![step.clone(), step.clone(), step]);
     let daemon = start(&ws.root, &llm, &Setup::default()).await;
     let connection = daemon.connect_bound().await;
-    connection
-        .call(
-            "mob/turn_start",
-            json!({"mob_id": "tui", "agent_identity": daemon.agent, "prompt": "seat a scout"}),
-        )
-        .await
-        .unwrap();
+    daemon.prompt(&connection, "seat a scout").await;
     let helper = within(async {
         loop {
             let status = connection
@@ -1060,12 +1040,7 @@ async fn overlapping_mode_changes_leave_the_plan_note_matching_the_mode() {
     // The mode that holds, as `/status` reads it.
     let mode = a.call("rkat/report", json!({})).await.unwrap()["mode"].clone();
     let plan = mode["mode"] == "plan";
-    a.call(
-        "mob/turn_start",
-        json!({"mob_id": "tui", "agent_identity": daemon.agent, "prompt": "go"}),
-    )
-    .await
-    .unwrap();
+    daemon.prompt(&a, "go").await;
     let request = format!("{:?}", llm.requests()[0]);
     let on = request.rfind("Plan mode is on");
     let off = request.rfind("Plan mode is off");
@@ -1472,6 +1447,13 @@ async fn engine_methods_that_make_sessions_outside_the_mob_are_refused() {
             "turn/start",
             json!({"session_id": session, "prompt": "run it"}),
         ),
+        // Served until the engine's 0.9.14 known issue: a request-scoped
+        // turn carries the cleanup that can destroy the agent's own mobs.
+        // The client prompts with `mob/member_send`.
+        (
+            "mob/turn_start",
+            json!({"mob_id": "tui", "agent_identity": daemon.agent, "prompt": "run it"}),
+        ),
         (
             "session/fork_at",
             json!({"session_id": session, "message_index": 0}),
@@ -1494,13 +1476,7 @@ async fn engine_methods_that_make_sessions_outside_the_mob_are_refused() {
     // request (a session the refused methods made would have run its turn
     // before the refusal was answered, and taken the one scripted step).
     let agent = daemon.connect_bound().await;
-    agent
-        .call(
-            "mob/turn_start",
-            json!({"mob_id": "tui", "agent_identity": daemon.agent, "prompt": "sentinel"}),
-        )
-        .await
-        .unwrap();
+    daemon.prompt(&agent, "sentinel").await;
     let seen = llm.recorded();
     assert_eq!(seen.len(), 1, "only the sentinel ran");
     assert!(seen[0].user().contains("sentinel"), "{:?}", seen[0].user());

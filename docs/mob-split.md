@@ -313,7 +313,7 @@ What is not isolated, by design (one principal per daemon):
   next client (`rkat/missed`); what the mode allows without review runs.
   Attended is positive evidence only: a client bound to the agent now, or
   the call's run (the dispatch context's run id) is one the engine saw
-  start after a client's `mob/member_send`/`mob/turn_start` to the
+  start after a client's `mob/member_send` to the
   session (`ApprovalEngine::human_input`), or that input waits and the
   run's start is not seen yet. The peer's text is never recorded as user
   input (only client sends reach `record_user_input`).
@@ -405,8 +405,8 @@ dialogs. The decisions are the daemon's only record: nothing goes to the
 realm's approval store, and decisions a stopped daemon left open are
 withdrawn at start. The client never polls `approval/list`.
 
-**The human's words.** The daemon records every `mob/member_send` and
-`mob/turn_start` for the orchestrator as user input for the classifier. An
+**The human's words.** The daemon records every `mob/member_send` for the
+orchestrator as user input for the classifier. An
 interrupt (`mob/stop_member_run`, `mob/force_cancel`) stops review, answers
 open escalations with Stop and retires the running helpers; a run start
 lifts the stop.
@@ -415,7 +415,10 @@ lifts the stop.
 cancelled when the sending connection closes), so prompts and steers go
 through `mob/member_send`; a `/model` switch is the daemon's
 `rkat/set_model`, the engine's LLM reconfigure on the member's live session
-so no run is tied to a connection.
+so no run is tied to a connection. The proxy does not serve
+`mob/turn_start` at all (`NOT_SERVED`): on Meerkat 0.9.14 its input carries
+the runtime's cleanup that destroys the mobs the session owns
+(`docs/evidence.md`).
 Every member `mob/stream_event` carries its envelope's `seq` and the `epoch`
 of that sequence space. The client keeps a mark (session, epoch, sequence)
 in `<realm>/attach.cursor` and reattaches with

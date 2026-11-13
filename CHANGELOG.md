@@ -42,6 +42,13 @@
   agents, but not on every run. The instructions say to announce only to
   agents that are working or attached, because a message to an idle
   agent with no client starts a model request there for nothing.
+- The daemon no longer serves the engine method `mob/turn_start`: a
+  request for it is refused like any other method the daemon does not
+  serve. rkat-tui's own client never sent it (prompts and steers are
+  `mob/member_send`, a model switch is `rkat/set_model`). On Meerkat
+  0.9.14 such a turn could destroy the agent's own helper mobs when it
+  could not be applied, was cancelled with its connection, or outlived
+  its agent's retirement.
 
 ### Fixed
 

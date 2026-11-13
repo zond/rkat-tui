@@ -143,13 +143,8 @@ async fn shown(llm: &ScriptedLlmClient, text: &str) -> Vec<String> {
 /// Start a turn of `daemon`'s agent with `prompt` and wait for it to end.
 async fn turn(daemon: &Running, prompt: &str) {
     let connection = daemon.connect_bound().await;
-    connection
-        .call(
-            "mob/turn_start",
-            json!({"mob_id": "tui", "agent_identity": daemon.agent, "prompt": prompt}),
-        )
-        .await
-        .unwrap();
+    daemon.prompt(&connection, prompt).await;
+    // After the run's end: the daemon's own turn state follows it.
     daemon.idle(&daemon.agent).await;
 }
 

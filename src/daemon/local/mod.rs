@@ -21,16 +21,14 @@
 //! never forwarded.
 //!
 //! What the forwarded methods tell the daemon ([`Local::observe`]): a
-//! prompt or steer for the agent (`mob/member_send`,
-//! `mob/turn_start`) is the human's words, recorded in the classifier's
+//! prompt or steer for the agent (`mob/member_send`) is the human's words, recorded in the classifier's
 //! transcript (the connection proved it holds the daemon's token), and the
 //! run that takes it is one a user started (attended, see
 //! [`crate::approval::attendance`]); an
 //! interrupt
 //! (`mob/stop_member_run`, `mob/force_cancel`) stops the session's review
 //! and answers its open escalations with Stop, and stops the session's
-//! running helpers; and a `mob/turn_start` that switches the model carries the
-//! `[thinking]` provider params for the new model unless it names its own.
+//! running helpers.
 //!
 //! [`Local::call`] is the dispatch table, one line per method; the
 //! handlers live in files by concern: an agent's conversations and its
@@ -50,7 +48,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use meerkat_core::lifecycle::run_primitive::TurnMetadataOverride;
 use meerkat_mob::{AgentIdentity, MobId};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use super::MOB_ID;
 use super::agents::Agents;
@@ -360,12 +358,7 @@ impl Local {
         };
         let mut input = None;
         match method.as_str() {
-            engine::MEMBER_SEND | engine::TURN_START => {
-                let field = if method == engine::MEMBER_SEND {
-                    "content"
-                } else {
-                    "prompt"
-                };
+            engine::MEMBER_SEND => {
                 self.agents.touch(&agent);
                 // On its way until the engine answers: the agent is not
                 // idle meanwhile.
@@ -376,16 +369,13 @@ impl Local {
                 if let Some(session) = self.core.conversations.current(&agent) {
                     self.core.engine.human_input(&session);
                     self.core.conversations.touch(&session, &agent);
-                    if let Some(text) = params.get(field).and_then(content_text)
+                    if let Some(text) = params.get("content").and_then(content_text)
                         && !text.trim().is_empty()
                     {
                         let n = self.inputs.fetch_add(1, Ordering::Relaxed);
                         let key = InputKey::new(format!("rkat-attach:{}:{n}", std::process::id()));
                         self.core.engine.record_user_input(&session, key, &text);
                     }
-                }
-                if method == engine::TURN_START {
-                    self.with_thinking(params);
                 }
             }
             engine::STOP_MEMBER_RUN | engine::FORCE_CANCEL | engine::HARD_CANCEL_MEMBER => {
@@ -503,6 +493,7 @@ fn content_text(content: &Value) -> Option<String> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn content_text_reads_strings_and_text_blocks() {

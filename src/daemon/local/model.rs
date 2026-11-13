@@ -265,68 +265,10 @@ impl Local {
             tracing::warn!(%agent, %warning, "plan mode");
         }
     }
-
-    /// A model switch carries the `[thinking]` the new model is configured
-    /// with (or clears the old model's), unless the caller names params.
-    pub(super) fn with_thinking(&self, params: &mut Value) {
-        if params.get("provider_params").is_some() {
-            return;
-        }
-        let (Some(model), Some(provider)) = (
-            params.get("model").and_then(Value::as_str),
-            params.get("provider").and_then(Value::as_str),
-        ) else {
-            return;
-        };
-        let binding = params.pointer("/auth_binding/value");
-        let endpoint = binding.and_then(|binding| {
-            bound_endpoint(
-                binding.get("realm")?.as_str()?,
-                binding.get("binding")?.as_str()?,
-            )
-        });
-        let Some(dialect) = WireDialect::parse(provider) else {
-            return;
-        };
-        let configured = self.configured_thinking(endpoint, provider, dialect, model);
-        params["provider_params"] = thinking_override(configured.as_ref());
-    }
 }
 
 /// The configured endpoint an auth binding of `realm` names (`binding`);
 /// `None` for a built-in endpoint's binding.
 pub(super) fn bound_endpoint<'a>(realm: &str, binding: &'a str) -> Option<&'a str> {
     is_endpoint_realm(realm).then_some(binding)
-}
-
-/// The `provider_params` override of a model switch: set the thinking the
-/// new model is configured with, or clear the old model's.
-#[must_use]
-pub fn thinking_override(
-    thinking: Option<&meerkat_core::lifecycle::run_primitive::AnthropicThinkingConfig>,
-) -> Value {
-    match thinking::params_for(thinking) {
-        Some(params) => json!({
-            "action": "set",
-            "value": meerkat_contracts::wire::runtime::WireProviderParamsOverride::from(params),
-        }),
-        None => json!({"action": "clear"}),
-    }
-}
-
-#[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_model_switch_sets_or_clears_thinking() {
-        let clear = thinking_override(None);
-        assert_eq!(clear, json!({"action": "clear"}));
-        let set = thinking_override(Some(
-            &meerkat_core::lifecycle::run_primitive::AnthropicThinkingConfig::Adaptive,
-        ));
-        assert_eq!(set["action"], "set");
-        assert!(set["value"]["provider_tag"].is_object(), "{set}");
-    }
 }

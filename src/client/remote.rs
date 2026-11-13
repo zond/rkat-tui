@@ -4,8 +4,8 @@
 //! - prompts and steers: `mob/member_send` (answered at once; the run is the
 //!   member's and outlives this client);
 //! - a model switch: the daemon's `rkat/set_model`, in place on the
-//!   member's session (`mob/turn_start` is not used: its run is tied to the
-//!   connection that sent it);
+//!   member's session (the daemon does not serve `mob/turn_start`, whose
+//!   run is tied to the connection that sent it);
 //! - interrupt: `mob/stop_member_run` for the run the stream reported, then
 //!   `mob/force_cancel`;
 //! - events: `mob/stream_open`, resumed after the last event shown with its

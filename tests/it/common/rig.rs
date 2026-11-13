@@ -768,6 +768,43 @@ impl Running {
         .await;
     }
 
+    /// A prompt for the agent `connection` is bound to, sent the way the
+    /// client sends one (`mob/member_send`), returning once the run that
+    /// took it has completed. `mob/member_send` answers at admission, so
+    /// the end is the positive event of a stream opened on the agent
+    /// before the send (a probe's, so the wait adds no client), never an
+    /// idle state that a run not yet started would also show.
+    pub async fn prompt(&self, connection: &Connection, text: &str) {
+        let member = serde_json::json!({"mob_id": "tui", "agent_identity": connection.agent()});
+        let (probe, mut notes) = self.connect_with_notes().await;
+        probe
+            .call("initialize", serde_json::json!({}))
+            .await
+            .unwrap();
+        let opened = probe.call("mob/stream_open", member.clone()).await.unwrap();
+        let stream = opened["stream_id"].clone();
+        let mut params = member;
+        params["content"] = serde_json::json!(text);
+        connection.call("mob/member_send", params).await.unwrap();
+        within(async {
+            loop {
+                let note = notes.recv().await.expect("the probe's connection open");
+                if note.method == "mob/stream_event"
+                    && note.params["stream_id"] == stream
+                    && note.params["event"]
+                        .to_string()
+                        .contains("\"type\":\"run_completed\"")
+                {
+                    return;
+                }
+            }
+        })
+        .await;
+        let _ = probe
+            .call("mob/stream_close", serde_json::json!({"stream_id": stream}))
+            .await;
+    }
+
     /// The committed messages of `session` (`rkat/transcript`).
     pub async fn transcript(
         &self,

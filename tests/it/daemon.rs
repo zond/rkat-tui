@@ -164,9 +164,11 @@ impl Client {
         opened["stream_id"].clone()
     }
 
-    /// A turn for the connection's agent.
-    fn turn(&self, prompt: &str) -> Value {
-        json!({"mob_id": MOB_ID, "agent_identity": self.agent, "prompt": prompt})
+    /// A prompt for the connection's agent, as the client sends one
+    /// (`mob/member_send`, answered at admission: a test waits for the
+    /// run's end on a stream it opened before, [`Self::run_completed`]).
+    fn prompt(&self, text: &str) -> Value {
+        json!({"mob_id": MOB_ID, "agent_identity": self.agent, "content": text})
     }
 
     /// The connection's agent as a member.
@@ -290,7 +292,8 @@ async fn a_connection_without_the_token_never_reaches_the_router() {
 /// outside the mob. Now a line the proxy cannot read as a JSON-RPC request
 /// is answered by the proxy and never forwarded: the form-feed variants of
 /// a refused and of a served method both get a parse error, the
-/// well-formed refusal stays `NOT_SERVED`, envelopes without a method or
+/// well-formed refusal stays `NOT_SERVED` (`mob/turn_start` among
+/// them, on the caller's own agent), envelopes without a method or
 /// with a bad `jsonrpc` are invalid requests, and nothing the refused lines
 /// asked for runs. A well-formed served method still works afterwards on
 /// the same connection, as the proxy's own serialization.
@@ -310,6 +313,14 @@ async fn the_proxy_forwards_only_requests_it_parsed() {
     let refused = client
         .call("session/create", create["params"].clone())
         .await;
+    assert_eq!(refused["error"]["code"], NOT_SERVED, "{refused}");
+    // A request-scoped turn on the connection's own agent is refused the
+    // same way: its run would carry the engine's cleanup that can destroy
+    // the agent's own mobs (the 0.9.14 known issue). Prompts are
+    // `mob/member_send`.
+    let mut turn = client.member();
+    turn["prompt"] = json!("run it");
+    let refused = client.call("mob/turn_start", turn).await;
     assert_eq!(refused["error"]["code"], NOT_SERVED, "{refused}");
 
     // The form-feed variants, refused and served: parse errors, answered
@@ -343,7 +354,9 @@ async fn the_proxy_forwards_only_requests_it_parsed() {
     // agent is the model's first request (a forwarded session/create runs
     // its turn before it answers, and would have taken the one step).
     let stream = client.open_stream().await;
-    client.ok("mob/turn_start", client.turn("sentinel")).await;
+    client
+        .ok("mob/member_send", client.prompt("sentinel"))
+        .await;
     client.run_completed(&stream).await;
     let seen = llm.recorded();
     assert_eq!(seen.len(), 1, "only the sentinel ran");
@@ -360,7 +373,7 @@ async fn a_turn_streams_to_every_attached_client() {
     let mut second = connect(&daemon).await;
     let first_stream = first.open_stream().await;
     let second_stream = second.open_stream().await;
-    first.ok("mob/turn_start", first.turn("say hello")).await;
+    first.ok("mob/member_send", first.prompt("say hello")).await;
     for (client, stream) in [(&mut first, &first_stream), (&mut second, &second_stream)] {
         let events = client.run_completed(stream).await;
         let text = Value::Array(events).to_string();
@@ -399,7 +412,6 @@ async fn a_client_cannot_drive_another_agent_through_the_engine() {
     };
     for (method, params) in [
         ("mob/member_send", on_a(json!({"content": "from b"}))),
-        ("mob/turn_start", on_a(json!({"prompt": "from b"}))),
         (
             "mob/stop_member_run",
             on_a(json!({"run_id": "r", "reason": "b"})),
@@ -424,7 +436,7 @@ async fn a_client_cannot_drive_another_agent_through_the_engine() {
     b.ok("mob/member_status", a.member()).await;
     // Nothing of B's reached A: its first turn is A's own.
     let stream = a.open_stream().await;
-    a.ok("mob/turn_start", a.turn("from a")).await;
+    a.ok("mob/member_send", a.prompt("from a")).await;
     a.run_completed(&stream).await;
     assert_eq!(llm.recorded().len(), 1, "B started nothing");
     assert!(llm.recorded()[0].user().contains("from a"));
@@ -489,10 +501,10 @@ async fn a_client_leaving_mid_turn_leaves_the_turn_running() {
     let daemon = Running::start(&ws.root, &llm).await;
     let mut client = connect(&daemon).await;
     let _ = client.open_stream().await;
-    // `mob/turn_start` is request-scoped: it answers when the turn ends,
-    // and its connection closing cancels the run. `mob/member_send` hands
-    // the input to the member and answers at once: the run is the
-    // member's and outlives the client.
+    // `mob/member_send` hands the input to the member and answers at
+    // once: the run is the member's and outlives the client (the
+    // request-scoped `mob/turn_start`, whose run its connection's close
+    // cancelled, is not served).
     let sent = client
         .ok(
             "mob/member_send",
@@ -550,7 +562,7 @@ async fn the_agent_has_the_tui_file_tools() {
     let mut client = connect(&daemon).await;
     let stream = client.open_stream().await;
     client
-        .ok("mob/turn_start", client.turn("read notes.txt"))
+        .ok("mob/member_send", client.prompt("read notes.txt"))
         .await;
     client.run_completed(&stream).await;
     assert!(llm.recorded()[0].tools.iter().any(|t| t == "read_file"));
@@ -651,7 +663,7 @@ async fn the_agent_shell_runs_confined() {
     let token = daemon.endpoint().token;
     let mut client = connect(&daemon).await;
     let stream = client.open_stream().await;
-    client.ok("mob/turn_start", client.turn("echo")).await;
+    client.ok("mob/member_send", client.prompt("echo")).await;
     client.run_completed(&stream).await;
     let request = last_request(&llm);
     assert!(request.contains("confined-42"), "{request}");
@@ -729,7 +741,7 @@ async fn a_restarted_daemon_restores_the_agent_with_its_tools() {
     let first_session = daemon.session.clone();
     let mut client = connect(&daemon).await;
     let stream = client.open_stream().await;
-    client.ok("mob/turn_start", client.turn("one")).await;
+    client.ok("mob/member_send", client.prompt("one")).await;
     client.run_completed(&stream).await;
     drop(client);
     daemon.stop().await;
@@ -749,7 +761,7 @@ async fn a_restarted_daemon_restores_the_agent_with_its_tools() {
     let members = client.ok("mob/members", json!({"mob_id": MOB_ID})).await;
     assert!(members_include_agent(&members, &daemon.agent), "{members}");
     let stream = client.open_stream().await;
-    client.ok("mob/turn_start", client.turn("two")).await;
+    client.ok("mob/member_send", client.prompt("two")).await;
     let events = client.run_completed(&stream).await;
     assert!(Value::Array(events).to_string().contains("second life"));
     let request = last_request(&llm);

@@ -8628,3 +8628,44 @@ What was restructured, and why:
   a_daemon_logs_plain_and_once_when_its_stderr_is_a_file`).
 - Nine doc comments that sat on the item next to theirs, left behind
   when functions moved, are back on their own items.
+
+## The daemon stops serving `mob/turn_start` (owner decision, 2026-11-13)
+
+Meerkat 0.9.14's known issue "mobs destroyed when a turn cannot be
+started": the runtime attaches a cleanup task to the inputs
+`SessionRuntime` admits (`turn/start`, `mob/turn_start`, results for a
+dormant session, background-job events), and when its outcome asks for
+cleanup it runs the archive cleanup, which destroys every mob the session
+owns (`destroy_bridge_session_mobs`: the agent's `implicit-<session>`
+helpers and the mobs it made itself). Inputs the mob admits
+(`mob/member_send`) carry no such task. The analysis, with its case
+table, is `.handover/known-issue-0.9.14-mobs-destroyed.md`.
+
+rkat-tui's client never sent `mob/turn_start` (prompts and steers are
+`mob/member_send`; a `/model` switch is `rkat/set_model`, which carries the
+`[thinking]` setting through `Local::configured_thinking`), but the proxy
+still served it, so any client holding the token could reach three of the
+analysis's cases: a per-turn model, provider or credential the host cannot
+apply (case 2), a queued request cancelled when its connection closes
+(case 3c), and a member retired while such a turn is in flight (case 5b).
+Removing it from `protocol::engine::SERVED` closes all three: `serve::route`
+answers it with `NOT_SERVED` before `Local::observe` sees it.
+
+Removed with it: the `TURN_START` constant, its entries in `SERVED` and
+`MEMBER_ACTIONS`, its arm in `Local::observe` (which recorded its `prompt`
+as the human's words and added the `[thinking]` provider params to a
+forwarded model switch), `Local::with_thinking` and `thinking_override`
+with its unit test (`a_model_switch_sets_or_clears_thinking`); a switch's
+thinking stays pinned by the `rkat/set_model` tests.
+
+Pinned by `approvals::engine_methods_that_make_sessions_outside_the_mob_are_refused`
+(now lists `mob/turn_start`) and `daemon::the_proxy_forwards_only_requests_it_parsed`
+(a `mob/turn_start` on the caller's own agent is `NOT_SERVED`, and the
+sentinel prompt is still the model's first request). The 22 test call sites
+that drove turns with `mob/turn_start` now prompt with `mob/member_send`,
+which answers at admission, so each waits for the run's end as a positive
+event: in `daemon.rs` on the stream the test opened before sending
+(`Client::run_completed`); elsewhere through the rig's `Running::prompt`,
+which opens a probe's stream on the agent before the send and returns on
+its `run_completed`. `client_turns::start_other_run` sends and keeps the
+other client's connection until its run is interrupted.
