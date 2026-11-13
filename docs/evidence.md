@@ -8297,3 +8297,27 @@ patterns: no ancestor of a match is pruned),
 `a_glob_prunes_its_walk_by_the_pattern` (answers equal to a full walk's,
 entries examined bounded), `a_grep_filter_with_directories_prunes_the_walk`
 and `a_capped_search_with_no_match_does_not_claim_absence`.
+
+## Errors an agent can fix say how (owner principle, 2026-11-13)
+
+The owner's principle: an error an agent runs into that it could fix by
+itself carries enough to fix it. The audit of rkat-tui's own tools: each
+refusal now says what was wrong, what was expected and the next step;
+one the agent cannot fix says who can (a permission error: the user).
+Argument errors of the file, note and watch tools go through
+`tools::invalid_arguments`: the parser's own message (it names the field
+and the value) and a minimal valid call (`tools::example_call`). The
+messages are listed, old and new, in the batch report; the tests are
+`file_tool_failures_say_what_to_do_next`, `malformed_arguments` and
+`dispatch_each_tool` in `memory::tools`, `a_refused_watch_says_what_to_pass`
+and `a_search_without_a_match_names_the_families`. Engine errors that
+pass rkat-tui unchanged: `Tool 'delegate' timed out after <ms>` is made
+by the engine's tool timeout after the dispatch future is dropped, so no
+dispatcher of rkat-tui's (not `Hiding`, which forwards `delegate` and the
+hidden mob tools) sees it to add the helper's name, mob and session; the
+daemon retires that helper (`mobs::delegates`), and nothing it does
+reaches the agent's tool result. `member_not_found` from `member_status`
+comes from the engine's per-member operator tools, mounted outside
+rkat-tui's wrappers; its message names the mob it looked in, and the
+agents' hint names `implicit-<your session id>` for `delegate` helpers
+(#2208). Both are drafted as upstream asks in the batch report.

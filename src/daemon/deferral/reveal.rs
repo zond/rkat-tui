@@ -295,7 +295,11 @@ impl SearchTool {
         if found.is_empty() {
             return ToolResult::new(
                 id,
-                format!("no hidden tool matches; {}", self.families()),
+                format!(
+                    "no hidden tool matches; search with fewer or broader words (one word such \
+                     as `schedule` often does), or pass a `family` alone to list all its tools; {}",
+                    self.families()
+                ),
                 false,
             );
         }
@@ -480,7 +484,9 @@ mod tests {
         assert!(!error);
         assert!(
             text.contains(
-                "no hidden tool matches; families: `schedule` (2 tools), `mob` (1 tools)"
+                "no hidden tool matches; search with fewer or broader words (one word such as \
+                 `schedule` often does), or pass a `family` alone to list all its tools; \
+                 families: `schedule` (2 tools), `mob` (1 tools)"
             ),
             "{text}"
         );

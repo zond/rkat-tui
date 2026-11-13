@@ -41,7 +41,8 @@ pub(crate) fn run(shared: &Shared, call: CallMeta, args: EditFileArgs) -> ToolOu
     }
     if args.old_string == args.new_string {
         return Err(ToolFailure::recoverable(
-            "old_string and new_string are identical; nothing to change",
+            "old_string and new_string are identical, so the edit would change nothing; put \
+             the text you want in new_string",
         ));
     }
     let resolved = shared.resolve(EDIT_FILE, &args.path)?;
@@ -66,10 +67,15 @@ pub(crate) fn run(shared: &Shared, call: CallMeta, args: EditFileArgs) -> ToolOu
 /// Why an edit could not be applied.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum EditError {
-    #[error("old_string not found")]
+    #[error(
+        "old_string not found: it must match the file's current text exactly, whitespace, \
+         indentation and line breaks included; read the file again with read_file and copy \
+         the lines from its output (without the line-number prefix)"
+    )]
     NotFound,
     #[error(
-        "old_string matches {0} times; add surrounding context to make it unique or set replace_all"
+        "old_string matches {0} times; add the lines around the one you mean to old_string \
+         (and new_string) to make it unique, or set replace_all to change every one"
     )]
     Ambiguous(usize),
 }

@@ -122,14 +122,24 @@ pub(crate) fn run(shared: &Shared, call: CallMeta, args: GrepArgs) -> ToolOutcom
     let regex = RegexBuilder::new(&args.pattern)
         .case_insensitive(args.case_insensitive)
         .build()
-        .map_err(|err| ToolFailure::recoverable(format!("invalid regex: {err}")))?;
+        .map_err(|err| {
+            ToolFailure::recoverable(format!(
+                "invalid regex `{}`: {err}. The pattern is a Rust regular expression: escape \
+                 `(`, `)`, `[`, `{{`, `.`, `*`, `+`, `?` and `|` with a backslash to match them \
+                 literally (for example `fn main\\(`)",
+                args.pattern
+            ))
+        })?;
     let filter = args
         .glob
         .as_deref()
         .map(|glob| {
-            Glob::new(glob)
-                .map(|g| g.compile_matcher())
-                .map_err(|err| ToolFailure::recoverable(format!("invalid glob filter: {err}")))
+            Glob::new(glob).map(|g| g.compile_matcher()).map_err(|err| {
+                ToolFailure::recoverable(format!(
+                    "invalid glob filter `{glob}`: {err}. {}",
+                    super::glob::GLOB_SYNTAX
+                ))
+            })
         })
         .transpose()?;
     let root = search_root(shared, GREP, args.path.as_deref())?;

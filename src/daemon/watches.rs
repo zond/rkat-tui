@@ -391,12 +391,20 @@ impl Watches {
 impl WatchHost for Watches {
     fn watch(&self, agent: &str, patterns: &[String], once: bool) -> Result<u64, String> {
         if patterns.is_empty() {
-            return Err("name at least one pattern".to_string());
+            return Err(
+                "name at least one pattern in `patterns`, for example [\"src/**/*.rs\"]"
+                    .to_string(),
+            );
         }
         let mut builder = GlobSetBuilder::new();
         for pattern in patterns {
-            let glob = Glob::new(pattern.trim_start_matches("./"))
-                .map_err(|err| format!("invalid pattern `{pattern}`: {err}"))?;
+            let glob = Glob::new(pattern.trim_start_matches("./")).map_err(|err| {
+                format!(
+                    "invalid pattern `{pattern}`: {err}. Patterns are relative to the project \
+                         root and use `*`, `**`, `?`, `[abc]` and `{{a,b}}`, for example \
+                         `src/**/*.rs`"
+                )
+            })?;
             builder.add(glob);
         }
         let set = builder
@@ -598,6 +606,20 @@ mod tests {
         let batch = rx.recv().await.unwrap();
         assert_eq!(batch.paths.len(), MAX_PATHS);
         assert_eq!(batch.more, MAX_TRACKED + 5 - MAX_PATHS);
+    }
+
+    /// A watch the agent asked for wrongly is refused with what to pass
+    /// instead.
+    #[tokio::test]
+    async fn a_refused_watch_says_what_to_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        let (w, _rx) = Watches::new(dir.path().to_path_buf());
+        let none = w.watch("main-a", &[], false).unwrap_err();
+        assert!(none.contains(r#"for example ["src/**/*.rs"]"#), "{none}");
+        let bad = w
+            .watch("main-a", &["src/[a".to_string()], false)
+            .unwrap_err();
+        assert!(bad.contains("for example `src/**/*.rs`"), "{bad}");
     }
 
     /// The recursive file-system watch goes when the last watch goes: by

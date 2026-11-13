@@ -112,7 +112,7 @@ pub enum NoteError {
     #[error("too many notes (limit {MAX_NOTES}); forget or merge some first")]
     TooMany,
     /// No note with this name exists.
-    #[error("no note named `{0}`")]
+    #[error("no note named `{0}` in this scope; note_list lists the notes of each scope")]
     NotFound(String),
     /// The notes directory or note file is a symlink.
     #[error("refusing to use symlink {}", .0.display())]

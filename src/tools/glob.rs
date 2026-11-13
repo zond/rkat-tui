@@ -12,6 +12,11 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+/// How a glob pattern is written, for the errors that refuse one.
+pub(crate) const GLOB_SYNTAX: &str = "A pattern uses `*` (any name part, within one \
+directory), `**` (any number of directories, as a whole path segment), `?`, `[abc]` and \
+`{a,b}`; for example `**/*.rs` or `src/*.toml`";
+
 /// Maximum number of paths returned.
 pub(crate) const MAX_RESULTS: usize = 500;
 
@@ -51,7 +56,8 @@ pub(crate) fn search_root(
     let resolved = shared.resolve(tool, raw)?;
     if !resolved.abs.exists() {
         return Err(ToolFailure::recoverable(format!(
-            "path not found: {}",
+            "path not found: {} (a relative path starts at the project root); pass a \
+             directory that exists, or leave `path` out to search the whole project",
             shared.display(&resolved)
         )));
     }
@@ -173,12 +179,18 @@ pub(crate) fn run_with(
     let matcher = GlobBuilder::new(&args.pattern)
         .literal_separator(true)
         .build()
-        .map_err(|err| ToolFailure::recoverable(format!("invalid glob pattern: {err}")))?
+        .map_err(|err| {
+            ToolFailure::recoverable(format!(
+                "invalid glob pattern `{}`: {err}. {GLOB_SYNTAX}",
+                args.pattern
+            ))
+        })?
         .compile_matcher();
     let root = search_root(shared, GLOB, args.path.as_deref())?;
     if !root.is_dir() {
         return Err(ToolFailure::recoverable(format!(
-            "{} is not a directory",
+            "{} is not a directory; pass the directory to search below as `path` (the \
+             pattern is matched relative to it), or read a file with read_file",
             shared.display_abs(&root)
         )));
     }

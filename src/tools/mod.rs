@@ -279,10 +279,19 @@ impl ToolFailure {
     /// Describe an I/O error on `display` in model-facing terms.
     pub(crate) fn io(action: &str, display: &str, err: &io::Error) -> Self {
         let message = match err.kind() {
-            io::ErrorKind::NotFound => format!("file not found: {display}"),
-            io::ErrorKind::PermissionDenied => {
-                format!("permission denied while trying to {action} {display}")
-            }
+            io::ErrorKind::NotFound => format!(
+                "file not found: {display} (a relative path starts at the project root); \
+                 find the file with glob, e.g. pattern `**/{}`",
+                Path::new(display).file_name().map_or_else(
+                    || display.to_string(),
+                    |name| name.to_string_lossy().into_owned()
+                )
+            ),
+            io::ErrorKind::PermissionDenied => format!(
+                "permission denied while trying to {action} {display}: the operating system \
+                 refuses it to the user rkat-tui runs as, which no file tool can change; use \
+                 another path, or ask the user to change the file's permissions"
+            ),
             _ => format!("failed to {action} {display}: {err}"),
         };
         Self::Recoverable(message)
@@ -290,6 +299,50 @@ impl ToolFailure {
 }
 
 pub(crate) type ToolOutcome = Result<String, ToolFailure>;
+
+/// What a call that went before its work ran (it timed out, the user
+/// interrupted it, its helper was cancelled) answers.
+pub(crate) const CANCELLED: &str =
+    "the call was cancelled before it ran (it timed out or was interrupted); nothing was changed";
+
+/// A minimal valid call of each of rkat-tui's own tools, for the errors
+/// that say how a call must look.
+#[must_use]
+pub fn example_call(tool: &str) -> Option<&'static str> {
+    Some(match tool {
+        READ_FILE => r#"{"path": "src/main.rs", "offset": 1, "limit": 200}"#,
+        WRITE_FILE => r#"{"path": "notes/todo.md", "content": "- first\n"}"#,
+        EDIT_FILE => {
+            r#"{"path": "src/lib.rs", "old_string": "fn old()", "new_string": "fn new()"}"#
+        }
+        GLOB => r#"{"pattern": "**/*.rs", "path": "src"}"#,
+        GREP => r#"{"pattern": "fn main", "glob": "*.rs", "output_mode": "content"}"#,
+        crate::memory::NOTE_SAVE => {
+            r#"{"scope": "workspace", "name": "build-commands", "content": "cargo nextest run"}"#
+        }
+        crate::memory::NOTE_READ | crate::memory::NOTE_FORGET => {
+            r#"{"scope": "workspace", "name": "build-commands"}"#
+        }
+        crate::memory::NOTE_LIST => r#"{"scope": "workspace"}"#,
+        watch::WATCH_PATHS => r#"{"patterns": ["src/**/*.rs"], "once": true}"#,
+        watch::UNWATCH => r#"{"id": 1}"#,
+        _ => return None,
+    })
+}
+
+/// The error of a call to `tool` whose arguments do not parse (`err`):
+/// what was wrong (the parser names the field and the value), and a
+/// minimal valid call ([`example_call`]).
+#[must_use]
+pub fn invalid_arguments(tool: &str, err: &serde_json::Error) -> ToolError {
+    let example = example_call(tool).map_or_else(String::new, |example| {
+        format!("; a valid call looks like {example} (the tool's schema lists every field)")
+    });
+    ToolError::InvalidArguments {
+        name: tool.to_string(),
+        reason: format!("{err}{example}"),
+    }
+}
 
 /// One tool call: its id, the session it belongs to, the flag set when the
 /// call goes, and how far a search may go.
@@ -475,13 +528,17 @@ impl Shared {
             .map_err(|refusal| refusal.into_failure("read", &display))?;
         if read.truncated {
             return Err(ToolFailure::recoverable(format!(
-                "{display} is larger than {} MiB; the file tools cannot rewrite it",
+                "{display} is larger than {} MiB, more than the file tools rewrite; change it \
+                 with a shell command instead (for example `sed -i` for a substitution)",
                 MAX_FILE_READ_BYTES / (1024 * 1024)
             )));
         }
-        String::from_utf8(read.bytes)
-            .map(Some)
-            .map_err(|_| ToolFailure::recoverable(format!("{display} is not valid UTF-8 text")))
+        String::from_utf8(read.bytes).map(Some).map_err(|_| {
+            ToolFailure::recoverable(format!(
+                "{display} is not valid UTF-8 text, which the file tools cannot rewrite \
+                     without damaging it; change it with a shell command instead"
+            ))
+        })
     }
 
     /// Write `content` to an already-checked path, record its new mtime, and
@@ -667,10 +724,7 @@ impl FileToolDispatcher {
     {
         let args: A = call
             .parse_args()
-            .map_err(|err| ToolError::InvalidArguments {
-                name: call.name.to_string(),
-                reason: err.to_string(),
-            })?;
+            .map_err(|err| invalid_arguments(call.name, &err))?;
         let shared = Arc::clone(&self.shared);
         let id = call.id.to_string();
         let limits = self.limits;
@@ -679,7 +733,7 @@ impl FileToolDispatcher {
         let outcome = run_cancellable(move |cancel| {
             // Still queued when the call went: nothing to do for anyone.
             if cancel.is_cancelled() {
-                return Err(ToolFailure::recoverable("the call was cancelled"));
+                return Err(ToolFailure::recoverable(CANCELLED));
             }
             let meta = CallMeta {
                 id,

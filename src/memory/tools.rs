@@ -209,16 +209,13 @@ impl NoteToolDispatcher {
     {
         let args: A = call
             .parse_args()
-            .map_err(|err| ToolError::InvalidArguments {
-                name: call.name.to_string(),
-                reason: err.to_string(),
-            })?;
+            .map_err(|err| crate::tools::invalid_arguments(call.name, &err))?;
         let stores = Arc::clone(&self.stores);
         // Work still queued when the call went (timed out, interrupted)
         // does not run: a save or forget nobody sees is not made.
         let outcome = crate::tools::run_cancellable(move |cancel| {
             if cancel.is_cancelled() {
-                Err("the call was cancelled".to_string())
+                Err(crate::tools::CANCELLED.to_string())
             } else {
                 run(&stores, args)
             }
@@ -362,6 +359,7 @@ mod tests {
         let (msg, is_error) = text(&d, NOTE_READ, json!({"scope": "user", "name": "style"})).await;
         assert!(is_error);
         assert!(msg.contains("no note named"), "{msg}");
+        assert!(msg.contains("note_list lists the notes"), "{msg}");
         let (msg, is_error) = text(
             &d,
             NOTE_SAVE,
@@ -377,7 +375,13 @@ mod tests {
         let err = call(&d, NOTE_READ, json!({"scope": "global", "name": "x"}))
             .await
             .unwrap_err();
-        assert!(matches!(err, ToolError::InvalidArguments { .. }), "{err:?}");
+        // The parser names the bad value; the error shows a valid call.
+        assert!(
+            matches!(&err, ToolError::InvalidArguments { reason, .. }
+                if reason.contains("global")
+                    && reason.contains(r#"a valid call looks like {"scope": "workspace", "name": "build-commands"}"#)),
+            "{err:?}"
+        );
         let err = call(&d, NOTE_LIST, json!({"extra": 1})).await.unwrap_err();
         assert!(matches!(err, ToolError::InvalidArguments { .. }), "{err:?}");
         let err = call(&d, "note_nope", json!({})).await.unwrap_err();

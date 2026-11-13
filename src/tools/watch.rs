@@ -132,10 +132,7 @@ impl AgentToolDispatcher for WatchToolDispatcher {
 
     async fn dispatch(&self, call: ToolCallView<'_>) -> Result<ToolDispatchOutcome, ToolError> {
         let id = call.id.to_string();
-        let invalid = |err: serde_json::Error| ToolError::InvalidArguments {
-            name: call.name.to_string(),
-            reason: err.to_string(),
-        };
+        let invalid = |err: serde_json::Error| super::invalid_arguments(call.name, &err);
         let result = match call.name {
             WATCH_PATHS => {
                 let args: WatchArgs = call.parse_args().map_err(invalid)?;

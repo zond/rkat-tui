@@ -1377,3 +1377,80 @@ async fn a_capped_search_with_no_match_does_not_claim_absence() {
         "{out}"
     );
 }
+
+/// Every failure of the file tools an agent can fix by itself says what
+/// was wrong, what was expected, and the next step.
+#[tokio::test]
+async fn file_tool_failures_say_what_to_do_next() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\none\n");
+    fx.write("bin.dat", b"\x00\x01\x02".as_slice());
+    let _ = fx.ok("read_file", json!({"path": "a.txt"})).await;
+    for (name, args, wanted) in [
+        (
+            "read_file",
+            json!({"path": "src/missing.rs"}),
+            "find the file with glob, e.g. pattern `**/missing.rs`",
+        ),
+        (
+            "read_file",
+            json!({"path": "bin.dat"}),
+            "inspect it with a shell command instead (for example `file bin.dat`",
+        ),
+        (
+            "edit_file",
+            json!({"path": "a.txt", "old_string": "two", "new_string": "three"}),
+            "read the file again with read_file and copy the lines from its output",
+        ),
+        (
+            "edit_file",
+            json!({"path": "a.txt", "old_string": "one", "new_string": "two"}),
+            "add the lines around the one you mean to old_string",
+        ),
+        (
+            "edit_file",
+            json!({"path": "a.txt", "old_string": "one", "new_string": "one"}),
+            "put the text you want in new_string",
+        ),
+        (
+            "glob",
+            json!({"pattern": "src/[a"}),
+            "for example `**/*.rs` or `src/*.toml`",
+        ),
+        (
+            "glob",
+            json!({"pattern": "*", "path": "nowhere"}),
+            "leave `path` out to search the whole project",
+        ),
+        (
+            "glob",
+            json!({"pattern": "*", "path": "a.txt"}),
+            "pass the directory to search below as `path`",
+        ),
+        ("grep", json!({"pattern": "fn main("}), "escape `(`"),
+        (
+            "grep",
+            json!({"pattern": "x", "glob": "src/[a"}),
+            "for example `**/*.rs`",
+        ),
+    ] {
+        let text = fx.err(name, args.clone()).await;
+        assert!(text.contains(wanted), "{name} {args}: {text}");
+    }
+    let read = fx
+        .ok("read_file", json!({"path": "a.txt", "offset": 9}))
+        .await;
+    assert!(read.contains("pass an offset from 1 to 2"), "{read}");
+    // Arguments that do not parse: the parser's complaint and a valid call.
+    let Err(ToolError::InvalidArguments { reason, .. }) = fx
+        .try_call("edit_file", json!({"path": "a.txt", "old": "one"}))
+        .await
+    else {
+        panic!("parsed");
+    };
+    assert!(
+        reason.contains("old")
+            && reason.contains(r#"a valid call looks like {"path": "src/lib.rs", "old_string""#),
+        "{reason}"
+    );
+}

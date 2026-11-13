@@ -72,7 +72,8 @@ pub(crate) fn run(shared: &Shared, call: CallMeta, args: ReadFileArgs) -> ToolOu
     let bytes = read.bytes;
     if looks_binary(&bytes) {
         return Err(ToolFailure::recoverable(format!(
-            "{display} is a binary file; read_file only reads text"
+            "{display} is a binary file and read_file only reads text; inspect it with a \
+             shell command instead (for example `file {display}` or `xxd {display} | head`)"
         )));
     }
     shared.record_read(call.session, resolved.abs, mtime);
@@ -100,7 +101,10 @@ fn render(text: &str, offset: usize, limit: usize) -> String {
     }
     let total = text.lines().count();
     if offset > total {
-        return format!("(file has {total} lines; offset {offset} is past the end)");
+        return format!(
+            "(file has {total} lines; offset {offset} is past the end: pass an offset from 1 \
+             to {total})"
+        );
     }
     let mut out = String::new();
     let mut last = offset;

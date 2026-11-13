@@ -4,6 +4,17 @@
 
 ### Fixed
 
+- The errors of rkat-tui's own tools say what to do next: a missing file
+  names the `glob` that finds it, a failed `edit_file` says how
+  `old_string` must match (read the file again and copy its lines) or how
+  to make it unique, a binary or oversized file names the shell command
+  to use, a bad `glob` pattern, `grep` regex or `watch_paths` pattern
+  shows the syntax with an example, an offset past the end gives the
+  range, a permission error says only the user can change it, a missing
+  note points at `note_list`, a `tool_search` without a match says how to
+  broaden it, and arguments that do not parse come with a minimal valid
+  call of the tool.
+
 - `glob` no longer walks what its pattern cannot match: `*-pnpm*/bin/pnpm`
   under a large store examined hundreds of thousands of entries deep in
   unrelated directories and answered "no matches" with a partial note;
