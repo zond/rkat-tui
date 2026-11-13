@@ -93,6 +93,16 @@ generation check).
 | `memory/` | the semantic-memory index |
 | `leases/`, `hosting/`, `delivery/` | the realm lease and per-session locks |
 
+Outside the realm, the engine keeps each session's comms key pair (its
+identity to the other agents) under the user config root
+(`--user-config-root`, else the home directory):
+`<user config root>/.rkat/session_comms_identity/<session id>/identity.key`
+(secret, 0600) and `identity.pub`. Written by the engine when a session's
+comms start (`meerkat` `sdk.rs` `session_comms_identity_root_in`;
+`meerkat-comms` `runtime/comms_runtime.rs` and `identity.rs`). Losing it
+gives the session a new identity, so peers that trusted the old key no
+longer reach it until they are wired again.
+
 ## In the workspace
 
 rkat-tui reads, never writes on its own: `.rkat/tui.toml` (the project

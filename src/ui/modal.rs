@@ -527,6 +527,16 @@ impl AgentPicker {
         }
     }
 
+    /// `agents` in place of the listed ones (a retire confirmed): the
+    /// highlight stays on its row (the next agent moves up into it), or
+    /// the last agent when the row is gone; the question or refusal goes.
+    pub fn refresh(&mut self, agents: Vec<AgentEntry>) {
+        let row = self.cursor.index().min(agents.len().saturating_sub(1));
+        self.agents = agents;
+        self.cursor = ListCursor(row);
+        self.line = None;
+    }
+
     /// The highlighted agent (`None`: the "new agent" row).
     #[must_use]
     pub fn selected(&self) -> Option<&AgentEntry> {

@@ -293,18 +293,45 @@ impl Runner {
 
     /// The picker's confirmed retire: `name` leaves the workspace through
     /// the daemon (`rkat/retire_agent`), which refuses an agent in use.
+    /// The picker stays open: once the daemon confirms, it lists the agents
+    /// again without the retired one ([`Msg::RefreshAgentPicker`]); a
+    /// refusal is shown on the picker ([`Msg::AgentPickerRefused`]) as well
+    /// as in the transcript.
     pub(super) fn retire_agent(&self, name: String) {
-        let params = protocol::AgentParams { name: name.clone() };
-        self.ask::<protocol::method::RetireAgent>(
-            params,
-            "the agent was not retired",
-            move |retired| {
-                vec![match retired {
-                    Ok(retired) => (NoticeLevel::Info, retired_words(&retired)),
-                    Err(err) => (NoticeLevel::Warn, format!("{name} was not retired: {err}")),
-                }]
-            },
-        );
+        let say = self.say();
+        let Some(connection) = self.link_or_say("the agent was not retired") else {
+            return;
+        };
+        let bound = self.agent.clone();
+        tokio::spawn(async move {
+            let params = protocol::AgentParams { name: name.clone() };
+            let retired = bounded(
+                CALL_TIMEOUT,
+                remote::call::<protocol::method::RetireAgent>(&connection, &params),
+            )
+            .await;
+            match retired {
+                Ok(retired) => say.notice(NoticeLevel::Info, retired_words(&retired)),
+                Err(err) => {
+                    let why = format!("{name} was not retired: {err}");
+                    say.notice(NoticeLevel::Warn, why.clone());
+                    let _ = say.ui_tx.send(Msg::AgentPickerRefused(why));
+                    return;
+                }
+            }
+            let Some(status) = daemon_status(&connection).await else {
+                return;
+            };
+            let listed = bounded(CALL_TIMEOUT, remote::conversations(&connection))
+                .await
+                .unwrap_or_default();
+            let mine = status.agent.as_deref().or(bound.as_deref());
+            let _ = say.ui_tx.send(Msg::RefreshAgentPicker(agent_entries(
+                &status.agents,
+                &listed,
+                mine,
+            )));
+        });
     }
 
     /// Shift+Tab, `/mode`, `/auto resume`: switch the daemon's mode.

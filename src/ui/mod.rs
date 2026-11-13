@@ -389,6 +389,13 @@ pub enum Msg {
     /// Open the agent picker (answer to [`Effect::Agents`] without a
     /// name): the workspace's agents, names in order.
     ShowAgentPicker(Vec<AgentEntry>),
+    /// The agents again after a retire from the picker: an open agent
+    /// picker shows them, the highlight on the row where it was (the next
+    /// agent, or the last when the retired one was last); nothing opens.
+    RefreshAgentPicker(Vec<AgentEntry>),
+    /// Why a retire from the picker was refused: an open agent picker
+    /// shows it.
+    AgentPickerRefused(String),
     /// Show a list picker (`/schedules`, `/permissions`, `/memory`). A
     /// `refresh` is the list again after the picker's own act: it replaces
     /// only a picker of its kind still open (or waiting behind an approval
@@ -1474,6 +1481,20 @@ impl App {
             }
             Msg::ShowAgentPicker(agents) => {
                 self.show_modal(Modal::Agents(AgentPicker::new(agents)));
+            }
+            Msg::RefreshAgentPicker(agents) => {
+                for slot in [&mut self.modal, &mut self.parked] {
+                    if let Some(Modal::Agents(picker)) = slot {
+                        picker.refresh(agents.clone());
+                    }
+                }
+            }
+            Msg::AgentPickerRefused(why) => {
+                for slot in [&mut self.modal, &mut self.parked] {
+                    if let Some(Modal::Agents(picker)) = slot {
+                        picker.line = Some(modal::AgentPickerLine::Refused(why.clone()));
+                    }
+                }
             }
             Msg::ShowPicker { picker, refresh } => self.show_picker(picker, refresh),
             Msg::ShowModelPicker(groups) => {

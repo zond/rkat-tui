@@ -30,6 +30,12 @@
   inlined, optional fields' `anyOf [T, null]` folded into `T`, `oneOf` as
   `anyOf` and a `type` on every constrained node. `/context` measures the
   definitions as sent.
+- `/agents` stays open after `d` then `y`: once the daemon confirms the
+  retire it lists the agents again without the retired one, the
+  highlight on its neighbour, so several can be retired in a row; a
+  refused retire (a running agent, one with a client, your own) shows its
+  reason on the picker. Enter still closes it. `/schedules` and
+  `/permissions` already behaved this way.
 - While a model request runs longer than five seconds, the status bar
   says that queued messages wait for the model's reply, and for how long,
   instead of a bare "delivering…".

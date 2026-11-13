@@ -1916,7 +1916,10 @@ move, Esc or `q` closes it, and:
   TUI attached, and your own (`/quit` retires that), saying why. A
   retired agent leaves as on `/quit`: its schedules are deleted, the
   others are told it left, and its conversation stays in `/resume` (and
-  `rkat-tui --resume <id>` seats it again).
+  `rkat-tui --resume <id>` seats it again). The picker stays open: once
+  the daemon confirms, it lists the agents again without the retired one,
+  the highlight on its neighbour, so several can be retired in a row; a
+  refusal shows its reason on the picker.
 
 **Wired.** Every agent is wired to every other one as a peer, so each has
 the engine's peer tools (`peers` lists the other agents, `send_message`

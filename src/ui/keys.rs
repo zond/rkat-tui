@@ -430,13 +430,17 @@ impl App {
             Some(Modal::Agents(picker)) => match picker.key(key) {
                 ModalKey::Stay => {}
                 ModalKey::Close => self.modal = None,
-                ModalKey::Choose(pick) => {
+                // A retire keeps the picker open: the list comes again
+                // without the agent ([`Msg::RefreshAgentPicker`]), or the
+                // refusal shows on it.
+                ModalKey::Choose(AgentPick::Retire(name)) => fx.push(Effect::RetireAgent(name)),
+                ModalKey::Choose(AgentPick::Switch(name)) => {
                     self.modal = None;
-                    fx.push(match pick {
-                        AgentPick::Switch(name) => Effect::Agents(Some(name)),
-                        AgentPick::New => Effect::NewAgent,
-                        AgentPick::Retire(name) => Effect::RetireAgent(name),
-                    });
+                    fx.push(Effect::Agents(Some(name)));
+                }
+                ModalKey::Choose(AgentPick::New) => {
+                    self.modal = None;
+                    fx.push(Effect::NewAgent);
                 }
             },
             Some(Modal::List(picker)) => match picker.key(key) {

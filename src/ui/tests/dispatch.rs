@@ -137,7 +137,8 @@ fn resume_picker_selects() {
 }
 
 /// `/agents` asks for the picker; its answers become the switch, the new
-/// agent and the retire effects, and the picker closes.
+/// agent and the retire effects; a switch or a new agent closes the
+/// picker, a retire keeps it open.
 #[test]
 fn agent_picker_switches_seats_and_retires() {
     let entry = |name: &str, mine: bool| AgentEntry {
@@ -178,6 +179,56 @@ fn agent_picker_switches_seats_and_retires() {
         app.update(key(KeyCode::Char('y'))),
         vec![Effect::RetireAgent("main-bbbb".into())]
     );
+    // A retire keeps the picker open; the list without the agent comes
+    // once the daemon confirmed, the highlight on its neighbour.
+    assert!(matches!(app.modal, Some(Modal::Agents(_))));
+    app.update(Msg::RefreshAgentPicker(vec![entry("main-aaaa", true)]));
+    let Some(Modal::Agents(picker)) = &app.modal else {
+        panic!("the picker closed");
+    };
+    assert_eq!(picker.agents.len(), 1);
+    assert_eq!(
+        picker.selected().map(|a| a.name.as_str()),
+        Some("main-aaaa")
+    );
+    // A refusal shows on the open picker, which stays.
+    app.update(Msg::AgentPickerRefused(
+        "main-aaaa was not retired: it runs".into(),
+    ));
+    let Some(Modal::Agents(picker)) = &app.modal else {
+        panic!("the picker closed");
+    };
+    assert_eq!(
+        picker.line,
+        Some(crate::ui::modal::AgentPickerLine::Refused(
+            "main-aaaa was not retired: it runs".into()
+        ))
+    );
+    // Several in a row: the next retire is offered on the refreshed list.
+    let mut app = open();
+    app.update(Msg::RefreshAgentPicker(vec![
+        entry("main-aaaa", true),
+        entry("main-bbbb", false),
+        entry("main-cccc", false),
+    ]));
+    app.update(key(KeyCode::Down));
+    app.update(key(KeyCode::Char('d')));
+    assert_eq!(
+        app.update(key(KeyCode::Char('y'))),
+        vec![Effect::RetireAgent("main-bbbb".into())]
+    );
+    app.update(Msg::RefreshAgentPicker(vec![
+        entry("main-aaaa", true),
+        entry("main-cccc", false),
+    ]));
+    app.update(key(KeyCode::Char('d')));
+    assert_eq!(
+        app.update(key(KeyCode::Char('y'))),
+        vec![Effect::RetireAgent("main-cccc".into())]
+    );
+    // A refresh with no picker open opens none.
+    let mut app = App::new(StatusInfo::default());
+    app.update(Msg::RefreshAgentPicker(vec![entry("main-aaaa", true)]));
     assert!(app.modal.is_none());
     // `/agents <name>` stays the shortcut.
     let mut app = App::new(StatusInfo::default());

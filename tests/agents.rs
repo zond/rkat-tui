@@ -415,6 +415,9 @@ async fn the_agent_picker_lists_retires_idle_agents_and_seats_a_new_one() {
         a.send(Effect::RetireAgent(name.clone()));
         a.wait_for(|m| matches!(m, Msg::Notice { text, .. } if text.contains(&format!("{name} was not retired")) && text.contains(why)))
             .await;
+        // The picker that asked shows the refusal too.
+        a.wait_for(|m| matches!(m, Msg::AgentPickerRefused(text) if text.contains(why)))
+            .await;
     }
     let names: Vec<String> = daemon
         .status()
@@ -430,6 +433,14 @@ async fn the_agent_picker_lists_retires_idle_agents_and_seats_a_new_one() {
     let short = rkat_tui::text::short_id(&b_session.to_string()).to_string();
     a.wait_for(|m| matches!(m, Msg::Notice { text, .. } if text.contains(&format!("retired agent {b_name}")) && text.contains(&short)))
         .await;
+    // The open picker gets the agents again, without B.
+    let refreshed = a
+        .wait_for(|m| matches!(m, Msg::RefreshAgentPicker(_)))
+        .await;
+    assert!(
+        matches!(&refreshed, Msg::RefreshAgentPicker(rows) if rows.len() == 3 && rows.iter().all(|r| r.name != b_name)),
+        "{refreshed:?}"
+    );
     let status = daemon.status().await;
     assert!(status.agents.iter().all(|r| r.name != b_name), "{status:?}");
     a.send(Effect::Agents(None));
