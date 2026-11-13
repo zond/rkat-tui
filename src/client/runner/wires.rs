@@ -12,6 +12,20 @@ use crate::daemon::protocol::workspace_name;
 /// What is said when the caller's daemon cannot say what it is.
 const NO_STATUS: &str = "the daemon did not say which agent this is";
 
+/// What a wire command works with: this daemon's status, and the other
+/// daemons when the command asks for them ([`Scene::others`]).
+struct Scene {
+    status: protocol::Status,
+    files: Vec<PathBuf>,
+}
+
+impl Scene {
+    /// The other workspaces' daemons that answer now.
+    async fn others(&self) -> Vec<Other> {
+        cross::others(&self.files, &self.status.workspace).await
+    }
+}
+
 impl Runner {
     /// The endpoint files `/wire` looks through.
     fn wire_files(&self) -> Vec<PathBuf> {
@@ -36,33 +50,49 @@ impl Runner {
         true
     }
 
-    /// `/wire`: the picker of other workspaces' agents, or wire to the one
-    /// `target` names.
-    pub(super) fn wire(&self, target: Option<String>) {
-        if self.wire_refused("nothing was wired") {
-            return;
-        }
-        let Some(connection) = self.link_or_say("nothing was wired") else {
+    /// Run `act` on a task of its own with this client's connection and
+    /// its daemon's status; without a connection, or a status, it says so
+    /// (`what` was not done) unless `quiet`.
+    fn with_scene<F, Fut>(&self, what: &str, quiet: bool, act: F)
+    where
+        F: FnOnce(Say, Arc<Connection>, Scene) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let connection = if quiet {
+            self.connection()
+        } else {
+            self.link_or_say(what)
+        };
+        let Some(connection) = connection else {
             return;
         };
         let files = self.wire_files();
         let say = self.say();
         tokio::spawn(async move {
             let Some(status) = daemon_status(&connection).await else {
-                say.notice(NoticeLevel::Warn, NO_STATUS);
+                if !quiet {
+                    say.notice(NoticeLevel::Warn, NO_STATUS);
+                }
                 return;
             };
-            let others = cross::others(&files, &status.workspace).await;
+            act(say, connection, Scene { status, files }).await;
+        });
+    }
+
+    /// `/wire`: the picker of other workspaces' agents, or wire to the one
+    /// `target` names.
+    pub(super) fn wire(&self, target: Option<String>) {
+        if self.wire_refused("nothing was wired") {
+            return;
+        }
+        self.with_scene("nothing was wired", false, |say, connection, scene| async move {
+            let others = scene.others().await;
             let all = cross::candidates(&others);
             let Some(target) = target else {
-                let picker = cross::wire_picker(&all, &cross::rows_of(&status));
-                let _ = say.ui_tx.send(Msg::ShowPicker {
-                    picker,
-                    refresh: false,
-                });
+                show(&say, cross::wire_picker(&all, &cross::rows_of(&scene.status)), false);
                 return;
             };
-            if names_own(&target, &status.workspace) {
+            if names_own(&target, &scene.status.workspace) {
                 say.notice(
                     NoticeLevel::Warn,
                     format!(
@@ -73,80 +103,79 @@ impl Runner {
             }
             match cross::resolve(&target, &all) {
                 Ok(found) => {
-                    let (workspace, agent) = (found.workspace.clone(), found.agent.clone());
-                    wire_with(&say, &connection, &others, &workspace, &agent).await;
+                    wire_with(&say, &connection, &others, &found.workspace, &found.agent).await;
                 }
                 Err(why) => say.notice(NoticeLevel::Warn, format!("nothing was wired: {why}")),
             }
         });
     }
 
-    /// The `/wire` picker's choice.
+    /// The `/wire` picker's choice; the picker stays, its row then marked
+    /// wired.
     pub(super) fn wire_to(&self, workspace: PathBuf, agent: String) {
         if self.wire_refused("nothing was wired") {
             return;
         }
-        let Some(connection) = self.link_or_say("nothing was wired") else {
-            return;
-        };
-        let files = self.wire_files();
-        let say = self.say();
-        tokio::spawn(async move {
-            let Some(status) = daemon_status(&connection).await else {
-                say.notice(NoticeLevel::Warn, NO_STATUS);
-                return;
-            };
-            let others = cross::others(&files, &status.workspace).await;
-            wire_with(&say, &connection, &others, &workspace, &agent).await;
-        });
+        self.with_scene(
+            "nothing was wired",
+            false,
+            |say, connection, scene| async move {
+                let others = scene.others().await;
+                wire_with(&say, &connection, &others, &workspace, &agent).await;
+                if let Some(status) = daemon_status(&connection).await {
+                    let all = cross::candidates(&others);
+                    show(
+                        &say,
+                        cross::wire_picker(&all, &cross::rows_of(&status)),
+                        true,
+                    );
+                }
+            },
+        );
     }
 
     /// `/unwire`: the picker of this agent's wires, or remove the one
     /// `target` names.
     pub(super) fn unwire(&self, target: Option<String>) {
-        let Some(connection) = self.link_or_say("nothing was unwired") else {
-            return;
-        };
-        let files = self.wire_files();
-        let say = self.say();
-        tokio::spawn(async move {
-            let Some(status) = daemon_status(&connection).await else {
-                say.notice(NoticeLevel::Warn, NO_STATUS);
-                return;
-            };
-            let rows = cross::rows_of(&status);
-            let others = cross::others(&files, &status.workspace).await;
-            let Some(target) = target else {
-                let picker = cross::unwire_picker(&rows, &others);
-                let _ = say.ui_tx.send(Msg::ShowPicker {
-                    picker,
-                    refresh: false,
-                });
-                return;
-            };
-            match cross::resolve_wire(&target, &rows) {
-                Ok(row) => unwire_with(&say, &connection, &status, row, &others).await,
-                Err(why) => say.notice(NoticeLevel::Warn, format!("nothing was unwired: {why}")),
-            }
-        });
+        self.with_scene(
+            "nothing was unwired",
+            false,
+            |say, connection, scene| async move {
+                let rows = cross::rows_of(&scene.status);
+                let others = scene.others().await;
+                let Some(target) = target else {
+                    show(&say, cross::unwire_picker(&rows, &others), false);
+                    return;
+                };
+                match cross::resolve_wire(&target, &rows) {
+                    Ok(row) => unwire_with(&say, &connection, &scene.status, row, &others).await,
+                    Err(why) => {
+                        say.notice(NoticeLevel::Warn, format!("nothing was unwired: {why}"));
+                    }
+                }
+            },
+        );
     }
 
-    /// The `/unwire` picker's confirmed choice.
+    /// The `/unwire` picker's confirmed choice; the picker stays, the wire
+    /// then gone from it.
     pub(super) fn unwire_from(&self, workspace: PathBuf, agent: String) {
-        let Some(connection) = self.link_or_say("nothing was unwired") else {
-            return;
-        };
-        let files = self.wire_files();
-        let say = self.say();
-        tokio::spawn(async move {
-            let Some(status) = daemon_status(&connection).await else {
-                say.notice(NoticeLevel::Warn, NO_STATUS);
-                return;
-            };
-            let others = cross::others(&files, &status.workspace).await;
-            let row = protocol::WireRow { workspace, agent };
-            unwire_with(&say, &connection, &status, &row, &others).await;
-        });
+        self.with_scene(
+            "nothing was unwired",
+            false,
+            |say, connection, scene| async move {
+                let others = scene.others().await;
+                let row = protocol::WireRow { workspace, agent };
+                unwire_with(&say, &connection, &scene.status, &row, &others).await;
+                if let Some(status) = daemon_status(&connection).await {
+                    show(
+                        &say,
+                        cross::unwire_picker(&cross::rows_of(&status), &others),
+                        true,
+                    );
+                }
+            },
+        );
     }
 
     /// This agent switched conversation, which gave it a new comms key:
@@ -156,20 +185,12 @@ impl Runner {
         if self.config.remote.is_some() {
             return;
         }
-        let Some(connection) = self.connection() else {
-            return;
-        };
-        let files = self.wire_files();
-        let say = self.say();
-        tokio::spawn(async move {
-            let Some(status) = daemon_status(&connection).await else {
-                return;
-            };
-            let rows = cross::rows_of(&status);
+        self.with_scene("", true, |say, connection, scene| async move {
+            let rows = cross::rows_of(&scene.status);
             if rows.is_empty() {
                 return;
             }
-            let others = cross::others(&files, &status.workspace).await;
+            let others = scene.others().await;
             for line in cross::refresh(&connection, &rows, &others).await {
                 say.notice(NoticeLevel::Warn, line);
             }
@@ -177,13 +198,15 @@ impl Runner {
     }
 }
 
+/// Show `picker` (`refresh`: only in place of an open one of its kind).
+fn show(say: &Say, picker: crate::ui::ListPicker, refresh: bool) {
+    let _ = say.ui_tx.send(Msg::ShowPicker { picker, refresh });
+}
+
 /// Whether `target` names the workspace `own` (by its name or its path,
 /// alone or before `/<agent>`).
 fn names_own(target: &str, own: &Path) -> bool {
-    let workspace = match target.rsplit_once('/') {
-        Some((workspace, agent)) if crate::daemon::agents::is_agent(agent) => workspace,
-        _ => target,
-    };
+    let (workspace, _) = cross::parse_target(target);
     workspace == workspace_name(own) || Path::new(workspace) == own
 }
 

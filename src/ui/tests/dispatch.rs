@@ -267,6 +267,75 @@ fn schedules_picker(n: usize) -> ListPicker {
     ListPicker::new(PickerKind::Schedules, rows, "no schedules", "keys")
 }
 
+/// The `/unwire` picker stays open after a confirmed unwire and its
+/// refresh drops the row; the `/wire` picker stays after a wire (review 5,
+/// P1: a list stays with the item gone, as `/agents` does).
+#[test]
+fn the_wire_pickers_stay_open_after_their_act() {
+    let unwire = |n: usize| {
+        let rows = (0..n)
+            .map(|i| {
+                let act = PickAct::Unwire {
+                    workspace: format!("/w/{i}").into(),
+                    agent: "main-aaaa".into(),
+                };
+                PickRow::new(
+                    format!("{i}/main-aaaa"),
+                    vec![PickKey::confirmed(KeyCode::Enter, act, "unwire?")],
+                )
+            })
+            .collect();
+        ListPicker::new(PickerKind::Unwire, rows, "no wires", "keys")
+    };
+    let mut app = App::new(StatusInfo::default());
+    app.update(Msg::ShowPicker {
+        picker: unwire(2),
+        refresh: false,
+    });
+    assert!(app.update(key(KeyCode::Enter)).is_empty());
+    assert_eq!(
+        app.update(key(KeyCode::Char('y'))),
+        vec![Effect::UnwireFrom {
+            workspace: "/w/0".into(),
+            agent: "main-aaaa".into()
+        }]
+    );
+    assert!(matches!(&app.modal, Some(Modal::List(p)) if p.kind == PickerKind::Unwire));
+    app.update(Msg::ShowPicker {
+        picker: unwire(1),
+        refresh: true,
+    });
+    assert!(matches!(&app.modal, Some(Modal::List(p)) if p.rows.len() == 1));
+    let wire = ListPicker::new(
+        PickerKind::Wire,
+        vec![PickRow::new(
+            "web/main-cccc",
+            vec![PickKey::now(
+                KeyCode::Enter,
+                PickAct::Wire {
+                    workspace: "/w/web".into(),
+                    agent: "main-cccc".into(),
+                },
+            )],
+        )],
+        "none",
+        "keys",
+    );
+    let mut app = App::new(StatusInfo::default());
+    app.update(Msg::ShowPicker {
+        picker: wire,
+        refresh: false,
+    });
+    assert_eq!(
+        app.update(key(KeyCode::Enter)),
+        vec![Effect::WireTo {
+            workspace: "/w/web".into(),
+            agent: "main-cccc".into()
+        }]
+    );
+    assert!(matches!(&app.modal, Some(Modal::List(p)) if p.kind == PickerKind::Wire));
+}
+
 /// `/schedules` asks for the picker; its acts run as the typed command
 /// and leave it open, a refresh replaces it on the same row (and is
 /// dropped once it was closed); `/schedules pause <name>` stays the

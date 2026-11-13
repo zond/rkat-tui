@@ -33,6 +33,12 @@
 
 ### Fixed
 
+- The `/unwire` picker stays open after a wire is removed and shows the
+  wires that remain, as `/agents` does after a retire. The `/wire`
+  picker stays open after a wire too and marks the row wired. Opening
+  either picker, and a `/new` or `/resume` of a wired agent, now asks
+  the other daemons all at once. Before, each stale endpoint file added
+  up to 2 s.
 - Esc and Ctrl+Enter (on an empty editor) now always act or say why
   not. When the client shows no turn but the agent runs one, for example
   a run that was going when this client attached, the client asks the

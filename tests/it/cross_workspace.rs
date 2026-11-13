@@ -357,6 +357,17 @@ async fn wired_agents_of_two_workspaces_message_both_ways_across_restarts() {
             && text.contains(&format!("/unwire {b_label} removes it")),
         "{text}"
     );
+    // The picker stays, its row now marked wired (review 5, P1).
+    let refreshed = c
+        .wait_for(|msg| {
+            matches!(msg, Msg::ShowPicker { picker, refresh: true } if picker.kind == PickerKind::Wire)
+        })
+        .await;
+    assert!(
+        matches!(&refreshed, Msg::ShowPicker { picker, .. }
+            if picker.rows.len() == 1 && picker.rows[0].text.ends_with("· wired")),
+        "{refreshed:?}"
+    );
     // Again: nothing changes, and the user is told so.
     c.send(Effect::Wire(Some("beta".into())));
     let (_, again) = notice(&mut c, "wired already").await;
@@ -493,11 +504,24 @@ async fn wired_agents_of_two_workspaces_message_both_ways_across_restarts() {
     shown(&llm, "from B2: toa").await;
     a.idle(&a.agent).await;
 
-    // `/unwire`: both sides.
+    // `/unwire` from its picker: both sides, and the picker stays with
+    // the wire gone from it (review 5, P1).
     let mut c = client(&root, std::slice::from_ref(&b_file)).await;
-    c.send(Effect::Unwire(Some(b_label.clone())));
+    c.send(Effect::UnwireFrom {
+        workspace: b_root.clone(),
+        agent: b_agent.to_string(),
+    });
     let (_, text) = notice(&mut c, "unwired").await;
     assert_eq!(text, format!("unwired {b_label} on both sides"));
+    let refreshed = c
+        .wait_for(|msg| {
+            matches!(msg, Msg::ShowPicker { picker, refresh: true } if picker.kind == PickerKind::Unwire)
+        })
+        .await;
+    assert!(
+        matches!(&refreshed, Msg::ShowPicker { picker, .. } if picker.rows.is_empty()),
+        "{refreshed:?}"
+    );
     assert_eq!(wires_of(&a).await, Vec::<String>::new());
     let system_before = llm.recorded().len();
     markers.set("unwired", "");

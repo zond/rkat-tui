@@ -2141,7 +2141,7 @@ only their top-level agents, never helpers or forks. Each row reads
 `<workspace>/<agent>  working|idle|unknown  <n> client(s)|no client`,
 with the workspace's path under it, and `· wired` on one yours is
 wired to already. Enter wires the agent this `rkat-tui` works with to
-the highlighted one. `/wire <workspace>/<agent>` does the same without
+the highlighted one; the picker stays open, the row then marked wired. `/wire <workspace>/<agent>` does the same without
 the picker (the workspace by its directory's name or its path, and a
 workspace alone when one agent works there). To wire to an agent of a
 workspace whose daemon is not running, start `rkat-tui` there first.
@@ -2207,7 +2207,8 @@ not delivered.
 
 **`/unwire`.** `/unwire` opens a picker of your agent's wires (each with
 `working`, `idle`, `its daemon is not running`, or `retired there (the
-wire is stale)`); Enter, then `y`, removes one. `/unwire
+wire is stale)`); Enter, then `y`, removes one, and the picker stays
+open without it. `/unwire
 <workspace>/<agent>` does it directly. Your side is removed always, the
 other side when its daemon runs; otherwise it goes when that agent
 retires or someone runs `/unwire` there. `/agents` shows each agent's

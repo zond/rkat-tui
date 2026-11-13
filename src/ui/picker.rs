@@ -92,7 +92,11 @@ impl PickAct {
     fn keeps_picker(&self) -> bool {
         matches!(
             self,
-            Self::Schedule(..) | Self::RemoveRule(_) | Self::FoldHelper(_)
+            Self::Schedule(..)
+                | Self::RemoveRule(_)
+                | Self::FoldHelper(_)
+                | Self::Wire { .. }
+                | Self::Unwire { .. }
         )
     }
 }
@@ -440,7 +444,7 @@ impl App {
     }
 
     /// A picker's answer: what the typed command does; the schedules, the
-    /// rules and the helpers stay open (their list comes again).
+    /// rules, the helpers and the wires stay open (their list comes again).
     pub(super) fn picked(&mut self, act: PickAct, fx: &mut Vec<Effect>) {
         if !act.keeps_picker() {
             self.modal = None;

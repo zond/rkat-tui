@@ -536,15 +536,53 @@ pub struct AgentRow {
     pub wires: Vec<WireRow>,
 }
 
+/// Whether an agent runs, as a client words it ([`AgentRow::run`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunWord {
+    /// A run of it is open.
+    Running,
+    /// No run of it is open.
+    Idle,
+    /// Its state could not be read.
+    Unknown,
+}
+
+impl RunWord {
+    /// `running`, `idle` or `unknown`.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Idle => "idle",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// As a picker row says it: `working`, `idle` or `unknown`.
+    #[must_use]
+    pub fn picker_word(self) -> &'static str {
+        match self {
+            Self::Running => "working",
+            other => other.as_str(),
+        }
+    }
+}
+
 impl AgentRow {
+    /// Whether it runs.
+    #[must_use]
+    pub fn run(&self) -> RunWord {
+        match self.running {
+            Some(true) => RunWord::Running,
+            Some(false) => RunWord::Idle,
+            None => RunWord::Unknown,
+        }
+    }
+
     /// Its run state in words: `running`, `idle` or `unknown`.
     #[must_use]
     pub fn run_label(&self) -> &'static str {
-        match self.running {
-            Some(true) => "running",
-            Some(false) => "idle",
-            None => "unknown",
-        }
+        self.run().as_str()
     }
 
     /// Why this agent may not be retired from `/agents` by a client
