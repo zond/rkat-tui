@@ -480,6 +480,8 @@ pub struct AgentEntry {
     pub mine: bool,
     /// Why the retire key refuses it (`None`: it may be retired).
     pub unretirable: Option<String>,
+    /// The agents of other workspaces it is wired to (`/wire`).
+    pub wires: Vec<String>,
 }
 
 /// What the `/agents` picker chose.
@@ -1208,6 +1210,9 @@ fn agent_row(agent: &AgentEntry) -> String {
             " · no client yet"
         });
     }
+    if !agent.wires.is_empty() {
+        row.push_str(&format!(" · wired to {}", agent.wires.join(", ")));
+    }
     if agent.mine {
         row.push_str(" · this rkat-tui");
     }
@@ -1350,6 +1355,7 @@ mod tests {
             detached: !mine,
             mine,
             unretirable: unretirable.map(str::to_string),
+            wires: Vec::new(),
         };
         AgentPicker::new(vec![
             entry("main-aaaa", false, None),
@@ -1359,6 +1365,19 @@ mod tests {
                 Some("main-bbbb is this rkat-tui's own agent"),
             ),
         ])
+    }
+
+    /// An agent's row names its wires to agents of other workspaces.
+    #[test]
+    fn an_agent_row_names_its_cross_workspace_wires() {
+        let mut agent = agents().agents[1].clone();
+        assert!(!agent_row(&agent).contains("wired"));
+        agent.wires = vec!["api/main-zz99".into(), "web/main-yy88".into()];
+        assert!(
+            agent_row(&agent).ends_with(" · wired to api/main-zz99, web/main-yy88 · this rkat-tui"),
+            "{}",
+            agent_row(&agent)
+        );
     }
 
     /// The agent picker opens on this client's own agent; Enter switches,

@@ -94,6 +94,8 @@ impl App {
             Command::DaemonStop => fx.push(Effect::DaemonStop),
             Command::DaemonStart => fx.push(Effect::DaemonStart),
             Command::Agents(name) => fx.push(Effect::Agents(name)),
+            Command::Wire(target) => fx.push(Effect::Wire(target)),
+            Command::Unwire(target) => fx.push(Effect::Unwire(target)),
             Command::Audit(lines) => fx.push(Effect::Audit(lines)),
             Command::Schedules(action) => fx.push(Effect::Schedules(action)),
             Command::Rehome(reference) => fx.push(Effect::Rehome(reference)),

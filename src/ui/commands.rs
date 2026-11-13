@@ -113,6 +113,12 @@ pub enum Command {
     /// `/agents [name]`: open the agent picker, or switch this rkat-tui
     /// to the agent `name`.
     Agents(Option<String>),
+    /// `/wire [<workspace>/<agent>]`: open the picker of other workspaces'
+    /// agents, or wire this agent to the one named.
+    Wire(Option<String>),
+    /// `/unwire [<workspace>/<agent>]`: open the picker of this agent's
+    /// cross-workspace wires, or remove the one named.
+    Unwire(Option<String>),
     /// `/audit [n]`: the last `n` lines of the daemon's audit log for this
     /// agent.
     Audit(Option<usize>),
@@ -299,6 +305,36 @@ pub static COMMANDS: &[CommandSpec] = &[
         parse: |rest| match words(rest).as_slice() {
             [] => Some(Command::Agents(None)),
             [name] => Some(Command::Agents(Some((*name).to_string()))),
+            _ => None,
+        },
+    },
+    CommandSpec {
+        name: "wire",
+        aliases: &[],
+        usage: "[workspace/agent]",
+        summary: "wire this agent to an agent of another workspace",
+        help: &[(
+            "/wire [workspace/agent]",
+            "open a picker of the agents of other workspaces whose daemon\nruns (workspace, agent, working or idle, clients): Enter wires\nthis agent and that one both ways, so each can message the\nother; with a name (a workspace alone when one agent works\nthere), wire directly",
+        )],
+        parse: |rest| match words(rest).as_slice() {
+            [] => Some(Command::Wire(None)),
+            [target] => Some(Command::Wire(Some((*target).to_string()))),
+            _ => None,
+        },
+    },
+    CommandSpec {
+        name: "unwire",
+        aliases: &[],
+        usage: "[workspace/agent]",
+        summary: "remove a wire to another workspace's agent",
+        help: &[(
+            "/unwire [workspace/agent]",
+            "open a picker of this agent's wires to other workspaces: Enter\nthen y removes one, on both sides when the other daemon runs;\nwith a name, remove it directly",
+        )],
+        parse: |rest| match words(rest).as_slice() {
+            [] => Some(Command::Unwire(None)),
+            [target] => Some(Command::Unwire(Some((*target).to_string()))),
             _ => None,
         },
     },
@@ -1048,13 +1084,15 @@ mod tests {
             "mode",
             "detach",
             "agents",
+            "wire",
+            "unwire",
             "audit",
             "rehome",
             "schedules",
         ] {
             assert!(super::spec(name).is_some(), "/{name} has no spec");
         }
-        assert_eq!(seen.len(), 32);
+        assert_eq!(seen.len(), 34);
         // `/help`'s "Commands:" rows come from the specs, in their order.
         let commands = help_text().split_once("Keys:").unwrap().0;
         let mut at = 0;
@@ -1076,6 +1114,18 @@ mod tests {
         assert_eq!(names("ta"), ["tasks"]);
         assert_eq!(names("zz"), Vec::<&str>::new());
         assert_eq!(completions("").count(), COMMANDS.len());
+    }
+
+    #[test]
+    fn wire_and_unwire_take_one_optional_target() {
+        assert_eq!(ok("/wire"), Command::Wire(None));
+        assert_eq!(
+            ok("/wire api/main-ab12"),
+            Command::Wire(Some("api/main-ab12".into()))
+        );
+        assert_eq!(ok("/unwire"), Command::Unwire(None));
+        assert_eq!(ok("/unwire api"), Command::Unwire(Some("api".into())));
+        assert_eq!(parse("/wire a b").map(|r| r.is_ok()), Some(false));
     }
 
     #[test]

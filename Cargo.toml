@@ -58,6 +58,9 @@ meerkat-sandbox = { version = "0.9.14" }
 meerkat-schedule = { version = "0.9.14" }
 meerkat-mob = { version = "0.9.14" }
 meerkat-mob-mcp = { version = "0.9.14" }
+# A cross-workspace wire's Unix socket: each connection is served with the
+# engine's own transport-generic envelope handler (`daemon::wires`).
+meerkat-comms = { version = "0.9.14" }
 # The user skills directory: listed and counted by the engine's own
 # filesystem skill source (`bootstrap::skills`).
 meerkat-skills = { version = "0.9.14" }
@@ -123,6 +126,9 @@ test-support = []
 # The integration tests drive the internal modules through `test-support`.
 rkat-tui = { path = ".", features = ["test-support"] }
 tokio = { version = "1.43", features = ["full", "test-util", "macros"] }
+# The cross-workspace tests write hand-made envelopes to a wire's socket
+# with the engine's own codec.
+tokio-util = { version = "0.7", features = ["codec"] }
 
 [lints]
 workspace = true

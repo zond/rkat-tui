@@ -141,6 +141,28 @@ pub fn roster_note(others: &[(String, PeerState)]) -> Option<String> {
     ))
 }
 
+/// `roster` (the note about this workspace's agents, when there are
+/// others) with a line naming the agents of other workspaces `wired`
+/// lists; `None` when both are empty.
+#[must_use]
+pub fn with_wired(roster: Option<String>, wired: &[String]) -> Option<String> {
+    if wired.is_empty() {
+        return roster;
+    }
+    let names = wired
+        .iter()
+        .map(|label| format!("`{label}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let line = format!(
+        "Agents of other workspaces you are wired to: {names} (each another project's agent; its state is not known here, and a message starts a model turn there when it is idle)."
+    );
+    Some(match roster {
+        Some(roster) => format!("{roster} {line}"),
+        None => line,
+    })
+}
+
 /// Why an agent leaves the workspace, as the others are told.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Leave {
@@ -296,6 +318,8 @@ pub struct Agents {
     /// The helpers and whom they work for (a message to one's own helper
     /// is a peer message like one to another agent).
     registry: Arc<crate::mobs::HelperRegistry>,
+    /// The agents' sockets and wires to other workspaces.
+    wires: Arc<super::wires::Wires>,
     /// The last watch event sent to each agent: a run it starts is the
     /// watch's.
     watch_sent: parking_lot::Mutex<std::collections::HashMap<String, String>>,
@@ -343,6 +367,8 @@ pub struct AgentsParts {
     pub ledger: Arc<super::usage::Ledger>,
     /// The helpers and their owners.
     pub registry: Arc<crate::mobs::HelperRegistry>,
+    /// The agents' sockets and wires to other workspaces.
+    pub wires: Arc<super::wires::Wires>,
 }
 
 impl Agents {
@@ -362,6 +388,7 @@ impl Agents {
             watches,
             ledger,
             registry,
+            wires,
         } = parts;
         Arc::new(Self {
             activity,
@@ -376,6 +403,7 @@ impl Agents {
             watches,
             ledger,
             registry,
+            wires,
             watch_sent: parking_lot::Mutex::new(std::collections::HashMap::new()),
             table: parking_lot::Mutex::new(BTreeMap::new()),
             seating: tokio::sync::Mutex::new(()),
@@ -481,6 +509,13 @@ impl Agents {
     /// endpoint names it).
     pub async fn is_agent_peer(&self, session: &SessionId, peer_id: &str) -> bool {
         let caller = self.conversations.agent_of(session);
+        // An agent of another workspace the caller is wired to.
+        if caller
+            .as_deref()
+            .is_some_and(|caller| self.wires.is_peer(caller, peer_id))
+        {
+            return true;
+        }
         let names: Vec<String> = self
             .table
             .lock()
@@ -605,6 +640,12 @@ impl Agents {
         &self.ledger
     }
 
+    /// The agents' sockets and wires to other workspaces.
+    #[must_use]
+    pub fn wires(&self) -> &Arc<super::wires::Wires> {
+        &self.wires
+    }
+
     /// The agents' schedules.
     #[must_use]
     pub fn schedules(&self) -> &Arc<super::schedules::Schedules> {
@@ -693,6 +734,8 @@ impl Agents {
         // The mob keeps its wiring across a restart; an edge it lost is
         // made again now.
         self.rewire(&names).await;
+        self.wires.keep_only(&names);
+        self.restore_wires(&names).await;
         // No client came back with them: what each was last told of the
         // others' clients is stale.
         self.note_rosters(&names).await;
@@ -742,6 +785,9 @@ impl Agents {
                 missed_dropped: 0,
             },
         );
+        // Its socket for agents of other workspaces (a failure is kept for
+        // its card: `/wire` names it).
+        let _ = self.wires.bind(name);
     }
 
     /// Wire every agent of `names` to every other live agent (an edge is
@@ -780,6 +826,14 @@ impl Agents {
         }
     }
 
+    /// Make the cross-workspace wires of every agent of `names` again
+    /// where its member lost them (a start, a seat, a switch).
+    async fn restore_wires(&self, names: &[String]) {
+        for name in names {
+            self.wires.restore(name).await;
+        }
+    }
+
     /// Append `text` to `name`'s system context (it reads it at its next
     /// turn; nothing wakes it). Best effort: a failure is logged.
     async fn note(&self, name: &str, text: String) {
@@ -804,20 +858,21 @@ impl Agents {
         states
     }
 
-    /// The roster note for `name`: every other agent of `states`.
-    fn roster_for(name: &str, states: &[(String, PeerState)]) -> Option<String> {
+    /// The roster note for `name`: every other agent of `states`, then
+    /// the agents of other workspaces it is wired to.
+    fn roster_for(&self, name: &str, states: &[(String, PeerState)]) -> Option<String> {
         let others: Vec<(String, PeerState)> = states
             .iter()
             .filter(|(other, _)| other != name)
             .cloned()
             .collect();
-        roster_note(&others)
+        with_wired(roster_note(&others), &self.wires.labels(name))
     }
 
     /// Tell `name` which other agents work here now and what each is
     /// doing (its fresh conversation knows none).
     async fn note_roster(&self, name: &str) {
-        if let Some(text) = Self::roster_for(name, &self.states().await) {
+        if let Some(text) = self.roster_for(name, &self.states().await) {
             self.note(name, text).await;
         }
     }
@@ -829,7 +884,7 @@ impl Agents {
         let states = self.states().await;
         let notes = names
             .iter()
-            .filter_map(|name| Some((name.clone(), Self::roster_for(name, &states)?)))
+            .filter_map(|name| Some((name.clone(), self.roster_for(name, &states)?)))
             .collect();
         self.note_each(notes).await;
     }
@@ -843,7 +898,7 @@ impl Agents {
             .iter()
             .filter(|(other, _)| other != name)
             .filter_map(|(other, _)| {
-                let roster = Self::roster_for(other, &states)?;
+                let roster = self.roster_for(other, &states)?;
                 let text = if joined {
                     format!("{} {roster}", membership_note(name, None))
                 } else {
@@ -1168,6 +1223,7 @@ impl Agents {
             match self.conversations.retire(&spare).await {
                 Ok(session) => {
                     self.table.lock().remove(&spare);
+                    self.wires.forget(&spare);
                     if let Some(session) = session {
                         self.engine.forget_session(&session);
                         self.conversations.forget(&session);
@@ -1185,6 +1241,7 @@ impl Agents {
         }
         self.admit(&name, false, false);
         self.rewire(std::slice::from_ref(&name)).await;
+        self.restore_wires(std::slice::from_ref(&name)).await;
         // The others are told it joined once its client is bound
         // ([`Self::bind`]), so the one note says it has one.
         self.note_roster(&name).await;
@@ -1218,6 +1275,7 @@ impl Agents {
             );
         }
         self.rewire(&[name.to_string()]).await;
+        self.restore_wires(&[name.to_string()]).await;
         if switched.is_ok() {
             self.note_roster(name).await;
         }
@@ -1234,6 +1292,7 @@ impl Agents {
         };
         tracing::error!(agent = %name, "the agent was lost in a failed switch");
         self.table.lock().remove(name);
+        self.wires.forget(name);
         self.note_others(name, &Leave::Closed).await;
         true
     }
@@ -1249,6 +1308,7 @@ impl Agents {
             return reseated;
         }
         self.rewire(&[name.to_string()]).await;
+        self.restore_wires(&[name.to_string()]).await;
         reseated
     }
 
@@ -1299,6 +1359,7 @@ impl Agents {
         self.activity.forget(name);
         self.watches.forget(name);
         self.watch_sent.lock().remove(name);
+        self.wires.forget(name);
         if let Some(session) = &session {
             self.engine.forget_session(session);
         }
@@ -1322,6 +1383,7 @@ impl Agents {
                 session_id: self.conversations.current(&name),
                 running: self.conversations.running(&name).await.reported(),
                 schedules: schedules.get(&name).copied().unwrap_or(0),
+                wires: self.wires.rows(&name),
                 name,
                 clients,
                 detached,
@@ -1428,6 +1490,12 @@ impl crate::approval::AgentPeers for AgentAttendance {
             return false;
         };
         agents.is_agent_peer(session, peer_id).await
+    }
+
+    async fn unreachable(&self, session: &SessionId, peer_id: &str) -> Option<String> {
+        let agents = self.0.upgrade()?;
+        let caller = agents.conversations.agent_of(session)?;
+        agents.wires.unreachable(&caller, peer_id)
     }
 }
 
@@ -1555,6 +1623,23 @@ mod tests {
         assert!(
             closed.contains("its session was closed") && !closed.contains("quit"),
             "{closed}"
+        );
+    }
+
+    #[test]
+    fn the_roster_names_the_agents_of_other_workspaces_it_is_wired_to() {
+        assert_eq!(with_wired(None, &[]), None);
+        assert_eq!(with_wired(Some("r".into()), &[]).as_deref(), Some("r"));
+        let alone = with_wired(None, &["api/main-ab12".into()]).unwrap();
+        assert!(
+            alone.starts_with("Agents of other workspaces you are wired to: `api/main-ab12`")
+                && alone.contains("not known here"),
+            "{alone}"
+        );
+        let both = with_wired(Some("Other agents.".into()), &["api/main-ab12".into()]).unwrap();
+        assert!(
+            both.starts_with("Other agents. Agents of other workspaces"),
+            "{both}"
         );
     }
 

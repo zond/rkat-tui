@@ -51,4 +51,11 @@ pub trait AgentPeers: Send + Sync {
     /// Whether `peer_id` (as the comms tools name a peer) is a live agent
     /// of this workspace other than the one running `session`.
     async fn is_agent_peer(&self, session: &SessionId, peer_id: &str) -> bool;
+
+    /// Why a message from `session` to `peer_id` cannot arrive now, in
+    /// words for the agent (an agent of another workspace whose daemon is
+    /// not running); `None`: it can, or `peer_id` is no such agent.
+    async fn unreachable(&self, _session: &SessionId, _peer_id: &str) -> Option<String> {
+        None
+    }
 }

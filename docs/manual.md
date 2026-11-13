@@ -21,6 +21,7 @@ the test protocol for working on rkat-tui itself.
 - [Where things live](#where-things-live)
 - [The workspace daemon](#the-workspace-daemon) ([Which daemon, which agent](#which-daemon-which-agent))
 - [Several agents](#several-agents)
+- [Wiring agents across workspaces](#wiring-agents-across-workspaces)
 - [Timers and watches](#timers-and-watches) ([Schedules](#schedules), [Tools an agent reveals](#tools-an-agent-reveals), [File watches](#file-watches))
 
 ## Overview
@@ -605,6 +606,23 @@ choice; after it, what a cautious user can do about it.
   agent in one workspace writes into another's prompt. *To tighten:*
   `[[deny]] tool = "note_save" arg = "user/*"`, and read
   `~/.rkat/tui/notes/` now and then.
+- **A wire to another workspace lets the two agents talk unreviewed.**
+  After `/wire` ([Wiring agents across workspaces](#wiring-agents-across-workspaces)),
+  a `send_message` between the two agents is tier 1 in both
+  workspaces, as between two agents of one workspace: your agent can
+  send the other one anything it has read in your project without being
+  asked, and the other agent can wake yours at any time (each message
+  to an idle agent is a model turn you pay for). A message carries no
+  authority: what your agent does about it passes your gate and
+  sandbox, an unattended turn is denied what needs review, and the
+  classifier never takes it for your words. Each agent's socket is
+  `<realm>/wire/<agent>.sock`, mode 0600 in a 0700 directory outside
+  the workspace, so only processes running as you can connect, and the
+  daemon admits only envelopes signed by the agent you wired (a wrong
+  or missing signature, or an unknown key, is dropped unanswered).
+  *To tighten:* wire only projects you would let share what they read,
+  `/unwire` when the work is done, or deny sends altogether
+  (`[[deny]] tool = "send_message"`).
 - **`!` runs as you, with no sandbox.** A `!` command is yours: it runs
   in your shell with your whole environment and files, unreviewed, and
   its output becomes part of the agent's context. *To tighten:* treat a
@@ -2101,6 +2119,100 @@ boundary:
   turn makes its later calls reviewed as usual. A turn you started stays
   yours after you `/detach`: it is reviewed as usual. The classifier
   never sees a peer's text as your words either.
+
+## Wiring agents across workspaces
+
+Each workspace has its own daemon, realm and agents, and an agent knows
+only the agents of its own workspace. `/wire` connects your agent to an
+agent of another workspace on the same machine, so the two can message
+each other: an API project's agent and its client project's, say.
+
+**`/wire`.** `/wire` opens a picker of the agents of every other
+workspace whose daemon runs (found as `rkat-tui --list` finds them),
+only their top-level agents, never helpers or forks. Each row reads
+`<workspace>/<agent>  working|idle|unknown  <n> client(s)|no client`,
+with the workspace's path under it, and `· wired` on one yours is
+wired to already. Enter wires the agent this `rkat-tui` works with to
+the highlighted one. `/wire <workspace>/<agent>` does the same without
+the picker (the workspace by its directory's name or its path, and a
+workspace alone when one agent works there). To wire to an agent of a
+workspace whose daemon is not running, start `rkat-tui` there first.
+
+Running `/wire` is your consent, for both directions: there is no
+further question in either workspace. Your `rkat-tui` holds your
+authority on both daemons (it reads their endpoint files as `--list`
+does), asks each for its agent's card (its workspace, name, comms key
+and socket), and asks the other daemon, then yours, to trust and route
+to the other agent. If the second side fails, the first is undone, and
+you are told which side failed and why ("the daemon of /home/me/api is
+an older rkat-tui-mob without cross-workspace wires: stop it (/quit
+there) and start rkat-tui there again with this version"). Neither
+daemon trusts the other daemon: each trusts one named agent's key.
+Wiring two agents that are wired already changes nothing and says so;
+an agent of your own workspace is refused (they are wired to each other
+already). `/wire` from a TUI attached with `--attach=HOST:PORT` to a
+daemon on another machine is refused: wires join daemons of one machine
+through local sockets.
+
+**Names.** Both workspaces call their agents `main-<id>`, so across a
+wire an agent is named `<workspace>/<agent>` (the workspace's directory
+name): `peers` lists it so, the receiving TUI labels its messages
+`✉ from agent api/main-ab12`, the `send_message` header names it, and
+the agents' notes use it.
+
+**What the agents are told.** When a wire is made, each agent gets a
+note naming the other, its workspace's path, that it is another
+project's agent with its own files, rules and user, that a message to
+it starts a model turn there when it is idle, and not to announce its
+file edits to it (the announcements are for the agents of its own
+workspace). The list of the other agents each agent gets also names the
+agents of other workspaces it is wired to, whose state is not known
+there. `/unwire` tells each side the wire is gone.
+
+**Messages.** A message is the engine's peer message, as between two
+agents of one workspace: an idle agent wakes for it and takes a model
+turn (its user pays for it), a busy one takes it at its next step. A
+`send_message` to a wired agent of another workspace is tier 1, as one
+to an agent of your own workspace (it changes nothing, and what the
+receiver does about it passes its own gate); a send to any other peer id
+is still reviewed. A message carries no authority: the receiving agent's
+calls go through its own workspace's gate and sandbox, and a turn it
+starts while no client is attached there is unattended (anything that
+needs review is denied).
+
+**When the other side is down.** The wire stays. A send fails at once
+(`… IO error: No such file or directory` or `Connection refused`): the
+other workspace's daemon is not running, and starting `rkat-tui` there
+brings it back. Its agent comes back idle with the same key, and the
+first message to it wakes it; nothing has to be wired again, and the
+same holds when your daemon restarts. A message sent while the other
+side is down is not kept for later.
+
+**A new conversation.** An agent's comms key belongs to its
+conversation: `/new` and `/resume` give it another one. Your daemon
+makes your side of each wire again at once, and your `rkat-tui` sends
+the agent's new card to the other daemons. When one of them is not
+running, you are told ("api/main-ab12 does not know this agent's new
+conversation (its daemon is not running): /wire api/main-ab12 again
+once rkat-tui runs there"), and until then messages between the two are
+not delivered.
+
+**`/unwire`.** `/unwire` opens a picker of your agent's wires (each with
+`working`, `idle`, `its daemon is not running`, or `retired there (the
+wire is stale)`); Enter, then `y`, removes one. `/unwire
+<workspace>/<agent>` does it directly. Your side is removed always, the
+other side when its daemon runs; otherwise it goes when that agent
+retires or someone runs `/unwire` there. `/agents` shows each agent's
+wires (`· wired to api/main-ab12`), and so does `rkat/status`. An agent
+that retires (`/quit`, the `/agents` retire key, the daemon's
+terminate) loses its wires; the other side keeps a stale one, which
+its `/unwire` picker marks and removes.
+
+**Not covered.** Only top-level agents are wired, not helpers or forks;
+only agents of daemons on the same machine; one pair per `/wire`, no
+groups. The socket's path must fit a Unix socket address (107 bytes on
+Linux, 103 on macOS): a realm under a very long `--config-dir` gets no
+socket, and `/wire` names the path and the limit.
 
 ## Timers and watches
 

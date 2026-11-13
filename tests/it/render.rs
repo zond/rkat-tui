@@ -688,6 +688,7 @@ fn agent_picker_snapshot() {
             detached: clients == 0,
             mine,
             unretirable: unretirable.map(str::to_string),
+            wires: Vec::new(),
         }
     };
     let mut app = App::new(StatusInfo::default());

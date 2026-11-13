@@ -25,6 +25,7 @@ mod compact;
 mod confinement;
 mod conversations;
 mod councils;
+mod cross_workspace;
 mod daemon;
 mod deferral;
 mod drift_pins;

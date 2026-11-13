@@ -217,6 +217,18 @@ methods! {
     /// (read only; a client asks when the agent is idle and holds nothing
     /// while it still waits for one of its steers).
     Inputs = "rkat/inputs" (RecallParams) -> InputFates;
+    /// A top-level agent's card for a cross-workspace wire: its workspace,
+    /// name, comms identity and the address of its Unix socket
+    /// ([`crate::daemon::wires`]). A bound caller asks for its own agent;
+    /// a probe names one.
+    Card = "rkat/wire_card" (WireAgentParams) -> WireCard;
+    /// `/wire`: trust the agent another workspace's `card` names and route
+    /// messages to it, for the caller's agent (a probe names the agent).
+    /// The client asks both daemons: the wire is both directions only when
+    /// each side trusts the other.
+    Wire = "rkat/wire" (WireParams) -> Wired;
+    /// `/unwire`: drop the agent's cross-workspace wire to `peer`.
+    Unwire = "rkat/unwire" (UnwireParams) -> Unwired;
 }
 
 /// [`method::Status`]'s result.
@@ -361,6 +373,12 @@ pub const NOT_YOURS: i32 = -32013;
 /// A retire ([`method::RetireAgent`]) refused because the agent is in
 /// use: it is the caller's own, has a client, or its turn runs.
 pub const AGENT_IN_USE: i32 = -32014;
+
+/// A cross-workspace wire refused ([`method::Wire`], [`method::Card`],
+/// [`method::Unwire`]): the card names this workspace or the agent itself,
+/// the agent has no socket, or the engine refused the edge. The message
+/// says which and what to do.
+pub const WIRE_REFUSED: i32 = -32015;
 
 /// A local method's refusal: a JSON-RPC error code and message.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -513,6 +531,9 @@ pub struct AgentRow {
     /// How many live schedules target it.
     #[serde(default)]
     pub schedules: usize,
+    /// Its wires to agents of other workspaces.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wires: Vec<WireRow>,
 }
 
 impl AgentRow {
@@ -937,6 +958,118 @@ pub struct ModeSet {
 pub struct ConversationList {
     /// Last used first.
     pub conversations: Vec<Listed>,
+}
+
+/// The name a workspace is shown by in a cross-workspace label: its
+/// directory's last component (the whole path when it has none).
+#[must_use]
+pub fn workspace_name(workspace: &std::path::Path) -> String {
+    workspace.file_name().map_or_else(
+        || workspace.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    )
+}
+
+/// What another workspace's agent is called across a wire:
+/// `<workspace name>/<agent>` (both workspaces name their agents
+/// `main-<id>`, so the agent's name alone could be a local one).
+#[must_use]
+pub fn wire_label(workspace: &std::path::Path, agent: &str) -> String {
+    format!("{}/{agent}", workspace_name(workspace))
+}
+
+/// A top-level agent's card ([`method::Card`]): what another
+/// workspace's daemon needs to trust it and reach it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireCard {
+    /// The canonical workspace the agent works in.
+    pub workspace: std::path::PathBuf,
+    /// The agent's name (`main-<id>`).
+    pub agent: String,
+    /// Its comms peer id (derived from the key).
+    pub peer_id: String,
+    /// Its comms public key, `ed25519:<base64>`.
+    pub pubkey: String,
+    /// Its socket, `uds://<path>`.
+    pub address: String,
+}
+
+impl WireCard {
+    /// `<workspace name>/<agent>` ([`wire_label`]).
+    #[must_use]
+    pub fn label(&self) -> String {
+        wire_label(&self.workspace, &self.agent)
+    }
+}
+
+/// [`method::Card`]'s parameters: the agent (a probe names it; a
+/// bound caller names none, or its own).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WireAgentParams {
+    /// The agent; `None`: the caller's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+}
+
+/// [`method::Wire`]'s parameters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WireParams {
+    /// The agent of this daemon; `None`: the caller's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// The other workspace's agent.
+    pub card: WireCard,
+}
+
+/// [`method::Wire`]'s answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Wired {
+    /// The other agent's label.
+    pub label: String,
+    /// The wire was there already, to the same key: nothing changed.
+    pub already: bool,
+}
+
+/// [`method::Unwire`]'s parameters: the other agent by its workspace and
+/// name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UnwireParams {
+    /// The agent of this daemon; `None`: the caller's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// The other agent's workspace.
+    pub workspace: std::path::PathBuf,
+    /// The other agent's name.
+    pub peer: String,
+}
+
+/// [`method::Unwire`]'s answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Unwired {
+    /// The other agent's label.
+    pub label: String,
+    /// A wire was removed (`false`: there was none).
+    pub removed: bool,
+}
+
+/// One cross-workspace wire of an agent ([`AgentRow::wires`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireRow {
+    /// The other agent's workspace.
+    pub workspace: std::path::PathBuf,
+    /// The other agent's name.
+    pub agent: String,
+}
+
+impl WireRow {
+    /// `<workspace name>/<agent>`.
+    #[must_use]
+    pub fn label(&self) -> String {
+        wire_label(&self.workspace, &self.agent)
+    }
 }
 
 /// [`method::RetireAgent`]'s parameters.

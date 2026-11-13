@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Added
+
+- `/wire` wires your agent to an agent of another workspace (another
+  `rkat-tui-mob` daemon on this machine), so the two can message each
+  other with `send_message`. `/wire` opens a picker of the agents of the
+  other running daemons (workspace, agent, working or idle, clients);
+  `/wire <workspace>/<agent>` does it directly. Running it is your
+  consent for both directions: the client wires both daemons, and if the
+  second side fails the first is undone and you are told which side
+  failed and why. The other agent is named `<workspace>/<agent>` in the
+  transcript, the tool headers and the agents' notes. Each daemon gives
+  each of its agents a Unix socket in its realm (owner-only, outside
+  the workspace) and admits only envelopes signed by an agent it was
+  wired to. `/unwire` (a picker, or `/unwire <workspace>/<agent>`)
+  removes a wire on both sides; `/agents` shows each agent's wires. A
+  message to an idle agent there starts a model turn there; whatever it
+  does passes its own workspace's gate and sandbox.
+
 ### Changed
 
 - Agents are told not to wake an idle agent nobody is attached to just

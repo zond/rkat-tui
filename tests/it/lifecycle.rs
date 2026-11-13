@@ -510,6 +510,7 @@ fn the_quit_decision_follows_the_rules() {
                 clients: *clients,
                 detached,
                 schedules: 0,
+                wires: Vec::new(),
             })
             .collect(),
     };

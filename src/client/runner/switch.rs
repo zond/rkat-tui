@@ -158,6 +158,11 @@ impl Runner {
             self.notice(NoticeLevel::Warn, warning);
         }
         self.list_mobs();
+        // This client moved the agent: the agents of other workspaces it
+        // is wired to learn its new conversation's key.
+        if matches!(why, Shown::New | Shown::Resumed) {
+            self.refresh_wires();
+        }
     }
 
     /// `/resume <reference>`: resolve it against the conversations, then

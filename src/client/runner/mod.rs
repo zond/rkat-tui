@@ -72,6 +72,7 @@ mod link;
 mod steers;
 mod switch;
 mod turn;
+mod wires;
 
 use conn::{Conn, ConnEvent, Leaving};
 use steers::Steers;
@@ -186,6 +187,9 @@ pub struct ClientConfig {
     /// How `/rehome` re-roots this client (`None`: it cannot, and says
     /// so).
     pub reroot: Option<Reroot>,
+    /// Where `/wire` looks for the other workspaces' daemons (`None`: every
+    /// endpoint file `--list` finds; tests name their own).
+    pub wire_files: Option<Vec<PathBuf>>,
 }
 
 /// The configuration of this client for a command line
@@ -1109,6 +1113,10 @@ impl Runner {
             Effect::Schedules(action) => self.schedules(action),
             Effect::PickedSchedule(op, id) => self.picked_schedule(op, id),
             Effect::Agents(Some(name)) => self.switch_agent(name),
+            Effect::Wire(target) => self.wire(target),
+            Effect::WireTo { workspace, agent } => self.wire_to(workspace, agent),
+            Effect::Unwire(target) => self.unwire(target),
+            Effect::UnwireFrom { workspace, agent } => self.unwire_from(workspace, agent),
             Effect::DecideQuit => self.decide_quit(),
             // Done once the loop ends: [`Effect::Quit`] follows.
             Effect::Leave(departure) => self.departure = Some(departure),
@@ -1370,6 +1378,7 @@ mod tests {
             clients,
             detached: clients == 0,
             schedules: 0,
+            wires: Vec::new(),
         };
         let alone = [row("main-mine", Some(false), 1)];
         assert_eq!(others_notice(&alone, "main-mine", false), None);
@@ -1423,6 +1432,7 @@ mod tests {
                 clients,
                 detached,
                 schedules: 0,
+                wires: Vec::new(),
             }
         };
         let rows = vec![
@@ -1568,6 +1578,7 @@ mod tests {
             compaction: crate::ui::CompactionPolicy::default(),
             pricing: crate::pricing::PricingSetup::default(),
             reroot: None,
+            wire_files: None,
             scope,
         };
         let (ui_tx, ui_rx) = mpsc::unbounded_channel();

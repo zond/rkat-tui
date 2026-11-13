@@ -178,6 +178,11 @@ rkat-tui-mob (daemon, src/daemon/, one per workspace realm)
   MethodRouter over loopback TCP after the rkat/attach handshake
     (RpcServer per connection, shared runtime, skip_shutdown_on_eof)
   realm lease + $XDG_STATE_HOME/rkat-tui/<key>/mob.endpoint
+  wires (daemon/wires.rs): a Unix socket per agent, <realm>/wire/<agent>.sock,
+    each connection served by meerkat_comms::handle_connection with the
+    agent's current key and inbox (woken first when it has no comms
+    runtime); external peer edges to agents of other workspaces' daemons,
+    their cards in <realm>/wires.json, made again after a switch
 
 rkat-tui (client, src/client/)
   reads the endpoint file, attaches with the token and the agent it wants
@@ -192,6 +197,10 @@ rkat-tui (client, src/client/)
   decision/notice + decision/decide for the approval dialog
   mob/compact_member (fallback session/compact) for /compact
   local: rendering, editor, `!` shell, model picker, history, notes
+  /wire, /unwire (client/wires.rs): finds the other daemons by their
+    endpoint files, attaches to one as a probe, asks both for their
+    agent's card and both to wire, the other side undone when this one
+    fails; after /new or /resume sends the agent's new card to each
 ```
 
 ## Wire and security
@@ -342,6 +351,9 @@ methods on the wire, and `daemon::protocol` types each one for both ends:
 | `rkat/checklist_view` | `{"view": "hidden"\|"shown"}` | `{}` (saved as `[ui] checklist`) |
 | `rkat/recall` | `{"input_ids": [InputId]}` | `{"recalled", "reached", "foreign", "errors"?}` (each input of the caller's agent's current conversation still queued is abandoned; the others are left) |
 | `rkat/inputs` | `{"input_ids": [InputId]}` | `{"inputs": [{"input_id", "fate": "pending"\|"taken"\|"dropped"\|"unknown", "why"?}]}` (read only: what the runtime records of each; a client asks when the agent is idle holding nothing while it still follows a steer) |
+| `rkat/wire_card` | `{"agent"?}` | `{"workspace", "agent", "peer_id", "pubkey", "address"}` (an agent's card for a cross-workspace wire: `pubkey` is `ed25519:<base64>`, `address` its socket `uds://<realm>/wire/<agent>.sock`; a bound caller asks for its own agent, a probe names one; refused with `WIRE_REFUSED`, -32015, when the agent has no socket, naming why) |
+| `rkat/wire` | `{"agent"?, "card"}` | `{"label", "already"}` (trust the agent `card` names and route to it: the engine's external peer edge named `<workspace>/<agent>`, the card kept in `<realm>/wires.json`, a note to the agent; `already` when it was there with the same key; refused with `WIRE_REFUSED` for a card of this workspace or one that is not a local socket) |
+| `rkat/unwire` | `{"agent"?, "workspace", "peer"}` | `{"label", "removed"}` |
 | `rkat/decision_ended` | notification, daemon to client | a decision the client was shown ended |
 | `rkat/file_diff` | notification, daemon to client | `{"tool_use_id", "path", "unified", "added", "removed"}`: a change the orchestrator's file tools made |
 | `rkat/switched` | notification, daemon to client | `{"agent", "session_id"}`: the agent runs another conversation now (a client's `/new` or `/resume`); its other clients show it |

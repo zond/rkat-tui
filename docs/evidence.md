@@ -8411,3 +8411,137 @@ member without manage scope only the members it spawned (meerkat-mob
 daemon's alone. The cheapest truthful live source would be a read-only
 tool over `Agents::rows` (what `rkat/status` answers); not added. Whether
 a real model follows the instruction is not measured.
+
+## Agents wired across workspaces (owner decisions, 2026-11-13)
+
+The owner asked for `/wire`: a top-level agent of one workspace messages
+one of another workspace's daemon (separate processes, realms and
+mobs), wired explicitly by the user, over Unix sockets.
+
+**The engine's route.** A member's comms runtime is session-scoped and
+in-process (`CommsRuntime::inproc_only_session_scoped_with_silent_intents`,
+meerkat-comms `runtime/comms_runtime.rs`); it has no listener. The
+realm-wide `[comms] mode = "tcp"` gives every member one key
+(`<realm>/.rkat/identity`) and seated a second agent with no endpoint
+(an earlier probe); a per-member listener does not exist
+(`SpawnMemberSpec` has no comms field). Dead routes, then: the realm
+TCP mode, and the engine's TCP host acceptor (works, but TCP only and a
+port to keep stable). What is used: `meerkat_comms::handle_connection`
+(io_task.rs:43, re-exported), transport-generic ("e.g., TcpStream or
+UnixStream"), which reads one frame, verifies its signature when
+`require_peer_auth`, resolves the recipient by key, admits through the
+inbox's classifier (trust) and acks. The sender's router dials
+`PeerAddr::Uds(path)` (router.rs:964) for a trust row addressed
+`uds:///path`.
+
+**Phase 1 probe** (two rig daemons in two processes, the test rerun as
+the second; each daemon's agent served on a socket by the test with
+`handle_connection(stream, true, keypair, inbox)` from
+`host_acceptor_registration_payload()`, each side wired with
+`MobHandle::wire(agent, PeerTarget::External(descriptor at uds://…))`):
+
+1. A→B and B→A: `{"delivery":"acked","kind":"peer_message_sent"}`; the
+   receiver woke, its request held a `Comms` notice
+   `Peer message from wsA/main-q7mn:\nfrom A: hello`. The sender's name
+   is the receiver's own descriptor name for it (`display_name` is the
+   trust row's), so each side names the other `<workspace>/<agent>`.
+2. One-sided (only A wired B): B's handler answered
+   `IngressDropped(UntrustedSender)`, A's send
+   `peer delivery outcome is ambiguous … acknowledgement was not
+   observed`; B was not asked within 3 s, nor after it wired A (dropped,
+   not queued).
+3. B restarted: the agent was restored with the same key (same session),
+   its wire still there; it had **no comms runtime** at start
+   (`session_service().comms_runtime` → `None`). A listener that calls
+   `MobHandle::ensure_member_live` (wakes the member, "runs no turn")
+   when the agent has none made the next message from A land, and the
+   restarted B's send to A was acked too.
+4. B down: A's send answered `… IO error: Connection refused (os error
+   111)` (a crash's stale socket; a clean stop removes the socket, so the
+   error is then `No such file or directory`), the whole turn 372 ms: no
+   queue, no retry.
+5. Envelopes written by the test with the crate's codec
+   (`EnvelopeFrame`, `TransportCodec`): unsigned and wrongly signed ones
+   claiming B's key were refused `InvalidSignature`, one correctly signed
+   by an unknown key `IngressDropped(UntrustedSender)`; none answered,
+   the model never asked.
+6. No observed source: `handle_connection` passes `None`, and the only
+   use of the observed TCP source is `source_confined_tcp_reply_endpoint`
+   (classify.rs:126-160): a `Request`'s declared reply endpoint, kept
+   only on an authenticated TCP ingress. A `send_message` is a `Message`,
+   classified alike; the notice showed `sender_taint: None` and the same
+   text as over TCP.
+7. `bind(2)`: a 107-byte path binds, 108 fails `path must be shorter
+   than SUN_LEN` (Linux `sun_path` 108 with its NUL; macOS 104, not run).
+
+Found on the way: `rkat/new` gave the agent a new key **and peer id**
+(the key is the session's, `session_comms_identity/<session>/`), and
+its external trust was gone (`peers()` empty): an agent leaves the mob
+for a switch and its edges go with it.
+
+**What was built** (`src/daemon/wires.rs`, `src/client/wires.rs`,
+`src/client/runner/wires.rs`):
+
+- A socket per live agent, `<realm>/wire/<agent>.sock` (0700 directory,
+  0600 socket; a stale file replaced), bound when the agent is seated or
+  restored, removed when it retires and at the daemon's stop. Each
+  connection looks up the agent's comms runtime then (a rebuilt or
+  switched agent is served with its current key) and wakes the agent
+  first when it has none. Every agent gets one, wired or not: binding is
+  cheap, and the handler admits only keys the agent trusts. A path over
+  `sun_path` is refused at the bind; `rkat/wire_card` then answers the
+  bind's error (path, length, limit).
+- `rkat/wire_card`, `rkat/wire`, `rkat/unwire` (typed in
+  `daemon::protocol`). A wire is the engine's external edge named
+  `<workspace name>/<agent>`; the daemon keeps the cards in
+  `<realm>/wires.json` and makes the edges again after a seat or switch
+  (`Wires::restore`) and at start. Wiring again with the same key and
+  address is a no-op (`already`); with another key the edge is replaced
+  (no second note).
+- The client arranges both sides: probe-attach to the other daemon (not
+  counted, its end no detach), both cards, the other side wired first,
+  ours second; ours failing undoes theirs. After `/new` or `/resume` the
+  client that switched sends the agent's new card to every wired daemon
+  that runs, and says which it could not reach.
+- Gate: `Agents::is_agent_peer` counts a wired card's peer id (derived
+  from its key) as an agent peer, so a `send_message` to it is tier 1,
+  as to an agent of the same workspace: the user consented to the pair
+  by running `/wire` ("connection implies trust"), the message changes
+  nothing here, and what the receiver does passes its own gate. A send
+  to an unknown peer id stays reviewed.
+- Notes: `daemon::wires::wired_note` / `unwired_note` when a wire is
+  made or removed; the roster note (`agents::with_wired`) names the
+  wired agents of other workspaces, their state "not known here".
+- A remote agent that retired: decided to report, not remove. Its
+  daemon removes its own side (`Wires::forget`), cannot reach ours, so
+  ours stays; the `/unwire` picker marks it `retired there (the wire is
+  stale)` and removes it. A retired agent of ours loses its wires.
+- `--attach HOST:PORT` to another machine: `/wire` is refused there
+  (`config.remote`): the sockets are local to the daemon's machine.
+
+Pinned by `cross_workspace::wired_agents_of_two_workspaces_message_both_ways_across_restarts`
+(two processes: picker row, wire notice, already-wired notice, both
+directions with the labels and the client's `Msg::Peer` label, the notes,
+`/new` refresh, the other side down and back, this side restarted,
+`/unwire` on both sides), `cross_workspace::the_daemon_wires_unwires_and_refuses`
+(idempotence, one note, tier 1 versus reviewed, refusals),
+`cross_workspace::a_socket_path_too_long_is_refused_naming_it`,
+`cross_workspace::forged_envelopes_on_the_socket_are_not_delivered`
+(also the modes, and the socket's removal at stop),
+`cross_workspace::wire_without_another_daemon_says_what_to_do`, and the
+unit tests in `daemon::wires`, `client::wires`, `client::runner::wires`
+and `ui::peer`.
+
+Engine asks (drafts, not filed): a per-member socket listener that keeps
+the session-scoped key, or a supported way to serve a local member on
+an application's socket (today: `host_acceptor_registration_payload`
+downcast to `HostAcceptorRegistrationMaterial` per connection); a refused
+send (untrusted) told apart from a lost ack; a member key that survives
+a conversation switch (or a hook when it changes), so an external peer's
+trust does not go stale with every `/new`.
+
+Not verified: real models, macOS (its 103-byte limit is from the
+platform's `sun_path`, not run), a connection from inside the confined
+shell (the realm is outside its grants, and the sandbox admits only IP
+sockets per the manual; not run against this socket), a client attached
+over `--attach HOST:PORT`.

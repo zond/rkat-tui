@@ -48,6 +48,7 @@ pub mod serve;
 pub mod tasks;
 pub mod usage;
 pub mod watches;
+pub mod wires;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -572,6 +573,19 @@ impl Daemon {
             composed.runtime.runtime_adapter(),
             &composed.decisions,
         );
+        // Every agent's socket for wires to other workspaces, and the
+        // cards they were wired to.
+        let (wires, wires_problem) = wires::Wires::open(
+            Arc::clone(&composed.state),
+            &composed.scope.realm_root(),
+            &workspace,
+        );
+        if let Some(problem) = wires_problem {
+            tracing::warn!(%problem, "no cross-workspace wires this run");
+            composed
+                .startup_notices
+                .push(protocol::StartupNotice::warn(problem));
+        }
         let agents = agents::Agents::new(agents::AgentsParts {
             activity,
             state: Arc::clone(&composed.state),
@@ -588,6 +602,7 @@ impl Daemon {
             watches: Arc::clone(&composed.watches),
             ledger: Arc::clone(&composed.ledger),
             registry: Arc::clone(&composed.root.registry),
+            wires,
         });
         attach_engine(&composed.engine, &agents, audit.as_ref(), &workspace)?;
         composed.desk.report_to(&composed.engine);
@@ -839,6 +854,8 @@ impl Daemon {
         // The endpoint goes first: nobody should find a daemon that no
         // longer accepts.
         self.listener.remove_files();
+        // Nor an agent's socket.
+        self.local.agents().wires().close();
         // "Terminate": the agents leave with the daemon (their
         // conversations stay); else they are restored at the next start.
         if self.local.lifecycle().retires_all() {

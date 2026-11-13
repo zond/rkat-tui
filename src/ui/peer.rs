@@ -15,9 +15,15 @@ const HEADER: &str = "Peer message from ";
 const SUMMARY: &str = "Peer message\n";
 
 /// The agent's own name in a comms name (`tui/main/main-ab12` →
-/// `main-ab12`).
+/// `main-ab12`). An agent of another workspace keeps its workspace
+/// (`other/main-ab12`, the name its wire gives it,
+/// `crate::daemon::protocol::wire_label`): its name alone would read as an
+/// agent of this one.
 #[must_use]
 pub fn short_name(comms_name: &str) -> &str {
+    if comms_name.matches('/').count() < 2 {
+        return comms_name;
+    }
     comms_name.rsplit('/').next().unwrap_or(comms_name)
 }
 
@@ -92,5 +98,14 @@ mod tests {
             None
         );
         assert_eq!(short_name("main-ab12"), "main-ab12");
+        // Another workspace's agent keeps its workspace.
+        assert_eq!(short_name("other/main-ab12"), "other/main-ab12");
+        let (from, body) =
+            of_input("Peer message\nPeer message from other/main-ab12:\nhello\nPeer message")
+                .unwrap();
+        assert_eq!(
+            (short_name(&from), body.as_str()),
+            ("other/main-ab12", "hello")
+        );
     }
 }

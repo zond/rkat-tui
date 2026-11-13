@@ -150,6 +150,7 @@ fn agent_picker_switches_seats_and_retires() {
         detached: !mine,
         mine,
         unretirable: mine.then(|| "own".to_string()),
+        wires: Vec::new(),
     };
     let open = || {
         let mut app = App::new(StatusInfo::default());

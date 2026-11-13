@@ -80,6 +80,11 @@ fn with_schedules(reason: String, status: &Status) -> String {
     )
 }
 
+/// A wire's failure as the method's refusal.
+fn wire_refusal(err: super::wires::WireError) -> Refusal {
+    Refusal::new(protocol::WIRE_REFUSED, err.to_string())
+}
+
 /// The idempotency source of the daemon's system-context notes.
 const SYSTEM_CONTEXT_SOURCE: &str = "rkat-tui";
 
@@ -353,6 +358,33 @@ impl Local {
             .ok_or_else(|| Refusal::new(protocol::NO_AGENT, "no agent works in this workspace"))
     }
 
+    /// The agent a wire method acts on: the caller's own (a bound caller
+    /// may name only its own), or the live one a probe names.
+    ///
+    /// # Errors
+    ///
+    /// [`protocol::NOT_YOURS`] for a bound caller naming another agent,
+    /// [`protocol::NO_AGENT`] for a probe naming none or an agent that is
+    /// not live.
+    fn wire_agent(&self, caller: &Caller, named: Option<String>) -> Result<String, Refusal> {
+        match (caller.agent.as_ref(), named) {
+            (Some(mine), Some(named)) if *mine != named => Err(Refusal::new(
+                protocol::NOT_YOURS,
+                format!("this connection works with {mine}, not {named}"),
+            )),
+            (Some(mine), _) => Ok(mine.clone()),
+            (None, Some(named)) if self.agents.is_live(&named) => Ok(named),
+            (None, Some(named)) => Err(Refusal::new(
+                protocol::NO_AGENT,
+                format!("no agent `{named}` works in this workspace (it may have retired)"),
+            )),
+            (None, None) => Err(Refusal::new(
+                protocol::NO_AGENT,
+                "a connection bound to no agent names the agent to wire",
+            )),
+        }
+    }
+
     /// The skills directories a session build of this workspace lists
     /// skills from and the size of its inventory (`/context`), as the
     /// realm config serves it now.
@@ -617,6 +649,48 @@ impl Local {
                 Ok(Empty {})
             };
             method::Trust, Empty {} => Ok(self.trust_project());
+            method::Card, protocol::WireAgentParams { agent } => {
+                let agent = self.wire_agent(&caller, agent)?;
+                self.agents.wires().card(&agent).await.map_err(wire_refusal)
+            };
+            method::Wire, protocol::WireParams { agent, card } => {
+                let agent = self.wire_agent(&caller, agent)?;
+                let label = card.label();
+                let workspace = card.workspace.display().to_string();
+                let already = self
+                    .agents
+                    .wires()
+                    .wire(&agent, card)
+                    .await
+                    .map_err(wire_refusal)?;
+                if !already {
+                    self.audit(
+                        super::audit::Line::event("wired", format!("{label} ({workspace})"))
+                            .of_agent(&agent),
+                    );
+                }
+                Ok(protocol::Wired { label, already })
+            };
+            method::Unwire, protocol::UnwireParams { agent, workspace, peer } => {
+                let agent = self.wire_agent(&caller, agent)?;
+                let label = protocol::wire_label(&workspace, &peer);
+                let removed = self
+                    .agents
+                    .wires()
+                    .unwire(&agent, &workspace, &peer)
+                    .await
+                    .map_err(wire_refusal)?;
+                if removed {
+                    self.audit(
+                        super::audit::Line::event(
+                            "unwired",
+                            format!("{label} ({})", workspace.display()),
+                        )
+                        .of_agent(&agent),
+                    );
+                }
+                Ok(protocol::Unwired { label, removed })
+            };
         }
         Err(Refusal::new(
             METHOD_NOT_FOUND,
@@ -1585,6 +1659,7 @@ mod tests {
                 clients: 1,
                 detached: false,
                 schedules,
+                wires: Vec::new(),
             }],
         };
         assert_eq!(with_schedules("why".into(), &status(0)), "why");

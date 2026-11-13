@@ -67,6 +67,8 @@ reads (refused when group or others may read it).
 | `tui_usage/<session>.toml`, `tui_usage/schedule-<id>.toml` | TOML `daemon::usage::Record` (totals per model, the last call's context); an unreadable file is set aside as `*.corrupt-<secs>` | daemon (written behind, at run ends and stop), atomic Private | cost and usage history |
 | `tui_tools.json` | JSON `daemon::deferral::reveal::Stored { revealed: session → [tool] }` | daemon, atomic Private, before a search answers | each conversation's revealed tools (it searches again). Goes when the engine's deferral replaces rkat-tui's (lukacf/meerkat#2180) |
 | `tui_helpers.json` | JSON `mobs::bindings::FileFormat { version: 1, mobs, members }` | daemon, atomic Private | which session each helper works for after a restart (helpers then refused) |
+| `wires.json` | JSON `daemon::wires::Records { agents: agent → [protocol::WireCard { workspace, agent, peer_id, pubkey, address }] }`, the cards of the agents of other workspaces each agent was wired to (`/wire`); an unreadable file starts the daemon with none and a start-up notice | daemon, atomic Private | the cross-workspace wires (the engine's own edges in `mobs/` go with the next conversation switch; `/wire` makes them again) |
+| `wire/<agent>.sock` | a Unix socket per live agent (directory 0700, socket 0600), no content | daemon: bound when the agent is seated or restored, removed when it retires and at the daemon's stop, a stale one replaced at the next bind | nothing (bound again) |
 | `notes/<slug>.md`, `notes/MEMORY.md` | workspace-scope notes, as in `<config>` | daemon, atomic Private | user data |
 | `attach.cursor`, `attach-<agent>.cursor` | one-line JSON `client::catchup::Cursor { session_id, sequence, epoch?, daemon? }` | client, atomic Private | nothing (the client replays instead) |
 | `tui_history` | as `<config>/history`, this workspace's prompts | client | prompt history |
@@ -101,7 +103,10 @@ identity to the other agents) under the user config root
 comms start (`meerkat` `sdk.rs` `session_comms_identity_root_in`;
 `meerkat-comms` `runtime/comms_runtime.rs` and `identity.rs`). Losing it
 gives the session a new identity, so peers that trusted the old key no
-longer reach it until they are wired again.
+longer reach it until they are wired again. The key is per session, so
+an agent's `/new` or `/resume` changes it too; for a cross-workspace
+wire the client that switched sends the new card to the other daemon
+(`client::wires::refresh`).
 
 ## In the workspace
 

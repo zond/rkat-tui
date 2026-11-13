@@ -365,6 +365,7 @@ mod tests {
                         clients: 1,
                         detached: false,
                         schedules: 2,
+                        wires: Vec::new(),
                     },
                     crate::daemon::protocol::AgentRow {
                         name: "main-cd34".into(),
@@ -373,6 +374,7 @@ mod tests {
                         clients: 0,
                         detached: true,
                         schedules: 0,
+                        wires: Vec::new(),
                     },
                 ],
             })),

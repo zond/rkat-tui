@@ -394,14 +394,14 @@ impl ApprovalEngine {
 
     /// Whether `facts` is a comms send (`send_message`, `send_request`,
     /// `send_response`) to another agent of the workspace.
-    async fn to_agent_peer(&self, session_id: &SessionId, facts: &Facts<'_>) -> bool {
+    async fn to_agent_peer(&self, session_id: &SessionId, facts: &Facts<'_>) -> AgentSend {
         let Some(peers) = self.agent_peers.get() else {
-            return false;
+            return AgentSend::No;
         };
         if facts.action.family != super::catalog::ToolFamily::Native
             || !super::policy::AGENT_SEND_TOOLS.contains(&facts.action.name)
         {
-            return false;
+            return AgentSend::No;
         }
         let Some(peer) = serde_json::from_str::<serde_json::Value>(facts.action.args.get())
             .ok()
@@ -411,9 +411,15 @@ impl ApprovalEngine {
                     .map(str::to_string)
             })
         else {
-            return false;
+            return AgentSend::No;
         };
-        peers.is_agent_peer(session_id, &peer).await
+        if !peers.is_agent_peer(session_id, &peer).await {
+            return AgentSend::No;
+        }
+        match peers.unreachable(session_id, &peer).await {
+            Some(why) => AgentSend::Unreachable(why),
+            None => AgentSend::Yes,
+        }
     }
 
     /// Record every decision and change of authority in `audit` from now
@@ -891,12 +897,22 @@ impl ApprovalEngine {
         *facts.allow_rule.lock() = decision.allow_rule;
         // A message to another agent of the workspace: tier 1 (a user deny
         // rule still decides first).
-        if decision.tier == Tier::Classifier && self.to_agent_peer(session_id, facts).await {
-            return allow_at(
-                Tier::AlwaysAllow,
-                Decider::Policy,
-                "a message to another agent of this workspace",
-            );
+        if decision.tier == Tier::Classifier {
+            match self.to_agent_peer(session_id, facts).await {
+                AgentSend::Yes => {
+                    return allow_at(
+                        Tier::AlwaysAllow,
+                        Decider::Policy,
+                        "a message to another agent of this workspace",
+                    );
+                }
+                // An agent of another workspace whose daemon is not
+                // running: the send would fail anyway, and this says why.
+                AgentSend::Unreachable(detail) => {
+                    return deny_at(Tier::Unavailable, DenyReason::Unavailable { detail });
+                }
+                AgentSend::No => {}
+            }
         }
         let mode = self.mode();
         match self.route(facts, decision, mode) {
@@ -1424,6 +1440,17 @@ fn allow_at(tier: Tier, by: Decider, why: impl Into<String>) -> Verdict {
         by,
         why: why.into(),
     }
+}
+
+/// Whether a call is a comms send to another agent ([`ApprovalEngine`]'s
+/// agent peers).
+enum AgentSend {
+    /// It is not.
+    No,
+    /// It is: tier 1.
+    Yes,
+    /// It is, to an agent that cannot be reached now (why).
+    Unreachable(String),
 }
 
 fn deny_at(tier: Tier, reason: DenyReason) -> Verdict {

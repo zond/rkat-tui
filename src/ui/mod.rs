@@ -705,6 +705,28 @@ pub enum Effect {
     /// [`Msg::ShowAgentPicker`]), or switch this client to the agent named
     /// (answered with notices).
     Agents(Option<String>),
+    /// `/wire`: open the picker of other workspaces' agents (`None`,
+    /// answered with [`Msg::ShowPicker`]), or wire this agent to the one
+    /// named (answered with a notice).
+    Wire(Option<String>),
+    /// The `/wire` picker's choice: wire this agent to `agent` of
+    /// `workspace` (answered with a notice).
+    WireTo {
+        /// The other agent's workspace.
+        workspace: std::path::PathBuf,
+        /// The other agent.
+        agent: String,
+    },
+    /// `/unwire`: open the picker of this agent's cross-workspace wires
+    /// (`None`), or remove the one named (answered with a notice).
+    Unwire(Option<String>),
+    /// The `/unwire` picker's confirmed choice.
+    UnwireFrom {
+        /// The other agent's workspace.
+        workspace: std::path::PathBuf,
+        /// The other agent.
+        agent: String,
+    },
     /// The agent picker's "new agent" row: seat a fresh agent for this
     /// client and switch to it (answered with notices).
     NewAgent,

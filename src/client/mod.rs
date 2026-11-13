@@ -42,6 +42,7 @@ pub mod remote;
 pub mod runner;
 pub mod sessions;
 pub mod transport;
+pub mod wires;
 
 use std::io::IsTerminal as _;
 use std::net::SocketAddr;
@@ -353,6 +354,7 @@ pub async fn configure_with(
         pricing,
         scope,
         reroot: None,
+        wire_files: None,
     })
 }
 

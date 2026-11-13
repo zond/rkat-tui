@@ -33,6 +33,10 @@ pub enum PickerKind {
     Mode,
     /// `/memory`.
     Memory,
+    /// `/wire`.
+    Wire,
+    /// `/unwire`.
+    Unwire,
 }
 
 impl PickerKind {
@@ -45,6 +49,8 @@ impl PickerKind {
             Self::Helpers => " Helpers ",
             Self::Mode => " Permission mode ",
             Self::Memory => " Instruction files ",
+            Self::Wire => " Agents of other workspaces ",
+            Self::Unwire => " Wires to other workspaces ",
         }
     }
 }
@@ -64,6 +70,20 @@ pub enum PickAct {
     ViewHelper(BlockId),
     /// Fold or expand the helper's block in the transcript.
     FoldHelper(BlockId),
+    /// `/wire <workspace>/<agent>`.
+    Wire {
+        /// The other agent's workspace.
+        workspace: std::path::PathBuf,
+        /// The other agent.
+        agent: String,
+    },
+    /// `/unwire <workspace>/<agent>`.
+    Unwire {
+        /// The other agent's workspace.
+        workspace: std::path::PathBuf,
+        /// The other agent.
+        agent: String,
+    },
 }
 
 impl PickAct {
@@ -430,6 +450,10 @@ impl App {
             PickAct::RemoveRule(n) => fx.push(Effect::PickedRuleRemoval(n)),
             PickAct::SetMode(mode) => fx.push(Effect::SetMode(mode)),
             PickAct::OpenMemory(target) => fx.push(Effect::OpenMemory(target)),
+            PickAct::Wire { workspace, agent } => fx.push(Effect::WireTo { workspace, agent }),
+            PickAct::Unwire { workspace, agent } => {
+                fx.push(Effect::UnwireFrom { workspace, agent });
+            }
             PickAct::ViewHelper(header) => {
                 self.helper_view = Some(OpenHelperView {
                     header,
