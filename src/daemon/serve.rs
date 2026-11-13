@@ -17,12 +17,14 @@
 //! is: stop accepting, give the connections [`DRAIN`] to end on their own,
 //! shut the runtime down, then abort what is left.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use meerkat_core::ConfigStore;
+use meerkat_rpc::protocol::RpcId;
 use meerkat_rpc::server::RpcServer;
 use meerkat_rpc::session_runtime::SessionRuntime;
 use serde_json::{Value, json};
@@ -31,8 +33,6 @@ use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
-use std::collections::{HashMap, HashSet};
-
 use super::DaemonError;
 use super::decisions::ClientGuard;
 use super::endpoint::{self, Endpoint};
@@ -40,7 +40,6 @@ use super::handshake;
 use super::lifecycle::Caller;
 use super::local::Local;
 use super::protocol::{self, Refusal};
-use meerkat_rpc::protocol::RpcId;
 
 /// The in-memory pipe between the proxy and the engine's server.
 const PIPE: usize = 1 << 20;
@@ -671,18 +670,13 @@ async fn proxy_with<R, W, E, L>(
     // client's decide eligibility with it) when the client leaves.
     let decisions = local.connect(&caller, out_tx.clone());
     let client_id = decisions.id();
-    // `initialize` requests whose answers get the decision methods.
-    let initializing: Arc<parking_lot::Mutex<HashSet<String>>> = Arc::default();
-    // The client's mob-wide streams, closed when their mob is destroyed.
-    let streams: Arc<parking_lot::Mutex<MobStreams>> = Arc::default();
-    // The inputs forwarded and not answered yet, by request id.
-    let inputs: Arc<parking_lot::Mutex<Inputs>> = Arc::default();
+    // What the forwarded requests not answered yet wait for, and the
+    // client's mob-wide streams.
+    let pending: Arc<parking_lot::Mutex<Pending>> = Arc::default();
     let mut destroyed = local.destroyed_mobs();
     let mut from_engine = AbortOnDrop(tokio::spawn({
         let out_tx = out_tx.clone();
-        let initializing = Arc::clone(&initializing);
-        let streams = Arc::clone(&streams);
-        let inputs = Arc::clone(&inputs);
+        let pending = Arc::clone(&pending);
         async move {
             let mut lines = BufReader::new(engine_read);
             let mut line = String::new();
@@ -692,20 +686,34 @@ async fn proxy_with<R, W, E, L>(
                     Ok(0) | Err(_) => break,
                     Ok(_) => {
                         let mut forward = std::mem::take(&mut line);
-                        // Released once the answer is on its way to the
-                        // client, so an idle push cannot overtake it.
-                        let answered = inputs.lock().answered(&forward);
-                        if !streams.lock().answered(&forward) {
+                        // Parsed only while a request waits (most lines
+                        // are stream events), and then once.
+                        let answered = if pending.lock().is_empty() {
+                            None
+                        } else {
+                            response(&forward).and_then(|(id, answer)| {
+                                Some((pending.lock().answered(&id, &answer)?, answer))
+                            })
+                        };
+                        // An input's guard is released once the answer is
+                        // on its way to the client, so an idle push cannot
+                        // overtake it.
+                        let mut held = None;
+                        match answered {
                             // The answer to a close of the daemon's own.
-                            continue;
-                        }
-                        if !initializing.lock().is_empty() {
-                            forward = with_decision_methods(forward, &initializing);
+                            Some((Awaiting::OwnClose, _)) => continue,
+                            Some((Awaiting::Initialize, mut answer)) => {
+                                if with_decision_methods(&mut answer) {
+                                    forward = format!("{answer}\n");
+                                }
+                            }
+                            Some((Awaiting::Input(input), _)) => held = Some(input),
+                            Some((Awaiting::StreamOpen(_), _)) | None => {}
                         }
                         let sent = out_tx
                             .send_waiting(Outgoing::line(forward), limits.stall)
                             .await;
-                        drop(answered);
+                        drop(held);
                         if sent.is_err() {
                             break;
                         }
@@ -725,7 +733,7 @@ async fn proxy_with<R, W, E, L>(
                 Ok(None) | Err(_) => break,
             },
             mob = next_destroyed(&mut destroyed) => {
-                let closes = streams.lock().close(mob.as_str());
+                let closes = pending.lock().close(mob.as_str());
                 for close in closes {
                     if engine_write.write_all(close.as_bytes()).await.is_err() {
                         break;
@@ -747,25 +755,16 @@ async fn proxy_with<R, W, E, L>(
             Routed::Local { id, method, params } => {
                 let local = Arc::clone(&local);
                 let caller = caller.clone();
-                // Weak: a call still running when the client leaves does
-                // not keep the writer waiting for its answer.
-                let out_tx = out_tx.downgrade();
-                tokio::spawn(async move {
-                    let line = answer(&*local, caller, id, &method, params).await;
-                    if let Some(out_tx) = out_tx.upgrade() {
-                        let _ = out_tx.send(Outgoing::line(line));
-                    }
+                spawn_answer(&out_tx, async move {
+                    answer(&*local, caller, id, &method, params).await
                 });
             }
             Routed::Decide { id, params } => {
                 let local = Arc::clone(&local);
-                let out_tx = out_tx.downgrade();
-                tokio::spawn(async move {
-                    let line = local.decide(client_id, id, params).await;
-                    if let Some(out_tx) = out_tx.upgrade() {
-                        let _ = out_tx.send(Outgoing::line(line));
-                    }
-                });
+                spawn_answer(
+                    &out_tx,
+                    async move { local.decide(client_id, id, params).await },
+                );
             }
             Routed::Refused { id, method } => {
                 if id.is_some() {
@@ -797,13 +796,11 @@ async fn proxy_with<R, W, E, L>(
             }
             Routed::Forward {
                 line: forward,
-                input,
+                awaits,
             } => {
-                if let Some(id) = initialize_id(&forward) {
-                    initializing.lock().insert(id);
+                if let Some((id, awaiting)) = awaits {
+                    pending.lock().by_id.insert(id, awaiting);
                 }
-                inputs.lock().sending(&forward, input);
-                streams.lock().opening(&forward);
                 if engine_write.write_all(forward.as_bytes()).await.is_err() {
                     break;
                 }
@@ -839,112 +836,74 @@ async fn next_destroyed(
     }
 }
 
-/// One client's inputs to agents forwarded to the engine and not answered
-/// yet: each holds its agent busy ([`super::activity::Sending`]) until the
-/// engine's answer to it passes (or the connection ends).
-#[derive(Debug, Default)]
-struct Inputs {
-    /// Request id (as JSON text) → the input's guard.
-    pending: HashMap<String, super::activity::Sending>,
+/// Answer `future`'s line to the client on a task of its own. Weak: a
+/// call still running when the client leaves does not keep the writer
+/// waiting for its answer.
+fn spawn_answer(
+    out_tx: &ClientOut,
+    future: impl std::future::Future<Output = String> + Send + 'static,
+) {
+    let out_tx = out_tx.downgrade();
+    tokio::spawn(async move {
+        let line = future.await;
+        if let Some(out_tx) = out_tx.upgrade() {
+            let _ = out_tx.send(Outgoing::line(line));
+        }
+    });
 }
 
-impl Inputs {
-    /// The client sends the request `line`, carrying `input`.
-    fn sending(&mut self, line: &str, input: Option<super::activity::Sending>) {
-        let Some(input) = input else {
-            return;
-        };
-        // A notification gets no answer: nothing to wait for.
-        if let Some(id) = serde_json::from_str::<Value>(line.trim_end())
-            .ok()
-            .and_then(|request| request.get("id").map(Value::to_string))
-        {
-            self.pending.insert(id, input);
-        }
-    }
-
-    /// The engine sends `line`: the guard of the input it answers.
-    fn answered(&mut self, line: &str) -> Option<super::activity::Sending> {
-        if self.pending.is_empty() {
-            return None;
-        }
-        let answer = serde_json::from_str::<Value>(line.trim_end()).ok()?;
-        if answer.get("method").is_some() {
-            return None;
-        }
-        self.pending.remove(&answer.get("id")?.to_string())
-    }
+/// What the engine's answer to a forwarded request is for.
+#[derive(Debug)]
+pub enum Awaiting {
+    /// An `initialize`: its answer gets [`DECISION_METHODS`].
+    Initialize,
+    /// An input to an agent: it holds the agent busy
+    /// ([`super::activity::Sending`]) until its answer passes (or the
+    /// connection ends).
+    Input(super::activity::Sending),
+    /// A mob-wide stream open (`mob/stream_open` with a `mob_id` and no
+    /// `agent_identity`) of this mob: its answer names the stream.
+    StreamOpen(String),
+    /// A stream close of the daemon's own: its answer is not the client's.
+    OwnClose,
 }
 
-/// One client's mob-wide streams (`mob/stream_open` with a `mob_id` and no
-/// `agent_identity`), by mob: the engine's subscription behind an open one
-/// is an owner of the mob's database, so a destroy's storage cleanup is
-/// refused while the client keeps it open (it closes a stream only when
-/// the stream ends, which the engine waits with until the cleanup is
-/// done). When the mob is destroyed the proxy closes them on the client's
-/// behalf; the engine then ends each with `mob/stream_end`, as for a close
-/// of the client's own.
+/// One client's requests forwarded and not answered yet, by request id
+/// (as JSON text), and its open mob-wide streams. The engine's
+/// subscription behind an open mob-wide stream is an owner of the mob's
+/// database, so a destroy's storage cleanup is refused while the client
+/// keeps it open (it closes a stream only when the stream ends, which the
+/// engine waits with until the cleanup is done). When the mob is destroyed
+/// the proxy closes them on the client's behalf ([`Self::close`]); the
+/// engine then ends each with `mob/stream_end`, as for a close of the
+/// client's own.
 #[derive(Debug, Default)]
-struct MobStreams {
-    /// Open requests not answered yet: request id (as JSON text) → mob.
-    pending: HashMap<String, String>,
+struct Pending {
+    by_id: HashMap<String, Awaiting>,
     /// Open streams: mob → stream ids.
     open: HashMap<String, Vec<String>>,
-    /// The ids of the daemon's own close requests, whose answers are not
-    /// the client's.
-    closing: HashSet<String>,
     /// Numbers the daemon's own requests.
     next: u64,
 }
 
-impl MobStreams {
-    /// The client sends `line`: note a mob-wide stream open.
-    fn opening(&mut self, line: &str) {
-        if !line.contains(protocol::engine::STREAM_OPEN) {
-            return;
-        }
-        let Ok(request) = serde_json::from_str::<Value>(line.trim_end()) else {
-            return;
-        };
-        let params = request.get("params");
-        if request.get("method").and_then(Value::as_str) != Some(protocol::engine::STREAM_OPEN)
-            || params.and_then(|p| p.get("agent_identity")).is_some()
-        {
-            return;
-        }
-        if let (Some(id), Some(mob)) = (
-            request.get("id").map(Value::to_string),
-            params.and_then(|p| p.get("mob_id")).and_then(Value::as_str),
-        ) {
-            self.pending.insert(id, mob.to_string());
-        }
+impl Pending {
+    fn is_empty(&self) -> bool {
+        self.by_id.is_empty()
     }
 
-    /// The engine sends `line`: note the stream an open answered with.
-    /// `false`: the line answers a close of the daemon's own and does not
-    /// go to the client.
-    fn answered(&mut self, line: &str) -> bool {
-        if self.pending.is_empty() && self.closing.is_empty() {
-            return true;
-        }
-        let Ok(answer) = serde_json::from_str::<Value>(line.trim_end()) else {
-            return true;
-        };
-        if answer.get("method").is_some() {
-            return true;
-        }
-        let Some(id) = answer.get("id").map(Value::to_string) else {
-            return true;
-        };
-        if self.closing.remove(&id) {
-            return false;
-        }
-        if let Some(mob) = self.pending.remove(&id)
+    /// The engine answered request `id` with `answer`: what that request
+    /// waited for (a mob-wide stream it opened is noted).
+    fn answered(&mut self, id: &str, answer: &Value) -> Option<Awaiting> {
+        let awaiting = self.by_id.remove(id)?;
+        if let Awaiting::StreamOpen(mob) = &awaiting
             && let Some(stream) = answer.pointer("/result/stream_id").and_then(Value::as_str)
         {
-            self.open.entry(mob).or_default().push(stream.to_string());
+            self.open
+                .entry(mob.clone())
+                .or_default()
+                .push(stream.to_string());
         }
-        true
+        Some(awaiting)
     }
 
     /// `mob` was destroyed: the close requests for its open streams.
@@ -955,7 +914,8 @@ impl MobStreams {
             .map(|stream| {
                 self.next += 1;
                 let id = format!("rkat-close-{}", self.next);
-                self.closing.insert(Value::String(id.clone()).to_string());
+                self.by_id
+                    .insert(Value::String(id.clone()).to_string(), Awaiting::OwnClose);
                 format!(
                     "{}\n",
                     json!({
@@ -970,42 +930,59 @@ impl MobStreams {
     }
 }
 
-/// The id (as JSON text) of an `initialize` request `line`.
-fn initialize_id(line: &str) -> Option<String> {
-    if !line.contains(protocol::engine::INITIALIZE) {
-        return None;
-    }
-    let request: Value = serde_json::from_str(line.trim_end()).ok()?;
-    (request.get("method").and_then(Value::as_str) == Some(protocol::engine::INITIALIZE))
-        .then(|| request.get("id").map(Value::to_string))
-        .flatten()
+/// What the client's forwarded `request` waits for, under its id (as JSON
+/// text): `None` for a notification (no answer comes; an input's guard is
+/// dropped at once) and for a request whose answer the proxy only passes.
+fn awaits(
+    request: &Value,
+    method: &str,
+    input: Option<super::activity::Sending>,
+) -> Option<(String, Awaiting)> {
+    let id = request.get("id")?.to_string();
+    let params = request.get("params");
+    let awaiting = match (input, method) {
+        (Some(input), _) => Awaiting::Input(input),
+        (None, protocol::engine::INITIALIZE) => Awaiting::Initialize,
+        (None, protocol::engine::STREAM_OPEN)
+            if params.and_then(|p| p.get("agent_identity")).is_none() =>
+        {
+            Awaiting::StreamOpen(
+                params
+                    .and_then(|p| p.get("mob_id"))
+                    .and_then(Value::as_str)?
+                    .to_string(),
+            )
+        }
+        _ => return None,
+    };
+    Some((id, awaiting))
 }
 
-/// `line` from the engine, with [`DECISION_METHODS`] added to its method
-/// catalog when it answers one of the `initialize` requests in `waiting`
-/// (which then forgets it).
-fn with_decision_methods(line: String, waiting: &parking_lot::Mutex<HashSet<String>>) -> String {
-    let Ok(mut answer) = serde_json::from_str::<Value>(line.trim_end()) else {
-        return line;
-    };
-    let Some(id) = answer.get("id").map(Value::to_string) else {
-        return line;
-    };
-    if !waiting.lock().remove(&id) {
-        return line;
+/// The id (as JSON text) and the parsed answer, when the engine's `line`
+/// is a response (no `method`).
+fn response(line: &str) -> Option<(String, Value)> {
+    let answer: Value = serde_json::from_str(line.trim_end()).ok()?;
+    if answer.get("method").is_some() {
+        return None;
     }
+    Some((answer.get("id")?.to_string(), answer))
+}
+
+/// Add [`DECISION_METHODS`] to the method catalog of an `initialize`
+/// `answer`; whether it had one.
+fn with_decision_methods(answer: &mut Value) -> bool {
     let Some(methods) = answer
         .pointer_mut("/result/methods")
         .and_then(Value::as_array_mut)
     else {
-        return line;
+        return false;
     };
     for method in DECISION_METHODS {
         if !methods.iter().any(|known| known.as_str() == Some(method)) {
             methods.push(json!(method));
         }
     }
-    format!("{answer}\n")
+    true
 }
 
 /// Where one client line goes.
@@ -1038,12 +1015,13 @@ pub enum Routed {
     },
     /// The line for the engine (newline included): the proxy's own
     /// serialization of the request it parsed, never the client's bytes;
-    /// with the input it carries to an agent, if it does.
+    /// with what its answer is for, under its id, when the proxy waits for
+    /// it (an input on its way, [`Observed::input`], among them).
     Forward {
         /// The line.
         line: String,
-        /// The input on its way ([`Observed::input`]).
-        input: Option<super::activity::Sending>,
+        /// The request id (as JSON text) and what its answer is for.
+        awaits: Option<(String, Awaiting)>,
     },
     /// A line that is not a JSON-RPC request the proxy accepts (unparsable,
     /// not an object, no `method`, a bad `jsonrpc` or `id`): never
@@ -1113,12 +1091,13 @@ pub fn route<L: LocalMethods + ?Sized>(line: &str, local: &L, caller: &Caller) -
             id: id(),
             method: method.to_string(),
         },
-        _ => {
+        method => {
+            let method = method.to_string();
             let id = id();
             match local.observe(caller, request) {
                 Ok(Observed { request, input }) => Routed::Forward {
                     line: format!("{request}\n"),
-                    input,
+                    awaits: awaits(&request, &method, input),
                 },
                 Err(refusal) => Routed::Denied { id, refusal },
             }
@@ -1170,10 +1149,26 @@ mod tests {
     /// another mob's are left alone.
     #[test]
     fn a_destroyed_mobs_streams_are_closed_for_the_client() {
-        let mut streams = MobStreams::default();
-        streams.opening(r#"{"jsonrpc":"2.0","id":1,"method":"mob/stream_open","params":{"mob_id":"council--x"}}"#);
-        streams.opening(r#"{"jsonrpc":"2.0","id":2,"method":"mob/stream_open","params":{"mob_id":"council--x","agent_identity":"p0"}}"#);
-        streams.opening(
+        let mut pending = Pending::default();
+        let open = |pending: &mut Pending, line: &str| {
+            let request: Value = serde_json::from_str(line).unwrap();
+            if let Some((id, awaiting)) = awaits(&request, protocol::engine::STREAM_OPEN, None) {
+                pending.by_id.insert(id, awaiting);
+            }
+        };
+        let answered = |pending: &mut Pending, line: &str| {
+            response(line).and_then(|(id, answer)| pending.answered(&id, &answer))
+        };
+        open(
+            &mut pending,
+            r#"{"jsonrpc":"2.0","id":1,"method":"mob/stream_open","params":{"mob_id":"council--x"}}"#,
+        );
+        open(
+            &mut pending,
+            r#"{"jsonrpc":"2.0","id":2,"method":"mob/stream_open","params":{"mob_id":"council--x","agent_identity":"p0"}}"#,
+        );
+        open(
+            &mut pending,
             r#"{"jsonrpc":"2.0","id":3,"method":"mob/stream_open","params":{"mob_id":"tui"}}"#,
         );
         for answer in [
@@ -1181,22 +1176,59 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":2,"result":{"stream_id":"s2"}}"#,
             r#"{"jsonrpc":"2.0","id":3,"result":{"stream_id":"s3"}}"#,
         ] {
-            assert!(streams.answered(answer));
+            assert!(!matches!(
+                answered(&mut pending, answer),
+                Some(Awaiting::OwnClose)
+            ));
         }
-        let closes = streams.close("council--x");
+        let closes = pending.close("council--x");
         assert_eq!(closes.len(), 1, "{closes:?}");
         let close: Value = serde_json::from_str(closes[0].trim_end()).unwrap();
         assert_eq!(close["method"], protocol::engine::STREAM_CLOSE);
         assert_eq!(close["params"]["stream_id"], "s1");
         // Its answer stays with the daemon; the engine's stream end goes on.
         let answer = json!({"jsonrpc": "2.0", "id": close["id"], "result": {"closed": true}});
-        assert!(!streams.answered(&answer.to_string()));
-        assert!(streams.answered(
-            r#"{"jsonrpc":"2.0","method":"mob/stream_end","params":{"stream_id":"s1"}}"#
+        assert!(matches!(
+            answered(&mut pending, &answer.to_string()),
+            Some(Awaiting::OwnClose)
         ));
+        assert!(
+            answered(
+                &mut pending,
+                r#"{"jsonrpc":"2.0","method":"mob/stream_end","params":{"stream_id":"s1"}}"#
+            )
+            .is_none()
+        );
         // Once: the hook reports the destroy again before each retry.
-        assert!(streams.close("council--x").is_empty());
-        assert_eq!(streams.close("tui").len(), 1);
+        assert!(pending.close("council--x").is_empty());
+        assert_eq!(pending.close("tui").len(), 1);
+    }
+
+    /// An `initialize` answer gets the decision methods, once each.
+    #[test]
+    fn an_initialize_answer_gets_the_decision_methods() {
+        let request = json!({"jsonrpc": "2.0", "id": 7, "method": "initialize"});
+        let (id, awaiting) = awaits(&request, protocol::engine::INITIALIZE, None).unwrap();
+        assert!(matches!(awaiting, Awaiting::Initialize));
+        let (answered, mut answer) = response(
+            &json!({"jsonrpc": "2.0", "id": 7, "result": {"methods": ["a", protocol::DECISION_DECIDE]}}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(answered, id);
+        assert!(with_decision_methods(&mut answer));
+        assert_eq!(
+            answer["result"]["methods"],
+            json!(["a", protocol::DECISION_DECIDE, protocol::DECISION_NOTICE])
+        );
+        // A notification waits for nothing.
+        assert!(
+            awaits(
+                &json!({"jsonrpc": "2.0", "method": "initialize"}),
+                protocol::engine::INITIALIZE,
+                None
+            )
+            .is_none()
+        );
     }
 
     /// The daemon's side of a connection: writes go to the client, and the
