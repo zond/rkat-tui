@@ -23,6 +23,13 @@
   whose interrupt is still not confirmed ends with a notice that the run
   may still be going, not as "turn interrupted". The daemon logs each
   interrupt it forwards.
+- A Gemini model behind an OpenAI-compatible proxy (LiteLLM to Vertex AI)
+  could not run at all: Vertex refused the request because the engine's
+  `task_list` schema left its optional `status` without a `type`. Every
+  agent's and helper's request now carries its tool schemas with `$ref`s
+  inlined, optional fields' `anyOf [T, null]` folded into `T`, `oneOf` as
+  `anyOf` and a `type` on every constrained node. `/context` measures the
+  definitions as sent.
 - While a model request runs longer than five seconds, the status bar
   says that queued messages wait for the model's reply, and for how long,
   instead of a bare "delivering…".

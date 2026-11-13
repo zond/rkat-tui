@@ -872,7 +872,12 @@ since adds its alias then. Prices come from `/model/info` too. So
 `litellm:claude-opus-5-5` runs on the proxy's window and prices over the
 OpenAI wire, with none of the Anthropic request shaping (no thinking
 field, no beta headers); the same id on the built-in `anthropic` endpoint
-keeps the catalog's row. The status bar and `/model` show the endpoint and
+keeps the catalog's row. Every request's tool definitions are sent in a
+form every provider accepts: the daemon inlines their `$ref`s, folds an
+optional field's `anyOf [T, null]` into `T`, writes `oneOf` as `anyOf` and
+gives every constrained schema node its `type`, so a Gemini model behind
+the proxy (Vertex AI refuses a parameter without a `type`) runs too; a
+tool accepts the same arguments as before. The status bar and `/model` show the endpoint and
 the model (`litellm` `claude-opus-5-5`); the picker matches both
 `litellm:claude` and `claude`; a stored conversation records the alias,
 and a bare model id that only one endpoint lists still resolves to it.

@@ -8090,3 +8090,33 @@ deadline ends the turn as `TurnFailure::Unconfirmed`
 `an_unconfirmed_interrupt_says_the_run_may_still_be_going`). The status bar
 says when queued messages wait for a model reply
 (`a_queued_message_says_it_waits_for_the_model_s_reply`).
+
+## Tool schemas every dialect accepts (2026-11-13)
+
+A user's agents on a Gemini model behind LiteLLM (OpenAI dialect, to
+Vertex AI) never ran: every request was refused with Vertex's 400
+"`task_list` functionDeclaration `parameters.status` schema didn't specify
+the schema type field". `task_list`'s `status: Option<TaskStatus>`
+(`meerkat-tools` `builtin/tasks/task_list.rs`) derives
+`{"anyOf": [{"$ref": "#/$defs/TaskStatus"}, {"type": "null"}]}`. The
+engine's native Gemini adapter lowers function schemas
+(`meerkat-gemini` `client.rs`, `normalize_gemini_function_parameters_schema`);
+its OpenAI dialect folds only root-level combinators and inlines refs
+(`meerkat-openai` `tool_schema.rs`), so a nested optional enum reaches the
+proxy untyped. No single dispatcher of ours sees every tool (the builtins
+and comms tools are the engine's), but every request passes the
+agent-facing LLM client, and the runtime takes a decorator for it
+(`SessionRuntime::set_agent_llm_client_decorator`, `meerkat-rpc`
+`session_runtime.rs`). `daemon::schema_compat::SchemaCompat` forwards every
+method of `AgentLlmClient` (pinned by
+`forwarding_wrappers_override_every_method_of_their_engine_trait`) and
+hands the inner client the tools with normalized schemas; the helpers'
+requests pass it too. `every_requested_tool_schema_has_a_type_everywhere`
+reads every request of an agent with all hidden families revealed and of a
+`delegate` helper: no `$ref`, no `oneOf`, and a `type` on every constrained
+node. Left untyped on purpose: nodes that admit any value (annotations
+only, such as `send_request.params`), for which no single type is true;
+the Gemini adapter documents the empty schema as accepted by the API. Not
+verified here: a request against Vertex itself. `/context` now measures
+the normalized definitions (`def_bytes`), which are what each request
+pays.

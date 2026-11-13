@@ -440,6 +440,10 @@ fn session_runtime(parts: RuntimeParts<'_>) -> Result<Arc<SessionRuntime>, Daemo
         realm_config.state_path().to_path_buf(),
     )));
     runtime.set_default_llm_client(llm_override);
+    // Every agent's and helper's requests carry tool schemas every dialect
+    // accepts (a Gemini model behind an OpenAI-compatible proxy refuses a
+    // property without a `type`).
+    runtime.set_agent_llm_client_decorator(Some(super::schema_compat::decorator()));
     Ok(Arc::new(runtime))
 }
 

@@ -43,6 +43,7 @@ pub mod mob;
 pub mod policy;
 pub mod protocol;
 pub mod schedules;
+pub mod schema_compat;
 pub mod serve;
 pub mod tasks;
 pub mod usage;

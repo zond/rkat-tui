@@ -189,6 +189,11 @@ fn forwarding_wrappers_override_every_method_of_their_engine_trait() {
             "src/daemon/approvals.rs",
             "impl ToolDispatchAdmission for RootGate",
         ),
+        (
+            "pub trait AgentLlmClient",
+            "src/daemon/schema_compat.rs",
+            "impl AgentLlmClient for SchemaCompat",
+        ),
     ] {
         let engine = source_with(&core.join("src"), header)
             .unwrap_or_else(|| panic!("meerkat-core has no `{header}`"));

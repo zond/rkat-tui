@@ -126,10 +126,12 @@ impl ToolFamily {
 /// and input schema as JSON (what a provider is sent for it).
 #[must_use]
 pub fn def_bytes(def: &ToolDef) -> usize {
+    // As requested: every request carries the schema normalized
+    // (`super::schema_compat`; normalizing it again changes nothing).
     serde_json::json!({
         "name": def.name.as_str(),
         "description": def.description,
-        "input_schema": def.input_schema,
+        "input_schema": super::schema_compat::normalize(&def.input_schema),
     })
     .to_string()
     .len()

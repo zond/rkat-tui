@@ -160,3 +160,108 @@ async fn an_agent_s_request_carries_every_tool_definition() {
     eprintln!("helper request {} bytes", helper.total_tool_bytes());
     rig.quit().await;
 }
+
+/// Every schema node of `value` without a `type` (by path), the form
+/// Vertex AI's function declarations refuse; a `$ref` or `$defs` counts too.
+fn untyped(value: &serde_json::Value, path: &str, out: &mut Vec<String>) {
+    let serde_json::Value::Object(obj) = value else {
+        return;
+    };
+    if obj.contains_key("$ref") || obj.contains_key("$defs") || obj.contains_key("definitions") {
+        out.push(format!("{path}: $ref/$defs"));
+    }
+    if obj.contains_key("oneOf") {
+        out.push(format!("{path}: oneOf"));
+    }
+    // A union's members carry the types; a node that admits any value
+    // (annotations only) has none that fits.
+    let exempt = obj.contains_key("anyOf") || rkat_tui::daemon::schema_compat::unconstrained(obj);
+    if !obj.get("type").is_some_and(serde_json::Value::is_string) && !exempt {
+        out.push(path.to_string());
+    }
+    if let Some(serde_json::Value::Object(properties)) = obj.get("properties") {
+        for (name, schema) in properties {
+            untyped(schema, &format!("{path}.{name}"), out);
+        }
+    }
+    if let Some(items) = obj.get("items") {
+        untyped(items, &format!("{path}[]"), out);
+    }
+    for key in ["anyOf", "oneOf"] {
+        if let Some(serde_json::Value::Array(members)) = obj.get(key) {
+            for (n, member) in members.iter().enumerate() {
+                untyped(member, &format!("{path}|{n}"), out);
+            }
+        }
+    }
+}
+
+/// Every tool definition an agent's request carries, with the hidden
+/// families revealed, and a `delegate` helper's, has a `type` on every
+/// constrained schema node (a union's on its members; a node that admits
+/// any value has none) and no `$ref` or `oneOf`: a Gemini model behind an OpenAI-compatible
+/// proxy (LiteLLM to Vertex AI) refused `task_list`'s `status` (an optional
+/// enum the engine's schema left without a type) and no request ran.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_requested_tool_schema_has_a_type_everywhere() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Text("one"),
+        Step::Tool {
+            id: "d1",
+            name: "delegate",
+            args: json!({
+                "member_id": "h1",
+                "task": "say hi",
+                "result_label": "result",
+                "max_text_bytes": 4000,
+            }),
+        },
+        Step::Text("helper done"),
+        Step::Text("ok"),
+    ]);
+    let mut rig = Attached::start(&ws.root, &llm).await;
+    rig.send(Effect::StartTurn("hello".into()));
+    rig.turn_finished().await.unwrap();
+    let deferral = rig.daemon.deferral();
+    let hidden: Vec<String> = deferral
+        .deferrable
+        .all()
+        .iter()
+        .map(|def| def.name.to_string())
+        .collect();
+    let hidden: Vec<&str> = hidden.iter().map(String::as_str).collect();
+    rig.daemon.reveal(&rig.daemon.session, &hidden).await;
+    rig.send(Effect::StartTurn("delegate".into()));
+    assert_eq!(rig.turn_finished().await.unwrap().text, "ok");
+    let recorded = llm.recorded();
+    let mut missing = Vec::new();
+    for (n, request) in recorded.iter().enumerate() {
+        for def in &request.defs {
+            untyped(
+                &def.input_schema,
+                &format!("request {n} {}", def.name),
+                &mut missing,
+            );
+        }
+    }
+    assert!(missing.is_empty(), "{missing:#?}");
+    let revealed = &recorded[1];
+    for name in &hidden {
+        assert!(
+            revealed.tools.iter().any(|t| t == name),
+            "{name} not revealed"
+        );
+    }
+    let task_list = recorded[0]
+        .defs
+        .iter()
+        .find(|def| def.name.as_str() == "task_list")
+        .expect("task_list is requested");
+    assert_eq!(
+        task_list.input_schema["properties"]["status"]["type"], "string",
+        "{}",
+        task_list.input_schema
+    );
+    rig.quit().await;
+}
