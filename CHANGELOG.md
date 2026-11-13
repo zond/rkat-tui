@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A Markdown table wider than the transcript no longer loses its right-hand
+  columns. When the columns' natural widths do not fit, the widest ones
+  shrink (narrow ones keep their width, none below 6 columns) and their
+  cells wrap within the column, word by word with an over-long word broken,
+  so one row spans several lines with the separators on each. A table with
+  too many columns for even that is shown stacked: one `header: cell` line
+  per cell, its rows divided by a short rule. A table that fits looks as
+  before.
+
 ## [0.0.2] - 2026-11-13
 
 ### Added

@@ -489,46 +489,119 @@ impl Renderer {
         }
     }
 
+    /// Lay a table out in the available width with nothing lost.
+    ///
+    /// Columns take their widest cell when that fits. When it does not, the
+    /// widest columns shrink (narrow ones keep their width) and cell text wraps
+    /// within its column, so one row spans several display lines with the
+    /// separators on each. A table with more columns than can each get
+    /// [`TABLE_MIN_COL`] columns is stacked instead: one `header: cell` line
+    /// per cell, rows divided by a rule.
     fn emit_table(&mut self, t: &TableState) {
-        let cols = t.rows.iter().map(Vec::len).max().unwrap_or(0);
-        let mut widths = vec![0usize; cols];
-        for row in &t.rows {
-            for (w, cell) in widths.iter_mut().zip(row) {
-                *w = (*w).max(display_width(&sanitize(cell)));
+        let rows: Vec<Vec<String>> = t
+            .rows
+            .iter()
+            .map(|row| row.iter().map(|c| sanitize(c)).collect())
+            .collect();
+        let cols = rows.iter().map(Vec::len).max().unwrap_or(0);
+        if cols == 0 {
+            return;
+        }
+        let mut natural = vec![0usize; cols];
+        for row in &rows {
+            for (w, cell) in natural.iter_mut().zip(row) {
+                *w = (*w).max(display_width(cell));
             }
         }
         let avail = self.avail();
-        for (i, row) in t.rows.iter().enumerate() {
-            let text = widths
-                .iter()
-                .enumerate()
-                .map(|(c, w)| {
-                    let cell = sanitize(row.get(c).map_or("", String::as_str));
-                    let pad = w.saturating_sub(display_width(&cell));
-                    format!("{cell}{}", " ".repeat(pad))
-                })
-                .collect::<Vec<_>>()
-                .join(TABLE_SEP);
+        let seps = display_width(TABLE_SEP) * (cols - 1);
+        let Some(widths) = avail
+            .checked_sub(seps)
+            .and_then(|budget| fit_columns(&natural, budget))
+        else {
+            self.emit_stacked_table(&rows, t.header_rows);
+            return;
+        };
+        for (i, row) in rows.iter().enumerate() {
             let header = i < t.header_rows;
             let st = if header {
                 style::TABLE_HEADER
             } else {
                 style::TEXT
             };
-            self.emit_line(vec![Span::styled(
-                truncate_to_width(text.trim_end(), avail),
-                st,
-            )]);
+            let wrapped: Vec<Vec<String>> = widths
+                .iter()
+                .enumerate()
+                .map(|(c, w)| wrap_text(row.get(c).map_or("", String::as_str), *w))
+                .collect();
+            let height = wrapped.iter().map(Vec::len).max().unwrap_or(1);
+            for line in 0..height {
+                let text = widths
+                    .iter()
+                    .zip(&wrapped)
+                    .map(|(w, cell)| {
+                        let part = cell.get(line).map_or("", String::as_str);
+                        let pad = w.saturating_sub(display_width(part));
+                        format!("{part}{}", " ".repeat(pad))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(TABLE_SEP);
+                self.emit_line(vec![Span::styled(text.trim_end().to_string(), st)]);
+            }
             if header && i + 1 == t.header_rows {
                 let sep = widths
                     .iter()
                     .map(|w| "─".repeat(*w))
                     .collect::<Vec<_>>()
                     .join("─┼─");
+                self.emit_line(vec![Span::styled(sep, style::TABLE_SEPARATOR)]);
+            }
+        }
+    }
+
+    /// The degenerate table layout: every body cell on lines of its own,
+    /// labelled with its column's header, rows divided by a rule.
+    fn emit_stacked_table(&mut self, rows: &[Vec<String>], header_rows: usize) {
+        let avail = self.avail();
+        let labels: &[String] = header_rows
+            .checked_sub(1)
+            .and_then(|i| rows.get(i))
+            .map_or(&[], Vec::as_slice);
+        let body = rows.get(header_rows..).unwrap_or_default();
+        // A table still streaming its first row shows its headers alone.
+        let (body, labels) = if body.is_empty() {
+            (rows, &[][..])
+        } else {
+            (body, labels)
+        };
+        for (r, row) in body.iter().enumerate() {
+            if r > 0 {
                 self.emit_line(vec![Span::styled(
-                    truncate_to_width(&sep, avail),
+                    "─".repeat(avail.min(8)),
                     style::TABLE_SEPARATOR,
                 )]);
+            }
+            for (c, cell) in row.iter().enumerate() {
+                let label = labels.get(c).map_or("", String::as_str);
+                let text = if label.is_empty() {
+                    cell.clone()
+                } else {
+                    format!("{label}: {cell}")
+                };
+                for (n, line) in wrap_text(&text, avail).into_iter().enumerate() {
+                    // The label is bold where it sits whole on the first line.
+                    match line.split_at_checked(label.len() + 1) {
+                        Some((head, rest))
+                            if n == 0 && !label.is_empty() && head == format!("{label}:") =>
+                        {
+                            self.emit_line(vec![
+                                Span::styled(head.to_string(), style::TABLE_HEADER),
+                                Span::styled(rest.to_string(), style::TEXT),
+                            ]);
+                        }
+                        _ => self.emit_line(vec![Span::styled(line, style::TEXT)]),
+                    }
+                }
             }
         }
     }
@@ -626,6 +699,51 @@ impl Renderer {
         spans.extend(content);
         self.out.push(Line::from(spans));
     }
+}
+
+/// Narrowest a shrunk table column gets before the table is stacked instead.
+const TABLE_MIN_COL: usize = 6;
+
+/// Column widths for a table whose cells are `natural` wide, within `budget`
+/// columns (the separators already taken off).
+///
+/// The natural widths when they fit. Otherwise every column wider than a cap
+/// is cut to it, the cap as large as the budget allows (the spare columns go
+/// one each to the cut columns), so narrow columns keep their width. `None`
+/// when even a cap of [`TABLE_MIN_COL`] does not fit.
+fn fit_columns(natural: &[usize], budget: usize) -> Option<Vec<usize>> {
+    let used = |cap: usize| natural.iter().map(|w| (*w).min(cap)).sum::<usize>();
+    let max = natural.iter().copied().max().unwrap_or(0);
+    if used(max) <= budget {
+        return Some(natural.to_vec());
+    }
+    if used(TABLE_MIN_COL) > budget {
+        return None;
+    }
+    // used(lo) fits, used(hi) does not.
+    let (mut lo, mut hi) = (TABLE_MIN_COL, max);
+    while hi - lo > 1 {
+        let mid = lo + (hi - lo) / 2;
+        if used(mid) <= budget {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let mut spare = budget - used(lo);
+    Some(
+        natural
+            .iter()
+            .map(|w| {
+                if *w > lo && spare > 0 {
+                    spare -= 1;
+                    lo + 1
+                } else {
+                    (*w).min(lo)
+                }
+            })
+            .collect(),
+    )
 }
 
 /// Greedy word wrap of inline tokens into lines of at most `avail` columns.
@@ -1043,6 +1161,137 @@ mod tests {
         );
         let lines = render_markdown("> q", 20);
         assert!(span_style(&lines, "q").add_modifier.contains(Modifier::DIM));
+    }
+
+    /// Every word of `text` appears, in order, in the joined rendered rows.
+    fn all_words_present(out: &[String], text: &str) -> bool {
+        let joined = out.join(" ");
+        text.split_whitespace().all(|w| joined.contains(w))
+    }
+
+    #[test]
+    fn table_that_fits_renders_at_natural_widths() {
+        let src = "| name | role |\n|---|---|\n| ann | admin |\n| bob | dev |";
+        assert_eq!(
+            md(src, 40),
+            vec!["name │ role", "─────┼──────", "ann  │ admin", "bob  │ dev"]
+        );
+    }
+
+    #[test]
+    fn wide_table_wraps_cells_within_their_columns() {
+        let long = "the quick brown fox jumps over the lazy dog";
+        let src = format!("| id | text | note |\n|---|---|---|\n| 1 | {long} | ok |");
+        let lines = render_markdown(&src, 30);
+        let out = texts(&lines);
+        assert!(out.iter().all(|l| display_width(l) <= 30), "{out:#?}");
+        assert!(all_words_present(&out, long), "{out:#?}");
+        // Narrow columns keep their width; the wide one wraps over rows that
+        // each carry both separators.
+        assert_eq!(out[0], format!("id │ text{} │ note", " ".repeat(14)));
+        let body = &out[2..];
+        assert!(body.len() > 1, "{out:#?}");
+        assert!(body.iter().all(|l| l.matches('│').count() == 2), "{out:#?}");
+        assert!(body[0].starts_with("1  │ the quick"), "{out:#?}");
+        assert!(body[0].ends_with("│ ok"), "{out:#?}");
+        assert_eq!(span_style(&lines, "note"), style::TABLE_HEADER);
+        assert_eq!(span_style(&lines, "─┼─"), style::TABLE_SEPARATOR);
+    }
+
+    #[test]
+    fn wide_table_hard_breaks_an_unbreakable_token() {
+        let token = "x".repeat(70);
+        let src = format!("| k | v |\n|---|---|\n| a | {token} |");
+        let out = md(&src, 24);
+        assert!(out.iter().all(|l| display_width(l) <= 24), "{out:#?}");
+        let pieces: String = out[2..]
+            .iter()
+            .map(|l| l.rsplit("│ ").next().unwrap_or("").trim())
+            .collect();
+        assert_eq!(pieces, token);
+    }
+
+    #[test]
+    fn wide_table_keeps_wide_characters_within_the_width() {
+        let src = "| 列 | 説明 |\n|---|---|\n| 一 | 日本語のとても長い説明文がここに入ります |";
+        let out = md(src, 20);
+        assert!(out.iter().all(|l| display_width(l) <= 20), "{out:#?}");
+        let joined: String = out[2..]
+            .iter()
+            .map(|l| l.rsplit("│ ").next().unwrap_or("").trim())
+            .collect();
+        assert_eq!(joined, "日本語のとても長い説明文がここに入ります");
+    }
+
+    #[test]
+    fn table_too_narrow_for_its_columns_is_stacked() {
+        let src =
+            "| a | b | c | d |\n|---|---|---|---|\n| one | two | three | four |\n| 5 | 6 | 7 | 8 |";
+        let lines = render_markdown(src, 12);
+        let out = texts(&lines);
+        assert_eq!(
+            out,
+            vec![
+                "a: one",
+                "b: two",
+                "c: three",
+                "d: four",
+                "────────",
+                "a: 5",
+                "b: 6",
+                "c: 7",
+                "d: 8"
+            ]
+        );
+        assert_eq!(span_style(&lines, "a:"), style::TABLE_HEADER);
+        assert_eq!(span_style(&lines, "one"), style::TEXT);
+    }
+
+    #[test]
+    fn table_relays_out_at_each_width() {
+        let src = "| col | words |\n|---|---|\n| x | alpha beta gamma delta epsilon |";
+        let wide = md(src, 80);
+        assert_eq!(wide.len(), 3);
+        for w in [16, 20, 30, 80] {
+            let out = md(src, w);
+            assert!(
+                out.iter().all(|l| display_width(l) <= usize::from(w)),
+                "{w}: {out:#?}"
+            );
+            assert!(
+                all_words_present(&out, "col words x alpha beta gamma delta epsilon"),
+                "{w}: {out:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn streaming_table_prefixes_never_panic_and_stay_within_the_width() {
+        let src = "| id | 名前 | description |\n|---|:-:|---|\n| 1 | 日本 | a long cell that wraps |\n| 2 | x |";
+        let ends: Vec<usize> = src
+            .char_indices()
+            .map(|(i, _)| i)
+            .chain([src.len()])
+            .collect();
+        for end in ends {
+            let prefix = src.get(..end).unwrap_or_default();
+            for w in [0u16, 1, 5, 12, 20, 80] {
+                let out = md(prefix, w);
+                let limit = usize::from(w).max(2);
+                assert!(
+                    out.iter().all(|l| display_width(l) <= limit),
+                    "{w} {prefix:?}: {out:#?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn stacked_table_in_a_list_item_keeps_every_cell() {
+        let src = "- item\n\n  | a | b | c |\n  |---|---|---|\n  | one | two | three |";
+        let out = md(src, 14);
+        assert!(all_words_present(&out, "one two three"), "{out:#?}");
+        assert!(out.iter().all(|l| display_width(l) <= 14), "{out:#?}");
     }
 
     #[test]

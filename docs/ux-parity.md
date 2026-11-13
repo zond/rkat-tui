@@ -63,7 +63,7 @@ official tables name, then niche features.
 | 46 | Stash the prompt | `Ctrl+S` | `Ctrl+S` | same |
 | 47 | Suspend | `Ctrl+Z` | `Ctrl+Z` | same |
 | 48 | Diff display for edits | colored diffs on Edit/Write | unified diffs on the tool blocks | same |
-| 49 | Markdown rendering | yes | yes | same |
+| 49 | Markdown rendering | yes | yes; a table wider than the transcript wraps its cells within shrunk columns, or stacks as `header: cell` lines when its columns cannot fit, so nothing is cut off | same |
 | 50 | Spinner / elapsed / status | spinner + status | braille spinner, `running Ns`, `classifying…`, queued count | same |
 | 51 | Close dialogs | `Esc` | `Esc` (and `q` in pickers) | same |
 | 52 | `/mcp` | `/mcp`: list, reconnect, enable, disable | none; `/trust` trusts the project's `.rkat/mcp.toml` | missing |

@@ -1363,6 +1363,11 @@ Details the table leaves out:
   editor exits successfully (trailing newline dropped; Ctrl-_ restores the
   old draft), and a failed run keeps the draft with a notice. The session
   goes on meanwhile and its output appears when the editor closes.
+- **Tables in answers** fit the transcript's width with nothing cut off.
+  When a table's columns are too wide, the widest shrink (none below six
+  columns) and their cells wrap within the column, so a row takes several
+  lines; a table with too many columns for that is shown stacked, one
+  `header: cell` line per cell. Resizing the terminal lays it out again.
 - **Ctrl-Z** gives the terminal back and stops rkat-tui with SIGTSTP; `fg`
   repaints the screen. The agent runs in the daemon, so its work goes on
   while the TUI is stopped.
