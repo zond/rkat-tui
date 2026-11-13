@@ -490,91 +490,41 @@ impl Daemon {
         let started_at = endpoint::timestamp(std::time::SystemTime::now());
         let workspace = std::fs::canonicalize(&layers.scope.context_root)
             .unwrap_or_else(|_| layers.scope.context_root.clone());
-        let (first_file, fallback_files) = endpoint_files(
+        let places = EndpointPlaces::find(
             options.endpoint_file,
             options.state_home,
             &layers.scope.context_root,
-        )?;
-        let files: Vec<&Path> = std::iter::once(first_file.as_path())
-            .chain(fallback_files.iter().map(PathBuf::as_path))
-            .collect();
-        // Refuse before taking the realm unless every place is free or
-        // proven stale (a refused connect): a live daemon keeps its
-        // endpoint, at either place, and a slow one must not be mistaken
-        // for a dead one.
-        for file in &files {
-            endpoint::check_stale(file).await?;
-        }
-        // The token's directories are secret to the agent's file tools
-        // (read included) and to the classifier's: the confined shell
-        // cannot reach them ([`choose_endpoint_file`]), and neither may a
-        // `read_file` a classifier would allow.
-        let secret: Vec<PathBuf> = endpoint::search_dirs()
-            .into_iter()
-            .chain(
-                files
-                    .iter()
-                    .filter_map(|file| file.parent().map(Path::to_path_buf)),
-            )
-            .collect();
-        layers.scope.project_root = layers.scope.project_root.clone().with_secret_roots(secret);
+        )
+        .await?;
+        layers.scope.project_root = layers
+            .scope
+            .project_root
+            .clone()
+            .with_secret_roots(places.secret_roots());
         let parts =
             bootstrap::assemble(layers, config, args, options.bootstrap, LEASE_SURFACE).await?;
-        let file = choose_endpoint_file(&parts.confinement, &first_file, &fallback_files)?;
+        let file = places.choose(&parts.confinement)?;
         let mut composed = engine::compose(parts, options.policy)?;
-        // The audit log in the realm: owner-only, outside the workspace
-        // and every grant of the agent's shell, secret to its file tools
-        // (see `audit`); it follows a re-home.
-        let audit = match audit::AuditLog::open(&composed.scope.realm_root()) {
-            Ok(log) => Some(log),
-            Err(err) => {
-                tracing::warn!(error = %err, "no audit log this run");
-                composed
-                    .startup_notices
-                    .push(protocol::StartupNotice::warn(format!(
-                        "no audit log this run: {err}"
-                    )));
-                None
-            }
-        };
+        let audit = open_audit(&mut composed);
         mob::ensure_mob(&composed.state, &composed.root).await?;
-        let conversations = conversations::Conversations::open(
-            Arc::clone(&composed.state),
-            Arc::clone(&composed.root.registry),
-            &composed.scope.realm_root(),
-            composed.root.model.clone(),
-            composed.root.auth_binding.clone(),
-        )?
-        .with_deferral(Arc::clone(&composed.deferral));
-        #[cfg(any(test, feature = "test-support"))]
-        let conversations = conversations.with_spawn_faults(options.spawn_faults.clone());
-        let conversations = Arc::new(conversations);
+        let conversations = open_conversations(
+            &composed,
+            #[cfg(any(test, feature = "test-support"))]
+            options.spawn_faults.clone(),
+        )?;
         let lifecycle = lifecycle::Lifecycle::built(
             workspace.clone(),
             started_at.clone(),
             options.start_token,
             options.build.unwrap_or_else(|| crate::BUILD.to_string()),
         );
-        let activity = idle_activity(
-            &conversations,
-            composed.runtime.runtime_adapter(),
-            &composed.decisions,
-        );
-        // Every agent's socket for wires to other workspaces, and the
-        // cards they were wired to.
-        let (wires, wires_problem) = wires::Wires::open(
-            Arc::clone(&composed.state),
-            &composed.scope.realm_root(),
-            &workspace,
-        );
-        if let Some(problem) = wires_problem {
-            tracing::warn!(%problem, "no cross-workspace wires this run");
-            composed
-                .startup_notices
-                .push(protocol::StartupNotice::warn(problem));
-        }
+        let wires = open_wires(&mut composed, &workspace);
         let agents = agents::Agents::new(agents::AgentsParts {
-            activity,
+            activity: idle_activity(
+                &conversations,
+                composed.runtime.runtime_adapter(),
+                &composed.decisions,
+            ),
             state: Arc::clone(&composed.state),
             conversations: Arc::clone(&conversations),
             engine: Arc::clone(&composed.engine),
@@ -593,33 +543,8 @@ impl Daemon {
         });
         attach_engine(&composed.engine, &agents, audit.as_ref(), &workspace)?;
         composed.desk.report_to(&composed.engine);
-        // Restored (their classifier seeded with what the user asked so
-        // far), else one seated for the first client.
-        let (first, session, created) = agents.start().await?;
+        let first_agent = start_agents(&agents, &composed).await?;
         let watch_task = deliver_watches(&agents, composed.watch_batches);
-        // Schedules fire while the daemon runs, from its start: the
-        // runtime arms its firing host on a session's creation only, and a
-        // restored agent creates none.
-        if let Err(err) = composed.runtime.ensure_schedule_host_started().await {
-            tracing::warn!(error = %err, "the schedule host did not start; schedules fire once a session is created");
-        }
-        // Records of schedules deleted while the daemon was down go.
-        agents.schedules().reconcile().await;
-        let first_agent = FirstAgent {
-            mob_id: meerkat_mob::MobId::from(MOB_ID),
-            identity: meerkat_mob::AgentIdentity::from(first.as_str()),
-            session_id: session,
-            created,
-        };
-        // The agents are idle now: their tool catalogs can be read.
-        for (agent, session) in agents.live() {
-            if !composed.origins.refresh(&session).await {
-                tracing::info!(
-                    %agent,
-                    "the agent's tool catalog is read after its first run; until then only rkat-tui's own tools are known to the gate"
-                );
-            }
-        }
         let local = Arc::new(local::Local::new(local::LocalParts {
             engine: Arc::clone(&composed.engine),
             state: Arc::clone(&composed.state),
@@ -649,18 +574,7 @@ impl Daemon {
                 helper_depth: composed.helper_max_depth,
             },
         }));
-        // The decisions an earlier daemon left open held dispatches that
-        // ended with it.
-        let leftovers = composed.decisions.withdraw_leftovers().await;
-        if leftovers > 0 {
-            tracing::info!(
-                leftovers,
-                "withdrew the approval requests an earlier daemon left open (their tool calls did not run)"
-            );
-        }
-        if let Some(warning) = local.announce_plan_mode().await {
-            tracing::warn!(%warning, "plan mode");
-        }
+        settle_leftovers(&composed.decisions, &local).await;
         let listener =
             serve::Listener::bind(options.listen, &file, &workspace, &started_at).await?;
         tracing::info!(
@@ -898,25 +812,171 @@ pub mod testing {
 /// How long a stopped daemon waits for the realm's databases to close.
 const STORE_SETTLE: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// The endpoint files the daemon may write, first the preferred one: the
-/// one named, the one in a state home, else the workspace's candidates
-/// (the state directory's, then the runtime directory's fallback).
-fn endpoint_files(
-    named: Option<PathBuf>,
-    state_home: Option<PathBuf>,
-    workspace: &Path,
-) -> Result<(PathBuf, Vec<PathBuf>), DaemonError> {
-    Ok(match (named, state_home) {
-        (Some(file), _) => (file, Vec::new()),
-        (None, Some(state_home)) => (endpoint::file_in(&state_home, workspace), Vec::new()),
-        (None, None) => {
-            let mut files = endpoint::candidates(workspace).into_iter();
-            match files.next() {
-                Some(first) => (first, files.collect()),
-                None => (endpoint_file(workspace)?, Vec::new()),
+/// Where the daemon may write its endpoint file: the preferred place and
+/// its fallbacks.
+struct EndpointPlaces {
+    first: PathBuf,
+    fallbacks: Vec<PathBuf>,
+}
+
+impl EndpointPlaces {
+    /// The one named, the one in a state home, else the workspace's
+    /// candidates (the state directory's, then the runtime directory's
+    /// fallback). Refused before the realm is taken unless every place is
+    /// free or proven stale (a refused connect): a live daemon keeps its
+    /// endpoint, at either place, and a slow one must not be mistaken for
+    /// a dead one.
+    async fn find(
+        named: Option<PathBuf>,
+        state_home: Option<PathBuf>,
+        workspace: &Path,
+    ) -> Result<Self, DaemonError> {
+        let (first, fallbacks) = match (named, state_home) {
+            (Some(file), _) => (file, Vec::new()),
+            (None, Some(state_home)) => (endpoint::file_in(&state_home, workspace), Vec::new()),
+            (None, None) => {
+                let mut files = endpoint::candidates(workspace).into_iter();
+                match files.next() {
+                    Some(first) => (first, files.collect()),
+                    None => (endpoint_file(workspace)?, Vec::new()),
+                }
             }
+        };
+        let places = Self { first, fallbacks };
+        for file in places.all() {
+            endpoint::check_stale(file).await?;
         }
+        Ok(places)
+    }
+
+    fn all(&self) -> impl Iterator<Item = &PathBuf> {
+        std::iter::once(&self.first).chain(&self.fallbacks)
+    }
+
+    /// The token's directories, secret to the agent's file tools (read
+    /// included) and to the classifier's: the confined shell cannot reach
+    /// them ([`choose_endpoint_file`]), and neither may a `read_file` a
+    /// classifier would allow.
+    fn secret_roots(&self) -> Vec<PathBuf> {
+        endpoint::search_dirs()
+            .into_iter()
+            .chain(
+                self.all()
+                    .filter_map(|file| file.parent().map(Path::to_path_buf)),
+            )
+            .collect()
+    }
+
+    /// [`choose_endpoint_file`] among them.
+    fn choose(&self, plan: &bootstrap::ConfinementPlan) -> Result<PathBuf, DaemonError> {
+        choose_endpoint_file(plan, &self.first, &self.fallbacks)
+    }
+}
+
+/// The audit log in the realm: owner-only, outside the workspace and every
+/// grant of the agent's shell, secret to its file tools (see `audit`); it
+/// follows a re-home. None, with a start-up notice, when it cannot be
+/// opened.
+fn open_audit(composed: &mut engine::Composed) -> Option<Arc<audit::AuditLog>> {
+    match audit::AuditLog::open(&composed.scope.realm_root()) {
+        Ok(log) => Some(log),
+        Err(err) => {
+            tracing::warn!(error = %err, "no audit log this run");
+            composed
+                .startup_notices
+                .push(protocol::StartupNotice::warn(format!(
+                    "no audit log this run: {err}"
+                )));
+            None
+        }
+    }
+}
+
+/// The agents' conversations, from the realm's conversation log.
+fn open_conversations(
+    composed: &engine::Composed,
+    #[cfg(any(test, feature = "test-support"))] spawn_faults: Option<
+        Arc<std::sync::atomic::AtomicUsize>,
+    >,
+) -> Result<Arc<conversations::Conversations>, DaemonError> {
+    let conversations = conversations::Conversations::open(
+        Arc::clone(&composed.state),
+        Arc::clone(&composed.root.registry),
+        &composed.scope.realm_root(),
+        composed.root.model.clone(),
+        composed.root.auth_binding.clone(),
+    )?
+    .with_deferral(Arc::clone(&composed.deferral));
+    #[cfg(any(test, feature = "test-support"))]
+    let conversations = conversations.with_spawn_faults(spawn_faults);
+    Ok(Arc::new(conversations))
+}
+
+/// Every agent's socket for wires to other workspaces, and the cards they
+/// were wired to (none, with a start-up notice, when the records cannot
+/// be read).
+fn open_wires(composed: &mut engine::Composed, workspace: &Path) -> Arc<wires::Wires> {
+    let (wires, problem) = wires::Wires::open(
+        Arc::clone(&composed.state),
+        &composed.scope.realm_root(),
+        workspace,
+    );
+    if let Some(problem) = problem {
+        tracing::warn!(%problem, "no cross-workspace wires this run");
+        composed
+            .startup_notices
+            .push(protocol::StartupNotice::warn(problem));
+    }
+    wires
+}
+
+/// Restore the agents (their classifier seeded with what the user asked
+/// so far), else seat one for the first client; arm the schedules and read
+/// the agents' tool catalogs. The agent the daemon starts with.
+async fn start_agents(
+    agents: &Arc<agents::Agents>,
+    composed: &engine::Composed,
+) -> Result<FirstAgent, DaemonError> {
+    let (first, session, created) = agents.start().await?;
+    // Schedules fire while the daemon runs, from its start: the runtime
+    // arms its firing host on a session's creation only, and a restored
+    // agent creates none.
+    if let Err(err) = composed.runtime.ensure_schedule_host_started().await {
+        tracing::warn!(error = %err, "the schedule host did not start; schedules fire once a session is created");
+    }
+    // Records of schedules deleted while the daemon was down go.
+    agents.schedules().reconcile().await;
+    // The agents are idle now: their tool catalogs can be read.
+    for (agent, session) in agents.live() {
+        if !composed.origins.refresh(&session).await {
+            tracing::info!(
+                %agent,
+                "the agent's tool catalog is read after its first run; until then only rkat-tui's own tools are known to the gate"
+            );
+        }
+    }
+    Ok(FirstAgent {
+        mob_id: meerkat_mob::MobId::from(MOB_ID),
+        identity: meerkat_mob::AgentIdentity::from(first.as_str()),
+        session_id: session,
+        created,
     })
+}
+
+/// What an earlier daemon left: the decisions it left open held dispatches
+/// that ended with it (withdrawn), and a persisted plan mode the agents
+/// are told of.
+async fn settle_leftovers(decisions: &decisions::Decisions, local: &local::Local) {
+    let leftovers = decisions.withdraw_leftovers().await;
+    if leftovers > 0 {
+        tracing::info!(
+            leftovers,
+            "withdrew the approval requests an earlier daemon left open (their tool calls did not run)"
+        );
+    }
+    if let Some(warning) = local.announce_plan_mode().await {
+        tracing::warn!(%warning, "plan mode");
+    }
 }
 
 /// When the agents are idle ([`activity`]): the runtime is asked for a
