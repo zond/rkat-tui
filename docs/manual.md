@@ -54,7 +54,8 @@ rkat-tui --no-confinement         # run the shell unsandboxed (see "Confinement"
 
 0. **Installing.** `cargo install rkat-tui --locked` installs both
    binaries, `rkat-tui` and its daemon `rkat-tui-mob` (Rust 1.97 or later;
-   Linux and macOS). The README's Install section has the build setting
+   Linux and macOS). `cargo binstall rkat-tui` installs them prebuilt
+   on x86-64 Linux and Apple-silicon macOS. The README's Install section has the build setting
    that makes the bundled SQLite faster, and what the sandbox needs.
 1. **A provider key.** Export one of `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`
    or `GEMINI_API_KEY` (or configure a key in the realm config, the `rkat`

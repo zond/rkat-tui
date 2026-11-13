@@ -13,6 +13,14 @@ categories = ["command-line-utilities"]
 # reads neither the checkout's cargo config nor its toolchain pin.
 exclude = [".github/", ".cargo/", "rust-toolchain.toml", "CLAUDE.md", "deny.toml"]
 
+# `cargo binstall rkat-tui`: the archives .github/workflows/release.yml
+# attaches to a tag's GitHub release. A target without one is built from
+# source, as `cargo install` does.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }-v{ version }.tgz"
+bin-dir = "{ name }-{ target }-v{ version }/{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
 [lib]
 name = "rkat_tui"
 path = "src/lib.rs"

@@ -8024,3 +8024,21 @@ text unchanged: 0.9.14 migrates nothing on open. The probe was a
 temporary test, not kept; `state_fixtures` passes unchanged.
 `cargo deny check` passes; the RUSTSEC-2026-0462 ignore still matches
 (`rmcp` 1.8.0) and its reason names 0.9.14.
+
+## Prebuilt binaries for `cargo binstall` (2026-11-13)
+
+Asked for with 0.0.2, ahead of the 0.1.0 the first publishing entry
+named. `.github/workflows/release.yml` runs on a `v*` tag (or by hand for
+an existing tag), builds `--release --locked` for
+`x86_64-unknown-linux-gnu` on Ubuntu 22.04 (glibc 2.35) and
+`aarch64-apple-darwin` on macOS 14, strips the two binaries and attaches
+`rkat-tui-<target>-v<version>.tgz` with its SHA-256 to the tag's GitHub
+release; `[package.metadata.binstall]` in `Cargo.toml` names that path.
+Measured here on 0.0.2: `rkat-tui-mob` is 389 MB as built and 293 MB
+stripped, `rkat-tui` 127 MB and 96 MB, the archive of both 145 MB. The
+checkout's `.cargo/config.toml` applies to this build, so the archives
+have the SQLite lock profile a registry `cargo install` lacks. No musl
+target (the bundled SQLite and the confinement were never built against
+it) and no Windows. Not verified before the first tag: the workflow
+itself and the macOS build, which no machine of ours has compiled; the
+jobs are independent, so one target failing leaves the other's archive.

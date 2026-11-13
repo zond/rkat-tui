@@ -1,0 +1,89 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+  # Builds the archives of a tag that exists already (a tag whose run
+  # failed, after the workflow was fixed on main).
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The release tag to build, for example v0.0.2"
+        required: true
+
+# Prebuilt binaries for `cargo binstall rkat-tui`: one archive per target,
+# attached to the tag's GitHub release under the name Cargo.toml's
+# [package.metadata.binstall] gives. The build is the checkout's release
+# build, so it carries the SQLite flags of .cargo/config.toml, which a
+# `cargo install` from the registry does not.
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+  CARGO_INCREMENTAL: "0"
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  archive:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The oldest hosted Ubuntu, so the binaries ask for no newer
+          # glibc than 2.35.
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: macos-14
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - name: The tag names the crate's version
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          if [ "v$version" != "$TAG" ]; then
+            echo "tag $TAG does not match Cargo.toml's version $version"
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - name: Free runner disk
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.0
+          targets: ${{ matrix.target }}
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Archive
+        shell: bash
+        run: |
+          name="rkat-tui-${{ matrix.target }}-v$VERSION"
+          mkdir "$name"
+          cp "target/${{ matrix.target }}/release/rkat-tui" "target/${{ matrix.target }}/release/rkat-tui-mob" "$name/"
+          strip "$name/rkat-tui" "$name/rkat-tui-mob"
+          "$name/rkat-tui" --version
+          "$name/rkat-tui-mob" --version
+          cp README.md CHANGELOG.md LICENSE-APACHE LICENSE-MIT "$name/"
+          tar czf "$name.tgz" "$name"
+          shasum -a 256 "$name.tgz" > "$name.tgz.sha256"
+          ls -l "$name.tgz"
+          echo "ARCHIVE=$name.tgz" >> "$GITHUB_ENV"
+      - name: Attach to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The release's text is the tag's changelog entry. Both jobs may
+          # get here first; the loser of the create just uploads.
+          awk -v v="$VERSION" '$0 ~ "^## \\[" v "\\]" {on=1; next} /^## \[/ {on=0} on' CHANGELOG.md > notes.md
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --title "rkat-tui $VERSION" --notes-file notes.md --verify-tag \
+            || gh release view "$TAG" >/dev/null
+          gh release upload "$TAG" "$ARCHIVE" "$ARCHIVE.sha256" --clobber

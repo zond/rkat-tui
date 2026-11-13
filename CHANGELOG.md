@@ -6,6 +6,11 @@
 
 ### Added
 
+- `cargo binstall rkat-tui` installs prebuilt binaries: every release
+  from this one on has an archive for x86-64 Linux (glibc 2.35 or later)
+  and for Apple-silicon macOS on its GitHub release, built with the
+  SQLite settings a plain `cargo install` leaves out. Other targets are
+  built from source as before.
 - A skills directory of your own, `~/.rkat/tui/skills/`
   (`<config-dir>/skills/`): every workspace's agents and their `delegate`
   helpers list its skills, ahead of the realm config's skill

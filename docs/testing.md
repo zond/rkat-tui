@@ -242,6 +242,11 @@ The 0.0.x line is the maintainer's dogfood line on crates.io: each
 3. The maintainer tags and publishes:
    `git tag -a v0.0.N -m "rkat-tui 0.0.N" && git push origin v0.0.N`,
    then `cargo publish --locked`.
+   The tag's push runs `.github/workflows/release.yml`, which builds the
+   archives `cargo binstall` fetches and attaches them to the tag's
+   GitHub release; when a run fails, fix the workflow on `main` and start
+   it by hand for the same tag (`gh workflow run release.yml -f
+   tag=v0.0.N`).
 4. On the other machine: `cargo install rkat-tui --locked` (`--force` over
    an older one), `rkat-tui --version`, and record what goes wrong as
    issues in the repository.

@@ -19,18 +19,23 @@ cargo install rkat-tui --locked   # installs rkat-tui and its daemon, rkat-tui-m
 export ANTHROPIC_API_KEY=…        # or OPENAI_API_KEY or GEMINI_API_KEY
 ```
 
-It needs Rust 1.97 or later and runs on Linux and macOS. On Linux the
+`cargo binstall rkat-tui` installs the same two binaries without
+compiling, from the release's prebuilt archive, on x86-64 Linux (glibc
+2.35 or later) and Apple-silicon macOS; elsewhere it builds from source.
+
+Building it needs Rust 1.97 or later; it runs on Linux and macOS. On Linux the
 sandbox needs unprivileged user namespaces; a host that cannot confine the
 shell refuses to start and explains how to enable them (for example an
 AppArmor profile on Ubuntu 24.04 and later). macOS uses Seatbelt; other
 platforms have no sandbox. `--no-confinement` runs the shell unsandboxed.
 
 The daemon's log may say that SQLite runs with process-wide locks: a plain
-install builds the bundled SQLite with its defaults, which work but make
+`cargo install` builds the bundled SQLite with its defaults, which work but make
 concurrent sessions in the daemon queue on three global locks;
 `LIBSQLITE3_FLAGS="-DSQLITE_DEFAULT_MEMSTATUS=0 -USQLITE_ENABLE_MEMORY_MANAGEMENT -DSQLITE_DISABLE_PAGECACHE_OVERFLOW_STATS" cargo install rkat-tui --locked`
 builds it without them (this checkout's `.cargo/config.toml` sets the same,
-so `cargo install --path .` here gets them too).
+so `cargo install --path .` here gets them too, as do the prebuilt
+archives).
 
 Your projects stay clean: a workspace's sessions, approvals and audit log
 live under `~/.rkat/tui/workspaces/<id>/`, not in the project (see
