@@ -42,7 +42,8 @@ only Markdown files outside `src/` and `tests/` (`README.md`, `CHANGELOG.md`,
 it still waits for its hosted CI run to end green. Anything else (code,
 `Cargo.toml`, `Cargo.lock`, `deny.toml`, `.cargo/`, CI config, test
 fixtures, a Markdown file a test or `include_str!` reads) runs the full gate. While iterating, scope the run
-(`--lib`, `--test <name>`, `-E 'test(<substring>)'`), then run the full gate
+(`--lib`, `--test it -E 'test(/^<module>::/)'` for one file of
+`tests/it/`, `-E 'test(<substring>)'`), then run the full gate
 once. The first clippy run must always be `--all-targets --all-features`; the
 second builds the library and binaries without `test-support`, so an
 item nothing but the tests use is reported as dead. Put such items under
@@ -90,7 +91,7 @@ shell (`src/user_shell.rs`) and the client's start-on-demand of the
 | `src/models.rs`, `src/pricing.rs`, `src/cost.rs`, `src/thinking.rs` | Model listing, price table, token totals by model and their price (the daemon counts them, `daemon/usage.rs`), the per-model `[thinking]` setting |
 | `src/mentions.rs`, `src/paths.rs`, `src/overlay.rs`, `src/http.rs`, `src/hex.rs`, `src/text.rs`, `src/user_shell.rs`, `src/error.rs` | `@` mentions and the path index, path expansion and the one atomic writer (`write_atomic`), `--set` overlays, the HTTP client and lenient fields, hex digests and random ids, counts and durations in messages, the user's `!` shell, the crate's error types |
 | `src/state_fixtures.rs` | The stored-state guard: opens the first release's files (`tests/fixtures/state-0.0.1/`) with this build's readers |
-| `tests/` | Integration tests through the `test-support` feature on the one rig: the real daemon with a scripted LLM (`tests/common/rig.rs`: `Setup`, `Attached`, `Running`, `Client`); `tests/common/mod.rs` holds the scripted LLM, the workspace and the command lines |
+| `tests/` | Integration tests, one binary `it` (`tests/it/main.rs` declares one module per file of `tests/it/`), through the `test-support` feature on the one rig: the real daemon with a scripted LLM (`tests/it/common/rig.rs`: `Setup`, `Attached`, `Running`, `Client`); `tests/it/common/mod.rs` holds the scripted LLM, the workspace and the command lines |
 | `docs/` | `testing.md` (protocol), `evidence.md` (what was built, why, with the probes and test names), `mob-split.md` (the architecture, its words, its status and the engine asks), `ux-parity.md` (Claude Code keys and behaviour compared), `state.md` (every stored file, its format and writer) |
 
 The README is the front page; the full user manual is `docs/manual.md`.

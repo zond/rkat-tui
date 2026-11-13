@@ -53,7 +53,7 @@ pub use watch::{UNWATCH, WATCH_PATHS, WATCH_TOOLS_SOURCE, WatchHost, WatchToolDi
 /// each tool's execution contract. Composed beside the engine's builtins,
 /// a dispatcher that left this at the default took the shell's `Detached`
 /// mode out of the agent's catalog, and every `shell` with `background`
-/// was refused (`tests/shell_jobs.rs`).
+/// was refused (`tests/it/shell_jobs.rs`).
 #[must_use]
 pub fn fixed_catalog() -> meerkat_core::ToolCatalogCapabilities {
     meerkat_core::ToolCatalogCapabilities {

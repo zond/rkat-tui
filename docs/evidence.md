@@ -8321,3 +8321,20 @@ comes from the engine's per-member operator tools, mounted outside
 rkat-tui's wrappers; its message names the mob it looked in, and the
 agents' hint names `implicit-<your session id>` for `delegate` helpers
 (#2208). Both are drafted as upstream asks in the batch report.
+
+## One integration test binary (owner decision, 2026-11-13)
+
+The 37 files under `tests/` were 37 test programs, each linking the
+whole engine again after any change, which dominated the gate's time and
+disk. They are now one target, `it`: `tests/it/main.rs` declares each
+former file as a module and `common`, `rig` and `fake` once (private, so
+their helpers keep their `dead_code` allowance); a file's `mod common;`
+and `#[path]` lines became `use crate::…;`. Cargo discovers only
+`tests/it/main.rs` (no `tests/*.rs` is left), nothing in `Cargo.toml`
+named a test target, and there is no nextest config. Each test still runs
+in its own process under nextest. What relied on the old layout: the two
+confinement tests that rerun their own binary with `--exact <name>` now
+pass the module-qualified name; `env!("CARGO_BIN_EXE_rkat-tui-mob")` and
+`CARGO_MANIFEST_DIR` work the same in the merged target. `cargo nextest
+list` lists the same 1323 tests (the same names, module-qualified) before
+and after. One file is run with `--test it -E 'test(/^<module>::/)'`.

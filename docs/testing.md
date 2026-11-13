@@ -54,7 +54,8 @@ Scope the run to what changed, then run the full gate once at the end:
 
 ```bash
 cargo nextest run --all-features --lib                 # unit tests only
-cargo nextest run --all-features --test client_turns     # one integration binary
+cargo nextest run --all-features --test it               # every integration test
+cargo nextest run --all-features --test it -E 'test(/^client_turns::/)'  # one file of tests/it/
 cargo nextest run --all-features -E 'test(resume)'     # tests whose name contains "resume"
 cargo nextest run --all-features --no-fail-fast        # see every failure at once
 ```
@@ -78,26 +79,26 @@ removed.
 | Kind | Where | Notes |
 |---|---|---|
 | Unit | `#[cfg(test)]` modules next to the code in `src/` | Pure logic: lexer, rules, keymap, input editing, completion, approval routing |
-| Integration | `tests/*.rs` | Drive the internal modules through the `test-support` feature (the crate's dev-dependency on itself turns it on) |
-| Headless harness | `tests/client_turns.rs`, `tests/compact.rs`, `tests/mobs.rs`, `tests/attach*.rs`, … | The one rig: the real `rkat-tui-mob` daemon started in the test process with only the LLM scripted, and attach clients driven through the UI's `Effect`/`Msg` channels. `tests/common/rig.rs` has `Setup`, `Attached`, `Running`, `Client`, `AllowAll`, the shared `ScriptedClassifier` and `stored_session`; `tests/common/mod.rs` has the scripted LLM (`ScriptedLlmClient`, `Step`), `Workspace` and the command lines (`args_for`, `args_with`). No keys, no network |
-| Daemon wire | `tests/daemon.rs` | The raw JSON-RPC wire below the attach client (handshake, the proxy's method allow-list, endpoint files) |
-| Rendering | `tests/render.rs` | Draws the UI into a ratatui `TestBackend` and asserts on rows; there are no snapshot files to update |
-| Confinement | `tests/confinement.rs` (and the confined rows of `tests/daemon.rs`) | Probes the host sandbox; prints `SKIPPED: <reason>` and passes where the backend is unavailable (nested namespaces, Ubuntu's user-namespace restriction), unless `RKAT_TUI_REQUIRE_SANDBOX=1`, which turns the skip into a failure |
-| Live | `tests/e2e_classifier.rs`, `--lib e2e_list_models` | `#[ignore]`; need provider keys. Not part of the gate |
+| Integration | `tests/it/*.rs`, one test binary `it` (`tests/it/main.rs` declares each file as a module, with `common`, `rig` and `fake` shared once) | Drive the internal modules through the `test-support` feature (the crate's dev-dependency on itself turns it on) |
+| Headless harness | `tests/it/client_turns.rs`, `tests/it/compact.rs`, `tests/it/mobs.rs`, `tests/it/attach*.rs`, … | The one rig: the real `rkat-tui-mob` daemon started in the test process with only the LLM scripted, and attach clients driven through the UI's `Effect`/`Msg` channels. `tests/it/common/rig.rs` has `Setup`, `Attached`, `Running`, `Client`, `AllowAll`, the shared `ScriptedClassifier` and `stored_session`; `tests/it/common/mod.rs` has the scripted LLM (`ScriptedLlmClient`, `Step`), `Workspace` and the command lines (`args_for`, `args_with`). No keys, no network |
+| Daemon wire | `tests/it/daemon.rs` | The raw JSON-RPC wire below the attach client (handshake, the proxy's method allow-list, endpoint files) |
+| Rendering | `tests/it/render.rs` | Draws the UI into a ratatui `TestBackend` and asserts on rows; there are no snapshot files to update |
+| Confinement | `tests/it/confinement.rs` (and the confined rows of `tests/it/daemon.rs`) | Probes the host sandbox; prints `SKIPPED: <reason>` and passes where the backend is unavailable (nested namespaces, Ubuntu's user-namespace restriction), unless `RKAT_TUI_REQUIRE_SANDBOX=1`, which turns the skip into a failure |
+| Live | `tests/it/e2e_classifier.rs`, `--lib e2e_list_models` | `#[ignore]`; need provider keys. Not part of the gate |
 
 The live lanes skip a provider whose key is not in the environment:
 
 ```bash
-ANTHROPIC_API_KEY=… OPENAI_API_KEY=… GEMINI_API_KEY=… cargo test --test e2e_classifier -- --ignored
+ANTHROPIC_API_KEY=… OPENAI_API_KEY=… GEMINI_API_KEY=… cargo test --all-features --test it e2e_classifier:: -- --ignored
 ANTHROPIC_API_KEY=… OPENAI_API_KEY=… GEMINI_API_KEY=… cargo test --lib e2e_list_models -- --ignored
 ```
 
 Every behaviour change ships with a test in the matching place. A UI change
-gets a `tests/render.rs` row assertion or an `App::update` unit test; a
+gets a `tests/it/render.rs` row assertion or an `App::update` unit test; a
 client or daemon change gets a test on the daemon rig (`ScriptedLlmClient`
 for the model); an approval change gets a routing test in `src/approval/`
 plus, if it touches the service gate, a case in
-`tests/approval_service.rs`. A key binding change updates `KEYS_HELP` in
+`tests/it/approval_service.rs`. A key binding change updates `KEYS_HELP` in
 `src/ui/commands.rs`, which is hand-kept: the unit test
 `keys_help_names_every_keymap_action_and_nothing_else` fails until the
 key reference and the keymap agree.
@@ -137,7 +138,7 @@ without the variable, the rows keep skipping where the host cannot
 confine; set it to prove that they ran:
 
 ```bash
-RKAT_TUI_REQUIRE_SANDBOX=1 cargo nextest run --all-features --test confinement --test daemon
+RKAT_TUI_REQUIRE_SANDBOX=1 cargo nextest run --all-features --test it -E 'test(/^confinement::/) | test(/^daemon::/)'
 ```
 
 ## Known flaky tests
@@ -148,7 +149,7 @@ output now says why; report it rather than retrying silently:
 - `parallel_escalations_share_one_timeout_including_the_queue`
   (`src/approval/engine.rs`): the paused tokio clock auto-advances while a task
   waits on `spawn_blocking`, so budget checks must happen after every await.
-- `workspace_state_survives_a_rename` (`tests/client_turns.rs`; since the
+- `workspace_state_survives_a_rename` (`tests/it/client_turns.rs`; since the
   realm moved out of the workspace, its successors
   `a_moved_workspace_starts_anew_and_is_offered_its_old_state` and the
   re-home tests share its `move_workspace`): copies and
@@ -164,7 +165,7 @@ output now says why; report it rather than retrying silently:
   database file of the realm open (`daemon::settle_stores`), so the tree is
   quiet when quit returns. A failure now means a database stayed open past
   that wait (the daemon logs "may still be open at exit").
-- `a_watched_change_reaches_the_agent_in_its_turn` (`tests/watches.rs`):
+- `a_watched_change_reaches_the_agent_in_its_turn` (`tests/it/watches.rs`):
   failed once on the two-core runner (run 43388269247, "the agent's own
   write was not reported"). The daemon learned of the agent's own
   `write_file` only from its diff, which a separate task forwarded after

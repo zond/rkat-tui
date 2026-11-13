@@ -36,7 +36,7 @@ pub const COUNCIL: &str = "council";
 
 /// The namespace of an agent-derived council id: the engine's
 /// (`meerkat_mob_mcp::agent_tools::AGENT_COUNCIL_NAMESPACE`, private there;
-/// `tests/councils.rs` fails if it drifts).
+/// `tests/it/councils.rs` fails if it drifts).
 const AGENT_COUNCIL_NAMESPACE: uuid::Uuid =
     uuid::Uuid::from_u128(0x312d_5af0_861a_4ba8_a35d_d6b4_734a_25b9);
 

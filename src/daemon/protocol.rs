@@ -7,7 +7,7 @@
 //! [`super::local`] answers the `rkat/*` methods, [`super::handshake`] the
 //! attach line, [`super::decisions`] `decision/decide`; the client
 //! (`crate::client::{remote, runner, approvals}`) calls them with these
-//! types. `tests/daemon.rs` tests the raw wire below them.
+//! types. `tests/it/daemon.rs` tests the raw wire below them.
 
 use meerkat_contracts::WireDecisionPhase;
 use meerkat_core::{Message, SessionId};

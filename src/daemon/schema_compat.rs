@@ -291,7 +291,7 @@ pub fn decorator() -> AgentLlmClientDecorator {
 /// An agent-facing LLM client whose requests carry their tools with
 /// [`normalize`]d schemas. Every method of the trait is forwarded to
 /// `inner` (a method left to its default would answer for `inner`, which
-/// the engine documents as a decorator's duty); `tests/layout.rs` fails
+/// the engine documents as a decorator's duty); `tests/it/layout.rs` fails
 /// when the trait declares a method this impl does not.
 pub struct SchemaCompat {
     inner: Arc<dyn AgentLlmClient>,

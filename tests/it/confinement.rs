@@ -19,9 +19,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-mod common;
-#[path = "common/rig.rs"]
-mod rig;
+use crate::common;
+use crate::rig;
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -206,7 +205,7 @@ async fn workspace_mode_passes_the_curated_environment() {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "workspace_mode_passes_the_curated_environment",
+                "confinement::workspace_mode_passes_the_curated_environment",
                 "--nocapture",
                 "--test-threads=1",
             ])
@@ -552,7 +551,7 @@ async fn a_bang_command_runs_as_the_user_unlike_the_agents_shell() {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "a_bang_command_runs_as_the_user_unlike_the_agents_shell",
+                "confinement::a_bang_command_runs_as_the_user_unlike_the_agents_shell",
                 "--nocapture",
                 "--test-threads=1",
             ])

@@ -64,7 +64,7 @@ jobs:
       # The tests must not write into the user's state directory (where
       # the daemon's endpoint files live): point it at an empty one and
       # fail the job if anything is left in it.
-      # The sandbox rows (tests/confinement.rs, tests/daemon.rs) need
+      # The sandbox rows (tests/it/confinement.rs, tests/it/daemon.rs) need
       # unprivileged user namespaces, which the runner's AppArmor
       # restricts: lift that for this job, and make a skip a failure, so a
       # runner that cannot confine fails instead of passing by skipping.

@@ -11,9 +11,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-mod common;
-#[path = "common/rig.rs"]
-mod rig;
+use crate::common;
+use crate::rig;
 
 use common::{ScriptedLlmClient, Step, Workspace};
 use meerkat_core::Message;

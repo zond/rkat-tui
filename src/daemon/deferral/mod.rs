@@ -3,7 +3,7 @@
 //! Every tool definition an agent has rides on every model request: on
 //! Meerkat 0.9.13 a main agent's request carries about 122 KB of them, the
 //! eight schedule tools 38.5 KB and the agent mob tools 33 KB
-//! (`tests/tool_costs.rs`). The engine's own deferred catalog never
+//! (`tests/it/tool_costs.rs`). The engine's own deferred catalog never
 //! engages for a mob member (lukacf/meerkat#2180), so rkat-tui defers
 //! those two families itself: every tool stays enabled, but a deferrable
 //! one is declared to the model only once its conversation revealed it
@@ -187,7 +187,7 @@ impl Deferrable {
 /// undeclared tool as not found before it reaches a dispatcher).
 /// Everything else is `inner`'s: every method of the trait must be
 /// forwarded, or a method the engine adds with a default would be answered
-/// by that default instead of by `inner`; `tests/layout.rs` fails when the
+/// by that default instead of by `inner`; `tests/it/layout.rs` fails when the
 /// trait declares a method this impl does not.
 pub struct Hiding {
     inner: Arc<dyn AgentToolDispatcher>,
