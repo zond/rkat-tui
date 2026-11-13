@@ -998,6 +998,11 @@ async fn an_agent_lost_in_a_failed_switch_is_no_ghost() {
     .unwrap();
     let lost = daemon.agent.clone();
     assert_ne!(b.agent(), lost);
+    // A file watch of the agent about to be lost (review 5, A1: a lost
+    // agent kept its watches, unlike a retired one).
+    let watches = Arc::clone(daemon.local().agents().watches());
+    rkat_tui::tools::WatchHost::watch(&*watches, &lost, &["*.txt".to_string()], false).unwrap();
+    assert_eq!(watches.describe(&lost).len(), 1);
     // The new conversation fails to spawn, and so does seating the old one.
     faults.store(2, std::sync::atomic::Ordering::SeqCst);
     let refused = a.call("rkat/new", json!({})).await.unwrap_err().to_string();
@@ -1017,6 +1022,11 @@ async fn an_agent_lost_in_a_failed_switch_is_no_ghost() {
         "no ghost: {:?}",
         status.agents
     );
+    assert!(
+        watches.describe(&lost).is_empty(),
+        "a lost agent's watches go with it"
+    );
+    drop(watches);
     // The other agent was told it left.
     b.call(
         "mob/turn_start",

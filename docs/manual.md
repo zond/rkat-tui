@@ -1796,7 +1796,7 @@ daemon (`/daemon stop`) and attach again with them.
 **When the attach fails.** The segment says why, when the TUI tries
 again, and where the daemon's output is, for example `daemon exited (exit
 status: 3): rkat-tui-mob: create endpoint directory …: Read-only file
-system · retry 2s · log ~/.rkat/logs/rkat-tui-mob.log`. A daemon that
+system · retry 2s · log ~/.rkat/logs/rkat-tui-mob.stderr.log`. A daemon that
 exits before serving is quoted from what that start wrote to the log:
 its own error lines, else its last lines (at most three, each cut at 300
 characters; the error at start-up shows all of them, the segment the

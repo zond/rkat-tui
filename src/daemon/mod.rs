@@ -964,11 +964,6 @@ pub mod testing {
 /// How long a stopped daemon waits for the realm's databases to close.
 const STORE_SETTLE: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// Wait, at most `bound`, until this process holds no SQLite database
-/// file under `realm_root` open (the databases, their write-ahead logs and
-/// shared memory), as `/proc/self/fd` shows. Past the bound the outcome is
-/// logged as unknown; where the process's descriptors cannot be listed
-/// (not Linux) nothing is waited for and nothing is claimed.
 /// The endpoint files the daemon may write: the one named, the one in a
 /// state home, else the workspace's candidates (the state directory's,
 /// then the runtime directory's fallback).
@@ -1080,6 +1075,11 @@ fn deliver_watches(
     })
 }
 
+/// Wait, at most `bound`, until this process holds no SQLite database
+/// file under `realm_root` open (the databases, their write-ahead logs and
+/// shared memory), as `/proc/self/fd` shows. Past the bound the outcome is
+/// logged as unknown; where the process's descriptors cannot be listed
+/// (not Linux) nothing is waited for and nothing is claimed.
 async fn settle_stores(realm_root: &Path, bound: std::time::Duration) {
     let deadline = tokio::time::Instant::now() + bound;
     loop {
@@ -1213,28 +1213,60 @@ async fn termination_signal() {
     }
 }
 
-/// Log to stderr and, like the TUI, to `<realm>/logs/rkat-tui-mob.log`
-/// (the file is skipped, with a warning, when it cannot be opened).
+/// Where the daemon's log lines go besides stderr, by whether stderr is
+/// a terminal: there they are coloured and kept, like the TUI's, in
+/// `<realm>/logs/rkat-tui-mob.log`; else stderr already is a file (the
+/// launching client's `rkat-tui-mob.stderr.log`), written plain and once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LogPlan {
+    /// ANSI colour on the stderr lines.
+    ansi: bool,
+    /// The lines also go to `rkat-tui-mob.log`.
+    file: bool,
+}
+
+impl LogPlan {
+    fn for_stderr(is_terminal: bool) -> Self {
+        Self {
+            ansi: is_terminal,
+            file: is_terminal,
+        }
+    }
+}
+
+/// Log to stderr and, when it is a terminal, also to
+/// `<realm>/logs/rkat-tui-mob.log` ([`LogPlan`]; the file is skipped, with
+/// a warning, when it cannot be opened).
 fn init_logging(realm_root: &Path) {
+    use std::io::IsTerminal as _;
     use tracing_subscriber::Layer as _;
     use tracing_subscriber::layer::SubscriberExt as _;
     use tracing_subscriber::util::SubscriberInitExt as _;
 
+    let plan = LogPlan::for_stderr(std::io::stderr().is_terminal());
     let filter = || {
         tracing_subscriber::EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
     };
     let log_dir = realm_root.join("logs");
-    let file = std::fs::create_dir_all(&log_dir)
-        .and_then(|()| {
-            std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(log_dir.join("rkat-tui-mob.log"))
+    let file = plan
+        .file
+        .then(|| {
+            std::fs::create_dir_all(&log_dir)
+                .and_then(|()| {
+                    std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(log_dir.join("rkat-tui-mob.log"))
+                })
+                .map_err(|err| {
+                    eprintln!("rkat-tui-mob: no log file in {}: {err}", log_dir.display());
+                })
+                .ok()
         })
-        .map_err(|err| eprintln!("rkat-tui-mob: no log file in {}: {err}", log_dir.display()))
-        .ok();
+        .flatten();
     let stderr = tracing_subscriber::fmt::layer()
+        .with_ansi(plan.ansi)
         .with_writer(std::io::stderr)
         .with_filter(filter());
     let file = file.map(|file| {
@@ -1276,6 +1308,26 @@ mod tests {
         assert!(started.elapsed() >= std::time::Duration::from_millis(100));
         assert_eq!(open_databases(&root), Some(Vec::new()));
         closer.await.unwrap();
+    }
+
+    /// The owner's log was full of escape codes: a daemon whose stderr is
+    /// the launching client's log file writes it plain, and only there.
+    #[test]
+    fn a_daemon_logs_plain_and_once_when_its_stderr_is_a_file() {
+        assert_eq!(
+            LogPlan::for_stderr(false),
+            LogPlan {
+                ansi: false,
+                file: false
+            }
+        );
+        assert_eq!(
+            LogPlan::for_stderr(true),
+            LogPlan {
+                ansi: true,
+                file: true
+            }
+        );
     }
 
     #[test]

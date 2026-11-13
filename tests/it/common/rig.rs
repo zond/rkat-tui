@@ -166,6 +166,12 @@ impl Running {
             .expect("the reveal is written");
     }
 
+    /// The daemon's own methods and what they reach (while it serves).
+    #[allow(dead_code)]
+    pub fn local(&self) -> Arc<rkat_tui::daemon::local::Local> {
+        self.local.upgrade().expect("the daemon serves")
+    }
+
     /// How many `method` requests the clients sent the engine through the
     /// daemon's proxy so far.
     pub fn forwarded(&self, method: &str) -> usize {

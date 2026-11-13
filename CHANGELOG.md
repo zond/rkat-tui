@@ -31,6 +31,14 @@
   agents that are working or attached, because a message to an idle
   agent with no client starts a model request there for nothing.
 
+### Fixed
+
+- A daemon the TUI started writes its log once, to
+  `<realm>/logs/rkat-tui-mob.stderr.log`, and without colour escape
+  codes. It used to write every line twice (also to `rkat-tui-mob.log`)
+  and coloured. A daemon started by hand in a terminal still colours its
+  output and keeps `rkat-tui-mob.log`.
+
 ## [0.0.3] - 2026-11-13
 
 ### Fixed

@@ -1222,10 +1222,8 @@ impl Agents {
         if let Some(spare) = self.spare() {
             match self.conversations.retire(&spare).await {
                 Ok(session) => {
-                    self.table.lock().remove(&spare);
-                    self.wires.forget(&spare);
+                    self.drop_agent(&spare, session.as_ref());
                     if let Some(session) = session {
-                        self.engine.forget_session(&session);
                         self.conversations.forget(&session);
                     }
                 }
@@ -1291,8 +1289,8 @@ impl Agents {
             return false;
         };
         tracing::error!(agent = %name, "the agent was lost in a failed switch");
-        self.table.lock().remove(name);
-        self.wires.forget(name);
+        let session = self.conversations.current(name);
+        self.drop_agent(name, session.as_ref());
         self.note_others(name, &Leave::Closed).await;
         true
     }
@@ -1355,17 +1353,25 @@ impl Agents {
             tracing::warn!(agent = %name, error = %err, "the running turn could not be cancelled before the retire");
         }
         let session = self.conversations.retire(name).await?;
+        self.drop_agent(name, session.as_ref());
+        self.note_others(name, why).await;
+        tracing::info!(agent = %name, ?session, "the agent retired");
+        Ok(session)
+    }
+
+    /// `name` is no live agent any more (retired, lost in a switch, or an
+    /// unused spare): its row, activity record, file watches, last watch
+    /// event and wires go, and the gate forgets `session`, the one it ran
+    /// as. The one place an agent leaves the table.
+    fn drop_agent(&self, name: &str, session: Option<&SessionId>) {
         self.table.lock().remove(name);
         self.activity.forget(name);
         self.watches.forget(name);
         self.watch_sent.lock().remove(name);
         self.wires.forget(name);
-        if let Some(session) = &session {
+        if let Some(session) = session {
             self.engine.forget_session(session);
         }
-        self.note_others(name, why).await;
-        tracing::info!(agent = %name, ?session, "the agent retired");
-        Ok(session)
     }
 
     /// Every live agent as `rkat/status` lists it, names in order.

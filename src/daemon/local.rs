@@ -953,12 +953,6 @@ impl Local {
         }
     }
 
-    /// `rkat/set_model`: switch the agent's session to another model
-    /// in place: the engine's LLM reconfigure on the live session,
-    /// with the endpoint's auth binding and the `[thinking]` setting the
-    /// new model is configured with. Refused while a turn runs;
-    /// the session keeps the model, and the next prompt is an
-    /// ordinary `mob/member_send`, tied to no connection.
     /// `rkat/recall` for `caller`: only its own agent's current
     /// conversation is searched, so another agent's input is never
     /// touched. A queued input is abandoned (`cancel_input_if_present`);
@@ -1065,6 +1059,12 @@ impl Local {
         self.conversations.flush();
     }
 
+    /// `rkat/set_model`: switch the agent's session to another model
+    /// in place: the engine's LLM reconfigure on the live session,
+    /// with the endpoint's auth binding and the `[thinking]` setting the
+    /// new model is configured with. Refused while a turn runs;
+    /// the session keeps the model, and the next prompt is an
+    /// ordinary `mob/member_send`, tied to no connection.
     async fn set_model(&self, agent: &str, params: SetModelParams) -> Result<ModelSet, Refusal> {
         use meerkat_runtime::SessionServiceRuntimeExt as _;
 
@@ -1506,7 +1506,6 @@ pub fn thinking_override(
     }
 }
 
-/// A method's answer as JSON.
 /// What the runtime's record of an input says became of it: still held,
 /// written into a run, or ended without one (and why, in words).
 fn input_fate(seed: &meerkat_runtime::input_state::InputStateSeed) -> protocol::InputFate {
@@ -1555,6 +1554,7 @@ fn abandon_words(reason: &meerkat_runtime::input_state::InputAbandonReason) -> O
     })
 }
 
+/// A method's answer as JSON.
 fn answer(result: impl serde::Serialize) -> Result<Value, Refusal> {
     serde_json::to_value(result)
         .map_err(|err| Refusal::new(protocol::INTERNAL_ERROR, err.to_string()))
