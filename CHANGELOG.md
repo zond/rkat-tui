@@ -4,6 +4,11 @@
 
 ### Fixed
 
+- A daemon the TUI started that exits before serving is reported with
+  the error it wrote (`rkat-tui-mob: create endpoint directory …:
+  Read-only file system`), taken from what that start wrote to its log
+  (at most three lines), not only its exit status and the log's path.
+
 - The errors of rkat-tui's own tools say what to do next: a missing file
   names the `glob` that finds it, a failed `edit_file` says how
   `old_string` must match (read the file again and copy its lines) or how

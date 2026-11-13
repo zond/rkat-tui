@@ -242,7 +242,7 @@ pub fn daemon_log(realm_root: &Path) -> PathBuf {
 /// thread when it exits. `start_token` goes to the daemon in
 /// [`START_TOKEN_ENV`] (the client presenting it at attach is the owner;
 /// `None`: the daemon has no owner). Returns its pid and a receiver that
-/// yields its exit status if it exits.
+/// yields how it exited if it exits ([`DaemonExit`]).
 ///
 /// # Errors
 ///
@@ -253,7 +253,7 @@ pub fn spawn_daemon(
     argv: &[OsString],
     log: &Path,
     start_token: Option<&str>,
-) -> Result<(u32, tokio::sync::oneshot::Receiver<String>), ClientError> {
+) -> Result<(u32, tokio::sync::oneshot::Receiver<DaemonExit>), ClientError> {
     let spawn_error = |source| ClientError::Spawn {
         program: program.to_path_buf(),
         source,
@@ -267,6 +267,8 @@ pub fn spawn_daemon(
         .open(log)
         .map_err(spawn_error)?;
     let err = out.try_clone().map_err(spawn_error)?;
+    // What this start writes to the log begins here.
+    let start = out.metadata().map_or(0, |meta| meta.len());
     // Through `setsid` a missing program would only show as `setsid`
     // exiting; refuse it here, as a direct spawn would.
     if !program_exists(program) {
@@ -305,13 +307,75 @@ pub fn spawn_daemon(
     let mut child = command.spawn().map_err(spawn_error)?;
     let pid = child.id();
     let (exited_tx, exited_rx) = tokio::sync::oneshot::channel();
+    let log = log.to_path_buf();
     std::thread::spawn(move || {
         let status = child
             .wait()
             .map_or_else(|err| err.to_string(), |status| status.to_string());
-        let _ = exited_tx.send(status);
+        let said = last_words(&log, start);
+        let _ = exited_tx.send(DaemonExit { status, said });
     });
     Ok((pid, exited_rx))
+}
+
+/// How a started daemon exited.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DaemonExit {
+    /// Its exit status.
+    pub status: String,
+    /// The error it wrote last ([`last_words`]), if any.
+    pub said: Option<String>,
+}
+
+/// Most lines of a daemon's last words.
+const LAST_WORDS_LINES: usize = 3;
+/// Most characters of one line of them.
+const LAST_WORDS_LINE_CHARS: usize = 300;
+/// How much of the log's end is read for them.
+const LAST_WORDS_BYTES: u64 = 16 * 1024;
+
+/// What the daemon wrote to `log` from byte `start` on (this start's
+/// output) that says why it stopped: its own error lines
+/// (`rkat-tui-mob: …`), else its last non-empty lines; at most
+/// [`LAST_WORDS_LINES`] lines of at most [`LAST_WORDS_LINE_CHARS`]
+/// characters, from the last [`LAST_WORDS_BYTES`] of it. `None` when it
+/// wrote nothing.
+#[must_use]
+pub fn last_words(log: &Path, start: u64) -> Option<String> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+    let mut file = std::fs::File::open(log).ok()?;
+    let len = file.metadata().ok()?.len();
+    let from = start.max(len.saturating_sub(LAST_WORDS_BYTES));
+    file.seek(SeekFrom::Start(from)).ok()?;
+    let mut bytes = Vec::new();
+    file.take(LAST_WORDS_BYTES).read_to_end(&mut bytes).ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let prefix = format!("{DAEMON_BINARY}: ");
+    let own: Vec<&str> = lines
+        .iter()
+        .copied()
+        .filter(|line| line.starts_with(&prefix))
+        .collect();
+    let chosen = if own.is_empty() { lines } else { own };
+    let chosen = &chosen[chosen.len().saturating_sub(LAST_WORDS_LINES)..];
+    if chosen.is_empty() {
+        return None;
+    }
+    let cut: Vec<String> = chosen
+        .iter()
+        .map(
+            |line| match line.char_indices().nth(LAST_WORDS_LINE_CHARS) {
+                Some((at, _)) => format!("{}…", &line[..at]),
+                None => (*line).to_string(),
+            },
+        )
+        .collect();
+    Some(cut.join("\n"))
 }
 
 /// Whether `program` is a file, or a bare name found on `PATH`.
@@ -344,7 +408,7 @@ pub fn setsid_program() -> Option<PathBuf> {
 pub async fn wait_for_endpoint(
     files: &[PathBuf],
     timeout: Duration,
-    exited: &mut tokio::sync::oneshot::Receiver<String>,
+    exited: &mut tokio::sync::oneshot::Receiver<DaemonExit>,
     log: &Path,
 ) -> Result<Endpoint, ClientError> {
     let deadline = tokio::time::Instant::now() + timeout;
@@ -352,9 +416,10 @@ pub async fn wait_for_endpoint(
         if let Liveness::Live(endpoint) = probe_any(files).await {
             return Ok(endpoint);
         }
-        if let Ok(status) = exited.try_recv() {
+        if let Ok(exit) = exited.try_recv() {
             return Err(ClientError::DaemonExited {
-                status,
+                status: exit.status,
+                said: exit.said,
                 log: log.to_path_buf(),
             });
         }
@@ -644,5 +709,56 @@ mod tests {
             spawn_daemon(Path::new("/nonexistent/rkat-tui-mob"), &[], &log, None),
             Err(ClientError::Spawn { .. })
         ));
+    }
+
+    /// A daemon that exits before serving is reported with what it said
+    /// last, bounded, from this start's output only: an older run's lines
+    /// in the same log are not shown.
+    #[tokio::test]
+    async fn a_daemon_that_exits_is_reported_with_its_last_words() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = daemon_log(dir.path());
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        std::fs::write(&log, "rkat-tui-mob: an older run's error\n").unwrap();
+        let script = format!(
+            "echo 'INFO starting'; echo 'rkat-tui-mob: create endpoint directory /x: Read-only file system' >&2; echo '{}' >&2; exit 3",
+            "y".repeat(1000)
+        );
+        let (_, mut exited) = spawn_daemon(
+            Path::new("/bin/sh"),
+            &["-c".into(), script.into()],
+            &log,
+            None,
+        )
+        .unwrap();
+        let waited = wait_for_endpoint(
+            &[dir.path().join("mob.endpoint")],
+            Duration::from_secs(10),
+            &mut exited,
+            &log,
+        )
+        .await;
+        let Err(err @ ClientError::DaemonExited { .. }) = waited else {
+            panic!("{waited:?}");
+        };
+        let text = err.to_string();
+        assert!(
+            text.contains("rkat-tui-mob: create endpoint directory /x: Read-only file system"),
+            "{text}"
+        );
+        assert!(
+            !text.contains("older run") && !text.contains("INFO starting"),
+            "{text}"
+        );
+        // Nothing of its own: the last lines it wrote, each cut.
+        let quiet = dir.path().join("quiet.log");
+        std::fs::write(&quiet, format!("a\n\nb\nc\nd {}\n", "z".repeat(1000))).unwrap();
+        let said = last_words(&quiet, 2).unwrap();
+        assert_eq!(said.lines().count(), 3, "{said}");
+        assert!(
+            said.starts_with("b\nc\nd ") && said.ends_with('…'),
+            "{said}"
+        );
+        assert_eq!(last_words(&quiet, 10_000), None);
     }
 }

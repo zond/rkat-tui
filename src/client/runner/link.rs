@@ -819,8 +819,12 @@ impl ConnectPlan {
 /// daemon's log, when there is one to read.
 pub(super) fn failure(err: &ClientError) -> (String, Option<PathBuf>) {
     match err {
-        ClientError::DaemonExited { status, log } => {
-            (format!("daemon exited ({status})"), Some(log.clone()))
+        ClientError::DaemonExited { status, said, log } => {
+            let said = said
+                .as_deref()
+                .and_then(|said| said.lines().last())
+                .map_or_else(String::new, |line| format!(": {line}"));
+            (format!("daemon exited ({status}){said}"), Some(log.clone()))
         }
         ClientError::NeverCameUp { waited, log } => (
             format!("daemon did not come up within {}s", waited.as_secs()),

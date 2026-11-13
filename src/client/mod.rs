@@ -142,10 +142,17 @@ pub enum ClientError {
         source: std::io::Error,
     },
     /// The started daemon exited before serving.
-    #[error("rkat-tui-mob exited ({status}) before serving; see {}", log.display())]
+    #[error(
+        "rkat-tui-mob exited ({status}) before serving{}; see {}",
+        said.as_deref().map_or_else(String::new, |said| format!(":\n{said}\n")),
+        log.display()
+    )]
     DaemonExited {
         /// Its exit status.
         status: String,
+        /// The error it wrote last
+        /// ([`launch::last_words`]), if any.
+        said: Option<String>,
         /// Its output.
         log: PathBuf,
     },

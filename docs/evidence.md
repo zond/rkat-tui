@@ -8338,3 +8338,25 @@ pass the module-qualified name; `env!("CARGO_BIN_EXE_rkat-tui-mob")` and
 `CARGO_MANIFEST_DIR` work the same in the merged target. `cargo nextest
 list` lists the same 1323 tests (the same names, module-qualified) before
 and after. One file is run with `--test it -E 'test(/^<module>::/)'`.
+
+## A daemon that exits before serving says why (2026-11-13)
+
+The client reported only `rkat-tui-mob exited (<status>) before serving;
+see <log>`, so a cause such as a read-only state directory needed the log
+opened. `launch::spawn_daemon` notes the log's length before the start;
+the thread that reaps the daemon then reads what this start wrote
+(`launch::last_words`: the last 16 KiB of it, the daemon's own
+`rkat-tui-mob: …` error lines, else its last non-empty lines, at most
+three of at most 300 characters), and `ClientError::DaemonExited` carries
+it; an older run's lines in the appended log are never quoted. Pinned by
+`a_daemon_that_exits_is_reported_with_its_last_words`.
+
+The transcript's grouping of identical `send_message` calls to several
+recipients (asked in the same batch) was left: a tool block holds one
+call's lifecycle (its state, its result and receipt, a denial found by
+the call's id) and every event addresses one block by its call id, so
+folding several calls into one block needs per-recipient state inside
+the block and its aggregate rendering in the live transcript, in a
+stored conversation's restore (`transcript::restore`) and in the helpers'
+follower view: a change of the block model across three views, not a
+contained one.
