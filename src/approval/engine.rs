@@ -1988,13 +1988,6 @@ mod tests {
             .await
     }
 
-    /// A6: in a run no user started, with no client attached, a call that
-    /// needs review is denied without a classifier request and without a
-    /// question to the human, and its notice is queued; a read and an
-    /// in-project write still run. Attaching makes the next call reviewed;
-    /// a run that started after a client's input stays reviewed with
-    /// nobody attached, and so does a call whose run is not seen yet while
-    /// that input waits.
     /// Fail closed: an engine nobody told who is with its agents treats
     /// no agent as attended. A run no client's input started is
     /// unattended, so what needs review is denied without a classifier
@@ -2029,6 +2022,13 @@ mod tests {
         assert_eq!(rig.classifier.calls(), 1);
     }
 
+    /// A6: in a run no user started, with no client attached, a call that
+    /// needs review is denied without a classifier request and without a
+    /// question to the human, and its notice is queued; a read and an
+    /// in-project write still run. Attaching makes the next call reviewed;
+    /// a run that started after a client's input stays reviewed with
+    /// nobody attached, and so does a call whose run is not seen yet while
+    /// that input waits.
     #[tokio::test]
     async fn an_unattended_turn_is_denied_what_needs_review() {
         let mut rig = rig(vec![], DEFAULT_ESCALATION_TIMEOUT);

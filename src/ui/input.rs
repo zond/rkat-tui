@@ -273,7 +273,6 @@ impl InputEditor {
         layout.to_visual(&self.lines, self.row, self.col)
     }
 
-    /// Seed the history (oldest first).
     /// Replace the recall history (oldest first), leaving the editor's
     /// text alone.
     pub fn set_history(&mut self, history: Vec<String>) {
@@ -281,6 +280,7 @@ impl InputEditor {
         self.history_pos = None;
     }
 
+    /// Seed the history (oldest first).
     pub fn with_history(mut self, history: Vec<String>) -> Self {
         self.history = history;
         self

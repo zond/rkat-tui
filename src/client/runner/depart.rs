@@ -255,6 +255,9 @@ async fn stopped_unconfirmed(files: &[PathBuf], endpoint: Option<&Endpoint>, dir
     }
 }
 
+/// How long [`daemon_ended`] waits for one connect to its address.
+const PROBE_WAIT: Duration = Duration::from_secs(1);
+
 /// Whether the daemon `endpoint` names ended within `wait`. Evidence that
 /// it did: no endpoint file at `files` names it any more (each is gone,
 /// or names another daemon), its process is gone, or a connect to its
@@ -267,9 +270,6 @@ async fn stopped_unconfirmed(files: &[PathBuf], endpoint: Option<&Endpoint>, dir
 /// another machine's) nor the local port (the forward may have exited
 /// while the daemon runs on) says anything about the daemon, so only the
 /// endpoint files count there. No files is no evidence.
-/// How long [`daemon_ended`] waits for one connect to its address.
-const PROBE_WAIT: Duration = Duration::from_secs(1);
-
 pub(crate) async fn daemon_ended(
     files: &[PathBuf],
     endpoint: &Endpoint,

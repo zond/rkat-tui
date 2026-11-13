@@ -409,6 +409,9 @@ async fn wired_agents_of_two_workspaces_message_both_ways_across_restarts() {
     let label = b_label.clone();
     c.wait_for(move |msg| matches!(msg, Msg::Peer { from, .. } if *from == label))
         .await;
+    // The run it woke is this client's turn too: `/new` is refused until
+    // the client has seen it end (the daemon's idle status can come first).
+    c.wait_for(|msg| matches!(msg, Msg::TurnFinished(_))).await;
 
     // A new conversation: a new key; the client tells the other side.
     let before = card(&a).await;
@@ -537,8 +540,8 @@ fn stranger(workspace: &Path, agent: &str) -> (WireCard, meerkat_comms::Keypair)
 /// note), a send to a wired peer is tier 1 (no review; one to an unknown
 /// peer id is reviewed), the roster names the wire, `rkat/status` lists
 /// it, unwiring removes it (twice: nothing to remove), and the refusals:
-/// a card of this workspace, a bound caller naming another agent, a probe
-/// naming none.
+/// a card of this workspace, a card whose peer id is not its key's, a
+/// bound caller naming another agent, a probe naming none.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_daemon_wires_unwires_and_refuses() {
     let (ws, root) = workspace("alpha");
@@ -585,6 +588,13 @@ async fn the_daemon_wires_unwires_and_refuses() {
             && err.contains("works in this workspace: the agents of one workspace are wired to each other already"),
         "{err}"
     );
+    // A card whose peer id is not its key's (review 5, W1: the gate
+    // compares the stored id, so it is checked once, here).
+    let (mut forged, _) = stranger(&other, "main-ffff");
+    forged.peer_id = unknown.to_string();
+    let err = wire(forged, None).await.unwrap_err().to_string();
+    assert!(err.contains("is not its key's"), "{err}");
+    assert_eq!(wires_of(&a).await, vec!["gamma/main-gggg".to_string()]);
     let err = wire(gamma.clone(), Some("main-other".into()))
         .await
         .unwrap_err()
@@ -636,6 +646,31 @@ async fn the_daemon_wires_unwires_and_refuses() {
     assert!(unwire().await.unwrap().removed);
     assert!(!unwire().await.unwrap().removed);
     assert_eq!(wires_of(&a).await, Vec::<String>::new());
+
+    // A wire whose card cannot be saved is undone, so its error says what
+    // is (review 5, W2): the records file is a directory now.
+    let records = common::realm_of(&root).join(rkat_tui::daemon::wires::RECORDS_FILE);
+    let _ = std::fs::remove_file(&records);
+    std::fs::create_dir(&records).unwrap();
+    let (delta, _) = stranger(&ws.sibling("delta"), "main-dddd");
+    let err = wire(delta, None).await.unwrap_err().to_string();
+    assert!(err.contains("cannot save the wires"), "{err}");
+    let members = a
+        .state()
+        .handle_for(&meerkat_mob::MobId::from("tui"))
+        .await
+        .unwrap()
+        .list_members()
+        .await;
+    let label = meerkat_mob::AgentIdentity::from("delta/main-dddd");
+    assert!(
+        members
+            .iter()
+            .all(|member| !member.wired_to.contains(&label)),
+        "the unsaved wire was undone"
+    );
+    assert_eq!(wires_of(&a).await, Vec::<String>::new());
+    std::fs::remove_dir(&records).unwrap();
     drop(bound);
     drop(probe);
     a.stop().await;

@@ -312,18 +312,6 @@ impl Assembled {
     }
 }
 
-/// Resolve endpoints, model, confinement, trust, approval engine and MCP
-/// set, open the realm persistence, take the realm lease under
-/// `lease_surface` and build the factory: everything the daemon composes
-/// its engine host over.
-///
-/// # Errors
-///
-/// [`TuiError::Endpoint`] when no start-up model can be chosen,
-/// [`TuiError::Confinement`] when `--confinement` cannot be enforced,
-/// [`TuiError::PersistenceOpen`] / [`TuiError::RealmLease`] when the realm
-/// cannot be opened, and [`TuiError::Overlay`] / [`TuiError::Approval`]
-/// when the approval rules cannot be loaded.
 /// Make the start-up model known to the realm config before a session is
 /// built on it. Every fact of a self-hosted endpoint's models is its own:
 /// the start-up model, the classifier's and every model it lists get an
@@ -405,6 +393,18 @@ async fn open_realm(
     Ok((manifest, persistence, lease))
 }
 
+/// Resolve endpoints, model, confinement, trust, approval engine and MCP
+/// set, open the realm persistence, take the realm lease under
+/// `lease_surface` and build the factory: everything the daemon composes
+/// its engine host over.
+///
+/// # Errors
+///
+/// [`TuiError::Endpoint`] when no start-up model can be chosen,
+/// [`TuiError::Confinement`] when `--confinement` cannot be enforced,
+/// [`TuiError::PersistenceOpen`] / [`TuiError::RealmLease`] when the realm
+/// cannot be opened, and [`TuiError::Overlay`] / [`TuiError::Approval`]
+/// when the approval rules cannot be loaded.
 pub async fn assemble(
     layers: Layers,
     config: Config,
@@ -643,6 +643,15 @@ fn memory_probe(
     }
 }
 
+/// Optional factory capabilities.
+#[derive(Debug, Clone, Copy)]
+struct FactoryToggles {
+    /// Attach the user's provider token store.
+    token_store: bool,
+    /// Native semantic memory (`memory_search`, compaction indexing).
+    memory: bool,
+}
+
 /// The agent factory every session is built with.
 ///
 /// `project_root` and `context_root` are the workspace, so the factory's
@@ -658,15 +667,6 @@ fn memory_probe(
 /// which the runtime-backed composition settles on every attachment.
 /// `with_token_store` attaches the user's provider token store, so OAuth and
 /// stored keys resolve like they do for `rkat`.
-/// Optional factory capabilities.
-#[derive(Debug, Clone, Copy)]
-struct FactoryToggles {
-    /// Attach the user's provider token store.
-    token_store: bool,
-    /// Native semantic memory (`memory_search`, compaction indexing).
-    memory: bool,
-}
-
 fn build_factory(
     scope: &RuntimeScope,
     store_path: PathBuf,

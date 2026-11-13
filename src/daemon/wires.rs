@@ -129,6 +129,12 @@ pub struct Records {
     pub agents: BTreeMap<String, Vec<WireCard>>,
 }
 
+impl WireError {
+    fn engine(err: impl std::fmt::Display) -> Self {
+        Self::Engine(err.to_string())
+    }
+}
+
 impl Records {
     /// Read `file` (absent: none).
     ///
@@ -200,9 +206,8 @@ pub struct Wires {
     file: PathBuf,
     realm: PathBuf,
     records: parking_lot::Mutex<Records>,
-    sockets: parking_lot::Mutex<HashMap<String, Socket>>,
-    /// Why an agent's bind failed, for its card.
-    failed: parking_lot::Mutex<HashMap<String, String>>,
+    /// Each live agent's socket, or why its bind failed (for its card).
+    sockets: parking_lot::Mutex<HashMap<String, Result<Socket, String>>>,
     /// The notes sent so far (their idempotency keys differ).
     notes: std::sync::atomic::AtomicU64,
 }
@@ -244,7 +249,6 @@ impl Wires {
             realm: realm.to_path_buf(),
             records: parking_lot::Mutex::new(records),
             sockets: parking_lot::Mutex::new(HashMap::new()),
-            failed: parking_lot::Mutex::new(HashMap::new()),
             notes: std::sync::atomic::AtomicU64::new(0),
         });
         (wires, problem)
@@ -263,22 +267,20 @@ impl Wires {
     ///
     /// [`WireError::PathTooLong`], [`WireError::Socket`].
     pub fn bind(&self, agent: &str) -> Result<(), WireError> {
-        let bound = self.try_bind(agent);
-        match &bound {
+        match self.try_bind(agent) {
             Ok(socket) => {
-                self.failed.lock().remove(agent);
                 tracing::debug!(%agent, path = %socket.path.display(), "the agent's wire socket listens");
+                self.sockets.lock().insert(agent.to_string(), Ok(socket));
+                Ok(())
             }
             Err(err) => {
                 tracing::warn!(%agent, error = %err, "the agent has no wire socket");
-                self.failed
+                self.sockets
                     .lock()
-                    .insert(agent.to_string(), err.to_string());
+                    .insert(agent.to_string(), Err(err.to_string()));
+                Err(err)
             }
         }
-        let socket = bound?;
-        self.sockets.lock().insert(agent.to_string(), socket);
-        Ok(())
     }
 
     fn try_bind(&self, agent: &str) -> Result<Socket, WireError> {
@@ -288,7 +290,9 @@ impl Wires {
             path: path.clone(),
             source,
         };
-        make_private_dir(&self.dir).map_err(io)?;
+        crate::paths::create_private_dir(&self.dir)
+            .and_then(|()| set_mode(&self.dir, 0o700))
+            .map_err(io)?;
         // The previous one of this agent (its daemon ended without its
         // clean stop) or a stale file: the realm's lease makes this the
         // only daemon of the realm.
@@ -311,6 +315,8 @@ impl Wires {
                         return;
                     }
                 };
+                // One task per connection, unbounded: only this user can
+                // connect (0600 in a 0700 directory).
                 tokio::spawn(serve(Arc::clone(&state), name.clone(), stream));
             }
         });
@@ -320,7 +326,6 @@ impl Wires {
     /// Stop serving `agent`'s socket and remove it.
     pub fn unbind(&self, agent: &str) {
         self.sockets.lock().remove(agent);
-        self.failed.lock().remove(agent);
     }
 
     /// Stop every socket and remove them (the daemon stops).
@@ -337,29 +342,23 @@ impl Wires {
     /// endpoint for it.
     pub async fn card(&self, agent: &str) -> Result<WireCard, WireError> {
         let path = match self.sockets.lock().get(agent) {
-            Some(socket) => socket.path.clone(),
-            None => {
-                let why = self
-                    .failed
-                    .lock()
-                    .get(agent)
-                    .cloned()
-                    .unwrap_or_else(|| "it is no live agent of this workspace".to_string());
-                return Err(WireError::NoSocket {
-                    agent: agent.to_string(),
-                    why,
-                });
-            }
-        };
+            Some(Ok(socket)) => Ok(socket.path.clone()),
+            Some(Err(why)) => Err(why.clone()),
+            None => Err("it is no live agent of this workspace".to_string()),
+        }
+        .map_err(|why| WireError::NoSocket {
+            agent: agent.to_string(),
+            why,
+        })?;
         let handle = self
             .state
             .handle_for(&MobId::from(MOB_ID))
             .await
-            .map_err(|err| WireError::Engine(err.to_string()))?;
+            .map_err(WireError::engine)?;
         let endpoint = handle
             .member_peer_endpoint(&AgentIdentity::from(agent))
             .await
-            .map_err(|err| WireError::Engine(err.to_string()))?
+            .map_err(WireError::engine)?
             .ok_or_else(|| WireError::NoEndpoint(agent.to_string()))?;
         let descriptor = endpoint.descriptor;
         Ok(WireCard {
@@ -395,23 +394,27 @@ impl Wires {
         if has_edge {
             self.engine_unwire(agent, &label).await?;
         }
-        self.state
-            .mob_wire(
-                &MobId::from(MOB_ID),
-                AgentIdentity::from(agent),
-                PeerTarget::External(descriptor),
-            )
-            .await
-            .map_err(|err| WireError::Engine(err.to_string()))?;
-        let fresh = existing.is_none();
-        {
-            let mut records = self.records.lock();
-            let cards = records.agents.entry(agent.to_string()).or_default();
-            cards.retain(|c| !(c.workspace == card.workspace && c.agent == card.agent));
-            cards.push(card.clone());
+        if let Err(err) = self.engine_wire(agent, descriptor).await {
+            // The old edge is gone: so goes its card, or a restore would
+            // make it again to the stale key.
+            if existing.is_some() {
+                self.set_card(agent, &card.workspace, &card.agent, None);
+                if let Err(save) = self.save() {
+                    tracing::warn!(%agent, peer = %label, error = %save, "the replaced wire's card stays recorded");
+                }
+            }
+            return Err(err);
         }
-        self.save()?;
-        if fresh {
+        self.set_card(agent, &card.workspace, &card.agent, Some(card.clone()));
+        if let Err(err) = self.save() {
+            // Unrecorded, the edge is undone: the error then says what is.
+            self.set_card(agent, &card.workspace, &card.agent, None);
+            if let Err(undo) = self.engine_unwire(agent, &label).await {
+                tracing::warn!(%agent, peer = %label, error = %undo, "an unrecorded wire stays until the next conversation switch");
+            }
+            return Err(err);
+        }
+        if existing.is_none() {
             self.note(agent, wired_note(&label, &card.workspace)).await;
         }
         tracing::info!(%agent, peer = %label, "wired to an agent of another workspace");
@@ -435,17 +438,7 @@ impl Wires {
         if had_edge {
             self.engine_unwire(agent, &label).await?;
         }
-        let removed = {
-            let mut records = self.records.lock();
-            let before = records.agents.get(agent).map_or(0, Vec::len);
-            if let Some(cards) = records.agents.get_mut(agent) {
-                cards.retain(|c| !(c.workspace == workspace && c.agent == peer));
-                if cards.is_empty() {
-                    records.agents.remove(agent);
-                }
-            }
-            before != records.agents.get(agent).map_or(0, Vec::len)
-        };
+        let removed = self.set_card(agent, workspace, peer, None);
         if removed {
             self.save()?;
         }
@@ -473,16 +466,8 @@ impl Wires {
                 continue;
             }
             let wired = match self.descriptor(&card) {
-                Ok(descriptor) => self
-                    .state
-                    .mob_wire(
-                        &MobId::from(MOB_ID),
-                        AgentIdentity::from(agent),
-                        PeerTarget::External(descriptor),
-                    )
-                    .await
-                    .map_err(|err| err.to_string()),
-                Err(err) => Err(err.to_string()),
+                Ok(descriptor) => self.engine_wire(agent, descriptor).await,
+                Err(err) => Err(err),
             };
             match wired {
                 Ok(()) => {
@@ -547,12 +532,7 @@ impl Wires {
     /// Whether `peer_id` is the peer id of an agent `agent` is wired to.
     #[must_use]
     pub fn is_peer(&self, agent: &str, peer_id: &str) -> bool {
-        self.records.lock().agents.get(agent).is_some_and(|cards| {
-            cards.iter().any(|card| {
-                meerkat_comms::PubKey::from_pubkey_string(&card.pubkey)
-                    .is_ok_and(|key| key.to_peer_id().to_string() == peer_id)
-            })
-        })
+        self.wired_card(agent, peer_id).is_some()
     }
 
     /// Why a message from `agent` to the wired peer `peer_id` cannot
@@ -562,17 +542,7 @@ impl Wires {
     /// connected to: a connection wakes the agent there.
     #[must_use]
     pub fn unreachable(&self, agent: &str, peer_id: &str) -> Option<String> {
-        let card = self
-            .records
-            .lock()
-            .agents
-            .get(agent)?
-            .iter()
-            .find(|card| {
-                meerkat_comms::PubKey::from_pubkey_string(&card.pubkey)
-                    .is_ok_and(|key| key.to_peer_id().to_string() == peer_id)
-            })?
-            .clone();
+        let card = self.wired_card(agent, peer_id)?;
         let path = Path::new(card.address.strip_prefix("uds://")?);
         if path.exists() {
             return None;
@@ -580,8 +550,22 @@ impl Wires {
         Some(unreachable_words(&card))
     }
 
+    /// The card of `agent`'s wire to the peer `peer_id`. A card's peer id
+    /// matched its key when it was accepted ([`Self::descriptor`]), so the
+    /// stored string is compared, never derived again.
+    fn wired_card(&self, agent: &str, peer_id: &str) -> Option<WireCard> {
+        self.records
+            .lock()
+            .agents
+            .get(agent)?
+            .iter()
+            .find(|card| card.peer_id == peer_id)
+            .cloned()
+    }
+
     /// The engine's descriptor of the agent `card` names, after checking
-    /// it is another workspace's and addressed at a Unix socket.
+    /// it is another workspace's, addressed at a Unix socket, and that its
+    /// peer id is its key's.
     fn descriptor(&self, card: &WireCard) -> Result<TrustedPeerDescriptor, WireError> {
         let label = card.label();
         if same_path(&card.workspace, &self.workspace) {
@@ -595,6 +579,13 @@ impl Wires {
         }
         let key = meerkat_comms::PubKey::from_pubkey_string(&card.pubkey)
             .map_err(|err| WireError::BadCard(format!("its key: {err}")))?;
+        let peer_id = key.to_peer_id();
+        if peer_id.to_string() != card.peer_id {
+            return Err(WireError::BadCard(format!(
+                "its peer id {} is not its key's ({peer_id})",
+                card.peer_id
+            )));
+        }
         let address = PeerAddress::parse(&card.address)
             .map_err(|err| WireError::BadCard(format!("its address: {err}")))?;
         if address.transport() != PeerTransport::Uds || !address.endpoint().starts_with('/') {
@@ -605,7 +596,7 @@ impl Wires {
         }
         let name = PeerName::new(label).map_err(WireError::BadCard)?;
         Ok(TrustedPeerDescriptor {
-            peer_id: key.to_peer_id(),
+            peer_id,
             name,
             address,
             pubkey: key.0,
@@ -618,8 +609,40 @@ impl Wires {
             .agents
             .get(agent)?
             .iter()
-            .find(|card| card.workspace == workspace && card.agent == peer)
+            .find(|card| card.names(workspace, peer))
             .cloned()
+    }
+
+    /// Replace `agent`'s card of `peer` in `workspace` with `card` (`None`:
+    /// remove it; an agent left with none has no entry). In memory only
+    /// ([`Self::save`] writes it); whether one was there.
+    fn set_card(&self, agent: &str, workspace: &Path, peer: &str, card: Option<WireCard>) -> bool {
+        let mut records = self.records.lock();
+        let cards = records.agents.entry(agent.to_string()).or_default();
+        let before = cards.len();
+        cards.retain(|c| !c.names(workspace, peer));
+        let had = cards.len() != before;
+        cards.extend(card);
+        if cards.is_empty() {
+            records.agents.remove(agent);
+        }
+        had
+    }
+
+    /// The engine's external edge from `agent` to `descriptor`.
+    async fn engine_wire(
+        &self,
+        agent: &str,
+        descriptor: TrustedPeerDescriptor,
+    ) -> Result<(), WireError> {
+        self.state
+            .mob_wire(
+                &MobId::from(MOB_ID),
+                AgentIdentity::from(agent),
+                PeerTarget::External(descriptor),
+            )
+            .await
+            .map_err(WireError::engine)
     }
 
     /// Whether the engine has `agent`'s edge to `label`.
@@ -645,7 +668,7 @@ impl Wires {
                 PeerTarget::ExternalName(name),
             )
             .await
-            .map_err(|err| WireError::Engine(err.to_string()))
+            .map_err(WireError::engine)
     }
 
     fn save(&self) -> Result<(), WireError> {
@@ -749,13 +772,10 @@ pub fn check_length(path: &Path) -> Result<(), WireError> {
     Ok(())
 }
 
+/// Whether `a` is `b`; only `a` is canonicalized, as `b` is the daemon's
+/// own workspace, canonical by construction.
 fn same_path(a: &Path, b: &Path) -> bool {
     a == b || std::fs::canonicalize(a).ok().as_deref() == Some(b)
-}
-
-fn make_private_dir(dir: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dir)?;
-    set_mode(dir, 0o700)
 }
 
 #[cfg(unix)]

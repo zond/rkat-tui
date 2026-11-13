@@ -1000,6 +1000,11 @@ impl WireCard {
     pub fn label(&self) -> String {
         wire_label(&self.workspace, &self.agent)
     }
+    /// Whether it is the card of `agent` in `workspace`.
+    #[must_use]
+    pub fn names(&self, workspace: &std::path::Path, agent: &str) -> bool {
+        self.workspace == workspace && self.agent == agent
+    }
 }
 
 /// [`method::Card`]'s parameters: the agent (a probe names it; a
