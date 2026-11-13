@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.0.2] - 2026-11-13
+
 ### Added
 
 - A skills directory of your own, `~/.rkat/tui/skills/`
