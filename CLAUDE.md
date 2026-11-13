@@ -169,6 +169,17 @@ repository). Open upstream issues this code waits on:
   member is in another mob the caller owns. The hint line of #2208 covers
   both until they ship.
 
+- #2231: a call that compacts an idle session. The quiet run `/compact`
+  starts itself (`ui::COMPACT_PROMPT`) goes when it ships.
+- #2232: a `fork_off` child wired to its parent; #2233: an agent wiring its
+  own children, and `auto_wire_parent` across mobs. The instructions'
+  "a fork reaches no one" and "helpers talk through the parent" go then.
+- #2234: the OpenAI dialect lowering nested tool schemas. The client
+  wrapper `src/daemon/schema_compat.rs` goes when it ships.
+- #2235: a peer message that waits for an idle receiver's next run. The
+  roster note's states and "do not message an idle agent with no client"
+  (`src/daemon/agents.rs`, the persona) go then.
+
 ## Stored state
 
 `docs/state.md` lists every file rkat-tui stores (path, format, writer,
