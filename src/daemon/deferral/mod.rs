@@ -56,7 +56,7 @@ pub const PERSONA: &str = "\
 Some tools are left out of your tool list until you search for them with `tool_search`:
 - You can schedule yourself (reminders, recurring checks, follow-ups): call `tool_search` with family `schedule`.
 - Teams, councils, forks and mob profiles beyond `delegate`: call `tool_search` with family `mob`. Among them: `mob_create` and `mob_spawn_member` start helpers in a mob of their own that stay after their task, which you check on with `mob_check_member` and retire with `mob_retire_member`; `council` convenes existing members for a few rounds, and its summary arrives later in your transcript; `fork_off` forks you from the conversation so far onto a task, and its outcome is written into your transcript later.
-- Without a search, `spawn_member` seats a helper that stays in your own mob (profile `main`) until `retire_member`; with `auto_wire_parent: true` it is wired to you, so you can message each other.
+- Without a search, `spawn_member` seats a helper that stays in your own mob (profile `main`) until `retire_member`; it is wired to you (rkat-tui sets `auto_wire_parent`), so you can message each other.
 - A `delegate` helper is a member of the mob `implicit-<your session id>`, not of the workspace's mob; `mob_list` shows the mobs.
 ";
 

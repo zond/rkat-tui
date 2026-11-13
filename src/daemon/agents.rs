@@ -244,6 +244,9 @@ pub struct Agents {
     watches: Arc<super::watches::Watches>,
     /// What every agent's and helper's model calls used.
     ledger: Arc<super::usage::Ledger>,
+    /// The helpers and whom they work for (a message to one's own helper
+    /// is a peer message like one to another agent).
+    registry: Arc<crate::mobs::HelperRegistry>,
     /// The last watch event sent to each agent: a run it starts is the
     /// watch's.
     watch_sent: parking_lot::Mutex<std::collections::HashMap<String, String>>,
@@ -289,6 +292,8 @@ pub struct AgentsParts {
     pub watches: Arc<super::watches::Watches>,
     /// The usage records.
     pub ledger: Arc<super::usage::Ledger>,
+    /// The helpers and their owners.
+    pub registry: Arc<crate::mobs::HelperRegistry>,
 }
 
 impl Agents {
@@ -307,6 +312,7 @@ impl Agents {
             audit,
             watches,
             ledger,
+            registry,
         } = parts;
         Arc::new(Self {
             activity,
@@ -320,6 +326,7 @@ impl Agents {
             audit,
             watches,
             ledger,
+            registry,
             watch_sent: parking_lot::Mutex::new(std::collections::HashMap::new()),
             table: parking_lot::Mutex::new(BTreeMap::new()),
             seating: tokio::sync::Mutex::new(()),
@@ -439,6 +446,18 @@ impl Agents {
             if let Ok(Some(endpoint)) = handle
                 .member_peer_endpoint(&AgentIdentity::from(name.as_str()))
                 .await
+                && endpoint.descriptor.peer_id.to_string() == peer_id
+            {
+                return true;
+            }
+        }
+        // One of the caller's own helpers (wired to it): a message to a
+        // child is a peer message like one to another agent.
+        for key in self.registry.live_for(session) {
+            let Ok(handle) = self.state.handle_for(&key.mob).await else {
+                continue;
+            };
+            if let Ok(Some(endpoint)) = handle.member_peer_endpoint(&key.member).await
                 && endpoint.descriptor.peer_id.to_string() == peer_id
             {
                 return true;

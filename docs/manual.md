@@ -1929,11 +1929,24 @@ move, Esc or `q` closes it, and:
 
 **Wired.** Every agent is wired to every other one as a peer, so each has
 the engine's peer tools (`peers` lists the other agents, `send_message`
-and the request and reply tools reach them; the daemon wires the agents
-only, never their helpers).
-A message to another agent of the workspace is tier 1 (it changes
-nothing, and what the other agent does about it passes its own gate);
-a send to any other peer is reviewed. A message
+and the request and reply tools reach them). An agent's helpers are wired
+to it, not to the workspace's other agents: a `delegate` helper (the
+engine wires it to its parent) and a member seated with `spawn_member` or
+`spawn_many_members` (rkat-tui sets `auto_wire_parent` on every helper it
+shapes) each see their parent in `peers` and can message it, and it them.
+A `fork_off` child is wired to no one: the engine seats it without a trust
+edge and gives rkat-tui no say in its spawn beyond the gate. A member of a
+mob the agent created (`mob_spawn_member`) is not wired to it either (the
+engine wires a parent only within one mob), and `wire_members` is refused
+in the workspace's mob, so an agent cannot wire two of its helpers to each
+other there. The instructions say all this: the parent announces its
+helpers' file changes to the other agents, a helper is told it reaches
+only its parent, and a fork (whose prompt is its parent's) is told it
+reaches no one.
+A message to another agent of the workspace, or from an agent to one of
+its own helpers, is tier 1 (it changes nothing, and what the receiver
+does about it passes its own gate); a send to any other peer is reviewed.
+A message
 reaches the other agent as input: an idle agent wakes for it, a busy one
 takes it at its next step. The receiving TUI shows it as a block labelled
 with the sender (`✉ from agent main-abc`), so you always see why your

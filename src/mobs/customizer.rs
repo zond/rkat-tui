@@ -686,6 +686,13 @@ impl SpawnMemberCustomizer for HelperCustomizer {
                 .map_err(refuse)?,
         };
         let fresh = !matches!(ctx.spawn_source, SpawnSource::Resume);
+        // Every child is wired to the member that seats it, asked or not:
+        // the engine wires a spawn in its parent's own mob only when this
+        // is set (a `delegate` helper is wired across mobs by the engine
+        // itself, and a `fork_off` child is never shaped here).
+        if fresh {
+            spec.auto_wire_parent = true;
+        }
         self.admit(key, &owner, spec, None, fresh)
     }
 

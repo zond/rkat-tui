@@ -8146,3 +8146,35 @@ stay in the conversation the model sees. Pinned by
 status bar shows `compacting… Ns` from `CompactionStarted` to its end. An
 engine call that compacts an idle session would make the run unneeded
 (an upstream ask, not filed).
+
+## Children wired to their parents (2026-11-13)
+
+The owner's decision: every agent talks freely with its children and
+parents. What the engine does in 0.9.14, by route (`meerkat-mob`):
+`SpawnMemberSpec::new` leaves `auto_wire_parent` false
+(`runtime/handle.rs`), and activation wires a parent only among the
+members of the same mob bound to the spawner (`runtime/actor.rs`,
+`resolve_auto_wire_parent_target`); `delegate` turns the flag off and
+wires its helper to the parent across mobs itself
+(`runtime/delegation.rs`, `wire_parent`); `fork_off` seats its child as a
+`PersistedForkResume` with no trust edge, and the spawn customizer is
+asked only for the child's dispatch admission (`runtime/actor.rs`
+`customize_spawn_spec` returns early for it); `mob_spawn_member` wires
+only when the caller is a member of the target mob
+(`meerkat-mob-mcp` `agent_tools.rs`). `wire_members` needs manage scope
+over the mob (`runtime/tools.rs` `ensure_current_mob_scope`), which an
+agent has on its implicit mob and on mobs it created, not on the daemon's
+`tui`. `peers` lists the comms trust store only (`meerkat-comms`
+`runtime/comms_runtime.rs`). So rkat-tui's customizer now sets
+`auto_wire_parent` on every helper it shapes fresh (`spawn_member` and
+`spawn_many_members` children are wired; for the other routes the flag
+finds no parent and does nothing), the gate counts an agent's message to
+its own helper as tier 1 like one to another agent
+(`Agents::is_agent_peer`), and the instructions say who reaches whom.
+`children_are_wired_to_their_parent_except_forks` pins the routes (a
+`delegate` and a `spawn_member` child list the parent in `peers`; a fork's
+`peers` is empty), `a_parent_messages_its_child_like_a_peer` the tier and
+the delivery, `children_are_told_who_they_can_reach` the wording. Not
+done, engine-bound: a fork wired to its parent, a `mob_spawn_member`
+member of the agent's own mob wired to it, and `wire_members` for an
+agent's own children in `tui` (upstream asks, not filed).

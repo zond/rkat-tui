@@ -587,6 +587,7 @@ impl Daemon {
             audit: audit.clone(),
             watches: Arc::clone(&composed.watches),
             ledger: Arc::clone(&composed.ledger),
+            registry: Arc::clone(&composed.root.registry),
         });
         attach_engine(&composed.engine, &agents, audit.as_ref(), &workspace)?;
         composed.desk.report_to(&composed.engine);

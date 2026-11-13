@@ -1174,3 +1174,212 @@ async fn an_agent_cannot_recall_another_agents_input() {
     drop((a, b, probe));
     daemon.stop().await;
 }
+
+/// What a child's `peers` lists, by route, run as the agent's helpers
+/// would (`HELPER-TASK` marks the child's conversation). Returns the
+/// child's `peers` result.
+async fn child_peers(route: &'static str) -> (String, String) {
+    let ws = Workspace::new();
+    let step = Step::Dynamic(Arc::new(move |messages: &[Message]| {
+        let child = messages
+            .iter()
+            .any(|m| matches!(m, Message::User(_)) && format!("{m:?}").contains("HELPER-TASK"));
+        let results = tool_results(messages);
+        if child {
+            let asked = messages.iter().any(|m| {
+                matches!(m, Message::ToolResults { results, .. } if results.iter().any(|r| r.tool_use_id == "cp1"))
+            });
+            if asked {
+                return Step::Text("child done");
+            }
+            return Step::Tool {
+                id: "cp1",
+                name: "peers",
+                args: json!({}),
+            };
+        }
+        if !results.is_empty() {
+            return Step::Text("parent done");
+        }
+        match route {
+            "delegate" => Step::Tool {
+                id: "r1",
+                name: "delegate",
+                args: json!({
+                    "member_id": "kid",
+                    "task": "HELPER-TASK list your peers",
+                    "result_label": "result",
+                    "max_text_bytes": 4000,
+                }),
+            },
+            "spawn_member" => Step::Tool {
+                id: "r1",
+                name: "spawn_member",
+                args: json!({
+                    "profile": "main",
+                    "member_id": "kid",
+                    "initial_message": "HELPER-TASK list your peers",
+                }),
+            },
+            _ => Step::Tool {
+                id: "r1",
+                name: "fork_off",
+                args: json!({"member_id": "kid", "task": "HELPER-TASK list your peers"}),
+            },
+        }
+    }));
+    let llm = ScriptedLlmClient::new(vec![step; 10]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    if route == "fork_off" {
+        daemon.reveal(&daemon.session, &["fork_off"]).await;
+    }
+    let connection = daemon.connect_bound().await;
+    connection
+        .call(
+            "mob/turn_start",
+            json!({"mob_id": "tui", "agent_identity": daemon.agent, "prompt": "start a child"}),
+        )
+        .await
+        .unwrap();
+    let peers = common::within(async {
+        loop {
+            let found = llm.requests().iter().find_map(|messages| {
+                messages.iter().find_map(|m| match m {
+                    Message::ToolResults { results, .. } => results
+                        .iter()
+                        .find(|r| r.tool_use_id == "cp1")
+                        .map(meerkat_core::types::ToolResult::text_content),
+                    _ => None,
+                })
+            });
+            if let Some(found) = found {
+                return found;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    let agent = daemon.agent.clone();
+    drop(connection);
+    daemon.stop().await;
+    (peers, agent)
+}
+
+/// Every child an agent starts with `delegate` or `spawn_member` is wired
+/// to it without being asked: its `peers` names the agent. A `fork_off`
+/// child is wired to no one (the engine seats it without a trust edge and
+/// asks rkat-tui's customizer only for its gate), so its `peers` is empty;
+/// the persona says so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn children_are_wired_to_their_parent_except_forks() {
+    for route in ["delegate", "spawn_member"] {
+        let (peers, agent) = child_peers(route).await;
+        assert!(peers.contains(&agent), "{route}: {peers}");
+    }
+    let (peers, agent) = child_peers("fork_off").await;
+    assert!(!peers.contains(&agent), "fork_off: {peers}");
+}
+
+/// A parent messages its own child as it messages another agent: the
+/// send is tier 1 (no classifier review; the child's own gate judges what
+/// it does about it), and the child's next run reads it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_parent_messages_its_child_like_a_peer() {
+    let ws = Workspace::new();
+    let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
+        let text = format!("{messages:?}");
+        let child = messages
+            .iter()
+            .any(|m| matches!(m, Message::User(_)) && format!("{m:?}").contains("HELPER-TASK"));
+        if child {
+            return Step::Text("child ok");
+        }
+        let answered = |id: &str| {
+            messages.iter().any(|m| {
+                matches!(m, Message::ToolResults { results, .. } if results.iter().any(|r| r.tool_use_id == id))
+            })
+        };
+        if !answered("r1") {
+            Step::Tool {
+                id: "r1",
+                name: "spawn_member",
+                args: json!({
+                    "profile": "main",
+                    "member_id": "kid",
+                    "initial_message": "HELPER-TASK wait for word",
+                }),
+            }
+        } else if !answered("p1") {
+            Step::Tool {
+                id: "p1",
+                name: "peers",
+                args: json!({}),
+            }
+        } else if !answered("m1") {
+            let peer = peer_id_of(messages, "kid").unwrap_or_else(|| "none".into());
+            Step::Tool {
+                id: "m1",
+                name: "send_message",
+                args: json!({"peer_id": peer, "body": "PARENT-WORD go on", "handling_mode": "queue"}),
+            }
+        } else if text.contains("PARENT-WORD") {
+            Step::Text("told the kid")
+        } else {
+            Step::Text("?")
+        }
+    }));
+    let llm = ScriptedLlmClient::new(vec![step; 12]);
+    let classifier = rig::ScriptedClassifier::allowing(Vec::new());
+    let setup = rig::Setup::default().classifier(Arc::clone(&classifier) as _);
+    let args = setup.command_line(&ws.root);
+    let daemon = Running::start_with(&args, setup.options(&ws.root, &llm)).await;
+    let connection = daemon.connect_bound().await;
+    connection
+        .call(
+            "mob/turn_start",
+            json!({"mob_id": "tui", "agent_identity": daemon.agent, "prompt": "seat a kid and tell it"}),
+        )
+        .await
+        .unwrap();
+    let sent = common::within(async {
+        loop {
+            let reply = llm.requests().iter().find_map(|messages| {
+                messages.iter().find_map(|m| match m {
+                    Message::ToolResults { results, .. } => results
+                        .iter()
+                        .find(|r| r.tool_use_id == "m1")
+                        .map(meerkat_core::types::ToolResult::text_content),
+                    _ => None,
+                })
+            });
+            if let Some(reply) = reply {
+                return reply;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert!(sent.contains("sent") || sent.contains("accepted"), "{sent}");
+    assert!(
+        !classifier.tools().iter().any(|tool| tool == "send_message"),
+        "{:?}",
+        classifier.tools()
+    );
+    // The kid reads it in a run of its own.
+    common::within(async {
+        loop {
+            let read = llm.requests().iter().any(|messages| {
+                messages.iter().any(|m| {
+                    matches!(m, Message::User(_)) && format!("{m:?}").contains("HELPER-TASK")
+                }) && format!("{messages:?}").contains("PARENT-WORD")
+            });
+            if read {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    drop(connection);
+    daemon.stop().await;
+}

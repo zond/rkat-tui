@@ -30,6 +30,14 @@
   inlined, optional fields' `anyOf [T, null]` folded into `T`, `oneOf` as
   `anyOf` and a `type` on every constrained node. `/context` measures the
   definitions as sent.
+- A helper seated with `spawn_member` or `spawn_many_members` is wired to
+  the agent that seats it without being asked (rkat-tui sets
+  `auto_wire_parent`), as a `delegate` helper already was: each sees the
+  other in `peers`. An agent's message to its own helper is tier 1 like
+  one to another agent. The instructions now say who reaches whom: the
+  agent announces its helpers' file changes, a helper reaches only its
+  parent, and a `fork_off` child (which the engine wires to no one) is
+  told not to try.
 - `/agents` stays open after `d` then `y`: once the daemon confirms the
   retire it lists the agents again without the retired one, the
   highlight on its neighbour, so several can be retired in a row; a
