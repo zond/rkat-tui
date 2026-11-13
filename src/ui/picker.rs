@@ -1,5 +1,5 @@
-//! The list pickers of `/schedules`, `/permissions`, `/helpers`, `/mode`
-//! and `/memory`: one [`ListPicker`] of rows, each carrying the keys that
+//! The list pickers of `/schedules`, `/permissions`, `/helpers`, `/mode`,
+//! `/memory`, `/wire`, `/unwire` and `/agents`: one [`ListPicker`] of rows, each carrying the keys that
 //! act on it (an act, an act to confirm with `y`, or why it cannot), with
 //! a selection, a scrolling window and an optional line under the rows.
 //!
@@ -37,6 +37,8 @@ pub enum PickerKind {
     Wire,
     /// `/unwire`.
     Unwire,
+    /// `/agents`.
+    Agents,
 }
 
 impl PickerKind {
@@ -51,6 +53,15 @@ impl PickerKind {
             Self::Memory => " Instruction files ",
             Self::Wire => " Agents of other workspaces ",
             Self::Unwire => " Wires to other workspaces ",
+            Self::Agents => " Agents ",
+        }
+    }
+
+    /// What the answers to a question are, as its line says them.
+    fn answers(self) -> &'static str {
+        match self {
+            Self::Agents => "y retires, any other key keeps it",
+            _ => "y yes, any other key no",
         }
     }
 }
@@ -84,6 +95,14 @@ pub enum PickAct {
         /// The other agent.
         agent: String,
     },
+    /// `/agents <name>`: switch this client to the agent.
+    SwitchAgent(String),
+    /// The `/agents` picker's "new agent" row: seat a fresh agent for
+    /// this client and switch to it.
+    NewAgent,
+    /// Retire the agent (the list comes again without it, or the refusal
+    /// shows on the picker).
+    RetireAgent(String),
 }
 
 impl PickAct {
@@ -97,6 +116,7 @@ impl PickAct {
                 | Self::FoldHelper(_)
                 | Self::Wire { .. }
                 | Self::Unwire { .. }
+                | Self::RetireAgent(_)
         )
     }
 }
@@ -208,6 +228,10 @@ pub struct ListPicker {
     pub empty: String,
     /// The key hint at the bottom.
     pub footer: String,
+    /// How many of the last rows are acts rather than items (the
+    /// `/agents` picker's "new agent" row): a refresh that drops the
+    /// highlighted item lands on the last item, not on them.
+    pub actions: usize,
 }
 
 impl ListPicker {
@@ -227,6 +251,7 @@ impl ListPicker {
             line: None,
             empty: empty.into(),
             footer: footer.into(),
+            actions: 0,
         }
     }
 
@@ -290,10 +315,20 @@ impl ListPicker {
         ModalKey::Stay
     }
 
-    /// `fresh` in place of this picker, on the same row where it still is.
+    /// `fresh` in place of this picker, on the same row where it still is
+    /// (an item highlighted stays on an item: the last when its row is
+    /// gone, never one of the [`Self::actions`] rows after them).
     #[must_use]
     pub fn refreshed(&self, fresh: Self) -> Self {
-        fresh.at(self.cursor.index())
+        let at = self.cursor.index();
+        let on_item = at < self.rows.len().saturating_sub(self.actions);
+        let items = fresh.rows.len().saturating_sub(fresh.actions);
+        let at = if on_item {
+            at.min(items.saturating_sub(1))
+        } else {
+            at
+        };
+        fresh.at(at)
     }
 }
 
@@ -310,7 +345,7 @@ pub(super) fn list_picker_lines(
     let mut tail = Vec::new();
     match &picker.line {
         Some(PickerLine::Confirm { question, .. }) => tail.extend(
-            wrap_text(&format!("{question} (y yes, any other key no)"), width)
+            wrap_text(&format!("{question} ({})", picker.kind.answers()), width)
                 .into_iter()
                 .map(|line| Line::styled(line, warn)),
         ),
@@ -406,6 +441,113 @@ pub fn mode_picker(current: Option<PermissionMode>, paused: bool) -> ListPicker 
     .at(at)
 }
 
+/// One agent of the workspace as the `/agents` picker shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentEntry {
+    /// Its name (`main-<id>`).
+    pub name: String,
+    /// `running`, `idle` or `unknown`.
+    pub run: &'static str,
+    /// Its conversation's short id, when it runs as one.
+    pub conversation: Option<String>,
+    /// That conversation's title, when known.
+    pub title: Option<String>,
+    /// How many clients work with it.
+    pub clients: usize,
+    /// It was left running without a client.
+    pub detached: bool,
+    /// It is this client's own agent.
+    pub mine: bool,
+    /// Why the retire key refuses it (`None`: it may be retired).
+    pub unretirable: Option<String>,
+    /// The agents of other workspaces it is wired to (`/wire`).
+    pub wires: Vec<String>,
+}
+
+/// The `/agents` picker: the workspace's agents, this client's own
+/// highlighted, then a "new agent" row. Enter switches to the agent (or
+/// seats a new one on the last row); `d` asks to retire it (`y` retires)
+/// or says why it cannot.
+#[must_use]
+pub fn agent_picker(agents: &[AgentEntry]) -> ListPicker {
+    let retire = KeyCode::Char('d');
+    let mut rows: Vec<PickRow> = agents
+        .iter()
+        .map(|agent| {
+            let d = match &agent.unretirable {
+                Some(why) => PickKey::refused(retire, format!("not retired: {why}")),
+                None => PickKey::confirmed(
+                    retire,
+                    PickAct::RetireAgent(agent.name.clone()),
+                    format!("retire {}? its conversation stays in /resume", agent.name),
+                ),
+            };
+            PickRow::new(
+                agent_row(agent),
+                vec![
+                    PickKey::now(KeyCode::Enter, PickAct::SwitchAgent(agent.name.clone())),
+                    d,
+                ],
+            )
+        })
+        .collect();
+    rows.push(PickRow::new(
+        "+ new agent",
+        vec![
+            PickKey::now(KeyCode::Enter, PickAct::NewAgent),
+            PickKey::refused(
+                retire,
+                "not retired: pick an agent to retire (the new-agent row is none)",
+            ),
+        ],
+    ));
+    let mine = agents.iter().position(|agent| agent.mine).unwrap_or(0);
+    let mut picker = ListPicker::new(
+        PickerKind::Agents,
+        rows,
+        "",
+        "↑/↓ move · Enter switch · d retire · Esc close",
+    )
+    .at(mine);
+    picker.actions = 1;
+    picker
+}
+
+/// `* main-ab12 · idle · 01234567 fix the test · 1 client · this rkat-tui`
+/// (the mark and the last part on this client's own agent; `detached`, or
+/// `no client`, for one nobody works with).
+fn agent_row(agent: &AgentEntry) -> String {
+    let mut row = format!(
+        "{} {} · {}",
+        if agent.mine { "*" } else { " " },
+        agent.name,
+        agent.run
+    );
+    match (&agent.conversation, &agent.title) {
+        (Some(id), Some(title)) => row.push_str(&format!(" · {id} {title}")),
+        (Some(id), None) => row.push_str(&format!(" · {id}")),
+        (None, _) => row.push_str(" · no conversation"),
+    }
+    row.push_str(&format!(
+        " · {}",
+        crate::text::count(agent.clients, "client")
+    ));
+    if agent.clients == 0 {
+        row.push_str(if agent.detached {
+            " · detached"
+        } else {
+            " · no client yet"
+        });
+    }
+    if !agent.wires.is_empty() {
+        row.push_str(&format!(" · wired to {}", agent.wires.join(", ")));
+    }
+    if agent.mine {
+        row.push_str(" · this rkat-tui");
+    }
+    row
+}
+
 impl App {
     /// Open a picker `modal` over nothing (or over the keys panel); behind
     /// an approval dialog it waits until the dialogs are answered
@@ -443,6 +585,18 @@ impl App {
         self.show_modal(Modal::List(picker));
     }
 
+    /// Why a picker's act was refused: a picker of `kind` open or waiting
+    /// shows it under its rows.
+    pub(super) fn picker_refused(&mut self, kind: PickerKind, why: &str) {
+        for slot in [&mut self.modal, &mut self.parked] {
+            if let Some(Modal::List(picker)) = slot
+                && picker.kind == kind
+            {
+                picker.line = Some(PickerLine::Refused(why.to_string()));
+            }
+        }
+    }
+
     /// A picker's answer: what the typed command does; the schedules, the
     /// rules, the helpers and the wires stay open (their list comes again).
     pub(super) fn picked(&mut self, act: PickAct, fx: &mut Vec<Effect>) {
@@ -458,6 +612,9 @@ impl App {
             PickAct::Unwire { workspace, agent } => {
                 fx.push(Effect::UnwireFrom { workspace, agent });
             }
+            PickAct::SwitchAgent(name) => fx.push(Effect::Agents(Some(name))),
+            PickAct::NewAgent => fx.push(Effect::NewAgent),
+            PickAct::RetireAgent(name) => fx.push(Effect::RetireAgent(name)),
             PickAct::ViewHelper(header) => {
                 self.helper_view = Some(OpenHelperView {
                     header,
@@ -615,5 +772,122 @@ mod tests {
         // Before the mode is known nothing is marked.
         let unknown = mode_picker(None, false);
         assert!(unknown.rows.iter().all(|r| r.text.starts_with("  ")));
+    }
+
+    fn entry(name: &str, mine: bool, unretirable: Option<&str>) -> AgentEntry {
+        AgentEntry {
+            name: name.into(),
+            run: "idle",
+            conversation: None,
+            title: None,
+            clients: usize::from(mine),
+            detached: !mine,
+            mine,
+            unretirable: unretirable.map(str::to_string),
+            wires: Vec::new(),
+        }
+    }
+
+    fn agents() -> Vec<AgentEntry> {
+        vec![
+            entry("main-aaaa", false, None),
+            entry(
+                "main-bbbb",
+                true,
+                Some("main-bbbb is this rkat-tui's own agent"),
+            ),
+        ]
+    }
+
+    /// An agent's row names its wires to agents of other workspaces.
+    #[test]
+    fn an_agent_row_names_its_cross_workspace_wires() {
+        let mut agent = agents()[1].clone();
+        assert!(!agent_row(&agent).contains("wired"));
+        agent.wires = vec!["api/main-zz99".into(), "web/main-yy88".into()];
+        assert!(
+            agent_row(&agent).ends_with(" · wired to api/main-zz99, web/main-yy88 · this rkat-tui"),
+            "{}",
+            agent_row(&agent)
+        );
+    }
+
+    /// The agent picker opens on this client's own agent; Enter switches,
+    /// the last row seats a new agent, `d` asks and `y` retires (any other
+    /// key keeps the agent), `d` on an agent in use says why and retires
+    /// nothing; Esc, `q` and Ctrl-C close.
+    #[test]
+    fn the_agent_picker_switches_seats_and_retires_after_a_confirmation() {
+        let mut p = agent_picker(&agents());
+        assert!(p.selected().unwrap().text.contains("main-bbbb"));
+        assert_eq!(
+            p.key(&press(KeyCode::Enter)),
+            ModalKey::Choose(PickAct::SwitchAgent("main-bbbb".into()))
+        );
+        // Its own agent is refused with the reason.
+        assert_eq!(p.key(&press(KeyCode::Char('d'))), ModalKey::Stay);
+        assert!(
+            matches!(&p.line, Some(PickerLine::Refused(why)) if why.contains("own agent")),
+            "{:?}",
+            p.line
+        );
+        assert_eq!(p.key(&press(KeyCode::Char('y'))), ModalKey::Stay);
+        assert_eq!(p.line, None);
+        // Up to the other one: `d` asks, `n` keeps it, `d` `y` retires it.
+        p.key(&press(KeyCode::Up));
+        assert_eq!(p.key(&press(KeyCode::Char('d'))), ModalKey::Stay);
+        assert!(
+            matches!(&p.line, Some(PickerLine::Confirm { act: PickAct::RetireAgent(name), .. }) if name == "main-aaaa"),
+            "{:?}",
+            p.line
+        );
+        assert_eq!(p.key(&press(KeyCode::Char('n'))), ModalKey::Stay);
+        assert_eq!(p.line, None);
+        // A cancelled confirmation does not also act: Esc there keeps the
+        // picker open.
+        p.key(&press(KeyCode::Char('d')));
+        assert_eq!(p.key(&press(KeyCode::Esc)), ModalKey::Stay);
+        p.key(&press(KeyCode::Char('d')));
+        assert_eq!(
+            p.key(&press(KeyCode::Char('y'))),
+            ModalKey::Choose(PickAct::RetireAgent("main-aaaa".into()))
+        );
+        // The last row is a new agent; `d` there retires nothing.
+        p.key(&press(KeyCode::Down));
+        p.key(&press(KeyCode::Char('j')));
+        p.key(&press(KeyCode::Down));
+        assert_eq!(p.selected().unwrap().text, "+ new agent");
+        p.key(&press(KeyCode::Char('d')));
+        assert!(matches!(p.line, Some(PickerLine::Refused(_))));
+        assert_eq!(
+            p.key(&press(KeyCode::Enter)),
+            ModalKey::Choose(PickAct::NewAgent)
+        );
+        // A held key only moves; Esc, `q` and Ctrl-C close.
+        let mut held = press(KeyCode::Char('d'));
+        held.kind = KeyEventKind::Repeat;
+        assert_eq!(p.key(&held), ModalKey::Stay);
+        assert_eq!(p.line, None);
+        assert_eq!(p.key(&press(KeyCode::Char('q'))), ModalKey::Close);
+        assert_eq!(p.key(&press(KeyCode::Esc)), ModalKey::Close);
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(p.key(&ctrl_c), ModalKey::Close);
+    }
+
+    /// A refresh after the last agent was retired lands on the agent
+    /// before it, not on the "new agent" row; one on that row stays there.
+    #[test]
+    fn an_agent_refresh_stays_on_an_agent() {
+        let three = vec![
+            entry("main-aaaa", true, Some("own")),
+            entry("main-bbbb", false, None),
+            entry("main-cccc", false, None),
+        ];
+        let open = agent_picker(&three).at(2);
+        let fresh = open.refreshed(agent_picker(&three[..2]));
+        assert!(fresh.selected().unwrap().text.contains("main-bbbb"));
+        let on_new = agent_picker(&three).at(3);
+        let fresh = on_new.refreshed(agent_picker(&three[..2]));
+        assert_eq!(fresh.selected().unwrap().text, "+ new agent");
     }
 }

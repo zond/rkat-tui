@@ -7,11 +7,10 @@ use std::time::Instant;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::{
-    Action, AgentPick, App, CHORD_WINDOW, Command, DOUBLE_CTRL_C_WINDOW, DOUBLE_ESC_WINDOW,
-    Departure, EditAction, EditorClosed, EditorTarget, Effect, HistorySearch, InputMode,
-    LocalEffect, Modal, ModalKey, ModelCommand, NoticeLevel, PathIndex, PendingId,
-    QUIT_CONFIRM_WINDOW, QuitChoice, QuitDecision, QuitDialog, SearchOutcome, StashOutcome,
-    complete, keymap, search,
+    Action, App, CHORD_WINDOW, Command, DOUBLE_CTRL_C_WINDOW, DOUBLE_ESC_WINDOW, Departure,
+    EditAction, EditorClosed, EditorTarget, Effect, HistorySearch, InputMode, LocalEffect, Modal,
+    ModalKey, ModelCommand, NoticeLevel, PathIndex, PendingId, QUIT_CONFIRM_WINDOW, QuitChoice,
+    QuitDecision, QuitDialog, SearchOutcome, StashOutcome, complete, keymap, search,
 };
 
 impl App {
@@ -427,22 +426,6 @@ impl App {
                 ModalKey::Choose(reference) => {
                     self.modal = None;
                     fx.push(Effect::ResumeSession(reference));
-                }
-            },
-            Some(Modal::Agents(picker)) => match picker.key(key) {
-                ModalKey::Stay => {}
-                ModalKey::Close => self.modal = None,
-                // A retire keeps the picker open: the list comes again
-                // without the agent ([`Msg::RefreshAgentPicker`]), or the
-                // refusal shows on it.
-                ModalKey::Choose(AgentPick::Retire(name)) => fx.push(Effect::RetireAgent(name)),
-                ModalKey::Choose(AgentPick::Switch(name)) => {
-                    self.modal = None;
-                    fx.push(Effect::Agents(Some(name)));
-                }
-                ModalKey::Choose(AgentPick::New) => {
-                    self.modal = None;
-                    fx.push(Effect::NewAgent);
                 }
             },
             Some(Modal::List(picker)) => match picker.key(key) {

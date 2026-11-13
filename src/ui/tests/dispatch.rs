@@ -159,7 +159,7 @@ fn agent_picker_switches_seats_and_retires() {
             entry("main-aaaa", true),
             entry("main-bbbb", false),
         ]));
-        assert!(matches!(app.modal, Some(Modal::Agents(_))));
+        assert!(matches!(&app.modal, Some(Modal::List(p)) if p.kind == PickerKind::Agents));
         app
     };
     let mut app = open();
@@ -182,27 +182,30 @@ fn agent_picker_switches_seats_and_retires() {
     );
     // A retire keeps the picker open; the list without the agent comes
     // once the daemon confirmed, the highlight on its neighbour.
-    assert!(matches!(app.modal, Some(Modal::Agents(_))));
+    assert!(matches!(&app.modal, Some(Modal::List(p)) if p.kind == PickerKind::Agents));
     app.update(Msg::RefreshAgentPicker(vec![entry("main-aaaa", true)]));
-    let Some(Modal::Agents(picker)) = &app.modal else {
+    let Some(Modal::List(picker)) = &app.modal else {
         panic!("the picker closed");
     };
-    assert_eq!(picker.agents.len(), 1);
-    assert_eq!(
-        picker.selected().map(|a| a.name.as_str()),
-        Some("main-aaaa")
+    assert_eq!(picker.kind, PickerKind::Agents);
+    // One agent and the "new agent" row.
+    assert_eq!(picker.rows.len(), 2);
+    assert!(
+        picker
+            .selected()
+            .is_some_and(|row| row.text.contains("main-aaaa"))
     );
     // A refusal shows on the open picker, which stays.
     app.update(Msg::AgentPickerRefused(
         "main-aaaa was not retired: it runs".into(),
     ));
-    let Some(Modal::Agents(picker)) = &app.modal else {
+    let Some(Modal::List(picker)) = &app.modal else {
         panic!("the picker closed");
     };
     assert_eq!(
         picker.line,
-        Some(crate::ui::modal::AgentPickerLine::Refused(
-            "main-aaaa was not retired: it runs".into()
+        Some(crate::ui::PickerLine::Refused(
+            "not retired: main-aaaa was not retired: it runs".into()
         ))
     );
     // Several in a row: the next retire is offered on the refreshed list.

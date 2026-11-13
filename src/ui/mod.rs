@@ -62,12 +62,12 @@ pub use history::History;
 pub use input::{InputEditor, StashOutcome};
 pub use keymap::{Action, EditAction};
 pub use modal::{
-    AgentEntry, AgentPick, AgentPicker, EscalationAnswer, EscalationDialog, EscalationId, Modal,
-    ModalKey, ModelPicker, PlanChoice, PlanDialog, QuitChoice, QuitDialog, ResumePicker,
+    EscalationAnswer, EscalationDialog, EscalationId, Modal, ModalKey, ModelPicker, PlanChoice,
+    PlanDialog, QuitChoice, QuitDialog, ResumePicker,
 };
 #[cfg(any(test, feature = "test-support"))]
 pub use picker::PickerLine;
-pub use picker::{ListPicker, PickAct, PickKey, PickRow, PickerKind};
+pub use picker::{AgentEntry, ListPicker, PickAct, PickKey, PickRow, PickerKind};
 pub use runtime::{UiChannels, UiError, run_ui};
 pub use search::{HistorySearch, SearchOutcome};
 pub use selection::{CellPos, SelectMode, Selection};
@@ -1120,7 +1120,7 @@ pub struct App {
     /// Search corpus (newest first, deduplicated), built when a search starts.
     search_corpus: Vec<String>,
     pending_escalations: VecDeque<(EscalationId, RecordedPrompt)>,
-    /// A picker ([`Modal::Model`], [`Modal::Resume`] or [`Modal::Agents`]) an escalation
+    /// A picker ([`Modal::Model`], [`Modal::Resume`] or [`Modal::List`]) an escalation
     /// displaced; restored once no escalation remains.
     parked: Option<Modal>,
     submitted: Vec<String>,
@@ -1535,22 +1535,12 @@ impl App {
             Msg::ShowResumePicker(items) => {
                 self.show_modal(Modal::Resume(ResumePicker::new(items)));
             }
-            Msg::ShowAgentPicker(agents) => {
-                self.show_modal(Modal::Agents(AgentPicker::new(agents)));
-            }
+            Msg::ShowAgentPicker(agents) => self.show_picker(picker::agent_picker(&agents), false),
             Msg::RefreshAgentPicker(agents) => {
-                for slot in [&mut self.modal, &mut self.parked] {
-                    if let Some(Modal::Agents(picker)) = slot {
-                        picker.refresh(agents.clone());
-                    }
-                }
+                self.show_picker(picker::agent_picker(&agents), true);
             }
             Msg::AgentPickerRefused(why) => {
-                for slot in [&mut self.modal, &mut self.parked] {
-                    if let Some(Modal::Agents(picker)) = slot {
-                        picker.line = Some(modal::AgentPickerLine::Refused(why.clone()));
-                    }
-                }
+                self.picker_refused(PickerKind::Agents, &format!("not retired: {why}"));
             }
             Msg::ShowPicker { picker, refresh } => self.show_picker(picker, refresh),
             Msg::ShowModelPicker(groups) => {
