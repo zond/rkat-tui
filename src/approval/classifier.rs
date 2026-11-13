@@ -55,6 +55,31 @@ pub struct Environment {
     pub default_branch: Option<String>,
     /// Operating system (`std::env::consts::OS`).
     pub os: String,
+    /// The directories outside the project the user allows the agent to
+    /// use (the confinement plan's grants, whether confinement is on or
+    /// off).
+    pub granted: GrantedDirs,
+}
+
+/// The directories outside the project the user allows the agent to write
+/// or read: what the confinement plan grants
+/// (`crate::bootstrap::confinement::plan_grants`), computed whether the
+/// shell is confined or not. The classifier is told all of them. Every
+/// path is canonical and each list is sorted.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GrantedDirs {
+    /// Writable by default: the temp directory in use, the user cache
+    /// directory, the Cargo home's caches (the sandbox's own grants).
+    pub baseline_write: Vec<PathBuf>,
+    /// Readable by default: toolchains, shared system directories and
+    /// files (the sandbox's own grants).
+    pub baseline_read: Vec<PathBuf>,
+    /// Named by the user for writing: `--confinement-write` and the user's
+    /// own `tui.toml` `[confinement] extra_write`.
+    pub user_write: Vec<PathBuf>,
+    /// Named by the user for reading: `--confinement-read` and
+    /// `[confinement] extra_read`.
+    pub user_read: Vec<PathBuf>,
 }
 
 impl Environment {
@@ -66,7 +91,15 @@ impl Environment {
             git_remote: None,
             default_branch: None,
             os: std::env::consts::OS.to_string(),
+            granted: GrantedDirs::default(),
         }
+    }
+
+    /// The same environment with the directories the user allows.
+    #[must_use]
+    pub fn with_granted(mut self, granted: GrantedDirs) -> Self {
+        self.granted = granted;
+        self
     }
 
     /// Environment with the `origin` remote URL and default branch read from

@@ -14,7 +14,8 @@ use meerkat_core::{AuthBindingRef, Config, Provider, SessionLlmIdentity};
 use tokio::sync::mpsc;
 
 use crate::approval::classifier::{
-    ActionClassifier, Environment, LlmClassifier, UnavailableClassifier, classifier_default_model,
+    ActionClassifier, Environment, GrantedDirs, LlmClassifier, UnavailableClassifier,
+    classifier_default_model,
 };
 use crate::approval::engine::DEFAULT_ESCALATION_TIMEOUT;
 use crate::approval::escalation::{EscalationBroker, EscalationRequest};
@@ -129,6 +130,7 @@ pub(crate) async fn build(
     scope: &RuntimeScope,
     layered: config::Layered,
     mut notices: Vec<String>,
+    granted: GrantedDirs,
     source: ClassifierSource<'_>,
     overrides: &ApprovalOverrides,
 ) -> Result<ApprovalParts, TuiError> {
@@ -137,7 +139,9 @@ pub(crate) async fn build(
     let (events_tx, events_rx) = mpsc::unbounded_channel();
     let (broker, escalations) = EscalationBroker::new(ESCALATION_CAPACITY);
     let cwd = std::env::current_dir().map_err(|e| TuiError::io("read current directory", e))?;
-    let environment = Environment::detect(scope.project_root.as_path(), &cwd).await;
+    let environment = Environment::detect(scope.project_root.as_path(), &cwd)
+        .await
+        .with_granted(granted);
     let classifier = match &overrides.classifier {
         Some(classifier) => Arc::clone(classifier),
         None => {

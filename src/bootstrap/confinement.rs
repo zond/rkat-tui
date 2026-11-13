@@ -49,6 +49,11 @@
 //! at least that access is refused as redundant. A detected grant that
 //! overlaps an extra grant otherwise yields to it (the backend refuses
 //! overlaps). A violation is a typed start-up error, never a silent drop.
+//!
+//! **The approval gate.** The same grants are computed whether the shell
+//! is confined or not ([`plan_grants`], [`ConfinementPlan::granted`]): the
+//! classifier is told every directory outside the workspace they allow to
+//! be written or read. With `--no-confinement` they reach only the gate.
 //! The user's own `tui.toml` layers add more with `[confinement] extra_read
 //! = [...]` / `extra_write = [...]` ([`ConfinementSection`]), validated the
 //! same way; a file grant that overlaps a command-line grant yields to it
@@ -564,16 +569,95 @@ pub fn grants(workspace: &Path, host: &HostPaths) -> (Vec<PathBuf>, Vec<PathBuf>
 ///
 /// [`ConfinementError::ExtraGrant`] naming the first extra grant that is
 /// not grantable.
+#[cfg(any(test, feature = "test-support"))]
 pub fn grants_with(
     workspace: &Path,
     host: &HostPaths,
     extra: &ExtraGrants,
 ) -> Result<(Vec<PathBuf>, Vec<PathBuf>, Vec<PathBuf>), ConfinementError> {
+    plan_grants(workspace, host, extra).map(|planned| (planned.write, planned.read, planned.files))
+}
+
+/// What [`plan_grants`] decides: the sandbox's grants and the directories
+/// the user named, as the approval gate is told them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PlannedGrants {
+    /// The sandbox's read-write directories (as [`grants_with`]).
+    pub write: Vec<PathBuf>,
+    /// The sandbox's read-only directories.
+    pub read: Vec<PathBuf>,
+    /// The sandbox's read-only files.
+    pub files: Vec<PathBuf>,
+    /// The canonical directories the user named for writing, in the order
+    /// given; one a detected grant already covers is here without
+    /// changing the sandbox (it tells the gate the user trusts it).
+    pub user_write: Vec<PathBuf>,
+    /// The canonical directories the user named for reading.
+    pub user_read: Vec<PathBuf>,
+}
+
+impl PlannedGrants {
+    /// The directories outside `workspace` the approval gate is told the
+    /// user allows: the user's own, and the sandbox's other grants as the
+    /// defaults (the workspace itself left out), each list sorted.
+    #[must_use]
+    pub fn granted(&self, workspace: &Path) -> crate::approval::classifier::GrantedDirs {
+        let workspace = canonical(workspace, true).unwrap_or_else(|| workspace.to_path_buf());
+        let named =
+            |path: &PathBuf| self.user_write.contains(path) || self.user_read.contains(path);
+        let sorted = |mut paths: Vec<PathBuf>| {
+            paths.sort();
+            paths.dedup();
+            paths
+        };
+        crate::approval::classifier::GrantedDirs {
+            baseline_write: sorted(
+                self.write
+                    .iter()
+                    .filter(|dir| **dir != workspace && !named(dir))
+                    .cloned()
+                    .collect(),
+            ),
+            baseline_read: sorted(
+                self.read
+                    .iter()
+                    .chain(&self.files)
+                    .filter(|dir| !named(dir))
+                    .cloned()
+                    .collect(),
+            ),
+            user_write: sorted(self.user_write.clone()),
+            user_read: sorted(self.user_read.clone()),
+        }
+    }
+}
+
+/// [`grants_with`], with the directories the user named kept apart
+/// ([`PlannedGrants::user_write`], [`PlannedGrants::user_read`]). An extra
+/// grant a detected grant already covers with at least that access is
+/// accepted for the gate and leaves the sandbox as it is.
+///
+/// # Errors
+///
+/// [`ConfinementError::ExtraGrant`] naming the first extra grant that is
+/// not grantable.
+pub fn plan_grants(
+    workspace: &Path,
+    host: &HostPaths,
+    extra: &ExtraGrants,
+) -> Result<PlannedGrants, ConfinementError> {
     let (mut write, mut read, mut files) = grants(workspace, host);
     if extra.is_empty() {
-        return Ok((write, read, files));
+        return Ok(PlannedGrants {
+            write,
+            read,
+            files,
+            ..PlannedGrants::default()
+        });
     }
-    let workspace_grant = canonical(workspace, true)
+    let workspace_dir = canonical(workspace, true);
+    let workspace_grant = workspace_dir
+        .as_ref()
         .and_then(|ws| write.iter().find(|dir| ws.starts_with(dir)).cloned());
     // (origin label, path, writable, from the command line)
     let requested = extra
@@ -600,8 +684,16 @@ pub fn grants_with(
                 .iter()
                 .map(|path| ("[confinement] extra_read", path, false, false)),
         );
-    // (canonical path, writable, from the command line)
-    let mut accepted: Vec<(PathBuf, bool, bool)> = Vec::new();
+    /// One accepted extra grant.
+    struct Accepted {
+        path: PathBuf,
+        writable: bool,
+        from_cli: bool,
+        /// Whether the sandbox gets it (`false`: a detected grant already
+        /// covers it; only the gate is told).
+        sandbox: bool,
+    }
+    let mut accepted: Vec<Accepted> = Vec::new();
     for (flag, given, writable, from_cli) in requested {
         let refuse = |problem| ConfinementError::ExtraGrant {
             flag,
@@ -609,24 +701,24 @@ pub fn grants_with(
             problem,
         };
         let path = validate_extra(given).map_err(refuse)?;
-        if let Some(ws) = workspace_grant.as_ref().filter(|ws| overlaps(&path, ws)) {
+        if let Some(ws) = workspace_dir.as_ref().filter(|ws| overlaps(&path, ws)) {
             return Err(refuse(ExtraGrantProblem::OverlapsWorkspace(ws.clone())));
         }
         if !from_cli {
             // The command line wins over the file; a file grant repeating
             // an earlier one with no more access adds nothing.
-            let yields = accepted.iter().any(|(other, other_writable, other_cli)| {
-                (*other_cli && overlaps(&path, other))
-                    || (*other == path && (*other_writable || !writable))
+            let yields = accepted.iter().any(|other| {
+                (other.from_cli && overlaps(&path, &other.path))
+                    || (other.path == path && (other.writable || !writable))
             });
             if yields {
                 continue;
             }
         }
-        if let Some((other, _, _)) = accepted.iter().find(|(other, _, _)| overlaps(&path, other)) {
-            return Err(refuse(ExtraGrantProblem::OverlapsGrant(other.clone())));
+        if let Some(other) = accepted.iter().find(|other| overlaps(&path, &other.path)) {
+            return Err(refuse(ExtraGrantProblem::OverlapsGrant(other.path.clone())));
         }
-        let covering = write
+        let covered = write
             .iter()
             .chain(
                 if writable { None } else { Some(&read) }
@@ -634,23 +726,41 @@ pub fn grants_with(
                     .flatten(),
             )
             .find(|dir| path.starts_with(dir));
-        if let Some(dir) = covering {
+        if let Some(dir) = covered {
             return Err(refuse(ExtraGrantProblem::AlreadyGranted(dir.clone())));
         }
-        accepted.push((path, writable, from_cli));
+        if let Some(ws) = workspace_grant.as_ref().filter(|ws| overlaps(&path, ws)) {
+            return Err(refuse(ExtraGrantProblem::OverlapsWorkspace(ws.clone())));
+        }
+        accepted.push(Accepted {
+            path,
+            writable,
+            from_cli,
+            sandbox: true,
+        });
     }
-    let clashes = |dir: &PathBuf| accepted.iter().any(|(path, _, _)| overlaps(dir, path));
+    let granted = || accepted.iter().filter(|grant| grant.sandbox);
+    let clashes = |dir: &PathBuf| granted().any(|grant| overlaps(dir, &grant.path));
     write.retain(|dir| !clashes(dir));
     read.retain(|dir| !clashes(dir));
-    files.retain(|file| !accepted.iter().any(|(path, _, _)| file.starts_with(path)));
-    for (path, writable, _) in accepted {
-        if writable {
-            write.push(path);
+    files.retain(|file| !granted().any(|grant| file.starts_with(&grant.path)));
+    let mut planned = PlannedGrants::default();
+    for grant in &accepted {
+        match (grant.writable, grant.sandbox) {
+            (true, true) => write.push(grant.path.clone()),
+            (false, true) => read.push(grant.path.clone()),
+            _ => {}
+        }
+        if grant.writable {
+            planned.user_write.push(grant.path.clone());
         } else {
-            read.push(path);
+            planned.user_read.push(grant.path.clone());
         }
     }
-    Ok((write, read, files))
+    planned.write = write;
+    planned.read = read;
+    planned.files = files;
+    Ok(planned)
 }
 
 /// `given` as a grantable directory: absolute, existing, canonical, a
@@ -801,6 +911,9 @@ pub struct ConfinementPlan {
     /// [`ShellConfinement::TrustedHost`] (the command inherits the whole
     /// environment, as before).
     pub shell_env: Option<HashMap<String, String>>,
+    /// The directories outside the workspace the user allows, for the
+    /// approval gate ([`PlannedGrants::granted`]), whatever the mode.
+    pub granted: crate::approval::classifier::GrantedDirs,
 }
 
 /// The host variables a confined command gets, by exact name (the `LC_*`
@@ -917,11 +1030,24 @@ pub fn lower(
 ///
 /// [`ConfinementError`] when the requirement is invalid (a relative
 /// workspace root) or an extra grant is not grantable.
+#[cfg(any(test, feature = "test-support"))]
 pub fn lower_with(
     mode: ConfinementArg,
     workspace: &Path,
     host: &HostPaths,
     extra: &ExtraGrants,
+) -> Result<Option<ExecutionConfinement>, ConfinementError> {
+    if mode == ConfinementArg::Off {
+        return Ok(None);
+    }
+    lower_planned(mode, workspace, plan_grants(workspace, host, extra)?)
+}
+
+/// [`lower_with`] over grants already planned.
+fn lower_planned(
+    mode: ConfinementArg,
+    workspace: &Path,
+    planned: PlannedGrants,
 ) -> Result<Option<ExecutionConfinement>, ConfinementError> {
     let network = match mode {
         ConfinementArg::Workspace => IpNetworkAccess::Unrestricted,
@@ -931,7 +1057,9 @@ pub fn lower_with(
     if !workspace.is_absolute() {
         return Err(ConfinementError::RelativeWorkspace(workspace.to_path_buf()));
     }
-    let (write, read, files) = grants_with(workspace, host, extra)?;
+    let PlannedGrants {
+        write, read, files, ..
+    } = planned;
     let spec = ConfinementSpec {
         baseline: PlatformBaseline::CommandRuntimeV1,
         read: FilesystemAccess::Paths(
@@ -995,7 +1123,11 @@ pub fn plan(
     host: &HostPaths,
     extra: &ExtraGrants,
 ) -> Result<ConfinementPlan, ConfinementError> {
-    let requirement = lower_with(mode, workspace, host, extra)?;
+    // The grants are planned (and the user's validated) in every mode: the
+    // approval gate is told them whether the shell is confined or not.
+    let planned = plan_grants(workspace, host, extra)?;
+    let granted = planned.granted(workspace);
+    let requirement = lower_planned(mode, workspace, planned)?;
     let mut notices = vec![describe(mode).to_string()];
     if !config.confinement.is_empty() {
         notices.push(
@@ -1006,7 +1138,7 @@ pub fn plan(
     let Some(requirement) = requirement else {
         if !extra.is_empty() {
             notices.push(
-                "--confinement-read/--confinement-write and tui.toml [confinement] grants have no effect: commands run unconfined"
+                "commands run unconfined: the --confinement-read/--confinement-write and tui.toml [confinement] directories tell only the approval gate where you allow the agent to work"
                     .to_string(),
             );
         }
@@ -1014,6 +1146,7 @@ pub fn plan(
             shell: ShellConfinement::TrustedHost,
             notices,
             shell_env: None,
+            granted,
         });
     };
     check(&requirement).map_err(|source| {
@@ -1032,6 +1165,7 @@ pub fn plan(
         shell: ShellConfinement::Required { requirement },
         notices,
         shell_env: Some(confined_environment(std::env::vars_os())),
+        granted,
     })
 }
 
@@ -1664,15 +1798,59 @@ mod tests {
         );
     }
 
+    /// Every grant is planned in every mode, for the approval gate: the
+    /// defaults (the workspace left out) and the user's own apart.
     #[test]
-    fn extra_grants_under_off_only_earn_a_notice() {
+    fn the_gate_is_told_the_grants_in_every_mode() {
         let f = fixture();
+        let root = f.ws.parent().unwrap().to_path_buf();
+        let data = root.join("data");
+        let scratch = root.join("scratch");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&scratch).unwrap();
         let extra = ExtraGrants {
-            read: vec![f.tools.clone()],
+            read: vec![data.clone()],
+            write: vec![scratch.clone()],
+            ..ExtraGrants::default()
+        };
+        let granted = plan_grants(&f.ws, &f.host, &extra).unwrap().granted(&f.ws);
+        assert_eq!(granted.user_write, vec![scratch]);
+        assert_eq!(granted.user_read, vec![data]);
+        assert_eq!(granted.baseline_write, vec![f.cache.clone()]);
+        assert_eq!(granted.baseline_read, {
+            let mut read = vec![f.tools.clone(), f.file.clone()];
+            read.sort();
+            read
+        });
+        // Unconfined, the plan carries the same directories.
+        let off = plan(
+            ConfinementArg::Off,
+            &f.ws,
+            &Config::default(),
+            &f.host,
+            &extra,
+        )
+        .unwrap();
+        assert_eq!(off.granted, granted);
+        // Without extra grants the defaults are all there is.
+        let none = plan_grants(&f.ws, &f.host, &ExtraGrants::default())
+            .unwrap()
+            .granted(&f.ws);
+        assert_eq!(none.baseline_write, vec![f.cache]);
+        assert!(none.user_write.is_empty() && none.user_read.is_empty());
+    }
+
+    #[test]
+    fn extra_grants_under_off_reach_only_the_gate() {
+        let f = fixture();
+        let data = f.ws.parent().unwrap().join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        let extra = ExtraGrants {
+            read: vec![data],
             write: Vec::new(),
             ..ExtraGrants::default()
         };
-        // Under `off` they only earn a notice.
+        // Under `off` they reach only the gate, and a notice says so.
         let off = plan(
             ConfinementArg::Off,
             &f.ws,
@@ -1682,7 +1860,9 @@ mod tests {
         )
         .unwrap();
         assert!(
-            off.notices.iter().any(|n| n.contains("no effect")),
+            off.notices
+                .iter()
+                .any(|n| n.contains("only the approval gate")),
             "{:?}",
             off.notices
         );

@@ -1736,6 +1736,19 @@ mod tests {
         verdicts: Vec<Result<ClassifierVerdict, ClassifierError>>,
         timeout: Duration,
     ) -> Rig {
+        granted_rig(
+            verdicts,
+            timeout,
+            super::super::classifier::GrantedDirs::default(),
+        )
+    }
+
+    /// [`bare_rig`] whose classifier environment holds `granted`.
+    fn granted_rig(
+        verdicts: Vec<Result<ClassifierVerdict, ClassifierError>>,
+        timeout: Duration,
+        granted: super::super::classifier::GrantedDirs,
+    ) -> Rig {
         let dir = tempfile::tempdir().unwrap();
         let root = ProjectRoot::new(dir.path()).unwrap();
         let classifier = Scripted::new(verdicts);
@@ -1749,7 +1762,7 @@ mod tests {
             classifier: Arc::clone(&classifier) as Arc<dyn ActionClassifier>,
             broker: Some(broker),
             escalation_timeout: timeout,
-            environment: Environment::basic(root.as_path(), root.as_path()),
+            environment: Environment::basic(root.as_path(), root.as_path()).with_granted(granted),
             posix_shell: true,
             events: tx,
             realm_file: None,
@@ -2927,6 +2940,32 @@ mod tests {
         );
         assert!(rig.escalations.try_recv().is_err());
         assert_eq!(rig.classifier.calls(), 0);
+    }
+
+    /// A write outside the project goes to the classifier, which is told
+    /// the directories the user allows: the defaults and the user's own.
+    #[tokio::test]
+    async fn the_classifier_is_told_the_granted_directories() {
+        let base = tempfile::tempdir().unwrap();
+        let base_path = std::fs::canonicalize(base.path()).unwrap();
+        let (named, tmp) = (base_path.join("named"), base_path.join("tmp"));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let granted = super::super::classifier::GrantedDirs {
+            baseline_write: vec![tmp.clone()],
+            user_write: vec![named.clone()],
+            ..Default::default()
+        };
+        let mut rig = granted_rig(vec![], DEFAULT_ESCALATION_TIMEOUT, granted);
+        rig.present = attended(&rig.engine);
+        let write = json!({"path": tmp.join("a.txt").display().to_string(), "content": "x"});
+        assert!(call(&rig, "w1", "write_file", &write).await.is_allowed());
+        assert_eq!(rig.classifier.calls(), 1);
+        let prompt = rig.classifier.prompts.lock()[0].clone();
+        assert!(
+            prompt.contains(&format!("- {} (default)", tmp.display()))
+                && prompt.contains(&format!("- {} (named by the user)", named.display())),
+            "{prompt}"
+        );
     }
 
     /// Accept-edits mode still asks for a protected write, and for a shell

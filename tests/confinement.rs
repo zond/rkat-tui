@@ -441,6 +441,76 @@ fn walk(dir: &Path) -> Vec<std::path::PathBuf> {
     out
 }
 
+/// The classifier is told where the user allows the agent to write, in an
+/// unconfined and a confined run alike: a shell command writing into the
+/// temp directory (a stand-in the host paths name) is judged with the
+/// sandbox's defaults and the `--confinement-write` directory in its
+/// prompt, and a project's own `.rkat/tui.toml` `[confinement]` adds
+/// nothing to them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_classifier_is_told_the_granted_directories_confined_or_not() {
+    for mode in ["off", "workspace"] {
+        let ws = Workspace::new();
+        if mode != "off"
+            && let Some(reason) = sandbox_unavailable(&ws.root, ConfinementArg::Workspace).await
+        {
+            common::sandbox_skipped(&format!("--confinement=workspace is unavailable: {reason}"));
+            continue;
+        }
+        let (tmp, named, project_grant) = (
+            ws.sibling("tmp"),
+            ws.sibling("named"),
+            ws.sibling("project-grant"),
+        );
+        for dir in [&tmp, &named, &project_grant, &ws.root.join(".rkat")] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(
+            ws.root.join(".rkat/tui.toml"),
+            format!(
+                "[confinement]\nextra_write = [\"{}\"]\n",
+                project_grant.display()
+            ),
+        )
+        .unwrap();
+        let command = leak(format!("echo hi > {}/out.txt", tmp.display()));
+        let llm = ScriptedLlmClient::new(vec![
+            Step::Tool {
+                id: "c1",
+                name: "shell",
+                args: json!({ "command": command }),
+            },
+            // The classifier's quick check.
+            Step::Text("ALLOW"),
+            Step::Text("written"),
+        ]);
+        let flag = format!("--confinement={mode}");
+        let setup = Setup {
+            llm_classifier: true,
+            host_paths: Some(HostPaths {
+                write: vec![tmp.clone()],
+                ..HostPaths::default()
+            }),
+            ..Setup::args(&[&flag, "--confinement-write", named.to_str().unwrap()])
+        };
+        let mut rig = Attached::start_with(&ws.root, &llm, setup).await;
+        rig.send(Effect::StartTurn("write hi into the temp dir".into()));
+        let _ = rig.turn_finished().await;
+        let judged = llm.recorded()[1].user();
+        assert!(
+            judged.contains(&format!("- {} (default)", tmp.display()))
+                && judged.contains(&format!("- {} (named by the user)", named.display())),
+            "{mode}: {judged}"
+        );
+        assert!(
+            !judged.contains(project_grant.to_str().unwrap()),
+            "{mode}: {judged}"
+        );
+        assert!(tmp.join("out.txt").exists(), "{mode}: the command ran");
+        rig.quit().await;
+    }
+}
+
 /// The realm config's `[confinement]` table does not decide the agent
 /// shell's confinement: the command line does, so `--confinement=off`
 /// starts even when the table asks for the workspace preset (it was a

@@ -429,6 +429,22 @@ access any layer gives, and the flags win over a file grant that overlaps
 one of theirs. A project `.rkat/tui.toml` may not widen the sandbox: its
 `[confinement]` is ignored with a notice.
 
+**What the approval gate is told.** The same grants are computed whether
+the shell is confined or not, and the classifier is told them: every
+directory outside the project the sandbox lets commands write by default
+(the temp directory in use, that is the real `TMPDIR`, the user cache
+directory, the Cargo home's `registry/` and `git/`), every directory it
+lets them read (toolchains, `/usr/share` and the like, the Cargo home's
+other entries, the name-resolution files), and every directory you added
+with the flags or `[confinement]`, yours marked as named by you. A write
+there is not a write outside the allowed scope; the classifier still
+judges what the action does. With `--no-confinement` (for example inside a
+sandbox of your own) the directories reach only the gate: name the ones
+your own sandbox allows with `--confinement-write` so the classifier knows
+them. The lists are sorted, your directories first, and each is cut after
+2 KiB of paths with a count of the ones left out. A project `.rkat/tui.toml`
+adds nothing to them either.
+
 The shell's confinement is the command line's alone (`--confinement`, the
 extra grants of the flags and your `tui.toml`): a `[confinement]` table in
 the realm's `config.toml` does not decide it, and a start-up notice says so

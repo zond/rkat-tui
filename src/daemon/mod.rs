@@ -1347,6 +1347,7 @@ mod tests {
             shell: meerkat_tools::builtin::shell::ShellConfinement::Required { requirement },
             notices: Vec::new(),
             shell_env: None,
+            granted: Default::default(),
         };
         assert_eq!(endpoint::exposing_grant(&plan, &resolved), None);
         // The old place, and any place in the workspace, is refused (the
@@ -1361,6 +1362,7 @@ mod tests {
             shell: meerkat_tools::builtin::shell::ShellConfinement::TrustedHost,
             notices: Vec::new(),
             shell_env: None,
+            granted: Default::default(),
         };
         check_endpoint_private(&off, &old).unwrap();
         // A refused place falls back to the next; with none safe, the

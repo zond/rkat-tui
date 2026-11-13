@@ -1263,6 +1263,7 @@ mod tests {
                 shell: meerkat_tools::builtin::shell::ShellConfinement::Required { requirement },
                 notices: Vec::new(),
                 shell_env: None,
+                granted: Default::default(),
             }
         };
         assert_eq!(exposing_grant(&plan(Vec::new()), &realm), None);
@@ -1275,6 +1276,7 @@ mod tests {
             shell: meerkat_tools::builtin::shell::ShellConfinement::TrustedHost,
             notices: Vec::new(),
             shell_env: None,
+            granted: Default::default(),
         };
         assert_eq!(exposing_grant(&off, &inside), None);
     }

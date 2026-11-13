@@ -112,14 +112,17 @@ pub struct Args {
 
     /// Let confined commands read this directory (absolute, existing, no
     /// symbolic link on the way, disjoint from the workspace and the other
-    /// grants). Repeatable; also `[confinement] extra_read` in your own
-    /// tui.toml (this flag wins on overlap).
+    /// grants), and tell the approval gate you allow it, confined or not.
+    /// Repeatable; also `[confinement] extra_read` in your own tui.toml
+    /// (this flag wins on overlap).
     #[arg(long, value_name = "DIR")]
     pub confinement_read: Vec<PathBuf>,
 
     /// Let confined commands read and write this directory (same rules as
-    /// `--confinement-read`). Repeatable; also `[confinement] extra_write`
-    /// in your own tui.toml (this flag wins on overlap).
+    /// `--confinement-read`), and tell the approval gate you allow it,
+    /// confined or not (with --no-confinement it reaches only the gate).
+    /// Repeatable; also `[confinement] extra_write` in your own tui.toml
+    /// (this flag wins on overlap).
     #[arg(long, value_name = "DIR")]
     pub confinement_write: Vec<PathBuf>,
 

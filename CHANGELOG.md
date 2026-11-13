@@ -112,6 +112,18 @@
 
 ### Changed
 
+- The approval classifier is told where you allow the agent to work
+  outside the project: every directory the confinement plan grants by
+  default (the temp directory in use, the user cache directory, the Cargo
+  home's caches for writing; toolchains and shared system directories
+  for reading) and every directory you name with `--confinement-write`,
+  `--confinement-read` or `[confinement]` in your own `tui.toml`, yours
+  marked as named by you. A write there no longer counts as leaving the
+  allowed scope. This holds with `--no-confinement` too: the grants are
+  computed and validated in every mode, and without confinement they
+  reach only the gate (the start-up notice says so instead of calling
+  them without effect). Helpers and forks are judged with the same list;
+  a project's own `.rkat/tui.toml` still adds nothing.
 - The engine is Meerkat 0.9.14 from crates.io (was 0.9.13). What it
   changes for rkat-tui: a conversation moved between two OpenAI-family
   endpoints (the OpenAI API, a self-hosted or LiteLLM server in

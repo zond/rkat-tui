@@ -8178,3 +8178,33 @@ the delivery, `children_are_told_who_they_can_reach` the wording. Not
 done, engine-bound: a fork wired to its parent, a `mob_spawn_member`
 member of the agent's own mob wired to it, and `wire_members` for an
 agent's own children in `tui` (upstream asks, not filed).
+
+## The classifier is told what the sandbox allows (owner decision, 2026-11-13)
+
+The owner runs rkat-tui with `--no-confinement` inside a sandbox of their
+own, so the gate and the classifier alone decide what may be written
+outside the project. The classifier knew only the project root: writes
+to the temp directory and to Cargo's caches were blocked under T3 again
+and again, also after the user had said yes in chat. The owner's
+decision: everything the confinement plan grants (its baseline and the
+user's `--confinement-write`/`--confinement-read`/`[confinement]`
+directories) is stated in the classifier's prompt as places the user
+allows, confined or not. `confinement::plan_grants` now plans the grants
+in every mode (so the user's are validated with `--no-confinement` too,
+where they used to earn only a "no effect" notice), keeps the user's
+apart from the detected ones, and `PlannedGrants::granted` hands the
+approval engine a `GrantedDirs` (canonical, sorted, the workspace left
+out) that sits in the classifier's `Environment`. The prompt names each
+directory as "named by the user" or "default", the user's first, and says
+a write there does not leave the allowed scope while what the action does
+is still judged; each list stops after `MAX_GRANTED_LIST_BYTES` (2 KiB) of
+paths and counts the rest, so the addition is deterministic and bounded.
+Helpers and forks go through the one engine and get the same list. The
+project's `.rkat/tui.toml` cannot add to it (its `[confinement]` is
+dropped when the layers are read). Pinned by
+`the_granted_directories_are_stated_sorted_and_bounded` (the prompt),
+`the_gate_is_told_the_grants_in_every_mode` and
+`extra_grants_under_off_reach_only_the_gate` (the plan), and
+`the_classifier_is_told_the_granted_directories_confined_or_not` (a rig
+run with the model classifier, unconfined and, where the host can,
+confined; the project file's directory absent from the prompt).

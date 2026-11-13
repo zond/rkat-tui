@@ -505,6 +505,7 @@ pub async fn assemble(
         &scope,
         layered,
         approval_notices,
+        confinement.granted.clone(),
         approval::ClassifierSource {
             factory: &factory,
             config: &effective,

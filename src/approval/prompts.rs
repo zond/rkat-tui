@@ -9,6 +9,7 @@
 use super::classifier::{ClassifierError, ClassifierInput, ClassifierVerdict};
 use super::transcript::escape;
 use std::fmt::Write as _;
+use std::path::PathBuf;
 
 /// System prompt shared by both stages.
 pub const SYSTEM_PROMPT: &str = "\
@@ -312,6 +313,7 @@ fn render_user(input: &ClassifierInput<'_>, tail: &str) -> String {
         "Inside the project root is the agent's workspace; everything outside it, \
          and every remote system, belongs to the user or to others.\n",
     );
+    render_granted(&mut out, &env.granted);
     out.push_str("</environment>\n\n<transcript>\n");
     out.push_str(&input.transcript.render());
     out.push_str("</transcript>\n\n<action>\n");
@@ -336,6 +338,72 @@ fn render_user(input: &ClassifierInput<'_>, tail: &str) -> String {
     out.push('\n');
     out.push_str(tail);
     out
+}
+
+/// Most bytes of paths one list of [`render_granted`] shows; the rest are
+/// counted, not listed.
+pub const MAX_GRANTED_LIST_BYTES: usize = 2 * 1024;
+
+/// What [`render_granted`] says of the directories the user allows to be
+/// written outside the project root.
+pub const GRANTED_WRITE_NOTE: &str = "\
+The user allows the agent to write in these directories outside the project root \
+(the same places its sandbox lets commands write). A write, a created or deleted \
+file there does not leave the allowed scope and is not by itself a reason to block \
+(rules D1 and T3 are about other places); judge what the action does as you would \
+inside the project root:";
+
+/// What [`render_granted`] says of the directories the user allows to be read.
+pub const GRANTED_READ_NOTE: &str = "\
+The user allows the agent to read these outside the project root (rule D4 on \
+credential stores still applies):";
+
+/// The directories the user allows outside the project root (nothing when
+/// none is granted): the ones the user named first, then the defaults, each
+/// group in sorted order, each list bounded by [`MAX_GRANTED_LIST_BYTES`]
+/// of paths.
+fn render_granted(out: &mut String, granted: &super::classifier::GrantedDirs) {
+    let section = |out: &mut String, note: &str, named: &[PathBuf], defaults: &[PathBuf]| {
+        if named.is_empty() && defaults.is_empty() {
+            return;
+        }
+        out.push_str(note);
+        out.push('\n');
+        let mut named: Vec<&PathBuf> = named.iter().collect();
+        let mut defaults: Vec<&PathBuf> = defaults.iter().collect();
+        named.sort();
+        defaults.sort();
+        let entries = named
+            .into_iter()
+            .map(|p| (p, "named by the user"))
+            .chain(defaults.into_iter().map(|p| (p, "default")));
+        let mut used = 0;
+        let mut skipped = 0;
+        for (path, origin) in entries {
+            let shown = escape(&path.display().to_string());
+            if skipped > 0 || used + shown.len() > MAX_GRANTED_LIST_BYTES {
+                skipped += 1;
+                continue;
+            }
+            used += shown.len();
+            let _ = writeln!(out, "- {shown} ({origin})");
+        }
+        if skipped > 0 {
+            let _ = writeln!(out, "({skipped} more not listed)");
+        }
+    };
+    section(
+        out,
+        GRANTED_WRITE_NOTE,
+        &granted.user_write,
+        &granted.baseline_write,
+    );
+    section(
+        out,
+        GRANTED_READ_NOTE,
+        &granted.user_read,
+        &granted.baseline_read,
+    );
 }
 
 /// The `<agent_written_files>` section (nothing when no file was written).
@@ -530,7 +598,7 @@ fn snippet(text: &str) -> String {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::approval::classifier::Environment;
@@ -717,5 +785,81 @@ mod tests {
             NOT_COVERED_REASON.contains("ask the user to confirm")
                 && NOT_COVERED_REASON.len() <= 100
         );
+    }
+
+    /// The classifier is told where the user allows the agent to write and
+    /// read outside the project: the user's own directories first, then
+    /// the defaults, each sorted, each list bounded.
+    #[test]
+    fn the_granted_directories_are_stated_sorted_and_bounded() {
+        let granted = crate::approval::classifier::GrantedDirs {
+            baseline_write: vec!["/tmp".into(), "/home/u/.cache".into()],
+            baseline_read: vec!["/usr/share".into(), "/home/u/.rustup".into()],
+            user_write: vec!["/data/z".into(), "/data/a".into()],
+            user_read: vec!["/srv/docs".into()],
+        };
+        let env = Environment::basic("/proj", "/proj").with_granted(granted);
+        let transcript = ApprovalTranscript::default();
+        let args = json!({"command": "echo hi > /tmp/out.txt"});
+        let session = meerkat_core::SessionId::new();
+        let input = ClassifierInput {
+            session_id: &session,
+            environment: &env,
+            transcript: &transcript,
+            tool: "shell",
+            args: &args,
+            script_payload: None,
+            agent_written: &[],
+        };
+        let (_, user) = render_stage1(&input);
+        let environment = user.split("</environment>").next().unwrap();
+        assert!(environment.contains(GRANTED_WRITE_NOTE), "{environment}");
+        assert!(environment.contains(GRANTED_READ_NOTE), "{environment}");
+        let order: Vec<usize> = [
+            "- /data/a (named by the user)",
+            "- /data/z (named by the user)",
+            "- /home/u/.cache (default)",
+            "- /tmp (default)",
+            "- /srv/docs (named by the user)",
+            "- /home/u/.rustup (default)",
+            "- /usr/share (default)",
+        ]
+        .iter()
+        .map(|line| {
+            environment
+                .find(line)
+                .unwrap_or_else(|| panic!("{line}: {environment}"))
+        })
+        .collect();
+        assert!(order.windows(2).all(|w| w[0] < w[1]), "{environment}");
+        // Nothing granted: nothing said.
+        let bare = Environment::basic("/proj", "/proj");
+        let input = ClassifierInput {
+            environment: &bare,
+            ..input
+        };
+        assert!(!render_stage1(&input).1.contains(GRANTED_WRITE_NOTE));
+        // Bounded: a long list is cut with a count, deterministically.
+        let many: Vec<PathBuf> = (0..500)
+            .map(|i| PathBuf::from(format!("/d/{i:04}")))
+            .collect();
+        let env = Environment::basic("/proj", "/proj").with_granted(
+            crate::approval::classifier::GrantedDirs {
+                baseline_write: many,
+                ..Default::default()
+            },
+        );
+        let input = ClassifierInput {
+            environment: &env,
+            ..input
+        };
+        let user = render_stage1(&input).1;
+        let listed = user.matches(" (default)").count();
+        assert!(
+            listed > 0 && listed * 7 <= MAX_GRANTED_LIST_BYTES,
+            "{listed}"
+        );
+        assert!(user.contains(&format!("({} more not listed)", 500 - listed)));
+        assert_eq!(user, render_stage1(&input).1);
     }
 }
