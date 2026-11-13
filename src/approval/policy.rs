@@ -659,111 +659,81 @@ fn builtin_tier(action: &Action<'_>, ctx: &PolicyContext<'_>) -> Result<TierDeci
                 Err("user-level notes persist into every project's system prompt".to_string())
             }
         }
-        ActionKind::FileRead { path } => {
-            if let Some(sealed) = secret(ctx.root, path) {
-                return Ok(sealed);
-            }
-            if let Some(dir) = require_reachable(ctx, path)? {
-                return Ok(TierDecision::new(
-                    Tier::AlwaysAllow,
-                    format!("read inside `{}`, which the user granted", dir.display()),
-                ));
-            }
-            Ok(TierDecision::new(
+        ActionKind::FileRead { path } => match classify_target(ctx, path, Access::Read)? {
+            Target::Sealed => Ok(secret(path)),
+            Target::Outside => Err(outside(path)),
+            Target::Granted(dir) => Ok(TierDecision::new(
+                Tier::AlwaysAllow,
+                format!("read inside `{}`, which the user granted", dir.display()),
+            )),
+            Target::Project | Target::Protected(_) => Ok(TierDecision::new(
                 Tier::AlwaysAllow,
                 "read inside the project",
-            ))
-        }
+            )),
+        },
         ActionKind::Search { path, pattern } => {
-            if let Some(path) = path.as_deref() {
-                if let Some(sealed) = secret(ctx.root, path) {
-                    return Ok(sealed);
-                }
-                if let Some(dir) = require_reachable(ctx, path)? {
-                    // A pattern is relative to the path searched; one that
-                    // climbs out of it is reviewed.
-                    if let Some(pattern) = pattern.as_deref()
-                        && escapes_root(pattern)
-                    {
-                        return Err(format!(
-                            "glob pattern `{pattern}` reaches outside `{}`",
-                            dir.display()
-                        ));
-                    }
-                    return Ok(TierDecision::new(
-                        Tier::AlwaysAllow,
-                        format!("search inside `{}`, which the user granted", dir.display()),
-                    ));
-                }
-            }
+            // A pattern is relative to the path searched; one that climbs
+            // out of it is reviewed.
+            let within = match path.as_deref() {
+                None => None,
+                Some(path) => match classify_target(ctx, path, Access::Read)? {
+                    Target::Sealed => return Ok(secret(path)),
+                    Target::Outside => return Err(outside(path)),
+                    Target::Granted(dir) => Some(dir),
+                    Target::Project | Target::Protected(_) => None,
+                },
+            };
+            let place = within.map_or_else(
+                || "the project".to_string(),
+                |dir| format!("`{}`", dir.display()),
+            );
             if let Some(pattern) = pattern.as_deref()
                 && escapes_root(pattern)
             {
-                return Err(format!(
-                    "glob pattern `{pattern}` reaches outside the project"
-                ));
+                return Err(format!("glob pattern `{pattern}` reaches outside {place}"));
             }
             Ok(TierDecision::new(
                 Tier::AlwaysAllow,
-                "search inside the project",
+                match within {
+                    None => "search inside the project".to_string(),
+                    Some(_) => format!("search inside {place}, which the user granted"),
+                },
             ))
         }
         ActionKind::FileWrite { paths } => {
-            // Every target is checked for a seal before any other verdict:
-            // an earlier outside or protected target must not hide a later
-            // sealed one behind the classifier or an allow rule.
-            for path in paths {
-                if ctx.root.resolve(path).is_ok_and(|resolved| resolved.sealed) {
-                    return Ok(TierDecision::new(
-                        Tier::Sealed,
-                        format!(
-                            "`{path}` is sealed: file tools never write the gate's own state \
-                             (`.rkat/`, the realm and user config directories) or the git directories"
-                        ),
-                    ));
-                }
+            let targets: Vec<_> = paths
+                .iter()
+                .map(|path| (path, classify_target(ctx, path, Access::Write)))
+                .collect();
+            // A seal decides before anything else (an earlier target must
+            // not hide a sealed one behind the classifier or an allow rule);
+            // then a path that does not resolve; then any protected target
+            // puts the whole call to the user, outside targets included (the
+            // human is the stricter reviewer); then any outside one is
+            // reviewed; else it is an edit.
+            if let Some((path, _)) = targets
+                .iter()
+                .find(|(_, t)| matches!(t, Ok(Target::Sealed)))
+            {
+                return Ok(TierDecision::new(
+                    Tier::Sealed,
+                    format!(
+                        "`{path}` is sealed: file tools never write the gate's own state \
+                         (`.rkat/`, the realm and user config directories) or the git directories"
+                    ),
+                ));
             }
-            let mut protected = Vec::new();
-            let mut outside = None;
-            let mut granted = Vec::new();
-            for path in paths {
-                let resolved = ctx
-                    .root
-                    .resolve(path)
-                    .map_err(|e| format!("path `{path}`: {e}"))?;
-                // A directory the user named for writing is tiered like the
-                // project: its own protected paths still ask. The path is
-                // canonical (`resolve`), so a link inside the directory
-                // pointing out of it does not carry the grant.
-                let in_granted = if resolved.inside() {
-                    None
-                } else {
-                    ctx.granted.user_write_dir_of(&resolved.abs)
-                };
-                let relative = resolved.relative.clone().or_else(|| {
-                    in_granted.and_then(|dir| resolved.abs.strip_prefix(dir).ok().map(Into::into))
-                });
-                let is_protected = match (&resolved.relative, in_granted, &relative) {
-                    (Some(_), _, _) => resolved.protected,
-                    (None, Some(_), Some(relative)) => ctx.root.is_protected_relative(relative),
-                    _ => false,
-                };
-                if is_protected && let Some(relative) = relative.as_deref() {
-                    protected.push(format!(
-                        "`{}` ({})",
-                        ctx.root.display_of(&resolved),
-                        protected_kind(relative)
-                    ));
-                } else if let Some(dir) = in_granted {
-                    if !granted.contains(&dir) {
-                        granted.push(dir);
-                    }
-                } else if !resolved.inside() && outside.is_none() {
-                    outside = Some(path);
-                }
-            }
-            // Any protected target puts the whole call to the user, outside
-            // targets included: the human is the stricter reviewer.
+            let targets = targets
+                .into_iter()
+                .map(|(path, target)| target.map(|t| (path, t)))
+                .collect::<Result<Vec<_>, _>>()?;
+            let protected: Vec<&str> = targets
+                .iter()
+                .filter_map(|(_, t)| match t {
+                    Target::Protected(what) => Some(what.as_str()),
+                    _ => None,
+                })
+                .collect();
             if !protected.is_empty() {
                 let noun = if protected.len() == 1 {
                     "protected path"
@@ -778,8 +748,16 @@ fn builtin_tier(action: &Action<'_>, ctx: &PolicyContext<'_>) -> Result<TierDeci
                     ),
                 ));
             }
-            if let Some(path) = outside {
-                return Err(format!("`{path}` is outside the project"));
+            if let Some((path, _)) = targets.iter().find(|(_, t)| matches!(t, Target::Outside)) {
+                return Err(outside(path));
+            }
+            let mut granted = Vec::new();
+            for (_, target) in &targets {
+                if let Target::Granted(dir) = target
+                    && !granted.contains(dir)
+                {
+                    granted.push(*dir);
+                }
             }
             if granted.is_empty() {
                 return Ok(TierDecision::new(
@@ -857,41 +835,87 @@ fn protected_kind(relative: &std::path::Path) -> &'static str {
     }
 }
 
-/// [`Tier::Sealed`] when `path` lies in a secret root (the daemon's
-/// endpoint directories: the attach token): never read, never a question
-/// for the classifier or the user.
-fn secret(root: &ProjectRoot, path: &str) -> Option<TierDecision> {
-    root.resolve(path)
-        .is_ok_and(|resolved| resolved.secret)
-        .then(|| {
-            TierDecision::new(
-                Tier::Sealed,
-                format!(
-                    "`{path}` is sealed: it holds the daemon's attach token, which file tools \
-                     never read"
-                ),
-            )
-        })
+/// How a file tool uses its target.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Access {
+    Read,
+    Write,
 }
 
-/// `Ok(None)` when `path` lies inside the project, `Ok(Some(dir))` when it
-/// lies inside `dir`, a directory the user named (for writing or reading),
-/// else why it needs review.
-fn require_reachable<'c>(
+/// Where a file tool's target lies, as the gate tiers it.
+enum Target<'c> {
+    /// Never touched: for a read, a secret root (the daemon's endpoint
+    /// directories: the attach token); for a write, any sealed path.
+    Sealed,
+    /// A write to a protected path, as "`path` (kind)" (reads never are).
+    Protected(String),
+    /// Inside a directory the user named (for a write: named for writing).
+    Granted(&'c std::path::Path),
+    Outside,
+    Project,
+}
+
+/// Classify `path` for `access`; `Err` when it does not resolve. The path
+/// is canonical (`resolve`), so a link inside a granted directory pointing
+/// out of it does not carry the grant. A directory the user named for
+/// writing is tiered like the project: its own protected paths still ask.
+fn classify_target<'c>(
     ctx: &PolicyContext<'c>,
     path: &str,
-) -> Result<Option<&'c std::path::Path>, String> {
+    access: Access,
+) -> Result<Target<'c>, String> {
     let resolved = ctx
         .root
         .resolve(path)
         .map_err(|e| format!("path `{path}`: {e}"))?;
-    if resolved.inside() {
-        return Ok(None);
-    }
-    ctx.granted
-        .user_dir_of(&resolved.abs)
-        .map(Some)
-        .ok_or_else(|| format!("`{path}` is outside the project"))
+    let protected = |relative: &std::path::Path| {
+        Target::Protected(format!(
+            "`{}` ({})",
+            ctx.root.display_of(&resolved),
+            protected_kind(relative)
+        ))
+    };
+    Ok(match access {
+        Access::Read if resolved.secret => Target::Sealed,
+        Access::Write if resolved.sealed => Target::Sealed,
+        _ => match &resolved.relative {
+            Some(relative) if access == Access::Write && resolved.protected => protected(relative),
+            Some(_) => Target::Project,
+            None => {
+                let dir = match access {
+                    Access::Read => ctx.granted.user_dir_of(&resolved.abs),
+                    Access::Write => ctx.granted.user_write_dir_of(&resolved.abs),
+                };
+                match dir {
+                    None => Target::Outside,
+                    Some(dir) => match resolved.abs.strip_prefix(dir) {
+                        Ok(relative)
+                            if access == Access::Write
+                                && ctx.root.is_protected_relative(relative) =>
+                        {
+                            protected(relative)
+                        }
+                        _ => Target::Granted(dir),
+                    },
+                }
+            }
+        },
+    })
+}
+
+/// A secret target's verdict: never read, never a question for the
+/// classifier or the user.
+fn secret(path: &str) -> TierDecision {
+    TierDecision::new(
+        Tier::Sealed,
+        format!(
+            "`{path}` is sealed: it holds the daemon's attach token, which file tools never read"
+        ),
+    )
+}
+
+fn outside(path: &str) -> String {
+    format!("`{path}` is outside the project")
 }
 
 fn escapes_root(pattern: &str) -> bool {
@@ -1055,6 +1079,249 @@ mod tests {
             decide("read_file", &json!({"path": at(&named, "out/x")})).tier,
             Tier::Classifier
         );
+    }
+
+    /// The file tools' built-in verdicts, pinned for every kind of target
+    /// alone and mixed in both orders, since the precedence is the point:
+    /// any sealed target first, then the first path that does not resolve,
+    /// then any protected one asks, then any outside one is reviewed, else
+    /// an edit. Reads and searches: secret is sealed, inside the project or
+    /// a directory the user named is tier 1, a glob that climbs out is
+    /// reviewed.
+    #[test]
+    fn file_tool_verdicts_by_target_and_precedence() {
+        const SEALED: &str = "Sealed: `.rkat/x` is sealed: file tools never write the gate's \
+             own state (`.rkat/`, the realm and user config directories) or the git directories";
+        const ASK_ENV: &str =
+            "AskUser: protected path: `.env` (secrets); the policy always asks for these";
+        const ASK_NAMED_ENV: &str = "AskUser: protected path: `<base>/named/.env` (secrets); \
+             the policy always asks for these";
+        const BAD: &str = "review: path ``: path is empty";
+        const OUTSIDE: &str = "review: `<base>/elsewhere/a.txt` is outside the project";
+        const EDIT_NAMED: &str =
+            "InProjectEdit: edit inside `<base>/named`, which the user granted for writing";
+        const IN_PROJECT: &str = "AlwaysAllow: read inside the project";
+        const SEARCH_PROJECT: &str = "AlwaysAllow: search inside the project";
+        const SEARCH_NAMED: &str =
+            "AlwaysAllow: search inside `<base>/named`, which the user granted";
+        let (_dir, root) = project();
+        let base = tempfile::tempdir().unwrap();
+        let base_path = std::fs::canonicalize(base.path()).unwrap();
+        let dir = |name: &str| base_path.join(name);
+        for name in ["named", "ro", "elsewhere", "secret"] {
+            std::fs::create_dir_all(dir(name)).unwrap();
+        }
+        std::os::unix::fs::symlink(dir("elsewhere"), dir("named").join("out")).unwrap();
+        let root = root.with_secret_roots([dir("secret")]);
+        let granted = crate::approval::classifier::GrantedDirs {
+            user_write: vec![dir("named")],
+            user_read: vec![dir("ro")],
+            ..Default::default()
+        };
+        let ctx = PolicyContext {
+            root: &root,
+            trust_project_builds: false,
+            posix_shell: true,
+            granted: &granted,
+        };
+        let path = |target: &str| -> String {
+            let at = |d: &str, f: &str| dir(d).join(f).display().to_string();
+            match target {
+                "project" => "src/new.rs".into(),
+                "protected" => ".env".into(),
+                "sealed" => ".rkat/x".into(),
+                "bad" => String::new(),
+                "outside" => at("elsewhere", "a.txt"),
+                "granted" => at("named", "a.txt"),
+                "granted2" => at("named", "b.txt"),
+                "granted-protected" => at("named", ".env"),
+                "link-out" => at("named", "out/a.txt"),
+                "read-only" => at("ro", "a.txt"),
+                "secret" => at("secret", "token"),
+                "named-dir" => dir("named").display().to_string(),
+                "ro-dir" => dir("ro").display().to_string(),
+                "secret-dir" => dir("secret").display().to_string(),
+                "outside-dir" => dir("elsewhere").display().to_string(),
+                "link-dir" => dir("named").join("out").display().to_string(),
+                other => other.into(),
+            }
+        };
+        let args = raw(&json!({}));
+        let verdict = |kind: ActionKind| {
+            let action = Action {
+                name: "tool",
+                args: &args,
+                family: ToolFamily::Files,
+                kind,
+            };
+            let text = match builtin_tier(&action, &ctx) {
+                Ok(decision) => format!("{:?}: {}", decision.tier, decision.detail),
+                Err(reason) => format!("review: {reason}"),
+            };
+            text.replace(&base_path.display().to_string(), "<base>")
+        };
+        let writes: &[(&[&str], &str)] = &[
+            (&["project"], "InProjectEdit: edit inside the project"),
+            (&["protected"], ASK_ENV),
+            (&["sealed"], SEALED),
+            (
+                &["secret"],
+                "Sealed: `<base>/secret/token` is sealed: file tools never write the gate's \
+                 own state (`.rkat/`, the realm and user config directories) or the git \
+                 directories",
+            ),
+            (&["bad"], BAD),
+            (&["outside"], OUTSIDE),
+            (&["granted"], EDIT_NAMED),
+            (&["granted-protected"], ASK_NAMED_ENV),
+            (
+                &["link-out"],
+                "review: `<base>/named/out/a.txt` is outside the project",
+            ),
+            (
+                &["read-only"],
+                "review: `<base>/ro/a.txt` is outside the project",
+            ),
+            (&["protected", "sealed"], SEALED),
+            (&["sealed", "protected"], SEALED),
+            (&["outside", "sealed"], SEALED),
+            (&["sealed", "outside"], SEALED),
+            (&["bad", "sealed"], SEALED),
+            (&["sealed", "bad"], SEALED),
+            (&["protected", "bad"], BAD),
+            (&["bad", "protected"], BAD),
+            (&["outside", "bad"], BAD),
+            (&["protected", "outside"], ASK_ENV),
+            (&["outside", "protected"], ASK_ENV),
+            (&["outside", "granted-protected"], ASK_NAMED_ENV),
+            (&["outside", "granted"], OUTSIDE),
+            (&["granted", "outside"], OUTSIDE),
+            (&["outside", "link-out"], OUTSIDE),
+            (
+                &["link-out", "outside"],
+                "review: `<base>/named/out/a.txt` is outside the project",
+            ),
+            (
+                &["project", "read-only"],
+                "review: `<base>/ro/a.txt` is outside the project",
+            ),
+            (&["granted", "project"], EDIT_NAMED),
+            (&["project", "granted"], EDIT_NAMED),
+            (&["granted", "granted2"], EDIT_NAMED),
+            (&["granted", "granted-protected"], ASK_NAMED_ENV),
+            (&["granted-protected", "granted"], ASK_NAMED_ENV),
+            (
+                &["protected", "granted-protected"],
+                "AskUser: protected paths: `.env` (secrets), `<base>/named/.env` (secrets); \
+                 the policy always asks for these",
+            ),
+            (
+                &["granted-protected", "protected"],
+                "AskUser: protected paths: `<base>/named/.env` (secrets), `.env` (secrets); \
+                 the policy always asks for these",
+            ),
+            (&["project", "outside", "protected", "sealed"], SEALED),
+        ];
+        for (targets, expected) in writes {
+            let paths = targets.iter().map(|t| path(t)).collect();
+            assert_eq!(
+                verdict(ActionKind::FileWrite { paths }),
+                *expected,
+                "write {targets:?}"
+            );
+        }
+        let reads: &[(&str, &str)] = &[
+            ("src/main.rs", IN_PROJECT),
+            ("protected", IN_PROJECT),
+            ("sealed", IN_PROJECT),
+            (
+                "secret",
+                "Sealed: `<base>/secret/token` is sealed: it holds the daemon's attach \
+                 token, which file tools never read",
+            ),
+            ("bad", BAD),
+            ("outside", OUTSIDE),
+            (
+                "granted",
+                "AlwaysAllow: read inside `<base>/named`, which the user granted",
+            ),
+            (
+                "read-only",
+                "AlwaysAllow: read inside `<base>/ro`, which the user granted",
+            ),
+            (
+                "link-out",
+                "review: `<base>/named/out/a.txt` is outside the project",
+            ),
+        ];
+        for (target, expected) in reads {
+            assert_eq!(
+                verdict(ActionKind::FileRead { path: path(target) }),
+                *expected,
+                "read {target}"
+            );
+        }
+        let searches: &[(Option<&str>, Option<&str>, &str)] = &[
+            (None, None, SEARCH_PROJECT),
+            (None, Some("**/*.rs"), SEARCH_PROJECT),
+            (
+                None,
+                Some("../*"),
+                "review: glob pattern `../*` reaches outside the project",
+            ),
+            (
+                None,
+                Some("/etc/*"),
+                "review: glob pattern `/etc/*` reaches outside the project",
+            ),
+            (
+                None,
+                Some("~/x"),
+                "review: glob pattern `~/x` reaches outside the project",
+            ),
+            (Some("src"), Some("**/*.rs"), SEARCH_PROJECT),
+            (
+                Some("src"),
+                Some("a/../../*"),
+                "review: glob pattern `a/../../*` reaches outside the project",
+            ),
+            (Some("named-dir"), Some("**/*.txt"), SEARCH_NAMED),
+            (Some("named-dir"), None, SEARCH_NAMED),
+            (
+                Some("named-dir"),
+                Some("../*"),
+                "review: glob pattern `../*` reaches outside `<base>/named`",
+            ),
+            (
+                Some("ro-dir"),
+                None,
+                "AlwaysAllow: search inside `<base>/ro`, which the user granted",
+            ),
+            (
+                Some("secret-dir"),
+                Some("*"),
+                "Sealed: `<base>/secret` is sealed: it holds the daemon's attach token, \
+                 which file tools never read",
+            ),
+            (
+                Some("outside-dir"),
+                None,
+                "review: `<base>/elsewhere` is outside the project",
+            ),
+            (
+                Some("link-dir"),
+                None,
+                "review: `<base>/named/out` is outside the project",
+            ),
+            (Some("bad"), None, BAD),
+        ];
+        for (target, pattern, expected) in searches {
+            let kind = ActionKind::Search {
+                path: target.map(path),
+                pattern: pattern.map(str::to_string),
+            };
+            assert_eq!(verdict(kind), *expected, "search {target:?} {pattern:?}");
+        }
     }
 
     /// D3 of the security review: a secret root (the daemon's endpoint

@@ -649,119 +649,120 @@ pub fn plan_grants(
     extra: &ExtraGrants,
 ) -> Result<PlannedGrants, ConfinementError> {
     let (mut write, mut read, mut files) = grants(workspace, host);
-    if extra.is_empty() {
-        return Ok(PlannedGrants {
-            write,
-            read,
-            files,
-            ..PlannedGrants::default()
-        });
-    }
-    let workspace_dir = canonical(workspace, true);
-    let workspace_grant = workspace_dir
-        .as_ref()
-        .and_then(|ws| write.iter().find(|dir| ws.starts_with(dir)).cloned());
-    // (origin label, path, writable, from the command line)
-    let requested = extra
-        .write
-        .iter()
-        .map(|path| ("--confinement-write", path, true, true))
-        .chain(
-            extra
-                .read
-                .iter()
-                .map(|path| ("--confinement-read", path, false, true)),
-        )
-        .chain(
-            extra
-                .file
-                .extra_write
-                .iter()
-                .map(|path| ("[confinement] extra_write", path, true, false)),
-        )
-        .chain(
-            extra
-                .file
-                .extra_read
-                .iter()
-                .map(|path| ("[confinement] extra_read", path, false, false)),
-        );
-    /// One accepted extra grant.
-    struct Accepted {
-        path: PathBuf,
-        writable: bool,
-        from_cli: bool,
-        /// Whether the sandbox gets it (`false`: a detected grant already
-        /// covers it; only the gate is told).
-        sandbox: bool,
-    }
-    let mut accepted: Vec<Accepted> = Vec::new();
-    for (flag, given, writable, from_cli) in requested {
-        let refuse = |problem| ConfinementError::ExtraGrant {
-            flag,
-            path: given.clone(),
-            problem,
-        };
-        let path = validate_extra(given).map_err(refuse)?;
-        if let Some(ws) = workspace_dir.as_ref().filter(|ws| overlaps(&path, ws)) {
-            return Err(refuse(ExtraGrantProblem::OverlapsWorkspace(ws.clone())));
-        }
-        if !from_cli {
-            // The command line wins over the file; a file grant repeating
-            // an earlier one with no more access adds nothing.
-            let yields = accepted.iter().any(|other| {
-                (other.from_cli && overlaps(&path, &other.path))
-                    || (other.path == path && (other.writable || !writable))
-            });
-            if yields {
-                continue;
-            }
-        }
-        if let Some(other) = accepted.iter().find(|other| overlaps(&path, &other.path)) {
-            return Err(refuse(ExtraGrantProblem::OverlapsGrant(other.path.clone())));
-        }
-        let covered = write
-            .iter()
-            .chain(
-                if writable { None } else { Some(&read) }
-                    .into_iter()
-                    .flatten(),
-            )
-            .any(|dir| path.starts_with(dir));
-        // One a detected grant already covers leaves the sandbox as it is
-        // (`--confinement-write /tmp`): it tells the gate the user named it.
-        if !covered && let Some(ws) = workspace_grant.as_ref().filter(|ws| overlaps(&path, ws)) {
-            return Err(refuse(ExtraGrantProblem::OverlapsWorkspace(ws.clone())));
-        }
-        accepted.push(Accepted {
-            path,
-            writable,
-            from_cli,
-            sandbox: !covered,
-        });
-    }
+    let accepted = accept_extra(workspace, &write, &read, extra)?;
     let granted = || accepted.iter().filter(|grant| grant.sandbox);
     let clashes = |dir: &PathBuf| granted().any(|grant| overlaps(dir, &grant.path));
     write.retain(|dir| !clashes(dir));
     read.retain(|dir| !clashes(dir));
     files.retain(|file| !granted().any(|grant| file.starts_with(&grant.path)));
-    let mut planned = PlannedGrants::default();
-    for grant in &accepted {
-        match (grant.writable, grant.sandbox) {
-            (true, true) => write.push(grant.path.clone()),
-            (false, true) => read.push(grant.path.clone()),
-            _ => {}
-        }
-        if grant.writable {
-            planned.user_write.push(grant.path.clone());
+    let (mut user_write, mut user_read) = (Vec::new(), Vec::new());
+    for grant in accepted {
+        let (sandbox, user) = if grant.writable {
+            (&mut write, &mut user_write)
         } else {
-            planned.user_read.push(grant.path.clone());
+            (&mut read, &mut user_read)
+        };
+        if grant.sandbox {
+            sandbox.push(grant.path.clone());
+        }
+        user.push(grant.path);
+    }
+    Ok(PlannedGrants {
+        write,
+        read,
+        files,
+        user_write,
+        user_read,
+    })
+}
+
+/// One accepted extra grant.
+struct Accepted {
+    path: PathBuf,
+    writable: bool,
+    from_cli: bool,
+    /// Whether the sandbox gets it (`false`: a detected grant already
+    /// covers it; only the gate is told).
+    sandbox: bool,
+}
+
+/// The extra grants of `extra` validated against the workspace, the
+/// detected grants `write` and `read`, and each other.
+fn accept_extra(
+    workspace: &Path,
+    write: &[PathBuf],
+    read: &[PathBuf],
+    extra: &ExtraGrants,
+) -> Result<Vec<Accepted>, ConfinementError> {
+    let mut accepted: Vec<Accepted> = Vec::new();
+    if extra.is_empty() {
+        return Ok(accepted);
+    }
+    let workspace_dir = canonical(workspace, true);
+    let workspace_grant = workspace_dir
+        .as_ref()
+        .and_then(|ws| write.iter().find(|dir| ws.starts_with(dir)).cloned());
+    // (origin label, paths, writable, from the command line)
+    let requested = [
+        ("--confinement-write", &extra.write, true, true),
+        ("--confinement-read", &extra.read, false, true),
+        (
+            "[confinement] extra_write",
+            &extra.file.extra_write,
+            true,
+            false,
+        ),
+        (
+            "[confinement] extra_read",
+            &extra.file.extra_read,
+            false,
+            false,
+        ),
+    ];
+    for (flag, paths, writable, from_cli) in requested {
+        for given in paths {
+            let refuse = |problem| ConfinementError::ExtraGrant {
+                flag,
+                path: given.clone(),
+                problem,
+            };
+            let path = validate_extra(given).map_err(refuse)?;
+            if let Some(ws) = workspace_dir.as_ref().filter(|ws| overlaps(&path, ws)) {
+                return Err(refuse(ExtraGrantProblem::OverlapsWorkspace(ws.clone())));
+            }
+            if !from_cli {
+                // The command line wins over the file; a file grant repeating
+                // an earlier one with no more access adds nothing.
+                let yields = accepted.iter().any(|other| {
+                    (other.from_cli && overlaps(&path, &other.path))
+                        || (other.path == path && (other.writable || !writable))
+                });
+                if yields {
+                    continue;
+                }
+            }
+            if let Some(other) = accepted.iter().find(|other| overlaps(&path, &other.path)) {
+                return Err(refuse(ExtraGrantProblem::OverlapsGrant(other.path.clone())));
+            }
+            let covered = write
+                .iter()
+                .chain(if writable { &[][..] } else { read })
+                .any(|dir| path.starts_with(dir));
+            // One a detected grant already covers leaves the sandbox as it is
+            // (`--confinement-write /tmp`): it tells the gate the user named it.
+            if !covered && let Some(ws) = workspace_grant.as_ref().filter(|ws| overlaps(&path, ws))
+            {
+                return Err(refuse(ExtraGrantProblem::OverlapsWorkspace(ws.clone())));
+            }
+            accepted.push(Accepted {
+                path,
+                writable,
+                from_cli,
+                sandbox: !covered,
+            });
         }
     }
-    planned.write = write;
-    planned.read = read;
-    planned.files = files;
-    Ok(planned)
+    Ok(accepted)
 }
 
 /// `given` as a grantable directory: absolute, existing, canonical, a
