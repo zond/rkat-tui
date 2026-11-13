@@ -163,6 +163,12 @@ repository). Open upstream issues this code waits on:
   persona's hint line naming `implicit-<your session id>`
   (`src/daemon/deferral/mod.rs`) goes when it ships.
 
+- #2224: a `delegate` call that times out returns an error with no helper
+  identity (the engine raises it outside any dispatcher of ours).
+- #2225: `member_not_found` from a per-member tool does not say that the
+  member is in another mob the caller owns. The hint line of #2208 covers
+  both until they ship.
+
 ## Stored state
 
 `docs/state.md` lists every file rkat-tui stores (path, format, writer,
