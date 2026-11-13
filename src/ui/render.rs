@@ -937,9 +937,68 @@ pub fn block_lines(block: &Block, width: u16) -> Vec<Line<'static>> {
             output,
             collapsed,
         } => shell_lines(command, state, output.as_ref(), *collapsed, w, &mut out),
+        Block::Outcome {
+            header,
+            md,
+            failed,
+            collapsed,
+            ..
+        } => outcome_lines(header, md, *failed, *collapsed, w, &mut out),
     }
     out.push(Line::default());
     out
+}
+
+/// Lines of a folded outcome's Markdown that show.
+pub const OUTCOME_PREVIEW_LINES: usize = 4;
+
+/// A detached job's outcome: `⚙ <header>`, then its Markdown indented,
+/// only the first [`OUTCOME_PREVIEW_LINES`] while `collapsed` with a line
+/// saying how to see the rest.
+fn outcome_lines(
+    header: &str,
+    md: &str,
+    failed: bool,
+    collapsed: bool,
+    w: usize,
+    out: &mut Vec<Line<'static>>,
+) {
+    let color = if failed {
+        Color::Yellow
+    } else {
+        Color::Magenta
+    };
+    out.push(Line::styled(
+        truncate_to_width(&format!("⚙ {}", sanitize(header)), w),
+        Style::default().fg(color).add_modifier(Modifier::BOLD),
+    ));
+    if md.is_empty() {
+        return;
+    }
+    let lines = render_markdown(md, u16::try_from(w.saturating_sub(2)).unwrap_or(u16::MAX));
+    let total = lines.len();
+    let shown = if collapsed {
+        OUTCOME_PREVIEW_LINES.min(total)
+    } else {
+        total
+    };
+    for line in lines.into_iter().take(shown) {
+        let mut spans = vec![Span::raw("  ")];
+        spans.extend(line.spans);
+        out.push(Line::from(spans));
+    }
+    if shown < total {
+        out.push(Line::styled(
+            truncate_to_width(
+                &format!(
+                    "  … {} more lines (click or Ctrl-O to expand)",
+                    total - shown
+                ),
+                w,
+            ),
+            Style::default().add_modifier(Modifier::DIM),
+        ));
+    }
 }
 
 /// A `!` command's block: `$ <cmd>` (later lines of a multi-line command

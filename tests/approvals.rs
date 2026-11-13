@@ -19,8 +19,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use common::{ScriptedLlmClient, Step, Workspace, args_for, endpoint_file_for, no_lists, within};
 use meerkat::LlmClient;
-use meerkat_core::Message;
 use meerkat_core::types::ToolResult;
+use meerkat_core::{AgentEvent, Message};
 use parking_lot::Mutex;
 use rig::{Client, Running};
 use rkat_tui::approval::classifier::{
@@ -29,6 +29,7 @@ use rkat_tui::approval::classifier::{
 use rkat_tui::approval::mode::PermissionMode;
 use rkat_tui::bootstrap::{ApprovalOverrides, BootstrapOptions, HostPaths};
 use rkat_tui::daemon::{Daemon, DaemonError, DaemonOptions};
+use rkat_tui::ui::transcript::outcome::JobOutcome;
 use rkat_tui::ui::{Effect, EscalationAnswer, Msg, RuleEffect, StatusUpdate};
 use serde_json::{Value, json};
 
@@ -1361,7 +1362,7 @@ async fn a_fork_off_outcome_arrives_later_in_the_transcript() {
     let llm = ScriptedLlmClient::new(vec![step; 8]);
     let daemon = start(&ws.root, &llm, &Setup::default()).await;
     daemon.reveal(&daemon.session, &["fork_off"]).await;
-    let client = attach(&ws.root).await;
+    let mut client = attach(&ws.root).await;
     client.send(Effect::StartTurn("fork a child".into()));
     let delivered = within(async {
         loop {
@@ -1404,6 +1405,22 @@ async fn a_fork_off_outcome_arrives_later_in_the_transcript() {
             .any(|m| format!("{m:?}").contains("parent done")),
         "{delivered:?}"
     );
+    // The client gets the outcome in a form the transcript shows compact:
+    // the job's event, or the run it starts with the notice as its input.
+    client
+        .saw(|m| match m {
+            Msg::Agent(env) => matches!(
+                &env.payload,
+                AgentEvent::BackgroundJobCompleted { display_name, detail, job_id, .. }
+                    if JobOutcome::from_detail(display_name, Some(job_id), detail)
+                        .is_some_and(|o| o.text.as_deref() == Some(OUTCOME))
+            ),
+            Msg::RemoteTurn { prompt: Some(p) } => {
+                JobOutcome::from_text(p).is_some_and(|o| o.text.as_deref() == Some(OUTCOME))
+            }
+            _ => false,
+        })
+        .await;
     client.quit().await;
     daemon.stop().await;
 }

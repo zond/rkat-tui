@@ -30,6 +30,12 @@
   inlined, optional fields' `anyOf [T, null]` folded into `T`, `oneOf` as
   `anyOf` and a `type` on every constrained node. `/context` measures the
   definitions as sent.
+- A `fork_off` child's outcome no longer fills screens with raw JSON:
+  the transcript shows one header (`fork <name> finished (completed) ·
+  11 turns · 39 tool calls · 12.3k tokens`) and the fork's report as
+  Markdown folded to four lines (click or Ctrl-O unfolds it), live and in
+  a restored conversation; a failed or cancelled one shows its error
+  unfolded. The agent still reads the engine's notice unchanged.
 - A helper seated with `spawn_member` or `spawn_many_members` is wired to
   the agent that seats it without being asked (rkat-tui sets
   `auto_wire_parent`), as a `delegate` helper already was: each sees the

@@ -37,7 +37,10 @@ pub fn blocks_from_messages(messages: &[Message]) -> Vec<Block> {
                     blocks.push(restored_tool_block(call.name, args));
                 }
             }
-            Message::SystemNotice(notice) => blocks.extend(peer_blocks(notice)),
+            Message::SystemNotice(notice) => {
+                blocks.extend(peer_blocks(notice));
+                blocks.extend(outcome_blocks(notice));
+            }
             _ => {}
         }
     }
@@ -82,6 +85,31 @@ fn peer_blocks(notice: &meerkat_core::SystemNoticeMessage) -> Vec<Block> {
                     text: body,
                 })
             }
+            _ => None,
+        })
+        .collect()
+}
+
+/// A detached job's durable outcome record (a fork's report) as the live
+/// transcript shows it ([`super::outcome::JobOutcome`]); a detail of
+/// another shape is left out, as before.
+fn outcome_blocks(notice: &meerkat_core::SystemNoticeMessage) -> Vec<Block> {
+    use meerkat_core::SystemNoticeBlock;
+    notice
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            SystemNoticeBlock::BackgroundJob {
+                job_id,
+                display_name,
+                detail: Some(detail),
+                ..
+            } => super::outcome::JobOutcome::from_detail(
+                display_name.as_deref().unwrap_or("job"),
+                Some(job_id),
+                detail,
+            )
+            .map(|outcome| outcome.block()),
             _ => None,
         })
         .collect()
@@ -159,6 +187,33 @@ mod tests {
                 text: "I am changing src/lib.rs".into()
             }]
         );
+    }
+
+    /// A fork's durable outcome record restores as the compact block the
+    /// live transcript shows.
+    #[test]
+    fn a_fork_outcome_restores_as_its_compact_block() {
+        let detail = serde_json::json!({
+            "agent_identity": "kid",
+            "bounded_result": {"label": "fork_off_result", "status": "completed", "text": "done well"},
+            "member_ref": "x",
+            "status": "completed",
+            "turns": 1,
+            "tool_calls": 0
+        })
+        .to_string();
+        let notice = meerkat_core::SystemNoticeMessage::persisted_background_job(
+            "fork_off",
+            "job-9",
+            meerkat_core::event::BackgroundJobTerminalStatus::Completed,
+            detail.clone(),
+        );
+        let restored = blocks_from_messages(&[Message::SystemNotice(notice)]);
+        let live =
+            super::super::outcome::JobOutcome::from_detail("fork_off", Some("job-9"), &detail)
+                .unwrap()
+                .block();
+        assert_eq!(restored, vec![live]);
     }
 
     #[test]

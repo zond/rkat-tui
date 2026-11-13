@@ -18,6 +18,7 @@ use super::render::{SPINNER, block_lines};
 
 mod helpers;
 mod notices;
+pub mod outcome;
 mod restore;
 
 use helpers::helper_args_preview;
@@ -286,6 +287,21 @@ pub enum Block {
         /// The message (empty: delivered into a running turn, whose text
         /// the live events do not carry).
         text: String,
+    },
+    /// A detached job's outcome (a `fork_off` child, a council), compact
+    /// ([`outcome::JobOutcome`]): a header with its counts and the result's
+    /// Markdown, folded to a few lines while `collapsed`.
+    Outcome {
+        /// `fork kid finished (completed) · 11 turns · …`.
+        header: String,
+        /// The result's text, and the error of one that failed.
+        md: String,
+        /// Whether it ended without its result.
+        failed: bool,
+        /// Whether only the first lines of `md` show.
+        collapsed: bool,
+        /// The engine's job id (the same outcome is shown once).
+        job: Option<String>,
     },
     /// A run nobody typed: a schedule fired it, or a file watch
     /// (`scheduled: <name>`, `files changed: …`), with its input.
@@ -603,6 +619,10 @@ impl Transcript {
                     let _ = writeln!(out, "## {label}");
                     body(&mut out, text);
                 }
+                Block::Outcome { header, md, .. } => {
+                    let _ = writeln!(out, "## {header}");
+                    body(&mut out, md);
+                }
                 Block::Approval {
                     tool,
                     tier,
@@ -891,6 +911,9 @@ impl Transcript {
                     } | Block::Shell {
                         collapsed: true,
                         ..
+                    } | Block::Outcome {
+                        collapsed: true,
+                        ..
                     }
                 )
             )
@@ -899,7 +922,8 @@ impl Transcript {
             if let Some(
                 Block::Reasoning { collapsed, .. }
                 | Block::Tool { collapsed, .. }
-                | Block::Shell { collapsed, .. },
+                | Block::Shell { collapsed, .. }
+                | Block::Outcome { collapsed, .. },
             ) = self.block_mut(id)
             {
                 *collapsed = !expand;
@@ -915,7 +939,11 @@ impl Transcript {
             return None;
         }
         match self.block_mut(id) {
-            Some(Block::Tool { collapsed, .. } | Block::Shell { collapsed, .. }) => {
+            Some(
+                Block::Tool { collapsed, .. }
+                | Block::Shell { collapsed, .. }
+                | Block::Outcome { collapsed, .. },
+            ) => {
                 *collapsed = !*collapsed;
                 Some(*collapsed)
             }
@@ -1350,6 +1378,16 @@ impl Transcript {
                 };
                 self.push_notice(NoticeLevel::Warn, text);
             }
+            AgentEvent::BackgroundJobCompleted {
+                job_id,
+                display_name,
+                detail,
+                ..
+            } if let Some(outcome) =
+                outcome::JobOutcome::from_detail(display_name, Some(job_id), detail) =>
+            {
+                self.push_outcome(&outcome);
+            }
             other => {
                 if let Some((level, text)) = upstream_notice(other) {
                     self.push_notice(level, text);
@@ -1357,6 +1395,18 @@ impl Transcript {
             }
         }
         None
+    }
+
+    /// `outcome`'s block, unless the transcript shows that job's already
+    /// (its event and the run it starts both carry it).
+    pub fn push_outcome(&mut self, outcome: &outcome::JobOutcome) {
+        let shown = outcome.job.is_some()
+            && self.entries.iter().any(
+                |entry| matches!(&entry.block, Block::Outcome { job, .. } if *job == outcome.job),
+            );
+        if !shown {
+            self.push(outcome.block());
+        }
     }
 
     fn push_raw(&mut self, block: Block) -> BlockId {
@@ -1560,6 +1610,7 @@ fn tool_has_output(block: &Block) -> bool {
                 ..
             }
         )
+        || matches!(block, Block::Outcome { md, .. } if !md.is_empty())
 }
 
 /// A `!` command's state as the export and the header say it.

@@ -122,6 +122,19 @@ impl App {
     /// While a turn runs it is another client's steer that joined it as a
     /// follow-up run: its text is shown.
     pub(super) fn remote_turn(&mut self, prompt: Option<String>, now: Instant) {
+        // A detached job's outcome (a fork's report) starts a run of its
+        // own: shown compact, not as the raw notice.
+        let (prompt, outcome) = match prompt
+            .as_deref()
+            .and_then(crate::ui::transcript::outcome::JobOutcome::from_text)
+        {
+            Some(outcome) => (None, Some(outcome)),
+            None => (prompt, None),
+        };
+        if let Some(outcome) = &outcome {
+            self.transcript.push_outcome(outcome);
+            self.scroll.bottom();
+        }
         if self.running {
             if let Some(text) = prompt {
                 self.transcript.push(Block::User { text });
