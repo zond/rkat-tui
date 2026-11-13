@@ -11,14 +11,18 @@ use super::{Block, ToolState};
 #[must_use]
 pub fn blocks_from_messages(messages: &[Message]) -> Vec<Block> {
     let mut blocks = Vec::new();
+    // The reply to `/compact`'s own prompt is not shown either.
+    let mut compact_reply = false;
     for message in messages {
         match message {
             Message::User(user) if user.transcript_role == TranscriptUserRole::Conversational => {
                 let text = user.text_content();
-                if !text.is_empty() {
+                compact_reply = text == crate::ui::COMPACT_PROMPT;
+                if !text.is_empty() && !compact_reply {
                     blocks.push(Block::User { text });
                 }
             }
+            Message::BlockAssistant(_) if compact_reply => compact_reply = false,
             Message::BlockAssistant(assistant) => {
                 for block in &assistant.blocks {
                     if let AssistantBlock::Text { text, .. } = block

@@ -317,6 +317,8 @@ enum Report {
     },
     /// A stop or a cancel failed.
     Interrupt(String),
+    /// The daemon answered `/compact`'s request ([`Runner::compact_asked`]).
+    CompactAsked(Result<(), String>),
     /// The mobs the daemon hosts (listed once per attach and per
     /// conversation; later ones are pushed, [`protocol::MOB`]).
     Mobs(Vec<String>),
@@ -478,6 +480,9 @@ struct Turn {
     /// The unconfirmed interrupt was followed by a hard cancel of the
     /// agent's current run ([`Runner::on_deadline`]).
     escalated: bool,
+    /// The run `/compact` started on an idle agent ([`Runner::compact_asked`]):
+    /// only its compaction events reach the UI.
+    quiet: bool,
     /// An interrupt the daemon has not confirmed ends the turn then.
     give_up_at: Option<Instant>,
     /// The prompt that started it, as sent (`None`: another client's run).
@@ -904,6 +909,7 @@ impl Runner {
                 }
                 Err(why) => self.notice(NoticeLevel::Error, format!("model not changed: {why}")),
             },
+            Report::CompactAsked(asked) => self.compact_asked(asked),
             Report::Interrupt(err) => {
                 self.notice(NoticeLevel::Error, format!("interrupt incomplete: {err}"));
             }

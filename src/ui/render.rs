@@ -684,6 +684,16 @@ pub fn status_bar(status: &StatusInfo, now: Instant) -> Line<'static> {
             Style::default().fg(Color::Magenta),
         ));
     }
+    if let Some(since) = status.compacting_since {
+        let frame = spinner_frame(Some(since), now);
+        segs.push(Span::styled(
+            format!(
+                "{frame} compacting… {}s",
+                now.saturating_duration_since(since).as_secs()
+            ),
+            Style::default().fg(Color::Magenta),
+        ));
+    }
     if let Some(since) = status.running_since {
         let elapsed = now.saturating_duration_since(since);
         let frame = spinner_frame(Some(since), now);

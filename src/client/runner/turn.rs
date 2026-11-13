@@ -317,6 +317,22 @@ impl Runner {
             return;
         }
         self.followers.convening(&envelope.payload, None);
+        // Another client's `/compact` run: quiet here too.
+        if !self.turn.active
+            && let AgentEvent::RunStarted { input, .. } = &envelope.payload
+            && input.prompt_text().as_deref() == Some(COMPACT_PROMPT)
+        {
+            self.turn = Turn {
+                active: true,
+                quiet: true,
+                ..Turn::default()
+            };
+            self.send(Msg::CompactionRun(true));
+        }
+        if self.turn.quiet {
+            self.on_quiet_event(envelope);
+            return;
+        }
         let mut terminal = false;
         // A run already going when this client attached (its start was shown
         // before it detached): the UI is busy until its end.
@@ -449,6 +465,54 @@ impl Runner {
         }
     }
 
+    /// An event of the quiet `/compact` run ([`Self::compact_asked`]): its
+    /// compaction events reach the UI, its prompt and reply do not; it
+    /// ends like any turn ([`Self::settle_turn`]), quietly.
+    fn on_quiet_event(&mut self, envelope: EventEnvelope<AgentEvent>) {
+        let mut terminal = false;
+        match &envelope.payload {
+            AgentEvent::RunStarted { identity, .. } => {
+                self.turn.saw_run = true;
+                if let Some(run) = &identity.run_id {
+                    self.turn.open_runs.insert(run.clone());
+                    self.turn.current_run = Some(run.clone());
+                }
+            }
+            AgentEvent::RunCompleted { identity, .. } => {
+                if let Some(run) = &identity.run_id {
+                    self.turn.open_runs.remove(run);
+                    self.turn.ended.insert(run.clone());
+                }
+                self.turn.record(Ok(TurnSummary::default()));
+                terminal = true;
+            }
+            AgentEvent::RunFailed {
+                identity,
+                error_report,
+                ..
+            } => {
+                if let Some(run) = &identity.run_id {
+                    self.turn.open_runs.remove(run);
+                    self.turn.ended.insert(run.clone());
+                }
+                self.turn
+                    .record(Err(TurnFailure::Failed(error_report.message.clone())));
+                terminal = true;
+            }
+            AgentEvent::CompactionStarted { .. }
+            | AgentEvent::CompactionCompleted { .. }
+            | AgentEvent::CompactionFailed { .. }
+            | AgentEvent::RequestedCompactionSkipped { .. } => {
+                self.send(Msg::Agent(envelope));
+            }
+            _ => {}
+        }
+        if terminal {
+            self.save_cursor();
+            self.settle_turn();
+        }
+    }
+
     /// The daemon says the agent is idle (`rkat/idle`): no run open and
     /// no input of the conversation unfinished.
     pub(super) fn idle_reported(&mut self, note: protocol::IdleNote) {
@@ -571,6 +635,22 @@ impl Runner {
     pub(super) fn finish_turn(&mut self) {
         let turn = std::mem::take(&mut self.turn);
         if !turn.active {
+            return;
+        }
+        if turn.quiet {
+            match &turn.result {
+                Some(Err(TurnFailure::Failed(why))) => self.notice(
+                    NoticeLevel::Warn,
+                    format!("the run that lets the agent compact failed: {why}"),
+                ),
+                Some(Err(_)) => self.notice(
+                    NoticeLevel::Warn,
+                    "the run that lets the agent compact was interrupted",
+                ),
+                _ => {}
+            }
+            self.send(Msg::CompactionRun(false));
+            self.save_cursor();
             return;
         }
         // A failed turn's prompt stays committed: the same text typed again
@@ -736,7 +816,7 @@ impl Runner {
         };
         let connection = Arc::clone(&link.connection);
         let session = link.session.clone();
-        let ui_tx = self.ui_tx.clone();
+        let reports = self.reporter();
         tokio::spawn(async move {
             let asked = tokio::time::timeout(CALL_TIMEOUT, async {
                 match remote::compact_member(&connection).await {
@@ -748,12 +828,48 @@ impl Runner {
             })
             .await
             .unwrap_or_else(|_| Err("the daemon did not answer in time".to_string()));
-            let _ = ui_tx.send(Msg::CompactRequested(
-                asked.map_err(CompactFailure::Request),
-            ));
+            reports.send(Report::CompactAsked(asked));
         });
     }
+
+    /// The compaction request answered ([`Self::compact_now`]). The engine
+    /// compacts only at the compaction check before a run's next model
+    /// request, so an idle agent would compact only when the user sends
+    /// something; the client starts that run itself ([`COMPACT_PROMPT`],
+    /// a quiet turn: the UI shows its compaction events, not its prompt or
+    /// reply) and tells the UI while it runs ([`Msg::CompactionRun`]),
+    /// which holds what the user types until it ends. A turn already
+    /// running compacts at its own next check.
+    pub(super) fn compact_asked(&mut self, asked: Result<(), String>) {
+        if asked.is_ok()
+            && !self.turn.active
+            && let Some(connection) = self.connection()
+        {
+            self.turns += 1;
+            self.turn = Turn {
+                active: true,
+                quiet: true,
+                id: self.turns,
+                ..Turn::default()
+            };
+            self.send(Msg::CompactionRun(true));
+            self.outbound(Outbound {
+                connection,
+                text: COMPACT_PROMPT.to_string(),
+                steer: None,
+                retry: None,
+                turn: self.turns,
+                reports: self.reporter(),
+                ui_tx: self.ui_tx.clone(),
+            });
+        }
+        self.send(Msg::CompactRequested(
+            asked.map_err(CompactFailure::Request),
+        ));
+    }
 }
+
+use crate::ui::COMPACT_PROMPT;
 
 /// What the UI is told when the daemon's answer to a steer names no
 /// input: its delivery cannot be told from another client's.

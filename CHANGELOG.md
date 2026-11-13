@@ -36,6 +36,14 @@
   refused retire (a running agent, one with a client, your own) shows its
   reason on the picker. Enter still closes it. `/schedules` and
   `/permissions` already behaved this way.
+- `/compact` on an idle agent compacts at once instead of waiting for
+  your next message. The engine compacts only at the check before a
+  run's model request and has no call that compacts an idle session, so
+  rkat-tui starts that run itself with a short prompt of its own: it
+  costs one short model call after the summary, and its prompt and
+  one-word reply stay in the conversation but are not shown (live or
+  restored). A message typed meanwhile is sent after it. While any
+  compaction runs, the status bar shows `compacting… Ns`.
 - While a model request runs longer than five seconds, the status bar
   says that queued messages wait for the model's reply, and for how long,
   instead of a bare "delivering…".

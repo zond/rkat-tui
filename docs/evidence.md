@@ -2588,7 +2588,7 @@ from its start, the new cursor names the new daemon),
 **`/compact now`.** `mob/compact_member` (router.rs:3580, handlers/mob.rs:3685)
 records a request the member's next compaction check consumes; the client
 sends it (fallback `session/compact`, handlers/session.rs:1477). Test:
-`tests/conversations.rs` `compact_now_compacts_at_the_next_turn` (the next
+`tests/conversations.rs` `compact_now_compacts_without_waiting_for_a_message` (formerly `compact_now_compacts_at_the_next_turn`; the next
 prompt's first call is the summary; the client sees `compaction_completed`).
 The in-process `/compact now` keeps its rebuild workaround: the facade has
 `MeerkatMachine::request_compaction` (meerkat/tests/compact_now.rs) but the
@@ -8120,3 +8120,29 @@ the Gemini adapter documents the empty schema as accepted by the API. Not
 verified here: a request against Vertex itself. `/context` now measures
 the normalized definitions (`def_bytes`), which are what each request
 pays.
+
+## `/compact` compacts by itself (2026-11-13)
+
+A user's `/compact` waited about three minutes into their next message:
+the engine compacts only at the compaction check before a run's next
+model request (`meerkat-runtime` `meerkat_machine/compaction_request.rs`:
+the request "is consumed by the next compaction check of a run"), and an
+idle agent makes none. Read in 0.9.14: the compaction itself
+(`run_compaction`, `meerkat-core` `agent/compact.rs`) is crate-private and
+runs only from the loop's `CheckCompaction` (`agent/state.rs` 4704-4830),
+whose rewrite repolls into the model request (8901-8908); no RPC method
+compacts an idle session, and `mob/turn_start` refuses `max_tokens` and
+requires a prompt (`transient_turn_context` adds request-only text but no
+run without a prompt). The owner chose to start that run: after the
+request is taken, an idle agent's client sends `ui::COMPACT_PROMPT` as a
+quiet turn (`Runner::compact_asked`): the UI hears only its compaction
+events and `Msg::CompactionRun`, holds what the user types until it ends,
+and the restored transcript leaves the prompt and its reply out. Cost:
+the summary plus one short model call; the prompt and the one-word reply
+stay in the conversation the model sees. Pinned by
+`compact_now_compacts_without_waiting_for_a_message`,
+`warn_mode_warns_and_compacts_only_on_compact` and
+`a_compaction_run_holds_what_is_typed_and_the_bar_says_compacting`. The
+status bar shows `compacting… Ns` from `CompactionStarted` to its end. An
+engine call that compacts an idle session would make the run unneeded
+(an upstream ask, not filed).

@@ -1093,15 +1093,21 @@ For a model whose window is unknown the thresholds are 120k (warn) and 150k
 to it, with a notice.
 
 `/compact status` shows the policy and threshold. **`/compact`** (or
-`/compact now`; idle only, after at least one turn) *asks Meerkat to compact
-at the session's next model call*; the
-session is not rebuilt and its threshold does not change. The request is
-all the TUI can report; the compaction notices confirm the compaction
-itself, and when the check finds nothing to fold the transcript says
-"nothing was compacted" with the reason. A prompt typed while the request
-is on its way is admitted as an ordinary queued input once it is answered.
-The `✓ compacted` notice appears when the session next runs (Meerkat
-publishes it once the semantic index took the discarded messages).
+`/compact now`; idle only, after at least one turn) compacts the
+conversation by itself; the session is not rebuilt and its threshold does
+not change. Meerkat compacts only at the check before a run's next model
+request and has no call that compacts an idle session, so rkat-tui asks
+it to compact (`mob/compact_member`) and then starts that run itself with
+a short prompt of its own (`[rkat-tui /compact] …`). The run costs the
+summary and one short model call after it; the model sees the summary,
+that prompt and its one-word reply, which stay in the conversation, and
+rkat-tui shows neither (live or restored): only the compaction notices,
+and `compacting… Ns` in the status bar while the compaction runs (any
+compaction, also the engine's own). When the check finds nothing to fold
+the transcript says "nothing was compacted" with the reason. A prompt
+typed while that run goes is held (*will send after this turn*) and sent
+when it ends; one typed while the request is still on its way starts
+an ordinary turn, which compacts first instead.
 
 `/context` prints the gauge (tokens used of the window, the percentage,
 and whether either is an estimate), the policy `/compact status` prints, and
@@ -1761,7 +1767,7 @@ daemon switches the session in place, with the endpoint's
 auth binding and `[thinking]` setting; not while a turn runs; the session
 keeps the model), the context gauge,
 token counts, `/status`, `/export`, `/cost` (helpers included, kept per
-conversation), `/copy`, `/context` (what the daemon reports of the conversation and its tools), `/compact` (the agent's next model call compacts first; the
+conversation), `/copy`, `/context` (what the daemon reports of the conversation and its tools), `/compact` (compacts at once through a short run of its own; the
 ✓ compacted notice and the gauge confirm it) and `/compact status` (the
 policy), `/remember` and `/memory` (the files are edited here; the agent
 reads the new content from its next model call), the Ctrl-T task checklist, approvals, the permission

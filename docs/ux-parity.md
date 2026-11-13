@@ -30,7 +30,7 @@ official tables name, then niche features.
 | 13 | Take back queued messages | `Up` from the first line | `Up` on an empty input takes back the queued messages the agent has not read yet | same |
 | 14 | `/help` | `/help`; `?` on an empty input toggles a shortcut panel | `/help`, `/?`; `?` on an empty input shows the keys | same |
 | 15 | `/clear` | `/clear [name]` | `/clear`, `/new` | same |
-| 16 | `/compact` | `/compact [instructions]`: compacts now, with optional focus | `/compact` asks the engine to compact at the next model call; focus instructions are ignored with a warning; `/compact status` shows the policy | partial |
+| 16 | `/compact` | `/compact [instructions]`: compacts now, with optional focus | `/compact` compacts at once (a short run of its own after the summary, not shown; `compacting… Ns` in the status bar); focus instructions are ignored with a warning; `/compact status` shows the policy | partial |
 | 17 | `/exit`, `/quit` | `/exit` (alias `/quit`) | `/quit`, `/exit`, `/q` | same |
 | 18 | `/model` | `/model [model]`, opens a picker | `/model [[endpoint:]id\|refresh]`, opens a filtered picker grouped by endpoint | same |
 | 19 | `/resume`, `--continue`, `--resume` | `/resume [session]`; `claude -c`; `claude --resume [id]` (opens a picker with no id) | `/resume [ref]` and a picker; `-c`/`--continue`; `--resume [ref]` (opens the picker with no ref) | same |

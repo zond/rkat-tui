@@ -441,6 +441,9 @@ pub enum Msg {
     /// `CompactionStarted`/`Completed` events confirm the compaction itself;
     /// `RequestedCompactionSkipped` says why nothing was compacted.
     CompactRequested(Result<(), CompactFailure>),
+    /// The run `/compact` starts on an idle agent began (`true`) or ended:
+    /// while it runs, a message typed is held and sent after it.
+    CompactionRun(bool),
     /// The terminal gained (`true`) or lost (`false`) the focus.
     Focus(bool),
     /// The client runner resolved `/memory`'s file (and created a missing
@@ -557,8 +560,21 @@ pub enum ShellOutcome {
 pub const COMPACT_FOCUS_UNSUPPORTED: &str =
     "focus instructions are not supported by the engine yet; compacting without them";
 
-/// Notice shown once the engine took a `/compact` request.
-pub const COMPACT_REQUESTED: &str = "the context will be compacted at the start of your next message (the ✓ compacted notice confirms it)";
+/// Notice shown once the engine took a `/compact` request while a turn
+/// of the agent runs (another client's): that turn compacts at its next
+/// model request.
+pub const COMPACT_REQUESTED: &str = "the context will be compacted before the agent's next model request (the ✓ compacted notice confirms it)";
+
+/// The prompt of the run `/compact` starts on an idle agent so that its
+/// compaction check runs (the client runner's `compact_asked`): it stays in
+/// the conversation (the engine keeps a run's input), costs one short model
+/// call after the summary, and is left out wherever rkat-tui shows the
+/// conversation (live and restored).
+pub const COMPACT_PROMPT: &str = "[rkat-tui /compact] The user asked to compact this conversation; it was compacted before this message. Reply with the single word: compacted";
+
+/// Notice shown once the engine took a `/compact` request on the idle
+/// agent: the client starts the short run whose check compacts.
+pub const COMPACT_RUNNING: &str = "compacting now: the agent makes one short request after the summary (the ✓ compacted notice confirms it; what you send meanwhile goes after it)";
 
 /// Side effect requested by [`App::update`], executed by the client runner.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -786,6 +802,8 @@ pub struct StatusInfo {
     /// a steer joins only once the reply is in, so the bar says what the
     /// queued messages wait for.
     model_since: Option<Instant>,
+    /// When the compaction running now started (`None`: none runs).
+    compacting_since: Option<Instant>,
     /// Number of helpers running now.
     helpers: usize,
     /// Whether the helper panel lists any helper (the status bar names the
@@ -1065,6 +1083,9 @@ pub struct App {
     /// admitted as an ordinary `Queue` input once the request is answered
     /// (the runner serves effects in order); session switches wait.
     compacting: bool,
+    /// Whether the run `/compact` started on the idle agent is going
+    /// ([`Msg::CompactionRun`]): what the user sends meanwhile is held.
+    compaction_run: bool,
     /// Context-gauge policy: warn about a filling context (warn mode).
     gauge: CompactionGauge,
     /// Whether assistant text streamed during the current turn (the turn
@@ -1149,6 +1170,7 @@ impl App {
             mode: InputMode::Normal,
             chord: None,
             compacting: false,
+            compaction_run: false,
             gauge: CompactionGauge::default(),
             streamed_text: false,
             global_history: Vec::new(),
@@ -1392,6 +1414,17 @@ impl App {
                     | AgentEvent::RunFailed { .. } => self.status.model_since = None,
                     _ => {}
                 }
+                match &env.payload {
+                    AgentEvent::CompactionStarted { .. } => {
+                        self.status.compacting_since = Some(now);
+                    }
+                    AgentEvent::CompactionCompleted { .. }
+                    | AgentEvent::CompactionFailed { .. }
+                    | AgentEvent::RequestedCompactionSkipped { .. }
+                    | AgentEvent::RunCompleted { .. }
+                    | AgentEvent::RunFailed { .. } => self.status.compacting_since = None,
+                    _ => {}
+                }
                 if let Some(usage) = self.transcript.apply_agent_event_at(&env.payload, now) {
                     self.status
                         .add_tokens(usage.input_tokens, usage.output_tokens);
@@ -1536,6 +1569,7 @@ impl App {
                 self.scroll.bottom();
             }
             Msg::CompactRequested(result) => self.compact_requested(result),
+            Msg::CompactionRun(running) => self.compaction_run(running, now, &mut fx),
             Msg::EditFile { target, path } => {
                 self.local
                     .push(LocalEffect::ExternalEditor(EditorTarget::Memory {

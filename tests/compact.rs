@@ -212,17 +212,59 @@ async fn warn_mode_warns_and_compacts_only_on_compact() {
         .wait_for(|msg| matches!(msg, Msg::CompactRequested(_)))
         .await;
     assert!(matches!(msg, Msg::CompactRequested(Ok(()))), "{msg:?}");
-    rig.send(Effect::StartTurn("compact first".into()));
-    assert_eq!(
-        rig.turn_finished().await.expect("turn succeeds").text,
-        "compacted"
+    // The agent was idle: the client starts the run whose check compacts,
+    // with no message of the user's. The UI hears that it runs and ends,
+    // and of it only the compaction.
+    assert!(
+        rig.seen
+            .iter()
+            .any(|m| matches!(m, Msg::CompactionRun(true)))
     );
+    let seen_before = rig.seen.len();
+    rig.wait_for(|msg| matches!(msg, Msg::CompactionRun(false)))
+        .await;
     assert_eq!(started(&rig), 1);
-    let last = llm.recorded().last().unwrap().clone();
+    let quiet = &rig.seen[seen_before..];
+    assert!(
+        !quiet
+            .iter()
+            .any(|m| matches!(m, Msg::TurnFinished(_) | Msg::RemoteTurn { .. })),
+        "{quiet:#?}"
+    );
+    assert!(
+        !quiet.iter().any(|m| matches!(m, Msg::Agent(env) if matches!(env.payload, AgentEvent::TextDelta { .. } | AgentEvent::RunStarted { .. }))),
+        "{quiet:#?}"
+    );
+    let recorded = llm.recorded();
+    assert_eq!(
+        recorded.len(),
+        SHORT_TURNS + 4,
+        "the summary and one short call"
+    );
+    let last = recorded.last().unwrap().clone();
     assert!(
         last.user().contains("SUMMARY of the earlier turns"),
         "{}",
         last.user()
+    );
+    assert!(
+        last.user().contains(rkat_tui::ui::COMPACT_PROMPT),
+        "{}",
+        last.user()
+    );
+    // A restored transcript leaves the compaction's prompt and reply out.
+    let restored = rkat_tui::ui::transcript::blocks_from_messages(&rig.messages().await);
+    assert!(
+        !restored
+            .iter()
+            .any(|b| matches!(b, rkat_tui::ui::Block::User { text } if text.contains("/compact"))),
+        "{restored:#?}"
+    );
+    assert!(
+        !restored
+            .iter()
+            .any(|b| matches!(b, rkat_tui::ui::Block::Assistant { md } if md == "compacted")),
+        "{restored:#?}"
     );
 
     rig.send(Effect::StartTurn("one more".into()));

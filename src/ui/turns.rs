@@ -5,8 +5,9 @@
 use std::time::Instant;
 
 use super::{
-    App, Block, BlockId, COMPACT_REQUESTED, Command, CompactFailure, Effect, NoticeLevel, Pending,
-    PendingId, PendingState, SteerFailure, TurnFailure, TurnSummary, commands, quote_short,
+    App, Block, BlockId, COMPACT_REQUESTED, COMPACT_RUNNING, Command, CompactFailure, Effect,
+    NoticeLevel, Pending, PendingId, PendingState, SteerFailure, TurnFailure, TurnSummary,
+    commands, quote_short,
 };
 
 impl App {
@@ -57,7 +58,7 @@ impl App {
                 };
                 if self.running {
                     self.enqueue(prompt, fx);
-                } else if self.shell_busy() {
+                } else if self.shell_busy() || self.compaction_run {
                     self.hold(prompt);
                 } else {
                     self.start_turn(prompt, now, fx);
@@ -165,8 +166,13 @@ impl App {
 
     /// `/compact now` answered: report the request (or why it failed).
     pub(super) fn compact_requested(&mut self, result: Result<(), CompactFailure>) {
-        self.compacting = false;
+        // Session commands keep waiting while the compaction's run goes.
+        self.compacting = self.compaction_run;
         match result {
+            Ok(()) if self.compaction_run => {
+                self.transcript
+                    .push_notice(NoticeLevel::Info, COMPACT_RUNNING);
+            }
             Ok(()) => {
                 self.transcript
                     .push_notice(NoticeLevel::Info, COMPACT_REQUESTED);
@@ -175,6 +181,27 @@ impl App {
                 self.transcript
                     .push_notice(NoticeLevel::Error, format!("/compact failed: {err}"));
             }
+        }
+    }
+
+    /// [`Msg::CompactionRun`](crate::ui::Msg::CompactionRun): the run that lets the idle agent
+    /// compact began or ended; at its end what the user sent meanwhile goes.
+    pub(super) fn compaction_run(&mut self, running: bool, now: Instant, fx: &mut Vec<Effect>) {
+        self.compaction_run = running;
+        if running {
+            self.compacting = true;
+            return;
+        }
+        self.compacting = false;
+        self.status.compacting_since = None;
+        if self.running || self.shell_busy() {
+            return;
+        }
+        let held = self
+            .pending
+            .take_where(|p| p.state == PendingState::Deferred);
+        if !held.is_empty() || self.send_next.is_some() {
+            self.next_after_turn(held, false, true, now, fx);
         }
     }
 

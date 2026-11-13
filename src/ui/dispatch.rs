@@ -147,10 +147,8 @@ impl App {
                         .push_notice(NoticeLevel::Warn, COMPACT_FOCUS_UNSUPPORTED);
                 }
                 self.compacting = true;
-                self.transcript.push_notice(
-                    NoticeLevel::Info,
-                    "asking the engine to compact at the next model call…",
-                );
+                self.transcript
+                    .push_notice(NoticeLevel::Info, "asking the engine to compact…");
                 self.scroll.bottom();
                 fx.push(Effect::CompactNow);
             }

@@ -855,10 +855,7 @@ fn prompts_during_the_request_are_queued_inputs_not_held_text() {
     assert!(app.compacting);
     assert_eq!(
         last_notice(&app),
-        Some((
-            NoticeLevel::Info,
-            "asking the engine to compact at the next model call…".into()
-        ))
+        Some((NoticeLevel::Info, "asking the engine to compact…".into()))
     );
     // The prompt goes to the runner at once: it admits it as a `Queue`
     // input after the request (effects are served in order).
@@ -1069,4 +1066,43 @@ fn an_unconfirmed_interrupt_says_the_run_may_still_be_going() {
         !notices.iter().any(|t| t == "turn interrupted"),
         "{notices:?}"
     );
+}
+
+/// While the run `/compact` starts goes, a message typed is held and sent
+/// when it ends; a compaction shows `compacting… Ns` in the status bar
+/// until it ends.
+#[test]
+fn a_compaction_run_holds_what_is_typed_and_the_bar_says_compacting() {
+    let start = Instant::now();
+    let mut app = App::new(StatusInfo::default());
+    app.status.context_used = Some(40_000);
+    assert_eq!(submit(&mut app, "/compact"), vec![Effect::CompactNow]);
+    app.update(Msg::CompactionRun(true));
+    app.update(Msg::CompactRequested(Ok(())));
+    assert!(
+        app.transcript
+            .blocks()
+            .iter()
+            .any(|b| matches!(b, Block::Notice { text, .. } if text == COMPACT_RUNNING))
+    );
+    app.update_at(
+        agent(AgentEvent::CompactionStarted {
+            input_tokens: 40_000,
+            estimated_history_tokens: 40_000,
+            message_count: 12,
+        }),
+        start,
+    );
+    let bar = render::status_line(&app.status, start + Duration::from_secs(7));
+    assert!(bar.contains("compacting… 7s"), "{bar}");
+    // Typed meanwhile: held, not started.
+    assert!(submit(&mut app, "after it").is_empty());
+    assert!(!app.is_running());
+    // Session commands wait too.
+    assert!(submit(&mut app, "/clear").is_empty());
+    // The run ends: the held message goes as a turn, the bar is clear.
+    let fx = app.update(Msg::CompactionRun(false));
+    assert_eq!(fx, vec![Effect::StartTurn("after it".into())]);
+    let bar = render::status_line(&app.status, start + Duration::from_secs(9));
+    assert!(!bar.contains("compacting"), "{bar}");
 }

@@ -274,13 +274,16 @@ async fn the_token_counter_and_gauge_follow_the_conversation() {
 }
 
 /// `/compact now` in attach mode asks the agent's next compaction
-/// check to compact (`mob/compact_member`): the next prompt's first model
-/// call is the summary, and the client sees `compaction_completed`.
+/// check to compact (`mob/compact_member`) and, the agent being idle,
+/// starts the run whose check compacts itself: the summary call comes
+/// with no message of the user's, the client sees `compaction_completed`,
+/// and the next prompt runs on the compacted history.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn compact_now_compacts_at_the_next_turn() {
+async fn compact_now_compacts_without_waiting_for_a_message() {
     let ws = Workspace::new();
     let mut script = vec![Step::Text("ok"); 4];
     script.push(Step::Text("SUMMARY of the earlier turns"));
+    script.push(Step::Text("compacted"));
     script.push(Step::Text("after"));
     let llm = ScriptedLlmClient::new(script);
     let daemon = Running::start(&ws.root, &llm).await;
@@ -294,8 +297,9 @@ async fn compact_now_compacts_at_the_next_turn() {
         .wait_for(|m| matches!(m, Msg::CompactRequested(_)))
         .await;
     assert!(matches!(asked, Msg::CompactRequested(Ok(()))), "{asked:?}");
-    client.send(Effect::StartTurn("next".into()));
-    assert_eq!(client.turn_finished().await.unwrap().text, "after");
+    client
+        .wait_for(|m| matches!(m, Msg::CompactionRun(false)))
+        .await;
     client
         .saw(|m| {
             matches!(
@@ -305,7 +309,20 @@ async fn compact_now_compacts_at_the_next_turn() {
             )
         })
         .await;
-    assert_eq!(llm.recorded().len(), 6, "the summary call came first");
+    assert_eq!(
+        llm.recorded().len(),
+        6,
+        "the summary and the short call, before any message"
+    );
+    client.send(Effect::StartTurn("next".into()));
+    assert_eq!(client.turn_finished().await.unwrap().text, "after");
+    let last = llm.recorded().last().unwrap().clone();
+    assert!(
+        last.user().contains("SUMMARY of the earlier turns"),
+        "{}",
+        last.user()
+    );
+    assert!(!last.user().contains("turn 0"), "{}", last.user());
     client.quit().await;
     daemon.stop().await;
 }
