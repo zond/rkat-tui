@@ -1007,3 +1007,66 @@ fn resume_replaces_the_cost_totals() {
     ));
     assert!(!footer(&app).contains('$'), "{}", footer(&app));
 }
+
+/// A message queued while a model request runs long says what it waits
+/// for, and for how long; once the tools run (the reply is in) it does not.
+#[test]
+fn a_queued_message_says_it_waits_for_the_model_s_reply() {
+    let start = Instant::now();
+    let mut app = App::new(StatusInfo::default());
+    submit(&mut app, "go");
+    app.update_at(
+        agent(AgentEvent::TurnStarted {
+            turn_number: 0,
+            assistant_message_id: None,
+        }),
+        start,
+    );
+    submit(&mut app, "more");
+    let at = |secs| render::status_line(&app.status, start + Duration::from_secs(secs));
+    assert!(at(2).contains("queued 1"), "{}", at(2));
+    assert!(!at(2).contains("waiting"), "{}", at(2));
+    assert!(
+        at(42).contains("queued 1, waiting for the model's reply (42s)"),
+        "{}",
+        at(42)
+    );
+    app.update_at(
+        agent(AgentEvent::ToolExecutionStarted {
+            id: "t1".into(),
+            name: "glob".into(),
+        }),
+        start + Duration::from_secs(43),
+    );
+    let after = render::status_line(&app.status, start + Duration::from_secs(50));
+    assert!(!after.contains("waiting"), "{after}");
+}
+
+/// An interrupt the daemon never confirmed is not called an interrupted
+/// turn: the notice says the run may still be going.
+#[test]
+fn an_unconfirmed_interrupt_says_the_run_may_still_be_going() {
+    let mut app = App::new(StatusInfo::default());
+    submit(&mut app, "go");
+    app.update(finished(Err(TurnFailure::Unconfirmed)));
+    assert!(!app.is_running());
+    let notices: Vec<String> = app
+        .transcript
+        .blocks()
+        .iter()
+        .filter_map(|block| match block {
+            Block::Notice { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        notices
+            .iter()
+            .any(|t| t.contains("the run may still be going")),
+        "{notices:?}"
+    );
+    assert!(
+        !notices.iter().any(|t| t == "turn interrupted"),
+        "{notices:?}"
+    );
+}

@@ -8052,3 +8052,41 @@ lost communication with the server", no log kept, as the first hosted
 test run of the 0.9.14 move did; taken as the runner out of memory in a
 cold build of the engine, not proven. The release build runs two
 compilations at a time (`--jobs 2`).
+
+## An interrupt during a stalled model request (2026-11-13)
+
+A report: a model request that sent nothing for minutes, a steer left
+*delivering…*, Ctrl+Enter without visible effect, then "the daemon did not
+confirm the interrupt" and "turn interrupted" while the run went on. What
+the engine does, read in 0.9.14: a stop or hard cancel races the whole run
+future against the interrupt and drops it (`meerkat-session`
+`ephemeral.rs` 12159-12197), so an in-flight request goes with it, and the
+terminal is `RunFailed` with class `cancelled` (`cancel_dropped_run`). A
+steer joins only before the next model request (`meerkat-core`
+`agent/state.rs` 8621-8672), never one in flight. No HTTP timeout is set
+on the provider clients; the engine's stream-inactivity watchdog (300 s
+by default, `[retry] stream_inactivity_timeout`) and an optional
+`[retry] call_timeout` are the only bounds, and a stall is retried up to
+`max_retries` (3).
+
+The rig reproduces the stall with `Step::Hang`, in the report's orders,
+and the engine behaves: the interrupt ends the run in well under a
+second, also with a `fork_off` child stalled beside it; a recalled steer
+is either taken back or run, never both; the message sent again arrives
+once (`an_interrupt_during_a_stalled_model_request_ends_it_and_loses_nothing`,
+`interrupt_then_recall_then_resend_during_a_stall_delivers_once`,
+`an_interrupt_during_a_stalled_request_is_confirmed_while_a_fork_runs`).
+The same tests show that the interrupted run's prompt is not in the
+stored conversation afterwards. Not reproduced: an unconfirmed stop. What
+the client did wrong regardless: it ignored the stop's receipt, so a stop
+whose run was no longer current (`not_current`, `not_stoppable`) stopped
+nothing and the client waited for its deadline, and after the deadline
+it called the turn interrupted while the run could still go on. Now a
+receipt that is not `stopped`, and the first deadline, hard-cancel the
+current run (`mob/hard_cancel_member`, served by the daemon's proxy and
+logged; `a_hard_cancel_through_the_daemon_ends_a_stalled_run`); a second
+deadline ends the turn as `TurnFailure::Unconfirmed`
+(`an_unconfirmed_interrupt_escalates_once_then_ends_unconfirmed`,
+`an_unconfirmed_interrupt_says_the_run_may_still_be_going`). The status bar
+says when queued messages wait for a model reply
+(`a_queued_message_says_it_waits_for_the_model_s_reply`).

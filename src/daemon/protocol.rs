@@ -250,6 +250,10 @@ pub mod engine {
     pub const STOP_MEMBER_RUN: &str = "mob/stop_member_run";
     /// Cancel whatever a member runs.
     pub const FORCE_CANCEL: &str = "mob/force_cancel";
+    /// Interrupt a member's current run at once, whichever it is (the
+    /// fallback when a stop names a run that is no longer current, or
+    /// goes unconfirmed).
+    pub const HARD_CANCEL_MEMBER: &str = "mob/hard_cancel_member";
     /// Open a member's or a mob's event stream.
     pub const STREAM_OPEN: &str = "mob/stream_open";
     /// Close a stream.
@@ -294,6 +298,7 @@ pub mod engine {
         TURN_START,
         STOP_MEMBER_RUN,
         FORCE_CANCEL,
+        HARD_CANCEL_MEMBER,
         STREAM_OPEN,
         STREAM_CLOSE,
         APPEND_SYSTEM_CONTEXT,
@@ -320,6 +325,7 @@ pub mod engine {
         TURN_START,
         STOP_MEMBER_RUN,
         FORCE_CANCEL,
+        HARD_CANCEL_MEMBER,
         APPEND_SYSTEM_CONTEXT,
         COMPACT_MEMBER,
     ];

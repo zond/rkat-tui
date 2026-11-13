@@ -106,13 +106,24 @@ durable `Steer` input that the runtime writes into the running turn as an
 ordinary user message at its next model boundary (between tool calls), or
 runs as one follow-up turn when no boundary comes. Its placeholder in the
 transcript reads *queued*, then *delivering*, and becomes your message once
-the runtime reports it written. A steer an interrupted turn did not deliver
+the runtime reports it written. A steer never joins a model request already
+on its way: while one runs longer than five seconds, the status bar reads
+`queued N, waiting for the model's reply (Ns)`. A steer an interrupted turn did not deliver
 is sent next (see below); one a failed turn did not deliver comes back to
 the editor.
 
 *Esc while a turn runs* interrupts it, as in Claude Code, and Ctrl-C does
 the same (the first Esc or Ctrl-C after a mouse selection only clears it):
-the daemon stops the agent's run and its running helpers. A message sent to
+the daemon stops the agent's run and its running helpers; a model request
+in flight is dropped at once. When the stop finds that the run the client
+knew is no longer the agent's current one, or the run has not ended 10 s
+after the interrupt, the client cancels whatever run the agent has then
+(a notice says so) and waits 10 s more; if even that is not confirmed, the
+turn ends with a notice that the run may still be going (it shows again
+when it reports, and what you send next waits behind it), never as
+"turn interrupted". The prompt of an interrupted run is not kept in the
+conversation the model sees (the engine closes the run without it); the
+transcript still shows it. A message sent to
 the daemon meanwhile is the runtime's: the agent gets it at its next step
 unless ↑ takes it back first. A second Esc a second later force-cancels
 the agent's work, which also drops the messages the runtime still holds

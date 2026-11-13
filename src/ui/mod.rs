@@ -149,6 +149,10 @@ pub enum TurnFailure {
     /// cancelled).
     #[error("interrupted")]
     Interrupted,
+    /// The user interrupted the turn, and the daemon never confirmed that
+    /// its run ended (not even after a hard cancel): it may still be going.
+    #[error("the interrupt was not confirmed")]
+    Unconfirmed,
 }
 
 impl TurnFailure {
@@ -159,7 +163,7 @@ impl TurnFailure {
     pub fn rank(end: &Result<TurnSummary, Self>) -> u8 {
         match end {
             Ok(_) => 0,
-            Err(Self::Interrupted) => 1,
+            Err(Self::Interrupted | Self::Unconfirmed) => 1,
             Err(Self::Failed(_)) => 2,
         }
     }
@@ -771,6 +775,10 @@ pub struct StatusInfo {
     running_since: Option<Instant>,
     /// Number of messages typed mid-turn that have not been delivered yet.
     queued: usize,
+    /// When the agent's model request in flight started (`None`: none is):
+    /// a steer joins only once the reply is in, so the bar says what the
+    /// queued messages wait for.
+    model_since: Option<Instant>,
     /// Number of helpers running now.
     helpers: usize,
     /// Whether the helper panel lists any helper (the status bar names the
@@ -1366,6 +1374,15 @@ impl App {
                     // The gauge's reading is the daemon's (`rkat/cost`); a
                     // compaction re-arms its warning.
                     AgentEvent::CompactionCompleted { .. } => self.gauge.compacted(),
+                    _ => {}
+                }
+                match &env.payload {
+                    AgentEvent::TurnStarted { .. } => self.status.model_since = Some(now),
+                    AgentEvent::ToolCallRequested { .. }
+                    | AgentEvent::ToolExecutionStarted { .. }
+                    | AgentEvent::TurnCompleted { .. }
+                    | AgentEvent::RunCompleted { .. }
+                    | AgentEvent::RunFailed { .. } => self.status.model_since = None,
                     _ => {}
                 }
                 if let Some(usage) = self.transcript.apply_agent_event_at(&env.payload, now) {

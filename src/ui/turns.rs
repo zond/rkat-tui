@@ -375,8 +375,14 @@ impl App {
         self.recalling = false;
         self.reached.clear();
         self.status.running_since = None;
+        self.status.model_since = None;
         self.status.classifying = false;
-        let interrupted = matches!(&result, Err(TurnFailure::Interrupted));
+        // An unconfirmed interrupt goes on as an interrupted turn does (the
+        // queue goes next; it waits behind a run that is still going).
+        let interrupted = matches!(
+            &result,
+            Err(TurnFailure::Interrupted | TurnFailure::Unconfirmed)
+        );
         let succeeded = result.is_ok();
         let answered = matches!(&result, Ok(summary) if !summary.text.trim().is_empty());
         match result {
@@ -392,6 +398,12 @@ impl App {
             Err(TurnFailure::Interrupted) => {
                 self.transcript
                     .push_notice(NoticeLevel::Warn, "turn interrupted");
+            }
+            Err(TurnFailure::Unconfirmed) => {
+                self.transcript.push_notice(
+                    NoticeLevel::Warn,
+                    "the daemon did not confirm the interrupt, not even after a hard cancel: the run may still be going and shows here again when it reports; what you send next waits behind it",
+                );
             }
         }
         self.streamed_text = false;

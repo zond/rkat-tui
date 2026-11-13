@@ -234,15 +234,63 @@ impl Runner {
         }
         tokio::spawn(async move {
             let result = match stop {
-                Some(run) => bounded(
-                    CALL_TIMEOUT,
-                    remote::stop_run(&connection, &run, INTERRUPT_REASON),
-                )
-                .await
-                .map(drop),
+                Some(run) => {
+                    match bounded(
+                        CALL_TIMEOUT,
+                        remote::stop_run(&connection, &run, INTERRUPT_REASON),
+                    )
+                    .await
+                    {
+                        Ok(answer) if remote::stopped(&answer) => Ok(()),
+                        // The run this client knew is not the one the agent
+                        // runs (or a stop was refused): interrupt whichever
+                        // runs now rather than wait for an end that will not
+                        // come.
+                        answered => {
+                            tracing::info!(
+                                ?answered,
+                                "the stop stopped nothing; hard-cancelling the current run"
+                            );
+                            bounded(
+                                CALL_TIMEOUT,
+                                remote::hard_cancel(&connection, INTERRUPT_REASON),
+                            )
+                            .await
+                        }
+                    }
+                }
                 None => bounded(CALL_TIMEOUT, remote::force_cancel(&connection)).await,
             };
             if let Err(failure) = result {
+                reports.send(Report::Interrupt(failure.to_string()));
+            }
+        });
+    }
+
+    /// The interrupt's deadline passed with no end of the run: the first
+    /// time, interrupt whichever run the agent has now (`mob/hard_cancel_member`)
+    /// and wait once more.
+    fn escalate_interrupt(&mut self) {
+        let Some(connection) = self.connection() else {
+            return;
+        };
+        self.turn.escalated = true;
+        self.turn.give_up_at = Some(Instant::now() + INTERRUPT_DEADLINE);
+        self.notice(
+            NoticeLevel::Warn,
+            format!(
+                "the run did not end within {}s of the interrupt; cancelling whatever the agent runs now",
+                INTERRUPT_DEADLINE.as_secs()
+            ),
+        );
+        let reports = self.reporter();
+        tokio::spawn(async move {
+            if let Err(failure) = bounded(
+                CALL_TIMEOUT,
+                remote::hard_cancel(&connection, INTERRUPT_REASON),
+            )
+            .await
+            {
                 reports.send(Report::Interrupt(failure.to_string()));
             }
         });
@@ -504,16 +552,20 @@ impl Runner {
         self.finish_turn();
     }
 
-    /// An interrupt the daemon has not confirmed in time ends the turn.
+    /// An interrupt the daemon has not confirmed in time: the first time
+    /// the current run is cancelled hard ([`Self::escalate_interrupt`]);
+    /// after that the turn ends as unconfirmed (not as interrupted: the
+    /// run may still be going, and it shows here again when it reports).
     pub(super) fn on_deadline(&mut self) {
-        if self.turn.give_up_at.is_some_and(|at| at <= Instant::now()) {
-            self.notice(
-                NoticeLevel::Warn,
-                "the daemon did not confirm the interrupt; the run may still be going (it shows here when it reports)",
-            );
-            self.turn.record(Err(TurnFailure::Interrupted));
-            self.finish_turn();
+        if self.turn.give_up_at.is_none_or(|at| at > Instant::now()) {
+            return;
         }
+        if !self.turn.escalated && self.connection().is_some() {
+            self.escalate_interrupt();
+            return;
+        }
+        self.turn.record(Err(TurnFailure::Unconfirmed));
+        self.finish_turn();
     }
 
     pub(super) fn finish_turn(&mut self) {

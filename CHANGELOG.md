@@ -16,6 +16,16 @@
   `edit_file` back to it when the daemon was busy. The file tools now mark
   the write before the file changes, and a change is judged by when it
   happened rather than when its batch left.
+- An interrupt no longer waits on a stop that stopped nothing: when the
+  stop finds the run the client knew is not the agent's current one, or
+  the run has not ended 10 s after Esc or Ctrl+Enter, the client
+  hard-cancels whatever the agent runs then and waits once more. A turn
+  whose interrupt is still not confirmed ends with a notice that the run
+  may still be going, not as "turn interrupted". The daemon logs each
+  interrupt it forwards.
+- While a model request runs longer than five seconds, the status bar
+  says that queued messages wait for the model's reply, and for how long,
+  instead of a bare "delivering…".
 
 ## [0.0.2] - 2026-11-13
 

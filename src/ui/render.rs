@@ -33,6 +33,9 @@ pub(crate) const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴'
 pub(crate) const SPINNER_FRAME_MS: u128 = 80;
 /// Status-bar segment separator.
 const SEP: &str = " │ ";
+/// How long a model request runs before the status bar says that the
+/// queued messages wait for its reply.
+pub const MODEL_WAIT_SHOWN: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Draw the whole application.
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
@@ -687,7 +690,20 @@ pub fn status_bar(status: &StatusInfo, now: Instant) -> Line<'static> {
         segs.push(Span::raw(format!("{frame} running {}s", elapsed.as_secs())));
     }
     if status.queued > 0 {
-        segs.push(Span::raw(format!("queued {}", status.queued)));
+        // A queued message joins once the model's reply is in: a long wait
+        // says so, and for how long.
+        let waiting = status
+            .model_since
+            .map(|since| now.saturating_duration_since(since))
+            .filter(|waited| *waited >= MODEL_WAIT_SHOWN);
+        segs.push(Span::raw(match waiting {
+            Some(waited) => format!(
+                "queued {}, waiting for the model's reply ({}s)",
+                status.queued,
+                waited.as_secs()
+            ),
+            None => format!("queued {}", status.queued),
+        }));
     }
     if status.helpers > 0 {
         segs.push(Span::styled(

@@ -1314,3 +1314,202 @@ async fn a_steer_queued_behind_an_interrupted_run_runs_after_it() {
     assert!(user_texts(&llm.requests()[1]).contains(&"typed while it hangs".to_string()));
     rig.quit().await;
 }
+
+/// How many of the conversation's user messages are `text`.
+fn count(messages: &[Message], text: &str) -> usize {
+    user_texts(messages).iter().filter(|t| *t == text).count()
+}
+
+/// The sequence of a user report (a model request that sends nothing): a
+/// steer typed during the stall, then Ctrl+Enter (interrupt, and the
+/// editor's text sent once the turn ends). The interrupt is confirmed
+/// well within the client's deadline, the stalled run ends, and the steer
+/// and the message sent next each reach the conversation once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_interrupt_during_a_stalled_model_request_ends_it_and_loses_nothing() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![
+        Step::Hang,
+        Step::Text("for the steer"),
+        Step::Text("for the message"),
+    ]);
+    let mut rig = Attached::start(&ws.root, &llm).await;
+    rig.send(Effect::StartTurn("stall".into()));
+    rig.wait_for(|msg| matches!(msg, Msg::Agent(env) if matches!(env.payload, AgentEvent::RunStarted { .. })))
+        .await;
+    llm.wait_call(0).await;
+    rig.send(steer(1, "steered during the stall"));
+    rig.wait_for(|msg| matches!(msg, Msg::SteerAck { result: Ok(()), .. }))
+        .await;
+    // Admitted, not written into the stalled request.
+    assert!(
+        !rig.seen
+            .iter()
+            .any(|msg| matches!(msg, Msg::SteerDelivered(PendingId(1))))
+    );
+    let asked = std::time::Instant::now();
+    rig.send(Effect::Interrupt);
+    assert_eq!(rig.turn_finished().await, Err(TurnFailure::Interrupted));
+    let took = asked.elapsed();
+    assert!(
+        took < rkat_tui::client::runner::INTERRUPT_DEADLINE / 2,
+        "{took:?}"
+    );
+    assert!(
+        !rig.seen
+            .iter()
+            .any(|msg| matches!(msg, Msg::Notice { text, .. } if text.contains("did not confirm"))),
+        "{:#?}",
+        rig.seen
+    );
+    // Ctrl+Enter's text goes once the turn ended.
+    rig.send(Effect::StartTurn("sent after the interrupt".into()));
+    let done = rig.turn_finished().await.unwrap();
+    assert!(
+        ["for the steer", "for the message"].contains(&done.text.as_str()),
+        "{done:?}"
+    );
+    common::within(async {
+        while llm.requests().len() < 3 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    let session = rig.messages().await;
+    assert_eq!(
+        count(&session, "steered during the stall"),
+        1,
+        "{session:#?}"
+    );
+    assert_eq!(
+        count(&session, "sent after the interrupt"),
+        1,
+        "{session:#?}"
+    );
+    // The engine closes an interrupted run's tail without its prompt: the
+    // conversation (and so the model) no longer has it.
+    assert_eq!(count(&session, "stall"), 0, "{session:#?}");
+    rig.quit().await;
+}
+
+/// The same with a `fork_off` child running in the background (its own
+/// model request stalled too): the agent's stalled request is still
+/// interrupted at once, and the next message is answered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_interrupt_during_a_stalled_request_is_confirmed_while_a_fork_runs() {
+    const TASK: &str = "FORK-CHILD-TASK stall too";
+    let ws = Workspace::new();
+    let step = Step::Dynamic(Arc::new(|messages: &[Message]| {
+        let text = format!("{messages:?}");
+        // The child forked before the message after the interrupt.
+        if text.contains("sent after the interrupt") {
+            Step::Text("answered")
+        } else if text.contains("FORK-CHILD-TASK") || text.contains("fo1") {
+            Step::Hang
+        } else {
+            Step::Tool {
+                id: "fo1",
+                name: "fork_off",
+                args: json!({"member_id": "forky", "task": TASK}),
+            }
+        }
+    }));
+    let llm = ScriptedLlmClient::new(vec![step; 8]);
+    let mut rig = Attached::start(&ws.root, &llm).await;
+    rig.daemon.reveal(&rig.daemon.session, &["fork_off"]).await;
+    rig.send(Effect::StartTurn("fork, then stall".into()));
+    // The parent's stalled request and the child's.
+    llm.wait_call(2).await;
+    let asked = std::time::Instant::now();
+    rig.send(Effect::Interrupt);
+    assert_eq!(rig.turn_finished().await, Err(TurnFailure::Interrupted));
+    let took = asked.elapsed();
+    assert!(
+        took < rkat_tui::client::runner::INTERRUPT_DEADLINE / 2,
+        "{took:?}"
+    );
+    rig.send(Effect::StartTurn("sent after the interrupt".into()));
+    assert_eq!(rig.turn_finished().await.unwrap().text, "answered");
+    rig.quit().await;
+}
+
+/// The order of the user report: a model request held open, a steer sent
+/// ("delivering…"), Ctrl+Enter (the interrupt), the steer taken back (↑),
+/// and the message sent again. The interrupt is confirmed at once, the
+/// recalled steer is never run, and the message sent again reaches the
+/// conversation exactly once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn interrupt_then_recall_then_resend_during_a_stall_delivers_once() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![Step::Hang, Step::Text("answered")]);
+    let mut rig = Attached::start(&ws.root, &llm).await;
+    rig.send(Effect::StartTurn("stall".into()));
+    rig.wait_for(|msg| matches!(msg, Msg::Agent(env) if matches!(env.payload, AgentEvent::RunStarted { .. })))
+        .await;
+    llm.wait_call(0).await;
+    rig.send(steer(1, "the message"));
+    rig.wait_for(|msg| matches!(msg, Msg::SteerAck { result: Ok(()), .. }))
+        .await;
+    let asked = std::time::Instant::now();
+    rig.send(Effect::Interrupt);
+    rig.send(Effect::RecallQueued);
+    let recalled = rig
+        .wait_for(|msg| matches!(msg, Msg::Recalled { .. }))
+        .await;
+    assert_eq!(rig.turn_finished().await, Err(TurnFailure::Interrupted));
+    let took = asked.elapsed();
+    assert!(
+        took < rkat_tui::client::runner::INTERRUPT_DEADLINE / 2,
+        "{took:?}"
+    );
+    let taken_back =
+        matches!(&recalled, Msg::Recalled { recalled, .. } if recalled.contains(&PendingId(1)));
+    let delivered = rig
+        .seen
+        .iter()
+        .any(|msg| matches!(msg, Msg::SteerDelivered(PendingId(1))));
+    // Either the recall took it back or it ran: never both, never neither.
+    assert!(taken_back != delivered, "{recalled:?} {:#?}", rig.seen);
+    if taken_back {
+        rig.send(Effect::StartTurn("the message".into()));
+        assert_eq!(rig.turn_finished().await.unwrap().text, "answered");
+    } else {
+        rig.saw(|msg| matches!(msg, Msg::TurnFinished(_))).await;
+    }
+    let session = rig.messages().await;
+    assert_eq!(count(&session, "the message"), 1, "{session:#?}");
+    assert!(
+        !rig.seen
+            .iter()
+            .any(|msg| matches!(msg, Msg::Notice { text, .. } if text.contains("did not confirm"))),
+        "{:#?}",
+        rig.seen
+    );
+    rig.quit().await;
+}
+
+/// The client's fallback when a stop stops nothing or goes unconfirmed:
+/// `mob/hard_cancel_member`, forwarded by the daemon, ends the agent's
+/// stalled run at once, and the agent serves the next prompt.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_hard_cancel_through_the_daemon_ends_a_stalled_run() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![Step::Hang, Step::Text("after")]);
+    let mut rig = Attached::start(&ws.root, &llm).await;
+    let agent = rig.agent().await;
+    rig.send(Effect::StartTurn("stall".into()));
+    llm.wait_call(0).await;
+    let other = rig.daemon.connect_bound().await;
+    let answer = other
+        .call(
+            "mob/hard_cancel_member",
+            json!({"mob_id": "tui", "agent_identity": agent, "reason": "test"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(answer["cancelled"], true, "{answer}");
+    assert_eq!(rig.turn_finished().await, Err(TurnFailure::Interrupted));
+    rig.send(Effect::StartTurn("again".into()));
+    assert_eq!(rig.turn_finished().await.unwrap().text, "after");
+    rig.quit().await;
+}

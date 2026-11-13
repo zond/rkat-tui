@@ -475,6 +475,9 @@ struct Turn {
     result: Option<Result<TurnSummary, TurnFailure>>,
     interrupted_at: Option<Instant>,
     force_cancelled: bool,
+    /// The unconfirmed interrupt was followed by a hard cancel of the
+    /// agent's current run ([`Runner::on_deadline`]).
+    escalated: bool,
     /// An interrupt the daemon has not confirmed ends the turn then.
     give_up_at: Option<Instant>,
     /// The prompt that started it, as sent (`None`: another client's run).
@@ -2199,5 +2202,63 @@ mod tests {
         turn.record(Err(TurnFailure::Failed("x".into())));
         turn.record(Err(TurnFailure::Interrupted));
         assert_eq!(turn.result, Some(Err(TurnFailure::Failed("x".into()))));
+    }
+
+    /// An interrupt the daemon does not confirm in time is followed by a
+    /// hard cancel of the agent's current run and a second wait; only
+    /// then does the turn end, as unconfirmed (never called interrupted).
+    #[tokio::test]
+    async fn an_unconfirmed_interrupt_escalates_once_then_ends_unconfirmed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut runner, mut ui_rx) = runner(dir.path());
+        runner.conn = up(link("live", SessionId::new()).await);
+        runner.turn = Turn {
+            active: true,
+            interrupted_at: Some(Instant::now()),
+            give_up_at: Some(Instant::now()),
+            ..Turn::default()
+        };
+        runner.on_deadline();
+        assert!(runner.turn.active, "it waits once more");
+        assert!(runner.turn.escalated);
+        assert!(runner.turn.give_up_at.is_some_and(|at| at > Instant::now()));
+        let notices: Vec<String> = std::iter::from_fn(|| ui_rx.try_recv().ok())
+            .filter_map(|msg| match msg {
+                Msg::Notice { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            notices
+                .iter()
+                .any(|t| t.contains("cancelling whatever the agent runs now")),
+            "{notices:?}"
+        );
+        runner.turn.give_up_at = Some(Instant::now());
+        runner.on_deadline();
+        assert!(!runner.turn.active);
+        let ended = std::iter::from_fn(|| ui_rx.try_recv().ok())
+            .find(|msg| matches!(msg, Msg::TurnFinished(_)));
+        assert!(
+            matches!(
+                ended,
+                Some(Msg::TurnFinished(Err(TurnFailure::Unconfirmed)))
+            ),
+            "{ended:?}"
+        );
+    }
+
+    #[test]
+    fn only_a_stopped_receipt_counts_as_a_stop() {
+        use serde_json::json;
+        assert!(remote::stopped(
+            &json!({"receipt": {"outcome": "stopped", "run_id": "r", "contributors": []}})
+        ));
+        for outcome in ["not_current", "not_stoppable"] {
+            assert!(!remote::stopped(
+                &json!({"receipt": {"outcome": outcome, "run_id": "r"}})
+            ));
+        }
+        assert!(!remote::stopped(&json!({})));
     }
 }

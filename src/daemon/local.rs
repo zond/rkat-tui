@@ -1287,7 +1287,8 @@ impl Local {
                     self.with_thinking(params);
                 }
             }
-            engine::STOP_MEMBER_RUN | engine::FORCE_CANCEL => {
+            engine::STOP_MEMBER_RUN | engine::FORCE_CANCEL | engine::HARD_CANCEL_MEMBER => {
+                tracing::info!(%method, %agent, "the client interrupts the agent");
                 if let Some(session) = self.conversations.current(&agent) {
                     self.engine.stop(&session);
                     self.desk.stop(&session);

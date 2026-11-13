@@ -258,6 +258,33 @@ pub async fn stop_run(
         .await
 }
 
+/// Interrupt the agent's current run at once, whichever it is (queued
+/// input stays queued).
+///
+/// # Errors
+///
+/// The call's error.
+pub async fn hard_cancel(connection: &Connection, reason: &str) -> Result<(), ClientError> {
+    connection
+        .call(
+            engine::HARD_CANCEL_MEMBER,
+            with_member(connection, json!({"reason": reason})),
+        )
+        .await
+        .map(drop)
+}
+
+/// Whether the answer of [`stop_run`] says the run was stopped (its
+/// receipt's `outcome` is `stopped`; `not_current` and `not_stoppable`
+/// stopped nothing).
+#[must_use]
+pub fn stopped(answer: &Value) -> bool {
+    answer
+        .pointer("/receipt/outcome")
+        .and_then(Value::as_str)
+        .is_some_and(|outcome| outcome == "stopped")
+}
+
 /// Cancel whatever the agent runs.
 ///
 /// # Errors
