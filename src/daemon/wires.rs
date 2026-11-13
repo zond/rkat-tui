@@ -208,8 +208,6 @@ pub struct Wires {
     records: parking_lot::Mutex<Records>,
     /// Each live agent's socket, or why its bind failed (for its card).
     sockets: parking_lot::Mutex<HashMap<String, Result<Socket, String>>>,
-    /// The notes sent so far (their idempotency keys differ).
-    notes: std::sync::atomic::AtomicU64,
 }
 
 impl std::fmt::Debug for Wires {
@@ -249,7 +247,6 @@ impl Wires {
             realm: realm.to_path_buf(),
             records: parking_lot::Mutex::new(records),
             sockets: parking_lot::Mutex::new(HashMap::new()),
-            notes: std::sync::atomic::AtomicU64::new(0),
         });
         (wires, problem)
     }
@@ -690,19 +687,7 @@ impl Wires {
     }
 
     async fn note(&self, agent: &str, text: String) {
-        let mut request = meerkat_core::AppendSystemContextRequest::from_text(text);
-        request.source = Some(NOTE_SOURCE.to_string());
-        request.idempotency_key = Some(format!(
-            "rkat-wires:{agent}:{}:{}",
-            std::process::id(),
-            self.notes
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        if let Err(err) = self
-            .state
-            .mob_append_system_context(&MobId::from(MOB_ID), &AgentIdentity::from(agent), request)
-            .await
-        {
+        if let Err(err) = super::agents::append_note(&self.state, agent, NOTE_SOURCE, text).await {
             tracing::warn!(%agent, error = %err, "the agent could not be told about its wire");
         }
     }

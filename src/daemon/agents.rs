@@ -219,6 +219,16 @@ pub struct Bound {
     pub seated: bool,
 }
 
+impl Bound {
+    /// A live agent, bound as it is.
+    fn existing(name: String) -> Self {
+        Self {
+            name,
+            seated: false,
+        }
+    }
+}
+
 /// One live agent.
 #[derive(Debug, Default)]
 struct Agent {
@@ -255,27 +265,48 @@ impl Drop for Agent {
 const WATCHER_DRAIN: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// How long a seat or retire waits for its membership note to an idle
-/// agent ([`Agents::note_each`]) before leaving it to land on its own.
+/// agent ([`Agents::send_notes`]) before leaving it to land on its own.
 const NOTE_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// How many unattended denials an agent keeps for its next client.
 const MISSED_KEPT: usize = 32;
 
-/// Append `text` to `name`'s system context under `key`. Best effort: a
-/// failure is logged.
-async fn append_note(state: Arc<MobMcpState>, name: String, text: String, key: String) {
+/// Append `text` to `agent`'s system context (it reads it at its next
+/// turn; nothing wakes it) as `source`'s note, under an idempotency key no
+/// other note shares, across processes too: a session keeps the notes of
+/// earlier daemons, and the engine refuses a key it already holds with
+/// another text. Every note the daemon sends an agent goes through here.
+///
+/// # Errors
+///
+/// The engine's refusal of the append.
+pub(crate) async fn append_note(
+    state: &MobMcpState,
+    agent: &str,
+    source: &str,
+    text: String,
+) -> Result<(), meerkat_mob_mcp::MobAppendSystemContextError> {
+    static NOTES: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
     let mut request = meerkat_core::AppendSystemContextRequest::from_text(text);
-    request.source = Some(NOTE_SOURCE.to_string());
-    request.idempotency_key = Some(key);
-    if let Err(err) = state
-        .mob_append_system_context(
-            &MobId::from(MOB_ID),
-            &AgentIdentity::from(name.as_str()),
-            request,
-        )
+    request.source = Some(source.to_string());
+    request.idempotency_key = Some(format!(
+        "{source}:{agent}:{}-{nanos}-{}",
+        std::process::id(),
+        NOTES.fetch_add(1, Ordering::Relaxed)
+    ));
+    state
+        .mob_append_system_context(&MobId::from(MOB_ID), &AgentIdentity::from(agent), request)
         .await
-    {
-        tracing::warn!(agent = %name, error = %err, "the agent could not be told about the other agents");
+        .map(drop)
+}
+
+/// [`append_note`] of a note about the other agents; a failure is logged.
+async fn note_agent(state: Arc<MobMcpState>, agent: String, text: String) {
+    if let Err(err) = append_note(&state, &agent, NOTE_SOURCE, text).await {
+        tracing::warn!(%agent, error = %err, "the agent could not be told about the other agents");
     }
 }
 
@@ -435,7 +466,12 @@ impl Agents {
             }
         };
         if from_watch {
-            self.audit_trigger(name, session, run, &format!("watch ({prompt})"));
+            self.audit_run(
+                name,
+                Some((session, run)),
+                "run_triggered",
+                format!("watch ({prompt})"),
+            );
             return;
         }
         let Some(fired) = self.schedules.attribute(name, run, prompt).await else {
@@ -464,20 +500,44 @@ impl Agents {
         prompt: &str,
         detail: &str,
     ) {
+        self.audit_run(
+            name,
+            Some((session, run)),
+            "run_triggered",
+            detail.to_string(),
+        );
+        self.tell_triggered(name, session, label, prompt.to_string());
+    }
+
+    /// The audit log's `event` line for `name` (of its `session`'s `run`,
+    /// when there is one).
+    fn audit_run(
+        &self,
+        name: &str,
+        run: Option<(&SessionId, &meerkat_core::RunId)>,
+        event: &str,
+        detail: String,
+    ) {
         if let Some(audit) = &self.audit {
-            let mut line =
-                super::audit::Line::event("run_triggered", detail.to_string()).of_agent(name);
-            line.session = Some(session.to_string());
-            line.run = Some(run.to_string());
+            let mut line = super::audit::Line::event(event, detail).of_agent(name);
+            if let Some((session, run)) = run {
+                line.session = Some(session.to_string());
+                line.run = Some(run.to_string());
+            }
             audit.write(&line);
         }
+    }
+
+    /// Tell the clients a run of `name` that no client started began
+    /// ([`super::protocol::TRIGGERED`]).
+    fn tell_triggered(&self, name: &str, session: &SessionId, label: String, prompt: String) {
         self.decisions.broadcast(
             super::protocol::TRIGGERED,
             &super::protocol::TriggeredNote {
                 agent: name.to_string(),
                 session_id: session.clone(),
                 label,
-                prompt: prompt.to_string(),
+                prompt,
             },
         );
     }
@@ -495,12 +555,10 @@ impl Agents {
         {
             return;
         }
-        let key = format!("read-only-comms-{}", self.tick());
-        tokio::spawn(append_note(
+        tokio::spawn(note_agent(
             Arc::clone(&self.state),
             name.to_string(),
             READ_ONLY_COMMS_NOTE.to_string(),
-            key,
         ));
     }
 
@@ -550,23 +608,6 @@ impl Agents {
         false
     }
 
-    /// The audit log's `run_triggered` line for `name`'s `run`.
-    fn audit_trigger(
-        &self,
-        name: &str,
-        session: &SessionId,
-        run: &meerkat_core::RunId,
-        detail: &str,
-    ) {
-        if let Some(audit) = &self.audit {
-            let mut line =
-                super::audit::Line::event("run_triggered", detail.to_string()).of_agent(name);
-            line.session = Some(session.to_string());
-            line.run = Some(run.to_string());
-            audit.write(&line);
-        }
-    }
-
     /// Deliver a watch's `batch` to its agent: a message into its
     /// session (into a running turn at its next step, else it starts one,
     /// which is then a turn no user started), announced to its clients
@@ -597,18 +638,8 @@ impl Agents {
             self.watch_sent.lock().remove(&name);
             return;
         }
-        if let Some(audit) = &self.audit {
-            audit.write(&super::audit::Line::event("watch_event", text.clone()).of_agent(&name));
-        }
-        self.decisions.broadcast(
-            super::protocol::TRIGGERED,
-            &super::protocol::TriggeredNote {
-                agent: name,
-                session_id: session,
-                label: "files changed".to_string(),
-                prompt: text,
-            },
-        );
+        self.audit_run(&name, None, "watch_event", text.clone());
+        self.tell_triggered(&name, &session, "files changed".to_string(), text);
     }
 
     /// When the agents are idle.
@@ -733,9 +764,8 @@ impl Agents {
         let names: Vec<String> = restored.iter().map(|(name, _)| name.clone()).collect();
         // The mob keeps its wiring across a restart; an edge it lost is
         // made again now.
-        self.rewire(&names).await;
         self.wires.keep_only(&names);
-        self.restore_wires(&names).await;
+        self.wire_up(&names).await;
         // No client came back with them: what each was last told of the
         // others' clients is stale.
         self.note_rosters(&names).await;
@@ -790,27 +820,41 @@ impl Agents {
         let _ = self.wires.bind(name);
     }
 
+    /// Wire every agent of `names` to every other live agent, and make its
+    /// cross-workspace wires again where its member lost them (a start, a
+    /// seat, a switch).
+    async fn wire_up(&self, names: &[String]) {
+        self.rewire(names).await;
+        for name in names {
+            self.wires.restore(name).await;
+        }
+    }
+
     /// Wire every agent of `names` to every other live agent (an edge is
-    /// both directions; an existing one stays). Best effort: a failure is
-    /// logged, and the agents then cannot reach each other.
+    /// both directions, so each pair once, in name order; an existing one
+    /// stays). Best effort: a failure is logged, and the agents then cannot
+    /// reach each other.
     async fn rewire(&self, names: &[String]) {
         let live = self.names();
-        let mut edges: Vec<(String, String)> = Vec::new();
-        for name in names {
-            for other in &live {
-                let pair = (name.clone(), other.clone());
-                let back = (other.clone(), name.clone());
-                if other != name && !edges.contains(&pair) && !edges.contains(&back) {
-                    edges.push(pair);
-                }
-            }
-        }
+        let edges: std::collections::BTreeSet<(&String, &String)> = names
+            .iter()
+            .flat_map(|name| {
+                live.iter()
+                    .filter(move |other| *other != name)
+                    .map(move |other| (name.min(other), name.max(other)))
+            })
+            .collect();
         if edges.is_empty() {
             return;
         }
         let edges: Vec<(AgentIdentity, AgentIdentity)> = edges
             .into_iter()
-            .map(|(a, b)| (AgentIdentity::from(a), AgentIdentity::from(b)))
+            .map(|(a, b)| {
+                (
+                    AgentIdentity::from(a.as_str()),
+                    AgentIdentity::from(b.as_str()),
+                )
+            })
             .collect();
         match self
             .state
@@ -824,21 +868,6 @@ impl Agents {
             ),
             Err(err) => tracing::warn!(error = %err, "cannot wire the agents to each other"),
         }
-    }
-
-    /// Make the cross-workspace wires of every agent of `names` again
-    /// where its member lost them (a start, a seat, a switch).
-    async fn restore_wires(&self, names: &[String]) {
-        for name in names {
-            self.wires.restore(name).await;
-        }
-    }
-
-    /// Append `text` to `name`'s system context (it reads it at its next
-    /// turn; nothing wakes it). Best effort: a failure is logged.
-    async fn note(&self, name: &str, text: String) {
-        let key = format!("rkat-agents:{name}:{}", self.tick());
-        append_note(Arc::clone(&self.state), name.to_string(), text, key).await;
     }
 
     /// Every live agent and what it is doing now (whether a run is open,
@@ -873,12 +902,12 @@ impl Agents {
     /// doing (its fresh conversation knows none).
     async fn note_roster(&self, name: &str) {
         if let Some(text) = self.roster_for(name, &self.states().await) {
-            self.note(name, text).await;
+            self.send_notes(vec![(name.to_string(), text)]).await;
         }
     }
 
     /// Tell every agent of `names` the roster as it is now, each its own
-    /// ([`Self::note_each`]): the daemon restored them, and what their
+    /// ([`Self::send_notes`]): the daemon restored them, and what their
     /// conversations were last told of the others' clients is gone.
     async fn note_rosters(&self, names: &[String]) {
         let states = self.states().await;
@@ -886,7 +915,7 @@ impl Agents {
             .iter()
             .filter_map(|name| Some((name.clone(), self.roster_for(name, &states)?)))
             .collect();
-        self.note_each(notes).await;
+        self.send_notes(notes).await;
     }
 
     /// Tell every other live agent the roster as it is now, after `name`
@@ -907,7 +936,7 @@ impl Agents {
                 Some((other.clone(), text))
             })
             .collect();
-        self.note_each(notes).await;
+        self.send_notes(notes).await;
     }
 
     /// `name`'s attachment changed outside the seating lock (its last
@@ -936,7 +965,7 @@ impl Agents {
             .filter(|other| other != name)
             .map(|other| (other, membership_note(name, Some(left))))
             .collect();
-        self.note_each(notes).await;
+        self.send_notes(notes).await;
     }
 
     /// Append each note of `notes` (agent, text) to its agent.
@@ -948,17 +977,11 @@ impl Agents {
     /// idle agent is waited for (bounded by [`NOTE_WAIT`]), so the agent
     /// reads it at its next turn; one to a running agent, or one whose
     /// state cannot be read, is left to land when that turn ends.
-    async fn note_each(&self, notes: Vec<(String, String)>) {
+    async fn send_notes(&self, notes: Vec<(String, String)>) {
         let mut waited = Vec::new();
         for (other, text) in notes {
             let idle = self.conversations.running(&other).await == RunState::Idle;
-            let key = format!("rkat-agents:{other}:{}", self.tick());
-            let task = tokio::spawn(append_note(
-                Arc::clone(&self.state),
-                other.clone(),
-                text,
-                key,
-            ));
+            let task = tokio::spawn(note_agent(Arc::clone(&self.state), other.clone(), text));
             if idle {
                 waited.push((other, task));
             } else {
@@ -1052,11 +1075,7 @@ impl Agents {
     /// The most recently active live agent (spares last).
     #[must_use]
     pub fn recent(&self) -> Option<String> {
-        self.table
-            .lock()
-            .iter()
-            .max_by_key(|(_, agent)| (!agent.spare, agent.active))
-            .map(|(name, _)| name.clone())
+        self.recent_used().or_else(|| self.spare())
     }
 
     /// `name` was active now (a prompt, a run).
@@ -1083,10 +1102,7 @@ impl Agents {
         let _one = self.seating.lock().await;
         let bound = match choice {
             AgentChoice::New => match self.spare() {
-                Some(name) => Bound {
-                    name,
-                    seated: false,
-                },
+                Some(name) => Bound::existing(name),
                 None => self.seat(Target::Fresh, None).await?,
             },
             AgentChoice::Recent => self.bind_recent().await?,
@@ -1094,19 +1110,13 @@ impl Agents {
                 if !self.is_live(name) {
                     return Err(BindError::NoSuchAgent(name.clone()));
                 }
-                Bound {
-                    name: name.clone(),
-                    seated: false,
-                }
+                Bound::existing(name.clone())
             }
             AgentChoice::Conversation { reference } => match self.resolve(reference).await {
                 // No match (the client's `/resume` says why): the most
                 // recent agent.
                 None => self.bind_recent().await?,
-                Some((_, owner)) if self.is_live(&owner) => Bound {
-                    name: owner,
-                    seated: false,
-                },
+                Some((_, owner)) if self.is_live(&owner) => Bound::existing(owner),
                 Some((session, owner)) => self.seat(Target::Resume(session), Some(owner)).await?,
             },
         };
@@ -1146,10 +1156,7 @@ impl Agents {
     /// Called under the seating lock.
     async fn bind_recent(self: &Arc<Self>) -> Result<Bound, BindError> {
         if let Some(name) = self.recent_used() {
-            return Ok(Bound {
-                name,
-                seated: false,
-            });
+            return Ok(Bound::existing(name));
         }
         let spare = self.spare();
         let last = self
@@ -1162,14 +1169,8 @@ impl Agents {
                 let target = Target::Resume(entry.session_id.clone());
                 self.seat(target, Some(entry.agent)).await?
             }
-            (Some(entry), _) => Bound {
-                name: entry.agent,
-                seated: false,
-            },
-            (None, Some(name)) => Bound {
-                name,
-                seated: false,
-            },
+            (Some(entry), _) => Bound::existing(entry.agent),
+            (None, Some(name)) => Bound::existing(name),
             (None, None) => self.seat(Target::Fresh, None).await?,
         })
     }
@@ -1238,8 +1239,7 @@ impl Agents {
             self.conversations.seed(&self.engine, &session).await;
         }
         self.admit(&name, false, false);
-        self.rewire(std::slice::from_ref(&name)).await;
-        self.restore_wires(std::slice::from_ref(&name)).await;
+        self.wire_up(std::slice::from_ref(&name)).await;
         // The others are told it joined once its client is bound
         // ([`Self::bind`]), so the one note says it has one.
         self.note_roster(&name).await;
@@ -1272,8 +1272,7 @@ impl Agents {
                 },
             );
         }
-        self.rewire(&[name.to_string()]).await;
-        self.restore_wires(&[name.to_string()]).await;
+        self.wire_up(&[name.to_string()]).await;
         if switched.is_ok() {
             self.note_roster(name).await;
         }
@@ -1305,8 +1304,7 @@ impl Agents {
         if self.lost(name, &reseated).await {
             return reseated;
         }
-        self.rewire(&[name.to_string()]).await;
-        self.restore_wires(&[name.to_string()]).await;
+        self.wire_up(&[name.to_string()]).await;
         reseated
     }
 

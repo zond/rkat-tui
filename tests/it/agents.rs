@@ -715,6 +715,48 @@ async fn the_roster_note_shows_who_works_and_is_not_sent_for_runs() {
     daemon.stop().await;
 }
 
+/// Review 5, W5: agents restored by a second daemon are each told the
+/// roster as it is then (both with no client), and the note reaches them.
+/// The notes' idempotency keys used to be unique only within one process,
+/// and the engine refuses a key a session already holds with another text.
+/// This scenario's keys did not collide before the fix either (the rig
+/// test passed then too), so the test guards the restored roster note and
+/// not the key format.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn restored_agents_are_told_the_roster_after_a_restart() {
+    use rkat_tui::daemon::protocol::AgentChoice;
+    use rkat_tui::ui::{Departure, Effect};
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![Step::Text("a after the restart")]);
+    let daemon = Running::start(&ws.root, &llm).await;
+    let mut a = rig::Client::attach(&ws.root).await;
+    let mut b = rig::Client::attach_agent(&ws.root, AgentChoice::New).await;
+    let a_name = a.agent().await;
+    let b_name = b.agent().await;
+    for client in [a, b] {
+        client.send(Effect::Leave(Departure::Detach));
+        client.quit().await;
+    }
+    daemon.stop().await;
+    let daemon = Running::start(&ws.root, &llm).await;
+    let mut a = rig::Client::attach_agent(&ws.root, AgentChoice::Agent { name: a_name }).await;
+    a.send(Effect::StartTurn("who is here".into()));
+    assert_eq!(a.turn_finished().await.unwrap().text, "a after the restart");
+    let told = format!("{:?}", llm.recorded()[0].messages);
+    let last = told
+        .rfind("Other agents in this workspace now:")
+        .map(|at| &told[at..])
+        .unwrap_or_default();
+    assert!(
+        last.starts_with(&format!(
+            "Other agents in this workspace now: `{b_name}` (idle, no client attached)"
+        )),
+        "{told}"
+    );
+    a.quit().await;
+    daemon.stop().await;
+}
+
 /// A6 (the user's decision, 2026-11-10): B's client detaches, A's message
 /// wakes B. Nobody started B's turn and nobody is with B, so its `curl`
 /// is denied as unattended without a classifier request (B reads why), and

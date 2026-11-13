@@ -11,12 +11,10 @@
 //! under it too.
 //!
 //! Entering and leaving plan mode also tells the agent, as system context
-//! ([`PLAN_ON_NOTE`], [`PLAN_OFF_NOTE`] under [`plan_note_key`]), which
-//! the daemon appends.
+//! ([`PLAN_ON_NOTE`], [`PLAN_OFF_NOTE`]), which the daemon appends
+//! (`crate::daemon::agents::append_note`).
 
 use std::fmt;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -115,23 +113,6 @@ pub(crate) const PLAN_OFF_NOTE: &str = "\
 
 The user left plan mode: the approval policy of the current permission mode \
 applies again, and you may make changes.";
-
-/// A per-process counter for plan-mode notes' idempotency keys.
-static PLAN_NOTES: AtomicU64 = AtomicU64::new(0);
-
-/// An idempotency key no other plan-mode note shares (a session keeps the
-/// notes of earlier transitions and of earlier processes).
-pub(crate) fn plan_note_key(on: bool) -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
-    format!(
-        "rkat-tui:plan-mode:{}:{}-{nanos}-{}",
-        if on { "on" } else { "off" },
-        std::process::id(),
-        PLAN_NOTES.fetch_add(1, Ordering::Relaxed)
-    )
-}
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]

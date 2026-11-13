@@ -35,7 +35,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use meerkat_core::AppendSystemContextRequest;
 use meerkat_core::lifecycle::run_primitive::TurnMetadataOverride;
 use meerkat_mob::{AgentIdentity, MobId};
 use meerkat_mob_mcp::MobMcpState;
@@ -84,7 +83,7 @@ fn wire_refusal(err: super::wires::WireError) -> Refusal {
     Refusal::new(protocol::WIRE_REFUSED, err.to_string())
 }
 
-/// The idempotency source of the daemon's system-context notes.
+/// The source of the daemon's plan-mode notes.
 const SYSTEM_CONTEXT_SOURCE: &str = "rkat-tui";
 
 /// What the local methods and the observer act on.
@@ -1280,15 +1279,15 @@ impl Local {
         } else {
             crate::approval::mode::PLAN_OFF_NOTE
         };
-        let mut request = AppendSystemContextRequest::from_text(note.to_string());
-        request.source = Some(SYSTEM_CONTEXT_SOURCE.to_string());
-        request.idempotency_key = Some(crate::approval::mode::plan_note_key(plan));
-        match self
-            .state
-            .mob_append_system_context(&MobId::from(MOB_ID), &AgentIdentity::from(agent), request)
-            .await
+        match super::agents::append_note(
+            &self.state,
+            agent,
+            SYSTEM_CONTEXT_SOURCE,
+            note.to_string(),
+        )
+        .await
         {
-            Ok(_) => None,
+            Ok(()) => None,
             Err(err) => Some(format!(
                 "agent {agent} could not be told about plan mode now (the tool errors say it): {err}"
             )),
