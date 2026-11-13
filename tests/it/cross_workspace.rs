@@ -586,8 +586,19 @@ async fn the_daemon_wires_unwires_and_refuses() {
             args: json!({"peer_id": unknown.to_string(), "body": "hi", "handling_mode": "queue"}),
         },
         Step::Text("tried"),
+        // Plan mode: the same send to the wired peer is put to the user.
+        Step::Tool {
+            id: "s3",
+            name: "send_message",
+            args: json!({"peer_id": gamma.peer_id, "body": "plan", "handling_mode": "queue"}),
+        },
+        Step::Text("asked"),
     ]);
-    let setup = rig::Setup::default().classifier(Arc::clone(&classifier) as _);
+    let setup = rig::Setup {
+        escalation_timeout: Some(Duration::from_millis(300)),
+        ..rig::Setup::default()
+    }
+    .classifier(Arc::clone(&classifier) as _);
     let a = Running::start_with(&args_for(&root), setup.options(&root, &llm)).await;
     turn(&a, "hello").await;
     let bound = a.connect_bound().await;
@@ -658,6 +669,37 @@ async fn the_daemon_wires_unwires_and_refuses() {
         reviewed.iter().filter(|t| *t == "send_message").count(),
         1,
         "only the send to the unknown peer is reviewed: {reviewed:?}"
+    );
+
+    // Review 5, AP2 (owner decision): in plan mode a message to an agent
+    // of another workspace is put to the user (nobody answers here, so it
+    // times out as a denial); auto mode above sent it without review.
+    // The peer's socket must look alive, or the send is refused as
+    // unreachable first.
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(other.join("nothing.sock"), b"").unwrap();
+    remote::call::<method::SetMode>(
+        &bound,
+        &protocol::SetModeParams {
+            mode: rkat_tui::approval::mode::PermissionMode::Plan,
+        },
+    )
+    .await
+    .unwrap();
+    turn(&a, "plan").await;
+    let asked = last_result(&llm);
+    assert!(
+        asked.contains("did not answer the approval request"),
+        "{asked}"
+    );
+    assert_eq!(
+        classifier
+            .tools()
+            .iter()
+            .filter(|t| *t == "send_message")
+            .count(),
+        1,
+        "the plan-mode ask is the user's, not the classifier's"
     );
 
     // Unwire, twice.

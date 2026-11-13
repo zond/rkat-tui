@@ -413,12 +413,12 @@ impl ApprovalEngine {
         else {
             return AgentSend::No;
         };
-        if !peers.is_agent_peer(session_id, &peer).await {
+        let Some(kind) = peers.agent_peer(session_id, &peer).await else {
             return AgentSend::No;
-        }
+        };
         match peers.unreachable(session_id, &peer).await {
             Some(why) => AgentSend::Unreachable(why),
-            None => AgentSend::Yes,
+            None => AgentSend::Yes(kind),
         }
     }
 
@@ -895,16 +895,31 @@ impl ApprovalEngine {
     ) -> Verdict {
         let decision = self.tier_of(facts);
         *facts.allow_rule.lock() = decision.allow_rule;
-        // A message to another agent of the workspace: tier 1 (a user deny
-        // rule still decides first).
+        // A message to another agent: tier 1 (a user deny rule still
+        // decides first). In plan mode one to an agent of another
+        // workspace is put to the user: that workspace has its own mode,
+        // and plan mode covers what this agent sets in motion there too.
         if decision.tier == Tier::Classifier {
             match self.to_agent_peer(session_id, facts).await {
-                AgentSend::Yes => {
-                    return allow_at(
-                        Tier::AlwaysAllow,
-                        Decider::Policy,
-                        "a message to another agent of this workspace",
-                    );
+                AgentSend::Yes(super::attendance::PeerKind::Wired(label))
+                    if self.mode() == PermissionMode::Plan =>
+                {
+                    if self.stopped(session_id) {
+                        return deny_at(Tier::Classifier, DenyReason::Stopped);
+                    }
+                    if !self.attended(session_id, run) {
+                        if let Some(attendance) = self.attendance.get() {
+                            attendance.missed(session_id, unattended_notice(agent, &facts.action));
+                        }
+                        return deny_at(Tier::Classifier, DenyReason::PlanWired { label });
+                    }
+                    let asking = Asking::PlanWired(format!(
+                        "plan mode asks before a message to {label}, an agent of another workspace (plan mode covers what this agent sets in motion there)"
+                    ));
+                    return self.escalate(session_id, agent, facts, asking, None).await;
+                }
+                AgentSend::Yes(kind) => {
+                    return allow_at(Tier::AlwaysAllow, Decider::Policy, kind.words());
                 }
                 // An agent of another workspace whose daemon is not
                 // running: the send would fail anyway, and this says why.
@@ -1173,7 +1188,12 @@ impl ApprovalEngine {
             pending.settled = true;
             return deny_at(tier, DenyReason::Stopped);
         }
-        match self.route(facts, self.tier_of(facts), self.mode()) {
+        let route = if matches!(asking, Asking::PlanWired(_)) {
+            Route::Ask(Asking::PlanWired(String::new()))
+        } else {
+            self.route(facts, self.tier_of(facts), self.mode())
+        };
+        match route {
             Route::Settled(verdict) => {
                 pending.settled = true;
                 return verdict;
@@ -1190,7 +1210,9 @@ impl ApprovalEngine {
         }
         let (classifier_hint, policy_reason) = match &asking {
             Asking::Classifier(hint) => (Some(hint.clone()), None),
-            Asking::Policy(reason) | Asking::Mode { reason, .. } => (None, Some(reason.clone())),
+            Asking::Policy(reason) | Asking::Mode { reason, .. } | Asking::PlanWired(reason) => {
+                (None, Some(reason.clone()))
+            }
         };
         let prompt = EscalationPrompt {
             id,
@@ -1447,8 +1469,9 @@ fn allow_at(tier: Tier, by: Decider, why: impl Into<String>) -> Verdict {
 enum AgentSend {
     /// It is not.
     No,
-    /// It is: tier 1.
-    Yes,
+    /// It is, to this kind of peer: tier 1 (in plan mode, an agent of
+    /// another workspace is put to the user).
+    Yes(super::attendance::PeerKind),
     /// It is, to an agent that cannot be reached now (why).
     Unreachable(String),
 }
@@ -1472,6 +1495,10 @@ enum Asking {
         /// Why the human is asked.
         reason: String,
     },
+    /// Plan mode asks before a message to an agent of another workspace
+    /// (why): the mode's own route would deny it, so the escalation does
+    /// not route it again.
+    PlanWired(String),
 }
 
 impl Asking {
@@ -1480,6 +1507,7 @@ impl Asking {
             Self::Classifier(_) => Tier::Classifier,
             Self::Policy(_) => Tier::AskUser,
             Self::Mode { tier, .. } => *tier,
+            Self::PlanWired(_) => Tier::Classifier,
         }
     }
 }
@@ -1552,7 +1580,7 @@ fn decider_label(verdict: &Verdict, facts: &Facts<'_>) -> String {
             DenyReason::Human { .. } => human(),
             DenyReason::Stopped => "human".to_string(),
             DenyReason::EscalationTimedOut => "timeout".to_string(),
-            DenyReason::PlanMode => "mode".to_string(),
+            DenyReason::PlanMode | DenyReason::PlanWired { .. } => "mode".to_string(),
             DenyReason::Unattended => "unattended".to_string(),
             DenyReason::Sealed { .. }
             | DenyReason::Unavailable { .. }
@@ -2020,6 +2048,74 @@ mod tests {
                 .is_allowed()
         );
         assert_eq!(rig.classifier.calls(), 1);
+    }
+
+    /// The owner's decision (review 5, AP2 and AP3): a message to an agent
+    /// of another workspace is tier 1 except in plan mode, where it is put
+    /// to the user (an unattended turn is denied, saying why and what to
+    /// do); one to this workspace's agents stays tier 1 in every mode. The
+    /// allow names the kind of peer truthfully.
+    #[tokio::test]
+    async fn plan_mode_asks_before_a_message_to_another_workspaces_agent() {
+        use super::super::attendance::{AgentPeers, PeerKind};
+        struct Peers;
+        #[async_trait::async_trait]
+        impl AgentPeers for Peers {
+            async fn agent_peer(&self, _session: &SessionId, peer: &str) -> Option<PeerKind> {
+                match peer {
+                    "wired" => Some(PeerKind::Wired("api/main-ab12".into())),
+                    "local" => Some(PeerKind::Workspace),
+                    _ => None,
+                }
+            }
+        }
+        let mut rig = rig(vec![], DEFAULT_ESCALATION_TIMEOUT);
+        assert!(rig.engine.set_agent_peers(Arc::new(Peers)));
+        let send = |peer: &str| json!({"peer_id": peer, "body": "hi", "handling_mode": "queue"});
+        rig.engine.set_mode(PermissionMode::Auto);
+        let wired = call_in(&rig, None, "s1", "send_message", &send("wired")).await;
+        assert!(
+            matches!(&wired, Verdict::Allow { tier: Tier::AlwaysAllow, why, .. }
+                if why == "a message to api/main-ab12, an agent of another workspace"),
+            "{wired:?}"
+        );
+        rig.engine.set_mode(PermissionMode::Plan);
+        let local = call_in(&rig, None, "s2", "send_message", &send("local")).await;
+        assert!(
+            matches!(&local, Verdict::Allow { why, .. } if why == "a message to another agent of this workspace"),
+            "{local:?}"
+        );
+        // Attended: the user is asked.
+        let engine = Arc::clone(&rig.engine);
+        let session = rig.session.clone();
+        let args = send("wired");
+        let task =
+            tokio::spawn(
+                async move { call_as(&engine, &session, "s3", "send_message", &args).await },
+            );
+        let request = rig.escalations.recv().await.unwrap();
+        request.respond.send(HumanDecision::AllowOnce).unwrap();
+        assert!(task.await.unwrap().is_allowed());
+        // Unattended: denied, saying why and what to do.
+        rig.present.attached.store(false, Ordering::SeqCst);
+        let peer_run = RunId::new();
+        rig.engine.run_started(&rig.session, Some(&peer_run));
+        let denied = call_in(&rig, Some(&peer_run), "s4", "send_message", &send("wired")).await;
+        let Verdict::Deny { reason, .. } = &denied else {
+            panic!("{denied:?}");
+        };
+        assert_eq!(
+            reason,
+            &DenyReason::PlanWired {
+                label: "api/main-ab12".into()
+            }
+        );
+        let text = reason.to_string();
+        assert!(
+            text.contains("covers what this agent sets in motion there")
+                && text.contains("leave plan mode, or send it themselves"),
+            "{text}"
+        );
     }
 
     /// A6: in a run no user started, with no client attached, a call that

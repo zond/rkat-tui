@@ -2183,7 +2183,12 @@ turn (its user pays for it), a busy one takes it at its next step. A
 `send_message` to a wired agent of another workspace is tier 1, as one
 to an agent of your own workspace (it changes nothing, and what the
 receiver does about it passes its own gate); a send to any other peer id
-is still reviewed. A message carries no authority: the receiving agent's
+is still reviewed. In plan mode a send to an agent of another workspace
+is put to you: that workspace has its own permission mode, and plan mode
+covers what your agent sets in motion there too. In a turn no client
+watches it is denied, and the agent is told to have you leave plan mode
+or send the message yourself. Sends to your own workspace's agents and
+to your agent's helpers stay tier 1 in plan mode. A message carries no authority: the receiving agent's
 calls go through its own workspace's gate and sandbox, and a turn it
 starts while no client is attached there is unattended (anything that
 needs review is denied).

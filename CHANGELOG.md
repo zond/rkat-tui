@@ -22,6 +22,15 @@
 
 ### Changed
 
+- In plan mode, a message your agent sends to an agent of another
+  workspace (a `/wire` peer) is put to you first, like the other things
+  plan mode asks about. That workspace has its own permission mode, and
+  plan mode covers what your agent sets in motion there too. In a turn
+  no client is attached to, the message is denied, and the agent is told
+  why and what to do. Messages to your own workspace's agents and to
+  your agent's helpers are unchanged. The approval record now names the
+  kind of recipient: an agent of this workspace, your own helper, or
+  `<workspace>/<agent>`, an agent of another workspace.
 - Agents are told not to wake an idle agent nobody is attached to just
   to announce file changes. The daemon's list of the other agents now says whether each one is
   working, idle with a client attached, or idle with no client attached.

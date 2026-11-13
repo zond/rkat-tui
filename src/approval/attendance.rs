@@ -43,14 +43,44 @@ pub trait Attendance: Send + Sync {
     fn missed(&self, session: &SessionId, notice: String);
 }
 
+/// Which kind of agent a comms send goes to ([`AgentPeers::agent_peer`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PeerKind {
+    /// Another agent of this workspace (its permission mode is this one's).
+    Workspace,
+    /// One of the sender's own helpers.
+    OwnHelper,
+    /// An agent of another workspace the sender is wired to (`/wire`),
+    /// by its label (`<workspace>/<agent>`): its workspace has its own
+    /// permission mode.
+    Wired(String),
+}
+
+impl PeerKind {
+    /// The recipient in words, as an allow's detail and the audit log say
+    /// it.
+    #[must_use]
+    pub fn words(&self) -> String {
+        match self {
+            Self::Workspace => "a message to another agent of this workspace".to_string(),
+            Self::OwnHelper => "a message to your own helper".to_string(),
+            Self::Wired(label) => {
+                format!("a message to {label}, an agent of another workspace")
+            }
+        }
+    }
+}
+
 /// The workspace's agents as comms peers: a message one agent sends
 /// another changes nothing in the tree (the recipient's own calls pass the
 /// gate), so the gate lets it through without review.
 #[async_trait::async_trait]
 pub trait AgentPeers: Send + Sync {
-    /// Whether `peer_id` (as the comms tools name a peer) is a live agent
-    /// of this workspace other than the one running `session`.
-    async fn is_agent_peer(&self, session: &SessionId, peer_id: &str) -> bool;
+    /// Which kind of agent peer `peer_id` (as the comms tools name a peer)
+    /// is to the agent running `session`: another live agent of this
+    /// workspace, one of its own helpers, or an agent of another workspace
+    /// it is wired to; `None`: none of them.
+    async fn agent_peer(&self, session: &SessionId, peer_id: &str) -> Option<PeerKind>;
 
     /// Why a message from `session` to `peer_id` cannot arrive now, in
     /// words for the agent (an agent of another workspace whose daemon is

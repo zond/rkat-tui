@@ -165,17 +165,22 @@ impl Agents {
         &self.core
     }
 
-    /// Whether `peer_id` is the comms peer id of a live agent other than
-    /// the one running `session` (the mob's record of each agent's
-    /// endpoint names it).
-    pub async fn is_agent_peer(&self, session: &SessionId, peer_id: &str) -> bool {
+    /// Which kind of agent peer `peer_id` is to the agent running
+    /// `session` (the mob's record of each agent's endpoint names it):
+    /// an agent of another workspace it is wired to, another live agent,
+    /// or one of its own helpers.
+    pub async fn agent_peer(
+        &self,
+        session: &SessionId,
+        peer_id: &str,
+    ) -> Option<crate::approval::PeerKind> {
+        use crate::approval::PeerKind;
         let caller = self.core.conversations.agent_of(session);
-        // An agent of another workspace the caller is wired to.
-        if caller
+        if let Some(label) = caller
             .as_deref()
-            .is_some_and(|caller| self.core.wires.is_peer(caller, peer_id))
+            .and_then(|caller| self.core.wires.peer_label(caller, peer_id))
         {
-            return true;
+            return Some(PeerKind::Wired(label));
         }
         let names: Vec<String> = self
             .table
@@ -185,7 +190,7 @@ impl Agents {
             .cloned()
             .collect();
         let Ok(handle) = self.core.state.handle_for(&MobId::from(MOB_ID)).await else {
-            return false;
+            return None;
         };
         for name in names {
             if let Ok(Some(endpoint)) = handle
@@ -193,7 +198,7 @@ impl Agents {
                 .await
                 && endpoint.descriptor.peer_id.to_string() == peer_id
             {
-                return true;
+                return Some(PeerKind::Workspace);
             }
         }
         // One of the caller's own helpers (wired to it): a message to a
@@ -205,10 +210,10 @@ impl Agents {
             if let Ok(Some(endpoint)) = handle.member_peer_endpoint(&key.member).await
                 && endpoint.descriptor.peer_id.to_string() == peer_id
             {
-                return true;
+                return Some(PeerKind::OwnHelper);
             }
         }
-        false
+        None
     }
 
     /// `name`'s run ended: its watches that live for a turn go.
@@ -916,11 +921,12 @@ impl AgentAttendance {
 
 #[async_trait::async_trait]
 impl crate::approval::AgentPeers for AgentAttendance {
-    async fn is_agent_peer(&self, session: &SessionId, peer_id: &str) -> bool {
-        let Some(agents) = self.0.upgrade() else {
-            return false;
-        };
-        agents.is_agent_peer(session, peer_id).await
+    async fn agent_peer(
+        &self,
+        session: &SessionId,
+        peer_id: &str,
+    ) -> Option<crate::approval::PeerKind> {
+        self.0.upgrade()?.agent_peer(session, peer_id).await
     }
 
     async fn unreachable(&self, session: &SessionId, peer_id: &str) -> Option<String> {

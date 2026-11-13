@@ -62,7 +62,7 @@ use rules::{Rule, RuleId, RulesError};
 use std::fmt;
 
 pub use admission::ApprovalGate;
-pub use attendance::{AgentPeers, Attendance};
+pub use attendance::{AgentPeers, Attendance, PeerKind};
 pub use catalog::ToolOrigins;
 pub use engine::{ApprovalConfig, ApprovalEngine};
 pub use transcript::InputKey;
@@ -180,6 +180,13 @@ pub enum DenyReason {
     /// message did) and no client is attached to the agent
     /// ([`attendance`]).
     Unattended,
+    /// Plan mode is on, the call is a message to an agent of another
+    /// workspace (`label`), which plan mode puts to the user, and no
+    /// client is attached to ask.
+    PlanWired {
+        /// The other agent, `<workspace>/<agent>`.
+        label: String,
+    },
 }
 
 impl DenyReason {
@@ -191,6 +198,7 @@ impl DenyReason {
             | Self::Sealed { .. }
             | Self::Unavailable { .. }
             | Self::PlanMode
+            | Self::PlanWired { .. }
             | Self::Unattended
             | Self::ClassifierUnavailable(_) => Decider::Policy,
             Self::Classifier { .. } => Decider::Classifier,
@@ -260,6 +268,10 @@ impl fmt::Display for DenyReason {
                  ask for it again",
             ),
             Self::Unattended => f.write_str(UNATTENDED_DENIAL),
+            Self::PlanWired { label } => write!(
+                f,
+                "plan mode is on, and plan mode puts a message to {label}, an agent of another workspace, to the user: it covers what this agent sets in motion there too. No client is attached to ask, so it was not sent; the user can leave plan mode, or send it themselves"
+            ),
         }
     }
 }

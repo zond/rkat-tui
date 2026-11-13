@@ -27,7 +27,7 @@
 //! conversation switch and its external edges go with it, so they are made
 //! again from the cards ([`Wires::restore`]); `/agents` and `rkat/status`
 //! list them; the gate counts a send to one as a send to an agent peer
-//! ([`Wires::is_peer`]).
+//! ([`Wires::peer_label`]).
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -526,10 +526,11 @@ impl Wires {
         self.rows(agent).iter().map(WireRow::label).collect()
     }
 
-    /// Whether `peer_id` is the peer id of an agent `agent` is wired to.
+    /// The label of the agent `agent` is wired to whose peer id is
+    /// `peer_id`, when it is one.
     #[must_use]
-    pub fn is_peer(&self, agent: &str, peer_id: &str) -> bool {
-        self.wired_card(agent, peer_id).is_some()
+    pub fn peer_label(&self, agent: &str, peer_id: &str) -> Option<String> {
+        self.wired_card(agent, peer_id).map(|card| card.label())
     }
 
     /// Why a message from `agent` to the wired peer `peer_id` cannot
