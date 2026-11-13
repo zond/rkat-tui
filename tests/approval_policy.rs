@@ -86,6 +86,7 @@ impl Harness {
             root: &self.root,
             trust_project_builds: self.trust_project_builds,
             posix_shell: true,
+            granted: rkat_tui::approval::classifier::GrantedDirs::none(),
         };
         let raw = serde_json::value::to_raw_value(args).unwrap();
         classify_tier(&Action::parse(name, &raw, origin), &self.rules, &ctx)

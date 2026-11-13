@@ -120,7 +120,9 @@ pub struct Args {
 
     /// Let confined commands read and write this directory (same rules as
     /// `--confinement-read`), and tell the approval gate you allow it,
-    /// confined or not (with --no-confinement it reaches only the gate).
+    /// confined or not (with --no-confinement it reaches only the gate):
+    /// file-tool edits there run like edits in the project. A directory
+    /// the sandbox already grants (the temp dir) is accepted for the gate.
     /// Repeatable; also `[confinement] extra_write` in your own tui.toml
     /// (this flag wins on overlap).
     #[arg(long, value_name = "DIR")]

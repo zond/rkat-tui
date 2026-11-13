@@ -8208,3 +8208,32 @@ dropped when the layers are read). Pinned by
 `the_classifier_is_told_the_granted_directories_confined_or_not` (a rig
 run with the model classifier, unconfined and, where the host can,
 confined; the project file's directory absent from the prompt).
+
+## A file-tool edit in a directory the user named (owner decision, 2026-11-13)
+
+The owner's decision: an edit by the file tools inside a directory the
+user explicitly granted for writing (`--confinement-write`, `[confinement]
+extra_write` of the user's own layers) is tiered exactly as an edit inside
+the project, deterministically and with no classifier call; the
+sandbox's baseline directories are not trusted this way (they get only
+the classifier's context). `policy::builtin_tier` now looks, for a target
+outside the project, for the user's write directory holding its resolved
+path (`GrantedDirs::user_write_dir_of`): `ProjectRoot::resolve` has
+canonicalized the deepest existing ancestor, so a symbolic link inside
+the directory pointing out of it does not carry the grant. The path
+relative to that directory is matched against the protected patterns
+(`ProjectRoot::is_protected_relative`), so `.env`, `build.rs`, `.git/`
+inside it still ask; sealed roots stay sealed. Plan mode, manual mode
+and accept-edits mode act on the tier as for project edits. A read or a
+search inside any directory the user named (read or write) is tier 1,
+since an edit needs the read first; a glob pattern climbing out of it is
+reviewed. A grant a detected one already covers (`--confinement-write
+/tmp`) used to be refused as redundant (`ExtraGrantProblem::AlreadyGranted`,
+now gone): it is accepted, leaves the sandbox plan as it is and is kept
+among the user's directories; one overlapping the workspace itself is
+still refused, as are all the other disjointness rules. Pinned by
+`an_edit_in_a_directory_the_user_named_is_an_in_project_edit` (tiers,
+protected paths, the link, the baseline directory),
+`an_edit_in_a_named_directory_runs_like_a_project_edit` (no classifier
+call, plan and manual mode), `extra_grants_are_validated_and_take_precedence`
+and `naming_the_temp_directory_is_accepted_confined_or_not`.

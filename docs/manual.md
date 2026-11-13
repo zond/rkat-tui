@@ -177,8 +177,8 @@ resumed sessions and helpers carry it too. First match wins:
 | Tier | What | Review |
 |---|---|---|
 | 0 | A user **deny** rule matches, or `write_file` / `edit_file` / the engine's `blob_save_file` (or any target of a patch) is a **sealed** path: the project's `.rkat/` (its `tui.toml`, `mcp.toml`, hooks), every `.rkat` and every `.git` inside it, and, wherever they lie, the git directories governing the project (an enclosing repository's `.git` when the workspace is a subdirectory, a worktree's git dir and the common dir its `commondir` names, with the hooks), the realm directory (the workspace's state directory: `config.toml`, approvals, `tui.toml`, sessions, the audit log) and the user config directory (`~/.rkat/tui`: global rules, trust records). On a file system that resolves names ignoring case (macOS's default), every spelling counts: `.RKAT/` is the real `.rkat/` there and is sealed as well; on a case-sensitive one it is an ordinary directory. Neither the classifier nor an allow rule opens a sealed path, and reading one is not sealed (except the daemon's endpoint directories, below); a shell command that writes there is still judged by the classifier. The engine's own file tools refuse the same state again by themselves (Meerkat 0.9.12): any `.rkat` in the workspace, and the realm, the config directory, the user config document and the credential store when the command line puts them inside the workspace. The directories that hold the daemon's endpoint file and its attach token (`$XDG_STATE_HOME/rkat-tui/`, else `~/.local/state/rkat-tui/`, and `$XDG_RUNTIME_DIR/rkat-tui/`) are sealed for reads and searches too: `read_file`, `grep` and `glob` never open them, and a search above them skips them; so is the realm directory | denied |
-| 1 | Read-only tools (`read_file`, `glob`, `grep` inside the project, task tools, `memory_search`, `note_list`/`note_read`, `blob_inspect`, skill browsing, read-only `mob_*` queries, `delegate`, `fork`), read-only shell commands (`cat`, `ls`, `rg`, `git status/diff/log`, `cargo check/test` when builds are trusted, …), narrow user **allow** rules | allowed |
-| 2 | `write_file` / `edit_file` / `blob_save_file` where every target is inside the project and not protected (`.rkat/`, `.git/` and any `.git` file, `.env*`, …); workspace notes | allowed (manual mode asks you) |
+| 1 | Read-only tools (`read_file`, `glob`, `grep` inside the project or inside a directory you named with `--confinement-write`/`--confinement-read`, task tools, `memory_search`, `note_list`/`note_read`, `blob_inspect`, skill browsing, read-only `mob_*` queries, `delegate`, `fork`), read-only shell commands (`cat`, `ls`, `rg`, `git status/diff/log`, `cargo check/test` when builds are trusted, …), narrow user **allow** rules | allowed |
+| 2 | `write_file` / `edit_file` / `blob_save_file` where every target is inside the project, or inside a directory you named with `--confinement-write` or `[confinement] extra_write`, and not protected (`.rkat/`, `.git/` and any `.git` file, `.env*`, …, matched inside a named directory as inside the project); workspace notes | allowed (manual mode asks you) |
 | ask | `write_file` / `edit_file` / `blob_save_file` (or any target of a patch) is a **protected** path in the project: `.env*`, `.envrc`, `build.rs`, `.cargo/`, `rust-toolchain*`, `AGENTS.md`, `.claude/`, `.gitmodules`, `.gitattributes`, `tui.toml`, `.vscode/`, `.idea/`. Never the classifier, whatever auto mode's state: the dialog names each path and what it is (`protected path: .env.local (secrets); the policy always asks for these`). A user allow rule for the path (what the dialog's "allow and add a rule" adds) allows it, a deny rule denies it | asks you, every time |
 | 3 | Everything else: other shell commands, MCP tools, web search, comms sends, mutating mob tools, out-of-project paths, user-level notes | classifier (manual and accept-edits modes ask you) |
 
@@ -407,10 +407,21 @@ sockets), so lookups go through `resolv.conf`'s DNS server.
 directory, contain no symbolic link on the way (the error names the real
 path to pass instead), stay off the baseline and `/proc`, `/sys`, `/dev`,
 and be disjoint from the workspace and the other added directories. A
-directory already granted with at least that access is refused as
-redundant; a detected grant that overlaps an added one otherwise yields to
-it (for example `--confinement-write /opt/foo` drops the read-only `/opt`).
+directory already granted with at least that access (`--confinement-write
+/tmp`) leaves the sandbox as it is and tells the approval gate you named
+it; a detected grant that overlaps an added one otherwise yields to it
+(for example `--confinement-write /opt/foo` drops the read-only `/opt`).
 Any violation refuses the start.
+
+A directory you name is trusted by the gate as well: a `write_file` or
+`edit_file` inside one you named for writing is tiered like an edit in
+the project (auto and accept-edits mode run it with no classifier call,
+manual mode asks, plan mode refuses, and its protected paths such as
+`.env` or `build.rs` still ask), and a `read_file`, `glob` or `grep`
+inside any directory you named is tier 1. The path is resolved first, so
+a symbolic link inside the directory that points out of it does not carry
+the grant. The sandbox's own defaults (the temp directory, the caches)
+get only the classifier's context described below.
 
 The same grants can live in your own `tui.toml` (the global
 `<config-dir>/tui.toml` or a trusted realm `tui.toml`), next to the flags:
@@ -526,8 +537,10 @@ choice; after it, what a cautious user can do about it.
   The file tools (`read_file`, `write_file`, `edit_file`, `grep`, `glob`)
   run in the daemon as you: nothing at the operating-system level stops
   them. Inside the project, reads are allowed and edits follow the
-  permission mode. A read, search or write outside the project is a
-  reviewed action: in auto mode the classifier decides it, in manual and
+  permission mode, and so do they in a directory you named with
+  `--confinement-write` (reads also in one named with
+  `--confinement-read`). Any other read, search or write outside the
+  project is a reviewed action: in auto mode the classifier decides it, in manual and
   accept-edits mode you are asked, plan mode refuses it. Only the
   workspace's state directory, the attach token's directory (never read)
   and the sealed paths (`~/.rkat/tui`, the project's `.rkat/` and `.git/`,

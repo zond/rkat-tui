@@ -315,6 +315,15 @@ impl ProjectRoot {
         sealed_set(self.fold_case).is_match(relative)
     }
 
+    /// Whether `relative` (a path relative to the root, or to another
+    /// directory whose edits are tiered like the project's) matches
+    /// [`PROTECTED_PATTERNS`], ignoring case on a case-insensitive file
+    /// system.
+    #[must_use]
+    pub fn is_protected_relative(&self, relative: &Path) -> bool {
+        protected_set(self.fold_case).is_match(relative)
+    }
+
     /// Whether `path` lies at or below one of `dirs`, as this root's file
     /// system compares names.
     #[must_use]

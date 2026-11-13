@@ -124,6 +124,15 @@
   reach only the gate (the start-up notice says so instead of calling
   them without effect). Helpers and forks are judged with the same list;
   a project's own `.rkat/tui.toml` still adds nothing.
+- A `write_file` or `edit_file` inside a directory you named with
+  `--confinement-write` or `[confinement] extra_write` runs like an edit
+  in the project, without a classifier call (protected paths still ask,
+  plan mode still refuses, manual mode still asks), and a read or search
+  inside any directory you named is allowed. Naming a directory the
+  sandbox already grants, such as `--confinement-write /tmp`, is accepted
+  (it was refused as redundant): the sandbox stays as it is and the gate
+  trusts the directory. The sandbox's own defaults are not trusted this
+  way; the classifier is only told of them.
 - The engine is Meerkat 0.9.14 from crates.io (was 0.9.13). What it
   changes for rkat-tui: a conversation moved between two OpenAI-family
   endpoints (the OpenAI API, a self-hosted or LiteLLM server in

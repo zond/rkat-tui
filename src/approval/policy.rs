@@ -559,6 +559,11 @@ pub struct PolicyContext<'a> {
     pub trust_project_builds: bool,
     /// Whether the shell tool runs a POSIX shell (Tier-1 shell analysis is off otherwise).
     pub posix_shell: bool,
+    /// The directories outside the project the user allows: a file
+    /// tool's edit in one the user named for writing is tiered like an
+    /// edit in the project, a read or search in one the user named is
+    /// tier 1.
+    pub granted: &'a crate::approval::classifier::GrantedDirs,
 }
 
 /// Result of tier classification.
@@ -658,7 +663,12 @@ fn builtin_tier(action: &Action<'_>, ctx: &PolicyContext<'_>) -> Result<TierDeci
             if let Some(sealed) = secret(ctx.root, path) {
                 return Ok(sealed);
             }
-            require_inside(ctx.root, path)?;
+            if let Some(dir) = require_reachable(ctx, path)? {
+                return Ok(TierDecision::new(
+                    Tier::AlwaysAllow,
+                    format!("read inside `{}`, which the user granted", dir.display()),
+                ));
+            }
             Ok(TierDecision::new(
                 Tier::AlwaysAllow,
                 "read inside the project",
@@ -669,7 +679,22 @@ fn builtin_tier(action: &Action<'_>, ctx: &PolicyContext<'_>) -> Result<TierDeci
                 if let Some(sealed) = secret(ctx.root, path) {
                     return Ok(sealed);
                 }
-                require_inside(ctx.root, path)?;
+                if let Some(dir) = require_reachable(ctx, path)? {
+                    // A pattern is relative to the path searched; one that
+                    // climbs out of it is reviewed.
+                    if let Some(pattern) = pattern.as_deref()
+                        && escapes_root(pattern)
+                    {
+                        return Err(format!(
+                            "glob pattern `{pattern}` reaches outside `{}`",
+                            dir.display()
+                        ));
+                    }
+                    return Ok(TierDecision::new(
+                        Tier::AlwaysAllow,
+                        format!("search inside `{}`, which the user granted", dir.display()),
+                    ));
+                }
             }
             if let Some(pattern) = pattern.as_deref()
                 && escapes_root(pattern)
@@ -700,19 +725,39 @@ fn builtin_tier(action: &Action<'_>, ctx: &PolicyContext<'_>) -> Result<TierDeci
             }
             let mut protected = Vec::new();
             let mut outside = None;
+            let mut granted = Vec::new();
             for path in paths {
                 let resolved = ctx
                     .root
                     .resolve(path)
                     .map_err(|e| format!("path `{path}`: {e}"))?;
-                if resolved.protected
-                    && let Some(relative) = resolved.relative.as_deref()
-                {
+                // A directory the user named for writing is tiered like the
+                // project: its own protected paths still ask. The path is
+                // canonical (`resolve`), so a link inside the directory
+                // pointing out of it does not carry the grant.
+                let in_granted = if resolved.inside() {
+                    None
+                } else {
+                    ctx.granted.user_write_dir_of(&resolved.abs)
+                };
+                let relative = resolved.relative.clone().or_else(|| {
+                    in_granted.and_then(|dir| resolved.abs.strip_prefix(dir).ok().map(Into::into))
+                });
+                let is_protected = match (&resolved.relative, in_granted, &relative) {
+                    (Some(_), _, _) => resolved.protected,
+                    (None, Some(_), Some(relative)) => ctx.root.is_protected_relative(relative),
+                    _ => false,
+                };
+                if is_protected && let Some(relative) = relative.as_deref() {
                     protected.push(format!(
                         "`{}` ({})",
                         ctx.root.display_of(&resolved),
                         protected_kind(relative)
                     ));
+                } else if let Some(dir) = in_granted {
+                    if !granted.contains(&dir) {
+                        granted.push(dir);
+                    }
                 } else if !resolved.inside() && outside.is_none() {
                     outside = Some(path);
                 }
@@ -736,9 +781,22 @@ fn builtin_tier(action: &Action<'_>, ctx: &PolicyContext<'_>) -> Result<TierDeci
             if let Some(path) = outside {
                 return Err(format!("`{path}` is outside the project"));
             }
+            if granted.is_empty() {
+                return Ok(TierDecision::new(
+                    Tier::InProjectEdit,
+                    "edit inside the project",
+                ));
+            }
+            let dirs: Vec<String> = granted
+                .iter()
+                .map(|dir| format!("`{}`", dir.display()))
+                .collect();
             Ok(TierDecision::new(
                 Tier::InProjectEdit,
-                "edit inside the project",
+                format!(
+                    "edit inside {}, which the user granted for writing",
+                    dirs.join(", ")
+                ),
             ))
         }
         ActionKind::Shell {
@@ -816,15 +874,24 @@ fn secret(root: &ProjectRoot, path: &str) -> Option<TierDecision> {
         })
 }
 
-fn require_inside(root: &ProjectRoot, path: &str) -> Result<(), String> {
-    let resolved = root
+/// `Ok(None)` when `path` lies inside the project, `Ok(Some(dir))` when it
+/// lies inside `dir`, a directory the user named (for writing or reading),
+/// else why it needs review.
+fn require_reachable<'c>(
+    ctx: &PolicyContext<'c>,
+    path: &str,
+) -> Result<Option<&'c std::path::Path>, String> {
+    let resolved = ctx
+        .root
         .resolve(path)
         .map_err(|e| format!("path `{path}`: {e}"))?;
     if resolved.inside() {
-        Ok(())
-    } else {
-        Err(format!("`{path}` is outside the project"))
+        return Ok(None);
     }
+    ctx.granted
+        .user_dir_of(&resolved.abs)
+        .map(Some)
+        .ok_or_else(|| format!("`{path}` is outside the project"))
 }
 
 fn escapes_root(pattern: &str) -> bool {
@@ -882,8 +949,112 @@ mod tests {
             root,
             trust_project_builds: trust,
             posix_shell: true,
+            granted: crate::approval::classifier::GrantedDirs::none(),
         };
         classify_tier(&parse(name, &raw(args)), rules, &ctx).tier
+    }
+
+    /// A file tool's edit inside a directory the user named for writing is
+    /// tiered like an edit in the project, with no classifier: its own
+    /// protected paths still ask, a link inside it pointing out of it does
+    /// not carry the grant, and a directory only the sandbox's defaults
+    /// grant (the temp directory) still goes to the classifier. A read or
+    /// search inside a named directory is tier 1.
+    #[test]
+    fn an_edit_in_a_directory_the_user_named_is_an_in_project_edit() {
+        let (_dir, root) = project();
+        let base = tempfile::tempdir().unwrap();
+        let base_path = std::fs::canonicalize(base.path()).unwrap();
+        let named = base_path.join("named");
+        let tmp = base_path.join("tmp");
+        let elsewhere = base_path.join("elsewhere");
+        for dir in [&named, &tmp, &elsewhere] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::os::unix::fs::symlink(&elsewhere, named.join("out")).unwrap();
+        let granted = crate::approval::classifier::GrantedDirs {
+            baseline_write: vec![tmp.clone()],
+            user_write: vec![named.clone()],
+            ..Default::default()
+        };
+        let ctx = PolicyContext {
+            root: &root,
+            trust_project_builds: false,
+            posix_shell: true,
+            granted: &granted,
+        };
+        let decide = |name: &str, args: &Value| {
+            classify_tier(&parse(name, &raw(args)), &RuleSet::default(), &ctx)
+        };
+        let at = |dir: &std::path::Path, file: &str| dir.join(file).display().to_string();
+        let edit = decide(
+            "write_file",
+            &json!({"path": at(&named, "notes/a.txt"), "content": "x"}),
+        );
+        assert_eq!(edit.tier, Tier::InProjectEdit, "{edit:?}");
+        assert!(edit.detail.contains("granted for writing"), "{edit:?}");
+        assert_eq!(
+            decide(
+                "edit_file",
+                &json!({"path": at(&named, "a.txt"), "old_string": "a", "new_string": "b"})
+            )
+            .tier,
+            Tier::InProjectEdit
+        );
+        // Its protected paths are protected as the project's are.
+        for file in [".env", "sub/build.rs", ".git/hooks/pre-commit"] {
+            assert_eq!(
+                decide(
+                    "write_file",
+                    &json!({"path": at(&named, file), "content": "x"})
+                )
+                .tier,
+                Tier::AskUser,
+                "{file}"
+            );
+        }
+        // A link out of it, a baseline-only directory and anywhere else:
+        // the classifier.
+        for path in [
+            at(&named, "out/escaped.txt"),
+            at(&tmp, "a.txt"),
+            at(&elsewhere, "a.txt"),
+        ] {
+            assert_eq!(
+                decide("write_file", &json!({"path": path, "content": "x"})).tier,
+                Tier::Classifier,
+                "{path}"
+            );
+        }
+        // Reads and searches in it are tier 1; outside it they are not.
+        assert_eq!(
+            decide("read_file", &json!({"path": at(&named, "a.txt")})).tier,
+            Tier::AlwaysAllow
+        );
+        assert_eq!(
+            decide(
+                "glob",
+                &json!({"pattern": "**/*.txt", "path": named.display().to_string()})
+            )
+            .tier,
+            Tier::AlwaysAllow
+        );
+        assert_eq!(
+            decide(
+                "glob",
+                &json!({"pattern": "../*", "path": named.display().to_string()})
+            )
+            .tier,
+            Tier::Classifier
+        );
+        assert_eq!(
+            decide("read_file", &json!({"path": at(&tmp, "a.txt")})).tier,
+            Tier::Classifier
+        );
+        assert_eq!(
+            decide("read_file", &json!({"path": at(&named, "out/x")})).tier,
+            Tier::Classifier
+        );
     }
 
     /// D3 of the security review: a secret root (the daemon's endpoint
@@ -944,6 +1115,7 @@ mod tests {
             root: &root,
             trust_project_builds: false,
             posix_shell: true,
+            granted: crate::approval::classifier::GrantedDirs::none(),
         };
         let env = json!({"path": ".env.local", "content": "K=v"});
         let raw_env = raw(&env);
@@ -1129,6 +1301,7 @@ mod tests {
             root: &root,
             trust_project_builds: true,
             posix_shell: true,
+            granted: crate::approval::classifier::GrantedDirs::none(),
         };
         let rules = RuleSet::default();
         for name in READ_ONLY_BUILTINS {
@@ -1476,6 +1649,7 @@ mod tests {
             root: &root,
             trust_project_builds: true,
             posix_shell: true,
+            granted: crate::approval::classifier::GrantedDirs::none(),
         };
         let args = json!({"command": "make lint"});
         let decision = classify_tier(&parse("shell", &raw(&args)), &rules, &ctx);
@@ -1518,6 +1692,7 @@ mod tests {
             root: &root,
             trust_project_builds: true,
             posix_shell: true,
+            granted: crate::approval::classifier::GrantedDirs::none(),
         };
         let decision = classify_tier(&action, &RuleSet::default(), &ctx);
         assert_eq!(decision.tier, Tier::Classifier);
@@ -1566,6 +1741,7 @@ mod tests {
             root: &root,
             trust_project_builds: true,
             posix_shell: true,
+            granted: crate::approval::classifier::GrantedDirs::none(),
         };
         let rules = RuleSet::default();
         let decide = |name: &str, args: &Value, origin: Option<ToolOrigin>| {

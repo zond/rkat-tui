@@ -808,6 +808,7 @@ impl ApprovalEngine {
             root: &self.root,
             trust_project_builds,
             posix_shell: self.posix_shell,
+            granted: &self.environment.granted,
         };
         classify_tier_with(&facts.action, &facts.subjects, &self.rules.read(), &ctx)
     }
@@ -2960,6 +2961,84 @@ mod tests {
         let write = json!({"path": tmp.join("a.txt").display().to_string(), "content": "x"});
         assert!(call(&rig, "w1", "write_file", &write).await.is_allowed());
         assert_eq!(rig.classifier.calls(), 1);
+        let prompt = rig.classifier.prompts.lock()[0].clone();
+        assert!(
+            prompt.contains(&format!("- {} (default)", tmp.display()))
+                && prompt.contains(&format!("- {} (named by the user)", named.display())),
+            "{prompt}"
+        );
+    }
+
+    /// An edit in a directory the user named for writing runs as an edit
+    /// in the project does: auto mode allows it with no classifier call,
+    /// manual mode asks as it does for project edits, plan mode denies it.
+    /// One in a directory only the sandbox's defaults grant goes to the
+    /// classifier, which is told the directory is allowed.
+    #[tokio::test]
+    async fn an_edit_in_a_named_directory_runs_like_a_project_edit() {
+        let base = tempfile::tempdir().unwrap();
+        let base_path = std::fs::canonicalize(base.path()).unwrap();
+        let (named, tmp) = (base_path.join("named"), base_path.join("tmp"));
+        std::fs::create_dir_all(&named).unwrap();
+        std::fs::create_dir_all(&tmp).unwrap();
+        let granted = super::super::classifier::GrantedDirs {
+            baseline_write: vec![tmp.clone()],
+            user_write: vec![named.clone()],
+            ..Default::default()
+        };
+        let mut rig = granted_rig(vec![], DEFAULT_ESCALATION_TIMEOUT, granted);
+        rig.present = attended(&rig.engine);
+        let write = |dir: &std::path::Path| json!({"path": dir.join("a.txt").display().to_string(), "content": "x"});
+        let verdict = call(&rig, "w1", "write_file", &write(&named)).await;
+        assert!(
+            matches!(
+                verdict,
+                Verdict::Allow {
+                    tier: Tier::InProjectEdit,
+                    by: Decider::Policy,
+                    ..
+                }
+            ),
+            "{verdict:?}"
+        );
+        assert_eq!(rig.classifier.calls(), 0);
+
+        rig.engine.set_mode(PermissionMode::Plan);
+        let verdict = call(&rig, "w2", "write_file", &write(&named)).await;
+        assert!(
+            matches!(
+                verdict,
+                Verdict::Deny {
+                    reason: DenyReason::PlanMode,
+                    ..
+                }
+            ),
+            "{verdict:?}"
+        );
+
+        rig.engine.set_mode(PermissionMode::Manual);
+        let task = spawn_call(&rig, "w3", "write_file", write(&named));
+        let request = rig.escalations.recv().await.unwrap();
+        assert!(
+            request
+                .prompt
+                .shown
+                .policy_reason
+                .as_deref()
+                .is_some_and(|r| r.contains("manual mode asks for every edit")),
+            "{:?}",
+            request.prompt.shown.policy_reason
+        );
+        request.respond.send(HumanDecision::AllowOnce).unwrap();
+        assert!(task.await.unwrap().is_allowed());
+
+        rig.engine.set_mode(PermissionMode::Auto);
+        assert!(
+            call(&rig, "w4", "write_file", &write(&tmp))
+                .await
+                .is_allowed()
+        );
+        assert_eq!(rig.classifier.calls(), 1, "the baseline directory");
         let prompt = rig.classifier.prompts.lock()[0].clone();
         assert!(
             prompt.contains(&format!("- {} (default)", tmp.display()))

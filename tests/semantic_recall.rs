@@ -94,6 +94,7 @@ async fn every_offered_builtin_is_classified_and_memory_search_is_tier_one() {
         root: &root,
         trust_project_builds: true,
         posix_shell: true,
+        granted: rkat_tui::approval::classifier::GrantedDirs::none(),
     };
     let rules = RuleSet::default();
     let mut unclassified = Vec::new();

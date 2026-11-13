@@ -64,8 +64,11 @@ pub struct Environment {
 /// The directories outside the project the user allows the agent to write
 /// or read: what the confinement plan grants
 /// (`crate::bootstrap::confinement::plan_grants`), computed whether the
-/// shell is confined or not. The classifier is told all of them. Every
-/// path is canonical and each list is sorted.
+/// shell is confined or not. The classifier is told all of them; the
+/// directories the user named also make a file tool's edit in one named
+/// for writing an in-project edit, and a read or search in either kind
+/// tier 1 (`crate::approval::policy`). Every path is canonical and each
+/// list is sorted.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GrantedDirs {
     /// Writable by default: the temp directory in use, the user cache
@@ -80,6 +83,46 @@ pub struct GrantedDirs {
     /// Named by the user for reading: `--confinement-read` and
     /// `[confinement] extra_read`.
     pub user_read: Vec<PathBuf>,
+}
+
+/// No directory granted ([`GrantedDirs::none`]).
+#[cfg(any(test, feature = "test-support"))]
+static NO_GRANTS: GrantedDirs = GrantedDirs {
+    baseline_write: Vec::new(),
+    baseline_read: Vec::new(),
+    user_write: Vec::new(),
+    user_read: Vec::new(),
+};
+
+impl GrantedDirs {
+    /// No directory granted, borrowed for as long as needed.
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn none() -> &'static Self {
+        &NO_GRANTS
+    }
+
+    /// The directory of `user_write` that holds the canonical path `abs`,
+    /// if one does.
+    #[must_use]
+    pub fn user_write_dir_of(&self, abs: &Path) -> Option<&Path> {
+        self.user_write
+            .iter()
+            .find(|dir| abs.starts_with(dir))
+            .map(PathBuf::as_path)
+    }
+
+    /// The directory the user named (for writing or reading) that holds
+    /// the canonical path `abs`, if one does.
+    #[must_use]
+    pub fn user_dir_of(&self, abs: &Path) -> Option<&Path> {
+        self.user_write_dir_of(abs).or_else(|| {
+            self.user_read
+                .iter()
+                .find(|dir| abs.starts_with(dir))
+                .map(PathBuf::as_path)
+        })
+    }
 }
 
 impl Environment {

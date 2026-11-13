@@ -45,15 +45,20 @@
 //! `--confinement-write <dir>` ([`ExtraGrants`]) add directories. Each must be absolute,
 //! canonical (no symbolic link on the way), an existing directory, off the
 //! baseline and `/proc`, `/sys`, `/dev`, and disjoint from the workspace and
-//! the other extra grants; one inside a detected grant that already gives
-//! at least that access is refused as redundant. A detected grant that
-//! overlaps an extra grant otherwise yields to it (the backend refuses
-//! overlaps). A violation is a typed start-up error, never a silent drop.
+//! the other extra grants. One inside a detected grant that already gives
+//! at least that access (`--confinement-write /tmp`) leaves the sandbox as
+//! it is and only tells the approval gate that the user named it. A
+//! detected grant that overlaps an extra grant otherwise yields to it (the
+//! backend refuses overlaps). A violation is a typed start-up error, never
+//! a silent drop.
 //!
 //! **The approval gate.** The same grants are computed whether the shell
 //! is confined or not ([`plan_grants`], [`ConfinementPlan::granted`]): the
 //! classifier is told every directory outside the workspace they allow to
-//! be written or read. With `--no-confinement` they reach only the gate.
+//! be written or read, and a file tool's edit in a directory the user
+//! named for writing is tiered like an edit in the project
+//! (`crate::approval::policy`). With `--no-confinement` they reach only
+//! the gate.
 //! The user's own `tui.toml` layers add more with `[confinement] extra_read
 //! = [...]` / `extra_write = [...]` ([`ConfinementSection`]), validated the
 //! same way; a file grant that overlaps a command-line grant yields to it
@@ -177,9 +182,6 @@ pub enum ExtraGrantProblem {
     /// Overlaps another extra grant.
     #[error("overlaps the extra grant {}", .0.display())]
     OverlapsGrant(PathBuf),
-    /// Already granted, with at least this access, by a detected grant.
-    #[error("already granted through {}", .0.display())]
-    AlreadyGranted(PathBuf),
 }
 
 /// What blocks unprivileged user namespaces on this host, read from the
@@ -725,18 +727,17 @@ pub fn plan_grants(
                     .into_iter()
                     .flatten(),
             )
-            .find(|dir| path.starts_with(dir));
-        if let Some(dir) = covered {
-            return Err(refuse(ExtraGrantProblem::AlreadyGranted(dir.clone())));
-        }
-        if let Some(ws) = workspace_grant.as_ref().filter(|ws| overlaps(&path, ws)) {
+            .any(|dir| path.starts_with(dir));
+        // One a detected grant already covers leaves the sandbox as it is
+        // (`--confinement-write /tmp`): it tells the gate the user named it.
+        if !covered && let Some(ws) = workspace_grant.as_ref().filter(|ws| overlaps(&path, ws)) {
             return Err(refuse(ExtraGrantProblem::OverlapsWorkspace(ws.clone())));
         }
         accepted.push(Accepted {
             path,
             writable,
             from_cli,
-            sandbox: true,
+            sandbox: !covered,
         });
     }
     let granted = || accepted.iter().filter(|grant| grant.sandbox);
@@ -1755,14 +1756,6 @@ mod tests {
                 vec![data.clone(), data.clone()],
                 ExtraGrantProblem::OverlapsGrant(data),
             ),
-            (
-                vec![f.cache.clone()],
-                ExtraGrantProblem::AlreadyGranted(f.cache.clone()),
-            ),
-            (
-                vec![f.tools.clone()],
-                ExtraGrantProblem::AlreadyGranted(f.tools.clone()),
-            ),
         ] {
             let err = grants_with(
                 &f.ws,
@@ -1782,19 +1775,61 @@ mod tests {
                 other => panic!("unexpected error: {other}"),
             }
         }
-        // A read grant may not repeat a detected read grant, but a write
-        // grant inside a read grant upgrades that part.
-        assert!(
-            grants_with(
+        // A grant a detected grant already covers with that access leaves
+        // the sandbox as it is and is kept as the user's, for the gate; a
+        // write grant inside a read grant upgrades that part (above).
+        let plain = grants(&f.ws, &f.host);
+        for (read, write) in [
+            (vec![inner], Vec::new()),
+            (vec![f.tools.clone()], Vec::new()),
+            (vec![f.cache.clone()], Vec::new()),
+            (Vec::new(), vec![f.cache.clone()]),
+        ] {
+            let planned = plan_grants(
                 &f.ws,
                 &f.host,
                 &ExtraGrants {
-                    read: vec![inner],
-                    write: Vec::new(),
+                    read: read.clone(),
+                    write: write.clone(),
                     ..ExtraGrants::default()
                 },
             )
-            .is_err()
+            .unwrap();
+            assert_eq!(
+                (planned.write, planned.read, planned.files),
+                plain.clone(),
+                "{read:?} {write:?}"
+            );
+            assert_eq!(planned.user_read, read);
+            assert_eq!(planned.user_write, write);
+        }
+    }
+
+    /// `--confinement-write` naming the temp directory (the fixture's
+    /// writable cache stands for it) is accepted, confined or not: the
+    /// sandbox is unchanged and the gate is told the user named it.
+    #[test]
+    fn naming_the_temp_directory_is_accepted_confined_or_not() {
+        let f = fixture();
+        let extra = ExtraGrants {
+            write: vec![f.cache.clone()],
+            ..ExtraGrants::default()
+        };
+        let off = plan(
+            ConfinementArg::Off,
+            &f.ws,
+            &Config::default(),
+            &f.host,
+            &extra,
+        )
+        .unwrap();
+        assert_eq!(off.granted.user_write, vec![f.cache.clone()]);
+        assert!(off.granted.baseline_write.is_empty(), "{:?}", off.granted);
+        let confined = lower_with(ConfinementArg::Workspace, &f.ws, &f.host, &extra).unwrap();
+        assert_eq!(
+            confined,
+            lower(ConfinementArg::Workspace, &f.ws, &f.host).unwrap(),
+            "the sandbox is unchanged"
         );
     }
 

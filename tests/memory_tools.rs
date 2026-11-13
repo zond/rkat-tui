@@ -36,6 +36,7 @@ impl Harness {
             root: &self.root,
             trust_project_builds: true,
             posix_shell: true,
+            granted: rkat_tui::approval::classifier::GrantedDirs::none(),
         };
         let raw = serde_json::value::to_raw_value(args).unwrap();
         let origin = ToolOrigin::tui(NOTES_SOURCE, name);

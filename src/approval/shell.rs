@@ -1721,6 +1721,7 @@ mod tests {
             root,
             trust_project_builds: trust,
             posix_shell: true,
+            granted: crate::approval::classifier::GrantedDirs::none(),
         }
     }
 
@@ -2168,6 +2169,7 @@ mod tests {
             root: &root,
             trust_project_builds: true,
             posix_shell: false,
+            granted: crate::approval::classifier::GrantedDirs::none(),
         };
         assert!(allowlisted("ls", &c).is_err());
     }
