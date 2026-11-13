@@ -1393,6 +1393,17 @@ Details the table leaves out:
   a run of deletes, a kill, a yank, a paste or a clear (Ctrl-C included)
   at a time, up to 64 steps; sending a prompt starts afresh. Stashing over
   a stash moves the older one to the prompt history.
+- **Long pastes.** A paste of more than one line, or of one line over 80
+  characters, shows in the input as one chip, `[Pasted text #N, C lines]`
+  (`C chars` for one long line), numbered from 1 for the session. The chip
+  edits as one character: the cursor crosses it in one step, Backspace,
+  Delete and the kill keys remove it whole, and undo and yank bring it
+  back; text typed around it stays. When the input leaves the editor (a
+  message, a steer, a `!` line, a command's argument, the external editor)
+  each chip is replaced by its text in place, so the agent, the
+  transcript, the prompt history and the unsent-message store get the
+  real content. A short one-line paste is inserted as text, and the
+  dialogs' one-line fields take pastes as before.
 - **The external editor** (Ctrl-G) edits a private temporary file in the
   realm directory's `drafts/`; the edited text replaces the input when the
   editor exits successfully (trailing newline dropped; Ctrl-_ restores the

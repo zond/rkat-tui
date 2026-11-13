@@ -30,6 +30,12 @@
   inlined, optional fields' `anyOf [T, null]` folded into `T`, `oneOf` as
   `anyOf` and a `type` on every constrained node. `/context` measures the
   definitions as sent.
+- A paste of more than one line, or of one line over 80 characters, is
+  one chip in the input, `[Pasted text #N, C lines]` (`C chars` for one
+  long line), as in Claude Code: it edits as a unit (one cursor step,
+  Backspace and the kill keys remove it whole, undo and yank bring it
+  back) and expands to its text in place when sent, so the agent, the
+  transcript, the history and the unsent store get the real content.
 - The agents' hint says what a helper's status (`member_status`,
   `mob_check_member`) does not show: while a helper runs its first turn
   its preview and tokens are empty, and a fork's preview is the answer it

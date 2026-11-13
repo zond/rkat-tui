@@ -21,6 +21,7 @@ mod keys;
 pub mod markdown;
 pub mod modal;
 mod mouse;
+pub mod paste;
 pub mod peer;
 pub mod picker;
 pub mod render;
@@ -1381,7 +1382,7 @@ impl App {
                             search.push(c, &self.search_corpus);
                         }
                     } else {
-                        self.input.insert_str(&text);
+                        self.input.paste(&text);
                     }
                 }
             }

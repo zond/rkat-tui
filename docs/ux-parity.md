@@ -49,7 +49,7 @@ official tables name, then niche features.
 | 32 | `/memory` | `/memory`: edit CLAUDE.md, toggle auto memory | `/memory` opens a list of the workspace and user `AGENTS.md` and `SYSTEM.md` (path, size); Enter, or `/memory workspace\|user\|system`, edits one in the editor | same |
 | 33 | `#` memory prefix | not in CC any more (the memory docs say to ask Claude or use `/memory`) | `#text` and `/remember <text>` append to the workspace `AGENTS.md` | n/a (rkat-tui keeps a control CC dropped) |
 | 34 | `/init` | `/init` writes CLAUDE.md | `/init` asks the agent to write or update the workspace `AGENTS.md` | same |
-| 35 | Image paste | `Ctrl+V` (`Alt+V` on Windows/WSL) inserts an `[Image #N]` chip | text paste only | missing |
+| 35 | Image paste | `Ctrl+V` (`Alt+V` on Windows/WSL) inserts an `[Image #N]` chip; a long text paste is a `[Pasted text #N +C lines]` chip | text paste only: a paste of several lines or over 80 characters is a `[Pasted text #N, C lines]` chip that expands on send; no image paste | partial (text same, image missing) |
 | 36 | External editor | `Ctrl+G` or `Ctrl+X Ctrl+E` | `Ctrl+G` or `Ctrl+X Ctrl+E` | same |
 | 37 | Redraw | `Ctrl+L` | `Ctrl+L` | same |
 | 38 | Background a task | `Ctrl+B`; `/tasks` (`/bashes`) | none: the shell runs commands in the foreground (background jobs are not available); `/tasks` is an alias of `/helpers` | missing |

@@ -96,6 +96,10 @@ fn char_len(line: &str) -> usize {
 /// Display columns one char of a stored line takes once sanitized for the
 /// screen (a tab expands, a control char becomes a replacement glyph).
 fn cell_width(ch: char) -> usize {
+    // A pasted-text chip is as wide as its label.
+    if let Some(label) = super::paste::label(ch) {
+        return display_width(&label);
+    }
     let mut buf = [0u8; 4];
     display_width(&sanitize(ch.encode_utf8(&mut buf)))
 }
@@ -297,8 +301,14 @@ impl InputEditor {
         (self.row, self.col)
     }
 
-    /// Full text joined with `\n`.
+    /// Full text joined with `\n`, every pasted-text chip expanded to the
+    /// text it stands for ([`super::paste`]).
     pub fn text(&self) -> String {
+        super::paste::expand(&self.raw_text())
+    }
+
+    /// Full text joined with `\n`, chips as they are.
+    fn raw_text(&self) -> String {
         self.lines.join("\n")
     }
 
@@ -351,7 +361,8 @@ impl InputEditor {
             let displaced = self
                 .stash
                 .replace(self.snapshot())
-                .map(|old| old.lines.join("\n"));
+                // It goes to the history: with its chips expanded.
+                .map(|old| super::paste::expand(&old.lines.join("\n")));
             self.last = LastEdit::Other;
             self.reset();
             return StashOutcome::Stashed { displaced };
@@ -470,12 +481,27 @@ impl InputEditor {
         self.col += 1;
     }
 
-    /// Insert text verbatim (bracketed paste). `\r\n` and `\r` become newlines.
+    /// Insert text verbatim. `\r\n` and `\r` become newlines.
     pub fn insert_str(&mut self, text: &str) {
         self.push_undo();
         self.last = LastEdit::Other;
         let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
         self.put_str(&normalized);
+    }
+
+    /// A bracketed paste: more than one line, or one line longer than
+    /// [`super::paste::CHIP_MIN_CHARS`], goes in as one chip
+    /// (`[Pasted text #N, C lines]`) that edits as a unit and expands on
+    /// send; anything shorter is inserted as text.
+    pub fn paste(&mut self, text: &str) {
+        let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+        if !super::paste::wants_chip(&normalized) {
+            self.insert_str(&normalized);
+            return;
+        }
+        self.push_undo();
+        self.last = LastEdit::Other;
+        self.put_char(super::paste::chip(&normalized));
     }
 
     /// Split the line at the cursor.
@@ -817,7 +843,7 @@ impl InputEditor {
         let next = match self.history_pos {
             None if self.history.is_empty() => return,
             None => {
-                self.draft = Some(self.text());
+                self.draft = Some(self.raw_text());
                 self.history.len() - 1
             }
             Some(0) => return,

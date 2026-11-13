@@ -466,10 +466,9 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect, now: Instant) {
             } else {
                 "  "
             };
-            Line::from(vec![
-                Span::styled(prefix, prompt_style),
-                Span::raw(sanitize(&raw)),
-            ])
+            let mut spans = vec![Span::styled(prefix, prompt_style)];
+            spans.extend(input_spans(&raw));
+            Line::from(spans)
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), inner);
@@ -480,6 +479,31 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect, now: Instant) {
         let y = inner.y + u16::try_from(cursor_vrow - first).unwrap_or(0);
         frame.set_cursor_position(Position::new(x.min(inner.right().saturating_sub(1)), y));
     }
+}
+
+/// One visual row of the input as spans: its text sanitized, each
+/// pasted-text chip as its label ([`super::paste`]), set apart.
+fn input_spans(raw: &str) -> Vec<Span<'static>> {
+    let chip_style = Style::default()
+        .fg(Color::Magenta)
+        .add_modifier(Modifier::BOLD);
+    let mut spans = Vec::new();
+    let mut text = String::new();
+    for ch in raw.chars() {
+        match super::paste::label(ch) {
+            Some(label) => {
+                if !text.is_empty() {
+                    spans.push(Span::raw(sanitize(&std::mem::take(&mut text))));
+                }
+                spans.push(Span::styled(label, chip_style));
+            }
+            None => text.push(ch),
+        }
+    }
+    if !text.is_empty() {
+        spans.push(Span::raw(sanitize(&text)));
+    }
+    spans
 }
 
 /// Flatten an entry for one-line display (newlines shown as `⏎`).

@@ -1140,3 +1140,69 @@ fn the_tick_runs_only_while_something_animates() {
     let running = running_app();
     assert!(running.wants_tick(), "the turn's spinner");
 }
+
+/// A paste of several lines, or of one line over 80 characters, is one
+/// chip in the input (`[Pasted text #N, C lines]`): the cursor crosses it
+/// in one step, Backspace removes it whole and undo brings it back, and
+/// on send it expands in place, also in the history; a short one-line
+/// paste is plain text.
+#[test]
+fn a_long_paste_is_one_chip_that_expands_on_send() {
+    let mut app = App::new(StatusInfo::default());
+    type_str(&mut app, "see ");
+    app.update(Msg::Paste("fn a() {}\r\nfn b() {}\nfn c() {}".into()));
+    type_str(&mut app, " ok");
+    // One unit in the editor: "see " + chip + " ok".
+    assert_eq!(app.input.lines().len(), 1);
+    assert_eq!(app.input.lines()[0].chars().count(), 4 + 1 + 3);
+    let rows = screen(&mut app, 12);
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("see [Pasted text #") && r.contains(", 3 lines] ok")),
+        "{rows:#?}"
+    );
+    // The cursor crosses it in one step.
+    for _ in 0..3 {
+        app.update(key(KeyCode::Left));
+    }
+    assert_eq!(app.input.cursor(), (0, 5));
+    app.update(key(KeyCode::Left));
+    assert_eq!(app.input.cursor(), (0, 4));
+    app.update(key(KeyCode::Right));
+    // Backspace takes it whole; undo restores it.
+    app.update(key(KeyCode::Backspace));
+    assert_eq!(app.input.text(), "see  ok");
+    app.update(ctrl('_'));
+    assert_eq!(app.input.text(), "see fn a() {}\nfn b() {}\nfn c() {} ok");
+    // Sent expanded, and kept so in the history.
+    assert_eq!(
+        app.update(key(KeyCode::Enter)),
+        vec![Effect::StartTurn(
+            "see fn a() {}\nfn b() {}\nfn c() {} ok".into()
+        )]
+    );
+    assert_eq!(
+        app.input.history().last().map(String::as_str),
+        Some("see fn a() {}\nfn b() {}\nfn c() {} ok")
+    );
+    // A short one-line paste stays text; one over 80 characters is a chip.
+    let mut app = App::new(StatusInfo::default());
+    app.update(Msg::Paste("short".into()));
+    assert_eq!(app.input.lines()[0], "short");
+    let long = "z".repeat(81);
+    app.update(Msg::Paste(long.clone()));
+    assert_eq!(app.input.lines()[0].chars().count(), 6);
+    let rows = screen(&mut app, 12);
+    assert!(rows.iter().any(|r| r.contains(", 81 chars]")), "{rows:#?}");
+    assert_eq!(app.input.text(), format!("short{long}"));
+    // A `!` line expands too.
+    let mut app = App::new(StatusInfo::default());
+    type_str(&mut app, "!echo ");
+    app.update(Msg::Paste("one\ntwo".into()));
+    let fx = app.update(key(KeyCode::Enter));
+    assert!(
+        fx.iter()
+            .any(|e| format!("{e:?}").contains("echo one\\ntwo")),
+        "{fx:?}"
+    );
+}
