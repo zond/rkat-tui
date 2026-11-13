@@ -1,7 +1,6 @@
 //! The daemon's shared handles, built once at its start and held as one
 //! `Arc` by the live agents ([`super::agents::Agents`]) and the local
-//! methods ([`super::local::Local`]), instead of each copying them field
-//! by field.
+//! methods ([`super::local::Local`]).
 
 use std::sync::Arc;
 

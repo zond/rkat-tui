@@ -22,10 +22,6 @@
 //! session only under the identity that created it
 //! (`ResumeSessionBoundToAnotherMember`), so a conversation whose agent
 //! quit is seated again under that agent's name ([`Agents::bind`]).
-//!
-//! The table of live agents and its seating rules are here; the names
-//! ([`names`]), what the agents are told of each other ([`notes`]) and the
-//! runs no client started ([`triggers`]) have files of their own.
 
 mod names;
 mod notes;

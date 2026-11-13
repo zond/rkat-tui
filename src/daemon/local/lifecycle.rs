@@ -4,7 +4,7 @@ use super::*;
 
 /// `reason` for asking at `/quit`, with what detaching or terminating does
 /// to the caller's agent's schedules, when it has any.
-pub(super) fn with_schedules(reason: String, status: &Status) -> String {
+fn with_schedules(reason: String, status: &Status) -> String {
     let count = status
         .agent
         .as_ref()

@@ -9,10 +9,6 @@ const RECALL_REASON: &str = "rkat-tui: recalled by the user";
 impl Local {
     /// `rkat/recall` for `caller` ([`Self::take_back`]); what was taken
     /// back may leave the agent idle.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::take_back`].
     pub(super) async fn recall(
         &self,
         caller: &Caller,
@@ -77,7 +73,7 @@ impl Local {
 
     /// The caller's agent's current conversation; `doing` names the method
     /// in its refusal.
-    pub(super) fn caller_session(
+    fn caller_session(
         &self,
         caller: &Caller,
         doing: &str,
@@ -97,11 +93,7 @@ impl Local {
     /// `rkat/inputs` for `caller`: what the runtime records of each input
     /// of its agent's current conversation ([`protocol::InputFate`]). Read
     /// only; an input that cannot be read is left out (its sender keeps
-    /// waiting).
-    ///
-    /// # Errors
-    ///
-    /// [`protocol::NO_AGENT`] as for `rkat/recall`.
+    /// waiting); [`protocol::NO_AGENT`] as for `rkat/recall`.
     pub(super) async fn input_fates(
         &self,
         caller: &Caller,
@@ -131,9 +123,7 @@ impl Local {
 
 /// What the runtime's record of an input says became of it: still held,
 /// written into a run, or ended without one (and why, in words).
-pub(super) fn input_fate(
-    seed: &meerkat_runtime::input_state::InputStateSeed,
-) -> protocol::InputFate {
+fn input_fate(seed: &meerkat_runtime::input_state::InputStateSeed) -> protocol::InputFate {
     use meerkat_runtime::input_state::{InputLifecycleState as Phase, InputTerminalOutcome};
 
     match seed.phase {
@@ -157,9 +147,7 @@ pub(super) fn input_fate(
 
 /// Why the runtime abandoned an input, in words (`None`: a reason this
 /// build does not know).
-pub(super) fn abandon_words(
-    reason: &meerkat_runtime::input_state::InputAbandonReason,
-) -> Option<String> {
+fn abandon_words(reason: &meerkat_runtime::input_state::InputAbandonReason) -> Option<String> {
     use meerkat_runtime::input_state::InputAbandonReason as Reason;
 
     Some(match reason {

@@ -265,7 +265,7 @@ impl Agents {
     /// idle agent is waited for (bounded by [`NOTE_WAIT`]), so the agent
     /// reads it at its next turn; one to a running agent, or one whose
     /// state cannot be read, is left to land when that turn ends.
-    pub(super) async fn send_notes(&self, notes: Vec<(String, String)>) {
+    async fn send_notes(&self, notes: Vec<(String, String)>) {
         let mut waited = Vec::new();
         for (other, text) in notes {
             let idle = self.core.conversations.running(&other).await == RunState::Idle;

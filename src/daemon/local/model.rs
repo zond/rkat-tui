@@ -26,7 +26,8 @@ impl Local {
         // built-in endpoint).
         let endpoint_name = auth_binding
             .as_ref()
-            .and_then(|binding| bound_endpoint(binding.realm.as_str(), binding.binding.as_str()));
+            .filter(|binding| is_endpoint_realm(binding.realm.as_str()))
+            .map(|binding| binding.binding.as_str());
         let endpoint = endpoint_name
             .and_then(|name| self.parts.endpoints.get(name))
             .cloned();
@@ -104,7 +105,7 @@ impl Local {
     /// out). When the alias is new, the live agent's model registry
     /// predates it: the agent is seated again on its session, which
     /// rebuilds it. Whether it was.
-    pub(super) async fn ensure_alias(
+    async fn ensure_alias(
         &self,
         agent: &str,
         model: &str,
@@ -148,7 +149,7 @@ impl Local {
     /// The `[thinking]` setting `model` of `provider` (its `dialect`) is
     /// configured with, a configured endpoint named by `endpoint` (its auth
     /// binding), a built-in one by the provider.
-    pub(super) fn configured_thinking(
+    fn configured_thinking(
         &self,
         endpoint: Option<&str>,
         provider: &str,
@@ -215,7 +216,7 @@ impl Local {
 
     /// Tell each live agent the plan mode that holds when its last note
     /// said otherwise (`all`: every live agent, whatever it was told).
-    pub(super) async fn note_plan(&self, all: bool) -> Option<String> {
+    async fn note_plan(&self, all: bool) -> Option<String> {
         let mut noted = self.plan_noted.lock().await;
         let plan = self.core.engine.mode() == PermissionMode::Plan;
         let live = self.agents.names();
@@ -235,7 +236,7 @@ impl Local {
         (!warnings.is_empty()).then(|| warnings.join("\n"))
     }
 
-    pub(super) async fn append_plan_note(&self, agent: &str, plan: bool) -> Option<String> {
+    async fn append_plan_note(&self, agent: &str, plan: bool) -> Option<String> {
         let note = if plan {
             crate::approval::mode::PLAN_ON_NOTE
         } else {
@@ -265,10 +266,4 @@ impl Local {
             tracing::warn!(%agent, %warning, "plan mode");
         }
     }
-}
-
-/// The configured endpoint an auth binding of `realm` names (`binding`);
-/// `None` for a built-in endpoint's binding.
-pub(super) fn bound_endpoint<'a>(realm: &str, binding: &'a str) -> Option<&'a str> {
-    is_endpoint_realm(realm).then_some(binding)
 }
