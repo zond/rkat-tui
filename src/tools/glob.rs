@@ -195,22 +195,35 @@ pub(crate) fn run_with(
         )));
     }
 
-    let scan = call.scan(&root);
     let pruning = prune.then(|| Prune::compile(&args.pattern)).flatten();
+    let (hits, total, partial) = search(shared, &call, &root, &matcher, pruning);
+    Ok(render(shared, &args.pattern, &hits, total, partial))
+}
+
+/// Walk below `root` for the matches of `matcher`: the newest
+/// [`MAX_RESULTS`], how many there were, and the partial note.
+fn search(
+    shared: &Shared,
+    call: &CallMeta,
+    root: &Path,
+    matcher: &globset::GlobMatcher,
+    pruning: Option<Prune>,
+) -> (Vec<Hit>, usize, Option<String>) {
+    let scan = call.scan(root);
     let walker = match pruning {
         Some(pruning) => pruned_walker(
-            &root,
+            root,
             shared.hide_secrets,
             shared.root.secret_roots(),
             move |relative| pruning.may_match_below(relative),
         ),
-        None => walker(&root, shared.hide_secrets, shared.root.secret_roots()),
+        None => walker(root, shared.hide_secrets, shared.root.secret_roots()),
     };
     let found = scan.walk(&walker, |entry, newest: &mut Newest| {
         if !entry.file_type().is_some_and(|ft| ft.is_file()) {
             return true;
         }
-        let Ok(relative) = entry.path().strip_prefix(&root) else {
+        let Ok(relative) = entry.path().strip_prefix(root) else {
             return true;
         };
         if matcher.is_match(relative) {
@@ -237,20 +250,28 @@ pub(crate) fn run_with(
         "search a subdirectory with `path` (the pattern is then relative to it) or use a more specific pattern",
         |path| shared.display_abs(path),
     );
+    (hits, total, partial)
+}
 
+/// The answer: the hits, newest first, and what was left out.
+fn render(
+    shared: &Shared,
+    pattern: &str,
+    hits: &[Hit],
+    total: usize,
+    partial: Option<String>,
+) -> String {
     let mut out = String::new();
-    if hits.is_empty() && partial.is_some() {
-        // A search that stopped early is no evidence of absence.
-        let _ = writeln!(
-            out,
-            "No files matched `{}` among the entries examined. The search stopped before \
-             it was done, so matching files may exist beyond what it examined.",
-            args.pattern
+    if hits.is_empty() {
+        super::scan::write_none(
+            &mut out,
+            &format!("No files matched `{pattern}`"),
+            "among the entries examined",
+            "matching files",
+            partial.is_some(),
         );
-    } else if hits.is_empty() {
-        let _ = writeln!(out, "No files matched `{}`", args.pattern);
     }
-    for hit in &hits {
+    for hit in hits {
         let _ = writeln!(out, "{}", shared.display_abs(&hit.path));
     }
     if total > MAX_RESULTS {
@@ -265,5 +286,5 @@ pub(crate) fn run_with(
             "{note} The files listed are the newest among the entries examined, not of the whole tree."
         );
     }
-    Ok(out)
+    out
 }

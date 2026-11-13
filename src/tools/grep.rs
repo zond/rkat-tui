@@ -10,6 +10,7 @@ use meerkat_core::ToolDef;
 use regex::RegexBuilder;
 use serde::Deserialize;
 use std::fmt::Write as _;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// Default maximum number of output lines (entries) when `head_limit` is omitted.
@@ -119,6 +120,30 @@ struct Found {
 }
 
 pub(crate) fn run(shared: &Shared, call: CallMeta, args: GrepArgs) -> ToolOutcome {
+    let (regex, filter) = compile(&args)?;
+    let root = search_root(shared, GREP, args.path.as_deref())?;
+    // An explicit target that is neither a directory nor a regular file (a
+    // FIFO, socket or device) is refused rather than silently skipped.
+    let root_meta = std::fs::metadata(&root)
+        .map_err(|err| ToolFailure::io("search", &shared.display_abs(&root), &err))?;
+    if !root_meta.is_dir() && !root_meta.is_file() {
+        return Err(ReadRefusal::NotRegular(root_meta.file_type())
+            .into_failure("search", &shared.display_abs(&root)));
+    }
+    let line_limit = args.head_limit.unwrap_or(DEFAULT_HEAD_LIMIT).max(1);
+    let search = Search {
+        regex: &regex,
+        filter: filter.as_ref(),
+        line_limit,
+        context: args.context.unwrap_or(0) as usize,
+        mode: args.output_mode,
+    };
+    let found = search.walk(shared, &call, &root, args.glob.as_deref());
+    Ok(render(found, line_limit, &args.pattern))
+}
+
+/// The pattern and the `glob` filter, compiled.
+fn compile(args: &GrepArgs) -> Result<(regex::Regex, Option<globset::GlobMatcher>), ToolFailure> {
     let regex = RegexBuilder::new(&args.pattern)
         .case_insensitive(args.case_insensitive)
         .build()
@@ -142,91 +167,118 @@ pub(crate) fn run(shared: &Shared, call: CallMeta, args: GrepArgs) -> ToolOutcom
             })
         })
         .transpose()?;
-    let root = search_root(shared, GREP, args.path.as_deref())?;
-    // An explicit target that is neither a directory nor a regular file (a
-    // FIFO, socket or device) is refused rather than silently skipped.
-    let root_meta = std::fs::metadata(&root)
-        .map_err(|err| ToolFailure::io("search", &shared.display_abs(&root), &err))?;
-    if !root_meta.is_dir() && !root_meta.is_file() {
-        return Err(ReadRefusal::NotRegular(root_meta.file_type())
-            .into_failure("search", &shared.display_abs(&root)));
-    }
-    let context = args.context.unwrap_or(0) as usize;
-    let line_limit = args.head_limit.unwrap_or(DEFAULT_HEAD_LIMIT).max(1);
-    // Lines and bytes found so far by every thread: once more than fit the
-    // output was found, the walk stops.
-    let lines_found = AtomicUsize::new(0);
-    let bytes_found = AtomicUsize::new(0);
-    let full = AtomicBool::new(false);
+    Ok((regex, filter))
+}
 
-    let scan = call.scan(&root);
-    let go_on = || scan.go_on();
-    // A filter with directories in its literal part confines the matches
-    // below them: the walk does not enter the others.
-    let walker = match args.glob.as_deref().and_then(super::prune::literal_dirs) {
-        Some(dirs) => pruned_walker(
-            &root,
-            shared.hide_secrets,
-            shared.root.secret_roots(),
-            move |relative| super::prune::on_the_way(relative, &dirs),
-        ),
-        None => walker(&root, shared.hide_secrets, shared.root.secret_roots()),
-    };
-    let found = scan.walk(&walker, |entry, found: &mut Found| {
-        if !entry.file_type().is_some_and(|ft| ft.is_file()) {
-            return true;
-        }
-        let path = entry.path();
-        if let Some(filter) = &filter {
-            let relative = path.strip_prefix(&root).unwrap_or(path);
-            let name_matches = path.file_name().is_some_and(|name| filter.is_match(name));
-            if !filter.is_match(relative) && !name_matches {
+/// What one search looks for and how much of it it keeps.
+struct Search<'a> {
+    regex: &'a regex::Regex,
+    filter: Option<&'a globset::GlobMatcher>,
+    line_limit: usize,
+    context: usize,
+    mode: OutputMode,
+}
+
+/// A walk's findings: each matching file's output lines sorted by its
+/// display path, whether the walk stopped because the output was full, and
+/// the partial note.
+struct Searched {
+    files: Vec<(String, Vec<String>)>,
+    full: bool,
+    partial: Option<String>,
+}
+
+impl Search<'_> {
+    /// Walk below `root` (`glob`: the filter as given, which can prune the
+    /// walk).
+    fn walk(&self, shared: &Shared, call: &CallMeta, root: &Path, glob: Option<&str>) -> Searched {
+        // Lines and bytes found so far by every thread: once more than fit
+        // the output was found, the walk stops.
+        let lines_found = AtomicUsize::new(0);
+        let bytes_found = AtomicUsize::new(0);
+        let full = AtomicBool::new(false);
+        let scan = call.scan(root);
+        let go_on = || scan.go_on();
+        // A filter with directories in its literal part confines the matches
+        // below them: the walk does not enter the others.
+        let walker = match glob.and_then(super::prune::literal_dirs) {
+            Some(dirs) => pruned_walker(
+                root,
+                shared.hide_secrets,
+                shared.root.secret_roots(),
+                move |relative| super::prune::on_the_way(relative, &dirs),
+            ),
+            None => walker(root, shared.hide_secrets, shared.root.secret_roots()),
+        };
+        let found = scan.walk(&walker, |entry, found: &mut Found| {
+            if !entry.file_type().is_some_and(|ft| ft.is_file()) {
                 return true;
             }
-        }
-        // `read_capped_while` re-checks the path (an entry's type comes
-        // from the directory listing) and never reads more than the cap.
-        let Ok(Some(read)) = read_capped_while(path, MAX_FILE_READ_BYTES, &go_on) else {
-            return true;
+            let path = entry.path();
+            if let Some(filter) = self.filter {
+                let relative = path.strip_prefix(root).unwrap_or(path);
+                let name_matches = path.file_name().is_some_and(|name| filter.is_match(name));
+                if !filter.is_match(relative) && !name_matches {
+                    return true;
+                }
+            }
+            // `read_capped_while` re-checks the path (an entry's type comes
+            // from the directory listing) and never reads more than the cap.
+            let Ok(Some(read)) = read_capped_while(path, MAX_FILE_READ_BYTES, &go_on) else {
+                return true;
+            };
+            if looks_binary(&read.bytes) {
+                return true;
+            }
+            let text = String::from_utf8_lossy(&read.bytes);
+            let display = shared.display_abs(path);
+            let (lines, cut) = search_file(
+                &text,
+                self.regex,
+                self.mode,
+                self.context,
+                &display,
+                self.line_limit,
+                &go_on,
+            );
+            if lines.is_empty() {
+                return true;
+            }
+            let count = lines.len();
+            let bytes: usize = lines.iter().map(|line| line.len() + 1).sum();
+            found.files.push((display, lines));
+            let lines_now = lines_found.fetch_add(count, Ordering::Relaxed) + count;
+            let bytes_now = bytes_found.fetch_add(bytes, Ordering::Relaxed) + bytes;
+            if cut || lines_now > self.line_limit || bytes_now > MAX_OUTPUT_BYTES {
+                full.store(true, Ordering::Relaxed);
+                return false;
+            }
+            true
+        });
+        let mut files: Vec<(String, Vec<String>)> =
+            found.into_iter().flat_map(|found| found.files).collect();
+        files.sort_by(|(a, _), (b, _)| a.cmp(b));
+        let narrow = if glob.is_some() {
+            "search a subdirectory with `path` or narrow the `glob` filter"
+        } else {
+            "search a subdirectory with `path` or pass a `glob` filter such as `*.rs`"
         };
-        if looks_binary(&read.bytes) {
-            return true;
+        Searched {
+            files,
+            full: full.load(Ordering::Relaxed),
+            partial: scan.partial_note(narrow, |path| shared.display_abs(path)),
         }
-        let text = String::from_utf8_lossy(&read.bytes);
-        let display = shared.display_abs(path);
-        let (lines, cut) = search_file(
-            &text,
-            &regex,
-            args.output_mode,
-            context,
-            &display,
-            line_limit,
-            &go_on,
-        );
-        if lines.is_empty() {
-            return true;
-        }
-        let count = lines.len();
-        let bytes: usize = lines.iter().map(|line| line.len() + 1).sum();
-        found.files.push((display, lines));
-        let lines_now = lines_found.fetch_add(count, Ordering::Relaxed) + count;
-        let bytes_now = bytes_found.fetch_add(bytes, Ordering::Relaxed) + bytes;
-        if cut || lines_now > line_limit || bytes_now > MAX_OUTPUT_BYTES {
-            full.store(true, Ordering::Relaxed);
-            return false;
-        }
-        true
-    });
+    }
+}
 
-    let mut files: Vec<(String, Vec<String>)> =
-        found.into_iter().flat_map(|found| found.files).collect();
-    files.sort_by(|(a, _), (b, _)| a.cmp(b));
-    let narrow = if args.glob.is_some() {
-        "search a subdirectory with `path` or narrow the `glob` filter"
-    } else {
-        "search a subdirectory with `path` or pass a `glob` filter such as `*.rs`"
-    };
-    let partial = scan.partial_note(narrow, |path| shared.display_abs(path));
+/// The answer: the files' lines up to the output's limits, and what was
+/// left out.
+fn render(found: Searched, line_limit: usize, pattern: &str) -> String {
+    let Searched {
+        files,
+        full,
+        partial,
+    } = found;
     let mut out = Output::new(line_limit);
     'files: for (_, lines) in &files {
         for line in lines {
@@ -235,23 +287,20 @@ pub(crate) fn run(shared: &Shared, call: CallMeta, args: GrepArgs) -> ToolOutcom
             }
         }
     }
-
     // A file's own lines were cut at the output's limits.
-    out.truncated |= full.load(Ordering::Relaxed);
+    out.truncated |= full;
     let mut text = out.text;
-    if files.is_empty() && partial.is_some() {
-        // A search that stopped early is no evidence of absence.
-        let _ = writeln!(
-            text,
-            "No matches for `{}` in the files examined. The search stopped before it was \
-             done, so matches may exist beyond what it examined.",
-            args.pattern
+    if files.is_empty() {
+        super::scan::write_none(
+            &mut text,
+            &format!("No matches for `{pattern}`"),
+            "in the files examined",
+            "matches",
+            partial.is_some(),
         );
-    } else if files.is_empty() {
-        let _ = writeln!(text, "No matches for `{}`", args.pattern);
     }
     if out.truncated {
-        let order = if full.load(Ordering::Relaxed) {
+        let order = if full {
             " (the search stops once the output is full, so these are sorted by path but \
              not necessarily the first matches by path)"
         } else {
@@ -266,7 +315,7 @@ pub(crate) fn run(shared: &Shared, call: CallMeta, args: GrepArgs) -> ToolOutcom
     if let Some(note) = partial {
         let _ = writeln!(text, "{note}");
     }
-    Ok(text)
+    text
 }
 
 /// One file's output lines for `mode`, at most `line_limit` of them, and

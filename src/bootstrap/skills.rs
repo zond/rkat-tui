@@ -42,7 +42,7 @@ use std::path::{Path, PathBuf};
 use meerkat_core::Config;
 use meerkat_core::skills::{
     SkillFilter, SkillKey, SkillKeyRemap, SkillName, SkillScope, SkillSource,
-    SourceHealthThresholds, SourceIdentityLineage, SourceIdentityLineageEvent, SourceUuid,
+    SourceIdentityLineage, SourceIdentityLineageEvent, SourceUuid,
 };
 use meerkat_core::skills_config::{SkillRepoTransport, SkillRepositoryConfig};
 use serde::{Deserialize, Serialize};
@@ -139,17 +139,16 @@ pub fn user_source() -> SourceUuid {
 }
 
 /// The valid skills of the directory `dir`, by name, as the engine's
-/// filesystem source lists them (none when it is missing). Blocking.
-fn listed(dir: &Path, source: &SourceUuid) -> Vec<SkillName> {
+/// filesystem source lists them (none when it is missing). Blocking: the
+/// filesystem source does its I/O synchronously inside a future that
+/// needs no tokio runtime, so a plain executor runs it (a whole skill
+/// runtime, whose git and HTTP sources do need tokio, goes through
+/// `crate::tools::with_skill_runtime` instead).
+fn listed(dir: &Path) -> Vec<SkillName> {
     if !dir.is_dir() {
         return Vec::new();
     }
-    let fs = meerkat_skills::FilesystemSkillSource::new_with_identity(
-        dir.to_path_buf(),
-        SkillScope::User,
-        source.clone(),
-        SourceHealthThresholds::default(),
-    );
+    let fs = meerkat_skills::FilesystemSkillSource::new(dir, SkillScope::User);
     futures::executor::block_on(fs.list(&SkillFilter::default()))
         .map(|skills| skills.into_iter().map(|s| s.key.skill_name).collect())
         .unwrap_or_default()
@@ -184,7 +183,7 @@ fn plan(repositories: &[SkillRepositoryConfig], dir: PathBuf) -> Option<Plan> {
         return None;
     }
     if let Some(own) = repositories.iter().find(|repo| reads(repo, &dir)) {
-        let names = listed(&dir, &own.source_uuid);
+        let names = listed(&dir);
         return Some(Plan {
             repository: None,
             source: own.source_uuid.clone(),
@@ -208,7 +207,7 @@ fn plan(repositories: &[SkillRepositoryConfig], dir: PathBuf) -> Option<Plan> {
             },
         }),
         source: user_source(),
-        names: listed(&dir, &user_source()),
+        names: listed(&dir),
     })
 }
 
@@ -319,7 +318,7 @@ pub fn report(config: &Config, global: Option<&GlobalDirs>, context_root: &Path)
     if !config.skills.enabled {
         return SkillsReport::Off;
     }
-    let count = |dir: &Path| dir.is_dir().then(|| listed(dir, &user_source()).len());
+    let count = |dir: &Path| dir.is_dir().then(|| listed(dir).len());
     let mut directories = Vec::new();
     if let Some(global) = global {
         let path = global.skills_dir();

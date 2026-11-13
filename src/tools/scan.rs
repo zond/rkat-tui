@@ -262,6 +262,21 @@ impl<'a> Scan<'a> {
     }
 }
 
+/// The line a search that found nothing answers with: `none` (what was
+/// not found), and when it stopped early that this is no evidence of
+/// absence: `none` `among`, and that `what` may exist beyond it.
+pub(crate) fn write_none(out: &mut String, none: &str, among: &str, what: &str, stopped: bool) {
+    if stopped {
+        let _ = writeln!(
+            out,
+            "{none} {among}. The search stopped before it was done, so {what} may exist \
+             beyond what it examined."
+        );
+    } else {
+        let _ = writeln!(out, "{none}");
+    }
+}
+
 /// One walk thread's own state, handed back when the thread is done.
 struct Local<'s, 'a, L> {
     scan: &'s Scan<'a>,

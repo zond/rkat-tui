@@ -62,7 +62,10 @@ pub trait SkillHost: Send + Sync {
 }
 
 /// Run `work` over `host`'s runtime on a blocking thread: the engine's
-/// skill sources read the file system synchronously inside their futures.
+/// skill sources read the file system synchronously inside their futures,
+/// and the config store and the git and HTTP sources need tokio, so the
+/// thread blocks on the runtime's handle (not a plain executor, as
+/// `crate::bootstrap::skills` lists one directory).
 ///
 /// # Errors
 ///
