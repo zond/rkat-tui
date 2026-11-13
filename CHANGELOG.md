@@ -30,6 +30,10 @@
   inlined, optional fields' `anyOf [T, null]` folded into `T`, `oneOf` as
   `anyOf` and a `type` on every constrained node. `/context` measures the
   definitions as sent.
+- The agents' hint says what a helper's status (`member_status`,
+  `mob_check_member`) does not show: while a helper runs its first turn
+  its preview and tokens are empty, and a fork's preview is the answer it
+  inherited, not its own work; to know how a running helper does, ask it.
 - A `send_message` call reads recipient first:
   `send_message → tui/main/main-bbbb: I am changing src/lib.rs` (the
   peer's name from the conversation's `peers` result, else its id), and a

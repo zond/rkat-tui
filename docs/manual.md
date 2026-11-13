@@ -701,6 +701,12 @@ works in the background, and when the child ends its outcome is written
 into the agent's transcript ("Background fork_off job … finished"): at
 the agent's next model call if it is mid-turn, else in a turn of its
 own. The child cannot message the parent or be messaged while it runs.
+A helper's status as the engine's `member_status` and `mob_check_member`
+give it shows no live progress: their `output_preview` and `tokens_used`
+are from the helper's last completed turn, so a fork's preview is the
+answer it inherited; the agents' hint says so and points them to asking
+the helper instead. (The TUI's own helper panel follows the helper's
+events live.)
 The transcript shows that outcome compact, live and in a restored
 conversation: `⚙ fork <name> finished (completed) · 11 turns · 39 tool
 calls · 12.3k tokens`, then the fork's report as Markdown folded to four

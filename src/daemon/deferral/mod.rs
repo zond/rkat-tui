@@ -58,6 +58,7 @@ Some tools are left out of your tool list until you search for them with `tool_s
 - Teams, councils, forks and mob profiles beyond `delegate`: call `tool_search` with family `mob`. Among them: `mob_create` and `mob_spawn_member` start helpers in a mob of their own that stay after their task, which you check on with `mob_check_member` and retire with `mob_retire_member`; `council` convenes existing members for a few rounds, and its summary arrives later in your transcript; `fork_off` forks you from the conversation so far onto a task, and its outcome is written into your transcript later.
 - Without a search, `spawn_member` seats a helper that stays in your own mob (profile `main`) until `retire_member`; it is wired to you (rkat-tui sets `auto_wire_parent`), so you can message each other.
 - A `delegate` helper is a member of the mob `implicit-<your session id>`, not of the workspace's mob; `mob_list` shows the mobs.
+- A helper's status (`member_status`, `mob_check_member`) shows no live progress: `output_preview` and `tokens_used` are from its last completed turn, so while a helper runs its first turn they are empty or zero, and a `fork_off` child's preview is the answer it inherited from your conversation, not its own work. To know how a running helper is doing, ask it with `send_message` (a `delegate` or `spawn_member` helper is wired to you) or wait for its result.
 ";
 
 /// The families whose tools are deferrable.
@@ -585,6 +586,10 @@ mod tests {
         // Where a `delegate` helper lives, which no tool says before its
         // call returns (`docs/evidence.md`, "Where a helper lives").
         assert!(PERSONA.contains("mob `implicit-<your session id>`"));
+        // What a helper's status does not show while it runs (the engine's
+        // status is its last completed turn's; a fork's is inherited).
+        assert!(PERSONA.contains("shows no live progress"));
+        assert!(PERSONA.contains("the answer it inherited from your conversation"));
     }
 
     /// The `mob` line names only tools that are in the hidden family (the
