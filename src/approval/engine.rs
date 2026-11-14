@@ -52,7 +52,9 @@ use tokio::sync::mpsc;
 use super::attendance::Attendance;
 use super::audit::{AuditSink, DecisionRecord};
 use super::catalog::{ToolOrigin, ToolOrigins};
-use super::classifier::{ActionClassifier, ClassifierInput, ClassifierVerdict, Environment};
+use super::classifier::{
+    ActionClassifier, ClassifierInput, ClassifierVerdict, Environment, GrantedDirs, SessionFacts,
+};
 use super::counters::{AutoMode, DenialCounters, PauseCause};
 use super::escalation::{EscalationBroker, EscalationPrompt, HumanDecision, RecordedPrompt};
 use super::mode::PermissionMode;
@@ -202,6 +204,10 @@ struct SessionState {
     /// session, in first-write order: shown to the classifier as
     /// agent-authored.
     agent_written: Vec<String>,
+    /// What the classifier is told of the session's own effects: the
+    /// files outside the project its file tools created, the manifests
+    /// they changed.
+    facts: SessionFacts,
     /// A client's input to the session waits for the run that takes it
     /// ([`ApprovalEngine::human_input`]).
     human_pending: bool,
@@ -219,6 +225,7 @@ impl Default for SessionState {
             runs_seen: VecDeque::new(),
             current_run: None,
             agent_written: Vec::new(),
+            facts: SessionFacts::default(),
             human_pending: false,
             human_runs: VecDeque::new(),
         }
@@ -238,6 +245,11 @@ pub enum PersistError {
 
 /// A callback run when a session's per-session state is forgotten.
 pub type ForgetHook = Arc<dyn Fn(&SessionId) + Send + Sync>;
+
+/// Where a session's private scratch directory is, if it has one
+/// ([`super::scratch`]): the daemon answers from the agent the session
+/// belongs to.
+pub type ScratchLookup = Arc<dyn Fn(&SessionId) -> Option<PathBuf> + Send + Sync>;
 
 /// The approval engine, shared behind an [`Arc`] by every session's gate.
 pub struct ApprovalEngine {
@@ -268,6 +280,9 @@ pub struct ApprovalEngine {
     answerers: Mutex<HashMap<u64, String>>,
     /// Called by [`Self::forget_session`] (helper hosts prune their state).
     forget_hooks: RwLock<Vec<ForgetHook>>,
+    /// Each session's scratch directory ([`Self::set_scratch`]); unset:
+    /// none has one.
+    scratch: OnceLock<ScratchLookup>,
 }
 
 impl fmt::Debug for ApprovalEngine {
@@ -333,7 +348,36 @@ impl ApprovalEngine {
             audit: OnceLock::new(),
             answerers: Mutex::new(HashMap::new()),
             forget_hooks: RwLock::new(Vec::new()),
+            scratch: OnceLock::new(),
         })
+    }
+
+    /// Where each session's private scratch directory is: the gate treats
+    /// it as the session's own from now on ([`super::scratch`]). Set once;
+    /// returns `false` when it was set already.
+    pub fn set_scratch(&self, lookup: ScratchLookup) -> bool {
+        self.scratch.set(lookup).is_ok()
+    }
+
+    /// Whether the confinement plan lets the shell write `path` (a default
+    /// or user-named write grant holds it): a scratch directory elsewhere
+    /// would be a `TMPDIR` the confined shell cannot write.
+    #[must_use]
+    pub fn plan_writes(&self, path: &std::path::Path) -> bool {
+        let granted = &self.environment.granted;
+        granted
+            .baseline_write
+            .iter()
+            .chain(&granted.user_write)
+            .any(|dir| path.starts_with(dir))
+    }
+
+    /// The directories outside the project `session_id`'s calls may use:
+    /// the confinement plan's, and the session's scratch directory.
+    fn granted_for(&self, session_id: &SessionId) -> GrantedDirs {
+        let mut granted = self.environment.granted.clone();
+        granted.scratch = self.scratch.get().and_then(|lookup| lookup(session_id));
+        granted
     }
 
     /// The project root.
@@ -780,10 +824,31 @@ impl ApprovalEngine {
     /// classifier allow (a write may change what a cached command does).
     /// Recorded at approval time (before the tool runs): a write that then
     /// fails stays listed, which only makes the classifier more careful.
+    ///
+    /// A target outside the project that does not exist yet is recorded as
+    /// created by the session (the classifier is told changing or deleting
+    /// it is the session's own business), and a dependency manifest or
+    /// lockfile as changed (the install exception then no longer covers
+    /// it).
     fn record_agent_writes(&self, session_id: &SessionId, facts: &Facts<'_>) {
-        if !matches!(facts.action.kind, ActionKind::FileWrite { .. }) {
+        let ActionKind::FileWrite { paths } = &facts.action.kind else {
             return;
-        }
+        };
+        // The scratch directory is the session's whole: its files need no
+        // list.
+        let scratch = self.scratch.get().and_then(|lookup| lookup(session_id));
+        let created: Vec<String> = paths
+            .iter()
+            .filter_map(|path| self.root.resolve(path).ok())
+            .filter(|resolved| {
+                !resolved.inside()
+                    && !scratch
+                        .as_deref()
+                        .is_some_and(|dir| resolved.abs.starts_with(dir))
+                    && std::fs::symlink_metadata(&resolved.abs).is_err()
+            })
+            .map(|resolved| resolved.abs.display().to_string())
+            .collect();
         let mut sessions = self.sessions.lock();
         for state in sessions.values_mut() {
             state.allow_cache.clear();
@@ -793,7 +858,28 @@ impl ApprovalEngine {
             if !state.agent_written.contains(subject) {
                 state.agent_written.push(subject.clone());
             }
+            if super::classifier::is_manifest(subject)
+                && !state.facts.manifests_changed.contains(subject)
+            {
+                state.facts.manifests_changed.push(subject.clone());
+            }
         }
+        for path in created {
+            if !state.facts.created_outside.contains(&path) {
+                state.facts.created_outside.push(path);
+            }
+        }
+    }
+
+    /// What the gate saw `session_id`'s file tools do (tests).
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn session_facts(&self, session_id: &SessionId) -> SessionFacts {
+        self.sessions
+            .lock()
+            .get(session_id)
+            .map(|state| state.facts.clone())
+            .unwrap_or_default()
     }
 
     /// Project files the agent of `session_id` was allowed to write, oldest
@@ -808,13 +894,14 @@ impl ApprovalEngine {
         })
     }
 
-    fn tier_of(&self, facts: &Facts<'_>) -> TierDecision {
+    fn tier_of(&self, session_id: &SessionId, facts: &Facts<'_>) -> TierDecision {
         let trust_project_builds = self.settings.read().trust_project_builds;
+        let granted = self.granted_for(session_id);
         let ctx = PolicyContext {
             root: &self.root,
             trust_project_builds,
             posix_shell: self.posix_shell,
-            granted: &self.environment.granted,
+            granted: &granted,
         };
         classify_tier_with(&facts.action, &facts.subjects, &self.rules.read(), &ctx)
     }
@@ -893,7 +980,7 @@ impl ApprovalEngine {
         run: Option<&RunId>,
         facts: &Facts<'_>,
     ) -> Verdict {
-        let decision = self.tier_of(facts);
+        let decision = self.tier_of(session_id, facts);
         *facts.allow_rule.lock() = decision.allow_rule;
         // A message to another agent: tier 1 (a user deny rule still
         // decides first). In plan mode one to an agent of another
@@ -948,11 +1035,17 @@ impl ApprovalEngine {
         if self.stopped(session_id) {
             return deny3(DenyReason::Stopped);
         }
-        if !self.attended(session_id, run) {
-            return self.unattended(session_id, agent, facts, Tier::Classifier);
-        }
+        // A turn no user started with nobody attached (the owner's decision
+        // of 2026-11-14): the classifier still judges, and its allow runs
+        // the call; whatever would ask the user (a pause, an action too
+        // large to review, a failed review) is denied, and the user is told
+        // when they attach.
+        let attended = self.attended(session_id, run);
         let size = facts.action.args.get().len();
         if size > MAX_REVIEWED_ACTION_BYTES {
+            if !attended {
+                return self.unattended(session_id, agent, facts, Tier::Classifier);
+            }
             // Never a cut-down copy to the classifier: its tail could be
             // the part that matters.
             let reason = format!(
@@ -966,6 +1059,9 @@ impl ApprovalEngine {
             };
         }
         let escalating = self.auto.lock().escalating();
+        if escalating && !attended {
+            return self.unattended(session_id, agent, facts, Tier::Classifier);
+        }
 
         let payload = self.payload(&facts.action).await;
         let key = payload.cache_key(&facts.action);
@@ -982,7 +1078,7 @@ impl ApprovalEngine {
         if escalating {
             let hint = match &result {
                 Ok(v) => format!("classifier: {v}"),
-                Err(e) => format!("classifier error: {e}"),
+                Err(e) => review_incomplete(e),
             };
             let fallback = result.ok();
             return self
@@ -992,6 +1088,10 @@ impl ApprovalEngine {
 
         match result {
             Ok(verdict) => self.apply_classifier(session_id, facts, verdict, key),
+            Err(err) if !attended => {
+                tracing::warn!(error = %err, tool = facts.action.name, "classifier failed in an unattended turn; denied");
+                self.unattended(session_id, agent, facts, Tier::Classifier)
+            }
             Err(err) => {
                 tracing::warn!(error = %err, tool = facts.action.name, "classifier failed; escalating");
                 if self.broker.is_some() {
@@ -999,12 +1099,12 @@ impl ApprovalEngine {
                         session_id,
                         agent,
                         facts,
-                        Asking::Classifier(format!("classifier error: {err}")),
+                        Asking::Classifier(review_incomplete(&err)),
                         None,
                     )
                     .await
                 } else {
-                    deny3(DenyReason::ClassifierUnavailable(err.to_string()))
+                    deny3(DenyReason::ReviewIncomplete(err.to_string()))
                 }
             }
         }
@@ -1055,7 +1155,7 @@ impl ApprovalEngine {
                     rule,
                     explanation: reason,
                     annotation,
-                    hint: self.scope_hint(facts, path.as_deref()),
+                    hint: self.scope_hint(session_id, facts, path.as_deref()),
                 })
             }
         }
@@ -1065,8 +1165,13 @@ impl ApprovalEngine {
     /// the directories the user allows is (or may be) why it was blocked:
     /// a file tool's own target outside them, else the path the classifier
     /// named. `None` when no such path is known.
-    fn scope_hint(&self, facts: &Facts<'_>, named: Option<&str>) -> Option<String> {
-        let granted = &self.environment.granted;
+    fn scope_hint(
+        &self,
+        session_id: &SessionId,
+        facts: &Facts<'_>,
+        named: Option<&str>,
+    ) -> Option<String> {
+        let granted = &self.granted_for(session_id);
         let outside = |raw: &str, write: bool| {
             let resolved = self.root.resolve(raw).ok()?;
             let allowed = resolved.inside()
@@ -1093,15 +1198,19 @@ impl ApprovalEngine {
             .subjects
             .first()
             .map(|subject| format!("/permissions add allow {} {subject}", facts.action.name));
-        let temp = std::fs::canonicalize(std::env::temp_dir())
-            .ok()
-            .filter(|temp| {
-                granted
-                    .baseline_write
-                    .iter()
-                    .chain(&granted.user_write)
-                    .any(|dir| temp.starts_with(dir))
-            });
+        // The session's own scratch directory first: writes there need no
+        // review.
+        let temp = granted.scratch.clone().or_else(|| {
+            std::fs::canonicalize(std::env::temp_dir())
+                .ok()
+                .filter(|temp| {
+                    granted
+                        .baseline_write
+                        .iter()
+                        .chain(&granted.user_write)
+                        .any(|dir| temp.starts_with(dir))
+                })
+        });
         Some(super::scope_hint(
             &abs,
             write,
@@ -1117,21 +1226,30 @@ impl ApprovalEngine {
         action: &Action<'_>,
         payload: &Payload,
     ) -> Result<ClassifierVerdict, super::classifier::ClassifierError> {
-        let (transcript, agent_written) = {
+        let (transcript, agent_written, session_facts) = {
             let state = self.session(session_id);
-            (state.transcript.clone(), state.agent_written.clone())
+            (
+                state.transcript.clone(),
+                state.agent_written.clone(),
+                state.facts.clone(),
+            )
         };
         let args: Value = serde_json::from_str(action.args.get())
             .unwrap_or_else(|_| Value::String(action.args.get().to_string()));
         let script = payload.combined();
+        let environment = Environment {
+            granted: self.granted_for(session_id),
+            ..self.environment.clone()
+        };
         let input = ClassifierInput {
             session_id,
-            environment: &self.environment,
+            environment: &environment,
             transcript: &transcript,
             tool: action.name,
             args: &args,
             script_payload: script.as_deref(),
             agent_written: &agent_written,
+            session: &session_facts,
         };
         self.emit(ApprovalEvent::Classifying(true));
         let result = self.classifier.classify(input).await;
@@ -1191,7 +1309,7 @@ impl ApprovalEngine {
         let route = if matches!(asking, Asking::PlanWired(_)) {
             Route::Ask(Asking::PlanWired(String::new()))
         } else {
-            self.route(facts, self.tier_of(facts), self.mode())
+            self.route(facts, self.tier_of(session_id, facts), self.mode())
         };
         match route {
             Route::Settled(verdict) => {
@@ -1582,11 +1700,18 @@ fn decider_label(verdict: &Verdict, facts: &Facts<'_>) -> String {
             DenyReason::EscalationTimedOut => "timeout".to_string(),
             DenyReason::PlanMode | DenyReason::PlanWired { .. } => "mode".to_string(),
             DenyReason::Unattended => "unattended".to_string(),
+            DenyReason::ReviewIncomplete(_) => "review-failed".to_string(),
             DenyReason::Sealed { .. }
             | DenyReason::Unavailable { .. }
             | DenyReason::ClassifierUnavailable(_) => "policy".to_string(),
         },
     }
+}
+
+/// What the dialog says when the classifier's review failed: a review that
+/// could not be completed, not a refusal of the action.
+fn review_incomplete(err: &super::classifier::ClassifierError) -> String {
+    format!("the classifier's review could not be completed ({err}); this is not a refusal")
 }
 
 /// The longest action an unattended notice quotes.
@@ -2018,12 +2143,13 @@ mod tests {
 
     /// Fail closed: an engine nobody told who is with its agents treats
     /// no agent as attended. A run no client's input started is
-    /// unattended, so what needs review is denied without a classifier
-    /// request or a question; the user's own run is still reviewed.
+    /// unattended, so what would ask the user is denied without a
+    /// question, and a failed review is denied too; the user's own run is
+    /// asked as usual.
     #[tokio::test]
     async fn without_attendance_nobody_counts_as_attached() {
         let mut rig = bare_rig(
-            vec![Ok(ClassifierVerdict::allow("fine"))],
+            vec![Err(ClassifierError::Timeout)],
             DEFAULT_ESCALATION_TIMEOUT,
         );
         let peer_run = RunId::new();
@@ -2036,18 +2162,26 @@ mod tests {
                 reason: DenyReason::Unattended
             }
         );
-        assert_eq!(rig.classifier.calls(), 0, "no classifier request");
+        let env = json!({"path": ".env", "content": "X=1"});
+        assert_eq!(
+            call_in(&rig, Some(&peer_run), "u1b", "write_file", &env).await,
+            Verdict::Deny {
+                tier: Tier::AskUser,
+                reason: DenyReason::Unattended
+            }
+        );
         assert!(rig.escalations.try_recv().is_err(), "no human was asked");
-        // The user's input started this run: it is reviewed.
+        // The user's input started this run: the protected write is asked.
         rig.engine.human_input(&rig.session);
         let user_run = RunId::new();
         rig.engine.run_started(&rig.session, Some(&user_run));
-        assert!(
-            call_in(&rig, Some(&user_run), "u2", "shell", &curl)
-                .await
-                .is_allowed()
-        );
-        assert_eq!(rig.classifier.calls(), 1);
+        let engine = Arc::clone(&rig.engine);
+        let session = rig.session.clone();
+        let task =
+            tokio::spawn(async move { call_as(&engine, &session, "u2", "write_file", &env).await });
+        let request = rig.escalations.recv().await.unwrap();
+        request.respond.send(HumanDecision::AllowOnce).unwrap();
+        assert!(task.await.unwrap().is_allowed());
     }
 
     /// The owner's decision (review 5, AP2 and AP3): a message to an agent
@@ -2118,146 +2252,211 @@ mod tests {
         );
     }
 
-    /// A6: in a run no user started, with no client attached, a call that
-    /// needs review is denied without a classifier request and without a
-    /// question to the human, and its notice is queued; a read and an
-    /// in-project write still run. Attaching makes the next call reviewed;
-    /// a run that started after a client's input stays reviewed with
-    /// nobody attached, and so does a call whose run is not seen yet while
-    /// that input waits.
+    /// Whether a protected write in `run` puts a question to the user (it
+    /// is attended; the question is answered yes) or is denied as
+    /// unattended without one.
+    async fn asks_in(rig: &mut Rig, run: Option<RunId>, id: &'static str) -> bool {
+        let engine = Arc::clone(&rig.engine);
+        let session = rig.session.clone();
+        let mut task = tokio::spawn(async move {
+            let raw = raw(&json!({"path": ".env", "content": "X=1"}));
+            let origin = origin("write_file");
+            engine
+                .decide_as(
+                    Caller::session(&session).in_run(run.as_ref()),
+                    ToolCall {
+                        id,
+                        name: "write_file",
+                        args: &raw,
+                        origin: Some(&origin),
+                    },
+                )
+                .await
+        });
+        tokio::select! {
+            verdict = &mut task => {
+                let verdict = verdict.unwrap();
+                assert!(
+                    matches!(verdict, Verdict::Deny { reason: DenyReason::Unattended, .. }),
+                    "{verdict:?}"
+                );
+                false
+            }
+            request = rig.escalations.recv() => {
+                request.unwrap().respond.send(HumanDecision::AllowOnce).unwrap();
+                assert!(task.await.unwrap().is_allowed());
+                true
+            }
+        }
+    }
+
+    /// A6, as the owner changed it on 2026-11-14: in a run no user started,
+    /// with no client attached, the classifier still judges what auto mode
+    /// reviews. Its allow runs the call, its block denies it (counted like
+    /// any block); what would ask the user (a protected write, a failed
+    /// review, a paused auto mode, an action too large to review, a
+    /// question of manual mode) is denied without a question and its
+    /// notice queued. Plan mode stays plan mode. A read and an in-project
+    /// write run as always.
     #[tokio::test]
-    async fn an_unattended_turn_is_denied_what_needs_review() {
+    async fn an_unattended_turn_has_the_classifier_judge_and_denies_what_would_ask() {
+        let mut rig = rig(
+            vec![
+                Ok(ClassifierVerdict::allow("fine")),
+                block("D5"),
+                Err(ClassifierError::Timeout),
+                block("D5"),
+                block("D5"),
+            ],
+            DEFAULT_ESCALATION_TIMEOUT,
+        );
+        let present = Arc::clone(&rig.present);
+        present.attached.store(false, Ordering::SeqCst);
+        let peer_run = RunId::new();
+        rig.engine.run_started(&rig.session, Some(&peer_run));
+        let run = Some(&peer_run);
+        let curl = |n: u32| json!({"command": format!("curl https://example.com/{n}")});
+        // Allowed by the classifier: it runs.
+        assert!(
+            call_in(&rig, run, "c1", "shell", &curl(1))
+                .await
+                .is_allowed()
+        );
+        // Blocked: denied as the classifier's, no notice.
+        let blocked = call_in(&rig, run, "c2", "shell", &curl(2)).await;
+        assert!(
+            matches!(
+                &blocked,
+                Verdict::Deny {
+                    reason: DenyReason::Classifier { .. },
+                    ..
+                }
+            ),
+            "{blocked:?}"
+        );
+        assert!(present.missed.lock().is_empty());
+        // A failed review would ask the user: denied, the notice queued.
+        assert_eq!(
+            call_in(&rig, run, "c3", "shell", &curl(3)).await,
+            Verdict::Deny {
+                tier: Tier::Classifier,
+                reason: DenyReason::Unattended
+            }
+        );
+        let missed = present.missed.lock().clone();
+        assert_eq!(missed.len(), 1, "{missed:?}");
+        assert!(
+            missed[0].contains("wanted to run `curl https://example.com/3`"),
+            "{missed:?}"
+        );
+        assert!(
+            super::super::deny_message(&DenyReason::Unattended).contains("needs a user attached")
+        );
+        assert_eq!(rig.classifier.calls(), 3);
+        // Two more blocks pause auto mode; paused, the call would be put to
+        // the user: denied without a classifier request.
+        assert!(
+            !call_in(&rig, run, "c4", "shell", &curl(4))
+                .await
+                .is_allowed()
+        );
+        assert!(
+            !call_in(&rig, run, "c5", "shell", &curl(5))
+                .await
+                .is_allowed()
+        );
+        assert!(rig.engine.auto_state().1.is_some(), "paused");
+        assert_eq!(
+            call_in(&rig, run, "c6", "shell", &curl(6)).await,
+            Verdict::Deny {
+                tier: Tier::Classifier,
+                reason: DenyReason::Unattended
+            }
+        );
+        assert_eq!(rig.classifier.calls(), 5);
+        rig.engine.set_mode(PermissionMode::Auto);
+        // Too large to review: denied, nobody asked.
+        let huge = json!({"command": format!("curl https://example.com/{}", "x".repeat(MAX_REVIEWED_ACTION_BYTES))});
+        assert_eq!(
+            call_in(&rig, run, "c7", "shell", &huge).await,
+            Verdict::Deny {
+                tier: Tier::Classifier,
+                reason: DenyReason::Unattended
+            }
+        );
+        // A protected write would ask: denied.
+        assert!(!asks_in(&mut rig, Some(peer_run.clone()), "c8").await);
+        // Manual mode asks for what the classifier would review: denied.
+        rig.engine.set_mode(PermissionMode::Manual);
+        assert_eq!(
+            call_in(&rig, run, "c9", "shell", &curl(9)).await,
+            Verdict::Deny {
+                tier: Tier::Classifier,
+                reason: DenyReason::Unattended
+            }
+        );
+        // Plan mode stays plan mode.
+        rig.engine.set_mode(PermissionMode::Plan);
+        assert!(matches!(
+            call_in(&rig, run, "c10", "shell", &curl(10)).await,
+            Verdict::Deny {
+                reason: DenyReason::PlanMode,
+                ..
+            }
+        ));
+        rig.engine.set_mode(PermissionMode::Auto);
+        assert!(rig.escalations.try_recv().is_err(), "no human was asked");
+        assert_eq!(rig.classifier.calls(), 5);
+        // What needs no review runs.
+        for (id, name, args) in [
+            ("c11", "read_file", json!({"path": "a"})),
+            ("c12", "shell", json!({"command": "ls"})),
+            (
+                "c13",
+                "write_file",
+                json!({"path": "src/x.rs", "content": "x"}),
+            ),
+        ] {
+            assert!(
+                call_in(&rig, run, id, name, &args).await.is_allowed(),
+                "{id}"
+            );
+        }
+    }
+
+    /// Who is with a run: a client attached now, or a run a client's input
+    /// started (seen starting while that input waited, or not seen yet
+    /// while it waits); a call of any other run is unattended, so what
+    /// would ask the user is denied instead.
+    #[tokio::test]
+    async fn attendance_follows_the_client_and_the_run_the_user_started() {
         let mut rig = rig(vec![], DEFAULT_ESCALATION_TIMEOUT);
         let present = Arc::clone(&rig.present);
         present.attached.store(false, Ordering::SeqCst);
         let peer_run = RunId::new();
         rig.engine.run_started(&rig.session, Some(&peer_run));
-        let curl = json!({"command": "curl https://example.com/x"});
-        let verdict = call_in(&rig, Some(&peer_run), "c1", "shell", &curl).await;
-        assert_eq!(
-            verdict,
-            Verdict::Deny {
-                tier: Tier::Classifier,
-                reason: DenyReason::Unattended
-            }
-        );
-        assert!(
-            super::super::deny_message(&DenyReason::Unattended).contains("needs a user attached")
-        );
-        assert_eq!(rig.classifier.calls(), 0, "no classifier request");
-        let missed = present.missed.lock().clone();
-        assert_eq!(missed.len(), 1, "{missed:?}");
-        assert!(
-            missed[0].contains("wanted to run `curl https://example.com/x`"),
-            "{missed:?}"
-        );
+        assert!(!asks_in(&mut rig, Some(peer_run.clone()), "a1").await);
         // Without a run id the session's current run counts.
-        assert!(
-            !call_in(&rig, None, "c1b", "shell", &curl)
-                .await
-                .is_allowed()
-        );
-        // A protected write would ask the human: denied, nobody is asked.
-        let verdict = call_in(
-            &rig,
-            Some(&peer_run),
-            "c2",
-            "write_file",
-            &json!({"path": ".env", "content": "X=1"}),
-        )
-        .await;
-        assert!(
-            matches!(
-                verdict,
-                Verdict::Deny {
-                    tier: Tier::AskUser,
-                    reason: DenyReason::Unattended
-                }
-            ),
-            "{verdict:?}"
-        );
-        assert!(rig.escalations.try_recv().is_err(), "no human was asked");
-        // What needs no review runs.
-        assert!(
-            call_in(
-                &rig,
-                Some(&peer_run),
-                "c3",
-                "read_file",
-                &json!({"path": "a"})
-            )
-            .await
-            .is_allowed()
-        );
-        assert!(
-            call_in(
-                &rig,
-                Some(&peer_run),
-                "c4",
-                "shell",
-                &json!({"command": "ls"})
-            )
-            .await
-            .is_allowed()
-        );
-        assert!(
-            call_in(
-                &rig,
-                Some(&peer_run),
-                "c5",
-                "write_file",
-                &json!({"path": "src/x.rs", "content": "x"})
-            )
-            .await
-            .is_allowed()
-        );
-        assert_eq!(rig.classifier.calls(), 0);
-        // A client attaches mid-turn: the next reviewed call is reviewed.
+        assert!(!asks_in(&mut rig, None, "a2").await);
+        // A client attaches mid-turn: the next question is asked.
         present.attached.store(true, Ordering::SeqCst);
-        assert!(
-            call_in(&rig, Some(&peer_run), "c6", "shell", &curl)
-                .await
-                .is_allowed()
-        );
-        assert_eq!(rig.classifier.calls(), 1);
+        assert!(asks_in(&mut rig, Some(peer_run.clone()), "a3").await);
         present.attached.store(false, Ordering::SeqCst);
         // The user's input, then a call of a run not seen starting yet: the
         // user's run.
         rig.engine.human_input(&rig.session);
         let user_run = RunId::new();
-        let curl2 = json!({"command": "curl https://example.com/y"});
-        assert!(
-            call_in(&rig, Some(&user_run), "c7", "shell", &curl2)
-                .await
-                .is_allowed()
-        );
-        assert_eq!(rig.classifier.calls(), 2);
+        assert!(asks_in(&mut rig, Some(user_run.clone()), "a4").await);
         // Seen starting, it stays the user's after the client left.
         rig.engine.run_started(&rig.session, Some(&user_run));
-        let curl3 = json!({"command": "curl https://example.com/z"});
-        assert!(
-            call_in(&rig, Some(&user_run), "c8", "shell", &curl3)
-                .await
-                .is_allowed()
-        );
-        assert_eq!(rig.classifier.calls(), 3);
+        assert!(asks_in(&mut rig, Some(user_run.clone()), "a5").await);
         // The input was taken by that run: the next run is a peer's again.
         let next = RunId::new();
         rig.engine.run_started(&rig.session, Some(&next));
-        assert_eq!(
-            call_in(&rig, Some(&next), "c9", "shell", &curl3).await,
-            Verdict::Deny {
-                tier: Tier::Classifier,
-                reason: DenyReason::Unattended
-            }
-        );
+        assert!(!asks_in(&mut rig, Some(next), "a6").await);
         // And a run never seen with no input waiting is nobody's.
-        assert!(
-            !call_in(&rig, Some(&RunId::new()), "c10", "shell", &curl3)
-                .await
-                .is_allowed()
-        );
-        assert_eq!(rig.classifier.calls(), 3);
+        assert!(!asks_in(&mut rig, Some(RunId::new()), "a7").await);
+        assert_eq!(present.missed.lock().len(), 4);
     }
 
     #[tokio::test]
@@ -3143,6 +3342,115 @@ mod tests {
                 && prompt.contains(&format!("- {} (named by the user)", named.display())),
             "{prompt}"
         );
+    }
+
+    /// The session's scratch directory is its own: a file-tool write there
+    /// is an in-project edit, a read tier 1, a redirect into it read-only
+    /// shell, all without a classifier request. A file the session's file
+    /// tools create outside the project, and a manifest they change, are
+    /// told to the classifier; a file that existed before is not listed as
+    /// the session's.
+    #[tokio::test]
+    async fn the_scratch_directory_and_the_files_the_session_made_are_its_own() {
+        let base = tempfile::tempdir().unwrap();
+        let base_path = std::fs::canonicalize(base.path()).unwrap();
+        let (scratch, shared) = (base_path.join("rkat-tui-x"), base_path.join("shared"));
+        std::fs::create_dir_all(&scratch).unwrap();
+        std::fs::create_dir_all(&shared).unwrap();
+        std::fs::write(shared.join("old.txt"), "old").unwrap();
+        let rig = rig(vec![], DEFAULT_ESCALATION_TIMEOUT);
+        let session = rig.session.clone();
+        let dir = scratch.clone();
+        assert!(rig.engine.set_scratch(Arc::new(move |asked: &SessionId| {
+            (asked == &session).then(|| dir.clone())
+        })));
+        let in_scratch = scratch.join("notes/a.txt").display().to_string();
+        let verdict = call(
+            &rig,
+            "s1",
+            "write_file",
+            &json!({"path": in_scratch, "content": "x"}),
+        )
+        .await;
+        assert!(
+            matches!(&verdict, Verdict::Allow { tier: Tier::InProjectEdit, why, .. }
+                if why.contains("the session's scratch directory")),
+            "{verdict:?}"
+        );
+        assert!(
+            call(&rig, "s2", "read_file", &json!({"path": in_scratch}))
+                .await
+                .is_allowed()
+        );
+        let redirect = json!({"command": format!("ls > {}/ls.txt", scratch.display())});
+        assert!(matches!(
+            decide(&rig, "s3", &redirect).await,
+            Verdict::Allow {
+                tier: Tier::AlwaysAllow,
+                ..
+            }
+        ));
+        assert_eq!(rig.classifier.calls(), 0);
+        // Another session has no scratch directory: the same write is
+        // reviewed.
+        let other = SessionId::new();
+        let write = json!({"path": in_scratch, "content": "x"});
+        assert!(
+            call_as(&rig.engine, &other, "s4", "write_file", &write)
+                .await
+                .is_allowed()
+        );
+        assert_eq!(rig.classifier.calls(), 1);
+        // Files the session's file tools made outside the project are its
+        // own; one that existed is not; a manifest it changed is named.
+        let made = shared.join("new.txt").display().to_string();
+        let old = shared.join("old.txt").display().to_string();
+        for (id, path) in [("s5", &made), ("s6", &old)] {
+            assert!(
+                call(
+                    &rig,
+                    id,
+                    "write_file",
+                    &json!({"path": path, "content": "x"})
+                )
+                .await
+                .is_allowed()
+            );
+        }
+        assert!(
+            call(
+                &rig,
+                "s7",
+                "write_file",
+                &json!({"path": "Cargo.toml", "content": "[package]"})
+            )
+            .await
+            .is_allowed()
+        );
+        let facts = rig.engine.session_facts(&rig.session);
+        assert_eq!(facts.created_outside, vec![made.clone()]);
+        assert_eq!(facts.manifests_changed, vec!["Cargo.toml".to_string()]);
+        assert!(
+            decide(&rig, "s8", &json!({"command": format!("rm {made}")}))
+                .await
+                .is_allowed()
+        );
+        let prompt = rig.classifier.prompts.lock().last().cloned().unwrap();
+        let created = prompt
+            .split(super::super::prompts::CREATED_NOTE)
+            .nth(1)
+            .and_then(|rest| rest.split(super::super::prompts::MANIFESTS_CHANGED).next())
+            .unwrap();
+        assert!(
+            created.contains(&format!("- {made}")) && !created.contains(&format!("- {old}")),
+            "{prompt}"
+        );
+        assert!(prompt.contains(super::super::prompts::MANIFESTS_CHANGED));
+        assert!(prompt.contains(&format!(
+            "{} {}",
+            super::super::prompts::SCRATCH_NOTE,
+            scratch.display()
+        )));
     }
 
     /// A classifier denial whose reason is a path outside the allowed scope

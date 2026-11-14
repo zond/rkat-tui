@@ -456,6 +456,13 @@ fn helper_registry(
             registry.forget_session(session);
         }
     }));
+    // The gate treats each agent's scratch directory as its sessions' own.
+    let scratch = Arc::downgrade(&registry);
+    engine.set_scratch(Arc::new(move |session: &meerkat_core::SessionId| {
+        scratch
+            .upgrade()
+            .and_then(|registry| registry.scratch_of_session(session))
+    }));
     registry
 }
 

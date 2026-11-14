@@ -664,7 +664,7 @@ fn builtin_tier(action: &Action<'_>, ctx: &PolicyContext<'_>) -> Result<TierDeci
             Target::Outside => Err(outside(path)),
             Target::Granted(dir) => Ok(TierDecision::new(
                 Tier::AlwaysAllow,
-                format!("read inside `{}`, which the user granted", dir.display()),
+                format!("read inside {}", granted_words(ctx, dir, "granted")),
             )),
             Target::Project | Target::Protected(_) => Ok(TierDecision::new(
                 Tier::AlwaysAllow,
@@ -696,7 +696,7 @@ fn builtin_tier(action: &Action<'_>, ctx: &PolicyContext<'_>) -> Result<TierDeci
                 Tier::AlwaysAllow,
                 match within {
                     None => "search inside the project".to_string(),
-                    Some(_) => format!("search inside {place}, which the user granted"),
+                    Some(dir) => format!("search inside {}", granted_words(ctx, dir, "granted")),
                 },
             ))
         }
@@ -767,14 +767,11 @@ fn builtin_tier(action: &Action<'_>, ctx: &PolicyContext<'_>) -> Result<TierDeci
             }
             let dirs: Vec<String> = granted
                 .iter()
-                .map(|dir| format!("`{}`", dir.display()))
+                .map(|dir| granted_words(ctx, dir, "granted for writing"))
                 .collect();
             Ok(TierDecision::new(
                 Tier::InProjectEdit,
-                format!(
-                    "edit inside {}, which the user granted for writing",
-                    dirs.join(", ")
-                ),
+                format!("edit inside {}", dirs.join(", ")),
             ))
         }
         ActionKind::Shell {
@@ -901,6 +898,17 @@ fn classify_target<'c>(
             }
         },
     })
+}
+
+/// How a decision names the directory `dir` it found a target in: the
+/// session's scratch directory, or one the user `how` (`granted`,
+/// `granted for writing`).
+fn granted_words(ctx: &PolicyContext<'_>, dir: &std::path::Path, how: &str) -> String {
+    if ctx.granted.scratch.as_deref() == Some(dir) {
+        format!("the session's scratch directory `{}`", dir.display())
+    } else {
+        format!("`{}`, which the user {how}", dir.display())
+    }
 }
 
 /// A secret target's verdict: never read, never a question for the

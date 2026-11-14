@@ -104,11 +104,11 @@ async fn a_classifier_block_reaches_the_model_and_the_run_continues() {
     let text = result.text_content();
     assert!(text.contains("policy_denied"), "{text}");
     assert!(
-        text.contains("Blocked by auto-mode safety policy: the safety classifier blocked it: touches files outside the project."),
+        text.contains("Blocked by auto-mode safety policy: the safety classifier blocked it: touches files outside the project (rule D1). Do not work around this block"),
         "{text}"
     );
-    // The rule tag and how the classifier checked are the user's: the
-    // notice shows them (above), the model's text carries neither.
+    // How the classifier checked is the user's: the notice shows it
+    // (above), the model's text does not.
     assert!(
         !text.contains("[D1]") && !text.contains("classifier checked"),
         "{text}"

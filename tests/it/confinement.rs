@@ -439,6 +439,66 @@ async fn the_classifier_is_told_the_granted_directories_confined_or_not() {
     }
 }
 
+/// Each agent's shell, confined or not, gets its private scratch directory
+/// as `TMPDIR` (under the temp directory the plan grants), can write it,
+/// and the agent is told its path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_agent_s_shell_gets_its_scratch_directory_as_tmpdir() {
+    let temp = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+    for mode in ["off", "workspace"] {
+        let ws = Workspace::new();
+        if mode != "off"
+            && let Some(reason) = sandbox_unavailable(&ws.root, ConfinementArg::Workspace).await
+        {
+            common::sandbox_skipped(&format!("--confinement=workspace is unavailable: {reason}"));
+            continue;
+        }
+        let llm = ScriptedLlmClient::new(vec![
+            Step::Tool {
+                id: "sh",
+                name: "shell",
+                args: json!({ "command": "echo \"T=[$TMPDIR]\"; touch \"$TMPDIR/probe\" && echo MADE; echo END" }),
+            },
+            Step::Text("done"),
+        ]);
+        let flag = format!("--confinement={mode}");
+        // The realm and the endpoint file outside the granted temp
+        // directory, as the daemon demands.
+        let (setup, _state) = allow_shell_detected(&[&flag]);
+        let setup = Setup {
+            host_paths: Some(HostPaths {
+                write: vec![temp.clone()],
+                ..HostPaths::default()
+            }),
+            ..setup
+        };
+        let mut rig = Attached::start_with(&ws.root, &llm, setup).await;
+        rig.send(Effect::StartTurn("run it".into()));
+        let _ = rig.turn_finished().await;
+        let output = tool_text(&llm.requests()[1], "sh");
+        let prefix = format!(
+            "T=[{}/{}",
+            temp.display(),
+            rkat_tui::approval::scratch::SCRATCH_PREFIX
+        );
+        assert!(output.contains(&prefix), "{mode}: {output}");
+        assert!(output.contains("MADE"), "{mode}: {output}");
+        let dir = output
+            .split("T=[")
+            .nth(1)
+            .and_then(|rest| rest.split(']').next())
+            .unwrap()
+            .to_string();
+        assert!(Path::new(&dir).join("probe").exists(), "{mode}: {dir}");
+        let system = llm.recorded()[0].system();
+        assert!(
+            system.contains(&format!("Your scratch directory is `{dir}`")),
+            "{mode}: {system}"
+        );
+        rig.quit().await;
+    }
+}
+
 /// The realm config's `[confinement]` table does not decide the agent
 /// shell's confinement: the command line does, so `--confinement=off`
 /// starts even when the table asks for the workspace preset (it was a

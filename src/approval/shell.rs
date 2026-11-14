@@ -1123,6 +1123,15 @@ fn check_segment(
         check_redirect(redirect, base, ctx)?;
     }
     let mut words: &[Word] = &seg.words;
+    // Leading assignments that only point the temp directory at the
+    // session's scratch directory.
+    while let Some((first, rest)) = words.split_first() {
+        if scratch_assignment(first, base, ctx) {
+            words = rest;
+        } else {
+            break;
+        }
+    }
     while let Some((first, rest)) = words.split_first() {
         if first.text == "command" || first.text == "builtin" {
             words = rest;
@@ -1614,7 +1623,12 @@ fn check_redirect(
 ) -> Result<(), NotAllowlisted> {
     let ok = match (redirect.kind, redirect.fd) {
         (RedirectKind::DupOut, Some(2)) => redirect.target == "1",
-        (RedirectKind::Out, None | Some(1 | 2)) => redirect.target == "/dev/null",
+        (RedirectKind::Out, None | Some(1 | 2)) if redirect.target == "/dev/null" => true,
+        // Output into the session's own scratch directory: its files are
+        // the session's.
+        (RedirectKind::Out | RedirectKind::Append, None | Some(1 | 2)) => {
+            !redirect.target_glob && in_scratch(&redirect.target, base, ctx)
+        }
         (RedirectKind::In, None | Some(0)) => {
             if redirect.target_glob {
                 return Err(NotAllowlisted::new(format!(
@@ -1638,6 +1652,36 @@ fn check_redirect(
     } else {
         Err(NotAllowlisted::new(format!("redirect {redirect}")))
     }
+}
+
+/// Whether the literal path `value` (relative to `base`) resolves inside
+/// the session's scratch directory, symbolic links resolved.
+fn in_scratch(value: &str, base: &std::path::Path, ctx: &PolicyContext<'_>) -> bool {
+    if ctx.granted.scratch.is_none() || value.starts_with('~') {
+        return false;
+    }
+    let candidate = if value.starts_with('/') {
+        PathBuf::from(value)
+    } else {
+        base.join(value)
+    };
+    candidate
+        .to_str()
+        .and_then(|path| ctx.root.resolve(path).ok())
+        .is_some_and(|resolved| !resolved.sealed && ctx.granted.in_scratch(&resolved.abs))
+}
+
+/// The variables a command may be given in front of it (`TMPDIR=… cargo
+/// test`) when their value is the session's scratch directory or inside
+/// it ([`super::scratch::SCRATCH_VARS`]).
+fn scratch_assignment(word: &Word, base: &std::path::Path, ctx: &PolicyContext<'_>) -> bool {
+    if word.unquoted_glob {
+        return false;
+    }
+    let Some((name, value)) = word.text.split_once('=') else {
+        return false;
+    };
+    super::scratch::SCRATCH_VARS.contains(&name) && in_scratch(value, base, ctx)
 }
 
 impl fmt::Display for Redirect {
@@ -2273,5 +2317,52 @@ mod tests {
         assert_eq!(script_path("deno run app.ts").as_deref(), Some("app.ts"));
         assert_eq!(script_path("ls -la"), None);
         assert_eq!(script_path("echo $(x)"), None);
+    }
+
+    /// Output into the session's scratch directory, and a leading
+    /// `TMPDIR=` naming it, are read-only shell; the shared temp directory,
+    /// a link out of the scratch directory and any other assignment are
+    /// not.
+    #[cfg(unix)]
+    #[test]
+    fn redirects_and_tmpdir_into_the_scratch_directory_are_allowed() {
+        let (_dir, root) = project();
+        let temp = tempfile::tempdir().unwrap();
+        let temp_path = std::fs::canonicalize(temp.path()).unwrap();
+        let scratch = temp_path.join("rkat-tui-abc");
+        std::fs::create_dir(&scratch).unwrap();
+        let outside = temp_path.join("shared");
+        std::fs::create_dir(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, scratch.join("out")).unwrap();
+        let granted = crate::approval::classifier::GrantedDirs {
+            scratch: Some(scratch.clone()),
+            ..Default::default()
+        };
+        let c = PolicyContext {
+            root: &root,
+            trust_project_builds: true,
+            posix_shell: true,
+            granted: &granted,
+        };
+        let s = scratch.display();
+        for (cmd, ok) in [
+            (format!("echo hi > {s}/env.sh"), true),
+            (format!("cat input.txt >> {s}/log"), true),
+            (format!("ls 2> {s}/err.txt"), true),
+            (format!("TMPDIR={s} cargo test"), true),
+            (format!("TMPDIR={s}/t TMP={s} cargo nextest run"), true),
+            (format!("echo hi > {}/x", outside.display()), false),
+            (format!("echo hi > {s}/out/x"), false),
+            (format!("echo hi > {s}/*.txt"), false),
+            (format!("TMPDIR={} cargo test", outside.display()), false),
+            (format!("RUSTFLAGS={s} cargo test"), false),
+            (format!("TMPDIR={s} rm -rf x"), false),
+        ] {
+            assert_eq!(allowlisted(&cmd, &c).is_ok(), ok, "{cmd}");
+        }
+        // Without a scratch directory nothing changes.
+        let bare = ctx(&root, true);
+        assert!(allowlisted(&format!("echo hi > {s}/env.sh"), &bare).is_err());
+        assert!(allowlisted(&format!("TMPDIR={s} cargo test"), &bare).is_err());
     }
 }

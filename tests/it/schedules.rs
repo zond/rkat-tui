@@ -267,9 +267,10 @@ async fn creating_a_schedule_asks_in_manual_mode() {
 }
 
 /// A fired schedule is a turn no user started: with nobody attached to
-/// its agent, the reviewed call it makes is denied without asking the
-/// classifier, and the notice is shown when a client attaches; with a
-/// client attached, the same call is reviewed as usual.
+/// its agent, the reviewed call it makes still goes to the classifier, but
+/// what would then be put to the user (here a review that times out) is
+/// denied, and the notice is shown when a client attaches; with a client
+/// attached, the next such call is reviewed as usual.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fired_schedule_is_unattended_while_nobody_is_attached() {
     let ws = Workspace::new();
@@ -294,7 +295,7 @@ async fn a_fired_schedule_is_unattended_while_nobody_is_attached() {
         },
         Step::Text("fetched b"),
     ]);
-    let classifier = rig::ScriptedClassifier::allowing(Vec::new());
+    let classifier = rig::ScriptedClassifier::failing_on("127.0.0.1:9/a");
     let setup = rig::Setup::default().classifier(Arc::clone(&classifier) as _);
     let args = setup.command_line(&ws.root);
     let daemon = Running::start_with(&args, setup.options(&ws.root, &llm)).await;
@@ -305,8 +306,9 @@ async fn a_fired_schedule_is_unattended_while_nobody_is_attached() {
     assert_eq!(a.turn_finished().await.unwrap().text, "scheduled");
     a.send(Effect::Leave(Departure::Detach));
     a.quit().await;
-    // fetch-a's run: its curl is denied unattended, no classifier asked.
-    // Its run's second call carries the denied curl's result.
+    // fetch-a's run: its curl is reviewed, the review fails, and it is
+    // denied unattended. Its run's second call carries the denied curl's
+    // result.
     llm.wait_call(3).await;
     let curls = || {
         classifier
@@ -315,7 +317,7 @@ async fn a_fired_schedule_is_unattended_while_nobody_is_attached() {
             .filter(|(tool, args, _)| tool == "shell" && args.to_string().contains("curl"))
             .count()
     };
-    assert_eq!(curls(), 0, "the unattended curl was not reviewed");
+    assert_eq!(curls(), 1, "the unattended curl went to the classifier");
     let result = common::tool_text(&llm.requests()[3], "a1");
     assert!(result.contains("needs a user attached"), "{result}");
     // A client attaches before fetch-b: it is shown what was denied, and
@@ -345,7 +347,7 @@ async fn a_fired_schedule_is_unattended_while_nobody_is_attached() {
     assert_eq!(b.turn_finished().await.unwrap().text, "scheduled b");
     b.wait_for(|m| fired_by(m, "fetch-b")).await;
     assert_eq!(b.turn_finished().await.unwrap().text, "fetched b");
-    assert_eq!(curls(), 1, "attached, the fired run's curl was reviewed");
+    assert_eq!(curls(), 2, "attached, the fired run's curl was reviewed");
     let result = common::tool_text(&llm.requests()[7], "b1");
     assert!(!result.contains("needs a user attached"), "{result}");
     b.quit().await;

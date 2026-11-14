@@ -15,7 +15,7 @@
 //! open in this daemon is refused.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use indexmap::IndexMap;
 use meerkat_core::{AgentEvent, AuthBindingRef, ScopedAgentEvent, SessionId, StreamScopeFrame};
@@ -182,6 +182,9 @@ pub struct HelperRegistry {
     /// (again before each retry of its storage cleanup): what still
     /// observes the mob lets go ([`Self::destroyed_mobs`]).
     destroyed: tokio::sync::broadcast::Sender<MobId>,
+    /// The agents' private scratch directories
+    /// ([`crate::approval::scratch`]): an agent's helpers share its own.
+    scratch: crate::approval::scratch::ScratchDirs,
 }
 
 impl HelperRegistry {
@@ -196,7 +199,10 @@ impl HelperRegistry {
     /// unreadable bindings file is logged and replaced).
     #[must_use]
     pub fn persistent(realm_root: &Path) -> Self {
-        Self::with_bindings(HelperBindings::open_or_empty(realm_root))
+        let mut registry = Self::with_bindings(HelperBindings::open_or_empty(realm_root));
+        registry.scratch =
+            crate::approval::scratch::ScratchDirs::in_temp(realm_root.display().to_string());
+        registry
     }
 
     fn with_bindings(bindings: HelperBindings) -> Self {
@@ -207,7 +213,48 @@ impl HelperRegistry {
             live: Mutex::new(IndexMap::new()),
             councils: Mutex::new(HashMap::new()),
             destroyed: tokio::sync::broadcast::channel(DESTROYED_QUEUE).0,
+            scratch: crate::approval::scratch::ScratchDirs::off(),
         }
+    }
+
+    /// The scratch directory of the agent `member`, made private when it
+    /// is not there yet; `None` when the shell could not write it
+    /// (`writable` says, from the confinement plan) or it cannot be made (a
+    /// warning is logged).
+    #[must_use]
+    pub fn scratch_for_agent(
+        &self,
+        member: &str,
+        writable: impl Fn(&Path) -> bool,
+    ) -> Option<PathBuf> {
+        if !self
+            .scratch
+            .path_for(member)
+            .is_some_and(|path| writable(&path))
+        {
+            return None;
+        }
+        match self.scratch.ensure(member) {
+            Ok(dir) => Some(dir),
+            Err(crate::approval::scratch::ScratchError::NoBase) => None,
+            Err(err) => {
+                tracing::warn!(agent = member, error = %err, "the agent has no scratch directory");
+                None
+            }
+        }
+    }
+
+    /// The scratch directory of the agent running as `session` (its
+    /// helpers' calls are judged as that session's), when it has one.
+    #[must_use]
+    pub fn scratch_of_session(&self, session: &SessionId) -> Option<PathBuf> {
+        let key = self.root_of_session(session)?;
+        self.scratch.existing(key.member.as_str())
+    }
+
+    /// Remove the scratch directory of the agent `member` (it retired).
+    pub fn remove_scratch(&self, member: &str) {
+        self.scratch.remove(member);
     }
 
     /// The persisted bindings (tests and diagnostics).
@@ -260,6 +307,16 @@ impl HelperRegistry {
     #[must_use]
     pub fn root_session(&self, key: &HelperKey) -> Option<SessionId> {
         self.roots.read().get(key).cloned()
+    }
+
+    /// The host-root member running as `session`, when one does.
+    #[must_use]
+    pub fn root_of_session(&self, session: &SessionId) -> Option<HelperKey> {
+        self.roots
+            .read()
+            .iter()
+            .find(|(_, running)| *running == session)
+            .map(|(key, _)| key.clone())
     }
 
     /// `session` is no longer open here: drop it, its running helpers

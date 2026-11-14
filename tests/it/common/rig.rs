@@ -840,9 +840,21 @@ pub struct ScriptedClassifier {
     verdicts: parking_lot::Mutex<Vec<Result<ClassifierVerdict, ClassifierError>>>,
     seen: parking_lot::Mutex<Vec<(String, serde_json::Value, String)>>,
     allow_when_done: bool,
+    /// A review of a call whose arguments hold this text times out.
+    fail_on: Option<String>,
 }
 
 impl ScriptedClassifier {
+    /// Allow everything, but time out reviewing a call whose arguments
+    /// contain `text`.
+    pub fn failing_on(text: &str) -> Arc<Self> {
+        Arc::new(Self {
+            allow_when_done: true,
+            fail_on: Some(text.to_string()),
+            ..Self::default()
+        })
+    }
+
     /// These verdicts, then a provider error.
     pub fn new(verdicts: Vec<Result<ClassifierVerdict, ClassifierError>>) -> Arc<Self> {
         Arc::new(Self {
@@ -887,6 +899,11 @@ impl ActionClassifier for ScriptedClassifier {
             input.args.clone(),
             input.transcript.render(),
         ));
+        if let Some(text) = &self.fail_on
+            && input.args.to_string().contains(text.as_str())
+        {
+            return Err(ClassifierError::Timeout);
+        }
         let mut verdicts = self.verdicts.lock();
         if !verdicts.is_empty() {
             return verdicts.remove(0);

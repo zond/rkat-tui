@@ -702,11 +702,12 @@ async fn restored_agents_are_told_the_roster_after_a_restart() {
     daemon.stop().await;
 }
 
-/// A6 (the user's decision, 2026-11-10): B's client detaches, A's message
-/// wakes B. Nobody started B's turn and nobody is with B, so its `curl`
-/// is denied as unattended without a classifier request (B reads why), and
-/// its in-project write still runs. A client attaching to B mid-turn is
-/// shown what B was denied, and B's next `curl` goes to the classifier.
+/// A6 (the user's decision, 2026-11-10, changed on 2026-11-14): B's client
+/// detaches, A's message wakes B. Nobody started B's turn and nobody is
+/// with B, so its `curl` goes to the classifier, whose review fails: what
+/// would be put to the user is denied as unattended (B reads why), and its
+/// in-project write still runs. A client attaching to B mid-turn is shown
+/// what B was denied, and B's next `curl` is reviewed and runs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_peer_woken_agent_with_no_client_is_denied_what_needs_review() {
     use rkat_tui::daemon::protocol::AgentChoice;
@@ -754,7 +755,8 @@ async fn a_peer_woken_agent_with_no_client_is_denied_what_needs_review() {
         ),
         Step::Text("fetched"),
     ]);
-    let classifier = rig::ScriptedClassifier::allowing(Vec::new());
+    // The review of B's first curl (not of `notes2`) times out.
+    let classifier = rig::ScriptedClassifier::failing_on("9/notes\"");
     let setup = rig::Setup::default().classifier(Arc::clone(&classifier) as _);
     let args = setup.command_line(&ws.root);
     let daemon = Running::start_with(&args, setup.options(&ws.root, &llm)).await;
@@ -777,7 +779,11 @@ async fn a_peer_woken_agent_with_no_client_is_denied_what_needs_review() {
             .filter(|(tool, args, _)| tool == "shell" && args.to_string().contains("curl"))
             .count()
     };
-    assert_eq!(reviewed_curls(), 0, "the unattended curl was not reviewed");
+    assert_eq!(
+        reviewed_curls(),
+        1,
+        "the unattended curl went to the classifier"
+    );
     let results = tool_results(&llm.requests()[5]);
     assert!(
         results.contains("needs a user attached to this agent"),
@@ -803,7 +809,7 @@ async fn a_peer_woken_agent_with_no_client_is_denied_what_needs_review() {
     .await;
     gate.notify_one();
     llm.wait_call(6).await;
-    assert_eq!(reviewed_curls(), 1, "attached, B's next curl was reviewed");
+    assert_eq!(reviewed_curls(), 2, "attached, B's next curl was reviewed");
     let result = common::tool_text(&llm.requests()[6], "b3");
     assert!(
         !result.contains("needs a user attached"),

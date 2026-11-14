@@ -51,6 +51,7 @@ pub mod mode;
 pub mod policy;
 pub mod prompts;
 pub mod rules;
+pub mod scratch;
 pub mod shell;
 pub(crate) mod shell_subject;
 pub mod transcript;
@@ -79,10 +80,10 @@ the user to approve it";
 
 /// Why an unattended call was denied: the tool error the model reads.
 pub const UNATTENDED_DENIAL: &str = "this action needs a user attached to this agent: no user \
-started this turn (another agent's message, a schedule or a file watch did) and no user is \
-attached now, so nothing that \
-needs review runs. The user is told what you wanted to do when they attach; say in your answer \
-that it waits for them";
+started this turn (another agent's message, a schedule or a file watch did), no user is \
+attached now, and the action needs the user's answer (a protected path, a question the \
+permission mode asks, a paused auto mode, or a review that could not be completed). The user is \
+told what you wanted to do when they attach; say in your answer that it waits for them";
 
 /// Final decision for one tool call.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -172,8 +173,12 @@ pub enum DenyReason {
     Stopped,
     /// Plan mode is on: the call would change something.
     PlanMode,
-    /// The classifier failed and no human could be asked.
+    /// No classifier or human could review the call (none is configured,
+    /// or the call is too large to review and no human can be asked).
     ClassifierUnavailable(String),
+    /// The classifier's review failed (it timed out, the provider failed)
+    /// and no human could be asked: not a refusal of the action.
+    ReviewIncomplete(String),
     /// Nobody answered the escalation in time.
     EscalationTimedOut,
     /// The call needs review, no human started the turn (another agent's
@@ -200,7 +205,8 @@ impl DenyReason {
             | Self::PlanMode
             | Self::PlanWired { .. }
             | Self::Unattended
-            | Self::ClassifierUnavailable(_) => Decider::Policy,
+            | Self::ClassifierUnavailable(_)
+            | Self::ReviewIncomplete(_) => Decider::Policy,
             Self::Classifier { .. } => Decider::Classifier,
             Self::Human { .. } | Self::Stopped | Self::EscalationTimedOut => Decider::Human,
         }
@@ -262,6 +268,13 @@ impl fmt::Display for DenyReason {
                 "the safety classifier is unavailable ({err}) and no user could be asked; \
                  the user can answer such calls once attached, or switch to manual mode"
             ),
+            Self::ReviewIncomplete(err) => write!(
+                f,
+                "{REVIEW_INCOMPLETE} ({err}); the call was not run, and this is not a refusal of \
+                 the action: try it again in a moment, and if the review keeps failing say so \
+                 in your answer, so the user can check the classifier or answer such calls \
+                 themselves"
+            ),
             Self::EscalationTimedOut => f.write_str(
                 "the user did not answer the approval request in time (or one queued ahead of \
                  it went unanswered); say in your answer what you wanted to do, so the user can \
@@ -279,19 +292,37 @@ impl fmt::Display for DenyReason {
 /// How a classifier denial starts: its source.
 pub const CLASSIFIER_SOURCE: &str = "the safety classifier blocked it: ";
 
+/// How a failed review starts, for the agent and the user alike.
+pub const REVIEW_INCOMPLETE: &str = "the safety review could not be completed";
+
+/// What the agent is told after a classifier block (Codex's wording for
+/// its reviewer's denials, adapted): no workaround, a materially safer way
+/// or the user.
+pub const BLOCK_GUIDANCE: &str = "Do not work around this block: do not try to reach the same \
+effect another way (a different tool, a rewritten or encoded command, a script). Choose a \
+materially safer alternative within the user's request, or stop and ask the user";
+
 impl DenyReason {
     /// The reason as the agent reads it: what was denied, by whom and why,
-    /// without the user-facing tags (the classifier's block-rule id and
-    /// how it checked), which the notice and the dialog show.
+    /// with the block rule's id but without how the classifier checked,
+    /// which the notice and the dialog show.
     #[must_use]
     pub fn for_model(&self) -> String {
         match self {
             Self::Classifier {
-                explanation, hint, ..
-            } => match hint {
-                Some(hint) => format!("{CLASSIFIER_SOURCE}{explanation}. {hint}"),
-                None => format!("{CLASSIFIER_SOURCE}{explanation}"),
-            },
+                explanation,
+                hint,
+                rule,
+                ..
+            } => {
+                let rule = rule
+                    .as_ref()
+                    .map_or_else(String::new, |rule| format!(" (rule {rule})"));
+                match hint {
+                    Some(hint) => format!("{CLASSIFIER_SOURCE}{explanation}{rule}. {hint}"),
+                    None => format!("{CLASSIFIER_SOURCE}{explanation}{rule}"),
+                }
+            }
             other => other.to_string(),
         }
     }
@@ -305,6 +336,10 @@ pub fn deny_message(reason: &DenyReason) -> String {
     if let DenyReason::Unavailable { .. } = user_reason {
         // Not a judgement of the action: nothing here can run it.
         return format!("Not available: {reason}.");
+    }
+    if let DenyReason::ReviewIncomplete(_) = user_reason {
+        // Not a judgement of the action either: the review failed.
+        return format!("Not run: {reason}.");
     }
     if let DenyReason::Human {
         comment: Some(_), ..
@@ -325,6 +360,9 @@ pub fn deny_message(reason: &DenyReason) -> String {
              take the alternative named; do not try to reach the same place another way \
              (different tool, rewritten or encoded command, or a script)."
         );
+    }
+    if let DenyReason::Classifier { .. } = user_reason {
+        return format!("Blocked by auto-mode safety policy: {reason}. {BLOCK_GUIDANCE}.");
     }
     format!(
         "Blocked by auto-mode safety policy: {reason}. Do not try to achieve the same effect \
@@ -441,16 +479,28 @@ mod tests {
             hint: None,
         };
         let msg = deny_message(&reason);
-        assert!(msg.starts_with(
-            "Blocked by auto-mode safety policy: the safety classifier blocked it: force push \
-             rewrites shared history. Do not try"
-        ));
+        assert!(
+            msg.starts_with(
+                "Blocked by auto-mode safety policy: the safety classifier blocked it: force push \
+                 rewrites shared history (rule T3). Do not work around this block"
+            ),
+            "{msg}"
+        );
+        assert!(msg.contains("materially safer alternative"), "{msg}");
         assert!(msg.ends_with("or stop and ask the user."));
-        // The tags are the user's: in the notice, never in the model's text.
+        // How the classifier checked is the user's: in the notice, never
+        // in the model's text.
         assert!(
             !msg.contains("[T3]") && !msg.contains("classifier checked"),
             "{msg}"
         );
+        // A failed review is not a refusal.
+        let failed = deny_message(&DenyReason::ReviewIncomplete("classifier timed out".into()));
+        assert!(
+            failed.starts_with("Not run: the safety review could not be completed (classifier timed out); the call was not run, and this is not a refusal"),
+            "{failed}"
+        );
+        assert!(!failed.contains("Blocked"), "{failed}");
         assert_eq!(
             reason.to_string(),
             "the safety classifier blocked it: force push rewrites shared history [T3] \
@@ -493,6 +543,10 @@ mod tests {
             (
                 DenyReason::ClassifierUnavailable("timed out".into()),
                 "the safety classifier is unavailable (timed out) and no user could be asked",
+            ),
+            (
+                DenyReason::ReviewIncomplete("classifier timed out".into()),
+                REVIEW_INCOMPLETE,
             ),
             (
                 DenyReason::Sealed {

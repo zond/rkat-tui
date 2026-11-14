@@ -66,6 +66,7 @@ async fn verdict(classifier: &LlmClassifier, command: &str) -> ClassifierVerdict
         args: &args,
         script_payload: None,
         agent_written: &[],
+        session: rkat_tui::approval::classifier::SessionFacts::none(),
     };
     let verdict = classifier.classify(input).await.unwrap();
     eprintln!("{} `{command}` => {verdict}", classifier.model());

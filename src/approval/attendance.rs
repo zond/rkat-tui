@@ -1,19 +1,21 @@
 //! Unattended turns (A6 of the security review, the user's decision of
-//! 2026-11-10).
+//! 2026-11-10, changed by the owner on 2026-11-14).
 //!
-//! A turn no human started (another agent's message woke the agent; later a
-//! schedule) runs unattended unless a client is attached to the agent at
-//! the moment of a call. In an unattended turn a call that would need review
-//! (the classifier's, or a question to the human: anything above Tier 1 that
-//! no allow rule covers, and an edit the mode does not allow on its own) is
-//! denied with [`super::DenyReason::Unattended`], without a classifier
-//! request; the agent reads in the tool result that the action needs a user
-//! attached to it, and a notice is queued ([`Attendance::missed`]) that the
-//! agent's next attached client shows. Reads, Tier-1 shell commands and the
-//! in-project writes the mode allows without review run as before.
+//! A turn no human started (another agent's message woke the agent, a
+//! schedule or a file watch) runs unattended unless a client is attached
+//! to the agent at the moment of a call. In an unattended turn a call auto
+//! mode's classifier reviews is still reviewed: an allow runs it, a block
+//! denies it. A call that would put a question to the human (a protected
+//! path, a question of manual or accept-edits mode, a paused auto mode, an
+//! action too large to review, a review that could not be completed) is
+//! denied with [`super::DenyReason::Unattended`]; the agent reads in the
+//! tool result that the action needs a user attached to it, and a notice
+//! is queued ([`Attendance::missed`]) that the agent's next attached client
+//! shows. Reads, Tier-1 shell commands and the in-project writes the mode
+//! allows without review run as before; plan mode stays plan mode.
 //!
 //! What counts as attended, all of it positive evidence (a check that
-//! cannot tell denies):
+//! cannot tell counts as unattended):
 //!
 //! - a client is attached to the agent now ([`Attendance::attached`]);
 //!   attaching mid-turn makes the turn's later calls attended;
@@ -28,7 +30,7 @@
 //! The daemon installs an [`Attendance`]
 //! ([`super::ApprovalEngine::set_attendance`]) before any agent runs; an
 //! engine without one counts nobody as attached (fail closed), so only the
-//! user's own runs are reviewed there.
+//! user's own runs put questions to the user there.
 
 use meerkat_core::SessionId;
 

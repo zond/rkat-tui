@@ -8695,3 +8695,158 @@ token, by `SEAT_TIMEOUT` (1 min). Pinned by
 `client::transport::tests::a_slow_seat_is_waited_for` (a daemon that seats
 3 s after the challenge, the handshake bound 1 s). A seat slower than a
 minute still ends in the old retry.
+
+## The classifier judges effects, not places (owner decision, 2026-11-14)
+
+The owner ran 0.0.2 with a classifier model and found it too
+conservative: writes to `/tmp`, to `~/.cargo/registry` (`cargo info`) and
+a package store (`pnpm install`) were blocked again and again under T3,
+also after a yes in chat. The research
+(`.handover/reports/Coding agent permission tuning.md`, change 1) found
+the cause in the policy text, not the model: the environment line said
+everything outside the project "belongs to the user or to others", D1
+blocked any delete or overwrite outside the project root and T3 any
+change outside it, and 0.0.3's granted-directory list only bolted an
+exception onto that location rule. Claude Code's shipped auto-mode rules
+(v2.1.325, `code.claude.com/docs/en/auto-mode-config`) have no rule
+against creating files in temp or cache places; they block by effect
+("Irreversible Local Destruction", "Shared Scratch Sweep", "Unverifiable
+Deletion Target", persistence, exfiltration) and allow installing what
+the manifest declares "provided the agent has not modified the manifest
+in this session". The owner's guiding principle: "The big risk isn't
+malevolence but mistakes"; the sandbox, not the classifier, is the
+boundary. This is a security-default change the owner approved.
+
+What changed (`src/approval/prompts.rs`): the system prompt asks for a
+judgement of effects and names the overeager agent as the risk; the
+environment says the project is where the agent works and temp, cache,
+store and toolchain directories are where its tools normally write; D1 is
+narrowed to files outside the project that existed before the session and
+that the user did not name (the session's own files are its own); T3 to
+lasting changes (system configuration, other repositories that existed,
+shell profiles and dotfiles, global installs of agent-chosen packages)
+with an explicit "Not T3" for temp files and tool caches; the install
+exception drops "into project-local locations" for Claude Code's
+manifest condition and excludes agent-picked package names. Three rules
+guard what this opens, under new ids (D1 and T3 keep theirs, they only
+narrow): D6 shared-scratch sweeps, D7 recursive deletes of an unset
+variable or substitution (a literal path is not D7, as in Claude Code's
+rule), D8 edits inside dependency caches and installed packages (the
+research's cache-poisoning risk; it is inferred there, no published
+exploit shows it). New explicit allow exceptions: temp and scratch files
+and the session's own files, a tool filling its own cache, loopback
+servers, commits on the current branch, pushing a branch the agent made.
+The granted-directory notes read "also allowed". The stage-1 and stage-2
+formats are unchanged. The policy stays short for a small classifier
+model (the rendered system prompt is under 9 KiB, pinned).
+
+Ownership and the manifest condition rest on facts the gate saw: the
+engine's `record_agent_writes` now also records, per session, each
+file-tool target outside the project (and outside its scratch directory)
+that did not exist when the write was allowed (`SessionFacts::
+created_outside`), and each dependency manifest or lockfile it was allowed
+to write (`SessionFacts::manifests_changed`, `classifier::MANIFEST_FILES`
+and `requirements*.txt`). Both are told to the classifier in the
+environment; a shell command's writes are not seen (said in the prompt:
+"through its file tools").
+
+Known risk: a judge that reads "normal course" too generously lets a
+cache edit or a sweep through; the corpus (item 4 of the plan) measures
+that. Pinned by `the_policy_blocks_by_effect_not_by_location` (the old
+location wording gone, the new rules and exceptions there, the length
+bound), `rules_have_unique_ids_in_four_groups`,
+`the_session_s_own_effects_are_stated` and
+`the_scratch_directory_and_the_files_the_session_made_are_its_own`.
+
+## Each agent's private scratch directory (owner decision, 2026-11-14)
+
+Three of the five friction cases in the field notes were temp writes the
+classifier blocked (a redirect into `/tmp`, a `write_file` under `/tmp`, a
+test suite's `tempdir()`); the workaround that worked was an in-workspace
+`TMPDIR`. Every mature sandbox grants a temp directory and points
+`TMPDIR` at it (Claude Code a per-user one, sandbox-runtime
+`/tmp/claude`, Codex `$TMPDIR`; the research's change 2). What was
+built (`src/approval/scratch.rs`): each agent gets
+`<temp>/rkat-tui-<12 hex of SHA-256(realm root \0 agent)>/`, created 0700
+with `DirBuilder::mode`; one already there is used only when `lstat`
+shows a directory owned by this user with no group or other bits (a
+planted one, a link, an open one is refused and logged, never followed).
+The directory is per agent, not per session id: an agent's shell
+environment is fixed when its member is seated (`SpawnMemberSpec::
+shell_env`), before the engine has made its session. Its helpers and
+forks share it (the customizer looks it up from the owner session,
+`HelperRegistry::scratch_of_session`). The shell gets `TMPDIR`, `TMP` and
+`TEMP` on top of what it already gets: the confined shell's curated set,
+or, unconfined, only these three (the engine's trusted-host launch adds
+`env_vars` to the inherited environment, `meerkat-tools`
+`custody_spawn::configure_trusted`). The name is fixed so a resumed
+agent's instructions (given once, at its first seat) stay true.
+
+Under the temp directory, not the realm: the confined shell must write
+it and the sandbox already grants the temp directory, while the realm is
+sealed and the plan refuses any grant reaching it. The customizer gives
+the directory only when the plan's write grants cover it
+(`ApprovalEngine::plan_writes`), so a confined `TMPDIR` is never
+unwritable. The gate: `GrantedDirs::scratch`, set per call from the
+daemon's lookup (`ApprovalEngine::set_scratch`); a file-tool write there
+is tier 2, a read tier 1, a redirect (`>`, `>>`, `2>` with fd 1 or 2) whose
+literal target resolves into it, and a leading `TMPDIR=`/`TMP=`/`TEMP=`
+naming it, pass the read-only shell lexer (`shell::in_scratch`,
+`scratch_assignment`); the classifier is told the directory is the
+session's. The shared `/tmp` stays classifier-judged. Removed when the
+agent retires (`Conversations::retire`) and when the daemon stops
+(`ScratchDirs`'s `Drop`); `remove_dir_all` does not follow links.
+
+Known risk: data staged in the scratch directory for exfiltration (a
+community Codex guide warns of it); the network step stays reviewed.
+Pinned by `each_agent_gets_its_own_private_directory`,
+`a_planted_directory_or_link_is_refused`,
+`the_shell_gets_the_directory_as_its_temp_variables`,
+`redirects_and_tmpdir_into_the_scratch_directory_are_allowed`,
+`the_scratch_directory_and_the_files_the_session_made_are_its_own` and
+`the_agent_s_shell_gets_its_scratch_directory_as_tmpdir` (a rig run,
+unconfined and confined: `$TMPDIR` names it, the shell writes it, the
+instructions name it).
+
+## A block says what to do; a failed review is not a block (2026-11-14)
+
+The research (change 3 and its Codex sources: `alignment.openai.com/
+auto-review`) recommends Codex's wording for a reviewer's denial: do not
+work around it, choose a materially safer alternative, or ask. A
+classifier block now reads `… blocked it: <reason> (rule <id>). Do not
+work around this block: … Choose a materially safer alternative within
+the user's request, or stop and ask the user` (`BLOCK_GUIDANCE`); the
+rule id now reaches the agent too (how the classifier checked stays the
+user's). A review that could not be completed (`ClassifierError::
+Timeout`/`Provider` with no human to ask) used to read like an
+unavailable classifier; it is now `DenyReason::ReviewIncomplete`: "Not
+run: the safety review could not be completed (…); the call was not run,
+and this is not a refusal of the action: try it again in a moment …",
+and the dialog's hint when a human is asked says the same. Errors never
+counted toward the 3/20 pause and still do not. The audit decider is
+`review-failed` (a new value of the existing string field). Pinned by
+`deny_message_wording`, `every_denial_names_its_source` and
+`a_classifier_block_reaches_the_model_and_the_run_continues`.
+
+## Unattended turns consult the classifier (owner decision, 2026-11-14)
+
+A6 of the security review (2026-11-10) denied every call needing review
+in a turn no user started with no client attached, without a classifier
+request. The owner agreed (the plan's F26) that such a call should be
+judged: `ApprovalEngine::evaluate` now sends it to the classifier as in
+an attended turn; an allow runs it, a block denies it (counted as any
+block). What would put a question to the user is still denied with
+`DenyReason::Unattended` and the missed-notice: a protected path, a
+question of manual or accept-edits mode, a paused auto mode (no
+classifier request then), an action too large to review, a review that
+could not be completed. Plan mode stays plan mode. This is a
+security-default change the owner approved; its risk is that a
+classifier allow now runs a call nobody watched (as it would in an
+attended auto-mode turn, which shows nothing to the user either until the
+call is done). Pinned by
+`an_unattended_turn_has_the_classifier_judge_and_denies_what_would_ask`
+(each branch), `attendance_follows_the_client_and_the_run_the_user_started`,
+`without_attendance_nobody_counts_as_attached`, and in the rig
+`a_peer_woken_agent_with_no_client_is_denied_what_needs_review` and
+`a_fired_schedule_is_unattended_while_nobody_is_attached` (the classifier
+is asked; a failed review is denied and shown to the next client).

@@ -56,6 +56,12 @@ Model lists are kept in memory only.
 `--attach-token-file` names a file of the user's that the client only
 reads (refused when group or others may read it).
 
+## `<temp>` (the daemon's temp directory, usually `/tmp`)
+
+| Path | Format | Written by | Losing it loses |
+|---|---|---|---|
+| `rkat-tui-<12 hex>/` | a directory, mode 0700, one per agent: the first 12 hex digits of SHA-256 of `<realm root>\0<agent name>` (`approval::scratch`); its contents are whatever the agent's shell and tools put there (it is their `TMPDIR`) | daemon (created at the agent's seat, removed at its retire and at the daemon's stop); the agent | nothing kept: temporary files by design |
+
 ## `<realm>` = `<config>/workspaces/<id>/`: rkat-tui's files
 
 | Path | Format | Written by | Losing it loses |

@@ -186,8 +186,8 @@ resumed sessions and helpers carry it too. First match wins:
 | Tier | What | Review |
 |---|---|---|
 | 0 | A user **deny** rule matches, or `write_file` / `edit_file` / the engine's `blob_save_file` (or any target of a patch) is a **sealed** path: the project's `.rkat/` (its `tui.toml`, `mcp.toml`, hooks), every `.rkat` and every `.git` inside it, and, wherever they lie, the git directories governing the project (an enclosing repository's `.git` when the workspace is a subdirectory, a worktree's git dir and the common dir its `commondir` names, with the hooks), the realm directory (the workspace's state directory: `config.toml`, approvals, `tui.toml`, sessions, the audit log) and the user config directory (`~/.rkat/tui`: global rules, trust records). On a file system that resolves names ignoring case (macOS's default), every spelling counts: `.RKAT/` is the real `.rkat/` there and is sealed as well; on a case-sensitive one it is an ordinary directory. Neither the classifier nor an allow rule opens a sealed path, and reading one is not sealed (except the daemon's endpoint directories, below); a shell command that writes there is still judged by the classifier. The engine's own file tools refuse the same state again by themselves (Meerkat 0.9.12): any `.rkat` in the workspace, and the realm, the config directory, the user config document and the credential store when the command line puts them inside the workspace. The directories that hold the daemon's endpoint file and its attach token (`$XDG_STATE_HOME/rkat-tui/`, else `~/.local/state/rkat-tui/`, and `$XDG_RUNTIME_DIR/rkat-tui/`) are sealed for reads and searches too: `read_file`, `grep` and `glob` never open them, and a search above them skips them; so is the realm directory | denied |
-| 1 | Read-only tools (`read_file`, `glob`, `grep` inside the project or inside a directory you named with `--confinement-write`/`--confinement-read`, task tools, `memory_search`, `note_list`/`note_read`, `blob_inspect`, skill browsing, read-only `mob_*` queries, `delegate`, `fork`), read-only shell commands (`cat`, `ls`, `rg`, `git status/diff/log`, `cargo check/test` when builds are trusted, …), narrow user **allow** rules | allowed |
-| 2 | `write_file` / `edit_file` / `blob_save_file` where every target is inside the project, or inside a directory you named with `--confinement-write` or `[confinement] extra_write`, and not protected (`.rkat/`, `.git/` and any `.git` file, `.env*`, …, matched inside a named directory as inside the project); workspace notes | allowed (manual mode asks you) |
+| 1 | Read-only tools (`read_file`, `glob`, `grep` inside the project, the agent's [scratch directory](#the-scratch-directory), or a directory you named with `--confinement-write`/`--confinement-read`, task tools, `memory_search`, `note_list`/`note_read`, `blob_inspect`, skill browsing, read-only `mob_*` queries, `delegate`, `fork`), read-only shell commands (`cat`, `ls`, `rg`, `git status/diff/log`, `cargo check/test` when builds are trusted, …; their output redirected into the scratch directory, and a leading `TMPDIR=<scratch directory>`), narrow user **allow** rules | allowed |
+| 2 | `write_file` / `edit_file` / `blob_save_file` where every target is inside the project, the agent's scratch directory, or a directory you named with `--confinement-write` or `[confinement] extra_write`, and not protected (`.rkat/`, `.git/` and any `.git` file, `.env*`, …, matched inside a named directory as inside the project); workspace notes | allowed (manual mode asks you) |
 | ask | `write_file` / `edit_file` / `blob_save_file` (or any target of a patch) is a **protected** path in the project: `.env*`, `.envrc`, `build.rs`, `.cargo/`, `rust-toolchain*`, `AGENTS.md`, `.claude/`, `.gitmodules`, `.gitattributes`, `tui.toml`, `.vscode/`, `.idea/`. Never the classifier, whatever auto mode's state: the dialog names each path and what it is (`protected path: .env.local (secrets); the policy always asks for these`). A user allow rule for the path (what the dialog's "allow and add a rule" adds) allows it, a deny rule denies it | asks you, every time |
 | 3 | Everything else: other shell commands, MCP tools, web search, comms sends, mutating mob tools, out-of-project paths, user-level notes | classifier (manual and accept-edits modes ask you) |
 
@@ -216,7 +216,16 @@ deny rule (by its id and pattern, which only you can lift with
 `/permissions`), rkat-tui's fixed policy (a sealed path), plan mode, you
 in the approval dialog (with your instruction when you gave one), the
 dialog going unanswered, an unattended turn, the classifier being
-unavailable, or the classifier with its reason. The classifier is asked
+unavailable, a review that could not be completed, or the classifier
+with its reason and rule. A classifier block tells the agent not to work
+around it (no other tool, rewritten or encoded command or script for the
+same effect) and to choose a materially safer way within your request or
+ask you. A review that could not be completed (the classifier timed out
+or its provider failed) is not a block: with you there you are asked,
+the dialog saying the review could not be completed; with nobody to ask
+the agent reads "Not run: the safety review could not be completed …;
+this is not a refusal of the action", and it never counts toward auto
+mode's pause. The classifier is asked
 to name the path outside the project and your allowed directories when
 that is why it blocks (a `PATH:` line besides its verdict, rule and
 reason); when a path is why (a file tool's own target, or the path the
@@ -233,6 +242,33 @@ the tool block shows the same text.
 The classifier is a separate LLM call on the start-up endpoint. It is given
 the user's messages and the agent's prior tool calls, never the agent's
 reasoning or its tool outputs, so the agent cannot argue with it directly.
+
+**What the classifier blocks: effects, not places.** The policy is tuned
+for a mistaken or overeager agent, not an adversary (the sandbox is the
+security boundary). Leaving the project is not a violation in itself:
+temp directories, and the caches, stores and toolchain directories that
+build, test and package tools write in their normal course, are where its
+tools normally write. It blocks what destroys what existed (deleting or
+overwriting a file outside the project that existed before the session
+and that you did not name, D1; force pushes and discarded work, D2;
+pattern or age-based deletes in shared temp or cache directories, D6; a
+recursive delete of an unset `$VAR`, D7), what changes dependency caches
+or installed packages that later builds run (D8), lasting changes outside
+the project (system configuration, other repositories, shell profiles,
+global installs of packages the agent picked, T3), credential reads and
+exfiltration (D4, D5), and the rest of the rules (S1–S5, T1–T5, R1–R5).
+It explicitly allows: building, testing, linting and formatting the
+project with the temp files, build output and caches those write;
+creating files in temp and scratch locations and changing or deleting the
+files the session created; installing what the manifest and lockfile
+declare, wherever the tool keeps its store, as long as the agent has not
+changed the manifest in this session; a tool filling its own cache; local
+servers on loopback; commits on the current branch; pushing a feature
+branch you asked for or the agent made. It is told the session's facts
+the gate saw: its scratch directory, the files its file tools created
+outside the project (they did not exist before; changing or deleting them
+is the session's own business), and whether its file tools changed a
+dependency manifest or lockfile.
 Stage 1 is a one-word ALLOW/BLOCK told to err on the side of blocking; stage 2
 re-evaluates flagged actions with reasoning and may read project files itself
 (read-only `read_file`, `glob`, `grep` inside the project; at most 6 calls,
@@ -409,7 +445,36 @@ proxy variables `http_proxy`, `https_proxy`, `no_proxy`, `all_proxy` (in
 lower and upper case). Proxy URLs pass unchanged, credentials included
 (`http://user:password@proxy:3128`): a command can read them. Every other
 variable, provider API keys included, stays outside the sandbox. Helpers' shell commands get the same set.
-Unconfined commands (`off`) inherit the whole environment as before.
+Unconfined commands (`off`) inherit the whole environment as before. In
+every mode `TMPDIR`, `TMP` and `TEMP` name the agent's scratch directory
+(below), not the shared temp directory.
+
+### The scratch directory
+
+Each agent gets a private scratch directory of its own,
+`<temp>/rkat-tui-<12 hex digits>/` (`<temp>` is the daemon's temp
+directory, usually `/tmp`), created with mode `0700`. Its shell gets it as
+`TMPDIR`, `TMP` and `TEMP` in every confinement mode, `--no-confinement`
+included, so test suites (`tempfile::tempdir()`), compilers and the
+agent's own scratch files land there instead of the shared `/tmp`; its
+helpers and forks share it, and the agent's instructions name it. The
+gate treats it as the agent's own: a `write_file` or `edit_file` there
+runs like an edit in the project, a read or search there is tier 1, a
+shell command whose only writes are `>`, `>>` or `2>` redirects into it
+is read-only shell, and a leading `TMPDIR=<it>` (also `TMP`, `TEMP`) is
+accepted in front of an allowlisted command; the classifier is told the
+directory is the session's. The shared `/tmp` stays judged by the
+classifier.
+
+The name is fixed per agent and workspace, so a resumed agent finds its
+directory under the same name, empty. rkat-tui uses the directory only
+when it is a real directory owned by you that nobody else can enter: one
+another user created first, a symbolic link, or one open to others is
+never used (the agent then has no scratch directory and the daemon log
+says why). It is removed, without following any link out of it, when the
+agent is retired and when the daemon stops. It is created only when the
+sandbox lets the shell write the temp directory (always, unless a grant
+of yours displaced it).
 
 The sandbox grants only directories and single regular files, at their own
 path, never through a symbolic link on the way and never overlapping each
@@ -537,12 +602,17 @@ What rkat-tui does by default where a security review asked for a choice
   keeps running until its turn ends, or until you stop it (`/quit` from a
   TUI attached to it, `/daemon stop`, or `kill <pid>` from a shell). It does
   not stop by itself after a while.
-- **Unattended turns.** A turn another agent's message started on your
-  agent, while no TUI is attached to it, cannot run anything that needs
-  review: the action is denied, the agent is told it needs you, and the
+- **Unattended turns.** A turn another agent's message, a schedule or a
+  file watch started on your agent, while no TUI is attached to it, is
+  still reviewed by the classifier in auto mode (your decision of
+  2026-11-14; it used to deny everything that needed review): what the
+  classifier allows runs, what it blocks is denied. Anything that would
+  ask you (a protected file, a question of manual or accept-edits mode,
+  a paused auto mode, an action too large to review, a review that could
+  not be completed) is denied, the agent is told it needs you, and the
   next TUI that attaches to the agent shows what it wanted to do (see
-  [Several agents](#several-agents)). A turn you started stays reviewed
-  as usual after you detach.
+  [Several agents](#several-agents)). Plan mode stays plan mode. A turn
+  you started stays reviewed as usual after you detach.
 - **The audit log** records every approval decision and who made it, and
   every change of mode, rules and trust, in `audit.jsonl` in the
   workspace's state directory, outside the workspace (see
@@ -592,11 +662,25 @@ choice; after it, what a cautious user can do about it.
 - **The sandbox shares `/tmp` and `~/.cache` with you.** The temp
   directory and your whole cache directory are granted read and write
   (with the workspace, and the Cargo home's `registry/` and `git/`): the
-  agent's shell can read and change what other programs keep there. It
-  cannot connect to Unix sockets found there (the sandbox admits only IP
-  sockets), but TCP, loopback included, stays open in the default mode.
-  *To tighten:* `--confinement=strict` removes the network; nothing
-  removes the two shared directories today, so keep secrets out of them.
+  agent's shell can read and change what other programs keep there. Its
+  own temp files go to its private scratch directory (its `TMPDIR`), but a
+  command that names `/tmp` itself still reaches the shared one, and the
+  classifier, not the sandbox, judges what it does there (a sweeping
+  delete is blocked under D6). It cannot connect to Unix sockets found
+  there (the sandbox admits only IP sockets), but TCP, loopback included,
+  stays open in the default mode. *To tighten:* `--confinement=strict`
+  removes the network; nothing removes the two shared directories today,
+  so keep secrets out of them.
+- **The classifier judges effects, so it lets ordinary writes outside
+  the project run.** Creating files in temp directories and caches, and
+  installs of what the project already declares, are allowed by the
+  policy's own exceptions rather than blocked as "outside the project".
+  The price is a judge that reads "normal course" too generously: a
+  small classifier model may let a cache edit or a sweeping delete pass
+  that a stricter policy would have stopped. The sandbox still keeps the
+  shell out of your home directory, `~/.ssh` and the like. *To tighten:*
+  keep confinement on, choose a capable `[auto] classifier_model`, or
+  work in manual mode for untrusted code.
 - **"Safe" git commands run what the repository configures.** `git
   status`, `diff`, `log`, `show`, `blame` and the other read-only git
   commands run without review, and git runs the programs `.git/config`
@@ -622,8 +706,9 @@ choice; after it, what a cautious user can do about it.
   asked, and the other agent can wake yours at any time (each message
   to an idle agent is a model turn you pay for). A message carries no
   authority: what your agent does about it passes your gate and
-  sandbox, an unattended turn is denied what needs review, and the
-  classifier never takes it for your words. Each agent's socket is
+  sandbox, an unattended turn runs only what the classifier allows and
+  nothing that would ask you, and the classifier never takes it for your
+  words. Each agent's socket is
   `<realm>/wire/<agent>.sock`, mode 0600 in a 0700 directory outside
   the workspace, so only processes running as you can connect, and the
   daemon admits only envelopes signed by the agent you wired (a wrong
@@ -1622,7 +1707,7 @@ it follows a re-home; owner-only, written by the daemon alone. It holds one JSON
 approval decision (time, agent, helper, session, run, tool, the deciding
 argument whole, tier, `allow` or `deny`, who decided: `rule:<id>`,
 `classifier`, `human:<connection>`, `mode`, `policy`, `unattended`,
-`timeout`, and for a denial why) and one per change of authority (mode
+`timeout`, `review-failed`, and for a denial why) and one per change of authority (mode
 switch, rule added or removed, `/trust`, an agent
 retired, daemon start and stop). It is out of the agent's reach: its
 confined shell is never granted the directory (the daemon refuses to
@@ -2121,14 +2206,16 @@ boundary:
 - Another agent can start a turn on yours that nobody prompted: a peer
   message wakes an idle agent, and the turn runs while you are away (a
   `/detach`ed agent too). Such a turn is **unattended** while no TUI is
-  attached to your agent: anything in it that would need review (what
-  the classifier would judge, or what the mode or a protected file would
-  ask you about) is denied, without asking the classifier. Reads,
-  allowlisted commands and the in-project edits your mode allows without
-  asking still run. Your agent reads in the tool result that the action
-  needs you attached, and the next TUI that attaches to it shows a
-  warning for each denied action ("wanted to run `curl …`; it was
-  denied"); ask again then to allow it. Attaching in the middle of such a
+  attached to your agent: in auto mode the classifier still judges what
+  it would judge, and runs what it allows and denies what it blocks, but
+  anything that would ask you (what the mode or a protected file would
+  ask you about, a paused auto mode, an action too large to review, a
+  review that could not be completed) is denied. Reads, allowlisted
+  commands and the in-project edits your mode allows without asking run
+  as always. Your agent reads in the tool result that the action needs
+  you attached, and the next TUI that attaches to it shows a warning for
+  each such denied action ("wanted to run `curl …`; it was denied"); ask
+  again then to allow it. Attaching in the middle of such a
   turn makes its later calls reviewed as usual. A turn you started stays
   yours after you `/detach`: it is reviewed as usual. The classifier
   never sees a peer's text as your words either.
@@ -2203,8 +2290,8 @@ watches it is denied, and the agent is told to have you leave plan mode
 or send the message yourself. Sends to your own workspace's agents and
 to your agent's helpers stay tier 1 in plan mode. A message carries no authority: the receiving agent's
 calls go through its own workspace's gate and sandbox, and a turn it
-starts while no client is attached there is unattended (anything that
-needs review is denied).
+starts while no client is attached there is unattended (only what that
+workspace's classifier allows runs; nothing that would ask its user).
 
 **When the other side is down.** The wire stays. A send fails at once
 (`… IO error: No such file or directory` or `Connection refused`): the
@@ -2272,13 +2359,15 @@ manual mode). While **nobody is attached** (you `/detach`ed, or the
 daemon restored the agent and nobody joined it), the turn is
 **unattended**, the rule of [Several agents](#several-agents): reads,
 allowlisted commands and the in-project edits your mode allows without
-asking still run; anything that needs review (a command the classifier
-would judge, a write outside the project, a protected file, whatever
-manual mode would ask) is denied without asking the classifier, the agent
-reads that it needs you attached, and the next TUI to attach shows a
-warning per denied action. So a nightly `cargo test` runs unattended only
-when it is allowlisted (`--trust-project-builds`, or an `[[allow]]` rule);
-a nightly `curl` or `git push` waits for you.
+asking run; in auto mode a command the classifier would judge is judged
+and runs when it allows it; anything that would ask you (a protected
+file, whatever manual mode would ask, a paused auto mode, a review that
+could not be completed) is denied, the agent reads that it needs you
+attached, and the next TUI to attach shows a warning per such denied
+action. So a nightly `cargo test` runs unattended when it is allowlisted
+(`--trust-project-builds`, or an `[[allow]]` rule) or the classifier
+allows it; a nightly `git push` to the default branch is blocked, and in
+manual mode everything reviewed waits for you.
 
 **`/schedules`.** Opens a list of this agent's schedules: name, when it
 fires, the next occurrence, `active` or `paused`, how many times it fired

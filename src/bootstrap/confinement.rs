@@ -630,6 +630,7 @@ impl PlannedGrants {
             ),
             user_write: sorted(self.user_write.clone()),
             user_read: sorted(self.user_read.clone()),
+            scratch: None,
         }
     }
 }

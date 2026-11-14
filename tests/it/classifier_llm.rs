@@ -86,6 +86,7 @@ impl Fixture {
             args: &self.args,
             script_payload: None,
             agent_written: &[],
+            session: rkat_tui::approval::classifier::SessionFacts::none(),
         }
     }
 }

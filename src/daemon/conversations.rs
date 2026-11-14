@@ -771,6 +771,7 @@ impl Conversations {
             .await
             .map_err(|err| SwitchError::mob("retiring the agent", err))?;
         self.registry.unregister_root(&Self::key(agent));
+        self.registry.remove_scratch(agent);
         self.switching.lock().remove(agent);
         Ok(previous)
     }

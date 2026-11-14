@@ -575,6 +575,32 @@ fn refuse(err: impl std::fmt::Display) -> MobError {
     MobError::Internal(format!("rkat-tui: helper refused: {err}"))
 }
 
+/// The line an agent's (or helper's) instructions get naming its scratch
+/// directory.
+#[must_use]
+pub fn scratch_instruction(dir: &std::path::Path) -> String {
+    format!(
+        "Your scratch directory is `{}` (it is also TMPDIR, TMP and TEMP in your shell): use it for temporary files, logs and experiments instead of /tmp or the project. It is private to you and your helpers, writing there needs no review, and it is removed when you are retired or the daemon stops.",
+        dir.display()
+    )
+}
+
+/// Point `spec`'s shell at the scratch directory `dir`: its temp variables
+/// name it, on top of the environment the shell already gets (the
+/// confined shell's curated set; an unconfined shell inherits the daemon's
+/// and only these are set), and, when `instruct`, its instructions say so.
+fn give_scratch(spec: &mut SpawnMemberSpec, dir: &std::path::Path, instruct: bool) {
+    spec.shell_env = Some(crate::approval::scratch::ScratchDirs::shell_env(
+        spec.shell_env.as_ref(),
+        dir,
+    ));
+    if instruct {
+        spec.additional_instructions
+            .get_or_insert_with(Vec::new)
+            .push(scratch_instruction(dir));
+    }
+}
+
 impl HelperCustomizer {
     /// Shape `spec` for `owner`, bind it as `key` and have it followed.
     fn admit(
@@ -616,6 +642,11 @@ impl HelperCustomizer {
             &self.tools,
             self.shell_env.as_ref(),
         );
+        // The helper shares its agent's scratch directory; its persona is
+        // given again on every build, and so is this line.
+        if let Some(dir) = self.registry.scratch_of_session(&owner.session) {
+            give_scratch(spec, &dir, true);
+        }
         deny_tools(spec, depth.nesting_denied(), self.gated_fork_off);
         if depth != Depth::MayNest {
             drop_mob_tools(spec);
@@ -666,6 +697,14 @@ impl SpawnMemberCustomizer for HelperCustomizer {
                 fresh,
                 self.gated_fork_off,
             );
+            // Its instructions are given once, at its first seat; the
+            // directory's name stays the same for it.
+            if let Some(dir) = self
+                .registry
+                .scratch_for_agent(key.member.as_str(), |path| self.engine.plan_writes(path))
+            {
+                give_scratch(spec, &dir, fresh);
+            }
             self.bind_policy(spec);
             return Ok(());
         }
@@ -725,6 +764,12 @@ impl SpawnMemberCustomizer for HelperCustomizer {
                 false,
                 self.gated_fork_off,
             );
+            if let Some(dir) = self
+                .registry
+                .scratch_for_agent(key.member.as_str(), |path| self.engine.plan_writes(path))
+            {
+                give_scratch(spec, &dir, false);
+            }
             if let Some(identity) = &durable.llm_identity
                 && let RootThinking::Set(thinking) = root.host.thinking(identity)
                 && let crate::thinking::Reapplied::Replace(params) =

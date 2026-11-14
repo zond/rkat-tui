@@ -83,6 +83,12 @@ pub struct GrantedDirs {
     /// Named by the user for reading: `--confinement-read` and
     /// `[confinement] extra_read`.
     pub user_read: Vec<PathBuf>,
+    /// The session's private scratch directory
+    /// ([`super::scratch::ScratchDirs`]), when it has one: a file tool's
+    /// write there is an in-project edit and a read tier 1, a shell
+    /// redirect into it is read-only shell, and the classifier is told it
+    /// is the session's own. Set per call, never by the confinement plan.
+    pub scratch: Option<PathBuf>,
 }
 
 /// No directory granted ([`GrantedDirs::none`]).
@@ -92,6 +98,7 @@ static NO_GRANTS: GrantedDirs = GrantedDirs {
     baseline_read: Vec::new(),
     user_write: Vec::new(),
     user_read: Vec::new(),
+    scratch: None,
 };
 
 impl GrantedDirs {
@@ -102,14 +109,24 @@ impl GrantedDirs {
         &NO_GRANTS
     }
 
-    /// The directory of `user_write` that holds the canonical path `abs`,
-    /// if one does.
+    /// The directory of `user_write`, or the session's scratch directory,
+    /// that holds the canonical path `abs`, if one does.
     #[must_use]
     pub fn user_write_dir_of(&self, abs: &Path) -> Option<&Path> {
-        self.user_write
+        self.scratch
             .iter()
+            .chain(&self.user_write)
             .find(|dir| abs.starts_with(dir))
             .map(PathBuf::as_path)
+    }
+
+    /// Whether the canonical path `abs` lies in the session's scratch
+    /// directory.
+    #[must_use]
+    pub fn in_scratch(&self, abs: &Path) -> bool {
+        self.scratch
+            .as_deref()
+            .is_some_and(|dir| abs.starts_with(dir))
     }
 
     /// The directory the user named (for writing or reading) that holds
@@ -294,6 +311,78 @@ pub struct ClassifierInput<'a> {
     /// agent-authored, so the classifier must not take it as evidence of
     /// user intent.
     pub agent_written: &'a [String],
+    /// What the gate knows of the session's own effects: the files outside
+    /// the project its file tools created, the dependency manifests they
+    /// changed.
+    pub session: &'a SessionFacts,
+}
+
+/// What the gate saw a session do through its file tools that the
+/// classifier's rules turn on: ownership of files it created outside the
+/// project (deleting them is its own business), and whether it changed a
+/// dependency manifest or lockfile (the install exception then no longer
+/// covers installing from it).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionFacts {
+    /// Absolute paths outside the project root that did not exist when the
+    /// session's file tools were allowed to write them, oldest first.
+    pub created_outside: Vec<String>,
+    /// Dependency manifests and lockfiles (display paths) the session's
+    /// file tools were allowed to write ([`is_manifest`]).
+    pub manifests_changed: Vec<String>,
+}
+
+/// Facts of a session the gate saw nothing of ([`SessionFacts::none`]).
+#[cfg(any(test, feature = "test-support"))]
+static NO_FACTS: SessionFacts = SessionFacts {
+    created_outside: Vec::new(),
+    manifests_changed: Vec::new(),
+};
+
+impl SessionFacts {
+    /// Nothing seen, borrowed for as long as needed.
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn none() -> &'static Self {
+        &NO_FACTS
+    }
+}
+
+/// File names of the dependency manifests and lockfiles whose installs the
+/// policy's install exception covers only while the agent has not changed
+/// them.
+pub const MANIFEST_FILES: &[&str] = &[
+    "Cargo.toml",
+    "Cargo.lock",
+    "package.json",
+    "package-lock.json",
+    "npm-shrinkwrap.json",
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
+    "yarn.lock",
+    "bun.lockb",
+    "bun.lock",
+    "pyproject.toml",
+    "poetry.lock",
+    "uv.lock",
+    "Pipfile",
+    "Pipfile.lock",
+    "setup.py",
+    "setup.cfg",
+    "go.mod",
+    "go.sum",
+    "Gemfile",
+    "Gemfile.lock",
+    "composer.json",
+    "composer.lock",
+];
+
+/// Whether `path`'s file name is a dependency manifest or lockfile
+/// ([`MANIFEST_FILES`], and `requirements*.txt`).
+#[must_use]
+pub fn is_manifest(path: &str) -> bool {
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    MANIFEST_FILES.contains(&name) || (name.starts_with("requirements") && name.ends_with(".txt"))
 }
 
 /// The classifier's verdict.
@@ -1033,6 +1122,7 @@ mod tests {
             args: &args,
             script_payload: None,
             agent_written: &[],
+            session: SessionFacts::none(),
         };
         assert!(matches!(
             UnavailableClassifier.classify(input).await,

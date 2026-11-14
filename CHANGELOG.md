@@ -2,6 +2,59 @@
 
 ## [Unreleased]
 
+### Added
+
+- Each agent has a private scratch directory,
+  `<temp>/rkat-tui-<12 hex digits>/` (mode `0700`), which its shell gets
+  as `TMPDIR`, `TMP` and `TEMP` in every confinement mode,
+  `--no-confinement` included; its helpers and forks share it and its
+  instructions name it. A `write_file` or `edit_file` there runs like an
+  edit in the project, a read there is allowed, and a shell command whose
+  writes are only redirects into it (`> `, `>>`, `2>`), or that is given
+  `TMPDIR=<it>` in front of an allowlisted command, is read-only shell: a
+  test suite's temp files, a redirect to a scratch file and a scratch
+  write no longer reach the classifier. The shared `/tmp` is still
+  judged by it. The directory is removed when the agent is retired and
+  when the daemon stops, and is never used when something not private to
+  you is in its place.
+
+### Changed
+
+- The approval classifier judges what an action does, not where it
+  writes. Its policy no longer makes leaving the project a violation in
+  itself: temp directories and the caches, stores and toolchain
+  directories build, test and package tools write are named as where its
+  tools normally write. D1 now covers only files outside the project that
+  existed before the session and that you did not name, and T3 only
+  lasting changes (system configuration, other repositories, shell
+  profiles, global installs of packages the agent chose); the install
+  exception covers what the manifest and lockfile declare wherever the
+  tool keeps its store, unless the agent changed the manifest in this
+  session. Three new rules guard what this opens: D6 (pattern or
+  age-based deletes in shared temp or cache directories), D7 (a recursive
+  delete of a variable or substitution not set in the same command) and
+  D8 (editing files in dependency caches or installed packages). New
+  explicit allows: temp and scratch files, a tool filling its own cache,
+  local servers on loopback, commits on the current branch, pushing a
+  branch the agent made. The classifier is told the files the session's
+  file tools created outside the project (deleting them is its own
+  business) and whether they changed a dependency manifest.
+- A classifier block tells the agent its rule and not to work around it,
+  but to choose a materially safer way or ask you. A review that could
+  not be completed (the classifier timed out, its provider failed) is
+  reported as that: you are asked when you are there, and with nobody to
+  ask the agent reads "Not run: the safety review could not be completed
+  …; this is not a refusal of the action". It never counts toward the
+  pause. The audit log names such a denial `review-failed`.
+- A turn no user started (another agent's message, a schedule, a file
+  watch) with no TUI attached is reviewed by the classifier in auto mode,
+  as you decided: what it allows runs, what it blocks is denied. Only
+  what would ask you (a protected file, a question of manual or
+  accept-edits mode, a paused auto mode, an action too large to review, a
+  review that could not be completed) is still denied with a notice for
+  your next TUI. Before, every call that needed review was denied without
+  a classifier request.
+
 ## [0.0.4] - 2026-11-14
 
 ### Added
