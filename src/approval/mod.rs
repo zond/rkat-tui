@@ -55,6 +55,7 @@ pub mod rules;
 pub mod scratch;
 pub mod shell;
 pub(crate) mod shell_subject;
+pub mod stats;
 pub mod transcript;
 
 use counters::PauseCause;

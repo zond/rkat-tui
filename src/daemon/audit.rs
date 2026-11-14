@@ -86,6 +86,10 @@ pub struct Line {
     /// A lifecycle event's detail.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// The classifier's review of a decided call, when one ran (stage,
+    /// verdict, rule, latency, tokens).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<crate::approval::audit::ReviewRecord>,
 }
 
 impl Line {
@@ -344,6 +348,7 @@ impl AuditSink for DaemonAudit {
             decider: Some(record.decider),
             reason: record.reason,
             detail: None,
+            review: record.review,
         };
         self.log.write(&line);
     }

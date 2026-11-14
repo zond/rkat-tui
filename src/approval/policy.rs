@@ -576,6 +576,10 @@ pub struct TierDecision {
     /// The user allow rule that made the call [`Tier::AlwaysAllow`], if one
     /// did (a deny rule is named by [`Tier::UserDeny`] itself).
     pub allow_rule: Option<RuleId>,
+    /// A [`Tier::AskUser`] write whose every protected target is protected
+    /// for its content ([`crate::paths::CONTENT_PATTERNS`]): auto mode has
+    /// the classifier review it instead of asking.
+    pub content: bool,
 }
 
 impl TierDecision {
@@ -584,6 +588,7 @@ impl TierDecision {
             tier,
             detail: detail.into(),
             allow_rule: None,
+            content: false,
         }
     }
 }
@@ -623,6 +628,7 @@ pub fn classify_tier_with(
             tier: Tier::AlwaysAllow,
             detail: format!("matches user rule {id}"),
             allow_rule: Some(id),
+            content: false,
         };
     }
     fallback
@@ -666,7 +672,7 @@ fn builtin_tier(action: &Action<'_>, ctx: &PolicyContext<'_>) -> Result<TierDeci
                 Tier::AlwaysAllow,
                 format!("read inside {}", granted_words(ctx, dir, "granted")),
             )),
-            Target::Project | Target::Protected(_) => Ok(TierDecision::new(
+            Target::Project | Target::Protected(..) => Ok(TierDecision::new(
                 Tier::AlwaysAllow,
                 "read inside the project",
             )),
@@ -680,7 +686,7 @@ fn builtin_tier(action: &Action<'_>, ctx: &PolicyContext<'_>) -> Result<TierDeci
                     Target::Sealed => return Ok(secret(path)),
                     Target::Outside => return Err(outside(path)),
                     Target::Granted(dir) => Some(dir),
-                    Target::Project | Target::Protected(_) => None,
+                    Target::Project | Target::Protected(..) => None,
                 },
             };
             let place = within.map_or_else(
@@ -727,10 +733,10 @@ fn builtin_tier(action: &Action<'_>, ctx: &PolicyContext<'_>) -> Result<TierDeci
                 .into_iter()
                 .map(|(path, target)| target.map(|t| (path, t)))
                 .collect::<Result<Vec<_>, _>>()?;
-            let protected: Vec<&str> = targets
+            let protected: Vec<(&str, bool)> = targets
                 .iter()
                 .filter_map(|(_, t)| match t {
-                    Target::Protected(what) => Some(what.as_str()),
+                    Target::Protected(what, content) => Some((what.as_str(), *content)),
                     _ => None,
                 })
                 .collect();
@@ -740,13 +746,22 @@ fn builtin_tier(action: &Action<'_>, ctx: &PolicyContext<'_>) -> Result<TierDeci
                 } else {
                     "protected paths"
                 };
-                return Ok(TierDecision::new(
-                    Tier::AskUser,
-                    format!(
-                        "{noun}: {}; the policy always asks for these",
-                        protected.join(", ")
-                    ),
-                ));
+                let names: Vec<&str> = protected.iter().map(|(what, _)| *what).collect();
+                // Protected only for their content (secrets, build scripts,
+                // agent instructions): auto mode's classifier judges them.
+                let content = protected.iter().all(|(_, content)| *content);
+                let tail = if content {
+                    "auto mode's classifier reviews these (and asks you when it blocks); the other modes ask"
+                } else {
+                    "the policy always asks for these"
+                };
+                return Ok(TierDecision {
+                    content,
+                    ..TierDecision::new(
+                        Tier::AskUser,
+                        format!("{noun}: {}; {tail}", names.join(", ")),
+                    )
+                });
             }
             if let Some((path, _)) = targets.iter().find(|(_, t)| matches!(t, Target::Outside)) {
                 return Err(outside(path));
@@ -844,8 +859,10 @@ enum Target<'c> {
     /// Never touched: for a read, a secret root (the daemon's endpoint
     /// directories: the attach token); for a write, any sealed path.
     Sealed,
-    /// A write to a protected path, as "`path` (kind)" (reads never are).
-    Protected(String),
+    /// A write to a protected path, as "`path` (kind)" (reads never are),
+    /// and whether it is protected for its content
+    /// ([`crate::paths::CONTENT_PATTERNS`]).
+    Protected(String, bool),
     /// Inside a directory the user named (for a write: named for writing).
     Granted(&'c std::path::Path),
     Outside,
@@ -866,11 +883,14 @@ fn classify_target<'c>(
         .resolve(path)
         .map_err(|e| format!("path `{path}`: {e}"))?;
     let protected = |relative: &std::path::Path| {
-        Target::Protected(format!(
-            "`{}` ({})",
-            ctx.root.display_of(&resolved),
-            protected_kind(relative)
-        ))
+        Target::Protected(
+            format!(
+                "`{}` ({})",
+                ctx.root.display_of(&resolved),
+                protected_kind(relative)
+            ),
+            ctx.root.is_content_relative(relative),
+        )
     };
     Ok(match access {
         Access::Read if resolved.secret => Target::Sealed,
@@ -886,6 +906,14 @@ fn classify_target<'c>(
                 match dir {
                     None => Target::Outside,
                     Some(dir) => match resolved.abs.strip_prefix(dir) {
+                        // A repository's hooks and configuration, and
+                        // rkat-tui's own state, are sealed in a granted
+                        // directory as in the project.
+                        Ok(relative)
+                            if access == Access::Write && ctx.root.is_sealed_in_grant(relative) =>
+                        {
+                            Target::Sealed
+                        }
                         Ok(relative)
                             if access == Access::Write
                                 && ctx.root.is_protected_relative(relative) =>
@@ -1033,15 +1061,26 @@ mod tests {
             .tier,
             Tier::InProjectEdit
         );
-        // Its protected paths are protected as the project's are.
-        for file in [".env", "sub/build.rs", ".git/hooks/pre-commit"] {
+        // Its protected paths are protected as the project's are, and its
+        // git hooks, git config and `.rkat` are sealed as the project's
+        // (the owner's decision of 2026-11-14).
+        for (file, tier) in [
+            (".env", Tier::AskUser),
+            ("sub/build.rs", Tier::AskUser),
+            (".cargo/config.toml", Tier::AskUser),
+            (".git/hooks/pre-commit", Tier::Sealed),
+            (".git/config", Tier::Sealed),
+            ("sub/.git/hooks/post-merge", Tier::Sealed),
+            (".rkat/tui.toml", Tier::Sealed),
+            (".git/info/exclude", Tier::AskUser),
+        ] {
             assert_eq!(
                 decide(
                     "write_file",
                     &json!({"path": at(&named, file), "content": "x"})
                 )
                 .tier,
-                Tier::AskUser,
+                tier,
                 "{file}"
             );
         }
@@ -1100,10 +1139,15 @@ mod tests {
     fn file_tool_verdicts_by_target_and_precedence() {
         const SEALED: &str = "Sealed: `.rkat/x` is sealed: file tools never write the gate's \
              own state (`.rkat/`, the realm and user config directories) or the git directories";
-        const ASK_ENV: &str =
-            "AskUser: protected path: `.env` (secrets); the policy always asks for these";
+        // `.env` is protected for its content (2026-11-14): auto mode's
+        // classifier reviews it; `.envrc`, which runs later, always asks.
+        const ASK_ENV: &str = "AskUser: protected path: `.env` (secrets); auto mode's \
+             classifier reviews these (and asks you when it blocks); the other modes ask";
         const ASK_NAMED_ENV: &str = "AskUser: protected path: `<base>/named/.env` (secrets); \
-             the policy always asks for these";
+             auto mode's classifier reviews these (and asks you when it blocks); the other \
+             modes ask";
+        const ASK_ENVRC: &str =
+            "AskUser: protected path: `.envrc` (secrets); the policy always asks for these";
         const BAD: &str = "review: path ``: path is empty";
         const OUTSIDE: &str = "review: `<base>/elsewhere/a.txt` is outside the project";
         const EDIT_NAMED: &str =
@@ -1137,6 +1181,8 @@ mod tests {
             match target {
                 "project" => "src/new.rs".into(),
                 "protected" => ".env".into(),
+                "runs-later" => ".envrc".into(),
+                "granted-hook" => at("named", ".git/hooks/pre-commit"),
                 "sealed" => ".rkat/x".into(),
                 "bad" => String::new(),
                 "outside" => at("elsewhere", "a.txt"),
@@ -1171,6 +1217,18 @@ mod tests {
         let writes: &[(&[&str], &str)] = &[
             (&["project"], "InProjectEdit: edit inside the project"),
             (&["protected"], ASK_ENV),
+            (&["runs-later"], ASK_ENVRC),
+            (
+                &["protected", "runs-later"],
+                "AskUser: protected paths: `.env` (secrets), `.envrc` (secrets); the policy \
+                 always asks for these",
+            ),
+            (
+                &["granted-hook"],
+                "Sealed: `<base>/named/.git/hooks/pre-commit` is sealed: file tools never \
+                 write the gate's own state (`.rkat/`, the realm and user config directories) \
+                 or the git directories",
+            ),
             (&["sealed"], SEALED),
             (
                 &["secret"],
@@ -1221,12 +1279,14 @@ mod tests {
             (
                 &["protected", "granted-protected"],
                 "AskUser: protected paths: `.env` (secrets), `<base>/named/.env` (secrets); \
-                 the policy always asks for these",
+                 auto mode's classifier reviews these (and asks you when it blocks); the other \
+                 modes ask",
             ),
             (
                 &["granted-protected", "protected"],
                 "AskUser: protected paths: `<base>/named/.env` (secrets), `.env` (secrets); \
-                 the policy always asks for these",
+                 auto mode's classifier reviews these (and asks you when it blocks); the other \
+                 modes ask",
             ),
             (&["project", "outside", "protected", "sealed"], SEALED),
         ];
@@ -1396,9 +1456,11 @@ mod tests {
         let raw_env = raw(&env);
         let decision = classify_tier(&parse("write_file", &raw_env), &RuleSet::default(), &ctx);
         assert_eq!(decision.tier, Tier::AskUser);
+        assert!(decision.content, "secrets are protected for their content");
         assert_eq!(
             decision.detail,
-            "protected path: `.env.local` (secrets); the policy always asks for these"
+            "protected path: `.env.local` (secrets); auto mode's classifier reviews these (and \
+             asks you when it blocks); the other modes ask"
         );
 
         let mut allow = RuleSet::default();

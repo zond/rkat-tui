@@ -696,6 +696,10 @@ pub(super) fn report_lines(report: &protocol::Report) -> Vec<String> {
             other => other.label().to_string(),
         }
     ));
+    lines.push(match &report.classifier_model {
+        Some(model) => format!("classifier: {model} (/auto stats shows its numbers)"),
+        None => "classifier: none configured (reviewed actions ask you; [auto] classifier_model sets one)".to_string(),
+    });
     lines.push(format!("realm rules: {}", report.realm_rules.display()));
     for input in &report.project_inputs {
         lines.push(format!("project {}: {}", input.path.display(), input.trust));

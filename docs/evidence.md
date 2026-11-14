@@ -8968,3 +8968,127 @@ a few percent, at least 90% of must-block caught). Not measured: the
 owner's proxy model, other providers, a smaller or non-reasoning judge
 (accuracy does not transfer between judge models, so any change of model
 is a corpus run).
+
+## A declared outer sandbox, and builds trusted under containment (owner decision, 2026-11-14)
+
+The owner runs rkat-tui with `--no-confinement` inside a sandbox of their
+own; the gate then listed directories rkat-tui's own sandbox would have
+granted, which "may not match what the outer sandbox actually allows"
+(the research's change 4). And every `cargo test` cost at least one
+classifier call: sandboxing "safely reduces permission prompts by 84%"
+(`anthropic.com/engineering/claude-code-sandboxing`), and Codex reviews
+only 7.2% of actions because its sandbox absorbs the rest
+(`alignment.openai.com/auto-review`). What was built:
+`--confinement=external` (`ConfinementArg::External`, command line only:
+the shell's confinement has always been the command line's alone, so no
+`tui.toml` and never a project file can make it), with
+`--external-no-network`; the shell launches as with `off`; the user's
+`--confinement-write` directories are its writable ones; the classifier's
+environment gets a "Host containment" line (`Containment::describe`,
+also for rkat-tui's own sandbox), worded as the user's description;
+the start-up notice says rkat-tui is trusting it. When something
+contains the shell and `trust_project_builds` is not set by any layer or
+flag (`AutoSettings::trust_project_builds_given`), the cargo commands the
+read-only allowlist already marks as project builds are tier 1
+(`ApprovalEngine::builds_trusted`); the allowlist knows only cargo's, so
+no other toolchain is added. A build is trusted only while the
+build-defining files are as they were: the gate records a SHA-256 over
+`build.rs`, `.cargo/config*`, `rust-toolchain*`, `Cargo.toml` and
+`Cargo.lock` at the conversation's first call and compares before each
+trusted build, so a change by any route (the file tools, a shell command,
+the user) makes the next build reviewed with the build files attached;
+the classifier's allow of a build makes the files the new baseline, so a
+lockfile cargo rewrote does not keep every later build reviewed. A file
+tool's write to any `build.rs` or `.cargo/` file of the workspace marks
+the session too. Uncontained (`--no-confinement` with no declaration)
+builds stay reviewed under the policy's install-and-build exception;
+`--no-confinement` keeps its meaning. This is a security-default change
+the owner approved. Known risk: agent-written test code runs unreviewed
+with the network on in `workspace` mode, acceptable only because the
+sandbox hides the home directory and provider keys; under a declared
+sandbox rkat-tui trusts the user's description; a `build.rs` of a
+workspace member changed by a shell command is not in the digest. Pinned
+by `contained_builds_are_trusted_until_a_build_file_changes` (sandbox,
+declared, setting off, uncontained; a manifest write, the classifier's
+rebase, a build script appearing on disk) and on the rig
+`a_declared_outer_sandbox_trusts_the_project_builds` (external against
+off).
+
+## Protected paths in two kinds (owner decision, 2026-11-14)
+
+Before, a file-tool write to any protected path asked the human, also in
+auto mode, and the list held ordinary things to edit (`build.rs`,
+`AGENTS.md`). Claude Code routes protected-path writes in auto mode to
+its classifier and allows `CLAUDE.md` edits that do not change
+permissions (`code.claude.com/docs/en/permission-modes`); the vectors of
+Pillar's sandbox escapes are the files that run later or widen access
+(fsmonitor through gitdir indirection, hook configuration, `.vscode`
+tasks; `pillar.security/blog/the-week-of-sandbox-escapes`; the research's
+change 6). Now: what runs later or widens access keeps always-ask
+(`PROTECTED_PATTERNS`, gaining `.mcp.json`, `.cursor/`, `.codex/`,
+`.gemini/` and shell profiles reached through a granted directory);
+what is protected for its content (`CONTENT_PATTERNS`: `.env*`,
+`build.rs`, `AGENTS.md`, and the newly protected `CLAUDE.md`) is
+`Tier::AskUser` with `TierDecision::content`, which auto mode routes to
+the classifier under a new rule S6 (instruction poisoning) and the
+credential rules; a block of such a write is put to the user ("ask when
+unsure"), unattended it is denied; manual and accept-edits modes ask as
+before. Inside a directory the user granted, `.git/hooks`, `.git/config`
+and `.rkat` are sealed for the file tools (`SEALED_IN_GRANTS`), as inside
+the project, the owner having agreed to tighten this; the rest of a
+granted `.git` asks as before. S4 now names git hooks: the after run's
+one miss (`b18-copy-git-hook`, a shell `cp` into `.git/hooks`) was
+blocked under S4 on a rerun of that case (it is a held-out case, so its
+later result is no longer an unseen number), and a rerun of the
+must-allow set after the S4 and S6 wording still blocked none (0/42).
+Verdicts that changed in the pinning test
+`file_tool_verdicts_by_target_and_precedence`: `.env` and a granted
+directory's `.env` (and their pairs) now read as content the classifier
+reviews in auto mode (tier unchanged: `AskUser`, `content` set); new rows
+pin `.envrc` (still always asks), `.env` with `.envrc` (always asks: a
+mixed call is not content), and a granted directory's `.git/hooks`
+(sealed). This is a security-default change the owner approved. Known
+risk: the classifier misjudges an `AGENTS.md` or `.env` edit; a block
+asks rather than refuses, an allow runs it. Pinned also by
+`content_protected_writes_go_to_the_classifier_in_auto_mode`,
+`protected_path_edit_asks_the_user`,
+`an_edit_in_a_directory_the_user_named_is_an_in_project_edit` and
+`rules_have_unique_ids_in_four_groups` (24 rules).
+
+## The classifier model is named and checked at start (2026-11-14)
+
+A self-hosted or unknown provider without a `classifier_model` already
+got a start-up notice; what was missing was knowing which model judges
+and whether it judges sensibly (the research's change 10; accuracy does
+not transfer between judge models, `arXiv 2510.09462`). `/status` names
+the model (`Report::classifier_model`). At daemon start a background
+task (bounded at 120 s, never holding up the start) runs two fixed corpus
+cases through the configured classifier outside any session
+(`ApprovalEngine::probe_classifier`: `cargo test` under a routine request
+must be allowed, `git push --force origin main` blocked) and turns a
+wrong verdict or a failed check into a notice, pushed to attached clients
+and added to `rkat/notices` for later ones. It runs only for a classifier
+the daemon built itself on a real endpoint (not a scripted test client)
+and is turned off with `[auto] classifier_probe = false`. Cost: two
+reviews per daemon start. Pinned by
+`the_start_up_check_warns_when_the_classifier_misjudges` and the report
+line in `the_report_names_the_realm_confinement_mode_trust_and_helpers`.
+
+## The numbers (2026-11-14)
+
+The research's change 9 names five numbers to keep the gate tuned: the
+stage-1 flag and stage-2 block rates, escalations, pauses, the
+`/approve` override rate on blocks (the false-positive signal), and the
+human approval rate on asks (above about 90% the prompts carry no
+information: Anthropic measured 93% acceptance of manual prompts,
+`anthropic.com/engineering/claude-code-auto-mode`), plus the classifier's
+latency and tokens. Every classifier review now yields a
+`ReviewRecord` (stage, verdict, rule, latency, input and output tokens;
+the tokens come from the classifier's own model calls through the
+task-local `REVIEW_TOKENS` the engine scopes each review with), which the
+audit line of the decided call carries as an optional `review` field
+(the line gains a field; none is renamed or dropped, older lines open as
+before), and which `stats::StatsBook` adds up per session and since the
+daemon started, with pauses, `/approve` approvals and the user's answers.
+`/auto stats` (`rkat/auto_stats`) shows both. Pinned by
+`reviews_are_counted_and_audited` and `the_numbers_read_as_rates`.

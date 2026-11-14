@@ -59,6 +59,62 @@ pub struct Environment {
     /// use (the confinement plan's grants, whether confinement is on or
     /// off).
     pub granted: GrantedDirs,
+    /// What contains the agent's shell.
+    pub containment: Containment,
+}
+
+/// What contains the agent's shell: rkat-tui's own sandbox, one the user
+/// declares (`--confinement=external`), or nothing. When something does,
+/// the project's builds and tests are trusted by default
+/// (`crate::approval::ApprovalEngine`), and the classifier is told.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Containment {
+    /// Nothing contains it (`--no-confinement`).
+    #[default]
+    None,
+    /// rkat-tui's sandbox (`workspace`, or `strict` without network).
+    Sandbox {
+        /// Whether the shell has an IP network.
+        network: bool,
+    },
+    /// A sandbox the user declares contains rkat-tui; rkat-tui trusts the
+    /// description.
+    External {
+        /// Whether the user says it has a network.
+        network: bool,
+    },
+}
+
+impl Containment {
+    /// Whether something contains the shell.
+    #[must_use]
+    pub fn contains(self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    /// The classifier's "Host containment" line (`None`: nothing contains
+    /// the shell).
+    #[must_use]
+    pub fn describe(self) -> Option<String> {
+        let net = |network: bool| {
+            if network {
+                "network allowed"
+            } else {
+                "no network"
+            }
+        };
+        match self {
+            Self::None => None,
+            Self::Sandbox { network } => Some(format!(
+                "Host containment: the agent's shell runs in rkat-tui's sandbox (writes only to the project and the directories listed here, {}).",
+                net(network)
+            )),
+            Self::External { network } => Some(format!(
+                "Host containment: the user declares that rkat-tui runs inside a sandbox of their own (writable: the directories the user named, {}); this is the user's description, not checked by rkat-tui.",
+                net(network)
+            )),
+        }
+    }
 }
 
 /// The directories outside the project the user allows the agent to write
@@ -156,7 +212,15 @@ impl Environment {
             default_branch: None,
             os: std::env::consts::OS.to_string(),
             granted: GrantedDirs::default(),
+            containment: Containment::None,
         }
+    }
+
+    /// The same environment with what contains the shell.
+    #[must_use]
+    pub fn with_containment(mut self, containment: Containment) -> Self {
+        self.containment = containment;
+        self
     }
 
     /// The same environment with the directories the user allows.
@@ -387,6 +451,14 @@ pub const MANIFEST_FILES: &[&str] = &[
 pub fn is_manifest(path: &str) -> bool {
     let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
     MANIFEST_FILES.contains(&name) || (name.starts_with("requirements") && name.ends_with(".txt"))
+}
+
+tokio::task_local! {
+    /// The tokens of the classifier's model calls within one review: the
+    /// engine scopes a review with it (`(input, output)`), and
+    /// [`LlmClassifier`] adds each call's usage, so the audit line and the
+    /// review numbers carry what the review cost.
+    pub static REVIEW_TOKENS: Arc<parking_lot::Mutex<(u64, u64)>>;
 }
 
 /// The classifier's verdict.
@@ -677,6 +749,15 @@ impl LlmClassifier {
         let projection = self.client.project_replay_request(&request.messages)?;
         let prepared = PreparedLlmRequest::from_projection(request, projection);
         let reply = collect_turn(&*self.client, &prepared).await?;
+        if let Some(usage) = &reply.usage {
+            let _ = REVIEW_TOKENS.try_with(|tokens| {
+                let mut tokens = tokens.lock();
+                tokens.0 += usage.input_tokens
+                    + usage.cache_read_tokens.unwrap_or(0)
+                    + usage.cache_creation_tokens.unwrap_or(0);
+                tokens.1 += usage.output_tokens;
+            });
+        }
         if let (Some(events), Some(usage)) = (&self.usage, reply.usage) {
             let _ = events.send(ApprovalEvent::ClassifierUsage {
                 session_id: session.clone(),

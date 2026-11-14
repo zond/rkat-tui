@@ -654,6 +654,8 @@ pub enum Effect {
     /// The rule picker's confirmed removal of session grant `id`, then the
     /// picker's list again.
     PickedGrantRemoval(u64),
+    /// `/auto stats`: the review numbers, as a notice.
+    AutoStats,
     /// `/approve`: open the picker over the calls the gate recently
     /// blocked (answered with [`Msg::ShowPicker`]).
     RequestApprovePicker,

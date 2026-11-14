@@ -344,6 +344,19 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
         approval_events,
         Some((Arc::clone(&state), Arc::clone(&registry))),
     );
+    // The start-up check of the classifier model: in the background,
+    // bounded, never holding up the start.
+    let probe_task = {
+        let engine = Arc::clone(&engine);
+        tokio::spawn(async move {
+            let checked =
+                tokio::time::timeout(std::time::Duration::from_mins(2), engine.probe_classifier())
+                    .await;
+            if checked.is_err() {
+                tracing::warn!("the classifier's start-up check did not finish in 120 s");
+            }
+        })
+    };
     let (desk, desk_task) = Desk::spawn(
         Arc::clone(&decisions),
         engine.escalation_timeout(),
@@ -369,6 +382,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
             notes_task,
             follower,
             destroyed_task,
+            probe_task,
         ],
         ledger,
         origins,

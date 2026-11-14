@@ -310,7 +310,8 @@ impl Local {
             method::Endpoint, protocol::SessionParams { session_id } => Ok(self.endpoint_of(&session_id).await);
             method::Usage, protocol::SessionParams { session_id } => self.usage(session_id).await;
             method::Tasks, protocol::SessionParams { session_id } => self.tasks(&session_id).await;
-            method::Notices, Empty {} => Ok(Notices { notices: self.parts.startup_notices.clone() });
+            method::Notices, Empty {} => Ok(self.notices());
+            method::AutoStats, Empty {} => Ok(self.auto_stats(&caller));
             method::Audit, protocol::AuditParams { lines } => self.audit_tail(&self.agent_of(&caller)?, lines.unwrap_or(AUDIT_LINES));
             method::Missed, Empty {} => self.missed(&caller);
             method::SetModel, params => self.set_model(&self.agent_of(&caller)?, params).await;

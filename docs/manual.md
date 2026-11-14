@@ -188,7 +188,7 @@ resumed sessions and helpers carry it too. First match wins:
 | 0 | A user **deny** rule matches, or `write_file` / `edit_file` / the engine's `blob_save_file` (or any target of a patch) is a **sealed** path: the project's `.rkat/` (its `tui.toml`, `mcp.toml`, hooks), every `.rkat` and every `.git` inside it, and, wherever they lie, the git directories governing the project (an enclosing repository's `.git` when the workspace is a subdirectory, a worktree's git dir and the common dir its `commondir` names, with the hooks), the realm directory (the workspace's state directory: `config.toml`, approvals, `tui.toml`, sessions, the audit log) and the user config directory (`~/.rkat/tui`: global rules, trust records). On a file system that resolves names ignoring case (macOS's default), every spelling counts: `.RKAT/` is the real `.rkat/` there and is sealed as well; on a case-sensitive one it is an ordinary directory. Neither the classifier nor an allow rule opens a sealed path, and reading one is not sealed (except the daemon's endpoint directories, below); a shell command that writes there is still judged by the classifier. The engine's own file tools refuse the same state again by themselves (Meerkat 0.9.12): any `.rkat` in the workspace, and the realm, the config directory, the user config document and the credential store when the command line puts them inside the workspace. The directories that hold the daemon's endpoint file and its attach token (`$XDG_STATE_HOME/rkat-tui/`, else `~/.local/state/rkat-tui/`, and `$XDG_RUNTIME_DIR/rkat-tui/`) are sealed for reads and searches too: `read_file`, `grep` and `glob` never open them, and a search above them skips them; so is the realm directory | denied |
 | 1 | Read-only tools (`read_file`, `glob`, `grep` inside the project, the agent's [scratch directory](#the-scratch-directory), or a directory you named with `--confinement-write`/`--confinement-read`, task tools, `memory_search`, `note_list`/`note_read`, `blob_inspect`, skill browsing, read-only `mob_*` queries, `delegate`, `fork`), read-only shell commands (`cat`, `ls`, `rg`, `git status/diff/log`, `cargo check/test` when builds are trusted, …; their output redirected into the scratch directory, and a leading `TMPDIR=<scratch directory>`), narrow user **allow** rules | allowed |
 | 2 | `write_file` / `edit_file` / `blob_save_file` where every target is inside the project, the agent's scratch directory, or a directory you named with `--confinement-write` or `[confinement] extra_write`, and not protected (`.rkat/`, `.git/` and any `.git` file, `.env*`, …, matched inside a named directory as inside the project); workspace notes | allowed (manual mode asks you) |
-| ask | `write_file` / `edit_file` / `blob_save_file` (or any target of a patch) is a **protected** path in the project: `.env*`, `.envrc`, `build.rs`, `.cargo/`, `rust-toolchain*`, `AGENTS.md`, `.claude/`, `.gitmodules`, `.gitattributes`, `tui.toml`, `.vscode/`, `.idea/`. Never the classifier, whatever auto mode's state: the dialog names each path and what it is (`protected path: .env.local (secrets); the policy always asks for these`). A user allow rule for the path (what the dialog's "allow and add a rule" adds) allows it, a deny rule denies it | asks you, every time |
+| ask | `write_file` / `edit_file` / `blob_save_file` (or any target of a patch) is a **protected** path in the project (or in a directory you granted). Two kinds. What **runs later or widens access**: `.envrc`, `.cargo/`, `rust-toolchain*`, `.claude/`, `.cursor/`, `.codex/`, `.gemini/`, `.mcp.json`, `.gitmodules`, `.gitattributes`, `tui.toml`, `.vscode/`, `.idea/`, shell profiles (`.bashrc`, `.zshrc`, `.profile`, …): never the classifier, the dialog names each path and what it is (`protected path: .envrc (secrets); the policy always asks for these`). What is protected for its **content**: `.env*`, `build.rs`, `AGENTS.md`, `CLAUDE.md`: in auto mode the classifier reviews it (rule S6, instruction poisoning, and the credential rules) and you are asked when it blocks; the other modes ask. A user allow rule for the path (what the dialog's "allow and add a rule" adds) allows it, a deny rule denies it | asks you (content: the classifier in auto mode) |
 | 3 | Everything else: other shell commands, MCP tools, web search, comms sends, mutating mob tools, out-of-project paths, user-level notes | classifier (manual and accept-edits modes ask you) |
 
 That is auto mode, the default [permission mode](#permission-modes); plan
@@ -335,6 +335,22 @@ up. A dialog's time limit runs while it is shown; when one goes
 unanswered for its whole limit, the questions of that agent queued
 behind it are denied as not answered too.
 
+**Which model judges, and how it does.** `/status` names the classifier
+model. When the daemon starts it checks the model in the background with
+two fixed cases (a routine `cargo test` that must be allowed and `git
+push --force origin main` that must be blocked; two reviews, a few
+thousand tokens) and warns when one comes out wrong ("the classifier
+model … misjudged a routine case: auto mode may block ordinary work;
+`[auto] classifier_model` chooses another"); `[auto] classifier_probe =
+false` turns the check off. `/auto stats` shows the numbers for this
+conversation and since the daemon started: reviews, how many the quick
+first stage flagged, blocks by rule, failed reviews, pauses, `/approve`
+overrides (the share of blocks you overrode: the false-block signal),
+how often you allowed what you were asked (near 100% means the questions
+carry no information), and the classifier's tokens and time. Each audit
+line of a reviewed call carries the same as a `review` field (stage,
+verdict, rule, latency, tokens).
+
 ### Approving a blocked call
 
 A classifier block in auto mode goes back to the agent without a dialog;
@@ -447,9 +463,37 @@ the foreground: background jobs are not available, see the evidence's
 | `workspace` (default) | the workspace, the temp dir, the Cargo home's `registry/` and `git/`, the user cache dir, each `--confinement-write` | the rest of the Cargo home (each entry as found at start: `bin/`, `config.toml`, `env`, …; never `credentials.toml` or `credentials`), the rustup home, `/usr/{local,share,include}`, `/opt`, `/etc/{ssl,pki,ca-certificates}`, each `--confinement-read`; the files `/etc/{resolv.conf,hosts,nsswitch.conf,host.conf,gai.conf,services,protocols,passwd,group,gitconfig}` | allowed |
 | `strict` | as `workspace` | as `workspace` | denied |
 | `off` (`--no-confinement`) | no sandbox | | the host's |
+| `external` | no sandbox of rkat-tui's: you declare one of your own contains rkat-tui; your `--confinement-write` directories are its writable ones | | as you declare (`--external-no-network`: none) |
 
 Command hooks and local MCP stdio servers are not confined. The mode is
-announced at start-up. Every shell call runs in durable process custody, so
+announced at start-up.
+
+**A sandbox of your own (`external`).** When you run rkat-tui inside a
+container or sandbox of your own, `--confinement=external` says so: the
+shell runs as with `off`, name what your sandbox lets commands write with
+`--confinement-write` (they become directories you named, as below), and
+add `--external-no-network` when it has no network. The classifier is
+told the containment as your description, the start-up notice says
+rkat-tui is trusting it (it cannot check it), and the project's builds
+are trusted as under rkat-tui's own sandbox (below). It is a command-line
+choice only; no `tui.toml`, and never a project's, can make it.
+
+**Builds and tests in a contained shell.** When rkat-tui's sandbox
+(`workspace`, `strict`) or a declared one (`external`) contains the shell
+and `trust_project_builds` is not set, the project's cargo builds, tests,
+linters and formatters (`cargo check`, `build`, `test`, `clippy`, `fmt
+--check`, `nextest`, `tree`, `metadata`) are tier 1: no classifier call.
+The gate keeps a digest of the build-defining files (`build.rs`,
+`.cargo/config*`, `rust-toolchain*`, `Cargo.toml`, `Cargo.lock`) from
+the conversation's first call; once one changes, through the agent's
+file tools or by any other route, the next build is reviewed (with the
+build files attached), and the classifier's allow makes the files as
+they are the new baseline. A `build.rs` of a workspace member is seen
+when the file tools write it, not when a shell command does. With
+`--no-confinement` builds stay reviewed (the policy allows them by its
+own exception); `--trust-project-builds` trusts them anyway, and
+`--no-trust-project-builds` or `[auto] trust_project_builds = false`
+keeps them reviewed in every mode. Every shell call runs in durable process custody, so
 an interrupted call leaves no process behind.
 
 **What a confined command sees.** On Linux it runs in an empty private
@@ -554,7 +598,9 @@ A directory you name is trusted by the gate as well: a `write_file` or
 the project (auto and accept-edits mode run it with no classifier call,
 manual mode asks, plan mode refuses, and its protected paths such as
 `.env` or `build.rs` still ask), and a `read_file`, `glob` or `grep`
-inside any directory you named is tier 1. The path is resolved first, so
+inside any directory you named is tier 1. Inside a directory you
+granted, a repository's `.git/hooks`, `.git/config` and any `.rkat` are
+sealed for the file tools, as they are inside the project. The path is resolved first, so
 a symbolic link inside the directory that points out of it does not carry
 the grant. The sandbox's own defaults (the temp directory, the caches)
 get only the classifier's context described below.
@@ -716,6 +762,14 @@ choice; after it, what a cautious user can do about it.
   stays open in the default mode. *To tighten:* `--confinement=strict`
   removes the network; nothing removes the two shared directories today,
   so keep secrets out of them.
+- **A contained shell runs the project's builds unreviewed.** Under
+  rkat-tui's sandbox, or one you declare with `--confinement=external`,
+  cargo builds and tests run without a classifier call until a
+  build-defining file changes, so test code the agent wrote runs with the
+  network on (in `workspace` mode). The sandbox keeps it out of your home
+  directory and provider keys; a declared sandbox is only as good as your
+  description of it. *To tighten:* `--no-trust-project-builds`, or
+  `--confinement=strict`.
 - **The classifier judges effects, so it lets ordinary writes outside
   the project run.** Creating files in temp directories and caches, and
   installs of what the project already declares, are allowed by the
@@ -961,6 +1015,7 @@ compact = "native"                       # or "warn" / "auto"; see "Context and 
 compact_warn_percent = 75
 compact_auto_percent = 85
 classifier_tools = true                  # stage 2 may read project files
+classifier_probe = true                  # check the classifier model at start
 
 [[allow]]
 tool = "shell"
@@ -988,7 +1043,8 @@ are never written to a file.
 | `auto.mode` (`"default"`/`"accept-edits"`/`"plan"`/`"auto"`; `/mode` writes it to the realm file) | `--set auto.mode=plan` | `"auto"` |
 | `auto.enabled` (`false` is `mode = "default"`) | `--no-auto` (= `false`) | `true` |
 | `auto.classifier_model` (not from a project file) | `--classifier-model <id>` | per-dialect default of the start-up endpoint |
-| `auto.trust_project_builds` | `--trust-project-builds` / `--no-trust-project-builds` | `false` |
+| `auto.trust_project_builds` | `--trust-project-builds` / `--no-trust-project-builds` | unset: trusted while a sandbox contains the shell and no build file changed |
+| `auto.classifier_probe` | `--set auto.classifier_probe=false` | `true` |
 | `auto.compact` (`"warn"`/`"auto"`) | `--auto-compact` / `--no-auto-compact` | `"warn"` |
 | `auto.compact_warn_percent` | `--set auto.compact_warn_percent=N` | `75` |
 | `auto.compact_auto_percent` | `--set auto.compact_auto_percent=N` | `85` |
@@ -1475,7 +1531,7 @@ feature by feature.
 `/help` (alias `/?`), `/quit` (aliases `/exit`, `/q`), `/detach`, `/agents [name]`, `/audit [n]`, `/schedules [pause|resume|delete <name>]`, `/daemon stop`, `/daemon start`, `/clear` (alias `/new`), `/resume [ref]`,
 `/permissions [list|add allow|deny <tool> [pattern]|rm <n>]` (`remove` for `rm`; alone, it opens a list of the rules and the grants in force: d then y removes the highlighted rule or session grant),
 `/approve` (the calls the gate recently blocked: Enter once, s for this session, a always; see [Approving a blocked call](#approving-a-blocked-call)),
-`/mode [default|accept-edits|plan|auto]`, `/auto [on|off|resume]`, `/model [[endpoint:]id|refresh]`,
+`/mode [default|accept-edits|plan|auto]`, `/auto [on|off|resume|stats]`, `/model [[endpoint:]id|refresh]`,
 `/remember <text>`, `/memory [workspace|user|system]`, `/init`, `/compact [now|status|<instructions>]`, `/context`, `/status`, `/export [file]`, `/usage` (aliases `/cost`, `/stats`), `/copy [N]`, `/trust`,
 `/helpers [list|expand|fold <label>|all]` (alias `/tasks`). `/status` prints the
 rkat-tui version, the model and its endpoint, the session id, the workspace

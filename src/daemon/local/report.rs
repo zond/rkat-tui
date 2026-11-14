@@ -301,6 +301,7 @@ impl Local {
             project_inputs,
             helper_depth,
             watches: agent.map_or_else(Vec::new, |agent| self.core.watches.describe(agent)),
+            classifier_model: self.core.engine.classifier_model().map(str::to_string),
         }
     }
 
@@ -329,6 +330,35 @@ impl Local {
         let session = self.session_of_caller(caller).ok();
         rows.grants = self.core.engine.grant_rows(session.as_ref());
         rows
+    }
+
+    /// `rkat/notices`: the start-up notices, and what the classifier's
+    /// start-up check found, once it did.
+    pub(super) fn notices(&self) -> Notices {
+        let mut notices = self.parts.startup_notices.clone();
+        if let Some(text) = self.core.engine.probe_notice() {
+            notices.push(StartupNotice::warn(text));
+        }
+        Notices { notices }
+    }
+
+    /// `rkat/auto_stats`: the review numbers since the daemon started and
+    /// for `caller`'s agent's conversation.
+    pub(super) fn auto_stats(&self, caller: &Caller) -> RuleOutcome {
+        let session = self.session_of_caller(caller).ok();
+        let (total, mine) = self.core.engine.review_stats(session.as_ref());
+        let model = self.core.engine.classifier_model().map_or_else(
+            || "no classifier model".to_string(),
+            |m| format!("classifier {m}"),
+        );
+        RuleOutcome {
+            ok: true,
+            text: format!(
+                "{model}\nthis conversation: {}\nsince the daemon started: {}",
+                mine.describe(),
+                total.describe()
+            ),
+        }
     }
 
     /// `rkat/blocked`: the calls of `caller`'s agent the gate recently

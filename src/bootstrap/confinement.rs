@@ -1041,6 +1041,9 @@ pub fn describe(mode: ConfinementArg) -> &'static str {
         ConfinementArg::Workspace => "confinement: workspace (network allowed)",
         ConfinementArg::Strict => "confinement: strict (workspace, network denied)",
         ConfinementArg::Off => "confinement: off (commands run unconfined)",
+        ConfinementArg::External => {
+            "confinement: external (commands run without rkat-tui's sandbox: you declared that a sandbox of your own contains rkat-tui, and rkat-tui trusts that description for the project's builds and tests and tells the classifier so)"
+        }
     }
 }
 
@@ -1073,7 +1076,7 @@ pub fn lower_with(
     host: &HostPaths,
     extra: &ExtraGrants,
 ) -> Result<Option<ExecutionConfinement>, ConfinementError> {
-    if mode == ConfinementArg::Off {
+    if matches!(mode, ConfinementArg::Off | ConfinementArg::External) {
         return Ok(None);
     }
     lower_planned(mode, workspace, plan_grants(workspace, host, extra)?)
@@ -1088,7 +1091,7 @@ fn lower_planned(
     let network = match mode {
         ConfinementArg::Workspace => IpNetworkAccess::Unrestricted,
         ConfinementArg::Strict => IpNetworkAccess::Denied,
-        ConfinementArg::Off => return Ok(None),
+        ConfinementArg::Off | ConfinementArg::External => return Ok(None),
     };
     if !workspace.is_absolute() {
         return Err(ConfinementError::RelativeWorkspace(workspace.to_path_buf()));
@@ -1172,7 +1175,12 @@ pub fn plan(
         );
     }
     let Some(requirement) = requirement else {
-        if !extra.is_empty() {
+        if mode == ConfinementArg::External {
+            notices.push(
+                "rkat-tui is trusting your description of the outer sandbox: it cannot check what that sandbox lets commands write or reach; the --confinement-write and tui.toml [confinement] directories are taken as its writable ones"
+                    .to_string(),
+            );
+        } else if !extra.is_empty() {
             notices.push(
                 "commands run unconfined: the --confinement-read/--confinement-write and tui.toml [confinement] directories tell only the approval gate where you allow the agent to work"
                     .to_string(),

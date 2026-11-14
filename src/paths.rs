@@ -43,10 +43,82 @@ pub const PROTECTED_PATTERNS: &[&str] = &[
     "**/build.rs",
     ".vscode/**",
     ".idea/**",
+    // Agent and MCP configuration of other tools, which run what it names.
+    ".mcp.json",
+    "**/.mcp.json",
+    ".cursor/**",
+    ".codex/**",
+    ".gemini/**",
+    // Shell profiles, when a directory the user granted holds them.
+    ".bashrc",
+    ".bash_profile",
+    ".profile",
+    ".zshrc",
+    ".zprofile",
+    ".zshenv",
+    ".config/fish/**",
     "AGENTS.md",
     "AGENTS.local.md",
     "**/AGENTS.md",
+    "CLAUDE.md",
+    "**/CLAUDE.md",
 ];
+
+/// The protected paths whose risk is their content, not that they run
+/// later or widen access: secrets, build scripts (a changed one makes the
+/// next build reviewed anyway) and agent instructions. In auto mode a
+/// file-tool write to one is the classifier's to judge (the instruction-
+/// poisoning and credential rules; the user is asked when it blocks); the
+/// other modes ask as for every protected path.
+pub const CONTENT_PATTERNS: &[&str] = &[
+    ".env",
+    ".env.*",
+    "**/.env",
+    "**/.env.*",
+    "build.rs",
+    "**/build.rs",
+    "AGENTS.md",
+    "AGENTS.local.md",
+    "**/AGENTS.md",
+    "CLAUDE.md",
+    "**/CLAUDE.md",
+];
+
+/// Patterns sealed for the file tools inside a directory the user granted,
+/// as they are inside the project: a repository's hooks and configuration,
+/// which git runs later, and rkat-tui's own state.
+pub const SEALED_IN_GRANTS: &[&str] = &[
+    ".git/hooks",
+    ".git/hooks/**",
+    ".git/config",
+    "**/.git/hooks",
+    "**/.git/hooks/**",
+    "**/.git/config",
+    ".rkat",
+    ".rkat/**",
+    "**/.rkat",
+    "**/.rkat/**",
+];
+
+fn content_set(fold_case: bool) -> &'static ProtectedSet {
+    static SET: OnceLock<ProtectedSet> = OnceLock::new();
+    static FOLDED: OnceLock<ProtectedSet> = OnceLock::new();
+    if fold_case {
+        FOLDED.get_or_init(|| ProtectedSet::build_with(CONTENT_PATTERNS, true))
+    } else {
+        SET.get_or_init(|| ProtectedSet::build(CONTENT_PATTERNS))
+    }
+}
+
+fn sealed_in_grants_set(fold_case: bool) -> &'static ProtectedSet {
+    static SET: OnceLock<ProtectedSet> = OnceLock::new();
+    static FOLDED: OnceLock<ProtectedSet> = OnceLock::new();
+    if fold_case {
+        FOLDED.get_or_init(|| ProtectedSet::build_with(SEALED_IN_GRANTS, true))
+    } else {
+        SET.get_or_init(|| ProtectedSet::build(SEALED_IN_GRANTS))
+    }
+}
 
 /// Compiled protected patterns. `All` is the fail-closed state used when any
 /// pattern fails to compile: every path counts as protected.
@@ -322,6 +394,21 @@ impl ProjectRoot {
     #[must_use]
     pub fn is_protected_relative(&self, relative: &Path) -> bool {
         protected_set(self.fold_case).is_match(relative)
+    }
+
+    /// Whether the protected `relative` path is protected for its content
+    /// ([`CONTENT_PATTERNS`]) rather than because it runs later or widens
+    /// access.
+    #[must_use]
+    pub fn is_content_relative(&self, relative: &Path) -> bool {
+        content_set(self.fold_case).is_match(relative)
+    }
+
+    /// Whether `relative` (inside a directory the user granted) is sealed
+    /// there ([`SEALED_IN_GRANTS`]).
+    #[must_use]
+    pub fn is_sealed_in_grant(&self, relative: &Path) -> bool {
+        sealed_in_grants_set(self.fold_case).is_match(relative)
     }
 
     /// Whether `path` lies at or below one of `dirs`, as this root's file

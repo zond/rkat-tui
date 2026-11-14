@@ -36,6 +36,13 @@ pub struct AutoSettings {
     /// bounded). On by default; off makes stage 2 decide from the attached
     /// context only, so file contents never reach the classifier.
     pub classifier_tools: bool,
+    /// Whether a layer or the command line set `trust_project_builds`
+    /// (unset, the project's builds are trusted when a sandbox contains the
+    /// shell: `crate::approval::ApprovalEngine`).
+    pub trust_project_builds_given: bool,
+    /// Whether the daemon checks the classifier model at start with two
+    /// fixed cases (`[auto] classifier_probe`, on by default).
+    pub classifier_probe: bool,
 }
 
 impl Default for AutoSettings {
@@ -48,6 +55,8 @@ impl Default for AutoSettings {
             compact_warn_percent: compaction.warn_percent,
             compact_auto_percent: compaction.auto_percent,
             classifier_tools: true,
+            trust_project_builds_given: false,
+            classifier_probe: true,
         }
     }
 }
@@ -97,6 +106,9 @@ pub struct AutoSection {
     /// See [`AutoSettings::classifier_tools`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub classifier_tools: Option<bool>,
+    /// See [`AutoSettings::classifier_probe`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub classifier_probe: Option<bool>,
 }
 
 /// How deep helpers may nest when none of the layers says.

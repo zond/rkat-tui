@@ -499,6 +499,52 @@ async fn the_agent_s_shell_gets_its_scratch_directory_as_tmpdir() {
     }
 }
 
+/// `--confinement=external`: the shell runs unconfined, the start-up
+/// notice says rkat-tui trusts the user's description, and the project's
+/// builds are trusted as under rkat-tui's own sandbox (no classifier call);
+/// with `--confinement=off` the same build is reviewed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_declared_outer_sandbox_trusts_the_project_builds() {
+    for (flag, reviewed) in [
+        ("--confinement=external", false),
+        ("--confinement=off", true),
+    ] {
+        let ws = Workspace::new();
+        std::fs::write(
+            ws.root.join("Cargo.toml"),
+            "[package]\nname = \"probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        let llm = ScriptedLlmClient::new(vec![
+            Step::Tool {
+                id: "b",
+                name: "shell",
+                args: json!({ "command": "cargo metadata --no-deps --format-version 1" }),
+            },
+            Step::Text("done"),
+        ]);
+        let classifier = rig::ScriptedClassifier::allowing(Vec::new());
+        let setup = Setup {
+            host_paths: Some(HostPaths::default()),
+            ..Setup::args(&[flag, "--external-no-network"]).classifier(Arc::clone(&classifier) as _)
+        };
+        let mut rig = Attached::start_with(&ws.root, &llm, setup).await;
+        rig.send(Effect::StartTurn("show the metadata".into()));
+        let _ = rig.turn_finished().await;
+        let shells = classifier.tools().iter().filter(|t| *t == "shell").count();
+        assert_eq!(shells > 0, reviewed, "{flag}: {:?}", classifier.tools());
+        if !reviewed {
+            assert!(
+                rig.notices()
+                    .contains("trusting your description of the outer sandbox"),
+                "{}",
+                rig.notices()
+            );
+        }
+        rig.quit().await;
+    }
+}
+
 /// The realm config's `[confinement]` table does not decide the agent
 /// shell's confinement: the command line does, so `--confinement=off`
 /// starts even when the table asks for the workspace preset (it was a

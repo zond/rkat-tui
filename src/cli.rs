@@ -101,14 +101,22 @@ pub struct Args {
     /// OS process confinement of the shell commands the session runs:
     /// `workspace` lets them write only the workspace, the temp dir, the
     /// Cargo home and the cache dir (network allowed), `strict` additionally
-    /// denies IP network access, `off` runs them unconfined. A mode this host
-    /// cannot enforce (e.g. no unprivileged user namespaces) refuses to start.
+    /// denies IP network access, `off` runs them unconfined, `external`
+    /// runs them unconfined because you declare that a sandbox of your own
+    /// contains rkat-tui (name its writable directories with
+    /// --confinement-write; rkat-tui trusts your description). A mode this
+    /// host cannot enforce (e.g. no unprivileged user namespaces) refuses
+    /// to start.
     #[arg(long, value_enum, value_name = "MODE", default_value_t = ConfinementArg::Workspace)]
     pub confinement: ConfinementArg,
 
     /// Launch processes unconfined (same as `--confinement off`).
     #[arg(long)]
     pub no_confinement: bool,
+
+    /// With `--confinement=external`: your sandbox has no network.
+    #[arg(long)]
+    pub external_no_network: bool,
 
     /// Let confined commands read this directory (absolute, existing, no
     /// symbolic link on the way, disjoint from the workspace and the other
@@ -330,6 +338,11 @@ pub enum ConfinementArg {
     Strict,
     /// Launch as the trusted host, with no OS confinement.
     Off,
+    /// You declare that a sandbox of your own contains rkat-tui: commands
+    /// run as with `off`, your `--confinement-write` directories are its
+    /// writable ones, and the gate and the classifier take your word for
+    /// the containment (`--external-no-network` when it has no network).
+    External,
 }
 
 impl ConfinementArg {
@@ -340,6 +353,7 @@ impl ConfinementArg {
             Self::Workspace => "workspace",
             Self::Strict => "strict",
             Self::Off => "off",
+            Self::External => "external",
         }
     }
 }
@@ -485,6 +499,16 @@ mod tests {
         assert_eq!(args.effective_confinement(), ConfinementArg::Strict);
         let args = Args::try_parse_from(["rkat-tui", "--confinement", "off"]).unwrap();
         assert_eq!(args.effective_confinement(), ConfinementArg::Off);
+        let args = Args::try_parse_from([
+            "rkat-tui",
+            "--confinement",
+            "external",
+            "--external-no-network",
+        ])
+        .unwrap();
+        assert_eq!(args.effective_confinement(), ConfinementArg::External);
+        assert!(args.external_no_network);
+        assert_eq!(ConfinementArg::External.name(), "external");
         let args =
             Args::try_parse_from(["rkat-tui", "--confinement", "strict", "--no-confinement"])
                 .unwrap();

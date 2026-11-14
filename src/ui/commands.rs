@@ -44,6 +44,8 @@ pub enum AutoCommand {
     Off,
     /// Resume after a denial-limit pause.
     Resume,
+    /// The review numbers (`/auto stats`).
+    Stats,
 }
 
 /// `/model` subcommands.
@@ -471,8 +473,8 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "auto",
         aliases: &[],
-        usage: "[on | off | resume]",
-        summary: "show the mode; switch auto mode on, off, or resume it",
+        usage: "[on | off | resume | stats]",
+        summary: "show the mode; switch auto mode on, off, or resume it; its numbers",
         help: &[
             (
                 "/auto",
@@ -481,6 +483,10 @@ pub static COMMANDS: &[CommandSpec] = &[
             (
                 "/auto on|off|resume",
                 "auto mode (= /mode auto), manual mode (= /mode default), or\nresume auto mode after a denial pause",
+            ),
+            (
+                "/auto stats",
+                "the classifier's reviews, stage-1 flags, blocks by rule, pauses,\n/approve overrides, how often you allow what is asked, its tokens\nand time, for this conversation and since the daemon started",
             ),
         ],
         parse: parse_auto,
@@ -750,6 +756,7 @@ fn parse_auto(rest: &str) -> Option<Command> {
         ["on"] => Some(Command::Auto(AutoCommand::On)),
         ["off"] => Some(Command::Auto(AutoCommand::Off)),
         ["resume"] => Some(Command::Auto(AutoCommand::Resume)),
+        ["stats"] => Some(Command::Auto(AutoCommand::Stats)),
         _ => None,
     }
 }

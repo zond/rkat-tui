@@ -501,11 +501,22 @@ pub async fn assemble(
     let helper_depth = layered.helpers.max_depth;
     let search_limits = layered.search;
     let daemon_principal = layered.daemon_principal.clone();
+    let containment = {
+        use crate::approval::classifier::Containment;
+        match args.effective_confinement() {
+            crate::cli::ConfinementArg::Workspace => Containment::Sandbox { network: true },
+            crate::cli::ConfinementArg::Strict => Containment::Sandbox { network: false },
+            crate::cli::ConfinementArg::Off => Containment::None,
+            crate::cli::ConfinementArg::External => Containment::External {
+                network: !args.external_no_network,
+            },
+        }
+    };
     let approval = approval::build(
         &scope,
         layered,
         approval_notices,
-        confinement.granted.clone(),
+        (confinement.granted.clone(), containment),
         approval::ClassifierSource {
             factory: &factory,
             config: &effective,

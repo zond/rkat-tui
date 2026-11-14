@@ -1674,7 +1674,7 @@ async fn every_gate_decision_is_one_audit_line_naming_who_decided() {
         Step::Tool {
             id: "w1",
             name: "write_file",
-            args: json!({"path": ".env", "content": "X=1\n"}),
+            args: json!({"path": ".envrc", "content": "export X=1\n"}),
         },
         Step::Tool {
             id: "r2",
@@ -1750,7 +1750,7 @@ async fn every_gate_decision_is_one_audit_line_naming_who_decided() {
             .contains("not that one"),
         "{blocked:?}"
     );
-    let human = one(".env");
+    let human = one(".envrc");
     assert_eq!(human.verdict.as_deref(), Some("allow"));
     assert!(
         human.decider.as_deref().unwrap_or("").starts_with("human:"),

@@ -130,7 +130,7 @@ pub(crate) async fn build(
     scope: &RuntimeScope,
     layered: config::Layered,
     mut notices: Vec<String>,
-    granted: GrantedDirs,
+    (granted, containment): (GrantedDirs, crate::approval::classifier::Containment),
     source: ClassifierSource<'_>,
     overrides: &ApprovalOverrides,
 ) -> Result<ApprovalParts, TuiError> {
@@ -141,10 +141,16 @@ pub(crate) async fn build(
     let cwd = std::env::current_dir().map_err(|e| TuiError::io("read current directory", e))?;
     let environment = Environment::detect(scope.project_root.as_path(), &cwd)
         .await
-        .with_granted(granted);
+        .with_granted(granted)
+        .with_containment(containment);
+    // The model the classifier runs on, and whether the start-up check
+    // runs against it (not for a scripted client, nor when turned off).
+    let mut model = None;
     let classifier = match &overrides.classifier {
         Some(classifier) => Arc::clone(classifier),
         None => {
+            let probe = layered.settings.classifier_probe && source.llm_override.is_none();
+            let named = classifier_model(&layered.settings, source.provider);
             let (classifier, notice) = make_classifier(
                 &layered.settings,
                 source,
@@ -152,6 +158,9 @@ pub(crate) async fn build(
                 events_tx.clone(),
             )
             .await;
+            if notice.is_none() {
+                model = named.map(|named| (named, probe));
+            }
             notices.extend(notice);
             classifier
         }
@@ -171,6 +180,9 @@ pub(crate) async fn build(
         events: events_tx,
         realm_file: Some(realm_file.clone()),
     });
+    if let Some((model, probe)) = model {
+        engine.set_classifier_model(model, probe);
+    }
     Ok(ApprovalParts {
         engine,
         realm_file: Some(realm_file),

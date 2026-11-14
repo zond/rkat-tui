@@ -36,6 +36,22 @@
 - The approval dialog has a fourth row, "Yes, for this session (…)", with
   the same session grant (`2` or `t`); allow and add a rule moved to `3`,
   no to `4`.
+- `--confinement=external` declares that a sandbox of your own contains
+  rkat-tui: commands run as with `--no-confinement`, your
+  `--confinement-write` directories are taken as its writable ones,
+  `--external-no-network` says it has no network, and the classifier is
+  told the containment as your description. The start-up notice says
+  rkat-tui is trusting it.
+- `/auto stats` shows the classifier's numbers for this conversation and
+  since the daemon started: reviews, stage-1 flags, blocks by rule,
+  failed reviews, pauses, `/approve` overrides, how often you allowed what
+  you were asked, and its tokens and time. Every audit line of a reviewed
+  call gains a `review` field (stage, verdict, rule, latency, tokens).
+- `/status` names the classifier model. At start the daemon checks it in
+  the background with two fixed cases (a routine `cargo test` that must
+  be allowed, a force push to the default branch that must be blocked)
+  and warns when it misjudges one; `[auto] classifier_probe = false`
+  turns the check off.
 - A permission corpus: 46 must-allow, 44 must-block and 12 scope-pair
   cases (`tests/corpus/permissions/`), a test that runs every case through
   the deterministic tiers in the gate, and an ignored runner that sends
@@ -65,6 +81,26 @@
   branch the agent made. The classifier is told the files the session's
   file tools created outside the project (deleting them is its own
   business) and whether they changed a dependency manifest.
+- When something contains the shell (rkat-tui's sandbox, the default, or
+  a declared outer one) and `trust_project_builds` is not set, the
+  project's cargo builds and tests (`check`, `build`, `test`, `clippy`,
+  `fmt --check`, `nextest`, …) run without a classifier call, until a
+  build-defining file changes in the session (`build.rs`, `.cargo/`,
+  `rust-toolchain*`, `Cargo.toml`, `Cargo.lock`, through the file tools
+  or on disk): the next build is reviewed, and its allow makes the files
+  the new baseline. With `--no-confinement` builds stay reviewed;
+  `trust_project_builds = false` keeps them reviewed everywhere.
+- Protected paths come in two kinds. Those that run later or widen
+  access always ask (git attributes and modules, `.cargo/`,
+  `rust-toolchain*`, `.envrc`, editor and other agents' configuration,
+  `.mcp.json`, shell profiles, `tui.toml`); the new ones are `.mcp.json`,
+  `.cursor/`, `.codex/`, `.gemini/`, shell profiles and `CLAUDE.md`. Those
+  protected for their content (`.env*`, `build.rs`, `AGENTS.md`,
+  `CLAUDE.md`) go to the classifier in auto mode, under a new rule S6
+  (instruction poisoning), and you are asked when it blocks; manual and
+  accept-edits modes ask as before. Inside a directory you granted, a
+  file tool never writes `.git/hooks`, `.git/config` or `.rkat`, as
+  inside the project. S4 now names git hooks.
 - A classifier block tells the agent its rule and not to work around it,
   but to choose a materially safer way or ask you. A review that could
   not be completed (the classifier timed out, its provider failed) is

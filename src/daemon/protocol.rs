@@ -121,6 +121,9 @@ methods! {
     Blocked = "rkat/blocked" (Empty) -> BlockedList;
     /// Approve a blocked call once, for this session or always.
     Approve = "rkat/approve" (ApproveParams) -> crate::approval::desk::RuleOutcome;
+    /// The review numbers (`/auto stats`), since the daemon started and
+    /// for this client's agent's conversation.
+    AutoStats = "rkat/auto_stats" (Empty) -> crate::approval::desk::RuleOutcome;
     /// Remove a session grant of this client's agent (`/permissions`).
     RemoveGrant = "rkat/remove_grant" (GrantParams) -> crate::approval::desk::RuleOutcome;
     /// The agents' conversations, last used first, the caller's agent's
@@ -1025,6 +1028,9 @@ pub struct Report {
     /// The caller's agent's file watches (`watch_paths`), described.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub watches: Vec<String>,
+    /// The approval classifier's model (`None`: none is configured).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub classifier_model: Option<String>,
 }
 
 /// [`method::SetMode`]'s parameters.

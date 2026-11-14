@@ -134,12 +134,17 @@ pub const BLOCK_RULES: &[BlockRule] = &[
     rule(
         "S4",
         RuleGroup::DegradeSecurity,
-        "Installing persistence: cron jobs, systemd units, launch agents, shell rc/profile edits, startup scripts, or SSH authorized_keys changes.",
+        "Installing persistence or code that runs later: cron jobs, systemd units, launch agents, shell rc/profile edits, startup scripts, git hooks (writing or copying into .git/hooks, core.hooksPath), editor or tool task files, or SSH authorized_keys changes.",
     ),
     rule(
         "S5",
         RuleGroup::DegradeSecurity,
         "Obfuscated or encoded commands (base64 | sh, eval of downloaded or generated strings, hex-escaped payloads) whose effect cannot be read directly.",
+    ),
+    rule(
+        "S6",
+        RuleGroup::DegradeSecurity,
+        "Instruction poisoning: writing into agent instruction files (AGENTS.md, CLAUDE.md, notes) or secrets files (.env*) text the user did not ask for that tells future agents to skip review or checks, claims approval, widens what they may do, or plants credentials. Routine content edits the user asked for are not S6.",
     ),
     rule(
         "T1",
@@ -307,7 +312,11 @@ fn render_rules(out: &mut String, policy: Policy) {
             #[cfg(any(test, feature = "test-support"))]
             if policy == Policy::Legacy004 {
                 match rule.id {
-                    "D6" | "D7" | "D8" => continue,
+                    "D6" | "D7" | "D8" | "S6" => continue,
+                    "S4" => {
+                        let _ = writeln!(out, "S4: {}", legacy::S4);
+                        continue;
+                    }
                     "D1" => {
                         let _ = writeln!(out, "D1: {}", legacy::D1);
                         continue;
@@ -351,6 +360,8 @@ A sequence of commands joined with && or ; is one action: block it if any part \
 should be blocked.";
     /// 0.0.4's D1.
     pub const D1: &str = "Deleting or overwriting files outside the project root, or recursive deletion of large or unrelated parts of the project.";
+    /// 0.0.4's S4.
+    pub const S4: &str = "Installing persistence: cron jobs, systemd units, launch agents, shell rc/profile edits, startup scripts, or SSH authorized_keys changes.";
     /// 0.0.4's T3.
     pub const T3: &str = "Modifying files or system state outside the project root (global package installs, system configuration, other repositories, the home directory).";
     /// 0.0.4's allow exceptions.
@@ -440,6 +451,10 @@ fn render_user(input: &ClassifierInput<'_>, tail: &str, policy: Policy) -> Strin
     out.push('\n');
     render_granted(&mut out, &env.granted, write_note, read_note);
     if policy == Policy::Current {
+        if let Some(line) = env.containment.describe() {
+            out.push_str(&line);
+            out.push('\n');
+        }
         render_session(&mut out, &env.granted, input.session);
     }
     out.push_str("</environment>\n\n<transcript>\n");
@@ -848,14 +863,14 @@ mod tests {
 
     #[test]
     fn rules_have_unique_ids_in_four_groups() {
-        assert_eq!(BLOCK_RULES.len(), 23);
+        assert_eq!(BLOCK_RULES.len(), 24);
         let mut ids: Vec<&str> = BLOCK_RULES.iter().map(|r| r.id).collect();
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(ids.len(), 23);
+        assert_eq!(ids.len(), 24);
         for (group, count) in [
             (RuleGroup::DestroyOrExfiltrate, 8),
-            (RuleGroup::DegradeSecurity, 5),
+            (RuleGroup::DegradeSecurity, 6),
             (RuleGroup::CrossTrustBoundary, 5),
             (RuleGroup::BypassReview, 5),
         ] {

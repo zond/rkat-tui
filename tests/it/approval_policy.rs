@@ -167,17 +167,32 @@ fn in_project_edit_is_tier_two() {
 #[test]
 fn protected_path_edit_asks_the_user() {
     let h = harness(Options::default());
-    for path in [".env", ".env.local", "build.rs", "AGENTS.md", ".gitmodules"] {
+    // Content (2026-11-14): auto mode's classifier reviews these; what runs
+    // later always asks.
+    for (path, content) in [
+        (".env", true),
+        (".env.local", true),
+        ("build.rs", true),
+        ("AGENTS.md", true),
+        ("CLAUDE.md", true),
+        (".gitmodules", false),
+        (".envrc", false),
+        (".cargo/config.toml", false),
+        (".mcp.json", false),
+    ] {
         let decision = h.decide(
             "edit_file",
             &json!({"path": path, "old_string": "", "new_string": "x"}),
         );
         assert_eq!(decision.tier, Tier::AskUser, "{path}");
+        assert_eq!(decision.content, content, "{path}");
+        let tail = if content {
+            "the other modes ask"
+        } else {
+            "the policy always asks for these"
+        };
         assert!(
-            decision.detail.contains(&format!("`{path}`"))
-                && decision
-                    .detail
-                    .ends_with("the policy always asks for these"),
+            decision.detail.contains(&format!("`{path}`")) && decision.detail.ends_with(tail),
             "{}",
             decision.detail
         );

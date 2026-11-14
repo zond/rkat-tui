@@ -287,7 +287,7 @@ async fn a_deny_comment_reaches_the_model_as_the_tool_error() {
         Step::Tool {
             id: "w1",
             name: "write_file",
-            args: json!({ "path": ".env.local", "content": "TOKEN=1\n" }),
+            args: json!({ "path": ".envrc", "content": "TOKEN=1\n" }),
         },
         Step::Text("understood"),
     ]);
@@ -304,7 +304,7 @@ async fn a_deny_comment_reaches_the_model_as_the_tool_error() {
         },
     ));
     assert_eq!(rig.turn_finished().await.expect("turn").text, "understood");
-    assert!(!ws.root.join(".env.local").exists());
+    assert!(!ws.root.join(".envrc").exists());
     let result = tool_result(&llm.requests()[1], "w1");
     assert!(result.is_error);
     let text = result.text_content();
@@ -364,20 +364,20 @@ async fn a_resumed_session_reseeds_the_classifier_transcript() {
     rig.quit().await;
 }
 
-/// A protected write (`.env.local`) goes to the human, not the classifier
+/// A protected write (`.envrc`) goes to the human, not the classifier
 /// (scripted to allow): the dialog names the path and why; "deny" denies
 /// it, "allow + rule" runs it and adds a rule for that file, and the next
 /// identical write runs without a dialog.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_protected_write_asks_the_user_and_allow_always_stops_the_prompts() {
     let ws = Workspace::new();
-    let target = ws.root.join(".env.local");
+    let target = ws.root.join(".envrc");
     let classifier = ScriptedClassifier::new(vec![
         Ok(ClassifierVerdict::allow("ok")),
         Ok(ClassifierVerdict::allow("ok")),
         Ok(ClassifierVerdict::allow("ok")),
     ]);
-    let write = |content: &str| json!({ "path": ".env.local", "content": content });
+    let write = |content: &str| json!({ "path": ".envrc", "content": content });
     let llm = ScriptedLlmClient::new(vec![
         Step::Tool {
             id: "w1",
@@ -409,7 +409,7 @@ async fn a_protected_write_asks_the_user_and_allow_always_stops_the_prompts() {
     assert_eq!(prompt.classifier_hint, None, "no classifier opinion");
     assert_eq!(
         prompt.policy_reason.as_deref(),
-        Some("protected path: `.env.local` (secrets); the policy always asks for these")
+        Some("protected path: `.envrc` (secrets); the policy always asks for these")
     );
     rig.send(Effect::RespondEscalation(
         id,
@@ -446,7 +446,7 @@ async fn a_protected_write_asks_the_user_and_allow_always_stops_the_prompts() {
     let listed = listed["text"].as_str().unwrap().to_string();
     let added: Vec<&str> = listed.lines().filter(|l| l.contains("allow ")).collect();
     assert_eq!(added.len(), 1, "{listed}");
-    assert!(added[0].contains("allow write_file .env.local"), "{listed}");
+    assert!(added[0].contains("allow write_file .envrc"), "{listed}");
 
     rig.send(Effect::StartTurn("change it".into()));
     assert_eq!(rig.turn_finished().await.expect("turn").text, "second");

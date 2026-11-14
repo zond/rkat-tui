@@ -734,7 +734,7 @@ async fn a_classifier_allowed_call_gets_a_note_and_a_tier1_call_does_not() {
     rig.quit().await;
 }
 
-/// The model writes a protected `.env.test`: even with a classifier that
+/// The model writes a protected `.envrc`: even with a classifier that
 /// allows everything, the UI gets an escalation naming the protected path;
 /// answering allow runs the write.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -744,7 +744,7 @@ async fn a_protected_write_is_put_to_the_user_and_runs_when_allowed() {
         Step::Tool {
             id: "env",
             name: "write_file",
-            args: json!({ "path": ".env.test", "content": "API_URL=http://localhost\n" }),
+            args: json!({ "path": ".envrc", "content": "API_URL=http://localhost\n" }),
         },
         Step::Text("configured"),
     ]);
@@ -759,13 +759,13 @@ async fn a_protected_write_is_put_to_the_user_and_runs_when_allowed() {
         prompt
             .policy_reason
             .as_deref()
-            .is_some_and(|r| r.contains("protected path: `.env.test` (secrets)")),
+            .is_some_and(|r| r.contains("protected path: `.envrc` (secrets)")),
         "{prompt:?}"
     );
     rig.send(Effect::RespondEscalation(id, EscalationAnswer::AllowOnce));
     assert_eq!(rig.turn_finished().await.expect("turn").text, "configured");
     assert_eq!(
-        std::fs::read_to_string(ws.root.join(".env.test")).unwrap(),
+        std::fs::read_to_string(ws.root.join(".envrc")).unwrap(),
         "API_URL=http://localhost\n"
     );
     assert!(

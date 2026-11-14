@@ -512,6 +512,7 @@ fn project_auto_without(project: AutoSection, cli: &AutoSection) -> AutoSection 
             cli.compact_auto_percent.is_some(),
         ),
         classifier_tools: keep(project.classifier_tools, cli.classifier_tools.is_some()),
+        classifier_probe: keep(project.classifier_probe, cli.classifier_probe.is_some()),
     }
 }
 
@@ -531,6 +532,10 @@ fn apply_auto(settings: &mut AutoSettings, mode: &mut PermissionMode, auto: &Aut
     }
     if let Some(trust) = auto.trust_project_builds {
         settings.trust_project_builds = trust;
+        settings.trust_project_builds_given = true;
+    }
+    if let Some(probe) = auto.classifier_probe {
+        settings.classifier_probe = probe;
     }
     if let Some(mode) = auto.compact {
         settings.compact = mode;

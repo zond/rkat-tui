@@ -30,6 +30,26 @@ pub struct DecisionRecord<'a> {
     pub decider: String,
     /// Why it was denied.
     pub reason: Option<String>,
+    /// The classifier's review of it, when one ran.
+    pub review: Option<ReviewRecord>,
+}
+
+/// One classifier review, as the audit log records it beside the decision.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ReviewRecord {
+    /// The stage that decided: 1 (the quick check allowed it) or 2.
+    pub stage: u8,
+    /// `allow`, `block`, or `error` (the review could not be completed).
+    pub verdict: String,
+    /// The block rule named, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule: Option<String>,
+    /// How long the review took, in milliseconds.
+    pub latency_ms: u64,
+    /// The classifier's input tokens (cache reads and writes included).
+    pub input_tokens: u64,
+    /// Its output tokens.
+    pub output_tokens: u64,
 }
 
 /// Where the gate's audit lines go.

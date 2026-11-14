@@ -1162,6 +1162,12 @@ impl Runner {
             Effect::PickedRuleRemoval(n) => self.rule_picker(Some(n)),
             Effect::PickedGrantRemoval(id) => self.grant_removal(id),
             Effect::RequestApprovePicker => self.approve_picker(None),
+            Effect::AutoStats => {
+                self.outcome_command::<protocol::method::AutoStats>(
+                    protocol::Empty {},
+                    "/auto stats",
+                );
+            }
             Effect::PickedApproval(id, scope) => self.approve_picker(Some((id, scope))),
             Effect::ListRules => {
                 self.outcome_command::<protocol::method::Rules>(RuleCommand::List, "/permissions");
@@ -1618,6 +1624,7 @@ mod tests {
             }],
             helper_depth: 1,
             watches: Vec::new(),
+            classifier_model: Some("claude-haiku-5-5".into()),
         };
         assert_eq!(
             report_lines(&report),
@@ -1625,6 +1632,7 @@ mod tests {
                 "realm: /w/.rkat/tui (id tui)",
                 "shell confinement: workspace",
                 "permission mode: auto, PAUSED (consecutive denials 1/3, total 2/20)",
+                "classifier: claude-haiku-5-5 (/auto stats shows its numbers)",
                 "realm rules: /w/.rkat/tui/tui.toml",
                 "project /w/.rkat/mcp.toml: not trusted: it changed",
                 "helpers: depth limit on (max_depth 1: the agent's helpers start none of their own)",

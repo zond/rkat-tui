@@ -178,6 +178,7 @@ pub fn daemon_argv(args: &Args, workspace: &Path) -> Vec<OsString> {
         (args.trust_project_builds, "--trust-project-builds"),
         (args.no_trust_project_builds, "--no-trust-project-builds"),
         (args.no_confinement, "--no-confinement"),
+        (args.external_no_network, "--external-no-network"),
         (args.no_auto, "--no-auto"),
         (args.trust_project, "--trust-project"),
         (args.wait_for_mcp, "--wait-for-mcp"),
