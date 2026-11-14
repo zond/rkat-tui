@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.0.4] - 2026-11-14
+
 ### Added
 
 - `/wire` wires your agent to an agent of another workspace (another
