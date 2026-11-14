@@ -60,6 +60,7 @@ async fn a_classifier_block_reaches_the_model_and_the_run_continues() {
         reason: "touches files outside the project".into(),
         annotation: Some("[classifier checked 0 files]".into()),
         path: None,
+        effect: None,
     })]);
     let llm = ScriptedLlmClient::new(vec![
         Step::Tool {
@@ -335,6 +336,7 @@ async fn a_resumed_session_reseeds_the_classifier_transcript() {
         reason: "no".into(),
         annotation: None,
         path: None,
+        effect: None,
     })]);
     let second = ScriptedLlmClient::new(vec![
         Step::Tool {

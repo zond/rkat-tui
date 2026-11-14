@@ -547,6 +547,7 @@ async fn a_blocked_write_is_approved_for_the_session_through_the_daemon() {
                 reason: "it writes outside the project".into(),
                 annotation: None,
                 path: Some(target.clone()),
+                effect: None,
             }]),
             ..ScriptedClassifier::default()
         }),
@@ -577,7 +578,7 @@ async fn a_blocked_write_is_approved_for_the_session_through_the_daemon() {
         "{note}"
     );
     let id = daemon.engine().blocked(&daemon.session)[0].id;
-    client.send(Effect::PickedApproval(id, GrantScope::Session));
+    client.send(Effect::PickedApproval(id, GrantScope::Session, None));
     client
         .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text.starts_with("granted for this session")))
         .await;
@@ -1693,6 +1694,7 @@ async fn every_gate_decision_is_one_audit_line_naming_who_decided() {
             reason: "not that one".into(),
             annotation: None,
             path: None,
+            effect: None,
         },
     ]);
     let setup = rig::Setup::default().classifier(Arc::clone(&classifier) as _);
@@ -1791,4 +1793,88 @@ async fn every_gate_decision_is_one_audit_line_naming_who_decided() {
         })
         .await;
     client.quit().await;
+}
+
+/// `/auto model` reaches the daemon (`rkat/set_classifier_model`): a model
+/// of an endpoint the daemon does not have is refused with what to do,
+/// and a daemon whose classifier is fixed (a test's) keeps it, saying so;
+/// neither changes the model `/status` names.
+#[tokio::test]
+async fn the_classifier_model_change_is_refused_for_an_unknown_endpoint() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let setup = Setup::default();
+    let daemon = start(&ws.root, &llm, &setup).await;
+    let connection = daemon.connect_bound().await;
+    let before =
+        connection.call("rkat/report", json!({})).await.unwrap()["classifier_model"].clone();
+    let unknown = connection
+        .call(
+            "rkat/set_classifier_model",
+            json!({"endpoint": "nowhere", "model": "m"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unknown["ok"], false, "{unknown}");
+    let text = unknown["text"].as_str().unwrap();
+    assert!(
+        text.contains("no endpoint `nowhere`") && text.contains("[endpoints.nowhere]"),
+        "{text}"
+    );
+    let fixed = connection
+        .call(
+            "rkat/set_classifier_model",
+            json!({"endpoint": "anthropic", "model": "claude-haiku-5-5"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(fixed["ok"], false, "{fixed}");
+    let after =
+        connection.call("rkat/report", json!({})).await.unwrap()["classifier_model"].clone();
+    assert_eq!(before, after);
+}
+
+/// A mode change is in the agent's context before the prompt sent right
+/// after it starts a run (the flaky `plan_mode_refuses_a_write_and_the_model_reads_why`
+/// of 2026-11-14): the change's note is held back, the prompt is sent
+/// meanwhile; it waits for the change to end, and the run reads the note.
+/// Before the fix the prompt went at once and its request had no note.
+#[tokio::test]
+async fn a_prompt_after_a_mode_change_waits_for_its_note() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![Step::Text("planned")]);
+    let setup = Setup::default();
+    let daemon = start(&ws.root, &llm, &setup).await;
+    let connection = Arc::new(daemon.connect_bound().await);
+    let local = daemon.local();
+    let hold = local.hold_mode_notes().await;
+    let set = {
+        let connection = Arc::clone(&connection);
+        tokio::spawn(async move {
+            connection
+                .call("rkat/set_mode", json!({"mode": "plan"}))
+                .await
+        })
+    };
+    // The change is under way (the mode is set before its note).
+    within(async {
+        while local.core().engine.mode() != PermissionMode::Plan {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    let release = async {
+        within(async {
+            while local.mode_waits() == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        assert!(llm.recorded().is_empty(), "the prompt waited");
+        drop(hold);
+    };
+    tokio::join!(daemon.prompt(&connection, "plan it"), release);
+    set.await.unwrap().unwrap();
+    let system = llm.recorded()[0].system();
+    assert!(system.contains("# Plan mode is on"), "{system}");
 }

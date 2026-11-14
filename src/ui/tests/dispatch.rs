@@ -556,6 +556,47 @@ fn model_command_requests_picker_or_refresh() {
     assert!(running.update(key(KeyCode::Enter)).is_empty());
 }
 
+/// `/auto model` asks for the classifier's picker, also during a turn;
+/// `/auto model <ref>` sets it; the picker is titled "Classifier model" and
+/// its choice sets the classifier's model, never the agent's.
+#[test]
+fn the_classifier_model_is_picked_or_set_from_the_tui() {
+    let mut app = app_on_sonnet();
+    type_str(&mut app, "/auto model");
+    assert_eq!(
+        app.update(key(KeyCode::Enter)),
+        vec![Effect::RequestClassifierPicker]
+    );
+    type_str(&mut app, "/auto model openai:gpt-5.4-mini");
+    assert_eq!(
+        app.update(key(KeyCode::Enter)),
+        vec![Effect::SetClassifierModel("openai:gpt-5.4-mini".into())]
+    );
+    let mut running = running_app();
+    type_str(&mut running, "/auto model");
+    assert_eq!(
+        running.update(key(KeyCode::Enter)),
+        vec![Effect::RequestClassifierPicker]
+    );
+    app.update(Msg::ShowClassifierPicker(picker_models()));
+    assert!(matches!(&app.modal, Some(Modal::Model(picker)) if picker.classifier));
+    assert!(
+        screen(&mut app, 30)
+            .iter()
+            .any(|row| row.contains("Classifier model")),
+        "{:?}",
+        screen(&mut app, 30)
+    );
+    type_str(&mut app, "haiku");
+    assert_eq!(
+        app.update(key(KeyCode::Enter)),
+        vec![Effect::SetClassifierModel(
+            "anthropic:claude-haiku-4-5".into()
+        )]
+    );
+    assert!(app.modal.is_none());
+}
+
 #[test]
 fn model_picker_filters_and_selects() {
     let mut app = app_on_sonnet();
@@ -1127,6 +1168,7 @@ fn auto_check_shows_progress_and_the_reports_rows() {
         label,
         held_out: false,
         pair: None,
+        role: None,
         action: "shell `cargo test`".into(),
         verdict,
         rule: rule.map(str::to_string),

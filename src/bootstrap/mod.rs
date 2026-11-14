@@ -527,6 +527,7 @@ pub async fn assemble(
                 .filter(|endpoint| endpoint.is_self_hosted())
                 .cloned(),
             llm_override: options.llm_override.clone(),
+            endpoints: &endpoints,
         },
         &options.approval,
     )

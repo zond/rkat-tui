@@ -14,8 +14,11 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 
 use super::markdown::{truncate_to_width, wrap_text};
-use super::modal::{ListCursor, ModalKey, has_ctrl_or_alt, is_ctrl_c, is_held, window_lines};
+use super::modal::{
+    ListCursor, ModalKey, has_ctrl_or_alt, is_ctrl_c, is_held, push_line_text, window_lines,
+};
 use super::{App, BlockId, Effect, MemoryTarget, Modal, OpenHelperView, ScrollState};
+use crate::approval::grants::GrantScope;
 use crate::approval::mode::PermissionMode;
 use crate::daemon::protocol::ScheduleOp;
 
@@ -78,8 +81,29 @@ pub enum PickAct {
     RemoveRule(usize),
     /// Remove session grant `id`, then the list again.
     RemoveGrant(u64),
+    /// Remove statement `id`, then the list again.
+    RemoveStatement(u64),
     /// Approve blocked call `id` for the scope, then the list again.
-    Approve(u64, crate::approval::grants::GrantScope),
+    Approve(u64, GrantScope),
+    /// Open the one-line field to allow blocked call `id`'s kind of
+    /// action, filled with `proposed` (its `EFFECT:` sentence, or empty);
+    /// the field's Enter is [`Self::AllowEffect`].
+    EditEffect {
+        /// The blocked call.
+        id: u64,
+        /// The sentence the field starts with.
+        proposed: String,
+    },
+    /// Allow the kind of action `text` describes, as blocked call `id`'s
+    /// approval, for the scope, then the list again.
+    AllowEffect {
+        /// The blocked call.
+        id: u64,
+        /// How long it holds (this session or always).
+        scope: GrantScope,
+        /// The statement as the user left it.
+        text: String,
+    },
     /// `/mode <mode>` (`/auto resume` for a paused auto mode).
     SetMode(PermissionMode),
     /// `/memory [workspace | user | system]`.
@@ -121,7 +145,9 @@ impl PickAct {
             Self::Schedule(..)
                 | Self::RemoveRule(_)
                 | Self::RemoveGrant(_)
+                | Self::RemoveStatement(_)
                 | Self::Approve(..)
+                | Self::AllowEffect { .. }
                 | Self::FoldHelper(_)
                 | Self::Wire { .. }
                 | Self::Unwire { .. }
@@ -220,6 +246,17 @@ pub enum PickerLine {
     },
     /// Why the key pressed does nothing on this row.
     Refused(String),
+    /// A one-line field: the kind of action blocked call `id` is to be
+    /// allowed for (Enter allows it for `scope`, Tab switches the scope,
+    /// Esc keeps things).
+    Edit {
+        /// The blocked call.
+        id: u64,
+        /// This session or always.
+        scope: GrantScope,
+        /// The statement as typed so far.
+        text: String,
+    },
 }
 
 /// A picker over rows ([`PickerKind`] says whose).
@@ -296,6 +333,44 @@ impl ListPicker {
         if (held && !moves) || has_ctrl_or_alt(key) {
             return ModalKey::Stay;
         }
+        if let Some(PickerLine::Edit { id, scope, text }) = &mut self.line {
+            return match key.code {
+                KeyCode::Enter => {
+                    let act = PickAct::AllowEffect {
+                        id: *id,
+                        scope: *scope,
+                        text: text.trim().to_string(),
+                    };
+                    self.line = None;
+                    ModalKey::Choose(act)
+                }
+                KeyCode::Esc => {
+                    self.line = None;
+                    ModalKey::Stay
+                }
+                KeyCode::Tab | KeyCode::BackTab => {
+                    *scope = match scope {
+                        GrantScope::Always => GrantScope::Session,
+                        _ => GrantScope::Always,
+                    };
+                    ModalKey::Stay
+                }
+                KeyCode::Backspace => {
+                    text.pop();
+                    ModalKey::Stay
+                }
+                KeyCode::Char(c) => {
+                    let mut buf = [0; 4];
+                    push_line_text(
+                        text,
+                        c.encode_utf8(&mut buf),
+                        crate::approval::statements::MAX_STATEMENT_CHARS,
+                    );
+                    ModalKey::Stay
+                }
+                _ => ModalKey::Stay,
+            };
+        }
         if let Some(PickerLine::Confirm { act, .. }) = self.line.take() {
             return match key.code {
                 KeyCode::Char('y') => ModalKey::Choose(act),
@@ -307,6 +382,16 @@ impl ListPicker {
             KeyCode::Down | KeyCode::Char('j') => self.cursor.down(self.rows.len()),
             KeyCode::Esc | KeyCode::Char('q') => return ModalKey::Close,
             code => match self.selected().and_then(|row| row.key(code)).cloned() {
+                Some(PickKey {
+                    act: Ok(PickAct::EditEffect { id, proposed }),
+                    ..
+                }) => {
+                    self.line = Some(PickerLine::Edit {
+                        id,
+                        scope: GrantScope::Session,
+                        text: proposed,
+                    });
+                }
                 Some(PickKey {
                     act: Ok(act),
                     confirm: None,
@@ -322,6 +407,24 @@ impl ListPicker {
             },
         }
         ModalKey::Stay
+    }
+
+    /// Whether a one-line field is open (a paste goes into it).
+    #[must_use]
+    pub fn editing(&self) -> bool {
+        matches!(self.line, Some(PickerLine::Edit { .. }))
+    }
+
+    /// Type (or paste) `text` into the open one-line field, on one line,
+    /// without control characters; nothing while none is open.
+    pub fn type_text(&mut self, text: &str) {
+        if let Some(PickerLine::Edit { text: field, .. }) = &mut self.line {
+            push_line_text(
+                field,
+                text,
+                crate::approval::statements::MAX_STATEMENT_CHARS,
+            );
+        }
     }
 
     /// `fresh` in place of this picker, on the same row where it still is
@@ -363,6 +466,27 @@ pub(super) fn list_picker_lines(
                 .into_iter()
                 .map(|line| Line::styled(line, warn)),
         ),
+        Some(PickerLine::Edit { scope, text, .. }) => {
+            let (now, other) = match scope {
+                GrantScope::Always => ("always (the realm's tui.toml)", "for this session"),
+                _ => ("for this session", "always"),
+            };
+            tail.extend(
+                wrap_text(
+                    &format!(
+                        "allow this kind of action {now}, judged by the classifier (edit it; Enter allows · Tab: {other} · Esc cancels):"
+                    ),
+                    width,
+                )
+                .into_iter()
+                .map(|line| Line::styled(line, warn)),
+            );
+            tail.extend(
+                wrap_text(&format!("> {text}▏"), width)
+                    .into_iter()
+                    .map(Line::from),
+            );
+        }
         None => {}
     }
     tail.extend(
@@ -616,7 +740,13 @@ impl App {
             PickAct::Schedule(op, id) => fx.push(Effect::PickedSchedule(op, id)),
             PickAct::RemoveRule(n) => fx.push(Effect::PickedRuleRemoval(n)),
             PickAct::RemoveGrant(id) => fx.push(Effect::PickedGrantRemoval(id)),
-            PickAct::Approve(id, scope) => fx.push(Effect::PickedApproval(id, scope)),
+            PickAct::RemoveStatement(id) => fx.push(Effect::PickedStatementRemoval(id)),
+            PickAct::Approve(id, scope) => fx.push(Effect::PickedApproval(id, scope, None)),
+            PickAct::AllowEffect { id, scope, text } => {
+                fx.push(Effect::PickedApproval(id, scope, Some(text)));
+            }
+            // The picker opens its field itself; never chosen.
+            PickAct::EditEffect { .. } => {}
             PickAct::SetMode(mode) => fx.push(Effect::SetMode(mode)),
             PickAct::OpenMemory(target) => fx.push(Effect::OpenMemory(target)),
             PickAct::Wire { workspace, agent } => fx.push(Effect::WireTo { workspace, agent }),

@@ -315,6 +315,8 @@ impl Reporter {
 /// What a background task reports.
 enum Report {
     /// A `/model` switch (`rkat/set_model`) applied, or why not.
+    /// The classifier's model (`rkat/report`), for its picker.
+    ClassifierModel(Option<String>),
     ModelSet {
         switch: ModelSwitch,
         result: Result<protocol::ModelSet, String>,
@@ -890,6 +892,28 @@ impl Runner {
                 self.send(Msg::QuitDecided(decision));
             }
             Report::RehomeStopped(stopped) => self.rehome_stopped(stopped),
+            Report::ClassifierModel(label) => {
+                let (endpoint, model) = label
+                    .as_deref()
+                    .and_then(|label| label.split_once(':'))
+                    .unwrap_or_default();
+                // A bare model (the start-up endpoint's) is marked on the
+                // agent's endpoint.
+                let bare = label.as_deref().filter(|l| !l.contains(':'));
+                let shown = self
+                    .model
+                    .as_ref()
+                    .map(|m| m.endpoint.clone())
+                    .unwrap_or_default();
+                let current = match bare {
+                    Some(model) => Current {
+                        endpoint: &shown,
+                        model,
+                    },
+                    None => Current { endpoint, model },
+                };
+                self.bench.request_model_picker(false, current, true);
+            }
             Report::Rehomed(rehomed) => self.rehomed(*rehomed),
             Report::ModelSet { switch, result } => match result {
                 Ok(set) => {
@@ -1125,8 +1149,10 @@ impl Runner {
             Effect::RequestResumePicker => self.show_resume_picker(),
             Effect::RequestModelPicker { refresh } => {
                 let current = current(self.model.as_ref());
-                self.bench.request_model_picker(refresh, current);
+                self.bench.request_model_picker(refresh, current, false);
             }
+            Effect::RequestClassifierPicker => self.classifier_picker(),
+            Effect::SetClassifierModel(reference) => self.set_classifier_model(&reference),
             Effect::Remember(text) => self.bench.remember(&text, &self.linked()),
             Effect::OpenMemory(target) => self.bench.open_memory(target),
             Effect::RequestMemoryPicker => self
@@ -1160,7 +1186,8 @@ impl Runner {
             }
             Effect::RequestRulePicker => self.rule_picker(None),
             Effect::PickedRuleRemoval(n) => self.rule_picker(Some(n)),
-            Effect::PickedGrantRemoval(id) => self.grant_removal(id),
+            Effect::PickedGrantRemoval(id) => self.grant_removal(id, false),
+            Effect::PickedStatementRemoval(id) => self.grant_removal(id, true),
             Effect::RequestApprovePicker => self.approve_picker(None),
             Effect::AutoStats => {
                 self.outcome_command::<protocol::method::AutoStats>(
@@ -1169,7 +1196,9 @@ impl Runner {
                 );
             }
             Effect::ClassifierCheck(selection) => self.classifier_check(selection),
-            Effect::PickedApproval(id, scope) => self.approve_picker(Some((id, scope))),
+            Effect::PickedApproval(id, scope, effect) => {
+                self.approve_picker(Some((id, scope, effect)));
+            }
             Effect::ListRules => {
                 self.outcome_command::<protocol::method::Rules>(RuleCommand::List, "/permissions");
             }
@@ -1331,6 +1360,7 @@ mod tests {
                 rule(7, false, None, false, RuleOrigin::Cli),
             ],
             &[],
+            &[],
         );
         let texts: Vec<&str> = picker.rows.iter().map(|r| r.text.as_str()).collect();
         assert_eq!(
@@ -1375,7 +1405,7 @@ mod tests {
             "{}",
             question(&picker)
         );
-        let none = rule_picker(&[], &[]);
+        let none = rule_picker(&[], &[], &[]);
         assert!(none.rows.is_empty());
         assert!(none.footer.contains("/permissions add"), "{}", none.footer);
     }
@@ -1404,6 +1434,7 @@ mod tests {
                 grant(5, "always", false),
                 grant(9, "session", true),
             ],
+            &[],
         );
         let texts: Vec<&str> = picker.rows.iter().map(|r| r.text.as_str()).collect();
         assert_eq!(
@@ -1430,6 +1461,68 @@ mod tests {
         );
     }
 
+    /// `/permissions` lists the statements with their origin; `d` asks
+    /// before removing a session or always one, and says to edit the file
+    /// for one of the user's own `tui.toml`.
+    #[test]
+    fn the_permissions_picker_lists_and_removes_statements() {
+        use crate::approval::statements::{StatementOrigin, StatementRow};
+        use crate::ui::{ModalKey, PickAct, PickerLine};
+        use ratatui::crossterm::event::{KeyCode, KeyEvent};
+        let row = |id, text: &str, origin| StatementRow {
+            id,
+            text: text.into(),
+            origin,
+        };
+        let mut picker = rule_picker(
+            &[],
+            &[],
+            &[
+                row(
+                    1,
+                    "network requests to api.example.com",
+                    StatementOrigin::Config,
+                ),
+                row(4, "pushing to main", StatementOrigin::Always),
+                row(
+                    7,
+                    "building after a dependency change",
+                    StatementOrigin::Session,
+                ),
+            ],
+        );
+        let texts: Vec<&str> = picker.rows.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec![
+                "allow kind \"network requests to api.example.com\" · config",
+                "allow kind \"pushing to main\" · always",
+                "allow kind \"building after a dependency change\" · session",
+            ]
+        );
+        assert!(
+            picker.rows[0]
+                .note
+                .as_deref()
+                .unwrap()
+                .contains("judged by the classifier")
+        );
+        let press = |code| KeyEvent::from(code);
+        picker.key(&press(KeyCode::Char('d')));
+        assert!(
+            matches!(&picker.line, Some(PickerLine::Refused(why)) if why.contains("your own tui.toml"))
+        );
+        picker.key(&press(KeyCode::Down));
+        picker.key(&press(KeyCode::Char('d')));
+        assert!(
+            matches!(&picker.line, Some(PickerLine::Confirm { question, .. }) if question.contains("leaves the realm's tui.toml"))
+        );
+        assert_eq!(
+            picker.key(&press(KeyCode::Char('y'))),
+            ModalKey::Choose(PickAct::RemoveStatement(4))
+        );
+    }
+
     /// `/approve` lists the blocked calls newest first; Enter approves once,
     /// `s` and `a` ask before a session or lasting grant, and a call no
     /// grant fits says so.
@@ -1447,6 +1540,7 @@ mod tests {
             path: None,
             reason: "the safety classifier blocked it: x".into(),
             at: 100,
+            effect: (id == 2).then(|| "pushing to the default branch".to_string()),
             grant,
         };
         let mut picker = approve_picker(
@@ -1489,6 +1583,99 @@ mod tests {
         );
         let empty = approve_picker(&[], 0);
         assert!(empty.rows.is_empty() && empty.empty.contains("nothing was blocked"));
+    }
+
+    /// `e` opens the one-line field with the call's kind of effect (empty
+    /// when the classifier named none): typing edits it, a paste stays on
+    /// one line, Tab switches to always and back, Esc keeps everything,
+    /// Enter allows the statement as edited. The picker says which choices
+    /// are exact and which the classifier judges.
+    #[test]
+    fn the_approve_picker_allows_an_edited_kind_of_effect() {
+        use crate::approval::grants::{BlockedCall, GrantScope};
+        use crate::ui::{ModalKey, PickAct, PickerLine};
+        use ratatui::crossterm::event::{KeyCode, KeyEvent};
+        let call = |id, effect: Option<&str>| BlockedCall {
+            id,
+            tool: "shell".into(),
+            helper: None,
+            summary: "git push origin main".into(),
+            rule: Some("R1".into()),
+            path: None,
+            reason: "blocked".into(),
+            at: 100,
+            effect: effect.map(str::to_string),
+            grant: None,
+        };
+        let mut picker = approve_picker(
+            &[
+                call(1, None),
+                call(2, Some("pushing to the default branch")),
+            ],
+            100,
+        );
+        assert!(picker.footer.contains("Enter/o once (exact: this call)"));
+        assert!(
+            picker
+                .footer
+                .contains("e allow this kind of effect (judged by the classifier)")
+        );
+        assert!(
+            picker.rows[0]
+                .note
+                .as_deref()
+                .unwrap()
+                .ends_with("e judged: \"pushing to the default branch\""),
+            "{:?}",
+            picker.rows[0].note
+        );
+        let press = |code| KeyEvent::from(code);
+        assert_eq!(picker.key(&press(KeyCode::Char('e'))), ModalKey::Stay);
+        assert!(picker.editing());
+        for c in " of my own repo".chars() {
+            picker.key(&press(KeyCode::Char(c)));
+        }
+        picker.type_text("\nnow");
+        picker.key(&press(KeyCode::Backspace));
+        picker.key(&press(KeyCode::Tab));
+        let lines = crate::ui::picker_lines_for_test(&picker, 200);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("allow this kind of action always")),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("> pushing to the default branch of my own repo no")),
+            "{lines:?}"
+        );
+        assert_eq!(
+            picker.key(&press(KeyCode::Enter)),
+            ModalKey::Choose(PickAct::AllowEffect {
+                id: 2,
+                scope: GrantScope::Always,
+                text: "pushing to the default branch of my own repo no".into(),
+            })
+        );
+        assert!(!picker.editing());
+        // A block without a sentence: the field starts empty; Esc keeps
+        // things, the picker stays open.
+        picker.key(&press(KeyCode::Down));
+        picker.key(&press(KeyCode::Char('e')));
+        assert!(
+            matches!(&picker.line, Some(PickerLine::Edit { id: 1, scope: GrantScope::Session, text }) if text.is_empty())
+        );
+        assert!(
+            picker.rows[1]
+                .note
+                .as_deref()
+                .unwrap()
+                .contains("a kind of effect you type")
+        );
+        assert_eq!(picker.key(&press(KeyCode::Esc)), ModalKey::Stay);
+        assert_eq!(picker.line, None);
     }
 
     /// The start-up notice about the other agents, for a client that

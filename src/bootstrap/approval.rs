@@ -86,6 +86,9 @@ pub(crate) struct ClassifierSource<'a> {
     pub self_hosted: Option<crate::endpoints::Endpoint>,
     /// Client every session uses instead of resolving credentials, if any.
     pub llm_override: Option<Arc<dyn LlmClient>>,
+    /// The process's endpoints: `[auto] classifier_model` may name one
+    /// (`endpoint:model`, as `/auto model` writes it).
+    pub endpoints: &'a crate::endpoints::EndpointRegistry,
 }
 
 /// Load the layered `tui.toml` (global, realm, project, command line) of
@@ -150,6 +153,7 @@ pub(crate) async fn build(
     // runs against it (not for a scripted client, nor when turned off).
     let mut model = None;
     let mut check = None;
+    let mut builder = None;
     let classifier = match &overrides.classifier {
         Some(classifier) => {
             model = overrides
@@ -161,6 +165,12 @@ pub(crate) async fn build(
         None => {
             let probe = layered.settings.classifier_probe && source.llm_override.is_none();
             let named = classifier_model(&layered.settings, source.provider);
+            builder = Some(classifier_builder(
+                &source,
+                layered.settings.classifier_tools,
+                scope.project_root.clone(),
+                events_tx.clone(),
+            ));
             let (classifier, checker, notice) = make_classifier(
                 &layered.settings,
                 source,
@@ -197,6 +207,9 @@ pub(crate) async fn build(
     if let Some(check) = check {
         engine.set_check_classifier(check);
     }
+    if let Some(builder) = builder {
+        engine.set_classifier_builder(builder);
+    }
     Ok(ApprovalParts {
         engine,
         realm_file: Some(realm_file),
@@ -217,7 +230,9 @@ pub(crate) fn classifier_model(settings: &AutoSettings, provider: Provider) -> O
 }
 
 /// The two-stage LLM classifier on the session's provider (model from
-/// `[auto] classifier_model`, else [`classifier_default_model`]), built with
+/// `[auto] classifier_model`, else [`classifier_default_model`]; a value
+/// `endpoint:model` naming one of the process's endpoints runs on that
+/// endpoint, as `/auto model` writes it), built with
 /// the factory's own credential resolution, and the same classifier for
 /// the checks (`/auto check`, the start-up check): the same client, model
 /// and policy, stage 2 without its file-reading tools, its calls reported
@@ -234,7 +249,7 @@ async fn make_classifier(
     Option<Arc<dyn ActionClassifier>>,
     Option<String>,
 ) {
-    let Some(model) = classifier_model(settings, source.provider) else {
+    let Some(named) = classifier_model(settings, source.provider) else {
         return (
             Arc::new(UnavailableClassifier),
             None,
@@ -244,14 +259,23 @@ async fn make_classifier(
             )),
         );
     };
-    let client = match source.llm_override {
-        Some(client) => client,
-        None => {
-            let identity = SessionLlmIdentity {
+    // `endpoint:model` on one of the process's endpoints; else a model of
+    // the start-up endpoint.
+    let on_endpoint = named
+        .split_once(':')
+        .and_then(|(name, model)| Some((source.endpoints.get(name)?.clone(), model.to_string())));
+    let (identity, provider, model) = match &on_endpoint {
+        Some((endpoint, model)) => (
+            endpoint_identity(endpoint, model),
+            endpoint.provider(),
+            model.clone(),
+        ),
+        None => (
+            SessionLlmIdentity {
                 model: source
                     .self_hosted
                     .as_ref()
-                    .map_or_else(|| model.clone(), |endpoint| endpoint.engine_model(&model)),
+                    .map_or_else(|| named.clone(), |endpoint| endpoint.engine_model(&named)),
                 provider: source
                     .self_hosted
                     .as_ref()
@@ -262,38 +286,127 @@ async fn make_classifier(
                     .and_then(crate::endpoints::Endpoint::self_hosted_server),
                 provider_params: None,
                 auth_binding: source.auth_binding.clone(),
-            };
-            match source
-                .factory
-                .build_llm_client_for_identity(source.config, &identity)
-                .await
-            {
-                Ok(client) => client,
-                Err(err) => {
-                    return (
-                        Arc::new(UnavailableClassifier),
-                        None,
-                        Some(format!(
-                            "the safety classifier ({model}) is unavailable: {err}; every reviewed action asks you"
-                        )),
-                    );
-                }
-            }
-        }
+            },
+            source.provider,
+            named.clone(),
+        ),
     };
+    let client = match source.llm_override {
+        Some(client) => client,
+        None => match source
+            .factory
+            .build_llm_client_for_identity(source.config, &identity)
+            .await
+        {
+            Ok(client) => client,
+            Err(err) => {
+                return (
+                    Arc::new(UnavailableClassifier),
+                    None,
+                    Some(format!(
+                        "the safety classifier ({named}) is unavailable: {err}; every reviewed action asks you"
+                    )),
+                );
+            }
+        },
+    };
+    let built = classifiers(
+        client,
+        provider,
+        model,
+        settings.classifier_tools.then_some(root),
+        events,
+    );
+    (built.review, Some(built.check), None)
+}
+
+/// The engine identity of `model` on `endpoint` (its alias on a
+/// self-hosted one, its auth binding).
+fn endpoint_identity(endpoint: &crate::endpoints::Endpoint, model: &str) -> SessionLlmIdentity {
+    let self_hosted = endpoint.is_self_hosted();
+    SessionLlmIdentity {
+        model: if self_hosted {
+            endpoint.engine_model(model)
+        } else {
+            model.to_string()
+        },
+        provider: if self_hosted {
+            endpoint.engine_provider()
+        } else {
+            endpoint.provider()
+        },
+        self_hosted_server_id: endpoint.self_hosted_server(),
+        provider_params: None,
+        auth_binding: endpoint.binding(),
+    }
+}
+
+/// The reviews' classifier on `client` (stage 2 reading the project at
+/// `tools_root` when given, its usage on `events`) and the checks'.
+fn classifiers(
+    client: Arc<dyn LlmClient>,
+    provider: Provider,
+    model: String,
+    tools_root: Option<ProjectRoot>,
+    events: mpsc::UnboundedSender<ApprovalEvent>,
+) -> crate::approval::engine::BuiltClassifier {
     let check: Arc<dyn ActionClassifier> = Arc::new(LlmClassifier::new(
         Arc::clone(&client),
-        source.provider,
+        provider,
         model.clone(),
     ));
-    let mut classifier =
-        LlmClassifier::new(client, source.provider, model).with_usage_events(events);
+    let mut review = LlmClassifier::new(client, provider, model).with_usage_events(events);
     // Stage 2 may read project files (read-only, bounded) to judge what a
     // command will actually execute.
-    if settings.classifier_tools {
-        classifier = classifier.with_project_tools(Arc::new(ReadOnlyProjectTools::new(root)));
+    if let Some(root) = tools_root {
+        review = review.with_project_tools(Arc::new(ReadOnlyProjectTools::new(root)));
     }
-    (Arc::new(classifier), Some(check), None)
+    crate::approval::engine::BuiltClassifier {
+        review: Arc::new(review),
+        check,
+    }
+}
+
+/// How `/auto model` builds the classifier for another model: the same
+/// factory, credentials and settings as the start-up one, on the endpoint
+/// the user picked.
+fn classifier_builder(
+    source: &ClassifierSource<'_>,
+    tools: bool,
+    root: ProjectRoot,
+    events: mpsc::UnboundedSender<ApprovalEvent>,
+) -> crate::approval::engine::ClassifierBuilder {
+    let factory = source.factory.clone();
+    let config = source.config.clone();
+    let llm_override = source.llm_override.clone();
+    Arc::new(move |endpoint, model| {
+        let factory = factory.clone();
+        let config = config.clone();
+        let llm_override = llm_override.clone();
+        let root = root.clone();
+        let events = events.clone();
+        Box::pin(async move {
+            let client = match llm_override {
+                Some(client) => client,
+                None => factory
+                    .build_llm_client_for_identity(&config, &endpoint_identity(&endpoint, &model))
+                    .await
+                    .map_err(|err| {
+                        format!(
+                            "no client for {model} on endpoint {}: {err}; the classifier keeps its model",
+                            endpoint.name
+                        )
+                    })?,
+            };
+            Ok(classifiers(
+                client,
+                endpoint.provider(),
+                model,
+                tools.then_some(root),
+                events,
+            ))
+        })
+    })
 }
 
 /// Shells whose syntax the Tier-1 shell analysis understands.

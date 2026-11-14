@@ -61,6 +61,10 @@ pub struct Environment {
     pub granted: GrantedDirs,
     /// What contains the agent's shell.
     pub containment: Containment,
+    /// The kinds of action the user allows, in their own words
+    /// ([`super::statements`]): the session's and the lasting ones, set
+    /// per call.
+    pub statements: Vec<String>,
 }
 
 /// What contains the agent's shell: rkat-tui's own sandbox, one the user
@@ -213,7 +217,15 @@ impl Environment {
             os: std::env::consts::OS.to_string(),
             granted: GrantedDirs::default(),
             containment: Containment::None,
+            statements: Vec::new(),
         }
+    }
+
+    /// The same environment with the statements the user allows.
+    #[must_use]
+    pub fn with_statements(mut self, statements: Vec<String>) -> Self {
+        self.statements = statements;
+        self
     }
 
     /// The same environment with what contains the shell.
@@ -483,6 +495,10 @@ pub enum ClassifierVerdict {
         /// The path outside the allowed scope the classifier named as why
         /// (its `PATH:` line), if it named one.
         path: Option<String>,
+        /// The kind of effect it objected to, in one general sentence (its
+        /// `EFFECT:` line), if it named one: `/approve` offers it as a
+        /// statement the user can allow ([`super::statements`]).
+        effect: Option<String>,
     },
 }
 
@@ -851,12 +867,17 @@ impl LlmClassifier {
         tracing::debug!(model = %self.model, tool = input.tool, ?run, "classifier stage 2 mode");
         let verdict = match stage2_or_block(&text) {
             ClassifierVerdict::Block {
-                rule, reason, path, ..
+                rule,
+                reason,
+                path,
+                effect,
+                ..
             } => ClassifierVerdict::Block {
                 rule,
                 reason,
                 annotation: run.suffix(),
                 path,
+                effect,
             },
             allow @ ClassifierVerdict::Allow { .. } => allow,
         };
@@ -1358,6 +1379,7 @@ mod tests {
             reason: "force push".into(),
             annotation: None,
             path: None,
+            effect: None,
         };
         assert_eq!(v.to_string(), "BLOCK [D1]: force push");
         assert_eq!(

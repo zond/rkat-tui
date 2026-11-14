@@ -239,13 +239,7 @@ impl EscalationDialog {
         let Some(comment) = &mut self.comment else {
             return;
         };
-        let room = MAX_COMMENT_CHARS.saturating_sub(comment.chars().count());
-        comment.extend(
-            text.chars()
-                .map(|c| if c == '\n' || c == '\t' { ' ' } else { c })
-                .filter(|c| !c.is_control())
-                .take(room),
-        );
+        push_line_text(comment, text, MAX_COMMENT_CHARS);
     }
 
     fn pick(&mut self, index: usize) -> Option<EscalationAnswer> {
@@ -260,6 +254,20 @@ impl EscalationDialog {
             }
         }
     }
+}
+
+/// Type (or paste) `text` into a one-line field `buf` of at most `max`
+/// characters: a line break or tab is a space, control characters go,
+/// what does not fit is dropped (the deny comment, the `/approve`
+/// statement field).
+pub(super) fn push_line_text(buf: &mut String, text: &str, max: usize) {
+    let room = max.saturating_sub(buf.chars().count());
+    buf.extend(
+        text.chars()
+            .map(|c| if c == '\n' || c == '\t' { ' ' } else { c })
+            .filter(|c| !c.is_control())
+            .take(room),
+    );
 }
 
 /// What the user chose in the "Plan ready" dialog.
@@ -473,6 +481,8 @@ pub struct ModelPicker {
     pub filter: String,
     /// The highlighted model among the filtered ones (across groups).
     pub cursor: ListCursor,
+    /// It picks the classifier's model (`/auto model`), not the agent's.
+    pub classifier: bool,
 }
 
 impl ModelPicker {
@@ -482,7 +492,15 @@ impl ModelPicker {
             groups,
             filter: String::new(),
             cursor: ListCursor::default(),
+            classifier: false,
         }
+    }
+
+    /// The same picker for the classifier's model.
+    #[must_use]
+    pub fn for_classifier(mut self) -> Self {
+        self.classifier = true;
+        self
     }
 
     fn matches(needle: &str, group: &ModelGroup, entry: &ModelEntry) -> bool {
@@ -654,7 +672,11 @@ pub fn draw_modal(frame: &mut Frame<'_>, area: Rect, modal: &mut Modal) {
             picker_lines(picker, inner_w, usize::from(area.height.saturating_sub(4))),
         ),
         Modal::Model(picker) => (
-            " Select model ".to_string(),
+            if picker.classifier {
+                " Classifier model ".to_string()
+            } else {
+                " Select model ".to_string()
+            },
             model_picker_lines(picker, inner_w, usize::from(area.height.saturating_sub(4))),
         ),
         Modal::List(picker) => (

@@ -302,7 +302,7 @@ impl Local {
             project_inputs,
             helper_depth,
             watches: agent.map_or_else(Vec::new, |agent| self.core.watches.describe(agent)),
-            classifier_model: self.core.engine.classifier_model().map(str::to_string),
+            classifier_model: self.core.engine.classifier_model(),
         }
     }
 
@@ -330,6 +330,7 @@ impl Local {
         let mut rows = crate::approval::desk::rule_rows(&self.core.engine);
         let session = self.session_of_caller(caller).ok();
         rows.grants = self.core.engine.grant_rows(session.as_ref());
+        rows.statements = self.core.engine.statement_rows(session.as_ref());
         rows
     }
 
@@ -389,15 +390,21 @@ impl Local {
         })
     }
 
-    /// `rkat/approve`: the user approves blocked call `id`.
+    /// `rkat/approve`: the user approves blocked call `id`, or allows its
+    /// kind of action in their words `effect`.
     pub(super) fn approve(
         &self,
         caller: &Caller,
         id: u64,
         scope: crate::approval::grants::GrantScope,
+        effect: Option<&str>,
     ) -> Result<RuleOutcome, Refusal> {
         let session = self.session_of_caller(caller)?;
-        Ok(match self.core.engine.approve(&session, id, scope) {
+        let done = match effect {
+            Some(text) => self.core.engine.approve_effect(&session, id, text, scope),
+            None => self.core.engine.approve(&session, id, scope),
+        };
+        Ok(match done {
             Ok(approved) => RuleOutcome {
                 ok: true,
                 text: approved.notice,
@@ -406,6 +413,20 @@ impl Local {
                 ok: false,
                 text: why,
             },
+        })
+    }
+
+    /// `rkat/remove_statement`: remove statement `id` of `caller`'s agent's
+    /// session, or one added always.
+    pub(super) fn remove_statement(
+        &self,
+        caller: &Caller,
+        id: u64,
+    ) -> Result<RuleOutcome, Refusal> {
+        let session = self.session_of_caller(caller)?;
+        Ok(match self.core.engine.remove_statement(&session, id) {
+            Ok(text) => RuleOutcome { ok: true, text },
+            Err(text) => RuleOutcome { ok: false, text },
         })
     }
 

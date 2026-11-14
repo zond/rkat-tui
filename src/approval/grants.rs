@@ -76,6 +76,10 @@ pub enum GrantTarget {
         /// The call's subject, matched literally.
         subject: String,
     },
+    /// The project's builds and tests after the session changed its
+    /// dependencies or build files, with nothing containing the shell
+    /// (asked of the user otherwise; for a session only).
+    Builds,
 }
 
 impl GrantTarget {
@@ -85,6 +89,9 @@ impl GrantTarget {
         match self {
             Self::Dir { path } => format!("writes under `{}`", path.display()),
             Self::Rule { tool, subject } => format!("`{tool} {subject}`"),
+            Self::Builds => {
+                "builds and tests of this project after a dependency change".to_string()
+            }
         }
     }
 }
@@ -107,6 +114,11 @@ pub struct BlockedCall {
     /// The path outside the allowed scope that was why, if one was.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    /// The kind of effect the classifier objected to, in one general
+    /// sentence (its `EFFECT:` line), if it named one: `/approve` offers
+    /// it, editable, as a statement ([`super::statements`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effect: Option<String>,
     /// Why it was blocked (the denial as the user reads it).
     pub reason: String,
     /// When, in seconds since the Unix epoch.

@@ -435,9 +435,12 @@ impl App {
                 ModalKey::Stay => {}
                 ModalKey::Close => self.modal = None,
                 ModalKey::Choose(model) => {
+                    let classifier = picker.classifier;
                     self.modal = None;
                     let current = format!("{}:{}", self.status.endpoint, self.status.model);
-                    if model != current {
+                    if classifier {
+                        fx.push(Effect::SetClassifierModel(model));
+                    } else if model != current {
                         self.switch_model(model, fx);
                     }
                 }

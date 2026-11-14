@@ -43,6 +43,12 @@ pub struct AutoSettings {
     /// Whether the daemon checks the classifier model at start with two
     /// fixed cases (`[auto] classifier_probe`, on by default).
     pub classifier_probe: bool,
+    /// The kinds of action the user allows (`[auto] allow`), from the
+    /// user-level file and the command line (`config`) and the realm's
+    /// (`always`, what `/approve` writes), each checked
+    /// ([`crate::approval::statements::normalize`]); never a project
+    /// file's.
+    pub allow: Vec<(crate::approval::statements::StatementOrigin, String)>,
 }
 
 impl Default for AutoSettings {
@@ -57,6 +63,7 @@ impl Default for AutoSettings {
             classifier_tools: true,
             trust_project_builds_given: false,
             classifier_probe: true,
+            allow: Vec::new(),
         }
     }
 }
@@ -109,6 +116,10 @@ pub struct AutoSection {
     /// See [`AutoSettings::classifier_probe`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub classifier_probe: Option<bool>,
+    /// See [`AutoSettings::allow`]: added to the lower layers' (a project
+    /// file's are ignored with a notice).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow: Vec<String>,
 }
 
 /// How deep helpers may nest when none of the layers says.

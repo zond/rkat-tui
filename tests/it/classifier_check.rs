@@ -30,6 +30,7 @@ fn block(rule: &str) -> Result<ClassifierVerdict, ClassifierError> {
         reason: "scripted".into(),
         annotation: None,
         path: None,
+        effect: None,
     })
 }
 

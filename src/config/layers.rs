@@ -34,6 +34,21 @@ pub enum Notice {
         /// The model it named.
         model: String,
     },
+    /// The project-level file listed `[auto] allow` statements; only the
+    /// user's own layers say which kinds of action they allow.
+    ProjectStatementsIgnored {
+        /// Project rules file.
+        path: PathBuf,
+        /// Number of ignored statements.
+        count: usize,
+    },
+    /// An `[auto] allow` statement of a user layer was not taken.
+    StatementIgnored {
+        /// The statement as written.
+        text: String,
+        /// Why.
+        reason: String,
+    },
     /// A configured endpoint is invalid and was skipped.
     EndpointSkipped {
         /// Endpoint name.
@@ -116,6 +131,14 @@ impl fmt::Display for Notice {
                 "ignored classifier_model={model:?} in {}: only your own configuration picks the classifier",
                 path.display()
             ),
+            Self::ProjectStatementsIgnored { path, count } => write!(
+                f,
+                "ignored {count} [auto] allow statement(s) in {}: only your own tui.toml says which kinds of action you allow",
+                path.display()
+            ),
+            Self::StatementIgnored { text, reason } => {
+                write!(f, "ignored [auto] allow statement {text:?}: {reason}")
+            }
             Self::EndpointSkipped { name, reason } => {
                 write!(f, "endpoint `{name}` skipped: {reason}")
             }
@@ -301,6 +324,12 @@ impl Layered {
         }
         if let Some(auto) = &file.auto {
             apply_auto(&mut self.settings, &mut self.mode, auto);
+            let origin = if origin == RuleOrigin::Realm {
+                crate::approval::statements::StatementOrigin::Always
+            } else {
+                crate::approval::statements::StatementOrigin::Config
+            };
+            self.add_statements(origin, &auto.allow);
         }
         if let Some(depth) = file.helpers.as_ref().and_then(|h| h.max_depth) {
             self.helpers.max_depth = depth;
@@ -415,6 +444,15 @@ impl Layered {
             });
         }
         if let Some(mut auto) = project.auto {
+            // Nor the kinds of action the user allows: a cloned repository
+            // could word one that clears what it wants.
+            let statements = std::mem::take(&mut auto.allow);
+            if !statements.is_empty() {
+                self.notices.push(Notice::ProjectStatementsIgnored {
+                    path: project_path.clone(),
+                    count: statements.len(),
+                });
+            }
             if auto.trust_project_builds == Some(true) {
                 auto.trust_project_builds = None;
                 self.notices.push(Notice::ProjectTrustIgnored {
@@ -466,6 +504,41 @@ impl Layered {
         Ok(())
     }
 
+    /// Take a user layer's `[auto] allow` statements: each checked, none
+    /// twice, at most [`crate::approval::statements::MAX_STATEMENTS`]; the
+    /// rest with a notice.
+    fn add_statements(
+        &mut self,
+        origin: crate::approval::statements::StatementOrigin,
+        statements: &[String],
+    ) {
+        use crate::approval::statements::{MAX_STATEMENTS, StatementRefusal, normalize};
+        for raw in statements {
+            let taken = normalize(raw).and_then(|text| {
+                if self
+                    .settings
+                    .allow
+                    .iter()
+                    .any(|(_, known)| known.eq_ignore_ascii_case(&text))
+                {
+                    Err(StatementRefusal::Duplicate)
+                } else if self.settings.allow.len() >= MAX_STATEMENTS {
+                    Err(StatementRefusal::TooMany)
+                } else {
+                    Ok(text)
+                }
+            });
+            match taken {
+                Ok(text) => self.settings.allow.push((origin, text)),
+                Err(StatementRefusal::Duplicate) => {}
+                Err(why) => self.notices.push(Notice::StatementIgnored {
+                    text: raw.chars().take(80).collect(),
+                    reason: why.to_string(),
+                }),
+            }
+        }
+    }
+
     /// Bring the compaction percentages into range, with a notice when
     /// they were not.
     fn clamp_compaction(&mut self) {
@@ -513,6 +586,7 @@ fn project_auto_without(project: AutoSection, cli: &AutoSection) -> AutoSection 
         ),
         classifier_tools: keep(project.classifier_tools, cli.classifier_tools.is_some()),
         classifier_probe: keep(project.classifier_probe, cli.classifier_probe.is_some()),
+        allow: Vec::new(),
     }
 }
 

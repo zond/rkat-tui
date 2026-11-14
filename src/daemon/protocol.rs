@@ -119,8 +119,18 @@ methods! {
     /// The calls the gate recently blocked for this client's agent that the
     /// user can approve (`/approve`), oldest first.
     Blocked = "rkat/blocked" (Empty) -> BlockedList;
-    /// Approve a blocked call once, for this session or always.
+    /// Approve a blocked call once, for this session or always; with an
+    /// `effect`, allow that kind of action (a statement the classifier
+    /// reads) for this session or always instead.
     Approve = "rkat/approve" (ApproveParams) -> crate::approval::desk::RuleOutcome;
+    /// Remove a statement of this client's agent's session, or one added
+    /// always (`/permissions`).
+    RemoveStatement = "rkat/remove_statement" (GrantParams) -> crate::approval::desk::RuleOutcome;
+    /// `/auto model`: review with another classifier model from now on
+    /// (live, written to the realm's `tui.toml`, audited, its start-up
+    /// check run in the background); refused for an endpoint this daemon
+    /// does not have.
+    SetClassifierModel = "rkat/set_classifier_model" (ClassifierModelParams) -> crate::approval::desk::RuleOutcome;
     /// The review numbers (`/auto stats`), since the daemon started and
     /// for this client's agent's conversation.
     AutoStats = "rkat/auto_stats" (Empty) -> crate::approval::desk::RuleOutcome;
@@ -784,12 +794,27 @@ pub struct BlockedList {
 }
 
 /// [`method::Approve`]'s parameters.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApproveParams {
     /// The blocked call's number.
     pub id: u64,
     /// How long the approval holds.
     pub scope: crate::approval::grants::GrantScope,
+    /// The kind of action to allow, in the user's words (the call's
+    /// `EFFECT:` sentence as the user edited it): a statement instead of
+    /// the call's grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effect: Option<String>,
+}
+
+/// [`method::SetClassifierModel`]'s parameters: a model of an endpoint,
+/// as the client resolved the user's `endpoint:model` reference.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClassifierModelParams {
+    /// The endpoint's name.
+    pub endpoint: String,
+    /// The model's id there.
+    pub model: String,
 }
 
 /// [`method::RemoveGrant`]'s parameters.

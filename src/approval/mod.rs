@@ -56,6 +56,7 @@ pub mod rules;
 pub mod scratch;
 pub mod shell;
 pub(crate) mod shell_subject;
+pub mod statements;
 pub mod stats;
 pub mod transcript;
 

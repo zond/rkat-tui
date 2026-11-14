@@ -161,6 +161,63 @@ impl Local {
             .resolve(Some(endpoint.unwrap_or(provider)), dialect.into(), model)
     }
 
+    /// `rkat/set_classifier_model`: `/auto model`. The classifier reviews
+    /// with `model` of `endpoint` from now on (a review that started
+    /// finishes on the old one); the choice is written to the realm's
+    /// `tui.toml` and audited, and the start-up check runs against it in
+    /// the background, its result a notice. An endpoint this daemon does
+    /// not have is refused with what to do.
+    pub(super) async fn set_classifier_model(&self, endpoint: &str, model: &str) -> RuleOutcome {
+        let refused = |text: String| RuleOutcome { ok: false, text };
+        let model = model.trim();
+        if model.is_empty() {
+            return refused("/auto model needs a model: /auto model [endpoint:]<id>, or /auto model to pick one".into());
+        }
+        let Some(target) = self.parts.endpoints.get(endpoint).cloned() else {
+            return refused(format!(
+                "the classifier model was not changed: this daemon has no endpoint `{endpoint}` (it has {}); define it under [endpoints.{endpoint}] in your own tui.toml and restart the daemon, or pick a model of one it has",
+                self.parts.endpoints.names().join(", ")
+            ));
+        };
+        if target.is_self_hosted()
+            && let Err(err) = crate::endpoints::ensure_endpoint_model(
+                self.parts.realm_config.runtime(),
+                &target,
+                model,
+                None,
+            )
+            .await
+        {
+            return refused(format!(
+                "the classifier model was not changed: {model} could not be registered for {endpoint}: {err}"
+            ));
+        }
+        let label = format!("{endpoint}:{model}");
+        match self
+            .core
+            .engine
+            .switch_classifier(target, model.to_string(), label)
+            .await
+        {
+            Ok(text) => {
+                let engine = Arc::clone(&self.core.engine);
+                tokio::spawn(async move {
+                    if tokio::time::timeout(
+                        std::time::Duration::from_mins(2),
+                        engine.probe_switched(),
+                    )
+                    .await
+                    .is_err()
+                    {
+                        tracing::warn!("the new classifier model's check did not finish in 120 s");
+                    }
+                });
+                RuleOutcome { ok: true, text }
+            }
+            Err(text) => refused(format!("the classifier model was not changed: {text}")),
+        }
+    }
+
     /// The permission mode and the denial counters now.
     #[must_use]
     pub fn mode(&self) -> ModeStatus {
@@ -184,6 +241,8 @@ impl Local {
                 "the mode applies to this run but was not saved: {err}"
             ));
         }
+        #[cfg(any(test, feature = "test-support"))]
+        let _held = self.mode_hold.read().await;
         if let Some(warning) = self.note_plan_mode().await {
             warnings.push(warning);
         }

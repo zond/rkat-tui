@@ -71,6 +71,7 @@ async fn a_delegated_helper_runs_behind_the_sessions_gate() {
         reason: "touches files outside the project".into(),
         annotation: None,
         path: None,
+        effect: None,
     })]);
     let llm = ScriptedLlmClient::new(vec![
         delegate(

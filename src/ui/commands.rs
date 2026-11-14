@@ -49,6 +49,9 @@ pub enum AutoCommand {
     /// Measure the classifier model on the permission corpus (`/auto
     /// check`).
     Check(crate::approval::corpus::Selection),
+    /// `/auto model`: pick the classifier's model; with a reference, set
+    /// it.
+    Model(Option<String>),
 }
 
 /// `/model` subcommands.
@@ -476,8 +479,8 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "auto",
         aliases: &[],
-        usage: "[on | off | resume | stats | check]",
-        summary: "show the mode; switch auto mode on, off, or resume it; its numbers; check its model",
+        usage: "[on | off | resume | stats | check | model]",
+        summary: "show the mode; switch auto mode on, off, or resume it; its numbers; check or change its model",
         help: &[
             (
                 "/auto",
@@ -492,8 +495,12 @@ pub static COMMANDS: &[CommandSpec] = &[
                 "the classifier's reviews, stage-1 flags, blocks by rule, pauses,\n/approve overrides, how often you allow what is asked, its tokens\nand time, for this conversation and since the daemon started",
             ),
             (
-                "/auto check [all | <n> | <case id>…]",
-                "measure the classifier model on built-in cases: 30 by default\n(12 routine, 12 harmful, 3 scope pairs), every case with all;\neach case is a classifier call on your endpoint, at your cost;\nprints the wrong blocks and misses and whether they are within\nthe targets",
+                "/auto model [[endpoint:]<id>]",
+                "the classifier's model: pick it from every endpoint's list (the\ncurrent one marked), or set it; live, written to the realm's\ntui.toml, its two-case check run in the background",
+            ),
+            (
+                "/auto check [all | statements | <n> | <case id>…]",
+                "measure the classifier model on built-in cases: 30 by default\n(12 routine, 12 harmful, 3 scope pairs), every case with all;\nstatements: the statement triples (allowed with a statement,\nblocked without, a neighbour that stays blocked); each case is\na classifier call on your endpoint, at your cost; prints the\nwrong blocks and misses and whether they are within the targets",
             ),
         ],
         parse: parse_auto,
@@ -764,6 +771,10 @@ fn parse_auto(rest: &str) -> Option<Command> {
         ["off"] => Some(Command::Auto(AutoCommand::Off)),
         ["resume"] => Some(Command::Auto(AutoCommand::Resume)),
         ["stats"] => Some(Command::Auto(AutoCommand::Stats)),
+        ["model"] => Some(Command::Auto(AutoCommand::Model(None))),
+        ["model", reference] => Some(Command::Auto(AutoCommand::Model(Some(
+            (*reference).to_string(),
+        )))),
         ["check", rest @ ..] => {
             parse_check(rest).map(|selection| Command::Auto(AutoCommand::Check(selection)))
         }
@@ -776,6 +787,10 @@ fn parse_check(words: &[&str]) -> Option<crate::approval::corpus::Selection> {
     use crate::approval::corpus::{Limit, Selection};
     match words {
         [] => Some(Selection::default()),
+        ["statements"] => Some(Selection {
+            sets: vec![crate::approval::corpus::Set::Statements],
+            ..Selection::default()
+        }),
         [word] if Limit::parse(word).is_some() => Some(Selection {
             limit: Limit::parse(word)?,
             ..Selection::default()
@@ -913,10 +928,11 @@ Lists (/schedules, /permissions, /approve, /helpers, /mode, /memory):
   Up/Down, j/k                   move
   Enter, p (/schedules)          pause the schedule, or resume a paused one
   d, then y (/schedules)         delete it; any other key keeps it
-  d, then y (/permissions)       remove the rule or the session grant (adding stays /permissions add)
-  Enter, o (/approve)            approve the blocked call once
-  s, then y (/approve)           grant its directory or call for this session
-  a, then y (/approve)           grant it always (the realm's tui.toml)
+  d, then y (/permissions)       remove the rule, the session grant or the statement (adding stays /permissions add)
+  Enter, o (/approve)            approve the blocked call once (exact)
+  s, then y (/approve)           grant its directory or call for this session (exact)
+  a, then y (/approve)           grant it always (the realm's tui.toml; exact)
+  e (/approve)                   allow its kind of effect: edit the sentence, Tab session/always, Enter (judged by the classifier)
   Enter (/helpers)               open the helper's full view (Esc returns)
   f (/helpers)                   fold or expand the helper's block in the transcript
   Enter (/mode)                  switch to the mode (a paused auto mode: resume it)
@@ -1387,6 +1403,24 @@ mod tests {
                 }))
             );
         }
+        assert_eq!(
+            ok("/auto check statements"),
+            Command::Auto(AutoCommand::Check(crate::approval::corpus::Selection {
+                sets: vec![crate::approval::corpus::Set::Statements],
+                ..crate::approval::corpus::Selection::default()
+            }))
+        );
+        assert_eq!(ok("/auto model"), Command::Auto(AutoCommand::Model(None)));
+        assert_eq!(
+            ok("/auto model anthropic:claude-haiku-5-5"),
+            Command::Auto(AutoCommand::Model(Some(
+                "anthropic:claude-haiku-5-5".into()
+            )))
+        );
+        assert!(matches!(
+            parse("/auto model a b"),
+            Some(Err(CommandError::Usage(_)))
+        ));
         assert!(matches!(
             parse("/auto maybe"),
             Some(Err(CommandError::Usage(_)))

@@ -943,3 +943,81 @@ fn confinement_grants_come_from_user_layers_only() {
     write(&realm, "[confinement]\nextra = [\"/x\"]\n");
     assert!(load_layered_with(&realm, None, &project, None).is_err());
 }
+
+/// `[auto] allow` statements come from the user's own layers only: the
+/// user-level file's are `config`, the realm's `always`; a project file's
+/// are ignored with a start-up notice, and a statement that says only
+/// "anything" is refused with its reason. The realm writer adds, removes
+/// and names the classifier model without touching the rest.
+#[test]
+fn allow_statements_come_from_the_user_s_layers_only() {
+    use crate::approval::statements::StatementOrigin;
+    let tmp = tempfile::tempdir().unwrap();
+    let realm = tmp.path().join("realm");
+    let project = tmp.path().join("project");
+    std::fs::create_dir_all(&realm).unwrap();
+    std::fs::create_dir_all(&project).unwrap();
+    let global = tmp.path().join("global.toml");
+    std::fs::write(
+        &global,
+        "[auto]\nallow = [\"pushing to the default branch of this solo repository\", \"anything\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        realm.join(RULES_FILE_NAME),
+        "[auto]\nmode = \"auto\"\nallow = [\"building the project after the agent changed its dependencies\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        project.join(RULES_FILE_NAME),
+        "[auto]\nallow = [\"sending the project's files to any host\"]\n",
+    )
+    .unwrap();
+    let (_, settings, notices) = load_layered(&realm, Some(&global), &project).unwrap();
+    assert_eq!(
+        settings.allow,
+        vec![
+            (
+                StatementOrigin::Config,
+                "pushing to the default branch of this solo repository".to_string()
+            ),
+            (
+                StatementOrigin::Always,
+                "building the project after the agent changed its dependencies".to_string()
+            ),
+        ]
+    );
+    assert!(
+        notices
+            .iter()
+            .any(|n| matches!(n, Notice::ProjectStatementsIgnored { count: 1, .. })),
+        "{notices:?}"
+    );
+    assert!(
+        notices
+            .iter()
+            .any(|n| matches!(n, Notice::StatementIgnored { text, .. } if text == "anything")),
+        "{notices:?}"
+    );
+    assert!(notices.iter().any(|n| {
+        n.to_string()
+            .contains("only your own tui.toml says which kinds of action you allow")
+    }));
+
+    let file = RealmFile::new(realm.join(RULES_FILE_NAME));
+    file.add_allow_statement("network requests to api.example.com")
+        .unwrap();
+    file.add_allow_statement("network requests to api.example.com")
+        .unwrap();
+    file.write_classifier_model("claude-haiku-5-5").unwrap();
+    file.remove_allow_statement("building the project after the agent changed its dependencies")
+        .unwrap();
+    let written = RulesFile::load(&realm.join(RULES_FILE_NAME)).unwrap();
+    let auto = written.auto.unwrap();
+    assert_eq!(
+        auto.allow,
+        vec!["network requests to api.example.com".to_string()]
+    );
+    assert_eq!(auto.classifier_model.as_deref(), Some("claude-haiku-5-5"));
+    assert_eq!(auto.mode, Some(crate::approval::mode::PermissionMode::Auto));
+}

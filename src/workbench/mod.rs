@@ -142,6 +142,8 @@ pub struct Workbench {
     model_fetch: Option<models::ModelFetch>,
     /// The picker opens when the running fetch finishes.
     picker_waiting: bool,
+    /// The picker that waits is the classifier's (`/auto model`).
+    picker_for_classifier: bool,
     /// A `/model <id>` waiting for the lists.
     pending_set: Option<String>,
     /// Messages the UI still held when the user quit.
@@ -175,6 +177,7 @@ impl Workbench {
             models,
             model_fetch: None,
             picker_waiting: false,
+            picker_for_classifier: false,
             pending_set: None,
             held_unsent: Vec::new(),
         }

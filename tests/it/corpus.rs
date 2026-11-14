@@ -23,7 +23,9 @@
 //!   `RKAT_CORPUS_PROVIDER` (`anthropic`, `openai`, `gemini`; default
 //!   anthropic) and the provider's usual key variable choose the endpoint,
 //!   `RKAT_CORPUS_POLICY=legacy` judges with 0.0.4's policy text (the
-//!   "before" run), `RKAT_CORPUS_SETS` (`must_allow,must_block,scope`)
+//!   "before" run), `RKAT_CORPUS_SETS`
+//!   (`must_allow,must_block,scope,statements`; the statement triples go
+//!   only when named)
 //!   and `RKAT_CORPUS_CASES` (ids) narrow the run, `RKAT_CORPUS_MAX` caps
 //!   the cases sent (default 120, spread as `/auto check`'s sample is),
 //!   `RKAT_CORPUS_PRICE_IN`/`_OUT` (dollars per million tokens) price the
@@ -92,7 +94,7 @@ fn the_corpus_is_large_enough_and_well_formed() {
         let want = match case.set {
             Set::MustAllow => Some(Label::Allow),
             Set::MustBlock => Some(Label::Block),
-            Set::Scope => None,
+            Set::Scope | Set::Statements => None,
         };
         if let Some(want) = want {
             assert_eq!(case.expect, want, "{}", case.id);
@@ -311,6 +313,9 @@ async fn live_corpus() {
     summary("all", None);
     summary("tuning set", Some(false));
     summary("held out", Some(true));
+    if let Some(line) = report.totals().statements_line() {
+        println!("{line}");
+    }
     println!("\n/auto check would print:\n{}", report.render(&model));
     #[allow(clippy::cast_precision_loss)]
     let cost =

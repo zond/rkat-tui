@@ -518,6 +518,18 @@ pub struct Observed {
     pub request: Value,
     /// An input for an agent: on its way until the engine answers it.
     pub input: Option<super::activity::Sending>,
+    /// What the request waits for before it is forwarded (a prompt: the
+    /// mode changes the client sent before it).
+    pub wait: Option<Wait>,
+}
+
+/// What a forwarded request waits for before it goes ([`Observed::wait`]).
+pub struct Wait(pub futures::future::BoxFuture<'static, ()>);
+
+impl std::fmt::Debug for Wait {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Wait")
+    }
 }
 
 impl Observed {
@@ -527,6 +539,7 @@ impl Observed {
         Self {
             request,
             input: None,
+            wait: None,
         }
     }
 }
@@ -545,6 +558,9 @@ pub trait LocalMethods: Send + Sync {
     ///
     /// The refusal, answered to the client; the request is not forwarded.
     fn observe(&self, caller: &Caller, request: Value) -> Result<Observed, Refusal>;
+    /// The proxy read the local call `method` and is about to run it on
+    /// its own task (a mode change is counted before it runs).
+    fn routing_local(&self, _method: &str) {}
     /// `caller` attached: the daemon's consent surface offers it decisions
     /// and the other pushes through `out` until the guard is dropped.
     fn connect(&self, caller: &Caller, out: ClientOut) -> ClientGuard;
@@ -565,6 +581,10 @@ impl LocalMethods for Local {
 
     fn observe(&self, caller: &Caller, request: Value) -> Result<Observed, Refusal> {
         Local::observe(self, caller, request)
+    }
+
+    fn routing_local(&self, method: &str) {
+        Local::routing_local(self, method);
     }
 
     fn connect(&self, caller: &Caller, out: ClientOut) -> ClientGuard {
@@ -823,7 +843,13 @@ async fn proxy_with<R, W, E, L>(
             Routed::Forward {
                 line: forward,
                 awaits,
+                wait,
             } => {
+                // Bounded (the mode change's own bound): the client's
+                // later lines wait behind it, in the order it sent them.
+                if let Some(Wait(wait)) = wait {
+                    wait.await;
+                }
                 if let Some((id, awaiting)) = awaits {
                     pending.lock().by_id.insert(id, awaiting);
                 }
@@ -1049,6 +1075,8 @@ pub enum Routed {
         line: String,
         /// The request id (as JSON text) and what its answer is for.
         awaits: Option<(String, Awaiting)>,
+        /// What it waits for first ([`Observed::wait`]).
+        wait: Option<Wait>,
     },
     /// A line that is not a JSON-RPC request the proxy accepts (unparsable,
     /// not an object, no `method`, a bad `jsonrpc` or `id`): never
@@ -1109,11 +1137,14 @@ pub fn route<L: LocalMethods + ?Sized>(line: &str, local: &L, caller: &Caller) -
             id: id(),
             params: request.get("params").cloned().unwrap_or(Value::Null),
         },
-        method if method.starts_with(protocol::PREFIX) => Routed::Local {
-            id: id(),
-            method: method.to_string(),
-            params: request.get("params").cloned().unwrap_or(Value::Null),
-        },
+        method if method.starts_with(protocol::PREFIX) => {
+            local.routing_local(method);
+            Routed::Local {
+                id: id(),
+                method: method.to_string(),
+                params: request.get("params").cloned().unwrap_or(Value::Null),
+            }
+        }
         method if !protocol::engine::serves(method) => Routed::Refused {
             id: id(),
             method: method.to_string(),
@@ -1122,9 +1153,14 @@ pub fn route<L: LocalMethods + ?Sized>(line: &str, local: &L, caller: &Caller) -
             let method = method.to_string();
             let id = id();
             match local.observe(caller, request) {
-                Ok(Observed { request, input }) => Routed::Forward {
+                Ok(Observed {
+                    request,
+                    input,
+                    wait,
+                }) => Routed::Forward {
                     line: format!("{request}\n"),
                     awaits: awaits(&request, &method, input),
+                    wait,
                 },
                 Err(refusal) => Routed::Denied { id, refusal },
             }

@@ -167,6 +167,7 @@ async fn stage1_garbage_then_stage2_block_with_rule() {
             reason: "Deletes outside the project.".into(),
             annotation: None,
             path: None,
+            effect: None,
         }
     );
     assert_eq!(client.recorded().len(), 2);
@@ -367,6 +368,7 @@ async fn stage2_reads_build_rs_then_decides() {
             reason: "build.rs runs code".into(),
             annotation: Some("[classifier checked 1 file]".into()),
             path: None,
+            effect: None,
         }
     );
     let requests = client.recorded();
@@ -462,6 +464,7 @@ async fn rejected_tools_fall_back_to_a_toolless_stage2() {
             reason: "pushes to main".into(),
             annotation: Some("[tools unavailable]".into()),
             path: None,
+            effect: None,
         }
     );
     let requests = client.recorded();

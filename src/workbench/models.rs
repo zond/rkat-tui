@@ -85,17 +85,31 @@ impl Workbench {
         true
     }
 
-    /// Answer [`crate::ui::Effect::RequestModelPicker`].
-    pub fn request_model_picker(&mut self, refresh: bool, current: Current<'_>) {
+    /// Answer [`crate::ui::Effect::RequestModelPicker`] (`classifier`:
+    /// [`crate::ui::Effect::RequestClassifierPicker`], `current` the
+    /// classifier's model).
+    pub fn request_model_picker(&mut self, refresh: bool, current: Current<'_>, classifier: bool) {
         if refresh {
             self.models = None;
         }
+        self.picker_for_classifier = classifier;
         if self.models.is_some() || self.endpoints.is_empty() {
-            self.send(Msg::ShowModelPicker(self.picker_groups(current)));
+            self.show_picker(current);
             return;
         }
         self.picker_waiting = true;
         self.ensure_fetch(true);
+    }
+
+    /// Open the picker that was asked for (the agent's or the
+    /// classifier's).
+    fn show_picker(&self, current: Current<'_>) {
+        let groups = self.picker_groups(current);
+        self.send(if self.picker_for_classifier {
+            Msg::ShowClassifierPicker(groups)
+        } else {
+            Msg::ShowModelPicker(groups)
+        });
     }
 
     /// The background fetch finished ([`Workbench::background`]): cache the
@@ -123,7 +137,7 @@ impl Workbench {
         };
         self.models = Some(cache);
         if std::mem::take(&mut self.picker_waiting) {
-            self.send(Msg::ShowModelPicker(self.picker_groups(current)));
+            self.show_picker(current);
         }
         self.pending_set.take()
     }

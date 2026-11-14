@@ -126,6 +126,58 @@ impl Runner {
         });
     }
 
+    /// `/auto model`: the model picker for the classifier, its model now
+    /// (`rkat/report`) marked; the lists are the ones `/model` shows.
+    pub(super) fn classifier_picker(&self) {
+        let Some(connection) = self.link_or_say("/auto model needs it") else {
+            return;
+        };
+        let reports = self.reporter();
+        let say = self.say();
+        tokio::spawn(async move {
+            match bounded(
+                CALL_TIMEOUT,
+                remote::call::<protocol::method::Report>(&connection, &protocol::Empty {}),
+            )
+            .await
+            {
+                Ok(report) => reports.send(Report::ClassifierModel(report.classifier_model)),
+                Err(err) => say.notice(
+                    NoticeLevel::Warn,
+                    format!("the classifier's model is unknown: {err}"),
+                ),
+            }
+        });
+    }
+
+    /// `/auto model <ref>` or the classifier picker's choice: resolve the
+    /// reference as `/model` does and have the daemon review with it
+    /// (`rkat/set_classifier_model`); its answer is a notice.
+    pub(super) fn set_classifier_model(&self, reference: &str) {
+        let switch = match super::turn::model_switch(
+            reference,
+            &self.config.endpoints,
+            self.bench.models(),
+            self.model.as_ref().map(|shown| shown.endpoint.as_str()),
+        ) {
+            Ok(switch) => switch,
+            Err(err) => {
+                self.notice(
+                    NoticeLevel::Warn,
+                    format!("the classifier model was not changed: {err} (/auto model picks from the lists)"),
+                );
+                return;
+            }
+        };
+        self.outcome_command::<protocol::method::SetClassifierModel>(
+            protocol::ClassifierModelParams {
+                endpoint: switch.endpoint,
+                model: switch.model,
+            },
+            "/auto model",
+        );
+    }
+
     /// `/audit [n]`: the audit log's last lines for this agent
     /// (`rkat/audit`).
     pub(super) fn show_audit(&self, lines: Option<usize>) {
@@ -256,7 +308,7 @@ impl Runner {
             .await
             {
                 Ok(rows) => {
-                    let picker = rule_picker(&rows.rules, &rows.grants);
+                    let picker = rule_picker(&rows.rules, &rows.grants, &rows.statements);
                     let _ = say.ui_tx.send(Msg::ShowPicker { picker, refresh });
                 }
                 Err(err) => say.notice(NoticeLevel::Warn, format!("cannot list the rules: {err}")),
@@ -265,21 +317,28 @@ impl Runner {
     }
 
     /// The `/permissions` picker's confirmed removal of session grant
-    /// `id`: its notice, then the picker again.
-    pub(super) fn grant_removal(&self, id: u64) {
+    /// `id` (`statement`: of statement `id`): its notice, then the picker
+    /// again.
+    pub(super) fn grant_removal(&self, id: u64, statement: bool) {
         let Some(connection) = self.link_or_say("/permissions needs it") else {
             return;
         };
         let say = self.say();
         tokio::spawn(async move {
-            let done = bounded(
-                CALL_TIMEOUT,
-                remote::call::<protocol::method::RemoveGrant>(
-                    &connection,
-                    &protocol::GrantParams { id },
-                ),
-            )
-            .await;
+            let params = protocol::GrantParams { id };
+            let done = if statement {
+                bounded(
+                    CALL_TIMEOUT,
+                    remote::call::<protocol::method::RemoveStatement>(&connection, &params),
+                )
+                .await
+            } else {
+                bounded(
+                    CALL_TIMEOUT,
+                    remote::call::<protocol::method::RemoveGrant>(&connection, &params),
+                )
+                .await
+            };
             let (level, text) = outcome_notice(done, "/permissions");
             say.notice(level, text);
             match bounded(
@@ -289,7 +348,7 @@ impl Runner {
             .await
             {
                 Ok(rows) => {
-                    let picker = rule_picker(&rows.rules, &rows.grants);
+                    let picker = rule_picker(&rows.rules, &rows.grants, &rows.statements);
                     let _ = say.ui_tx.send(Msg::ShowPicker {
                         picker,
                         refresh: true,
@@ -305,7 +364,7 @@ impl Runner {
     /// of the one open.
     pub(super) fn approve_picker(
         &self,
-        approve: Option<(u64, crate::approval::grants::GrantScope)>,
+        approve: Option<(u64, crate::approval::grants::GrantScope, Option<String>)>,
     ) {
         let Some(connection) = self.link_or_say("/approve needs it") else {
             return;
@@ -313,16 +372,21 @@ impl Runner {
         let say = self.say();
         tokio::spawn(async move {
             let refresh = approve.is_some();
-            if let Some((id, scope)) = approve {
+            let mut refused = None;
+            if let Some((id, scope, effect)) = approve {
                 let done = bounded(
                     CALL_TIMEOUT,
                     remote::call::<protocol::method::Approve>(
                         &connection,
-                        &protocol::ApproveParams { id, scope },
+                        &protocol::ApproveParams { id, scope, effect },
                     ),
                 )
                 .await;
+                let not_ok = matches!(&done, Ok(outcome) if !outcome.ok);
                 let (level, text) = outcome_notice(done, "/approve");
+                if not_ok {
+                    refused = Some(text.clone());
+                }
                 say.notice(level, text);
             }
             match bounded(
@@ -334,6 +398,14 @@ impl Runner {
                 Ok(list) => {
                     let picker = approve_picker(&list.calls, crate::pricing::unix_now());
                     let _ = say.ui_tx.send(Msg::ShowPicker { picker, refresh });
+                    // A refusal (a statement that says only "anything")
+                    // shows on the refreshed picker too.
+                    if let Some(why) = refused {
+                        let _ = say.ui_tx.send(Msg::PickerRefused {
+                            kind: crate::ui::PickerKind::Approve,
+                            why,
+                        });
+                    }
                 }
                 Err(err) => say.notice(
                     NoticeLevel::Warn,
@@ -765,8 +837,10 @@ pub(super) fn report_lines(report: &protocol::Report) -> Vec<String> {
 pub(super) fn rule_picker(
     rules: &[crate::approval::desk::RuleRow],
     grants: &[crate::approval::grants::GrantRow],
+    statements: &[crate::approval::statements::StatementRow],
 ) -> crate::ui::ListPicker {
     use crate::approval::rules::RuleOrigin;
+    use crate::approval::statements::StatementOrigin;
     use crate::ui::{ListPicker, PickAct, PickKey, PickRow, PickerKind};
     use ratatui::crossterm::event::KeyCode;
     let grant_rows = grants.iter().map(|grant| {
@@ -789,6 +863,36 @@ pub(super) fn rule_picker(
             )
         };
         PickRow::new(format!("grant {what} · {}", grant.origin), vec![key])
+    });
+    let statement_rows = statements.iter().map(|statement| {
+        let key = match statement.origin {
+            StatementOrigin::Config => PickKey::refused(
+                KeyCode::Char('d'),
+                "it is in your own tui.toml ([auto] allow): edit that file to drop it",
+            ),
+            StatementOrigin::Session => PickKey::confirmed(
+                KeyCode::Char('d'),
+                PickAct::RemoveStatement(statement.id),
+                format!("stop allowing \"{}\" for this session?", statement.text),
+            ),
+            StatementOrigin::Always => PickKey::confirmed(
+                KeyCode::Char('d'),
+                PickAct::RemoveStatement(statement.id),
+                format!(
+                    "stop allowing \"{}\"? it leaves the realm's tui.toml",
+                    statement.text
+                ),
+            ),
+        };
+        PickRow::new(
+            format!(
+                "allow kind \"{}\" · {}",
+                statement.text,
+                statement.origin.word()
+            ),
+            vec![key],
+        )
+        .noted("a statement: judged by the classifier, read narrowly")
     });
     let rows = rules
         .iter()
@@ -818,18 +922,23 @@ pub(super) fn rule_picker(
             )
         })
         .chain(grant_rows)
+        .chain(statement_rows)
         .collect();
     ListPicker::new(
         PickerKind::Permissions,
         rows,
-        "no approval rules or grants yet",
+        "no approval rules, grants or statements yet",
         "↑/↓ move · d remove · /permissions add allow|deny <tool> [pattern] adds a rule · /approve grants · Esc close",
     )
 }
 
 /// The `/approve` picker: the calls the gate recently blocked, newest
 /// first; Enter or `o` approves one once, `s` for this session, `a`
-/// always (a call no grant fits says so).
+/// always (a call no grant fits says so): each exact, the call itself or
+/// its directory or literal command. `e` opens a one-line field with the
+/// kind of effect the classifier objected to (empty when it named none),
+/// to edit and allow for this session or always: a statement the
+/// classifier judges.
 pub(super) fn approve_picker(
     calls: &[crate::approval::grants::BlockedCall],
     now: u64,
@@ -878,9 +987,20 @@ pub(super) fn approve_picker(
                 .as_ref()
                 .map_or_else(String::new, |rule| format!(" [{rule}]"));
             let ago = crate::text::span(now.saturating_sub(call.at), 1);
+            keys.push(PickKey::now(
+                KeyCode::Char('e'),
+                PickAct::EditEffect {
+                    id: call.id,
+                    proposed: call.effect.clone().unwrap_or_default(),
+                },
+            ));
             let grant = call.grant.as_ref().map_or_else(String::new, |grant| {
-                format!(" · grant: {}", grant.describe())
+                format!(" · s/a exact: {}", grant.describe())
             });
+            let effect = call.effect.as_ref().map_or_else(
+                || " · e judged: a kind of effect you type".to_string(),
+                |effect| format!(" · e judged: \"{effect}\""),
+            );
             PickRow::new(
                 format!(
                     "#{} {}{who}: {}{rule} · {ago} ago",
@@ -888,14 +1008,14 @@ pub(super) fn approve_picker(
                 ),
                 keys,
             )
-            .noted(format!("{}{grant}", call.reason))
+            .noted(format!("{}{grant}{effect}", call.reason))
         })
         .collect();
     ListPicker::new(
         PickerKind::Approve,
         rows,
         "nothing was blocked recently",
-        "↑/↓ move · Enter/o once · s for this session · a always · Esc close",
+        "↑/↓ move · Enter/o once (exact: this call) · s this session / a always (exact: its directory or literal command) · e allow this kind of effect (judged by the classifier) · Esc close",
     )
 }
 

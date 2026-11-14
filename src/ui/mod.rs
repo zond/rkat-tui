@@ -68,6 +68,21 @@ pub use modal::{
 #[cfg(any(test, feature = "test-support"))]
 pub use picker::PickerLine;
 pub use picker::{AgentEntry, ListPicker, PickAct, PickKey, PickRow, PickerKind};
+
+/// A picker's lines as text, `width` wide (tests of pickers built
+/// elsewhere).
+#[cfg(test)]
+pub(crate) fn picker_lines_for_test(picker: &ListPicker, width: usize) -> Vec<String> {
+    picker::list_picker_lines(picker, width, 100)
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect()
+        })
+        .collect()
+}
 pub use runtime::{UiChannels, UiError, run_ui};
 pub use search::{HistorySearch, SearchOutcome};
 pub use selection::{CellPos, SelectMode, Selection};
@@ -390,6 +405,9 @@ pub enum Msg {
     /// group per endpoint, the current endpoint and model first; a group's
     /// warning says why its list is missing.
     ShowModelPicker(Vec<ModelGroup>),
+    /// Open the model picker for the classifier (`/auto model`): the same
+    /// lists, titled "Classifier model", the classifier's model first.
+    ShowClassifierPicker(Vec<ModelGroup>),
     /// Open the agent picker (answer to [`Effect::Agents`] without a
     /// name): the workspace's agents, names in order.
     ShowAgentPicker(Vec<AgentEntry>),
@@ -400,6 +418,14 @@ pub enum Msg {
     /// Why a retire from the picker was refused: an open agent picker
     /// shows it.
     AgentPickerRefused(String),
+    /// Why a picker's act was refused by the daemon: a picker of `kind`
+    /// open or waiting shows it under its rows.
+    PickerRefused {
+        /// Whose picker.
+        kind: PickerKind,
+        /// Why.
+        why: String,
+    },
     /// Show a list picker (`/schedules`, `/permissions`, `/memory`). A
     /// `refresh` is the list again after the picker's own act: it replaces
     /// only a picker of its kind still open (or waiting behind an approval
@@ -657,6 +683,9 @@ pub enum Effect {
     /// The rule picker's confirmed removal of session grant `id`, then the
     /// picker's list again.
     PickedGrantRemoval(u64),
+    /// The rule picker's confirmed removal of statement `id`, then the
+    /// picker's list again.
+    PickedStatementRemoval(u64),
     /// `/auto stats`: the review numbers, as a notice.
     AutoStats,
     /// `/auto check`: measure the classifier model on these corpus cases
@@ -666,8 +695,9 @@ pub enum Effect {
     /// blocked (answered with [`Msg::ShowPicker`]).
     RequestApprovePicker,
     /// The `/approve` picker's choice: approve blocked call `id` for the
-    /// scope, then the picker's list again.
-    PickedApproval(u64, crate::approval::grants::GrantScope),
+    /// scope (with a statement: allow that kind of action instead), then
+    /// the picker's list again.
+    PickedApproval(u64, crate::approval::grants::GrantScope, Option<String>),
     /// `/trust`: record every project input's digest
     /// in the host trust record; their servers and hooks run from the next
     /// session.
@@ -679,6 +709,12 @@ pub enum Effect {
     SetChecklistView(ChecklistView),
     /// Switch model.
     SetModel(String),
+    /// `/auto model`: open the model picker for the classifier (answered
+    /// with [`Msg::ShowClassifierPicker`]).
+    RequestClassifierPicker,
+    /// `/auto model <ref>` or the classifier picker's choice: the
+    /// classifier reviews with that model (`rkat/set_classifier_model`).
+    SetClassifierModel(String),
     /// Load the provider's model list (cached for the session unless
     /// `refresh`); answer with [`Msg::ShowModelPicker`].
     RequestModelPicker {
@@ -1542,6 +1578,10 @@ impl App {
             Msg::Paste(text) => {
                 if let Some(Modal::Escalation { dialog, .. }) = &mut self.modal {
                     dialog.type_text(&text);
+                } else if let Some(Modal::List(picker)) = &mut self.modal
+                    && picker.editing()
+                {
+                    picker.type_text(&text);
                 } else if self.modal.is_none() {
                     self.chord = None;
                     if let InputMode::Search(search) = &mut self.mode {
@@ -1701,7 +1741,13 @@ impl App {
             Msg::AgentPickerRefused(why) => {
                 self.picker_refused(PickerKind::Agents, &format!("not retired: {why}"));
             }
+            Msg::PickerRefused { kind, why } => self.picker_refused(kind, &why),
             Msg::ShowPicker { picker, refresh } => self.show_picker(picker, refresh),
+            Msg::ShowClassifierPicker(groups) => {
+                if matches!(self.modal, None | Some(Modal::Keys)) && self.parked.is_none() {
+                    self.modal = Some(Modal::Model(ModelPicker::new(groups).for_classifier()));
+                }
+            }
             Msg::ShowModelPicker(groups) => {
                 if matches!(self.modal, None | Some(Modal::Keys)) && self.parked.is_none() {
                     self.modal = Some(Modal::Model(ModelPicker::new(groups)));

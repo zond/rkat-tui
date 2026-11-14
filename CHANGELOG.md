@@ -4,6 +4,25 @@
 
 ### Added
 
+- `/approve` can allow a **kind of effect**: the classifier names the
+  kind of effect it objects to in one general sentence, `e` on a blocked
+  call opens it in a one-line field to edit, Tab chooses this session or
+  always, Enter allows it. Such a statement is read by the classifier
+  (narrowly; it never clears sending data to a host you have not listed),
+  not matched; the picker says which choices are exact and which are
+  judged. "Always" statements are written to the realm's `tui.toml` as
+  `[auto] allow`, which your own `tui.toml` can hold too (a project's
+  `.rkat/tui.toml` cannot: ignored with a notice). At most 12, each at
+  most 200 characters; "anything" is refused. `/permissions` lists and
+  removes them; the agent is told when one is added.
+- `/auto check statements`: triples of a statement (blocked without it,
+  allowed with it, a neighbour that stays blocked), reported as
+  "statements: X of Y honoured, Z over-applied".
+- `/auto model` picks the classifier's model from the `/model` lists
+  ("Classifier model"), `/auto model <endpoint:id>` sets it: live, no
+  restart, written to the realm's `tui.toml`, audited, its two-case check
+  run against the new model with the result as a notice.
+
 - The input's prompt marker shows whether the agent is working: `›` while
   idle, a turning spinner while a turn runs (yours, or a run the daemon
   reports that you did not start) and while a classifier review or a
@@ -25,6 +44,13 @@
 
 ### Changed
 
+- A build after the agent changed the dependencies or build files: in a
+  contained shell (rkat-tui's sandbox or `--confinement=external`) it
+  stays unreviewed, with one notice per conversation ("building with
+  dependencies changed in this session; the sandbox contains it");
+  uncontained it asks you (with "for this session"), never a bare
+  classifier block.
+
 - The status bar's activity segment (spinner, state, elapsed time) comes
   first while the agent is busy, so a narrow terminal no longer cuts it.
 - Each tool call is one plain line that never wraps instead of its name
@@ -43,6 +69,12 @@
   open helper view, not only the latest. While it is on, new ones arrive
   shown; a click still toggles one until the next Ctrl-O; scrolled back,
   the line at the top of the view stays there.
+
+### Fixed
+
+- A prompt sent right after a mode change could start before the
+  agent was told of the change (plan mode on or off): it now waits for
+  the change's note.
 
 ## [0.0.4] - 2026-11-14
 

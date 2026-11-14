@@ -366,6 +366,10 @@ pub struct RuleRows {
     /// agent ([`super::ApprovalEngine::grant_rows`]).
     #[serde(default)]
     pub grants: Vec<super::grants::GrantRow>,
+    /// The kinds of action the user allows for the asking client's agent
+    /// ([`super::ApprovalEngine::statement_rows`]).
+    #[serde(default)]
+    pub statements: Vec<super::statements::StatementRow>,
 }
 
 /// The rules of `engine` as the `/permissions` picker shows them.
@@ -387,6 +391,7 @@ pub fn rule_rows(engine: &ApprovalEngine) -> RuleRows {
             })
             .collect(),
         grants: Vec::new(),
+        statements: Vec::new(),
     }
 }
 

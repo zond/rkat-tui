@@ -37,6 +37,10 @@
 //! workspaces ([`wires`]), and the reads behind `/status`, `/context`,
 //! `/audit` and `/trust` ([`report`]).
 
+/// The longest a prompt waits for a mode change the same client sent
+/// before it ([`Local::observe`]).
+const MODE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
 mod inputs;
 mod lifecycle;
 mod model;
@@ -90,9 +94,22 @@ pub struct Local {
     /// cannot interleave their check and their note.
     plan_noted: tokio::sync::Mutex<std::collections::HashMap<String, bool>>,
     inputs: AtomicU64,
+    /// The `rkat/set_mode` calls routed so far ([`Local::routing_local`]),
+    /// counted when the proxy reads them, before their task runs.
+    modes_routed: AtomicU64,
+    /// The `rkat/set_mode` calls that ended (their note in the agents'
+    /// context): a prompt to an idle agent waits until every mode change
+    /// routed before it ended ([`Local::observe`]).
+    modes_done: tokio::sync::watch::Sender<u64>,
     /// Tests: how many times each engine method was forwarded.
     #[cfg(any(test, feature = "test-support"))]
     forwarded: parking_lot::Mutex<std::collections::HashMap<String, usize>>,
+    /// Tests: a mode change waits on it before its note.
+    #[cfg(any(test, feature = "test-support"))]
+    mode_hold: Arc<tokio::sync::RwLock<()>>,
+    /// Tests: how many prompts waited for a mode change.
+    #[cfg(any(test, feature = "test-support"))]
+    mode_waits: Arc<AtomicU64>,
 }
 
 /// What only [`Local`] reads, beside the [`Core`] it shares.
@@ -164,9 +181,62 @@ impl Local {
             parts,
             plan_noted: tokio::sync::Mutex::new(noted),
             inputs: AtomicU64::new(0),
+            modes_routed: AtomicU64::new(0),
+            modes_done: tokio::sync::watch::Sender::new(0),
             #[cfg(any(test, feature = "test-support"))]
             forwarded: parking_lot::Mutex::default(),
+            #[cfg(any(test, feature = "test-support"))]
+            mode_hold: Arc::default(),
+            #[cfg(any(test, feature = "test-support"))]
+            mode_waits: Arc::default(),
         }
+    }
+
+    /// Tests: hold every mode change before its note until the guard is
+    /// dropped.
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn hold_mode_notes(&self) -> tokio::sync::OwnedRwLockWriteGuard<()> {
+        Arc::clone(&self.mode_hold).write_owned().await
+    }
+
+    /// Tests: how many prompts waited for a mode change to end.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn mode_waits(&self) -> u64 {
+        self.mode_waits.load(Ordering::SeqCst)
+    }
+
+    /// The proxy read `caller`'s local call `method` and is about to run
+    /// it on its own task: a mode change is counted now, so a prompt the
+    /// same client sends right after it waits for it ([`Self::observe`]).
+    pub fn routing_local(&self, method: &str) {
+        if method == <method::SetMode as Method>::NAME {
+            self.modes_routed.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    /// What a prompt to an idle agent waits for: every mode change routed
+    /// before it to end, so the change's note is in the agent's context
+    /// before the run it starts (bounded: a change held up longer lets the
+    /// prompt go).
+    fn after_mode_changes(&self) -> Option<super::serve::Wait> {
+        let target = self.modes_routed.load(Ordering::SeqCst);
+        if *self.modes_done.borrow() >= target {
+            return None;
+        }
+        let mut done = self.modes_done.subscribe();
+        #[cfg(any(test, feature = "test-support"))]
+        self.mode_waits.fetch_add(1, Ordering::SeqCst);
+        Some(super::serve::Wait(Box::pin(async move {
+            if tokio::time::timeout(MODE_WAIT, done.wait_for(|ended| *ended >= target))
+                .await
+                .is_err()
+            {
+                tracing::warn!(
+                    "a prompt waited {MODE_WAIT:?} for a mode change to end; sent anyway"
+                );
+            }
+        })))
     }
 
     /// What the local methods share with the agents.
@@ -271,6 +341,28 @@ impl Local {
         method: &str,
         params: Value,
     ) -> Result<Value, Refusal> {
+        /// Counts a mode change as ended however its call ends (answered,
+        /// refused, or dropped unfinished), so no prompt waits for one
+        /// that never will.
+        struct Ended<'a>(Option<&'a tokio::sync::watch::Sender<u64>>);
+        impl Drop for Ended<'_> {
+            fn drop(&mut self) {
+                if let Some(done) = self.0 {
+                    done.send_modify(|ended| *ended += 1);
+                }
+            }
+        }
+        let _ended =
+            Ended((method == <method::SetMode as Method>::NAME).then_some(&self.modes_done));
+        self.dispatch(caller, method, params).await
+    }
+
+    async fn dispatch(
+        &self,
+        caller: Caller,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, Refusal> {
         /// One arm per method: `$p` is its parameters, `$body` (which may
         /// await) its `Result<M::Result, Refusal>`.
         macro_rules! dispatch {
@@ -300,8 +392,9 @@ impl Local {
             method::Rules, command => self.rules(command).await;
             method::RuleRows, Empty {} => Ok(self.rule_and_grant_rows(&caller));
             method::Blocked, Empty {} => self.blocked(&caller);
-            method::Approve, protocol::ApproveParams { id, scope } => self.approve(&caller, id, scope);
+            method::Approve, protocol::ApproveParams { id, scope, effect } => self.approve(&caller, id, scope, effect.as_deref());
             method::RemoveGrant, protocol::GrantParams { id } => self.remove_grant(&caller, id);
+            method::RemoveStatement, protocol::GrantParams { id } => self.remove_statement(&caller, id);
             method::Conversations, Empty {} => Ok(self.conversation_list(&caller).await);
             method::New, Empty {} => self.switch(&self.agent_of(&caller)?, Target::Fresh).await;
             method::Resume, protocol::SessionParams { session_id } => self.switch(&self.agent_of(&caller)?, Target::Resume(session_id)).await;
@@ -312,6 +405,7 @@ impl Local {
             method::Tasks, protocol::SessionParams { session_id } => self.tasks(&session_id).await;
             method::Notices, Empty {} => Ok(self.notices());
             method::AutoStats, Empty {} => Ok(self.auto_stats(&caller));
+            method::SetClassifierModel, protocol::ClassifierModelParams { endpoint, model } => Ok(self.set_classifier_model(&endpoint, &model).await);
             method::ClassifierCheck, selection => self.classifier_check(&selection).await;
             method::Audit, protocol::AuditParams { lines } => self.audit_tail(&self.agent_of(&caller)?, lines.unwrap_or(AUDIT_LINES));
             method::Missed, Empty {} => self.missed(&caller);
@@ -362,8 +456,16 @@ impl Local {
             _ => return Ok(Observed::plain(request)),
         };
         let mut input = None;
+        let mut wait = None;
         match method.as_str() {
             engine::MEMBER_SEND => {
+                // A prompt to an idle agent starts a run: a mode change
+                // the client sent before it is in the agent's context
+                // first. A steer into a running turn does not wait (that
+                // turn's note comes after it anyway).
+                if !self.core.activity.running(&agent) {
+                    wait = self.after_mode_changes();
+                }
                 self.agents.touch(&agent);
                 // On its way until the engine answers: the agent is not
                 // idle meanwhile.
@@ -399,7 +501,11 @@ impl Local {
             }
             _ => {}
         }
-        Ok(Observed { request, input })
+        Ok(Observed {
+            request,
+            input,
+            wait,
+        })
     }
 
     /// Whether `caller` may send the engine request `method` with

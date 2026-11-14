@@ -180,6 +180,15 @@ impl Activity {
         self.agents.lock().remove(agent);
     }
 
+    /// Whether a run of `agent` the daemon saw start has not ended yet.
+    #[must_use]
+    pub fn running(&self, agent: &str) -> bool {
+        self.agents
+            .lock()
+            .get(agent)
+            .is_some_and(|state| !state.open.is_empty())
+    }
+
     /// What the clients were told of `agent`, when it is idle now.
     #[must_use]
     pub fn idle(&self, agent: &str) -> Option<IdleNote> {

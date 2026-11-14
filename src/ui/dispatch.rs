@@ -179,6 +179,10 @@ impl App {
             }
             Command::Auto(AutoCommand::Off) => fx.push(Effect::SetMode(PermissionMode::Manual)),
             Command::Auto(AutoCommand::Stats) => fx.push(Effect::AutoStats),
+            Command::Auto(AutoCommand::Model(None)) => fx.push(Effect::RequestClassifierPicker),
+            Command::Auto(AutoCommand::Model(Some(reference))) => {
+                fx.push(Effect::SetClassifierModel(reference));
+            }
             Command::Auto(AutoCommand::Check(selection)) => {
                 fx.push(Effect::ClassifierCheck(selection));
             }

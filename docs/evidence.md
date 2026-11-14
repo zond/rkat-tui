@@ -9227,3 +9227,131 @@ laid out again. Tests: `ui::transcript::tool_line::tests::*`,
 `ctrl_o_keeps_the_top_line_in_place`,
 `ui::tests::escalations::the_dialog_shows_the_call_as_its_line`, and the
 pinned lines in `tests/it/render.rs`.
+
+## Allowing a kind of effect: statements (owner decision, 2026-11-14)
+
+The owner: "Can we make it more general, so that we can tell the
+classifier 'this kind of effect is allowed'?" … "Yes - please do this."
+A grant (0.0.5's `/approve`) is exact: one directory, one literal
+command; a block of `cargo check` after a dependency change, or of `git
+push origin main` in a solo repository, recurs with every new
+argument. What was built: stage 2's answer gains an `EFFECT:` line after
+`PATH:` (one general sentence for the kind of effect objected to,
+without what varies between calls); `parse_stage2` reads it leniently
+(absent, `NONE`, or a sentence `statements::normalize` refuses: none),
+so four-line answers of older prompts still parse. The sentence is kept
+on the blocked-call record (`BlockedCall::effect`); `/approve`'s `e`
+opens a one-line field with it (the deny comment's editing,
+`modal::push_line_text`), Tab switches session/always, Enter sends
+`rkat/approve` with `effect`. The picker says which choices are exact
+and which are judged. A statement is not matched by the gate: the
+classifier reads the active ones in its environment, where the granted
+directories are, under `prompts::STATEMENTS_NOTE` ("The user allows these
+kinds of action (statements in their own words)", read narrowly, never
+clearing data sent to a host the user has not listed as trusted).
+Session statements live in the engine's per-session state (helpers' and
+forks' calls are judged under the agent's session, as grants are);
+"always" ones go through the realm's trusted writer
+(`RealmFile::add_allow_statement`, `[auto] allow`), following the
+"always" directory grants; `[auto] allow` is read from the user-level
+and realm layers and never from a project file
+(`Notice::ProjectStatementsIgnored`: a cloned repository could word one
+that clears what it wants). Limits: 12 active, 200 characters, control
+characters stripped, "anything"-only statements refused
+(`statements::BROAD_WORDS`). Every add and remove is audited
+(`statement_added`, `statement_removed`); the agent gets one note.
+Unknown and not measured (no live run in this change: the owner's API
+credit): how well a small classifier writes the `EFFECT:` sentence and
+applies a statement narrowly. The corpus gained a fourth set,
+`statements.toml`: nine triples (an action blocked without the
+statement, allowed with it, a neighbour that must stay blocked with
+it), not in the quick sample, reported as their own line
+(`Totals::statements_line`: "statements: X of Y honoured, Z
+over-applied"); the owner measures with `/auto check statements`.
+Pinned by `a_kind_of_effect_is_allowed_for_the_session_or_always`,
+`stage2_names_the_kind_of_effect_it_objects_to`,
+`the_user_s_statements_and_the_containment_reach_the_environment`,
+`allow_statements_come_from_the_user_s_layers_only`,
+`statements_are_cleaned_bounded_and_never_anything`,
+`the_approve_picker_allows_an_edited_kind_of_effect`,
+`the_permissions_picker_lists_and_removes_statements` and
+`statement_triples_are_their_own_line`.
+
+## Builds after a dependency change (owner decision, 2026-11-14)
+
+The owner's case: `--confinement=external`, the agent had changed the
+dependencies, and `cargo check` was blocked as "might download and
+execute deps". Claude Code's classifier allows installing and building
+what the manifest declares only while the agent has not changed the
+manifest in the session; 0.0.5 followed it (the trusted build was
+reviewed again after a build-defining file changed). This departs from
+that condition on purpose: when a sandbox contains the shell (rkat-tui's,
+or one the user declares), the sandbox is the boundary for what a build
+runs, and a build right after the agent added a dependency is the
+ordinary next step of the task; the owner's stance is "the big risk
+isn't malevolence but mistakes", and a build is not a mistake the
+classifier can usefully catch there. What was built: contained, a
+project build stays tier 1 after a change (`builds_trusted`); the
+digest and the write flag stay, now over every root-level manifest too,
+for one notice per conversation ("building with dependencies changed in
+this session; the sandbox contains it", `notice_build`, audit
+`build_after_change`). Uncontained, a command running a build tool after
+a change is put to the user (`Asking::Build`, `BUILD_AFTER_CHANGE_ASK`),
+never a bare classifier block; the dialog's "for this session" grants
+`GrantTarget::Builds` (session only), after which such builds go to the
+classifier, told the user allows them (`BUILDS_STATEMENT`); unattended
+it is denied with the missed notice. The allow-exception text and the
+manifest note say the same (contained: a change does not matter;
+uncontained: the user is asked). Pinned by
+`contained_builds_stay_trusted_and_uncontained_ones_ask_after_a_change`
+(it replaces `contained_builds_are_trusted_until_a_build_file_changes`,
+which encoded the old rule) and the corpus triple `t01`;
+`build_configuration_is_part_of_the_cache_key` grants the session's
+builds first, since a changed `build.rs` now asks when uncontained.
+
+## A mode change reaches the agent before the next prompt (2026-11-14)
+
+`client_turns::plan_mode_refuses_a_write_and_the_model_reads_why` failed
+once in a full gate: after leaving plan mode the next request still had
+no "# Plan mode is off". A real ordering defect, not a test artefact.
+The engine applies an appended system context synchronously
+(`mob_append_system_context` → the session actor →
+`Session::append_system_message_idempotent`, meerkat-session 0.9.14
+`ephemeral.rs` 7852-7895, 13188-13225), but the session actor serves no
+command while a turn runs. `Local::set_mode` broadcast the mode push,
+then persisted the mode, then appended the note; the client (and the
+test) acts on the push, and the daemon serves each local call on its own
+task while a forwarded `mob/member_send` goes straight to the engine, so
+a prompt sent right after the switch could start its run first and the
+note then waited behind the whole turn. Fixed in the daemon: the proxy
+counts an `rkat/set_mode` when it reads it, before its task runs
+(`Local::routing_local`), the call counts as ended however it ends, and a
+`mob/member_send` to an agent with no open run waits (bounded, 10 s)
+until every mode change routed before it ended (`Local::observe`,
+`serve::Wait`); a steer into a running turn does not wait. Pinned by
+`approvals::a_prompt_after_a_mode_change_waits_for_its_note`, which
+holds the note back (`Local::hold_mode_notes`), sends the prompt, and
+releases the note only once the prompt waits: it fails every time with
+the wait removed (checked), and passes with it.
+
+## The classifier model from the TUI (owner decision, 2026-11-14)
+
+The owner: "Can I see/change the classifier model from the tui?" …
+"Great - yes do that". `/auto model` opens the model picker for the
+classifier (the `/model` lists, titled "Classifier model", its model
+marked); `/auto model <ref>` resolves as `/model` does. The daemon's
+`rkat/set_classifier_model` refuses an endpoint it does not have, with
+what to do; else the engine builds the classifier through the builder
+bootstrap installs (`ClassifierBuilder`: the same factory, credentials
+and settings as at start, on the chosen endpoint) and swaps it
+(`switch_classifier`; the reviews take their classifier per review, so a
+running one finishes on the old), writes `[auto] classifier_model =
+"<endpoint>:<model>"` through the realm's trusted writer (bootstrap now
+reads that form: a prefix naming a known endpoint runs it there), audits
+`classifier_model`, and runs the two-case check against the new model in
+the background (`probe_switched`, which also says when it passes).
+`/status` and `/auto stats` read the model live. Pinned by
+`the_classifier_model_is_switched_live`,
+`the_classifier_model_is_picked_or_set_from_the_tui` and the rig's
+`the_classifier_model_change_is_refused_for_an_unknown_endpoint`; no live
+model was called.

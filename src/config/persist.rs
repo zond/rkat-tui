@@ -140,6 +140,52 @@ impl RealmFile {
         save_realm(&self.path, &file)
     }
 
+    /// Add `text` to its `[auto] allow` (a statement the user allowed
+    /// "always" with `/approve`), keeping everything else; one already
+    /// listed is not added twice.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::write_rules_with`].
+    pub fn add_allow_statement(&self, text: &str) -> Result<(), RulesError> {
+        let _one = self.lock.lock();
+        let mut file = RulesFile::load(&self.path)?;
+        let auto = file.auto.get_or_insert_with(AutoSection::default);
+        if !auto.allow.iter().any(|known| known == text) {
+            auto.allow.push(text.to_string());
+        }
+        save_realm(&self.path, &file)
+    }
+
+    /// Remove `text` from its `[auto] allow`, keeping everything else.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::write_rules_with`].
+    pub fn remove_allow_statement(&self, text: &str) -> Result<(), RulesError> {
+        let _one = self.lock.lock();
+        let mut file = RulesFile::load(&self.path)?;
+        if let Some(auto) = &mut file.auto {
+            auto.allow.retain(|known| known != text);
+        }
+        save_realm(&self.path, &file)
+    }
+
+    /// Write `model` as its `[auto] classifier_model` (`/auto model`),
+    /// keeping everything else.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::write_rules_with`].
+    pub fn write_classifier_model(&self, model: &str) -> Result<(), RulesError> {
+        let _one = self.lock.lock();
+        let mut file = RulesFile::load(&self.path)?;
+        file.auto
+            .get_or_insert_with(AutoSection::default)
+            .classifier_model = Some(model.to_string());
+        save_realm(&self.path, &file)
+    }
+
     /// Write `view` as its `[ui] checklist`.
     ///
     /// # Errors

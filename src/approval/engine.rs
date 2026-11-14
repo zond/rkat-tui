@@ -66,6 +66,7 @@ use super::policy::{
 };
 use super::prompts::MAX_REVIEWED_ACTION_BYTES;
 use super::rules::{Rule, RuleId, RuleKind, RuleOrigin, RuleSet, RulesError};
+use super::statements::{MAX_STATEMENTS, StatementOrigin, StatementRefusal, StatementRow};
 use super::stats::{ReviewStats, StatsBook};
 use super::transcript::{ApprovalTranscript, InputKey};
 use super::{ApprovalEvent, DenyReason, Verdict, prompts, shell};
@@ -226,12 +227,19 @@ struct SessionState {
     approved_once: HashSet<CacheKey>,
     /// The grants the user made for this session and its helpers, by id.
     grants: Vec<(u64, GrantTarget)>,
+    /// The kinds of action the user allows for this session and its
+    /// helpers ([`super::statements`]), by id.
+    statements: Vec<(u64, String)>,
     /// The digest of the project's build-defining files when the session
     /// was first seen, or when a reviewed build last ran: a trusted build
     /// is trusted only while they are unchanged ([`BUILD_DEFINING_FILES`]).
     build_digest: Option<[u8; 32]>,
-    /// The session's file tools wrote a build-defining file since then.
+    /// The session's file tools wrote a build-defining file or a
+    /// dependency manifest since then.
     build_files_written: bool,
+    /// The first build after such a change with the shell contained was
+    /// noticed ([`ApprovalEngine::notice_build`]).
+    build_change_noticed: bool,
 }
 
 /// The project files whose change makes the next build reviewed even where
@@ -292,8 +300,10 @@ impl Default for SessionState {
             recent: VecDeque::new(),
             approved_once: HashSet::new(),
             grants: Vec::new(),
+            statements: Vec::new(),
             build_digest: None,
             build_files_written: false,
+            build_change_noticed: false,
         }
     }
 }
@@ -357,6 +367,26 @@ impl Drop for CheckRun<'_> {
     }
 }
 
+/// What [`ClassifierBuilder`] builds: the reviews' classifier and the
+/// checks' (the same model and policy, stage 2 without its tools).
+pub struct BuiltClassifier {
+    /// The reviews'.
+    pub review: Arc<dyn ActionClassifier>,
+    /// The checks'.
+    pub check: Arc<dyn ActionClassifier>,
+}
+
+/// Builds the classifier for a model of an endpoint (`/auto model`), or
+/// says why it cannot.
+pub type ClassifierBuilder = Arc<
+    dyn Fn(
+            crate::endpoints::Endpoint,
+            String,
+        ) -> futures::future::BoxFuture<'static, Result<BuiltClassifier, String>>
+        + Send
+        + Sync,
+>;
+
 /// A callback run when a session's per-session state is forgotten.
 pub type ForgetHook = Arc<dyn Fn(&SessionId) + Send + Sync>;
 
@@ -372,7 +402,10 @@ pub struct ApprovalEngine {
     settings: RwLock<AutoSettings>,
     sessions: Mutex<HashMap<SessionId, SessionState>>,
     auto: Mutex<AutoMode>,
-    classifier: Arc<dyn ActionClassifier>,
+    /// The classifier the reviews use now; `/auto model` replaces it
+    /// ([`Self::switch_classifier`]): a review that started finishes on
+    /// the one it took.
+    classifier: RwLock<Arc<dyn ActionClassifier>>,
     broker: Option<EscalationBroker>,
     escalation_timeout: Duration,
     next_escalation: AtomicU64,
@@ -402,16 +435,23 @@ pub struct ApprovalEngine {
     /// Directories the user granted "always" while this daemon runs (the
     /// realm's `tui.toml` holds them for the next start), by id.
     always_dirs: RwLock<Vec<(u64, PathBuf)>>,
+    /// The statements in force for every session: the user's own
+    /// `tui.toml` files' (`config`, `always` for the realm's) and the ones
+    /// added "always" while the daemon runs.
+    lasting_statements: RwLock<Vec<StatementRow>>,
     /// The classifier's model, and whether the start-up check should run
     /// against it ([`Self::set_classifier_model`]).
-    classifier_model: OnceLock<(String, bool)>,
+    classifier_model: RwLock<Option<(String, bool)>>,
     /// What the start-up check found wrong, for the clients that attach
     /// later ([`Self::probe_notice`]).
     probe_notice: Mutex<Option<String>>,
     /// The classifier the checks send their cases to: the review's, with
     /// stage 2's file-reading tools off ([`Self::set_check_classifier`]);
     /// unset, the review's own.
-    check_classifier: OnceLock<Arc<dyn ActionClassifier>>,
+    check_classifier: RwLock<Option<Arc<dyn ActionClassifier>>>,
+    /// Builds the classifier for another model (`/auto model`); unset, the
+    /// model cannot be changed live ([`Self::set_classifier_builder`]).
+    classifier_builder: OnceLock<ClassifierBuilder>,
     /// A classifier check runs ([`Self::check_classifier`]).
     check_running: std::sync::atomic::AtomicBool,
     /// The review numbers (`/auto stats`), since the daemon started and
@@ -440,6 +480,8 @@ struct Facts<'a> {
     /// The path outside the allowed scope the classifier named as why it
     /// blocked, if it did.
     blocked_path: Mutex<Option<String>>,
+    /// The kind of effect the classifier objected to, if it named one.
+    blocked_effect: Mutex<Option<String>>,
     /// The classifier's review of the call, when one ran (the audit line).
     review: Mutex<Option<ReviewRecord>>,
 }
@@ -467,13 +509,24 @@ impl ApprovalEngine {
             let _ = events.send(ApprovalEvent::RulesDropped(dropped));
         }
         let auto = AutoMode::new(mode);
+        let lasting: Vec<StatementRow> = settings
+            .allow
+            .iter()
+            .zip(1u64..)
+            .map(|((origin, text), id)| StatementRow {
+                id,
+                text: text.clone(),
+                origin: *origin,
+            })
+            .collect();
+        let first_id = u64::try_from(lasting.len()).unwrap_or(0) + 1;
         Arc::new(Self {
             root,
             rules: Arc::new(RwLock::new(rules)),
             settings: RwLock::new(settings),
             sessions: Mutex::new(HashMap::new()),
             auto: Mutex::new(auto),
-            classifier,
+            classifier: RwLock::new(classifier),
             broker,
             escalation_timeout,
             next_escalation: AtomicU64::new(1),
@@ -488,11 +541,13 @@ impl ApprovalEngine {
             answerers: Mutex::new(HashMap::new()),
             forget_hooks: RwLock::new(Vec::new()),
             scratch: OnceLock::new(),
-            next_id: AtomicU64::new(1),
+            next_id: AtomicU64::new(first_id),
             always_dirs: RwLock::new(Vec::new()),
-            classifier_model: OnceLock::new(),
+            lasting_statements: RwLock::new(lasting),
+            classifier_model: RwLock::new(None),
             probe_notice: Mutex::new(None),
-            check_classifier: OnceLock::new(),
+            check_classifier: RwLock::new(None),
+            classifier_builder: OnceLock::new(),
             check_running: std::sync::atomic::AtomicBool::new(false),
             stats: Mutex::new(StatsBook::default()),
         })
@@ -502,14 +557,62 @@ impl ApprovalEngine {
     /// send their cases to `classifier`: the review's own model, endpoint
     /// and policy, with stage 2's file-reading tools off. Set once.
     pub fn set_check_classifier(&self, classifier: Arc<dyn ActionClassifier>) {
-        let _ = self.check_classifier.set(classifier);
+        *self.check_classifier.write() = Some(classifier);
     }
 
     /// The classifier the checks use.
-    fn checker(&self) -> &dyn ActionClassifier {
+    fn checker(&self) -> Arc<dyn ActionClassifier> {
         self.check_classifier
-            .get()
-            .map_or(&*self.classifier, |classifier| &**classifier)
+            .read()
+            .clone()
+            .unwrap_or_else(|| Arc::clone(&*self.classifier.read()))
+    }
+
+    /// How `/auto model` builds the classifier for another model: set once
+    /// by the daemon's composition.
+    pub fn set_classifier_builder(&self, builder: ClassifierBuilder) {
+        let _ = self.classifier_builder.set(builder);
+    }
+
+    /// `/auto model`: review with `model` of `endpoint` from now on, live
+    /// (a review that started finishes on the old one), named `label` (the
+    /// `endpoint:model` reference) in `/status`, `/auto stats` and the
+    /// checks; written to the realm's `tui.toml` (`[auto] classifier_model`)
+    /// and audited. The caller runs the start-up check against it
+    /// ([`Self::probe_classifier`]). Returns the notice.
+    ///
+    /// # Errors
+    ///
+    /// Why the model was not changed, for the user.
+    pub async fn switch_classifier(
+        &self,
+        endpoint: crate::endpoints::Endpoint,
+        model: String,
+        label: String,
+    ) -> Result<String, String> {
+        let Some(builder) = self.classifier_builder.get() else {
+            return Err("this daemon's classifier is fixed (a test's or an embedder's); the model cannot be changed".into());
+        };
+        let built = builder(endpoint, model).await?;
+        let previous = self.classifier_model();
+        *self.classifier.write() = built.review;
+        *self.check_classifier.write() = Some(built.check);
+        *self.classifier_model.write() = Some((label.clone(), true));
+        *self.probe_notice.lock() = None;
+        let saved = match &self.realm_file {
+            Some(file) => file
+                .write_classifier_model(&label)
+                .map_err(|err| format!("; it applies to this run but was not saved: {err}")),
+            None => Ok(()),
+        };
+        self.audit_event(
+            "classifier_model",
+            format!("{} -> {label}", previous.as_deref().unwrap_or("none")),
+        );
+        let unsaved = saved.err().unwrap_or_default();
+        Ok(format!(
+            "the classifier now reviews with {label} (written to the realm's tui.toml as [auto] classifier_model){unsaved}; its start-up check runs now, and /auto check measures it on more cases"
+        ))
     }
 
     /// `/auto check`: send `cases` (a [`corpus::select`]ion) through the
@@ -529,10 +632,7 @@ impl ApprovalEngine {
         cases: &[corpus::Case],
         bounds: corpus::Bounds,
     ) -> Result<(String, corpus::Report), CheckError> {
-        let model = self
-            .classifier_model()
-            .ok_or(CheckError::NotConfigured)?
-            .to_string();
+        let model = self.classifier_model().ok_or(CheckError::NotConfigured)?;
         if self.check_running.swap(true, Ordering::SeqCst) {
             return Err(CheckError::Busy);
         }
@@ -548,7 +648,8 @@ impl ApprovalEngine {
             total: cases.len(),
             running: true,
         });
-        let report = corpus::evaluate(self.checker(), cases, bounds, |done, total| {
+        let checker = self.checker();
+        let report = corpus::evaluate(&*checker, cases, bounds, |done, total| {
             run.done.store(done, Ordering::Relaxed);
             self.emit(ApprovalEvent::CheckProgress {
                 done,
@@ -590,13 +691,19 @@ impl ApprovalEngine {
     /// The classifier runs on `model`; `probe`: the start-up check should
     /// run against it. Set once.
     pub fn set_classifier_model(&self, model: String, probe: bool) {
-        let _ = self.classifier_model.set((model, probe));
+        let mut slot = self.classifier_model.write();
+        if slot.is_none() {
+            *slot = Some((model, probe));
+        }
     }
 
     /// The classifier's model, when one is configured.
     #[must_use]
-    pub fn classifier_model(&self) -> Option<&str> {
-        self.classifier_model.get().map(|(model, _)| model.as_str())
+    pub fn classifier_model(&self) -> Option<String> {
+        self.classifier_model
+            .read()
+            .as_ref()
+            .map(|(model, _)| model.clone())
     }
 
     /// What the start-up check found wrong, if it ran and found anything.
@@ -615,7 +722,18 @@ impl ApprovalEngine {
     /// and [`Self::probe_notice`] for clients that attach later; `/auto
     /// check` measures more).
     pub async fn probe_classifier(&self) {
-        let Some((model, true)) = self.classifier_model.get().cloned() else {
+        self.probe(false).await;
+    }
+
+    /// The start-up check against the model `/auto model` just chose
+    /// ([`Self::switch_classifier`]): as [`Self::probe_classifier`], and a
+    /// check that passes says so too.
+    pub async fn probe_switched(&self) {
+        self.probe(true).await;
+    }
+
+    async fn probe(&self, announce: bool) {
+        let Some((model, true)) = self.classifier_model.read().clone() else {
             return;
         };
         let selection = corpus::Selection {
@@ -627,9 +745,9 @@ impl ApprovalEngine {
                 "the start-up check of the classifier model {model} could not run: {err}"
             )),
             Ok(cases) => {
+                let checker = self.checker();
                 let report =
-                    corpus::evaluate(self.checker(), &cases, corpus::Bounds::default(), |_, _| {})
-                        .await;
+                    corpus::evaluate(&*checker, &cases, corpus::Bounds::default(), |_, _| {}).await;
                 match (&report.stopped, report.wrong().next()) {
                     (Some(corpus::Stopped::Failed { error, .. }), _) => Some(format!(
                         "the start-up check of the classifier model {model} could not complete ({error}); reviewed actions may ask you or fail until it answers"
@@ -645,7 +763,14 @@ impl ApprovalEngine {
                         "the classifier model {model} misjudged a risky case (it allowed {}): auto mode may let harmful actions run; /auto check measures it on more cases, and `[auto] classifier_model` chooses another",
                         wrong.action
                     )),
-                    (None, None) => None,
+                    (None, None) => {
+                        if announce {
+                            self.emit(ApprovalEvent::Notice(format!(
+                                "the classifier model {model} passed the start-up check (a routine test run allowed, a force push to the default branch blocked); /auto check measures it on more cases"
+                            )));
+                        }
+                        None
+                    }
                 }
             }
         };
@@ -1096,6 +1221,7 @@ impl ApprovalEngine {
             allow_rule: Mutex::new(None),
             answerer: Mutex::new(None),
             blocked_path: Mutex::new(None),
+            blocked_effect: Mutex::new(None),
             review: Mutex::new(None),
         };
         self.snapshot_build_files(session_id);
@@ -1203,7 +1329,7 @@ impl ApprovalEngine {
             {
                 state.facts.manifests_changed.push(subject.clone());
             }
-            if is_build_defining(subject) {
+            if is_build_defining(subject) || super::classifier::is_manifest(subject) {
                 state.build_files_written = true;
             }
         }
@@ -1245,8 +1371,13 @@ impl ApprovalEngine {
             helper: agent.map(str::to_string),
             summary,
             rule,
-            grant: self.grant_for(facts, path.as_deref()),
+            grant: if self.build_asks(session_id, facts, Tier::Classifier) {
+                Some(GrantTarget::Builds)
+            } else {
+                self.grant_for(facts, path.as_deref())
+            },
             path,
+            effect: facts.blocked_effect.lock().clone(),
             reason: reason.to_string(),
             at,
         };
@@ -1393,6 +1524,9 @@ impl ApprovalEngine {
                 }
                 self.always_dirs.write().push((id, dir));
             }
+            (GrantScope::Always, GrantTarget::Builds) => {
+                return Err("builds after a dependency change are allowed for a session at a time; allow this kind of effect always with /approve's e instead".into());
+            }
             (GrantScope::Always, GrantTarget::Rule { tool, subject }) => {
                 let rule = Rule::literal(RuleKind::Allow, tool, subject, RuleOrigin::Realm)
                     .map_err(|err| format!("no rule fits: {err}"))?;
@@ -1494,6 +1628,191 @@ impl ApprovalEngine {
         Ok(format!("removed the session grant of {what}"))
     }
 
+    /// The statements in force for `session_id`'s calls: the lasting ones,
+    /// then the session's, at most [`MAX_STATEMENTS`].
+    fn statements_for(&self, session_id: &SessionId) -> Vec<String> {
+        let mut texts: Vec<String> = self
+            .lasting_statements
+            .read()
+            .iter()
+            .map(|row| row.text.clone())
+            .collect();
+        if let Some(state) = self.sessions.lock().get(session_id) {
+            texts.extend(state.statements.iter().map(|(_, text)| text.clone()));
+        }
+        texts.truncate(MAX_STATEMENTS);
+        // The session grant of a build after a change reads as what it is.
+        if self.builds_granted(session_id) {
+            texts.push(BUILDS_STATEMENT.to_string());
+        }
+        texts
+    }
+
+    /// The statements in force for `session_id`, as `/permissions` lists
+    /// them: the lasting ones, then the session's.
+    #[must_use]
+    pub fn statement_rows(&self, session_id: Option<&SessionId>) -> Vec<StatementRow> {
+        let mut rows = self.lasting_statements.read().clone();
+        if let Some(state) = session_id.and_then(|s| {
+            self.sessions
+                .lock()
+                .get(s)
+                .map(|state| state.statements.clone())
+        }) {
+            rows.extend(state.into_iter().map(|(id, text)| StatementRow {
+                id,
+                text,
+                origin: StatementOrigin::Session,
+            }));
+        }
+        rows
+    }
+
+    /// The user allows the kind of action `raw` describes, for `scope`
+    /// (this session, its helpers and forks; or always, written to the
+    /// realm's `tui.toml` too). The classifier reads it from the next
+    /// review on; the agent is told in one system note.
+    ///
+    /// # Errors
+    ///
+    /// Why it was not added, for the user: refused by
+    /// [`super::statements::normalize`], [`MAX_STATEMENTS`] active, the same
+    /// one active, "once" asked, or the realm file not written.
+    pub fn allow_statement(
+        &self,
+        session_id: &SessionId,
+        raw: &str,
+        scope: GrantScope,
+    ) -> Result<Approved, String> {
+        let text = super::statements::normalize(raw).map_err(|why| why.to_string())?;
+        let active = self.statements_for(session_id);
+        if active.iter().any(|known| known.eq_ignore_ascii_case(&text)) {
+            return Err(StatementRefusal::Duplicate.to_string());
+        }
+        if self.statement_rows(Some(session_id)).len() >= MAX_STATEMENTS {
+            return Err(StatementRefusal::TooMany.to_string());
+        }
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        match scope {
+            GrantScope::Once => {
+                return Err(
+                    "a kind of action is allowed for this session or always, not once".into(),
+                );
+            }
+            GrantScope::Session => self.session(session_id).statements.push((id, text.clone())),
+            GrantScope::Always => {
+                if let Some(file) = &self.realm_file {
+                    file.add_allow_statement(&text)
+                        .map_err(|err| format!("the statement was not saved: {err}"))?;
+                }
+                self.lasting_statements.write().push(StatementRow {
+                    id,
+                    text: text.clone(),
+                    origin: StatementOrigin::Always,
+                });
+            }
+        }
+        self.audit_event("statement_added", format!("{} {text:?}", scope.words()));
+        let approved = Approved {
+            notice: format!(
+                "allowed {}: \"{text}\" (judged by the classifier, read narrowly)",
+                scope.words()
+            ),
+            note: format!(
+                "The user now allows: \"{text}\" ({}). The safety review reads it narrowly: actions of that kind are no longer blocked for that reason; other actions are reviewed as before.",
+                scope.words()
+            ),
+        };
+        self.emit(ApprovalEvent::Granted {
+            session_id: session_id.clone(),
+            note: approved.note.clone(),
+        });
+        Ok(approved)
+    }
+
+    /// The user allows the kind of action of blocked call `id` in their
+    /// words `text` (its `EFFECT:` sentence, edited) for `scope`: the call
+    /// leaves the `/approve` list and the statement is added
+    /// ([`Self::allow_statement`]).
+    ///
+    /// # Errors
+    ///
+    /// No such call, or why the statement was not added.
+    pub fn approve_effect(
+        &self,
+        session_id: &SessionId,
+        id: u64,
+        text: &str,
+        scope: GrantScope,
+    ) -> Result<Approved, String> {
+        if !self
+            .sessions
+            .lock()
+            .get(session_id)
+            .is_some_and(|state| state.recent.iter().any(|b| b.call.id == id))
+        {
+            return Err(format!("no blocked call #{id} (`/approve` lists them)"));
+        }
+        let approved = self.allow_statement(session_id, text, scope)?;
+        self.session(session_id)
+            .recent
+            .retain(|blocked| blocked.call.id != id);
+        self.stats
+            .lock()
+            .add(Some(session_id), |stats| stats.approvals += 1);
+        Ok(approved)
+    }
+
+    /// Remove statement `id`: a session's, or one added always (it leaves
+    /// the realm's `tui.toml` too). One from the user's own `tui.toml` is
+    /// removed by editing that file. Cached allows are dropped: one may
+    /// have rested on it.
+    ///
+    /// # Errors
+    ///
+    /// No such statement, one of the user's own files, or the realm file
+    /// not written.
+    pub fn remove_statement(&self, session_id: &SessionId, id: u64) -> Result<String, String> {
+        let removed = {
+            let mut state = self.session(session_id);
+            state
+                .statements
+                .iter()
+                .position(|(known, _)| *known == id)
+                .map(|at| state.statements.remove(at).1)
+        };
+        let (text, origin) = if let Some(text) = removed {
+            (text, StatementOrigin::Session)
+        } else {
+            let row = self
+                .lasting_statements
+                .read()
+                .iter()
+                .find(|row| row.id == id)
+                .cloned()
+                .ok_or_else(|| format!("no statement #{id}"))?;
+            if row.origin == StatementOrigin::Config {
+                return Err(format!(
+                    "\"{}\" comes from your own tui.toml ([auto] allow): remove it there",
+                    row.text
+                ));
+            }
+            if let Some(file) = &self.realm_file {
+                file.remove_allow_statement(&row.text)
+                    .map_err(|err| format!("the statement was not removed: {err}"))?;
+            }
+            self.lasting_statements
+                .write()
+                .retain(|known| known.id != id);
+            (row.text, row.origin)
+        };
+        for state in self.sessions.lock().values_mut() {
+            state.allow_cache.clear();
+        }
+        self.audit_event("statement_removed", format!("{} {text:?}", origin.word()));
+        Ok(format!("no longer allowed: \"{text}\""))
+    }
+
     /// Whether the user approved `facts`' call once for `session_id`; the
     /// approval is used up.
     fn take_approved(&self, session_id: &SessionId, facts: &Facts<'_>) -> bool {
@@ -1535,7 +1854,10 @@ impl ApprovalEngine {
     /// (a missing file counts as missing).
     fn build_files_digest(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
-        for file in BUILD_DEFINING_FILES {
+        let manifests = super::classifier::MANIFEST_FILES
+            .iter()
+            .filter(|file| !BUILD_DEFINING_FILES.contains(file));
+        for file in BUILD_DEFINING_FILES.iter().chain(manifests) {
             hash_str(file, &mut hasher);
             match std::fs::read(self.root.as_path().join(file)) {
                 Ok(bytes) => {
@@ -1581,28 +1903,92 @@ impl ApprovalEngine {
     /// the shell (rkat-tui's sandbox, or one the user declares); and in
     /// either case only while no build-defining file changed in the session
     /// by any route the gate sees (its file tools, or the files' digest).
+    ///
+    /// When something contains the shell a build stays trusted after such
+    /// a change too (the sandbox is the boundary; the owner's decision of
+    /// 2026-11-14): the first one shows a notice ([`Self::notice_build`]).
+    /// Uncontained, a build after a change is put to the user
+    /// ([`Self::build_asks`]).
     fn builds_trusted(&self, session_id: &SessionId, facts: &Facts<'_>) -> bool {
+        let contained = self.environment.containment.contains();
         let trusted = {
             let settings = self.settings.read();
             if settings.trust_project_builds_given {
                 settings.trust_project_builds
             } else {
-                self.environment.containment.contains()
+                contained
             }
         };
         let ActionKind::Shell { command, .. } = &facts.action.kind else {
             return trusted;
         };
-        if !trusted || !build_runners(command).contains(&"cargo") {
+        if !trusted || contained || !build_runners(command).contains(&"cargo") {
             return trusted;
         }
+        !self.build_changed(session_id)
+    }
+
+    /// Whether a build-defining file or dependency manifest changed in the
+    /// session since its baseline, by any route the gate sees (its file
+    /// tools, or the files' digest).
+    fn build_changed(&self, session_id: &SessionId) -> bool {
         let (snapshot, written) = {
             let sessions = self.sessions.lock();
             sessions.get(session_id).map_or((None, false), |state| {
                 (state.build_digest, state.build_files_written)
             })
         };
-        !written && snapshot.is_some_and(|digest| digest == self.build_files_digest())
+        written || snapshot.is_some_and(|digest| digest != self.build_files_digest())
+    }
+
+    /// Whether `facts`' call runs a build (a build runner anywhere in its
+    /// command).
+    fn is_build(facts: &Facts<'_>) -> bool {
+        matches!(&facts.action.kind, ActionKind::Shell { command, .. } if !build_runners(command).is_empty())
+    }
+
+    /// Whether `facts`' call, decided `tier`, is a build after a change
+    /// that the user must decide: nothing contains the shell, the call
+    /// would go to the classifier, the session's files changed, and the
+    /// user has not allowed such builds for the session.
+    fn build_asks(&self, session_id: &SessionId, facts: &Facts<'_>, tier: Tier) -> bool {
+        tier == Tier::Classifier
+            && !self.environment.containment.contains()
+            && Self::is_build(facts)
+            && !self.builds_granted(session_id)
+            && self.build_changed(session_id)
+    }
+
+    /// Whether the user allowed builds after a change for the session.
+    fn builds_granted(&self, session_id: &SessionId) -> bool {
+        self.sessions.lock().get(session_id).is_some_and(|state| {
+            state
+                .grants
+                .iter()
+                .any(|(_, grant)| *grant == GrantTarget::Builds)
+        })
+    }
+
+    /// The first build of a session after a change with something
+    /// containing the shell: one notice for the user and an audit line.
+    fn notice_build(&self, session_id: &SessionId, facts: &Facts<'_>) {
+        if !self.environment.containment.contains()
+            || !Self::is_build(facts)
+            || self
+                .sessions
+                .lock()
+                .get(session_id)
+                .is_some_and(|state| state.build_change_noticed)
+            || !self.build_changed(session_id)
+        {
+            return;
+        }
+        self.session(session_id).build_change_noticed = true;
+        self.audit_event(
+            "build_after_change",
+            format!("{} (contained)", decisive_argument(facts)),
+        );
+        self.emit(ApprovalEvent::Notice(BUILD_AFTER_CHANGE_NOTICE.to_string()));
     }
 
     fn tier_of(&self, session_id: &SessionId, facts: &Facts<'_>) -> TierDecision {
@@ -1737,6 +2123,8 @@ impl ApprovalEngine {
         }
         let mode = self.mode();
         let content = decision.content;
+        let build_asks = self.build_asks(session_id, facts, decision.tier);
+        self.notice_build(session_id, facts);
         // The user approved this very call once (`/approve`): it runs,
         // unless plan mode forbids it.
         if matches!(decision.tier, Tier::Classifier | Tier::AskUser)
@@ -1749,7 +2137,15 @@ impl ApprovalEngine {
                 "approved once by the user (/approve)",
             );
         }
-        match self.route(facts, decision, mode) {
+        let route = match self.route(facts, decision, mode) {
+            // Uncontained, a build after the session changed what it
+            // builds from is the user's to decide, never a bare block.
+            Route::Review | Route::Ask(Asking::Mode { .. }) if build_asks => {
+                Route::Ask(Asking::Build(BUILD_AFTER_CHANGE_ASK.to_string()))
+            }
+            route => route,
+        };
+        match route {
             Route::Settled(verdict) => return verdict,
             Route::Ask(asking) => {
                 // A protected write, or a question the mode puts to the
@@ -1904,6 +2300,7 @@ impl ApprovalEngine {
                 reason,
                 annotation,
                 path,
+                effect,
             } => {
                 let paused = self.auto.lock().record_classifier_deny();
                 if let Some(cause) = paused {
@@ -1913,6 +2310,7 @@ impl ApprovalEngine {
                     self.emit(ApprovalEvent::Paused(cause));
                 }
                 facts.blocked_path.lock().clone_from(&path);
+                *facts.blocked_effect.lock() = effect;
                 deny3(DenyReason::Classifier {
                     rule,
                     explanation: reason,
@@ -2011,6 +2409,7 @@ impl ApprovalEngine {
         let script = payload.combined();
         let environment = Environment {
             granted: self.granted_for(session_id),
+            statements: self.statements_for(session_id),
             ..self.environment.clone()
         };
         let input = ClassifierInput {
@@ -2023,11 +2422,14 @@ impl ApprovalEngine {
             agent_written: &agent_written,
             session: &session_facts,
         };
+        // The classifier now: a switch while this review runs leaves it on
+        // this one.
+        let classifier = Arc::clone(&*self.classifier.read());
         self.emit(ApprovalEvent::Classifying(true));
         let started = std::time::Instant::now();
         let tokens = Arc::new(Mutex::new((0u64, 0u64)));
         let result = super::classifier::REVIEW_TOKENS
-            .scope(Arc::clone(&tokens), self.classifier.classify(input))
+            .scope(Arc::clone(&tokens), classifier.classify(input))
             .await;
         self.emit(ApprovalEvent::Classifying(false));
         let (input_tokens, output_tokens) = *tokens.lock();
@@ -2150,19 +2552,25 @@ impl ApprovalEngine {
         }
         let (classifier_hint, policy_reason) = match &asking {
             Asking::Classifier(hint) => (Some(hint.clone()), None),
-            Asking::Policy(reason) | Asking::Mode { reason, .. } | Asking::PlanWired(reason) => {
-                (None, Some(reason.clone()))
-            }
+            Asking::Policy(reason)
+            | Asking::Mode { reason, .. }
+            | Asking::PlanWired(reason)
+            | Asking::Build(reason) => (None, Some(reason.clone())),
         };
         // What "for this session" would grant: the directory of a file
         // tool's target outside the allowed scope, else the call's literal
         // rule.
-        let session_grant = self.grant_for(
-            facts,
-            self.outside_target(session_id, facts)
-                .map(|(abs, _)| abs.display().to_string())
-                .as_deref(),
-        );
+        let building = matches!(asking, Asking::Build(_));
+        let session_grant = if building {
+            Some(GrantTarget::Builds)
+        } else {
+            self.grant_for(
+                facts,
+                self.outside_target(session_id, facts)
+                    .map(|(abs, _)| abs.display().to_string())
+                    .as_deref(),
+            )
+        };
         let prompt = EscalationPrompt {
             id,
             session_id: session_id.clone(),
@@ -2211,6 +2619,10 @@ impl ApprovalEngine {
         match decision {
             HumanDecision::AllowOnce => {
                 self.human_allowed(counted);
+                if building {
+                    // The user saw the build files as they are now.
+                    self.rebase_build_files(session_id);
+                }
                 allow_at(tier, Decider::Human, "allowed once by the user")
             }
             HumanDecision::AllowForSession => {
@@ -2472,6 +2884,10 @@ enum Asking {
     /// (why): the mode's own route would deny it, so the escalation does
     /// not route it again.
     PlanWired(String),
+    /// A build after the session changed a build-defining file, with
+    /// nothing containing the shell: the user decides, never a bare
+    /// classifier block (why).
+    Build(String),
 }
 
 impl Asking {
@@ -2480,10 +2896,23 @@ impl Asking {
             Self::Classifier(_) => Tier::Classifier,
             Self::Policy(_) => Tier::AskUser,
             Self::Mode { tier, .. } => *tier,
-            Self::PlanWired(_) => Tier::Classifier,
+            Self::PlanWired(_) | Self::Build(_) => Tier::Classifier,
         }
     }
 }
+
+/// Why a build after a dependency change is put to the user when nothing
+/// contains the shell.
+pub const BUILD_AFTER_CHANGE_ASK: &str = "a build after the agent changed the project's dependencies or build files in this session, and nothing contains the shell (--no-confinement): it runs code nobody reviewed, so you decide";
+
+/// The notice of the first build after such a change when something
+/// contains the shell.
+pub const BUILD_AFTER_CHANGE_NOTICE: &str =
+    "building with dependencies changed in this session; the sandbox contains it";
+
+/// What the session grant of a build after a dependency change covers,
+/// as the classifier reads it among the user's statements.
+pub const BUILDS_STATEMENT: &str = "building and testing the project after the agent changed its dependencies or build files (the user allowed it for this session)";
 
 /// What the permission mode makes of a call ([`ApprovalEngine::route`]).
 enum Route {
@@ -2773,6 +3202,7 @@ mod tests {
             reason: format!("blocked by {rule}"),
             annotation: None,
             path: None,
+            effect: None,
         })
     }
 
@@ -3459,6 +3889,12 @@ mod tests {
         assert!(decide(&rig, "c2", &args).await.is_allowed());
         assert_eq!(rig.classifier.calls(), 1);
         std::fs::write(rig.dir.path().join("build.rs"), "fn main() { evil() }\n").unwrap();
+        // Uncontained, a build after a change asks the user unless they
+        // allowed such builds for the session; then the classifier
+        // reviews it, the cached allow not reused.
+        rig.engine
+            .grant(&rig.session, GrantTarget::Builds, GrantScope::Session)
+            .unwrap();
         assert!(decide(&rig, "c3", &args).await.is_allowed());
         assert_eq!(rig.classifier.calls(), 2, "changed build.rs is reviewed");
     }
@@ -4200,13 +4636,17 @@ mod tests {
     }
 
     /// With the shell contained (rkat-tui's sandbox or a declared one) and
-    /// `trust_project_builds` unset, a cargo build is tier 1; once a
-    /// build-defining file changes in the session (the file tools, or on
-    /// disk by any other route) the next build is reviewed, and the
-    /// classifier's allow makes the files the new baseline. Uncontained, or
-    /// with the setting off, builds are reviewed.
+    /// `trust_project_builds` unset, a cargo build is tier 1, also after a
+    /// build-defining file or manifest changed in the session (the owner's
+    /// decision of 2026-11-14; this replaced "reviewed once a build file
+    /// changes"): the first such build shows one notice and leaves an
+    /// audit line. Uncontained, builds are reviewed; after such a change a
+    /// build is put to the user (the dialog's "for this session" allows
+    /// such builds for the session), never a bare classifier block, and
+    /// denied with the missed notice when nobody is there. With the
+    /// setting off, builds are reviewed and a change asks nothing more.
     #[tokio::test]
-    async fn contained_builds_are_trusted_until_a_build_file_changes() {
+    async fn contained_builds_stay_trusted_and_uncontained_ones_ask_after_a_change() {
         use super::super::classifier::Containment;
         let contained = |containment: Containment, settings: AutoSettings| {
             let mut rig = rig(vec![], DEFAULT_ESCALATION_TIMEOUT);
@@ -4233,8 +4673,15 @@ mod tests {
             rig.present = attended(&rig.engine);
             rig
         };
+        let notices = |rig: &mut Rig| {
+            drain(&mut rig.events)
+                .into_iter()
+                .filter(|e| matches!(e, ApprovalEvent::Notice(text) if text == BUILD_AFTER_CHANGE_NOTICE))
+                .count()
+        };
         let test = json!({"command": "cargo test"});
-        let rig = contained(
+        let manifest = json!({"path": "Cargo.toml", "content": "[package]\nname = \"x\"\n"});
+        let mut rig = contained(
             Containment::Sandbox { network: true },
             AutoSettings::default(),
         );
@@ -4245,40 +4692,44 @@ mod tests {
                 ..
             }
         ));
-        assert_eq!(rig.classifier.calls(), 0);
-        // The agent edits the manifest: the next build is reviewed, and its
-        // allow is the new baseline.
-        let manifest = json!({"path": "Cargo.toml", "content": "[package]\nname = \"x\"\n"});
+        assert_eq!(notices(&mut rig), 0, "nothing changed yet");
+        // The agent edits the manifest: still tier 1, one notice.
         assert!(call(&rig, "c2", "write_file", &manifest).await.is_allowed());
         std::fs::write(
             rig.dir.path().join("Cargo.toml"),
             "[package]\nname = \"x\"\n",
         )
         .unwrap();
-        assert!(decide(&rig, "c3", &test).await.is_allowed());
-        assert_eq!(rig.classifier.calls(), 1);
-        assert!(
-            decide(&rig, "c4", &json!({"command": "cargo build"}))
-                .await
-                .is_allowed()
-        );
-        assert_eq!(rig.classifier.calls(), 1, "trusted again");
-        // A build script appears by another route: reviewed.
+        assert!(matches!(
+            decide(&rig, "c3", &test).await,
+            Verdict::Allow {
+                tier: Tier::AlwaysAllow,
+                ..
+            }
+        ));
+        // A build script appears by another route: still trusted.
         std::fs::write(rig.dir.path().join("build.rs"), "fn main() {}\n").unwrap();
-        assert!(
-            decide(&rig, "c5", &json!({"command": "cargo check"}))
-                .await
-                .is_allowed()
-        );
-        assert_eq!(rig.classifier.calls(), 2);
-        // A declared outer sandbox counts too; the setting off, or nothing
-        // containing the shell, means review.
-        let declared = contained(
+        assert!(matches!(
+            decide(&rig, "c4", &json!({"command": "cargo check"})).await,
+            Verdict::Allow {
+                tier: Tier::AlwaysAllow,
+                ..
+            }
+        ));
+        assert_eq!(rig.classifier.calls(), 0);
+        assert_eq!(notices(&mut rig), 1, "one notice per conversation");
+        // A declared outer sandbox counts too.
+        let mut declared = contained(
             Containment::External { network: false },
             AutoSettings::default(),
         );
+        std::fs::write(declared.dir.path().join("Cargo.lock"), "# changed\n").unwrap();
+        decide(&declared, "d0", &json!({"command": "ls"})).await;
+        std::fs::write(declared.dir.path().join("Cargo.lock"), "# changed again\n").unwrap();
         assert!(decide(&declared, "d1", &test).await.is_allowed());
         assert_eq!(declared.classifier.calls(), 0);
+        assert_eq!(notices(&mut declared), 1);
+        // The setting off: reviewed, a change asks nothing more.
         let off = contained(
             Containment::Sandbox { network: true },
             AutoSettings {
@@ -4287,11 +4738,91 @@ mod tests {
                 ..AutoSettings::default()
             },
         );
+        assert!(call(&off, "o0", "write_file", &manifest).await.is_allowed());
         assert!(decide(&off, "o1", &test).await.is_allowed());
         assert_eq!(off.classifier.calls(), 1);
-        let bare = contained(Containment::None, AutoSettings::default());
+        // Uncontained: reviewed; after a change, asked.
+        let mut bare = contained(Containment::None, AutoSettings::default());
         assert!(decide(&bare, "n1", &test).await.is_allowed());
         assert_eq!(bare.classifier.calls(), 1);
+        assert!(
+            call(&bare, "n2", "write_file", &manifest)
+                .await
+                .is_allowed()
+        );
+        let task = spawn_decide(&bare, "n3", test.clone());
+        let request = bare.escalations.recv().await.unwrap();
+        assert_eq!(
+            request.prompt.shown.policy_reason.as_deref(),
+            Some(BUILD_AFTER_CHANGE_ASK)
+        );
+        assert_eq!(
+            request.prompt.shown.session_grant.as_deref(),
+            Some("builds and tests of this project after a dependency change")
+        );
+        request
+            .respond
+            .send(HumanDecision::AllowForSession)
+            .unwrap();
+        assert!(task.await.unwrap().is_allowed());
+        assert_eq!(
+            bare.classifier.calls(),
+            1,
+            "the user decided, not the classifier"
+        );
+        // For this session: the next build after another change is not
+        // asked; the classifier reviews it, told the user allows it.
+        std::fs::write(
+            bare.dir.path().join("Cargo.toml"),
+            "[package]\nname = \"y\"\n",
+        )
+        .unwrap();
+        assert!(decide(&bare, "n4", &test).await.is_allowed());
+        assert!(bare.escalations.try_recv().is_err());
+        assert!(
+            bare.classifier
+                .prompts
+                .lock()
+                .last()
+                .unwrap()
+                .contains(BUILDS_STATEMENT)
+        );
+        assert!(rig_grant_rows_name_builds(&bare));
+        // Nobody there: denied, with the missed notice, never a block.
+        let lonely = contained(Containment::None, AutoSettings::default());
+        assert!(
+            call(&lonely, "l1", "write_file", &manifest)
+                .await
+                .is_allowed()
+        );
+        lonely.present.attached.store(false, Ordering::SeqCst);
+        let calls = lonely.classifier.calls();
+        assert!(matches!(
+            call_in(&lonely, Some(&RunId::new()), "l2", "shell", &test).await,
+            Verdict::Deny {
+                reason: DenyReason::Unattended,
+                ..
+            }
+        ));
+        assert_eq!(lonely.classifier.calls(), calls);
+        assert_eq!(lonely.present.missed.lock().len(), 1);
+        assert_eq!(
+            lonely.engine.blocked(&lonely.session)[0].grant,
+            Some(GrantTarget::Builds)
+        );
+        assert!(
+            lonely
+                .engine
+                .grant(&lonely.session, GrantTarget::Builds, GrantScope::Always)
+                .is_err()
+        );
+    }
+
+    fn rig_grant_rows_name_builds(rig: &Rig) -> bool {
+        rig.engine
+            .grant_rows(Some(&rig.session))
+            .iter()
+            .any(|row| row.target == GrantTarget::Builds && row.removable)
     }
 
     /// A write protected only for its content (`AGENTS.md`, `.env`,
@@ -4364,6 +4895,129 @@ mod tests {
     /// classifier; right verdicts say nothing, a wrong one becomes a notice
     /// naming the model and the key that chooses another; with no model
     /// set, or the check turned off, nothing is asked.
+    /// `/auto model`: without a builder the model is fixed; with one the
+    /// classifier is replaced live (a review that started finishes on the
+    /// old one, the next goes to the new one), named as the reference in
+    /// `/status` and the checks, written to the realm's `tui.toml` and
+    /// audited; the check after the switch says when it passes. A builder
+    /// that fails leaves the old classifier.
+    #[tokio::test]
+    async fn the_classifier_model_is_switched_live() {
+        let mut rig = rig(vec![], DEFAULT_ESCALATION_TIMEOUT);
+        let realm = rig.dir.path().join("realm-tui.toml");
+        let (tx, events) = mpsc::unbounded_channel();
+        let root = ProjectRoot::new(rig.dir.path()).unwrap();
+        let old = Scripted::new(vec![]);
+        rig.engine = ApprovalEngine::new(ApprovalConfig {
+            root: root.clone(),
+            rules: RuleSet::default(),
+            settings: AutoSettings::default(),
+            mode: PermissionMode::Auto,
+            classifier: Arc::clone(&old) as Arc<dyn ActionClassifier>,
+            broker: None,
+            escalation_timeout: DEFAULT_ESCALATION_TIMEOUT,
+            environment: Environment::basic(root.as_path(), root.as_path()),
+            posix_shell: true,
+            events: tx,
+            realm_file: Some(config::RealmFile::new(realm.clone())),
+        });
+        rig.events = events;
+        rig.present = attended(&rig.engine);
+        rig.engine
+            .set_classifier_model("anthropic:m-old".into(), true);
+        let endpoint = crate::endpoints::Endpoint::builtin(
+            crate::endpoints::WireDialect::Anthropic,
+            None,
+            crate::endpoints::SecretString::new("k"),
+        );
+        let fixed = rig
+            .engine
+            .switch_classifier(endpoint.clone(), "m-new".into(), "anthropic:m-new".into())
+            .await;
+        assert!(fixed.unwrap_err().contains("fixed"));
+        let new = Scripted::new(vec![Ok(ClassifierVerdict::allow("ok")), block("D2")]);
+        let made = Arc::clone(&new);
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&asked);
+        rig.engine
+            .set_classifier_builder(Arc::new(move |endpoint, model| {
+                seen.lock().push(format!("{}:{model}", endpoint.name));
+                let made = Arc::clone(&made);
+                Box::pin(async move {
+                    if model == "m-broken" {
+                        return Err("no key".to_string());
+                    }
+                    Ok(BuiltClassifier {
+                        review: Arc::clone(&made) as Arc<dyn ActionClassifier>,
+                        check: made as Arc<dyn ActionClassifier>,
+                    })
+                })
+            }));
+        let audit = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        struct Events(Arc<Mutex<Vec<(String, String)>>>);
+        impl AuditSink for Events {
+            fn decision(&self, _record: DecisionRecord<'_>) {}
+            fn event(&self, event: &str, detail: String) {
+                self.0.lock().push((event.to_string(), detail));
+            }
+        }
+        rig.engine.set_audit(Arc::new(Events(Arc::clone(&audit))));
+        assert!(
+            rig.engine
+                .switch_classifier(
+                    endpoint.clone(),
+                    "m-broken".into(),
+                    "anthropic:m-broken".into()
+                )
+                .await
+                .unwrap_err()
+                .contains("no key")
+        );
+        assert_eq!(
+            rig.engine.classifier_model().as_deref(),
+            Some("anthropic:m-old")
+        );
+        let notice = rig
+            .engine
+            .switch_classifier(endpoint, "m-new".into(), "anthropic:m-new".into())
+            .await
+            .unwrap();
+        assert!(notice.contains("/auto check"), "{notice}");
+        assert_eq!(
+            rig.engine.classifier_model().as_deref(),
+            Some("anthropic:m-new")
+        );
+        assert!(
+            std::fs::read_to_string(&realm)
+                .unwrap()
+                .contains("classifier_model = \"anthropic:m-new\"")
+        );
+        assert!(
+            audit
+                .lock()
+                .iter()
+                .any(|(e, d)| e == "classifier_model" && d == "anthropic:m-old -> anthropic:m-new")
+        );
+        // The check runs on the new one and says it passed.
+        rig.engine.probe_switched().await;
+        assert_eq!(new.calls(), 2);
+        assert!(drain(&mut rig.events).iter().any(|e| matches!(e, ApprovalEvent::Notice(t) if t.contains("anthropic:m-new passed the start-up check"))));
+        // Reviews go to the new one now; the old one saw none.
+        assert!(
+            decide(&rig, "r1", &json!({"command": "curl https://a.example"}))
+                .await
+                .is_allowed()
+        );
+        assert_eq!((old.calls(), new.calls()), (0, 3));
+        assert_eq!(
+            asked.lock().clone(),
+            vec![
+                "anthropic:m-broken".to_string(),
+                "anthropic:m-new".to_string()
+            ]
+        );
+    }
+
     #[tokio::test]
     async fn the_start_up_check_warns_when_the_classifier_misjudges() {
         let mut fine = rig(
@@ -4376,7 +5030,7 @@ mod tests {
         fine.engine.probe_classifier().await;
         assert_eq!(fine.classifier.calls(), 2);
         assert_eq!(fine.engine.probe_notice(), None);
-        assert_eq!(fine.engine.classifier_model(), Some("m-small"));
+        assert_eq!(fine.engine.classifier_model(), Some("m-small".to_string()));
         let mut wrong = rig(vec![block("T3"), block("D2")], DEFAULT_ESCALATION_TIMEOUT);
         wrong.engine.set_classifier_model("m-tiny".into(), true);
         wrong.engine.probe_classifier().await;
@@ -4504,6 +5158,223 @@ mod tests {
         assert!(!task.await.unwrap().is_allowed());
     }
 
+    /// A statement: the classifier's `EFFECT:` sentence is kept with the
+    /// blocked call; allowed (edited) for this session it reaches the
+    /// classifier's environment for the session and its helpers' calls,
+    /// not another session's; always, it is written to the realm's
+    /// `tui.toml` and holds for every session; the agent is told; it is
+    /// listed with its origin and removed (cached allows dropped); the
+    /// limits refuse with a reason; every add and remove is audited.
+    #[tokio::test]
+    async fn a_kind_of_effect_is_allowed_for_the_session_or_always() {
+        let blocked = Ok(ClassifierVerdict::Block {
+            rule: Some("R1".into()),
+            reason: "pushes to the default branch".into(),
+            annotation: None,
+            path: None,
+            effect: Some("pushing to the default branch of the project's own remote".into()),
+        });
+        let mut rig = rig(vec![blocked], DEFAULT_ESCALATION_TIMEOUT);
+        let realm = rig.dir.path().join("realm-tui.toml");
+        let (tx, events) = mpsc::unbounded_channel();
+        let root = ProjectRoot::new(rig.dir.path()).unwrap();
+        rig.engine = ApprovalEngine::new(ApprovalConfig {
+            root: root.clone(),
+            rules: RuleSet::default(),
+            settings: AutoSettings {
+                allow: vec![(
+                    StatementOrigin::Config,
+                    "network requests to docs.rs".into(),
+                )],
+                ..AutoSettings::default()
+            },
+            mode: PermissionMode::Auto,
+            classifier: Arc::clone(&rig.classifier) as Arc<dyn ActionClassifier>,
+            broker: None,
+            escalation_timeout: DEFAULT_ESCALATION_TIMEOUT,
+            environment: Environment::basic(root.as_path(), root.as_path()),
+            posix_shell: true,
+            events: tx,
+            realm_file: Some(config::RealmFile::new(realm.clone())),
+        });
+        rig.events = events;
+        rig.present = attended(&rig.engine);
+        #[derive(Default)]
+        struct Events(Mutex<Vec<(String, String)>>);
+        impl AuditSink for Events {
+            fn decision(&self, _record: DecisionRecord<'_>) {}
+            fn event(&self, event: &str, detail: String) {
+                self.0.lock().push((event.to_string(), detail));
+            }
+        }
+        let audit = Arc::new(Events::default());
+        rig.engine.set_audit(Arc::clone(&audit) as _);
+        let push = json!({"command": "git push origin main"});
+        assert!(!decide(&rig, "p1", &push).await.is_allowed());
+        let listed = rig.engine.blocked(&rig.session);
+        assert_eq!(
+            listed[0].effect.as_deref(),
+            Some("pushing to the default branch of the project's own remote")
+        );
+        // The user edits it and allows it for this session.
+        let approved = rig
+            .engine
+            .approve_effect(
+                &rig.session,
+                listed[0].id,
+                "pushing to the default branch of this solo repository",
+                GrantScope::Session,
+            )
+            .unwrap();
+        assert!(
+            approved.notice.contains("judged by the classifier"),
+            "{}",
+            approved.notice
+        );
+        assert!(
+            approved.note.starts_with("The user now allows: \"pushing"),
+            "{}",
+            approved.note
+        );
+        assert!(rig.engine.blocked(&rig.session).is_empty());
+        assert!(drain(&mut rig.events).iter().any(
+            |e| matches!(e, ApprovalEvent::Granted { note, .. } if note.contains("now allows"))
+        ));
+        assert!(decide(&rig, "p2", &push).await.is_allowed());
+        let prompt = rig.classifier.prompts.lock().last().cloned().unwrap();
+        assert!(
+            prompt.contains(super::super::prompts::STATEMENTS_NOTE),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("- network requests to docs.rs\n"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("- pushing to the default branch of this solo repository\n"));
+        // A helper's call is judged under the session: it has it too.
+        let raw =
+            serde_json::value::to_raw_value(&json!({"command": "git push origin main --dry-run"}))
+                .unwrap();
+        let origin = origin("shell");
+        rig.engine
+            .decide_as(
+                Caller::helper(&rig.session, "scout"),
+                ToolCall {
+                    id: "h1",
+                    name: "shell",
+                    args: &raw,
+                    origin: Some(&origin),
+                },
+            )
+            .await;
+        assert!(
+            rig.classifier
+                .prompts
+                .lock()
+                .last()
+                .unwrap()
+                .contains("this solo repository")
+        );
+        // Another session has only the lasting one.
+        let other = SessionId::new();
+        call_as(
+            &rig.engine,
+            &other,
+            "o1",
+            "shell",
+            &json!({"command": "git push origin dev"}),
+        )
+        .await;
+        let prompt = rig.classifier.prompts.lock().last().cloned().unwrap();
+        assert!(!prompt.contains("this solo repository") && prompt.contains("docs.rs"));
+        // Always: written to the realm's tui.toml, every session has it.
+        rig.engine
+            .allow_statement(
+                &other,
+                "building the project after the agent changed its dependencies",
+                GrantScope::Always,
+            )
+            .unwrap();
+        let written = std::fs::read_to_string(&realm).unwrap();
+        assert!(
+            written.contains("building the project after the agent changed its dependencies"),
+            "{written}"
+        );
+        // Limits: anything, a duplicate, too many.
+        for (text, why) in [
+            ("anything at all", "allows anything"),
+            ("network requests to docs.rs", "active already"),
+            ("", "empty"),
+        ] {
+            let err = rig
+                .engine
+                .allow_statement(&rig.session, text, GrantScope::Session)
+                .unwrap_err();
+            assert!(err.contains(why), "{text}: {err}");
+        }
+        assert!(
+            rig.engine
+                .allow_statement(&rig.session, "reading /etc/hosts", GrantScope::Once)
+                .is_err()
+        );
+        let rows = rig.engine.statement_rows(Some(&rig.session));
+        let origins: Vec<StatementOrigin> = rows.iter().map(|r| r.origin).collect();
+        assert_eq!(
+            origins,
+            vec![
+                StatementOrigin::Config,
+                StatementOrigin::Always,
+                StatementOrigin::Session
+            ]
+        );
+        for n in 0..(MAX_STATEMENTS - rows.len()) {
+            rig.engine
+                .allow_statement(
+                    &rig.session,
+                    &format!("running the demo script number {n}"),
+                    GrantScope::Session,
+                )
+                .unwrap();
+        }
+        let err = rig
+            .engine
+            .allow_statement(&rig.session, "one more kind of action", GrantScope::Session)
+            .unwrap_err();
+        assert!(err.contains("remove one in /permissions"), "{err}");
+        // Removal: the user's own file says to edit it; always and session go.
+        assert!(
+            rig.engine
+                .remove_statement(&rig.session, rows[0].id)
+                .unwrap_err()
+                .contains("your own tui.toml")
+        );
+        rig.engine
+            .remove_statement(&rig.session, rows[1].id)
+            .unwrap();
+        assert!(
+            !std::fs::read_to_string(&realm)
+                .unwrap()
+                .contains("changed its dependencies")
+        );
+        rig.engine
+            .remove_statement(&rig.session, rows[2].id)
+            .unwrap();
+        assert!(
+            rig.engine
+                .remove_statement(&rig.session, rows[2].id)
+                .is_err()
+        );
+        let lines = audit.0.lock().clone();
+        assert!(lines.iter().any(
+            |(event, detail)| event == "statement_added" && detail.contains("for this session")
+        ));
+        assert!(
+            lines
+                .iter()
+                .any(|(event, detail)| event == "statement_removed" && detail.contains("always"))
+        );
+    }
+
     /// `/approve`: a classifier block is kept (newest ten); approved once,
     /// the next identical call runs without the classifier and only once;
     /// for this session, a directory grant makes writes there in-project
@@ -4522,6 +5393,7 @@ mod tests {
                 reason: "it writes outside the project".into(),
                 annotation: None,
                 path,
+                effect: None,
             })
         };
         let mut rig = rig(
@@ -4769,6 +5641,7 @@ mod tests {
                 reason: "it writes outside the project".into(),
                 annotation: None,
                 path,
+                effect: None,
             })
         };
         let granted = super::super::classifier::GrantedDirs {
