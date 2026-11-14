@@ -324,6 +324,7 @@ impl Layered {
         }
         if let Some(auto) = &file.auto {
             apply_auto(&mut self.settings, &mut self.mode, auto);
+            self.prepare_sources(origin, auto);
             let origin = if origin == RuleOrigin::Realm {
                 crate::approval::statements::StatementOrigin::Always
             } else {
@@ -497,6 +498,7 @@ impl Layered {
                 }
             }
             apply_auto(&mut self.settings, &mut self.mode, &auto);
+            self.prepare_sources(RuleOrigin::Project, &auto);
             if classifier_off && !classifier_off_by_cli && self.mode == PermissionMode::Auto {
                 self.mode = PermissionMode::Manual;
             }
@@ -541,6 +543,27 @@ impl Layered {
 
     /// Bring the compaction percentages into range, with a notice when
     /// they were not.
+    /// Note which layer set `compact_prepare` and `compact_prepare_at`,
+    /// and keep every other layer's than the realm's as what `/compact
+    /// prepare default` goes back to.
+    fn prepare_sources(&mut self, origin: RuleOrigin, auto: &AutoSection) {
+        use super::settings::{PrepareSource, Sourced};
+        let source = PrepareSource::of(origin);
+        let settings = &mut self.settings;
+        if let Some(text) = &auto.compact_prepare {
+            settings.compact_prepare_source = source;
+            if origin != RuleOrigin::Realm {
+                settings.compact_prepare_default = Sourced::new(Some(text.clone()), source);
+            }
+        }
+        if let Some(at) = auto.compact_prepare_at {
+            settings.compact_prepare_at_source = source;
+            if origin != RuleOrigin::Realm {
+                settings.compact_prepare_at_default = Sourced::new(at, source);
+            }
+        }
+    }
+
     fn clamp_compaction(&mut self) {
         let (policy, clamped) = CompactionPolicy {
             mode: self.settings.compact,

@@ -2,8 +2,8 @@
 //! they layer into (see [`super::layers`]).
 
 use super::settings::{
-    ChecklistView, CompactMode, CompactPrepare, CompactionPolicy, DEFAULT_PREPARE_AT, HelperView,
-    PrepareAt,
+    ChecklistView, CompactMode, CompactionPolicy, DEFAULT_PREPARE_AT, HelperView, PrepareAt,
+    PrepareSetting, PrepareSource, Sourced, prepare_instruction,
 };
 use crate::approval::mode::PermissionMode;
 use crate::approval::rules::{Rule, RuleKind, RuleOrigin, RulesError};
@@ -57,6 +57,16 @@ pub struct AutoSettings {
     pub compact_prepare: Option<String>,
     /// Where it is asked ([`DEFAULT_PREPARE_AT`] unless a layer says).
     pub compact_prepare_at: PrepareAt,
+    /// Which layer [`Self::compact_prepare`] comes from.
+    pub compact_prepare_source: PrepareSource,
+    /// Which layer [`Self::compact_prepare_at`] comes from.
+    pub compact_prepare_at_source: PrepareSource,
+    /// What [`Self::compact_prepare`] would be without the realm file's
+    /// (`/compact prepare default` goes back to it).
+    pub compact_prepare_default: Sourced<Option<String>>,
+    /// What [`Self::compact_prepare_at`] would be without the realm
+    /// file's (`/compact prepare at default` goes back to it).
+    pub compact_prepare_at_default: Sourced<PrepareAt>,
 }
 
 impl Default for AutoSettings {
@@ -74,6 +84,10 @@ impl Default for AutoSettings {
             allow: Vec::new(),
             compact_prepare: None,
             compact_prepare_at: DEFAULT_PREPARE_AT,
+            compact_prepare_source: PrepareSource::Default,
+            compact_prepare_at_source: PrepareSource::Default,
+            compact_prepare_default: Sourced::new(None, PrepareSource::Default),
+            compact_prepare_at_default: Sourced::new(DEFAULT_PREPARE_AT, PrepareSource::Default),
         }
     }
 }
@@ -92,14 +106,22 @@ impl AutoSettings {
         .0
     }
 
-    /// The prepare instruction and its threshold, when one is set.
+    /// The prepare instruction, its threshold and where they came from,
+    /// as the daemon starts with them.
     #[must_use]
-    pub fn compact_prepare(&self) -> Option<CompactPrepare> {
-        let instruction = self.compact_prepare.as_deref()?.trim();
-        (!instruction.is_empty()).then(|| CompactPrepare {
-            instruction: instruction.to_string(),
-            at: self.compact_prepare_at,
-        })
+    pub fn prepare_setting(&self) -> PrepareSetting {
+        PrepareSetting {
+            instruction: Sourced::new(
+                prepare_instruction(self.compact_prepare.as_deref()),
+                self.compact_prepare_source,
+            ),
+            at: Sourced::new(self.compact_prepare_at, self.compact_prepare_at_source),
+            default_instruction: Sourced::new(
+                prepare_instruction(self.compact_prepare_default.value.as_deref()),
+                self.compact_prepare_default.source,
+            ),
+            default_at: self.compact_prepare_at_default.clone(),
+        }
     }
 }
 

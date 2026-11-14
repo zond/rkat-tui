@@ -837,20 +837,16 @@ pub fn status_bar(status: &StatusInfo, now: Instant) -> Line<'static> {
     // clips the bar's end, cuts it last.
     let activity = activity(status, now);
     let mut segs: Vec<Span<'static>> = activity_segments(status, &activity, now);
-    if let Some(connection) = &status.connection {
+    // The connection only when it is not the normal attachment; the
+    // daemon's address, the agent and the conversation are `/status`'s.
+    if let Some(segment) = status.connection.as_ref().and_then(|c| c.segment(now)) {
         segs.push(Span::styled(
-            connection.segment(now),
+            segment,
             Style::default().add_modifier(Modifier::BOLD),
         ));
     }
-    if let Some(agent) = &status.agent {
-        segs.push(Span::raw(format!("agent {agent}")));
-    }
     if !status.endpoint.is_empty() || !status.model.is_empty() {
         segs.push(Span::raw(format!("{}/{}", status.endpoint, status.model)));
-    }
-    if !status.session_short.is_empty() {
-        segs.push(Span::raw(format!("session {}", status.session_short)));
     }
     segs.push(Span::raw(format!(
         "↑{} ↓{}",
@@ -1500,12 +1496,12 @@ mod tests {
         let line = status_line(&s, now);
         assert_eq!(
             line,
-            " ⠋ running 0s │ anthropic/claude-sonnet-4-6 │ session 345-ffff │ ↑1.5k ↓20 │ auto (deny 1/3, 4/20) │ queued 2"
+            " ⠋ running 0s │ anthropic/claude-sonnet-4-6 │ ↑1.5k ↓20 │ auto (deny 1/3, 4/20) │ queued 2"
         );
     }
 
     #[test]
-    fn the_attach_state_leads_the_status_line() {
+    fn only_a_connection_state_leads_the_status_line() {
         let now = Instant::now();
         let mut s = StatusInfo::default();
         s.apply(StatusUpdate::Model {
@@ -1518,19 +1514,21 @@ mod tests {
                 daemon_build: None,
             },
         ));
-        let line = status_line(&s, now);
-        assert!(
-            line.starts_with(" attached 127.0.0.1:4000 │ anthropic/claude-sonnet-4-6"),
-            "{line}"
-        );
-        // The agent this client works with follows the connection.
+        // Attached normally: no address, no agent, no conversation (they
+        // are /status's).
         s.apply(crate::ui::StatusUpdate::Agent(Some("main-ab12".into())));
         let line = status_line(&s, now);
+        assert!(line.starts_with(" anthropic/claude-sonnet-4-6 │"), "{line}");
         assert!(
-            line.starts_with(" attached 127.0.0.1:4000 │ agent main-ab12 │ anthropic/"),
+            !line.contains("127.0.0.1") && !line.contains("main-ab12") && !line.contains("session"),
             "{line}"
         );
-        s.apply(crate::ui::StatusUpdate::Agent(None));
+        // A state that is not the normal attachment leads.
+        s.apply(crate::ui::StatusUpdate::Connection(
+            crate::ui::Connection::Reconnecting,
+        ));
+        let line = status_line(&s, now);
+        assert!(line.starts_with(" reconnecting │ anthropic/"), "{line}");
         s.connection = None;
         assert!(status_line(&s, now).starts_with(" anthropic/"));
     }

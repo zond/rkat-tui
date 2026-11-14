@@ -3,6 +3,7 @@
 use std::fmt;
 
 use crate::approval::mode::PermissionMode;
+use crate::config::settings::{InstructionChange, PrepareAt, PrepareChange, ThresholdChange};
 
 /// Whether a rule allows or denies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,10 +78,100 @@ pub enum CompactCommand {
     /// `/compact status`: report the compaction policy and the prepare
     /// instruction (its threshold, whether it is armed).
     Status,
-    /// `/compact prepare <text>`: set (or replace) the workspace's prepare
-    /// instruction (`[auto] compact_prepare`); `None` (`/compact prepare
-    /// off`) clears it.
-    Prepare(Option<String>),
+    /// `/compact prepare [at <threshold>|default] [<text>|off|default]`:
+    /// set the workspace's prepare threshold (`[auto] compact_prepare_at`)
+    /// or remove it, then set, replace, turn off or remove its
+    /// instruction (`[auto] compact_prepare`); `default all` removes both.
+    Prepare(PrepareChange),
+    /// `/compact prepare`: show the instruction, its threshold and state,
+    /// and the forms that change them.
+    PrepareShow,
+    /// `/compact prepare at …` with no threshold it can read: this says
+    /// why, the accepted forms and an example.
+    PrepareRefused(String),
+}
+
+/// The forms `/compact prepare at` accepts, with an example (its
+/// refusals end with it).
+pub const PREPARE_AT_FORMS: &str = "give tokens (300000, 300k or 1.2m), a share of the window (65%) or default, for example /compact prepare at 65% update PLAN.md";
+
+/// The fewest tokens `/compact prepare at` takes (fewer is a typo, or an
+/// instruction such as "at 3 o'clock …", refused rather than guessed).
+pub const PREPARE_AT_MIN_TOKENS: u64 = 1_000;
+
+/// `/compact prepare`'s three forms, as it lists them after the state.
+pub const PREPARE_USAGE: &str = "/compact prepare <text> | off | default: set the instruction for this workspace, turn it off here, or use your tui.toml's\n/compact prepare at <N | Nk | N%> | default: set the threshold (tokens or a share of the window), or use your tui.toml's\n/compact prepare at <threshold> <text>: set both (/compact prepare default all resets both)";
+
+/// `/compact prepare`'s argument (`text`, trimmed): `at` and a word that
+/// reads as a threshold (or `default`) sets it, the rest is the
+/// instruction (`off`: none in this workspace; `default`: the lower
+/// layers'); `default all` resets both; a word after `at` that starts
+/// like a number but is no threshold is refused; any other text is the
+/// instruction, `at` and all.
+fn parse_prepare(text: &str) -> CompactCommand {
+    let instruction = |text: &str| match text {
+        "" => None,
+        "off" => Some(InstructionChange::Off),
+        "default" => Some(InstructionChange::Default),
+        text => Some(InstructionChange::To(text.to_string())),
+    };
+    match text {
+        "" => return CompactCommand::PrepareShow,
+        "default all" => {
+            return CompactCommand::Prepare(PrepareChange {
+                at: Some(ThresholdChange::Default),
+                instruction: Some(InstructionChange::Default),
+            });
+        }
+        _ => {}
+    }
+    if let Some(after) = first_word(text, "at") {
+        let (word, rest) = after
+            .split_once(char::is_whitespace)
+            .map_or((after, ""), |(word, rest)| (word, rest.trim()));
+        let at = if word.is_empty() {
+            return CompactCommand::PrepareRefused(format!(
+                "/compact prepare at needs a threshold: {PREPARE_AT_FORMS}"
+            ));
+        } else if word.eq_ignore_ascii_case("default") {
+            Some(ThresholdChange::Default)
+        } else if word.starts_with(|c: char| c.is_ascii_digit() || c == '.') {
+            match PrepareAt::parse(word) {
+                Ok(PrepareAt::Tokens(tokens)) if tokens < PREPARE_AT_MIN_TOKENS => {
+                    return CompactCommand::PrepareRefused(format!(
+                        "/compact prepare at {word}: {tokens} tokens is too few to prepare at: {PREPARE_AT_FORMS}"
+                    ));
+                }
+                Ok(at) => Some(ThresholdChange::To(at)),
+                Err(_) => {
+                    return CompactCommand::PrepareRefused(format!(
+                        "/compact prepare at {word}: `{word}` is no threshold: {PREPARE_AT_FORMS}"
+                    ));
+                }
+            }
+        } else {
+            None
+        };
+        if at.is_some() {
+            return CompactCommand::Prepare(PrepareChange {
+                at,
+                instruction: instruction(rest),
+            });
+        }
+    }
+    CompactCommand::Prepare(PrepareChange {
+        at: None,
+        instruction: instruction(text),
+    })
+}
+
+/// `text` after its first word when that is `word` (any case), trimmed.
+fn first_word<'a>(text: &'a str, word: &str) -> Option<&'a str> {
+    let head = text.get(..word.len())?;
+    let after = text.get(word.len()..)?;
+    (head.eq_ignore_ascii_case(word)
+        && (after.is_empty() || after.starts_with(char::is_whitespace)))
+    .then(|| after.trim())
 }
 
 /// Which instruction file `/memory` opens.
@@ -545,7 +636,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "compact",
         aliases: &[],
-        usage: "[now | status | prepare <text>|off | <instructions>]",
+        usage: "[now | status | prepare [at <N | Nk | N%>|default] [<text>|off|default] | <instructions>]",
         summary: "compact the context (during a turn: before its next step)",
         help: &[
             (
@@ -561,18 +652,21 @@ pub static COMMANDS: &[CommandSpec] = &[
                 "show the compaction policy (tui.toml [auto] compact =\n\"warn\" (default) warns at 75% and 85%; \"auto\" or\n--auto-compact lets the runtime compact at 85%) and the\nprepare instruction: its threshold, whether it is armed",
             ),
             (
-                "/compact prepare <text>|off",
-                "set the instruction the agent gets before an automatic\ncompaction (at [auto] compact_prepare_at, default 70% of\nthe window; it calls compact_ready when done), or clear it",
+                "/compact prepare <text>|off|default",
+                "set this workspace's instruction the agent gets before an\nautomatic compaction (it calls compact_ready when done);\noff: none here, even when your tui.toml has one; default:\nyour tui.toml's again",
+            ),
+            (
+                "/compact prepare at <N | Nk | N%>|default",
+                "set where it is asked: tokens (300000, 300k, 1.2m) or a\nshare of the window (65%); default: your tui.toml's again\n(70% unless it says)",
+            ),
+            (
+                "/compact prepare at <threshold> <text>",
+                "set both; /compact prepare default all resets both;\n/compact prepare alone shows what is set and where from",
             ),
         ],
         parse: |rest| {
-            if let Some(text) = rest.trim().strip_prefix("prepare") {
-                let text = text.trim();
-                return Some(Command::Compact(match text {
-                    "" => CompactCommand::Status,
-                    "off" => CompactCommand::Prepare(None),
-                    text => CompactCommand::Prepare(Some(text.to_string())),
-                }));
+            if let Some(text) = first_word(rest.trim(), "prepare") {
+                return Some(Command::Compact(parse_prepare(text)));
             }
             Some(Command::Compact(match words(rest).as_slice() {
                 [] | ["now"] => CompactCommand::Now,
@@ -1320,17 +1414,129 @@ mod tests {
         );
         assert_eq!(
             ok("/compact prepare update  PLAN.md, then call compact_ready"),
-            Command::Compact(CompactCommand::Prepare(Some(
-                "update  PLAN.md, then call compact_ready".into()
-            )))
+            prepare(None, Some("update  PLAN.md, then call compact_ready"))
         );
         assert_eq!(
             ok("/compact prepare off"),
-            Command::Compact(CompactCommand::Prepare(None))
+            Command::Compact(CompactCommand::Prepare(PrepareChange {
+                at: None,
+                instruction: Some(InstructionChange::Off),
+            }))
         );
         assert_eq!(
             ok("/compact prepare"),
-            Command::Compact(CompactCommand::Status)
+            Command::Compact(CompactCommand::PrepareShow)
+        );
+    }
+
+    fn prepare(at: Option<ThresholdChange>, text: Option<&str>) -> Command {
+        Command::Compact(CompactCommand::Prepare(PrepareChange {
+            at,
+            instruction: text.map(|text| InstructionChange::To(text.to_string())),
+        }))
+    }
+
+    /// `/compact prepare at` reads tokens, `k`, `m` and percentages, and
+    /// `default`; with text after the threshold it sets both; `at` and a
+    /// word that is not a threshold stays an instruction; a number that
+    /// is no threshold is refused with the forms and an example.
+    #[test]
+    fn compact_prepare_at_forms() {
+        let to = |at| Some(ThresholdChange::To(at));
+        for (input, tokens) in [
+            ("300000", 300_000),
+            ("300_000", 300_000),
+            ("300k", 300_000),
+            ("300K", 300_000),
+            ("1.2m", 1_200_000),
+            ("1.25M", 1_250_000),
+            ("0.5m", 500_000),
+            ("2.5k", 2_500),
+        ] {
+            assert_eq!(
+                ok(&format!("/compact prepare at {input}")),
+                prepare(to(PrepareAt::Tokens(tokens)), None),
+                "{input}"
+            );
+        }
+        assert_eq!(
+            ok("/compact prepare at 65%"),
+            prepare(to(PrepareAt::Percent(65)), None)
+        );
+        assert_eq!(
+            ok("/compact prepare AT default"),
+            prepare(Some(ThresholdChange::Default), None)
+        );
+        // Both, the threshold first.
+        assert_eq!(
+            ok("/compact prepare at 65% update  PLAN.md"),
+            prepare(to(PrepareAt::Percent(65)), Some("update  PLAN.md"))
+        );
+        assert_eq!(
+            ok("/compact prepare at default write NOTES.md"),
+            prepare(Some(ThresholdChange::Default), Some("write NOTES.md"))
+        );
+        assert_eq!(
+            ok("/compact prepare at 300k off"),
+            Command::Compact(CompactCommand::Prepare(PrepareChange {
+                at: to(PrepareAt::Tokens(300_000)),
+                instruction: Some(InstructionChange::Off),
+            }))
+        );
+        // "at" and no threshold: the instruction, "at" and all.
+        for text in [
+            "at the next stopping point, update PLAN.md",
+            "attach the notes to PLAN.md",
+            "at defaults, write NOTES.md",
+        ] {
+            assert_eq!(
+                ok(&format!("/compact prepare {text}")),
+                prepare(None, Some(text)),
+                "{text}"
+            );
+        }
+        // Nonsense is refused with the forms and an example.
+        for bad in [
+            "at",
+            "at 0",
+            "at 150%",
+            "at 0%",
+            "at 12x",
+            "at 1.5",
+            "at 1.2345k",
+            "at 3 o'clock",
+            "at .",
+            "at 65.5%",
+        ] {
+            let Command::Compact(CompactCommand::PrepareRefused(why)) =
+                ok(&format!("/compact prepare {bad}"))
+            else {
+                panic!("{bad} is refused")
+            };
+            assert!(why.ends_with(PREPARE_AT_FORMS), "{bad}: {why}");
+            assert!(
+                why.contains("300k") && why.contains("65%") && why.contains("for example"),
+                "{why}"
+            );
+        }
+        // `default`: the lower layers' instruction; `default all`: both.
+        assert_eq!(
+            ok("/compact prepare default"),
+            Command::Compact(CompactCommand::Prepare(PrepareChange {
+                at: None,
+                instruction: Some(InstructionChange::Default),
+            }))
+        );
+        let both = Command::Compact(CompactCommand::Prepare(PrepareChange {
+            at: Some(ThresholdChange::Default),
+            instruction: Some(InstructionChange::Default),
+        }));
+        assert_eq!(ok("/compact prepare default all"), both);
+        assert_eq!(ok("/compact prepare at default default"), both);
+        // `prepare` is a word of its own.
+        assert_eq!(
+            ok("/compact prepared"),
+            Command::Compact(CompactCommand::Focused("prepared".into()))
         );
     }
 

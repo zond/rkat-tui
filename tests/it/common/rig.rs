@@ -400,7 +400,7 @@ impl Client {
         .await;
     }
 
-    /// The agent this client works with (the status bar's).
+    /// The agent this client works with, as the daemon told it.
     pub async fn agent(&mut self) -> String {
         let shown = |msg: &Msg| match msg {
             Msg::Status(StatusUpdate::Agent(Some(agent))) => Some(agent.clone()),

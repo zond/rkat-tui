@@ -405,7 +405,7 @@ impl Local {
             method::Tasks, protocol::SessionParams { session_id } => self.tasks(&session_id).await;
             method::Notices, Empty {} => Ok(self.notices());
             method::AutoStats, Empty {} => Ok(self.auto_stats(&caller));
-            method::CompactPrepare, protocol::CompactPrepareParams { text } => Ok(self.core.prepare.set(text));
+            method::CompactPrepare, change => Ok(self.core.prepare.set(change));
             method::CompactStatus, Empty {} => Ok(crate::approval::desk::RuleOutcome { ok: true, text: self.core.prepare.status(self.agent_of(&caller).ok().as_deref()) });
             method::SetClassifierModel, protocol::ClassifierModelParams { endpoint, model } => Ok(self.set_classifier_model(&endpoint, &model).await);
             method::ClassifierCheck, selection => self.classifier_check(&selection).await;

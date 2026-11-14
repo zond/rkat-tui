@@ -175,7 +175,7 @@ pub fn compose(parts: Assembled, policy: PolicyOptions) -> Result<Composed, Daem
     let prepare = Arc::new(super::prepare::Prepare::new(
         compact_prepare,
         &compaction,
-        context_window,
+        (context_window, &choice.model),
         memory,
         approval.realm_file.clone(),
     ));

@@ -326,3 +326,139 @@ async fn a_helpers_context_does_not_fire_it() {
     );
     rig.quit().await;
 }
+
+/// `rkat/compact_prepare` through the daemon: the instruction comes from
+/// the user's own `tui.toml`; a new threshold applies at once (the next
+/// crossing of it asks the agent) and is written to the realm's
+/// `tui.toml`; `off` is none in this workspace although the user's file
+/// has one, says so, and holds across a daemon restart; `default` goes
+/// back, live, to the user's instruction and threshold, each named by
+/// where it comes from.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_workspace_sets_off_and_defaults_over_the_users_file_live() {
+    let ws = Workspace::new();
+    let cfg = common::config_dir_for(&ws.root);
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::write(
+        cfg.join("tui.toml"),
+        format!("[auto]\ncompact_prepare = \"{INSTRUCTION}\"\n"),
+    )
+    .unwrap();
+    let realm_toml = common::realm_of(&ws.root).join("tui.toml");
+    let stored = || -> toml::Table {
+        toml::from_str(&std::fs::read_to_string(&realm_toml).unwrap_or_default()).unwrap()
+    };
+    let mut script = history();
+    script.push(Step::TextUsage("big", 60_000));
+    let llm = ScriptedLlmClient::new(script);
+    let setup = Setup::args(&["--set", "auto.compact=warn"]);
+    let mut rig = Attached::start_with(&ws.root, &llm, setup).await;
+    let start = status(&rig).await;
+    assert!(
+        start.starts_with(&format!(
+            "compact prepare: \"{INSTRUCTION}\", from your tui.toml; asked at 70% of the window (about 700k tokens for "
+        )),
+        "{start}"
+    );
+    assert!(start.contains("), default: armed"), "{start}");
+    // The threshold, live: the next reading over it asks the agent.
+    let answer = set(&rig, json!({"at": {"to": 50_000}})).await;
+    assert_eq!(
+        answer["text"],
+        format!(
+            "prepare threshold set: the agent is asked at 50k tokens, from this workspace (/compact prepare) to: \"{INSTRUCTION}\", from your tui.toml"
+        )
+    );
+    assert!(answer.get("warning").is_none(), "{answer}");
+    assert_eq!(
+        stored()["auto"]["compact_prepare_at"].as_integer(),
+        Some(50_000)
+    );
+    turns(&mut rig, 6).await;
+    let agent = rig.agent().await;
+    rig.daemon.idle(&agent).await;
+    assert!(
+        status(&rig).await.contains("next turn"),
+        "{}",
+        status(&rig).await
+    );
+    // Off for the workspace, over the user's file.
+    let answer = set(&rig, json!({"instruction": "off"})).await;
+    assert!(
+        answer["text"].as_str().unwrap().starts_with(
+            "prepare instruction off for this workspace (your tui.toml has one: /compact prepare default uses it)"
+        ),
+        "{answer}"
+    );
+    assert_eq!(stored()["auto"]["compact_prepare"].as_str(), Some(""));
+    rig.quit().await;
+    // A restart keeps it off.
+    let llm = ScriptedLlmClient::new(vec![Step::Text("ok")]);
+    let mut setup = Setup::args(&["--set", "auto.compact=warn"]);
+    setup.client_args = vec!["-c".to_string()];
+    let rig = Attached::start_with(&ws.root, &llm, setup).await;
+    let off = status(&rig).await;
+    assert!(
+        off.starts_with(
+            "compact prepare: off for this workspace (your tui.toml has one: /compact prepare default uses it); its threshold is 50k tokens, from this workspace (/compact prepare)"
+        ),
+        "{off}"
+    );
+    // Both back to the user's file, live, and gone from the realm's.
+    let answer = set(&rig, json!({"at": "default", "instruction": "default"})).await;
+    let text = answer["text"].as_str().unwrap();
+    assert!(
+        text.starts_with(&format!(
+            "prepare instruction back to the lower layers: \"{INSTRUCTION}\", from your tui.toml; the agent is asked at 70% of the window"
+        )) && text.ends_with("), default"),
+        "{text}"
+    );
+    let auto = stored()
+        .get("auto")
+        .and_then(toml::Value::as_table)
+        .cloned()
+        .unwrap_or_default();
+    assert!(auto.get("compact_prepare").is_none(), "{auto}");
+    assert!(auto.get("compact_prepare_at").is_none(), "{auto}");
+    assert!(status(&rig).await.contains("from your tui.toml"));
+    rig.quit().await;
+}
+
+/// `rkat/compact_prepare` with `params`, as `/compact prepare` sends it.
+async fn set(rig: &Attached, params: serde_json::Value) -> serde_json::Value {
+    rig.daemon
+        .connect_bound()
+        .await
+        .call("rkat/compact_prepare", params)
+        .await
+        .unwrap()
+}
+
+/// A threshold at or above the automatic compaction applies and warns
+/// with the start-up notice's text.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_late_threshold_is_set_with_the_start_up_warning() {
+    let ws = Workspace::new();
+    let llm = ScriptedLlmClient::new(vec![]);
+    let rig = rig(&llm, &ws, "auto", 30_000).await;
+    let answer = rig
+        .daemon
+        .connect_bound()
+        .await
+        .call("rkat/compact_prepare", json!({"at": {"to": "90%"}}))
+        .await
+        .unwrap();
+    let warning = answer["warning"].as_str().unwrap();
+    assert!(
+        warning.starts_with("[auto] compact_prepare_at = 90% (900k tokens) is at or above the automatic compaction at 50k tokens, so the prepare instruction would never run first"),
+        "{warning}"
+    );
+    assert!(
+        answer["text"]
+            .as_str()
+            .unwrap()
+            .contains("90% of the window (about 900k tokens for "),
+        "{answer}"
+    );
+    rig.quit().await;
+}

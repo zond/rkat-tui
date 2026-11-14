@@ -288,9 +288,10 @@ pub struct Assembled {
     pub tasks_db: PathBuf,
     /// The context-compaction policy of the `tui.toml` `[auto]` settings.
     pub compaction: crate::ui::compaction::CompactionPolicy,
-    /// `[auto] compact_prepare` and `compact_prepare_at`, when an
-    /// instruction is set (`crate::daemon::prepare`).
-    pub compact_prepare: Option<crate::config::settings::CompactPrepare>,
+    /// `[auto] compact_prepare` and `compact_prepare_at`, and what
+    /// `/compact prepare at default` goes back to
+    /// (`crate::daemon::prepare`).
+    pub compact_prepare: crate::config::settings::PrepareSetting,
     /// The start-up model's context window ([`model_window`]): what the
     /// compaction threshold is computed from.
     pub context_window: Option<u64>,
@@ -499,7 +500,7 @@ pub async fn assemble(
         Arc::new(project_inputs.clone()),
     );
     let compaction = layered.settings.compaction_policy(None);
-    let compact_prepare = layered.settings.compact_prepare();
+    let compact_prepare = layered.settings.prepare_setting();
     approval_notices.extend(endpoint_notices.iter().map(ToString::to_string));
     approval_notices.extend(thinking_notices);
     let helper_depth = layered.helpers.max_depth;

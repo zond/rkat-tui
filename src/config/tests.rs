@@ -1022,6 +1022,96 @@ fn allow_statements_come_from_the_user_s_layers_only() {
     assert_eq!(auto.mode, Some(crate::approval::mode::PermissionMode::Auto));
 }
 
+/// What `/compact prepare` needs at hand to fall back live: the source
+/// of each value in force, and what the layers other than the realm's
+/// give. The realm's empty instruction (`/compact prepare off`) is off
+/// here over the user's own, as every start reads it; a realm file
+/// without the key leaves the user's in force.
+#[test]
+fn the_prepare_setting_knows_its_sources_and_the_lower_layers() {
+    use super::settings::{DEFAULT_PREPARE_AT, PrepareAt, PrepareSource, Sourced};
+    let tmp = tempfile::tempdir().unwrap();
+    let (home, realm, project) = (
+        tmp.path().join("home"),
+        tmp.path().join("realm"),
+        tmp.path().join("p"),
+    );
+    let global = home.join(RULES_FILE_NAME);
+    write(
+        &home,
+        "[auto]\ncompact_prepare = \"update PLAN.md\"\ncompact_prepare_at = \"60%\"\n",
+    );
+    write(&project, "");
+    write(&realm, "");
+    let setting = load_layered_with(&realm, Some(&global), &project, None)
+        .unwrap()
+        .settings
+        .prepare_setting();
+    let user = Sourced::new(Some("update PLAN.md".to_string()), PrepareSource::User);
+    assert_eq!(setting.instruction, user);
+    assert_eq!(
+        setting.at,
+        Sourced::new(PrepareAt::Percent(60), PrepareSource::User)
+    );
+    // Off for the workspace, the threshold the workspace's.
+    let file = RealmFile::new(realm.join(RULES_FILE_NAME));
+    file.write_compact_prepare(Some("")).unwrap();
+    file.write_compact_prepare_at(Some(PrepareAt::Tokens(50_000)))
+        .unwrap();
+    let setting = load_layered_with(&realm, Some(&global), &project, None)
+        .unwrap()
+        .settings
+        .prepare_setting();
+    assert_eq!(
+        setting.instruction,
+        Sourced::new(None, PrepareSource::Workspace)
+    );
+    assert_eq!(setting.default_instruction, user);
+    assert_eq!(
+        setting.at,
+        Sourced::new(PrepareAt::Tokens(50_000), PrepareSource::Workspace)
+    );
+    assert_eq!(
+        setting.default_at,
+        Sourced::new(PrepareAt::Percent(60), PrepareSource::User)
+    );
+    // The command line and the project file are over the realm's.
+    let overlay = cli("[auto]\ncompact_prepare_at = \"80%\"\n");
+    let setting = load_layered_with(&realm, Some(&global), &project, Some(&overlay))
+        .unwrap()
+        .settings
+        .prepare_setting();
+    assert_eq!(
+        setting.at,
+        Sourced::new(PrepareAt::Percent(80), PrepareSource::CommandLine)
+    );
+    assert_eq!(setting.default_at, setting.at);
+    write(&project, "[auto]\ncompact_prepare = \"write NOTES.md\"\n");
+    let setting = load_layered_with(&realm, Some(&global), &project, None)
+        .unwrap()
+        .settings
+        .prepare_setting();
+    assert_eq!(setting.instruction.source, PrepareSource::Project);
+    assert_eq!(setting.default_instruction.source, PrepareSource::Project);
+    // No layer: the default, and none.
+    let none = load_layered_with(&tmp.path().join("r2"), None, &tmp.path().join("p2"), None)
+        .unwrap()
+        .settings
+        .prepare_setting();
+    assert_eq!(none.instruction, Sourced::new(None, PrepareSource::Default));
+    assert_eq!(
+        none.at,
+        Sourced::new(DEFAULT_PREPARE_AT, PrepareSource::Default)
+    );
+    // `300k` and `1.2m` read in a file too.
+    write(&project, "[auto]\ncompact_prepare_at = \"1.2m\"\n");
+    let layered = load_layered_with(&realm, None, &project, None).unwrap();
+    assert_eq!(
+        layered.settings.compact_prepare_at,
+        PrepareAt::Tokens(1_200_000)
+    );
+}
+
 /// `[auto] compact_prepare` and `compact_prepare_at` layer like the other
 /// compaction keys: user layers, the command line, and the project file
 /// where the command line did not set them. The threshold reads as tokens
@@ -1035,7 +1125,7 @@ fn the_prepare_instruction_layers_like_the_compaction_keys() {
     write(&realm, "");
     write(&project, "");
     let layered = load_layered_with(&realm, None, &project, None).unwrap();
-    assert_eq!(layered.settings.compact_prepare(), None);
+    assert_eq!(layered.settings.prepare_setting().instruction.value, None);
     assert_eq!(layered.settings.compact_prepare_at, DEFAULT_PREPARE_AT);
     assert_eq!(DEFAULT_PREPARE_AT, PrepareAt::Percent(70));
 
@@ -1046,10 +1136,9 @@ fn the_prepare_instruction_layers_like_the_compaction_keys() {
     let prepare = load_layered_with(&realm, None, &project, None)
         .unwrap()
         .settings
-        .compact_prepare()
-        .unwrap();
-    assert_eq!(prepare.instruction, "update PLAN.md");
-    assert_eq!(prepare.at, PrepareAt::Tokens(300_000));
+        .prepare_setting();
+    assert_eq!(prepare.instruction.value.as_deref(), Some("update PLAN.md"));
+    assert_eq!(prepare.at.value, PrepareAt::Tokens(300_000));
     // The project file may set them...
     write(&project, "[auto]\ncompact_prepare_at = \"60%\"\n");
     let layered = load_layered_with(&realm, None, &project, None).unwrap();
@@ -1059,11 +1148,19 @@ fn the_prepare_instruction_layers_like_the_compaction_keys() {
     let overlay = cli("[auto]\ncompact_prepare_at = \"80%\"\ncompact_prepare = \"x\"\n");
     let layered = load_layered_with(&realm, None, &project, Some(&overlay)).unwrap();
     assert_eq!(layered.settings.compact_prepare_at, PrepareAt::Percent(80));
-    assert_eq!(layered.settings.compact_prepare().unwrap().instruction, "x");
+    assert_eq!(
+        layered
+            .settings
+            .prepare_setting()
+            .instruction
+            .value
+            .as_deref(),
+        Some("x")
+    );
     // An empty instruction is none.
     let overlay = cli("[auto]\ncompact_prepare = \"  \"\n");
     let layered = load_layered_with(&realm, None, &project, Some(&overlay)).unwrap();
-    assert_eq!(layered.settings.compact_prepare(), None);
+    assert_eq!(layered.settings.prepare_setting().instruction.value, None);
     // Bad thresholds are parse errors.
     for bad in ["0", "\"0%\"", "\"101%\"", "\"soon\""] {
         write(&project, &format!("[auto]\ncompact_prepare_at = {bad}\n"));

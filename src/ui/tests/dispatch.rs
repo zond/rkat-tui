@@ -901,6 +901,7 @@ fn session_commands_share_one_idle_guard() {
 
 #[test]
 fn compact_status_reports_the_policy_and_compact_needs_context() {
+    use crate::config::settings::{InstructionChange, PrepareAt, PrepareChange, ThresholdChange};
     let mut app = gauge_app(CompactMode::Auto);
     // The prepare instruction is the daemon's to report.
     assert_eq!(
@@ -919,13 +920,40 @@ fn compact_status_reports_the_policy_and_compact_needs_context() {
     );
     assert_eq!(
         submit(&mut app, "/compact prepare update PLAN.md"),
-        vec![Effect::CompactPrepare(Some("update PLAN.md".into()))]
+        vec![Effect::CompactPrepare(PrepareChange {
+            at: None,
+            instruction: Some(InstructionChange::To("update PLAN.md".into())),
+        })]
     );
     assert_eq!(
         submit(&mut app, "/compact prepare off"),
-        vec![Effect::CompactPrepare(None)]
+        vec![Effect::CompactPrepare(PrepareChange {
+            at: None,
+            instruction: Some(InstructionChange::Off),
+        })]
+    );
+    assert_eq!(
+        submit(&mut app, "/compact prepare at 65% update PLAN.md"),
+        vec![Effect::CompactPrepare(PrepareChange {
+            at: Some(ThresholdChange::To(PrepareAt::Percent(65))),
+            instruction: Some(InstructionChange::To("update PLAN.md".into())),
+        })]
     );
     assert!(last_notice(&app).is_some_and(|(_, text)| text.contains("auto-compaction is off")));
+    // Alone it asks the daemon for the state (and lists the forms).
+    assert_eq!(
+        submit(&mut app, "/compact prepare"),
+        vec![Effect::CompactPrepareShow]
+    );
+    // A threshold it cannot read is refused here, with the forms.
+    assert_eq!(submit(&mut app, "/compact prepare at 150%"), vec![]);
+    assert!(
+        last_notice(&app).is_some_and(|(level, text)| level == NoticeLevel::Error
+            && text.starts_with("/compact prepare at 150%: `150%` is no threshold")
+            && text.ends_with(crate::ui::commands::PREPARE_AT_FORMS)),
+        "{:?}",
+        last_notice(&app)
+    );
     // Nothing reported yet: nothing to compact.
     for cmd in ["/compact", "/compact now", "/compact keep the plan"] {
         assert!(submit(&mut app, cmd).is_empty(), "{cmd}");

@@ -45,20 +45,17 @@ impl Connection {
         matches!(self, Self::Attached { .. } | Self::Reconnecting)
     }
 
-    /// The status bar's segment at `now`.
+    /// The status bar's segment at `now`: a state, never an identity, so
+    /// a normal attachment has none (`/status` names the daemon's
+    /// address); a daemon of another build is named.
     #[must_use]
-    pub fn segment(&self, now: Instant) -> String {
-        match self {
+    pub fn segment(&self, now: Instant) -> Option<String> {
+        Some(match self {
             Self::Connecting => "connecting".to_string(),
             Self::Starting => "daemon starting".to_string(),
-            Self::Attached {
-                address,
-                daemon_build,
-            } => match daemon_build {
-                Some(build) if build != crate::BUILD => {
-                    format!("attached {address} · daemon build {build}")
-                }
-                _ => format!("attached {address}"),
+            Self::Attached { daemon_build, .. } => match daemon_build {
+                Some(build) if build != crate::BUILD => format!("daemon build {build}"),
+                _ => return None,
             },
             Self::Reconnecting => "reconnecting".to_string(),
             Self::Failed {
@@ -79,11 +76,12 @@ impl Connection {
                 text
             }
             Self::Stopped => "daemon stopped".to_string(),
-        }
+        })
     }
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use std::time::Duration;
@@ -97,7 +95,7 @@ mod tests {
             retry_at: Some(now + Duration::from_millis(7_200)),
         };
         assert_eq!(
-            failed.segment(now),
+            failed.segment(now).unwrap(),
             "daemon exited (signal: 7 SIGBUS) · retry 8s · log /var/log/rkat-tui-mob.log"
         );
         assert!(!failed.reached());
@@ -106,7 +104,10 @@ mod tests {
             log: None,
             retry_at: None,
         };
-        assert_eq!(given_up.segment(now), "no daemon · /daemon start retries");
+        assert_eq!(
+            given_up.segment(now).as_deref(),
+            Some("no daemon · /daemon start retries")
+        );
     }
 
     #[test]
@@ -116,15 +117,22 @@ mod tests {
             address: "127.0.0.1:1".into(),
             daemon_build: Some(crate::BUILD.into()),
         };
-        assert_eq!(same.segment(now), "attached 127.0.0.1:1");
+        assert_eq!(same.segment(now), None, "an identity, not a state");
         assert!(same.reached());
         let other = Connection::Attached {
             address: "127.0.0.1:1".into(),
             daemon_build: Some("0.0.1+old".into()),
         };
         assert_eq!(
-            other.segment(now),
-            "attached 127.0.0.1:1 · daemon build 0.0.1+old"
+            other.segment(now).as_deref(),
+            Some("daemon build 0.0.1+old")
         );
+        for state in [
+            Connection::Connecting,
+            Connection::Reconnecting,
+            Connection::Stopped,
+        ] {
+            assert!(state.segment(now).is_some(), "{state:?}");
+        }
     }
 }

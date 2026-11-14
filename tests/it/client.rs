@@ -494,7 +494,7 @@ async fn what_the_daemon_cannot_do_yet_says_so() {
         .await;
     client.send(Effect::StatusReport);
     client
-        .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text.contains("attached to the workspace daemon") && text.contains(&format!("agent `{}`", daemon.agent))))
+        .wait_for(|msg| matches!(msg, Msg::Notice { text, .. } if text.contains("attached to the workspace daemon") && text.contains(&format!("\nagent: {}\n", daemon.agent))))
         .await;
     client.quit().await;
     daemon.stop().await;

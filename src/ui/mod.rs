@@ -668,12 +668,15 @@ pub enum Effect {
     ResumeSession(String),
     /// Load session list; answer with [`Msg::ShowResumePicker`].
     RequestResumePicker,
-    /// `/compact prepare <text>|off`: set or clear the instruction the
-    /// agents get before an automatic compaction (`rkat/compact_prepare`).
-    CompactPrepare(Option<String>),
+    /// `/compact prepare [at <threshold>|default] [<text>|off]`: change
+    /// the threshold and the instruction the agents get before an
+    /// automatic compaction (`rkat/compact_prepare`).
+    CompactPrepare(crate::config::settings::PrepareChange),
     /// `/compact status`: the daemon's side of it, the prepare instruction
     /// (`rkat/compact_status`), as a notice.
     CompactPrepareStatus,
+    /// `/compact prepare`: the same, then the forms that change it.
+    CompactPrepareShow,
     /// Leaving with commands still held for the turn's end: they are
     /// dropped; the runner says so after the UI closes too.
     DroppedCommands(Vec<String>),

@@ -70,12 +70,20 @@ pub struct AgentNotice {
     pub text: String,
 }
 
-/// What [`method::CompactPrepare`] takes.
+/// What [`method::CompactPrepare`] takes: the threshold's change and the
+/// instruction's, either left out to leave it.
+pub type CompactPrepareParams = crate::config::settings::PrepareChange;
+
+/// What [`method::CompactPrepare`] answers: what is now set, and the
+/// start-up notice's warning when the threshold is at or above the
+/// automatic compaction's.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CompactPrepareParams {
-    /// The instruction (`None`: clear it).
+pub struct CompactPrepareOutcome {
+    /// What is now set.
+    pub text: String,
+    /// The warning, when there is one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>,
+    pub warning: Option<String>,
 }
 
 /// The notification of the permission mode and the denial counters
@@ -155,10 +163,11 @@ methods! {
     /// check run in the background); refused for an endpoint this daemon
     /// does not have.
     SetClassifierModel = "rkat/set_classifier_model" (ClassifierModelParams) -> crate::approval::desk::RuleOutcome;
-    /// `/compact prepare <text>|off`: the instruction every agent gets
-    /// before an automatic compaction, set (written to the realm's
-    /// `tui.toml`, live) or cleared.
-    CompactPrepare = "rkat/compact_prepare" (CompactPrepareParams) -> crate::approval::desk::RuleOutcome;
+    /// `/compact prepare [at <threshold>|default] [<text>|off]`: the
+    /// threshold and the instruction every agent gets before an automatic
+    /// compaction, set (written to the realm's `tui.toml`, live, the
+    /// trigger armed against them) or cleared.
+    CompactPrepare = "rkat/compact_prepare" (CompactPrepareParams) -> CompactPrepareOutcome;
     /// `/compact status`'s daemon side: the prepare instruction, its
     /// threshold and whether it is armed for this client's agent.
     CompactStatus = "rkat/compact_status" (Empty) -> crate::approval::desk::RuleOutcome;

@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+### Added
+
+- `/compact prepare at <N | Nk | N%>` sets where the agent is asked to
+  prepare for a compaction (`300000`, `300k`, `1.2m`, `65%`), live and
+  for the workspace; `/compact prepare at 65% <text>` sets the threshold
+  and the instruction at once. A threshold at or above the automatic
+  compaction's is applied with the start-up notice's warning; one it
+  cannot read is refused with the accepted forms and an example. `300k`
+  and `1.2m` read in `tui.toml` too.
+- `/compact prepare default` and `/compact prepare at default` remove the
+  workspace's instruction or threshold and the lower layers' (your own
+  `tui.toml`'s) apply at once, without a restart; `/compact prepare
+  default all` resets both. `/compact prepare` alone shows what is set,
+  its state and the forms.
+
+### Changed
+
+- `/compact prepare off` turns the instruction off for this workspace
+  also when your own `tui.toml` has one, and it stays off across daemon
+  restarts (an empty `compact_prepare` in the realm's `tui.toml`).
+- The `/compact prepare` confirmations and `/compact status` give the
+  threshold as set and in tokens for the model, and name where each value
+  in force comes from (this workspace, your tui.toml, the command line,
+  the project's .rkat/tui.toml, or the default).
+- The status bar no longer shows the daemon's address, the agent's name
+  or the conversation's id; a connection state other than the normal
+  attachment (connecting, reconnecting, a failure, a daemon of another
+  build) still leads it. `/status` prints the three on labelled lines
+  (`daemon:`, `agent:`, `conversation:` with the full and the short id).
+
 ## [0.0.5] - 2026-11-14
 
 ### Added

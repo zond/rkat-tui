@@ -186,8 +186,9 @@ impl RealmFile {
         save_realm(&self.path, &file)
     }
 
-    /// Write `text` as its `[auto] compact_prepare` (`/compact prepare`),
-    /// or remove the key (`None`, `/compact prepare off`), keeping
+    /// Write `text` as its `[auto] compact_prepare` (`/compact prepare`;
+    /// an empty one is off for the workspace, `/compact prepare off`), or
+    /// remove the key (`None`, `/compact prepare default`), keeping
     /// everything else.
     ///
     /// # Errors
@@ -199,6 +200,25 @@ impl RealmFile {
         file.auto
             .get_or_insert_with(AutoSection::default)
             .compact_prepare = text.map(str::to_string);
+        save_realm(&self.path, &file)
+    }
+
+    /// Write `at` as its `[auto] compact_prepare_at` (`/compact prepare
+    /// at`), or remove the key (`None`, `/compact prepare at default`),
+    /// keeping everything else.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::write_rules_with`].
+    pub fn write_compact_prepare_at(
+        &self,
+        at: Option<crate::config::settings::PrepareAt>,
+    ) -> Result<(), RulesError> {
+        let _one = self.lock.lock();
+        let mut file = RulesFile::load(&self.path)?;
+        file.auto
+            .get_or_insert_with(AutoSection::default)
+            .compact_prepare_at = at;
         save_realm(&self.path, &file)
     }
 

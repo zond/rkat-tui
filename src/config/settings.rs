@@ -180,7 +180,8 @@ impl PrepareAt {
         }
     }
 
-    /// `300000` or `"70%"` (a string of digits reads as tokens).
+    /// `300000`, `300k`, `1.2m` or `"70%"` (a string of digits reads as
+    /// tokens; `_` separates digits).
     ///
     /// # Errors
     ///
@@ -189,7 +190,7 @@ impl PrepareAt {
         let text = text.trim();
         let bad = || {
             format!(
-                "`{text}` is no threshold: give tokens (300000) or a share of the window (\"70%\")"
+                "`{text}` is no threshold: give tokens (300000, 300k or 1.2m) or a share of the window (65%)"
             )
         };
         if let Some(percent) = text.strip_suffix('%') {
@@ -198,11 +199,47 @@ impl PrepareAt {
                 _ => Err(bad()),
             };
         }
-        match text.replace('_', "").parse::<u64>() {
-            Ok(tokens) if tokens > 0 => Ok(Self::Tokens(tokens)),
-            _ => Err(bad()),
-        }
+        let number = text.replace('_', "").to_ascii_lowercase();
+        let (number, scale) = if let Some(number) = number.strip_suffix('k') {
+            (number, 1_000)
+        } else if let Some(number) = number.strip_suffix('m') {
+            (number, 1_000_000)
+        } else {
+            (number.as_str(), 1)
+        };
+        scaled(number, scale)
+            .filter(|tokens| *tokens > 0)
+            .map(Self::Tokens)
+            .ok_or_else(bad)
     }
+}
+
+/// `number` (digits, a decimal fraction allowed) times `scale`, when it is
+/// a whole number of tokens (`1.2` of a million is, `1.5` tokens is not).
+fn scaled(number: &str, scale: u64) -> Option<u64> {
+    let (whole, fraction) = match number.split_once('.') {
+        Some((_, "")) => return None,
+        Some((whole, fraction)) => (whole, fraction),
+        None => (number, ""),
+    };
+    let digits = |part: &str| part.bytes().all(|b| b.is_ascii_digit());
+    if (whole.is_empty() && fraction.is_empty()) || !digits(whole) || !digits(fraction) {
+        return None;
+    }
+    let mut value = if whole.is_empty() {
+        0
+    } else {
+        whole.parse::<u64>().ok()?.checked_mul(scale)?
+    };
+    let mut unit = scale;
+    for digit in fraction.bytes() {
+        if !unit.is_multiple_of(10) {
+            return None;
+        }
+        unit /= 10;
+        value = value.checked_add(u64::from(digit - b'0') * unit)?;
+    }
+    Some(value)
 }
 
 impl std::fmt::Display for PrepareAt {
@@ -241,14 +278,152 @@ impl<'de> Deserialize<'de> for PrepareAt {
     }
 }
 
-/// The instruction the agent gets before an automatic compaction
-/// (`[auto] compact_prepare`) and where it runs (`compact_prepare_at`).
+/// Which `tui.toml` layer the prepare instruction or its threshold in
+/// force comes from (`/compact prepare` and `/compact status` say it).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PrepareSource {
+    /// No layer sets it.
+    #[default]
+    Default,
+    /// The user's own `tui.toml`.
+    User,
+    /// The realm's `tui.toml`, which `/compact prepare` writes.
+    Workspace,
+    /// `--set` on the command line.
+    CommandLine,
+    /// The project's `.rkat/tui.toml`.
+    Project,
+}
+
+impl PrepareSource {
+    /// The source of a value a `tui.toml` layer of `origin` set.
+    #[must_use]
+    pub fn of(origin: crate::approval::rules::RuleOrigin) -> Self {
+        use crate::approval::rules::RuleOrigin;
+        match origin {
+            RuleOrigin::Global => Self::User,
+            RuleOrigin::Realm | RuleOrigin::Session => Self::Workspace,
+            RuleOrigin::Cli => Self::CommandLine,
+            RuleOrigin::Project => Self::Project,
+        }
+    }
+
+    /// Where the value comes from, as the notices end with it.
+    #[must_use]
+    pub fn describe(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::User => "from your tui.toml",
+            Self::Workspace => "from this workspace (/compact prepare)",
+            Self::CommandLine => "from the command line (applies until the daemon restarts)",
+            Self::Project => "from the project's .rkat/tui.toml",
+        }
+    }
+
+    /// The layer by name (`your tui.toml has one`).
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Default => "the default",
+            Self::User => "your tui.toml",
+            Self::Workspace => "this workspace",
+            Self::CommandLine => "the command line",
+            Self::Project => "the project's .rkat/tui.toml",
+        }
+    }
+
+    /// A layer over the workspace's (it wins again at the next start).
+    #[must_use]
+    pub fn over_workspace(self) -> bool {
+        matches!(self, Self::CommandLine | Self::Project)
+    }
+}
+
+/// A setting's value and the layer it comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompactPrepare {
-    /// What the agent is asked to do first.
-    pub instruction: String,
-    /// When.
-    pub at: PrepareAt,
+pub struct Sourced<T> {
+    /// The value.
+    pub value: T,
+    /// Where it comes from.
+    pub source: PrepareSource,
+}
+
+impl<T> Sourced<T> {
+    /// `value` from `source`.
+    pub fn new(value: T, source: PrepareSource) -> Self {
+        Self { value, source }
+    }
+}
+
+/// The prepare instruction and its threshold as the daemon starts with
+/// them, and what the lower layers give (`/compact prepare default`
+/// goes back to those, live).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrepareSetting {
+    /// The instruction in force (`None` from a layer: off there; from
+    /// [`PrepareSource::Default`]: none is set).
+    pub instruction: Sourced<Option<String>>,
+    /// Its threshold in force.
+    pub at: Sourced<PrepareAt>,
+    /// The instruction without the realm file's `compact_prepare`.
+    pub default_instruction: Sourced<Option<String>>,
+    /// The threshold without the realm file's `compact_prepare_at`.
+    pub default_at: Sourced<PrepareAt>,
+}
+
+impl Default for PrepareSetting {
+    fn default() -> Self {
+        Self {
+            instruction: Sourced::new(None, PrepareSource::Default),
+            at: Sourced::new(DEFAULT_PREPARE_AT, PrepareSource::Default),
+            default_instruction: Sourced::new(None, PrepareSource::Default),
+            default_at: Sourced::new(DEFAULT_PREPARE_AT, PrepareSource::Default),
+        }
+    }
+}
+
+/// An instruction as a layer wrote it: trimmed, an empty one is off.
+#[must_use]
+pub fn prepare_instruction(text: Option<&str>) -> Option<String> {
+    text.map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
+/// What `/compact prepare at …` does to the threshold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThresholdChange {
+    /// Set it for the workspace (written to the realm's `tui.toml`).
+    To(PrepareAt),
+    /// Remove the workspace's (`/compact prepare at default`): the lower
+    /// layers' applies.
+    Default,
+}
+
+/// What `/compact prepare <text>|off|default` does to the instruction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstructionChange {
+    /// Set (or replace) it for the workspace.
+    To(String),
+    /// None in this workspace, whatever the lower layers say (written as
+    /// an empty `compact_prepare`).
+    Off,
+    /// Remove the workspace's: the lower layers' applies.
+    Default,
+}
+
+/// One `/compact prepare` change: the threshold first, then the
+/// instruction; `None` leaves that part as it is.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrepareChange {
+    /// The threshold's change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<ThresholdChange>,
+    /// The instruction's change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instruction: Option<InstructionChange>,
 }
 
 impl CompactionPolicy {

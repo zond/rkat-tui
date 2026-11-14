@@ -1144,12 +1144,8 @@ impl Runner {
             Effect::NewSession => self.switch_conversation(None),
             Effect::ResumeSession(reference) => self.resume_session(reference),
             Effect::RequestResumePicker => self.show_resume_picker(),
-            Effect::CompactPrepare(text) => {
-                self.outcome_command::<protocol::method::CompactPrepare>(
-                    protocol::CompactPrepareParams { text },
-                    "/compact prepare",
-                );
-            }
+            Effect::CompactPrepare(change) => self.compact_prepare(change),
+            Effect::CompactPrepareShow => self.compact_prepare_show(),
             Effect::CompactPrepareStatus => {
                 self.outcome_command::<protocol::method::CompactStatus>(
                     protocol::Empty {},

@@ -67,14 +67,19 @@ impl Runner {
         )];
         match self.conn.link() {
             Some(link) => {
+                // The bar leaves these out: they are here, each on its line.
                 lines.push(format!(
-                    "daemon: {} (pid {}), mob `{}`, agent `{}`",
+                    "daemon: {} (pid {}), mob `{}`",
                     link.endpoint.address,
                     link.endpoint.pid,
-                    crate::daemon::MOB_ID,
-                    link.connection.agent()
+                    crate::daemon::MOB_ID
                 ));
-                lines.push(format!("session: {}", link.session));
+                lines.push(format!("agent: {}", link.connection.agent()));
+                let session = link.session.to_string();
+                lines.push(format!(
+                    "conversation: {session} (short {})",
+                    crate::text::short_id(&session)
+                ));
             }
             None => lines.push("daemon: not attached".to_string()),
         }
@@ -544,6 +549,46 @@ impl Runner {
                 Err(err) => (NoticeLevel::Error, format!("{failed}: {err}")),
             }]
         });
+    }
+
+    /// `/compact prepare`'s change: what is now set, and the warning when
+    /// the threshold comes too late to run first.
+    pub(super) fn compact_prepare(&self, change: protocol::CompactPrepareParams) {
+        self.ask::<protocol::method::CompactPrepare>(
+            change,
+            "/compact prepare needs it",
+            |answer| match answer {
+                Ok(outcome) => std::iter::once((NoticeLevel::Info, outcome.text))
+                    .chain(outcome.warning.map(|warning| (NoticeLevel::Warn, warning)))
+                    .collect(),
+                Err(err) => vec![(
+                    NoticeLevel::Error,
+                    format!("/compact prepare failed: {err}"),
+                )],
+            },
+        );
+    }
+
+    /// `/compact prepare` alone: what is set and its state, as `/compact
+    /// status` has it, then the forms that change it.
+    pub(super) fn compact_prepare_show(&self) {
+        self.ask::<protocol::method::CompactStatus>(
+            protocol::Empty {},
+            "/compact prepare needs it",
+            |answer| match answer {
+                Ok(outcome) => vec![
+                    (NoticeLevel::Info, outcome.text),
+                    (
+                        NoticeLevel::Info,
+                        crate::ui::commands::PREPARE_USAGE.to_string(),
+                    ),
+                ],
+                Err(err) => vec![(
+                    NoticeLevel::Error,
+                    format!("/compact prepare failed: {err}"),
+                )],
+            },
+        );
     }
 
     /// `/auto check`: say how many cases go to the classifier and that

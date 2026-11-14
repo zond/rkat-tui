@@ -188,8 +188,14 @@ impl App {
                 // The prepare instruction is the daemon's.
                 fx.push(Effect::CompactPrepareStatus);
             }
-            Command::Compact(CompactCommand::Prepare(text)) => {
-                fx.push(Effect::CompactPrepare(text));
+            Command::Compact(CompactCommand::Prepare(change)) => {
+                fx.push(Effect::CompactPrepare(change));
+            }
+            Command::Compact(CompactCommand::PrepareShow) => {
+                fx.push(Effect::CompactPrepareShow);
+            }
+            Command::Compact(CompactCommand::PrepareRefused(why)) => {
+                self.transcript.push_notice(NoticeLevel::Error, why);
             }
             Command::Compact(cmd @ (CompactCommand::Now | CompactCommand::Focused(_)))
                 if self.running =>

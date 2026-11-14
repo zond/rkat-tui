@@ -861,9 +861,24 @@ async fn status_report_names_the_session_and_the_workspace() {
         unreachable!()
     };
     assert!(
-        text.contains(&format!("session: {}", rig.current_session().await)),
+        text.contains(&format!("conversation: {}", rig.current_session().await)),
         "{text}"
     );
+    // The daemon's address, the agent and the conversation (full and
+    // short) each on a labelled line: the status bar leaves them out.
+    let session = rig.current_session().await.to_string();
+    assert!(
+        text.contains(&format!(
+            "\nconversation: {session} (short {})\n",
+            rkat_tui::text::short_id(&session)
+        )),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!("\nagent: {}\n", rig.agent().await)),
+        "{text}"
+    );
+    assert!(text.contains("\ndaemon: 127.0.0.1:"), "{text}");
     assert!(
         text.contains(&format!("workspace: {}", ws.root.display())),
         "{text}"

@@ -1724,12 +1724,44 @@ is at or above that threshold (the engine's own, 80% of the window, in
 the default mode; `compact_auto_percent` with `compact = "auto"`), a
 start-up notice says the instruction would never run first and what to
 change. Helpers and forks get no instruction and have no `compact_ready`.
-`/compact prepare <text>` sets (or replaces) the instruction for the
-workspace in the realm's `tui.toml`, live; `/compact prepare off` clears
-it. The keys may come from your own `tui.toml`, the realm's, `--set`
-(`--set 'auto.compact_prepare=update PLAN.md'`, `--set
-auto.compact_prepare_at=60%`), or a project's `.rkat/tui.toml` where the
-command line does not set them, as the other compaction keys.
+The keys may come from your own `tui.toml`, the realm's (what
+`/compact prepare` writes), `--set` (`--set 'auto.compact_prepare=update
+PLAN.md'`, `--set auto.compact_prepare_at=60%`), or a project's
+`.rkat/tui.toml` where the command line does not set them, as the other
+compaction keys. The threshold reads as tokens (`300000`, `300k`,
+`1.2m`) or a share of the window (`"65%"`).
+
+**From inside the TUI.** Every form applies at once, without a restart,
+arms the trigger of every agent against what is now set, and is written
+for this workspace to the realm's `tui.toml`:
+
+- `/compact prepare <text>` sets the instruction; `/compact prepare off`
+  turns it off for this workspace, also when your own `tui.toml` has one
+  (written as an empty `compact_prepare`, so it holds across restarts);
+  `/compact prepare default` removes the workspace's and your own
+  `tui.toml`'s applies again at once (or none).
+- `/compact prepare at <N | Nk | N%>` sets the threshold (`at 300k`, `at
+  1.2m`, `at 65%`); `/compact prepare at default` removes the
+  workspace's and the lower layers' applies at once (70% when none says).
+  Something after `at` that starts like a number but is no threshold is
+  refused with the accepted forms and an example; `at` followed by words
+  stays part of an instruction ("at the next stopping point, …").
+- `/compact prepare at 65% <text>` sets both, the threshold first;
+  `/compact prepare default all` resets both.
+
+`/compact prepare` alone prints what is set, its state and the three
+forms. The confirmations and `/compact status` give the threshold as set
+and in tokens for the model ("prepare instruction set: "update PLAN.md",
+from this workspace (/compact prepare); the agent is asked at 65% of the
+window (about 650k tokens for <model>), from this workspace (/compact
+prepare)") and name where each value in force comes from: from this
+workspace, from your tui.toml, from the command line, from the project's
+.rkat/tui.toml, or default. Off says what `default` would bring back
+("off for this workspace (your tui.toml has one: /compact prepare
+default uses it)"). A threshold at or above the automatic compaction's
+is applied with the start-up notice's warning. A value from the command
+line or the project's file is over the workspace's: a change says it
+applies again at the next start.
 
 ## Skills
 
@@ -1854,7 +1886,7 @@ feature by feature.
 `/permissions [list|add allow|deny <tool> [pattern]|rm <n>]` (`remove` for `rm`; alone, it opens a list of the rules and the grants in force: d then y removes the highlighted rule or session grant),
 `/approve` (the calls the gate recently blocked: Enter once, s for this session, a always; see [Approving a blocked call](#approving-a-blocked-call)),
 `/mode [default|accept-edits|plan|auto]`, `/auto [on|off|resume|stats|check [all|<n>|<case id>…]]` (see [Checking your classifier model](#checking-your-classifier-model)), `/model [[endpoint:]id|refresh]`,
-`/remember <text>`, `/memory [workspace|user|system]`, `/init`, `/compact [now|status|prepare <text>|prepare off|<instructions>]`, `/context`, `/status`, `/export [file]`, `/usage` (aliases `/cost`, `/stats`), `/copy [N]`, `/trust`,
+`/remember <text>`, `/memory [workspace|user|system]`, `/init`, `/compact [now|status|prepare [at <threshold>|default] [<text>|off|default]|<instructions>]`, `/context`, `/status`, `/export [file]`, `/usage` (aliases `/cost`, `/stats`), `/copy [N]`, `/trust`,
 `/helpers [list|expand|fold <label>|all]` (alias `/tasks`). `/status` prints the
 rkat-tui version, the model and its endpoint, the session id, the workspace
 and realm directories, the shell confinement, the permission mode, the
@@ -2340,13 +2372,15 @@ it restarted.
 **Status bar.** While the agent is busy, its activity leads the bar
 (`⠋ running 12s`, `⠋ classifying…`, `⠋ compacting… 4s`, or what it waits
 for after a silence, see **Working or waiting**), so that a narrow
-terminal, which cuts the bar's end, keeps it. Then comes the connection: `connecting`,
-`daemon starting`, `attached 127.0.0.1:<port>`, `reconnecting`, a
-failure, or `daemon stopped`; the next one the agent this TUI works with
-(`agent main-<id>`). A daemon built from another commit than this TUI
-adds `· daemon build <version>+<commit>` to the attached segment and says
-so once in the transcript (`/daemon stop` and attach again runs the new
-build).
+terminal, which cuts the bar's end, keeps it. Then comes the connection,
+but only when it is not the normal attachment: `connecting`, `daemon
+starting`, `reconnecting`, a failure, or `daemon stopped`. Attached, the
+bar names neither the daemon's address, the agent nor the conversation:
+`/status` prints each on its own line (`daemon: 127.0.0.1:<port> (pid
+…)`, `agent: main-<id>`, `conversation: <id> (short <last eight>)`). A
+daemon built from another commit than this TUI shows `daemon build
+<version>+<commit>` there and says so once in the transcript (`/daemon
+stop` and attach again runs the new build).
 
 **A daemon started with other confinement flags.** The agent's shell
 runs in the daemon, under the confinement the daemon was started with
@@ -2455,7 +2489,7 @@ their size, first message and, for another agent's, its name) and
 switches back to one of this agent's, showing its transcript; `/resume
 <ref>` takes `last` (this agent's most recent conversation other than
 this one), `~N` (counting those), an id, an id prefix, or the short id
-the picker, `/agents`, the status bar and the notices show (an id's last
+the picker, `/agents`, `/status` and the notices show (an id's last
 eight characters: ids start with the time, so conversations made within a
 minute share their first ones). A conversation
 belongs to the agent that ran it (the engine seats a session only under
@@ -2546,9 +2580,8 @@ with its own user, conversation, model and helpers, and they know about
 each other.
 
 **Names.** Each agent is a member of the daemon's mob named `main-<id>`
-(four letters and digits, fixed for the agent's life): the status bar
-shows it after the connection, and `/agents`, `--list` and `/status` name
-it. A daemon from before several agents keeps its one agent, `main`.
+(four letters and digits, fixed for the agent's life): `/agents`,
+`--list` and `/status` name it. A daemon from before several agents keeps its one agent, `main`.
 
 **Starting.** The first `rkat-tui` in a workspace starts the daemon and
 works with its first agent. Any later start with neither `-c` nor
