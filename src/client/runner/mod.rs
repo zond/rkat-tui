@@ -1168,6 +1168,7 @@ impl Runner {
                     "/auto stats",
                 );
             }
+            Effect::ClassifierCheck(selection) => self.classifier_check(selection),
             Effect::PickedApproval(id, scope) => self.approve_picker(Some((id, scope))),
             Effect::ListRules => {
                 self.outcome_command::<protocol::method::Rules>(RuleCommand::List, "/permissions");

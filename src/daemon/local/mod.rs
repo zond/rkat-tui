@@ -312,6 +312,7 @@ impl Local {
             method::Tasks, protocol::SessionParams { session_id } => self.tasks(&session_id).await;
             method::Notices, Empty {} => Ok(self.notices());
             method::AutoStats, Empty {} => Ok(self.auto_stats(&caller));
+            method::ClassifierCheck, selection => self.classifier_check(&selection).await;
             method::Audit, protocol::AuditParams { lines } => self.audit_tail(&self.agent_of(&caller)?, lines.unwrap_or(AUDIT_LINES));
             method::Missed, Empty {} => self.missed(&caller);
             method::SetModel, params => self.set_model(&self.agent_of(&caller)?, params).await;

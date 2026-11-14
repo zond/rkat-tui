@@ -607,7 +607,8 @@ impl LocalMethods for Local {
 /// consent surface offers this client. Ends when the client closes (the
 /// engine then sees its end of input) or the engine's side closes; a local
 /// call still running then finishes (a conversation switch is not cut in
-/// half), and its answer is dropped. Ends too when the client's queue
+/// half), and its answer is dropped, except one of
+/// [`protocol::CANCELLED_ON_LEAVE`], which is dropped itself. Ends too when the client's queue
 /// fills ([`CLIENT_QUEUE`]): a client that does not read is dropped.
 /// `caller` is what the client proved at attach (the lifecycle methods
 /// answer for it).
@@ -726,6 +727,9 @@ async fn proxy_with<R, W, E, L>(
     // mob's streams are closed between two client lines).
     let mut lines = client_read.lines();
     let mut overflowed = false;
+    // Set when the client's lines end: the calls of
+    // [`protocol::CANCELLED_ON_LEAVE`] still running are dropped.
+    let (left, _) = tokio::sync::watch::channel(false);
     loop {
         let line = tokio::select! {
             read = lines.next_line() => match read {
@@ -752,6 +756,28 @@ async fn proxy_with<R, W, E, L>(
             }
         };
         match route(&line, &*local, &caller) {
+            Routed::Local { id, method, params }
+                if protocol::CANCELLED_ON_LEAVE.contains(&method.as_str()) =>
+            {
+                let local = Arc::clone(&local);
+                let caller = caller.clone();
+                let mut gone = left.subscribe();
+                tokio::spawn({
+                    let out_tx = out_tx.downgrade();
+                    async move {
+                        tokio::select! {
+                            line = answer(&*local, caller, id, &method, params) => {
+                                if let Some(out_tx) = out_tx.upgrade() {
+                                    let _ = out_tx.send(Outgoing::line(line));
+                                }
+                            }
+                            // The client left (or the proxy ended): the
+                            // call is dropped unfinished.
+                            _ = gone.wait_for(|left| *left) => {}
+                        }
+                    }
+                });
+            }
             Routed::Local { id, method, params } => {
                 let local = Arc::clone(&local);
                 let caller = caller.clone();
@@ -807,6 +833,7 @@ async fn proxy_with<R, W, E, L>(
             }
         }
     }
+    left.send_replace(true);
     drop(decisions);
     let _ = engine_write.shutdown().await;
     drop(out_tx);

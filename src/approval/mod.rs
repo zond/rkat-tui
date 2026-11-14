@@ -43,6 +43,7 @@ pub mod attendance;
 pub mod audit;
 pub mod catalog;
 pub mod classifier;
+pub mod corpus;
 pub mod counters;
 pub mod desk;
 pub mod engine;
@@ -467,6 +468,16 @@ pub enum ApprovalEvent {
     /// Something the human should know about the approval machinery (an
     /// allow rule could not be saved, a rules file was not trusted).
     Notice(String),
+    /// A classifier check (`/auto check`) judged `done` of its `total`
+    /// cases; `running: false` when it ended.
+    CheckProgress {
+        /// Cases judged.
+        done: usize,
+        /// Cases it sends.
+        total: usize,
+        /// Whether it still runs.
+        running: bool,
+    },
 }
 
 /// Errors from approval setup.

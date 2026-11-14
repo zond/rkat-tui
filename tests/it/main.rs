@@ -18,6 +18,7 @@ mod agents;
 mod approval_policy;
 mod approval_service;
 mod approvals;
+mod classifier_check;
 mod classifier_llm;
 mod client;
 mod client_turns;

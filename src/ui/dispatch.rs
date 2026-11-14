@@ -179,6 +179,9 @@ impl App {
             }
             Command::Auto(AutoCommand::Off) => fx.push(Effect::SetMode(PermissionMode::Manual)),
             Command::Auto(AutoCommand::Stats) => fx.push(Effect::AutoStats),
+            Command::Auto(AutoCommand::Check(selection)) => {
+                fx.push(Effect::ClassifierCheck(selection));
+            }
             Command::Mode(Some(mode)) => fx.push(Effect::SetMode(mode)),
             Command::Rules(RulesCommand::Pick) => fx.push(Effect::RequestRulePicker),
             Command::Approve => fx.push(Effect::RequestApprovePicker),

@@ -708,6 +708,12 @@ pub fn status_bar(status: &StatusInfo, now: Instant) -> Line<'static> {
             Style::default().fg(Color::Magenta),
         ));
     }
+    if let Some((done, total)) = status.check {
+        segs.push(Span::styled(
+            format!("classifier check {done}/{total}"),
+            Style::default().fg(Color::Magenta),
+        ));
+    }
     if let Some(since) = status.compacting_since {
         let frame = spinner_frame(Some(since), now);
         segs.push(Span::styled(

@@ -220,6 +220,7 @@ pub const NOT_FORWARDED: &[&str] = &[
     "list",
     "rehome",
     "audit",
+    "classifier_check",
 ];
 
 /// `argv` with `--endpoint-file <file>`: the daemon writes its endpoint

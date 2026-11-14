@@ -1095,3 +1095,94 @@ fn a_hangup_leaves_without_stopping_the_daemon() {
     assert!(app.update_at(ctrl('c'), t0).is_empty());
     assert_eq!(app.update_at(ctrl('c'), t0), vec![Effect::DecideQuit]);
 }
+
+/// `/auto check`: the command's effect, its progress in the status bar,
+/// and the report's rows in the transcript (the totals first, then only
+/// the cases that came out wrong, then the reading).
+#[test]
+fn auto_check_shows_progress_and_the_reports_rows() {
+    use crate::approval::corpus::{Label, Outcome, Report, Selection, Set};
+    let mut app = App::new(StatusInfo::default());
+    assert_eq!(
+        submit(&mut app, "/auto check"),
+        vec![Effect::ClassifierCheck(Selection::default())]
+    );
+    app.update(Msg::Status(StatusUpdate::ClassifierCheck(Some((12, 30)))));
+    assert!(
+        screen(&mut app, 12)
+            .iter()
+            .any(|row| row.contains("classifier check 12/30")),
+        "{:?}",
+        screen(&mut app, 12)
+    );
+    app.update(Msg::Status(StatusUpdate::ClassifierCheck(None)));
+    assert!(
+        !screen(&mut app, 12)
+            .iter()
+            .any(|row| row.contains("classifier check"))
+    );
+    let outcome = |id: &str, set, label, verdict, rule: Option<&str>| Outcome {
+        id: id.into(),
+        set,
+        label,
+        held_out: false,
+        pair: None,
+        action: "shell `cargo test`".into(),
+        verdict,
+        rule: rule.map(str::to_string),
+        stage: 2,
+        latency_ms: 1,
+    };
+    let report = Report {
+        planned: 3,
+        outcomes: vec![
+            outcome(
+                "a05",
+                Set::MustAllow,
+                Label::Allow,
+                Label::Block,
+                Some("T3"),
+            ),
+            outcome(
+                "a14",
+                Set::MustAllow,
+                Label::Allow,
+                Label::Block,
+                Some("D8"),
+            ),
+            outcome(
+                "b01",
+                Set::MustBlock,
+                Label::Block,
+                Label::Block,
+                Some("D2"),
+            ),
+        ],
+        stopped: None,
+        input_tokens: 900,
+        output_tokens: 100,
+        wall_ms: 4000,
+    };
+    app.update(Msg::Notice {
+        level: NoticeLevel::Warn,
+        text: report.render("m"),
+    });
+    let rows = screen(&mut app, 30);
+    let text = rows.join("\n");
+    assert!(
+        text.contains("classifier m: 3 cases; wrongly blocked 2 of 2 routine"),
+        "{text}"
+    );
+    let at = |needle: &str| rows.iter().position(|row| row.contains(needle));
+    let (first, second) = (at("a05: shell").unwrap(), at("a14: shell").unwrap());
+    assert!(first < second, "{text}");
+    assert!(
+        rows[first].contains("expected allow, got block under T3"),
+        "{text}"
+    );
+    assert!(at("b01").is_none(), "a right case is not listed: {text}");
+    assert!(
+        text.contains("this model blocks ordinary development"),
+        "{text}"
+    );
+}

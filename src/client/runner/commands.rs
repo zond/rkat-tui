@@ -453,6 +453,47 @@ impl Runner {
         });
     }
 
+    /// `/auto check`: say how many cases go to the classifier and that
+    /// they cost, ask the daemon to send them, and show what came out
+    /// ([`crate::client::check`]). Its progress comes as pushes.
+    pub(super) fn classifier_check(&self, selection: crate::approval::corpus::Selection) {
+        let cases = match crate::approval::corpus::select(&selection) {
+            Ok(cases) => cases.len(),
+            Err(err) => {
+                self.send(Msg::Notice {
+                    level: NoticeLevel::Error,
+                    text: format!("/auto check: {err}"),
+                });
+                return;
+            }
+        };
+        let Some(connection) = self.link_or_say("/auto check needs it") else {
+            return;
+        };
+        self.send(Msg::Notice {
+            level: NoticeLevel::Info,
+            text: crate::client::check::intro(cases),
+        });
+        let say = self.say();
+        tokio::spawn(async move {
+            let answer = tokio::time::timeout(
+                crate::client::check::CALL_BOUND,
+                remote::call::<protocol::method::ClassifierCheck>(&connection, &selection),
+            )
+            .await
+            .unwrap_or(Err(ClientError::Timeout(
+                "waiting for the classifier check",
+            )));
+            let (reading, text) = crate::client::check::outcome(&answer);
+            let level = match reading {
+                Some(crate::approval::corpus::Reading::Within) => NoticeLevel::Info,
+                Some(_) => NoticeLevel::Warn,
+                None => NoticeLevel::Error,
+            };
+            say.notice(level, text);
+        });
+    }
+
     /// The UI answered an approval dialog: decide its decision.
     pub(super) fn respond_escalation(&mut self, id: EscalationId, answer: &EscalationAnswer) {
         if let Some((decision, digest)) = self.approvals.answer_decision(id) {

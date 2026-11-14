@@ -239,6 +239,27 @@ methods! {
     Wire = "rkat/wire" (WireParams) -> Wired;
     /// `/unwire`: drop the agent's cross-workspace wire to `peer`.
     Unwire = "rkat/unwire" (UnwireParams) -> Unwired;
+    /// `/auto check`: send the corpus cases the selection names through
+    /// the daemon's classifier as a review shows them
+    /// ([`crate::approval::ApprovalEngine::check_classifier`]) and answer
+    /// what came out. One at a time ([`CHECK_REFUSED`] while one runs, or
+    /// without a classifier model); dropped when its client leaves
+    /// ([`CANCELLED_ON_LEAVE`]).
+    ClassifierCheck = "rkat/classifier_check" (crate::approval::corpus::Selection) -> ClassifierChecked;
+}
+
+/// The local methods whose run is dropped when the client that called
+/// them leaves (a check sends model calls the user pays for; nobody reads
+/// its answer then).
+pub const CANCELLED_ON_LEAVE: &[&str] = &[<method::ClassifierCheck as Method>::NAME];
+
+/// [`method::ClassifierCheck`]'s result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClassifierChecked {
+    /// The classifier's model.
+    pub model: String,
+    /// What came out.
+    pub report: crate::approval::corpus::Report,
 }
 
 /// [`method::Status`]'s result.
@@ -390,6 +411,11 @@ pub const AGENT_IN_USE: i32 = -32014;
 /// the agent has no socket, or the engine refused the edge. The message
 /// says which and what to do.
 pub const WIRE_REFUSED: i32 = -32015;
+
+/// A classifier check ([`method::ClassifierCheck`]) refused: no classifier
+/// model is configured, another check runs, or the selection names no
+/// case it can send. The message says which and what to do.
+pub const CHECK_REFUSED: i32 = -32016;
 
 /// A local method's refusal: a JSON-RPC error code and message.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1259,6 +1285,16 @@ pub enum ApprovalNote {
         /// What.
         text: String,
     },
+    /// A classifier check (`/auto check`) judged `done` of its `total`
+    /// cases (every client shows it: the daemon runs one at a time).
+    CheckProgress {
+        /// Cases judged.
+        done: usize,
+        /// Cases it sends.
+        total: usize,
+        /// Whether it still runs.
+        running: bool,
+    },
 }
 
 impl ApprovalNote {
@@ -1295,6 +1331,15 @@ impl ApprovalNote {
             },
             ApprovalEvent::Classifying(running) => Self::Classifying { running },
             ApprovalEvent::Notice(text) => Self::Notice { text },
+            ApprovalEvent::CheckProgress {
+                done,
+                total,
+                running,
+            } => Self::CheckProgress {
+                done,
+                total,
+                running,
+            },
             ApprovalEvent::EscalationWithdrawn(_)
             | ApprovalEvent::ClassifierUsage { .. }
             | ApprovalEvent::Granted { .. } => {

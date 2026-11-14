@@ -34,7 +34,7 @@ pub enum RulesCommand {
 }
 
 /// `/auto` subcommands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AutoCommand {
     /// Show the auto-mode state.
     Status,
@@ -46,6 +46,9 @@ pub enum AutoCommand {
     Resume,
     /// The review numbers (`/auto stats`).
     Stats,
+    /// Measure the classifier model on the permission corpus (`/auto
+    /// check`).
+    Check(crate::approval::corpus::Selection),
 }
 
 /// `/model` subcommands.
@@ -473,8 +476,8 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "auto",
         aliases: &[],
-        usage: "[on | off | resume | stats]",
-        summary: "show the mode; switch auto mode on, off, or resume it; its numbers",
+        usage: "[on | off | resume | stats | check]",
+        summary: "show the mode; switch auto mode on, off, or resume it; its numbers; check its model",
         help: &[
             (
                 "/auto",
@@ -487,6 +490,10 @@ pub static COMMANDS: &[CommandSpec] = &[
             (
                 "/auto stats",
                 "the classifier's reviews, stage-1 flags, blocks by rule, pauses,\n/approve overrides, how often you allow what is asked, its tokens\nand time, for this conversation and since the daemon started",
+            ),
+            (
+                "/auto check [all | <n> | <case id>…]",
+                "measure the classifier model on built-in cases: 30 by default\n(12 routine, 12 harmful, 3 scope pairs), every case with all;\neach case is a classifier call on your endpoint, at your cost;\nprints the wrong blocks and misses and whether they are within\nthe targets",
             ),
         ],
         parse: parse_auto,
@@ -757,6 +764,26 @@ fn parse_auto(rest: &str) -> Option<Command> {
         ["off"] => Some(Command::Auto(AutoCommand::Off)),
         ["resume"] => Some(Command::Auto(AutoCommand::Resume)),
         ["stats"] => Some(Command::Auto(AutoCommand::Stats)),
+        ["check", rest @ ..] => {
+            parse_check(rest).map(|selection| Command::Auto(AutoCommand::Check(selection)))
+        }
+        _ => None,
+    }
+}
+
+/// `/auto check [all | <n> | <case id>…]`.
+fn parse_check(words: &[&str]) -> Option<crate::approval::corpus::Selection> {
+    use crate::approval::corpus::{Limit, Selection};
+    match words {
+        [] => Some(Selection::default()),
+        [word] if Limit::parse(word).is_some() => Some(Selection {
+            limit: Limit::parse(word)?,
+            ..Selection::default()
+        }),
+        ids if ids.iter().all(|id| Limit::parse(id).is_none()) => Some(Selection {
+            cases: ids.iter().map(ToString::to_string).collect(),
+            ..Selection::default()
+        }),
         _ => None,
     }
 }
@@ -1328,6 +1355,37 @@ mod tests {
         assert_eq!(ok("/auto on"), Command::Auto(AutoCommand::On));
         assert_eq!(ok("/auto off"), Command::Auto(AutoCommand::Off));
         assert_eq!(ok("/auto resume"), Command::Auto(AutoCommand::Resume));
+        {
+            use crate::approval::corpus::{Limit, Selection};
+            assert_eq!(
+                ok("/auto check"),
+                Command::Auto(AutoCommand::Check(Selection::default()))
+            );
+            assert_eq!(
+                ok("/auto check all"),
+                Command::Auto(AutoCommand::Check(Selection {
+                    limit: Limit::All,
+                    ..Selection::default()
+                }))
+            );
+            assert_eq!(
+                ok("/auto check 8"),
+                Command::Auto(AutoCommand::Check(Selection {
+                    limit: Limit::Count(8),
+                    ..Selection::default()
+                }))
+            );
+            assert_eq!(
+                ok("/auto check b01-force-push-main a05-test-suite-with-temp-files"),
+                Command::Auto(AutoCommand::Check(Selection {
+                    cases: vec![
+                        "b01-force-push-main".into(),
+                        "a05-test-suite-with-temp-files".into()
+                    ],
+                    ..Selection::default()
+                }))
+            );
+        }
         assert!(matches!(
             parse("/auto maybe"),
             Some(Err(CommandError::Usage(_)))

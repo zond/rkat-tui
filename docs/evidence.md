@@ -8915,7 +8915,9 @@ agent's note, removal, audit lines).
 ## The permission corpus and its live numbers (2026-11-14)
 
 No public must-allow suite for coding agents exists (the research's
-change 9), so one was written: `tests/corpus/permissions/` holds 46
+change 9), so one was written: `tests/corpus/permissions/` (since moved
+to `src/approval/corpus/`, embedded in the binary; see "Checking the
+user's own classifier model" below) holds 46
 must-allow cases (the field notes' friction cases in generic form:
 redirects into the scratch directory and shared `/tmp`, file-tool writes
 in temp, a test suite with temp files, `cargo info` filling the registry
@@ -9092,3 +9094,66 @@ before), and which `stats::StatsBook` adds up per session and since the
 daemon started, with pauses, `/approve` approvals and the user's answers.
 `/auto stats` (`rkat/auto_stats`) shows both. Pinned by
 `reviews_are_counted_and_audited` and `the_numbers_read_as_rates`.
+
+## Checking the user's own classifier model (2026-11-14)
+
+Why: the corpus's live runs used Claude Haiku 5.5, and on it even the
+old (0.0.4) policy wrongly blocked none of the 42 must-allow cases the
+classifier sees. The owner's friction is real but comes from their own
+setup: an installed binary against an OpenAI-compatible LiteLLM proxy,
+with a classifier model of their own. A repository test that reaches a
+provider's public API by key cannot see that; the measurement has to
+run where the user's reviews run, on the user's model, endpoint, key
+variable and dialect, from the installed binary, in one command.
+
+What was built: the corpus files moved to `src/approval/corpus/` and are
+`include_str!`-ed by `approval::corpus` (typed loader, `Places`, the one
+`evaluate`), so the binary carries them and the repository's tests read
+the same data. `ApprovalEngine::check_classifier` sends a selection of
+cases through the daemon's classifier: the review's own `LlmClassifier`
+(same client, model, provider dialect and policy text), built beside it
+by `bootstrap::approval::make_classifier` with stage 2's file-reading
+tools off (a case has no project to read, as in the live runner) and no
+usage events (a check is no conversation's cost; its tokens come back in
+its result through `REVIEW_TOKENS`). Each case is shown on the fixed
+machine the live runner used (`Places::fixed`), not the user's
+workspace: a case's label is right for that machine, and the numbers
+measure the model, not the workspace, so two runs and the developer's
+table mean the same thing. `live_corpus` now calls the same
+`corpus::evaluate`. The start-up probe uses two of the cases by id
+(`corpus::PROBE_CASES`). The wire gains one method,
+`rkat/classifier_check` (`protocol::method::ClassifierCheck`, refused
+with `CHECK_REFUSED` without a classifier model, while another check
+runs, or for an unknown or deterministic case id), and one approval note
+variant, `CheckProgress`, for the status bar. The proxy drops a call of
+`protocol::CANCELLED_ON_LEAVE` when its client's lines end, so a check
+whose client left stops sending model calls; its `CheckRun` guard frees
+the engine for the next check and writes the audit line of how far it
+got. Bounds: each case a review's (both stages' timeouts and 30 s), the
+check 20 minutes. A provider error or timeout stops the check
+(`Stopped::Failed`) and is reported as an error of the endpoint, never as
+a block. Nothing touches a session: no counter, pause, statistic, allow
+cache or transcript.
+
+The quick sample is 30 cases: 12 must-allow, 12 must-block and 3 scope
+pairs, interleaved four, four and one pair per ten, each set spread over
+the rule its `why` names (else the program its command runs), groups in
+sorted order: the must-block twelve cite twelve different rules. Targets
+as the owner set them: at most one wrong block in 30 cases sent
+(`wrong_blocks * 30 <= cases`), at least 90% of the must-block cases
+blocked. Scope pairs are reported, not in the targets (AmPermBench finds
+every model worse on them). `rkat-tui --classifier-check` exits 0, 3
+(outside) or 1 (incomplete); there is no `--json`, as the command line
+has no JSON convention.
+
+Not verified: no live model call was made for this change (the owner's
+credit is nearly spent); the numbers on the owner's model are theirs to
+take. Pinned by `the_totals_of_a_scripted_mix_and_nothing_reaches_a_session`,
+`the_case_bound_and_a_provider_error`,
+`one_check_at_a_time_and_a_departed_clients_check_is_dropped`,
+`without_a_classifier_model_the_check_says_how_to_configure_one`,
+`the_client_announces_the_check_and_shows_the_report`,
+`the_command_line_form_exits_non_zero_outside_the_targets`,
+`the_quick_sample_is_fixed_spread_and_balanced`,
+`totals_and_the_rendered_report`, `the_wrong_block_target_is_one_in_thirty`
+and `auto_check_shows_progress_and_the_reports_rows`.

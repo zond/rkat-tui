@@ -120,6 +120,13 @@ pub fn note_messages(note: ApprovalNote) -> Vec<Msg> {
             level: NoticeLevel::Warn,
             text,
         }],
+        ApprovalNote::CheckProgress {
+            done,
+            total,
+            running,
+        } => vec![Msg::Status(StatusUpdate::ClassifierCheck(
+            running.then_some((done, total)),
+        ))],
     }
 }
 

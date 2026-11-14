@@ -86,8 +86,8 @@ official tables name, then niche features.
 
 rkat-tui extras with no CC counterpart: `Shift+↑/↓`, `PgUp/PgDn` and
 `Home/End` scroll the transcript; mouse selection copies over OSC 52;
-`/helpers` folds and expands helper headers; `/trust`; `/auto` and `/auto
-resume`; the daemon's `/detach`, `/agents`, `/daemon`, `/rehome`,
+`/helpers` folds and expands helper headers; `/trust`; `/auto`, `/auto
+resume`, `/auto stats` and `/auto check`; the daemon's `/detach`, `/agents`, `/daemon`, `/rehome`,
 `/schedules` and `/audit`; `//` sends a literal `/`, `\#` a literal `#` and
 `\!` a literal `!`.
 

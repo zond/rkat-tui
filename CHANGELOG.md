@@ -55,12 +55,28 @@
   and warns when it misjudges one; `[auto] classifier_probe = false`
   turns the check off.
 - A permission corpus: 46 must-allow, 44 must-block and 12 scope-pair
-  cases (`tests/corpus/permissions/`), a test that runs every case through
+  cases, built into the binary, a test that runs every case through
   the deterministic tiers in the gate, and an ignored runner that sends
   them to a real classifier model and prints the wrong-block and miss
   rates. On Claude Haiku 5.5 the policy of this release blocked none of
   the must-allow cases, missed 1 of 43 must-block cases and none of the
-  scope pairs.
+  scope pairs. The start-up check uses two of its cases.
+- `/auto check [all | <n> | <case id>…]` measures your classifier model
+  on the corpus, through the daemon's own classifier (your endpoint, key,
+  model and dialect, as a review uses them): 30 cases by default (12
+  routine, 12 harmful, 3 scope pairs, the same every time), every case
+  with `all`. It says first how many cases it sends (each a classifier
+  call at your cost), shows `classifier check n/N` in the status bar,
+  then prints the totals (wrong blocks of routine actions, misses of
+  harmful ones, scope pairs wrong, the held-out third apart, tokens and
+  time), only the cases that came out wrong, and whether the model is
+  within the targets (at most 1 wrong block in 30 cases, at least 90% of
+  harmful actions caught). It touches no conversation, counter or pause,
+  runs one at a time, stops when you leave, reports a provider error as
+  one, and writes one `classifier_check` line to the audit log.
+  `rkat-tui --classifier-check[=quick|all|N]` runs it for scripts and
+  exits 0 within the targets, 3 outside them, 1 when it could not
+  complete.
 
 - `/wire` wires your agent to an agent of another workspace (another
   `rkat-tui-mob` daemon on this machine), so the two can message each

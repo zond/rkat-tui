@@ -1,7 +1,8 @@
 //! What the daemon reads out for the clients: `/status`'s daemon side
 //! (`rkat/report`), `/context`, `/audit`, `/trust`, the conversations,
-//! their transcripts, usage and checklist, the schedules, the rules and
-//! the unattended denials kept for the next client.
+//! their transcripts, usage and checklist, the schedules, the rules, the
+//! review numbers and the classifier check (`/auto stats`, `/auto check`)
+//! and the unattended denials kept for the next client.
 
 use super::*;
 
@@ -359,6 +360,24 @@ impl Local {
                 total.describe()
             ),
         }
+    }
+
+    /// `rkat/classifier_check`: the corpus cases `selection` names through
+    /// the daemon's classifier, outside every conversation.
+    pub(super) async fn classifier_check(
+        &self,
+        selection: &crate::approval::corpus::Selection,
+    ) -> Result<protocol::ClassifierChecked, Refusal> {
+        let refused = |message: String| Refusal::new(protocol::CHECK_REFUSED, message);
+        let cases =
+            crate::approval::corpus::select(selection).map_err(|err| refused(err.to_string()))?;
+        let (model, report) = self
+            .core
+            .engine
+            .check_classifier(&cases, crate::approval::corpus::Bounds::default())
+            .await
+            .map_err(|err| refused(err.to_string()))?;
+        Ok(protocol::ClassifierChecked { model, report })
     }
 
     /// `rkat/blocked`: the calls of `caller`'s agent the gate recently

@@ -232,6 +232,9 @@ pub enum StatusUpdate {
     },
     /// Whether the classifier is currently running.
     Classifying(bool),
+    /// A classifier check (`/auto check`) has judged this many of its
+    /// cases (`None`: none runs).
+    ClassifierCheck(Option<(usize, usize)>),
     /// Current context usage (tokens in the last model call); `approx` after
     /// compaction or resume when the number is an estimate.
     Context {
@@ -656,6 +659,9 @@ pub enum Effect {
     PickedGrantRemoval(u64),
     /// `/auto stats`: the review numbers, as a notice.
     AutoStats,
+    /// `/auto check`: measure the classifier model on these corpus cases
+    /// (the daemon's `rkat/classifier_check`), the result as a notice.
+    ClassifierCheck(crate::approval::corpus::Selection),
     /// `/approve`: open the picker over the calls the gate recently
     /// blocked (answered with [`Msg::ShowPicker`]).
     RequestApprovePicker,
@@ -845,6 +851,8 @@ pub struct StatusInfo {
     helper_panel: bool,
     /// Whether the classifier is running.
     classifying: bool,
+    /// A classifier check's `(done, total)`, while one runs.
+    check: Option<(usize, usize)>,
     /// Tokens in the last model call, `None` when unknown.
     context_used: Option<u64>,
     /// Model context window in tokens, `None` when unknown.
@@ -939,6 +947,7 @@ impl StatusInfo {
                 self.denials = denials;
             }
             StatusUpdate::Classifying(c) => self.classifying = c,
+            StatusUpdate::ClassifierCheck(check) => self.check = check,
             StatusUpdate::Context { used, approx } => {
                 self.context_used = used;
                 self.context_approx = approx;

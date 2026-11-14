@@ -41,6 +41,9 @@ pub struct ApprovalOverrides {
     /// How long the human has to answer an escalation
     /// (default [`DEFAULT_ESCALATION_TIMEOUT`]).
     pub escalation_timeout: Option<Duration>,
+    /// The model `classifier` stands for (`/status`, `/auto check`; the
+    /// start-up check does not run on it). `None`: no model is named.
+    pub classifier_model: Option<String>,
 }
 
 /// The approval engine plus what the runner serves.
@@ -146,12 +149,19 @@ pub(crate) async fn build(
     // The model the classifier runs on, and whether the start-up check
     // runs against it (not for a scripted client, nor when turned off).
     let mut model = None;
+    let mut check = None;
     let classifier = match &overrides.classifier {
-        Some(classifier) => Arc::clone(classifier),
+        Some(classifier) => {
+            model = overrides
+                .classifier_model
+                .clone()
+                .map(|named| (named, false));
+            Arc::clone(classifier)
+        }
         None => {
             let probe = layered.settings.classifier_probe && source.llm_override.is_none();
             let named = classifier_model(&layered.settings, source.provider);
-            let (classifier, notice) = make_classifier(
+            let (classifier, checker, notice) = make_classifier(
                 &layered.settings,
                 source,
                 scope.project_root.clone(),
@@ -162,6 +172,7 @@ pub(crate) async fn build(
                 model = named.map(|named| (named, probe));
             }
             notices.extend(notice);
+            check = checker;
             classifier
         }
     };
@@ -182,6 +193,9 @@ pub(crate) async fn build(
     });
     if let Some((model, probe)) = model {
         engine.set_classifier_model(model, probe);
+    }
+    if let Some(check) = check {
+        engine.set_check_classifier(check);
     }
     Ok(ApprovalParts {
         engine,
@@ -204,17 +218,26 @@ pub(crate) fn classifier_model(settings: &AutoSettings, provider: Provider) -> O
 
 /// The two-stage LLM classifier on the session's provider (model from
 /// `[auto] classifier_model`, else [`classifier_default_model`]), built with
-/// the factory's own credential resolution. Without a model or a client
-/// every Tier-3 call is escalated to the human; the notice says why.
+/// the factory's own credential resolution, and the same classifier for
+/// the checks (`/auto check`, the start-up check): the same client, model
+/// and policy, stage 2 without its file-reading tools, its calls reported
+/// in the check's result rather than as a conversation's usage. Without a
+/// model or a client every Tier-3 call is escalated to the human; the
+/// notice says why.
 async fn make_classifier(
     settings: &AutoSettings,
     source: ClassifierSource<'_>,
     root: ProjectRoot,
     events: mpsc::UnboundedSender<ApprovalEvent>,
-) -> (Arc<dyn ActionClassifier>, Option<String>) {
+) -> (
+    Arc<dyn ActionClassifier>,
+    Option<Arc<dyn ActionClassifier>>,
+    Option<String>,
+) {
     let Some(model) = classifier_model(settings, source.provider) else {
         return (
             Arc::new(UnavailableClassifier),
+            None,
             Some(format!(
                 "no classifier model for provider {}: set [auto] classifier_model; until then every reviewed action asks you",
                 source.provider.as_str()
@@ -249,6 +272,7 @@ async fn make_classifier(
                 Err(err) => {
                     return (
                         Arc::new(UnavailableClassifier),
+                        None,
                         Some(format!(
                             "the safety classifier ({model}) is unavailable: {err}; every reviewed action asks you"
                         )),
@@ -257,6 +281,11 @@ async fn make_classifier(
             }
         }
     };
+    let check: Arc<dyn ActionClassifier> = Arc::new(LlmClassifier::new(
+        Arc::clone(&client),
+        source.provider,
+        model.clone(),
+    ));
     let mut classifier =
         LlmClassifier::new(client, source.provider, model).with_usage_events(events);
     // Stage 2 may read project files (read-only, bounded) to judge what a
@@ -264,7 +293,7 @@ async fn make_classifier(
     if settings.classifier_tools {
         classifier = classifier.with_project_tools(Arc::new(ReadOnlyProjectTools::new(root)));
     }
-    (Arc::new(classifier), None)
+    (Arc::new(classifier), Some(check), None)
 }
 
 /// Shells whose syntax the Tier-1 shell analysis understands.

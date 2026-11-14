@@ -26,6 +26,8 @@
 //!   mobs' own event streams.
 //! - [`sessions`]: `/new`, `/resume` (the daemon's `rkat/new`,
 //!   `rkat/resume`, `rkat/conversations`, `rkat/transcript`).
+//! - [`check`]: `/auto check` and `--classifier-check` (the daemon's
+//!   `rkat/classifier_check`).
 //!
 //! What runs on this side of the wire is the [`crate::workbench`] and the
 //! UI it starts ([`crate::workbench::app::build_app`]).
@@ -33,6 +35,7 @@
 pub mod address;
 pub mod approvals;
 pub mod catchup;
+pub mod check;
 pub mod helpers;
 pub mod launch;
 pub mod list;

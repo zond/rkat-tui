@@ -86,6 +86,12 @@ pub enum TuiError {
     /// stdin or stdout is not a terminal; the TUI needs one.
     #[error("stdin and stdout must be a terminal; rkat-tui is interactive")]
     NotATerminal,
+    /// `--classifier-check` could not run, or stopped before its last case.
+    #[error("the classifier check did not complete: {0}")]
+    ClassifierCheck(String),
+    /// `--classifier-check` ran and the model is outside the targets.
+    #[error("the classifier model is outside the targets (the report above says how)")]
+    ClassifierOutside,
     /// The terminal UI failed.
     #[error(transparent)]
     Ui(#[from] crate::ui::UiError),
@@ -175,7 +181,9 @@ impl TuiError {
             | Self::RealmLease { .. }
             | Self::ToolGateway(_)
             | Self::Daemon(_)
+            | Self::ClassifierCheck(_)
             | Self::Ui(_) => 1,
+            Self::ClassifierOutside => 3,
         }
     }
 }

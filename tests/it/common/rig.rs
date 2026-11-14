@@ -81,6 +81,7 @@ impl Running {
             approval: ApprovalOverrides {
                 classifier: Some(Arc::new(AllowAll) as Arc<dyn ActionClassifier>),
                 escalation_timeout: None,
+                classifier_model: None,
             },
             without_token_store: true,
         }
@@ -581,6 +582,8 @@ pub struct Setup {
     /// calls take the script's next steps) instead of `classifier`.
     pub llm_classifier: bool,
     pub escalation_timeout: Option<Duration>,
+    /// The model the classifier stands for (`/auto check` runs on it).
+    pub classifier_model: Option<String>,
     pub lister: Option<rkat_tui::models::ModelLister>,
     pub host_paths: Option<HostPaths>,
     /// Run every session on the engine's own clients (against a fake
@@ -625,6 +628,7 @@ impl Setup {
                             .unwrap_or_else(|| Arc::new(AllowAll) as Arc<dyn ActionClassifier>)
                     }),
                     escalation_timeout: self.escalation_timeout,
+                    classifier_model: self.classifier_model.clone(),
                 },
             })
             .with_endpoint_file(self.endpoint_file(root))

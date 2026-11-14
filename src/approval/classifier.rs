@@ -490,6 +490,16 @@ pub enum ClassifierVerdict {
 /// states none of its own).
 pub const STAGE1_ALLOW_REASON: &str = "nothing flagged by the quick check";
 
+/// The stage that reached `verdict`: 1 when the quick first pass allowed
+/// it, else 2.
+#[must_use]
+pub fn review_stage(verdict: &ClassifierVerdict) -> u8 {
+    match verdict {
+        ClassifierVerdict::Allow { reason } if reason == STAGE1_ALLOW_REASON => 1,
+        _ => 2,
+    }
+}
+
 impl ClassifierVerdict {
     /// An allow verdict with `reason`.
     #[must_use]

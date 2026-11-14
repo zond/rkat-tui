@@ -79,6 +79,7 @@ impl Setup {
             approval: ApprovalOverrides {
                 classifier: Some(Arc::clone(&self.classifier) as Arc<dyn ActionClassifier>),
                 escalation_timeout: self.escalation_timeout,
+                classifier_model: None,
             },
             without_token_store: true,
         });
