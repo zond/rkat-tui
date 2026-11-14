@@ -90,6 +90,40 @@
 
 ## [0.0.3] - 2026-11-13
 
+### Changed
+
+- The approval classifier is told where you allow the agent to work
+  outside the project: every directory the confinement plan grants by
+  default (the temp directory in use, the user cache directory, the Cargo
+  home's caches for writing; toolchains and shared system directories
+  for reading) and every directory you name with `--confinement-write`,
+  `--confinement-read` or `[confinement]` in your own `tui.toml`, yours
+  marked as named by you. A write there no longer counts as leaving the
+  allowed scope. This holds with `--no-confinement` too: the grants are
+  computed and validated in every mode, and without confinement they
+  reach only the gate (the start-up notice says so instead of calling
+  them without effect). Helpers and forks are judged with the same list;
+  a project's own `.rkat/tui.toml` still adds nothing.
+- A `write_file` or `edit_file` inside a directory you named with
+  `--confinement-write` or `[confinement] extra_write` runs like an edit
+  in the project, without a classifier call (protected paths still ask,
+  plan mode still refuses, manual mode still asks), and a read or search
+  inside any directory you named is allowed. Naming a directory the
+  sandbox already grants, such as `--confinement-write /tmp`, is accepted
+  (it was refused as redundant): the sandbox stays as it is and the gate
+  trusts the directory. The sandbox's own defaults are not trusted this
+  way; the classifier is only told of them.
+- Every denial the agent receives says who denied it (a deny rule by id
+  and pattern, the fixed policy, plan mode, you in the dialog, an
+  unanswered dialog, an unattended turn, an unavailable classifier, or
+  the classifier with its reason), and the notice shows the same. When a
+  path outside the project and your allowed directories is why, the
+  denial names the path and how you can allow it
+  (`--confinement-write <dir>`, `[confinement] extra_write` in your own
+  `tui.toml`, or an allow rule's exact `/permissions add` line) and what
+  the agent can use instead (a directory in the project, the temp
+  directory). The classifier's answer gains a `PATH:` line for this.
+
 ### Fixed
 
 - A daemon the TUI started that exits before serving is reported with
@@ -225,37 +259,6 @@
 
 ### Changed
 
-- The approval classifier is told where you allow the agent to work
-  outside the project: every directory the confinement plan grants by
-  default (the temp directory in use, the user cache directory, the Cargo
-  home's caches for writing; toolchains and shared system directories
-  for reading) and every directory you name with `--confinement-write`,
-  `--confinement-read` or `[confinement]` in your own `tui.toml`, yours
-  marked as named by you. A write there no longer counts as leaving the
-  allowed scope. This holds with `--no-confinement` too: the grants are
-  computed and validated in every mode, and without confinement they
-  reach only the gate (the start-up notice says so instead of calling
-  them without effect). Helpers and forks are judged with the same list;
-  a project's own `.rkat/tui.toml` still adds nothing.
-- A `write_file` or `edit_file` inside a directory you named with
-  `--confinement-write` or `[confinement] extra_write` runs like an edit
-  in the project, without a classifier call (protected paths still ask,
-  plan mode still refuses, manual mode still asks), and a read or search
-  inside any directory you named is allowed. Naming a directory the
-  sandbox already grants, such as `--confinement-write /tmp`, is accepted
-  (it was refused as redundant): the sandbox stays as it is and the gate
-  trusts the directory. The sandbox's own defaults are not trusted this
-  way; the classifier is only told of them.
-- Every denial the agent receives says who denied it (a deny rule by id
-  and pattern, the fixed policy, plan mode, you in the dialog, an
-  unanswered dialog, an unattended turn, an unavailable classifier, or
-  the classifier with its reason), and the notice shows the same. When a
-  path outside the project and your allowed directories is why, the
-  denial names the path and how you can allow it
-  (`--confinement-write <dir>`, `[confinement] extra_write` in your own
-  `tui.toml`, or an allow rule's exact `/permissions add` line) and what
-  the agent can use instead (a directory in the project, the temp
-  directory). The classifier's answer gains a `PATH:` line for this.
 - The engine is Meerkat 0.9.14 from crates.io (was 0.9.13). What it
   changes for rkat-tui: a conversation moved between two OpenAI-family
   endpoints (the OpenAI API, a self-hosted or LiteLLM server in
